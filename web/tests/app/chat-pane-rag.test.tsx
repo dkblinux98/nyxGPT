@@ -20,6 +20,27 @@ vi.mock('@/contexts/ToastContext', () => ({
 
 type Handler = (url: string, init?: RequestInit) => any;
 
+function sseResponse(raw: string) {
+  let sent = false;
+  return {
+    ok: true,
+    status: 200,
+    body: {
+      getReader() {
+        return {
+          read: async () => {
+            if (!sent) {
+              sent = true;
+              return { value: new TextEncoder().encode(raw), done: false };
+            }
+            return { value: undefined, done: true };
+          },
+        };
+      },
+    },
+  };
+}
+
 function makeFetchMock(extra: Record<string, Handler> = {}, seedMessages: any[] = []) {
   return vi.fn().mockImplementation((url: string, init?: RequestInit) => {
     for (const key of Object.keys(extra)) {
@@ -184,6 +205,34 @@ describe('RagCitationsCollapsible', () => {
     const user = userEvent.setup();
     await user.click(toggle);
     await waitFor(() => expect(screen.getByText('N/A')).toBeInTheDocument());
+  });
+
+  it('formats chunk refs from chunk_number with and without total_chunks, and omits the ref when neither chunk_number nor chunk_id is present', async () => {
+    const seed = [
+      { role: 'user', content: 'Q7' },
+      {
+        role: 'assistant',
+        content: 'A7',
+        rag_chunks: [
+          { text: 'has number and total', score: 0.7, doc_id: 'doc-x', chunk_number: 2, total_chunks: 5, collection: 'alt' },
+          { text: 'has number, no total', score: 0.6, doc_id: 'doc-y', chunk_number: 1, total_chunks: null },
+          { text: 'has neither', score: 0.5, doc_id: 'doc-z' },
+        ],
+      },
+    ];
+    global.fetch = makeFetchMock({}, seed) as unknown as typeof fetch;
+    render(<ChatPane sessionName="rag7" />);
+    const toggle = await screen.findByText(/3 RAG sources retrieved/);
+    const user = userEvent.setup();
+    await user.click(toggle);
+
+    // chunk_number + total_chunks -> "chunk 2 of 5", plus the non-default collection suffix.
+    expect(screen.getByText(/Doc: doc-x \(chunk 2 of 5\)/)).toBeInTheDocument();
+    expect(screen.getByText(/· alt/)).toBeInTheDocument();
+    // chunk_number without total_chunks -> "chunk 1" (no "of N").
+    expect(screen.getByText(/Doc: doc-y \(chunk 1\)/)).toBeInTheDocument();
+    // Neither chunk_number nor chunk_id -> no "(chunk ...)" suffix at all.
+    expect(screen.getByText('Doc: doc-z')).toBeInTheDocument();
   });
 
   // NOTE: RagCitationsCollapsible's lazy `fetch(/rag)` chunk-loading branch
@@ -457,5 +506,122 @@ describe('RAG toggle, filters, attach/detach, upload', () => {
     const file2 = new File(['hello2'], 'doc2.txt', { type: 'text/plain' });
     await userEvent.upload(fileInput, file2);
     await waitFor(() => expect(screen.getByText('Upload failed')).toBeInTheDocument());
+  });
+
+  it('selects a non-default collection, reflects it on the Filters button, and forwards it on the next chat request', async () => {
+    let sendBody: any = null;
+    global.fetch = makeFetchMock({
+      '/metadata': () => ({ ok: true, status: 200, json: () => Promise.resolve({ rag_enabled: true, title: '', model: '' }) }),
+      '/rag/collections': () =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ collections: [{ name: 'docs2', doc_count: 3 }] }),
+        }),
+      '/api/chat/stream': (_url: string, init?: RequestInit) => {
+        sendBody = init?.body ? JSON.parse(init.body as string) : null;
+        return sseResponse('event: done\ndata: {}\n\n');
+      },
+    }) as unknown as typeof fetch;
+
+    render(<ChatPane sessionName="ragcollection1" />);
+    const user = userEvent.setup();
+    await waitFor(() => expect(screen.getByText('RAG: ON')).toBeInTheDocument());
+
+    await user.click(screen.getByTitle('Filter RAG documents'));
+    expect(await screen.findByText('Collection')).toBeInTheDocument();
+    const select = screen.getByRole('combobox') as HTMLSelectElement;
+    expect(screen.getByText('docs2 (3 docs)')).toBeInTheDocument();
+    await user.selectOptions(select, 'docs2');
+
+    await waitFor(() => expect(screen.getByText(/· docs2/)).toBeInTheDocument());
+
+    const input = await screen.findByPlaceholderText('Type your message…');
+    await user.type(input, 'scoped to docs2');
+    await user.click(screen.getByTitle('Send message'));
+
+    await waitFor(() => expect(sendBody?.rag_filters?.collection).toBe('docs2'));
+  });
+
+  it('swallows a failing collections fetch (non-critical) and still opens the filters panel', async () => {
+    global.fetch = makeFetchMock({
+      '/metadata': () => ({ ok: true, status: 200, json: () => Promise.resolve({ rag_enabled: true, title: '', model: '' }) }),
+      '/rag/collections': () => Promise.reject(new Error('collections down')),
+    }) as unknown as typeof fetch;
+
+    render(<ChatPane sessionName="ragcollectionerr1" />);
+    const user = userEvent.setup();
+    await waitFor(() => expect(screen.getByText('RAG: ON')).toBeInTheDocument());
+
+    await user.click(screen.getByTitle('Filter RAG documents'));
+    expect(await screen.findByText('Collection')).toBeInTheDocument();
+    // Collections fetch failed and was swallowed; only the "Default" option is present.
+    const select = screen.getByRole('combobox') as HTMLSelectElement;
+    expect(select.options.length).toBe(1);
+    expect(select.options[0].textContent).toBe('Default');
+  });
+
+  it('leaves available collections empty (without crashing) when the collections fetch resolves non-ok', async () => {
+    global.fetch = makeFetchMock({
+      '/metadata': () => ({ ok: true, status: 200, json: () => Promise.resolve({ rag_enabled: true, title: '', model: '' }) }),
+      '/rag/collections': () => ({ ok: false, status: 500, json: () => Promise.resolve({}) }),
+    }) as unknown as typeof fetch;
+
+    render(<ChatPane sessionName="ragcollectionhttp1" />);
+    const user = userEvent.setup();
+    await waitFor(() => expect(screen.getByText('RAG: ON')).toBeInTheDocument());
+
+    await user.click(screen.getByTitle('Filter RAG documents'));
+    expect(await screen.findByText('Collection')).toBeInTheDocument();
+    const select = screen.getByRole('combobox') as HTMLSelectElement;
+    expect(select.options.length).toBe(1);
+    expect(select.options[0].textContent).toBe('Default');
+  });
+
+  it('resets the collection filter back to default when reselecting the Default option', async () => {
+    global.fetch = makeFetchMock({
+      '/metadata': () => ({ ok: true, status: 200, json: () => Promise.resolve({ rag_enabled: true, title: '', model: '' }) }),
+      '/rag/collections': () =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ collections: [{ name: 'docs2', doc_count: 3 }] }),
+        }),
+    }) as unknown as typeof fetch;
+
+    render(<ChatPane sessionName="ragcollectionreset1" />);
+    const user = userEvent.setup();
+    await waitFor(() => expect(screen.getByText('RAG: ON')).toBeInTheDocument());
+
+    await user.click(screen.getByTitle('Filter RAG documents'));
+    const select = screen.getByRole('combobox') as HTMLSelectElement;
+    await user.selectOptions(select, 'docs2');
+    await waitFor(() => expect(screen.getByText(/· docs2/)).toBeInTheDocument());
+
+    await user.selectOptions(select, '');
+    await waitFor(() => expect(screen.getByText(/· default/)).toBeInTheDocument());
+  });
+
+  it('scopes the chat upload request to the selected collection', async () => {
+    let uploadUrl = '';
+    global.fetch = makeFetchMock({
+      '/metadata': () => ({ ok: true, status: 200, json: () => Promise.resolve({ rag_enabled: true, title: '', model: '' }) }),
+      '/rag/upload': (url: string) => {
+        uploadUrl = url;
+        return { ok: true, status: 200, json: () => Promise.resolve({ doc_id: 'uploaded-2', collection: 'docs2' }) };
+      },
+    }) as unknown as typeof fetch;
+    sessionStorage.setItem('rag_filters_upload2', JSON.stringify({ collection: 'docs2' }));
+
+    render(<ChatPane sessionName="upload2" />);
+    const user = userEvent.setup();
+    await waitFor(() => expect(screen.getByText('RAG: ON')).toBeInTheDocument());
+    await user.click(await screen.findByTitle('Upload file'));
+    await user.click(await screen.findByText('Upload file'));
+
+    const fileInput = document.querySelector('input[type="file"]:not([multiple])') as HTMLInputElement;
+    const file = new File(['hello'], 'doc.txt', { type: 'text/plain' });
+    await userEvent.upload(fileInput, file);
+    await waitFor(() => expect(uploadUrl).toContain('collection=docs2'));
   });
 });
