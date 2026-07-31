@@ -66,6 +66,25 @@
     text-transform: uppercase; color: var(--muted); display: flex; align-items: center; gap: 12px; }
   h2.divider::after { content: ""; flex: 1; height: 1px; background: var(--grid); }
 
+  .strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; }
+  .strip .chip {
+    background: var(--surface); border: 1px solid var(--ring); border-left: 3px solid var(--accent);
+    border-radius: 6px; padding: 9px 13px; font-size: 13px; color: var(--ink-2); line-height: 1.45;
+  }
+  .strip .chip b { display: block; font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--muted); font-weight: 650; margin-bottom: 1px; }
+  .strip .chip .v { color: var(--ink); }
+  .colwrap { position: relative; }
+  .colwrap .rel { position: absolute; top: -14px; left: 50%; transform: translateX(-50%);
+    font-size: 9.5px; font-weight: 700; color: var(--ink-2); white-space: nowrap;
+    font-family: ui-monospace, Menlo, Consolas, monospace; border-bottom: 1px dashed var(--axis); padding: 0 2px; }
+  .gpct { font-size: 10px; color: var(--muted); font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .themebar { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; padding: 6px 0; }
+  .themebar + .themebar { border-top: 1px solid var(--grid); }
+  .themebar .tname { font-size: 13px; }
+  .themebar .tbar { display: flex; align-items: center; gap: 8px; }
+  .themebar .tbar i { display: block; height: 12px; background: var(--sev-med); border-radius: 3px; }
+  .themebar .tn { font-size: 12px; font-weight: 650; font-family: ui-monospace, Menlo, Consolas, monospace; }
   .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
   .tile {
     background: var(--surface); border: 1px solid var(--ring); border-radius: 8px;
@@ -193,6 +212,8 @@
 
   <div class="tiles" id="qtiles"></div>
 
+  <div class="strip" id="takeaways"></div>
+
   <section class="panel">
     <h2>Failures and work by sprint</h2>
     <p class="desc" id="wdesc"></p>
@@ -211,17 +232,37 @@
   </section>
 
   <section class="panel">
-    <h2>Review gate by month</h2>
-    <p class="desc">Merge throughput against pull requests that hit at least one
-    <span class="mono">REQUEST_CHANGES</span> that month — the "bad or incomplete code" the review
-    gate caught before acceptance. The project idled April–June between Phase&nbsp;5 and the v2.0.0 release push.</p>
+    <h2>Review gate by month — interception vs escapes</h2>
+    <p class="desc">Merge throughput, PRs the review gate caught (≥1 <span class="mono">REQUEST_CHANGES</span>),
+    and defects that escaped to acceptance (failure issues filed that month). The interception rate under each
+    month is review catches ÷ (review catches + escapes). Hover for median time-to-merge. The project idled
+    April–June between Phase&nbsp;5 and the v2.0.0 release push.</p>
     <div class="legend">
       <span><span class="dot" style="background:var(--c1)"></span>PRs merged</span>
-      <span><span class="dot" style="background:var(--c2)"></span>PRs rejected ≥1×</span>
+      <span><span class="dot" style="background:var(--c2)"></span>PRs rejected ≥1× (caught in review)</span>
+      <span><span class="dot" style="background:var(--c3)"></span>Acceptance failures filed (escapes)</span>
     </div>
     <div class="gatechart" id="gchart"></div>
     <div class="gatelabels" id="glabels"></div>
   </section>
+
+  <div class="charts">
+    <section class="panel">
+      <h2>Failure backlog: created vs closed</h2>
+      <p class="desc">Acceptance-failure issues opened and closed per month — is the backlog draining or growing?</p>
+      <div class="legend">
+        <span><span class="dot" style="background:var(--c2)"></span>Opened</span>
+        <span><span class="dot good"></span>Closed</span>
+      </div>
+      <div class="gatechart" id="flowchart"></div>
+      <div class="gatelabels" id="flowlabels"></div>
+    </section>
+    <section class="panel">
+      <h2>Open failures by age</h2>
+      <p class="desc" id="agingdesc"></p>
+      <div id="aging"></div>
+    </section>
+  </div>
 
   <h2 class="divider">Last 7 days in review · Jul 23–30</h2>
 
@@ -265,6 +306,13 @@
         </table>
       </div>
     </details>
+  </section>
+
+  <section class="panel">
+    <h2>Recurring finding themes</h2>
+    <p class="desc">The review-agent's findings from the last 7 days, clustered by theme — each cluster is a
+    candidate for a pre-submit check or developer-agent prompt rule.</p>
+    <div id="themes"></div>
   </section>
 
   <section class="panel">
@@ -365,6 +413,10 @@ function lensButtons(el, current, onpick) {
   el.querySelectorAll('button').forEach(b => b.addEventListener('click', () => onpick(b.dataset.lens)));
 }
 
+/* takeaway strip */
+document.getElementById('takeaways').innerHTML = (QDATA.takeaways || []).map(x =>
+  `<div class="chip"><b>${x.k}</b><span class="v">${x.v}</span></div>`).join('');
+
 /* weekly chart */
 let wlens = 'cause';
 function renderWeekly() {
@@ -381,7 +433,13 @@ function renderWeekly() {
     const sprintNo = QDATA.weeks.indexOf(wk) + 1;
     const label = wk.label || `Sprint ${sprintNo} (wk of ${new Date(r.w+'T00:00:00Z').toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:'UTC'})})`;
     const segs = r.vals.map((v,i)=> v ? `<div style="background:${CVAR[i]};height:${Math.max(v/max*100,1.5)}%"></div>` : '').join('');
-    return `<div class="colwrap" data-tip="${label} — ${total} issue${total===1?'':'s'}${tips?': '+tips:''}">
+    const rel = (QDATA.releases || []).find(rl => {
+      const t0 = new Date(r.w+'T00:00:00Z'), t1 = new Date(t0.getTime() + 7*86400*1000);
+      const rd = new Date(rl.date+'T00:00:00Z');
+      return rd >= t0 && rd < t1;
+    });
+    return `<div class="colwrap" data-tip="${label} — ${total} issue${total===1?'':'s'}${tips?': '+tips:''}${rel ? ' · '+rel.label+' released '+rel.date : ''}">
+      ${rel ? `<span class="rel">${rel.label}</span>` : ''}
       <span class="cnum">${total||''}</span>
       <div class="stack" style="height:${total/max*100}%">${segs}</div>
     </div>`;
@@ -421,13 +479,49 @@ function renderMilestones() {
 renderMilestones();
 
 /* review gate */
-const gmax = Math.max(...QDATA.gate.map(g => Math.max(g.merged, g.rejected)));
+const gmax = Math.max(...QDATA.gate.map(g => Math.max(g.merged, g.rejected, g.af || 0)));
 document.getElementById('gchart').innerHTML = QDATA.gate.map(g => {
   const col = (v, c) => `<div class="gcol${v?'':' zero'}"><span class="cnum">${v}</span><i style="background:${c};height:${Math.max(v/gmax*100, v?2:0)}%"></i></div>`;
-  return `<div class="gmonth" data-tip="${g.m} 2026 — ${g.merged} PRs merged, ${g.rejected} PRs hit ≥1 REQUEST_CHANGES">
-    ${col(g.merged,'var(--c1)')}${col(g.rejected,'var(--c2)')}</div>`;
+  const mh = g.medianHrs != null ? `, median time-to-merge ${g.medianHrs < 48 ? g.medianHrs+'h' : Math.round(g.medianHrs/24)+'d'}` : '';
+  return `<div class="gmonth" data-tip="${g.m} 2026 — ${g.merged} PRs merged, ${g.rejected} caught in review, ${g.af||0} escaped to acceptance${mh}">
+    ${col(g.merged,'var(--c1)')}${col(g.rejected,'var(--c2)')}${col(g.af||0,'var(--c3)')}</div>`;
 }).join('');
-document.getElementById('glabels').innerHTML = QDATA.gate.map(g => `<div>${g.m}</div>`).join('');
+document.getElementById('glabels').innerHTML = QDATA.gate.map(g => {
+  const tot = g.rejected + (g.af || 0);
+  const pct = tot ? Math.round(g.rejected / tot * 100) + '%' : '·';
+  return `<div>${g.m}<br><span class="gpct">${pct}</span></div>`;
+}).join('');
+
+/* failure backlog flow */
+const fmax = Math.max(1, ...QDATA.flow.map(f => Math.max(f.opened, f.closed)));
+document.getElementById('flowchart').innerHTML = QDATA.flow.map(f => {
+  const col = (v, c) => `<div class="gcol${v?'':' zero'}"><span class="cnum">${v}</span><i style="background:${c};height:${Math.max(v/fmax*100, v?2:0)}%"></i></div>`;
+  const net = f.opened - f.closed;
+  return `<div class="gmonth" data-tip="${f.m} 2026 — ${f.opened} failures opened, ${f.closed} closed (net ${net>0?'+':''}${net})">
+    ${col(f.opened,'var(--c2)')}${col(f.closed,'var(--good)')}</div>`;
+}).join('');
+document.getElementById('flowlabels').innerHTML = QDATA.flow.map(f => `<div>${f.m}</div>`).join('');
+
+/* aging */
+const amax = Math.max(1, ...QDATA.aging.map(a => a.n));
+const atot = QDATA.aging.reduce((s,a)=>s+a.n,0);
+document.getElementById('agingdesc').textContent =
+  `${atot} acceptance-failure issue${atot===1?' is':'s are'} open right now, by age since filing.`;
+document.getElementById('aging').innerHTML = QDATA.aging.map(a => `<div class="mrow">
+  <div><div class="mname">${a.bucket}</div></div>
+  <div class="bar" style="width:${a.n/amax*100}%">${a.n ? `<div class="seg" style="background:var(--accent);width:100%"
+    data-tip="${a.n} open failure${a.n===1?'':'s'} aged ${a.bucket}"><span class="n">${a.n}</span></div>` : ''}</div>
+  <div class="mtot">${a.n||'·'}</div>
+</div>`).join('');
+
+/* recurring finding themes */
+const TH = QDATA.themes || {top: [], other: 0};
+const tmax = Math.max(1, ...TH.top.map(x => x.n));
+document.getElementById('themes').innerHTML = TH.top.map(x => `<div class="themebar">
+  <span class="tname">${x.theme}</span>
+  <span class="tbar"><i style="width:${20 + x.n/tmax*160}px"></i><span class="tn">${x.n}</span></span>
+</div>`).join('') + (TH.other ? `<div class="themebar"><span class="tname" style="color:var(--muted)">
+  …plus ${TH.other} findings that don't fit a recurring theme</span><span></span></div>` : '');
 
 /* ---------- last 7 days ---------- */
 const SEV = [["C","crit","Critical"],["M","med","Medium"],["m","minor","Minor"]];

@@ -43,8 +43,8 @@ Artifact URL (republish to this URL, do not mint a new one):
       (C/M/m/rounds/issues per module), `days`, `issues` (per-work-item rollup with
       finding titles), `cleanPRs`, `cleanByModule`, `totals`
       (rounds/C/M/m/items/clean/reviewed/merged/unreviewed).
-   d. Update the current month in `GATE` inside `build_dashboard.py` (merged count
-      via `search_pull_requests`, rejected count via a Gmail month-window search).
+   d. Refresh `data/pr_times.json` (all merged PRs Jan 1→now: number → [created_at, merged_at], via search_pull_requests) and update the current month in `GATE` inside `build_dashboard.py` (rejected count
+      via a Gmail month-window search). Merged counts and median time-to-merge are derived from pr_times.json automatically.
    e. Update the hard-coded window copy in `retro_template.html` (the
       "Last 7 days in review · <dates>" divider and the totals sentences in the
       first-pass panel and footer) to the new window.

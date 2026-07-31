@@ -18,8 +18,9 @@ when regenerating.
 import argparse
 import json
 import re
-from collections import Counter
-from datetime import date, timedelta
+import statistics
+from collections import Counter, defaultdict
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 HERE = Path(__file__).parent
@@ -36,6 +37,7 @@ CAUSES = ['defect', 'spec', 'workflow']
 
 # Review-gate monthly series: PRs merged (GitHub API) vs PRs with >=1
 # REQUEST_CHANGES (notification-email archive). Update the current month on refresh.
+# merged/medianHrs are recomputed from data/pr_times.json when present.
 GATE = [
     {'m': 'Jan', 'merged': 153, 'rejected': 62},
     {'m': 'Feb', 'merged': 15, 'rejected': 26},
@@ -44,6 +46,22 @@ GATE = [
     {'m': 'May', 'merged': 0, 'rejected': 0},
     {'m': 'Jun', 'merged': 0, 'rejected': 0},
     {'m': 'Jul', 'merged': 168, 'rejected': 67},
+]
+
+# Release annotations on the sprint axis.
+RELEASES = [
+    {'date': '2026-01-29', 'label': 'v1.0.0'},
+    {'date': '2026-07-20', 'label': 'v2.0.0'},  # approx: Post Release 2.0.0 milestone created
+]
+
+# Recurring-finding themes (last-7-days review findings), first match wins.
+THEME_RULES = [
+    ('Missing tests / coverage gate', r'test|coverage|vitest|pytest|mock|isolation'),
+    ('Acceptance criteria not fully implemented', r'acceptance criteria|not (shown|implemented|displayed)|missing (the|a )|incomplete|never|doesn.t'),
+    ('Definition of Done: frontend surface', r'frontend|web surface|usable from|dashboard surface|admin page'),
+    ('Config / secrets / environment', r'config|secret|token|env\b|\.ini'),
+    ('Error handling & edge cases', r'error|exception|race|leak|crash|401|500|edge'),
+    ('Docs not updated', r'doc|readme|runbook'),
 ]
 
 WORKFLOW_RE = re.compile(
@@ -128,6 +146,91 @@ def sprint_buckets(issues, project_fields):
     return buckets, 'calendar'
 
 
+def month_of(iso):
+    return int(iso[5:7])
+
+
+def gate_series(issues, pr_times):
+    gate = [dict(g) for g in GATE]
+    for i in issues:
+        if i.get('cause'):
+            gate[month_of(i['created']) - 1].setdefault('af', 0)
+            gate[month_of(i['created']) - 1]['af'] += 1
+    for g in gate:
+        g.setdefault('af', 0)
+    if pr_times:
+        by_month = defaultdict(list)
+        merged_count = Counter()
+        for created, merged in pr_times.values():
+            m = month_of(merged)
+            merged_count[m] += 1
+            dt = (datetime.fromisoformat(merged.replace('Z', '+00:00'))
+                  - datetime.fromisoformat(created.replace('Z', '+00:00')))
+            by_month[m].append(dt.total_seconds() / 3600)
+        for g, m in zip(gate, range(1, 8)):
+            g['merged'] = merged_count.get(m, 0)
+            g['medianHrs'] = round(statistics.median(by_month[m]), 1) if by_month.get(m) else None
+    return gate
+
+
+def aging_flow(issues, now):
+    open_af = [i for i in issues if i.get('cause') and i.get('state', '').upper() == 'OPEN']
+    buckets = [('<2d', 0, 2), ('2-7d', 2, 7), ('7-30d', 7, 30), ('>30d', 30, 10**6)]
+    aging = []
+    for name, lo, hi in buckets:
+        n = sum(1 for i in open_af
+                if lo <= (now - datetime.fromisoformat(i['created'].replace('Z', '+00:00'))).days < hi)
+        aging.append({'bucket': name, 'n': n})
+    flow = [{'m': g['m'], 'opened': 0, 'closed': 0} for g in GATE]
+    for i in issues:
+        if not i.get('cause'):
+            continue
+        flow[month_of(i['created']) - 1]['opened'] += 1
+        if i.get('closed'):
+            flow[month_of(i['closed']) - 1]['closed'] += 1
+    return aging, flow, len(open_af)
+
+
+def finding_themes(reviews):
+    counts = Counter()
+    for r in reviews:
+        for sev in ('critical', 'medium', 'minor'):
+            for t in r.get(sev, []):
+                for name, pat in THEME_RULES:
+                    if re.search(pat, t, re.I):
+                        counts[name] += 1
+                        break
+                else:
+                    counts['(unclustered)'] += 1
+    other = counts.pop('(unclustered)', 0)
+    top = [{'theme': k, 'n': v} for k, v in counts.most_common(5)]
+    return {'top': top, 'other': other}
+
+
+def takeaways(issues, dashboard, weeks, open_af):
+    out = []
+    mods = dashboard.get('modules', {})
+    if mods:
+        worst, v = max(mods.items(), key=lambda kv: kv[1]['C'] + kv[1]['M'])
+        out.append({'k': 'Worst module (7d)',
+                    'v': f"{worst} — {v['C'] + v['M']} blocking findings across {v['rounds']} rejected rounds"})
+    data_weeks = [w for w in weeks if sum(w['cause'].values()) or sum(w['label'].values())]
+    if len(data_weeks) >= 2:
+        cur, prev = sum(data_weeks[-1]['cause'].values()), sum(data_weeks[-2]['cause'].values())
+        delta = cur - prev
+        out.append({'k': 'Failure trend',
+                    'v': f"{cur} acceptance failures this sprint vs {prev} last ({'+' if delta >= 0 else ''}{delta})"})
+    items = dashboard.get('issues', [])
+    if items:
+        sticky = max(items, key=lambda i: i['rounds'])
+        ref = f"#{sticky['issue']}" if sticky.get('issue') else f"PR #{sticky['pr']}"
+        out.append({'k': 'Stickiest item (7d)',
+                    'v': f"{ref} — {sticky['rounds']} review rounds ({sticky['module']})"})
+    out.append({'k': 'Open failure backlog',
+                'v': f"{open_af} acceptance-failure issues currently open"})
+    return out
+
+
 def build_qdata(issues, project_fields):
     issues = [i for i in issues if i.get('milestone') not in EXCLUDED_MILESTONES]
     for i in issues:
@@ -175,6 +278,7 @@ def build_qdata(issues, project_fields):
         'sprintSource': source,
         'milestones': [{'name': s, **ms[s]} for s in MS_SHORT if ms[s]['total'] > 0],
         'gate': GATE,
+        'issues_classified': issues,
         'qtotals': {'issues': len(issues), 'af': sum(1 for i in issues if i['cause']),
                     'defect': sum(1 for i in issues if i['cause'] == 'defect'),
                     'spec': sum(1 for i in issues if i['cause'] == 'spec'),
@@ -196,8 +300,19 @@ def main():
     dashboard = json.loads((data / 'dashboard_data.json').read_text())
     pf_path = data / 'project_fields.json'
     project_fields = json.loads(pf_path.read_text()) if pf_path.exists() else None
+    pt_path = data / 'pr_times.json'
+    pr_times = json.loads(pt_path.read_text()) if pt_path.exists() else None
+    rv_path = data / 'reviews_final.json'
+    reviews = json.loads(rv_path.read_text()) if rv_path.exists() else []
 
     qdata = build_qdata(issues, project_fields)
+    classified = qdata.pop('issues_classified')
+    qdata['gate'] = gate_series(classified, pr_times)
+    now = datetime.now(timezone.utc)
+    qdata['aging'], qdata['flow'], open_af = aging_flow(classified, now)
+    qdata['themes'] = finding_themes(reviews)
+    qdata['takeaways'] = takeaways(classified, dashboard, qdata['weeks'], open_af)
+    qdata['releases'] = RELEASES
     html = Path(args.template).read_text()
     html = html.replace('__QDATA__', json.dumps(qdata, separators=(',', ':')))
     html = html.replace('__DATA__', json.dumps(dashboard, separators=(',', ':')))
