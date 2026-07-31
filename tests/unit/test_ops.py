@@ -880,6 +880,41 @@ def test_tracing_wiring_issue_none_when_collector_reachable(monkeypatch, tmp_pat
 
 
 @pytest.mark.unit
+def test_tracing_packages_doctor_issue_none_when_no_config(tmp_path):
+    assert ops._tracing_packages_doctor_issue(tmp_path / "missing.ini") is None
+
+
+@pytest.mark.unit
+def test_tracing_packages_doctor_issue_none_when_disabled(tmp_path):
+    cfg_path = tmp_path / "config.ini"
+    _write_tracing_config(cfg_path, enabled=False)
+    assert ops._tracing_packages_doctor_issue(cfg_path) is None
+
+
+@pytest.mark.unit
+def test_tracing_packages_doctor_issue_flags_missing_package(monkeypatch, tmp_path):
+    cfg_path = tmp_path / "config.ini"
+    _write_tracing_config(cfg_path)
+    monkeypatch.setattr(
+        ops.tracing, "missing_tracing_packages", lambda: ["opentelemetry-instrumentation-urllib"]
+    )
+
+    issue = ops._tracing_packages_doctor_issue(cfg_path)
+    assert issue is not None
+    assert "opentelemetry-instrumentation-urllib" in issue
+    assert "nyxgpt ops install" in issue
+
+
+@pytest.mark.unit
+def test_tracing_packages_doctor_issue_none_when_all_present(monkeypatch, tmp_path):
+    cfg_path = tmp_path / "config.ini"
+    _write_tracing_config(cfg_path)
+    monkeypatch.setattr(ops.tracing, "missing_tracing_packages", lambda: [])
+
+    assert ops._tracing_packages_doctor_issue(cfg_path) is None
+
+
+@pytest.mark.unit
 def test_ops_doctor_flags_unreachable_otlp_collector(monkeypatch, capsys, tmp_path):
     cfg_dir = tmp_path / ".nyxGPT"
     cfg_dir.mkdir(parents=True, exist_ok=True)
