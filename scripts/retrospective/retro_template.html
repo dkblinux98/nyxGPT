@@ -340,11 +340,13 @@
     itself was wrong or incomplete (redesigns, consolidations, UX corrections); <em>workflow miss</em> —
     the agent pipeline itself failed (review gate, branch hygiene, submission workflows). Classification
     is keyword-heuristic over titles and bodies, hand-reviewed. No issue carries a Production Defect label.</p>
-    <p><strong>Sprints.</strong> The Sprint field lives in the GitHub Project (iteration field), which is not
-    readable through the API surface available here. Sprints on this page are therefore derived from the
-    calendar: one-week sprints starting Monday, numbered from the project's first week (Sprint 1 = week of
-    Dec 29, 2025), bucketing issues by creation date. If the real sprint cadence differs, the numbering can
-    be re-mapped without changing the underlying data. Milestones are the repo's phase milestones, ordered. The six issues under the
+    <p><strong>Sprints.</strong> Sprint buckets are the Project's real Sprint iterations, read from the
+    snapshot committed by the "Retro Dashboard - Dump Project Fields" workflow
+    (scripts/retrospective/data/project_fields.json) — each issue lands in the sprint it was actually
+    assigned to on the board, and Module values come from the Project's Module field. If the snapshot is
+    missing, the builder falls back to calendar weeks bucketed by creation date and title-inferred modules
+    (the sprint-axis caption says which mode is active). The last-7-days section always uses title-inferred
+    modules. Milestones are the repo's phase milestones, ordered. The six issues under the
     "Phase X: Rejected" milestone (rejected, never worked) are excluded throughout.</p>
     <p><strong>Review gate.</strong> Monthly counts of PRs with ≥1 REQUEST_CHANGES come from the complete
     GitHub notification-email archive (thread-level, so a PR rejected in two months counts in both);
@@ -431,12 +433,16 @@ function renderWeekly() {
     const tips = r.vals.map((v,i)=> v ? `${LENSES[wlens].names[L.keys[i]]}: ${v}` : null).filter(Boolean).join(' · ');
     const wk = QDATA.weeks.find(x => x.w === r.w);
     const sprintNo = QDATA.weeks.indexOf(wk) + 1;
-    const label = wk.label || `Sprint ${sprintNo} (wk of ${new Date(r.w+'T00:00:00Z').toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:'UTC'})})`;
+    const label = wk.sname || `Sprint ${sprintNo} (wk of ${new Date(r.w+'T00:00:00Z').toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:'UTC'})})`;
     const segs = r.vals.map((v,i)=> v ? `<div style="background:${CVAR[i]};height:${Math.max(v/max*100,1.5)}%"></div>` : '').join('');
+    const wk0 = QDATA.weeks.find(x => x.w === r.w);
+    const idx0 = QDATA.weeks.indexOf(wk0);
+    const bEnd = wk0.end ? new Date(wk0.end+'T00:00:00Z')
+      : (QDATA.weeks[idx0+1] ? new Date(QDATA.weeks[idx0+1].w+'T00:00:00Z')
+                             : new Date(new Date(r.w+'T00:00:00Z').getTime() + 7*86400*1000));
     const rel = (QDATA.releases || []).find(rl => {
-      const t0 = new Date(r.w+'T00:00:00Z'), t1 = new Date(t0.getTime() + 7*86400*1000);
       const rd = new Date(rl.date+'T00:00:00Z');
-      return rd >= t0 && rd < t1;
+      return rd >= new Date(r.w+'T00:00:00Z') && rd < bEnd;
     });
     return `<div class="colwrap" data-tip="${label} — ${total} issue${total===1?'':'s'}${tips?': '+tips:''}${rel ? ' · '+rel.label+' released '+rel.date : ''}">
       ${rel ? `<span class="rel">${rel.label}</span>` : ''}
@@ -445,6 +451,11 @@ function renderWeekly() {
     </div>`;
   }).join('');
   document.getElementById('wlabels').innerHTML = QDATA.weeks.map((w,i) => {
+    if (QDATA.sprintSource === 'project') {
+      const d = new Date(w.w+'T00:00:00Z');
+      const sub = w.w.startsWith('9999') ? '' : '<br>' + d.toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:'UTC'});
+      return `<div>${w.sname || ''}${sub}</div>`;
+    }
     const d = new Date(w.w+'T00:00:00Z');
     const first = i===0 || d.getUTCMonth() !== new Date(QDATA.weeks[i-1].w+'T00:00:00Z').getUTCMonth();
     return `<div>${(i+1)%5===1 ? 'S'+(i+1) : ''}${first ? '<br>'+d.toLocaleDateString('en-US',{month:'short',timeZone:'UTC'}) : ''}</div>`;

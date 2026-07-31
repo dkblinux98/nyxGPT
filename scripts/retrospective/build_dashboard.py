@@ -121,7 +121,10 @@ def sprint_buckets(issues, project_fields):
                 if f.get('field') == 'Sprint' and f.get('value'):
                     sprint_of[item['number']] = f['value']
         cal = sorted(project_fields.get('sprints', []), key=lambda s: s['startDate'])
-        buckets = [{'w': s['startDate'], 'label': s['title'], 'issues': []} for s in cal]
+        buckets = [{'w': s['startDate'], 'label': s['title'],
+                    'end': (date.fromisoformat(s['startDate'])
+                            + timedelta(days=s['duration'])).isoformat(),
+                    'issues': []} for s in cal]
         by_title = {b['label']: b for b in buckets}
         stray = {'w': '9999-12-31', 'label': '(no sprint)', 'issues': []}
         for i in issues:
@@ -129,7 +132,6 @@ def sprint_buckets(issues, project_fields):
             (by_title.get(t) or stray)['issues'].append(i)
         if stray['issues']:
             buckets.append(stray)
-        buckets = [b for b in buckets if b['issues']]
         return buckets, 'project'
     # calendar fallback
     start, end = date(2025, 12, 29), date.today()
@@ -233,8 +235,14 @@ def takeaways(issues, dashboard, weeks, open_af):
 
 def build_qdata(issues, project_fields):
     issues = [i for i in issues if i.get('milestone') not in EXCLUDED_MILESTONES]
+    real_module = {}
+    if project_fields:
+        for item in project_fields.get('items', []):
+            for f in item.get('fields', []):
+                if f.get('field') == 'Module' and f.get('value'):
+                    real_module[item['number']] = f['value']
     for i in issues:
-        i['module'] = detect_module(i['title'])
+        i['module'] = real_module.get(i['n']) or detect_module(i['title'])
         i['cause'] = classify(i)
     modc = Counter(i['module'] for i in issues)
     mods = [m for m, _ in modc.most_common(7)]
@@ -256,10 +264,8 @@ def build_qdata(issues, project_fields):
             agg['module'][mod(i)] += 1
             if i['cause']:
                 agg['cause'][i['cause']] += 1
-        entry = {'w': b['w'], **agg}
-        if b['label']:
-            entry['label_name'] = b['label']
-        weeks.append({'w': b['w'], 'label': b.get('label'), **agg})
+        weeks.append({'w': b['w'], 'sname': b.get('label'),
+                      'end': b.get('end'), **agg})
 
     ms = {s: {**empty(), 'total': 0, 'af': 0} for s in MS_SHORT}
     for i in issues:
