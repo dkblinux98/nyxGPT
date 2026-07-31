@@ -180,15 +180,17 @@ def fetch_grafana_alerts(cfg: ConfigParser) -> list[Alert] | None:
     from "couldn't check" and fall back to `compute_alerts`'s local snapshot
     instead of reporting a false all-clear.
     """
-    from nyxgpt.config import get_monitoring_config, get_monitoring_grafana_admin_password
+    from nyxgpt.config import get_monitoring_config, resolve_grafana_admin_password
 
     monitoring = get_monitoring_config(cfg)
     if not monitoring["enabled"]:
         return None
 
-    password = get_monitoring_grafana_admin_password(cfg)
-    if not password:
-        return None
+    # Same resolution `ops._grafana_admin_password` uses: falls back to the
+    # ops-managed secret on disk when config.ini leaves the password unset
+    # (the documented default install), instead of a "" that guarantees
+    # every request below 401s and this source silently never activates (#3458).
+    password = resolve_grafana_admin_password(cfg)
 
     url = monitoring["grafana_ui_url"].rstrip("/") + "/api/alertmanager/grafana/api/v2/alerts"
     try:
@@ -200,6 +202,17 @@ def fetch_grafana_alerts(cfg: ConfigParser) -> list[Alert] | None:
         )
         response.raise_for_status()
         raw_alerts = response.json()
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 401:
+            logger.warning(
+                "health: Grafana alerting API at %s rejected the admin password "
+                "(401) -- check ~/.nyxGPT/secrets/grafana-admin-password matches "
+                "what the Grafana container is running with (see `nyxgpt ops doctor`)",
+                url,
+            )
+        else:
+            logger.warning("health: could not reach Grafana alerting API at %s: %s", url, e)
+        return None
     except (httpx.HTTPError, ValueError) as e:
         logger.warning("health: could not reach Grafana alerting API at %s: %s", url, e)
         return None

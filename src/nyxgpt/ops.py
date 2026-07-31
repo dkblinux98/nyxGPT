@@ -38,10 +38,11 @@ from nyxgpt import self_heal, tracing
 from nyxgpt.config import (
     get_log_aggregation_enabled,
     get_monitoring_config,
-    get_monitoring_grafana_admin_password,
     get_monitoring_slack_webhook_url,
     get_tracing_config,
     get_tracing_enabled,
+    grafana_admin_password_path,
+    resolve_grafana_admin_password,
 )
 from nyxgpt.logging import get_correlation_id
 
@@ -4461,41 +4462,24 @@ def _grafana_provisioned_datasource_uids() -> list[str]:
 
 
 def _grafana_admin_password_path() -> Path:
-    """Where the ops-managed Grafana admin password is stored, for when
-    `[monitoring] grafana_admin_password` is unset in config.ini.
+    """Where the ops-managed Grafana admin password is stored.
 
-    Same pattern as `_glitchtip_grafana_token_path`/`_grafana_doctor_token_path`:
-    a generated-once secret read straight off disk, so it can't drift from
-    whatever `nyxgpt ops install` last reconciled the container to (#3458).
+    Thin alias for `config.grafana_admin_password_path` -- kept as a
+    module-level name here so existing call sites/tests in this module don't
+    need to change, but the actual resolution logic lives in `config.py` so
+    `health.py` can share it (#3466) instead of drifting apart (#3458).
     """
-    return Path.home() / ".nyxGPT" / "secrets" / "grafana-admin-password"
+    return grafana_admin_password_path()
 
 
 def _grafana_admin_password(cfg: ConfigParser) -> str:
     """Resolve the Grafana admin password `nyxgpt ops` should reconcile the
     container to.
 
-    `[monitoring] grafana_admin_password` wins when the user has explicitly
-    set one in config.ini (a deliberate override). Otherwise this falls back
-    to an ops-managed secret generated once and reused from
-    `_grafana_admin_password_path()` -- never the `""` fallback that
-    previously guaranteed a 401 on every default-config install (#3458).
+    Thin alias for `config.resolve_grafana_admin_password` -- see that
+    function's docstring for the resolution order.
     """
-    configured = get_monitoring_grafana_admin_password(cfg).strip()
-    if configured:
-        return configured
-
-    path = _grafana_admin_password_path()
-    if path.exists():
-        existing = path.read_text().strip()
-        if existing:
-            return existing
-
-    password = secrets.token_urlsafe(24)
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path.write_text(password)
-    path.chmod(0o600)
-    return password
+    return resolve_grafana_admin_password(cfg)
 
 
 def _grafana_admin_client(grafana_ui_url: str, grafana_admin_password: str) -> httpx.Client:

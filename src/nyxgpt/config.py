@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 import sys
 from configparser import ConfigParser
 from pathlib import Path
@@ -1227,6 +1228,48 @@ def get_monitoring_grafana_admin_password(cfg: ConfigParser) -> str:
     return cfg.get("monitoring", "grafana_admin_password", fallback="")
 
 
+def grafana_admin_password_path() -> Path:
+    """Where the ops-managed Grafana admin password is stored, for when
+    `[monitoring] grafana_admin_password` is unset in config.ini.
+
+    A generated-once secret read straight off disk, so it can't drift from
+    whatever `nyxgpt ops install` last reconciled the running Grafana
+    container to (#3458).
+    """
+    return Path.home() / ".nyxGPT" / "secrets" / "grafana-admin-password"
+
+
+def resolve_grafana_admin_password(cfg: ConfigParser) -> str:
+    """Resolve the Grafana admin password the same way `nyxgpt ops` reconciles
+    the container to it.
+
+    `[monitoring] grafana_admin_password` wins when the user has explicitly
+    set one in config.ini (a deliberate override). Otherwise this falls back
+    to an ops-managed secret generated once and reused from
+    `grafana_admin_password_path()` -- never the `""` fallback that
+    previously guaranteed a 401 on every default-config install (#3458).
+
+    Shared between `ops.py` (install-time reconciliation) and `health.py`
+    (reading Grafana's real alert state) so both resolve the same password
+    the same way instead of drifting apart (#3466).
+    """
+    configured = get_monitoring_grafana_admin_password(cfg).strip()
+    if configured:
+        return configured
+
+    path = grafana_admin_password_path()
+    if path.exists():
+        existing = path.read_text().strip()
+        if existing:
+            return existing
+
+    password = secrets.token_urlsafe(24)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.write_text(password)
+    path.chmod(0o600)
+    return password
+
+
 def get_monitoring_slack_webhook_url(cfg: ConfigParser) -> str:
     """Get the Slack incoming-webhook URL for Grafana's alerting contact point.
 
@@ -1424,6 +1467,8 @@ __all__ = [
     "get_monitoring_enabled",
     "get_monitoring_config",
     "get_monitoring_grafana_admin_password",
+    "grafana_admin_password_path",
+    "resolve_grafana_admin_password",
     "get_monitoring_slack_webhook_url",
     "get_log_aggregation_enabled",
     "get_log_aggregation_config",
