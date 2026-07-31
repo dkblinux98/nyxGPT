@@ -307,14 +307,19 @@ top to bottom in a fixed order:
    status (unhealthy components, restarts, backoff state), and canary state
    (active/idle, traffic split, rollbacks) — pulled from the same metrics as
    [System Overview, API Metrics, RAG Performance, Resource Usage,
-   Self-Healing, and Canary Rollout](#monitoring-dashboards) below, plus
-   stat tiles and links to each dashboard for the full drill-down.
+   Self-Healing, and Canary Rollout](#monitoring-dashboards) below. Rather
+   than one grouped link list, each deep-dive dashboard's link sits directly
+   above the section it deepens (e.g. the System Overview / API Metrics link
+   sits above the request-rate/error-rate/latency graphs, the Self-Healing
+   link sits above the self-heal stat tiles) — navigation lives next to the
+   content it navigates to.
 2. **Logs** — a featured, queryless `{job="nyxgpt"}` logs panel rendered
-   directly on SRE Home, plus a link to Grafana's **Logs Drilldown** app
-   (`/a/grafana-lokiexplore-app`) for filtering, search, and patterns. No
-   saved/curated Explore queries needed for general log search — Drilldown's
-   own label filtering (`level`, `logger`) replaces them. See
-   [Log Aggregation](#log-aggregation) below.
+   directly on SRE Home, with its panel title itself carrying a direct link
+   ("Open Logs Drilldown") into Grafana's **Logs Drilldown** app
+   (`/a/grafana-lokiexplore-app`), pre-filtered to `job=nyxgpt` so the label
+   filter never has to be typed by hand. No saved/curated Explore queries
+   needed for general log search — Drilldown's own label filtering (`level`,
+   `logger`) replaces them. See [Log Aggregation](#log-aggregation) below.
 3. **Traces** — a Jaeger datasource is provisioned in Grafana alongside
    Prometheus and Loki, so a live traces panel renders inline; the native
    Jaeger UI is demoted to a debug tool (no primary-navigation link to it
@@ -505,7 +510,9 @@ profiles together), which is pre-provisioned with a Loki datasource.
 The primary way to search logs (#3411) is Grafana's **Logs Drilldown** app
 (`grafana-lokiexplore-app`, pinned/provisioned so it's present on a fresh
 install), reached via the Admin Dashboard's SRE Overview tile → SRE Home
-dashboard, pre-filtered to `{job="nyxgpt"}`. Drilldown's own label filtering
+dashboard → the featured logs panel's "Open Logs Drilldown" title link,
+pre-filtered to `{job="nyxgpt"}` so the label filter never has to be typed by
+hand. Drilldown's own label filtering
 (`level`, `logger`) replaces the older curated per-component saved queries,
 so the standalone **Operational Logs** dashboard was retired. SRE Home also
 renders a featured, queryless `{job="nyxgpt"}` logs panel directly on the
