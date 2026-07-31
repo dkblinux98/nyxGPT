@@ -3,8 +3,12 @@
 Tracing is opt-in and local-only: spans are exported via OTLP/HTTP to a
 collector that only exists when the ``tracing`` Compose profile (OTel
 collector + Jaeger all-in-one) is running. Nothing here talks to an
-external/cloud exporter. When tracing is disabled (the default), every
-function in this module is a no-op so the rest of the app pays no cost.
+external/cloud exporter. When tracing is disabled, `init_tracing` is a
+no-op and every other function in this module is a no-op too, so the rest
+of the app pays no cost. The one exception is `instrument_fastapi_app`,
+which must run unconditionally at module import time (see its docstring)
+-- with no SDK provider installed it wires in an inert proxy tracer, not a
+literal no-op call.
 """
 
 from __future__ import annotations
@@ -36,16 +40,41 @@ _F = TypeVar("_F", bound=Callable[..., Any])
 _enabled = False
 
 
-def init_tracing(app: FastAPI, tracing_config: dict[str, Any]) -> None:
-    """Set up the OTel SDK and instrument the app, if tracing is enabled.
+def instrument_fastapi_app(app: FastAPI) -> None:
+    """Wire OTel's ASGI instrumentation into the app for HTTP request spans.
+
+    Must be called before the app processes its first ASGI message of any
+    kind -- including the `lifespan` startup event. Starlette builds and
+    caches `app.middleware_stack` the first time it's called (that first
+    call *is* the lifespan startup message uvicorn sends), so instrumenting
+    from inside the app's own lifespan handler is silently a no-op: nothing
+    raises, but the OTel middleware never actually gets woven into the
+    stack, and every request serves with zero HTTP-level spans -- even
+    though Cassandra/urllib spans (monkey-patched, not middleware-based)
+    keep working and make it look like tracing is fine. Call this at module
+    scope right after the `FastAPI()` app is constructed instead.
+
+    Safe to call unconditionally, independent of whether tracing ends up
+    enabled: with no SDK `TracerProvider` installed yet, OTel's API hands
+    out a proxy tracer that's an inert no-op until `init_tracing` (if it
+    ever runs) installs the real one -- see `ProxyTracerProvider` in the
+    `opentelemetry-api` package.
+    """
+    FastAPIInstrumentor.instrument_app(app)
+
+
+def init_tracing(tracing_config: dict[str, Any]) -> None:
+    """Set up the OTel SDK and instrument non-ASGI call sites, if enabled.
 
     Registers a TracerProvider that batches spans to a local OTLP collector,
-    then instruments the FastAPI app (one span per request), the Cassandra
-    driver (one span per query), and `urllib.request` (one client span per
-    outbound Ollama call, with a W3C `traceparent` header injected
-    automatically) so chat/RAG traffic, its storage calls, and its Ollama
-    calls all show up in Jaeger without call-site changes -- the
-    browser/Next -> FastAPI -> Ollama correlation backbone (#3430).
+    then instruments the Cassandra driver (one span per query) and
+    `urllib.request` (one client span per outbound Ollama call, with a W3C
+    `traceparent` header injected automatically) so chat/RAG traffic's
+    storage calls and Ollama calls show up in Jaeger without call-site
+    changes -- the browser/Next -> FastAPI -> Ollama correlation backbone
+    (#3430). FastAPI's own request spans are wired up separately by
+    `instrument_fastapi_app`, which must run before this (see its
+    docstring for why).
     """
     global _enabled
 
@@ -59,7 +88,6 @@ def init_tracing(app: FastAPI, tracing_config: dict[str, Any]) -> None:
     provider.add_span_processor(BatchSpanProcessor(exporter))
     trace.set_tracer_provider(provider)
 
-    FastAPIInstrumentor.instrument_app(app)
     CassandraInstrumentor().instrument()
     URLLibInstrumentor().instrument()
 

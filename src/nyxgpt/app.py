@@ -259,7 +259,7 @@ async def lifespan(_app: FastAPI):
 
     # Initialize distributed tracing (no-op unless [tracing] enabled = true)
     try:
-        tracing_module.init_tracing(_app, get_tracing_config(cfg))
+        tracing_module.init_tracing(get_tracing_config(cfg))
     except Exception as e:
         log.warning("Tracing initialization failed: %s", e, extra={"component": "startup"})
 
@@ -418,6 +418,14 @@ async def lifespan(_app: FastAPI):
 
 # Versioned API router
 app = FastAPI(title="nyxGPT", version="1.0.0.md", lifespan=lifespan)
+
+# Must happen here, before uvicorn ever calls `app` -- including for the
+# lifespan startup event itself. Starlette freezes `app.middleware_stack` on
+# that first call, so instrumenting from inside `lifespan()`/`init_tracing()`
+# (as this used to do) silently produced zero HTTP request spans in Jaeger
+# even with tracing "enabled" -- see `tracing.instrument_fastapi_app`.
+tracing_module.instrument_fastapi_app(app)
+
 api = APIRouter(prefix="/api/v1")
 
 
