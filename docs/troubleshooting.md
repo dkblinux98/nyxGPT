@@ -122,6 +122,42 @@ This command verifies:
 
 ---
 
+## Installation / Environment Issues
+
+### `ModuleNotFoundError` After a Pull
+
+**Symptoms:**
+- A `nyxgpt` command fails with a raw traceback like
+  `ModuleNotFoundError: No module named 'opentelemetry.instrumentation.urllib'`
+  right after `git pull`.
+
+**Cause:**
+
+A new (or bumped) dependency was added to `pyproject.toml`, but the local
+venv was never refreshed to install it.
+
+**Solutions:**
+
+1. **Refresh the venv:**
+   ```bash
+   pip install -e .
+   ```
+
+2. **Confirm the fix:**
+   ```bash
+   nyxgpt ops doctor
+   ```
+   `doctor` checks the installed environment against every dependency
+   declared in `pyproject.toml` and names exactly which package(s) are
+   missing.
+
+Tracing, error tracking, and metrics collection are all designed to degrade
+gracefully when their integration package is missing -- the affected feature
+disables itself with a single warning instead of crashing every command --
+but `pip install -e .` is still the fix to actually use the feature again.
+
+---
+
 ## Configuration Problems
 
 ### Invalid Configuration Values

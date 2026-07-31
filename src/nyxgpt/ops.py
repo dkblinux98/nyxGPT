@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 import getpass
 import hashlib
+import importlib.metadata
 import json
 import logging
 import os
@@ -3499,7 +3500,10 @@ def doctor(_args) -> int:
     listening on it, (once the shared Ollama store has been configured)
     whether native Ollama's OLLAMA_MODELS env has drifted from it (#3431),
     and whether `~/.nyxGPT/secrets` is writable / holds the GlitchTip
-    Grafana token when the observability stack is up (#3432).
+    Grafana token when the observability stack is up (#3432), and whether
+    the installed environment actually has every dependency declared in
+    `pyproject.toml` -- catches a venv that wasn't refreshed after a `git
+    pull` added or bumped one (#3487).
     Also prints a per-logger recent log volume
     (last 24h, via Loki) when log aggregation
     and the monitoring stack are both up, so idle curated components aren't
@@ -3610,6 +3614,7 @@ def doctor(_args) -> int:
         issues.append(ollama_env_issue)
 
     issues += _glitchtip_secrets_doctor_issues()
+    issues += _stale_venv_doctor_issues()
 
     if (
         TERRAFORM_DIR.joinpath("terraform.tfstate").exists()
@@ -5398,6 +5403,58 @@ def _glitchtip_secrets_doctor_issues() -> list[str]:
             )
 
     return issues
+
+
+def _requirement_distribution_name(requirement: str) -> str:
+    """Extract the distribution name from a PEP 508 requirement string.
+
+    e.g. "opentelemetry-instrumentation-urllib>=0.45b0" ->
+    "opentelemetry-instrumentation-urllib". Strips any environment marker
+    (`; python_version ...`) and version specifier/extras.
+    """
+    without_marker = requirement.split(";", 1)[0].strip()
+    match = re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*", without_marker)
+    return match.group(0) if match else without_marker
+
+
+def _stale_venv_doctor_issues() -> list[str]:
+    """`nyxgpt ops doctor` check for a Python venv that wasn't refreshed
+    after a `git pull` added or bumped a declared dependency (#3487) -- the
+    root cause behind a bare top-level import of a newly-added package (e.g.
+    an OTel instrumentation) crashing every `nyxgpt` command with a raw
+    `ModuleNotFoundError` instead of a targeted, actionable finding here.
+    """
+    pyproject_path = REPO_ROOT / "pyproject.toml"
+    if not pyproject_path.exists():
+        return []
+
+    try:
+        declared = tomllib.loads(pyproject_path.read_text())["project"]["dependencies"]
+    except Exception as e:
+        logger.warning(
+            "Failed to parse %s for the stale-venv doctor check: %s",
+            pyproject_path,
+            e,
+            extra={"component": "ops"},
+        )
+        return []
+
+    missing = []
+    for requirement in declared:
+        name = _requirement_distribution_name(requirement)
+        try:
+            importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            missing.append(name)
+
+    if not missing:
+        return []
+
+    return [
+        "Installed environment is missing declared "
+        f"dependenc{'y' if len(missing) == 1 else 'ies'}: {', '.join(sorted(missing))} "
+        "-- your venv is likely stale after a pull (run: pip install -e .)"
+    ]
 
 
 def _glitchtip_container_healthy() -> bool:

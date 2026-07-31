@@ -9483,6 +9483,62 @@ def test_status_shows_per_component_canary_when_kubernetes_pods_present(monkeypa
 
 
 @pytest.mark.unit
+def test_requirement_distribution_name_strips_specifier_and_marker():
+    assert (
+        ops._requirement_distribution_name("opentelemetry-instrumentation-urllib>=0.45b0")
+        == "opentelemetry-instrumentation-urllib"
+    )
+    assert ops._requirement_distribution_name("httpx>=0.27") == "httpx"
+    assert ops._requirement_distribution_name('foo>=1.0; python_version >= "3.11"') == "foo"
+
+
+@pytest.mark.unit
+def test_stale_venv_doctor_issues_empty_when_no_pyproject(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+
+    assert ops._stale_venv_doctor_issues() == []
+
+
+@pytest.mark.unit
+def test_stale_venv_doctor_issues_empty_when_all_dependencies_installed(monkeypatch, tmp_path):
+    """#3487: doctor must report no issue when every declared dependency
+    resolves via importlib.metadata (the common, healthy case)."""
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["json-fake-dep>=1.0"]\n', encoding="utf-8"
+    )
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops.importlib.metadata, "version", lambda name: "1.0")
+
+    assert ops._stale_venv_doctor_issues() == []
+
+
+@pytest.mark.unit
+def test_stale_venv_doctor_issues_flags_missing_declared_dependency(monkeypatch, tmp_path):
+    """#3487 repro: a venv that wasn't refreshed after a pull added a new
+    dependency (e.g. opentelemetry-instrumentation-urllib) must be flagged
+    with the exact fix command, instead of surfacing only as a
+    ModuleNotFoundError crash the next time something imports it."""
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["opentelemetry-instrumentation-urllib>=0.45b0", "httpx>=0.27"]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+
+    def fake_version(name):
+        if name == "httpx":
+            return "0.27.0"
+        raise ops.importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(ops.importlib.metadata, "version", fake_version)
+
+    issues = ops._stale_venv_doctor_issues()
+
+    assert len(issues) == 1
+    assert "opentelemetry-instrumentation-urllib" in issues[0]
+    assert "pip install -e ." in issues[0]
+
+
+@pytest.mark.unit
 def test_doctor_flags_stale_terraform_state(monkeypatch, tmp_path, capsys):
     """Genuinely stale: tfstate still records resources but no containers are running."""
     tf_dir = tmp_path / "terraform"
