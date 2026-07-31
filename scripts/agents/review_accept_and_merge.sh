@@ -61,6 +61,34 @@ fi
 
 # Check if PR has merge conflicts
 if [[ "$pr_mergeable" == "CONFLICTING" ]]; then
+  echo "[review] PR #${PR} has merge conflicts with ${pr_base_branch}." >&2
+
+  # One automated conflict-resolution round before escalating to a human:
+  # return the issue to In Progress and reassign the developer agent, whose
+  # fix-round path detects the CONFLICTING state and merges the base branch
+  # into the PR branch (resolving conflicts, re-running gates). The marker
+  # string below is the loop guard -- if a prior automated round already ran
+  # on this PR and it is conflicted again, escalate to the human owner.
+  CONFLICT_ROUND_MARKER="Automated conflict-resolution round"
+  prior_rounds=$(gh pr view "$PR" --repo "${REPO_OWNER}/${REPO_NAME}" --json comments \
+    --jq "[.comments[] | select(.body | contains(\"${CONFLICT_ROUND_MARKER}\"))] | length" \
+    2>/dev/null || echo 0)
+  if [[ "${prior_rounds:-0}" -eq 0 ]]; then
+    echo "[review] Dispatching automated conflict-resolution round to developer agent..." >&2
+    AUTO_MSG="⚠️ **Merge Conflicts Detected** — ${CONFLICT_ROUND_MARKER} dispatched.
+
+PR #${PR} cannot merge into \`${pr_base_branch}\` because the base branch moved while the PR was in review. The developer agent has been reassigned to: merge \`origin/${pr_base_branch}\` into \`${pr_head_branch}\`, resolve the conflicts preserving both sides' intents, re-run all validation gates, and push. The push re-triggers review; if the PR conflicts again after this round, it escalates to @${HUMAN_OWNER}."
+    gh pr comment "$PR" --repo "${REPO_OWNER}/${REPO_NAME}" --body "$AUTO_MSG" || true
+    issue_comment "$ISSUE" "$AUTO_MSG"
+    if set_issue_status "$ISSUE" "In Progress" && assign_and_trigger_developer "$ISSUE"; then
+      echo "[review] Conflict-resolution round dispatched (issue #${ISSUE} -> In Progress, developer reassigned)." >&2
+      exit 0
+    fi
+    _warn "Could not dispatch conflict-resolution round — falling back to human escalation."
+  else
+    echo "[review] A prior automated conflict-resolution round already ran (${prior_rounds}x) — escalating to human." >&2
+  fi
+
   echo "[review] ERROR: PR #${PR} has merge conflicts and cannot be merged automatically." >&2
   echo "[review] Assigning to human owner for manual resolution..." >&2
 
