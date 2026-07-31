@@ -11,6 +11,29 @@ type CollectionInfo = {
   embedding_models: string[];
 };
 
+// Mirrors `COLLECTION_NAME_PATTERN` / `max_collection_name_length()` in
+// src/nyxgpt/rag/vectorstore_cassandra.py: collection names become part of a
+// Cassandra table identifier, so only letters, digits, and underscores are
+// allowed, and the length is capped by Cassandra's 48-char identifier limit
+// minus the default `rag_chunks_` table prefix. The server is authoritative
+// (e.g. if `[rag] cassandra_table` is customized); this is a fast client-side
+// check to avoid a round trip for obviously invalid names.
+const COLLECTION_NAME_PATTERN = /^[a-zA-Z0-9_]+$/;
+const COLLECTION_NAME_MAX_LENGTH = 37;
+
+function validateCollectionName(name: string): string | null {
+  if (!name) {
+    return 'Collection name is required';
+  }
+  if (!COLLECTION_NAME_PATTERN.test(name)) {
+    return 'Collection names may contain only letters, digits, and underscores (no hyphens, spaces, or other characters).';
+  }
+  if (name.length > COLLECTION_NAME_MAX_LENGTH) {
+    return `Collection name must be at most ${COLLECTION_NAME_MAX_LENGTH} characters.`;
+  }
+  return null;
+}
+
 export default function CollectionsPage() {
   const [collections, setCollections] = useState<CollectionInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -75,8 +98,10 @@ export default function CollectionsPage() {
   }
 
   async function handleCreateCollection() {
-    if (!newCollectionName.trim()) {
-      alert('Collection name is required');
+    const trimmedName = newCollectionName.trim();
+    const nameError = validateCollectionName(trimmedName);
+    if (nameError) {
+      alert(nameError);
       return;
     }
 
@@ -93,7 +118,7 @@ export default function CollectionsPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: newCollectionName.trim(),
+          name: trimmedName,
           embedding_dim: dim,
           embedding_model: newCollectionModel.trim() || undefined,
         }),
@@ -472,7 +497,7 @@ export default function CollectionsPage() {
                 value={newCollectionName}
                 onChange={(e) => setNewCollectionName(e.target.value)}
                 disabled={creating}
-                placeholder="my-collection"
+                placeholder="my_collection"
                 style={{
                   width: '100%',
                   padding: '0.5rem',
@@ -484,7 +509,7 @@ export default function CollectionsPage() {
                 }}
               />
               <p style={{ marginTop: '0.25rem', fontSize: '0.75rem', color: 'var(--foreground-muted)' }}>
-                Alphanumeric, underscores, and hyphens only
+                Letters, numbers, and underscores only (no hyphens or spaces), max {COLLECTION_NAME_MAX_LENGTH} characters
               </p>
             </div>
 

@@ -59,6 +59,26 @@ describe('CollectionsPage', () => {
     expect(screen.getByRole('button', { name: /create collection/i })).toBeInTheDocument();
   });
 
+  it('shows a valid placeholder example that matches the naming rule it documents', async () => {
+    mockCollections([]);
+    const user = userEvent.setup();
+
+    render(<CollectionsPage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /create collection/i })).toBeInTheDocument();
+    });
+    await user.click(screen.getByRole('button', { name: /create collection/i }));
+
+    // The placeholder must itself be a name the field's own validation accepts --
+    // regression coverage for the bug where the example (`my-collection`)
+    // contained a hyphen, which the backend rejects.
+    const nameInput = screen.getByLabelText(/collection name/i) as HTMLInputElement;
+    expect(nameInput.placeholder).toBe('my_collection');
+    expect(nameInput.placeholder).toMatch(/^[a-zA-Z0-9_]+$/);
+    expect(screen.getByText(/letters, numbers, and underscores only/i)).toBeInTheDocument();
+  });
+
   it('shows the empty state when there are no collections', async () => {
     mockCollections([]);
 
@@ -199,8 +219,22 @@ describe('CollectionsPage', () => {
     await user.click(within(createModal()).getByRole('button', { name: 'Create Collection' }));
     expect(global.alert).toHaveBeenCalledWith('Collection name is required');
 
+    // Hyphenated name (the placeholder used to suggest this was valid -- it isn't)
+    await user.type(screen.getByLabelText(/collection name/i), 'test-collection');
+    await user.click(within(createModal()).getByRole('button', { name: 'Create Collection' }));
+    expect(global.alert).toHaveBeenCalledWith(
+      'Collection names may contain only letters, digits, and underscores (no hyphens, spaces, or other characters).'
+    );
+
+    // Over-length name
+    await user.clear(screen.getByLabelText(/collection name/i));
+    await user.type(screen.getByLabelText(/collection name/i), 'a'.repeat(38));
+    await user.click(within(createModal()).getByRole('button', { name: 'Create Collection' }));
+    expect(global.alert).toHaveBeenCalledWith('Collection name must be at most 37 characters.');
+
     // Invalid dimension (explicit 0)
-    await user.type(screen.getByLabelText(/collection name/i), 'my-collection');
+    await user.clear(screen.getByLabelText(/collection name/i));
+    await user.type(screen.getByLabelText(/collection name/i), 'my_collection');
     await user.clear(screen.getByLabelText(/embedding dimension/i));
     await user.type(screen.getByLabelText(/embedding dimension/i), '0');
     await user.click(within(createModal()).getByRole('button', { name: 'Create Collection' }));
@@ -223,7 +257,7 @@ describe('CollectionsPage', () => {
 
     // Reopen, fill in valid data, and hold the create request open to test the busy overlay no-op
     await user.click(screen.getByRole('button', { name: /create collection/i }));
-    await user.type(screen.getByLabelText(/collection name/i), 'my-collection');
+    await user.type(screen.getByLabelText(/collection name/i), 'my_collection');
     await user.clear(screen.getByLabelText(/embedding dimension/i));
     await user.type(screen.getByLabelText(/embedding dimension/i), '768');
 
@@ -266,7 +300,7 @@ describe('CollectionsPage', () => {
     });
 
     await user.click(screen.getByRole('button', { name: /create collection/i }));
-    await user.type(screen.getByLabelText(/collection name/i), 'my-collection');
+    await user.type(screen.getByLabelText(/collection name/i), 'my_collection');
 
     // errorData.error branch
     server.use(
@@ -545,7 +579,7 @@ describe('CollectionsPage', () => {
 
     // handleCreateCollection
     await user.click(screen.getByRole('button', { name: /create collection/i }));
-    await user.type(screen.getByLabelText(/collection name/i), 'my-collection');
+    await user.type(screen.getByLabelText(/collection name/i), 'my_collection');
     fetchSpy.mockImplementationOnce(() => Promise.reject('create gremlin'));
     await user.click(within(createModal()).getByRole('button', { name: 'Create Collection' }));
     await waitFor(() => {
