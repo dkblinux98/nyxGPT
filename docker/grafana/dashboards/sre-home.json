@@ -13,9 +13,12 @@
       "title": "nyxGPT SRE Home -- single pane of glass",
       "type": "text",
       "gridPos": { "h": 3, "w": 24, "x": 0, "y": 0 },
+      "links": [
+        { "title": "Prometheus UI", "url": "http://localhost:9090", "targetBlank": true }
+      ],
       "options": {
         "mode": "markdown",
-        "content": "Live health and metrics below, then full log search, then traces and errors. Deep-dive dashboards: [System Overview](/d/nyxgpt-system-overview) · [API Metrics](/d/nyxgpt-api-metrics) · [RAG Performance](/d/nyxgpt-rag-performance) · [Resource Usage](/d/nyxgpt-resource-usage) · [Self-Healing](/d/nyxgpt-self-healing) · [Canary Rollout](/d/nyxgpt-canary). GlitchTip UI: [localhost:8080](http://localhost:8080)."
+        "content": "Live health and metrics below, then full log search, then traces and errors. Deep-dive dashboards: [System Overview](/d/nyxgpt-system-overview) · [API Metrics](/d/nyxgpt-api-metrics) · [RAG Performance](/d/nyxgpt-rag-performance) · [Resource Usage](/d/nyxgpt-resource-usage) · [Self-Healing](/d/nyxgpt-self-healing) · [Canary Rollout](/d/nyxgpt-canary)."
       }
     },
     {
@@ -409,6 +412,9 @@
       "type": "traces",
       "datasource": { "type": "jaeger", "uid": "jaeger" },
       "gridPos": { "h": 10, "w": 24, "x": 0, "y": 49 },
+      "links": [
+        { "title": "Jaeger UI", "url": "http://localhost:16686", "targetBlank": true }
+      ],
       "targets": [
         {
           "datasource": { "type": "jaeger", "uid": "jaeger" },
@@ -427,6 +433,9 @@
       "type": "stat",
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "glitchtip-infinity" },
       "gridPos": { "h": 8, "w": 6, "x": 0, "y": 59 },
+      "links": [
+        { "title": "GlitchTip UI", "url": "http://localhost:8080", "targetBlank": true }
+      ],
       "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
       "options": { "reduceOptions": { "calcs": ["count"], "fields": "/.*/" } },
       "targets": [
@@ -449,6 +458,9 @@
       "type": "table",
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "glitchtip-infinity" },
       "gridPos": { "h": 8, "w": 18, "x": 6, "y": 59 },
+      "links": [
+        { "title": "GlitchTip UI", "url": "http://localhost:8080", "targetBlank": true }
+      ],
       "targets": [
         {
           "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "glitchtip-infinity" },
