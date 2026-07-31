@@ -434,13 +434,11 @@ def test_sre_home_panel_title_links_open_underlying_tool_uis_in_new_tabs() -> No
     assert_single_link(
         "GlitchTip: recent errors (nyxgpt-backend)", error_tracking_defaults["glitchtip_ui_url"]
     )
-    assert_single_link(
-        "nyxGPT SRE Home -- single pane of glass", monitoring_defaults["prometheus_ui_url"]
-    )
+    assert_single_link("nyxGPT SRE Home", monitoring_defaults["prometheus_ui_url"])
 
     # The old top-of-dashboard GlitchTip text link is absorbed into the
     # GlitchTip panels' title links above, not duplicated in the markdown.
-    overview_panel = panels["nyxGPT SRE Home -- single pane of glass"]
+    overview_panel = panels["nyxGPT SRE Home"]
     assert "glitchtip" not in overview_panel["options"]["content"].lower()
 
 

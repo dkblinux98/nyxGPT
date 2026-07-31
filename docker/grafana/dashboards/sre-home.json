@@ -4,13 +4,13 @@
   "tags": ["nyxgpt", "sre", "home"],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 4,
+  "version": 5,
   "refresh": "1m",
   "time": { "from": "now-1h", "to": "now" },
   "panels": [
     {
       "id": 1,
-      "title": "nyxGPT SRE Home -- single pane of glass",
+      "title": "nyxGPT SRE Home",
       "type": "text",
       "gridPos": { "h": 3, "w": 24, "x": 0, "y": 0 },
       "links": [
@@ -18,7 +18,17 @@
       ],
       "options": {
         "mode": "markdown",
-        "content": "Live health and metrics below, then full log search, then traces and errors. Deep-dive dashboards: [System Overview](/d/nyxgpt-system-overview) · [API Metrics](/d/nyxgpt-api-metrics) · [RAG Performance](/d/nyxgpt-rag-performance) · [Resource Usage](/d/nyxgpt-resource-usage) · [Self-Healing](/d/nyxgpt-self-healing) · [Canary Rollout](/d/nyxgpt-canary)."
+        "content": ""
+      }
+    },
+    {
+      "id": 24,
+      "title": "",
+      "type": "text",
+      "gridPos": { "h": 2, "w": 24, "x": 0, "y": 3 },
+      "options": {
+        "mode": "markdown",
+        "content": "**Deep dive:** [System Overview](/d/nyxgpt-system-overview) · [API Metrics](/d/nyxgpt-api-metrics)"
       }
     },
     {
@@ -26,7 +36,7 @@
       "title": "API up",
       "type": "stat",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 6, "w": 4, "x": 0, "y": 3 },
+      "gridPos": { "h": 6, "w": 4, "x": 0, "y": 5 },
       "fieldConfig": {
         "defaults": {
           "unit": "none",
@@ -47,11 +57,213 @@
       ]
     },
     {
+      "id": 7,
+      "title": "Total requests handled",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 4, "x": 4, "y": 5 },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(nyxgpt_http_requests_total)",
+          "legendFormat": "requests",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Requests by status",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 11 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(increase(nyxgpt_http_requests_total[$__rate_interval])) by (status)",
+          "legendFormat": "status {{status}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "5xx errors",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 11 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(increase(nyxgpt_http_errors_total[$__rate_interval]))",
+          "legendFormat": "5xx errors",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Request latency (p50 / p95 / p99)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 11 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.50, sum(rate(nyxgpt_http_request_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(nyxgpt_http_request_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.99, sum(rate(nyxgpt_http_request_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "id": 25,
+      "title": "",
+      "type": "text",
+      "gridPos": { "h": 2, "w": 24, "x": 0, "y": 19 },
+      "options": {
+        "mode": "markdown",
+        "content": "**Deep dive:** [RAG Performance](/d/nyxgpt-rag-performance)"
+      }
+    },
+    {
+      "id": 11,
+      "title": "RAG queries by source",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 21 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(increase(nyxgpt_rag_queries_total[$__rate_interval])) by (source)",
+          "legendFormat": "{{source}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "RAG ingests by source and outcome",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 21 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(increase(nyxgpt_rag_ingests_total[$__rate_interval])) by (source, result)",
+          "legendFormat": "{{source}} ({{result}})",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "Chat requests (streaming vs. non-streaming)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 21 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(increase(nyxgpt_chat_requests_total[$__rate_interval])) by (streaming)",
+          "legendFormat": "streaming={{streaming}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 26,
+      "title": "",
+      "type": "text",
+      "gridPos": { "h": 2, "w": 24, "x": 0, "y": 29 },
+      "options": {
+        "mode": "markdown",
+        "content": "**Deep dive:** [Resource Usage](/d/nyxgpt-resource-usage)"
+      }
+    },
+    {
+      "id": 14,
+      "title": "Memory (RSS)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 31 },
+      "fieldConfig": { "defaults": { "unit": "decmbytes" }, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "nyxgpt_resource_memory_rss_mb",
+          "legendFormat": "RSS",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "title": "CPU usage",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 31 },
+      "fieldConfig": { "defaults": { "unit": "percent" }, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "nyxgpt_resource_cpu_percent",
+          "legendFormat": "CPU %",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "title": "Cache hit rate by cache",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 31 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(nyxgpt_cache_requests_total{result=\"hit\"}[5m])) by (cache) / sum(rate(nyxgpt_cache_requests_total[5m])) by (cache)",
+          "legendFormat": "{{cache}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 27,
+      "title": "",
+      "type": "text",
+      "gridPos": { "h": 2, "w": 24, "x": 0, "y": 39 },
+      "options": {
+        "mode": "markdown",
+        "content": "**Deep dive:** [Self-Healing](/d/nyxgpt-self-healing)"
+      }
+    },
+    {
       "id": 3,
       "title": "Unhealthy components (now)",
       "type": "stat",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 6, "w": 4, "x": 4, "y": 3 },
+      "gridPos": { "h": 6, "w": 4, "x": 0, "y": 41 },
       "fieldConfig": {
         "defaults": {
           "unit": "none",
@@ -79,7 +291,7 @@
       "title": "Self-heal restarts (24h)",
       "type": "stat",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 6, "w": 4, "x": 8, "y": 3 },
+      "gridPos": { "h": 6, "w": 4, "x": 4, "y": 41 },
       "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
       "targets": [
         {
@@ -91,11 +303,51 @@
       ]
     },
     {
+      "id": 18,
+      "title": "Consecutive restart count by service (backoff state)",
+      "type": "bargauge",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 16, "x": 8, "y": 41 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 5 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "nyxgpt_selfheal_restart_count",
+          "legendFormat": "{{service}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 28,
+      "title": "",
+      "type": "text",
+      "gridPos": { "h": 2, "w": 24, "x": 0, "y": 47 },
+      "options": {
+        "mode": "markdown",
+        "content": "**Deep dive:** [Canary Rollout](/d/nyxgpt-canary)"
+      }
+    },
+    {
       "id": 5,
       "title": "Canary rollout active",
       "type": "stat",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 6, "w": 4, "x": 12, "y": 3 },
+      "gridPos": { "h": 6, "w": 4, "x": 0, "y": 49 },
       "fieldConfig": {
         "defaults": {
           "unit": "none",
@@ -126,7 +378,7 @@
       "title": "Canary rollbacks (24h)",
       "type": "stat",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 6, "w": 4, "x": 16, "y": 3 },
+      "gridPos": { "h": 6, "w": 4, "x": 4, "y": 49 },
       "fieldConfig": {
         "defaults": {
           "unit": "none",
@@ -150,183 +402,11 @@
       ]
     },
     {
-      "id": 7,
-      "title": "Total requests handled",
-      "type": "stat",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 6, "w": 4, "x": 20, "y": 3 },
-      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(nyxgpt_http_requests_total)",
-          "legendFormat": "requests",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 8,
-      "title": "Requests by status",
-      "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 9 },
-      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(increase(nyxgpt_http_requests_total[$__rate_interval])) by (status)",
-          "legendFormat": "status {{status}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 9,
-      "title": "5xx errors",
-      "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 9 },
-      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(increase(nyxgpt_http_errors_total[$__rate_interval]))",
-          "legendFormat": "5xx errors",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 10,
-      "title": "Request latency (p50 / p95 / p99)",
-      "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 9 },
-      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.50, sum(rate(nyxgpt_http_request_duration_seconds_bucket[5m])) by (le))",
-          "legendFormat": "p50",
-          "refId": "A"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.95, sum(rate(nyxgpt_http_request_duration_seconds_bucket[5m])) by (le))",
-          "legendFormat": "p95",
-          "refId": "B"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.99, sum(rate(nyxgpt_http_request_duration_seconds_bucket[5m])) by (le))",
-          "legendFormat": "p99",
-          "refId": "C"
-        }
-      ]
-    },
-    {
-      "id": 11,
-      "title": "RAG queries by source",
-      "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 17 },
-      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(increase(nyxgpt_rag_queries_total[$__rate_interval])) by (source)",
-          "legendFormat": "{{source}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 12,
-      "title": "RAG ingests by source and outcome",
-      "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 17 },
-      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(increase(nyxgpt_rag_ingests_total[$__rate_interval])) by (source, result)",
-          "legendFormat": "{{source}} ({{result}})",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 13,
-      "title": "Chat requests (streaming vs. non-streaming)",
-      "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 17 },
-      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(increase(nyxgpt_chat_requests_total[$__rate_interval])) by (streaming)",
-          "legendFormat": "streaming={{streaming}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 14,
-      "title": "Memory (RSS)",
-      "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 25 },
-      "fieldConfig": { "defaults": { "unit": "decmbytes" }, "overrides": [] },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "nyxgpt_resource_memory_rss_mb",
-          "legendFormat": "RSS",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 15,
-      "title": "CPU usage",
-      "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 25 },
-      "fieldConfig": { "defaults": { "unit": "percent" }, "overrides": [] },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "nyxgpt_resource_cpu_percent",
-          "legendFormat": "CPU %",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 16,
-      "title": "Cache hit rate by cache",
-      "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 25 },
-      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(rate(nyxgpt_cache_requests_total{result=\"hit\"}[5m])) by (cache) / sum(rate(nyxgpt_cache_requests_total[5m])) by (cache)",
-          "legendFormat": "{{cache}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
       "id": 17,
       "title": "Canary traffic split",
       "type": "gauge",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 25 },
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 55 },
       "fieldConfig": {
         "defaults": { "unit": "percent", "min": 0, "max": 100 },
         "overrides": []
@@ -341,41 +421,11 @@
       ]
     },
     {
-      "id": 18,
-      "title": "Consecutive restart count by service (backoff state)",
-      "type": "bargauge",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 33 },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 1 },
-              { "color": "red", "value": 5 }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "nyxgpt_selfheal_restart_count",
-          "legendFormat": "{{service}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
       "id": 19,
       "title": "Canary traffic split over time",
       "type": "timeseries",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 33 },
+      "gridPos": { "h": 8, "w": 18, "x": 6, "y": 55 },
       "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 }, "overrides": [] },
       "targets": [
         {
@@ -391,7 +441,15 @@
       "title": "Logs -- nyxGPT (open Logs Drilldown for filters, search, and patterns)",
       "type": "logs",
       "datasource": { "type": "loki", "uid": "loki" },
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 39 },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 63 },
+      "links": [
+        {
+          "title": "Open Logs Drilldown",
+          "url": "/a/grafana-lokiexplore-app/explore?var-ds=loki&var-filters=job%7C%3D%7Cnyxgpt",
+          "targetBlank": true,
+          "keepTime": true
+        }
+      ],
       "options": {
         "showTime": true,
         "showLabels": true,
@@ -411,7 +469,7 @@
       "title": "Recent nyxgpt traces",
       "type": "traces",
       "datasource": { "type": "jaeger", "uid": "jaeger" },
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 49 },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 73 },
       "links": [
         { "title": "Jaeger UI", "url": "http://localhost:16686", "targetBlank": true }
       ],
@@ -428,11 +486,21 @@
       ]
     },
     {
+      "id": 29,
+      "title": "",
+      "type": "text",
+      "gridPos": { "h": 2, "w": 24, "x": 0, "y": 83 },
+      "options": {
+        "mode": "markdown",
+        "content": "GlitchTip UI: [localhost:8080](http://localhost:8080)"
+      }
+    },
+    {
       "id": 22,
       "title": "GlitchTip: open issues (nyxgpt-backend)",
       "type": "stat",
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "glitchtip-infinity" },
-      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 59 },
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 85 },
       "links": [
         { "title": "GlitchTip UI", "url": "http://localhost:8080", "targetBlank": true }
       ],
@@ -457,7 +525,7 @@
       "title": "GlitchTip: recent errors (nyxgpt-backend)",
       "type": "table",
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "glitchtip-infinity" },
-      "gridPos": { "h": 8, "w": 18, "x": 6, "y": 59 },
+      "gridPos": { "h": 8, "w": 18, "x": 6, "y": 85 },
       "links": [
         { "title": "GlitchTip UI", "url": "http://localhost:8080", "targetBlank": true }
       ],

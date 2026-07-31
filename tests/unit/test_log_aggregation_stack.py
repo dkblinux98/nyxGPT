@@ -298,6 +298,85 @@ def test_sre_home_features_a_queryless_logs_panel() -> None:
             assert target["expr"] == '{job="nyxgpt"}'
 
 
+def test_sre_home_logs_panel_links_directly_into_prefiltered_drilldown() -> None:
+    """Owner acceptance (#3473): the SPOG featured logs panel must carry a
+    working title-corner link straight into Grafana's Logs Drilldown app,
+    pre-filtered to `job=nyxgpt` -- Grafana's own left-nav entry to
+    Drilldown can't be provisioned pre-filtered, so every nyxGPT-owned
+    entry point (this one included) must carry the filter itself."""
+    dashboards_dir = REPO_ROOT / "docker" / "grafana" / "dashboards"
+    dashboard = json.loads((dashboards_dir / "sre-home.json").read_text())
+
+    logs_panel = next(p for p in dashboard["panels"] if p["type"] == "logs")
+    links = logs_panel.get("links")
+    assert links, "the featured logs panel must have a title-corner link into Drilldown"
+
+    drilldown_link = links[0]
+    assert drilldown_link["url"].startswith("/a/grafana-lokiexplore-app/")
+    assert "var-ds=loki" in drilldown_link["url"]
+    assert "var-filters=job%7C%3D%7Cnyxgpt" in drilldown_link["url"]
+
+
+def test_sre_home_title_is_trimmed() -> None:
+    """Owner acceptance (#3473): the header panel's title is exactly
+    "nyxGPT SRE Home" -- the "-- single pane of glass" suffix comes off."""
+    dashboards_dir = REPO_ROOT / "docker" / "grafana" / "dashboards"
+    dashboard = json.loads((dashboards_dir / "sre-home.json").read_text())
+
+    header_panel = next(p for p in dashboard["panels"] if p["id"] == 1)
+    assert header_panel["title"] == "nyxGPT SRE Home"
+    assert "single pane of glass" not in json.dumps(dashboard)
+
+
+def test_sre_home_has_no_ordering_blurb() -> None:
+    """Owner acceptance (#3473): the "Live health and metrics below, then
+    full log search, then traces and errors." ordering blurb comes out
+    entirely -- the layout should speak for itself."""
+    dashboards_dir = REPO_ROOT / "docker" / "grafana" / "dashboards"
+    text = (dashboards_dir / "sre-home.json").read_text()
+    assert "Live health and metrics below" not in text
+
+
+def test_sre_home_deep_dive_links_sit_above_their_own_sections() -> None:
+    """Owner acceptance (#3473): deep-dive dashboard links are no longer
+    pooled in one grouped block -- each sits in its own panel, positioned
+    (by gridPos y) directly above the section of panels it deepens, not
+    bundled into the header panel."""
+    dashboards_dir = REPO_ROOT / "docker" / "grafana" / "dashboards"
+    dashboard = json.loads((dashboards_dir / "sre-home.json").read_text())
+    panels = dashboard["panels"]
+    header_panel = next(p for p in panels if p["id"] == 1)
+
+    assert header_panel["options"]["content"] == "", "header panel must not bundle any links"
+
+    # (deep-dive dashboard uid fragment, titles of the panels it deepens)
+    sections = [
+        ("nyxgpt-system-overview", ["API up", "Requests by status"]),
+        ("nyxgpt-api-metrics", ["API up", "Requests by status"]),
+        ("nyxgpt-rag-performance", ["RAG queries by source"]),
+        ("nyxgpt-resource-usage", ["Memory (RSS)"]),
+        ("nyxgpt-self-healing", ["Unhealthy components (now)"]),
+        ("nyxgpt-canary", ["Canary rollout active"]),
+    ]
+
+    text_panels = [p for p in panels if p["type"] == "text"]
+    for dashboard_uid, section_panel_titles in sections:
+        owning_panels = [p for p in text_panels if f"/d/{dashboard_uid}" in p["options"]["content"]]
+        assert owning_panels, f"no deep-dive link panel found for {dashboard_uid!r}"
+        assert len(owning_panels) == 1, f"{dashboard_uid!r} link must not be duplicated"
+        link_panel = owning_panels[0]
+        assert (
+            link_panel["id"] != 1
+        ), f"{dashboard_uid!r} link must not be bundled into the header panel"
+
+        link_y = link_panel["gridPos"]["y"]
+        for title in section_panel_titles:
+            section_panel = next(p for p in panels if p.get("title") == title)
+            assert link_y < section_panel["gridPos"]["y"], (
+                f"{dashboard_uid!r} deep-dive link must sit above its section " f"({title!r})"
+            )
+
+
 def test_sre_home_dashboard_is_provisioned_and_is_the_landing_page() -> None:
     """The SRE Home dashboard (#3411) is the single pane of glass the Admin
     Dashboard's SRE Overview tile opens -- it must be provisioned, and set
