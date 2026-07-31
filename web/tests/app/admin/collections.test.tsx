@@ -351,6 +351,21 @@ describe('CollectionsPage', () => {
       expect(screen.getByText(/Failed to create collection: HTTP 500/)).toBeInTheDocument();
     });
 
+    // extractErrorMessage guard branches: a JSON body that parses but is not
+    // an object (null / bare string) must fall through to the HTTP fallback
+    // rather than being unwrapped.
+    server.use(http.post('/api/v1/rag/collections', () => HttpResponse.json(null, { status: 502 })));
+    await user.click(within(createModal()).getByRole('button', { name: 'Create Collection' }));
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to create collection: HTTP 502/)).toBeInTheDocument();
+    });
+
+    server.use(http.post('/api/v1/rag/collections', () => HttpResponse.json('bare string', { status: 503 })));
+    await user.click(within(createModal()).getByRole('button', { name: 'Create Collection' }));
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to create collection: HTTP 503/)).toBeInTheDocument();
+    });
+
     // Unparseable body branch
     server.use(http.post('/api/v1/rag/collections', () => new HttpResponse(null, { status: 500 })));
     await user.click(within(createModal()).getByRole('button', { name: 'Create Collection' }));
