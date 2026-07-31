@@ -52,6 +52,9 @@ jobs:
           STATUS_FOR_RELEASE=${{ vars.STATUS_FOR_RELEASE }}
 
           RELEASE_BRANCH=${{ vars.RELEASE_BRANCH }}
+          RELEASE_ISSUE_NUMBER=${{ vars.RELEASE_ISSUE_NUMBER }}
+          SPRINT_AUTOPILOT=${{ vars.SPRINT_AUTOPILOT }}
+          SPRINT_FIELD=${{ vars.SPRINT_FIELD }}
           EOF
 
           echo "NYXGPT_CONFIG_FILE=$CFG" >> "$GITHUB_ENV"
@@ -91,8 +94,15 @@ jobs:
         run: |
           set -euo pipefail
           echo "::group::Selecting next issue from Backlog"
-          # Use --select-only since workflow handles starting separately
-          NEXT_ISSUE=$(bash -lc './scripts/agents/scrummaster_next_issue.sh --select-only' || echo "")
+          # Use --select-only since workflow handles starting separately.
+          # Sprint-scope selection while autopilot is on (#3480) -- the
+          # script itself falls back to unscoped selection if no Sprint is
+          # currently active, so this is safe to pass unconditionally.
+          SPRINT_ARGS=""
+          if [[ "${{ vars.SPRINT_AUTOPILOT }}" == "true" ]]; then
+            SPRINT_ARGS="--sprint-scoped"
+          fi
+          NEXT_ISSUE=$(bash -lc "./scripts/agents/scrummaster_next_issue.sh --select-only $SPRINT_ARGS" || echo "")
 
           if [[ -z "$NEXT_ISSUE" ]]; then
             echo "::warning::No eligible issues found in Backlog"
