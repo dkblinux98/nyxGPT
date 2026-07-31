@@ -118,6 +118,12 @@ class RagFilters(BaseModel):
     tags: list[str] | None = Field(None, description="Filter by tags (must have ALL tags)")
     date_from: str | None = Field(None, description="Filter by ingestion date >= (ISO format)")
     date_to: str | None = Field(None, description="Filter by ingestion date <= (ISO format)")
+    collection: str | None = Field(
+        None,
+        description=(
+            "Collection to search (defaults to the 'default' collection when not specified)"
+        ),
+    )
 
 
 class AttachmentBlock(BaseModel):
@@ -165,8 +171,11 @@ class RagChunkInfo(BaseModel):
     text: str
     score: float
     doc_id: str | None = None
-    chunk_id: int | None = None
+    chunk_id: int | None = None  # Internal zero-based clustering key; not for display
     similarity_score: float | None = None  # Original vector similarity (0-1) for UI display
+    collection: str | None = None  # Collection this chunk was retrieved from
+    chunk_number: int | None = None  # 1-based, human-readable chunk position
+    total_chunks: int | None = None  # Total chunks in the source document, if known
 
 
 class ChatResponse(BaseModel):
@@ -210,6 +219,7 @@ class RagIngestResponse(BaseModel):
     status: str = Field(description="Ingestion status: 'ingested', 'updated', or 'skipped'")
     doc_hash: str | None = Field(None, description="SHA-256 hash of document content")
     previous_hash: str | None = Field(None, description="Previous hash if document was updated")
+    collection: str = Field("default", description="Collection the document was ingested into")
 
 
 class RagDocumentInfo(BaseModel):
@@ -289,6 +299,9 @@ class RagQueryRequest(BaseModel):
     query: str = Field(..., description="Search query")
     top_k: int = Field(5, ge=1, le=50)
     debug_mode: bool = Field(False, description="Enable debug mode to return detailed metrics")
+    collection: str | None = Field(
+        None, description="Collection to query (defaults to the 'default' collection)"
+    )
     # Metadata filters
     doc_ids: list[str] | None = Field(None, description="Filter by document IDs (OR logic)")
     filename: str | None = Field(
@@ -303,10 +316,13 @@ class RagQueryResult(BaseModel):
     """A single retrieved chunk returned from a RAG query."""
 
     doc_id: str
-    chunk_id: int
+    chunk_id: int  # Internal zero-based clustering key; not for display
     text: str
     score: float
     similarity_score: float | None = None  # Original vector similarity (0-1) for UI display
+    collection: str | None = None  # Collection this chunk was retrieved from
+    chunk_number: int | None = None  # 1-based, human-readable chunk position
+    total_chunks: int | None = None  # Total chunks in the source document, if known
 
 
 class RagDebugInfo(BaseModel):
@@ -401,6 +417,9 @@ class RagMetricsQueryRequest(BaseModel):
     top_k: int | None = None
     debug_mode: bool = True
     collect_metrics: bool = True
+    collection: str | None = Field(
+        None, description="Collection to query (defaults to the 'default' collection)"
+    )
 
 
 class RagMetricsQueryResponse(BaseModel):

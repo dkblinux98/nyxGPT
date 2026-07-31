@@ -387,7 +387,11 @@ def test_force_include_makes_second_retrieve_call(
     calls: list[Any] = []
 
     def fake_retrieve(
-        prompt: str, *, debug_mode: bool = False, metadata_filter: Any = None
+        prompt: str,
+        *,
+        debug_mode: bool = False,
+        collection: str = "default",
+        metadata_filter: Any = None,
     ) -> list[dict]:
         calls.append(metadata_filter)
         return [{"text": "chunk", "score": 0.9, "doc_id": "doc-x", "chunk_id": 0}]
@@ -426,7 +430,11 @@ def test_force_include_rows_take_precedence(
     call_count = {"n": 0}
 
     def fake_retrieve(
-        prompt: str, *, debug_mode: bool = False, metadata_filter: Any = None
+        prompt: str,
+        *,
+        debug_mode: bool = False,
+        collection: str = "default",
+        metadata_filter: Any = None,
     ) -> list[dict]:
         call_count["n"] += 1
         if call_count["n"] == 1:
@@ -471,7 +479,11 @@ def test_force_include_deduplication(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     call_count = {"n": 0}
 
     def fake_retrieve(
-        prompt: str, *, debug_mode: bool = False, metadata_filter: Any = None
+        prompt: str,
+        *,
+        debug_mode: bool = False,
+        collection: str = "default",
+        metadata_filter: Any = None,
     ) -> list[dict]:
         call_count["n"] += 1
         return [duplicate_chunk]
@@ -499,7 +511,11 @@ def test_force_include_skipped_when_attached_doc_ids_empty(
     call_count = {"n": 0}
 
     def fake_retrieve(
-        prompt: str, *, debug_mode: bool = False, metadata_filter: Any = None
+        prompt: str,
+        *,
+        debug_mode: bool = False,
+        collection: str = "default",
+        metadata_filter: Any = None,
     ) -> list[dict]:
         call_count["n"] += 1
         return []
@@ -528,7 +544,11 @@ def test_force_include_skipped_when_attached_doc_ids_absent(
     call_count = {"n": 0}
 
     def fake_retrieve(
-        prompt: str, *, debug_mode: bool = False, metadata_filter: Any = None
+        prompt: str,
+        *,
+        debug_mode: bool = False,
+        collection: str = "default",
+        metadata_filter: Any = None,
     ) -> list[dict]:
         call_count["n"] += 1
         return []

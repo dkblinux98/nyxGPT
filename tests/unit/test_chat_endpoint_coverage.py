@@ -71,6 +71,7 @@ def test_chat_endpoint_forwards_rag_filters_attachments_output_format() -> None:
         "tags": None,
         "date_from": None,
         "date_to": None,
+        "collection": None,
     }
     assert captured_kwargs.get("attachments") == [
         {"type": "image", "media_type": "image/png", "data": img_b64, "filename": "a.png"}
