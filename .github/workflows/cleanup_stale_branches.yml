@@ -80,8 +80,12 @@ jobs:
 
               let reason = null;
               try {
+                // Octokit percent-encodes the {basehead} path parameter itself;
+                // pre-encoding the branch name double-encodes the "/" in every
+                // claude/* ref (%2F -> %252F) and 404s the compare, so every
+                // candidate was skipped as "inspection failed".
                 const cmp = await github.rest.repos.compareCommitsWithBasehead({
-                  owner, repo, basehead: `${base}...${encodeURIComponent(name)}`,
+                  owner, repo, basehead: `${base}...${name}`,
                 });
                 if (cmp.data.ahead_by === 0) {
                   // No commits beyond base → already merged/contained.
