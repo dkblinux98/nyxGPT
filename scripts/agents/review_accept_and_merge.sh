@@ -77,7 +77,7 @@ if [[ "$pr_mergeable" == "CONFLICTING" ]]; then
     echo "[review] Dispatching automated conflict-resolution round to developer agent..." >&2
     AUTO_MSG="⚠️ **Merge Conflicts Detected** — ${CONFLICT_ROUND_MARKER} dispatched.
 
-PR #${PR} cannot merge into \`${pr_base_branch}\` because the base branch moved while the PR was in review. The developer agent has been reassigned to: merge \`origin/${pr_base_branch}\` into \`${pr_head_branch}\`, resolve the conflicts preserving both sides' intents, re-run all validation gates, and push. The push re-triggers review; if the PR conflicts again after this round, it escalates to @${HUMAN_OWNER}."
+PR #${PR} cannot merge into \`${pr_base_branch}\` because the base branch moved while the PR was in review. The developer agent is being reassigned to: merge \`origin/${pr_base_branch}\` into \`${pr_head_branch}\`, resolve the conflicts preserving both sides' intents, re-run all validation gates, and push. The push re-triggers review; if the PR conflicts again after this round, it escalates to @${HUMAN_OWNER}."
     gh pr comment "$PR" --repo "${REPO_OWNER}/${REPO_NAME}" --body "$AUTO_MSG" || true
     issue_comment "$ISSUE" "$AUTO_MSG"
     if set_issue_status "$ISSUE" "In Progress" && assign_and_trigger_developer "$ISSUE"; then
