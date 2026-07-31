@@ -88,7 +88,9 @@ describe('RagCitationsCollapsible', () => {
     await waitFor(() => expect(screen.getAllByText('High').length).toBeGreaterThan(0));
     expect(screen.getByText('Keyword')).toBeInTheDocument();
     expect(screen.getByText(/Doc: doc-1/)).toBeInTheDocument();
-    expect(screen.getByText(/chunk 3/)).toBeInTheDocument();
+    // chunk_id=3 is the zero-based internal key; displayed as 1-based "chunk 4"
+    // (legacy data with no chunk_number/total_chunks falls back to chunk_id + 1).
+    expect(screen.getByText(/chunk 4/)).toBeInTheDocument();
 
     // Long chunk truncated, with a "Show full source" toggle.
     const showFull = screen.getByText('Show full source');

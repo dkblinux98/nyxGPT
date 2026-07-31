@@ -10,6 +10,9 @@ type RAGResult = {
   text: string;
   score: number;
   similarity_score: number | null;
+  collection?: string | null;
+  chunk_number?: number | null;
+  total_chunks?: number | null;
 };
 
 type RAGDebugInfo = {
@@ -158,6 +161,7 @@ export default function PlaygroundPage() {
         query: query.trim(),
         top_k: topK,
         debug_mode: debugMode,
+        collection: collection,
       };
 
       if (collectMetrics) {
@@ -559,7 +563,11 @@ export default function PlaygroundPage() {
                         >
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
                             <div style={{ fontSize: '0.75rem', color: 'var(--foreground-muted)' }}>
-                              <strong>#{idx + 1}</strong> • {result.doc_id} • Chunk {result.chunk_id}
+                              <strong>#{idx + 1}</strong> • {result.doc_id} • Chunk{' '}
+                              {result.chunk_number != null
+                                ? (result.total_chunks ? `${result.chunk_number} of ${result.total_chunks}` : result.chunk_number)
+                                : result.chunk_id + 1}
+                              {result.collection && result.collection !== 'default' && ` • ${result.collection}`}
                             </div>
                             <div
                               style={{
