@@ -1,223 +1,205 @@
-# Phase 6 — Cloud Deployment & Unified Orchestration (v3.0.0)
+# Phase 6 — Enterprise Deployment & Hardening (v3.0.0)
 
-**Created:** 2026-07-15
-**Owner decision (2026-07-15):** add a Phase 6 milestone and a v3.0.0 release to deliver
-cloud-native AWS deployment plus the unified one-command, OS-aware deploy story. Phase X is
-unrelated to local-first and does not constrain this work; cloud-native provisioning is now
-explicitly in scope for v3.
+**Created:** 2026-07-15 · **Rewritten:** 2026-07-31 (post-Phase-5.5 scope re-review)
+**Milestone:** `Phase 6 - Enterprise Deployment & Hardening` (owner-created)
+**Sprint:** `Sprint 7` (2 weeks — no `6.x` sprint naming)
 
-## Deployment model decision — native-first, one container (owner, 2026-07-15)
+Phase 5.5 absorbed or overturned a large part of the original plan (ledger below). This
+rewrite contains only the work that remains, specified so each item can be filed directly
+as an issue with the correct fields. Unless a spec block says otherwise, every issue is
+filed with:
 
-**The DEFAULT local deployment is native-on-the-host for every component — API, web, Ollama,
-Prometheus, Grafana, Jaeger, GlitchTip, Loki — with Cassandra as the *only* Docker container.
-All components communicate over `localhost`.** The Docker Compose stack (#2689) and Kubernetes
-(#2688) are **retained, not retired** — they are optional deployments for **future enterprise
-use**, plus an optional **local deployment for testing only**. Native-first is what an ordinary
-single-user install gets by default.
+> **Status:** Backlog · **Milestone:** Phase 6 - Enterprise Deployment & Hardening ·
+> **Sprint:** Sprint 7 · **Priority:** P1 - High · **Label/Module/Effort:** per block
 
-- **Native-first is the default and primary path.** `nyxgpt ops install` becomes the native
-  deployment manager: it installs and configures *every* component as a native Homebrew service,
-  using `homebrew/nyxgpt-api.rb` and `homebrew/nyxgpt-web.rb` as the pattern (nyxgpt-tap
-  formulae, or upstream formulae configured for nyxGPT), and manages the single Cassandra Docker
-  container. No user runs raw `brew`, `docker`, `docker compose`, or `kubectl` (ops-wrapper
-  principle).
-- **Compose (#2689) and k8s (#2688) remain supported** as optional enterprise / local-testing
-  deployments. Their container-networking acceptance failures (#3177, #3178, #3179, #3182,
-  #3184, #3185) are **not moot** — they still need fixing for those optional paths — but they
-  are **not blockers for the default native deployment**, so they re-prioritize below the
-  native-deployment work rather than closing.
-- **One wrapped entry point, mode by flag.** `nyxgpt ops install` (no flag) = native default.
-  `nyxgpt ops install --k8s` = Kubernetes, resolving to a **local minikube** cluster for
-  testing or an **AWS/EKS-style** cluster for enterprise deployment. (A Compose flag can follow
-  the same pattern.) The user never runs raw `minikube`/`kubectl`/`eksctl`/`docker compose` —
-  every mode is selected through the `nyxgpt` wrapper.
-- **Blue-green (#2691) and canary (#2692)** stay on the retained k8s substrate; not dropped.
-- Native-first makes the *default* private-to-the-workstation posture natural (native services
-  bind `localhost`), and reduces the split-brain (#16) by making native the primary model
-  (Compose/k8s are an explicit opt-in, not an accidental parallel stack).
-- The AWS deploy (Sprint 6.2/6.3) is the enterprise/cloud path and may use the containerized
-  model; the default local experience stays native.
+## Standing owner decisions (unchanged, restated)
 
-## Theme
+- **Native-first, one container (2026-07-15):** the default local deployment is native on
+  the host for every component, Cassandra as the only Docker container, all localhost.
+  Compose and Kubernetes are retained as optional enterprise/testing paths. Shipped: this
+  is exactly what `nyxgpt ops install` does today.
+- **Everything through `nyxgpt` wrappers (2026-07-15, CLAUDE.md):** no raw
+  `docker`/`kubectl`/`terraform` in any user instruction or flow.
+- **Private-to-the-workstation access, even in the cloud (2026-07-15):** every deployment,
+  local or AWS, is reachable only from the owner's workstation over a locked path (tunnel /
+  WireGuard / Tailscale / owner-IP-scoped SG). Never a public endpoint — for the app *and*
+  the observability tools. The concrete mechanism is decision issue **P6-4** below.
+- **Canary, not blue-green (#3409, 2026-07-29):** blue-green is retired; canary is the
+  progressive-delivery strategy on the k8s substrate (api + web per #3419; ollama documented
+  infeasible).
 
-One command, after a clean `git checkout`, brings up the **entire** nyxGPT stack —
-API, web UI, Cassandra, host-wired Ollama, **and** the full monitoring stack
-(Prometheus, Grafana, Loki, Jaeger) — with the deploy path **detecting macOS vs Linux**
-and doing the right thing on each. That same capability extends to the cloud: one CLI
-command provisions AWS infrastructure (Terraform) and deploys the full app onto a
-Linux or macOS AWS instance, monitored and self-healing, operable from the SRE/admin
-dashboard per the Definition of Done.
+## Absorbed by Phase 5.5 (do not re-file)
 
-## Why a hardening sprint comes first
-
-Two audit findings become **critical** the moment the API is exposed on a public cloud
-endpoint rather than localhost:
-
-- **S1** — `/api/v1/tools/{cat,ls,grep}` allow **arbitrary file read** (no path sandbox).
-  On a public AWS endpoint this is remote arbitrary file disclosure of the host,
-  including the API key in `~/.nyxGPT/config.ini`.
-- **S2** — the API is **unauthenticated by default**, and the deploy config binds `0.0.0.0`.
-
-These must land **before** any cloud exposure. Sprint 6.0 is therefore a gate, not optional.
+| Original item | Disposition |
+|---|---|
+| Sandbox `/api/v1/tools/*` (audit S1) | Moot — tools/TUI feature removed entirely (#3429) |
+| config.ini 0600 permissions (audit S3) | Done — ops chmods config/tfvars/secret files 0600 (#3432/#3458 era); P6-1 re-verifies coverage as an AC |
+| One-command full-stack bring-up | Done in substance — `nyxgpt ops install` reconciles the full native stack (#3406/#3414); alias/polish residue is P6-5 |
+| Monitoring in the default bring-up | Done — install brings up observability by default, `--skip-observability` to opt out |
+| Teardown + idempotent re-deploy | Done — `nyxgpt ops down` / idempotent install; "dashboard teardown control" overturned by #3410 (Infrastructure page is status-only, owner decision) |
+| GlitchTip DSN collection (part of guided secrets) | Obsolete — DSN is auto-provisioned end-to-end (#3411/#3458) |
+| Local Terraform substrate | Done — `nyxgpt ops install --terraform --local`, `nyxgpt-tf-*` containers, mode-aware status/self-heal (#3410/#3428) |
 
 ---
 
-## Sprint 6.0 — Deployment hardening (prerequisite gate)
+## Sprint 7 issues
 
-Must merge before any public cloud exposure work in 6.2+.
+Sequencing: **P6-1..P6-3 are the hardening gate — no cloud-exposure work (P6-8 onward)
+merges before they do.** P6-4 (access mechanism) and P6-7 (substrate) are decision issues
+blocking the infra builds. P6-16 (capstone) is selected LAST.
 
-1. **fix: Sandbox `/api/v1/tools/{cat,ls,grep}` to prevent arbitrary file read**
-   Constrain resolved paths to an allowlisted workspace root, mirroring the existing
-   guard on `/api/v1/logs/view/{filename}`. Reject any path whose `resolve()` escapes root.
-   *Label: Acceptance Failure · Module: API · Effort: S*
+### P6-1 · feat: refuse non-loopback API bind without auth enabled
+**Label:** Feature · **Module:** security · **Effort:** S
 
-2. **feat: Require auth when the API binds to a non-loopback host**
-   If `api.host` is not loopback, refuse to start (or hard-warn) unless `[auth] enabled=true`.
-   Document auth-on as the deploy default in the deployment checklist.
-   *Label: Feature · Module: API · Effort: S*
+- Problem: the API is unauthenticated by default and deploy configs can bind `0.0.0.0`;
+  exposure without auth must be impossible, not just discouraged (env-sync's warning text
+  exists; enforcement doesn't).
+- ACs: API startup with a non-loopback `api.host` and `[auth] enabled != true` refuses to
+  start with an actionable error (what to set, pointer to the wizard); loopback binds
+  unaffected; deployment checklist documents auth-on as the deploy default; re-verify every
+  config/secrets write path still lands 0600/0700 perms (closes the S3 residue); tests for
+  the refusal matrix (host × auth) and the perms sweep.
 
-3. **fix: Persist `config.ini` with 0600 permissions to protect the API key**
-   `os.chmod(cfg_path, 0o600)` after every write; parent dir `0o700`.
-   *Label: Acceptance Failure · Module: API · Effort: XS*
+### P6-2 · feat: security scanning in CI - bandit, pip-audit, npm audit
+**Label:** Feature · **Module:** security · **Effort:** S
 
-4. **feat: Add security scanning to CI (bandit, pip-audit, npm audit)**
-   New push/PR-triggered job. Fail on high-severity dependency CVEs and Python SAST findings.
-   *Label: Feature · Module: Agent System · Effort: S*
+- ACs: push/PR workflow running bandit (Python SAST), pip-audit, and `npm audit` (web);
+  fails on high-severity findings; baseline/suppression file for accepted findings with
+  justification comments; documented in the developer runbook. Workflow-file note: agents
+  cannot write `.github/workflows/*` — deliver proposed YAML for owner-side application
+  (hand-carry pattern per #3454/#3479).
 
-5. **feat: Add an independent push/PR Python test + mypy gate in CI**
-   A standalone workflow that runs the full `tests/` suite and a blocking `mypy` on push/PR,
-   independent of the agent pipeline (closes the C1/C2 gap: today pytest only runs inside
-   the dev/review agent workflows, over `tests/unit/` only).
-   *Label: Feature · Module: Agent System · Effort: S*
+### P6-3 · feat: standalone push/PR CI gate - full pytest suite plus blocking mypy
+**Label:** Feature · **Module:** testing · **Effort:** S
 
-## Sprint 6.1 — Unified local deploy + OS detection
+- Problem: pytest/mypy today run only inside the agent workflows, over `tests/unit/` only.
+- ACs: an independent workflow on push/PR runs the full `tests/` suite (unit + integration
+  where environment-feasible) and a blocking `mypy src/`; green on current v2.0.0 before
+  merge (fix or explicitly skip-with-comment anything red); same workflow-file hand-carry
+  note as P6-2.
 
-Closes the capstone (#3160) deploy-pillar gap: a real single command, monitoring included,
-OS-aware.
+### P6-4 · feat: decision - private access mechanism for cloud deployments
+**Label:** Feature · **Module:** documentation · **Effort:** S · **Blocks:** P6-8, P6-11
 
-6. **feat: `nyxgpt up` — one command brings up the full stack after checkout**
-   Single entrypoint orchestrating the Compose stack (all core services), waiting for health,
-   printing the web URL. Idempotent. Dashboard surface for status per DoD.
-   *Label: Feature · Module: CLI · Effort: L*
+- ACs: a decision record under `product_management/` comparing SSH tunnel, WireGuard,
+  Tailscale, and owner-IP-scoped security groups against the private-access principle;
+  picks one with rationale, spelling out how the owner reaches app + observability UIs and
+  what "returns the URL" means under it; reviewed/approved by the owner on the issue before
+  P6-8/P6-11 start.
 
-7. **feat: Include Prometheus/Grafana/Loki/Jaeger in the default bring-up**
-   Monitoring comes up as part of `nyxgpt up` (today they are opt-in Compose profiles that a
-   bare `docker compose up` skips). `--no-monitoring` to opt out.
-   *Label: Feature · Module: Observability · Effort: M*
+### P6-5 · feat: nyxgpt up and down aliases with health-wait and URL print
+**Label:** Feature · **Module:** cli · **Effort:** S
 
-8. **feat: macOS/Linux detection with platform-appropriate native install**
-   Add a Linux path (systemd units) alongside the existing macOS-only launchd/launchctl path
-   in `ops.py`; dispatch on `platform.system()`. Today the native install path is Mac-only.
-   *Label: Feature · Module: CLI · Effort: L*
+- Problem: `ops install`/`down` are the shipped one-command story; the original Phase 6
+  `up`/`down` naming plus bring-up UX polish remain undone.
+- ACs: `nyxgpt up` = alias for the full reconcile (mode flags pass through), then waits for
+  component health (reusing self-heal probes) and prints the web URL; `nyxgpt down` =
+  alias for teardown; both idempotent; docs/help updated; no behavior forked from `ops`
+  (thin aliases, single code path).
 
-9. **feat: Single-command teardown + idempotent re-deploy for the unified stack**
-   `nyxgpt down` / re-run `nyxgpt up` cleanly. Dashboard teardown control.
-   *Label: Feature · Module: CLI · Effort: M*
+### P6-6 · feat: guided secrets setup - masked input and per-key help, CLI + admin wizard
+**Label:** Feature · **Module:** cli · **Effort:** M
 
-9a. **feat: Guided credentials/secrets setup during deploy (CLI + `/admin` wizard)**
-   When `nyxgpt up` runs and a required secret is unset, collect it through a **guided,
-   self-documenting** flow that, for each key, (a) names it in plain language, (b) explains
-   what it's for, (c) says exactly where to obtain or create it (URL + steps), (d) prompts
-   with **masked input** (`getpass`), (e) validates format where possible, and (f) writes to
-   `~/.nyxGPT/config.ini` with **0600** perms (implements audit S3). Extends the existing
-   `run_wizard` (`src/nyxgpt/wizard.py`) and the `/admin` setup wizard
-   (`web/src/app/admin/page.tsx`) — the same guided step must exist on the **web** surface
-   per the Definition of Done, not CLI-only.
-   Secrets in scope: `[auth] api_key` (protect the instance — offer to generate one),
-   `[error_tracking] dsn` (GlitchTip project settings → DSN),
-   `[openai] api_key` (platform.openai.com/api-keys, only if OpenAI is enabled),
-   `[github] pat` (github.com/settings/tokens, only if agent ops are used).
-   Idempotent: never re-prompts for a secret already present; `--reconfigure` to force.
-   *Label: Feature · Module: CLI · Effort: L*
+- Problem: the first-run wizard exists but secrets entry lacks the guided treatment; DSN
+  collection is obsolete (auto-provisioned), shrinking the original scope.
+- ACs: for each secret still human-provided (`[auth] api_key` — with an offer to generate,
+  `[openai] api_key`, `[github] pat`): plain-language name, what-it's-for, exactly where to
+  obtain it, masked entry (`getpass`), format validation, 0600 write; idempotent
+  (`--reconfigure` to force); the same guided step exists in the `/admin` wizard per the
+  Definition of Done; tests for prompt/skip/validate flows.
 
-## Sprint 6.2 — AWS IaC foundation
+### P6-7 · feat: decision - AWS compute substrate, EC2 single-box vs EKS
+**Label:** Feature · **Module:** documentation · **Effort:** S · **Blocks:** P6-8, P6-11, P6-12
 
-10. **feat: Architecture decision — AWS compute substrate (EC2 single-box vs EKS)**
-    Decision issue with a recommendation and rationale; picks the target for the modules below.
-    *Label: Feature · Module: Agent System · Effort: S*
+- ACs: decision record with recommendation + rationale (cost, ops burden, fit with the
+  canary/k8s substrate, private-access mechanism from P6-4); owner-approved on the issue.
 
-11. **feat: Terraform AWS modules — VPC, subnets, security groups, compute**
-    Cloud provider modules provisioning the chosen substrate (per #10). Least-privilege SGs.
-    *Label: Feature · Module: CLI · Effort: XL*
+### P6-8 · feat: Terraform AWS modules - VPC, subnets, security groups, compute
+**Label:** Feature · **Module:** cli · **Effort:** XL · **Blocked by:** P6-1..P6-4, P6-7
 
-12. **feat: Terraform remote state (S3 backend + DynamoDB lock)**
-    *Label: Feature · Module: CLI · Effort: M*
+- ACs: provider modules provisioning the P6-7 substrate; least-privilege SGs implementing
+  the P6-4 access mechanism (no 0.0.0.0/0 ingress anywhere); builds on the local terraform
+  layout (`nyxgpt-tf-*` naming/conventions); `terraform validate` + a plan-level test in CI;
+  wrapped entirely behind `nyxgpt` commands.
 
-13. **feat: Cloud secrets management (SSM Parameter Store / Secrets Manager) — no plaintext keys**
-    API key and any credentials sourced from AWS secret storage, never baked into images/config.
-    *Label: Feature · Module: API · Effort: M*
+### P6-9 · feat: Terraform remote state - S3 backend with DynamoDB locking
+**Label:** Feature · **Module:** cli · **Effort:** M · **Blocked by:** P6-8
 
-## Sprint 6.3 — One-command cloud deploy
+- ACs: S3 backend + DynamoDB lock provisioning and migration from local state; documented
+  recovery story; wrapped setup (no raw `terraform init` instructions).
 
-14. **feat: `nyxgpt cloud deploy` — provision AWS + deploy the full app after checkout**
-    Single CLI command: `terraform apply` the infra, then bring up the full stack on the
-    provisioned Linux/macOS AWS instance, wired to the monitoring stack, returning the URL.
-    *Label: Feature · Module: CLI · Effort: XL*
+### P6-10 · feat: cloud secrets via SSM Parameter Store or Secrets Manager
+**Label:** Feature · **Module:** security · **Effort:** M · **Blocked by:** P6-7
 
-15. **feat: Target OS detection/provisioning for Linux vs macOS AWS instances**
-    Provision and configure correctly whether the target AMI is Linux or macOS (EC2 mac).
-    *Label: Feature · Module: CLI · Effort: L*
+- ACs: API key and credentials sourced from AWS secret storage on cloud deploys — never
+  baked into AMIs, user-data, tfvars, or config files; local deploys unchanged; rotation
+  documented; tests with mocked AWS clients.
 
-15a. **feat: Guided cloud-credential collection for AWS deploy**
-    Extends the #9a guided-secrets flow to the cloud path: AWS access key / secret /
-    region / profile, and the target secret-store references (SSM/Secrets Manager per #13),
-    each with what-it-is + where-to-get-it help and masked entry. Never writes AWS secrets
-    to `config.ini` in plaintext — routes them to the OS keychain / AWS profile / secret
-    store. CLI + `/admin` cloud-deploy wizard.
-    *Label: Feature · Module: CLI · Effort: L*
+### P6-11 · feat: nyxgpt cloud deploy - provision AWS and deploy the full stack
+**Label:** Feature · **Module:** cli · **Effort:** XL · **Blocked by:** P6-8..P6-10
 
-16. **feat: Cloud deploy status / teardown / rollback from the SRE dashboard**
-    DoD surface: the whole cloud deploy lifecycle operable from `/admin`, not just the CLI.
-    *Label: Feature · Module: Web UI · Effort: L*
+- ACs: one command: apply infra, deploy the full app + observability onto the provisioned
+  instance, wire the P6-4 access path, wait for health, print the (tunnel/loopback) URL;
+  idempotent re-runs; `nyxgpt cloud destroy` counterpart; smoke-verifiable end to end.
 
-17. **feat: Cloud smoke test — provision → verify chat/RAG over public endpoint → teardown**
-    Mirrors `scripts/smoke-test.sh` but against a live AWS deployment.
-    *Label: Feature · Module: Testing · Effort: M*
+### P6-12 · feat: target-OS provisioning for Linux and macOS AWS instances
+**Label:** Feature · **Module:** cli · **Effort:** L · **Blocked by:** P6-7
+**Pairs with:** P6-14 (shares the OS-dispatch layer)
 
-## Capstone (implement LAST)
+- ACs: cloud provisioning configures the stack correctly on Linux AMIs and EC2 Mac;
+  documented support matrix; CI coverage where feasible (Linux at minimum).
 
-18. **feat: Phase 6 capstone — deploy nyxGPT to AWS from a clean checkout in one command,
-    monitored and self-healing**
-    End-to-end acceptance: clean checkout → one command → provisioned, deployed, monitored,
-    self-healing app reachable over the internet, entirely operable from the SRE dashboard;
-    documented end-to-end smoke test; teardown. Depends on all of #6.0–#6.3.
-    *Label: Feature · Module: CLI · Effort: XL · Sequencing: LAST*
+### P6-13 · feat: guided AWS credential collection for cloud deploy
+**Label:** Feature · **Module:** cli · **Effort:** M · **Blocked by:** P6-6, P6-10
+
+- ACs: extends P6-6's guided flow to AWS access key/secret/region/profile + secret-store
+  references; masked entry with what-it-is/where-to-get-it help; AWS secrets never written
+  to `config.ini` — routed to AWS profile / OS keychain / secret store; CLI + `/admin`
+  cloud wizard parity.
+
+### P6-14 · feat: Linux-native install path - systemd units with OS dispatch
+**Label:** Feature · **Module:** cli · **Effort:** L
+
+- Problem: the native install path is macOS-only (brew + launchd); Linux runs the stack
+  (CI terraform smoke proves it) but has no native-first story.
+- ACs: `platform.system()` dispatch in ops; systemd unit generation/management mirroring
+  the launchd path (install/start/stop/restart/status/logs per service, log paths feeding
+  the same `~/.nyxGPT/logs` shipping); self-heal's native probes work on Linux; doctor
+  checks OS-appropriate; docs gain a Linux install section; CI exercise of the systemd path
+  (container or unit-level as feasible).
+
+### P6-15 · feat: cloud deploy lifecycle from the SRE dashboard
+**Label:** Feature · **Module:** sre · **Effort:** L · **Blocked by:** P6-11
+
+- ACs: cloud deploy status visible from `/admin` per the Definition of Done; lifecycle
+  controls (deploy/teardown/rollback) reconciled with the owner's #3410 status-only
+  precedent for the local Infrastructure page — an explicit owner decision on the issue
+  settles whether cloud gets controls or status-plus-CLI-pointers; whatever is decided is
+  fully implemented and tested.
+
+### P6-16 · feat: Phase 6 capstone - clean checkout to monitored AWS deploy in one command
+**Label:** Feature · **Module:** cli · **Effort:** XL · **Sequencing: selected LAST**
+
+- ACs: end-to-end acceptance — clean checkout → one command → provisioned, deployed,
+  monitored, self-healing app reachable only via the private access path; operable per the
+  P6-15 decision; documented end-to-end smoke test (P6-17's script) run green; teardown
+  verified; depends on every other P6 issue.
+
+### P6-17 · feat: cloud smoke test - provision, verify chat and RAG, teardown
+**Label:** Feature · **Module:** testing · **Effort:** M · **Blocked by:** P6-11
+
+- ACs: mirrors `scripts/smoke-test.sh` against a live cloud deployment over the private
+  access path (chat round-trip, RAG ingest+query, observability reachable); leaves no
+  billed resources behind on success or failure; wrapped invocation.
 
 ---
 
-## Cross-cutting principle — everything through `nyxgpt` wrappers (owner, 2026-07-15)
+## Not in this milestone (schedule separately)
 
-No operation may require a raw `docker`/`docker compose`/`kubectl`/`terraform` command from
-the user; all of it is exposed through `nyxgpt` commands (`nyxgpt up`/`down`/`ops …`) and the
-dashboard. This is now codified in CLAUDE.md ("Operational Command Wrapping"). It elevates the
-`nyxgpt up`/`down`/`ops` wrappers (#6, #9, #8) from convenience to hard requirement, and it
-constrains the fixes for the deploy-layer acceptance failures: self-heal (#3179), smoke test
-(#3180), and blue-green/canary (#3184) must heal/operate via wrappers, and the UI strings +
-the five docs that currently show raw `docker compose`/`kubectl` must be converted.
-
-## Cross-cutting principle — private-to-the-workstation access, even in the cloud (owner, 2026-07-15)
-
-**Every nyxGPT deployment — local *and* remote (AWS Linux/macOS) — is reachable only from the
-owner's own workstation, never publicly exposed.** A cloud deploy provisions private
-infrastructure the owner reaches through a locked path (e.g. SSH tunnel / WireGuard / Tailscale,
-or a security group scoped to the owner's current IP with services bound to loopback behind the
-tunnel) — not a public endpoint. This applies to the app *and* the local observability tools
-(Grafana/Prometheus/Jaeger/GlitchTip), which are reached over localhost (or the tunnel), never a
-public URL. This is a non-negotiable security posture consistent with VISION.md (local-first,
-privacy-respecting) and directly constrains the AWS security-group/networking work (#11), the
-`nyxgpt cloud deploy` command (#14), and the "returns the URL" behavior (the URL is a
-tunnel/loopback address, not a public one). The specific access mechanism is an architecture
-decision to make explicitly (like #10), not to assume.
-
-## Sequencing rules
-
-- Sprint 6.0 blocks 6.2/6.3 (no public exposure before the API is sandboxed + auth-gated).
-- #18 (capstone) is selected LAST, only after #1–#17 are closed — same gate pattern as #3160.
-- #10 (compute-substrate decision) blocks #11, #14, #15.
-
-## Not in this milestone (recommend separate scheduling)
-
-- **A1** — split the 4,616-line `app.py` monolith into per-domain routers. Pure refactor,
-  no user-facing change; schedule as its own tech-debt issue, not gated on v3.
-- **A3** — `auto-check-tasklist` read-modify-write race (workflow tooling hygiene).
-- **C3** — coverage floor (`--cov-fail-under`).
+- **A1** — split the `app.py` monolith into per-domain routers (pure refactor, own issue).
+- **A3** — `auto-check-tasklist` read-modify-write race (workflow hygiene).
+- **C3** — coverage floor for Python (`--cov-fail-under`) — partially superseded by the
+  web 100% gate precedent; decide the Python floor when filing.
+- Compose/k8s container-networking acceptance-failure backlog (#3177–#3185 era): re-verify
+  against post-5.5 reality before re-prioritizing — several are likely already fixed by the
+  mode-awareness campaign (#3409/#3410/#3428).
