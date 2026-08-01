@@ -3190,6 +3190,7 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
             event_id = 0
             start_time = time.time()
             total_tokens = 0
+            rag_used_in_stream = False
 
             d = _chat_runtime_defaults(_req_cfg(request))
             chosen_model = req.model or d["default_model"]
@@ -3246,6 +3247,7 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
                     # Strip RAG/retry markers for legacy clients
                     clean_chunk = chunk
                     if "__RAG_START__" in chunk and "__RAG_END__" in chunk:
+                        rag_used_in_stream = True
                         rag_start = chunk.find("__RAG_START__")
                         rag_end = chunk.find("__RAG_END__") + len("__RAG_END__")
                         clean_chunk = chunk[:rag_start] + chunk[rag_end:]
@@ -3322,6 +3324,9 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
 
                         elapsed = time.time() - start_time
                         yield f"event: text\ndata: {json.dumps({'content': chunk, 'tokens': total_tokens, 'elapsed': elapsed})}\nid: {event_id}\n\n"
+
+                if rag_used_in_stream:
+                    prom_metrics.RAG_QUERIES_TOTAL.labels(source="chat").inc()
 
                 try:
                     usage_analytics_module.record(

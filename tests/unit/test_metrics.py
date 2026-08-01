@@ -195,6 +195,44 @@ def test_chat_stream_endpoint_increments_business_metrics() -> None:
 
 
 @pytest.mark.unit
+def test_chat_stream_endpoint_increments_rag_query_metric_when_rag_used() -> None:
+    """A streamed reply carrying `__RAG_START__`/`__RAG_END__` markers must
+    bump `nyxgpt_rag_queries_total{source="chat"}` (#3469 acceptance
+    failure): the web UI's chat pane only ever calls `/chat/stream`, so
+    before this fix every RAG query issued through the actual chat
+    interface was invisible to the SPOG RAG panels -- only the
+    non-streaming `/api/v1/chat` endpoint incremented this counter.
+    """
+    client = TestClient(app)
+
+    def mock_chat_stream(*args, **kwargs):
+        yield "before "
+        yield '__RAG_START__{"chunks": []}__RAG_END__'
+        yield "after"
+
+    with (
+        patch("nyxgpt.app.chat_stream", side_effect=mock_chat_stream),
+        client.stream(
+            "POST",
+            "/api/v1/chat/stream",
+            json={
+                "prompt": "hi",
+                "session": "metrics-unit-test-rag-stream",
+                "model": "metrics-stream-rag-model",
+            },
+        ) as response,
+    ):
+        assert response.status_code == 200
+        list(response.iter_text())
+
+    metrics_text = client.get("/metrics").text
+    rag_samples = _samples(metrics_text, "nyxgpt_rag_queries_total")
+    assert any(
+        s.labels.get("source") == "chat" for s in rag_samples
+    ), "expected a rag counter sample labeled source=chat for a streamed reply using RAG"
+
+
+@pytest.mark.unit
 def test_resource_ingest_cache_and_rate_limit_metrics_are_registered() -> None:
     prom_metrics.RAG_INGESTS_TOTAL.labels(source="unit-test", result="success").inc()
     prom_metrics.CACHE_REQUESTS_TOTAL.labels(cache="unit-test", result="hit").inc()

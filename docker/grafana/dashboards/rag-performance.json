@@ -4,7 +4,7 @@
   "tags": ["nyxgpt", "rag"],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 3,
+  "version": 4,
   "refresh": "30s",
   "time": { "from": "now-6h", "to": "now" },
   "panels": [
@@ -27,7 +27,7 @@
     {
       "id": 2,
       "title": "Total RAG queries by source",
-      "type": "piechart",
+      "type": "stat",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
       "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
@@ -91,7 +91,7 @@
     {
       "id": 6,
       "title": "Total RAG ingests by source",
-      "type": "piechart",
+      "type": "stat",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
       "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
