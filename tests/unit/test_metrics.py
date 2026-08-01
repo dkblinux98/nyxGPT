@@ -202,8 +202,15 @@ def test_chat_stream_endpoint_increments_rag_query_metric_when_rag_used() -> Non
     before this fix every RAG query issued through the actual chat
     interface was invisible to the SPOG RAG panels -- only the
     non-streaming `/api/v1/chat` endpoint incremented this counter.
+
+    Asserts on the counter's delta (not mere presence of a
+    ``source="chat"`` sample): that counter is process-global and other
+    tests in this file (e.g. ``test_chat_endpoint_increments_business_metrics``)
+    already increment it via the non-streaming endpoint, so a presence-only
+    assertion would pass even if the streaming-path fix regressed.
     """
     client = TestClient(app)
+    before = prom_metrics.RAG_QUERIES_TOTAL.labels(source="chat")._value.get()
 
     def mock_chat_stream(*args, **kwargs):
         yield "before "
@@ -225,11 +232,11 @@ def test_chat_stream_endpoint_increments_rag_query_metric_when_rag_used() -> Non
         assert response.status_code == 200
         list(response.iter_text())
 
-    metrics_text = client.get("/metrics").text
-    rag_samples = _samples(metrics_text, "nyxgpt_rag_queries_total")
-    assert any(
-        s.labels.get("source") == "chat" for s in rag_samples
-    ), "expected a rag counter sample labeled source=chat for a streamed reply using RAG"
+    after = prom_metrics.RAG_QUERIES_TOTAL.labels(source="chat")._value.get()
+    assert after == before + 1, (
+        "expected nyxgpt_rag_queries_total{source=chat} to increase by exactly 1 "
+        "for a streamed reply using RAG"
+    )
 
 
 @pytest.mark.unit
