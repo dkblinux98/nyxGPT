@@ -6023,6 +6023,19 @@ def _patch_ini_value(text: str, section: str, key: str, value: str) -> str:
     return "".join(lines)
 
 
+def _current_error_tracking_dsn(cfg_path: Path) -> str:
+    """Return the `[error_tracking] dsn` currently in `cfg_path`, or `""` if
+    the file/section/key is absent -- used by `_provision_glitchtip` to
+    detect a DSN change (re-minted project/key) before `nyxgpt-api` has
+    reloaded it, see `_restart_native_api_if_running`."""
+    if not cfg_path.exists():
+        return ""
+    parser = ConfigParser()
+    parser.optionxform = str  # type: ignore[assignment]
+    parser.read(cfg_path)
+    return parser.get("error_tracking", "dsn", fallback="").strip()
+
+
 def _write_error_tracking_dsn(cfg_path: Path, dsn: str, *, chmod_600: bool) -> OpsResult:
     """Write the provisioned DSN and `enabled = true` into `[error_tracking]` in `cfg_path`.
 
@@ -6158,6 +6171,31 @@ def _restart_grafana_if_running(reason: str = "the new GlitchTip token") -> OpsR
             "and `nyxgpt ops logs grafana` for the boot error.",
         )
     return OpsResult(True, f"Restarted Grafana to pick up {reason}")
+
+
+def _restart_native_api_if_running(reason: str = "the new GlitchTip DSN") -> OpsResult:
+    """Restart the native `nyxgpt-api` Homebrew service if it's currently running.
+
+    The API's error-tracking SDK reads `[error_tracking] dsn` from
+    `~/.nyxGPT/config.ini` once, at process startup -- it does not hot-reload
+    config.ini. If `_provision_glitchtip` re-mints the GlitchTip project/key
+    (e.g. after a `down`+`install` cycle against a fresh GlitchTip database)
+    the DSN written to config.ini changes, but a running `nyxgpt-api` keeps
+    reporting to the *old* DSN until restarted -- silently dropping every
+    event from then on. Mirrors `_restart_grafana_if_running` for the
+    Grafana Infinity token. No-ops (not a failure) when `nyxgpt-api` isn't
+    running as a native brew service -- a Compose-deployed `nyxgpt-api`
+    reads its DSN from `docker/config.docker.ini` fresh on each container
+    start and restarts through `nyxgpt ops restart api` like any other
+    Compose service.
+    """
+    if _brew_services_snapshot().get("nyxgpt-api") not in ("started", "running"):
+        return OpsResult(True, "Skipped nyxgpt-api restart (not running natively)")
+
+    result = _restart_brew_service("nyxgpt-api")[0]
+    if not result.ok:
+        return result
+    return OpsResult(True, f"Restarted nyxgpt-api to pick up {reason}")
 
 
 def _slack_webhook_secret_path() -> Path:
@@ -6447,8 +6485,11 @@ def _provision_glitchtip() -> list[OpsResult]:
     finally:
         api_client.close()
 
+    previous_native_dsn = _current_error_tracking_dsn(native_cfg_path)
     results.append(_write_error_tracking_dsn(native_cfg_path, dsn, chmod_600=True))
     results.append(_write_error_tracking_dsn(COMPOSE_CONFIG_FILE, dsn, chmod_600=False))
+    if dsn != previous_native_dsn:
+        results.append(_restart_native_api_if_running())
 
     token_changed, token_write_result = _write_grafana_glitchtip_token(token)
     results.append(token_write_result)
