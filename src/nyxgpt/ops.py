@@ -3613,6 +3613,17 @@ def doctor(_args) -> int:
             "(run: nyxgpt ops install)"
         )
 
+    if _which("docker") is not None:
+        restarting = sorted(
+            service for service, state in _compose_stack_snapshot().items() if state == "restarting"
+        )
+        if restarting:
+            issues.append(
+                "Compose service(s) stuck in a restart/crash loop: "
+                f"{', '.join(restarting)} (run: nyxgpt ops logs <service> to see why it's "
+                "failing to start)"
+            )
+
     web_dir = REPO_ROOT / "web"
     if web_dir.exists():
 
@@ -4579,14 +4590,33 @@ def _quiet_httpx_retries() -> Iterator[None]:
         httpx_logger.setLevel(previous_level)
 
 
+def _grafana_admin_auth_status(grafana_ui_url: str, grafana_admin_password: str) -> str:
+    """Probe `grafana_admin_password` against the running Grafana instance.
+
+    Returns one of `"ok"` (200), `"unauthorized"` (401 -- Grafana answered,
+    the credential is genuinely wrong), or `"unreachable"` (connection
+    error, or any other status) -- e.g. Grafana still starting, or stuck in
+    a crash loop. `_reconcile_grafana_admin_credential` (#3538) uses this
+    distinction to give a failure message that points at the right fix: a
+    rejected credential and an unreachable/crash-looping Grafana need
+    opposite operator responses.
+    """
+    try:
+        with _grafana_admin_client(grafana_ui_url, grafana_admin_password) as client:
+            status_code = client.get("/api/org").status_code
+    except httpx.HTTPError:
+        return "unreachable"
+    if status_code == 200:
+        return "ok"
+    if status_code == 401:
+        return "unauthorized"
+    return "unreachable"
+
+
 def _grafana_admin_authenticates(grafana_ui_url: str, grafana_admin_password: str) -> bool:
     """Whether `grafana_admin_password` currently authenticates as `admin`
     against the running Grafana instance."""
-    try:
-        with _grafana_admin_client(grafana_ui_url, grafana_admin_password) as client:
-            return client.get("/api/org").status_code == 200
-    except httpx.HTTPError:
-        return False
+    return _grafana_admin_auth_status(grafana_ui_url, grafana_admin_password) == "ok"
 
 
 def _reset_grafana_admin_password(password: str) -> OpsResult:
@@ -4648,12 +4678,20 @@ def _reconcile_grafana_admin_credential(
     `result.ok` is `False` when reconciliation could not be completed, so
     callers can skip credential-dependent follow-on checks and surface this
     ONE actionable failure instead of each of them separately 401ing.
+
+    The final failure message distinguishes a genuinely rejected credential
+    (Grafana answered 401 -- the stored password is wrong) from Grafana
+    being unreachable or crash-looping the whole time (#3538: these need
+    opposite operator responses, and were previously reported with the same
+    "still doesn't authenticate" message regardless of which one happened).
     """
     password = _grafana_admin_password(cfg)
+    last_status = "unreachable"
 
     with _quiet_httpx_retries():
         for attempt in range(attempts):
-            if _grafana_admin_authenticates(grafana_ui_url, password):
+            last_status = _grafana_admin_auth_status(grafana_ui_url, password)
+            if last_status == "ok":
                 return password, OpsResult(True, "Grafana admin credential already reconciled")
             if attempt < attempts - 1:
                 time.sleep(delay_s)
@@ -4670,7 +4708,8 @@ def _reconcile_grafana_admin_credential(
             )
 
         for attempt in range(attempts):
-            if _grafana_admin_authenticates(grafana_ui_url, password):
+            last_status = _grafana_admin_auth_status(grafana_ui_url, password)
+            if last_status == "ok":
                 return password, OpsResult(
                     True,
                     f"{reset_result.message} (stored at {_grafana_admin_password_path()})",
@@ -4678,6 +4717,15 @@ def _reconcile_grafana_admin_credential(
             if attempt < attempts - 1:
                 time.sleep(delay_s)
 
+    if last_status == "unreachable":
+        return None, OpsResult(
+            False,
+            "Grafana is unreachable after reset",
+            "Reset via `grafana cli admin reset-admin-password` succeeded but Grafana never "
+            "answered GET /api/org afterward -- this looks like Grafana crash-looping or still "
+            "starting, not a rejected credential. Check `nyxgpt ops status` (a compose service "
+            "stuck `restarting` is the tell) and `nyxgpt ops logs grafana` for the boot error.",
+        )
     return None, OpsResult(
         False,
         "Grafana admin credential still doesn't authenticate after reset",
@@ -5072,6 +5120,29 @@ def _reconcile_grafana_provisioning() -> list[OpsResult]:
             cfg_parser.read(cfg_path)
             monitoring_config = get_monitoring_config(cfg_parser)
             grafana_ui_url = monitoring_config["grafana_ui_url"]
+
+            # Bounded wait-for-healthy (#3538) before anything authenticates
+            # against Grafana: `_start_observability_stack`/the drift
+            # recreate above may have just (re)started the container, and a
+            # container stuck crash-looping (e.g. a broken alerting-
+            # provisioning file) should surface here as one clear failure
+            # rather than as a misleading "credential doesn't authenticate".
+            # Skipped as a no-op when Grafana isn't part of the running
+            # Compose stack at all (e.g. Docker not found) -- the
+            # credential-reconcile call below already handles that host
+            # shape on its own terms.
+            grafana_running = _compose_stack_snapshot().get("grafana") == "running"
+            if grafana_running and not _wait_for_grafana_healthy():
+                results.append(
+                    OpsResult(
+                        False,
+                        "Grafana never became healthy",
+                        "Check `nyxgpt ops status` (a compose service stuck `restarting` is "
+                        "the tell) and `nyxgpt ops logs grafana` for the boot error.",
+                    )
+                )
+                return results
+
             grafana_admin_password, credential_result = _reconcile_grafana_admin_credential(
                 grafana_ui_url, cfg_parser
             )
@@ -6016,6 +6087,43 @@ def _write_grafana_glitchtip_token(token: str) -> tuple[bool, OpsResult]:
     return True, OpsResult(True, f"Wrote GlitchTip API token for Grafana to {path}")
 
 
+def _grafana_container_healthy() -> bool:
+    """Whether the `grafana` Compose container currently reports healthy."""
+    for status in self_heal.list_component_status():
+        if status.service == "grafana":
+            return status.healthy
+    return False
+
+
+def _wait_for_grafana_healthy(timeout: float = 120.0, poll_interval: float = 3.0) -> bool:
+    """Poll until the `grafana` container reports healthy, or `timeout` elapses.
+
+    Mirrors `_wait_for_glitchtip_healthy` (#3432): returns False immediately
+    (no polling) if `grafana` isn't part of the currently running Compose
+    stack at all, so a host without the observability stack never stalls.
+    Otherwise waits out Grafana's healthcheck `start_period` (see
+    docker-compose.yml's `grafana` service) since a container just
+    (re)started is not immediately reachable -- and, critically, a container
+    stuck crash-looping (#3538, e.g. an alerting-provisioning file Grafana
+    can't validate) never reports healthy, so this returns False instead of
+    hanging forever, letting callers surface that as an actionable failure
+    instead of reporting a restart as OK when Grafana never actually comes
+    back up.
+    """
+    statuses = [s for s in self_heal.list_component_status() if s.service == "grafana"]
+    if not statuses or statuses[0].state == "absent":
+        return False
+    if statuses[0].healthy:
+        return True
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        time.sleep(poll_interval)
+        if _grafana_container_healthy():
+            return True
+    return False
+
+
 def _restart_grafana_if_running(reason: str = "the new GlitchTip token") -> OpsResult:
     """Restart the `grafana` Compose container if it's currently running.
 
@@ -6023,6 +6131,12 @@ def _restart_grafana_if_running(reason: str = "the new GlitchTip token") -> OpsR
     Infinity token, see `_write_grafana_glitchtip_token`, and the Slack
     alerting webhook, see `_write_grafana_slack_webhook_secret`) at startup,
     so a freshly (re)written secret needs this to actually take effect.
+
+    Waits for Grafana to report healthy again before returning (#3538) --
+    without this, a restart that leaves Grafana crash-looping (e.g. a broken
+    alerting-provisioning file) was previously reported as a plain "OK,
+    restarted", with the crash loop only surfacing later, misleadingly, as
+    an unrelated-looking credential-verify failure.
     """
     if not _compose_available():
         return OpsResult(True, "Skipped Grafana restart (Docker not found)")
@@ -6035,6 +6149,14 @@ def _restart_grafana_if_running(reason: str = "the new GlitchTip token") -> OpsR
     cp = _run(cmd, check=False)
     if cp.returncode != 0:
         return OpsResult(False, "Failed to restart Grafana", (cp.stderr or cp.stdout or "").strip())
+
+    if not _wait_for_grafana_healthy():
+        return OpsResult(
+            False,
+            f"Restarted Grafana to pick up {reason}, but it never became healthy again",
+            "Check `nyxgpt ops status` (a compose service stuck `restarting` is the tell) "
+            "and `nyxgpt ops logs grafana` for the boot error.",
+        )
     return OpsResult(True, f"Restarted Grafana to pick up {reason}")
 
 
@@ -6054,28 +6176,49 @@ def _slack_webhook_secret_path() -> Path:
     return Path.home() / ".nyxGPT" / "secrets" / "slack-webhook-url"
 
 
-def _write_grafana_slack_webhook_secret(url: str) -> tuple[bool, OpsResult]:
-    """Write `url` (may be empty) to `_slack_webhook_secret_path()` for
-    Grafana's `nyxgpt-slack` contact point.
+# Written to the secret file in place of an empty string when [monitoring]
+# slack_webhook_url is unset (#3538). Grafana's alerting-provisioning
+# validator requires a Slack integration to have a non-empty url/token/
+# recipient -- an empty url doesn't mean "configured but broken", it fails
+# validation identically to a missing one and crash-loops the whole Grafana
+# container. This placeholder is syntactically a well-formed Slack webhook
+# URL (satisfies validation, so Grafana boots) but not a real one -- delivery
+# to it fails at send time, visible under Alerting -> Contact points -> Test,
+# which is the "alerts still fire, Slack delivery silently fails" behavior
+# #3466 actually intended.
+GRAFANA_SLACK_WEBHOOK_PLACEHOLDER_URL = (
+    "https://hooks.slack.com/services/UNCONFIGURED/UNCONFIGURED/UNCONFIGURED"
+)
 
-    Always writes the file, even when `url` is `""` -- the contact point's
-    `$__file{}` reference must resolve to *something* at Grafana startup;
-    an empty webhook URL just means Slack delivery silently fails (visible
-    under Grafana's Alerting -> Contact points -> Test) while the alert
-    rules themselves still evaluate and fire regardless (#3466's "alerts
-    still fire visibly with no webhook configured" requirement).
+
+def _write_grafana_slack_webhook_secret(url: str) -> tuple[bool, OpsResult]:
+    """Write `url` to `_slack_webhook_secret_path()` for Grafana's
+    `nyxgpt-slack` contact point -- `GRAFANA_SLACK_WEBHOOK_PLACEHOLDER_URL`
+    when `url` is empty/unset.
+
+    Never writes an empty string, even though `url` may be `""` -- the
+    contact point's `$__file{}` reference must resolve to a non-empty,
+    syntactically-valid webhook URL at Grafana startup, or Grafana's
+    alerting-provisioning validator refuses to boot the container entirely
+    (#3538: confirmed by booting grafana/grafana:13.1.1 against this exact
+    provisioning with an empty secret file -- it crash-loops, it does not
+    degrade to "Slack delivery fails silently" as originally intended by
+    #3466). The placeholder preserves that original intent instead: Grafana
+    boots, and only the (already-broken, unconfigured) Slack delivery fails,
+    visibly, under Grafana's Alerting -> Contact points -> Test.
 
     Returns `(changed, result)` -- `changed` is False when the file already
     holds this exact value, which callers use to skip an unnecessary
     Grafana restart (mirrors `_write_grafana_glitchtip_token`).
     """
     path = _slack_webhook_secret_path()
+    resolved = url.strip() or GRAFANA_SLACK_WEBHOOK_PLACEHOLDER_URL
     try:
-        if path.exists() and path.read_text(encoding="utf-8").strip() == url.strip():
+        if path.exists() and path.read_text(encoding="utf-8").strip() == resolved:
             return False, OpsResult(True, f"{path} already holds the current Slack webhook URL")
 
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        path.write_text(url, encoding="utf-8")
+        path.write_text(resolved, encoding="utf-8")
         os.chmod(path, 0o600)
     except OSError as e:
         result = _glitchtip_secrets_dir_unwritable_result(path.parent)
@@ -6084,8 +6227,13 @@ def _write_grafana_slack_webhook_secret(url: str) -> tuple[bool, OpsResult]:
             f"Cannot write Slack webhook URL to {path}",
             f"{result.details}\n{type(e).__name__}: {e}",
         )
-    verb = "Wrote" if url.strip() else "Cleared"
-    return True, OpsResult(True, f"{verb} Slack webhook URL for Grafana at {path}")
+    if url.strip():
+        return True, OpsResult(True, f"Wrote Slack webhook URL for Grafana at {path}")
+    return True, OpsResult(
+        True,
+        f"Wrote placeholder Slack webhook URL for Grafana at {path} "
+        "(no [monitoring] slack_webhook_url configured)",
+    )
 
 
 def _sync_grafana_slack_webhook_secret(cfg_path: Path | None = None) -> list[OpsResult]:

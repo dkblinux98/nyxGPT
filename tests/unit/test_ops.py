@@ -628,6 +628,7 @@ def test_ops_doctor_ok(monkeypatch, capsys, tmp_path):
 
     # Cassandra container is present and running
     monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
 
     # Mock REPO_ROOT to point to tmp_path (no web/ directory)
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
@@ -652,6 +653,7 @@ def test_ops_doctor_warns_when_web_deps_missing(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
 
     rc = ops.doctor(MagicMock())
     assert rc == 2
@@ -665,6 +667,7 @@ def test_ops_doctor_fail_when_missing_config(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
     monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
 
     rc = ops.doctor(MagicMock())
     assert rc == 2
@@ -683,12 +686,62 @@ def test_ops_doctor_warns_when_cassandra_container_missing(monkeypatch, capsys, 
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
     monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
 
     rc = ops.doctor(MagicMock())
     assert rc == 2
     out = capsys.readouterr().out
     assert "Missing local Cassandra container" in out
     assert "nyxgpt-cassandra" in out
+
+
+@pytest.mark.unit
+def test_ops_doctor_flags_compose_service_stuck_restarting(monkeypatch, capsys, tmp_path):
+    """#3538: a crash-looping compose service (e.g. Grafana rejecting a bad
+    alerting-provisioning file) must FAIL doctor, not report OK with the
+    crash loop silently ignored -- `nyxgpt ops status` already sees the
+    `restarting` state, doctor must consume it."""
+    cfg_dir = tmp_path / ".nyxGPT"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    (cfg_dir / "config.ini").write_text(
+        "[project]\nname=nyxGPT\n\n[tracing]\nenabled = false\n", encoding="utf-8"
+    )
+
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(
+        ops, "_compose_stack_snapshot", lambda: {"grafana": "restarting", "loki": "running"}
+    )
+
+    rc = ops.doctor(MagicMock())
+    assert rc == 2
+    out = capsys.readouterr().out
+    assert "restart/crash loop" in out
+    assert "grafana" in out
+    assert "loki" not in out.split("restart/crash loop")[1].split("\n")[0]
+
+
+@pytest.mark.unit
+def test_ops_doctor_ignores_compose_when_no_docker(monkeypatch, capsys, tmp_path):
+    cfg_dir = tmp_path / ".nyxGPT"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    (cfg_dir / "config.ini").write_text("[project]\nname=nyxGPT\n", encoding="utf-8")
+
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "_which", lambda _: None)
+
+    def _boom():
+        raise AssertionError("must not query the compose stack without docker on PATH")
+
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", _boom)
+
+    rc = ops.doctor(MagicMock())
+    assert rc == 2  # still fails on "Missing tool in PATH", just not from this check
+    out = capsys.readouterr().out
+    assert "restart/crash loop" not in out
 
 
 def _write_log_aggregation_config(path, *, enabled=True):
@@ -4390,6 +4443,7 @@ def test_ops_doctor_reports_non_executable_script(monkeypatch, capsys, tmp_path)
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
 
     rc = ops.doctor(MagicMock())
     assert rc == 2
@@ -4434,6 +4488,7 @@ def test_ops_doctor_web_deps_present_and_undici_resolves(monkeypatch, capsys, tm
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
     monkeypatch.setattr(
         ops.subprocess,
         "run",
@@ -4459,6 +4514,7 @@ def test_ops_doctor_web_deps_present_but_undici_unresolvable(monkeypatch, capsys
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
     monkeypatch.setattr(
         ops.subprocess,
         "run",
@@ -4484,6 +4540,7 @@ def test_ops_doctor_can_resolve_handles_exception(monkeypatch, capsys, tmp_path)
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
 
     def raise_run(cmd, cwd=None, text=True, capture_output=True):
         raise OSError("boom")
@@ -5503,7 +5560,7 @@ def test_grafana_admin_password_prefers_explicit_config_value(tmp_path, monkeypa
 @pytest.mark.unit
 def test_reconcile_grafana_admin_credential_skips_reset_when_already_working(monkeypatch):
     monkeypatch.setattr(ops, "_grafana_admin_password", lambda cfg: "already-good")
-    monkeypatch.setattr(ops, "_grafana_admin_authenticates", lambda url, pw: True)
+    monkeypatch.setattr(ops, "_grafana_admin_auth_status", lambda url, pw: "ok")
 
     def _boom(*a, **kw):
         raise AssertionError("should not reset when the current password already authenticates")
@@ -5525,12 +5582,12 @@ def test_reconcile_grafana_admin_credential_resets_on_401_then_succeeds(monkeypa
 
     reset_calls = []
 
-    def _authenticates(url, pw):
+    def _auth_status(url, pw):
         # Fails before the reset (stale/empty container password), then
         # succeeds afterward -- simulates a long-lived volume (#3458).
-        return bool(reset_calls)
+        return "ok" if reset_calls else "unauthorized"
 
-    monkeypatch.setattr(ops, "_grafana_admin_authenticates", _authenticates)
+    monkeypatch.setattr(ops, "_grafana_admin_auth_status", _auth_status)
     monkeypatch.setattr(
         ops,
         "_reset_grafana_admin_password",
@@ -5549,7 +5606,7 @@ def test_reconcile_grafana_admin_credential_resets_on_401_then_succeeds(monkeypa
 @pytest.mark.unit
 def test_reconcile_grafana_admin_credential_reports_one_failure_when_reset_fails(monkeypatch):
     monkeypatch.setattr(ops, "_grafana_admin_password", lambda cfg: "ops-managed-secret")
-    monkeypatch.setattr(ops, "_grafana_admin_authenticates", lambda url, pw: False)
+    monkeypatch.setattr(ops, "_grafana_admin_auth_status", lambda url, pw: "unauthorized")
     monkeypatch.setattr(ops.time, "sleep", lambda _: None)
     monkeypatch.setattr(
         ops,
@@ -5571,7 +5628,7 @@ def test_reconcile_grafana_admin_credential_reports_one_failure_when_reset_verif
     monkeypatch,
 ):
     monkeypatch.setattr(ops, "_grafana_admin_password", lambda cfg: "ops-managed-secret")
-    monkeypatch.setattr(ops, "_grafana_admin_authenticates", lambda url, pw: False)
+    monkeypatch.setattr(ops, "_grafana_admin_auth_status", lambda url, pw: "unauthorized")
     monkeypatch.setattr(ops.time, "sleep", lambda _: None)
     monkeypatch.setattr(
         ops,
@@ -5586,6 +5643,33 @@ def test_reconcile_grafana_admin_credential_reports_one_failure_when_reset_verif
     assert password is None
     assert result.ok is False
     assert "still doesn't authenticate" in result.message
+    assert "rejects the password" in result.details
+
+
+@pytest.mark.unit
+def test_reconcile_grafana_admin_credential_distinguishes_unreachable_from_401(monkeypatch):
+    """A crash-looping/still-starting Grafana (#3538) must not be reported with
+    the same "still doesn't authenticate" message a genuine 401 gets -- they
+    need opposite operator responses (check the boot log vs. re-check the
+    credential)."""
+    monkeypatch.setattr(ops, "_grafana_admin_password", lambda cfg: "ops-managed-secret")
+    monkeypatch.setattr(ops, "_grafana_admin_auth_status", lambda url, pw: "unreachable")
+    monkeypatch.setattr(ops.time, "sleep", lambda _: None)
+    monkeypatch.setattr(
+        ops,
+        "_reset_grafana_admin_password",
+        lambda pw: ops.OpsResult(True, "Reset Grafana admin password"),
+    )
+
+    password, result = ops._reconcile_grafana_admin_credential(
+        "http://localhost:3001", ConfigParser(), attempts=2
+    )
+
+    assert password is None
+    assert result.ok is False
+    assert result.message == "Grafana is unreachable after reset"
+    assert "crash loop" in result.details or "crash-looping" in result.details
+    assert "still doesn't authenticate" not in result.message
 
 
 @pytest.mark.unit
@@ -5637,6 +5721,77 @@ def test_grafana_admin_authenticates_false_when_unreachable(monkeypatch):
     monkeypatch.setattr(ops.httpx, "Client", FailingClient)
 
     assert ops._grafana_admin_authenticates("http://localhost:3001", "admin") is False
+
+
+@pytest.mark.unit
+def test_grafana_admin_auth_status_ok_on_200(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, path, **kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(ops.httpx, "Client", lambda **kwargs: FakeClient())
+
+    assert ops._grafana_admin_auth_status("http://localhost:3001", "admin") == "ok"
+
+
+@pytest.mark.unit
+def test_grafana_admin_auth_status_unauthorized_on_401(monkeypatch):
+    class FakeResponse:
+        status_code = 401
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, path, **kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(ops.httpx, "Client", lambda **kwargs: FakeClient())
+
+    assert ops._grafana_admin_auth_status("http://localhost:3001", "wrong") == "unauthorized"
+
+
+@pytest.mark.unit
+def test_grafana_admin_auth_status_unreachable_on_connect_error(monkeypatch):
+    class FailingClient:
+        def __init__(self, *a, **kw):
+            raise httpx.ConnectError("refused")
+
+    monkeypatch.setattr(ops.httpx, "Client", FailingClient)
+
+    assert ops._grafana_admin_auth_status("http://localhost:3001", "admin") == "unreachable"
+
+
+@pytest.mark.unit
+def test_grafana_admin_auth_status_unreachable_on_unexpected_status(monkeypatch):
+    class FakeResponse:
+        status_code = 503
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, path, **kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(ops.httpx, "Client", lambda **kwargs: FakeClient())
+
+    assert ops._grafana_admin_auth_status("http://localhost:3001", "admin") == "unreachable"
 
 
 @pytest.mark.unit
@@ -5739,6 +5894,8 @@ def test_reconcile_grafana_provisioning_verifies_when_config_exists(tmp_path, mo
     monkeypatch.setattr(
         ops, "_start_observability_stack", lambda: [ops.OpsResult(True, "stack up")]
     )
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "running"})
+    monkeypatch.setattr(ops, "_wait_for_grafana_healthy", lambda: True)
     credential_calls = []
     monkeypatch.setattr(
         ops,
@@ -5794,6 +5951,8 @@ def test_reconcile_grafana_provisioning_reports_single_failure_when_credential_b
     monkeypatch.setattr(
         ops, "_start_observability_stack", lambda: [ops.OpsResult(True, "stack up")]
     )
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "running"})
+    monkeypatch.setattr(ops, "_wait_for_grafana_healthy", lambda: True)
     monkeypatch.setattr(
         ops,
         "_reconcile_grafana_admin_credential",
@@ -5815,6 +5974,40 @@ def test_reconcile_grafana_provisioning_reports_single_failure_when_credential_b
     failures = [r for r in results if not r.ok]
     assert len(failures) == 1
     assert "Could not reconcile Grafana admin credential" in failures[0].message
+
+
+@pytest.mark.unit
+def test_reconcile_grafana_provisioning_reports_single_failure_when_never_healthy(
+    tmp_path, monkeypatch
+):
+    """A crash-looping Grafana (#3538, e.g. a bad alerting-provisioning file)
+    must surface as one clear failure here -- not as a misleading credential
+    "still doesn't authenticate" message from a later step."""
+    _write_grafana_fixture(tmp_path, monkeypatch, datasource_yml=_SAMPLE_DATASOURCE_YML)
+    (tmp_path / ".nyxGPT").mkdir()
+    cfg_path = tmp_path / ".nyxGPT" / "config.ini"
+    cfg_path.write_text(
+        "[monitoring]\ngrafana_ui_url = http://localhost:3001\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(ops, "_recreate_grafana_if_provisioning_drifted", lambda: None)
+    monkeypatch.setattr(
+        ops, "_start_observability_stack", lambda: [ops.OpsResult(True, "stack up")]
+    )
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "running"})
+    monkeypatch.setattr(ops, "_wait_for_grafana_healthy", lambda: False)
+
+    def _boom(*a, **kw):
+        raise AssertionError("must not authenticate against a Grafana that never became healthy")
+
+    monkeypatch.setattr(ops, "_reconcile_grafana_admin_credential", _boom)
+
+    results = ops._reconcile_grafana_provisioning()
+
+    failures = [r for r in results if not r.ok]
+    assert len(failures) == 1
+    assert "never became healthy" in failures[0].message
 
 
 @pytest.mark.unit
@@ -6972,6 +7165,90 @@ def test_wait_for_glitchtip_healthy_absent_but_enabled_returns_false_without_sle
     assert sleeps == []
 
 
+# --- Grafana container health polling (#3538) ---
+
+
+@pytest.mark.unit
+def test_grafana_container_healthy_true(monkeypatch):
+    status = self_heal.ComponentStatus(
+        service="grafana", container="c", state="running", health="healthy", healthy=True
+    )
+    monkeypatch.setattr(ops.self_heal, "list_component_status", lambda: [status])
+    assert ops._grafana_container_healthy() is True
+
+
+@pytest.mark.unit
+def test_grafana_container_healthy_false_when_unhealthy(monkeypatch):
+    status = self_heal.ComponentStatus(
+        service="grafana", container="c", state="restarting", health="", healthy=False
+    )
+    monkeypatch.setattr(ops.self_heal, "list_component_status", lambda: [status])
+    assert ops._grafana_container_healthy() is False
+
+
+@pytest.mark.unit
+def test_grafana_container_healthy_false_when_absent(monkeypatch):
+    monkeypatch.setattr(ops.self_heal, "list_component_status", lambda: [])
+    assert ops._grafana_container_healthy() is False
+
+
+@pytest.mark.unit
+def test_wait_for_grafana_healthy_absent_returns_false_without_sleeping(monkeypatch):
+    monkeypatch.setattr(ops.self_heal, "list_component_status", lambda: [])
+    sleeps = []
+    monkeypatch.setattr(ops.time, "sleep", lambda s: sleeps.append(s))
+
+    assert ops._wait_for_grafana_healthy(timeout=5, poll_interval=0.01) is False
+    assert sleeps == []
+
+
+@pytest.mark.unit
+def test_wait_for_grafana_healthy_already_healthy_returns_true_immediately(monkeypatch):
+    status = self_heal.ComponentStatus(
+        service="grafana", container="c", state="running", health="healthy", healthy=True
+    )
+    monkeypatch.setattr(ops.self_heal, "list_component_status", lambda: [status])
+    sleeps = []
+    monkeypatch.setattr(ops.time, "sleep", lambda s: sleeps.append(s))
+
+    assert ops._wait_for_grafana_healthy(timeout=5, poll_interval=0.01) is True
+    assert sleeps == []
+
+
+@pytest.mark.unit
+def test_wait_for_grafana_healthy_polls_until_healthy(monkeypatch):
+    unhealthy = self_heal.ComponentStatus(
+        service="grafana", container="c", state="starting", health="starting", healthy=False
+    )
+    healthy = self_heal.ComponentStatus(
+        service="grafana", container="c", state="running", health="healthy", healthy=True
+    )
+    calls = {"n": 0}
+
+    def fake_status():
+        calls["n"] += 1
+        return [healthy] if calls["n"] >= 3 else [unhealthy]
+
+    monkeypatch.setattr(ops.self_heal, "list_component_status", fake_status)
+    monkeypatch.setattr(ops.time, "sleep", lambda s: None)
+
+    assert ops._wait_for_grafana_healthy(timeout=5, poll_interval=0.01) is True
+    assert calls["n"] >= 3
+
+
+@pytest.mark.unit
+def test_wait_for_grafana_healthy_times_out_when_crash_looping(monkeypatch):
+    """A container stuck `restarting` (#3538's crash loop) never reports
+    healthy -- this must time out and return False, not hang forever."""
+    restarting = self_heal.ComponentStatus(
+        service="grafana", container="c", state="restarting", health="", healthy=False
+    )
+    monkeypatch.setattr(ops.self_heal, "list_component_status", lambda: [restarting])
+    monkeypatch.setattr(ops.time, "sleep", lambda s: None)
+
+    assert ops._wait_for_grafana_healthy(timeout=0.05, poll_interval=0.01) is False
+
+
 @pytest.mark.unit
 def test_resolve_admin_credentials_generates_when_missing(tmp_path):
     cfg_path = tmp_path / "config.ini"
@@ -7474,7 +7751,11 @@ def test_write_grafana_slack_webhook_secret_writes_and_chmods(tmp_path, monkeypa
 
 
 @pytest.mark.unit
-def test_write_grafana_slack_webhook_secret_writes_empty_string_when_unset(tmp_path, monkeypatch):
+def test_write_grafana_slack_webhook_secret_writes_placeholder_when_unset(tmp_path, monkeypatch):
+    """Never writes an empty string (#3538): Grafana's alerting-provisioning
+    validator crash-loops the container on an empty `url`, so an unconfigured
+    webhook gets a syntactically-valid but non-functional placeholder
+    instead."""
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
 
     changed, result = ops._write_grafana_slack_webhook_secret("")
@@ -7483,7 +7764,7 @@ def test_write_grafana_slack_webhook_secret_writes_empty_string_when_unset(tmp_p
     assert result.ok
     secret_path = tmp_path / ".nyxGPT" / "secrets" / "slack-webhook-url"
     assert secret_path.exists()
-    assert secret_path.read_text(encoding="utf-8") == ""
+    assert secret_path.read_text(encoding="utf-8") == ops.GRAFANA_SLACK_WEBHOOK_PLACEHOLDER_URL
 
 
 @pytest.mark.unit
@@ -7835,6 +8116,7 @@ def test_restart_grafana_if_running_skips_when_not_running(monkeypatch):
 def test_restart_grafana_if_running_restarts_when_running(monkeypatch):
     monkeypatch.setattr(ops, "_compose_available", lambda: True)
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "running"})
+    monkeypatch.setattr(ops, "_wait_for_grafana_healthy", lambda: True)
     captured_cmd = {}
 
     def fake_run(cmd, check=False):
@@ -7859,6 +8141,24 @@ def test_restart_grafana_if_running_reports_failure(monkeypatch):
     result = ops._restart_grafana_if_running()
     assert not result.ok
     assert "boom" in result.details
+
+
+@pytest.mark.unit
+def test_restart_grafana_if_running_fails_when_never_healthy_again(monkeypatch):
+    """A restart that leaves Grafana crash-looping (#3538) must surface as a
+    failure, not a false "OK, restarted" while the container never actually
+    comes back up."""
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "running"})
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, check=False: SimpleNamespace(returncode=0, stdout="", stderr="")
+    )
+    monkeypatch.setattr(ops, "_wait_for_grafana_healthy", lambda: False)
+
+    result = ops._restart_grafana_if_running()
+
+    assert result.ok is False
+    assert "never became healthy" in result.message
 
 
 @pytest.mark.unit
@@ -9587,6 +9887,7 @@ def test_doctor_flags_stale_terraform_state(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/fake")
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
 
     rc = ops.doctor(MagicMock())
     assert rc == 2

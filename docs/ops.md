@@ -421,6 +421,10 @@ Checks include:
   that wasn't refreshed after a `git pull` added or bumped a dependency,
   reporting exactly which package(s) are missing and to run
   `pip install -e .`
+- Whether any Docker Compose service is stuck in a restart/crash loop (state
+  `restarting`) -- `nyxgpt ops status` already surfaces that state, but
+  doctor now FAILs on it instead of leaving it as an easy-to-miss warning;
+  points at `nyxgpt ops logs <service>` for the boot error (#3538)
 
 Results are reported with clear PASS / FAIL indicators.
 
