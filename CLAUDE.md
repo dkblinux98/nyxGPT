@@ -114,6 +114,30 @@ Do not spend excessive time reading bootstrap/context files before addressing th
 
 ---
 
+## Repo-less Portability (Owner Requirement, 2026-08-01)
+
+**The entire stack must be installable and runnable without checking out or
+downloading the code repository.** Distribution is via published artifacts
+(installable package / remote tap / container images), never `git clone`.
+Portability targets, in scope: macOS, Linux, Docker/Compose, Kubernetes,
+AWS EC2. Windows is explicitly out of scope.
+
+- Known violations today: `src/nyxgpt/ops.py` resolves runtime data
+  repo-relative (`REPO_ROOT = Path(__file__).parents[2]` -> `docker/`,
+  `ops/launchagents/`, `scripts/`, `pyproject.toml`), and the Homebrew tap
+  is generated locally FROM a checkout (`file://` tarball). Both must be
+  retired: runtime data ships inside the package (importlib.resources or
+  ops-managed copies under `~/.nyxGPT`), and artifacts are published so a
+  clean machine can install without the repo.
+- Delivery is spread across Phase 6: core packaging + self-containment in
+  P6-5 (#3504); Linux artifact install in P6-14 (#3508); AWS instances
+  provision from artifacts (never clone) in P6-12 (#3511) / P6-11 (#3513);
+  the capstone P6-16 (#3516) accepts from a clean machine with no checkout.
+- A source checkout remains supported for development (`pip install -e .`),
+  but no user-facing install or operate flow may require one.
+
+---
+
 ## Operating Mode
 
 Claude must adopt exactly one role at a time:
