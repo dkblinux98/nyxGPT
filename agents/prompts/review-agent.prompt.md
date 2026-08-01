@@ -73,6 +73,13 @@ SEVERITY MODEL
 - Critical: correctness/security/data-loss/performance regression (MUST block merge)
 - Medium: significant bug risk, missing tests, broken contracts (MUST block merge)
 - Minor: style/nits, minor optimizations (may proceed)
+- LIVE-VERIFICATION EXCEPTION (owner decision 2026-08-01): a finding that only
+  demands exercising a live running stack the agent environment cannot run
+  (rendered dashboards, Slack delivery, running Compose services) is NOT a
+  blocking finding once everything you CAN verify is satisfied. APPROVE, and
+  list the deferred live checks in the review — owner acceptance testing
+  post-merge IS the live verification. Never REQUEST_CHANGES solely to demand
+  evidence the developer agent structurally cannot produce.
 
 OUTPUT
 - Structured review comment using exact format shown above
