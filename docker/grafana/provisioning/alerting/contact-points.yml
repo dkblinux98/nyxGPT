@@ -6,15 +6,30 @@ apiVersion: 1
 # written to the file below by `nyxgpt ops env-sync`/`install`
 # (src/nyxgpt/ops.py's `_write_grafana_slack_webhook_secret`) via Grafana's
 # `$__file{}` provisioning expansion -- same pattern as the GlitchTip token in
-# ../datasources/glitchtip.yml. That writer always creates the file (empty if
-# unset) specifically so this reference never dangles: an empty webhook URL
-# just means Slack delivery fails silently (visible under Grafana's Alerting
-# -> Contact points -> Test), while the alert rules themselves still
-# evaluate and fire in the Alerting UI regardless of contact point health.
+# ../datasources/glitchtip.yml. That writer always creates the file with a
+# non-empty value -- a non-functional placeholder when unset (#3538) --
+# specifically so this reference never dangles AND never resolves to an
+# empty string (Grafana's alerting validator refuses to boot on one, see
+# below): an unconfigured webhook just means Slack delivery fails silently
+# (visible under Grafana's Alerting -> Contact points -> Test), while the
+# alert rules themselves still evaluate and fire in the Alerting UI
+# regardless of contact point health.
 #
 # Grafana only re-reads `$__file{}` targets at startup, so a freshly written
 # webhook URL needs a Grafana restart to take effect -- `nyxgpt ops env-sync`
 # and `nyxgpt ops install` both do this automatically when the value changes.
+#
+# `url` MUST live under `settings`, not `secureSettings` (#3538): Grafana
+# 13.1's alerting-provisioning validator only recognizes a Slack integration
+# as "configured" via `settings.url` -- a `secureSettings.url` (even
+# non-empty) isn't seen at all, so validation falls through to demanding
+# `recipient`/`token` instead and Grafana refuses to boot, crash-looping the
+# container. Confirmed by booting this file against grafana/grafana:13.1.1.
+# Grafana still encrypts/redacts the value in its API responses regardless
+# of which section declares it, so this doesn't expose the webhook URL.
+# `_write_grafana_slack_webhook_secret` (src/nyxgpt/ops.py) always writes a
+# non-empty value -- a placeholder when unconfigured -- for the same reason:
+# an empty `url` fails validation identically to a missing one.
 contactPoints:
   - orgId: 1
     name: nyxgpt-slack
@@ -24,5 +39,4 @@ contactPoints:
         disableResolveMessage: false
         settings:
           username: nyxGPT Alerting
-        secureSettings:
           url: "$__file{/etc/nyxgpt-secrets/slack-webhook-url}"

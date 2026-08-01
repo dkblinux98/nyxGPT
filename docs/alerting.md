@@ -92,10 +92,18 @@ file directly.
 
 **No webhook configured is a valid, supported state**: alert rules still
 evaluate and fire visibly in Grafana's Alerting UI and on the SRE Home
-dashboard regardless of whether Slack delivery is configured -- an empty
-webhook URL only means the Slack contact point silently fails to deliver
-(visible under Grafana's Alerting -> Contact points -> Test), not that
-alerting itself is broken.
+dashboard regardless of whether Slack delivery is configured. When
+`slack_webhook_url` is unset, `nyxgpt ops env-sync`/`install` write a
+non-functional placeholder URL rather than an empty string (#3538) --
+Grafana's alerting-provisioning validator refuses to boot the whole
+container on a genuinely empty Slack `url`, so an empty file would crash-loop
+Grafana rather than leave it up with a silently-failing contact point. With
+the placeholder, Grafana boots normally and only Slack delivery fails
+(visible under Grafana's Alerting -> Contact points -> Test) -- alerting
+itself is unaffected. If `nyxgpt ops status` ever shows the `grafana` compose
+service stuck `restarting`, `nyxgpt ops doctor` reports it and `nyxgpt ops
+logs grafana` shows the boot error (most often a bad provisioning file under
+`docker/grafana/provisioning/alerting/`).
 
 ## Testing the pipeline
 
