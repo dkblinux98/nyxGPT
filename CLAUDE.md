@@ -194,6 +194,7 @@ When creating GitHub issues:
 - Module: Auto-detect from keywords (web-ui, api, rag, cli, tui, testing, documentation, security, observability), fallback to "api"
 - Label: "Feature" (or "Acceptance Failure" for bugs/defects found before release)
 - **NEVER use a "Bug" or "Production Defect" label.** "Production Defect" (formerly "Bug") is reserved for production issues and applied only by the human owner. A `bug:` title prefix is fine; the label for any pre-release defect is always "Acceptance Failure".
+- **"Improvement" label + acceptance testing (Owner decision, 2026-08-01):** an improvement filed during acceptance testing of a feature counts as a *product management failure* (spec gap), distinct from an Acceptance Failure (implementation defect). File it as a normal Backlog issue labeled "Improvement" with a `Parent feature: #N` line in the body linking it to the feature that revealed it. It does not gate the parent's move to "For Release". See `agents/runbooks/review-runbook.md` §9.
 - Sprint: Current sprint (if active)
 - Milestone: Current open milestone (if exists)
 
