@@ -1237,6 +1237,45 @@ def test_loki_recent_volume_by_logger_401_is_actionable_not_silent(monkeypatch, 
     assert "rejected" in issue
 
 
+@pytest.mark.unit
+def test_loki_recent_volume_by_logger_http_error_includes_body_in_log(
+    monkeypatch, tmp_path, caplog
+):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    secrets_dir = tmp_path / ".nyxGPT" / "secrets"
+    secrets_dir.mkdir(parents=True)
+    (secrets_dir / "grafana-doctor-token").write_text("a-token")
+
+    class _FakeResponse:
+        status_code = 502
+        text = "bad gateway: loki datasource proxy unreachable"
+
+    class _FakeClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, path, params=None):
+            return _FakeResponse()
+
+    monkeypatch.setattr(ops.httpx, "Client", _FakeClient)
+
+    with caplog.at_level("WARNING", logger="nyxgpt.ops"):
+        volumes, issue = ops._loki_recent_volume_by_logger("http://localhost:3001")
+
+    assert volumes is None
+    assert issue is None
+    records = [r for r in caplog.records if "Failed to query Loki log volumes" in r.getMessage()]
+    assert len(records) == 1
+    assert "HTTP 502" in records[0].getMessage()
+    assert "bad gateway: loki datasource proxy unreachable" in records[0].getMessage()
+
+
 def _write_config(path, *, api_key="", grafana_password="", auth_enabled="false"):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -5313,6 +5352,35 @@ def test_verify_grafana_datasources_resolve_fails_when_unreachable(monkeypatch):
 
 
 @pytest.mark.unit
+def test_verify_grafana_datasources_resolve_fails_with_http_error_includes_body(monkeypatch):
+    monkeypatch.setattr(ops, "_grafana_provisioned_datasource_uids", lambda: ["prometheus"])
+    monkeypatch.setattr(ops.time, "sleep", lambda _: None)
+
+    class FakeResponse:
+        status_code = 500
+        text = "internal server error: datasource registry unavailable"
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, path, **kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(ops.httpx, "Client", lambda **kwargs: FakeClient())
+
+    result = ops._verify_grafana_datasources_resolve("http://localhost:3001", "admin", attempts=2)
+
+    assert result.ok is False
+    assert "Could not reach Grafana" in result.message
+    assert "HTTP 500" in result.details
+    assert "datasource registry unavailable" in result.details
+
+
+@pytest.mark.unit
 def test_grafana_expected_plugin_ids_parses_gf_install_plugins(tmp_path, monkeypatch):
     compose_path = tmp_path / "docker-compose.yml"
     compose_path.write_text(
@@ -5516,6 +5584,115 @@ def test_provision_grafana_doctor_token_fails_when_grafana_unreachable(monkeypat
     result = ops._provision_grafana_doctor_token("http://localhost:3001", "admin")
 
     assert result.ok is False
+    assert not (tmp_path / ".nyxGPT" / "secrets" / "grafana-doctor-token").exists()
+
+
+@pytest.mark.unit
+def test_provision_grafana_doctor_token_fails_when_search_returns_http_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+
+    class FakeResponse:
+        status_code = 403
+        text = "access denied: admin credentials rejected"
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, path, params=None):
+            return FakeResponse()
+
+        def post(self, path, json=None):
+            raise AssertionError("should not reach POST when search fails")
+
+    monkeypatch.setattr(ops.httpx, "Client", lambda **kwargs: FakeClient())
+
+    result = ops._provision_grafana_doctor_token("http://localhost:3001", "admin")
+
+    assert result.ok is False
+    assert "HTTP 403" in result.details
+    assert "access denied: admin credentials rejected" in result.details
+    assert not (tmp_path / ".nyxGPT" / "secrets" / "grafana-doctor-token").exists()
+
+
+@pytest.mark.unit
+def test_provision_grafana_doctor_token_fails_when_create_service_account_returns_http_error(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+
+    class FakeResponse:
+        def __init__(self, status_code, payload=None, text=""):
+            self.status_code = status_code
+            self._payload = payload or {}
+            self.text = text
+
+        def json(self):
+            return self._payload
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, path, params=None):
+            return FakeResponse(200, {"serviceAccounts": []})
+
+        def post(self, path, json=None):
+            assert path == "/api/serviceaccounts"
+            return FakeResponse(409, text="service account name already exists")
+
+    monkeypatch.setattr(ops.httpx, "Client", lambda **kwargs: FakeClient())
+
+    result = ops._provision_grafana_doctor_token("http://localhost:3001", "admin")
+
+    assert result.ok is False
+    assert "HTTP 409" in result.details
+    assert "service account name already exists" in result.details
+    assert not (tmp_path / ".nyxGPT" / "secrets" / "grafana-doctor-token").exists()
+
+
+@pytest.mark.unit
+def test_provision_grafana_doctor_token_fails_when_mint_token_returns_http_error(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+
+    class FakeResponse:
+        def __init__(self, status_code, payload=None, text=""):
+            self.status_code = status_code
+            self._payload = payload or {}
+            self.text = text
+
+        def json(self):
+            return self._payload
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, path, params=None):
+            return FakeResponse(200, {"serviceAccounts": [{"id": 3, "name": "nyxgpt-ops-doctor"}]})
+
+        def post(self, path, json=None):
+            assert path == "/api/serviceaccounts/3/tokens"
+            return FakeResponse(500, text="token minting temporarily unavailable")
+
+    monkeypatch.setattr(ops.httpx, "Client", lambda **kwargs: FakeClient())
+
+    result = ops._provision_grafana_doctor_token("http://localhost:3001", "admin")
+
+    assert result.ok is False
+    assert "HTTP 500" in result.details
+    assert "token minting temporarily unavailable" in result.details
     assert not (tmp_path / ".nyxGPT" / "secrets" / "grafana-doctor-token").exists()
 
 
