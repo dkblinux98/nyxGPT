@@ -10,6 +10,7 @@ can warn about -- and refuse to create -- port collisions between the two.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import getpass
 import hashlib
@@ -28,7 +29,6 @@ import tomllib
 from collections.abc import Callable, Iterator
 from configparser import ConfigParser
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -6259,59 +6259,121 @@ def _sync_grafana_slack_webhook_secret(cfg_path: Path | None = None) -> list[Ops
     return results
 
 
-def _send_grafana_test_alert(grafana_ui_url: str, grafana_admin_password: str) -> OpsResult:
-    """POST a synthetic alert straight into Grafana's embedded Alertmanager
-    (#3466) -- the same API real firing rules route through, so this
-    exercises the whole pipeline end to end: it shows up in Grafana's
-    Alerting -> Fired alerts UI, and reaches Slack via the nyxgpt-slack
-    contact point/notification policy if a webhook is configured, exactly
-    like a genuine CPU/memory/disk/self-heal/canary alert would.
+# The `nyxgpt-slack` contact point / integration provisioned by
+# docker/grafana/provisioning/alerting/contact-points.yml -- `alert_test`
+# needs both to address Grafana's receiver-test API directly (#3545).
+GRAFANA_SLACK_CONTACT_POINT_NAME = "nyxgpt-slack"
+GRAFANA_SLACK_INTEGRATION_UID = "nyxgpt-slack-receiver"
 
-    `endsAt` is 5 minutes out so a forgotten test alert resolves itself
-    instead of paging anyone indefinitely.
+
+def _grafana_receiver_k8s_name(contact_point_name: str) -> str:
+    """Grafana's alerting-notifications app addresses a legacy-provisioned
+    contact point by `base64.RawURLEncoding(name)` -- see `NameToUid` /
+    `convertToK8sResource` in grafana/grafana's
+    pkg/services/ngalert/models/receivers.go and
+    pkg/registry/apps/alerting/notifications/receiver/conversions.go.
+    Confirmed live by booting grafana/grafana:13.1.1 (the pinned image)
+    against this repo's exact provisioning and listing
+    `/apis/notifications.alerting.grafana.app/v0alpha1/namespaces/default/receivers`
+    (#3545): `nyxgpt-slack` -> `bnl4Z3B0LXNsYWNr`.
     """
-    now = datetime.now(UTC)
-    payload = [
-        {
+    return base64.urlsafe_b64encode(contact_point_name.encode()).rstrip(b"=").decode()
+
+
+def _send_grafana_test_alert(
+    grafana_ui_url: str, grafana_admin_password: str, webhook_configured: bool
+) -> OpsResult:
+    """POST a test notification through the `nyxgpt-slack` receiver via
+    Grafana's receiver-test API -- the same
+    `/apis/notifications.alerting.grafana.app/.../receivers/{name}/test`
+    endpoint Grafana's own Alerting -> Contact points -> Test button calls
+    (#3545).
+
+    #3466 originally posted straight into Grafana's embedded Alertmanager
+    ingestion API (`/api/alertmanager/grafana/api/v2/alerts`), which only
+    accepts alerts from Grafana's own rule engine and 400s on anything
+    posted externally. The legacy contact-point test route that would have
+    worked instead (`/api/alertmanager/grafana/config/api/v1/receivers/test`)
+    also doesn't help -- it returns 410 Gone on the pinned grafana/grafana
+    image, having been replaced by this one. This proves delivery through
+    the contact point, not rule evaluation or notification-policy routing --
+    see docs/alerting.md#testing-the-pipeline for the full-path (deliberate
+    threshold breach) alternative that covers those.
+
+    `webhook_configured` is the caller's own read of config.ini's
+    `[monitoring] slack_webhook_url`. Grafana redacts/encrypts the `url`
+    setting in every API response (it's schema-flagged secure regardless of
+    which YAML section provisions it -- see contact-points.yml), so there is
+    no way to distinguish "no webhook configured" from "webhook configured
+    but wrong" by inspecting the test response alone; the caller's own
+    config read is the only source of truth for that distinction.
+    """
+    receiver_name = _grafana_receiver_k8s_name(GRAFANA_SLACK_CONTACT_POINT_NAME)
+    payload = {
+        "integration": {
+            "uid": GRAFANA_SLACK_INTEGRATION_UID,
+            "type": "slack",
+            "settings": {},
+            # Reuse the currently-provisioned (possibly placeholder) `url`
+            # secret rather than resupplying it -- this CLI has no access to
+            # the secret file's contents, nor should it need any.
+            "secureFields": {"url": True},
+        },
+        "alert": {
             "labels": {"alertname": "NyxGPTAlertTest", "severity": "warning"},
-            "annotations": {
-                "summary": "Test alert triggered by `nyxgpt ops alert-test`",
-                "description": (
-                    "Synthetic alert used to verify the Grafana alerting pipeline (rules -> "
-                    "notification policy -> Slack contact point) end to end. Resolves itself "
-                    "automatically."
-                ),
-            },
-            "startsAt": now.isoformat(),
-            "endsAt": (now + timedelta(minutes=5)).isoformat(),
-        }
-    ]
+            "annotations": {"summary": "Test alert triggered by `nyxgpt ops alert-test`"},
+        },
+    }
     try:
         with _grafana_admin_client(grafana_ui_url, grafana_admin_password) as client:
-            resp = client.post("/api/alertmanager/grafana/api/v2/alerts", json=payload)
-            resp.raise_for_status()
+            resp = client.post(
+                "/apis/notifications.alerting.grafana.app/v0alpha1/namespaces/default/"
+                f"receivers/{receiver_name}/test",
+                json=payload,
+            )
     except httpx.HTTPError as e:
         return OpsResult(
             False,
-            "Failed to send test alert to Grafana's Alertmanager API",
+            "Failed to reach Grafana's receiver-test API",
             f"{type(e).__name__}: {e}",
         )
-    return OpsResult(
-        True,
-        "Sent test alert to Grafana -- check the Alerting UI's Fired alerts tab "
-        "(and Slack, if a webhook is configured) within a minute or two.",
-    )
+    if resp.status_code != 200:
+        return OpsResult(
+            False,
+            "Grafana rejected the nyxgpt-slack contact-point test request",
+            f"HTTP {resp.status_code}: {resp.text[:500]}",
+        )
+    data = resp.json()
+    if data.get("status") == "success":
+        return OpsResult(
+            True,
+            "Sent a test notification through the nyxgpt-slack contact point -- "
+            "check Slack for delivery.",
+        )
+    error = str(data.get("error") or "Grafana reported failure with no error message")
+    if not webhook_configured:
+        return OpsResult(
+            True,
+            "Alerting pipeline is intact -- Grafana reached the nyxgpt-slack contact "
+            "point and attempted delivery, but no [monitoring] slack_webhook_url is "
+            "configured in config.ini, so delivery to the placeholder webhook failed "
+            "as expected.",
+            error[:500],
+        )
+    return OpsResult(False, "Slack delivery test failed", error[:500])
 
 
 def alert_test(_args: Any) -> int:
     """CLI entrypoint for `nyxgpt ops alert-test`.
 
-    Fires a synthetic alert directly into Grafana's embedded Alertmanager --
-    the acceptance test for the alerting pipeline: confirms rules ->
-    notification policy -> Slack contact point are wired correctly without
-    waiting for a real CPU/memory/disk/self-heal/canary threshold breach.
-    No-ops with a clear, actionable message if monitoring is disabled, unset
-    up, or Grafana isn't reachable.
+    Pushes a test notification through the `nyxgpt-slack` contact point via
+    Grafana's receiver-test API -- the acceptance test for Slack delivery:
+    confirms the receiver and webhook are wired correctly without waiting
+    for a real CPU/memory/disk/self-heal/canary threshold breach. This
+    covers contact-point delivery only, not rule evaluation or
+    notification-policy routing -- see docs/alerting.md#testing-the-pipeline
+    for the full-path alternative. No-ops with a clear, actionable message
+    if monitoring is disabled, unset up, or Grafana isn't reachable.
 
     Returns 0 on success, else 2.
     """
@@ -6343,8 +6405,11 @@ def alert_test(_args: Any) -> int:
             ]
         else:
             grafana_admin_password = _grafana_admin_password(cfg)
+            webhook_configured = bool(get_monitoring_slack_webhook_url(cfg).strip())
             results = [
-                _send_grafana_test_alert(monitoring["grafana_ui_url"], grafana_admin_password)
+                _send_grafana_test_alert(
+                    monitoring["grafana_ui_url"], grafana_admin_password, webhook_configured
+                )
             ]
 
     ok = _emit_results("alert-test", results)

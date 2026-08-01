@@ -102,6 +102,20 @@ def require_ollama(cfg: Any) -> None:
 
 
 @pytest.fixture(scope="session")
+def require_grafana(cfg: Any) -> None:
+    """Skip unless a real Grafana (started via `nyxgpt ops install`/`observability`)
+    is reachable -- used by tests that exercise `nyxgpt ops alert-test` against a
+    live instance instead of a mocked endpoint (#3545)."""
+    base_url = cfg.get("monitoring", "grafana_ui_url", fallback="http://127.0.0.1:3001")
+    u = urlparse(base_url)
+    host = u.hostname or "127.0.0.1"
+    port = int(u.port or 3001)
+
+    if not _can_connect(host, port, timeout=2.0):
+        pytest.skip(f"Grafana not reachable at {host}:{port}")
+
+
+@pytest.fixture(scope="session")
 def require_cassandra(cfg: Any) -> None:
     # Keep this tolerant: different keys possible over time.
     # Defaults assume local Docker Cassandra.

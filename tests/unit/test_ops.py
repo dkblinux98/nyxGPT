@@ -7857,16 +7857,27 @@ def test_sync_grafana_slack_webhook_secret_skips_restart_when_unchanged(tmp_path
     assert len(results) == 1
 
 
-# --- Grafana test-notification path: `nyxgpt ops alert-test` (#3466) ---
+# --- Grafana contact-point test path: `nyxgpt ops alert-test` (#3466, #3545) ---
 
 
 @pytest.mark.unit
-def test_send_grafana_test_alert_posts_to_alertmanager_api(monkeypatch):
+def test_grafana_receiver_k8s_name_matches_live_grafana_encoding():
+    # Confirmed live against a booted grafana/grafana:13.1.1 (the pinned
+    # image) provisioned with this repo's contact-points.yml (#3545): GET
+    # /apis/notifications.alerting.grafana.app/v0alpha1/namespaces/default/receivers
+    # lists the nyxgpt-slack contact point under this exact k8s resource name.
+    assert ops._grafana_receiver_k8s_name("nyxgpt-slack") == "bnl4Z3B0LXNsYWNr"
+
+
+@pytest.mark.unit
+def test_send_grafana_test_alert_posts_to_receiver_test_api(monkeypatch):
     calls = []
 
     class FakeResponse:
-        def raise_for_status(self):
-            pass
+        status_code = 200
+
+        def json(self):
+            return {"status": "success", "duration": "100ms"}
 
     class FakeClient:
         def __enter__(self):
@@ -7881,17 +7892,22 @@ def test_send_grafana_test_alert_posts_to_alertmanager_api(monkeypatch):
 
     monkeypatch.setattr(ops.httpx, "Client", lambda **kwargs: FakeClient())
 
-    result = ops._send_grafana_test_alert("http://localhost:3001", "admin-pw")
+    result = ops._send_grafana_test_alert("http://localhost:3001", "admin-pw", True)
 
     assert result.ok is True
-    assert calls[0][0] == "/api/alertmanager/grafana/api/v2/alerts"
-    alert = calls[0][1][0]
-    assert alert["labels"]["alertname"] == "NyxGPTAlertTest"
-    assert "startsAt" in alert and "endsAt" in alert
+    path, body = calls[0]
+    assert path == (
+        "/apis/notifications.alerting.grafana.app/v0alpha1/namespaces/default/"
+        "receivers/bnl4Z3B0LXNsYWNr/test"
+    )
+    assert body["integration"]["uid"] == "nyxgpt-slack-receiver"
+    assert body["integration"]["type"] == "slack"
+    assert body["integration"]["secureFields"] == {"url": True}
+    assert body["alert"]["labels"]["alertname"] == "NyxGPTAlertTest"
 
 
 @pytest.mark.unit
-def test_send_grafana_test_alert_reports_failure_on_http_error(monkeypatch):
+def test_send_grafana_test_alert_reports_failure_on_network_error(monkeypatch):
     class FakeClient:
         def __enter__(self):
             return self
@@ -7904,10 +7920,92 @@ def test_send_grafana_test_alert_reports_failure_on_http_error(monkeypatch):
 
     monkeypatch.setattr(ops.httpx, "Client", lambda **kwargs: FakeClient())
 
-    result = ops._send_grafana_test_alert("http://localhost:3001", "admin-pw")
+    result = ops._send_grafana_test_alert("http://localhost:3001", "admin-pw", True)
 
     assert result.ok is False
-    assert "Failed to send test alert" in result.message
+    assert "Failed to reach Grafana's receiver-test API" in result.message
+
+
+@pytest.mark.unit
+def test_send_grafana_test_alert_includes_response_body_on_http_error(monkeypatch):
+    class FakeResponse:
+        status_code = 404
+        text = '{"message":"Receiver not found"}'
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def post(self, path, json=None):
+            return FakeResponse()
+
+    monkeypatch.setattr(ops.httpx, "Client", lambda **kwargs: FakeClient())
+
+    result = ops._send_grafana_test_alert("http://localhost:3001", "admin-pw", True)
+
+    assert result.ok is False
+    assert "HTTP 404" in result.details
+    assert "Receiver not found" in result.details
+
+
+@pytest.mark.unit
+def test_send_grafana_test_alert_fails_on_delivery_failure_when_webhook_configured(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"status": "failure", "error": "failed to send Slack message: invalid_token"}
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def post(self, path, json=None):
+            return FakeResponse()
+
+    monkeypatch.setattr(ops.httpx, "Client", lambda **kwargs: FakeClient())
+
+    result = ops._send_grafana_test_alert("http://localhost:3001", "admin-pw", True)
+
+    assert result.ok is False
+    assert "Slack delivery test failed" in result.message
+    assert "invalid_token" in result.details
+
+
+@pytest.mark.unit
+def test_send_grafana_test_alert_reports_pipeline_intact_when_webhook_unconfigured(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "status": "failure",
+                "error": "failed to send Slack message: failed incoming webhook: no_team",
+            }
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def post(self, path, json=None):
+            return FakeResponse()
+
+    monkeypatch.setattr(ops.httpx, "Client", lambda **kwargs: FakeClient())
+
+    result = ops._send_grafana_test_alert("http://localhost:3001", "admin-pw", False)
+
+    assert result.ok is True
+    assert "pipeline is intact" in result.message
+    assert "no [monitoring] slack_webhook_url is configured" in result.message
 
 
 @pytest.mark.unit
@@ -7934,7 +8032,33 @@ def test_alert_test_fails_when_monitoring_disabled(tmp_path, monkeypatch, capsys
 
 
 @pytest.mark.unit
-def test_alert_test_sends_synthetic_alert_when_monitoring_enabled(tmp_path, monkeypatch, capsys):
+def test_alert_test_sends_test_notification_when_monitoring_enabled(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    cfg_path = tmp_path / ".nyxGPT" / "config.ini"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text(
+        "[monitoring]\nenabled = true\ngrafana_ui_url = http://localhost:3001\n"
+        "grafana_admin_password = admin-pw\nslack_webhook_url = https://hooks.slack.com/x\n"
+    )
+    calls = []
+    monkeypatch.setattr(
+        ops,
+        "_send_grafana_test_alert",
+        lambda url, pw, webhook_configured: calls.append(webhook_configured)
+        or ops.OpsResult(True, "sent"),
+    )
+
+    rc = ops.alert_test(MagicMock())
+
+    assert rc == 0
+    assert "sent" in capsys.readouterr().out
+    assert calls == [True]
+
+
+@pytest.mark.unit
+def test_alert_test_passes_webhook_unconfigured_when_slack_webhook_url_unset(
+    tmp_path, monkeypatch, capsys
+):
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
     cfg_path = tmp_path / ".nyxGPT" / "config.ini"
     cfg_path.parent.mkdir(parents=True)
@@ -7942,14 +8066,18 @@ def test_alert_test_sends_synthetic_alert_when_monitoring_enabled(tmp_path, monk
         "[monitoring]\nenabled = true\ngrafana_ui_url = http://localhost:3001\n"
         "grafana_admin_password = admin-pw\n"
     )
+    calls = []
     monkeypatch.setattr(
-        ops, "_send_grafana_test_alert", lambda url, pw: ops.OpsResult(True, "sent")
+        ops,
+        "_send_grafana_test_alert",
+        lambda url, pw, webhook_configured: calls.append(webhook_configured)
+        or ops.OpsResult(True, "pipeline intact"),
     )
 
     rc = ops.alert_test(MagicMock())
 
     assert rc == 0
-    assert "sent" in capsys.readouterr().out
+    assert calls == [False]
 
 
 # --- Linux bind-mount ownership: ~/.nyxGPT/secrets preflight (#3432) ---

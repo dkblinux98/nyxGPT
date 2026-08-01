@@ -107,36 +107,46 @@ logs grafana` shows the boot error (most often a bad provisioning file under
 
 ## Testing the pipeline
 
-A deliberate test that doesn't require actually breaching a threshold:
+A test notification that doesn't require actually breaching a threshold:
 
 ```bash
 nyxgpt ops alert-test
 ```
 
-This posts a synthetic `NyxGPTAlertTest` alert directly into Grafana's
-embedded Alertmanager API -- the same API real firing rules route through
--- so it exercises rules, notification policy, and the Slack contact point
-exactly like a genuine alert would. Expect, within a minute or two:
+This calls Grafana's receiver-test API against the `nyxgpt-slack` contact
+point -- the same mechanism Grafana's own **Alerting -> Contact points ->
+nyxgpt-slack -> Test** button uses. It reuses the currently-provisioned
+webhook secret, so it works whether or not `slack_webhook_url` is configured:
 
-- The alert appears under Grafana's **Alerting -> Fired alerts**.
-- If `slack_webhook_url` is configured, a message posts to the configured
-  Slack channel.
-- It surfaces on the SRE Home dashboard's alerting panel.
+- If a real webhook is configured, expect a message in the configured Slack
+  channel within a few seconds, and the command exits `0`.
+- If `slack_webhook_url` is unset, the command still confirms Grafana
+  reached the contact point and attempted delivery -- it reports that
+  clearly as "pipeline intact, delivery unconfigured" and exits `0`, rather
+  than surfacing the placeholder webhook's inevitable delivery failure as an
+  error.
+- If a real webhook is configured but delivery genuinely fails (bad token,
+  wrong channel, etc.), the command exits `2` with Grafana's own error
+  message.
 
-The synthetic alert auto-resolves after 5 minutes. See
-[ops.md#nyxgpt-ops-alert-test](ops.md#nyxgpt-ops-alert-test) for exit codes
-and failure modes.
+See [ops.md#nyxgpt-ops-alert-test](ops.md#nyxgpt-ops-alert-test) for exit
+codes in full.
 
-To test with a *real* threshold breach instead (e.g. to confirm the CPU
-rule specifically), load the API process (or lower the rule's threshold
-temporarily in `docker/grafana/provisioning/alerting/rules.yml` and restart
-Grafana) and watch the same three outcomes above.
-
-You can also use Grafana's own UI: **Alerting -> Contact points ->
-nyxgpt-slack -> Test** sends a single test notification through that
-contact point without going through a rule or the Alertmanager API at all
--- useful for isolating "is the webhook URL itself valid" from "is the
-whole rules-to-notification pipeline wired up".
+**What this does *not* test:** contact-point delivery only, not rule
+evaluation or notification-policy routing -- a passing `alert-test` confirms
+Slack is reachable through `nyxgpt-slack`, not that a real alert would
+actually route to it. There is no way to verify the rule-evaluation and
+routing path other than watching a real rule fire. To do that deliberately
+and reversibly: briefly break the signal a rule watches (e.g. stop a
+monitored service so the "NyxGPT API down" rule fires, or temporarily lower
+a threshold in `docker/grafana/provisioning/alerting/rules.yml` and restart
+Grafana), confirm the alert appears under Grafana's **Alerting -> Fired
+alerts** and, if configured, reaches Slack via the notification policy, then
+restore the service/threshold. This is the only way to exercise the
+rules -> notification-policy -> contact-point path end to end; `alert-test`
+deliberately doesn't attempt it, since posting a synthetic alert into
+Grafana's embedded Alertmanager from outside the rule engine isn't a
+supported operation (Grafana's ingestion API rejects it -- #3545).
 
 ## System Health panel
 
