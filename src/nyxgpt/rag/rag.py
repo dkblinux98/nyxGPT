@@ -43,6 +43,7 @@ from nyxgpt.rag.vectorstore_cassandra import (
     CassandraVectorStore,
     MetadataFilter,
     VectorSearchDebugMetrics,
+    parse_metadata,
 )
 from nyxgpt.tracing import traced
 
@@ -1503,7 +1504,7 @@ def retrieve_context(
                         continue
 
                     # Parse metadata for filtering
-                    metadata = json.loads(r.metadata) if r.metadata else {}
+                    metadata = parse_metadata(r.metadata, doc_id=doc_id)
 
                     # Apply metadata filters (same logic as in query_by_embedding)
                     if metadata_filter:
