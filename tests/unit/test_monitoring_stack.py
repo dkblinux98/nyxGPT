@@ -566,7 +566,14 @@ def test_slack_contact_point_reads_webhook_url_from_the_shared_secrets_mount() -
     contact_points_doc = yaml.safe_load((ALERTING_DIR / "contact-points.yml").read_text())
     receiver = contact_points_doc["contactPoints"][0]["receivers"][0]
     assert receiver["type"] == "slack"
-    url_ref = receiver["secureSettings"]["url"]
+    # Must live under `settings`, not `secureSettings` (#3538): Grafana's
+    # alerting-provisioning validator doesn't recognize a `secureSettings.url`
+    # as "configured" at all -- confirmed by booting grafana/grafana:13.1.1
+    # against this file, which crash-loops with `secureSettings.url` but
+    # boots clean with `settings.url` (Grafana still redacts it in API
+    # responses regardless of which section declares it).
+    assert "url" not in receiver.get("secureSettings", {})
+    url_ref = receiver["settings"]["url"]
     assert url_ref.startswith("$__file{/etc/nyxgpt-secrets/")
 
     compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text())
