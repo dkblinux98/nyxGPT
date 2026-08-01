@@ -5227,8 +5227,7 @@ def test_verify_grafana_datasources_resolve_ok_when_all_present(monkeypatch):
     )
 
     class FakeResponse:
-        def raise_for_status(self):
-            pass
+        status_code = 200
 
         def json(self):
             return [{"uid": "prometheus"}, {"uid": "jaeger"}, {"uid": "glitchtip-infinity"}]
@@ -5266,8 +5265,7 @@ def test_verify_grafana_datasources_resolve_fails_when_uid_missing(monkeypatch):
     monkeypatch.setattr(ops.time, "sleep", lambda _: None)
 
     class FakeResponse:
-        def raise_for_status(self):
-            pass
+        status_code = 200
 
         def json(self):
             return [{"uid": "prometheus"}]
@@ -5379,6 +5377,7 @@ def test_verify_grafana_plugins_installed_fails_when_plugin_missing(monkeypatch)
 
     class FakeResponse:
         status_code = 404
+        text = '{"message": "Plugin not found"}'
 
         def json(self):
             return {"message": "Plugin not found"}
@@ -5400,6 +5399,8 @@ def test_verify_grafana_plugins_installed_fails_when_plugin_missing(monkeypatch)
     assert result.ok is False
     assert "grafana-lokiexplore-app" in result.message
     assert "nyxgpt ops logs grafana" in result.details
+    assert "HTTP 404" in result.details
+    assert "Plugin not found" in result.details
 
 
 @pytest.mark.unit
@@ -5426,11 +5427,10 @@ def test_provision_grafana_doctor_token_mints_new_service_account(monkeypatch, t
     calls = []
 
     class FakeResponse:
+        status_code = 200
+
         def __init__(self, payload):
             self._payload = payload
-
-        def raise_for_status(self):
-            pass
 
         def json(self):
             return self._payload
@@ -5472,11 +5472,10 @@ def test_provision_grafana_doctor_token_reuses_existing_service_account(monkeypa
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
 
     class FakeResponse:
+        status_code = 200
+
         def __init__(self, payload):
             self._payload = payload
-
-        def raise_for_status(self):
-            pass
 
         def json(self):
             return self._payload

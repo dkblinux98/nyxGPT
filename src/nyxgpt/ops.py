@@ -3516,7 +3516,8 @@ def _loki_recent_volume_by_logger(
                         "(401) -- delete the file and re-run `nyxgpt ops install` to mint a "
                         "fresh one"
                     )
-                resp.raise_for_status()
+                if resp.status_code >= 400:
+                    raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:500]}")
                 result = resp.json().get("data", {}).get("result", [])
                 volumes[name] = int(float(result[0]["value"][1])) if result else 0
     except Exception as e:
@@ -4763,7 +4764,8 @@ def _verify_grafana_datasources_resolve(
             try:
                 with _grafana_admin_client(grafana_ui_url, grafana_admin_password) as client:
                     resp = client.get("/api/datasources")
-                    resp.raise_for_status()
+                    if resp.status_code >= 400:
+                        raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:500]}")
                     actual = {ds.get("uid") for ds in resp.json()}
                 missing = expected - actual
                 if not missing:
@@ -4832,11 +4834,18 @@ def _verify_grafana_plugins_installed(
         for attempt in range(attempts):
             try:
                 missing: list[str] = []
+                missing_details: list[str] = []
                 with _grafana_admin_client(grafana_ui_url, grafana_admin_password) as client:
                     for plugin_id in expected:
                         resp = client.get(f"/api/plugins/{plugin_id}/settings")
-                        if resp.status_code != 200 or not resp.json().get("enabled"):
+                        if resp.status_code != 200:
                             missing.append(plugin_id)
+                            missing_details.append(
+                                f"{plugin_id}: HTTP {resp.status_code}: {resp.text[:500]}"
+                            )
+                        elif not resp.json().get("enabled"):
+                            missing.append(plugin_id)
+                            missing_details.append(f"{plugin_id}: not enabled: {resp.text[:500]}")
                 if not missing:
                     return OpsResult(
                         True, f"Verified {len(expected)} GF_INSTALL_PLUGINS plugin(s) installed"
@@ -4850,7 +4859,7 @@ def _verify_grafana_plugins_installed(
                     "Listed in docker-compose.yml's GF_INSTALL_PLUGINS but not enabled per "
                     "GET /api/plugins/<id>/settings -- check `nyxgpt ops logs grafana` for a "
                     "plugin download error (no network access, registry outage, renamed/typo'd "
-                    "plugin id).",
+                    "plugin id).\n" + "\n".join(missing_details),
                 )
             except Exception as e:
                 last_error = e
@@ -4893,7 +4902,8 @@ def _provision_grafana_doctor_token(grafana_ui_url: str, grafana_admin_password:
             resp = client.get(
                 "/api/serviceaccounts/search", params={"query": GRAFANA_DOCTOR_SA_NAME}
             )
-            resp.raise_for_status()
+            if resp.status_code >= 400:
+                raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:500]}")
             for sa in resp.json().get("serviceAccounts", []):
                 if isinstance(sa, dict) and sa.get("name") == GRAFANA_DOCTOR_SA_NAME:
                     sa_id = sa.get("id")
@@ -4903,14 +4913,16 @@ def _provision_grafana_doctor_token(grafana_ui_url: str, grafana_admin_password:
                     "/api/serviceaccounts",
                     json={"name": GRAFANA_DOCTOR_SA_NAME, "role": "Viewer"},
                 )
-                resp.raise_for_status()
+                if resp.status_code >= 400:
+                    raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:500]}")
                 sa_id = resp.json().get("id")
 
             resp = client.post(
                 f"/api/serviceaccounts/{sa_id}/tokens",
                 json={"name": GRAFANA_DOCTOR_TOKEN_NAME},
             )
-            resp.raise_for_status()
+            if resp.status_code >= 400:
+                raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:500]}")
             token: Any = resp.json().get("key")
     except Exception as e:
         return OpsResult(
