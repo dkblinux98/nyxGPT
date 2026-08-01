@@ -238,6 +238,24 @@ the core repo-less packaging work)*
   access path (chat round-trip, RAG ingest+query, observability reachable); leaves no
   billed resources behind on success or failure; wrapped invocation.
 
+### P6-18 · feat: nyxgpt ops verify - live smoke harness + review-agent CI live testing
+**Label:** Feature · **Module:** testing · **Effort:** L · **Sprint:** Sprint 7 · **Issue:** #3555
+
+Filed 2026-08-01 (owner decision, from the PR #3548/#3469 review deadlock: acceptance
+criteria demanding live verification could not be satisfied by agents with no running
+stack or eyes on rendered output; the interim rule defers those checks to owner
+acceptance — this issue closes the gap so live verification happens *before* merge).
+
+- ACs: `nyxgpt ops verify` (wrapped) boots the needed Compose profiles ephemerally,
+  generates known traffic (RAG query, ingest per source path, chat round-trip), asserts
+  deterministically via Prometheus instant queries and Grafana's HTTP API executing each
+  touched panel's own query, captures Playwright screenshots of touched dashboards as PR
+  evidence the multimodal review agent can visually judge, runs on GitHub-hosted runners
+  (LLM stubbed/tiny), documents what CI cannot cover (Apple Silicon brew layout, real
+  Slack delivery — those stay owner acceptance checks), doubles as the owner's
+  one-command pre-acceptance check, and narrows the review-runbook §2 live-verification
+  exception to only the documented not-covered list.
+
 ---
 
 ## Not in this milestone (schedule separately)

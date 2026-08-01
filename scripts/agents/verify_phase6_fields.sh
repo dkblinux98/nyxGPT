@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Verify (and optionally repair) the project fields of the Phase 6 issue set
-# (#3500-#3516, filed 2026-07-31 by create_phase6.sh via file_phase6_issues.yml).
+# (#3500-#3516, filed 2026-07-31 by create_phase6.sh via file_phase6_issues.yml,
+# plus #3555 = P6-18, filed 2026-08-01).
 #
 # WHY: ensure_project_hygiene.yml raced create_issue.sh on #3500 — its Status
 # check ran in the seconds before create_issue.sh set Backlog, so it stamped
@@ -37,6 +38,7 @@ EXPECTED="
 3506|P6-7|Sprint 7|documentation|S
 3507|P6-10|Sprint 7|security|M
 3508|P6-14|Sprint 7|cli|L
+3555|P6-18|Sprint 7|testing|L
 3509|P6-8|Sprint 8|cli|XL
 3510|P6-9|Sprint 8|cli|M
 3511|P6-12|Sprint 8|cli|L
