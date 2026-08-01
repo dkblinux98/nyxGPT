@@ -53,6 +53,20 @@ The review-agent OWNS the review process:
 - Medium: significant bug risk, missing tests, broken contract, poor maintainability; must block merge
 - Minor: style/nits, minor optimization opportunities; may proceed
 
+### Live-verification findings do NOT block (Owner decision, 2026-08-01)
+When the only outstanding finding is that an acceptance criterion requires
+exercising a **live running stack** (Grafana panels rendering, Slack delivery,
+browser behavior, a running Compose stack) that the agent environment cannot
+run, and everything the reviewer CAN verify — code correctness, tests and
+their effectiveness, static/empirical checks — is satisfied: **APPROVE and
+merge.** Owner acceptance testing after merge IS the live verification; that
+is exactly what the Acceptance Testing stage exists for. Do not REQUEST_CHANGES
+or burn escalation cycles demanding evidence the developer agent structurally
+cannot produce (PR #3548/#3469 deadlocked three cycles this way). Instead,
+list the deferred live checks explicitly in the APPROVE review so the owner
+knows precisely what to exercise during acceptance. Escalation is reserved
+for unresolved findings the agents *could* fix but haven't.
+
 ## 3) CI failure handling
 If CI fails during review (should not happen if developer phase worked correctly):
 - Still review the code changes
