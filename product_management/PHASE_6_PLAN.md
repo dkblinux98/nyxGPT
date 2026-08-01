@@ -30,6 +30,12 @@ filed with:
   local or AWS, is reachable only from the owner's workstation over a locked path (tunnel /
   WireGuard / Tailscale / owner-IP-scoped SG). Never a public endpoint — for the app *and*
   the observability tools. The concrete mechanism is decision issue **P6-4** below.
+- **Repo-less portability (2026-08-01, CLAUDE.md):** the entire stack installs and
+  runs without a repo checkout — published artifacts only (package + remote tap +
+  container images), across macOS / Linux / Docker / k8s / AWS EC2 (no Windows).
+  Delivered incrementally: P6-5 (core packaging + runtime self-containment),
+  P6-14 (Linux artifact install), P6-12/P6-11 (cloud provisions from artifacts,
+  never clones), P6-16 (capstone accepts from a clean, checkout-free machine).
 - **Canary, not blue-green (#3409, 2026-07-29):** blue-green is retired; canary is the
   progressive-delivery strategy on the k8s substrate (api + web per #3419; ollama documented
   infeasible).
@@ -100,14 +106,25 @@ lowest-number-first selection respects the dependencies).
   P6-8/P6-11 start.
 
 ### P6-5 · feat: nyxgpt up and down aliases with health-wait and URL print
-**Label:** Feature · **Module:** cli · **Effort:** S
+**Label:** Feature · **Module:** cli · **Effort:** L *(raised from S 2026-08-01: absorbs
+the core repo-less packaging work)*
 
 - Problem: `ops install`/`down` are the shipped one-command story; the original Phase 6
-  `up`/`down` naming plus bring-up UX polish remain undone.
+  `up`/`down` naming plus bring-up UX polish remain undone. And per the repo-less
+  portability requirement (2026-08-01), the whole install story currently violates the
+  standing decision: `ops.py` resolves runtime data repo-relative (`REPO_ROOT`) and the
+  brew tap is generated locally from a checkout.
 - ACs: `nyxgpt up` = alias for the full reconcile (mode flags pass through), then waits for
   component health (reusing self-heal probes) and prints the web URL; `nyxgpt down` =
   alias for teardown; both idempotent; docs/help updated; no behavior forked from `ops`
-  (thin aliases, single code path).
+  (thin aliases, single code path). **Repo-less core:** all runtime data (compose files,
+  config templates, launchd/systemd templates, grafana/promtail/prometheus provisioning,
+  helper scripts) ships inside the package (importlib.resources or ops-managed copies
+  under `~/.nyxGPT`) — no `REPO_ROOT` lookups remain; install artifacts are published
+  (pip-installable package via PyPI or GitHub Releases, remote brew tap with versioned
+  tarballs, container images to a registry for the Compose/k8s paths); acceptance:
+  `nyxgpt up` brings up the full local stack on a macOS machine that has never cloned
+  the repo; a source checkout stays supported for development only.
 
 ### P6-6 · feat: guided secrets setup - masked input and per-key help, CLI + admin wizard
 **Label:** Feature · **Module:** cli · **Effort:** M
@@ -153,13 +170,18 @@ lowest-number-first selection respects the dependencies).
 - ACs: one command: apply infra, deploy the full app + observability onto the provisioned
   instance, wire the P6-4 access path, wait for health, print the (tunnel/loopback) URL;
   idempotent re-runs; `nyxgpt cloud destroy` counterpart; smoke-verifiable end to end.
+  **Repo-less:** the deploy ships published artifacts/images to the instance (never
+  clones), and the operator side runs from an artifact-installed `nyxgpt` CLI — the whole
+  flow works from a workstation with no checkout.
 
 ### P6-12 · feat: target-OS provisioning for Linux and macOS AWS instances
 **Label:** Feature · **Module:** cli · **Effort:** L · **Blocked by:** P6-7
 **Pairs with:** P6-14 (shares the OS-dispatch layer)
 
 - ACs: cloud provisioning configures the stack correctly on Linux AMIs and EC2 Mac;
-  documented support matrix; CI coverage where feasible (Linux at minimum).
+  documented support matrix; CI coverage where feasible (Linux at minimum). **Repo-less:**
+  instances install from published artifacts/images (P6-5) — provisioning never runs
+  `git clone` on a target machine.
 
 ### P6-13 · feat: guided AWS credential collection for cloud deploy
 **Label:** Feature · **Module:** cli · **Effort:** M · **Blocked by:** P6-6, P6-10
@@ -178,7 +200,9 @@ lowest-number-first selection respects the dependencies).
   the launchd path (install/start/stop/restart/status/logs per service, log paths feeding
   the same `~/.nyxGPT/logs` shipping); self-heal's native probes work on Linux; doctor
   checks OS-appropriate; docs gain a Linux install section; CI exercise of the systemd path
-  (container or unit-level as feasible).
+  (container or unit-level as feasible). **Repo-less:** the Linux install path works from
+  the published artifacts (P6-5) on a machine with no checkout — same self-contained
+  resource resolution, no git required on the target.
 
 ### P6-15 · feat: cloud deploy lifecycle from the SRE dashboard
 **Label:** Feature · **Module:** sre · **Effort:** L · **Blocked by:** P6-11
@@ -189,13 +213,16 @@ lowest-number-first selection respects the dependencies).
   settles whether cloud gets controls or status-plus-CLI-pointers; whatever is decided is
   fully implemented and tested.
 
-### P6-16 · feat: Phase 6 capstone - clean checkout to monitored AWS deploy in one command
+### P6-16 · feat: Phase 6 capstone - clean machine to monitored AWS deploy in one command
 **Label:** Feature · **Module:** cli · **Effort:** XL · **Sequencing: selected LAST**
 
-- ACs: end-to-end acceptance — clean checkout → one command → provisioned, deployed,
-  monitored, self-healing app reachable only via the private access path; operable per the
-  P6-15 decision; documented end-to-end smoke test (P6-17's script) run green; teardown
-  verified; depends on every other P6 issue.
+- ACs: end-to-end acceptance — **clean machine (no repo checkout): install `nyxgpt` from
+  published artifacts** → one command → provisioned, deployed, monitored, self-healing app
+  reachable only via the private access path; operable per the P6-15 decision; documented
+  end-to-end smoke test (P6-17's script) run green; teardown verified; depends on every
+  other P6 issue. (Re-scoped 2026-08-01 from "clean checkout" per the repo-less
+  portability requirement; the checkout path remains a dev-mode convenience, not the
+  acceptance path.)
 
 ### P6-17 · feat: cloud smoke test - provision, verify chat and RAG, teardown
 **Label:** Feature · **Module:** testing · **Effort:** M · **Blocked by:** P6-11

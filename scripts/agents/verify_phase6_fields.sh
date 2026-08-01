@@ -32,7 +32,7 @@ EXPECTED="
 3501|P6-2|Sprint 7|security|S
 3502|P6-3|Sprint 7|testing|S
 3503|P6-4|Sprint 7|documentation|S
-3504|P6-5|Sprint 7|cli|S
+3504|P6-5|Sprint 7|cli|L
 3505|P6-6|Sprint 7|cli|M
 3506|P6-7|Sprint 7|documentation|S
 3507|P6-10|Sprint 7|security|M
