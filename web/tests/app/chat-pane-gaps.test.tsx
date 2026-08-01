@@ -419,17 +419,6 @@ describe('remaining branch closure', () => {
     expect(screen.queryByText('f0')).not.toBeInTheDocument();
   });
 
-  it('keeps the upload menu open on non-Escape keys', async () => {
-    global.fetch = makeFetchMock(undefined, []) as unknown as typeof fetch;
-    render(<ChatPane sessionName="upload-menu" />);
-    const toggle = await screen.findByTitle('Upload file');
-    fireEvent.click(toggle);
-    await screen.findByTitle('Attach image or document');
-    fireEvent.keyDown(document, { key: 'a' });
-    expect(screen.getByTitle('Attach image or document')).toBeInTheDocument();
-    fireEvent.keyDown(document, { key: 'Escape' });
-  });
-
   it('ignores a blank force-include doc id and empty file selections', async () => {
     global.fetch = makeFetchMock(undefined, [], {
       '/metadata': () => ({

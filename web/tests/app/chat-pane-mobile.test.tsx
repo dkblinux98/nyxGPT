@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ChatPane from '@/app/components/ChatPane';
 
@@ -68,7 +68,7 @@ beforeEach(() => {
 });
 
 describe('ChatPane mobile layout branches', () => {
-  it('sizes action buttons, upload/attach/RAG controls, and the send button for touch (44px) on mobile', async () => {
+  it('sizes action buttons, attach/RAG controls, and the send button for touch (44px) on mobile', async () => {
     global.fetch = makeFetchMock() as unknown as typeof fetch;
     render(<ChatPane sessionName="mobile1" />);
     await screen.findByText('hi mobile');
@@ -85,9 +85,6 @@ describe('ChatPane mobile layout branches', () => {
 
     const regenBtn = screen.getByTitle('Regenerate response');
     expect(regenBtn.getAttribute('style')).toContain('height: 44px');
-
-    const uploadBtn = screen.getByTitle('Upload file');
-    expect(uploadBtn.getAttribute('style')).toContain('width: 44px');
 
     const attachBtn = screen.getByTitle('Attach image or document');
     expect(attachBtn.getAttribute('style')).toContain('width: 44px');
@@ -123,10 +120,5 @@ describe('ChatPane mobile layout branches', () => {
 
     const stopBtn = await screen.findByTitle('Stop generating');
     expect(stopBtn.getAttribute('style')).toContain('width: 44px');
-
-    // Hover handlers on the (disabled while streaming) upload button.
-    const uploadBtn = screen.getByTitle('Upload file');
-    fireEvent.mouseEnter(uploadBtn);
-    fireEvent.mouseLeave(uploadBtn);
   });
 });

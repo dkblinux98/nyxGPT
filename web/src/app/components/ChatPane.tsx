@@ -412,7 +412,6 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
 
   // RAG state
   const [ragEnabled, setRagEnabled] = useState<boolean>(false);
-  const [ragStatus, setRagStatus] = useState<'idle' | 'uploading' | 'error'>('idle');
   const [ragError, setRagError] = useState<string | null>(null);
 
   // RAG filters state
@@ -446,10 +445,6 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
   const [attachedDocIds, setAttachedDocIds] = useState<string[]>([]);
   const [showAttachedDocs, setShowAttachedDocs] = useState<boolean>(false);
   const [attachDocInput, setAttachDocInput] = useState<string>('');
-
-  // Upload menu state
-  const [showUploadMenu, setShowUploadMenu] = useState<boolean>(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Inline attachment state
   const [pendingAttachments, setPendingAttachments] = useState<AttachmentFile[]>([]);
@@ -680,22 +675,6 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
     return () => document.removeEventListener('keydown', handleEscape);
   }, [showModelDropdown]);
 
-  // Close upload menu on click outside or Escape
-  useEffect(() => {
-    const handleClick = () => setShowUploadMenu(false);
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setShowUploadMenu(false);
-    };
-    if (showUploadMenu) {
-      document.addEventListener('click', handleClick);
-      document.addEventListener('keydown', handleEscape);
-      return () => {
-        document.removeEventListener('click', handleClick);
-        document.removeEventListener('keydown', handleEscape);
-      };
-    }
-  }, [showUploadMenu]);
-
   // Load older messages when scrolling to top (Critical Issue 2: Use Virtuoso's startReached)
   const loadOlderMessages = useCallback(async () => {
     if (isLoadingMore || !hasMore) return;
@@ -824,40 +803,6 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       setRagError(msg);
-      setRagStatus('error');
-    }
-  }
-
-  async function uploadFile(file: File) {
-    setRagStatus('uploading');
-    setRagError(null);
-
-    const formData = new FormData();
-    formData.append('file', file);
-
-    // Uploads target the currently selected RAG collection (the same
-    // selector used to scope chat retrieval), defaulting to "default" when
-    // none is picked.
-    const query = ragFilters.collection
-      ? `?collection=${encodeURIComponent(ragFilters.collection)}`
-      : '';
-
-    try {
-      const res = await fetch(`/api/rag/upload${query}`, {
-        method: 'POST',
-        body: formData,
-      });
-      if (!res.ok) throw new Error('Upload failed');
-
-      const data = await res.json();
-      console.log('File uploaded:', data.doc_id, 'into collection:', data.collection);
-      toast.success(`Uploaded "${data.doc_id}" to collection "${data.collection || 'default'}"`);
-      setRagStatus('idle');
-      fetchAvailableDocuments();
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setRagError(msg);
-      setRagStatus('error');
     }
   }
 
@@ -1718,19 +1663,6 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
         )}
       </div>
 
-      {/* Hidden file input */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept=".txt,.md,.json,.pdf,.docx,.pptx,.epub,.html,.htm"
-        onChange={(e) => {
-          const file = e.target.files?.[0];
-          if (file) void uploadFile(file);
-          e.target.value = ''; // Reset so same file can be selected again
-        }}
-        style={{ display: 'none' }}
-      />
-
       {/* RAG Filters Panel */}
       {showRagFilters && ragEnabled && (
         <div
@@ -1788,7 +1720,8 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
                 ))}
             </select>
             <p style={{ fontSize: 11, opacity: 0.7, marginTop: 4 }}>
-              Scopes RAG search to this collection, and is also where files you upload from chat are ingested.
+              Scopes RAG search to this collection. To add documents to a collection, use the
+              &quot;Upload document&quot; action on the Collections admin page.
             </p>
           </div>
 
@@ -2215,99 +2148,8 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
             borderTop: '1px solid var(--border)',
           }}
         >
-          {/* Left side: Upload button and RAG toggle */}
+          {/* Left side: Attach button and RAG toggle */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            {/* Upload menu button */}
-            <div style={{ position: 'relative' }}>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setShowUploadMenu(!showUploadMenu);
-                }}
-                disabled={isStreaming}
-                style={{
-                  width: isMobile ? 44 : 32,
-                  height: isMobile ? 44 : 32,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  borderRadius: 8,
-                  border: 'none',
-                  background: 'transparent',
-                  cursor: isStreaming ? 'not-allowed' : 'pointer',
-                  color: 'var(--foreground)',
-                  opacity: isStreaming ? 0.4 : 0.6,
-                  transition: 'opacity 0.15s, background 0.15s',
-                }}
-                onMouseEnter={(e) => {
-                  if (!isStreaming) {
-                    e.currentTarget.style.opacity = '1';
-                    e.currentTarget.style.background = 'var(--button-hover)';
-                  }
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.opacity = isStreaming ? '0.4' : '0.6';
-                  e.currentTarget.style.background = 'transparent';
-                }}
-                title="Upload file"
-              >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="12" y1="5" x2="12" y2="19" />
-                  <line x1="5" y1="12" x2="19" y2="12" />
-                </svg>
-              </button>
-
-              {/* Upload dropdown menu */}
-              {showUploadMenu && (
-                <div
-                  onClick={(e) => e.stopPropagation()}
-                  style={{
-                    position: 'absolute',
-                    bottom: '100%',
-                    left: 0,
-                    marginBottom: 8,
-                    background: 'var(--sidebar-bg)',
-                    border: '1px solid var(--border)',
-                    borderRadius: 8,
-                    boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
-                    zIndex: 1000,
-                    minWidth: 160,
-                  }}
-                >
-                  <button
-                    onClick={() => {
-                      fileInputRef.current?.click();
-                      setShowUploadMenu(false);
-                    }}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      width: '100%',
-                      padding: '10px 14px',
-                      background: 'transparent',
-                      border: 'none',
-                      fontSize: 14,
-                      cursor: 'pointer',
-                      color: 'var(--foreground)',
-                      textAlign: 'left',
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.background = 'var(--button-hover)';
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = 'transparent';
-                    }}
-                  >
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-                    </svg>
-                    Upload file
-                  </button>
-                </div>
-              )}
-            </div>
-
             {/* Inline attachment (paperclip) button */}
             <button
               onClick={() => attachmentInputRef.current?.click()}
@@ -2420,7 +2262,6 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
               </button>
             )}
 
-            {ragStatus === 'uploading' && <span style={{ fontSize: 12, color: 'var(--foreground)', opacity: 0.6 }}>Uploading...</span>}
             {ragError && <span style={{ fontSize: 12, color: 'red' }}>{ragError}</span>}
           </div>
 

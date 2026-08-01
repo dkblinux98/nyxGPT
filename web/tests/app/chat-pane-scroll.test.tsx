@@ -373,22 +373,6 @@ describe('model dropdown and upload menu interactions', () => {
     await waitFor(() => expect(screen.queryByText('modelA')).not.toBeInTheDocument());
   });
 
-  it('closes the upload menu on Escape and on outside click', async () => {
-    global.fetch = makeFetchMock() as unknown as typeof fetch;
-    render(<ChatPane sessionName="dropdown5" />);
-    const user = userEvent.setup();
-    await user.click(await screen.findByTitle('Upload file'));
-    await waitFor(() => expect(screen.queryAllByText('Upload file').length).toBeGreaterThan(0));
-
-    fireEvent.keyDown(document, { key: 'Escape' });
-    await waitFor(() => expect(screen.queryAllByText('Upload file').length).toBe(0));
-
-    await user.click(screen.getByTitle('Upload file'));
-    await waitFor(() => expect(screen.queryAllByText('Upload file').length).toBeGreaterThan(0));
-    await user.click(document.body);
-    await waitFor(() => expect(screen.queryAllByText('Upload file').length).toBe(0));
-  });
-
   it('disables the model button while streaming', async () => {
     global.fetch = makeFetchMock({
       '/api/chat/stream': () => ({

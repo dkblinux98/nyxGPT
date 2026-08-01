@@ -380,15 +380,6 @@ describe('hover style handlers (statement coverage for onMouseEnter/onMouseLeave
     fireEvent.mouseLeave(screen.getByTitle('Cancel edit'));
     await user.click(screen.getByTitle('Cancel edit'));
 
-    await user.click(screen.getByTitle('Upload file'));
-    const uploadItem = await screen.findByText('Upload file', { selector: 'button' }).catch(() =>
-      screen.getAllByText('Upload file').find((el) => el.tagName === 'BUTTON')
-    );
-    if (uploadItem) {
-      fireEvent.mouseEnter(uploadItem);
-      fireEvent.mouseLeave(uploadItem);
-    }
-
     await user.click(screen.getByRole('button', { name: /nyxGPT/i }));
     const modelItem = await screen.findByText('modelB');
     fireEvent.mouseEnter(modelItem);
