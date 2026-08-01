@@ -135,7 +135,14 @@ the core repo-less packaging work)*
   `[openai] api_key`, `[github] pat`): plain-language name, what-it's-for, exactly where to
   obtain it, masked entry (`getpass`), format validation, 0600 write; idempotent
   (`--reconfigure` to force); the same guided step exists in the `/admin` wizard per the
-  Definition of Done; tests for prompt/skip/validate flows.
+  Definition of Done; tests for prompt/skip/validate flows. **Canonical store + sync
+  (owner, 2026-08-01):** `~/.nyxGPT/config.ini` is the single canonical store for
+  write-once external tokens (Slack webhook/bot token, PATs — the issuing service never
+  shows them again); a wrapped `nyxgpt ops secrets-sync` pushes a declared key mapping
+  one-way to GitHub Actions secrets (sealed-box via the GitHub API, values never
+  printed/logged), so nothing is ever hand-edited in two places. Machine-generated
+  secrets stay in `~/.nyxGPT/secrets/` (#3458 precedent); human-provided ones in
+  config.ini; both 0600.
 
 ### P6-7 · feat: decision - AWS compute substrate, EC2 single-box vs EKS
 **Label:** Feature · **Module:** documentation · **Effort:** S · **Blocks:** P6-8, P6-11, P6-12
