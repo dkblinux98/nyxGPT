@@ -39,6 +39,11 @@ filed with:
 - **Canary, not blue-green (#3409, 2026-07-29):** blue-green is retired; canary is the
   progressive-delivery strategy on the k8s substrate (api + web per #3419; ollama documented
   infeasible).
+- **Extremely clean SDLC (2026-08-01):** the target is full test and documentation
+  coverage, perfect spec, clean code on the first try, and zero technical debt. The
+  review agent does as much heavy lifting as possible — including running live
+  verification itself (P6-18) — so owner acceptance testing confirms what the loop
+  already verified rather than being the first live exercise of anything.
 
 ## Absorbed by Phase 5.5 (do not re-file)
 
@@ -249,12 +254,18 @@ acceptance — this issue closes the gap so live verification happens *before* m
 - ACs: `nyxgpt ops verify` (wrapped) boots the needed Compose profiles ephemerally,
   generates known traffic (RAG query, ingest per source path, chat round-trip), asserts
   deterministically via Prometheus instant queries and Grafana's HTTP API executing each
-  touched panel's own query, captures Playwright screenshots of touched dashboards as PR
-  evidence the multimodal review agent can visually judge, runs on GitHub-hosted runners
-  (LLM stubbed/tiny), documents what CI cannot cover (Apple Silicon brew layout, real
-  Slack delivery — those stay owner acceptance checks), doubles as the owner's
-  one-command pre-acceptance check, and narrows the review-runbook §2 live-verification
-  exception to only the documented not-covered list.
+  touched panel's own query, and captures Playwright screenshots of touched dashboards.
+  **The review agent runs the harness itself** on every review touching observability,
+  metrics, or UI surfaces: it executes the command in its CI environment, reads the
+  assertion results, visually inspects the screenshots (multimodal), and cites the live
+  evidence in its APPROVE/REQUEST_CHANGES — an APPROVE without having run the harness on
+  an eligible PR is a process violation. Runs on GitHub-hosted runners (LLM stubbed/tiny);
+  documents what CI cannot cover (Apple Silicon brew layout, real Slack delivery — ONLY
+  those stay owner acceptance checks); doubles as the owner's one-command pre-acceptance
+  convenience (the review loop must not depend on it); narrows the review-runbook §2
+  live-verification exception to only the documented not-covered list. Owner goal
+  (2026-08-01): review-agent heavy lifting toward a clean SDLC — owner acceptance
+  confirms what the loop already verified.
 
 ---
 
