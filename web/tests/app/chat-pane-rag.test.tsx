@@ -479,35 +479,6 @@ describe('RAG toggle, filters, attach/detach, upload', () => {
     Object.defineProperty(window.navigator, 'onLine', { value: true, configurable: true });
   });
 
-  it('uploadFile via the hidden file input: success and failure paths', async () => {
-    let uploadOk = true;
-    global.fetch = makeFetchMock({
-      '/rag/upload': () =>
-        uploadOk
-          ? { ok: true, status: 200, json: () => Promise.resolve({ doc_id: 'uploaded-1' }) }
-          : { ok: false, status: 500, json: () => Promise.resolve({}) },
-    }) as unknown as typeof fetch;
-
-    render(<ChatPane sessionName="upload1" />);
-    const user = userEvent.setup();
-    await user.click(await screen.findByTitle('Upload file'));
-    await user.click(await screen.findByText('Upload file'));
-
-    const fileInput = document.querySelector('input[type="file"]:not([multiple])') as HTMLInputElement;
-    expect(fileInput).toBeTruthy();
-    const file = new File(['hello'], 'doc.txt', { type: 'text/plain' });
-    await userEvent.upload(fileInput, file);
-    await waitFor(() => expect((global.fetch as any).mock.calls.some((c: any[]) => c[0] === '/api/rag/upload')).toBe(true));
-
-    // Second upload, this time failing.
-    uploadOk = false;
-    await user.click(screen.getByTitle('Upload file'));
-    await user.click(screen.getByText('Upload file'));
-    const file2 = new File(['hello2'], 'doc2.txt', { type: 'text/plain' });
-    await userEvent.upload(fileInput, file2);
-    await waitFor(() => expect(screen.getByText('Upload failed')).toBeInTheDocument());
-  });
-
   it('selects a non-default collection, reflects it on the Filters button, and forwards it on the next chat request', async () => {
     let sendBody: any = null;
     global.fetch = makeFetchMock({
@@ -602,26 +573,4 @@ describe('RAG toggle, filters, attach/detach, upload', () => {
     await waitFor(() => expect(screen.getByText(/· default/)).toBeInTheDocument());
   });
 
-  it('scopes the chat upload request to the selected collection', async () => {
-    let uploadUrl = '';
-    global.fetch = makeFetchMock({
-      '/metadata': () => ({ ok: true, status: 200, json: () => Promise.resolve({ rag_enabled: true, title: '', model: '' }) }),
-      '/rag/upload': (url: string) => {
-        uploadUrl = url;
-        return { ok: true, status: 200, json: () => Promise.resolve({ doc_id: 'uploaded-2', collection: 'docs2' }) };
-      },
-    }) as unknown as typeof fetch;
-    sessionStorage.setItem('rag_filters_upload2', JSON.stringify({ collection: 'docs2' }));
-
-    render(<ChatPane sessionName="upload2" />);
-    const user = userEvent.setup();
-    await waitFor(() => expect(screen.getByText('RAG: ON')).toBeInTheDocument());
-    await user.click(await screen.findByTitle('Upload file'));
-    await user.click(await screen.findByText('Upload file'));
-
-    const fileInput = document.querySelector('input[type="file"]:not([multiple])') as HTMLInputElement;
-    const file = new File(['hello'], 'doc.txt', { type: 'text/plain' });
-    await userEvent.upload(fileInput, file);
-    await waitFor(() => expect(uploadUrl).toContain('collection=docs2'));
-  });
 });

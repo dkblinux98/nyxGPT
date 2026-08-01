@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { server } from '../../mocks/server';
@@ -840,5 +840,200 @@ describe('CollectionsPage', () => {
     });
 
     fetchSpy.mockRestore();
+  });
+
+  it('uploads a document into the selected collection and reflects the updated counts', async () => {
+    mockCollections();
+    const user = userEvent.setup();
+
+    render(<CollectionsPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('notes')).toBeInTheDocument();
+    });
+
+    let uploadedUrl = '';
+    server.use(
+      http.post('/api/rag/upload', ({ request }) => {
+        uploadedUrl = request.url;
+        return HttpResponse.json({
+          doc_id: 'field-notes',
+          chunks_ingested: 4,
+          status: 'ingested',
+          doc_hash: 'abc123',
+          previous_hash: null,
+          collection: 'notes',
+        });
+      }),
+      http.get('/api/v1/rag/collections', () =>
+        HttpResponse.json({
+          collections: [sampleCollections[0], { ...sampleCollections[1], doc_count: 4, chunk_count: 24 }],
+        })
+      )
+    );
+
+    const notesCard = screen.getByText('notes').closest('div')!.parentElement!.parentElement!;
+    const uploadButton = within(notesCard).getByRole('button', { name: /upload document/i });
+    await user.click(uploadButton);
+
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    expect(fileInput).toBeTruthy();
+    const file = new File(['hello world'], 'field-notes.txt', { type: 'text/plain' });
+    await user.upload(fileInput, file);
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Uploaded 'field-notes' into 'notes': 4 chunk\(s\) ingested \(ingested\)\./)
+      ).toBeInTheDocument();
+    });
+    expect(uploadedUrl).toContain('collection=notes');
+
+    const notesCardAfter = screen.getByText('notes').closest('div')!.parentElement!.parentElement!;
+    expect(within(notesCardAfter).getByText('4')).toBeInTheDocument();
+    expect(within(notesCardAfter).getByText('24')).toBeInTheDocument();
+  });
+
+  it('falls back to the clicked collection name when the upload response omits it', async () => {
+    mockCollections();
+    const user = userEvent.setup();
+
+    render(<CollectionsPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('notes')).toBeInTheDocument();
+    });
+
+    server.use(
+      http.post('/api/rag/upload', () =>
+        HttpResponse.json({
+          doc_id: 'field-notes-2',
+          chunks_ingested: 1,
+          status: 'ingested',
+          doc_hash: 'def456',
+          previous_hash: null,
+        })
+      )
+    );
+
+    const notesCard = screen.getByText('notes').closest('div')!.parentElement!.parentElement!;
+    await user.click(within(notesCard).getByRole('button', { name: /upload document/i }));
+
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const file = new File(['hello again'], 'field-notes-2.txt', { type: 'text/plain' });
+    await user.upload(fileInput, file);
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Uploaded 'field-notes-2' into 'notes': 1 chunk\(s\) ingested \(ingested\)\./)
+      ).toBeInTheDocument();
+    });
+  });
+
+  it('uploads into the default collection and surfaces upload errors', async () => {
+    mockCollections();
+    const user = userEvent.setup();
+
+    render(<CollectionsPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('(Default)')).toBeInTheDocument();
+    });
+
+    let uploadedUrl = '';
+    server.use(
+      http.post('/api/rag/upload', ({ request }) => {
+        uploadedUrl = request.url;
+        return HttpResponse.json(
+          { error: { code: 'http_error', message: 'unsupported file type', details: null, request_id: 'req-9' } },
+          { status: 400 }
+        );
+      })
+    );
+
+    const defaultCard = screen.getByText('default').closest('div')!.parentElement!.parentElement!;
+    await user.click(within(defaultCard).getByRole('button', { name: /upload document/i }));
+
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const file = new File(['bad'], 'notes.txt', { type: 'text/plain' });
+    await user.upload(fileInput, file);
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Failed to upload document to 'default': unsupported file type/)
+      ).toBeInTheDocument();
+    });
+    expect(uploadedUrl).toContain('collection=default');
+  });
+
+  it('falls back to "Unknown error" when a failed upload response body is unparseable', async () => {
+    mockCollections();
+    const user = userEvent.setup();
+
+    render(<CollectionsPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('notes')).toBeInTheDocument();
+    });
+
+    server.use(http.post('/api/rag/upload', () => new HttpResponse(null, { status: 500 })));
+
+    const notesCard = screen.getByText('notes').closest('div')!.parentElement!.parentElement!;
+    await user.click(within(notesCard).getByRole('button', { name: /upload document/i }));
+
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const file = new File(['bad'], 'notes.txt', { type: 'text/plain' });
+    await user.upload(fileInput, file);
+
+    await waitFor(() => {
+      expect(screen.getByText("Failed to upload document to 'notes': Unknown error")).toBeInTheDocument();
+    });
+  });
+
+  it('falls back to String(e) when the upload request rejects with a non-Error value', async () => {
+    mockCollections();
+    const user = userEvent.setup();
+    const fetchSpy = vi.spyOn(global, 'fetch');
+
+    render(<CollectionsPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('notes')).toBeInTheDocument();
+    });
+
+    const notesCard = screen.getByText('notes').closest('div')!.parentElement!.parentElement!;
+    await user.click(within(notesCard).getByRole('button', { name: /upload document/i }));
+
+    fetchSpy.mockImplementationOnce(() => Promise.reject('upload gremlin'));
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const file = new File(['hello'], 'field-notes-3.txt', { type: 'text/plain' });
+    await user.upload(fileInput, file);
+
+    await waitFor(() => {
+      expect(screen.getByText("Failed to upload document to 'notes': upload gremlin")).toBeInTheDocument();
+    });
+
+    fetchSpy.mockRestore();
+  });
+
+  it('resets the upload target when the file picker is dismissed without a selection', async () => {
+    mockCollections();
+    const user = userEvent.setup();
+
+    render(<CollectionsPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('notes')).toBeInTheDocument();
+    });
+
+    const notesCard = screen.getByText('notes').closest('div')!.parentElement!.parentElement!;
+    await user.click(within(notesCard).getByRole('button', { name: /upload document/i }));
+
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    // Simulate the browser's file picker firing a change event with no file selected.
+    Object.defineProperty(fileInput, 'files', { value: [], configurable: true });
+    fireEvent.change(fileInput);
+
+    // No upload request should have been made.
+    expect(screen.queryByText(/Uploaded '/)).not.toBeInTheDocument();
   });
 });

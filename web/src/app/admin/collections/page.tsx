@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import LoadingSpinner from '../../../components/LoadingSpinner';
 import ErrorMessage from '../../../components/ErrorMessage';
 
@@ -77,6 +77,9 @@ export default function CollectionsPage() {
   const [settingsEmbeddingModel, setSettingsEmbeddingModel] = useState('');
   const [settingsChunkSize, setSettingsChunkSize] = useState('');
   const [settingsChunkOverlap, setSettingsChunkOverlap] = useState('');
+  const [uploadTargetCollection, setUploadTargetCollection] = useState<string | null>(null);
+  const [uploadingCollection, setUploadingCollection] = useState<string | null>(null);
+  const uploadInputRef = useRef<HTMLInputElement>(null);
 
   async function loadCollections() {
     setLoading(true);
@@ -200,6 +203,50 @@ export default function CollectionsPage() {
       setError(`Failed to create collection: ${msg}`);
     } finally {
       setCreating(false);
+    }
+  }
+
+  function handleUploadClick(collectionName: string) {
+    setUploadTargetCollection(collectionName);
+    // Ref is attached to a single shared hidden input; click() must happen
+    // after the target collection state above so onChange picks it up.
+    uploadInputRef.current?.click();
+  }
+
+  async function handleUploadFile(file: File) {
+    // Always set by handleUploadClick before the shared file input is opened.
+    const targetCollection = uploadTargetCollection!;
+
+    setUploadingCollection(targetCollection);
+    setError(null);
+    setActionMessage(null);
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const res = await fetch(
+        `/api/rag/upload?collection=${encodeURIComponent(targetCollection)}`,
+        { method: 'POST', body: formData }
+      );
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({ error: 'Unknown error' }));
+        throw new Error(extractErrorMessage(errorData, `HTTP ${res.status}`));
+      }
+
+      const data = await res.json();
+      // Reload collections so the card reflects the new doc/chunk counts
+      await loadCollections();
+      setActionMessage(
+        `Uploaded '${data.doc_id}' into '${data.collection || targetCollection}': ${data.chunks_ingested} chunk(s) ingested (${data.status}).`
+      );
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(`Failed to upload document to '${targetCollection}': ${msg}`);
+    } finally {
+      setUploadingCollection(null);
+      setUploadTargetCollection(null);
     }
   }
 
@@ -392,6 +439,24 @@ export default function CollectionsPage() {
                   )}
                 </div>
                 <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <button
+                    onClick={() => handleUploadClick(coll.name)}
+                    disabled={uploadingCollection === coll.name}
+                    title={`Upload a document into '${coll.name}'`}
+                    style={{
+                      padding: '0.5rem 1rem',
+                      backgroundColor: '#16a34a',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '0.375rem',
+                      cursor: uploadingCollection === coll.name ? 'not-allowed' : 'pointer',
+                      fontSize: '0.875rem',
+                      fontWeight: '600',
+                      opacity: uploadingCollection === coll.name ? 0.6 : 1,
+                    }}
+                  >
+                    {uploadingCollection === coll.name ? 'Uploading...' : 'Upload Document'}
+                  </button>
                   <button
                     onClick={() => handleViewSettings(coll.name)}
                     style={{
@@ -674,6 +739,22 @@ export default function CollectionsPage() {
           its own vector index optimized for the embedding model and dimension you choose.
         </p>
       </div>
+
+      {/* Hidden file input shared by every collection's "Upload Document" button;
+          the target collection is tracked in `uploadTargetCollection` state set
+          by handleUploadClick just before this input is clicked. */}
+      <input
+        ref={uploadInputRef}
+        type="file"
+        accept=".txt,.md,.json,.pdf,.docx,.pptx,.epub,.html,.htm"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) void handleUploadFile(file);
+          else setUploadTargetCollection(null);
+          e.target.value = '';
+        }}
+        style={{ display: 'none' }}
+      />
 
       {/* Create Collection Modal */}
       {showCreateModal && (

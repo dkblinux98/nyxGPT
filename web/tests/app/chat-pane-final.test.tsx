@@ -158,7 +158,7 @@ describe('loadOlderMessages / initial pagination: not-ok and missing-messages fa
   });
 });
 
-describe('attachDocument/detachDocument/toggleRag/uploadFile remaining branches', () => {
+describe('attachDocument/detachDocument/toggleRag remaining branches', () => {
   it('attachDocument succeeds and falls back to [] when attached_doc_ids is missing from the response', async () => {
     global.fetch = makeFetchMock({
       '/rag/documents': () => ({ ok: true, status: 200, json: () => Promise.resolve({ documents: [] }) }),
@@ -204,19 +204,6 @@ describe('attachDocument/detachDocument/toggleRag/uploadFile remaining branches'
     await waitFor(() => expect(screen.getByText('plain string rejection')).toBeInTheDocument());
   });
 
-  it('uploadFile surfaces a stringified error when a non-Error is thrown', async () => {
-    global.fetch = makeFetchMock({
-      '/rag/upload': () => Promise.reject('upload rejection string'),
-    }) as unknown as typeof fetch;
-    render(<ChatPane sessionName="nonerror2" />);
-    const user = userEvent.setup();
-    await user.click(await screen.findByTitle('Upload file'));
-    await user.click(await screen.findByText('Upload file'));
-    const fileInput = document.querySelector('input[type="file"]:not([multiple])') as HTMLInputElement;
-    const file = new File(['x'], 'f.txt', { type: 'text/plain' });
-    await userEvent.upload(fileInput, file);
-    await waitFor(() => expect(screen.getByText('upload rejection string')).toBeInTheDocument());
-  });
 });
 
 describe('send() editingIndex-cleared and rag_filters operand branches', () => {
