@@ -195,6 +195,51 @@ def test_chat_stream_endpoint_increments_business_metrics() -> None:
 
 
 @pytest.mark.unit
+def test_chat_stream_endpoint_increments_rag_query_metric_when_rag_used() -> None:
+    """A streamed reply carrying `__RAG_START__`/`__RAG_END__` markers must
+    bump `nyxgpt_rag_queries_total{source="chat"}` (#3469 acceptance
+    failure): the web UI's chat pane only ever calls `/chat/stream`, so
+    before this fix every RAG query issued through the actual chat
+    interface was invisible to the SPOG RAG panels -- only the
+    non-streaming `/api/v1/chat` endpoint incremented this counter.
+
+    Asserts on the counter's delta (not mere presence of a
+    ``source="chat"`` sample): that counter is process-global and other
+    tests in this file (e.g. ``test_chat_endpoint_increments_business_metrics``)
+    already increment it via the non-streaming endpoint, so a presence-only
+    assertion would pass even if the streaming-path fix regressed.
+    """
+    client = TestClient(app)
+    before = prom_metrics.RAG_QUERIES_TOTAL.labels(source="chat")._value.get()
+
+    def mock_chat_stream(*args, **kwargs):
+        yield "before "
+        yield '__RAG_START__{"chunks": []}__RAG_END__'
+        yield "after"
+
+    with (
+        patch("nyxgpt.app.chat_stream", side_effect=mock_chat_stream),
+        client.stream(
+            "POST",
+            "/api/v1/chat/stream",
+            json={
+                "prompt": "hi",
+                "session": "metrics-unit-test-rag-stream",
+                "model": "metrics-stream-rag-model",
+            },
+        ) as response,
+    ):
+        assert response.status_code == 200
+        list(response.iter_text())
+
+    after = prom_metrics.RAG_QUERIES_TOTAL.labels(source="chat")._value.get()
+    assert after == before + 1, (
+        "expected nyxgpt_rag_queries_total{source=chat} to increase by exactly 1 "
+        "for a streamed reply using RAG"
+    )
+
+
+@pytest.mark.unit
 def test_resource_ingest_cache_and_rate_limit_metrics_are_registered() -> None:
     prom_metrics.RAG_INGESTS_TOTAL.labels(source="unit-test", result="success").inc()
     prom_metrics.CACHE_REQUESTS_TOTAL.labels(cache="unit-test", result="hit").inc()

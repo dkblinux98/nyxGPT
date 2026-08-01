@@ -344,6 +344,41 @@ if you change `jaeger_ui_url`/`glitchtip_ui_url`/`prometheus_ui_url` in
 config, update `docker/grafana/dashboards/sre-home.json`'s panel links to
 match.
 
+### Manual verification: RAG panel legibility at local traffic (#3469)
+
+The RAG panels on SRE Home and the RAG Performance dashboard use
+`increase(...[$__rate_interval])` (not a per-second `rate()`) precisely so
+a handful of interactive local queries/ingests render as a visible integer
+blip instead of vanishing under a requests/second axis. Query-syntax review
+and unit tests (`tests/unit/test_monitoring_stack.py`,
+`tests/unit/test_metrics.py`) cover the panel JSON and metric emission, but
+only a live pass against a running stack catches scrape-target and
+range-vs-activity issues, so re-run these steps after any change to
+`docker/grafana/dashboards/{sre-home,rag-performance}.json` or to RAG
+metric emission (`src/nyxgpt/app.py`, `src/nyxgpt/chat.py`):
+
+1. Start the stack (`nyxgpt ops install`) and open Grafana's **SRE Home**
+   dashboard from the Admin Dashboard's SRE Overview tile. Set the time
+   range to cover "now" (e.g. Last 15 minutes) with auto-refresh on — a
+   flat/blank panel with a stale time range is a range mismatch, not a
+   metrics bug.
+2. Issue one RAG query from the chat pane (any prompt that triggers
+   retrieval) and confirm "RAG queries by source" and "Total RAG queries by
+   source" move within one scrape interval (Prometheus scrapes `/metrics`
+   every 15s — see `docker/prometheus.yml`).
+3. Ingest one document through each path — chat attachment (paperclip),
+   playground/API upload (`POST /rag/ingest`), and index-repo — and confirm
+   each bumps "RAG ingests by source and outcome" / "Total RAG ingests by
+   source" with the correct `source`/`outcome` labels.
+4. Confirm the "Total RAG queries/ingests by source" stat panels render `0`
+   (not blank or "No data") for any source with no activity in the selected
+   window.
+5. In the Prometheus UI (started by `nyxgpt ops observability`; reachable
+   at its published port), check **Status → Targets** and confirm the API
+   scrape target is `UP`. A dead scrape reproduces the same "flat
+   zero/blank stat" symptom regardless of whether the counters are
+   incrementing correctly.
+
 ## Monitoring Dashboards
 
 Grafana dashboards are local-only — metrics never leave this machine. It

@@ -261,6 +261,33 @@ def test_local_traffic_panels_use_increase_not_bare_rate(
         ), f"{dashboard_name}::{panel_title} expr should not use a bare rate(): {expr!r}"
 
 
+RAG_TOTAL_STAT_PANELS = [
+    "Total RAG queries by source",
+    "Total RAG ingests by source",
+]
+
+
+@pytest.mark.parametrize("panel_title", RAG_TOTAL_STAT_PANELS)
+def test_rag_total_by_source_panels_render_honest_zero(panel_title: str) -> None:
+    """A Grafana `piechart` panel draws nothing for an all-zero series --
+    Prometheus (correctly) exposes it, but the panel shows a blank tile
+    indistinguishable from "No data" (#3469 acceptance failure: the owner
+    saw the RAG-queries total panel render blank despite real queries that
+    session, on a dashboard whose whole point is the #3424 honest-zero
+    convention). A `stat` panel renders each series' value explicitly,
+    including 0, so this must stay `stat` and never regress back to
+    `piechart`."""
+    dashboard = json.loads(
+        (REPO_ROOT / "docker" / "grafana" / "dashboards" / "rag-performance.json").read_text()
+    )
+    panels = {p["title"]: p for p in dashboard["panels"]}
+    assert panel_title in panels, f"rag-performance.json is missing panel {panel_title!r}"
+    assert panels[panel_title]["type"] == "stat", (
+        f"{panel_title} should be a 'stat' panel so legitimate all-zero series "
+        "render as an honest 0 instead of a blank piechart"
+    )
+
+
 def test_grafana_dashboards_are_provisioned() -> None:
     dashboards_dir = REPO_ROOT / "docker" / "grafana" / "dashboards"
     dashboard_files = sorted(p.name for p in dashboards_dir.glob("*.json"))
