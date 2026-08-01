@@ -1066,17 +1066,26 @@ _API_IMAGE_FINGERPRINT_PATHS = [
 
 
 def _install_homebrew_api(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResult]:
-    """Build and install the `nyxgpt-api` Homebrew formula into `tap`, then start the service.
+    """Build and install the `nyxgpt-api` Homebrew formula into `tap`, then (re)start the service.
 
     Generates a dist tarball vendoring `pyproject.toml` + `src/nyxgpt/`,
     patches the formula template's `sha256` to match it, writes the formula
     into the tap's Formula/ dir, and installs/reinstalls it only if the
     vendored source actually changed since the last install (see
-    `_brew_install_or_reinstall`), then requests `brew services start`. The
-    formula itself builds a self-contained venv inside the Cellar keg from
-    that vendored source -- the installed app never depends on the repo
-    checkout or an editable `.venv` (#3406). Returns a list of OpsResult;
-    fails early if brew isn't installed or the formula template is missing.
+    `_brew_install_or_reinstall`). The formula itself builds a self-contained
+    venv inside the Cellar keg from that vendored source -- the installed app
+    never depends on the repo checkout or an editable `.venv` (#3406).
+
+    When a rebuild actually happened (`decision` is "installed" or
+    "reinstalled ..."), this restarts the service (`brew services restart`)
+    instead of just starting it: `brew services start` on an already-running
+    service is a no-op, so a code fix landing while the API is still running
+    would otherwise leave the *old* in-memory process serving requests
+    against the new keg's on-disk source forever -- silently undoing the fix
+    (#3472, mirrors the `nyxgpt-web` fix in #3445). When nothing changed, a
+    plain `start` is used so an already-up-to-date install doesn't bounce a
+    healthy running service. Returns a list of OpsResult; fails early if brew
+    isn't installed or the formula template is missing.
     """
     results: list[OpsResult] = []
     if _which("brew") is None:
@@ -1112,8 +1121,15 @@ def _install_homebrew_api(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResul
     decision = _brew_install_or_reinstall(
         f"{tap}/nyxgpt-api", "nyxgpt-api", sha256=sha, marker_dir=tap_dir / "dist"
     )
-    _run(["brew", "services", "start", "nyxgpt-api"], check=False)
-    results.append(OpsResult(True, f"nyxgpt-api: {decision}; requested service start", ""))
+    if decision == "already up to date (skipped reinstall)":
+        _run(["brew", "services", "start", "nyxgpt-api"], check=False)
+        results.append(OpsResult(True, f"nyxgpt-api: {decision}; requested service start", ""))
+    else:
+        # A new keg was just installed -- restart, not start, so the running
+        # process actually picks it up instead of continuing to serve the
+        # old build's code (#3472).
+        results.append(OpsResult(True, f"nyxgpt-api: {decision}", ""))
+        results.extend(_restart_brew_service("nyxgpt-api"))
 
     return results
 
