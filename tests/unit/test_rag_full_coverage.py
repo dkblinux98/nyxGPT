@@ -708,6 +708,39 @@ def test_retrieve_context_hybrid_keyword_search_tags_filter(
 
 
 @pytest.mark.unit
+def test_retrieve_context_hybrid_keyword_search_tolerates_legacy_string_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression fixture for #3541: a row ingested before metadata was
+    consistently JSON-encoded stores a bare string (like `smoke-test-doc`'s
+    stored shape), not a `{"filename": ..., "tags": ...}` object. The
+    keyword-search chunk fetch must not drop the chunk entirely just because
+    `metadata.get(...)` can't run against a str."""
+    monkeypatch.setattr("nyxgpt.rag.rag.load_config", lambda *_a, **_k: _hybrid_cfg())
+    _patch_single_query_embedding(monkeypatch)
+
+    legacy_row = SimpleNamespace(
+        doc_id="smoke-test-doc",
+        chunk_id=0,
+        text="python tutorial content",
+        metadata="smoke-test-doc",
+        embedding_model="test-model",
+        embedding_dim=3,
+        ingested_at=None,
+    )
+    rows_by_doc = {"smoke-test-doc": [legacy_row]}
+    store = _HybridFakeStore([], ["smoke-test-doc"], rows_by_doc)
+    monkeypatch.setattr("nyxgpt.rag.rag.CassandraVectorStore", lambda **kw: store)
+
+    from nyxgpt.rag.rag import retrieve_context
+
+    results = retrieve_context("python tutorial")
+
+    doc_ids = {r["doc_id"] for r in results}
+    assert "smoke-test-doc" in doc_ids
+
+
+@pytest.mark.unit
 def test_retrieve_context_hybrid_keyword_search_date_range_filter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -138,13 +138,15 @@ def test_rag_document_info_store_error_returns_400() -> None:
 
 
 def test_rag_documents_list_enriches_with_metadata() -> None:
+    """`metadata` is a Cassandra `text` column holding a JSON-encoded object --
+    the driver hands back a raw string, never a pre-parsed dict."""
     mock_store = Mock()
     mock_store.list_docs.return_value = [
         {"doc_id": "doc-1", "chunks": 2, "embedding_model": "nomic-embed-text"},
     ]
     mock_store.table_name = "documents"
     row = Mock()
-    row.metadata = {"filename": "report.pdf", "tags": ["finance"]}
+    row.metadata = '{"filename": "report.pdf", "tags": ["finance"]}'
     row.ingested_at = None
     mock_store.session.execute.return_value = [row]
 
@@ -168,6 +170,76 @@ def test_rag_documents_list_enriches_with_metadata() -> None:
         }
     ]
     mock_store.close.assert_called_once()
+
+
+def test_rag_documents_list_enriches_legacy_string_metadata_without_warning_path() -> None:
+    """Regression fixture for #3541: pre-citation-enrichment rows (like
+    `smoke-test-doc`) store metadata as a bare, non-JSON string rather than a
+    JSON object. Enrichment must degrade filename/tags to None instead of
+    raising `'str' object has no attribute 'get'`."""
+    mock_store = Mock()
+    mock_store.list_docs.return_value = [
+        {"doc_id": "smoke-test-doc", "chunks": 1, "embedding_model": "nomic-embed-text"},
+    ]
+    mock_store.table_name = "documents"
+    row = Mock()
+    row.metadata = "smoke-test-doc"
+    row.ingested_at = None
+    mock_store.session.execute.return_value = [row]
+
+    client = _client()
+    with patch(
+        "nyxgpt.rag.vectorstore_cassandra.CassandraVectorStore",
+        lambda **kwargs: mock_store,
+    ):
+        response = client.get("/api/v1/rag/documents")
+
+    assert response.status_code == 200
+    docs = response.json()["documents"]
+    assert docs == [
+        {
+            "doc_id": "smoke-test-doc",
+            "chunks": 1,
+            "embedding_model": "nomic-embed-text",
+            "filename": None,
+            "tags": None,
+            "ingested_at": None,
+        }
+    ]
+    mock_store.close.assert_called_once()
+
+
+def test_rag_documents_list_enriches_malformed_metadata_string() -> None:
+    """Metadata that isn't even valid JSON also degrades gracefully."""
+    mock_store = Mock()
+    mock_store.list_docs.return_value = [
+        {"doc_id": "doc-broken", "chunks": 1, "embedding_model": "nomic-embed-text"},
+    ]
+    mock_store.table_name = "documents"
+    row = Mock()
+    row.metadata = "{not valid json"
+    row.ingested_at = None
+    mock_store.session.execute.return_value = [row]
+
+    client = _client()
+    with patch(
+        "nyxgpt.rag.vectorstore_cassandra.CassandraVectorStore",
+        lambda **kwargs: mock_store,
+    ):
+        response = client.get("/api/v1/rag/documents")
+
+    assert response.status_code == 200
+    docs = response.json()["documents"]
+    assert docs == [
+        {
+            "doc_id": "doc-broken",
+            "chunks": 1,
+            "embedding_model": "nomic-embed-text",
+            "filename": None,
+            "tags": None,
+            "ingested_at": None,
+        }
+    ]
 
 
 def test_rag_documents_list_falls_back_when_metadata_enrichment_fails() -> None:
