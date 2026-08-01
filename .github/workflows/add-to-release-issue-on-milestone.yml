@@ -31,6 +31,15 @@ jobs:
               return;
             }
 
+            // A release tracking issue is the ledger, not an entry: when the
+            // tracker itself gets milestoned (owner housekeeping), its version
+            // matches its own release and it appended ITSELF to its own
+            // checklist (#2759, 2026-07-31). Never track the tracker.
+            if (issueNumber === releaseIssueNumber) {
+              core.notice(`Issue #${issueNumber} IS the release tracking issue — not adding it to its own checklist.`);
+              return;
+            }
+
             const rel = await github.rest.issues.get({ owner, repo, issue_number: releaseIssueNumber });
             const body = rel.data.body || "";
 
