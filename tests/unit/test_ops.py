@@ -3450,7 +3450,50 @@ def test_install_homebrew_api_success(monkeypatch, tmp_path):
     assert 'version "2.0.0"' in content
     assert "nyxgpt-api-2.0.0.tar.gz" in content
     assert any(cmd[:2] in (["brew", "install"], ["brew", "reinstall"]) for cmd in run_calls)
+    # A fresh install/reinstall must restart (not merely start) the service so
+    # the running uvicorn process actually picks up the newly built keg's
+    # source instead of continuing to serve the old process's already-imported
+    # (stale) code (#3472, mirrors the nyxgpt-web fix in #3445).
+    assert any(cmd[:3] == ["brew", "services", "restart"] for cmd in run_calls)
+    assert not any(cmd[:3] == ["brew", "services", "start"] for cmd in run_calls)
+
+
+@pytest.mark.unit
+def test_install_homebrew_api_already_up_to_date_uses_start_not_restart(monkeypatch, tmp_path):
+    """When the vendored api source hasn't changed since the last install,
+    `_brew_install_or_reinstall` skips the rebuild entirely -- and this must
+    only `start` (idempotent) the service rather than bounce an
+    already-healthy running process for no reason (#3472, mirrors #3445)."""
+    repo_root = _make_fake_api_repo_root(tmp_path)
+    (repo_root / "homebrew").mkdir(parents=True)
+    (repo_root / "homebrew" / "nyxgpt-api.rb").write_text(
+        'url "file://tap/dist/nyxgpt-api-__VERSION__.tar.gz"\n'
+        'sha256 "__SHA256__"\n'
+        'version "__VERSION__"\n',
+        encoding="utf-8",
+    )
+    tap_dir = tmp_path / "tap"
+
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/brew")
+    monkeypatch.setattr(ops, "REPO_ROOT", repo_root)
+    monkeypatch.setattr(ops, "_tap_repo", lambda tap: tap_dir)
+    monkeypatch.setattr(ops, "_read_project_version", lambda: "2.0.0")
+    monkeypatch.setattr(
+        ops,
+        "_brew_install_or_reinstall",
+        lambda *a, **k: "already up to date (skipped reinstall)",
+    )
+    run_calls = []
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: run_calls.append(cmd) or subprocess.CompletedProcess(cmd, 0),
+    )
+
+    results = ops._install_homebrew_api()
+    assert all(r.ok for r in results)
     assert any(cmd[:3] == ["brew", "services", "start"] for cmd in run_calls)
+    assert not any(cmd[:3] == ["brew", "services", "restart"] for cmd in run_calls)
 
 
 @pytest.mark.unit
@@ -3595,6 +3638,25 @@ def test_api_formula_launches_via_bash():
     formula = Path(__file__).resolve().parents[2] / "homebrew" / "nyxgpt-api.rb"
     text = formula.read_text(encoding="utf-8")
     assert 'run ["/bin/bash", opt_bin/"nyxgpt-api"]' in text
+
+
+@pytest.mark.unit
+def test_api_formula_wrapper_execs_uvicorn():
+    """Regression test: the wrapper script must `exec` into uvicorn rather
+    than run it as a child process. A plain (non-exec'd) foreground command
+    leaves bash as the tracked launchd PID; bash's SIGTERM/SIGINT traps used
+    to only log the signal without forwarding it or killing the child, so
+    `brew services stop`/`restart` never actually stopped uvicorn -- it was
+    silently orphaned, still bound to the port and still serving the *old*
+    in-memory code, which is how a merged code fix could survive a
+    `nyxgpt ops down && nyxgpt ops install` cycle without ever taking effect
+    on the live stack (#3472). `exec` makes uvicorn the actual tracked
+    process so a stop signal reaches it directly, mirroring nyxgpt-web.rb's
+    wrapper (`exec npm run start`)."""
+    formula = Path(__file__).resolve().parents[2] / "homebrew" / "nyxgpt-api.rb"
+    text = formula.read_text(encoding="utf-8")
+    assert 'exec "#{venv}/bin/python3" -m uvicorn nyxgpt.app:app' in text
+    assert "trap '" not in text
 
 
 # --- _brew_install_or_reinstall ---

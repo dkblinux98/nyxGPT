@@ -80,13 +80,19 @@ PY
       echo "  host: $HOST" >&2
       echo "  port: $PORT" >&2
 
-      trap 'echo "nyxgpt-api wrapper received SIGTERM" >&2' TERM
-      trap 'echo "nyxgpt-api wrapper received SIGINT" >&2' INT
-
-      "#{venv}/bin/python3" -m uvicorn nyxgpt.app:app --host "$HOST" --port "$PORT"
-      RC=$?
-      echo "nyxgpt-api uvicorn exited with code $RC" >&2
-      exit $RC
+      # `exec` replaces this wrapper's process image with uvicorn instead of
+      # running it as a child: without it, launchd/`brew services stop`'s
+      # SIGTERM lands on this bash process, whose old `trap ... TERM` only
+      # logged the signal without forwarding it or killing the child, so
+      # uvicorn never actually stopped -- it was silently orphaned (still
+      # bound to the port, still serving the *old* in-memory code) once bash
+      # exited or was force-killed after launchd's grace period. The next
+      # `brew services start`/`restart` then raced that orphan for the port,
+      # so a rebuilt keg's fix could silently never take effect on the
+      # running stack (#3472). `exec` here makes uvicorn the tracked PID
+      # directly, so a stop signal reaches it and actually shuts it down --
+      # matching how nyxgpt-web.rb's wrapper `exec`s into `npm run start`.
+      exec "#{venv}/bin/python3" -m uvicorn nyxgpt.app:app --host "$HOST" --port "$PORT"
     EOS
     system "chmod", "0755", bin/"nyxgpt-api"
   end
