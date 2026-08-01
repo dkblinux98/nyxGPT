@@ -608,11 +608,12 @@ Exit codes:
 
 ## `nyxgpt ops alert-test`
 
-Fires a synthetic alert straight into Grafana's embedded Alertmanager, to
-verify the whole alerting pipeline -- rules, notification policy, and the
-Slack contact point -- end to end, without waiting for a real
-CPU/memory/disk/self-heal/canary threshold breach. See
-[alerting.md](alerting.md#testing-the-pipeline) for the full walkthrough.
+Pushes a test notification through the `nyxgpt-slack` contact point, to
+verify Slack delivery is wired correctly without waiting for a real
+CPU/memory/disk/self-heal/canary threshold breach. This tests **contact-point
+delivery only** -- not rule evaluation or notification-policy routing; see
+[alerting.md](alerting.md#testing-the-pipeline) for the full walkthrough and
+the deliberate-threshold-breach procedure that covers those.
 
 Usage:
 
@@ -625,13 +626,23 @@ Behavior:
 - Requires `[monitoring] enabled = true` and a reachable Grafana -- reports
   a clear, actionable message and exits non-zero otherwise (rather than a
   raw connection error).
-- Posts a `NyxGPTAlertTest` alert (labels `severity=warning`) to
-  `/api/alertmanager/grafana/api/v2/alerts`, the same embedded Alertmanager
-  API real firing rules route through -- it shows up on Grafana's Alerting
-  page and reaches Slack (if `slack_webhook_url` is configured) exactly like
-  a genuine alert would.
-- The synthetic alert auto-resolves after 5 minutes, so a forgotten test run
-  doesn't page anyone indefinitely.
+- Calls Grafana's receiver-test API
+  (`/apis/notifications.alerting.grafana.app/v0alpha1/namespaces/default/receivers/{name}/test`)
+  against the `nyxgpt-slack` contact point -- the same API Grafana's own
+  **Alerting -> Contact points -> nyxgpt-slack -> Test** button calls, so it
+  reuses the currently-provisioned webhook secret rather than needing its own
+  copy of it (#3545). An earlier version posted straight into Grafana's
+  embedded Alertmanager ingestion API instead
+  (`/api/alertmanager/grafana/api/v2/alerts`), which only accepts alerts from
+  Grafana's own rule engine and 400s on anything posted externally -- that
+  never actually exercised this command against a real Grafana until #3538
+  made booting one part of CI.
+- If `slack_webhook_url` is unset, the command still confirms the pipeline
+  reaches the contact point and attempts delivery -- it reports that clearly
+  as an unconfigured-delivery success, not a raw HTTP error.
+- If `slack_webhook_url` *is* configured and delivery genuinely fails, the
+  command exits non-zero with Grafana's own error message (e.g. an invalid
+  webhook token) rather than a bare status code.
 
 Exit codes:
 
