@@ -4101,7 +4101,7 @@ def rag_documents_list(
     - tags: Document tags (from metadata if available)
     - ingested_at: Ingestion timestamp (from metadata if available)
     """
-    from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
+    from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore, parse_metadata
 
     store = CassandraVectorStore(collection=collection)
     try:
@@ -4121,7 +4121,11 @@ def rag_documents_list(
                 rows = store.session.execute(stmt, (doc_id,))
                 row = next(iter(rows), None)
 
-                metadata = row.metadata if row and hasattr(row, "metadata") else {}
+                metadata = (
+                    parse_metadata(row.metadata, doc_id=doc_id)
+                    if row and hasattr(row, "metadata")
+                    else {}
+                )
                 ingested_at = (
                     row.ingested_at.isoformat()
                     if row and hasattr(row, "ingested_at") and row.ingested_at

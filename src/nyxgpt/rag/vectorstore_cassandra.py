@@ -187,6 +187,61 @@ def _candidate_fetch_multiplier(metadata_filter: MetadataFilter | None) -> int:
     return min(2 + active_filters, 6)
 
 
+def parse_metadata(raw: object, *, doc_id: str | None = None) -> dict:
+    """Parse a chunk row's stored ``metadata`` value into a dict.
+
+    The ``metadata`` column is CQL ``text`` holding a JSON object, but rows
+    ingested before metadata was consistently JSON-encoded (or corrupted by
+    some other legacy path) can hold a bare/non-dict string -- e.g. a raw
+    filename instead of ``{"filename": ...}``, or a value that happens to be
+    valid JSON but decodes to a string/list rather than an object. Callers
+    across the retrieval, keyword-search, and document-listing paths all
+    assume a dict (``.get(...)``), so this normalizes every legacy shape to
+    ``{}`` instead of letting ``.get()`` raise ``AttributeError`` deep in a
+    request path. Logs at most one bounded warning per call, never raises.
+
+    Args:
+        raw: The stored value (normally a JSON string; ``None`` for chunks
+            ingested without metadata).
+        doc_id: Optional document id, included in the warning for context.
+
+    Returns:
+        The decoded metadata dict, or ``{}`` if ``raw`` is empty, not valid
+        JSON, or valid JSON that isn't an object.
+    """
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str):
+        log.warning(
+            "Unexpected metadata type %s for doc_id=%s, treating as empty",
+            type(raw).__name__,
+            doc_id,
+        )
+        return {}
+
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        log.warning(
+            "Non-JSON legacy metadata for doc_id=%s, treating as empty: %r",
+            doc_id,
+            raw[:200],
+        )
+        return {}
+
+    if not isinstance(parsed, dict):
+        log.warning(
+            "Legacy metadata for doc_id=%s decoded to %s, expected object; treating as empty",
+            doc_id,
+            type(parsed).__name__,
+        )
+        return {}
+
+    return parsed
+
+
 def _filter_and_score_rows(
     rows: Iterable,
     k: int,
@@ -212,7 +267,7 @@ def _filter_and_score_rows(
         ):
             continue
 
-        metadata = json.loads(r.metadata) if r.metadata else {}
+        metadata = parse_metadata(r.metadata, doc_id=getattr(r, "doc_id", None))
 
         if metadata_filter:
             if metadata_filter.doc_ids and r.doc_id not in metadata_filter.doc_ids:

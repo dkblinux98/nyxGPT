@@ -36,6 +36,7 @@ from nyxgpt.rag.vectorstore_cassandra import (
     MetadataFilter,
     _filter_and_score_rows,
     _is_missing_schema_error,
+    parse_metadata,
 )
 
 # ---------------------------------------------------------------------------
@@ -177,6 +178,78 @@ def test_filter_and_score_rows_rejects_row_after_date_to():
 
     assert len(out) == 1
     assert scores == [0.9]
+
+
+# ---------------------------------------------------------------------------
+# parse_metadata (#3541: legacy rows store metadata as a bare/non-dict string)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_parse_metadata_none_returns_empty_dict():
+    assert parse_metadata(None) == {}
+
+
+@pytest.mark.unit
+def test_parse_metadata_empty_string_returns_empty_dict():
+    assert parse_metadata("") == {}
+
+
+@pytest.mark.unit
+def test_parse_metadata_dict_passthrough():
+    """Already-a-dict input (defensive; drivers shouldn't hand back one) is returned as-is."""
+    assert parse_metadata({"filename": "a.txt"}) == {"filename": "a.txt"}
+
+
+@pytest.mark.unit
+def test_parse_metadata_json_object_string_parses_to_dict():
+    assert parse_metadata('{"filename": "report.pdf", "tags": ["finance"]}') == {
+        "filename": "report.pdf",
+        "tags": ["finance"],
+    }
+
+
+@pytest.mark.unit
+def test_parse_metadata_legacy_bare_string_degrades_to_empty_dict(caplog):
+    """Legacy rows (like smoke-test-doc) store a plain non-JSON string, not a dict.
+
+    Regression fixture for #3541: `.get()` must not be called on this value.
+    """
+    with caplog.at_level("WARNING"):
+        result = parse_metadata("smoke-test-doc", doc_id="smoke-test-doc")
+    assert result == {}
+    assert "smoke-test-doc" in caplog.text
+
+
+@pytest.mark.unit
+def test_parse_metadata_json_encoded_string_value_degrades_to_empty_dict():
+    """Valid JSON that decodes to a str (not an object) is also legacy-shaped, not a dict."""
+    assert parse_metadata('"smoke-test-doc"') == {}
+
+
+@pytest.mark.unit
+def test_parse_metadata_json_encoded_list_value_degrades_to_empty_dict():
+    assert parse_metadata("[1, 2, 3]") == {}
+
+
+@pytest.mark.unit
+def test_parse_metadata_malformed_json_degrades_to_empty_dict_with_single_warning(caplog):
+    with caplog.at_level("WARNING"):
+        result = parse_metadata("{not valid json", doc_id="doc-broken")
+    assert result == {}
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+
+
+@pytest.mark.unit
+def test_filter_and_score_rows_tolerates_legacy_string_metadata():
+    """A row with legacy (non-JSON, non-dict) metadata degrades to `{}` instead of crashing."""
+    row = _mock_row(metadata="smoke-test-doc")
+
+    out, _scores = _filter_and_score_rows([row], k=5, embedding_model=None, metadata_filter=None)
+
+    assert len(out) == 1
+    assert out[0]["metadata"] == {}
 
 
 # ---------------------------------------------------------------------------
