@@ -136,6 +136,24 @@ Move the issue to "For Release" in the project board. No action needed in GitHub
 "For Release" only after every one of those linked issues has itself been
 accepted (For Release).
 
+### If acceptance reveals an improvement (not a defect)
+
+When acceptance testing shows the feature works as specified but the spec was
+incomplete or wrong, that is a **product management failure**, not an
+acceptance failure — the metric is charged to requirements, not to
+implementation (owner decision 2026-08-01). File it as a **new Backlog issue**
+through the normal flow (it does not jump the queue the way a defect does):
+
+- Label: **"Improvement"** (the existing label stands — no new label)
+- Body includes the same `Parent feature: #N` marker linking it to the feature
+  whose acceptance revealed it
+
+Per feature, the two markers give two separate counts for metrics:
+"Acceptance Failure"-labeled children = implementation failures;
+"Improvement"-labeled children filed during acceptance = requirements gaps.
+An improvement does NOT gate the parent's move to "For Release" — only
+acceptance-failure children do.
+
 ### If acceptance fails (bug found after merge)
 
 1. **Go to the issue** (it is assigned to you and closed)
