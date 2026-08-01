@@ -8293,6 +8293,58 @@ def test_restart_grafana_if_running_fails_when_never_healthy_again(monkeypatch):
 
 
 @pytest.mark.unit
+def test_restart_native_api_if_running_skips_when_not_running(monkeypatch):
+    monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {"nyxgpt-api": "none"})
+    result = ops._restart_native_api_if_running()
+    assert result.ok
+    assert "not running natively" in result.message
+
+
+@pytest.mark.unit
+def test_restart_native_api_if_running_restarts_when_running(monkeypatch):
+    monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {"nyxgpt-api": "started"})
+    captured_cmd = {}
+
+    def fake_run(cmd, check=False):
+        captured_cmd["cmd"] = cmd
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/brew")
+    monkeypatch.setattr(ops, "_run", fake_run)
+    result = ops._restart_native_api_if_running("the new GlitchTip DSN")
+    assert result.ok
+    assert "Restarted nyxgpt-api" in result.message
+    assert "the new GlitchTip DSN" in result.message
+    assert captured_cmd["cmd"][-3:] == ["services", "restart", "nyxgpt-api"]
+
+
+@pytest.mark.unit
+def test_restart_native_api_if_running_reports_failure(monkeypatch):
+    monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {"nyxgpt-api": "started"})
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/brew")
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, check=False: SimpleNamespace(returncode=1, stdout="", stderr="boom"),
+    )
+    result = ops._restart_native_api_if_running()
+    assert not result.ok
+    assert "boom" in result.details
+
+
+@pytest.mark.unit
+def test_current_error_tracking_dsn_missing_file_returns_empty(tmp_path):
+    assert ops._current_error_tracking_dsn(tmp_path / "missing.ini") == ""
+
+
+@pytest.mark.unit
+def test_current_error_tracking_dsn_reads_existing_value(tmp_path):
+    cfg_path = tmp_path / "config.ini"
+    cfg_path.write_text("[error_tracking]\ndsn = http://key@localhost:8080/1\n", encoding="utf-8")
+    assert ops._current_error_tracking_dsn(cfg_path) == "http://key@localhost:8080/1"
+
+
+@pytest.mark.unit
 def test_patch_ini_value_appends_missing_key():
     text = "[error_tracking]\nenvironment = docker\n"
     patched = ops._patch_ini_value(text, "error_tracking", "dsn", "http://key@localhost:8080/1")
@@ -8487,6 +8539,9 @@ def test_provision_glitchtip_full_happy_path(monkeypatch, tmp_path):
     # compose ps` subprocess call from `_restart_grafana_if_running`.
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
 
+    restart_api_mock = MagicMock(return_value=ops.OpsResult(True, "Restarted nyxgpt-api"))
+    monkeypatch.setattr(ops, "_restart_native_api_if_running", restart_api_mock)
+
     results = ops._provision_glitchtip()
 
     assert all(r.ok for r in results)
@@ -8508,6 +8563,81 @@ def test_provision_glitchtip_full_happy_path(monkeypatch, tmp_path):
     token_path = tmp_path / ".nyxGPT" / "secrets" / "glitchtip-grafana-token"
     assert token_path.read_text(encoding="utf-8") == "tok"
     assert oct(token_path.stat().st_mode)[-3:] == "600"
+
+    # The native `nyxgpt-api` brew service reads config.ini's DSN once, at
+    # process startup (#3470 acceptance failure) -- the DSN here changed
+    # (empty -> "http://key@localhost:8080/1"), so a running nyxgpt-api must
+    # be restarted to pick it up, mirroring the Grafana token restart above.
+    restart_api_mock.assert_called_once()
+
+
+@pytest.mark.unit
+def test_provision_glitchtip_skips_native_api_restart_when_dsn_unchanged(monkeypatch, tmp_path):
+    """#3470 acceptance failure: a `down`+`install` cycle against a preserved
+    GlitchTip Postgres volume reuses the same org/project/key, so the DSN
+    written to config.ini is unchanged -- restarting nyxgpt-api in that case
+    would just be a needless bounce of a healthy process."""
+    cfg_path = tmp_path / ".nyxGPT" / "config.ini"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text(
+        "[error_tracking]\nenabled = true\ndsn = http://key@localhost:8080/1\n",
+        encoding="utf-8",
+    )
+
+    (tmp_path / "docker").mkdir()
+    compose_cfg = tmp_path / "docker" / "config.docker.ini"
+    compose_cfg.write_text("[error_tracking]\nenabled = false\ndsn =\n", encoding="utf-8")
+
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops, "COMPOSE_CONFIG_FILE", compose_cfg)
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_wait_for_glitchtip_healthy", lambda: True)
+    monkeypatch.setattr(
+        ops, "_glitchtip_ensure_superuser", lambda e, p: ops.OpsResult(True, "created")
+    )
+
+    fake_login_client = MagicMock()
+    monkeypatch.setattr(
+        ops,
+        "_glitchtip_login",
+        lambda base_url, e, p: (fake_login_client, ops.OpsResult(True, "logged in")),
+    )
+    monkeypatch.setattr(
+        ops,
+        "_glitchtip_ensure_api_token",
+        lambda client, base_url: ("tok", ops.OpsResult(True, "token")),
+    )
+    fake_api_client = MagicMock()
+    monkeypatch.setattr(ops, "_glitchtip_http_client", lambda base_url, **k: fake_api_client)
+    monkeypatch.setattr(
+        ops, "_glitchtip_ensure_organization", lambda client: ("nyxgpt", ops.OpsResult(True, "org"))
+    )
+    monkeypatch.setattr(
+        ops,
+        "_glitchtip_ensure_team",
+        lambda client, org: ("nyxgpt", ops.OpsResult(True, "team")),
+    )
+    monkeypatch.setattr(
+        ops,
+        "_glitchtip_ensure_project",
+        lambda client, org, team: ("nyxgpt-backend", ops.OpsResult(True, "project")),
+    )
+    # Same DSN the project key already had -- an idempotent re-provisioning.
+    monkeypatch.setattr(
+        ops,
+        "_glitchtip_ensure_project_key",
+        lambda client, org, proj: ("http://key@localhost:8080/1", ops.OpsResult(True, "key")),
+    )
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+
+    restart_api_mock = MagicMock(return_value=ops.OpsResult(True, "Restarted nyxgpt-api"))
+    monkeypatch.setattr(ops, "_restart_native_api_if_running", restart_api_mock)
+
+    results = ops._provision_glitchtip()
+
+    assert all(r.ok for r in results)
+    restart_api_mock.assert_not_called()
 
 
 @pytest.mark.unit
