@@ -4,6 +4,27 @@ on:
   issue_comment:
     types: [created]
 
+# Linked-issue acceptance-failure model (owner decision 2026-08-01):
+# the original feature/improvement issue is never reopened or relabeled.
+# Each acceptance failure becomes a NEW issue labeled "Acceptance Failure",
+# linked to the original ("Parent feature: #N" body marker + GitHub
+# sub-issue), and only the new issue enters the dev/review cycle. The
+# original stays closed in "Acceptance Testing" and moves to "For Release"
+# only when every linked failure issue has itself been accepted. This keeps
+# the resolution trail of each failure separate and makes the failure count
+# per feature readable straight off the parent's sub-issue list.
+#
+# NOTE: issue_comment workflows execute from the DEFAULT branch (master),
+# so this rewrite goes live at the v2.0.0 -> master release merge — i.e.
+# exactly at the v3.0.0 boundary. Failures processed before that merge run
+# the previous reopen-and-relabel behavior from master.
+
+# Serialize per commented issue so two rapid comments compute distinct
+# failure-round numbers. Distinct comments still create distinct issues.
+concurrency:
+  group: acceptance-failure-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
 jobs:
   handle:
     # Triggers when the human owner comments @acceptance-failure on an issue.
@@ -53,56 +74,129 @@ jobs:
           EOF
           echo "NYXGPT_CONFIG_FILE=$CFG" >> "$GITHUB_ENV"
 
-      - name: Reopen issue, label, and assign to developer
+      - name: Create linked acceptance-failure issue
+        id: create_child
+        env:
+          # Owner-authored comment text: passed via env (never interpolated
+          # into the script) so backticks/quotes in the report can't inject.
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          COMMENT_URL: ${{ github.event.comment.html_url }}
         run: |
           set -euo pipefail
-          ISSUE="${{ github.event.issue.number }}"
+          COMMENTED="${{ github.event.issue.number }}"
           source scripts/agents/lib/gh_project.sh
           load_config
           require_gh_auth
 
-          # Reopen if closed (acceptance failures are found after merge closes the issue)
-          STATE=$(gh issue view "$ISSUE" --json state -q '.state')
-          if [[ "$STATE" == "CLOSED" ]]; then
-            gh issue reopen "$ISSUE"
-            echo "Reopened issue #$ISSUE"
+          # Resolve the root parent feature. Commenting @acceptance-failure
+          # on an acceptance-failure issue (a fix that failed re-test) links
+          # the new failure to the SAME parent, keeping the whole trail on
+          # one feature.
+          PARENT="$COMMENTED"
+          MARKER="$(gh issue view "$COMMENTED" --repo "${REPO_OWNER}/${REPO_NAME}" --json body -q '.body' \
+            | grep -m1 -oE 'Parent feature: #[0-9]+' | grep -oE '[0-9]+' || true)"
+          if [[ -n "$MARKER" ]]; then
+            PARENT="$MARKER"
+            echo "Commented issue #$COMMENTED is itself an acceptance-failure issue -> parent is #$PARENT"
           fi
 
-          # Add Acceptance Failure label (remove Feature label if present)
-          gh issue edit "$ISSUE" --add-label "Acceptance Failure" --remove-label "Feature" 2>/dev/null || \
-            gh issue edit "$ISSUE" --add-label "Acceptance Failure"
+          PARENT_TITLE="$(gh issue view "$PARENT" --repo "${REPO_OWNER}/${REPO_NAME}" --json title -q '.title')"
 
-          # Set status to In Progress and assign to developer agent
-          set_issue_status "$ISSUE" "$STATUS_IN_PROGRESS"
-          assign_and_trigger_developer "$ISSUE"
+          # Failure round = existing linked failures + 1 (exact body-marker
+          # match, not text search, so #34 never counts for #3).
+          EXISTING="$(gh issue list --repo "${REPO_OWNER}/${REPO_NAME}" \
+            --label "Acceptance Failure" --state all --limit 500 --json number,body \
+            -q "[.[] | select(.body | test(\"Parent feature: #${PARENT}\\\\b\"))] | length")"
+          ROUND=$((EXISTING + 1))
 
-          echo "Issue #$ISSUE: reopened, labelled Acceptance Failure, assigned to $DEV_AGENT"
+          TITLE="bug: acceptance failure ${ROUND} for #${PARENT} - ${PARENT_TITLE#*: }"
+          TITLE="${TITLE:0:80}"
+
+          BODY_FILE="$RUNNER_TEMP/af-body.md"
+          {
+            echo "## Problem / Motivation"
+            echo
+            echo "Acceptance testing of the parent feature failed (failure round ${ROUND})."
+            echo
+            echo "Parent feature: #${PARENT}"
+            echo "Reported by: @${HUMAN_OWNER} — ${COMMENT_URL}"
+            echo
+            echo "## Reported Failure"
+            echo
+            printf '%s\n' "$COMMENT_BODY"
+            echo
+            echo "## Acceptance Criteria"
+            echo
+            echo "- [ ] The reported failure is fixed and verified"
+            echo "- [ ] Parent #${PARENT} stays intact; it moves to \"For Release\" only after every linked acceptance-failure issue is accepted"
+          } > "$BODY_FILE"
+
+          # Rework happens in the active sprint; everything else (Module,
+          # Priority, Effort, Milestone) is inherited from the parent so the
+          # child stays inside the same release wall.
+          ACTIVE_SPRINT="$(iteration_active_title "${SPRINT_FIELD:-Sprint}" 2>/dev/null || echo "")"
+
+          ARGS=(--title "$TITLE" --body-file "$BODY_FILE"
+                --label "Acceptance Failure"
+                --copy-from-issue "$PARENT"
+                --status "$STATUS_IN_PROGRESS")
+          if [[ -n "$ACTIVE_SPRINT" && "$ACTIVE_SPRINT" != "null" ]]; then
+            ARGS+=(--sprint "$ACTIVE_SPRINT")
+          fi
+          CHILD="$(scripts/agents/create_issue.sh "${ARGS[@]}" | tail -1)"
+          echo "Created acceptance-failure issue #$CHILD (round ${ROUND}) for parent #$PARENT"
+
+          # Native sub-issue link: the parent shows N linked failures and
+          # their open/closed progress, which is the per-feature failure
+          # metric. Best-effort — the body marker above is the canonical
+          # machine-readable link.
+          CHILD_DBID="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${CHILD}" --jq '.id')"
+          if gh api -X POST "repos/${REPO_OWNER}/${REPO_NAME}/issues/${PARENT}/sub_issues" \
+               -F sub_issue_id="$CHILD_DBID" >/dev/null 2>&1; then
+            echo "Linked #$CHILD as a sub-issue of #$PARENT"
+          else
+            echo "[warn] Could not add #$CHILD as sub-issue of #$PARENT (body marker still links them)"
+          fi
+
+          # Only the child enters the rework cycle; the parent is untouched.
+          assign_and_trigger_developer "$CHILD"
+
+          {
+            echo "child=$CHILD"
+            echo "parent=$PARENT"
+            echo "round=$ROUND"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Post acknowledgement comment
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
           script: |
-            const issue_number = ${{ github.event.issue.number }};
+            const commented = ${{ github.event.issue.number }};
+            const child = Number('${{ steps.create_child.outputs.child }}');
+            const parent = Number('${{ steps.create_child.outputs.parent }}');
+            const round = '${{ steps.create_child.outputs.round }}';
             const dev_agent = process.env.DEV_AGENT;
-            const human_owner = process.env.HUMAN_OWNER;
             const repoUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}`;
+
+            const parentNote = (commented === parent)
+              ? `This issue stays closed in **Acceptance Testing** and is otherwise untouched.`
+              : `Logged against root parent #${parent} (this issue is itself an acceptance-failure issue).`;
 
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number,
+              issue_number: commented,
               body:
                 `🔧 **Scrummaster Agent**: Acceptance failure acknowledged.\n\n` +
-                `Issue reopened and assigned to @${dev_agent} for investigation and fix.\n\n` +
-                `**Next steps (automated):**\n` +
-                `- Developer agent will create a \`fix/${issue_number}-...\` branch\n` +
-                `- Implement the fix described in your comment above\n` +
-                `- Submit a PR with \`Closes #${issue_number}\` for review\n` +
-                `- Review agent will review and merge\n\n` +
-                `If the fix cycle escalates again, you will be notified via Slack.\n\n` +
-                `[Monitor progress](${repoUrl}/issues/${issue_number})`
+                `Filed as **#${child}** — failure ${round} for feature #${parent} — ` +
+                `assigned to @${dev_agent} for investigation and fix.\n\n` +
+                `**Flow (automated):**\n` +
+                `- ${parentNote}\n` +
+                `- Developer agent fixes via a \`fix/${child}-...\` branch and a PR with \`Closes #${child}\`\n` +
+                `- Review agent reviews and merges; #${child} then lands in Acceptance Testing for your re-test\n` +
+                `- Move #${parent} to **For Release** only after every linked acceptance-failure issue is accepted\n\n` +
+                `[Monitor progress](${repoUrl}/issues/${child})`
             });
         env:
           DEV_AGENT: ${{ vars.DEV_AGENT }}
-          HUMAN_OWNER: ${{ vars.HUMAN_OWNER }}

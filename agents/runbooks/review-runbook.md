@@ -132,6 +132,9 @@ After merge, each issue is assigned to the human owner with status "Acceptance T
 
 ### If acceptance passes
 Move the issue to "For Release" in the project board. No action needed in GitHub.
+**Gate:** an issue with linked acceptance-failure issues (see below) moves to
+"For Release" only after every one of those linked issues has itself been
+accepted (For Release).
 
 ### If acceptance fails (bug found after merge)
 
@@ -142,16 +145,33 @@ Move the issue to "For Release" in the project board. No action needed in GitHub
    - Steps to reproduce if relevant
 3. **On the same or a separate comment, write:** `@acceptance-failure`
 
-That's it. The system will automatically:
-- Reopen the issue
-- Add the "Acceptance Failure" label
-- Set status back to "In Progress"
-- Assign to the developer agent to create a `fix/N-...` branch and PR with correct `Closes #N` body
+That's it. The system will automatically (linked-issue model, owner decision
+2026-08-01):
+- Leave the original feature/improvement issue **intact** — it stays closed,
+  keeps its labels, and remains in "Acceptance Testing". The original never
+  re-enters the dev/review cycle.
+- Create a **new** issue labeled "Acceptance Failure", linked to the original
+  via a `Parent feature: #N` body marker and a GitHub sub-issue, titled with
+  its failure round (failure 1, 2, ...). Module/Priority/Effort/Milestone are
+  copied from the original; Sprint is the active sprint.
+- Set the new issue to "In Progress" and assign the developer agent to create
+  a `fix/CHILD-...` branch and PR with `Closes #CHILD`.
+
+Each further failure — including a failed re-test of a fix (comment
+`@acceptance-failure` on the failure issue itself) — creates another linked
+issue on the same root parent. The resolution trail of every failure is its
+own issue, and the failure count per feature is readable straight off the
+parent's sub-issue list (or a label + body-marker search) for metrics.
 
 > **Note:** `@acceptance-failure` is only accepted from the human owner account and only on
 > issues (not PRs). It is entirely separate from the review-loop overrides
 > (`@approve-merge`, `@request-changes`, `@send-to-developer`) which apply to PRs
 > during the automated code review cycle.
+>
+> **Rollout:** `issue_comment` workflows run from the default branch (master),
+> so this model activates at the v2.0.0 → master release merge — the v3.0.0
+> boundary. Failures processed before that merge follow the previous
+> reopen-and-relabel behavior.
 
 ## 10) Phase completion
 When the human owner moves the last issue in the active Phase to "For Release" (human stakeholder acceptance):
