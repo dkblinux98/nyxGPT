@@ -1,8 +1,12 @@
 import hashlib
 import json
 import logging
+import os
+import signal
 import subprocess
+import sys
 import tarfile
+import time
 from configparser import ConfigParser
 from pathlib import Path
 from types import SimpleNamespace
@@ -3657,6 +3661,71 @@ def test_api_formula_wrapper_execs_uvicorn():
     text = formula.read_text(encoding="utf-8")
     assert 'exec "#{venv}/bin/python3" -m uvicorn nyxgpt.app:app' in text
     assert "trap '" not in text
+
+
+@pytest.mark.unit
+def test_wrapper_exec_forwards_sigterm_to_child_but_bare_trap_does_not(tmp_path):
+    """OS-level proof of the #3472 root cause and fix, independent of the
+    formula's literal text (see test_api_formula_wrapper_execs_uvicorn for
+    that static check): a wrapper that runs its child as a plain foreground
+    job with only a log-only `trap ... TERM` never forwards the signal, so
+    the child outlives the wrapper (the exact orphaned-uvicorn bug). A
+    wrapper that `exec`s into the child instead makes the child the actual
+    signaled process, so it dies with the wrapper. Uses stand-in child
+    scripts instead of uvicorn so the test has no port/readiness flakiness."""
+    child_script = tmp_path / "child.py"
+    child_script.write_text(
+        "import pathlib, time\n"
+        "pathlib.Path(pathlib.sys.argv[1]).write_text('running')\n"
+        "time.sleep(30)\n"
+    )
+
+    old_wrapper = tmp_path / "old_wrapper.sh"
+    old_wrapper.write_text(
+        "#!/bin/bash\n"
+        "set -euo pipefail\n"
+        "trap 'echo received TERM' TERM\n"
+        f"{sys.executable} {child_script} \"$1\" &\n"
+        "CHILD=$!\n"
+        "wait $CHILD\n"
+    )
+    new_wrapper = tmp_path / "new_wrapper.sh"
+    new_wrapper.write_text(
+        "#!/bin/bash\n"
+        "set -euo pipefail\n"
+        f'exec {sys.executable} {child_script} "$1"\n'
+    )
+
+    def child_survives_wrapper_sigterm(wrapper: Path) -> bool:
+        marker = tmp_path / f"marker-{wrapper.stem}"
+        proc = subprocess.Popen(["/bin/bash", str(wrapper), str(marker)], start_new_session=True)
+        try:
+            deadline = time.monotonic() + 5
+            while not marker.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert marker.exists(), "child never started"
+
+            os.kill(proc.pid, signal.SIGTERM)
+            proc.wait(timeout=5)
+
+            # The wrapper's own PID (bash, or the exec'd child sharing it) is
+            # gone either way -- what matters is whether a *different*,
+            # still-running process is left holding the child's job. We
+            # detect that by whether the process group the child was placed
+            # in is still occupied under the wrapper's old (non-exec) PID.
+            try:
+                os.killpg(proc.pid, 0)
+                return True  # process group still has a living member
+            except ProcessLookupError:
+                return False
+        finally:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+    assert child_survives_wrapper_sigterm(old_wrapper) is True
+    assert child_survives_wrapper_sigterm(new_wrapper) is False
 
 
 # --- _brew_install_or_reinstall ---
