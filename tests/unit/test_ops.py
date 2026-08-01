@@ -1,3 +1,4 @@
+import contextlib
 import hashlib
 import json
 import logging
@@ -3685,15 +3686,13 @@ def test_wrapper_exec_forwards_sigterm_to_child_but_bare_trap_does_not(tmp_path)
         "#!/bin/bash\n"
         "set -euo pipefail\n"
         "trap 'echo received TERM' TERM\n"
-        f"{sys.executable} {child_script} \"$1\" &\n"
+        f'{sys.executable} {child_script} "$1" &\n'
         "CHILD=$!\n"
         "wait $CHILD\n"
     )
     new_wrapper = tmp_path / "new_wrapper.sh"
     new_wrapper.write_text(
-        "#!/bin/bash\n"
-        "set -euo pipefail\n"
-        f'exec {sys.executable} {child_script} "$1"\n'
+        "#!/bin/bash\n" "set -euo pipefail\n" f'exec {sys.executable} {child_script} "$1"\n'
     )
 
     def child_survives_wrapper_sigterm(wrapper: Path) -> bool:
@@ -3719,10 +3718,8 @@ def test_wrapper_exec_forwards_sigterm_to_child_but_bare_trap_does_not(tmp_path)
             except ProcessLookupError:
                 return False
         finally:
-            try:
+            with contextlib.suppress(ProcessLookupError):
                 os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
 
     assert child_survives_wrapper_sigterm(old_wrapper) is True
     assert child_survives_wrapper_sigterm(new_wrapper) is False
