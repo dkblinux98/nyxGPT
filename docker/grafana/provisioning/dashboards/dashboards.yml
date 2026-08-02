@@ -1,5 +1,17 @@
 apiVersion: 1
 
+# `allowUiUpdates: true` lets an operator tweak a dashboard from the Grafana
+# UI without it reverting on the next `updateIntervalSeconds` poll -- but it
+# also means Grafana only re-imports a dashboard JSON file when its
+# top-level `"version"` is HIGHER than what's already stored for it. Editing
+# a dashboard JSON under docker/grafana/dashboards/ without bumping
+# `"version"` gets silently ignored by an already-provisioned Grafana: the
+# file on disk is correct, but the live dashboard keeps serving the stale
+# panel it already had. This is exactly what happened to the SRE Home
+# dashboard's GlitchTip panels in #3470/#3565 -- the `is:unresolved` query
+# fix landed in sre-home.json but its `"version"` field wasn't bumped, so an
+# already-running Grafana never picked it up. Bump `"version"` in the
+# relevant dashboard JSON every time you change its content.
 providers:
   - name: nyxGPT
     orgId: 1
