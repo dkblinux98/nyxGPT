@@ -607,7 +607,10 @@ Behavior:
   `docker/config.docker.ini` is a git-ignored, per-machine artifact that
   `nyxgpt ops install`/`env-sync` derive from the native `~/.nyxGPT/config.ini`
   (rewriting only container-network endpoints), so this runtime write never
-  dirties a tracked file.
+  dirties a tracked file. That derivation rewrites the DSN's `localhost`
+  host:port to the `glitchtip` service's container-network alias (#3565) --
+  a containerized api can't reach the native, browser-facing `localhost` DSN
+  -- while `glitchtip_ui_url`, opened from the host browser, stays localhost.
 
 Exit codes:
 

@@ -8885,6 +8885,39 @@ def test_current_error_tracking_dsn_reads_existing_value(tmp_path):
 
 
 @pytest.mark.unit
+def test_containerized_error_tracking_dsn_rewrites_host_and_port():
+    """#3565 round 5: GlitchTip mints DSNs from its browser-facing
+    `GLITCHTIP_DOMAIN` (localhost) -- a containerized api can't reach that
+    from inside the docker network, so the compose-facing copy must point at
+    the `glitchtip` service instead, preserving the embedded key and project
+    path."""
+    dsn = "http://509fecaebca74ee68bcd4bd9d56dbe53@localhost:8080/1"
+    assert (
+        ops._containerized_error_tracking_dsn(dsn)
+        == "http://509fecaebca74ee68bcd4bd9d56dbe53@glitchtip:8080/1"
+    )
+
+
+@pytest.mark.unit
+def test_containerized_error_tracking_dsn_rewrites_nondefault_host_port():
+    """The rewrite always targets the container-internal port (8080) even if
+    the DSN's host-mapped port (`GLITCHTIP_UI_PORT`) differs -- the container
+    network never sees the host port remap."""
+    dsn = "http://key@localhost:19999/1"
+    assert ops._containerized_error_tracking_dsn(dsn) == "http://key@glitchtip:8080/1"
+
+
+@pytest.mark.unit
+def test_containerized_error_tracking_dsn_empty_string_is_noop():
+    assert ops._containerized_error_tracking_dsn("") == ""
+
+
+@pytest.mark.unit
+def test_containerized_error_tracking_dsn_unparseable_returns_unchanged():
+    assert ops._containerized_error_tracking_dsn("not a url") == "not a url"
+
+
+@pytest.mark.unit
 def test_patch_ini_value_appends_missing_key():
     text = "[error_tracking]\nenvironment = docker\n"
     patched = ops._patch_ini_value(text, "error_tracking", "dsn", "http://key@localhost:8080/1")
@@ -9095,7 +9128,10 @@ def test_provision_glitchtip_full_happy_path(monkeypatch, tmp_path):
 
     compose_parser = ConfigParser()
     compose_parser.read(compose_cfg)
-    assert compose_parser.get("error_tracking", "dsn") == "http://key@localhost:8080/1"
+    # #3565 round 5: the compose/container-facing copy gets its DSN host
+    # rewritten to the `glitchtip` service's network alias -- a containerized
+    # api can't reach the native config's browser-facing `localhost` DSN.
+    assert compose_parser.get("error_tracking", "dsn") == "http://key@glitchtip:8080/1"
     assert compose_parser.get("error_tracking", "enabled") == "true"
 
     # The Infinity datasource's GlitchTip token is minted alongside the DSN
@@ -10754,7 +10790,11 @@ def test_generate_compose_config_derives_from_native(tmp_path, monkeypatch):
         "cassandra_hosts = 127.0.0.1\n"
         "[tracing]\n"
         "otlp_endpoint = http://127.0.0.1:4318/v1/traces\n"
-        "jaeger_ui_url = http://localhost:16686\n",
+        "jaeger_ui_url = http://localhost:16686\n"
+        "[error_tracking]\n"
+        "enabled = true\n"
+        "glitchtip_ui_url = http://localhost:8080\n"
+        "dsn = http://509fecaebca74ee68bcd4bd9d56dbe53@localhost:8080/1\n",
         encoding="utf-8",
     )
     out = tmp_path / "config.docker.ini"
@@ -10785,6 +10825,105 @@ def test_generate_compose_config_derives_from_native(tmp_path, monkeypatch):
     # preserved: user setting + browser-facing UI URL stays localhost
     assert parser.get("nyxgpt", "default_model") == "llama3.1:8b"
     assert "jaeger_ui_url = http://localhost:16686" in text
+    # #3565 round 5: the error-tracking DSN is host-rewritten for the
+    # container network (a containerized api can't reach the native config's
+    # browser-facing `localhost` DSN), while glitchtip_ui_url -- opened from
+    # the host browser -- stays localhost.
+    assert (
+        parser.get("error_tracking", "dsn")
+        == "http://509fecaebca74ee68bcd4bd9d56dbe53@glitchtip:8080/1"
+    )
+    assert parser.get("error_tracking", "glitchtip_ui_url") == "http://localhost:8080"
+
+
+@pytest.mark.unit
+def test_generate_compose_config_no_error_tracking_section_is_noop(tmp_path, monkeypatch):
+    """No `[error_tracking] dsn` in the native config (error tracking never
+    provisioned) -- the DSN rewrite step must not blow up or fabricate a
+    section."""
+    home = tmp_path / "home"
+    (home / ".nyxGPT").mkdir(parents=True)
+    native = home / ".nyxGPT" / "config.ini"
+    native.write_text("[nyxgpt]\ndefault_model = llama3.1:8b\n", encoding="utf-8")
+    out = tmp_path / "config.docker.ini"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "COMPOSE_CONFIG_FILE", out)
+
+    results = ops._generate_compose_config()
+    assert all(r.ok for r in results)
+
+    parser = ConfigParser()
+    parser.read(out)
+    assert not parser.has_section("error_tracking")
+
+
+@pytest.mark.unit
+def test_generate_compose_config_malformed_native_config_degrades_gracefully(
+    tmp_path, monkeypatch, caplog
+):
+    """A native config.ini that isn't valid INI (e.g. a hand-edited duplicate
+    section) must not crash `_generate_compose_config` -- the DSN rewrite step
+    parses the text with `ConfigParser`, which raises `configparser.Error` on
+    input the line-based `_patch_ini_value` rewrites tolerate fine. Regression
+    test for #3565 round-5 review: this used to propagate uncaught out of
+    `env_sync()`, which has no surrounding try/except."""
+    home = tmp_path / "home"
+    (home / ".nyxGPT").mkdir(parents=True)
+    native = home / ".nyxGPT" / "config.ini"
+    native.write_text(
+        "[nyxgpt]\n"
+        "default_model = llama3.1:8b\n"
+        "[error_tracking]\n"
+        "enabled = true\n"
+        "dsn = http://509fecaebca74ee68bcd4bd9d56dbe53@localhost:8080/1\n"
+        "[error_tracking]\n"
+        "dsn = http://duplicate@localhost:8080/1\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "config.docker.ini"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "COMPOSE_CONFIG_FILE", out)
+
+    with caplog.at_level(logging.WARNING):
+        results = ops._generate_compose_config()
+
+    assert all(r.ok for r in results)
+    assert out.exists()
+    assert "Failed to parse" in caplog.text
+
+    text = out.read_text(encoding="utf-8")
+    # DSN rewrite skipped (unparseable), but the rest of the derived config
+    # is still written -- no crash, no partial/missing output file.
+    assert "dsn = http://509fecaebca74ee68bcd4bd9d56dbe53@localhost:8080/1" in text
+
+
+@pytest.mark.unit
+def test_env_sync_survives_malformed_native_config(tmp_path, monkeypatch):
+    """`nyxgpt ops env-sync` must not raise when the native config.ini has a
+    duplicate section -- `_generate_compose_config` is called directly with no
+    surrounding try/except in `env_sync()`, unlike the `install()` call sites."""
+    home = tmp_path / "home"
+    (home / ".nyxGPT").mkdir(parents=True)
+    native = home / ".nyxGPT" / "config.ini"
+    _write_config(native, api_key="cli-api-key")
+    with native.open("a", encoding="utf-8") as f:
+        f.write(
+            "[error_tracking]\ndsn = http://one@localhost:8080/1\n"
+            "[error_tracking]\ndsn = http://two@localhost:8080/1\n"
+        )
+    out = tmp_path / "config.docker.ini"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "COMPOSE_CONFIG_FILE", out)
+    monkeypatch.setattr(ops, "sync_env_from_config", lambda **kwargs: [])
+    monkeypatch.setattr(ops, "_sync_grafana_slack_webhook_secret", lambda **kwargs: [])
+
+    args = MagicMock()
+    args.config = None
+    args.env_file = None
+    rc = ops.env_sync(args)
+
+    assert rc == 0
+    assert out.exists()
 
 
 @pytest.mark.unit

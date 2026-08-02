@@ -1276,8 +1276,15 @@ def _generate_compose_config() -> list[OpsResult]:
 
     Regenerated on every `nyxgpt ops install`/`env-sync` so native edits
     propagate. Comments and unlisted keys survive verbatim (the rewrite is
-    line-based via `_patch_ini_value`), and the DSN `nyxgpt ops glitchtip-init`
-    writes into the native config carries over so error tracking stays wired.
+    line-based via `_patch_ini_value`). The DSN `nyxgpt ops glitchtip-init`
+    writes into the native config also carries over, but -- unlike every
+    other unlisted key -- it isn't copied verbatim: its host:port is rewritten
+    for the container network the same way `_COMPOSE_CONFIG_OVERRIDES` rewrites
+    `ollama`/`cassandra` (see `_containerized_error_tracking_dsn`), because a
+    containerized api using the native, browser-facing `localhost` DSN
+    silently drops every event (#3565). It can't be a static entry in
+    `_COMPOSE_CONFIG_OVERRIDES` because the value carries a per-install secret
+    key, not a fixed constant.
 
     No-ops (successfully) before `nyxgpt wizard` has created the native config.
     """
@@ -1294,6 +1301,24 @@ def _generate_compose_config() -> list[OpsResult]:
         text = native.read_text(encoding="utf-8")
         for section, key, value in _COMPOSE_CONFIG_OVERRIDES:
             text = _patch_ini_value(text, section, key, value)
+        try:
+            dsn_parser = ConfigParser()
+            dsn_parser.optionxform = str  # type: ignore[assignment]
+            dsn_parser.read_string(text)
+            native_dsn = dsn_parser.get("error_tracking", "dsn", fallback="").strip()
+        except Exception as e:
+            logger.warning(
+                "Failed to parse %s while rewriting the error-tracking DSN for "
+                "the container network, leaving it unrewritten: %s",
+                native,
+                e,
+                extra={"component": "ops"},
+            )
+            native_dsn = ""
+        if native_dsn:
+            text = _patch_ini_value(
+                text, "error_tracking", "dsn", _containerized_error_tracking_dsn(native_dsn)
+            )
         COMPOSE_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
         COMPOSE_CONFIG_FILE.write_text(text, encoding="utf-8")
     except OSError as e:
@@ -5500,6 +5525,14 @@ GLITCHTIP_TOKEN_NAME = "nyxgpt-ops-glitchtip-init"
 GLITCHTIP_TOKEN_SCOPES = ["org:read", "org:write", "project:read", "project:write", "event:read"]
 GLITCHTIP_DEFAULT_ADMIN_EMAIL = "admin@nyxgpt.local"
 
+# The `glitchtip` Compose service's network alias and container-internal port
+# (docker-compose.yml: `PORT: 8080`, exposed as `8080:8080`) -- always 8080
+# regardless of `GLITCHTIP_UI_PORT`, which only remaps the *host*-side port.
+# Used to rewrite a DSN for containerized-api consumption; see
+# `_containerized_error_tracking_dsn`.
+GLITCHTIP_CONTAINER_HOST = "glitchtip"
+GLITCHTIP_CONTAINER_PORT = 8080
+
 
 def _glitchtip_grafana_token_path() -> Path:
     """Where the GlitchTip API token is written for Grafana's Infinity
@@ -6215,6 +6248,36 @@ def _patch_ini_value(text: str, section: str, key: str, value: str) -> str:
     return "".join(lines)
 
 
+def _containerized_error_tracking_dsn(dsn: str) -> str:
+    """Rewrite a GlitchTip DSN's host:port for a containerized api to use.
+
+    GlitchTip mints DSNs from its own `GLITCHTIP_DOMAIN` env var
+    (`http://localhost:${GLITCHTIP_UI_PORT}` -- see docker-compose.yml's
+    `glitchtip` service), because that's what a browser opening an issue link
+    needs. But a *containerized* api (Compose `--profile errors` or
+    `terraform ... --local`, both consuming `docker/config.docker.ini`) reads
+    that same DSN to send events server-side -- inside the container network,
+    `localhost` resolves to the api container itself, not the docker host.
+    `sentry_sdk`'s HTTP transport is fire-and-forget, so the connection
+    failure is silently swallowed: `capture_exception` returns normally and
+    nothing ever reaches GlitchTip (#3565 round 5 -- confirmed live: the
+    error-tracking endpoint reported 202 while GlitchTip received nothing).
+
+    Points the DSN at the `glitchtip` service's network alias and
+    container-internal port instead, which every containerized deploy mode
+    shares a docker network with (`_COMPOSE_CONFIG_OVERRIDES` makes the same
+    assumption for `ollama`/`cassandra`). Falls back to returning `dsn`
+    unchanged if it doesn't parse as a URL with a host.
+    """
+    try:
+        url = httpx.URL(dsn)
+    except Exception:
+        return dsn
+    if not url.host:
+        return dsn
+    return str(url.copy_with(host=GLITCHTIP_CONTAINER_HOST, port=GLITCHTIP_CONTAINER_PORT))
+
+
 def _current_error_tracking_dsn(cfg_path: Path) -> str:
     """Return the `[error_tracking] dsn` currently in `cfg_path`, or `""` if
     the file/section/key is absent -- used by `_provision_glitchtip` to
@@ -6744,7 +6807,11 @@ def _provision_glitchtip() -> list[OpsResult]:
 
     previous_native_dsn = _current_error_tracking_dsn(native_cfg_path)
     results.append(_write_error_tracking_dsn(native_cfg_path, dsn, chmod_600=True))
-    results.append(_write_error_tracking_dsn(COMPOSE_CONFIG_FILE, dsn, chmod_600=False))
+    results.append(
+        _write_error_tracking_dsn(
+            COMPOSE_CONFIG_FILE, _containerized_error_tracking_dsn(dsn), chmod_600=False
+        )
+    )
     if dsn != previous_native_dsn:
         results.append(_restart_native_api_if_running())
 
