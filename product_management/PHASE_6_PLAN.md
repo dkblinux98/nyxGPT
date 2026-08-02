@@ -277,7 +277,10 @@ the operator can't tell progress from a hang. Same for `down`, `restart`, `stop`
 - ACs: every long-running ops command announces each step BEFORE executing (name +
   `N/M` counter) and prints per-step outcome, streaming as it happens; steps that can
   exceed a few seconds emit sub-progress or a heartbeat with elapsed time; failures name
-  the step, show the underlying error, and give a remediation hint; `--quiet` preserves
+  the step, show the underlying error, and give a remediation hint; expected-nonzero
+  subprocess exits (defined success/no-op paths like glitchtip-init's
+  `createsuperuser --noinput` on an existing account, #3267) are logged INFO/DEBUG as
+  expected, never WARNING (owner report 2026-08-02); `--quiet` preserves
   terse output for scripting; final summary lists slow-step durations; tests cover the
   progress stream; dashboard note — Infrastructure page is status-only by owner decision
   (#3410), so no new dashboard surface is required.
