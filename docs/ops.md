@@ -585,7 +585,10 @@ Behavior:
   `[error_tracking] admin_email`/`admin_password` from config.ini if set,
   else generating a strong password and saving it back there (chmod 600,
   same trust model as `[auth] api_key` -- safe because GlitchTip is
-  loopback-only).
+  loopback-only). `createsuperuser --noinput` exits rc=1 by design when the
+  account already exists; a re-run logs that at INFO ("expected rc=1,
+  treated as success"), never a WARNING, so an idempotent re-install on an
+  already-provisioned stack never looks like a failure.
 - Creates (or reuses) a scoped API token, then the `nyxgpt` organization,
   `nyxgpt-backend` project, and its DSN via GlitchTip's Sentry-compatible
   REST API -- the upgrade-stable path, not an ORM/`manage.py shell` seed.
