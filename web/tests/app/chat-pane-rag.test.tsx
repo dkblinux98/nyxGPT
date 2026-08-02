@@ -580,4 +580,60 @@ describe('RAG toggle, filters, attach/detach, upload', () => {
     await waitFor(() => expect(screen.getByText(/· default/)).toBeInTheDocument());
   });
 
+  it('scopes the Select Documents list to the selected collection and refreshes on change (#3566)', async () => {
+    const docsByCollection: Record<string, any[]> = {
+      default: [{ doc_id: 'default-doc', filename: 'default.pdf', chunks: 1, tags: null, ingested_at: null }],
+      docs2: [{ doc_id: 'docs2-doc', filename: 'docs2.pdf', chunks: 5, tags: null, ingested_at: null }],
+      empty_coll: [],
+    };
+    const requestedCollections: string[] = [];
+    global.fetch = makeFetchMock({
+      '/metadata': () => ({ ok: true, status: 200, json: () => Promise.resolve({ rag_enabled: true, title: '', model: '' }) }),
+      '/rag/collections': () =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              collections: [
+                { name: 'docs2', doc_count: 1 },
+                { name: 'empty_coll', doc_count: 0 },
+              ],
+            }),
+        }),
+      '/rag/documents': (url: string) => {
+        const collection = new URL(url, 'http://localhost').searchParams.get('collection') || 'default';
+        requestedCollections.push(collection);
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ documents: docsByCollection[collection] || [] }),
+        });
+      },
+    }) as unknown as typeof fetch;
+
+    render(<ChatPane sessionName="ragcollectionscope1" />);
+    const user = userEvent.setup();
+    await waitFor(() => expect(screen.getByText('RAG: ON')).toBeInTheDocument());
+
+    await user.click(screen.getByTitle('Filter RAG documents'));
+    expect(await screen.findByText('default.pdf')).toBeInTheDocument();
+    expect(requestedCollections).toContain('default');
+
+    // Switching collections re-fetches and swaps the list — the previously
+    // shown default-collection doc must not linger.
+    const select = screen.getByRole('combobox') as HTMLSelectElement;
+    await user.selectOptions(select, 'docs2');
+    await waitFor(() => expect(screen.getByText('docs2.pdf')).toBeInTheDocument());
+    expect(screen.queryByText('default.pdf')).not.toBeInTheDocument();
+    expect(requestedCollections).toContain('docs2');
+
+    // An empty collection renders an honest empty state, not another
+    // collection's documents.
+    await user.selectOptions(select, 'empty_coll');
+    await waitFor(() => expect(screen.getByText('No documents available')).toBeInTheDocument());
+    expect(screen.queryByText('docs2.pdf')).not.toBeInTheDocument();
+    expect(requestedCollections).toContain('empty_coll');
+  });
+
 });
