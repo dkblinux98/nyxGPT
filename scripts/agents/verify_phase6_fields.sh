@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Verify (and optionally repair) the project fields of the Phase 6 issue set
 # (#3500-#3516, filed 2026-07-31 by create_phase6.sh via file_phase6_issues.yml,
-# plus #3555 = P6-18 and #3558 = P6-19, filed 2026-08-01).
+# plus #3555 = P6-18 and #3558 = P6-19 (2026-08-01), and #3581 = PD-1 (owner
+# Production Defect deferred to Sprint 7/v3.0.0, 2026-08-02).
 #
 # WHY: ensure_project_hygiene.yml raced create_issue.sh on #3500 — its Status
 # check ran in the seconds before create_issue.sh set Backlog, so it stamped
@@ -40,6 +41,7 @@ EXPECTED="
 3508|P6-14|Sprint 7|cli|L
 3555|P6-18|Sprint 7|testing|L
 3558|P6-19|Sprint 7|cli|M
+3581|PD-1|Sprint 7|api|M
 3509|P6-8|Sprint 8|cli|XL
 3510|P6-9|Sprint 8|cli|M
 3511|P6-12|Sprint 8|cli|L
