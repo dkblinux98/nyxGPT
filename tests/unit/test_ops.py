@@ -5540,7 +5540,81 @@ def test_verify_grafana_plugins_installed_ok_when_all_enabled(monkeypatch):
         status_code = 200
 
         def json(self):
-            return {"enabled": True}
+            return {"type": "app", "enabled": True}
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, path, **kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(ops.httpx, "Client", lambda **kwargs: FakeClient())
+
+    result = ops._verify_grafana_plugins_installed("http://localhost:3001", "admin")
+
+    assert result.ok is True
+
+
+@pytest.mark.unit
+def test_verify_grafana_plugins_installed_fails_when_app_plugin_not_enabled(monkeypatch):
+    monkeypatch.setattr(ops, "_grafana_expected_plugin_ids", lambda: ["grafana-lokiexplore-app"])
+    monkeypatch.setattr(ops.time, "sleep", lambda _: None)
+
+    class FakeResponse:
+        status_code = 200
+        text = '{"type": "app", "enabled": false}'
+
+        def json(self):
+            return {"type": "app", "enabled": False}
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, path, **kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(ops.httpx, "Client", lambda **kwargs: FakeClient())
+
+    result = ops._verify_grafana_plugins_installed("http://localhost:3001", "admin", attempts=2)
+
+    assert result.ok is False
+    assert "grafana-lokiexplore-app" in result.message
+    assert "not enabled" in result.details
+
+
+@pytest.mark.unit
+def test_verify_grafana_plugins_installed_ok_when_datasource_plugin_reports_disabled(
+    monkeypatch,
+):
+    """#3560: `enabled` is an app-plugin-only concept -- a datasource plugin
+    that is fully installed and loaded always reports `enabled: false`
+    (Grafana has no on/off toggle for datasource plugins), so that must not
+    be treated as a failure."""
+    monkeypatch.setattr(
+        ops, "_grafana_expected_plugin_ids", lambda: ["yesoreyeram-infinity-datasource"]
+    )
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "name": "Infinity",
+                "type": "datasource",
+                "id": "yesoreyeram-infinity-datasource",
+                "enabled": False,
+                "pinned": False,
+                "autoEnabled": False,
+                "module": "public/plugins/yesoreyeram-infinity-datasource/module.js",
+            }
 
     class FakeClient:
         def __enter__(self):
