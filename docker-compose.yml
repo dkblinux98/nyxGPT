@@ -485,3 +485,19 @@ services:
         condition: service_healthy
       glitchtip-migrate:
         condition: service_completed_successfully
+    # This container is the actual event-ingestion pipeline (Celery worker +
+    # beat): it's what turns a reported exception into a GlitchTip Issue.
+    # Without a healthcheck, self_heal.py (whose ComponentStatus.healthy
+    # falls back to "running" when `Health` is empty, see self_heal.py's
+    # `_docker_compose_container_statuses`) can never see this container as
+    # unhealthy -- the wrapper process can stay "running" while the Celery
+    # worker inside it has died or wedged, silently dropping every event
+    # from then on with no restart ever triggered (#3565 acceptance
+    # failure: "ingestion apparently stopped"). `celery inspect ping`
+    # reaches the actual worker process, not just the container.
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A glitchtip inspect ping --timeout 10 | grep -q OK"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 45s
