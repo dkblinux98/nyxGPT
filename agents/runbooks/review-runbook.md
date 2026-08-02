@@ -200,10 +200,9 @@ parent's sub-issue list (or a label + body-marker search) for metrics.
 > (`@approve-merge`, `@request-changes`, `@send-to-developer`) which apply to PRs
 > during the automated code review cycle.
 >
-> **Rollout:** `issue_comment` workflows run from the default branch (master),
-> so this model activates at the v2.0.0 → master release merge — the v3.0.0
-> boundary. Failures processed before that merge follow the previous
-> reopen-and-relabel behavior.
+> **Rollout:** `issue_comment` workflows run from the repository default
+> branch — empirically the active release branch, so this model went live
+> when it merged (first live run 2026-08-02, on the v2.0.0 tail failures).
 
 ## 10) Phase completion
 When the human owner moves the last issue in the active Phase to "For Release" (human stakeholder acceptance):

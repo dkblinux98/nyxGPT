@@ -14,10 +14,10 @@ on:
 # the resolution trail of each failure separate and makes the failure count
 # per feature readable straight off the parent's sub-issue list.
 #
-# NOTE: issue_comment workflows execute from the DEFAULT branch (master),
-# so this rewrite goes live at the v2.0.0 -> master release merge — i.e.
-# exactly at the v3.0.0 boundary. Failures processed before that merge run
-# the previous reopen-and-relabel behavior from master.
+# NOTE: issue_comment workflows execute from the repository DEFAULT branch.
+# Empirically (first live run, 2026-08-02) that is the active release
+# branch, so this model went live on merge — not, as first assumed, at the
+# release merge to master.
 
 # Serialize per commented issue so two rapid comments compute distinct
 # failure-round numbers. Distinct comments still create distinct issues.

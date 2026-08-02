@@ -272,9 +272,11 @@ require_gh_auth
 if [[ -n "$COPY_FROM_ISSUE" ]]; then
   echo "[create-issue] Copying fields from issue #${COPY_FROM_ISSUE}..." >&2
 
-  # Get source issue's project item
-  SOURCE_CONTENT_ID=$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${COPY_FROM_ISSUE}" --jq '.node_id')
-  SOURCE_ITEM=$(get_project_item "$SOURCE_CONTENT_ID")
+  # Get source issue's project item (ensure_issue_in_project returns the
+  # existing item id for issues already in the project; the previous
+  # get_project_item helper never existed in gh_project.sh, so this path
+  # exit-127'd the first time --copy-from-issue was exercised, 2026-08-02)
+  SOURCE_ITEM=$(ensure_issue_in_project "$COPY_FROM_ISSUE")
 
   if [[ -z "$SOURCE_ITEM" || "$SOURCE_ITEM" == "null" ]]; then
     echo "[warning] Source issue #${COPY_FROM_ISSUE} not in project, cannot copy fields" >&2
