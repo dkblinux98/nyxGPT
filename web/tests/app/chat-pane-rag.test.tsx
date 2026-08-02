@@ -318,12 +318,10 @@ describe('RAG toggle, filters, attach/detach, upload', () => {
     expect(screen.getByText('doc-b')).toBeInTheDocument();
     expect(screen.getByText(/tag1, tag2/)).toBeInTheDocument();
 
-    // The help text's "Collections admin page" is a real, clickable link to
-    // /admin/collections -- not just prose the user has to act on by finding
-    // that destination on their own (#3566).
-    const collectionsLink = screen.getByRole('link', { name: 'Collections admin page' });
-    expect(collectionsLink).toHaveAttribute('href', '/admin/collections');
-    expect(collectionsLink).toHaveAttribute('target', '_blank');
+    // Documents can be uploaded straight into the selected collection from the
+    // chat page itself -- distinct from the paperclip attachment button, and no
+    // longer requiring a trip to the Collections admin page (#3573).
+    expect(screen.getByRole('button', { name: "Upload document to 'default'" })).toBeInTheDocument();
 
     // Select doc-a checkbox
     const checkboxes = screen.getAllByRole('checkbox');
@@ -578,6 +576,72 @@ describe('RAG toggle, filters, attach/detach, upload', () => {
 
     await user.selectOptions(select, '');
     await waitFor(() => expect(screen.getByText(/· default/)).toBeInTheDocument());
+  });
+
+  it('uploads a document into the selected collection via the chat page and refreshes the collection list', async () => {
+    let uploadUrl = '';
+    let uploadedFormData: FormData | null = null;
+    global.fetch = makeFetchMock({
+      '/metadata': () => ({ ok: true, status: 200, json: () => Promise.resolve({ rag_enabled: true, title: '', model: '' }) }),
+      '/rag/collections': () =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ collections: [{ name: 'docs2', doc_count: 3 }] }),
+        }),
+      '/api/rag/upload': (url: string, init?: RequestInit) => {
+        uploadUrl = url;
+        uploadedFormData = init?.body as FormData;
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ doc_id: 'notes.txt', collection: 'docs2', chunks_ingested: 2, status: 'ingested' }),
+        });
+      },
+    }) as unknown as typeof fetch;
+
+    render(<ChatPane sessionName="raguploadcollection1" />);
+    const user = userEvent.setup();
+    await waitFor(() => expect(screen.getByText('RAG: ON')).toBeInTheDocument());
+
+    await user.click(screen.getByTitle('Filter RAG documents'));
+    const select = screen.getByRole('combobox') as HTMLSelectElement;
+    await user.selectOptions(select, 'docs2');
+    await waitFor(() => expect(screen.getByText(/· docs2/)).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: "Upload document to 'docs2'" })).toBeInTheDocument();
+
+    const uploadInput = document.querySelector('input[type="file"]:not([multiple])') as HTMLInputElement;
+    const doc = new File(['hello'], 'notes.txt', { type: 'text/plain' });
+    await userEvent.upload(uploadInput, doc);
+
+    await waitFor(() => expect(uploadUrl).toContain('/api/rag/upload?collection=docs2'));
+    expect(uploadedFormData?.get('file')).toBeInstanceOf(File);
+    await waitFor(() =>
+      expect(toastMocks.success).toHaveBeenCalledWith(
+        expect.stringContaining("Uploaded 'notes.txt' into 'docs2': 2 chunk(s) ingested.")
+      )
+    );
+  });
+
+  it('shows an error toast when uploading a document to a collection fails', async () => {
+    global.fetch = makeFetchMock({
+      '/metadata': () => ({ ok: true, status: 200, json: () => Promise.resolve({ rag_enabled: true, title: '', model: '' }) }),
+      '/api/rag/upload': () =>
+        Promise.resolve({ ok: false, status: 400, json: () => Promise.resolve({ detail: 'Unsupported collection' }) }),
+    }) as unknown as typeof fetch;
+
+    render(<ChatPane sessionName="raguploadcollectionerr1" />);
+    const user = userEvent.setup();
+    await waitFor(() => expect(screen.getByText('RAG: ON')).toBeInTheDocument());
+    await user.click(screen.getByTitle('Filter RAG documents'));
+
+    const uploadInput = document.querySelector('input[type="file"]:not([multiple])') as HTMLInputElement;
+    const doc = new File(['hello'], 'notes.txt', { type: 'text/plain' });
+    await userEvent.upload(uploadInput, doc);
+
+    await waitFor(() =>
+      expect(toastMocks.error).toHaveBeenCalledWith(expect.stringContaining('Unsupported collection'))
+    );
   });
 
 });

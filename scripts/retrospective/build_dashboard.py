@@ -49,6 +49,8 @@ def milestone_short(title):
     m = MS_PREFIX_RE.match(title or "")
     short = f"Phase {m.group(1)}" if m else None
     return short if short in MS_SHORT else "(none)"
+
+
 LABELS = ["Acceptance Failure", "Feature", "Release Management", "Improvement", "Documentation"]
 CAUSES = ["defect", "spec", "workflow"]
 
