@@ -35,6 +35,7 @@ KNOWN_METRIC_NAMES = {
     "nyxgpt_http_request_duration_seconds_bucket",
     "nyxgpt_http_errors_total",
     "nyxgpt_chat_requests_total",
+    "nyxgpt_chat_attachments_total",
     "nyxgpt_rag_queries_total",
     "nyxgpt_selfheal_unhealthy_components",
     "nyxgpt_selfheal_component_healthy",
@@ -78,6 +79,7 @@ def test_known_metric_names_match_registry() -> None:
         "nyxgpt_http_request_duration_seconds",
         "nyxgpt_http_errors_total",
         "nyxgpt_chat_requests_total",
+        "nyxgpt_chat_attachments_total",
         "nyxgpt_rag_queries_total",
         "nyxgpt_selfheal_unhealthy_components",
         "nyxgpt_selfheal_component_healthy",
@@ -292,6 +294,48 @@ def test_rag_total_by_source_panels_render_honest_zero(panel_title: str) -> None
     )
 
 
+def test_chat_attachments_panel_exists_and_is_not_in_rag_section() -> None:
+    """Chat paperclip attachments are a chat feature, not RAG ingestion --
+    per the #3463 two-function decision, a per-source "Chat attachments"
+    stat must exist (#3469 acceptance failure: an earlier fix incorrectly
+    counted them under nyxgpt_rag_ingests_total instead), and it must sit
+    with the other chat/API stats, not inside the RAG panel row (y=21) on
+    SRE Home."""
+    dashboard = json.loads(
+        (REPO_ROOT / "docker" / "grafana" / "dashboards" / "sre-home.json").read_text()
+    )
+    panels = {p["title"]: p for p in dashboard["panels"]}
+    assert "Chat attachments" in panels, "sre-home.json is missing the 'Chat attachments' panel"
+    panel = panels["Chat attachments"]
+
+    assert panel["targets"], "'Chat attachments' panel has no targets"
+    for target in panel["targets"]:
+        assert "nyxgpt_chat_attachments_total" in target["expr"]
+        assert "nyxgpt_rag_ingests_total" not in target["expr"]
+
+    rag_ingests_panel = panels["RAG ingests by source and outcome"]
+    assert panel["gridPos"]["y"] != rag_ingests_panel["gridPos"]["y"], (
+        "'Chat attachments' must not share a row with the RAG panels -- it "
+        "belongs with the chat/API metrics, not the RAG section of SPOG"
+    )
+
+
+def test_rag_ingests_panels_do_not_reference_chat_attachment_source() -> None:
+    """chat_attachment must never be emitted into nyxgpt_rag_ingests_total
+    (#3469 acceptance failure) -- guard the dashboard queries/legends that
+    would surface it if the emission bug ever regressed."""
+    for dashboard_name in (
+        "docker/grafana/dashboards/sre-home.json",
+        "docker/grafana/dashboards/rag-performance.json",
+    ):
+        dashboard = json.loads((REPO_ROOT / dashboard_name).read_text())
+        for panel in dashboard["panels"]:
+            if "RAG ingest" not in panel.get("title", ""):
+                continue
+            for target in panel["targets"]:
+                assert "chat_attachment" not in target["expr"]
+
+
 def test_grafana_dashboards_are_provisioned() -> None:
     dashboards_dir = REPO_ROOT / "docker" / "grafana" / "dashboards"
     dashboard_files = sorted(p.name for p in dashboards_dir.glob("*.json"))
@@ -455,21 +499,37 @@ def test_sre_home_glitchtip_recent_errors_table_shows_status() -> None:
 
 def test_glitchtip_worker_has_a_healthcheck() -> None:
     """Regression test for #3565: `glitchtip-worker` runs the actual
-    event-ingestion pipeline (Celery worker + beat) but had no healthcheck,
-    so `self_heal._docker_compose_container_statuses` (which treats an empty
+    event-ingestion pipeline but had no healthcheck, so
+    `self_heal._docker_compose_container_statuses` (which treats an empty
     `Health` field as healthy whenever the container `state == "running"`)
     could never detect a dead/wedged worker -- the container process stayed
     "running" while ingestion silently stopped, with self-heal never
-    restarting it. `celery inspect ping` reaches the worker process itself,
-    not just the container, so a wedged worker now surfaces as unhealthy."""
+    restarting it. Round 1 of this fix probed with `celery inspect ping`,
+    but the pinned glitchtip:6.2.0 image doesn't ship Celery at all (it runs
+    django-vtasks), so that probe failed with "celery: not found" on every
+    run (#3565 round 2) -- round 2 instead checks the mtime of the
+    `VTASKS_HEALTH_CHECK_FILE` heartbeat file that django-vtasks' `runworker`
+    rewrites every 5 seconds, via `python` (confirmed present in the
+    image), which is a real liveness check reaching the worker process
+    itself, not just the container."""
     compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text())
     worker = compose["services"]["glitchtip-worker"]
 
     assert (
         "healthcheck" in worker
-    ), "glitchtip-worker has no healthcheck -- self-heal can't detect a dead Celery worker"
-    test = worker["healthcheck"]["test"]
-    assert "celery" in " ".join(test) and "inspect" in " ".join(test)
+    ), "glitchtip-worker has no healthcheck -- self-heal can't detect a dead worker"
+    assert "celery" not in " ".join(worker["healthcheck"]["test"]), (
+        "the pinned glitchtip:6.2.0 image has no celery binary/module -- "
+        "a `celery` probe fails with 'not found' on every run (#3565 round 2)"
+    )
+
+    assert "VTASKS_HEALTH_CHECK_FILE" in worker["environment"]
+    test = " ".join(worker["healthcheck"]["test"])
+    assert "python" in test
+    assert "VTASKS_HEALTH_CHECK_FILE" in test, (
+        "the probe must read the path via the VTASKS_HEALTH_CHECK_FILE env var "
+        "(as django-vtasks itself does), not a hardcoded path that could drift from it"
+    )
 
 
 @pytest.mark.parametrize(

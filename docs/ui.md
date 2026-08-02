@@ -49,16 +49,17 @@ this section covers the UI surface specifically.
 **Web UI** — RAG controls sit left of the message input in the chat interface:
 - **RAG Toggle** button to enable/disable RAG for the current session
 - RAG status displays current state (ON/OFF)
-- **Document Filters** button (available when RAG is enabled) to narrow which documents are searched: select specific documents by checkbox, filter by filename (partial match, case-insensitive) or ingestion date range, and pick a **Collection** to scope retrieval (populated from [RAG Collections management](rag.md#collections-management-ui); defaults to `"default"` when none is picked). The button label always shows the effective collection (e.g. `Filters · default`) so it's never implicit. This picker only scopes *search* — it does not ingest documents (see below). Filters persist across page reloads via session storage, with an active-filter indicator when applied.
+- **Document Filters** button (available when RAG is enabled) to narrow which documents are searched: select specific documents by checkbox, filter by filename (partial match, case-insensitive) or ingestion date range, and pick a **Collection** to scope retrieval (populated from [RAG Collections management](rag.md#collections-management-ui); defaults to `"default"` when none is picked). The button label always shows the effective collection (e.g. `Filters · default`) so it's never implicit. The **Select Documents** checkbox list is scoped to the currently selected collection and re-fetches whenever the collection changes, so it never shows another collection's documents; an empty collection renders an honest empty list (#3566). The filters themselves only scope *search*; the panel's separate upload button (see below) is what ingests documents. Filters persist across page reloads via session storage, with an active-filter indicator when applied.
 
-Chat has no document-ingestion surface (Owner design decision, 2026-08-01): the chat paperclip is a
-pure conversation attachment (see [File Attachments](#file-attachments) below) and never touches
-the RAG store, and the "File Upload" control formerly in this panel was removed. To add a document
-to a collection, use **Upload Document** on the [RAG Collections](rag.md#collections-management-ui)
-admin page (`/admin/collections`) instead — the Document Filters panel's help text links there
-directly (opens in a new tab), and the RAG Playground's Collection selector carries the same link,
-so the destination is reachable with one click from either surface instead of requiring the reader
-to already know where the Collections admin page lives (#3566).
+The Document Filters panel also includes an **"Upload document to '\<collection\>'"** button
+(Owner decision, 2026-08-02, reversing the 2026-08-01 design above per stakeholder acceptance
+testing of #3463): selecting a file ingests it directly into the collection currently selected
+in the Collection dropdown (`"default"` when none is picked), refreshing both the collection list
+and the Select Documents list on success — no page reload or trip to the Collections admin page
+required. This is distinct from the chat paperclip, which remains a pure conversation attachment
+(see [File Attachments](#file-attachments) below) that never touches the RAG store. Documents can
+still also be uploaded via **Upload Document** on the [RAG Collections](rag.md#collections-management-ui)
+admin page (`/admin/collections`).
 - **RAG Citations** displayed inline with responses: retrieved source chunks with click-to-expand for full text, relevance scores with quality indicators (High/Medium/Low), document IDs, human-readable chunk position ("chunk 2 of 5", not the internal zero-based index), and source collection (shown when it isn't `"default"`), plus export to separate files (JSON, Markdown)
 
 Pinned sessions are displayed with a 📌 icon and appear at the top of the list.
@@ -166,7 +167,7 @@ The web UI includes:
 
 - **Chat interface** with streaming responses and session management
 - **Message editing and regeneration** — edit any message and fork the conversation from that point, or regenerate assistant responses (see [Message Editing](api.md#message-editing))
-- **RAG toggle and search scoping** in the chat interface, plus per-message RAG citations (see [RAG](rag.md)); document ingestion is a separate action on the [RAG Collections](rag.md#collections-management-ui) admin page, not the chat interface
+- **RAG toggle and search scoping** in the chat interface, plus per-message RAG citations (see [RAG](rag.md)); the Document Filters panel also lets a user upload a document directly into the selected collection from the chat page itself, in addition to the [RAG Collections](rag.md#collections-management-ui) admin page
 - **Admin dashboard** (`/admin/dashboard`) — a unified hub with a system status overview (canary state, resource metrics, opt-in observability stacks), a configuration summary, access/API-key management (view masked key, enable/disable auth, rotate), and an activity log (audit trail of admin actions)
 - **System Health screen** (`/admin/health`) — the single consolidated destination (#3413) for "how is the system doing," with three sections on one page: service health (service uptime, a live Self-Heal Components card naming any unhealthy self-heal-monitored component — sourced from the same `/api/v1/self-heal/status` the Self-Heal page uses, so the two pages can never disagree, with a link through to [Self-Heal](self-healing.md) for full detail — dependency reachability checks for Ollama and Cassandra when RAG is enabled, and alert indicators — live from Grafana's real alerting when monitoring is enabled and reachable, else a local threshold estimate; the panel labels which one it's showing, see [alerting.md](alerting.md#system-health-panel)), usage analytics (total/per-model/per-day request and token breakdowns from recorded chat usage, with JSON/CSV report export — see [API — Usage Analytics](api.md#usage-analytics)), and resource metrics (the history-backed live performance dashboard from #3352). Section anchor links at the top jump between them. The former standalone `/admin/analytics` route and the Settings page's Resource Usage tab were retired into this screen — it is now their only home.
 - **RAG Collections management** (`/admin/collections`) for multi-model embedding support (see [RAG — Collections Management UI](rag.md#collections-management-ui))
@@ -214,7 +215,7 @@ Toasts appear in the bottom-right corner, auto-dismiss after 5 seconds (configur
 
 #### File Attachments
 
-The chat interface supports inline file attachments. Users can attach images and documents directly to a chat message before sending. This is a pure conversation attachment: the file's content is given to the model for that message only (summarize, discuss, quote) and is never chunked, embedded, or stored in any RAG collection — no collection is involved or modified, and attach behavior does not depend on the Collection filter above. To add a document to RAG for future retrieval, use **Upload Document** on the [RAG Collections](rag.md#collections-management-ui) admin page instead.
+The chat interface supports inline file attachments. Users can attach images and documents directly to a chat message before sending. This is a pure conversation attachment: the file's content is given to the model for that message only (summarize, discuss, quote) and is never chunked, embedded, or stored in any RAG collection — no collection is involved or modified, and attach behavior does not depend on the Collection filter above. To add a document to RAG for future retrieval, use the **"Upload document to '\<collection\>'"** button in the Document Filters panel (see [RAG Controls](#rag-controls-web-ui) above), or **Upload Document** on the [RAG Collections](rag.md#collections-management-ui) admin page.
 
 **How to attach files:**
 

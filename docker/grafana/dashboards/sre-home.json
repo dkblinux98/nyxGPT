@@ -73,6 +73,23 @@
       ]
     },
     {
+      "id": 30,
+      "title": "Chat attachments",
+      "type": "stat",
+      "description": "Documents attached via the chat paperclip flow -- a chat feature, not RAG ingestion. This does NOT count toward the RAG ingest panels below.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 4, "x": 8, "y": 5 },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(nyxgpt_chat_attachments_total) by (result)",
+          "legendFormat": "{{result}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
       "id": 8,
       "title": "Requests by status",
       "type": "timeseries",
