@@ -385,8 +385,8 @@ def test_sre_home_dashboard_is_provisioned_and_is_the_landing_page() -> None:
     dashboard = json.loads((dashboards_dir / "sre-home.json").read_text())
 
     assert dashboard["uid"] == "nyxgpt-sre-home"
-    panel_types = {panel["type"] for panel in dashboard["panels"]}
-    assert "traces" in panel_types, "must give traces a default, non-blank view"
+    panel_titles = {panel["title"] for panel in dashboard["panels"]}
+    assert "Recent nyxgpt traces" in panel_titles, "must give traces a default, non-blank view"
 
     compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text())
     grafana_env = compose["services"]["grafana"]["environment"]

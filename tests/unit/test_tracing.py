@@ -585,3 +585,34 @@ def test_grafana_jaeger_panels_service_filter_matches_tracing_config() -> None:
             f"service={target.get('service')!r}, but tracing.py exports "
             f"service.name={expected_service!r}"
         )
+
+
+def test_grafana_jaeger_search_panels_do_not_use_the_single_trace_panel_type() -> None:
+    """Regression test for #3564 (acceptance-failure round 1 of #3472): the
+    SPOG traces panel kept showing "No data found in response" against a
+    live Jaeger that verifiably had matching traces (confirmed by querying
+    Grafana's own /api/ds/query with the panel's exact target JSON). The
+    query and service name were both correct -- the panel's `type` was
+    "traces", which Grafana's core Traces panel only renders for a single
+    trace's spans. A Jaeger `queryType: "search"` target returns a *list* of
+    traces (Trace ID / Trace name / Start time / Duration columns), a shape
+    the Traces panel can't display; it silently reports no data instead of
+    erroring. The Table panel renders that list shape natively. Sweeps every
+    dashboard so a future Jaeger search panel can't reintroduce this."""
+    dashboards_dir = REPO_ROOT / "docker" / "grafana" / "dashboards"
+    search_panels = []
+    for dashboard_path in sorted(dashboards_dir.glob("*.json")):
+        dashboard = json.loads(dashboard_path.read_text())
+        for panel, target in _iter_jaeger_panel_targets(dashboard):
+            if target.get("queryType") == "search":
+                search_panels.append((dashboard_path.name, panel["title"], panel.get("type")))
+
+    assert search_panels, "expected at least one Jaeger search-query panel"
+    for dashboard_name, panel_title, panel_type in search_panels:
+        assert panel_type != "traces", (
+            f"{dashboard_name}: panel {panel_title!r} runs a Jaeger "
+            f"queryType=search (multi-trace list) query but uses the "
+            f"single-trace 'traces' panel type, which renders it as empty "
+            f"('No data found in response') even when Jaeger has matching "
+            f"traces -- use 'table' instead"
+        )
