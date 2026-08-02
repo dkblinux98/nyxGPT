@@ -1589,6 +1589,75 @@ def test_run_expected_true_logs_debug_not_warning_on_nonzero_exit_check_true(cap
 
 
 @pytest.mark.unit
+def test_run_expected_returncodes_logs_info_not_warning_with_expected_wording(caplog):
+    # #3574: a declared-expected exit code (e.g. createsuperuser --noinput's
+    # rc=1 when the account already exists) must never read as scary WARNING.
+    with patch.object(ops.subprocess, "run") as run:
+        run.return_value = subprocess.CompletedProcess(
+            args=["false"], returncode=1, stdout="", stderr="boom\n"
+        )
+        with caplog.at_level("DEBUG", logger="nyxgpt.ops"):
+            cp = ops._run(
+                ["false"],
+                check=False,
+                expected_returncodes={1},
+                expected_message="superuser already exists -- expected rc=1, treated as success",
+            )
+
+    assert cp.returncode == 1
+    assert not any(r.levelno == logging.WARNING for r in caplog.records)
+    records = [r for r in caplog.records if r.levelno == logging.INFO]
+    assert records, "Expected _run to log the declared-expected exit at INFO"
+    assert "expected" in records[0].getMessage().lower()
+    assert "superuser already exists" in records[0].getMessage()
+
+
+@pytest.mark.unit
+def test_run_expected_returncodes_mismatch_still_logs_warning(caplog):
+    # A genuinely unexpected exit code (not in expected_returncodes) must
+    # still log WARNING exactly as today, even when the caller declared some
+    # other code as expected.
+    with patch.object(ops.subprocess, "run") as run:
+        run.return_value = subprocess.CompletedProcess(
+            args=["false"], returncode=2, stdout="", stderr="boom\n"
+        )
+        with caplog.at_level("DEBUG", logger="nyxgpt.ops"):
+            cp = ops._run(
+                ["false"],
+                check=False,
+                expected_returncodes={1},
+                expected_message="should not be used",
+            )
+
+    assert cp.returncode == 2
+    records = [r for r in caplog.records if "Subprocess exited non-zero" in r.getMessage()]
+    assert records, "Expected _run to log the unexpected non-zero exit"
+    assert records[0].levelno == logging.WARNING
+    assert not any(r.levelno == logging.INFO for r in caplog.records)
+
+
+@pytest.mark.unit
+def test_glitchtip_ensure_superuser_already_exists_logs_info_not_warning(caplog):
+    # #3574 acceptance: a full down+install on an already-provisioned stack
+    # must emit zero WARNING lines for the idempotent createsuperuser step.
+    with patch.object(ops.subprocess, "run") as run:
+        run.return_value = subprocess.CompletedProcess(
+            args=["docker"],
+            returncode=1,
+            stdout="",
+            stderr="Error: That email address is already taken.",
+        )
+        with caplog.at_level("DEBUG", logger="nyxgpt.ops"):
+            result = ops._glitchtip_ensure_superuser("admin@nyxgpt.local", "pw")
+
+    assert result.ok
+    assert not any(r.levelno == logging.WARNING for r in caplog.records)
+    info_records = [r for r in caplog.records if r.levelno == logging.INFO]
+    assert info_records, "Expected the expected-rc=1 exit to log at INFO"
+    assert "expected" in info_records[0].getMessage().lower()
+
+
+@pytest.mark.unit
 def test_which_finds_and_misses():
     assert ops._which("python3") is not None
     assert ops._which("definitely-not-a-real-binary-xyz") is None
