@@ -578,9 +578,10 @@ describe('RAG toggle, filters, attach/detach, upload', () => {
     await waitFor(() => expect(screen.getByText(/· default/)).toBeInTheDocument());
   });
 
-  it('uploads a document into the selected collection via the chat page and refreshes the collection list', async () => {
+  it('uploads a document into the selected collection via the chat page, refreshes the collection and document lists, and opens the file picker via the button click', async () => {
     let uploadUrl = '';
     let uploadedFormData: FormData | null = null;
+    let documentsFetchCount = 0;
     global.fetch = makeFetchMock({
       '/metadata': () => ({ ok: true, status: 200, json: () => Promise.resolve({ rag_enabled: true, title: '', model: '' }) }),
       '/rag/collections': () =>
@@ -589,6 +590,15 @@ describe('RAG toggle, filters, attach/detach, upload', () => {
           status: 200,
           json: () => Promise.resolve({ collections: [{ name: 'docs2', doc_count: 3 }] }),
         }),
+      '/rag/documents': () => {
+        documentsFetchCount += 1;
+        // Second fetch (post-upload refresh) reflects the newly-ingested document.
+        const documents =
+          documentsFetchCount >= 2
+            ? [{ doc_id: 'notes.txt', filename: 'notes.txt', chunks: 2, tags: null, ingested_at: null }]
+            : [];
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ documents }) });
+      },
       '/api/rag/upload': (url: string, init?: RequestInit) => {
         uploadUrl = url;
         uploadedFormData = init?.body as FormData;
@@ -608,9 +618,17 @@ describe('RAG toggle, filters, attach/detach, upload', () => {
     const select = screen.getByRole('combobox') as HTMLSelectElement;
     await user.selectOptions(select, 'docs2');
     await waitFor(() => expect(screen.getByText(/· docs2/)).toBeInTheDocument());
-    expect(screen.getByRole('button', { name: "Upload document to 'docs2'" })).toBeInTheDocument();
 
+    const uploadButton = screen.getByRole('button', { name: "Upload document to 'docs2'" });
     const uploadInput = document.querySelector('input[type="file"]:not([multiple])') as HTMLInputElement;
+    // Exercise the button's own onClick handler (not just the hidden input directly).
+    const clickSpy = vi.spyOn(uploadInput, 'click');
+    await user.click(uploadButton);
+    expect(clickSpy).toHaveBeenCalled();
+
+    // No documents available yet (pre-upload fetch on RAG enable returned none).
+    expect(screen.getByText('No documents available')).toBeInTheDocument();
+
     const doc = new File(['hello'], 'notes.txt', { type: 'text/plain' });
     await userEvent.upload(uploadInput, doc);
 
@@ -621,9 +639,12 @@ describe('RAG toggle, filters, attach/detach, upload', () => {
         expect.stringContaining("Uploaded 'notes.txt' into 'docs2': 2 chunk(s) ingested.")
       )
     );
+
+    // The Select Documents list reflects the new document without a page reload.
+    await waitFor(() => expect(screen.getByText('notes.txt')).toBeInTheDocument());
   });
 
-  it('shows an error toast when uploading a document to a collection fails', async () => {
+  it('shows an error toast (detail fallback) when uploading a document to a collection fails', async () => {
     global.fetch = makeFetchMock({
       '/metadata': () => ({ ok: true, status: 200, json: () => Promise.resolve({ rag_enabled: true, title: '', model: '' }) }),
       '/api/rag/upload': () =>
@@ -641,6 +662,194 @@ describe('RAG toggle, filters, attach/detach, upload', () => {
 
     await waitFor(() =>
       expect(toastMocks.error).toHaveBeenCalledWith(expect.stringContaining('Unsupported collection'))
+    );
+  });
+
+  it('shows an error toast (plain string error) when uploading a document to a collection fails', async () => {
+    global.fetch = makeFetchMock({
+      '/metadata': () => ({ ok: true, status: 200, json: () => Promise.resolve({ rag_enabled: true, title: '', model: '' }) }),
+      '/api/rag/upload': () =>
+        Promise.resolve({ ok: false, status: 400, json: () => Promise.resolve({ error: 'Bad upload' }) }),
+    }) as unknown as typeof fetch;
+
+    render(<ChatPane sessionName="raguploadcollectionerr2" />);
+    const user = userEvent.setup();
+    await waitFor(() => expect(screen.getByText('RAG: ON')).toBeInTheDocument());
+    await user.click(screen.getByTitle('Filter RAG documents'));
+
+    const uploadInput = document.querySelector('input[type="file"]:not([multiple])') as HTMLInputElement;
+    const doc = new File(['hello'], 'notes.txt', { type: 'text/plain' });
+    await userEvent.upload(uploadInput, doc);
+
+    await waitFor(() =>
+      expect(toastMocks.error).toHaveBeenCalledWith(expect.stringContaining('Bad upload'))
+    );
+  });
+
+  it('shows an error toast (nested error.message object) when uploading a document to a collection fails', async () => {
+    global.fetch = makeFetchMock({
+      '/metadata': () => ({ ok: true, status: 200, json: () => Promise.resolve({ rag_enabled: true, title: '', model: '' }) }),
+      '/api/rag/upload': () =>
+        Promise.resolve({
+          ok: false,
+          status: 400,
+          json: () => Promise.resolve({ error: { message: 'Nested upload failure' } }),
+        }),
+    }) as unknown as typeof fetch;
+
+    render(<ChatPane sessionName="raguploadcollectionerr3" />);
+    const user = userEvent.setup();
+    await waitFor(() => expect(screen.getByText('RAG: ON')).toBeInTheDocument());
+    await user.click(screen.getByTitle('Filter RAG documents'));
+
+    const uploadInput = document.querySelector('input[type="file"]:not([multiple])') as HTMLInputElement;
+    const doc = new File(['hello'], 'notes.txt', { type: 'text/plain' });
+    await userEvent.upload(uploadInput, doc);
+
+    await waitFor(() =>
+      expect(toastMocks.error).toHaveBeenCalledWith(expect.stringContaining('Nested upload failure'))
+    );
+  });
+
+  it('shows an error toast (HTTP status fallback) when the upload error body is not an object', async () => {
+    global.fetch = makeFetchMock({
+      '/metadata': () => ({ ok: true, status: 200, json: () => Promise.resolve({ rag_enabled: true, title: '', model: '' }) }),
+      '/api/rag/upload': () =>
+        Promise.resolve({ ok: false, status: 400, json: () => Promise.resolve(null) }),
+    }) as unknown as typeof fetch;
+
+    render(<ChatPane sessionName="raguploadcollectionerr4" />);
+    const user = userEvent.setup();
+    await waitFor(() => expect(screen.getByText('RAG: ON')).toBeInTheDocument());
+    await user.click(screen.getByTitle('Filter RAG documents'));
+
+    const uploadInput = document.querySelector('input[type="file"]:not([multiple])') as HTMLInputElement;
+    const doc = new File(['hello'], 'notes.txt', { type: 'text/plain' });
+    await userEvent.upload(uploadInput, doc);
+
+    await waitFor(() =>
+      expect(toastMocks.error).toHaveBeenCalledWith(expect.stringContaining('HTTP 400'))
+    );
+  });
+
+  it('shows an error toast (HTTP status fallback) when the upload error body has neither error nor detail', async () => {
+    global.fetch = makeFetchMock({
+      '/metadata': () => ({ ok: true, status: 200, json: () => Promise.resolve({ rag_enabled: true, title: '', model: '' }) }),
+      '/api/rag/upload': () =>
+        Promise.resolve({ ok: false, status: 400, json: () => Promise.resolve({}) }),
+    }) as unknown as typeof fetch;
+
+    render(<ChatPane sessionName="raguploadcollectionerr4b" />);
+    const user = userEvent.setup();
+    await waitFor(() => expect(screen.getByText('RAG: ON')).toBeInTheDocument());
+    await user.click(screen.getByTitle('Filter RAG documents'));
+
+    const uploadInput = document.querySelector('input[type="file"]:not([multiple])') as HTMLInputElement;
+    const doc = new File(['hello'], 'notes.txt', { type: 'text/plain' });
+    await userEvent.upload(uploadInput, doc);
+
+    await waitFor(() =>
+      expect(toastMocks.error).toHaveBeenCalledWith(expect.stringContaining('HTTP 400'))
+    );
+  });
+
+  it('shows an error toast (unparseable error body) when the upload error response body cannot be parsed as JSON', async () => {
+    global.fetch = makeFetchMock({
+      '/metadata': () => ({ ok: true, status: 200, json: () => Promise.resolve({ rag_enabled: true, title: '', model: '' }) }),
+      '/api/rag/upload': () =>
+        Promise.resolve({ ok: false, status: 500, json: () => Promise.reject(new Error('not json')) }),
+    }) as unknown as typeof fetch;
+
+    render(<ChatPane sessionName="raguploadcollectionerr5" />);
+    const user = userEvent.setup();
+    await waitFor(() => expect(screen.getByText('RAG: ON')).toBeInTheDocument());
+    await user.click(screen.getByTitle('Filter RAG documents'));
+
+    const uploadInput = document.querySelector('input[type="file"]:not([multiple])') as HTMLInputElement;
+    const doc = new File(['hello'], 'notes.txt', { type: 'text/plain' });
+    await userEvent.upload(uploadInput, doc);
+
+    await waitFor(() =>
+      expect(toastMocks.error).toHaveBeenCalledWith(expect.stringContaining('Unknown error'))
+    );
+  });
+
+  it('shows a generic error toast when the upload request itself rejects with a non-Error value', async () => {
+    global.fetch = makeFetchMock({
+      '/metadata': () => ({ ok: true, status: 200, json: () => Promise.resolve({ rag_enabled: true, title: '', model: '' }) }),
+      '/api/rag/upload': () => Promise.reject('network exploded'),
+    }) as unknown as typeof fetch;
+
+    render(<ChatPane sessionName="raguploadcollectionerr6" />);
+    const user = userEvent.setup();
+    await waitFor(() => expect(screen.getByText('RAG: ON')).toBeInTheDocument());
+    await user.click(screen.getByTitle('Filter RAG documents'));
+
+    const uploadInput = document.querySelector('input[type="file"]:not([multiple])') as HTMLInputElement;
+    const doc = new File(['hello'], 'notes.txt', { type: 'text/plain' });
+    await userEvent.upload(uploadInput, doc);
+
+    await waitFor(() =>
+      expect(toastMocks.error).toHaveBeenCalledWith(expect.stringContaining('network exploded'))
+    );
+  });
+
+  it('falls back to the selected collection name in the success toast when the upload response omits it', async () => {
+    global.fetch = makeFetchMock({
+      '/metadata': () => ({ ok: true, status: 200, json: () => Promise.resolve({ rag_enabled: true, title: '', model: '' }) }),
+      '/rag/collections': () =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ collections: [{ name: 'docs3', doc_count: 1 }] }),
+        }),
+      '/api/rag/upload': () =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ doc_id: 'a.txt', chunks_ingested: 1, status: 'ingested' }),
+        }),
+    }) as unknown as typeof fetch;
+
+    render(<ChatPane sessionName="raguploadcollectionfallback1" />);
+    const user = userEvent.setup();
+    await waitFor(() => expect(screen.getByText('RAG: ON')).toBeInTheDocument());
+    await user.click(screen.getByTitle('Filter RAG documents'));
+    const select = screen.getByRole('combobox') as HTMLSelectElement;
+    await user.selectOptions(select, 'docs3');
+    await waitFor(() => expect(screen.getByText(/· docs3/)).toBeInTheDocument());
+
+    const uploadInput = document.querySelector('input[type="file"]:not([multiple])') as HTMLInputElement;
+    const doc = new File(['hello'], 'a.txt', { type: 'text/plain' });
+    await userEvent.upload(uploadInput, doc);
+
+    await waitFor(() =>
+      expect(toastMocks.success).toHaveBeenCalledWith(expect.stringContaining("into 'docs3'"))
+    );
+  });
+
+  it('falls back to \'default\' in the success toast when neither the upload response nor the filter selects a collection', async () => {
+    global.fetch = makeFetchMock({
+      '/metadata': () => ({ ok: true, status: 200, json: () => Promise.resolve({ rag_enabled: true, title: '', model: '' }) }),
+      '/api/rag/upload': () =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ doc_id: 'b.txt', chunks_ingested: 1, status: 'ingested' }),
+        }),
+    }) as unknown as typeof fetch;
+
+    render(<ChatPane sessionName="raguploadcollectionfallback2" />);
+    const user = userEvent.setup();
+    await waitFor(() => expect(screen.getByText('RAG: ON')).toBeInTheDocument());
+    await user.click(screen.getByTitle('Filter RAG documents'));
+
+    const uploadInput = document.querySelector('input[type="file"]:not([multiple])') as HTMLInputElement;
+    const doc = new File(['hello'], 'b.txt', { type: 'text/plain' });
+    await userEvent.upload(uploadInput, doc);
+
+    await waitFor(() =>
+      expect(toastMocks.success).toHaveBeenCalledWith(expect.stringContaining("into 'default'"))
     );
   });
 

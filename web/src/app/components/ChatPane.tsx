@@ -792,7 +792,7 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
       }
 
       const data = await res.json();
-      await fetchAvailableCollections();
+      await Promise.all([fetchAvailableCollections(), fetchAvailableDocuments()]);
       toast.success(
         `Uploaded '${data.doc_id}' into '${data.collection || targetCollection || 'default'}': ${data.chunks_ingested} chunk(s) ingested.`
       );
