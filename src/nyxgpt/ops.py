@@ -4834,12 +4834,22 @@ def _verify_grafana_plugins_installed(
     delay_s: float = 2.0,
 ) -> OpsResult:
     """Confirm every plugin listed in `GF_INSTALL_PLUGINS` is actually
-    installed and enabled, rather than assuming a successful env-var-driven
-    download (#3424's "plugin installation is confirmed... rather than
-    assumed from GF_INSTALL_PLUGINS" AC). `GF_INSTALL_PLUGINS` downloads
-    each plugin from the network at container startup and fails silently
-    (a logged error, not a crash) if that download fails -- e.g. no network
-    access, registry outage, or a renamed/typo'd plugin id.
+    installed, rather than assuming a successful env-var-driven download
+    (#3424's "plugin installation is confirmed... rather than assumed from
+    GF_INSTALL_PLUGINS" AC). `GF_INSTALL_PLUGINS` downloads each plugin from
+    the network at container startup and fails silently (a logged error, not
+    a crash) if that download fails -- e.g. no network access, registry
+    outage, or a renamed/typo'd plugin id. On any such failure the plugin is
+    never registered, so `GET /api/plugins/<id>/settings` 404s -- that's the
+    signal used for every plugin type.
+
+    `enabled` in that response is only meaningful for `type: "app"` plugins,
+    which have an explicit on/off toggle; datasource/panel/renderer plugins
+    have no such toggle and always report `enabled: false` even once fully
+    installed and loaded (#3560 -- `yesoreyeram-infinity-datasource` false-
+    failed here despite its provisioned datasource resolving fine in the very
+    next check). So `enabled` is only enforced for app plugins; for every
+    other type, the 200 itself is proof Grafana registered the plugin.
     """
     expected = _grafana_expected_plugin_ids()
     if not expected:
@@ -4859,7 +4869,9 @@ def _verify_grafana_plugins_installed(
                             missing_details.append(
                                 f"{plugin_id}: HTTP {resp.status_code}: {resp.text[:500]}"
                             )
-                        elif not resp.json().get("enabled"):
+                            continue
+                        settings = resp.json()
+                        if settings.get("type") == "app" and not settings.get("enabled"):
                             missing.append(plugin_id)
                             missing_details.append(f"{plugin_id}: not enabled: {resp.text[:500]}")
                 if not missing:
@@ -4872,10 +4884,11 @@ def _verify_grafana_plugins_installed(
                 return OpsResult(
                     False,
                     f"Grafana plugin(s) failed to install: {', '.join(missing)}",
-                    "Listed in docker-compose.yml's GF_INSTALL_PLUGINS but not enabled per "
-                    "GET /api/plugins/<id>/settings -- check `nyxgpt ops logs grafana` for a "
-                    "plugin download error (no network access, registry outage, renamed/typo'd "
-                    "plugin id).\n" + "\n".join(missing_details),
+                    "Listed in docker-compose.yml's GF_INSTALL_PLUGINS but not registered (or, "
+                    "for app-type plugins, not enabled) per GET /api/plugins/<id>/settings -- "
+                    "check `nyxgpt ops logs grafana` for a plugin download error (no network "
+                    "access, registry outage, renamed/typo'd plugin id).\n"
+                    + "\n".join(missing_details),
                 )
             except Exception as e:
                 last_error = e
