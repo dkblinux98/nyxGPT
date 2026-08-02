@@ -1301,10 +1301,20 @@ def _generate_compose_config() -> list[OpsResult]:
         text = native.read_text(encoding="utf-8")
         for section, key, value in _COMPOSE_CONFIG_OVERRIDES:
             text = _patch_ini_value(text, section, key, value)
-        dsn_parser = ConfigParser()
-        dsn_parser.optionxform = str  # type: ignore[assignment]
-        dsn_parser.read_string(text)
-        native_dsn = dsn_parser.get("error_tracking", "dsn", fallback="").strip()
+        try:
+            dsn_parser = ConfigParser()
+            dsn_parser.optionxform = str  # type: ignore[assignment]
+            dsn_parser.read_string(text)
+            native_dsn = dsn_parser.get("error_tracking", "dsn", fallback="").strip()
+        except Exception as e:
+            logger.warning(
+                "Failed to parse %s while rewriting the error-tracking DSN for "
+                "the container network, leaving it unrewritten: %s",
+                native,
+                e,
+                extra={"component": "ops"},
+            )
+            native_dsn = ""
         if native_dsn:
             text = _patch_ini_value(
                 text, "error_tracking", "dsn", _containerized_error_tracking_dsn(native_dsn)

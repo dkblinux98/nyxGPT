@@ -10858,6 +10858,75 @@ def test_generate_compose_config_no_error_tracking_section_is_noop(tmp_path, mon
 
 
 @pytest.mark.unit
+def test_generate_compose_config_malformed_native_config_degrades_gracefully(
+    tmp_path, monkeypatch, caplog
+):
+    """A native config.ini that isn't valid INI (e.g. a hand-edited duplicate
+    section) must not crash `_generate_compose_config` -- the DSN rewrite step
+    parses the text with `ConfigParser`, which raises `configparser.Error` on
+    input the line-based `_patch_ini_value` rewrites tolerate fine. Regression
+    test for #3565 round-5 review: this used to propagate uncaught out of
+    `env_sync()`, which has no surrounding try/except."""
+    home = tmp_path / "home"
+    (home / ".nyxGPT").mkdir(parents=True)
+    native = home / ".nyxGPT" / "config.ini"
+    native.write_text(
+        "[nyxgpt]\n"
+        "default_model = llama3.1:8b\n"
+        "[error_tracking]\n"
+        "enabled = true\n"
+        "dsn = http://509fecaebca74ee68bcd4bd9d56dbe53@localhost:8080/1\n"
+        "[error_tracking]\n"
+        "dsn = http://duplicate@localhost:8080/1\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "config.docker.ini"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "COMPOSE_CONFIG_FILE", out)
+
+    with caplog.at_level(logging.WARNING):
+        results = ops._generate_compose_config()
+
+    assert all(r.ok for r in results)
+    assert out.exists()
+    assert "Failed to parse" in caplog.text
+
+    text = out.read_text(encoding="utf-8")
+    # DSN rewrite skipped (unparseable), but the rest of the derived config
+    # is still written -- no crash, no partial/missing output file.
+    assert "dsn = http://509fecaebca74ee68bcd4bd9d56dbe53@localhost:8080/1" in text
+
+
+@pytest.mark.unit
+def test_env_sync_survives_malformed_native_config(tmp_path, monkeypatch):
+    """`nyxgpt ops env-sync` must not raise when the native config.ini has a
+    duplicate section -- `_generate_compose_config` is called directly with no
+    surrounding try/except in `env_sync()`, unlike the `install()` call sites."""
+    home = tmp_path / "home"
+    (home / ".nyxGPT").mkdir(parents=True)
+    native = home / ".nyxGPT" / "config.ini"
+    _write_config(native, api_key="cli-api-key")
+    with native.open("a", encoding="utf-8") as f:
+        f.write(
+            "[error_tracking]\ndsn = http://one@localhost:8080/1\n"
+            "[error_tracking]\ndsn = http://two@localhost:8080/1\n"
+        )
+    out = tmp_path / "config.docker.ini"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "COMPOSE_CONFIG_FILE", out)
+    monkeypatch.setattr(ops, "sync_env_from_config", lambda **kwargs: [])
+    monkeypatch.setattr(ops, "_sync_grafana_slack_webhook_secret", lambda **kwargs: [])
+
+    args = MagicMock()
+    args.config = None
+    args.env_file = None
+    rc = ops.env_sync(args)
+
+    assert rc == 0
+    assert out.exists()
+
+
+@pytest.mark.unit
 def test_generate_compose_config_noop_without_native(tmp_path, monkeypatch):
     """Before `nyxgpt wizard` has created the native config, it no-ops cleanly."""
     home = tmp_path / "empty-home"
