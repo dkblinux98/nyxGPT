@@ -267,6 +267,21 @@ acceptance — this issue closes the gap so live verification happens *before* m
   (2026-08-01): review-agent heavy lifting toward a clean SDLC — owner acceptance
   confirms what the loop already verified.
 
+### P6-19 · feat: live progress output for nyxgpt ops commands - no black-box runs
+**Label:** Feature · **Module:** cli · **Effort:** M · **Sprint:** Sprint 7 · **Issue:** #3558
+
+Filed 2026-08-01 (owner request: `nyxgpt ops install` runs ~52 steps with long silent
+stretches — brew operations, image pulls, Cassandra waits — then reports "failed (51/52)";
+the operator can't tell progress from a hang. Same for `down`, `restart`, `stop`, etc.).
+
+- ACs: every long-running ops command announces each step BEFORE executing (name +
+  `N/M` counter) and prints per-step outcome, streaming as it happens; steps that can
+  exceed a few seconds emit sub-progress or a heartbeat with elapsed time; failures name
+  the step, show the underlying error, and give a remediation hint; `--quiet` preserves
+  terse output for scripting; final summary lists slow-step durations; tests cover the
+  progress stream; dashboard note — Infrastructure page is status-only by owner decision
+  (#3410), so no new dashboard surface is required.
+
 ---
 
 ## Not in this milestone (schedule separately)
