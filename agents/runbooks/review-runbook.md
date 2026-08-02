@@ -146,9 +146,10 @@ After merge, each issue is assigned to the human owner with status "Acceptance T
 
 ### If acceptance passes
 Move the issue to "For Release" in the project board. No action needed in GitHub.
-**Gate:** an issue with linked acceptance-failure issues (see below) moves to
-"For Release" only after every one of those linked issues has itself been
-accepted (For Release).
+**Gate:** an issue with related acceptance-failure issues (see below) is NOT
+moved to "For Release" by hand — the promotion sweep
+(`promote_accepted_features.yml`, every 30 min) moves it automatically once
+every related failure issue has itself been accepted (For Release).
 
 ### If acceptance reveals an improvement (not a defect)
 
@@ -159,14 +160,15 @@ implementation (owner decision 2026-08-01). File it as a **new Backlog issue**
 through the normal flow (it does not jump the queue the way a defect does):
 
 - Label: **"Improvement"** (the existing label stands — no new label)
-- Body includes the same `Parent feature: #N` marker linking it to the feature
-  whose acceptance revealed it
+- Body includes a `Related feature: #N` line when a related feature exists.
+  If no feature issue applies, that is NOT a blocker — file and work the
+  Improvement without it (owner decision 2026-08-02).
 
-Per feature, the two markers give two separate counts for metrics:
-"Acceptance Failure"-labeled children = implementation failures;
-"Improvement"-labeled children filed during acceptance = requirements gaps.
-An improvement does NOT gate the parent's move to "For Release" — only
-acceptance-failure children do.
+Per feature, the two labels give two separate counts for metrics:
+"Acceptance Failure"-labeled related issues = implementation failures;
+"Improvement"-labeled related issues filed during acceptance = requirements
+gaps. An improvement does NOT gate the feature's move to "For Release" —
+only acceptance-failure issues do.
 
 ### If acceptance fails (bug found after merge)
 
@@ -177,23 +179,32 @@ acceptance-failure children do.
    - Steps to reproduce if relevant
 3. **On the same or a separate comment, write:** `@acceptance-failure`
 
-That's it. The system will automatically (linked-issue model, owner decision
-2026-08-01):
-- Leave the original feature/improvement issue **intact** — it stays closed,
-  keeps its labels, and remains in "Acceptance Testing". The original never
-  re-enters the dev/review cycle.
-- Create a **new** issue labeled "Acceptance Failure", linked to the original
-  via a `Parent feature: #N` body marker and a GitHub sub-issue, titled with
-  its failure round (failure 1, 2, ...). Module/Priority/Effort/Milestone are
-  copied from the original; Sprint is the active sprint.
+That's it. The system will automatically (related-issue model, owner decision
+2026-08-02):
+- Leave the original feature/doc/release/improvement issue **intact** — it
+  stays closed, keeps its labels, and remains in "Acceptance Testing". The
+  original never re-enters the dev/review cycle.
+- Create a **new** issue labeled "Acceptance Failure", RELATED to the
+  original via a `Related feature: #N` body line and marked as **blocking**
+  the original (native issue-dependency relationship — the original's
+  Relationships panel shows exactly what holds it back). NOT a sub-issue.
+  Module/Priority/Effort/Milestone copy from the original; Sprint is the
+  active sprint.
 - Set the new issue to "In Progress" and assign the developer agent to create
-  a `fix/CHILD-...` branch and PR with `Closes #CHILD`.
+  a `fix/N-...` branch and PR with `Closes #N`.
 
-Each further failure — including a failed re-test of a fix (comment
-`@acceptance-failure` on the failure issue itself) — creates another linked
-issue on the same root parent. The resolution trail of every failure is its
-own issue, and the failure count per feature is readable straight off the
-parent's sub-issue list (or a label + body-marker search) for metrics.
+**If the failure issue's fix fails your re-test:** comment
+`@acceptance-failure` on the FAILURE issue itself — it is **reopened** and
+sent back through dev → review (no new issue; its own history is the trail
+of that failure's resolution). A genuinely NEW, distinct failure of the
+feature gets its own related issue via a comment on the feature.
+
+**Promotion:** when every related acceptance-failure issue reaches
+"For Release", the feature is promoted to "For Release" automatically by
+the promotion sweep, with a comment recording which failures cleared it.
+Unique-failure count per feature (usually 1) = its related
+"Acceptance Failure" issues; rework rounds live inside each failure issue's
+history.
 
 > **Note:** `@acceptance-failure` is only accepted from the human owner account and only on
 > issues (not PRs). It is entirely separate from the review-loop overrides

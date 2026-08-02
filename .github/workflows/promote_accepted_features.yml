@@ -1,0 +1,66 @@
+name: Promote Accepted Features
+
+# Owner flow 2026-08-02 (companion to handle_acceptance_failure.yml): a
+# feature parks closed in "Acceptance Testing" while its related
+# acceptance-failure issues are reworked; when EVERY related failure issue
+# reaches "For Release", the feature is promoted to "For Release"
+# automatically. The sweep also heals the native blocking relationship
+# (failure blocks feature) if the handler couldn't set it.
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Report what would be promoted/linked without changing anything"
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  promote:
+    if: vars.AGENTS_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.RELEASE_BRANCH }}
+
+      - name: Write ephemeral config
+        run: |
+          CFG="$RUNNER_TEMP/nyxgpt-config.ini"
+          cat > "$CFG" <<EOF
+          REPO_OWNER=${{ vars.REPO_OWNER }}
+          REPO_NAME=${{ vars.REPO_NAME }}
+          PROJECT_OWNER=${{ vars.PROJECT_OWNER }}
+          PROJECT_NUMBER=${{ vars.PROJECT_NUMBER }}
+
+          DEV_AGENT=${{ vars.DEV_AGENT }}
+          REVIEW_AGENT=${{ vars.REVIEW_AGENT }}
+          SCRUM_AGENT=${{ vars.SCRUM_AGENT }}
+          HUMAN_OWNER=${{ vars.HUMAN_OWNER }}
+
+          STATUS_FIELD=${{ vars.STATUS_FIELD }}
+          STATUS_BACKLOG=${{ vars.STATUS_BACKLOG }}
+          STATUS_IN_PROGRESS=${{ vars.STATUS_IN_PROGRESS }}
+          STATUS_IN_REVIEW=${{ vars.STATUS_IN_REVIEW }}
+          STATUS_FOR_RELEASE=${{ vars.STATUS_FOR_RELEASE }}
+
+          RELEASE_BRANCH=${{ vars.RELEASE_BRANCH }}
+          EOF
+          echo "NYXGPT_CONFIG_FILE=$CFG" >> "$GITHUB_ENV"
+
+      - name: Promote accepted features
+        run: |
+          DRY_RUN=0
+          if [[ "${{ github.event.inputs.dry_run || 'false' }}" == "true" ]]; then
+            DRY_RUN=1
+          fi
+          DRY_RUN="$DRY_RUN" scripts/agents/promote_accepted_features.sh
