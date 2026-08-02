@@ -587,7 +587,7 @@ assumed:
 | `glitchtip-redis` | added | `redis-cli ping` |
 | `glitchtip` | added | Python TCP connect to `127.0.0.1:8080` |
 | `glitchtip-postgres` | pre-existing | `pg_isready` |
-| `glitchtip-worker` | added (#3565) | `celery -A glitchtip inspect ping` |
+| `glitchtip-worker` | added (#3565) | mtime of the `VTASKS_HEALTH_CHECK_FILE` heartbeat file |
 | `loki`, `promtail`, `otel-collector` | **none** | see below |
 
 `loki` and `otel-collector` ship images built without a shell
@@ -598,15 +598,36 @@ Self-heal still detects these three going to a non-`running` state (a
 crash) via Compose's `State` field; it just can't distinguish "running but
 stuck" for them the way it can for the services above.
 
-`glitchtip-worker` (the Celery worker + beat process that actually turns a
-reported exception into a GlitchTip Issue) was originally left out of the
-HTTP-probe survey above -- it has a shell but no `wget`/`curl`/`python`
-either. But it doesn't need an HTTP probe: it's the same image as
-`glitchtip`, running `celery` directly (`command:
-./bin/run-celery-with-beat.sh`), so the `celery` CLI is guaranteed present
-and its own `inspect ping` reaches the worker process over the Redis
-broker -- a real liveness check, not just "the container process is still
-running." Without it, a wedged worker (ingestion silently stopped, #3565)
+`glitchtip-worker` (the process that actually turns a reported exception
+into a GlitchTip Issue) was originally left out of the HTTP-probe survey
+above -- it has a shell and `python`, but no `wget`/`curl` to probe an HTTP
+endpoint with. The first attempt at a fix (#3565 round 1) assumed this
+image ran Celery (`command: ./bin/run-celery-with-beat.sh`) and probed with
+`celery -A glitchtip inspect ping`. That assumption was wrong for the
+pinned `glitchtip:6.2.0` image: `run-celery-with-beat.sh` only prints a
+deprecation notice and execs `run-worker.sh`, which runs `django-vtasks`'s
+`manage.py runworker` -- there is no `celery` binary or Python module in
+this image at all, so the probe failed on every single run with `celery:
+not found`, permanently misreporting a healthy worker as unhealthy (#3565
+round 2, live-verified via `docker inspect --format
+'{{json .State.Health}}'` against the running container).
+
+`django-vtasks` has its own purpose-built liveness mechanism instead:
+`runworker` reads `VTASKS_HEALTH_CHECK_FILE` from the environment (no
+Django setting needed -- `django_vtasks/conf.py` falls back to `os.environ`
+directly) and, for as long as its event loop is alive, a background
+coroutine rewrites that file's contents every 5 seconds. The healthcheck
+sets that env var to `/tmp/vtasks_health_check` and probes with `python`
+(confirmed present in the image) checking the file's mtime is under 30
+seconds old -- a wedged worker's heartbeat coroutine stops updating the
+file just as reliably as a crashed process stops existing, giving a real
+liveness check rather than "the container process is still running."
+This was boot-tested against the real pinned image and container: a
+running worker reports `healthy`; freezing the worker process with `docker
+kill --signal=STOP` (leaving the container itself `running`) makes the
+heartbeat file go stale and the probe flip to `unhealthy` after the
+retry threshold, and `--signal=CONT` recovers it back to `healthy`. Without
+this healthcheck, a wedged worker (ingestion silently stopped, #3565)
 stayed invisible to self-heal indefinitely, since a healthcheck-less
 container with `state == "running"` is always reported healthy.
 
