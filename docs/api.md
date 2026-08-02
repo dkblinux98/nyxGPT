@@ -1148,7 +1148,10 @@ a core component an operator deliberately stopped via `nyxgpt ops down`/
 `stop` (`state: "absent"` for the former, see
 [self-healing.md#desired-state-for-observability-profiles](self-healing.md#desired-state-for-observability-profiles);
 [self-healing.md#intentional-stops-nyxgpt-ops-downstop-vs-self-heal](self-healing.md#intentional-stops-nyxgpt-ops-downstop-vs-self-heal)
-for the latter).
+for the latter). Each component also carries `restart_count` (consecutive
+automatic restart attempts since it last recovered) and `giving_up` (`true`
+once that count has hit `max_consecutive_restarts` and the automatic loop
+has stopped retrying it).
 
 **Response:**
 
@@ -1156,12 +1159,12 @@ for the latter).
 {
   "enabled": true,
   "components": [
-    { "service": "api", "container": "nyxgpt-api", "state": "started", "health": "", "healthy": true, "source": "native", "desired": true },
-    { "service": "web", "container": "nyxgpt-web-1", "state": "running", "health": "healthy", "healthy": true, "source": "compose", "desired": true },
-    { "service": "cassandra", "container": "nyxgpt-tf-cassandra", "state": "running", "health": "healthy", "healthy": true, "source": "terraform", "desired": true },
-    { "service": "nyxgpt-api-stable-7f8b9c-abcde", "container": "nyxgpt-api-stable-7f8b9c-abcde", "state": "Running", "health": "ready", "healthy": true, "source": "kubernetes", "desired": true },
-    { "service": "grafana", "container": "", "state": "absent", "health": "", "healthy": false, "source": "compose", "desired": true },
-    { "service": "loki", "container": "nyxgpt-loki-1", "state": "exited", "health": "", "healthy": false, "source": "compose", "desired": false }
+    { "service": "api", "container": "nyxgpt-api", "state": "started", "health": "", "healthy": true, "source": "native", "desired": true, "restart_count": 0, "giving_up": false },
+    { "service": "web", "container": "nyxgpt-web-1", "state": "running", "health": "healthy", "healthy": true, "source": "compose", "desired": true, "restart_count": 0, "giving_up": false },
+    { "service": "cassandra", "container": "nyxgpt-tf-cassandra", "state": "running", "health": "healthy", "healthy": true, "source": "terraform", "desired": true, "restart_count": 0, "giving_up": false },
+    { "service": "nyxgpt-api-stable-7f8b9c-abcde", "container": "nyxgpt-api-stable-7f8b9c-abcde", "state": "Running", "health": "ready", "healthy": true, "source": "kubernetes", "desired": true, "restart_count": 0, "giving_up": false },
+    { "service": "grafana", "container": "", "state": "absent", "health": "", "healthy": false, "source": "compose", "desired": true, "restart_count": 5, "giving_up": true },
+    { "service": "loki", "container": "nyxgpt-loki-1", "state": "exited", "health": "", "healthy": false, "source": "compose", "desired": false, "restart_count": 0, "giving_up": false }
   ],
   "unhealthy_count": 1,
   "events": [
