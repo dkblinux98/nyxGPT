@@ -1,77 +1,5 @@
 [
  {
-  "issue": 3309,
-  "pr": 3334,
-  "title": "Feature: docs: slim the 1,146-line README to a landing page - move depth into docs/ (#3309)",
-  "module": "documentation",
-  "date": "2026-07-24T21:15:14Z",
-  "critical": [],
-  "medium": [
-   "\"Collections Management UI\" content deleted, not moved, and left a dead link",
-   "RAG Collections management"
-  ],
-  "minor": []
- },
- {
-  "issue": 3314,
-  "pr": 3339,
-  "title": "Feature: feat: Add query cache stats panel to admin dashboard - web-ui (#3314)",
-  "module": "web-ui",
-  "date": "2026-07-25T03:27:40Z",
-  "critical": [],
-  "medium": [
-   "`ttl_seconds` reports `null` even when the cache has an effective default TTL"
-  ],
-  "minor": [
-   "`web/src/components/QueryCacheStatsPanel.tsx:566-576`: the Clear Cache button uses hardcoded colors (`#dc3545`, `#ccc`) instead of the CSS variables (`var(--border)`, `var(--background)`, etc.) used e",
-   "Line 106's `!stats ? null : ...` branch appears structurally dead (stats and error/loading state should always be in sync given the current effect/handler logic) \u2014 worth simplifying regardless of the "
-  ]
- },
- {
-  "issue": 3344,
-  "pr": 3361,
-  "title": "Acceptance Failure: bug: wrap terraform and k8s deploys as one-command nyxgpt ops install flags (#3344)",
-  "module": "cli",
-  "date": "2026-07-25T20:38:14Z",
-  "critical": [],
-  "medium": [
-   "Missing tests for new frontend surface"
-  ],
-  "minor": [
-   "`src/nyxgpt/ops.py` `_ensure_terraform_tfvars` and `_ensure_k8s_secret` use `re.sub(pattern, f'... = \"{key}\"', text)` where `key` can be a user-supplied `--api-key` value (or dashboard input). Because"
-  ]
- },
- {
-  "issue": 3346,
-  "pr": 3363,
-  "title": "Acceptance Failure: bug: container data hidden in named volumes - relocate under ~/.nyxGPT (#3346)",
-  "module": "cli",
-  "date": "2026-07-25T22:40:44Z",
-  "critical": [
-   "`migrate_legacy_volumes()`'s \"already migrated\" check can silently strand pre-upgrade chat/RAG data with no warning"
-  ],
-  "medium": [
-   "Missing ordering warning in docs tied to the above",
-   "Silent no-op when two legacy volumes exist for a shared destination"
-  ],
-  "minor": []
- },
- {
-  "issue": 3348,
-  "pr": 3364,
-  "title": "Acceptance Failure: bug: self-heal only watches Compose - core native components unmonitored (#3348)",
-  "module": "observability",
-  "date": "2026-07-25T23:38:08Z",
-  "critical": [],
-  "medium": [
-   "Vitest regression \u2014 stale assertion in `web/tests/app/admin/self-heal.test.tsx:175`",
-   "Missing/ineffective test coverage for the new `source` badge"
-  ],
-  "minor": [
-   "`component_logs()` doesn't support native-sourced components (see note above) \u2014 likely a follow-up rather than blocking, since it's not currently reachable from the dashboard UI."
-  ]
- },
- {
   "issue": 3352,
   "pr": 3372,
   "title": "Acceptance Failure: bug: Resource Usage timeframe buttons cosmetic - no server-side history (#3352)",
@@ -83,8 +11,8 @@
    "Missing tests for `ResourceMetrics.tsx`'s new error-handling paths (also breaks the coverage gate)"
   ],
   "minor": [
-   "`resource_metrics_store.py`: `record_sample` performs disk I/O (open/append/possible truncate) while holding `_lock`, so the 5s-scale `/api/v1/metrics` reads and the history sampler thread can briefly",
-   "`.gitignore`: the `.venv*/` addition and its explanatory comment are a reasonable, unrelated hygiene fix (per the commit history, this was carried over from an earlier snapshot commit); no objection, "
+   "resource_metrics_store.py",
+   ".gitignore"
   ]
  },
  {
@@ -98,7 +26,7 @@
    "Server-side history does not actually survive an API restart in the realistic startup ordering, contradicting the documented behavior"
   ],
   "minor": [
-   "(Carried over, still non-blocking) `resource_metrics_store.py`'s `record_sample` performs file I/O while holding `_lock`; fine at the current 60s cadence, worth revisiting only if the sample interval "
+   "(Carried over, still non-blocking) `resource_metrics_store.py`'s `record_sample` performs file I/O while holding `_lock`"
   ]
  },
  {
@@ -121,11 +49,11 @@
   "date": "2026-07-26T16:14:56Z",
   "critical": [],
   "medium": [
-   "`docs/configuration.md` and `docs/ui.md` contradict themselves \u2014 and the code \u2014 about whether rate limiting is hot-reloadable"
+   "docs/configuration.md` and `docs/ui.md` contradict themselves \u2014 and the code \u2014 about whether rate limiting is hot-reloadable"
   ],
   "minor": [
-   "`config_wizard.read_sections` uses `cfg.get(section, key, fallback=\"\")` for every field rather than the section-specific semantic defaults already defined in `config.py` (e.g. `get_chat_timeout_second",
-   "The `/* v8 ignore next */` inline coverage-ignore comments on a couple of `onChange` handlers in `page.tsx` (e.g. `embedding-model`, `log-aggregation-enabled-checkbox`) are a little unusual style-wise"
+   "config_wizard.read_sections` uses `cfg.get(section, key, fallback=\"\")` for every field rather than the section-specific ",
+   "The `/* v8 ignore next */` inline coverage-ignore comments on a couple of `onChange` handlers in `page.tsx` (e.g"
   ]
  },
  {
@@ -151,8 +79,8 @@
    "Size-guard trip aborts the whole snapshot step, potentially losing already-committed implementation work, not just the oversized delta"
   ],
   "minor": [
-   "The new `tests/test_snapshot_safe_add.sh` is a plain bash script, consistent with the existing `tests/test_gh_project_lib.sh` convention, but neither is wired into any CI workflow (verification only r",
-   "`ROOT_ALLOWED_FILES` in `snapshot_safe_add.sh:34-41` is a fairly narrow allowlist for *new* root-level files (misses `docker-compose.yml`, `Dockerfile`, `.env.example`, etc.), but since `git add -u` a"
+   "The new `tests/test_snapshot_safe_add.sh` is a plain bash script, consistent with the existing `tests/test_gh_project_li",
+   "ROOT_ALLOWED_FILES` in `snapshot_safe_add.sh:34-41` is a fairly narrow allowlist for *new* root-level files (misses `doc"
   ]
  },
  {
@@ -166,7 +94,7 @@
    "Failed one-shot job is never marked `desired\ufffdlse` after its profile is disabled, so auto-heal keeps trying to restart it"
   ],
   "minor": [
-   "docs/self-healing.md:94 \u2014 \"Any desired\\nservice missing from...\" reads a little awkwardly across the line-wrap boundary introduced by the diff (`are **desired**` orphaned onto the next line), purely c"
+   "docs/self-healing.md:94"
   ]
  },
  {
@@ -176,7 +104,7 @@
   "module": "api",
   "date": "2026-07-27T18:18:24Z",
   "critical": [
-   "`cleanup_superseded_branches` fails open if the open-PR check errors, risking deletion of an active branch"
+   "cleanup_superseded_branches` fails open if the open-PR check errors, risking deletion of an active branch"
   ],
   "medium": [
    "Missing tests for all new logic",
@@ -195,7 +123,7 @@
    "Vitest coverage gate failure (branch coverage)"
   ],
   "minor": [
-   "`web/src/app/admin/page.tsx`'s `buildSavePayload` now has ~20 near-identical `include(...)` calls, one per field. Not incorrect, but a small array-of-`{section,key,transform}` driven loop would cut th"
+   "web/src/app/admin/page.tsx`'s `buildSavePayload` now has ~20 near-identical `include(...)` calls, one per field"
   ]
  },
  {
@@ -209,8 +137,8 @@
    "AC \"PR closed without merging \u2192 branch deleted automatically\" still not wired to an automatic trigger"
   ],
   "minor": [
-   "`classify_mergeable`'s patch-id comparison (`scripts/agents/lib/gh_project.sh:134-145`) is per-commit; a branch whose commits were squashed differently on `base_branch` (same net diff, different commi",
-   "`git show \"$c\" | git patch-id --stable` on a merge commit will diff against the first parent only, which could behave unexpectedly if an agent branch ever contains a merge commit; not currently a prac"
+   "classify_mergeable`'s patch-id comparison (`scripts/agents/lib/gh_project.sh:134-145`) is per-commit;",
+   "git show \"$c\" | git patch-id --stable` on a merge commit will diff against the first parent only, which could behave une"
   ]
  },
  {
@@ -224,8 +152,8 @@
    "AC \"PR closed without merging \u2192 branch deleted automatically\" still not wired to an automatic trigger"
   ],
   "minor": [
-   "`classify_mergeable`'s patch-id comparison (`scripts/agents/lib/gh_project.sh:~586-640`) is per-commit; a branch whose commits were squashed differently on `base_branch` (same net diff, different comm",
-   "`git show \"$c\" | git patch-id --stable` on a merge commit diffs against the first parent only; not a practical concern today since agent branches are linear."
+   "classify_mergeable`'s patch-id comparison (`scripts/agents/lib/gh_project.sh:~586-640`) is per-commit;",
+   "git show \"$c\" | git patch-id --stable` on a merge commit diffs against the first parent only;"
   ]
  },
  {
@@ -239,7 +167,7 @@
   ],
   "medium": [],
   "minor": [
-   "`src/nyxgpt/ops.py:3522-3523` (`_persist_admin_credentials` docstring) still says \"never the git-tracked `docker/config.docker.ini` template\" \u2014 stale wording missed by the otherwise-thorough resync of"
+   "src/nyxgpt/ops.py:3522-3523` (`_persist_admin_credentials` docstring) still says \"never the git-tracked `docker/config.d"
   ]
  },
  {
@@ -252,7 +180,7 @@
    "Terraform deployment path is broken the same way the Compose path was, and remains unfixed"
   ],
   "medium": [
-   "`docs/docker-compose.md`'s \"quick one-off evaluation\" path is also broken and undocumented"
+   "docs/docker-compose.md`'s \"quick one-off evaluation\" path is also broken and undocumented"
   ],
   "minor": []
  },
@@ -281,45 +209,45 @@
    "Missing dedicated test for the new proxy route"
   ],
   "minor": [
-   "`src/nyxgpt/config_wizard.py`'s `_build_schema()` now reads `example.config.ini` via `Path(__file__).resolve().parents[2]` **at module import time**, raising `FileNotFoundError` if the file is missing",
-   "`config_wizard._merge_ini_text`'s `_find_key_line` only recognizes `key = value` lines (`\"=\" not in lines[i]` skip) and won't match a `key: value`-style INI line if one is ever hand-added; `example.co",
-   "`_infer_validator`'s float regex (`r\"-?\\d+\\.\\d+\"`) won't recognize `.5` or `5.` style literals as floats, falling back to string validation; not currently triggered by any value in `example.config.ini"
+   "src/nyxgpt/config_wizard.py`'s `_build_schema()` now reads `example.config.ini` via `Path(__file__).resolve().parents[2]",
+   "config_wizard._merge_ini_text`'s `_find_key_line` only recognizes `key = value` lines (`\"=\" not in lines[i]` skip) and w",
+   "_infer_validator`'s float regex (`r\"-?\\d+\\.\\d+\"`) won't recognize `.5` or `5.` style literals as floats, falling back to"
   ]
  },
  {
   "issue": 3406,
   "pr": 3408,
   "title": "Acceptance Failure: feat: real Homebrew installable app + off-by-default self-heal across all install methods (#3406)",
-  "module": "cli",
+  "module": "observability",
   "date": "2026-07-28T21:26:04Z",
   "critical": [
    "Vitest failure is a real regression, not a stale test",
    "Homebrew \"real installable app\" acceptance criteria \u2014 entirely unaddressed"
   ],
   "medium": [
-   "`nyxgpt ops down` (native/Compose scope) can mismark Terraform-managed components as intentionally stopped without actually stopping them"
+   "nyxgpt ops down` (native/Compose scope) can mismark Terraform-managed components as intentionally stopped without actually stopping them"
   ],
   "minor": [
-   "`self_heal.is_intentionally_stopped()` (self_heal.py:364) is added to the public API and `__all__` but has no call site outside tests (`mark_intentionally_stopped`/`clear_intentionally_stopped`/`list_",
-   "PR body's acceptance-criteria and Testing checklists are all left unchecked, even though several items (self-heal off-by-default, single arm/disarm path, Terraform/Kubernetes self-heal, tests added/pa"
+   "self_heal.is_intentionally_stopped()` (self_heal.py:364) is added to the public API and `__all__` but has no call site o",
+   "PR body's acceptance-criteria and Testing checklists are all left unchecked, even though several items (self-heal off-by"
   ]
  },
  {
   "issue": 3406,
   "pr": 3408,
   "title": "Acceptance Failure: feat: real Homebrew installable app + off-by-default self-heal across all install methods (#3406)",
-  "module": "cli",
+  "module": "observability",
   "date": "2026-07-28T21:32:28Z",
   "critical": [
    "Vitest regression not fixed",
    "Homebrew packaging work not implemented"
   ],
   "medium": [
-   "`nyxgpt ops down` (native/Compose scope) can mismark Terraform-managed components as intentionally stopped without stopping them"
+   "nyxgpt ops down` (native/Compose scope) can mismark Terraform-managed components as intentionally stopped without stopping them"
   ],
   "minor": [
-   "`self_heal.is_intentionally_stopped()` remains unused outside tests \u2014 fine to keep for API symmetry, not blocking.",
-   "PR body's acceptance-criteria and Testing checklists are still all unchecked despite several items being genuinely complete (self-heal off-by-default, single arm/disarm path, Terraform/Kubernetes self"
+   "self_heal.is_intentionally_stopped()` remains unused outside tests",
+   "PR body's acceptance-criteria and Testing checklists are still all unchecked despite several items being genuinely compl"
   ]
  },
  {
@@ -334,8 +262,8 @@
    "Missing effective test coverage for restart-required POST failure"
   ],
   "minor": [
-   "`src/nyxgpt/config_wizard.py:710` (`restart_components`) is no longer called anywhere in production code (`app.py` now calls `restart_required_detail` directly and derives `sorted(...)` itself) \u2014 only",
-   "`_do_restart_required` (`app.py`) silently no-ops when `self_heal_module.heal_now()` returns an `\"error\"` key with an empty `healed` list (e.g. component not currently running) \u2014 the pending flag corr"
+   "src/nyxgpt/config_wizard.py:710` (`restart_components`) is no longer called anywhere in production code (`app.py` now ca",
+   "_do_restart_required` (`app.py`) silently no-ops when `self_heal_module.heal_now()` returns an `\"error\"` key with an emp"
   ]
  },
  {
@@ -351,8 +279,8 @@
    "Web canary coverage acceptance criterion not met"
   ],
   "minor": [
-   "`web/tests/app/api/v1/canary/deploy/route.test.ts`'s \"passes through backend response status\" test dropped the response-body equality check that the old `deploy/rollback` version had \u2014 consider restor",
-   "Several docs sections (e.g. `docs/kubernetes.md` around self-heal Pod matching) still describe internal `kubectl get pods` usage inside `self_heal.py` \u2014 that's fine (internals may shell out per CLAUDE"
+   "web/tests/app/api/v1/canary/deploy/route.test.ts`'s \"passes through backend response status\" test dropped the response-b",
+   "Several docs sections (e.g"
   ]
  },
  {
@@ -366,8 +294,8 @@
    "Unmet acceptance criterion without a linked follow-up or sign-off"
   ],
   "minor": [
-   "`docker/grafana/dashboards/canary.json`'s Loki query and panel title updates look consistent with the new `deploying|Deployed` log markers added in `canary.py` \u2014 no issue, just noting it was checked.",
-   "The `_finalize_promotion` path returns `CanaryResult(True, ...)` even when the post-promotion replica-count restore (`_scale` calls) partially fails, folding that into the success message string rathe"
+   "docker/grafana/dashboards/canary.json`'s Loki query and panel title updates look consistent with the new `deploying|Depl",
+   "The `_finalize_promotion` path returns `CanaryResult(True, ...)` even when the post-promotion replica-count restore (`_s"
   ]
  },
  {
@@ -390,7 +318,7 @@
   "date": "2026-07-29T07:29:39Z",
   "critical": [],
   "medium": [
-   "Stale self-reference to #3409 remains in `src/nyxgpt/canary.py:16`"
+   "Stale self-reference to #3409 remains in `src/nyxgpt/canary.py:16"
   ],
   "minor": []
  },
@@ -405,8 +333,8 @@
    "\"Which instance/service is currently serving traffic\" is not shown on the Infrastructure page"
   ],
   "minor": [
-   "`MODE_LABELS['none']` differs in tone between the two pages (`'Nothing detected running'` in `infrastructure/page.tsx` vs `'none detected'` in `self-heal/page.tsx`) \u2014 harmless, but worth aligning for ",
-   "`docs/terraform.md` and `docs/kubernetes.md` are listed in the issue's \"Tests and docs\" acceptance bullet as needing updates but are unchanged in this diff. I checked their content and didn't find any"
+   "MODE_LABELS['none']` differs in tone between the two pages (`'Nothing detected running'` in `infrastructure/page.tsx` vs",
+   "docs/terraform.md` and `docs/kubernetes.md` are listed in the issue's \"Tests and docs\" acceptance bullet as needing upda"
   ]
  },
  {
@@ -443,15 +371,15 @@
   "issue": 3411,
   "pr": 3422,
   "title": "Acceptance Failure: feat: Grafana single pane of glass - retire in-app SRE screens, wire all four signals (#3411)",
-  "module": "observability",
+  "module": "web-ui",
   "date": "2026-07-29T11:44:36Z",
   "critical": [],
   "medium": [
    "Missing test for `loadMonitoring`'s network-error path breaks the 100% coverage gate"
   ],
   "minor": [
-   "`docs/docker-compose.md` and `docs/ops.md` reference `nyxgpt ops restart observability` inline in a code comment (`src/nyxgpt/ops.py:_glitchtip_grafana_token_path` docstring says \"`nyxgpt ops restart ",
-   "`docker/grafana/dashboards/sre-home.json`'s GlitchTip panels hardcode the project slug `nyxgpt-backend` and query `statsPeriod$h` in the URL rather than sourcing it from a variable; fine given the res"
+   "docs/docker-compose.md` and `docs/ops.md` reference `nyxgpt ops restart observability` inline in a code comment (`src/ny",
+   "docker/grafana/dashboards/sre-home.json`'s GlitchTip panels hardcode the project slug `nyxgpt-backend` and query `statsP"
   ]
  },
  {
@@ -466,8 +394,8 @@
   ],
   "medium": [],
   "minor": [
-   "`config._fallback_warned_keys` is a plain `set()` mutated without a lock (`config.py:382-395`). Config getters can be called from multiple request-handling threads; a data race here would at worst cau",
-   "`rag/reranker.py`'s consolidation of the duplicate debug-log lines into one is a nice simplification with no behavior change \u2014 no issue, just noting it as a good cleanup."
+   "config._fallback_warned_keys` is a plain `set()` mutated without a lock (`config.py:382-395`)",
+   "rag/reranker.py`'s consolidation of the duplicate debug-log lines into one is a nice simplification with no behavior cha"
   ]
  },
  {
@@ -481,7 +409,7 @@
   ],
   "medium": [],
   "minor": [
-   "(Carried over, non-blocking) `config._fallback_warned_keys` is a plain `set()` mutated without a lock \u2014 at worst causes a fallback warning to log 0 or 2 times instead of exactly once under concurrent "
+   "(Carried over, non-blocking) `config._fallback_warned_keys` is a plain `set()` mutated without a lock"
   ]
  },
  {
@@ -492,28 +420,27 @@
   "date": "2026-07-29T20:26:25Z",
   "critical": [],
   "medium": [
-   "Self-heal probe evidence (gap 7) is not surfaced in the SRE dashboard, contradicting the issue's own acceptance criterion and CLAUDE.md's Definition of Done",
-   "Fix"
+   "Self-heal probe evidence (gap 7) is not surfaced in the SRE dashboard, contradicting the issue's own acceptance criterion and CLAUDE.md's Definition of Done"
   ],
   "minor": [
-   "(Carried over, non-blocking) `config._fallback_warned_keys` is a plain `set()` mutated without a lock \u2014 at worst causes a fallback warning to log 0 or 2 times instead of exactly once under concurrent ",
-   "`docs/self-healing.md`'s \"Observability: logs, metrics, and the Self-Healing dashboard\" section (around line 339-343) documents the restart-attempt/outcome log lines but doesn't mention the new `evide"
+   "(Carried over, non-blocking) `config._fallback_warned_keys` is a plain `set()` mutated without a lock",
+   "docs/self-healing.md`'s \"Observability"
   ]
  },
  {
   "issue": 3419,
   "pr": 3433,
   "title": "Feature: feat: extend canary deployment to web and ollama - net-new k8s workloads (#3419)",
-  "module": "observability",
+  "module": "web-ui",
   "date": "2026-07-29T22:35:23Z",
   "critical": [],
   "medium": [
    "Missing/ineffective tests for the new component tab switcher (blocks the Vitest coverage gate)",
-   "`nyxgpt ops status` / Infrastructure Status page were not extended for per-component canary reporting, contradicting this PR's own checklist item and #3419's acceptance criteria"
+   "nyxgpt ops status` / Infrastructure Status page were not extended for per-component canary reporting, contradicting this PR's own checklist item and #3419's acceptance criteria"
   ],
   "minor": [
-   "`ComponentSpec.default_total_replicas` (`src/nyxgpt/canary.py`), including the new `DEFAULT_WEB_TOTAL_REPLICAS` constant, is set on both the `api` and `web` specs but never read anywhere \u2014 `app.py`/`c",
-   "Clicking a tab on `/admin/canary` sets `loading=true`, and since `if (loading) return <spinner>` (page.tsx:210-211) sits above the tab bar in the render tree, the whole page \u2014 tab bar included \u2014 unmou"
+   "ComponentSpec.default_total_replicas` (`src/nyxgpt/canary.py`), including the new `DEFAULT_WEB_TOTAL_REPLICAS` constant,",
+   "Clicking a tab on `/admin/canary` sets `loading=true`, and since `if (loading) return <spinner>` (page.tsx:210-211) sits"
   ]
  },
  {
@@ -532,15 +459,15 @@
   "issue": 3431,
   "pr": 3437,
   "title": "Release Management: fix: unify Ollama model library across native/container launch modes (#3431)",
-  "module": "api",
+  "module": "cli",
   "date": "2026-07-29T23:08:26Z",
   "critical": [],
   "medium": [
    "Boot-time race between the two `RunAtLoad` LaunchAgents can silently re-break the \"single shared library\" guarantee"
   ],
   "minor": [
-   "`_migrate_native_ollama_models` (`src/nyxgpt/ops.py:1318-1358`) copies every native model file via `shutil.copy2` (`_copy_file`) rather than hard-linking. Per the issue's own numbers this can be multi",
-   "Docs correctly note the Kubernetes follow-up is \"tracked separately\" via #3431 itself rather than a distinct new issue number \u2014 acceptable given issue-creation is gated by owner approval, but worth a "
+   "_migrate_native_ollama_models` (`src/nyxgpt/ops.py:1318-1358`) copies every native model file via `shutil.copy2` (`_copy",
+   "Docs correctly note the Kubernetes follow-up is \"tracked separately\" via #3431 itself rather than a distinct new issue n"
   ]
  },
  {
@@ -554,22 +481,24 @@
   ],
   "medium": [],
   "minor": [
-   "Acceptance criterion \"the same leftover-shadowing logic is verified for all components and modes: stopped brew services or leftover containers from a previous mode must not shadow the active mode's en",
-   "`src/nyxgpt/self_heal.py:879`'s tie-break check `s.state in (\"running\", \"started\")` correctly spans both docker's `\"running\"` vocabulary (cassandra/terraform containers) and brew's `\"started\"` vocabul"
+   "Acceptance criterion \"the same leftover-shadowing logic is verified for all components and modes",
+   "src/nyxgpt/self_heal.py:879`'s tie-break check `s.state in (\"running\", \"started\")` correctly spans both docker's `\"runni"
   ]
  },
  {
   "issue": 3430,
   "pr": 3450,
   "title": "Release Management: chore: web-tier instrumentation and OTel trace correlation backbone - sre (#3430)",
-  "module": "observability",
+  "module": "web-ui",
   "date": "2026-07-30T04:45:15Z",
   "critical": [],
   "medium": [
-   "Missing tests for `web/src/instrumentation.ts` and `web/src/instrumentation-client.ts`",
+   "Missing tests for `web/src/instrumentation.ts` and `web/src/instrumentation-client.ts",
    "New raw `docker compose build web` command shown as a user instruction"
   ],
-  "minor": []
+  "minor": [
+   "web/src/app/api/chat/stream/route.ts` is missing a trailing newline at EOF (shown by the diff's \"No newline at end of fi"
+  ]
  },
  {
   "issue": 3439,
@@ -580,6 +509,347 @@
   "critical": [],
   "medium": [
    "New doctor test doesn't mock `_compose_stack_snapshot`, breaking test isolation convention and creating a real (if narrow) flakiness vector"
+  ],
+  "minor": []
+ },
+ {
+  "issue": 3443,
+  "pr": 3474,
+  "title": "Acceptance Failure: bug: pytest runs write into production log dir, polluting the Loki stream - sre (#3443)",
+  "module": "observability",
+  "date": "2026-07-30T21:39:02Z",
+  "critical": [],
+  "medium": [
+   "Config-file mutation has no crash-safety net, and can leave the real production `config.ini` permanently misdirected"
+  ],
+  "minor": [
+   "The PR body's acceptance-criteria checkboxes are all still unchecked (`- [ ]`) despite the corresponding work being done",
+   "Unrelated to this diff, but noticed in passing"
+  ]
+ },
+ {
+  "issue": 3444,
+  "pr": 3476,
+  "title": "Acceptance Failure: bug: RAG playground bypasses web proxy, breaks from non-local devices - web-ui (#3444)",
+  "module": "web-ui",
+  "date": "2026-07-30T22:18:03Z",
+  "critical": [],
+  "medium": [
+   "Missing documentation update for a user-facing/operational behavior change"
+  ],
+  "minor": [
+   "web/src/app/api/v1/rag/query/route.ts` and `web/src/app/api/v1/rag/metrics/query/route.ts` are near-identical (differ on",
+   "Both new routes call `res.json()` unconditionally without a `res.ok` check (unlike `web/src/app/api/v1/rag/documents/rou"
+  ]
+ },
+ {
+  "issue": 3480,
+  "pr": 3483,
+  "title": "Release Management: feat: sprint autopilot - self-continuing loop, end-date reports, reorg approval (#3480)",
+  "module": "api",
+  "date": "2026-07-31T01:59:25Z",
+  "critical": [],
+  "medium": [
+   "Ruff failures block CI"
+  ],
+  "minor": [
+   "docs/sprint-autopilot.md` documents `.github/workflows/*` changes the owner must hand-apply (agent tokens can't write wo",
+   "The PR body's checklist items are all left unchecked (template boilerplate)"
+  ]
+ },
+ {
+  "issue": 3460,
+  "pr": 3486,
+  "title": "Acceptance Failure: bug: RAG collection name rules unclear - UI example itself is invalid - rag (#3460)",
+  "module": "web-ui",
+  "date": "2026-07-31T02:32:44Z",
+  "critical": [],
+  "medium": [
+   "Backend validation errors are not actually surfaced verbatim, contradicting the issue's own acceptance criteria"
+  ],
+  "minor": [
+   "max_collection_name_length()` (`src/nyxgpt/rag/vectorstore_cassandra.py:309`) can return 0 or negative if `[rag] cassand",
+   "The frontend's `COLLECTION_NAME_MAX_LENGTH = 37` (`web/src/app/admin/collections/page.tsx`) is a hardcoded mirror of the"
+  ]
+ },
+ {
+  "issue": 3460,
+  "pr": 3486,
+  "title": "Acceptance Failure: bug: RAG collection name rules unclear - UI example itself is invalid - rag (#3460)",
+  "module": "web-ui",
+  "date": "2026-07-31T03:01:15Z",
+  "critical": [],
+  "medium": [],
+  "minor": [
+   "(Carried over from previous review, non-blocking, unaddressed) `max_collection_name_length()` (`src/nyxgpt/rag/vectorsto",
+   "COLLECTION_NAME_MAX_LENGTH = 37` in the web client remains a hardcoded mirror of the backend formula for the default tab"
+  ]
+ },
+ {
+  "issue": 3460,
+  "pr": 3486,
+  "title": "Acceptance Failure: bug: RAG collection name rules unclear - UI example itself is invalid - rag (#3460)",
+  "module": "web-ui",
+  "date": "2026-07-31T03:08:56Z",
+  "critical": [],
+  "medium": [],
+  "minor": [
+   "(Carried over, non-blocking) `COLLECTION_NAME_MAX_LENGTH = 37` in the web client remains a hardcoded mirror of the backe"
+  ]
+ },
+ {
+  "issue": 3460,
+  "pr": 3486,
+  "title": "Acceptance Failure: bug: RAG collection name rules unclear - UI example itself is invalid - rag (#3460)",
+  "module": "web-ui",
+  "date": "2026-07-31T04:34:41Z",
+  "critical": [],
+  "medium": [],
+  "minor": [
+   "(Carried over, non-blocking, already accepted as a tradeoff) `COLLECTION_NAME_MAX_LENGTH = 37` in the web client remains"
+  ]
+ },
+ {
+  "issue": 3460,
+  "pr": 3486,
+  "title": "Acceptance Failure: bug: RAG collection name rules unclear - UI example itself is invalid - rag (#3460)",
+  "module": "web-ui",
+  "date": "2026-07-31T04:39:47Z",
+  "critical": [],
+  "medium": [],
+  "minor": [
+   "(Carried over, non-blocking, already accepted as a tradeoff) `COLLECTION_NAME_MAX_LENGTH = 37` in the web client remains"
+  ]
+ },
+ {
+  "issue": 3463,
+  "pr": 3518,
+  "title": "Acceptance Failure: bug: collections unreachable from chat - no ingest/query targeting - rag (#3463)",
+  "module": "rag",
+  "date": "2026-07-31T08:52:40Z",
+  "critical": [],
+  "medium": [
+   "Vitest coverage gate fails"
+  ],
+  "minor": [
+   "sessions.py::export_session_html` (around the `citation-title` div) uses `format_chunk_ref(chunk)` for the human-readabl",
+   "_resolve_and_validate_collection` opens a fresh `CassandraVectorStore` (and thus a session-pool round trip) on every cal"
+  ]
+ },
+ {
+  "issue": 3463,
+  "pr": 3519,
+  "title": "Acceptance Failure: bug: collections unreachable from chat - no ingest/query targeting - rag (#3463)",
+  "module": "rag",
+  "date": "2026-07-31T09:08:46Z",
+  "critical": [],
+  "medium": [
+   "Missing tests for the new Collection selector in ChatPane.tsx (causes CI coverage-gate failure)",
+   "Playground's collection-forwarding fix has no direct-assertion test"
+  ],
+  "minor": [
+   "web/src/app/admin/playground/page.tsx` branch coverage sits at 96.55% (vs 100% elsewhere) after this change, likely the ",
+   "_resolve_and_validate_collection` (src/nyxgpt/app.py:4058) opens a fresh `CassandraVectorStore` connection per call, and",
+   "Pre-existing (not introduced by this PR)"
+  ]
+ },
+ {
+  "issue": 3464,
+  "pr": 3522,
+  "title": "Acceptance Failure: bug: playground collection selection ignored - empty collection returns results (#3464)",
+  "module": "rag",
+  "date": "2026-07-31T18:38:51Z",
+  "critical": [],
+  "medium": [
+   "Untested production code path in `rag.py"
+  ],
+  "minor": [
+   "rag_metrics_query`'s `collection\ufffdbug_info.collection` propagation (`src/nyxgpt/app.py`) has no dedicated test, unlike `r",
+   "The PR body's checklist boxes (scoping verified, wire path verifiable, results display collection, etc.) are all left un"
+  ]
+ },
+ {
+  "issue": 3467,
+  "pr": 3525,
+  "title": "Acceptance Failure: bug: time-range buttons only affect trends, not aggregate usage blocks - web-ui (#3467)",
+  "module": "web-ui",
+  "date": "2026-07-31T19:58:02Z",
+  "critical": [],
+  "medium": [
+   "Missing documentation update for the exact behavior this PR changes"
+  ],
+  "minor": []
+ },
+ {
+  "issue": 3466,
+  "pr": 3526,
+  "title": "Improvement: feat: real alerting - Grafana alert rules with Slack contact point - sre (#3466)",
+  "module": "observability",
+  "date": "2026-07-31T20:29:10Z",
+  "critical": [
+   "health.fetch_grafana_alerts` never reaches Grafana on the documented default install path, so the health panel's \"grafana\" source is effectively dead code for most users"
+  ],
+  "medium": [],
+  "minor": [
+   "health.py:187`'s warning log (\"could not reach Grafana alerting API\") will also fire on a 401 (wrong/stale password) onc"
+  ]
+ },
+ {
+  "issue": 3468,
+  "pr": 3527,
+  "title": "Acceptance Failure: bug: k8s card says CANNOT DETERMINE when no cluster configured - infra (#3468)",
+  "module": "cli",
+  "date": "2026-07-31T20:45:42Z",
+  "critical": [],
+  "medium": [
+   "Missing documentation for user-facing status semantics change"
+  ],
+  "minor": []
+ },
+ {
+  "issue": 3469,
+  "pr": 3528,
+  "title": "Acceptance Failure: bug: SPOG RAG panels illegible at local traffic; ingest panel empty - sre (#3469)",
+  "module": "web-ui",
+  "date": "2026-07-31T20:52:51Z",
+  "critical": [],
+  "medium": [
+   "Missing test coverage for the dashboard JSON changes (the core fix)"
+  ],
+  "minor": [
+   "Stale \"rate\" panel titles",
+   "The `except Exception` blocks around the new metric increments (`chat.py:507-519`) are broad but consistent with the exi"
+  ]
+ },
+ {
+  "issue": 3489,
+  "pr": 3535,
+  "title": "Acceptance Failure: bug: Clear Collection unexplained; no way to delete a collection - rag (#3489)",
+  "module": "rag",
+  "date": "2026-07-31T22:09:25Z",
+  "critical": [],
+  "medium": [
+   "Missing test for new proxy route (blocks Vitest coverage gate)"
+  ],
+  "minor": [
+   "TOCTOU between existence check and mutation"
+  ]
+ },
+ {
+  "issue": 3487,
+  "pr": 3534,
+  "title": "Acceptance Failure: bug: bare OTel import crashes entire CLI when venv is stale after pull (#3487)",
+  "module": "cli",
+  "date": "2026-07-31T22:23:51Z",
+  "critical": [],
+  "medium": [
+   "Tracing/error-tracking tests don't exercise the real import-time guard"
+  ],
+  "minor": [
+   "src/nyxgpt/ops.py`'s `_stale_venv_doctor_issues` doesn't evaluate PEP 508 environment markers before stripping them (`_r",
+   "docs/troubleshooting.md`'s new \"Installation / Environment Issues\" section is inserted before \"## Configuration Problems"
+  ]
+ },
+ {
+  "issue": 3472,
+  "pr": 3547,
+  "title": "Acceptance Failure: bug: SPOG traces panel empty while Jaeger UI shows traces - query mismatch - sre (#3472)",
+  "module": "web-ui",
+  "date": "2026-08-01T03:37:31Z",
+  "critical": [],
+  "medium": [
+   "PR does not implement issue #3472's acceptance criteria, and closes it anyway",
+   "No live end-to-end verification of the actual shipped fix through the real path",
+   "Owner's most recent, specific direction for the re-fix was overridden without a clear checkpoint"
+  ],
+  "minor": []
+ },
+ {
+  "issue": 3469,
+  "pr": 3548,
+  "title": "Acceptance Failure: bug: SPOG RAG panels illegible at local traffic; ingest panel empty - sre (#3469)",
+  "module": "web-ui",
+  "date": "2026-08-01T03:43:47Z",
+  "critical": [],
+  "medium": [
+   "Streaming RAG metric test is not effective in the full-suite context",
+   "Missing documented live verification required by #3469's acceptance criteria"
+  ],
+  "minor": []
+ },
+ {
+  "issue": 3545,
+  "pr": 3550,
+  "title": "Acceptance Failure: bug: alert-test posts to embedded Alertmanager which rejects external alerts - sre (#3545)",
+  "module": "observability",
+  "date": "2026-08-01T03:51:02Z",
+  "critical": [],
+  "medium": [
+   "Acceptance criterion \"All ops HTTP failure messages against Grafana include the response body\" is only partially met"
+  ],
+  "minor": []
+ },
+ {
+  "issue": 3469,
+  "pr": 3548,
+  "title": "Acceptance Failure: bug: SPOG RAG panels illegible at local traffic; ingest panel empty - sre (#3469)",
+  "module": "web-ui",
+  "date": "2026-08-01T04:00:26Z",
+  "critical": [],
+  "medium": [
+   "Missing documented live verification required by #3469's acceptance criteria"
+  ],
+  "minor": []
+ },
+ {
+  "issue": 3469,
+  "pr": 3548,
+  "title": "Acceptance Failure: bug: SPOG RAG panels illegible at local traffic; ingest panel empty - sre (#3469)",
+  "module": "web-ui",
+  "date": "2026-08-01T04:04:19Z",
+  "critical": [],
+  "medium": [
+   "Missing documented live verification required by #3469's acceptance criteria"
+  ],
+  "minor": []
+ },
+ {
+  "issue": 3545,
+  "pr": 3550,
+  "title": "Acceptance Failure: bug: alert-test posts to embedded Alertmanager which rejects external alerts - sre (#3545)",
+  "module": "observability",
+  "date": "2026-08-01T04:09:37Z",
+  "critical": [],
+  "medium": [
+   "Missing effective test coverage for 3 of 4 newly-fixed HTTP-error-body branches"
+  ],
+  "minor": [
+   "_send_grafana_test_alert` (ops.py:342-348)"
+  ]
+ },
+ {
+  "issue": 3545,
+  "pr": 3550,
+  "title": "Acceptance Failure: bug: alert-test posts to embedded Alertmanager which rejects external alerts - sre (#3545)",
+  "module": "observability",
+  "date": "2026-08-01T04:12:17Z",
+  "critical": [],
+  "medium": [
+   "Missing effective test coverage for 3 HTTP-error-body branches (unchanged from previous review)"
+  ],
+  "minor": [
+   "Same as previously noted"
+  ]
+ },
+ {
+  "issue": 3469,
+  "pr": 3548,
+  "title": "Acceptance Failure: bug: SPOG RAG panels illegible at local traffic; ingest panel empty - sre (#3469)",
+  "module": "web-ui",
+  "date": "2026-08-01T04:26:59Z",
+  "critical": [],
+  "medium": [
+   "Missing documented live verification required by #3469's acceptance criteria"
   ],
   "minor": []
  }
