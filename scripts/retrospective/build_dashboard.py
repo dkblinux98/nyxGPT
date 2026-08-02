@@ -285,6 +285,7 @@ def takeaways(_issues, dashboard, weeks, open_af):
                 "v": f"{worst} — {v['C'] + v['M']} blocking findings across {v['rounds']} rejected rounds",
             }
         )
+
     # Compare the two most recent sprints that actually carry acceptance
     # failures. Sprints planned ahead (issues filed, none accepted yet) would
     # otherwise render the trend as a meaningless "0 vs 0".
