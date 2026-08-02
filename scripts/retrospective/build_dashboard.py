@@ -285,25 +285,29 @@ def takeaways(_issues, dashboard, weeks, open_af):
                 "v": f"{worst} — {v['C'] + v['M']} blocking findings across {v['rounds']} rejected rounds",
             }
         )
-    data_weeks = [
-        w
-        for w in weeks
-        if w.get("sname") != "(no sprint)"
-        and (sum(w["cause"].values()) or sum(w["label"].values()))
+    # Compare the two most recent sprints that actually carry acceptance
+    # failures. Sprints planned ahead (issues filed, none accepted yet) would
+    # otherwise render the trend as a meaningless "0 vs 0".
+    def sprint_name(w):
+        return w.get("sname") or w["w"]
+
+    fail_weeks = [
+        w for w in weeks if w.get("sname") != "(no sprint)" and sum(w["cause"].values()) > 0
     ]
-    if len(data_weeks) >= 2:
-        cur, prev = sum(data_weeks[-1]["cause"].values()), sum(data_weeks[-2]["cause"].values())
-        delta = cur - prev
-        name = data_weeks[-1].get("sname") or "this sprint"
-        out.append(
-            {
-                "k": "Failure trend",
-                "v": (
-                    f"{cur} acceptance failure{'s' if cur != 1 else ''} in {name} "
-                    f"vs {prev} last sprint ({'+' if delta >= 0 else ''}{delta})"
-                ),
-            }
-        )
+    if fail_weeks:
+        cur = sum(fail_weeks[-1]["cause"].values())
+        name = sprint_name(fail_weeks[-1])
+        if len(fail_weeks) >= 2:
+            prev = sum(fail_weeks[-2]["cause"].values())
+            delta = cur - prev
+            v = (
+                f"{cur} acceptance failure{'s' if cur != 1 else ''} in {name} "
+                f"vs {prev} in {sprint_name(fail_weeks[-2])} "
+                f"({'+' if delta >= 0 else ''}{delta})"
+            )
+        else:
+            v = f"{cur} acceptance failure{'s' if cur != 1 else ''} in {name}"
+        out.append({"k": "Failure trend", "v": v})
     items = dashboard.get("issues", [])
     if items:
         sticky = max(items, key=lambda i: i["rounds"])
