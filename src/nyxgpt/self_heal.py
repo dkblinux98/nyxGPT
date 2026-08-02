@@ -1029,7 +1029,7 @@ def _list_compose_component_status() -> list[ComponentStatus]:
 
 
 def _record_health_check(statuses: list[ComponentStatus]) -> int:
-    """Log each component's health-check result and update the unhealthy-count gauge.
+    """Log each component's health-check result and update the self-heal gauges.
 
     Logged at DEBUG (routine, high-frequency per-component data -- set
     `[logging] level = DEBUG` in config.ini to see it) rather than INFO, so a
@@ -1038,11 +1038,15 @@ def _record_health_check(statuses: list[ComponentStatus]) -> int:
     the count (e.g. `heal_now`'s pass summary). A stopped-but-`desired=False`
     component (its observability profile is disabled -- see
     `_mark_disabled_present_services`) isn't counted: it's intentionally
-    down, not something an operator needs to act on.
+    down, not something an operator needs to act on. The same alarming
+    condition (`not healthy and desired`) also drives the labeled
+    `SELFHEAL_COMPONENT_HEALTHY` gauge, so the aggregate count and the named
+    per-service series can never disagree (#3575).
     """
     unhealthy = 0
     for s in statuses:
-        if not s.healthy and s.desired:
+        is_unhealthy = not s.healthy and s.desired
+        if is_unhealthy:
             unhealthy += 1
         logger.debug(
             "self-heal: health check %s healthy=%s state=%s health=%s",
@@ -1058,7 +1062,11 @@ def _record_health_check(statuses: list[ComponentStatus]) -> int:
                 "health": s.health,
             },
         )
+        prom_metrics.SELFHEAL_COMPONENT_HEALTHY.labels(service=s.service).set(
+            0.0 if is_unhealthy else 1.0
+        )
     prom_metrics.SELFHEAL_UNHEALTHY_COMPONENTS.set(unhealthy)
+    prom_metrics.SELFHEAL_LAST_CHECK_TIMESTAMP.set(time.time())
     return unhealthy
 
 
@@ -1758,13 +1766,31 @@ def detected_mode(components: list[ComponentStatus]) -> str:
 
 
 def status() -> dict[str, Any]:
-    """Aggregate status for `GET /api/v1/self-heal/status`."""
+    """Aggregate status for `GET /api/v1/self-heal/status`.
+
+    Each component dict is annotated with `restart_count` (consecutive
+    automatic restart attempts since it last recovered) and `giving_up`
+    (`True` once that count has hit the watchdog's `max_consecutive_restarts`
+    and the automatic loop has stopped retrying -- see `heal_now`). Without
+    this, a component stuck unhealthy looks identical whether self-heal is
+    still actively retrying it or has already given up and is waiting on an
+    operator (#3575).
+    """
     components = list_component_status()
     unhealthy_count = _record_health_check(components)
+    restart_counts: dict[str, int] = _load_state().get("restart_counts", {})
+    max_consecutive_restarts = get_watchdog().max_consecutive_restarts
+    component_dicts = []
+    for c in components:
+        d = c.to_dict()
+        count = restart_counts.get(c.service, 0)
+        d["restart_count"] = count
+        d["giving_up"] = not c.healthy and c.desired and count >= max_consecutive_restarts
+        component_dicts.append(d)
     return {
         "enabled": is_enabled(),
         "mode": detected_mode(components),
-        "components": [c.to_dict() for c in components],
+        "components": component_dicts,
         "unhealthy_count": unhealthy_count,
         "events": recent_events(20),
     }
