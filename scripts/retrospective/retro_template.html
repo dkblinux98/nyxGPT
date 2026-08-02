@@ -208,7 +208,7 @@
 <div class="wrap">
   <header>
     <div class="eyebrow">
-      <span>dkblinux98/nyxGPT</span><span>·</span><span>agent loop</span><span>·</span><span>Jan 1 – Aug 1, 2026</span>
+      <span>dkblinux98/nyxGPT</span><span>·</span><span>agent loop</span><span>·</span><span>Jan 1 – Aug 2, 2026</span>
     </div>
     <h1>nyxGPT Project Retrospective</h1>
     <p class="sub">The overall quality picture across all 377 issues, from the perspective of final
@@ -271,7 +271,7 @@
     </section>
   </div>
 
-  <h2 class="divider">Last 7 days in review · Jul 26 – Aug 1</h2>
+  <h2 class="divider">Last 7 days in review · Jul 27 – Aug 2</h2>
 
   <div class="tiles" id="tiles"></div>
 
@@ -296,8 +296,8 @@
 
   <section class="panel">
     <h2>First-pass outcome by module</h2>
-    <p class="desc">Of the 57 pull requests the review-agent reviewed this window, 30 were approved on
-    the first pass with zero review failures. Bars count PRs, not findings. (11 further merges were
+    <p class="desc">Of the 68 pull requests the review-agent reviewed this window, 38 were approved on
+    the first pass with zero review failures. Bars count PRs, not findings. (32 further merges were
     owner-carried workflow changes that bypassed agent review; they're excluded.)</p>
     <div class="legend">
       <span><span class="dot good"></span>Clean pass (approved first review)</span>
@@ -305,7 +305,7 @@
     </div>
     <div id="outcome"></div>
     <details class="cleanlist">
-      <summary>Show the 30 zero-failure merges</summary>
+      <summary>Show the 38 zero-failure merges</summary>
       <div class="tablewrap">
         <table>
           <thead><tr><th>PR</th><th>Title</th><th>Module</th><th>Merged</th></tr></thead>
@@ -326,7 +326,7 @@
     <h2>Issues behind the failures</h2>
     <p class="desc">Sorted by blocking findings. Click a row to see its Critical and Medium finding titles.</p>
     <details class="cleanlist">
-      <summary>Show the 27 work items with review failures</summary>
+      <summary>Show the 34 work items with review failures</summary>
       <div class="tablewrap">
         <table>
           <thead><tr>
@@ -340,7 +340,7 @@
   </section>
 
   <footer>
-    <p><strong>Acceptance-perspective classification.</strong> The 168 issues labeled
+    <p><strong>Acceptance-perspective classification.</strong> The 182 issues labeled
     <span class="mono">Acceptance Failure</span> (defects found at stakeholder acceptance, before release)
     are classified by root cause: <em>escaped defect</em> — broken behavior in code that had passed
     review (a review miss); <em>spec gap</em> — the delivered work matched the issue but the requirement
@@ -359,11 +359,11 @@
     GitHub notification-email archive (thread-level, so a PR rejected in two months counts in both);
     merged-PR counts from the GitHub API. Feb shows more rejected than merged because rejected PRs often
     merged in a later month or were superseded.</p>
-    <p><strong>Last 7 days.</strong> The 61 REQUEST_CHANGES reviews on nyxGPT PRs between 2026-07-26 and
-    2026-08-01, parsed from the structured review comments (Critical / Medium / Minor findings sections).
-    Re-review rejections with no new findings count as a round with zero findings. Of 110 PRs merged in the
-    window, 31 owner-carried workflow merges bypassed agent review and are excluded from first-pass stats;
-    of the 79 reviewed PRs, 42 were approved first-pass — verified
+    <p><strong>Last 7 days.</strong> The 60 REQUEST_CHANGES reviews on nyxGPT PRs between 2026-07-27 and
+    2026-08-02, parsed from the structured review comments (Critical / Medium / Minor findings sections).
+    Re-review rejections with no new findings count as a round with zero findings. Of 100 PRs merged in the
+    window, 32 owner-carried workflow merges bypassed agent review and are excluded from first-pass stats;
+    of the 68 reviewed PRs, 38 were approved first-pass — verified
     against each PR's review history. <strong>Module attribution</strong> follows the repo's module taxonomy,
     inferred from issue titles (the Project's Module field is not API-readable here). PR #3398 has no linked
     issue and is listed under its PR number.</p>
@@ -381,7 +381,7 @@ const CVAR = ['var(--c1)','var(--c2)','var(--c3)','var(--c4)','var(--c5)','var(-
 /* ---------- project-wide quality ---------- */
 const qt = QDATA.qtotals;
 document.getElementById('qtiles').innerHTML = [
-  {label:'Issues total', value:qt.issues, note:'Jan 1 – Aug 1'},
+  {label:'Issues total', value:qt.issues, note:'Jan 1 – Aug 2'},
   {label:'Acceptance failures', value:qt.af, note:`${Math.round(qt.af/qt.issues*100)}% of all issues`},
   {label:'Escaped defects', value:qt.defect, note:'review misses', color:'var(--c1)'},
   {label:'Spec gaps', value:qt.spec, note:'bad or incomplete spec', color:'var(--c2)'},

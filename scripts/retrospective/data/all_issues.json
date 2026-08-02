@@ -4109,7 +4109,7 @@
   ],
   "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
   "created": "2026-07-30T20:44:52Z",
-  "closed": "2026-08-01T04:39:18Z",
+  "closed": "2026-08-02T04:28:02Z",
   "state": "closed"
  },
  {
@@ -4175,7 +4175,7 @@
   ],
   "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
   "created": "2026-07-30T21:08:08Z",
-  "closed": "2026-08-01T17:57:25Z",
+  "closed": "2026-08-02T04:16:31Z",
   "state": "closed"
  },
  {
@@ -4560,8 +4560,8 @@
   ],
   "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
   "created": "2026-08-02T02:55:30Z",
-  "closed": null,
-  "state": "open"
+  "closed": "2026-08-02T03:22:16Z",
+  "state": "closed"
  },
  {
   "n": 3565,
@@ -4571,8 +4571,8 @@
   ],
   "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
   "created": "2026-08-02T02:55:40Z",
-  "closed": null,
-  "state": "open"
+  "closed": "2026-08-02T04:47:43Z",
+  "state": "closed"
  },
  {
   "n": 3566,
@@ -4582,7 +4582,40 @@
   ],
   "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
   "created": "2026-08-02T02:57:44Z",
-  "closed": null,
-  "state": "open"
+  "closed": "2026-08-02T04:53:39Z",
+  "state": "closed"
+ },
+ {
+  "n": 3573,
+  "title": "bug: acceptance failure 2 for #3463 - collections unreachable from chat - no ing",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
+  "created": "2026-08-02T03:40:01Z",
+  "closed": "2026-08-02T05:25:16Z",
+  "state": "closed"
+ },
+ {
+  "n": 3574,
+  "title": "bug: expected rc=1 from glitchtip createsuperuser logs scary WARNING - cli",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
+  "created": "2026-08-02T03:51:48Z",
+  "closed": "2026-08-02T04:21:08Z",
+  "state": "closed"
+ },
+ {
+  "n": 3575,
+  "title": "bug: unhealthy-components stat is unnamed and disagrees with admin health",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
+  "created": "2026-08-02T03:58:22Z",
+  "closed": "2026-08-02T06:01:45Z",
+  "state": "closed"
  }
 ]
