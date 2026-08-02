@@ -65,7 +65,7 @@ GATE = [
     {"m": "May", "merged": 0, "rejected": 0},
     {"m": "Jun", "merged": 0, "rejected": 0},
     {"m": "Jul", "merged": 168, "rejected": 80},
-    {"m": "Aug", "merged": 0, "rejected": 3},
+    {"m": "Aug", "merged": 0, "rejected": 6},
 ]
 
 # Release annotations on the sprint axis.
