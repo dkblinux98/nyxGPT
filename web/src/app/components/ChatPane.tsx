@@ -8,6 +8,26 @@ import { isQueuedForBackgroundSync } from '../lib/backgroundSync';
 import { useToast } from '../../contexts/ToastContext';
 import { useIsMobile } from '../../hooks/useIsMobile';
 
+// The API's error envelope (see `http_exception_handler` in src/nyxgpt/app.py)
+// nests the human-readable message under `error.message`; a plain string
+// `error` (from the Next.js proxy route's own catch block, e.g. on a network
+// failure) or a top-level `detail` are also handled as fallbacks.
+function extractUploadErrorMessage(errorData: unknown, fallback: string): string {
+  if (errorData && typeof errorData === 'object') {
+    const { error, detail } = errorData as { error?: unknown; detail?: unknown };
+    if (typeof error === 'string') {
+      return error;
+    }
+    if (error && typeof error === 'object' && typeof (error as { message?: unknown }).message === 'string') {
+      return (error as { message: string }).message;
+    }
+    if (typeof detail === 'string') {
+      return detail;
+    }
+  }
+  return fallback;
+}
+
 // Error Boundary for Virtuoso rendering
 export class VirtuosoErrorBoundary extends Component<
   {
@@ -440,6 +460,8 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
     doc_count: number;
     chunk_count: number;
   }>>([]);
+  const [uploadingToCollection, setUploadingToCollection] = useState<boolean>(false);
+  const collectionUploadInputRef = useRef<HTMLInputElement>(null);
 
   // Attached documents state (force-include for RAG)
   const [attachedDocIds, setAttachedDocIds] = useState<string[]>([]);
@@ -758,6 +780,40 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
       }
     } catch (err) {
       console.error('Failed to fetch available collections:', err);
+    }
+  }
+
+  // Uploads a document straight into the currently-selected RAG collection
+  // (`ragFilters.collection`, defaulting to "default"), persisting it for
+  // future retrieval — distinct from the paperclip attachment flow above,
+  // which only inlines a file into a single outgoing message.
+  async function uploadDocumentToCollection(file: File): Promise<void> {
+    const targetCollection = ragFilters.collection;
+    setUploadingToCollection(true);
+    setRagError(null);
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const query = targetCollection ? `?collection=${encodeURIComponent(targetCollection)}` : '';
+      const res = await fetch(`/api/rag/upload${query}`, { method: 'POST', body: formData });
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({ error: 'Unknown error' }));
+        throw new Error(extractUploadErrorMessage(errorData, `HTTP ${res.status}`));
+      }
+
+      const data = await res.json();
+      await Promise.all([fetchAvailableCollections(), fetchAvailableDocuments()]);
+      toast.success(
+        `Uploaded '${data.doc_id}' into '${data.collection || targetCollection || 'default'}': ${data.chunks_ingested} chunk(s) ingested.`
+      );
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      toast.error(`Failed to upload document to collection: ${msg}`);
+    } finally {
+      setUploadingToCollection(false);
     }
   }
 
@@ -1733,18 +1789,28 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
                 ))}
             </select>
             <p style={{ fontSize: 11, opacity: 0.7, marginTop: 4 }}>
-              Scopes RAG search to this collection. To add documents to a collection, use the
-              &quot;Upload document&quot; action on the{' '}
-              <a
-                href="/admin/collections"
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{ color: 'var(--accent, #0066cc)' }}
-              >
-                Collections admin page
-              </a>
-              .
+              Scopes RAG search to this collection.
             </p>
+            <button
+              onClick={() => collectionUploadInputRef.current?.click()}
+              disabled={uploadingToCollection || isStreaming}
+              style={{
+                marginTop: 6,
+                padding: '6px 10px',
+                borderRadius: 6,
+                border: '1px solid var(--border)',
+                background: 'var(--button-hover)',
+                color: 'var(--foreground)',
+                cursor: uploadingToCollection || isStreaming ? 'not-allowed' : 'pointer',
+                fontSize: 12,
+                fontWeight: 500,
+              }}
+              title="Upload a document into this collection"
+            >
+              {uploadingToCollection
+                ? 'Uploading…'
+                : `Upload document to '${ragFilters.collection || 'default'}'`}
+            </button>
           </div>
 
           {/* Document selection */}
@@ -1984,6 +2050,21 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
         onChange={(e) => {
           if (e.target.files && e.target.files.length > 0) {
             void processFilesAsAttachments(e.target.files);
+          }
+          e.target.value = '';
+        }}
+        style={{ display: 'none' }}
+      />
+
+      {/* Hidden file input for uploading a document into the selected RAG collection */}
+      <input
+        ref={collectionUploadInputRef}
+        type="file"
+        accept=".txt,.md,.json,.pdf,.docx,.pptx,.epub,.html,.htm"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) {
+            void uploadDocumentToCollection(file);
           }
           e.target.value = '';
         }}
