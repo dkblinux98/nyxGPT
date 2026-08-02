@@ -38,6 +38,8 @@ KNOWN_METRIC_NAMES = {
     "nyxgpt_chat_attachments_total",
     "nyxgpt_rag_queries_total",
     "nyxgpt_selfheal_unhealthy_components",
+    "nyxgpt_selfheal_component_healthy",
+    "nyxgpt_selfheal_last_check_timestamp",
     "nyxgpt_selfheal_restarts_total",
     "nyxgpt_selfheal_restart_count",
     "nyxgpt_selfheal_last_recovery_timestamp",
@@ -80,6 +82,8 @@ def test_known_metric_names_match_registry() -> None:
         "nyxgpt_chat_attachments_total",
         "nyxgpt_rag_queries_total",
         "nyxgpt_selfheal_unhealthy_components",
+        "nyxgpt_selfheal_component_healthy",
+        "nyxgpt_selfheal_last_check_timestamp",
         "nyxgpt_selfheal_restarts_total",
         "nyxgpt_selfheal_restart_count",
         "nyxgpt_selfheal_last_recovery_timestamp",
@@ -526,6 +530,71 @@ def test_glitchtip_worker_has_a_healthcheck() -> None:
         "the probe must read the path via the VTASKS_HEALTH_CHECK_FILE env var "
         "(as django-vtasks itself does), not a hardcoded path that could drift from it"
     )
+
+
+@pytest.mark.parametrize(
+    "dashboard_name",
+    ["self-healing.json", "sre-home.json"],
+)
+def test_unhealthy_components_stat_is_paired_with_a_naming_panel(dashboard_name: str) -> None:
+    """#3575: a bare "Unhealthy components (now)" count can't say which
+    component it means -- each dashboard showing that stat must also carry a
+    panel that names the offender via the labeled per-service gauge."""
+    dashboard = json.loads(
+        (REPO_ROOT / "docker" / "grafana" / "dashboards" / dashboard_name).read_text()
+    )
+    panels = {p["title"]: p for p in dashboard["panels"]}
+
+    assert "Unhealthy components (now)" in panels
+    naming_panel = panels["Unhealthy components by name (now)"]
+    exprs = [t["expr"] for t in naming_panel["targets"]]
+    assert any("nyxgpt_selfheal_component_healthy" in expr for expr in exprs)
+    assert "{{service}}" in naming_panel["targets"][0]["legendFormat"]
+
+
+@pytest.mark.parametrize(
+    "dashboard_name",
+    ["self-healing.json", "sre-home.json"],
+)
+def test_unhealthy_components_stat_states_its_freshness(dashboard_name: str) -> None:
+    """#3575 AC: the Grafana panel must state its as-of time, since the
+    underlying gauge holds its value between self-heal check passes rather
+    than updating live."""
+    dashboard = json.loads(
+        (REPO_ROOT / "docker" / "grafana" / "dashboards" / dashboard_name).read_text()
+    )
+    panels = {p["title"]: p for p in dashboard["panels"]}
+
+    freshness_panel = panels["Self-heal check freshness"]
+    exprs = [t["expr"] for t in freshness_panel["targets"]]
+    assert any("nyxgpt_selfheal_last_check_timestamp" in expr for expr in exprs)
+
+
+def _iter_panel_ids(panels: list) -> list:
+    ids = []
+    for panel in panels:
+        if "id" in panel:
+            ids.append(panel["id"])
+        if "panels" in panel:
+            ids.extend(_iter_panel_ids(panel["panels"]))
+    return ids
+
+
+@pytest.mark.parametrize(
+    "dashboard_path",
+    sorted((REPO_ROOT / "docker" / "grafana" / "dashboards").glob("*.json")),
+)
+def test_no_duplicate_panel_ids(dashboard_path: Path) -> None:
+    """Grafana panel ids must be unique within a dashboard -- a collision
+    (as introduced by #3575's "Unhealthy components by name" panel reusing
+    id 30, already claimed by "Chat attachments") causes ambiguous
+    behavior for anything keyed by panel id: `?viewPanel=` deep links,
+    Grafana's internal panel-state keying, and React key collisions in the
+    panel grid."""
+    dashboard = json.loads(dashboard_path.read_text())
+    ids = _iter_panel_ids(dashboard["panels"])
+    duplicates = {i for i in ids if ids.count(i) > 1}
+    assert not duplicates, f"{dashboard_path.name} has duplicate panel ids: {duplicates}"
 
 
 def _cfg(**monitoring_options: str) -> ConfigParser:

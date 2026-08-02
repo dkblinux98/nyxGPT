@@ -182,6 +182,94 @@ describe('SelfHealPage', () => {
     expect(screen.getByText(/"max_consecutive_restarts": 3/)).toBeInTheDocument();
   });
 
+  it('shows a "gave up" badge for a component that exhausted its restart budget', async () => {
+    server.use(
+      http.get('/api/v1/self-heal/status', () =>
+        HttpResponse.json({
+          ...mockStatus,
+          components: [
+            {
+              service: 'api',
+              container: 'nyxgpt-api-1',
+              state: 'running',
+              health: 'unhealthy',
+              healthy: false,
+              source: 'native',
+              restart_count: 3,
+              giving_up: true,
+            },
+          ],
+        })
+      )
+    );
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+
+    render(<SelfHealPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('gave up after 3 restarts')).toBeInTheDocument();
+    });
+  });
+
+  it('uses singular "restart" in the "gave up" badge when restart_count is 1', async () => {
+    server.use(
+      http.get('/api/v1/self-heal/status', () =>
+        HttpResponse.json({
+          ...mockStatus,
+          components: [
+            {
+              service: 'web',
+              container: 'nyxgpt-web-1',
+              state: 'running',
+              health: 'unhealthy',
+              healthy: false,
+              source: 'compose',
+              restart_count: 1,
+              giving_up: true,
+            },
+          ],
+        })
+      )
+    );
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+
+    render(<SelfHealPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('gave up after 1 restart')).toBeInTheDocument();
+    });
+  });
+
+  it('does not show the "gave up" badge for a component still being retried', async () => {
+    server.use(
+      http.get('/api/v1/self-heal/status', () =>
+        HttpResponse.json({
+          ...mockStatus,
+          components: [
+            {
+              service: 'api',
+              container: 'nyxgpt-api-1',
+              state: 'running',
+              health: 'unhealthy',
+              healthy: false,
+              source: 'native',
+              restart_count: 1,
+              giving_up: false,
+            },
+          ],
+        })
+      )
+    );
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+
+    render(<SelfHealPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('api')).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/gave up after/)).not.toBeInTheDocument();
+  });
+
   it('describes the monitored set as core app components regardless of source, not "the Docker Compose stack"', async () => {
     server.use(http.get('/api/v1/self-heal/status', () => HttpResponse.json(mockStatus)));
     mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);

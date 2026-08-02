@@ -4,7 +4,7 @@
   "tags": ["nyxgpt", "sre", "home"],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 6,
+  "version": 7,
   "refresh": "1m",
   "time": { "from": "now-1h", "to": "now" },
   "panels": [
@@ -278,6 +278,7 @@
     {
       "id": 3,
       "title": "Unhealthy components (now)",
+      "description": "Snapshot from the last self-heal check pass, not real-time -- see the 'Unhealthy components by name' and 'Self-heal check freshness' panels below for which component(s) and how stale this count is.",
       "type": "stat",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 6, "w": 4, "x": 0, "y": 41 },
@@ -350,10 +351,61 @@
       ]
     },
     {
+      "id": 32,
+      "title": "Unhealthy components by name (now)",
+      "description": "Names every unhealthy/stopped component this check pass found -- pairs with the bare 'Unhealthy components (now)' count above, which can't say which service it means.",
+      "type": "bargauge",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 47 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": 0,
+          "max": 1,
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "unhealthy" }, "1": { "text": "healthy" } } }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "nyxgpt_selfheal_component_healthy",
+          "legendFormat": "{{service}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 31,
+      "title": "Self-heal check freshness",
+      "description": "Seconds since the self-heal watchdog's last check pass -- how stale the unhealthy-component panels above are relative to now. Should stay well under the configured check interval; a large/climbing value means the watchdog loop has stalled.",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 47 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "time() - nyxgpt_selfheal_last_check_timestamp",
+          "legendFormat": "seconds since last check",
+          "refId": "A"
+        }
+      ]
+    },
+    {
       "id": 28,
       "title": "",
       "type": "text",
-      "gridPos": { "h": 2, "w": 24, "x": 0, "y": 47 },
+      "gridPos": { "h": 2, "w": 24, "x": 0, "y": 53 },
       "options": {
         "mode": "markdown",
         "content": "**Deep dive:** [Canary Rollout](/d/nyxgpt-canary)"
@@ -364,7 +416,7 @@
       "title": "Canary rollout active",
       "type": "stat",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 6, "w": 4, "x": 0, "y": 49 },
+      "gridPos": { "h": 6, "w": 4, "x": 0, "y": 55 },
       "fieldConfig": {
         "defaults": {
           "unit": "none",
@@ -395,7 +447,7 @@
       "title": "Canary rollbacks (24h)",
       "type": "stat",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 6, "w": 4, "x": 4, "y": 49 },
+      "gridPos": { "h": 6, "w": 4, "x": 4, "y": 55 },
       "fieldConfig": {
         "defaults": {
           "unit": "none",
@@ -423,7 +475,7 @@
       "title": "Canary traffic split",
       "type": "gauge",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 55 },
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 61 },
       "fieldConfig": {
         "defaults": { "unit": "percent", "min": 0, "max": 100 },
         "overrides": []
@@ -442,7 +494,7 @@
       "title": "Canary traffic split over time",
       "type": "timeseries",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 18, "x": 6, "y": 55 },
+      "gridPos": { "h": 8, "w": 18, "x": 6, "y": 61 },
       "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 }, "overrides": [] },
       "targets": [
         {
@@ -458,7 +510,7 @@
       "title": "Logs -- nyxGPT (open Logs Drilldown for filters, search, and patterns)",
       "type": "logs",
       "datasource": { "type": "loki", "uid": "loki" },
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 63 },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 69 },
       "links": [
         {
           "title": "Open Logs Drilldown",
@@ -486,7 +538,7 @@
       "title": "Recent nyxgpt traces",
       "type": "table",
       "datasource": { "type": "jaeger", "uid": "jaeger" },
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 73 },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 79 },
       "links": [
         { "title": "Jaeger UI", "url": "http://localhost:16686", "targetBlank": true }
       ],
@@ -506,7 +558,7 @@
       "id": 29,
       "title": "",
       "type": "text",
-      "gridPos": { "h": 2, "w": 24, "x": 0, "y": 83 },
+      "gridPos": { "h": 2, "w": 24, "x": 0, "y": 89 },
       "options": {
         "mode": "markdown",
         "content": "GlitchTip UI: [localhost:8080](http://localhost:8080)"
@@ -517,7 +569,7 @@
       "title": "GlitchTip: open issues (nyxgpt-backend)",
       "type": "stat",
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "glitchtip-infinity" },
-      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 85 },
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 91 },
       "links": [
         { "title": "GlitchTip UI", "url": "http://localhost:8080", "targetBlank": true }
       ],
@@ -542,7 +594,7 @@
       "title": "GlitchTip: recent errors (nyxgpt-backend)",
       "type": "table",
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "glitchtip-infinity" },
-      "gridPos": { "h": 8, "w": 18, "x": 6, "y": 85 },
+      "gridPos": { "h": 8, "w": 18, "x": 6, "y": 91 },
       "links": [
         { "title": "GlitchTip UI", "url": "http://localhost:8080", "targetBlank": true }
       ],

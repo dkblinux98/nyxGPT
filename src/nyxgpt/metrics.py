@@ -126,6 +126,27 @@ SELFHEAL_UNHEALTHY_COMPONENTS = Gauge(
     registry=REGISTRY,
 )
 
+SELFHEAL_COMPONENT_HEALTHY = Gauge(
+    "nyxgpt_selfheal_component_healthy",
+    "Whether a self-heal-monitored component is healthy (1) or unhealthy (0), by "
+    "service -- names the component nyxgpt_selfheal_unhealthy_components can only "
+    "count. A component with its observability profile disabled (desired=False) "
+    "reports 1 even while stopped, matching nyxgpt_selfheal_unhealthy_components's "
+    "own count semantics (see self_heal._record_health_check): it's intentionally "
+    "down, not an operator concern.",
+    ["service"],
+    registry=REGISTRY,
+)
+
+SELFHEAL_LAST_CHECK_TIMESTAMP = Gauge(
+    "nyxgpt_selfheal_last_check_timestamp",
+    "Unix timestamp of the most recent self-heal health-check pass -- lets a "
+    "dashboard panel show how stale nyxgpt_selfheal_unhealthy_components and "
+    "nyxgpt_selfheal_component_healthy are relative to 'now', since both hold "
+    "their last value between check passes rather than updating live.",
+    registry=REGISTRY,
+)
+
 SELFHEAL_RESTARTS_TOTAL = Counter(
     "nyxgpt_selfheal_restarts_total",
     "Total self-heal restart attempts, by service and outcome",

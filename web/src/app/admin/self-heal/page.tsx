@@ -14,6 +14,8 @@ type Component = {
   source: string;
   desired?: boolean;
   note?: string;
+  restart_count?: number;
+  giving_up?: boolean;
 };
 
 type HealEvent = {
@@ -448,6 +450,21 @@ export default function SelfHealPage() {
                             ? 'enabled in config, no container running'
                             : `state=${c.state}${c.health ? ` health=${c.health}` : ''}`}
                       </span>
+                      {c.giving_up && (
+                        <span
+                          style={{
+                            marginLeft: '0.5rem',
+                            fontSize: '0.7rem',
+                            padding: '1px 6px',
+                            borderRadius: 999,
+                            background: '#ef4444',
+                            color: 'white',
+                          }}
+                          title="Auto-heal exhausted its consecutive-restart budget for this component and stopped retrying -- use the heal-now button to try again, or investigate why restarts aren't fixing it."
+                        >
+                          gave up after {c.restart_count} restart{c.restart_count === 1 ? '' : 's'}
+                        </span>
+                      )}
                       {c.note && (
                         <div
                           style={{

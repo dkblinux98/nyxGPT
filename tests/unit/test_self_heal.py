@@ -1623,6 +1623,109 @@ def test_record_health_check_excludes_disabled_present_from_unhealthy_count():
 
 
 @pytest.mark.unit
+def test_record_health_check_sets_labeled_component_healthy_gauge():
+    """#3575: the bare unhealthy count can't say which component -- a
+    labeled per-service gauge must name it."""
+    statuses = [
+        self_heal.ComponentStatus("api", "c", "running", "healthy", True),
+        self_heal.ComponentStatus("web", "c", "exited", "", False),
+    ]
+    self_heal._record_health_check(statuses)
+
+    assert _metric_value("nyxgpt_selfheal_component_healthy", service="api") == 1
+    assert _metric_value("nyxgpt_selfheal_component_healthy", service="web") == 0
+
+
+@pytest.mark.unit
+def test_record_health_check_component_healthy_gauge_treats_disabled_present_as_healthy():
+    """A `desired=False` component (its observability profile is off) isn't
+    counted toward `nyxgpt_selfheal_unhealthy_components` -- the labeled gauge
+    must report the same "not alarming" verdict (1) for it, or the two series
+    would disagree about the exact same component (#3575)."""
+    statuses = [
+        self_heal.ComponentStatus("grafana", "c", "exited", "", False, desired=False),
+    ]
+    self_heal._record_health_check(statuses)
+
+    assert _metric_value("nyxgpt_selfheal_component_healthy", service="grafana") == 1
+
+
+@pytest.mark.unit
+def test_record_health_check_labeled_gauge_sum_matches_unhealthy_count():
+    """Count-consistency guard (#3575 AC): the aggregate
+    `nyxgpt_selfheal_unhealthy_components` must always equal the number of
+    `nyxgpt_selfheal_component_healthy` series reporting 0 for these
+    services, since both are derived from the same per-component verdict."""
+    statuses = [
+        self_heal.ComponentStatus("api", "c", "running", "healthy", True),
+        self_heal.ComponentStatus("web", "c", "exited", "", False),
+        self_heal.ComponentStatus("ollama", "c", "exited", "", False),
+        self_heal.ComponentStatus("grafana", "c", "exited", "", False, desired=False),
+    ]
+
+    unhealthy_count = self_heal._record_health_check(statuses)
+
+    labeled_unhealthy = sum(
+        1
+        for s in statuses
+        if _metric_value("nyxgpt_selfheal_component_healthy", service=s.service) == 0
+    )
+    assert labeled_unhealthy == unhealthy_count == 2
+
+
+@pytest.mark.unit
+def test_record_health_check_updates_last_check_timestamp():
+    before = time.time()
+    self_heal._record_health_check(
+        [self_heal.ComponentStatus("api", "c", "running", "healthy", True)]
+    )
+    after = time.time()
+
+    last_check = _metric_value("nyxgpt_selfheal_last_check_timestamp")
+    assert before <= last_check <= after
+
+
+@pytest.mark.unit
+def test_status_reports_zero_restart_count_and_not_giving_up_by_default(monkeypatch):
+    monkeypatch.setattr(
+        self_heal,
+        "list_component_status",
+        lambda: [self_heal.ComponentStatus("web", "c", "running", "healthy", True)],
+    )
+
+    data = self_heal.status()
+
+    component = data["components"][0]
+    assert component["restart_count"] == 0
+    assert component["giving_up"] is False
+
+
+@pytest.mark.unit
+def test_status_reports_giving_up_once_restart_budget_exhausted(monkeypatch, tmp_path):
+    """#3575: a component self-heal has given up on (exhausted
+    max_consecutive_restarts) must look different from one it's still
+    actively retrying -- otherwise an operator can't tell "will heal itself
+    shortly" apart from "needs me to intervene"."""
+    state_path = tmp_path / "self_heal_state.json"
+    monkeypatch.setattr(self_heal, "_state_path", lambda: state_path)
+    monkeypatch.setattr(
+        self_heal,
+        "list_component_status",
+        lambda: [self_heal.ComponentStatus("glitchtip-worker", "c", "running", "unhealthy", False)],
+    )
+    monkeypatch.setattr(
+        self_heal, "get_watchdog", lambda: self_heal.Watchdog(max_consecutive_restarts=3)
+    )
+    self_heal._save_state({**self_heal._default_state(), "restart_counts": {"glitchtip-worker": 3}})
+
+    data = self_heal.status()
+
+    component = data["components"][0]
+    assert component["restart_count"] == 3
+    assert component["giving_up"] is True
+
+
+@pytest.mark.unit
 def test_heal_now_skips_disabled_present_component(monkeypatch):
     monkeypatch.setattr(
         self_heal,

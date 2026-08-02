@@ -356,7 +356,10 @@ action when **enabled** — controlled at runtime, not by editing
 
 - **Dashboard**: `/admin/self-heal` has an "Enable auto-heal" toggle, a
   "Heal now" button per component (and one for "heal everything
-  unhealthy"), and a recent-events log.
+  unhealthy"), and a recent-events log. A component that's exhausted its
+  `max_consecutive_restarts` budget shows a "gave up after N restarts" badge
+  distinct from a plain "Unhealthy" state, so it's clear self-heal has
+  stopped retrying and is waiting on an operator.
 - **CLI**: `nyxgpt self-heal status` / `enable` / `disable` / `heal
   [--service NAME]`.
 - **API**: `GET /api/v1/self-heal/status`, `POST
@@ -407,6 +410,8 @@ when `[logging] format = json` -- see
 | Metric | Type | Labels | Description |
 |---|---|---|---|
 | `nyxgpt_selfheal_unhealthy_components` | Gauge | — | Components currently unhealthy or stopped |
+| `nyxgpt_selfheal_component_healthy` | Gauge | `service` | Whether a component is healthy (1) or unhealthy (0) -- names the component the bare count above can't |
+| `nyxgpt_selfheal_last_check_timestamp` | Gauge | — | Unix timestamp of the last self-heal check pass -- how stale the two gauges above are relative to "now" |
 | `nyxgpt_selfheal_restarts_total` | Counter | `service`, `result` | Restart attempts, by service and outcome |
 | `nyxgpt_selfheal_restart_count` | Gauge | `service` | Current consecutive-restart count per service |
 | `nyxgpt_selfheal_last_recovery_timestamp` | Gauge | `service` | Unix timestamp of the last successful restart |
@@ -417,10 +422,19 @@ when `[logging] format = json` -- see
 auto-provisioned exactly like the other three dashboards (System Overview,
 RAG Performance, API Metrics -- see [docker-compose.md's Monitoring
 Dashboards](docker-compose.md#monitoring-dashboards)), no separate install
-step. It shows live unhealthy-component count, restarts in the last 24h,
-consecutive-restart count per service (the "backoff state" view), restart
-rate by service/outcome, time since each service's last recovery, and a
-Loki-backed restart/recovery event timeline.
+step. It shows live unhealthy-component count, which component(s) that count means
+(by name, via the labeled gauge) and how stale that snapshot is, restarts in
+the last 24h, consecutive-restart count per service (the "backoff state"
+view), restart rate by service/outcome, time since each service's last
+recovery, and a Loki-backed restart/recovery event timeline.
+
+`GET /api/v1/self-heal/status` (backing both the Self-Heal and System Health
+admin dashboard pages) also annotates each component with `restart_count`
+(consecutive automatic restart attempts since it last recovered) and
+`giving_up` (`true` once that count has hit `max_consecutive_restarts` and
+the automatic loop has stopped retrying) -- so a component self-heal is still
+actively working on looks different from one it's given up on and is
+waiting on an operator to fix.
 
 **Loki query** for self-heal events (heal attempts/outcomes) plus operator
 `nyxgpt ops` lifecycle events (see below), used by that timeline panel:

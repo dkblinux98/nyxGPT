@@ -4,13 +4,14 @@
   "tags": ["nyxgpt", "self-heal"],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "30s",
   "time": { "from": "now-6h", "to": "now" },
   "panels": [
     {
       "id": 1,
       "title": "Unhealthy components (now)",
+      "description": "Snapshot from the last self-heal check pass, not real-time -- see 'Unhealthy components by name' and 'Self-heal check freshness' below for which component(s) and how stale this count is.",
       "type": "stat",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
@@ -162,6 +163,57 @@
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "sum(increase(nyxgpt_ops_actions_total[5m])) by (command, service, result)",
           "legendFormat": "{{command}} {{service}} ({{result}})",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Unhealthy components by name (now)",
+      "description": "Names every unhealthy/stopped component this check pass found -- pairs with the bare 'Unhealthy components (now)' count above, which can't say which service it means.",
+      "type": "bargauge",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 32 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": 0,
+          "max": 1,
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "unhealthy" }, "1": { "text": "healthy" } } }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "nyxgpt_selfheal_component_healthy",
+          "legendFormat": "{{service}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Self-heal check freshness",
+      "description": "Seconds since the self-heal watchdog's last check pass -- how stale the unhealthy-component panels above are relative to now. Should stay well under the configured check interval; a large/climbing value means the watchdog loop has stalled.",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 32 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "time() - nyxgpt_selfheal_last_check_timestamp",
+          "legendFormat": "seconds since last check",
           "refId": "A"
         }
       ]
