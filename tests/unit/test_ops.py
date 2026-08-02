@@ -8650,6 +8650,102 @@ def test_glitchtip_secrets_doctor_issues_ok_when_token_present_and_grafana_runni
     assert ops._glitchtip_secrets_doctor_issues() == []
 
 
+def _write_error_tracking_config(path, *, enabled=True, dsn="http://key@localhost:8080/1"):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"[error_tracking]\nenabled = {'true' if enabled else 'false'}\ndsn = {dsn}\n"
+        "glitchtip_ui_url = http://localhost:8080\n",
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.unit
+def test_error_tracking_dsn_drift_issue_none_when_no_config(tmp_path):
+    assert ops._error_tracking_dsn_drift_issue(tmp_path / "missing.ini") is None
+
+
+@pytest.mark.unit
+def test_error_tracking_dsn_drift_issue_none_when_disabled(tmp_path):
+    cfg_path = tmp_path / "config.ini"
+    _write_error_tracking_config(cfg_path, enabled=False)
+    assert ops._error_tracking_dsn_drift_issue(cfg_path) is None
+
+
+@pytest.mark.unit
+def test_error_tracking_dsn_drift_issue_none_when_no_dsn(tmp_path):
+    cfg_path = tmp_path / "config.ini"
+    _write_error_tracking_config(cfg_path, dsn="")
+    assert ops._error_tracking_dsn_drift_issue(cfg_path) is None
+
+
+@pytest.mark.unit
+def test_error_tracking_dsn_drift_issue_none_when_no_grafana_token(tmp_path, monkeypatch):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    cfg_path = tmp_path / "config.ini"
+    _write_error_tracking_config(cfg_path)
+    assert ops._error_tracking_dsn_drift_issue(cfg_path) is None
+
+
+@pytest.mark.unit
+def test_error_tracking_dsn_drift_issue_none_when_key_still_live(tmp_path, monkeypatch):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    cfg_path = tmp_path / "config.ini"
+    _write_error_tracking_config(cfg_path, dsn="http://key@localhost:8080/1")
+    token_path = tmp_path / ".nyxGPT" / "secrets" / "glitchtip-grafana-token"
+    token_path.parent.mkdir(parents=True)
+    token_path.write_text("tok", encoding="utf-8")
+
+    def handler(request):
+        return httpx.Response(200, json=[{"dsn": "http://key@localhost:8080/1"}])
+
+    monkeypatch.setattr(
+        ops, "_glitchtip_http_client", lambda base_url, **k: _mock_client(base_url, handler)
+    )
+
+    assert ops._error_tracking_dsn_drift_issue(cfg_path) is None
+
+
+@pytest.mark.unit
+def test_error_tracking_dsn_drift_issue_flags_stale_key(tmp_path, monkeypatch):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    cfg_path = tmp_path / "config.ini"
+    _write_error_tracking_config(cfg_path, dsn="http://stale-key@localhost:8080/1")
+    token_path = tmp_path / ".nyxGPT" / "secrets" / "glitchtip-grafana-token"
+    token_path.parent.mkdir(parents=True)
+    token_path.write_text("tok", encoding="utf-8")
+
+    def handler(request):
+        return httpx.Response(200, json=[{"dsn": "http://current-key@localhost:8080/1"}])
+
+    monkeypatch.setattr(
+        ops, "_glitchtip_http_client", lambda base_url, **k: _mock_client(base_url, handler)
+    )
+
+    issue = ops._error_tracking_dsn_drift_issue(cfg_path)
+    assert issue is not None
+    assert "doesn't match any current GlitchTip key" in issue
+    assert "nyxgpt ops glitchtip-init" in issue
+
+
+@pytest.mark.unit
+def test_error_tracking_dsn_drift_issue_none_when_glitchtip_unreachable(tmp_path, monkeypatch):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    cfg_path = tmp_path / "config.ini"
+    _write_error_tracking_config(cfg_path)
+    token_path = tmp_path / ".nyxGPT" / "secrets" / "glitchtip-grafana-token"
+    token_path.parent.mkdir(parents=True)
+    token_path.write_text("tok", encoding="utf-8")
+
+    def handler(request):
+        raise httpx.ConnectError("connection refused", request=request)
+
+    monkeypatch.setattr(
+        ops, "_glitchtip_http_client", lambda base_url, **k: _mock_client(base_url, handler)
+    )
+
+    assert ops._error_tracking_dsn_drift_issue(cfg_path) is None
+
+
 @pytest.mark.unit
 def test_ops_doctor_flags_glitchtip_secrets_issues(monkeypatch, capsys, tmp_path):
     cfg_dir = tmp_path / ".nyxGPT"

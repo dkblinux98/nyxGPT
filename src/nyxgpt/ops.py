@@ -37,6 +37,8 @@ import httpx
 from nyxgpt import metrics as prom_metrics
 from nyxgpt import self_heal, tracing
 from nyxgpt.config import (
+    get_error_tracking_config,
+    get_error_tracking_enabled,
     get_log_aggregation_enabled,
     get_monitoring_config,
     get_monitoring_slack_webhook_url,
@@ -3591,8 +3593,11 @@ def doctor(_args) -> int:
     listening on it, (once the shared Ollama store has been configured)
     whether native Ollama's OLLAMA_MODELS env has drifted from it (#3431),
     and whether `~/.nyxGPT/secrets` is writable / holds the GlitchTip
-    Grafana token when the observability stack is up (#3432), and whether
-    the installed environment actually has every dependency declared in
+    Grafana token when the observability stack is up (#3432), whether a
+    configured error-tracking DSN's public key still matches a live
+    GlitchTip project key -- a stale/re-minted key silently drops every
+    event with no other visible symptom (#3565) -- and whether the
+    installed environment actually has every dependency declared in
     `pyproject.toml` -- catches a venv that wasn't refreshed after a `git
     pull` added or bumped one (#3487).
     Also prints a per-logger recent log volume
@@ -3720,6 +3725,9 @@ def doctor(_args) -> int:
         issues.append(ollama_env_issue)
 
     issues += _glitchtip_secrets_doctor_issues()
+    error_tracking_drift_issue = _error_tracking_dsn_drift_issue()
+    if error_tracking_drift_issue:
+        issues.append(error_tracking_drift_issue)
     issues += _stale_venv_doctor_issues()
 
     if (
@@ -5593,6 +5601,107 @@ def _glitchtip_secrets_doctor_issues() -> list[str]:
             )
 
     return issues
+
+
+def _error_tracking_dsn_drift_issue(cfg_path: Path | None = None) -> str | None:
+    """Detect the #3565 acceptance-failure shape: a configured error-tracking
+    DSN whose public key no longer matches any live GlitchTip project key.
+
+    sentry_sdk's HTTP transport is fire-and-forget, exactly like the OTLP
+    span exporter `_tracing_wiring_issue` already guards against: when
+    GlitchTip rejects an event (401, unrecognized key) the SDK just drops it
+    -- nothing raises, nothing logs anywhere an operator would see, and
+    `/api/error-tracking` keeps reporting `active: true` because that only
+    reflects whether `sentry_sdk.init()` ran, not whether GlitchTip still
+    accepts the key it was given. This happens whenever GlitchTip's
+    org/project/key gets re-minted independently of `config.ini` (e.g. its
+    Postgres data was reset out-of-band) -- `_provision_glitchtip` only
+    restarts a *native* `nyxgpt-api` when it personally changes the DSN, so
+    a drift introduced any other way is never detected until this check.
+
+    Authenticates with the same ops-provisioned API token already written
+    for Grafana's Infinity datasource (`_glitchtip_grafana_token_path`) --
+    no extra credential to manage, and no check at all if that token, a
+    configured DSN, or a reachable GlitchTip aren't all present, so this
+    never blocks `doctor` on a host where error tracking isn't in play.
+    """
+    cfg_path = cfg_path or (Path.home() / ".nyxGPT" / "config.ini")
+    if not cfg_path.exists():
+        return None
+
+    parser = ConfigParser()
+    try:
+        parser.read(cfg_path)
+    except Exception as e:
+        logger.warning(
+            "Failed to parse %s, skipping error tracking DSN drift check: %s",
+            cfg_path,
+            e,
+            extra={"component": "ops"},
+        )
+        return None
+
+    if not get_error_tracking_enabled(parser):
+        return None
+
+    error_tracking_config = get_error_tracking_config(parser)
+    dsn = (error_tracking_config["dsn"] or "").strip()
+    if not dsn:
+        return None
+
+    try:
+        configured_key = httpx.URL(dsn).username
+    except Exception:
+        return None
+    if not configured_key:
+        return None
+
+    token_path = _glitchtip_grafana_token_path()
+    if not token_path.exists():
+        return None
+    try:
+        token = token_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not token:
+        return None
+
+    base_url = error_tracking_config["glitchtip_ui_url"]
+    try:
+        with _glitchtip_http_client(
+            base_url, headers={"Authorization": f"Bearer {token}"}
+        ) as client:
+            resp = client.get(
+                f"/api/0/projects/{GLITCHTIP_ORG_SLUG}/{GLITCHTIP_PROJECT_SLUG}/keys/"
+            )
+    except httpx.HTTPError:
+        return None
+    if resp.status_code != 200:
+        return None
+
+    keys: Any = resp.json()
+    if not isinstance(keys, list):
+        return None
+    live_public_keys = set()
+    for key in keys:
+        key_dsn = _extract_dsn(key)
+        if not key_dsn:
+            continue
+        try:
+            live_public_keys.add(httpx.URL(key_dsn).username)
+        except Exception:
+            continue
+
+    if not live_public_keys or configured_key in live_public_keys:
+        return None
+
+    return (
+        f"error_tracking DSN in {cfg_path} doesn't match any current GlitchTip key for "
+        f"{GLITCHTIP_ORG_SLUG}/{GLITCHTIP_PROJECT_SLUG} -- every event is being rejected "
+        "(401) and silently dropped, the same way an unreachable OTLP collector silently "
+        "drops spans. The project's key was likely re-minted since this DSN was written. "
+        "Fix: nyxgpt ops glitchtip-init && nyxgpt ops restart api."
+    )
 
 
 def _requirement_distribution_name(requirement: str) -> str:

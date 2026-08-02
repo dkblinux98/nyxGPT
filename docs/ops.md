@@ -416,6 +416,15 @@ Checks include:
   shared `~/.nyxGPT/volumes/ollama/models` path -- catches drift back to
   Ollama's own default store (see
   [homebrew.md#ollama-model-store](homebrew.md#ollama-model-store))
+- (when error tracking is enabled and GlitchTip is reachable) whether the
+  configured `[error_tracking] dsn`'s public key still matches a live
+  GlitchTip project key -- if GlitchTip's org/project/key ever gets
+  re-minted independently of `config.ini` (e.g. its data was reset
+  out-of-band), a running api process keeps sending events under a key
+  GlitchTip no longer recognizes; every one is rejected (401) and silently
+  dropped by sentry_sdk's fire-and-forget transport, the same failure shape
+  as the OTLP check above (#3565). Fix: `nyxgpt ops glitchtip-init && nyxgpt
+  ops restart api`
 - Whether the installed Python environment actually has every dependency
   declared in `pyproject.toml` (via `importlib.metadata`) -- catches a venv
   that wasn't refreshed after a `git pull` added or bumped a dependency,
@@ -606,6 +615,18 @@ Exit codes:
   up/healthy yet)
 - `2` -- a step actually failed (e.g. couldn't reach the GlitchTip API,
   or config.ini is missing -- run `nyxgpt wizard` first)
+
+**GlitchTip's "Logs" tab is not error tracking (#3565 acceptance failure).**
+GlitchTip 6.x ships a separate structured-logging feature (`apps.logs`,
+its own `LogEvent`/`LogResource` models) that's unrelated to the
+error/exception tracking (`apps.issue_events`) this integration uses.
+nyxGPT's `error_tracking.py` only ever calls `capture_exception`/
+`capture_message`, which create GlitchTip **Issues** -- it never sends
+anything to the Logs feature, and isn't meant to. GlitchTip's Logs view
+saying "No logs found. Configure your SDK to start capturing logs." is
+therefore expected and not a signal that error tracking is broken; check
+GlitchTip's **Issues** view (or `nyxgpt ops doctor`'s DSN-drift check
+above) instead.
 
 ---
 
