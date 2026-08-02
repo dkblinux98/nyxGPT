@@ -318,6 +318,13 @@ describe('RAG toggle, filters, attach/detach, upload', () => {
     expect(screen.getByText('doc-b')).toBeInTheDocument();
     expect(screen.getByText(/tag1, tag2/)).toBeInTheDocument();
 
+    // The help text's "Collections admin page" is a real, clickable link to
+    // /admin/collections -- not just prose the user has to act on by finding
+    // that destination on their own (#3566).
+    const collectionsLink = screen.getByRole('link', { name: 'Collections admin page' });
+    expect(collectionsLink).toHaveAttribute('href', '/admin/collections');
+    expect(collectionsLink).toHaveAttribute('target', '_blank');
+
     // Select doc-a checkbox
     const checkboxes = screen.getAllByRole('checkbox');
     await user.click(checkboxes[0]);

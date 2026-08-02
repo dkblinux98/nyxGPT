@@ -1721,7 +1721,16 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
             </select>
             <p style={{ fontSize: 11, opacity: 0.7, marginTop: 4 }}>
               Scopes RAG search to this collection. To add documents to a collection, use the
-              &quot;Upload document&quot; action on the Collections admin page.
+              &quot;Upload document&quot; action on the{' '}
+              <a
+                href="/admin/collections"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: 'var(--accent, #0066cc)' }}
+              >
+                Collections admin page
+              </a>
+              .
             </p>
           </div>
 
