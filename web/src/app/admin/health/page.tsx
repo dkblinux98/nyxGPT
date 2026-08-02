@@ -18,6 +18,20 @@ type DependencyCheck = {
   applicable: boolean;
 };
 
+type SelfHealComponent = {
+  service: string;
+  state: string;
+  health: string;
+  healthy: boolean;
+  desired?: boolean;
+};
+
+type SelfHealStatus = {
+  enabled: boolean;
+  components: SelfHealComponent[];
+  unhealthy_count: number;
+};
+
 type ResourceMetricsSummary = {
   memory: { rss_mb: number; percent: number };
   cpu: { process_percent: number };
@@ -99,6 +113,7 @@ export default function AdminHealthPage() {
   const [health, setHealth] = useState<HealthData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [selfHeal, setSelfHeal] = useState<SelfHealStatus | null>(null);
 
   const loadHealth = useCallback(async () => {
     setLoading(true);
@@ -115,11 +130,29 @@ export default function AdminHealthPage() {
     }
   }, []);
 
+  const loadSelfHeal = useCallback(async () => {
+    try {
+      const res = await fetch('/api/v1/self-heal/status', { cache: 'no-store' });
+      if (!res.ok) return;
+      setSelfHeal(await res.json());
+    } catch {
+      // Self-heal component detail is a supplement to this page, not its
+      // core data -- a failed fetch here shouldn't block the rest of the
+      // system health view from rendering.
+    }
+  }, []);
+
   useEffect(() => {
     loadHealth();
     const interval = setInterval(loadHealth, 15000);
     return () => clearInterval(interval);
   }, [loadHealth]);
+
+  useEffect(() => {
+    loadSelfHeal();
+    const interval = setInterval(loadSelfHeal, 15000);
+    return () => clearInterval(interval);
+  }, [loadSelfHeal]);
 
   return (
     <main style={{ padding: '2rem', maxWidth: 1000, margin: '0 auto' }}>
@@ -176,6 +209,48 @@ export default function AdminHealthPage() {
                     Uptime: <strong>{formatUptime(h.service.uptime_s)}</strong>
                   </div>
                 </div>
+              </section>
+
+              {/* Self-Heal Components -- surfaces the same live component
+                  set the Self-Heal page shows (fetched from the same
+                  /api/v1/self-heal/status endpoint), so this page can never
+                  read "all clear" while Self-Heal shows a named component
+                  unhealthy (#3575). Dependency Checks below covers a
+                  different, narrower set (Ollama/Cassandra reachability) --
+                  this card is the full self-heal-monitored component set. */}
+              <section style={cardStyle} aria-label="Self-heal components">
+                <h2 style={sectionTitleStyle}>Self-Heal Components</h2>
+                {!selfHeal ? (
+                  <p style={{ color: 'var(--muted-foreground)', fontSize: 14 }}>
+                    Self-heal status unavailable.
+                  </p>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    <StatusBadge
+                      ok={selfHeal.unhealthy_count === 0}
+                      label={
+                        selfHeal.unhealthy_count === 0
+                          ? 'All components healthy'
+                          : `${selfHeal.unhealthy_count} unhealthy`
+                      }
+                    />
+                    {selfHeal.components
+                      .filter((c) => !c.healthy && c.desired !== false)
+                      .map((c) => (
+                        <div key={c.service} style={{ fontSize: 13 }}>
+                          <strong>{c.service}</strong>
+                          <span style={{ color: 'var(--muted-foreground)' }}>
+                            {' '}
+                            -- state={c.state}
+                            {c.health ? ` health=${c.health}` : ''}
+                          </span>
+                        </div>
+                      ))}
+                    <a href="/admin/self-heal" style={{ color: '#0066cc', fontSize: 13 }}>
+                      Self-Heal details →
+                    </a>
+                  </div>
+                )}
               </section>
 
               {/* Dependency Checks */}
