@@ -408,6 +408,33 @@ def test_sre_home_glitchtip_panels_filter_to_unresolved_issues() -> None:
             ), f"{panel['title']!r} issues query is missing the unresolved status filter"
 
 
+def test_sre_home_dashboard_version_bumped_past_stale_glitchtip_deploy() -> None:
+    """Regression test for #3565: the #3470 `is:unresolved` fix landed in
+    sre-home.json (version 5) without bumping the dashboard's top-level
+    `"version"`. With `allowUiUpdates: true` (dashboards.yml), Grafana's file
+    provisioner only re-imports a dashboard when the file's `"version"` is
+    higher than what's already stored -- an already-provisioned Grafana
+    instance kept serving the stale, unfiltered query indefinitely even
+    though the file on disk was already correct. `"version"` must move past
+    5 so a live instance actually picks up the fix."""
+    dashboard = json.loads(
+        (REPO_ROOT / "docker" / "grafana" / "dashboards" / "sre-home.json").read_text()
+    )
+    assert dashboard["version"] > 5
+
+
+def test_dashboards_provisioning_documents_the_version_bump_requirement() -> None:
+    """#3565: `allowUiUpdates: true` silently drops a dashboard file update
+    whose `"version"` wasn't bumped (see the regression above) -- document
+    that gotcha next to the setting so the next dashboard edit doesn't
+    reintroduce it."""
+    text = (
+        REPO_ROOT / "docker" / "grafana" / "provisioning" / "dashboards" / "dashboards.yml"
+    ).read_text()
+    assert "allowUiUpdates: true" in text
+    assert "version" in text.lower()
+
+
 def test_sre_home_glitchtip_recent_errors_table_shows_status() -> None:
     """The "recent errors" table also carries a status column (#3470) so an
     issue that gets resolved between dashboard refreshes isn't mistaken for
@@ -420,6 +447,25 @@ def test_sre_home_glitchtip_recent_errors_table_shows_status() -> None:
     )
     selectors = {c["selector"] for c in panel["targets"][0]["columns"]}
     assert "status" in selectors
+
+
+def test_glitchtip_worker_has_a_healthcheck() -> None:
+    """Regression test for #3565: `glitchtip-worker` runs the actual
+    event-ingestion pipeline (Celery worker + beat) but had no healthcheck,
+    so `self_heal._docker_compose_container_statuses` (which treats an empty
+    `Health` field as healthy whenever the container `state == "running"`)
+    could never detect a dead/wedged worker -- the container process stayed
+    "running" while ingestion silently stopped, with self-heal never
+    restarting it. `celery inspect ping` reaches the worker process itself,
+    not just the container, so a wedged worker now surfaces as unhealthy."""
+    compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text())
+    worker = compose["services"]["glitchtip-worker"]
+
+    assert (
+        "healthcheck" in worker
+    ), "glitchtip-worker has no healthcheck -- self-heal can't detect a dead Celery worker"
+    test = worker["healthcheck"]["test"]
+    assert "celery" in " ".join(test) and "inspect" in " ".join(test)
 
 
 def _cfg(**monitoring_options: str) -> ConfigParser:
