@@ -37,6 +37,8 @@ KNOWN_METRIC_NAMES = {
     "nyxgpt_chat_requests_total",
     "nyxgpt_rag_queries_total",
     "nyxgpt_selfheal_unhealthy_components",
+    "nyxgpt_selfheal_component_healthy",
+    "nyxgpt_selfheal_last_check_timestamp",
     "nyxgpt_selfheal_restarts_total",
     "nyxgpt_selfheal_restart_count",
     "nyxgpt_selfheal_last_recovery_timestamp",
@@ -78,6 +80,8 @@ def test_known_metric_names_match_registry() -> None:
         "nyxgpt_chat_requests_total",
         "nyxgpt_rag_queries_total",
         "nyxgpt_selfheal_unhealthy_components",
+        "nyxgpt_selfheal_component_healthy",
+        "nyxgpt_selfheal_last_check_timestamp",
         "nyxgpt_selfheal_restarts_total",
         "nyxgpt_selfheal_restart_count",
         "nyxgpt_selfheal_last_recovery_timestamp",
@@ -466,6 +470,44 @@ def test_glitchtip_worker_has_a_healthcheck() -> None:
     ), "glitchtip-worker has no healthcheck -- self-heal can't detect a dead Celery worker"
     test = worker["healthcheck"]["test"]
     assert "celery" in " ".join(test) and "inspect" in " ".join(test)
+
+
+@pytest.mark.parametrize(
+    "dashboard_name",
+    ["self-healing.json", "sre-home.json"],
+)
+def test_unhealthy_components_stat_is_paired_with_a_naming_panel(dashboard_name: str) -> None:
+    """#3575: a bare "Unhealthy components (now)" count can't say which
+    component it means -- each dashboard showing that stat must also carry a
+    panel that names the offender via the labeled per-service gauge."""
+    dashboard = json.loads(
+        (REPO_ROOT / "docker" / "grafana" / "dashboards" / dashboard_name).read_text()
+    )
+    panels = {p["title"]: p for p in dashboard["panels"]}
+
+    assert "Unhealthy components (now)" in panels
+    naming_panel = panels["Unhealthy components by name (now)"]
+    exprs = [t["expr"] for t in naming_panel["targets"]]
+    assert any("nyxgpt_selfheal_component_healthy" in expr for expr in exprs)
+    assert "{{service}}" in naming_panel["targets"][0]["legendFormat"]
+
+
+@pytest.mark.parametrize(
+    "dashboard_name",
+    ["self-healing.json", "sre-home.json"],
+)
+def test_unhealthy_components_stat_states_its_freshness(dashboard_name: str) -> None:
+    """#3575 AC: the Grafana panel must state its as-of time, since the
+    underlying gauge holds its value between self-heal check passes rather
+    than updating live."""
+    dashboard = json.loads(
+        (REPO_ROOT / "docker" / "grafana" / "dashboards" / dashboard_name).read_text()
+    )
+    panels = {p["title"]: p for p in dashboard["panels"]}
+
+    freshness_panel = panels["Self-heal check freshness"]
+    exprs = [t["expr"] for t in freshness_panel["targets"]]
+    assert any("nyxgpt_selfheal_last_check_timestamp" in expr for expr in exprs)
 
 
 def _cfg(**monitoring_options: str) -> ConfigParser:
