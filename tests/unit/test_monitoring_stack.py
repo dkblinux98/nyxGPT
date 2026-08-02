@@ -570,6 +570,33 @@ def test_unhealthy_components_stat_states_its_freshness(dashboard_name: str) -> 
     assert any("nyxgpt_selfheal_last_check_timestamp" in expr for expr in exprs)
 
 
+def _iter_panel_ids(panels: list) -> list:
+    ids = []
+    for panel in panels:
+        if "id" in panel:
+            ids.append(panel["id"])
+        if "panels" in panel:
+            ids.extend(_iter_panel_ids(panel["panels"]))
+    return ids
+
+
+@pytest.mark.parametrize(
+    "dashboard_path",
+    sorted((REPO_ROOT / "docker" / "grafana" / "dashboards").glob("*.json")),
+)
+def test_no_duplicate_panel_ids(dashboard_path: Path) -> None:
+    """Grafana panel ids must be unique within a dashboard -- a collision
+    (as introduced by #3575's "Unhealthy components by name" panel reusing
+    id 30, already claimed by "Chat attachments") causes ambiguous
+    behavior for anything keyed by panel id: `?viewPanel=` deep links,
+    Grafana's internal panel-state keying, and React key collisions in the
+    panel grid."""
+    dashboard = json.loads(dashboard_path.read_text())
+    ids = _iter_panel_ids(dashboard["panels"])
+    duplicates = {i for i in ids if ids.count(i) > 1}
+    assert not duplicates, f"{dashboard_path.name} has duplicate panel ids: {duplicates}"
+
+
 def _cfg(**monitoring_options: str) -> ConfigParser:
     cfg = ConfigParser()
     if monitoring_options:

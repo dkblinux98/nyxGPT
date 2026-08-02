@@ -30,6 +30,12 @@ const zeroMetrics = {
   queue: { depth: 0, total_requests: 0 },
 };
 
+const healthySelfHealStatus = {
+  enabled: true,
+  components: [{ service: 'api', state: 'running', health: 'healthy', healthy: true }],
+  unhealthy_count: 0,
+};
+
 describe('AdminHealthPage', () => {
   // The consolidated screen (#3413) also mounts the Usage Analytics and
   // Resource Metrics sections on every render, so every test needs default
@@ -39,8 +45,108 @@ describe('AdminHealthPage', () => {
     server.use(
       http.get('/api/v1/analytics/usage', () => HttpResponse.json(emptyUsageSummary)),
       http.get('/api/metrics', () => HttpResponse.json(zeroMetrics)),
-      http.get('/api/v1/metrics/history', () => HttpResponse.json(emptyMetricsHistory))
+      http.get('/api/v1/metrics/history', () => HttpResponse.json(emptyMetricsHistory)),
+      http.get('/api/v1/self-heal/status', () => HttpResponse.json(healthySelfHealStatus))
     );
+  });
+
+  describe('Self-Heal Components card (#3575)', () => {
+    it('shows "All components healthy" when unhealthy_count is 0', async () => {
+      render(<AdminHealthPage />);
+      await waitFor(() => {
+        expect(screen.getByText('All components healthy')).toBeInTheDocument();
+      });
+    });
+
+    it('names the unhealthy component(s) so the operator can act without leaving the page', async () => {
+      server.use(
+        http.get('/api/v1/self-heal/status', () =>
+          HttpResponse.json({
+            enabled: true,
+            components: [
+              { service: 'glitchtip-worker', state: 'running', health: 'unhealthy', healthy: false },
+              { service: 'api', state: 'running', health: 'healthy', healthy: true },
+            ],
+            unhealthy_count: 1,
+          })
+        )
+      );
+
+      render(<AdminHealthPage />);
+      await waitFor(() => {
+        expect(screen.getByText('1 unhealthy')).toBeInTheDocument();
+      });
+      expect(screen.getByText('glitchtip-worker')).toBeInTheDocument();
+      expect(screen.getByText(/state=running health=unhealthy/)).toBeInTheDocument();
+    });
+
+    it('omits the health= suffix for a component with no health field', async () => {
+      server.use(
+        http.get('/api/v1/self-heal/status', () =>
+          HttpResponse.json({
+            enabled: true,
+            components: [{ service: 'web', state: 'exited', health: '', healthy: false }],
+            unhealthy_count: 1,
+          })
+        )
+      );
+
+      render(<AdminHealthPage />);
+      await waitFor(() => {
+        expect(screen.getByText('web')).toBeInTheDocument();
+      });
+      expect(screen.getByText(/-- state=exited/)).toBeInTheDocument();
+      expect(screen.queryByText(/health=/)).not.toBeInTheDocument();
+    });
+
+    it('excludes components disabled by config (desired=false) from the named-unhealthy list', async () => {
+      server.use(
+        http.get('/api/v1/self-heal/status', () =>
+          HttpResponse.json({
+            enabled: true,
+            components: [
+              {
+                service: 'canary',
+                state: 'absent',
+                health: '',
+                healthy: false,
+                desired: false,
+              },
+            ],
+            unhealthy_count: 1,
+          })
+        )
+      );
+
+      render(<AdminHealthPage />);
+      await waitFor(() => {
+        expect(screen.getByText('1 unhealthy')).toBeInTheDocument();
+      });
+      expect(screen.queryByText('canary')).not.toBeInTheDocument();
+    });
+
+    it('links to the Self-Heal page for full details', async () => {
+      render(<AdminHealthPage />);
+      await waitFor(() => {
+        expect(screen.getByText('All components healthy')).toBeInTheDocument();
+      });
+      expect(screen.getByRole('link', { name: /self-heal details/i })).toHaveAttribute(
+        'href',
+        '/admin/self-heal'
+      );
+    });
+
+    it('shows "Self-heal status unavailable" when the self-heal endpoint fails, without blocking the rest of the page', async () => {
+      server.use(
+        http.get('/api/v1/self-heal/status', () => new HttpResponse(null, { status: 500 }))
+      );
+
+      render(<AdminHealthPage />);
+      await waitFor(() => {
+        expect(screen.getByText('Self-heal status unavailable.')).toBeInTheDocument();
+      });
+      expect(screen.getByText(/Service: ok/)).toBeInTheDocument();
+    });
   });
 
   it('renders the heading and back link', async () => {

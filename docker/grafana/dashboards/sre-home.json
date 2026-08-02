@@ -351,7 +351,7 @@
       ]
     },
     {
-      "id": 30,
+      "id": 32,
       "title": "Unhealthy components by name (now)",
       "description": "Names every unhealthy/stopped component this check pass found -- pairs with the bare 'Unhealthy components (now)' count above, which can't say which service it means.",
       "type": "bargauge",
