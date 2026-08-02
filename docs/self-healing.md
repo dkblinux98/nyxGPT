@@ -587,16 +587,28 @@ assumed:
 | `glitchtip-redis` | added | `redis-cli ping` |
 | `glitchtip` | added | Python TCP connect to `127.0.0.1:8080` |
 | `glitchtip-postgres` | pre-existing | `pg_isready` |
-| `loki`, `promtail`, `otel-collector`, `glitchtip-worker` | **none** | see below |
+| `glitchtip-worker` | added (#3565) | `celery -A glitchtip inspect ping` |
+| `loki`, `promtail`, `otel-collector` | **none** | see below |
 
-`loki`, `otel-collector`, and `glitchtip` ship images built without a
-shell (`opentelemetry-collector-contrib` is FROM-scratch; `loki`'s image
-has no `sh`), and `promtail`/`glitchtip-worker` have a shell but no
-`wget`/`curl`/`python` to probe an HTTP endpoint with — there is no
-`CMD-SHELL` healthcheck possible for them. Self-heal still detects these
-four going to a non-`running` state (a crash) via Compose's `State` field;
-it just can't distinguish "running but stuck" for them the way it can for
-the services above.
+`loki` and `otel-collector` ship images built without a shell
+(`opentelemetry-collector-contrib` is FROM-scratch; `loki`'s image has no
+`sh`), and `promtail` has a shell but no `wget`/`curl`/`python` to probe an
+HTTP endpoint with — there is no `CMD-SHELL` healthcheck possible for them.
+Self-heal still detects these three going to a non-`running` state (a
+crash) via Compose's `State` field; it just can't distinguish "running but
+stuck" for them the way it can for the services above.
+
+`glitchtip-worker` (the Celery worker + beat process that actually turns a
+reported exception into a GlitchTip Issue) was originally left out of the
+HTTP-probe survey above -- it has a shell but no `wget`/`curl`/`python`
+either. But it doesn't need an HTTP probe: it's the same image as
+`glitchtip`, running `celery` directly (`command:
+./bin/run-celery-with-beat.sh`), so the `celery` CLI is guaranteed present
+and its own `inspect ping` reaches the worker process over the Redis
+broker -- a real liveness check, not just "the container process is still
+running." Without it, a wedged worker (ingestion silently stopped, #3565)
+stayed invisible to self-heal indefinitely, since a healthcheck-less
+container with `state == "running"` is always reported healthy.
 
 ## Known limitation: healing the `api` process itself
 

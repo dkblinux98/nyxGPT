@@ -26,17 +26,8 @@ from pathlib import Path
 
 HERE = Path(__file__).parent
 
-MS_ORDER = [
-    "Phase 0: Application Scaffolding",
-    "Phase 1: Quality & Security",
-    "Phase 2: User Experience",
-    "Phase 3: Intelligence",
-    "Phase 3.5: Post Release 1.0.0 Fixes",
-    "Phase 4: Scale & Performance",
-    "Phase 5: Enterprise Features",
-    "Phase 5.5: Post Release 2.0.0 Fixes",
-    None,
-]
+# Milestone titles get renamed upstream (owner reorgs), so the phase axis is
+# derived from the "Phase <n>" prefix rather than from full titles.
 MS_SHORT = [
     "Phase 0",
     "Phase 1",
@@ -46,9 +37,18 @@ MS_SHORT = [
     "Phase 4",
     "Phase 5",
     "Phase 5.5",
+    "Phase 6",
     "(none)",
 ]
+MS_PREFIX_RE = re.compile(r"^Phase\s+(\d+(?:\.\d+)?)\b")
 EXCLUDED_MILESTONES = {"Phase X: Rejected"}
+
+
+def milestone_short(title):
+    """Map a milestone title to its short phase label ('(none)' when unknown)."""
+    m = MS_PREFIX_RE.match(title or "")
+    short = f"Phase {m.group(1)}" if m else None
+    return short if short in MS_SHORT else "(none)"
 LABELS = ["Acceptance Failure", "Feature", "Release Management", "Improvement", "Documentation"]
 CAUSES = ["defect", "spec", "workflow"]
 
@@ -62,7 +62,8 @@ GATE = [
     {"m": "Apr", "merged": 0, "rejected": 0},
     {"m": "May", "merged": 0, "rejected": 0},
     {"m": "Jun", "merged": 0, "rejected": 0},
-    {"m": "Jul", "merged": 168, "rejected": 67},
+    {"m": "Jul", "merged": 168, "rejected": 80},
+    {"m": "Aug", "merged": 0, "rejected": 3},
 ]
 
 # Release annotations on the sprint axis.
@@ -83,6 +84,7 @@ PHASE_ERA = {
     "Phase 4": "v2.0.0",
     "Phase 5": "v2.0.0",
     "Phase 5.5": "v2.0.0",
+    "Phase 6": "v3.0.0",
 }
 
 # Recurring-finding themes (last-7-days review findings), first match wins.
@@ -227,7 +229,7 @@ def gate_series(issues, pr_times):
                 created.replace("Z", "+00:00")
             )
             by_month[m].append(dt.total_seconds() / 3600)
-        for g, m in zip(gate, range(1, 8), strict=False):
+        for g, m in zip(gate, range(1, 1 + len(gate)), strict=False):
             g["merged"] = merged_count.get(m, 0)
             g["medianHrs"] = round(statistics.median(by_month[m]), 1) if by_month.get(m) else None
     return gate
@@ -355,7 +357,7 @@ def build_qdata(issues, project_fields):
                 agg["cause"][i["cause"]] += 1
         votes = Counter()
         for i in b["issues"]:
-            s = MS_SHORT[MS_ORDER.index(i["milestone"])] if i["milestone"] in MS_ORDER else None
+            s = milestone_short(i["milestone"])
             if s in PHASE_ERA:
                 votes[PHASE_ERA[s]] += 1
         era = votes.most_common(1)[0][0] if votes else prev_era
@@ -364,7 +366,7 @@ def build_qdata(issues, project_fields):
 
     ms = {s: {**empty(), "total": 0, "af": 0} for s in MS_SHORT}
     for i in issues:
-        s = MS_SHORT[MS_ORDER.index(i["milestone"])] if i["milestone"] in MS_ORDER else "(none)"
+        s = milestone_short(i["milestone"])
         for label in i["labels"]:
             if label in LABELS:
                 ms[s]["label"][label] += 1

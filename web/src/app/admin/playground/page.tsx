@@ -369,6 +369,19 @@ export default function PlaygroundPage() {
                   </option>
                 ))}
               </select>
+              <p style={{ fontSize: '0.75rem', color: 'var(--foreground-muted)', marginTop: '0.25rem' }}>
+                Scopes retrieval to this collection. To add documents, use the &quot;Upload
+                Document&quot; action on the{' '}
+                <a
+                  href="/admin/collections"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ color: 'var(--accent, #0066cc)' }}
+                >
+                  Collections admin page
+                </a>
+                .
+              </p>
             </div>
 
             <div style={{ marginBottom: '1rem' }}>

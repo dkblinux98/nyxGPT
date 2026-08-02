@@ -369,6 +369,19 @@ describe('PlaygroundPage', () => {
     expect(screen.queryByText(/Score Range:/)).not.toBeInTheDocument();
   });
 
+  it('links the collection help text to the Collections admin page', async () => {
+    mockCollections();
+
+    render(<PlaygroundPage />);
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /run query/i })).toBeInTheDocument();
+    });
+
+    const collectionsLink = screen.getByRole('link', { name: 'Collections admin page' });
+    expect(collectionsLink).toHaveAttribute('href', '/admin/collections');
+    expect(collectionsLink).toHaveAttribute('target', '_blank');
+  });
+
   it('forwards the selected collection in the outgoing query request body', async () => {
     mockCollections([
       { name: 'default', doc_count: 5, chunk_count: 40, embedding_models: [] },

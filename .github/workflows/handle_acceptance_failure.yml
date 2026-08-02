@@ -100,15 +100,20 @@ jobs:
           require_gh_auth
 
           issue_json="$(gh issue view "$COMMENTED" --repo "${REPO_OWNER}/${REPO_NAME}" --json state,title,labels,body)"
-          LABELS="$(echo "$issue_json" | jq -r '[.labels[].name] | join(",")')"
           RELATED="$(echo "$issue_json" | jq -r '.body' \
             | grep -m1 -oE '(Parent|Related) feature: #[0-9]+' | grep -oE '[0-9]+' || true)"
 
-          # --- Path B: the commented issue IS an acceptance-failure issue.
-          # Its fix failed the owner's re-test -> reopen the SAME issue and
-          # send it back through the process. Its own history is the trail;
-          # no new issue is created for another round of the same failure.
-          if [[ ",${LABELS}," == *",Acceptance Failure,"* ]]; then
+          # --- Path B: the commented issue is a handler-created FAILURE
+          # issue of some parent — identified by its "Related feature: #N"
+          # body marker, NOT by the "Acceptance Failure" label. (The label
+          # is also carried by owner-filed defect issues like #3463/#3469,
+          # which are themselves PARENTS being acceptance-tested; keying on
+          # the label reopened #3463 when the owner wanted a second related
+          # failure issue, 2026-08-02.) Its fix failed the owner's re-test
+          # -> reopen the SAME issue and send it back through the process.
+          # Its own history is the trail; no new issue is created for
+          # another round of the same failure.
+          if [[ -n "$RELATED" ]]; then
             STATE="$(echo "$issue_json" | jq -r '.state')"
             if [[ "$STATE" == "CLOSED" ]]; then
               gh issue reopen "$COMMENTED" --repo "${REPO_OWNER}/${REPO_NAME}"

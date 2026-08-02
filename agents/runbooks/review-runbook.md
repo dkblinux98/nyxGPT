@@ -194,7 +194,10 @@ That's it. The system will automatically (related-issue model, owner decision
   a `fix/N-...` branch and PR with `Closes #N`.
 
 **If the failure issue's fix fails your re-test:** comment
-`@acceptance-failure` on the FAILURE issue itself — it is **reopened** and
+`@acceptance-failure` on the FAILURE issue itself (the one carrying the
+`Related feature: #N` body marker — that marker, not the "Acceptance
+Failure" label, is what the automation keys on, since owner-filed defect
+issues carry the label too while being parents) — it is **reopened** and
 sent back through dev → review (no new issue; its own history is the trail
 of that failure's resolution). A genuinely NEW, distinct failure of the
 feature gets its own related issue via a comment on the feature.

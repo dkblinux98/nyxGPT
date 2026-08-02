@@ -55,7 +55,10 @@ Chat has no document-ingestion surface (Owner design decision, 2026-08-01): the 
 pure conversation attachment (see [File Attachments](#file-attachments) below) and never touches
 the RAG store, and the "File Upload" control formerly in this panel was removed. To add a document
 to a collection, use **Upload Document** on the [RAG Collections](rag.md#collections-management-ui)
-admin page (`/admin/collections`) instead.
+admin page (`/admin/collections`) instead — the Document Filters panel's help text links there
+directly (opens in a new tab), and the RAG Playground's Collection selector carries the same link,
+so the destination is reachable with one click from either surface instead of requiring the reader
+to already know where the Collections admin page lives (#3566).
 - **RAG Citations** displayed inline with responses: retrieved source chunks with click-to-expand for full text, relevance scores with quality indicators (High/Medium/Low), document IDs, human-readable chunk position ("chunk 2 of 5", not the internal zero-based index), and source collection (shown when it isn't `"default"`), plus export to separate files (JSON, Markdown)
 
 Pinned sessions are displayed with a 📌 icon and appear at the top of the list.
