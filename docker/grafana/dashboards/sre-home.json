@@ -467,7 +467,7 @@
     {
       "id": 21,
       "title": "Recent nyxgpt traces",
-      "type": "traces",
+      "type": "table",
       "datasource": { "type": "jaeger", "uid": "jaeger" },
       "gridPos": { "h": 10, "w": 24, "x": 0, "y": 73 },
       "links": [
