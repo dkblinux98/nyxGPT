@@ -503,20 +503,19 @@ def _build_user_message(
             # Ollama accepts base64 image strings in the `images` array
             image_data.append(raw_data)
         elif att_type == "document":
-            # Extract document text and prepend to prompt
+            # Extract document text and prepend to prompt. This is a chat
+            # feature, not RAG ingestion (#3469) -- the text goes straight
+            # into the prompt and never touches the vectorstore, so it's
+            # tracked on its own counter, not nyxgpt_rag_ingests_total.
             try:
                 raw_bytes = base64.b64decode(raw_data)
                 media_type = att.get("media_type", "")
                 text = _extract_document_text(raw_bytes, media_type, filename)
                 doc_text_parts.append(f"[Attached document: {filename}]\n{text}")
-                prom_metrics.RAG_INGESTS_TOTAL.labels(
-                    source="chat_attachment", result="success"
-                ).inc()
+                prom_metrics.CHAT_ATTACHMENTS_TOTAL.labels(result="success").inc()
             except Exception:
                 logger.warning("Failed to decode document attachment: %s", filename)
-                prom_metrics.RAG_INGESTS_TOTAL.labels(
-                    source="chat_attachment", result="failure"
-                ).inc()
+                prom_metrics.CHAT_ATTACHMENTS_TOTAL.labels(result="failure").inc()
 
     full_prompt = prompt
     if doc_text_parts:

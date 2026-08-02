@@ -264,10 +264,11 @@ def test_build_user_message_pdf_no_extractable_text(monkeypatch: pytest.MonkeyPa
     assert "what is this?" in msg["content"]
 
 
-def test_build_user_message_document_increments_ingest_metric() -> None:
-    """A document-type chat attachment is an ingest path in its own right --
-    the RAG ingest panel must show a datapoint for chat-attached docs, not
-    just playground uploads and /rag/ingest calls."""
+def test_build_user_message_document_increments_chat_attachments_metric() -> None:
+    """A document-type chat attachment is a chat feature, not RAG ingestion
+    (#3463 two-function decision, #3469 acceptance failure) -- it must bump
+    nyxgpt_chat_attachments_total, and must NOT touch nyxgpt_rag_ingests_total
+    (that's reserved for playground/API upload, /rag/ingest, and index-repo)."""
     from prometheus_client.parser import text_string_to_metric_families
 
     from nyxgpt import metrics as prom_metrics
@@ -279,16 +280,19 @@ def test_build_user_message_document_increments_ingest_metric() -> None:
     _build_user_message("summarize", attachments)
 
     body, _ = prom_metrics.render_metrics()
-    samples = [
+    families = list(text_string_to_metric_families(body.decode("utf-8")))
+    attachment_samples = [
         s
-        for family in text_string_to_metric_families(body.decode("utf-8"))
+        for family in families
         for s in family.samples
-        if s.name == "nyxgpt_rag_ingests_total"
+        if s.name == "nyxgpt_chat_attachments_total"
     ]
-    assert any(
-        s.labels.get("source") == "chat_attachment" and s.labels.get("result") == "success"
-        for s in samples
-    )
+    assert any(s.labels.get("result") == "success" for s in attachment_samples)
+
+    ingest_samples = [
+        s for family in families for s in family.samples if s.name == "nyxgpt_rag_ingests_total"
+    ]
+    assert not any(s.labels.get("source") == "chat_attachment" for s in ingest_samples)
 
 
 def test_build_user_message_document_bad_base64_increments_failure_metric() -> None:
@@ -311,30 +315,23 @@ def test_build_user_message_document_bad_base64_increments_failure_metric() -> N
         s
         for family in text_string_to_metric_families(body.decode("utf-8"))
         for s in family.samples
-        if s.name == "nyxgpt_rag_ingests_total"
+        if s.name == "nyxgpt_chat_attachments_total"
     ]
-    assert any(
-        s.labels.get("source") == "chat_attachment" and s.labels.get("result") == "failure"
-        for s in samples
-    )
+    assert any(s.labels.get("result") == "failure" for s in samples)
 
 
-def test_build_user_message_image_only_does_not_increment_ingest_metric() -> None:
+def test_build_user_message_image_only_does_not_increment_attachment_metric() -> None:
     from nyxgpt import metrics as prom_metrics
 
     img_b64 = base64.b64encode(b"fake-image-data").decode()
     attachments = [
         {"type": "image", "media_type": "image/jpeg", "data": img_b64, "filename": "photo.jpg"}
     ]
-    before = prom_metrics.RAG_INGESTS_TOTAL.labels(
-        source="chat_attachment", result="success"
-    )._value.get()
+    before = prom_metrics.CHAT_ATTACHMENTS_TOTAL.labels(result="success")._value.get()
 
     _build_user_message("describe this", attachments)
 
-    after = prom_metrics.RAG_INGESTS_TOTAL.labels(
-        source="chat_attachment", result="success"
-    )._value.get()
+    after = prom_metrics.CHAT_ATTACHMENTS_TOTAL.labels(result="success")._value.get()
     assert after == before
 
 

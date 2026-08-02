@@ -35,6 +35,7 @@ KNOWN_METRIC_NAMES = {
     "nyxgpt_http_request_duration_seconds_bucket",
     "nyxgpt_http_errors_total",
     "nyxgpt_chat_requests_total",
+    "nyxgpt_chat_attachments_total",
     "nyxgpt_rag_queries_total",
     "nyxgpt_selfheal_unhealthy_components",
     "nyxgpt_selfheal_restarts_total",
@@ -76,6 +77,7 @@ def test_known_metric_names_match_registry() -> None:
         "nyxgpt_http_request_duration_seconds",
         "nyxgpt_http_errors_total",
         "nyxgpt_chat_requests_total",
+        "nyxgpt_chat_attachments_total",
         "nyxgpt_rag_queries_total",
         "nyxgpt_selfheal_unhealthy_components",
         "nyxgpt_selfheal_restarts_total",
@@ -286,6 +288,48 @@ def test_rag_total_by_source_panels_render_honest_zero(panel_title: str) -> None
         f"{panel_title} should be a 'stat' panel so legitimate all-zero series "
         "render as an honest 0 instead of a blank piechart"
     )
+
+
+def test_chat_attachments_panel_exists_and_is_not_in_rag_section() -> None:
+    """Chat paperclip attachments are a chat feature, not RAG ingestion --
+    per the #3463 two-function decision, a per-source "Chat attachments"
+    stat must exist (#3469 acceptance failure: an earlier fix incorrectly
+    counted them under nyxgpt_rag_ingests_total instead), and it must sit
+    with the other chat/API stats, not inside the RAG panel row (y=21) on
+    SRE Home."""
+    dashboard = json.loads(
+        (REPO_ROOT / "docker" / "grafana" / "dashboards" / "sre-home.json").read_text()
+    )
+    panels = {p["title"]: p for p in dashboard["panels"]}
+    assert "Chat attachments" in panels, "sre-home.json is missing the 'Chat attachments' panel"
+    panel = panels["Chat attachments"]
+
+    assert panel["targets"], "'Chat attachments' panel has no targets"
+    for target in panel["targets"]:
+        assert "nyxgpt_chat_attachments_total" in target["expr"]
+        assert "nyxgpt_rag_ingests_total" not in target["expr"]
+
+    rag_ingests_panel = panels["RAG ingests by source and outcome"]
+    assert panel["gridPos"]["y"] != rag_ingests_panel["gridPos"]["y"], (
+        "'Chat attachments' must not share a row with the RAG panels -- it "
+        "belongs with the chat/API metrics, not the RAG section of SPOG"
+    )
+
+
+def test_rag_ingests_panels_do_not_reference_chat_attachment_source() -> None:
+    """chat_attachment must never be emitted into nyxgpt_rag_ingests_total
+    (#3469 acceptance failure) -- guard the dashboard queries/legends that
+    would surface it if the emission bug ever regressed."""
+    for dashboard_name in (
+        "docker/grafana/dashboards/sre-home.json",
+        "docker/grafana/dashboards/rag-performance.json",
+    ):
+        dashboard = json.loads((REPO_ROOT / dashboard_name).read_text())
+        for panel in dashboard["panels"]:
+            if "RAG ingest" not in panel.get("title", ""):
+                continue
+            for target in panel["targets"]:
+                assert "chat_attachment" not in target["expr"]
 
 
 def test_grafana_dashboards_are_provisioned() -> None:

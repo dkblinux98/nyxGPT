@@ -159,6 +159,7 @@ Prometheus text exposition format metrics for scraping. Unauthenticated
 | `nyxgpt_http_request_duration_seconds` | Histogram | `method`, `path` | HTTP request latency |
 | `nyxgpt_http_errors_total` | Counter | `method`, `path` | Requests that resulted in a 5xx error |
 | `nyxgpt_chat_requests_total` | Counter | `model`, `streaming` | Chat requests processed |
+| `nyxgpt_chat_attachments_total` | Counter | `result` | Documents attached via the chat paperclip flow, by outcome (`success`/`failure`) -- a chat feature, not RAG ingestion; these are not counted in `nyxgpt_rag_ingests_total` (#3469) |
 | `nyxgpt_rag_queries_total` | Counter | `source` | RAG retrieval queries executed (`chat` or `rag_query`) |
 | `nyxgpt_selfheal_unhealthy_components` | Gauge | — | Self-heal-monitored components currently unhealthy or stopped |
 | `nyxgpt_selfheal_restarts_total` | Counter | `service`, `result` | Self-heal restart attempts, by service and outcome (`ok`/`failed`) |
@@ -175,7 +176,7 @@ Prometheus text exposition format metrics for scraping. Unauthenticated
 | `nyxgpt_canary_component_events_total` | Counter | `component`, `action`, `result` | Canary lifecycle events, by component, action, and outcome |
 | `nyxgpt_canary_component_track_version_info` | Gauge | `component`, `track`, `version` | 1 for the (component, track, version) currently observed on that component's track Deployment |
 | `nyxgpt_canary_auto_rollback_total` | Counter | `component` | Canary rollouts automatically rolled back due to a metrics regression -- distinct from `nyxgpt_canary_events_total{action="rollback"}`, which also counts operator-initiated rollbacks. Backs the "NyxGPT canary auto-rollback" alert, see [alerting.md](alerting.md) |
-| `nyxgpt_rag_ingests_total` | Counter | `source`, `result` | RAG document ingestion attempts, by source (`document`/`upload`/`repo`/`chat_attachment`) and outcome (`success`/`failure`) |
+| `nyxgpt_rag_ingests_total` | Counter | `source`, `result` | RAG document ingestion attempts, by source (`document`/`upload`/`repo`) and outcome (`success`/`failure`) -- chat paperclip attachments are not an ingestion source, see `nyxgpt_chat_attachments_total` |
 | `nyxgpt_cache_requests_total` | Counter | `cache`, `result` | Cache lookups, by cache (`chat_response`/`embedding`/`rag_query_result`) and outcome (`hit`/`miss`) |
 | `nyxgpt_rate_limit_rejections_total` | Counter | `path` | Requests rejected by the per-client rate limiter |
 | `nyxgpt_resource_memory_rss_mb` | Gauge | — | API process resident set size, in MB (refreshed on each `/metrics` scrape) |

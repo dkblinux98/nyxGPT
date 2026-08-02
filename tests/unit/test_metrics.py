@@ -318,12 +318,23 @@ def test_initialize_known_rag_metric_series_populates_zero_samples() -> None:
         ), f"expected a pre-initialized nyxgpt_rag_queries_total series for source={source!r}"
 
     ingest_samples = _samples(text, "nyxgpt_rag_ingests_total")
-    for source in ("document", "upload", "repo", "chat_attachment"):
+    for source in ("document", "upload", "repo"):
         for result in ("success", "failure"):
             assert any(
                 s.labels.get("source") == source and s.labels.get("result") == result
                 for s in ingest_samples
             ), f"expected a pre-initialized nyxgpt_rag_ingests_total series for {source=} {result=}"
+    assert not any(s.labels.get("source") == "chat_attachment" for s in ingest_samples), (
+        "chat_attachment must not be a nyxgpt_rag_ingests_total source -- paperclip "
+        "attachments are a chat feature, not RAG ingestion (#3469); see "
+        "nyxgpt_chat_attachments_total instead"
+    )
+
+    attachment_samples = _samples(text, "nyxgpt_chat_attachments_total")
+    for result in ("success", "failure"):
+        assert any(
+            s.labels.get("result") == result for s in attachment_samples
+        ), f"expected a pre-initialized nyxgpt_chat_attachments_total series for {result=}"
 
 
 @pytest.mark.unit
