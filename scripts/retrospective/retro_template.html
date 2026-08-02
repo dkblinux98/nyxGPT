@@ -208,7 +208,7 @@
 <div class="wrap">
   <header>
     <div class="eyebrow">
-      <span>dkblinux98/nyxGPT</span><span>·</span><span>agent loop</span><span>·</span><span>Jan 1 – Jul 30, 2026</span>
+      <span>dkblinux98/nyxGPT</span><span>·</span><span>agent loop</span><span>·</span><span>Jan 1 – Aug 1, 2026</span>
     </div>
     <h1>nyxGPT Project Retrospective</h1>
     <p class="sub">The overall quality picture across all 377 issues, from the perspective of final
@@ -271,7 +271,7 @@
     </section>
   </div>
 
-  <h2 class="divider">Last 7 days in review · Jul 23–30</h2>
+  <h2 class="divider">Last 7 days in review · Jul 26 – Aug 1</h2>
 
   <div class="tiles" id="tiles"></div>
 
@@ -359,11 +359,11 @@
     GitHub notification-email archive (thread-level, so a PR rejected in two months counts in both);
     merged-PR counts from the GitHub API. Feb shows more rejected than merged because rejected PRs often
     merged in a later month or were superseded.</p>
-    <p><strong>Last 7 days.</strong> The 41 REQUEST_CHANGES reviews on nyxGPT PRs between 2026-07-23 and
-    2026-07-30, parsed from the structured review comments (Critical / Medium / Minor findings sections).
-    Re-review rejections with no new findings count as a round with zero findings. Of 67 PRs merged in the
-    window, 11 owner-carried workflow merges bypassed agent review and are excluded from first-pass stats;
-    of the 57 reviewed PRs (56 merged + #3450 still in review), 30 were approved first-pass — verified
+    <p><strong>Last 7 days.</strong> The 61 REQUEST_CHANGES reviews on nyxGPT PRs between 2026-07-26 and
+    2026-08-01, parsed from the structured review comments (Critical / Medium / Minor findings sections).
+    Re-review rejections with no new findings count as a round with zero findings. Of 110 PRs merged in the
+    window, 31 owner-carried workflow merges bypassed agent review and are excluded from first-pass stats;
+    of the 79 reviewed PRs, 42 were approved first-pass — verified
     against each PR's review history. <strong>Module attribution</strong> follows the repo's module taxonomy,
     inferred from issue titles (the Project's Module field is not API-readable here). PR #3398 has no linked
     issue and is listed under its PR number.</p>
@@ -381,7 +381,7 @@ const CVAR = ['var(--c1)','var(--c2)','var(--c3)','var(--c4)','var(--c5)','var(-
 /* ---------- project-wide quality ---------- */
 const qt = QDATA.qtotals;
 document.getElementById('qtiles').innerHTML = [
-  {label:'Issues total', value:qt.issues, note:'Jan 1 – Jul 30'},
+  {label:'Issues total', value:qt.issues, note:'Jan 1 – Aug 1'},
   {label:'Acceptance failures', value:qt.af, note:`${Math.round(qt.af/qt.issues*100)}% of all issues`},
   {label:'Escaped defects', value:qt.defect, note:'review misses', color:'var(--c1)'},
   {label:'Spec gaps', value:qt.spec, note:'bad or incomplete spec', color:'var(--c2)'},
@@ -579,7 +579,7 @@ document.getElementById('modules').innerHTML = mods.map(([name, v]) => {
   </div>`;
 }).join('');
 
-const WINDOW = ['2026-07-23','2026-07-24','2026-07-25','2026-07-26','2026-07-27','2026-07-28','2026-07-29','2026-07-30'];
+const WINDOW = ['2026-07-26','2026-07-27','2026-07-28','2026-07-29','2026-07-30','2026-07-31','2026-08-01'];
 const maxDay = Math.max(...WINDOW.map(d => (DATA.days[d]||{rounds:0}).rounds));
 document.getElementById('days').innerHTML = WINDOW.map(d => {
   const v = (DATA.days[d]||{rounds:0,C:0,M:0,m:0});
