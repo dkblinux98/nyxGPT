@@ -26,7 +26,7 @@ import sys
 import tarfile
 import time
 import tomllib
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Container, Iterator
 from configparser import ConfigParser
 from dataclasses import dataclass
 from pathlib import Path
@@ -283,7 +283,12 @@ def record_canary_action(
 
 
 def _run(
-    cmd: list[str], *, check: bool = True, expected: bool = False
+    cmd: list[str],
+    *,
+    check: bool = True,
+    expected: bool = False,
+    expected_returncodes: Container[int] | None = None,
+    expected_message: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run `cmd`, capturing stdout/stderr as text.
 
@@ -291,37 +296,64 @@ def _run(
     Non-zero exits are always logged with the command and a stderr tail first,
     so the evidence reaches Loki even when a caller catches the exception (or
     passes `check=False`) without logging it itself (#3415 gap 5).
-    Pass `expected=True` for read-only probes where a non-zero exit is a normal
-    outcome (e.g. "not found"/"not running") to log at DEBUG instead of WARNING.
+    Pass `expected=True` for read-only probes where any non-zero exit is a
+    normal outcome (e.g. "not found"/"not running") to log at DEBUG instead
+    of WARNING.
+    Pass `expected_returncodes={1, ...}` when only specific non-zero exit
+    codes are a known success/no-op path (e.g. `createsuperuser --noinput`
+    exiting 1 because the account already exists) -- a matching exit logs at
+    INFO with `expected_message` (or a generic "expected exit" message)
+    instead of WARNING, while any other non-zero exit still logs at WARNING
+    exactly as today (#3574).
     """
     try:
         result = subprocess.run(cmd, check=check, text=True, capture_output=True)
     except subprocess.CalledProcessError as e:
-        level = logging.DEBUG if expected else logging.WARNING
-        logger.log(
-            level,
-            f"Subprocess exited non-zero (rc={e.returncode}): {' '.join(cmd)}",
-            extra={
-                "component": "ops",
-                "cmd": cmd,
-                "returncode": e.returncode,
-                "stderr_tail": e.stderr[-2000:] if e.stderr else "",
-            },
+        _log_nonzero_exit(
+            cmd, e.returncode, e.stderr, expected, expected_returncodes, expected_message
         )
         raise
     if result.returncode != 0:
-        level = logging.DEBUG if expected else logging.WARNING
-        logger.log(
-            level,
-            f"Subprocess exited non-zero (rc={result.returncode}): {' '.join(cmd)}",
-            extra={
-                "component": "ops",
-                "cmd": cmd,
-                "returncode": result.returncode,
-                "stderr_tail": result.stderr[-2000:] if result.stderr else "",
-            },
+        _log_nonzero_exit(
+            cmd, result.returncode, result.stderr, expected, expected_returncodes, expected_message
         )
     return result
+
+
+def _log_nonzero_exit(
+    cmd: list[str],
+    returncode: int,
+    stderr: str | None,
+    expected: bool,
+    expected_returncodes: Container[int] | None,
+    expected_message: str | None,
+) -> None:
+    """Log a subprocess non-zero exit at the appropriate level (helper for `_run`).
+
+    A returncode declared via `expected_returncodes` logs at INFO -- it is
+    useful information, not a warning sign -- with wording that explicitly
+    says the exit was expected, so it never reads as scary to the user
+    (#3574). Everything else keeps the pre-existing WARNING/DEBUG split.
+    """
+    if expected_returncodes is not None and returncode in expected_returncodes:
+        level = logging.INFO
+        message = expected_message or (
+            f"Subprocess exited with expected rc={returncode}, treated as "
+            f"success: {' '.join(cmd)}"
+        )
+    else:
+        level = logging.DEBUG if expected else logging.WARNING
+        message = f"Subprocess exited non-zero (rc={returncode}): {' '.join(cmd)}"
+    logger.log(
+        level,
+        message,
+        extra={
+            "component": "ops",
+            "cmd": cmd,
+            "returncode": returncode,
+            "stderr_tail": stderr[-2000:] if stderr else "",
+        },
+    )
 
 
 def _which(prog: str) -> str | None:
@@ -5699,8 +5731,10 @@ def _glitchtip_ensure_superuser(email: str, password: str) -> OpsResult:
     Non-interactive: credentials are passed as the `DJANGO_SUPERUSER_*`
     environment variables Django's own `createsuperuser` management command
     reads directly, so this never blocks on a TTY prompt. `--noinput` exits
-    non-zero if the account already exists -- treated as success here so
-    re-running `glitchtip-init` after the first successful run is a no-op.
+    rc=1 by design if the account already exists -- declared to `_run` as an
+    expected returncode so a healthy re-run of `glitchtip-init` logs at INFO
+    instead of a scary WARNING (#3574), while still treating it as success
+    so re-running after the first successful run is a no-op.
     """
     cmd = [
         "docker",
@@ -5721,7 +5755,15 @@ def _glitchtip_ensure_superuser(email: str, password: str) -> OpsResult:
         "--noinput",
     ]
     try:
-        cp = _run(cmd, check=False)
+        cp = _run(
+            cmd,
+            check=False,
+            expected_returncodes={1},
+            expected_message=(
+                f"GlitchTip superuser {email} already exists -- expected rc=1, "
+                "treated as success"
+            ),
+        )
     except Exception as e:
         return OpsResult(
             False, "Failed to run GlitchTip createsuperuser", f"{type(e).__name__}: {e}"

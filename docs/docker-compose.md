@@ -366,14 +366,21 @@ metric emission (`src/nyxgpt/app.py`, `src/nyxgpt/chat.py`):
    retrieval) and confirm "RAG queries by source" and "Total RAG queries by
    source" move within one scrape interval (Prometheus scrapes `/metrics`
    every 15s — see `docker/prometheus.yml`).
-3. Ingest one document through each path — chat attachment (paperclip),
-   playground/API upload (`POST /rag/ingest`), and index-repo — and confirm
-   each bumps "RAG ingests by source and outcome" / "Total RAG ingests by
-   source" with the correct `source`/`outcome` labels.
-4. Confirm the "Total RAG queries/ingests by source" stat panels render `0`
-   (not blank or "No data") for any source with no activity in the selected
-   window.
-5. In the Prometheus UI (started by `nyxgpt ops observability`; reachable
+3. Ingest one document through each real RAG path — playground/API upload
+   (`POST /rag/ingest`) and index-repo — and confirm each bumps "RAG ingests
+   by source and outcome" / "Total RAG ingests by source" with the correct
+   `source`/`outcome` labels.
+4. Attach one document via the chat paperclip flow and confirm it moves the
+   SRE Home "Chat attachments" stat *only* — per the two-function decision
+   (#3463), a paperclip attachment is inlined into the prompt and never
+   touches the vectorstore, so it must leave every RAG panel ("RAG queries
+   by source", "RAG ingests by source and outcome", and both RAG Performance
+   dashboards) unchanged (#3469 acceptance failure: an earlier fix
+   incorrectly counted paperclip attachments in `nyxgpt_rag_ingests_total`).
+5. Confirm the "Total RAG queries/ingests by source" and "Chat attachments"
+   stat panels render `0` (not blank or "No data") for any source/result
+   with no activity in the selected window.
+6. In the Prometheus UI (started by `nyxgpt ops observability`; reachable
    at its published port), check **Status → Targets** and confirm the API
    scrape target is `UP`. A dead scrape reproduces the same "flat
    zero/blank stat" symptom regardless of whether the counters are

@@ -103,6 +103,16 @@ CHAT_REQUESTS_TOTAL = Counter(
     registry=REGISTRY,
 )
 
+CHAT_ATTACHMENTS_TOTAL = Counter(
+    "nyxgpt_chat_attachments_total",
+    "Total chat document attachments decoded via the paperclip flow, by outcome. "
+    "This is a chat feature, not RAG ingestion (#3469) -- these documents are "
+    "prepended to the prompt inline and never touch the vectorstore, so this "
+    "counter is deliberately separate from nyxgpt_rag_ingests_total.",
+    ["result"],
+    registry=REGISTRY,
+)
+
 RAG_QUERIES_TOTAL = Counter(
     "nyxgpt_rag_queries_total",
     "Total RAG retrieval queries executed",
@@ -315,7 +325,8 @@ def update_resource_gauges(
 
 
 def initialize_known_rag_metric_series() -> None:
-    """Touch every known RAG query/ingest label combination at startup.
+    """Touch every known RAG query/ingest (and chat-attachment) label
+    combination at startup.
 
     A `Counter` child only exists in the registry once `.labels(...)` has
     been called on it, so on a fresh instance the RAG panels show "No data"
@@ -326,9 +337,11 @@ def initialize_known_rag_metric_series() -> None:
     """
     for source in ("chat", "rag_query"):
         RAG_QUERIES_TOTAL.labels(source=source)
-    for source in ("document", "upload", "repo", "chat_attachment"):
+    for source in ("document", "upload", "repo"):
         for result in ("success", "failure"):
             RAG_INGESTS_TOTAL.labels(source=source, result=result)
+    for result in ("success", "failure"):
+        CHAT_ATTACHMENTS_TOTAL.labels(result=result)
 
 
 def render_metrics() -> tuple[bytes, str]:

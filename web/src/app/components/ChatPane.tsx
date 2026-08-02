@@ -746,9 +746,12 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
     lastMessageCountRef.current = messages.length;
   }, [isStreaming, messages.length]);
 
-  async function fetchAvailableDocuments() {
+  async function fetchAvailableDocuments(collection?: string) {
     try {
-      const res = await fetch('/api/v1/rag/documents');
+      const targetCollection = collection ?? ragFilters.collection ?? 'default';
+      const res = await fetch(
+        `/api/v1/rag/documents?collection=${encodeURIComponent(targetCollection)}`
+      );
       if (res.ok) {
         const data = await res.json();
         setAvailableDocuments(data.documents || []);
@@ -757,6 +760,16 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
       console.error('Failed to fetch available documents:', err);
     }
   }
+
+  // Re-scope the "Select Documents" list to whichever collection is chosen in
+  // the RAG filter dropdown — otherwise it keeps showing the collection that
+  // happened to be selected (or 'default') when it was first fetched.
+  useEffect(() => {
+    if (ragEnabled) {
+      void fetchAvailableDocuments(ragFilters.collection || 'default');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ragFilters.collection, ragEnabled]);
 
   async function fetchAvailableCollections() {
     try {
