@@ -65,7 +65,7 @@ GATE = [
     {"m": "May", "merged": 0, "rejected": 0},
     {"m": "Jun", "merged": 0, "rejected": 0},
     {"m": "Jul", "merged": 168, "rejected": 80},
-    {"m": "Aug", "merged": 0, "rejected": 6},
+    {"m": "Aug", "merged": 0, "rejected": 8},
 ]
 
 # Release annotations on the sprint axis.
@@ -395,7 +395,7 @@ def build_qdata(issues, project_fields):
             "defect": sum(1 for i in issues if i["cause"] == "defect"),
             "spec": sum(1 for i in issues if i["cause"] == "spec"),
             "workflow": sum(1 for i in issues if i["cause"] == "workflow"),
-            "production": 0,
+            "production": sum(1 for i in issues if "Production Defect" in i["labels"]),
         },
         "lens": {"causes": CAUSES, "labels": LABELS, "modules": mods_all},
     }

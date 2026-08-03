@@ -1,154 +1,8 @@
 [
  {
-  "issue": 3370,
-  "pr": 3380,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: snapshot step's blanket git add -A commits untracked junk to branches (#3370)",
-  "module": "api",
-  "date": "2026-07-27T06:27:07Z",
-  "critical": [],
-  "medium": [
-   "Size-guard trip aborts the whole snapshot step, potentially losing already-committed implementation work, not just the o"
-  ],
-  "minor": [
-   "The new `tests/test_snapshot_safe_add.sh` is a plain bash script, consistent with the existing `tests/test_gh_project_li",
-   "ROOT_ALLOWED_FILES` in `snapshot_safe_add.sh:34-41` is a fairly narrow allowlist for *new* root-level files (misses `doc"
-  ]
- },
- {
-  "issue": 3381,
-  "pr": 3382,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: self-heal falsely reports glitchtip-migrate one-shot job as unhealthy (#3381)",
-  "module": "observability",
-  "date": "2026-07-27T16:35:17Z",
-  "critical": [],
-  "medium": [
-   "Failed one-shot job is never marked `desired\ufffdlse` after its profile is disabled, so auto-heal keeps trying to restart it"
-  ],
-  "minor": [
-   "docs/self-healing.md:94"
-  ]
- },
- {
-  "issue": 3392,
-  "pr": 3395,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: fix: auto-delete superseded and closed-PR agent branches (branch hygiene) (#3392)",
-  "module": "api",
-  "date": "2026-07-27T18:18:24Z",
-  "critical": [
-   "cleanup_superseded_branches` fails open if the open-PR check errors, risking deletion of an active branch"
-  ],
-  "medium": [
-   "Missing tests for all new logic",
-   "AC \"PR closed without merging \u2192 branch deleted automatically\" is not actually automatic"
-  ],
-  "minor": []
- },
- {
-  "issue": 3385,
-  "pr": 3393,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: Configuration Wizard shows empty fields instead of effective config values (#3385)",
-  "module": "web-ui",
-  "date": "2026-07-27T18:22:34Z",
-  "critical": [],
-  "medium": [
-   "Vitest coverage gate failure (branch coverage)"
-  ],
-  "minor": [
-   "web/src/app/admin/page.tsx`'s `buildSavePayload` now has ~20 near-identical `include(...)` calls, one per field. Not inc"
-  ]
- },
- {
-  "issue": 3392,
-  "pr": 3395,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: fix: auto-delete superseded and closed-PR agent branches (branch hygiene) (#3392)",
-  "module": "api",
-  "date": "2026-07-27T18:38:21Z",
-  "critical": [],
-  "medium": [
-   "AC \"PR closed without merging \u2192 branch deleted automatically\" still not wired to an automatic trigger"
-  ],
-  "minor": [
-   "classify_mergeable`'s patch-id comparison (`scripts/agents/lib/gh_project.sh:134-145`) is per-commit; a branch whose com",
-   "git show \"$c\" | git patch-id --stable` on a merge commit will diff against the first parent only, which could behave une"
-  ]
- },
- {
-  "issue": 3392,
-  "pr": 3395,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: fix: auto-delete superseded and closed-PR agent branches (branch hygiene) (#3392)",
-  "module": "api",
-  "date": "2026-07-27T18:49:22Z",
-  "critical": [],
-  "medium": [
-   "AC \"PR closed without merging \u2192 branch deleted automatically\" still not wired to an automatic trigger"
-  ],
-  "minor": [
-   "classify_mergeable`'s patch-id comparison (`scripts/agents/lib/gh_project.sh:~586-640`) is per-commit; a branch whose co",
-   "git show \"$c\" | git patch-id --stable` on a merge commit diffs against the first parent only; not a practical concern to"
-  ]
- },
- {
-  "issue": null,
-  "pr": 3398,
-  "title": "[dkblinux98/nyxGPT] fix: make docker/config.docker.ini a derived per-machine artifact, not tracked",
-  "module": "cli",
-  "date": "2026-07-27T19:17:23Z",
-  "critical": [
-   "Full Docker Compose Quickstart is now broken on a fresh checkout"
-  ],
-  "medium": [],
-  "minor": [
-   "src/nyxgpt/ops.py:3522-3523` (`_persist_admin_credentials` docstring) still says \"never the git-tracked `docker/config.d"
-  ]
- },
- {
-  "issue": null,
-  "pr": 3398,
-  "title": "[dkblinux98/nyxGPT] fix: make docker/config.docker.ini a derived per-machine artifact, not tracked",
-  "module": "cli",
-  "date": "2026-07-27T19:52:14Z",
-  "critical": [
-   "Terraform deployment path is broken the same way the Compose path was, and remains unfixed"
-  ],
-  "medium": [
-   "docs/docker-compose.md`'s \"quick one-off evaluation\" path is also broken and undocumented"
-  ],
-  "minor": []
- },
- {
-  "issue": null,
-  "pr": 3398,
-  "title": "[dkblinux98/nyxGPT] fix: make docker/config.docker.ini a derived per-machine artifact, not tracked",
-  "module": "cli",
-  "date": "2026-07-27T19:54:58Z",
-  "critical": [
-   "Terraform deployment path still broken (carried over from previous review, unfixed)"
-  ],
-  "medium": [
-   "\"Quick one-off evaluation\" doc path still broken (carried over from previous review, unfixed)"
-  ],
-  "minor": []
- },
- {
-  "issue": 3388,
-  "pr": 3400,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: feat: derive Configuration Wizard schema from example.config.ini (#3388)",
-  "module": "web-ui",
-  "date": "2026-07-27T20:25:44Z",
-  "critical": [],
-  "medium": [
-   "Missing dedicated test for the new proxy route"
-  ],
-  "minor": [
-   "src/nyxgpt/config_wizard.py`'s `_build_schema()` now reads `example.config.ini` via `Path(__file__).resolve().parents[2]",
-   "config_wizard._merge_ini_text`'s `_find_key_line` only recognizes `key = value` lines (`\"=\" not in lines[i]` skip) and w",
-   "_infer_validator`'s float regex (`r\"-?\\d+\\.\\d+\"`) won't recognize `.5` or `5.` style literals as floats, falling back to"
-  ]
- },
- {
   "issue": 3406,
   "pr": 3408,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: feat: real Homebrew installable app + off-by-default self-heal across all install methods (#3406)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: feat: real Homebrew installable app + off-by-default self-heal across all install methods (#3406) (PR #3408)",
   "module": "observability",
   "date": "2026-07-28T21:26:04Z",
   "critical": [
@@ -156,17 +10,17 @@
    "Homebrew \"real installable app\" acceptance criteria \u2014 entirely unaddressed"
   ],
   "medium": [
-   "nyxgpt ops down` (native/Compose scope) can mismark Terraform-managed components as intentionally stopped without actual"
+   "`nyxgpt ops down` (native/Compose scope) can mismark Terraform-managed components as intentionally stopped without actua"
   ],
   "minor": [
-   "self_heal.is_intentionally_stopped()` (self_heal.py:364) is added to the public API and `__all__` but has no call site o",
+   "`self_heal.is_intentionally_stopped()` (self_heal.py:364) is added to the public API and `__all__` but has no call site ",
    "PR body's acceptance-criteria and Testing checklists are all left unchecked, even though several items (self-heal off-by"
   ]
  },
  {
   "issue": 3406,
   "pr": 3408,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: feat: real Homebrew installable app + off-by-default self-heal across all install methods (#3406)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: feat: real Homebrew installable app + off-by-default self-heal across all install methods (#3406) (PR #3408)",
   "module": "observability",
   "date": "2026-07-28T21:32:28Z",
   "critical": [
@@ -174,17 +28,17 @@
    "Homebrew packaging work not implemented"
   ],
   "medium": [
-   "nyxgpt ops down` (native/Compose scope) can mismark Terraform-managed components as intentionally stopped without stoppi"
+   "`nyxgpt ops down` (native/Compose scope) can mismark Terraform-managed components as intentionally stopped without stopp"
   ],
   "minor": [
-   "self_heal.is_intentionally_stopped()` remains unused outside tests",
+   "`self_heal.is_intentionally_stopped()` remains unused outside tests \u2014 fine to keep for API symmetry, not blocking.",
    "PR body's acceptance-criteria and Testing checklists are still all unchecked despite several items being genuinely compl"
   ]
  },
  {
   "issue": 3407,
   "pr": 3417,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: wizard Summary, per-page save/cancel layout, restart-required flow - web-ui (#3407)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: wizard Summary, per-page save/cancel layout, restart-required flow - web-ui (#3407) (PR #3417)",
   "module": "web-ui",
   "date": "2026-07-29T04:23:01Z",
   "critical": [],
@@ -193,14 +47,14 @@
    "Missing effective test coverage for restart-required POST failure"
   ],
   "minor": [
-   "src/nyxgpt/config_wizard.py:710` (`restart_components`) is no longer called anywhere in production code (`app.py` now ca",
-   "_do_restart_required` (`app.py`) silently no-ops when `self_heal_module.heal_now()` returns an `\"error\"` key with an emp"
+   "`src/nyxgpt/config_wizard.py:710` (`restart_components`) is no longer called anywhere in production code (`app.py` now c",
+   "`_do_restart_required` (`app.py`) silently no-ops when `self_heal_module.heal_now()` returns an `\"error\"` key with an em"
   ]
  },
  {
   "issue": 3409,
   "pr": 3418,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: consolidate deploy model on canary - retire blue/green, honest status (#3409)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: consolidate deploy model on canary - retire blue/green, honest status (#3409) (PR #3418)",
   "module": "observability",
   "date": "2026-07-29T06:35:38Z",
   "critical": [],
@@ -210,14 +64,14 @@
    "Web canary coverage acceptance criterion not met"
   ],
   "minor": [
-   "web/tests/app/api/v1/canary/deploy/route.test.ts`'s \"passes through backend response status\" test dropped the response-b",
+   "`web/tests/app/api/v1/canary/deploy/route.test.ts`'s \"passes through backend response status\" test dropped the response-",
    "Several docs sections (e.g. `docs/kubernetes.md` around self-heal Pod matching) still describe internal `kubectl get pod"
   ]
  },
  {
   "issue": 3409,
   "pr": 3418,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: consolidate deploy model on canary - retire blue/green, honest status (#3409)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: consolidate deploy model on canary - retire blue/green, honest status (#3409) (PR #3418)",
   "module": "observability",
   "date": "2026-07-29T06:58:53Z",
   "critical": [],
@@ -225,14 +79,14 @@
    "Unmet acceptance criterion without a linked follow-up or sign-off"
   ],
   "minor": [
-   "docker/grafana/dashboards/canary.json`'s Loki query and panel title updates look consistent with the new `deploying|Depl",
+   "`docker/grafana/dashboards/canary.json`'s Loki query and panel title updates look consistent with the new `deploying|Dep",
    "The `_finalize_promotion` path returns `CanaryResult(True, ...)` even when the post-promotion replica-count restore (`_s"
   ]
  },
  {
   "issue": 3409,
   "pr": 3418,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: consolidate deploy model on canary - retire blue/green, honest status (#3409)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: consolidate deploy model on canary - retire blue/green, honest status (#3409) (PR #3418)",
   "module": "observability",
   "date": "2026-07-29T07:16:26Z",
   "critical": [],
@@ -244,7 +98,7 @@
  {
   "issue": 3409,
   "pr": 3418,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: consolidate deploy model on canary - retire blue/green, honest status (#3409)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: consolidate deploy model on canary - retire blue/green, honest status (#3409) (PR #3418)",
   "module": "observability",
   "date": "2026-07-29T07:29:39Z",
   "critical": [],
@@ -256,7 +110,7 @@
  {
   "issue": 3410,
   "pr": 3420,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: Infrastructure page becomes honest status-only display - drop Install/Destroy (#3410)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: Infrastructure page becomes honest status-only display - drop Install/Destroy (#3410) (PR #3420)",
   "module": "web-ui",
   "date": "2026-07-29T08:52:36Z",
   "critical": [],
@@ -264,14 +118,14 @@
    "\"Which instance/service is currently serving traffic\" is not shown on the Infrastructure page"
   ],
   "minor": [
-   "MODE_LABELS['none']` differs in tone between the two pages (`'Nothing detected running'` in `infrastructure/page.tsx` vs",
-   "docs/terraform.md` and `docs/kubernetes.md` are listed in the issue's \"Tests and docs\" acceptance bullet as needing upda"
+   "`MODE_LABELS['none']` differs in tone between the two pages (`'Nothing detected running'` in `infrastructure/page.tsx` v",
+   "`docs/terraform.md` and `docs/kubernetes.md` are listed in the issue's \"Tests and docs\" acceptance bullet as needing upd"
   ]
  },
  {
   "issue": 3410,
   "pr": 3420,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: Infrastructure page becomes honest status-only display - drop Install/Destroy (#3410)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: Infrastructure page becomes honest status-only display - drop Install/Destroy (#3410) (PR #3420)",
   "module": "web-ui",
   "date": "2026-07-29T09:16:55Z",
   "critical": [],
@@ -281,7 +135,7 @@
  {
   "issue": 3410,
   "pr": 3420,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: Infrastructure page becomes honest status-only display - drop Install/Destroy (#3410)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: Infrastructure page becomes honest status-only display - drop Install/Destroy (#3410) (PR #3420)",
   "module": "web-ui",
   "date": "2026-07-29T09:41:19Z",
   "critical": [],
@@ -291,7 +145,7 @@
  {
   "issue": 3410,
   "pr": 3420,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: Infrastructure page becomes honest status-only display - drop Install/Destroy (#3410)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: Infrastructure page becomes honest status-only display - drop Install/Destroy (#3410) (PR #3420)",
   "module": "web-ui",
   "date": "2026-07-29T10:20:43Z",
   "critical": [],
@@ -301,7 +155,7 @@
  {
   "issue": 3411,
   "pr": 3422,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: feat: Grafana single pane of glass - retire in-app SRE screens, wire all four signals (#3411)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: feat: Grafana single pane of glass - retire in-app SRE screens, wire all four signals (#3411) (PR #3422)",
   "module": "web-ui",
   "date": "2026-07-29T11:44:36Z",
   "critical": [],
@@ -309,30 +163,32 @@
    "Missing test for `loadMonitoring`'s network-error path breaks the 100% coverage gate"
   ],
   "minor": [
-   "docs/docker-compose.md` and `docs/ops.md` reference `nyxgpt ops restart observability` inline in a code comment (`src/ny",
-   "docker/grafana/dashboards/sre-home.json`'s GlitchTip panels hardcode the project slug `nyxgpt-backend` and query `statsP"
+   "`docs/docker-compose.md` and `docs/ops.md` reference `nyxgpt ops restart observability` inline in a code comment (`src/n",
+   "`docker/grafana/dashboards/sre-home.json`'s GlitchTip panels hardcode the project slug `nyxgpt-backend` and query `stats"
   ]
  },
  {
   "issue": 3415,
   "pr": 3427,
-  "title": "[dkblinux98/nyxGPT] Release Management: chore: close instrumentation gaps blocking RCA, self-heal, and SRE work - sre (#3415)",
+  "title": "[dkblinux98/nyxGPT] Release Management: chore: close instrumentation gaps blocking RCA, self-heal, and SRE work - sre (#3415) (PR #3427)",
   "module": "observability",
   "date": "2026-07-29T19:16:17Z",
   "critical": [
    "PR claims to close #3415, but Gap 1 (web tier) and Gap 6 (OTel correlation backbone) \u2014 the two gaps the issue's owner-ap",
    "The \"tracing enabled by default\" change is inconsistent and self-contradicting between the API and the admin UI/docs."
   ],
-  "medium": [],
+  "medium": [
+   "None beyond the above (both findings above are Critical because they directly falsify claims made in the PR/issue itself"
+  ],
   "minor": [
-   "config._fallback_warned_keys` is a plain `set()` mutated without a lock (`config.py:382-395`). Config getters can be cal",
-   "rag/reranker.py`'s consolidation of the duplicate debug-log lines into one is a nice simplification with no behavior cha"
+   "`config._fallback_warned_keys` is a plain `set()` mutated without a lock (`config.py:382-395`). Config getters can be ca",
+   "`rag/reranker.py`'s consolidation of the duplicate debug-log lines into one is a nice simplification with no behavior ch"
   ]
  },
  {
   "issue": 3415,
   "pr": 3427,
-  "title": "[dkblinux98/nyxGPT] Release Management: chore: close instrumentation gaps blocking RCA, self-heal, and SRE work - sre (#3415)",
+  "title": "[dkblinux98/nyxGPT] Release Management: chore: close instrumentation gaps blocking RCA, self-heal, and SRE work - sre (#3415) (PR #3427)",
   "module": "observability",
   "date": "2026-07-29T19:37:41Z",
   "critical": [
@@ -340,13 +196,13 @@
   ],
   "medium": [],
   "minor": [
-   "(Carried over, non-blocking) `config._fallback_warned_keys` is a plain `set()` mutated without a lock"
+   "(Carried over, non-blocking) `config._fallback_warned_keys` is a plain `set()` mutated without a lock \u2014 at worst causes "
   ]
  },
  {
   "issue": 3415,
   "pr": 3427,
-  "title": "[dkblinux98/nyxGPT] Release Management: chore: close instrumentation gaps blocking RCA, self-heal, and SRE work - sre (#3415)",
+  "title": "[dkblinux98/nyxGPT] Release Management: chore: close instrumentation gaps blocking RCA, self-heal, and SRE work - sre (#3415) (PR #3427)",
   "module": "observability",
   "date": "2026-07-29T20:26:25Z",
   "critical": [],
@@ -354,30 +210,30 @@
    "Self-heal probe evidence (gap 7) is not surfaced in the SRE dashboard, contradicting the issue's own acceptance criterio"
   ],
   "minor": [
-   "(Carried over, non-blocking) `config._fallback_warned_keys` is a plain `set()` mutated without a lock",
-   "docs/self-healing.md`'s \"Observability: logs, metrics, and the Self-Healing dashboard\" section (around line 339-343) doc"
+   "(Carried over, non-blocking) `config._fallback_warned_keys` is a plain `set()` mutated without a lock \u2014 at worst causes ",
+   "`docs/self-healing.md`'s \"Observability: logs, metrics, and the Self-Healing dashboard\" section (around line 339-343) do"
   ]
  },
  {
   "issue": 3419,
   "pr": 3433,
-  "title": "[dkblinux98/nyxGPT] Feature: feat: extend canary deployment to web and ollama - net-new k8s workloads (#3419)",
+  "title": "[dkblinux98/nyxGPT] Feature: feat: extend canary deployment to web and ollama - net-new k8s workloads (#3419) (PR #3433)",
   "module": "web-ui",
   "date": "2026-07-29T22:35:23Z",
   "critical": [],
   "medium": [
    "Missing/ineffective tests for the new component tab switcher (blocks the Vitest coverage gate)",
-   "nyxgpt ops status` / Infrastructure Status page were not extended for per-component canary reporting, contradicting this"
+   "`nyxgpt ops status` / Infrastructure Status page were not extended for per-component canary reporting, contradicting thi"
   ],
   "minor": [
-   "ComponentSpec.default_total_replicas` (`src/nyxgpt/canary.py`), including the new `DEFAULT_WEB_TOTAL_REPLICAS` constant,",
+   "`ComponentSpec.default_total_replicas` (`src/nyxgpt/canary.py`), including the new `DEFAULT_WEB_TOTAL_REPLICAS` constant",
    "Clicking a tab on `/admin/canary` sets `loading=true`, and since `if (loading) return <spinner>` (page.tsx:210-211) sits"
   ]
  },
  {
   "issue": 3434,
   "pr": 3435,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: query cache stats show bare zeros when RAG is disabled - web-ui (#3434)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: query cache stats show bare zeros when RAG is disabled - web-ui (#3434) (PR #3435)",
   "module": "web-ui",
   "date": "2026-07-29T22:54:29Z",
   "critical": [],
@@ -389,7 +245,7 @@
  {
   "issue": 3431,
   "pr": 3437,
-  "title": "[dkblinux98/nyxGPT] Release Management: fix: unify Ollama model library across native/container launch modes (#3431)",
+  "title": "[dkblinux98/nyxGPT] Release Management: fix: unify Ollama model library across native/container launch modes (#3431) (PR #3437)",
   "module": "cli",
   "date": "2026-07-29T23:08:26Z",
   "critical": [],
@@ -397,29 +253,31 @@
    "Boot-time race between the two `RunAtLoad` LaunchAgents can silently re-break the \"single shared library\" guarantee"
   ],
   "minor": [
-   "_migrate_native_ollama_models` (`src/nyxgpt/ops.py:1318-1358`) copies every native model file via `shutil.copy2` (`_copy",
+   "`_migrate_native_ollama_models` (`src/nyxgpt/ops.py:1318-1358`) copies every native model file via `shutil.copy2` (`_cop",
    "Docs correctly note the Kubernetes follow-up is \"tracked separately\" via #3431 itself rather than a distinct new issue n"
   ]
  },
  {
   "issue": 3428,
   "pr": 3446,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: self-heal attributes cassandra to stopped native container in tf mode (#3428)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: self-heal attributes cassandra to stopped native container in tf mode (#3428) (PR #3446)",
   "module": "observability",
   "date": "2026-07-30T00:37:03Z",
   "critical": [
    "CI-blocking: Vitest coverage gate fails, and it's caused by untested new code"
   ],
-  "medium": [],
+  "medium": [
+   "None beyond the above, which is already blocking as Critical/CI-gating."
+  ],
   "minor": [
    "Acceptance criterion \"the same leftover-shadowing logic is verified for all components and modes: stopped brew services ",
-   "src/nyxgpt/self_heal.py:879`'s tie-break check `s.state in (\"running\", \"started\")` correctly spans both docker's `\"runni"
+   "`src/nyxgpt/self_heal.py:879`'s tie-break check `s.state in (\"running\", \"started\")` correctly spans both docker's `\"runn"
   ]
  },
  {
   "issue": 3430,
   "pr": 3450,
-  "title": "[dkblinux98/nyxGPT] Release Management: chore: web-tier instrumentation and OTel trace correlation backbone - sre (#3430)",
+  "title": "[dkblinux98/nyxGPT] Release Management: chore: web-tier instrumentation and OTel trace correlation backbone - sre (#3430) (PR #3450)",
   "module": "web-ui",
   "date": "2026-07-30T04:45:15Z",
   "critical": [],
@@ -428,13 +286,13 @@
    "New raw `docker compose build web` command shown as a user instruction"
   ],
   "minor": [
-   "web/src/app/api/chat/stream/route.ts` is missing a trailing newline at EOF (shown by the diff's \"No newline at end of fi"
+   "`web/src/app/api/chat/stream/route.ts` is missing a trailing newline at EOF (shown by the diff's \"No newline at end of f"
   ]
  },
  {
   "issue": 3439,
   "pr": 3453,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: doctor flags stale terraform state forever after clean down --terraform (#3439)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: doctor flags stale terraform state forever after clean down --terraform (#3439) (PR #3453)",
   "module": "cli",
   "date": "2026-07-30T06:01:04Z",
   "critical": [],
@@ -446,7 +304,7 @@
  {
   "issue": 3443,
   "pr": 3474,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: pytest runs write into production log dir, polluting the Loki stream - sre (#3443)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: pytest runs write into production log dir, polluting the Loki stream - sre (#3443) (PR #3474)",
   "module": "observability",
   "date": "2026-07-30T21:39:02Z",
   "critical": [],
@@ -461,7 +319,7 @@
  {
   "issue": 3444,
   "pr": 3476,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: RAG playground bypasses web proxy, breaks from non-local devices - web-ui (#3444)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: RAG playground bypasses web proxy, breaks from non-local devices - web-ui (#3444) (PR #3476)",
   "module": "web-ui",
   "date": "2026-07-30T22:18:03Z",
   "critical": [],
@@ -469,14 +327,14 @@
    "Missing documentation update for a user-facing/operational behavior change"
   ],
   "minor": [
-   "web/src/app/api/v1/rag/query/route.ts` and `web/src/app/api/v1/rag/metrics/query/route.ts` are near-identical (differ on",
+   "`web/src/app/api/v1/rag/query/route.ts` and `web/src/app/api/v1/rag/metrics/query/route.ts` are near-identical (differ o",
    "Both new routes call `res.json()` unconditionally without a `res.ok` check (unlike `web/src/app/api/v1/rag/documents/rou"
   ]
  },
  {
   "issue": 3480,
   "pr": 3483,
-  "title": "[dkblinux98/nyxGPT] Release Management: feat: sprint autopilot - self-continuing loop, end-date reports, reorg approval (#3480)",
+  "title": "[dkblinux98/nyxGPT] Release Management: feat: sprint autopilot - self-continuing loop, end-date reports, reorg approval (#3480) (PR #3483)",
   "module": "api",
   "date": "2026-07-31T01:59:25Z",
   "critical": [],
@@ -484,14 +342,14 @@
    "Ruff failures block CI"
   ],
   "minor": [
-   "docs/sprint-autopilot.md` documents `.github/workflows/*` changes the owner must hand-apply (agent tokens can't write wo",
-   "The PR body's checklist items are all left unchecked (template boilerplate)"
+   "`docs/sprint-autopilot.md` documents `.github/workflows/*` changes the owner must hand-apply (agent tokens can't write w",
+   "The PR body's checklist items are all left unchecked (template boilerplate) \u2014 doesn't block, but worth confirming agains"
   ]
  },
  {
   "issue": 3460,
   "pr": 3486,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: RAG collection name rules unclear - UI example itself is invalid - rag (#3460)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: RAG collection name rules unclear - UI example itself is invalid - rag (#3460) (PR #3486)",
   "module": "web-ui",
   "date": "2026-07-31T02:32:44Z",
   "critical": [],
@@ -499,27 +357,27 @@
    "Backend validation errors are not actually surfaced verbatim, contradicting the issue's own acceptance criteria"
   ],
   "minor": [
-   "max_collection_name_length()` (`src/nyxgpt/rag/vectorstore_cassandra.py:309`) can return 0 or negative if `[rag] cassand",
+   "`max_collection_name_length()` (`src/nyxgpt/rag/vectorstore_cassandra.py:309`) can return 0 or negative if `[rag] cassan",
    "The frontend's `COLLECTION_NAME_MAX_LENGTH = 37` (`web/src/app/admin/collections/page.tsx`) is a hardcoded mirror of the"
   ]
  },
  {
   "issue": 3460,
   "pr": 3486,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: RAG collection name rules unclear - UI example itself is invalid - rag (#3460)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: RAG collection name rules unclear - UI example itself is invalid - rag (#3460) (PR #3486)",
   "module": "web-ui",
   "date": "2026-07-31T03:01:15Z",
   "critical": [],
   "medium": [],
   "minor": [
    "(Carried over from previous review, non-blocking, unaddressed) `max_collection_name_length()` (`src/nyxgpt/rag/vectorsto",
-   "COLLECTION_NAME_MAX_LENGTH = 37` in the web client remains a hardcoded mirror of the backend formula for the default tab"
+   "`COLLECTION_NAME_MAX_LENGTH = 37` in the web client remains a hardcoded mirror of the backend formula for the default ta"
   ]
  },
  {
   "issue": 3460,
   "pr": 3486,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: RAG collection name rules unclear - UI example itself is invalid - rag (#3460)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: RAG collection name rules unclear - UI example itself is invalid - rag (#3460) (PR #3486)",
   "module": "web-ui",
   "date": "2026-07-31T03:08:56Z",
   "critical": [],
@@ -531,7 +389,7 @@
  {
   "issue": 3460,
   "pr": 3486,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: RAG collection name rules unclear - UI example itself is invalid - rag (#3460)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: RAG collection name rules unclear - UI example itself is invalid - rag (#3460) (PR #3486)",
   "module": "web-ui",
   "date": "2026-07-31T04:34:41Z",
   "critical": [],
@@ -543,7 +401,7 @@
  {
   "issue": 3460,
   "pr": 3486,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: RAG collection name rules unclear - UI example itself is invalid - rag (#3460)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: RAG collection name rules unclear - UI example itself is invalid - rag (#3460) (PR #3486)",
   "module": "web-ui",
   "date": "2026-07-31T04:39:47Z",
   "critical": [],
@@ -555,7 +413,7 @@
  {
   "issue": 3463,
   "pr": 3518,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: collections unreachable from chat - no ingest/query targeting - rag (#3463)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: collections unreachable from chat - no ingest/query targeting - rag (#3463) (PR #3518)",
   "module": "rag",
   "date": "2026-07-31T08:52:40Z",
   "critical": [],
@@ -563,14 +421,14 @@
    "Vitest coverage gate fails"
   ],
   "minor": [
-   "sessions.py::export_session_html` (around the `citation-title` div) uses `format_chunk_ref(chunk)` for the human-readabl",
-   "_resolve_and_validate_collection` opens a fresh `CassandraVectorStore` (and thus a session-pool round trip) on every cal"
+   "`sessions.py::export_session_html` (around the `citation-title` div) uses `format_chunk_ref(chunk)` for the human-readab",
+   "`_resolve_and_validate_collection` opens a fresh `CassandraVectorStore` (and thus a session-pool round trip) on every ca"
   ]
  },
  {
   "issue": 3463,
   "pr": 3519,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: collections unreachable from chat - no ingest/query targeting - rag (#3463)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: collections unreachable from chat - no ingest/query targeting - rag (#3463) (PR #3519)",
   "module": "rag",
   "date": "2026-07-31T09:08:46Z",
   "critical": [],
@@ -579,15 +437,15 @@
    "Playground's collection-forwarding fix has no direct-assertion test"
   ],
   "minor": [
-   "web/src/app/admin/playground/page.tsx` branch coverage sits at 96.55% (vs 100% elsewhere) after this change, likely the ",
-   "_resolve_and_validate_collection` (src/nyxgpt/app.py:4058) opens a fresh `CassandraVectorStore` connection per call, and",
+   "`web/src/app/admin/playground/page.tsx` branch coverage sits at 96.55% (vs 100% elsewhere) after this change, likely the",
+   "`_resolve_and_validate_collection` (src/nyxgpt/app.py:4058) opens a fresh `CassandraVectorStore` connection per call, an",
    "Pre-existing (not introduced by this PR): `/rag/ingest` (`src/nyxgpt/app.py:3402`) still accepts an arbitrary `req.colle"
   ]
  },
  {
   "issue": 3464,
   "pr": 3522,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: playground collection selection ignored - empty collection returns results (#3464)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: playground collection selection ignored - empty collection returns results (#3464) (PR #3522)",
   "module": "rag",
   "date": "2026-07-31T18:38:51Z",
   "critical": [],
@@ -595,14 +453,14 @@
    "Untested production code path in `rag.py`"
   ],
   "minor": [
-   "rag_metrics_query`'s `collection\ufffdbug_info.collection` propagation (`src/nyxgpt/app.py`) has no dedicated test, unlike `r",
+   "`rag_metrics_query`'s `collection\ufffdbug_info.collection` propagation (`src/nyxgpt/app.py`) has no dedicated test, unlike `",
    "The PR body's checklist boxes (scoping verified, wire path verifiable, results display collection, etc.) are all left un"
   ]
  },
  {
   "issue": 3467,
   "pr": 3525,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: time-range buttons only affect trends, not aggregate usage blocks - web-ui (#3467)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: time-range buttons only affect trends, not aggregate usage blocks - web-ui (#3467) (PR #3525)",
   "module": "web-ui",
   "date": "2026-07-31T19:58:02Z",
   "critical": [],
@@ -614,21 +472,21 @@
  {
   "issue": 3466,
   "pr": 3526,
-  "title": "[dkblinux98/nyxGPT] Improvement: feat: real alerting - Grafana alert rules with Slack contact point - sre (#3466)",
+  "title": "[dkblinux98/nyxGPT] Improvement: feat: real alerting - Grafana alert rules with Slack contact point - sre (#3466) (PR #3526)",
   "module": "observability",
   "date": "2026-07-31T20:29:10Z",
   "critical": [
-   "health.fetch_grafana_alerts` never reaches Grafana on the documented default install path, so the health panel's \"grafan"
+   "`health.fetch_grafana_alerts` never reaches Grafana on the documented default install path, so the health panel's \"grafa"
   ],
   "medium": [],
   "minor": [
-   "health.py:187`'s warning log (\"could not reach Grafana alerting API\") will also fire on a 401 (wrong/stale password) onc"
+   "`health.py:187`'s warning log (\"could not reach Grafana alerting API\") will also fire on a 401 (wrong/stale password) on"
   ]
  },
  {
   "issue": 3468,
   "pr": 3527,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: k8s card says CANNOT DETERMINE when no cluster configured - infra (#3468)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: k8s card says CANNOT DETERMINE when no cluster configured - infra (#3468) (PR #3527)",
   "module": "cli",
   "date": "2026-07-31T20:45:42Z",
   "critical": [],
@@ -640,7 +498,7 @@
  {
   "issue": 3469,
   "pr": 3528,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: SPOG RAG panels illegible at local traffic; ingest panel empty - sre (#3469)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: SPOG RAG panels illegible at local traffic; ingest panel empty - sre (#3469) (PR #3528)",
   "module": "web-ui",
   "date": "2026-07-31T20:52:51Z",
   "critical": [],
@@ -655,7 +513,7 @@
  {
   "issue": 3489,
   "pr": 3535,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: Clear Collection unexplained; no way to delete a collection - rag (#3489)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: Clear Collection unexplained; no way to delete a collection - rag (#3489) (PR #3535)",
   "module": "rag",
   "date": "2026-07-31T22:09:25Z",
   "critical": [],
@@ -669,7 +527,7 @@
  {
   "issue": 3487,
   "pr": 3534,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: bare OTel import crashes entire CLI when venv is stale after pull (#3487)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: bare OTel import crashes entire CLI when venv is stale after pull (#3487) (PR #3534)",
   "module": "cli",
   "date": "2026-07-31T22:23:51Z",
   "critical": [],
@@ -677,14 +535,14 @@
    "Tracing/error-tracking tests don't exercise the real import-time guard"
   ],
   "minor": [
-   "src/nyxgpt/ops.py`'s `_stale_venv_doctor_issues` doesn't evaluate PEP 508 environment markers before stripping them (`_r",
-   "docs/troubleshooting.md`'s new \"Installation / Environment Issues\" section is inserted before \"## Configuration Problems"
+   "`src/nyxgpt/ops.py`'s `_stale_venv_doctor_issues` doesn't evaluate PEP 508 environment markers before stripping them (`_",
+   "`docs/troubleshooting.md`'s new \"Installation / Environment Issues\" section is inserted before \"## Configuration Problem"
   ]
  },
  {
   "issue": 3472,
   "pr": 3547,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: SPOG traces panel empty while Jaeger UI shows traces - query mismatch - sre (#3472)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: SPOG traces panel empty while Jaeger UI shows traces - query mismatch - sre (#3472) (PR #3547)",
   "module": "web-ui",
   "date": "2026-08-01T03:37:31Z",
   "critical": [],
@@ -698,7 +556,7 @@
  {
   "issue": 3469,
   "pr": 3548,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: SPOG RAG panels illegible at local traffic; ingest panel empty - sre (#3469)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: SPOG RAG panels illegible at local traffic; ingest panel empty - sre (#3469) (PR #3548)",
   "module": "web-ui",
   "date": "2026-08-01T03:43:47Z",
   "critical": [],
@@ -706,24 +564,28 @@
    "Streaming RAG metric test is not effective in the full-suite context",
    "Missing documented live verification required by #3469's acceptance criteria"
   ],
-  "minor": []
+  "minor": [
+   "None beyond the above."
+  ]
  },
  {
   "issue": 3545,
   "pr": 3550,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: alert-test posts to embedded Alertmanager which rejects external alerts - sre (#3545)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: alert-test posts to embedded Alertmanager which rejects external alerts - sre (#3545) (PR #3550)",
   "module": "observability",
   "date": "2026-08-01T03:51:02Z",
   "critical": [],
   "medium": [
    "Acceptance criterion \"All ops HTTP failure messages against Grafana include the response body\" is only partially met"
   ],
-  "minor": []
+  "minor": [
+   "None of note \u2014 the reasoning comments in `_send_grafana_test_alert` and `_grafana_receiver_k8s_name` are unusually thoro"
+  ]
  },
  {
   "issue": 3469,
   "pr": 3548,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: SPOG RAG panels illegible at local traffic; ingest panel empty - sre (#3469)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: SPOG RAG panels illegible at local traffic; ingest panel empty - sre (#3469) (PR #3548)",
   "module": "web-ui",
   "date": "2026-08-01T04:00:26Z",
   "critical": [],
@@ -735,7 +597,7 @@
  {
   "issue": 3469,
   "pr": 3548,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: SPOG RAG panels illegible at local traffic; ingest panel empty - sre (#3469)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: SPOG RAG panels illegible at local traffic; ingest panel empty - sre (#3469) (PR #3548)",
   "module": "web-ui",
   "date": "2026-08-01T04:04:19Z",
   "critical": [],
@@ -747,7 +609,7 @@
  {
   "issue": 3545,
   "pr": 3550,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: alert-test posts to embedded Alertmanager which rejects external alerts - sre (#3545)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: alert-test posts to embedded Alertmanager which rejects external alerts - sre (#3545) (PR #3550)",
   "module": "observability",
   "date": "2026-08-01T04:09:37Z",
   "critical": [],
@@ -755,13 +617,13 @@
    "Missing effective test coverage for 3 of 4 newly-fixed HTTP-error-body branches"
   ],
   "minor": [
-   "_send_grafana_test_alert` (ops.py:342-348): after the explicit `resp.status_code != 200` check, `data = resp.json()` is "
+   "`_send_grafana_test_alert` (ops.py:342-348): after the explicit `resp.status_code != 200` check, `data = resp.json()` is"
   ]
  },
  {
   "issue": 3545,
   "pr": 3550,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: alert-test posts to embedded Alertmanager which rejects external alerts - sre (#3545)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: alert-test posts to embedded Alertmanager which rejects external alerts - sre (#3545) (PR #3550)",
   "module": "observability",
   "date": "2026-08-01T04:12:17Z",
   "critical": [],
@@ -775,7 +637,7 @@
  {
   "issue": 3469,
   "pr": 3548,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: SPOG RAG panels illegible at local traffic; ingest panel empty - sre (#3469)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: SPOG RAG panels illegible at local traffic; ingest panel empty - sre (#3469) (PR #3548)",
   "module": "web-ui",
   "date": "2026-08-01T04:26:59Z",
   "critical": [],
@@ -787,7 +649,7 @@
  {
   "issue": 3469,
   "pr": 3571,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: SPOG RAG panels illegible at local traffic; ingest panel empty - sre (#3469)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: SPOG RAG panels illegible at local traffic; ingest panel empty - sre (#3469) (PR #3571)",
   "module": "web-ui",
   "date": "2026-08-02T03:41:33Z",
   "critical": [],
@@ -796,13 +658,13 @@
   ],
   "minor": [
    "The PR body's own \"Acceptance Criteria\" and \"Testing\" checkboxes are all left unchecked (template artifact) even though ",
-   "black` is pinned as `black>$.0` with no upper bound in `pyproject.toml` (`pyproject.toml:56`); if the Black gate failure"
+   "`black` is pinned as `black>$.0` with no upper bound in `pyproject.toml` (`pyproject.toml:56`); if the Black gate failur"
   ]
  },
  {
   "issue": 3469,
   "pr": 3571,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: SPOG RAG panels illegible at local traffic; ingest panel empty - sre (#3469)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: SPOG RAG panels illegible at local traffic; ingest panel empty - sre (#3469) (PR #3571)",
   "module": "web-ui",
   "date": "2026-08-02T04:01:50Z",
   "critical": [],
@@ -816,7 +678,7 @@
  {
   "issue": 3573,
   "pr": 3576,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: acceptance failure 2 for #3463 - collections unreachable from chat - no ing (#3573)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: acceptance failure 2 for #3463 - collections unreachable from chat - no ing (#3573) (PR #3576)",
   "module": "rag",
   "date": "2026-08-02T04:29:20Z",
   "critical": [],
@@ -826,13 +688,13 @@
    "Uploaded document doesn't appear in \"Select Documents\" list without a reload"
   ],
   "minor": [
-   "scripts/retrospective/build_dashboard.py`: two blank lines added around `LABELS` (looks like an incidental formatter cha"
+   "`scripts/retrospective/build_dashboard.py`: two blank lines added around `LABELS` (looks like an incidental formatter ch"
   ]
  },
  {
   "issue": 3575,
   "pr": 3578,
-  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: unhealthy-components stat is unnamed and disagrees with admin health (#3575)",
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: unhealthy-components stat is unnamed and disagrees with admin health (#3575) (PR #3578)",
   "module": "web-ui",
   "date": "2026-08-02T05:08:53Z",
   "critical": [],
@@ -844,7 +706,39 @@
   ],
   "minor": [
    "Consider adding a `test_no_duplicate_panel_ids` guard to `tests/unit/test_monitoring_stack.py` (which already parses and",
-   "scripts/retrospective/build_dashboard.py:49-52` adds a stray blank-line diff (two blank lines before `LABELS = ...`) tha"
+   "`scripts/retrospective/build_dashboard.py:49-52` adds a stray blank-line diff (two blank lines before `LABELS = ...`) th"
+  ]
+ },
+ {
+  "issue": 3565,
+  "pr": 3592,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: acceptance failure 1 for #3470 - SPOG GlitchTip panel counts all issues as  (#3565) (PR #3592)",
+  "module": "web-ui",
+  "date": "2026-08-02T21:35:26Z",
+  "critical": [],
+  "medium": [
+   "Uncaught `configparser.Error` crashes `nyxgpt ops env-sync` on a malformed native `config.ini`"
+  ],
+  "minor": [
+   "`docs/ops.md:604-608` states GlitchTip auto-provisioning \"Writes the resulting DSN and `enabled = true` into `~/.nyxGPT/"
+  ]
+ },
+ {
+  "issue": 3565,
+  "pr": 3599,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: acceptance failure 1 for #3470 - SPOG GlitchTip panel counts all issues as  (#3565) (PR #3599)",
+  "module": "web-ui",
+  "date": "2026-08-03T04:01:23Z",
+  "critical": [],
+  "medium": [
+   "Missing regression test for the `limit00` pagination-cap fix",
+   "Missing test for the recent-errors per-row deep-link fix",
+   "Missing documentation for the new dual-stack (native/Compose vs. Terraform) conflict detection"
+  ],
+  "minor": [
+   "Round-5 scope item 3 (\"mode-transition hygiene\") is only partially implemented: `detect_deployment_mode`/`status`/`docto",
+   "`_glitchtip_ensure_api_token`'s stale-scope cleanup only deletes the first matching-label token found (`break` after one",
+   "No web files touched \u2014 TypeScript/Vitest gates not applicable, consistent with the PR description."
   ]
  }
 ]
