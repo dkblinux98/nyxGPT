@@ -2,7 +2,8 @@
 
 **Created:** 2026-07-15 · **Rewritten:** 2026-07-31 (post-Phase-5.5 scope re-review)
 **Milestone:** `Phase 6 — Enterprise Deployment & Hardening (v3.0.0)` (owner-created)
-**Sprints:** `Sprint 7` (2026-08-01) + `Sprint 8` (2026-08-15) — two 2-week sprints,
+**Sprints:** `Sprint 7` (2026-08-06) + `Sprint 8` (2026-08-20) — two 2-week sprints
+(dates bumped 2026-08-03: v2.0.0 close-out overran the original 08-01 start),
 owner decision 2026-07-31 (`Sprint 6` belongs to Phase 5.5; no `6.x` sprint naming).
 Split by effort and dependencies:
 Sprint 7 = hardening gate, decision records, and cloud-independent platform work
