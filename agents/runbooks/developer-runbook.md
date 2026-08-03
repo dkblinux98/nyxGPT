@@ -80,6 +80,35 @@ touching:
   `~/.nyxGPT/logs` path in new code, and don't rely on per-test caplog
   discipline as the only safeguard.
 
+## 3b) Workflow-authoring conventions
+
+Any new or edited `.github/workflows/*.yml` job triggered by `issues`,
+`issue_comment`, `pull_request`, or `pull_request_review*` and carrying write
+permissions (`contents: write`, `issues: write`, `pull-requests: write`, or a
+secret-backed `GH_TOKEN`) MUST carry an actor gate on its `if:` condition —
+never rely on comment/body text alone (#3600, going-public hardening).
+
+- **Gate on identity, not phrasing.** Check
+  `github.event.comment.user.login` (or `github.event.review.user.login`)
+  against `vars.HUMAN_OWNER` and/or the relevant agent identity var
+  (`vars.SCRUM_AGENT`/`vars.DEV_AGENT`/`vars.REVIEW_AGENT`) — a trigger
+  phrase like `contains(comment.body, '@approve-merge')` with no author
+  check fires for any commenter on a public repo.
+  `handle_acceptance_failure.yml` and `developer_auto_implement.yml`'s
+  `RETRY_IMPLEMENTATION` path are the reference pattern.
+- **Fork-PR guard on merge/review paths.** A job that reviews or merges a
+  PR based on an `issue_comment` or `pull_request_review` event has no
+  `pull_request.head.repo` in its event payload — add an explicit step
+  that resolves it via `gh pr view <PR> --json headRepositoryOwner,
+  headRepository` and fails the job if it doesn't equal
+  `github.repository`, before any privileged action runs. See the "Verify
+  PR head repo (fork guard)" step in `review_agent_auto_review.yml` and
+  `claude-code-review.yml`.
+- **Read-only automation is exempt.** Jobs that only read (e.g. posting a
+  status comment gated on `vars.AGENTS_ENABLED`) don't need an actor gate;
+  the requirement is scoped to jobs that write `contents`, `issues`, or
+  `pull-requests`, or that hold a write-scoped secret token.
+
 ## 4) Verification loop (MANDATORY - ALL must pass before commit)
 Run ALL of the following checks and fix issues until they pass:
 - `black --check .` - If fails, run `black .` to auto-format, then re-check
