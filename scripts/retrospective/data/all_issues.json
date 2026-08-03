@@ -4571,7 +4571,7 @@
   ],
   "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
   "created": "2026-08-02T02:55:40Z",
-  "closed": "2026-08-02T04:47:43Z",
+  "closed": "2026-08-03T04:18:29Z",
   "state": "closed"
  },
  {
@@ -4617,5 +4617,88 @@
   "created": "2026-08-02T03:58:22Z",
   "closed": "2026-08-02T06:01:45Z",
   "state": "closed"
+ },
+ {
+  "n": 3581,
+  "title": "bug: admin system health reports incorrect CPU utilization - api",
+  "labels": [
+   "Production Defect",
+   "Feature"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment & Hardening (v3.0.0)",
+  "created": "2026-08-02T19:57:19Z",
+  "closed": null,
+  "state": "open"
+ },
+ {
+  "n": 3583,
+  "title": "bug: chat RAG filter doc list unscoped and filename search inert - web-ui",
+  "labels": [
+   "Production Defect",
+   "Feature"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment & Hardening (v3.0.0)",
+  "created": "2026-08-02T20:02:40Z",
+  "closed": null,
+  "state": "open"
+ },
+ {
+  "n": 3585,
+  "title": "bug: chat RAG citations block missing - regression or non-default path",
+  "labels": [
+   "Production Defect",
+   "Feature"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment & Hardening (v3.0.0)",
+  "created": "2026-08-02T20:21:59Z",
+  "closed": null,
+  "state": "open"
+ },
+ {
+  "n": 3588,
+  "title": "bug: terraform-mode self-heal omits observability services - sre",
+  "labels": [
+   "Production Defect",
+   "Feature"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment & Hardening (v3.0.0)",
+  "created": "2026-08-02T20:56:12Z",
+  "closed": null,
+  "state": "open"
+ },
+ {
+  "n": 3590,
+  "title": "improvement: migrate chat sessions from JSON files to database storage",
+  "labels": [
+   "Improvement"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment & Hardening (v3.0.0)",
+  "created": "2026-08-02T21:01:21Z",
+  "closed": null,
+  "state": "open"
+ },
+ {
+  "n": 3593,
+  "title": "bug: OTel context-detach error floods GlitchTip on streamed chat turns",
+  "labels": [
+   "Production Defect",
+   "Feature"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment & Hardening (v3.0.0)",
+  "created": "2026-08-03T03:08:44Z",
+  "closed": null,
+  "state": "open"
+ },
+ {
+  "n": 3596,
+  "title": "bug: k8s --local requires a pre-existing cluster - no wrapped provisioning",
+  "labels": [
+   "Production Defect",
+   "Feature"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment & Hardening (v3.0.0)",
+  "created": "2026-08-03T03:17:14Z",
+  "closed": null,
+  "state": "open"
  }
 ]
