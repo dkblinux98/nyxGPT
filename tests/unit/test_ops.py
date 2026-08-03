@@ -563,6 +563,49 @@ def test_detect_deployment_mode_true_dual_backend_conflict_still_reported(monkey
 
 
 @pytest.mark.unit
+def test_detect_deployment_mode_flags_terraform_conflict(monkeypatch):
+    """#3565 round 5 acceptance failure: after an `ops down` (no `--terraform`)
+    followed by `ops install`, the owner had a full native stack AND a full
+    Terraform stack running simultaneously, but `nyxgpt ops status` logged
+    `conflicts=[]` -- the pre-fix `conflicts` field only ever compared native
+    vs. Compose, with no way to represent a native-vs-Terraform collision."""
+    monkeypatch.setattr(
+        ops,
+        "_brew_services_snapshot",
+        lambda: {"nyxgpt-api": "started", "nyxgpt-web": "stopped", "ollama": "stopped"},
+    )
+
+    def fake_docker_state(name):
+        if name == "nyxgpt-cassandra":
+            return "exited"  # native cassandra lost its port to the tf one
+        if name == ops.TERRAFORM_CONTAINERS["api"]:
+            return "running"
+        return "absent"
+
+    monkeypatch.setattr(ops, "_docker_container_state", fake_docker_state)
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+
+    mode = ops.detect_deployment_mode()
+    assert mode.terraform["api"] == "running"
+    assert mode.conflicts == []  # native vs. Compose only -- unaffected
+    assert mode.terraform_conflicts == ["api"]
+
+
+@pytest.mark.unit
+def test_detect_deployment_mode_no_terraform_conflict_when_terraform_absent(monkeypatch):
+    monkeypatch.setattr(
+        ops,
+        "_brew_services_snapshot",
+        lambda: {"nyxgpt-api": "started", "nyxgpt-web": "stopped", "ollama": "stopped"},
+    )
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+
+    mode = ops.detect_deployment_mode()
+    assert mode.terraform_conflicts == []
+
+
+@pytest.mark.unit
 def test_ops_status_smoke(monkeypatch, capsys):
     # Make status deterministic by stubbing _which and _run outputs
     class CP:
@@ -4977,8 +5020,17 @@ def test_ops_doctor_logs_ok_at_info(caplog, monkeypatch, tmp_path):
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    # Only the native cassandra container is "running" here -- a broader
+    # stub (any name -> "running") would also mark every Terraform-managed
+    # container "running", tripping the dual-stack conflict check this test
+    # isn't exercising.
+    monkeypatch.setattr(
+        ops,
+        "_docker_container_state",
+        lambda name: "running" if name == "nyxgpt-cassandra" else "absent",
+    )
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+    monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
 
     with caplog.at_level("INFO", logger="nyxgpt.ops"):
         rc = ops.doctor(MagicMock())
@@ -7875,7 +7927,15 @@ def test_glitchtip_ensure_api_token_reuses_existing():
     def handler(request):
         if request.url.path == "/api/0/api-tokens/" and request.method == "GET":
             return httpx.Response(
-                200, json=[{"name": ops.GLITCHTIP_TOKEN_NAME, "token": "existing-token"}]
+                200,
+                json=[
+                    {
+                        "id": 1,
+                        "label": ops.GLITCHTIP_TOKEN_NAME,
+                        "token": "existing-token",
+                        "scopes": ops.GLITCHTIP_TOKEN_SCOPES,
+                    }
+                ],
             )
         return httpx.Response(404)
 
@@ -7883,6 +7943,70 @@ def test_glitchtip_ensure_api_token_reuses_existing():
     token, result = ops._glitchtip_ensure_api_token(client, "http://localhost:8080")
     assert token == "existing-token"
     assert result.ok
+    assert "Reusing" in result.message
+    client.close()
+
+
+@pytest.mark.unit
+def test_glitchtip_ensure_api_token_ignores_unlabeled_tokens():
+    """A token whose `label` doesn't match (e.g. blank, from the pre-#3565-round-6
+    bug where the code posted `name` instead of `label` and GlitchTip silently
+    dropped it) must not be treated as a match -- it should mint a fresh,
+    correctly labeled token instead of reusing an unrelated one."""
+
+    posted = {}
+
+    def handler(request):
+        if request.url.path == "/api/0/api-tokens/" and request.method == "GET":
+            return httpx.Response(
+                200, json=[{"id": 1, "label": "", "token": "unrelated-token", "scopes": []}]
+            )
+        if request.url.path == "/api/0/api-tokens/" and request.method == "POST":
+            posted.update(json.loads(request.content))
+            return httpx.Response(201, json={"token": "new-token"})
+        return httpx.Response(404)
+
+    client = _mock_client("http://localhost:8080", handler)
+    token, result = ops._glitchtip_ensure_api_token(client, "http://localhost:8080")
+    assert token == "new-token"
+    assert result.ok
+    assert posted.get("label") == ops.GLITCHTIP_TOKEN_NAME
+    client.close()
+
+
+@pytest.mark.unit
+def test_glitchtip_ensure_api_token_replaces_stale_scopes():
+    """A reused token missing a currently-required scope (e.g. minted before
+    `team:write` was added) must be deleted and replaced -- GlitchTip's API
+    has no token PUT/PATCH, so upgrading scopes means replacing it."""
+
+    deleted_ids = []
+
+    def handler(request):
+        if request.url.path == "/api/0/api-tokens/" and request.method == "GET":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": 7,
+                        "label": ops.GLITCHTIP_TOKEN_NAME,
+                        "token": "stale-token",
+                        "scopes": ["org:read"],
+                    }
+                ],
+            )
+        if request.url.path == "/api/0/api-tokens/7/" and request.method == "DELETE":
+            deleted_ids.append(7)
+            return httpx.Response(204)
+        if request.url.path == "/api/0/api-tokens/" and request.method == "POST":
+            return httpx.Response(201, json={"token": "fresh-token"})
+        return httpx.Response(404)
+
+    client = _mock_client("http://localhost:8080", handler)
+    token, result = ops._glitchtip_ensure_api_token(client, "http://localhost:8080")
+    assert token == "fresh-token"
+    assert result.ok
+    assert deleted_ids == [7]
     client.close()
 
 
@@ -7964,6 +8088,50 @@ def test_glitchtip_ensure_team_reuses_existing():
     slug, result = ops._glitchtip_ensure_team(client, ops.GLITCHTIP_ORG_SLUG)
     assert slug == ops.GLITCHTIP_TEAM_SLUG
     assert "existing" in result.message
+    client.close()
+
+
+@pytest.mark.unit
+def test_glitchtip_ensure_team_membership_joins_via_me_alias():
+    """#3565 round 5 acceptance failure: a superuser who is an org member but
+    not on any team sees "This organization has no projects" in the
+    GlitchTip UI. `_glitchtip_ensure_team`'s own team-creation path already
+    adds the creator, but a *pre-existing* team (created by an earlier/
+    different admin) doesn't -- this must be called unconditionally to cover
+    that case, using GlitchTip's `me` member-id alias so it never needs to
+    look up an org-user id first."""
+    posted_paths = []
+
+    def handler(request):
+        posted_paths.append((request.method, request.url.path))
+        return httpx.Response(201, json={"slug": ops.GLITCHTIP_TEAM_SLUG, "isMember": True})
+
+    client = _mock_client("http://localhost:8080", handler)
+    result = ops._glitchtip_ensure_team_membership(
+        client, ops.GLITCHTIP_ORG_SLUG, ops.GLITCHTIP_TEAM_SLUG
+    )
+    assert result.ok
+    assert posted_paths == [
+        (
+            "POST",
+            f"/api/0/organizations/{ops.GLITCHTIP_ORG_SLUG}/members/me/teams/"
+            f"{ops.GLITCHTIP_TEAM_SLUG}/",
+        )
+    ]
+    client.close()
+
+
+@pytest.mark.unit
+def test_glitchtip_ensure_team_membership_reports_failure():
+    def handler(request):
+        return httpx.Response(403, text="Permission denied")
+
+    client = _mock_client("http://localhost:8080", handler)
+    result = ops._glitchtip_ensure_team_membership(
+        client, ops.GLITCHTIP_ORG_SLUG, ops.GLITCHTIP_TEAM_SLUG
+    )
+    assert not result.ok
+    assert "403" in result.details
     client.close()
 
 
@@ -9100,6 +9268,11 @@ def test_provision_glitchtip_full_happy_path(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         ops,
+        "_glitchtip_ensure_team_membership",
+        lambda client, org, team: ops.OpsResult(True, "membership"),
+    )
+    monkeypatch.setattr(
+        ops,
         "_glitchtip_ensure_project",
         lambda client, org, team: ("nyxgpt-backend", ops.OpsResult(True, "project")),
     )
@@ -9193,6 +9366,11 @@ def test_provision_glitchtip_skips_native_api_restart_when_dsn_unchanged(monkeyp
         ops,
         "_glitchtip_ensure_team",
         lambda client, org: ("nyxgpt", ops.OpsResult(True, "team")),
+    )
+    monkeypatch.setattr(
+        ops,
+        "_glitchtip_ensure_team_membership",
+        lambda client, org, team: ops.OpsResult(True, "membership"),
     )
     monkeypatch.setattr(
         ops,
@@ -10763,6 +10941,43 @@ def test_doctor_does_not_flag_terraform_state_after_clean_destroy(monkeypatch, t
     assert "Terraform state exists but no nyxgpt-tf-* containers are running" not in out
     assert rc == 0
     assert "doctor: OK" in out
+
+
+@pytest.mark.unit
+def test_doctor_flags_dual_stack(monkeypatch, tmp_path, capsys):
+    """#3565 round 5 acceptance failure: after an incomplete mode switch left
+    a native/Compose stack AND a Terraform stack running at once, `nyxgpt ops
+    doctor` reported OK -- the conflicts detector it relies on
+    (`detect_deployment_mode`) only ever compared native vs. Compose, so a
+    native-vs-Terraform collision was invisible to it. Must FAIL now."""
+    cfg_dir = tmp_path / ".nyxGPT"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    (cfg_dir / "config.ini").write_text(
+        "[project]\nname=nyxGPT\n\n[tracing]\nenabled = false\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "TERRAFORM_DIR", tmp_path / "terraform")
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops, "_which", lambda _: None)
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+    monkeypatch.setattr(
+        ops,
+        "_brew_services_snapshot",
+        lambda: {"nyxgpt-api": "started", "nyxgpt-web": "stopped", "ollama": "stopped"},
+    )
+
+    def fake_docker_state(name):
+        if name == ops.TERRAFORM_CONTAINERS["api"]:
+            return "running"
+        return "absent"
+
+    monkeypatch.setattr(ops, "_docker_container_state", fake_docker_state)
+
+    rc = ops.doctor(MagicMock())
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "api" in out
+    assert "BOTH native/Compose and Terraform" in out
 
 
 @pytest.mark.unit

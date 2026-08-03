@@ -456,6 +456,49 @@ def test_sre_home_glitchtip_panels_filter_to_unresolved_issues() -> None:
             ), f"{panel['title']!r} issues query is missing the unresolved status filter"
 
 
+def test_sre_home_glitchtip_open_issues_stat_requests_full_page() -> None:
+    """Regression test for #3565 round 6: GlitchTip's issues endpoint
+    defaults to 50 rows per page, so the open-issues Stat panel -- which
+    counts rows in the JSON response -- silently pinned at 50 once the true
+    unresolved count reached the page size, even with the `is:unresolved`
+    filter correctly applied. The panel's query must request `limit=1000`
+    (GlitchTip's own hard cap) so the count stays truthful past 50."""
+    dashboard = json.loads(
+        (REPO_ROOT / "docker" / "grafana" / "dashboards" / "sre-home.json").read_text()
+    )
+    panel = next(p for p in dashboard["panels"] if p["title"].startswith("GlitchTip: open issues"))
+    for target in panel["targets"]:
+        assert "limit=1000" in target["url"], (
+            f"{panel['title']!r} issues query is missing limit=1000 -- the panel will "
+            "pin at GlitchTip's default 50-row page size once the true count exceeds it"
+        )
+
+
+def test_sre_home_glitchtip_recent_errors_row_link_uses_org_slug() -> None:
+    """Regression test for #3565 round 5/6: GlitchTip's own `permalink`
+    field on an issue is built from the *project* slug
+    (`/nyxgpt-backend/issues/<id>`), which 404s against GlitchTip's
+    org-scoped frontend routing -- the correct issue URL takes the
+    *organization* slug (`/nyxgpt/issues/<id>`). The recent-errors table's
+    per-row "Issue" column link must build its own URL from the org slug
+    rather than trusting a project-slug value."""
+    dashboard = json.loads(
+        (REPO_ROOT / "docker" / "grafana" / "dashboards" / "sre-home.json").read_text()
+    )
+    panel = next(
+        p for p in dashboard["panels"] if p["title"].startswith("GlitchTip: recent errors")
+    )
+    override = next(
+        o for o in panel["fieldConfig"]["overrides"] if o["matcher"].get("options") == "Issue"
+    )
+    link_property = next(p for p in override["properties"] if p["id"] == "links")
+    urls = [link["url"] for link in link_property["value"]]
+    assert urls, f"{panel['title']!r} Issue column override has no link configured"
+    for url in urls:
+        assert "/nyxgpt/issues/" in url, f"expected the org slug in {url!r}, not the project slug"
+        assert "/nyxgpt-backend/issues/" not in url, f"{url!r} uses the project slug, which 404s"
+
+
 def test_sre_home_dashboard_version_bumped_past_stale_glitchtip_deploy() -> None:
     """Regression test for #3565: the #3470 `is:unresolved` fix landed in
     sre-home.json (version 5) without bumping the dashboard's top-level
@@ -629,13 +672,14 @@ def test_sre_home_panel_title_links_open_underlying_tool_uis_in_new_tabs() -> No
         assert links[0]["url"] == expected_url
         assert links[0]["targetBlank"] is True
 
+    # GlitchTip UI links deep-link straight to the canonical org's issues list
+    # (`/nyxgpt/issues/`) rather than the bare host -- the Projects landing
+    # page, and GlitchTip's own project-slug-based issue permalinks, both
+    # 404 against GlitchTip's org-scoped frontend routing (#3565).
+    glitchtip_issues_url = error_tracking_defaults["glitchtip_ui_url"] + "/nyxgpt/issues/"
     assert_single_link("Recent nyxgpt traces", tracing_defaults["jaeger_ui_url"])
-    assert_single_link(
-        "GlitchTip: open issues (nyxgpt-backend)", error_tracking_defaults["glitchtip_ui_url"]
-    )
-    assert_single_link(
-        "GlitchTip: recent errors (nyxgpt-backend)", error_tracking_defaults["glitchtip_ui_url"]
-    )
+    assert_single_link("GlitchTip: open issues (nyxgpt-backend)", glitchtip_issues_url)
+    assert_single_link("GlitchTip: recent errors (nyxgpt-backend)", glitchtip_issues_url)
     assert_single_link("nyxGPT SRE Home", monitoring_defaults["prometheus_ui_url"])
 
     # The old top-of-dashboard GlitchTip text link is absorbed into the

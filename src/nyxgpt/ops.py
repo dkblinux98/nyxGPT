@@ -28,7 +28,7 @@ import time
 import tomllib
 from collections.abc import Callable, Container, Iterator
 from configparser import ConfigParser
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -146,15 +146,28 @@ def volume_dir(component: str) -> Path:
 
 @dataclass(frozen=True)
 class DeploymentMode:
-    """Snapshot of what's actually running, native vs. Docker Compose.
+    """Snapshot of what's actually running, native vs. Docker Compose vs. Terraform.
 
-    `native`/`compose` map component name -> a state string ("started"/"running"/
-    "none"/"absent"/...); `conflicts` lists components reported live in both.
+    `native`/`compose`/`terraform` map component name -> a state string
+    ("started"/"running"/"none"/"absent"/...); `conflicts` lists components
+    reported live in both native and Compose (a same-port phantom-backend
+    conflict). `terraform_conflicts` lists components reported live under
+    Terraform *and* under native or Compose at once -- a whole second core
+    stack left running after an incomplete mode switch (#3565: `nyxgpt ops
+    down` without `--terraform` followed by `nyxgpt ops install` left both
+    the native and Terraform stacks up, each answering on its own network,
+    while this dataclass's pre-fix `conflicts` field -- native-vs-Compose
+    only -- had no way to represent it and logged `conflicts=[]`). `terraform`
+    defaults to `{}` and `terraform_conflicts` to `[]` so every existing
+    positional/keyword construction (tests included) stays valid without
+    populating them.
     """
 
     native: dict[str, str]
     compose: dict[str, str]
     conflicts: list[str]
+    terraform: dict[str, str] = field(default_factory=dict)
+    terraform_conflicts: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -515,6 +528,7 @@ def detect_deployment_mode() -> DeploymentMode:
     native["cassandra"] = _docker_container_state("nyxgpt-cassandra")
 
     compose = _compose_stack_snapshot()
+    terraform = terraform_stack_state()
 
     conflicts = [
         component
@@ -522,17 +536,29 @@ def detect_deployment_mode() -> DeploymentMode:
         if native.get(component) in ("started", "running") and compose.get(component) == "running"
     ]
 
+    terraform_conflicts = [
+        component
+        for component in TERRAFORM_CONTAINERS
+        if terraform.get(component) == "running"
+        and (native.get(component) in ("started", "running") or compose.get(component) == "running")
+    ]
+
     logger.debug(
-        "ops: detected deployment mode (native=%s, compose=%s, conflicts=%s)",
+        "ops: detected deployment mode (native=%s, compose=%s, terraform=%s, conflicts=%s, "
+        "terraform_conflicts=%s)",
         native,
         compose,
+        terraform,
         conflicts,
+        terraform_conflicts,
         extra={
             "component": "ops",
             "action": "detect_deployment_mode",
             "native": native,
             "compose": compose,
+            "terraform": terraform,
             "conflicts": conflicts,
+            "terraform_conflicts": terraform_conflicts,
         },
     )
     if conflicts:
@@ -542,8 +568,25 @@ def detect_deployment_mode() -> DeploymentMode:
             ", ".join(sorted(conflicts)),
             extra={"component": "ops", "action": "detect_deployment_mode", "conflicts": conflicts},
         )
+    if terraform_conflicts:
+        logger.warning(
+            "ops: native/Compose and Terraform deployment stacks both running on %s -- an "
+            "incomplete mode switch left two core stacks up",
+            ", ".join(sorted(terraform_conflicts)),
+            extra={
+                "component": "ops",
+                "action": "detect_deployment_mode",
+                "terraform_conflicts": terraform_conflicts,
+            },
+        )
 
-    return DeploymentMode(native=native, compose=compose, conflicts=conflicts)
+    return DeploymentMode(
+        native=native,
+        compose=compose,
+        conflicts=conflicts,
+        terraform=terraform,
+        terraform_conflicts=terraform_conflicts,
+    )
 
 
 # --- Restart helpers ---
@@ -3197,6 +3240,10 @@ def status(_args) -> int:
             print(f"  compose {component}: {state}")
     else:
         print("  compose: not detected (no Docker Compose stack running)")
+    running_terraform = {c: s for c, s in mode.terraform.items() if s != "absent"}
+    if running_terraform:
+        for component, state in sorted(running_terraform.items()):
+            print(f"  terraform {component}: {state}")
 
     if mode.conflicts:
         stop_examples = ", ".join(f"nyxgpt ops stop {c}" for c in sorted(mode.conflicts))
@@ -3215,6 +3262,18 @@ def status(_args) -> int:
         if mode.compose:
             config_hint += f" (native components) / {COMPOSE_CONFIG_HINT} (Compose components)"
         print(f"\nConfig in use: {config_hint}")
+
+    if mode.terraform_conflicts:
+        print(
+            "\nWARNING: "
+            + ", ".join(sorted(mode.terraform_conflicts))
+            + " reported running under BOTH native/Compose and Terraform -- an incomplete "
+            "mode switch (e.g. `nyxgpt ops down` without `--terraform` before `nyxgpt ops "
+            "install`) left two whole core stacks up at once, each answering on its own "
+            "network. Run `nyxgpt ops down --terraform` to tear down the Terraform stack, "
+            "then `nyxgpt ops install` to reconcile the native/Compose one -- or the reverse "
+            "if Terraform is the mode you want to keep."
+        )
 
     if _which("brew"):
         cp = _run(["brew", "services", "list"], check=False, expected=True)
@@ -3764,6 +3823,24 @@ def doctor(_args) -> int:
             "Terraform state exists but no nyxgpt-tf-* containers are running "
             "(run: nyxgpt ops install --terraform --local, or nyxgpt ops down --terraform "
             "to clean up the stale state)"
+        )
+
+    try:
+        dual_stack_conflicts = detect_deployment_mode().terraform_conflicts
+    except Exception as e:  # never let dual-stack detection block the rest of doctor
+        logger.warning(
+            "ops: dual-stack detection failed, skipping: %s: %s",
+            type(e).__name__,
+            e,
+            extra={"component": "ops", "action": "doctor"},
+        )
+        dual_stack_conflicts = []
+    if dual_stack_conflicts:
+        issues.append(
+            ", ".join(sorted(dual_stack_conflicts))
+            + " reported running under BOTH native/Compose and Terraform at once -- an "
+            "incomplete mode switch left two core stacks up (run: nyxgpt ops down "
+            "--terraform, or nyxgpt ops down, to drop the mode you don't want)"
         )
 
     if issues:
@@ -5521,8 +5598,19 @@ GLITCHTIP_PROJECT_SLUG = "nyxgpt-backend"
 GLITCHTIP_PROJECT_NAME = "nyxgpt-backend"
 GLITCHTIP_TOKEN_NAME = "nyxgpt-ops-glitchtip-init"
 # event:read lets Grafana's Infinity datasource (#3411) query issues/events
-# via GlitchTip's Sentry-compatible REST API; the rest predate that use.
-GLITCHTIP_TOKEN_SCOPES = ["org:read", "org:write", "project:read", "project:write", "event:read"]
+# via GlitchTip's Sentry-compatible REST API; team:read/team:write let
+# `_glitchtip_ensure_team_membership` (#3565 round 6) confirm/add the
+# provisioning admin to the canonical team -- without it, GlitchTip's
+# `/organizations/{org}/members/me/teams/{team}/` join endpoint 403s.
+GLITCHTIP_TOKEN_SCOPES = [
+    "org:read",
+    "org:write",
+    "project:read",
+    "project:write",
+    "event:read",
+    "team:read",
+    "team:write",
+]
 GLITCHTIP_DEFAULT_ADMIN_EMAIL = "admin@nyxgpt.local"
 
 # The `glitchtip` Compose service's network alias and container-internal port
@@ -5991,8 +6079,30 @@ def _glitchtip_ensure_api_token(
     Uses the authenticated session from `_glitchtip_login` for this one call
     (token creation is CSRF-guarded like any other POST); every call after
     this switches to `Authorization: Bearer <token>`.
+
+    GlitchTip's `APIToken` model field (and the `api-tokens/` response) is
+    `label`, not `name` -- posting `name` (as this function did through
+    #3565 round 5) silently drops on the floor (`APITokenIn`'s schema only
+    accepts `label`/`scopes`), so every token is created with `label: ""`.
+    The very next run's reuse lookup then matches on `tok.get("name")`,
+    which is *never* present in the response, so it can never find a match
+    either -- every `glitchtip-init`/`install`/`env-sync` run minted a brand
+    new orphaned token, silently defeating the "idempotent" contract
+    (verified live: booted a real GlitchTip 6.2.0 instance, ran the
+    pre-fix code twice, got two distinct tokens both labeled ""). Posting
+    `label` and reusing by `label` fixes both sides of that bug.
+
+    A reused token whose stored `scopes` don't cover every scope in
+    `GLITCHTIP_TOKEN_SCOPES` (e.g. an older token from before a scope was
+    added here) is deleted and re-minted -- GlitchTip's API has no token
+    PUT/PATCH, only create/delete, so upgrading scopes means replacing it.
     """
     try:
+        csrf_token = client.cookies.get("csrftoken", "")
+        headers = {"Referer": base_url}
+        if csrf_token:
+            headers["X-CSRFToken"] = csrf_token
+
         listing = client.get("/api/0/api-tokens/")
         if listing.status_code == 200:
             existing: Any = listing.json()
@@ -6000,19 +6110,20 @@ def _glitchtip_ensure_api_token(
                 for tok in existing:
                     if not isinstance(tok, dict):
                         continue
-                    if tok.get("name") == GLITCHTIP_TOKEN_NAME and tok.get("token"):
+                    if tok.get("label") != GLITCHTIP_TOKEN_NAME or not tok.get("token"):
+                        continue
+                    if set(GLITCHTIP_TOKEN_SCOPES) <= set(tok.get("scopes") or []):
                         return str(tok["token"]), OpsResult(
                             True, "Reusing existing GlitchTip API token"
                         )
-
-        csrf_token = client.cookies.get("csrftoken", "")
-        headers = {"Referer": base_url}
-        if csrf_token:
-            headers["X-CSRFToken"] = csrf_token
+                    token_id = tok.get("id")
+                    if token_id is not None:
+                        client.delete(f"/api/0/api-tokens/{token_id}/", headers=headers)
+                    break
 
         resp = client.post(
             "/api/0/api-tokens/",
-            json={"name": GLITCHTIP_TOKEN_NAME, "scopes": GLITCHTIP_TOKEN_SCOPES},
+            json={"label": GLITCHTIP_TOKEN_NAME, "scopes": GLITCHTIP_TOKEN_SCOPES},
             headers=headers,
         )
         if resp.status_code not in (200, 201):
@@ -6106,6 +6217,43 @@ def _glitchtip_ensure_team(client: httpx.Client, org_slug: str) -> tuple[str | N
         return slug, OpsResult(True, f"Created GlitchTip team {slug}")
     except httpx.HTTPError as e:
         return None, OpsResult(False, "Failed to ensure GlitchTip team", f"{type(e).__name__}: {e}")
+
+
+def _glitchtip_ensure_team_membership(
+    client: httpx.Client, org_slug: str, team_slug: str
+) -> OpsResult:
+    """Ensure the provisioning admin is a member of `team_slug`, idempotently.
+
+    GlitchTip's UI only lists projects on teams the logged-in user belongs
+    to -- a superuser who is an org member but not on any team still sees
+    "This organization has no projects" (#3565 round 5 acceptance failure,
+    live-diagnosed by the owner via Django admin). `_glitchtip_ensure_team`
+    creating a brand-new team already adds the requesting user (verified by
+    reading GlitchTip's `create_team` view: it `team.members.aadd()`s the
+    creator's `OrganizationUser`), so this only actually does work the first
+    time a *pre-existing* team is reused by a different/new admin. It's
+    cheap and idempotent (`team.members.aadd()` is a no-op if already a
+    member) so it's called unconditionally rather than trying to detect
+    which case applies.
+
+    Uses the join endpoint's `me` alias
+    (`POST /organizations/{org}/members/me/teams/{team}/`) rather than
+    looking up a member id, and requires the `team:write` scope on the
+    client's token (see `GLITCHTIP_TOKEN_SCOPES`) -- without it this 403s.
+    """
+    try:
+        resp = client.post(f"/api/0/organizations/{org_slug}/members/me/teams/{team_slug}/")
+        if resp.status_code in (200, 201):
+            return OpsResult(True, f"Confirmed GlitchTip team membership on {team_slug}")
+        return OpsResult(
+            False,
+            "Failed to confirm GlitchTip team membership",
+            f"HTTP {resp.status_code}: {resp.text[:500]}",
+        )
+    except httpx.HTTPError as e:
+        return OpsResult(
+            False, "Failed to confirm GlitchTip team membership", f"{type(e).__name__}: {e}"
+        )
 
 
 def _glitchtip_ensure_project(
@@ -6792,6 +6940,8 @@ def _provision_glitchtip() -> list[OpsResult]:
         results.append(team_result)
         if team_slug is None:
             return results
+
+        results.append(_glitchtip_ensure_team_membership(api_client, org_slug, team_slug))
 
         project_slug, project_result = _glitchtip_ensure_project(api_client, org_slug, team_slug)
         results.append(project_result)

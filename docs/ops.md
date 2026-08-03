@@ -161,6 +161,11 @@ Reports:
   running in *both* modes, `status` prints a **WARNING** — only one is actually serving
   traffic on the shared port, and config edits to `~/.nyxGPT/config.ini` (native) vs.
   `docker/config.docker.ini` (Compose) reach different, non-interchangeable processes.
+- **Terraform component state** for each `nyxgpt-tf-*` core container, when any are
+  running. If a component is reported running under Terraform *and* under native/Compose
+  at the same time, `status` prints a second **WARNING** — this means an incomplete mode
+  switch (e.g. `nyxgpt ops install` after `nyxgpt ops down` without `--terraform`) left
+  two whole core stacks up at once, each answering on its own network (#3565).
 - Homebrew service state (`started`, `stopped`, `error`)
 - Docker container state for Cassandra
 - LaunchAgent load state
@@ -434,6 +439,13 @@ Checks include:
   `restarting`) -- `nyxgpt ops status` already surfaces that state, but
   doctor now FAILs on it instead of leaving it as an easy-to-miss warning;
   points at `nyxgpt ops logs <service>` for the boot error (#3538)
+- Whether a Terraform-managed core component is running at the same time as
+  its native/Compose equivalent (dual-stack) -- doctor FAILs on it, since an
+  incomplete mode switch otherwise leaves two whole core stacks answering on
+  their own networks with `nyxgpt ops status`'s own conflict detector
+  reporting no conflict (it only ever compared native vs. Compose). Fix:
+  `nyxgpt ops down --terraform` or `nyxgpt ops down`, whichever mode you
+  don't want (#3565)
 
 Results are reported with clear PASS / FAIL indicators.
 
@@ -599,8 +611,23 @@ Behavior:
   treated as success"), never a WARNING, so an idempotent re-install on an
   already-provisioned stack never looks like a failure.
 - Creates (or reuses) a scoped API token, then the `nyxgpt` organization,
-  `nyxgpt-backend` project, and its DSN via GlitchTip's Sentry-compatible
-  REST API -- the upgrade-stable path, not an ORM/`manage.py shell` seed.
+  the `nyxgpt` team (with the provisioning admin confirmed as a member --
+  GlitchTip's UI only lists projects on teams the logged-in user belongs
+  to, so an org member on no team still sees "This organization has no
+  projects", #3565), the `nyxgpt-backend` project (attached to that team),
+  and its DSN, all via GlitchTip's Sentry-compatible REST API -- the
+  upgrade-stable path, not an ORM/`manage.py shell` seed.
+- **Log into the GlitchTip UI (`http://localhost:8080`) as the account
+  `[error_tracking] admin_email` in config.ini (`admin@nyxgpt.local` by
+  default) -- org `nyxgpt`, project `nyxgpt-backend`.** GlitchTip's open
+  self-registration is disabled (`ENABLE_USER_REGISTRATION: "False"` in
+  docker-compose.yml, #3565) specifically so a different, self-registered
+  account can't end up with its own same-named decoy `nyxgpt` project in a
+  different org -- exactly what silently shadowed the real data for days in
+  a past acceptance failure. To give a teammate their own login, invite
+  them into org `nyxgpt` (`Settings -> Members`) *and* add them to the
+  `nyxgpt` team -- an org invite alone leaves them looking at "no
+  projects".
 - Writes the resulting DSN and `enabled = true` into
   `~/.nyxGPT/config.ini` (native) and `docker/config.docker.ini` (Compose)
   -- the DSN is a public key, safe to store in both. The live
