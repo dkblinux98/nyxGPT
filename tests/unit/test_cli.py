@@ -1577,6 +1577,34 @@ def test_ops_migrate_volumes_dispatches_to_ops_module(
     assert "[OK] Migrated cassandra data" in capsys.readouterr().out
 
 
+def test_ops_port_forward_dispatches_to_ops_module(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`nyxgpt ops port-forward` parses and dispatches, with --port passed through."""
+    import nyxgpt.cli as cli_mod
+
+    calls = []
+    monkeypatch.setattr(cli_mod.ops_mod, "port_forward", lambda args: calls.append(args.port) or 0)
+
+    exit_code = cli(["ops", "port-forward", "--port", "3001"])
+
+    assert exit_code == 0
+    assert calls == [3001]
+
+
+def test_ops_port_forward_default_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`nyxgpt ops port-forward` defaults to port 3000 when --port is omitted."""
+    import nyxgpt.cli as cli_mod
+
+    calls = []
+    monkeypatch.setattr(cli_mod.ops_mod, "port_forward", lambda args: calls.append(args.port) or 0)
+
+    exit_code = cli(["ops", "port-forward"])
+
+    assert exit_code == 0
+    assert calls == [3000]
+
+
 def test_ops_install_skip_observability_flag_parses(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

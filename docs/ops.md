@@ -46,6 +46,7 @@ nyxgpt ops logs
 nyxgpt ops observability
 nyxgpt ops glitchtip-init
 nyxgpt ops migrate-volumes
+nyxgpt ops port-forward
 ```
 
 ---
@@ -78,8 +79,8 @@ nyxGPT is up: http://127.0.0.1:3000
 - `--no-wait` — return as soon as `install` finishes, without waiting for
   health or printing the URL
 - Under `--kubernetes`, Services are ClusterIP-only, so `up` prints
-  `kubectl -n nyxgpt port-forward` instructions instead of claiming the URL
-  is directly reachable (see [kubernetes.md](kubernetes.md#4-verify))
+  `nyxgpt ops port-forward` instructions instead of claiming the URL is
+  directly reachable (see [kubernetes.md](kubernetes.md#4-verify))
 
 Both are idempotent, same as `install`/`down` themselves: re-running `up`
 just reconciles and re-waits; re-running `down` on an already-torn-down
@@ -802,6 +803,30 @@ Exit codes:
   nothing to migrate)
 - `2` -- a copy failed, or a component was refused because its destination
   was already populated while a legacy volume still exists for it
+
+---
+
+## `nyxgpt ops port-forward`
+
+Forwards the Kubernetes `nyxgpt-web` Service to `127.0.0.1` so it's reachable
+from the operator's own workstation. `k8s/`'s Services are ClusterIP-only --
+there's no Ingress/LoadBalancer (see
+[kubernetes.md](kubernetes.md#4-verify)) -- so this is the only way to reach
+the web UI after a `--kubernetes` install. It's a thin wrapper around
+`kubectl port-forward` so operators never need to type the raw `kubectl`
+command themselves; `nyxgpt up --kubernetes` prints this command as its next
+step once the stack reports healthy.
+
+Usage:
+
+```bash
+nyxgpt ops port-forward
+nyxgpt ops port-forward --port 3001   # forward to a different local port
+```
+
+Runs in the foreground until interrupted (`Ctrl-C`), same as `kubectl
+port-forward` itself. Exits `2` if `kubectl` isn't on `PATH`; otherwise
+returns `kubectl`'s own exit code once the forward stops.
 
 ---
 

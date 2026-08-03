@@ -11317,4 +11317,68 @@ def test_ops_up_kubernetes_mode_prints_port_forward_instructions(monkeypatch, ca
     assert rc == 0
     out = capsys.readouterr().out
     assert "port-forward" in out
+    assert "kubectl -n nyxgpt port-forward" not in out
     assert ops.WEB_URL in out
+
+
+@pytest.mark.unit
+def test_ops_up_kubernetes_mode_wraps_kubectl_not_raw(monkeypatch, capsys):
+    """The Operational Command Wrapping policy (CLAUDE.md) forbids instructing
+    users to run a raw `kubectl` command -- `up --kubernetes` must point at
+    the `nyxgpt ops port-forward` wrapper instead."""
+    monkeypatch.setattr(ops, "install", lambda args: 0)
+    monkeypatch.setattr(ops, "_wait_for_stack_healthy", lambda **kw: True)
+
+    ops.up(MagicMock(no_wait=False, timeout=180.0, kubernetes=True))
+
+    out = capsys.readouterr().out
+    assert "nyxgpt ops port-forward" in out
+
+
+@pytest.mark.unit
+def test_ops_port_forward_missing_kubectl(monkeypatch, capsys):
+    """`nyxgpt ops port-forward` fails fast with a clear message if kubectl isn't installed."""
+    monkeypatch.setattr(ops, "_which", lambda _: None)
+
+    rc = ops.port_forward(MagicMock(port=3000))
+
+    assert rc == 2
+    assert "kubectl not found on PATH" in capsys.readouterr().err
+
+
+@pytest.mark.unit
+def test_ops_port_forward_invokes_kubectl(monkeypatch, capsys):
+    """`nyxgpt ops port-forward` shells out to `kubectl port-forward` for the
+    web Service, using the requested local port, and returns its exit code."""
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/kubectl")
+    calls = []
+
+    def fake_run(cmd):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, returncode=0)
+
+    monkeypatch.setattr(ops.subprocess, "run", fake_run)
+
+    rc = ops.port_forward(MagicMock(port=3001))
+
+    assert rc == 0
+    assert calls == [
+        ["kubectl", "-n", ops.K8S_NAMESPACE, "port-forward", "svc/nyxgpt-web", "3001:3000"]
+    ]
+    assert "3001" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_ops_port_forward_keyboard_interrupt_is_clean_exit(monkeypatch):
+    """Stopping `port-forward` with Ctrl-C (the normal way to end it) is a
+    clean exit, not a crash."""
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/kubectl")
+
+    def raise_interrupt(cmd):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(ops.subprocess, "run", raise_interrupt)
+
+    rc = ops.port_forward(MagicMock(port=3000))
+
+    assert rc == 0

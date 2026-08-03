@@ -2053,6 +2053,17 @@ def cli(argv: list[str] | None = None) -> int:
         ),
     )
 
+    ops_port_forward = ops_sub.add_parser(
+        "port-forward",
+        help=(
+            "Forward the Kubernetes web Service to localhost "
+            "(wraps `kubectl port-forward` -- see `--kubernetes` in docs/kubernetes.md#4-verify)"
+        ),
+    )
+    ops_port_forward.add_argument(
+        "--port", type=int, default=3000, help="Local port to forward to (default: 3000)"
+    )
+
     # Add canary command (local weighted-traffic canary rollout on a local k8s cluster --
     # the sole deployment model since #3409 retired blue/green in favor of it)
     canary_p = sub.add_parser("canary", help="Local canary deployment (kind/minikube/k3s cluster)")
@@ -2297,6 +2308,8 @@ def cli(argv: list[str] | None = None) -> int:
             return ops_mod.observability(args)
         if args.ops_cmd == "migrate-volumes":
             return ops_mod.migrate_volumes_cmd(args)
+        if args.ops_cmd == "port-forward":
+            return ops_mod.port_forward(args)
 
     if cmd == "canary":
         # Same per-invocation correlation id as the `ops` dispatch above --

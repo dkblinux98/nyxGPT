@@ -2965,6 +2965,48 @@ def _down_kubernetes(_args) -> int:
     return 0 if ok else 2
 
 
+def port_forward(args) -> int:
+    """`nyxgpt ops port-forward`: forward the Kubernetes web Service to localhost.
+
+    `k8s/`'s Services are ClusterIP-only -- there's no Ingress/LoadBalancer
+    (see docs/kubernetes.md#4-verify) -- so `kubectl port-forward` is the
+    only way to reach `nyxgpt-web` from the operator's own workstation. This
+    wraps that invocation so operators never type the raw `kubectl` command
+    themselves, per CLAUDE.md's Operational Command Wrapping requirement;
+    `nyxgpt up --kubernetes` points here instead of printing it directly.
+
+    Runs in the foreground until interrupted (Ctrl-C), same as `kubectl
+    port-forward` itself -- there's no "done" state to return early from.
+    """
+    if _which("kubectl") is None:
+        print("[FAIL] kubectl not found on PATH", file=sys.stderr)
+        return 2
+
+    local_port = getattr(args, "port", 3000) or 3000
+    logger.info(
+        "ops: port-forward starting",
+        extra={"component": "ops", "action": "port-forward", "local_port": local_port},
+    )
+    print(
+        f"Forwarding http://127.0.0.1:{local_port} -> "
+        f"{K8S_NAMESPACE}/svc/nyxgpt-web:3000 (Ctrl-C to stop)..."
+    )
+    try:
+        cp = subprocess.run(
+            [
+                "kubectl",
+                "-n",
+                K8S_NAMESPACE,
+                "port-forward",
+                "svc/nyxgpt-web",
+                f"{local_port}:3000",
+            ]
+        )
+    except KeyboardInterrupt:
+        return 0
+    return cp.returncode
+
+
 def infra_status() -> dict[str, Any]:
     """Honest, status-only deployment status for the Infrastructure admin page (see #3410).
 
@@ -3281,8 +3323,8 @@ def up(args) -> int:
     if getattr(args, "kubernetes", False):
         print(
             "nyxGPT is up. Kubernetes Services are ClusterIP-only -- run "
-            "`kubectl -n nyxgpt port-forward svc/nyxgpt-web 3000:3000` in another "
-            f"terminal, then open {WEB_URL} (see docs/kubernetes.md#4-verify)."
+            "`nyxgpt ops port-forward` in another terminal, then open "
+            f"{WEB_URL} (see docs/kubernetes.md#4-verify)."
         )
     else:
         print(f"nyxGPT is up: {WEB_URL}")
