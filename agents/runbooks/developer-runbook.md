@@ -134,7 +134,7 @@ these triggers is added or edited — the review-runbook checklist entry for
 | `link_revert_pr_to_issue.yml` | `pull_request`(opened) | pull-requests write (`github.token`) | gated on `body` `startsWith('Reverts')` (attacker-controlled string) | Unchanged — re-verified during this audit: every write (`gh pr edit`, the informational comment) targets `github.event.pull_request.number`, i.e. the PR the attacker themselves just opened. Crafting a "Reverts owner/repo#N" body lets an attacker rewrite the body of *their own* PR to include a `Closes #ISSUE` line (extracted read-only from a real PR's linked issue) — this writes no resource the attacker doesn't already control, and any downstream merge/close of that PR is independently gated elsewhere. No actor gate added. |
 | `notify-merge-conflicts.yml` | `pull_request`(opened,synchronize,reopened) | issues write (comment only) | none | Unchanged — notification only, no merge/code-exec |
 | `delete_branch_on_pr_close.yml` | `pull_request`(closed) | contents write (branch delete) | none, but explicitly skips fork-head PRs + branch allow-pattern + deny-list | Unchanged — already scoped safely by construction |
-| `claude.yml` | `issue_comment`, `pull_request_review_comment`, `issues`(opened,assigned), `pull_request_review` | Bash/Read/Write/Edit, `CLAUDE_CODE_OAUTH_TOKEN`; job-level `GITHUB_TOKEN` is read-only | **none** — any `@claude` mention triggers a full agentic session | **Known gap, out of #3600's scope.** The read-only job token can't push/merge directly, but on a public repo any user can trigger a costly agent session that posts comments under the bot's identity. Flagged for an owner decision (gate to `HUMAN_OWNER`/agent identities, or accept the risk for public Q&A) via a fast-follow issue. |
+| `claude.yml` | `issue_comment`, `pull_request_review_comment`, `issues`(opened,assigned), `pull_request_review` | Bash/Read/Write/Edit, `CLAUDE_CODE_OAUTH_TOKEN`; job-level `GITHUB_TOKEN` is read-only | **none** — any `@claude` mention triggers a full agentic session | **Known gap, out of #3600's scope.** The read-only job token can't push/merge directly, but on a public repo any user can trigger a costly agent session that posts comments under the bot's identity. Flagged for an owner decision (gate to `HUMAN_OWNER`/agent identities, or accept the risk for public Q&A). No fast-follow issue has been filed for this yet — file one before relying on this row as a tracked follow-up. |
 | `admin_label_rename.yml`, `bulk_set_issue_status.yml`, `promote_accepted_features.yml`, `reconcile_closed_backlog_status.yml`, `scrummaster_sprint_report.yml`, `usage_limit_retry.yml`, `terraform-local-smoke.yml`, `validate-web-routes.yml` | `workflow_dispatch`/`schedule`/path-filtered CI | varies | N/A | No comment/issue-content-driven public-actor path |
 
 **Verification.** Each new `if:` condition was hand-traced against
@@ -161,17 +161,17 @@ merged (v3.0.0 is also the default branch — see the issue's Technical
 Details) and cannot be exercised live pre-merge. Two things stand in for a
 live run: (1) the gates reuse the exact `comment.user.login ==
 vars.HUMAN_OWNER`/`author_association` pattern already live in
-`handle_acceptance_failure.yml` and `developer_auto_implement.yml`, which
-fired successfully for the allowed actor multiple times over this issue's
-own lifecycle (developer-agent runs
-[30854816600](https://github.com/dkblinux98/nyxGPT/actions/runs/30854816600)
-and
-[30856730941](https://github.com/dkblinux98/nyxGPT/actions/runs/30856730941),
-both triggered by HUMAN_OWNER/DEV_AGENT actions on issue #3600) — proving the
-pattern in this exact CI environment, not just in the abstract; and (2) per
-the issue's own acceptance criteria, the next `@approve-merge`,
-`READY_FOR_NEXT_ISSUE`, and `@review` invocations in normal agent-loop
-operation after merge exercise the new gates for real, for an allowed actor.
+`handle_acceptance_failure.yml` and `developer_auto_implement.yml` — the
+boolean logic above was hand-traced against representative actors rather than
+asserted from a specific run link, since individual workflow-run URLs are not
+stable evidence (runs can be deleted or expire); run
+[30856730941](https://github.com/dkblinux98/nyxGPT/actions/runs/30856730941)
+is one concrete example of this pattern firing on issue #3600, triggered by
+`myGPT-review-agent` re-invoking the developer-agent automation, and it
+completed successfully; and (2) per the issue's own acceptance criteria, the
+next `@approve-merge`, `READY_FOR_NEXT_ISSUE`, and `@review` invocations in
+normal agent-loop operation after merge exercise the new gates for real, for
+an allowed actor.
 
 ## 4) Verification loop (MANDATORY - ALL must pass before commit)
 Run ALL of the following checks and fix issues until they pass:
