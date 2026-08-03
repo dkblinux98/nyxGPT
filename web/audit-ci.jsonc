@@ -1,0 +1,31 @@
+{
+  // CI gate config for `audit-ci` (wraps `npm audit`, adds an allowlist with
+  // per-entry justification comments -- JSONC, unlike npm's own audit
+  // output, supports comments). See ../security/README.md for the
+  // cross-tool security-scanning overview (#3501).
+  //
+  // "high": true means audit-ci fails the build on high OR critical
+  // severity findings; moderate/low are reported but non-blocking.
+  "high": true,
+  "allowlist": [
+    // next.js 16.x head carries ~30 bundled advisories (DoS, cache
+    // poisoning, SSRF, CSRF-bypass, etc.), all fixed together by upgrading
+    // to next@16.3.0 -- which sits outside the ^16.x range currently pinned
+    // in package.json and needs its own regression-tested upgrade issue.
+    // Accepted 2026-08-03 as out of scope for CI-scanning setup (#3501);
+    // re-triage before/with the next Next.js upgrade.
+    "next",
+    // postcss <=8.5.22 is a transitive dep of next; fixed by the same
+    // next@16.3.0 bump above. Accepted 2026-08-03, same rationale as "next".
+    "postcss",
+    // sharp <0.35.0 is next's optional image-optimization dep; fixed by the
+    // same next@16.3.0 bump above. Accepted 2026-08-03, same rationale.
+    "sharp",
+    // serialize-javascript <=7.0.4, pulled in via @ducanh2912/next-pwa's
+    // workbox-build chain. Fix requires a next-pwa major-version bump
+    // (breaking change per `npm audit fix --force`) -- needs its own
+    // upgrade+regression issue. Accepted 2026-08-03 as out of scope for
+    // CI-scanning setup (#3501).
+    "serialize-javascript"
+  ]
+}
