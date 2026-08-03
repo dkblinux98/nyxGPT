@@ -57,6 +57,10 @@ dev = [
   "yamllint>=1.35",
   "interrogate>=1.7",
 
+  # Security scanning (#3501)
+  "bandit[toml]>=1.7",
+  "pip-audit>=2.7",
+
   # Pre-commit hooks
   "pre-commit>=3.6",
 
@@ -171,6 +175,13 @@ exclude = ["tests"]
 line-length = 100
 target-version = ["py311"]
 include = '\.pyi?$'
+
+[tool.bandit]
+# SAST scan of runtime code only -- tests intentionally exercise things
+# bandit flags out of context (e.g. hardcoded test fixtures, subprocess
+# calls against local test services). See security/README.md for the CI
+# gate (severity/confidence thresholds) and suppression conventions (#3501).
+exclude_dirs = ["tests", ".venv", "venv", "web"]
 
 [build-system]
 requires = ["setuptools>=68"]
