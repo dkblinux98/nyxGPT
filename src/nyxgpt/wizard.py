@@ -275,7 +275,7 @@ def _generate_config_ini(
     config.set("paths", "npm_bin", npm_bin)
 
     # Write to file
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         config.write(f)
 

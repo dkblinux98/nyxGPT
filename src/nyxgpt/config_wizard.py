@@ -856,11 +856,17 @@ def apply_updates(
     and anything hand-added) survive a save byte-for-byte (#3388). Never
     deletes a key -- that's `remove_keys`'s job, only invoked once a user
     confirms a key `find_stale_keys` reported. Returns the values written.
+
+    Chmods to 0600 after every write (not just on creation): this is the
+    general wizard-save endpoint (`POST /config/sections`) and `validated`
+    can include `[auth] api_key`, so a config.ini created here must never be
+    left at the default umask (typically world-readable).
     """
-    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     original_text = cfg_path.read_text(encoding="utf-8") if cfg_path.exists() else ""
     new_text, _removed = _merge_ini_text(original_text, validated, None)
     cfg_path.write_text(new_text, encoding="utf-8")
+    cfg_path.chmod(0o600)
 
     return {section: dict(fields) for section, fields in validated.items()}
 

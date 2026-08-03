@@ -228,6 +228,11 @@ port = 8000
 | `host` | Bind address for the API server (default: `127.0.0.1`) |
 | `port` | Port for the API server (default: `8000`) |
 
+**Non-loopback binds require auth:** setting `host` to anything other than a
+loopback address (`127.0.0.1`, `localhost`, `::1`) requires `[auth] enabled
+= true`, or the API refuses to start — see [`[auth]`](#auth-section) above
+and [`docs/security.md`](security.md#network-security).
+
 ---
 
 ## `[logging]` section
@@ -310,6 +315,11 @@ header = X-API-Key
 - Rotate keys regularly and immediately if compromise is suspected
 
 **Note:** Authentication configuration is **hot-reloadable** and takes effect immediately without restart.
+
+**Enforced at startup:** if `[api] host` (below) is bound non-loopback while
+`enabled` isn't `true`, the native API refuses to start rather than serving
+unauthenticated — see
+[`docs/security.md#network-security`](security.md#network-security).
 
 **Docker Compose:** the `web` and `api` containers need this same key as the
 `NYXGPT_AUTH_API_KEY` environment variable (see `docker-compose.yml`).

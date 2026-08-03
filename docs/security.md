@@ -92,6 +92,17 @@ host = 127.0.0.1
 port = 3000
 ```
 
+**The native API enforces this, not just recommends it:** startup refuses to
+proceed if `[api] host` is bound non-loopback while
+[`[auth] enabled`](#authentication-configuration) isn't `true`, exiting with
+an actionable error instead of serving an unauthenticated API to the network.
+Loopback binds are never affected. (This check only applies to the native
+process, whose `[api] host` directly controls the real listen address —
+Docker Compose and Kubernetes always bind `0.0.0.0` *inside the container*
+regardless of this setting, since that's required for container networking;
+their actual host/cluster exposure is controlled by `NYXGPT_BIND_ADDR` and
+the Kubernetes Service type respectively, covered below.)
+
 If you need to reach nyxGPT from another machine, prefer one of these over
 binding directly to `0.0.0.0`:
 

@@ -1364,6 +1364,10 @@ def _generate_compose_config() -> list[OpsResult]:
             )
         COMPOSE_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
         COMPOSE_CONFIG_FILE.write_text(text, encoding="utf-8")
+        # Copied verbatim from native config.ini above (see docstring): carries
+        # [auth] api_key / [monitoring] grafana_admin_password when set, same
+        # secret-bearing content as the native file, so it gets the same 0600.
+        os.chmod(COMPOSE_CONFIG_FILE, 0o600)
     except OSError as e:
         return [
             OpsResult(
@@ -1415,6 +1419,7 @@ def _persist_compose_file_path() -> list[OpsResult]:
     parser.set("paths", "compose_file", str(compose_path))
     with cfg_path.open("w", encoding="utf-8") as f:
         parser.write(f)
+    os.chmod(cfg_path, 0o600)
     return [OpsResult(True, f"Recorded compose-file path in config.ini: {compose_path}")]
 
 

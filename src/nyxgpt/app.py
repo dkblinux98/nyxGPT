@@ -17,6 +17,7 @@ import io
 import logging
 import os
 import secrets
+import sys
 import threading
 import time
 import urllib.error
@@ -123,6 +124,7 @@ from nyxgpt.config import (
     get_tracing_config,
     load_config,
     log_effective_config,
+    validate_bind_security,
 )
 from nyxgpt.logging import configure_logging, request_id_var
 from nyxgpt.ollama_client import ModelRuntimeError, get_json, post_json
@@ -232,20 +234,39 @@ def log_with_context(level, message, request_id=None, **extra):
 async def lifespan(_app: FastAPI):
     """Run startup and shutdown initialization for the FastAPI app.
 
-    On startup: configures centralized logging, initializes tracing and
-    error tracking (both no-ops unless enabled in config.ini), ensures the
-    sessions directory exists, does a warn-only Ollama reachability check,
-    initializes the rate limiter and batch processor if enabled, starts the
-    resource monitor, and starts the self-heal watchdog (always running so
-    the dashboard toggle takes effect without a restart). Initialization
-    failures are logged but never prevent the API from starting.
+    On startup: refuses to start if `[api] host` is non-loopback and
+    `[auth] enabled` isn't true (P6-1 hardening gate; skipped inside a
+    container, see below), configures centralized logging, initializes
+    tracing and error tracking (both no-ops unless enabled in config.ini),
+    ensures the sessions directory exists, does a warn-only Ollama
+    reachability check, initializes the rate limiter and batch processor if
+    enabled, starts the resource monitor, and starts the self-heal watchdog
+    (always running so the dashboard toggle takes effect without a restart).
+    Beyond the bind-security refusal, initialization failures are logged but
+    never prevent the API from starting.
 
     On shutdown: stops the batch processor and self-heal watchdog.
     """
     global _rate_limiter, _batch_processor
 
-    # Initialize centralized logging once for the API process
     cfg = load_config(None)
+
+    # P6-1 hardening gate: a non-loopback bind with auth disabled would let
+    # anyone who can reach this host/network call the API with no
+    # credentials -- refuse to start rather than merely warn. Skipped inside
+    # a container (Compose `api` service, Kubernetes pod): both hardcode
+    # uvicorn's own `--host 0.0.0.0` for the container's *network namespace*
+    # regardless of `[api] host` (see docker/entrypoint.sh) -- real
+    # host/cluster exposure there is gated by Docker's port-publish
+    # (`NYXGPT_BIND_ADDR`) or the Kubernetes Service type, neither of which
+    # is visible to this process (docs/security.md#network-security).
+    if not os.environ.get("NYXGPT_CONTAINER_RUNTIME"):
+        bind_error = validate_bind_security(cfg)
+        if bind_error:
+            print(f"ERROR: {bind_error}", file=sys.stderr)
+            raise RuntimeError(bind_error)
+
+    # Initialize centralized logging once for the API process
     try:
         configure_logging(cfg, console=False, filename="api.log")
         log.info("Centralized logging initialized", extra={"component": "startup"})
@@ -891,6 +912,7 @@ def _apply_hot_config_updates(updates: dict[str, Any]) -> dict[str, Any]:
     # Persist changes
     with cfg_path.open("w", encoding="utf-8") as f:
         parser.write(f)
+    os.chmod(cfg_path, 0o600)
 
     # Invalidate config cache to force reload on next access
     # This ensures mtime-based caching works even for rapid writes/reads
@@ -950,6 +972,7 @@ def _apply_auth_config_updates(updates: dict[str, Any]) -> dict[str, Any]:
 
     with cfg_path.open("w", encoding="utf-8") as f:
         parser.write(f)
+    os.chmod(cfg_path, 0o600)
 
     nyxgpt.config._CACHED_CFG = None
     nyxgpt.config._CACHED_PATH = None

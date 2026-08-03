@@ -313,6 +313,29 @@ def test_apply_updates_creates_file_when_missing(tmp_path):
     assert cfg_path.exists()
 
 
+def test_apply_updates_lands_0600_on_a_freshly_created_file(tmp_path):
+    """The general wizard-save endpoint (`POST /config/sections`) can write
+    `[auth] api_key` and can create config.ini from scratch -- it must never
+    leave that secret at default umask permissions.
+    """
+    cfg_path = tmp_path / "nested" / "config.ini"
+    config_wizard.apply_updates(cfg_path, {"auth": {"api_key": "supersecret"}})
+    assert oct(cfg_path.stat().st_mode & 0o777) == "0o600"
+
+
+def test_apply_updates_rechmods_a_pre_existing_permissive_file(tmp_path):
+    """A config.ini created some other way (e.g. by an admin manually) with
+    looser perms must be tightened back to 0600 on the next wizard save.
+    """
+    cfg_path = tmp_path / "config.ini"
+    cfg_path.write_text("[auth]\nenabled = false\n", encoding="utf-8")
+    cfg_path.chmod(0o644)
+
+    config_wizard.apply_updates(cfg_path, {"auth": {"enabled": True}})
+
+    assert oct(cfg_path.stat().st_mode & 0o777) == "0o600"
+
+
 def test_schema_summary_covers_every_non_excluded_section():
     """Guards against #3388's original bug: the wizard silently only covering a subset."""
     parser = ConfigParser()

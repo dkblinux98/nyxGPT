@@ -9,6 +9,7 @@ from nyxgpt.config import (
     get_ann_oversample_factor,
     get_api_host,
     get_api_port,
+    get_auth_enabled,
     get_batch_enabled,
     get_batch_size,
     get_batch_wait_time_ms,
@@ -62,9 +63,11 @@ from nyxgpt.config import (
     get_tracing_enabled,
     get_vector_similarity_function,
     get_vectorstore_dir,
+    is_loopback_host,
     load_config,
     log_effective_config,
     reset_fallback_warnings,
+    validate_bind_security,
     validate_config,
 )
 
@@ -1421,6 +1424,96 @@ host = 0.0.0.0
 
     cfg = load_config(str(ini))
     assert get_api_host(cfg) == "0.0.0.0"
+
+
+# ---------------------------------------------------------------------------
+# is_loopback_host / get_auth_enabled / validate_bind_security
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "host,expected",
+    [
+        ("127.0.0.1", True),
+        ("localhost", True),
+        ("LOCALHOST", True),
+        ("  localhost  ", True),
+        ("::1", True),
+        ("127.5.6.7", True),
+        ("0.0.0.0", False),
+        ("10.0.0.5", False),
+        ("192.168.1.1", False),
+        ("::", False),
+        ("example.com", False),
+        ("", False),
+    ],
+)
+def test_is_loopback_host(host: str, expected: bool) -> None:
+    assert is_loopback_host(host) is expected
+
+
+def test_get_auth_enabled_default_false(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[nyxgpt]\ndefault_model = llama3.1:8b\n")
+
+    cfg = load_config(str(ini))
+    assert get_auth_enabled(cfg) is False
+
+
+def test_get_auth_enabled_true(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[auth]\nenabled = true\n")
+
+    cfg = load_config(str(ini))
+    assert get_auth_enabled(cfg) is True
+
+
+def test_get_auth_enabled_invalid_falls_back_to_false(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[auth]\nenabled = not_a_boolean\n")
+
+    cfg = load_config(str(ini))
+    caplog.set_level(logging.WARNING, logger="nyxgpt.config")
+    assert get_auth_enabled(cfg) is False
+    assert "Invalid auth.enabled" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "host,auth_enabled,should_refuse",
+    [
+        ("127.0.0.1", False, False),
+        ("127.0.0.1", True, False),
+        ("localhost", False, False),
+        ("localhost", True, False),
+        ("::1", False, False),
+        ("0.0.0.0", False, True),
+        ("0.0.0.0", True, False),
+        ("10.0.0.5", False, True),
+        ("10.0.0.5", True, False),
+        ("192.168.1.100", False, True),
+        ("192.168.1.100", True, False),
+    ],
+)
+def test_validate_bind_security_refusal_matrix(
+    tmp_path: Path, host: str, auth_enabled: bool, should_refuse: bool
+) -> None:
+    """The host x auth refusal matrix: non-loopback + auth-off is the only refused cell."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        f"[api]\nhost = {host}\n[auth]\nenabled = {'true' if auth_enabled else 'false'}\n",
+    )
+
+    cfg = load_config(str(ini))
+    error = validate_bind_security(cfg)
+    if should_refuse:
+        assert error is not None
+        assert host in error
+        assert "nyxgpt wizard" in error
+    else:
+        assert error is None
 
 
 # ---------------------------------------------------------------------------
