@@ -629,13 +629,14 @@ def test_sre_home_panel_title_links_open_underlying_tool_uis_in_new_tabs() -> No
         assert links[0]["url"] == expected_url
         assert links[0]["targetBlank"] is True
 
+    # GlitchTip UI links deep-link straight to the canonical org's issues list
+    # (`/nyxgpt/issues/`) rather than the bare host -- the Projects landing
+    # page, and GlitchTip's own project-slug-based issue permalinks, both
+    # 404 against GlitchTip's org-scoped frontend routing (#3565).
+    glitchtip_issues_url = error_tracking_defaults["glitchtip_ui_url"] + "/nyxgpt/issues/"
     assert_single_link("Recent nyxgpt traces", tracing_defaults["jaeger_ui_url"])
-    assert_single_link(
-        "GlitchTip: open issues (nyxgpt-backend)", error_tracking_defaults["glitchtip_ui_url"]
-    )
-    assert_single_link(
-        "GlitchTip: recent errors (nyxgpt-backend)", error_tracking_defaults["glitchtip_ui_url"]
-    )
+    assert_single_link("GlitchTip: open issues (nyxgpt-backend)", glitchtip_issues_url)
+    assert_single_link("GlitchTip: recent errors (nyxgpt-backend)", glitchtip_issues_url)
     assert_single_link("nyxGPT SRE Home", monitoring_defaults["prometheus_ui_url"])
 
     # The old top-of-dashboard GlitchTip text link is absorbed into the

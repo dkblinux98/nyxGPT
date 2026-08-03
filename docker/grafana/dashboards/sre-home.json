@@ -4,7 +4,7 @@
   "tags": ["nyxgpt", "sre", "home"],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 7,
+  "version": 8,
   "refresh": "1m",
   "time": { "from": "now-1h", "to": "now" },
   "panels": [
@@ -561,17 +561,18 @@
       "gridPos": { "h": 2, "w": 24, "x": 0, "y": 89 },
       "options": {
         "mode": "markdown",
-        "content": "GlitchTip UI: [localhost:8080](http://localhost:8080)"
+        "content": "GlitchTip UI: [localhost:8080/nyxgpt/issues/](http://localhost:8080/nyxgpt/issues/) (log in as admin@nyxgpt.local -- see docs/ops.md#glitchtip)"
       }
     },
     {
       "id": 22,
       "title": "GlitchTip: open issues (nyxgpt-backend)",
+      "description": "True unresolved-issue count (via a limit high enough to return every row in one page, capped at GlitchTip's own 1000-issue hard limit) -- not a first-page row count, which pins at 50 once the true count reaches the default page size.",
       "type": "stat",
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "glitchtip-infinity" },
       "gridPos": { "h": 8, "w": 6, "x": 0, "y": 91 },
       "links": [
-        { "title": "GlitchTip UI", "url": "http://localhost:8080", "targetBlank": true }
+        { "title": "GlitchTip UI", "url": "http://localhost:8080/nyxgpt/issues/", "targetBlank": true }
       ],
       "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
       "options": { "reduceOptions": { "calcs": ["count"], "fields": "/.*/" } },
@@ -581,7 +582,7 @@
           "type": "json",
           "source": "url",
           "format": "table",
-          "url": "/api/0/projects/nyxgpt/nyxgpt-backend/issues/?statsPeriod=24h&query=is%3Aunresolved",
+          "url": "/api/0/projects/nyxgpt/nyxgpt-backend/issues/?statsPeriod=24h&query=is%3Aunresolved&limit=1000",
           "url_options": { "method": "GET" },
           "root_selector": "",
           "columns": [{ "selector": "id", "text": "id", "type": "string" }],
@@ -596,8 +597,28 @@
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "glitchtip-infinity" },
       "gridPos": { "h": 8, "w": 18, "x": 6, "y": 91 },
       "links": [
-        { "title": "GlitchTip UI", "url": "http://localhost:8080", "targetBlank": true }
+        { "title": "GlitchTip UI", "url": "http://localhost:8080/nyxgpt/issues/", "targetBlank": true }
       ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Issue" },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View in GlitchTip",
+                    "url": "http://localhost:8080/nyxgpt/issues/${__value.raw}",
+                    "targetBlank": true
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
       "targets": [
         {
           "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "glitchtip-infinity" },
@@ -613,7 +634,7 @@
             { "selector": "status", "text": "Status", "type": "string" },
             { "selector": "count", "text": "Events", "type": "number" },
             { "selector": "lastSeen", "text": "Last Seen", "type": "timestamp" },
-            { "selector": "permalink", "text": "Link", "type": "string" }
+            { "selector": "id", "text": "Issue", "type": "string" }
           ],
           "refId": "A"
         }
