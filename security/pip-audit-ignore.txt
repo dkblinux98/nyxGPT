@@ -1,0 +1,20 @@
+# pip-audit suppression list (#3501)
+#
+# One vulnerability ID per line (PYSEC-..., GHSA-..., or CVE-...). The
+# "Python dependency audit (pip-audit)" CI job step reads this file and
+# passes each ID as a separate --ignore-vuln flag. Blank lines and lines
+# starting with '#' are ignored.
+#
+# Add an entry only after triage, with a comment directly above it
+# explaining WHY it's accepted (no upstream fix yet / dev-only tool not
+# shipped to users / not reachable in nyxGPT's usage of the package / etc.)
+# and the date accepted. Re-review accepted entries periodically -- a fix
+# may exist next time this file is touched.
+#
+# Format:
+#   # <justification> -- accepted <YYYY-MM-DD>
+#   <VULN-ID>
+#
+# No entries as of 2026-08-03: `pip install -e .[dev]` in a clean
+# environment (no unrelated preinstalled packages) reports zero known
+# vulnerabilities in nyxGPT's own dependency closure.
