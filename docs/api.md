@@ -2395,6 +2395,17 @@ When authentication is enabled:
 - Invalid or missing API keys return `401 Unauthorized` with a request ID for debugging
 - API keys are compared using constant-time comparison to prevent timing attacks
 
+### Startup enforcement
+
+The API refuses to start if `[api] host` is bound to a non-loopback address
+(`0.0.0.0`, a LAN IP, ...) while `[auth] enabled` isn't `true` — it exits
+with an actionable error instead of silently serving an unauthenticated API
+to the network. Loopback binds (`127.0.0.1`, `localhost`, `::1`, the
+default) are never affected regardless of the auth setting. This check
+applies to the native process only — see
+[`docs/security.md#network-security`](security.md#network-security) for why
+containerized (Compose/Kubernetes) deployments are unaffected.
+
 ### Configuration
 
 Authentication is configured in `~/.nyxGPT/config.ini` under the `[auth]` section.
