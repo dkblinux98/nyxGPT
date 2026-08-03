@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from nacl import public as nacl_public
 
 from nyxgpt import metrics as prom_metrics
 from nyxgpt import self_heal, tracing
@@ -5587,6 +5588,205 @@ def env_sync(args) -> int:
         "ops: env-sync %s",
         "succeeded" if ok else "failed",
         extra={"component": "ops", "action": "env-sync", "ok": ok},
+    )
+
+    return 0 if ok else 2
+
+
+# --- Secrets sync: config.ini -> GitHub Actions secrets (#3505) ---
+#
+# The canonical-store pattern this codifies: several external tokens
+# (Slack bot tokens, agent PATs) are write-once -- the issuing service shows
+# them only at creation, so hand-editing a second copy into GitHub's
+# Settings -> Secrets UI lets the two silently drift. config.ini is the one
+# place a human ever pastes these in (via `nyxgpt secrets setup`); this
+# pushes them outward, one direction only, to the matching Actions secret.
+# `config.SECRETS_SYNC_MANIFEST` is the sole source of truth for *which*
+# config.ini keys are in scope -- anything not listed there is never pushed.
+
+GITHUB_API_BASE_URL = "https://api.github.com"
+
+
+def _github_actions_client(pat: str) -> httpx.Client:
+    """Construct an `httpx.Client` authenticated against the GitHub REST API."""
+    return httpx.Client(
+        base_url=GITHUB_API_BASE_URL,
+        timeout=15.0,
+        headers={
+            "Authorization": f"Bearer {pat}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+
+
+def _secrets_sync_targets(cfg: ConfigParser) -> list[tuple[str, str, str]]:
+    """Return `(full_key, value, actions_secret_name)` for every manifest entry with a value.
+
+    A manifest key absent or blank in config.ini is silently skipped (nothing
+    to sync yet, not an error) -- `nyxgpt secrets setup`/manual entry decides
+    when a given secret exists.
+    """
+    from nyxgpt.config import SECRETS_SYNC_MANIFEST
+
+    targets = []
+    for full_key, actions_secret in SECRETS_SYNC_MANIFEST.items():
+        section, key = full_key.split(".", 1)
+        value = cfg.get(section, key, fallback="").strip()
+        if value:
+            targets.append((full_key, value, actions_secret))
+    return targets
+
+
+def _encrypt_for_actions_secret(public_key_b64: str, value: str) -> str:
+    """Encrypt `value` for the GitHub Actions secrets API's libsodium sealed-box scheme.
+
+    GitHub requires each secret value sealed with the repo's public key
+    (base64-encoded in its API response) before it's PUT to the API -- see
+    https://docs.github.com/en/rest/actions/secrets. Returns the
+    base64-encoded ciphertext the API expects as `encrypted_value`.
+    """
+    public_key = nacl_public.PublicKey(base64.b64decode(public_key_b64))
+    sealed_box = nacl_public.SealedBox(public_key)
+    encrypted = sealed_box.encrypt(value.encode("utf-8"))
+    return base64.b64encode(encrypted).decode("utf-8")
+
+
+def sync_secrets_to_github_actions(
+    cfg_path: Path | None = None, dry_run: bool = False
+) -> list[OpsResult]:
+    """Push `config.SECRETS_SYNC_MANIFEST`'s config.ini values to GitHub Actions secrets.
+
+    One direction only: config.ini -> Actions. Never reads a secret back from
+    GitHub (the API can't return one anyway -- write-once). `dry_run=True`
+    reports which secrets *would* be pushed (names only, no network call, no
+    values) without touching the GitHub API or requiring a valid PAT.
+    Returns one `OpsResult` per synced secret (name only in the message --
+    never the value) plus, on failure, enough detail to fix the problem
+    (missing config field, HTTP status, etc.).
+    """
+    from nyxgpt.config import (
+        get_github_pat,
+        get_github_repo_name,
+        get_github_repo_owner,
+        load_config,
+    )
+
+    cfg_path = cfg_path or (Path.home() / ".nyxGPT" / "config.ini")
+    if not cfg_path.exists():
+        return [
+            OpsResult(
+                False,
+                f"Missing config {cfg_path}",
+                "Run `nyxgpt wizard` first to generate config.ini.",
+            )
+        ]
+
+    cfg = load_config(cfg_path)
+    targets = _secrets_sync_targets(cfg)
+    if not targets:
+        return [
+            OpsResult(
+                True,
+                "No mapped secrets have a value set in config.ini -- nothing to sync",
+                "Run `nyxgpt secrets setup` (or set a mapped [monitoring]/[github] key) "
+                "first, then retry.",
+            )
+        ]
+
+    if dry_run:
+        return [
+            OpsResult(True, f"[dry-run] would sync {full_key} -> Actions secret {actions_secret}")
+            for full_key, _value, actions_secret in targets
+        ]
+
+    pat = get_github_pat(cfg)
+    if not pat:
+        return [
+            OpsResult(
+                False,
+                "Cannot sync: [github] pat is not set",
+                "Run `nyxgpt secrets setup` to configure a GitHub PAT with repo scope.",
+            )
+        ]
+    repo_owner = get_github_repo_owner(cfg)
+    repo_name = get_github_repo_name(cfg)
+    if not repo_owner or not repo_name:
+        return [
+            OpsResult(
+                False,
+                "Cannot sync: [github] repo_owner/repo_name is not set in config.ini",
+                "Set both under [github] in config.ini, then retry.",
+            )
+        ]
+
+    results: list[OpsResult] = []
+    with _github_actions_client(pat) as client:
+        try:
+            response = client.get(f"/repos/{repo_owner}/{repo_name}/actions/secrets/public-key")
+            response.raise_for_status()
+        except httpx.HTTPError as e:
+            return [
+                OpsResult(
+                    False,
+                    "Failed to fetch the repo's Actions secrets public key",
+                    f"{e} -- check [github] pat has 'repo' (or 'actions:write') scope and "
+                    f"[github] repo_owner/repo_name are correct.",
+                )
+            ]
+        public_key_data = response.json()
+        key_id = public_key_data["key_id"]
+        public_key_b64 = public_key_data["key"]
+
+        for full_key, value, actions_secret in targets:
+            try:
+                encrypted_value = _encrypt_for_actions_secret(public_key_b64, value)
+                put_response = client.put(
+                    f"/repos/{repo_owner}/{repo_name}/actions/secrets/{actions_secret}",
+                    json={"encrypted_value": encrypted_value, "key_id": key_id},
+                )
+                put_response.raise_for_status()
+            except httpx.HTTPError as e:
+                results.append(
+                    OpsResult(
+                        False,
+                        f"Failed to sync {full_key} -> Actions secret {actions_secret}",
+                        f"{e} -- verify [github] pat has permission to manage Actions secrets "
+                        f"on {repo_owner}/{repo_name}.",
+                    )
+                )
+                continue
+            results.append(OpsResult(True, f"Synced {full_key} -> Actions secret {actions_secret}"))
+
+    return results
+
+
+def secrets_sync(args) -> int:
+    """CLI entrypoint for `nyxgpt ops secrets-sync`.
+
+    Returns 0 if every mapped secret with a value synced successfully
+    (or there was nothing to sync), else 2.
+    """
+    cfg_path = Path(args.config).expanduser() if getattr(args, "config", None) else None
+    dry_run = bool(getattr(args, "dry_run", False))
+
+    logger.info(
+        "ops: secrets-sync starting (config=%s, dry_run=%s)",
+        cfg_path,
+        dry_run,
+        extra={"component": "ops", "action": "secrets-sync"},
+    )
+
+    results = sync_secrets_to_github_actions(cfg_path=cfg_path, dry_run=dry_run)
+    ok = _emit_results("secrets-sync", results)
+
+    result, message = _ops_action_outcome(results)
+    _record_ops_action("secrets-sync", "github-actions", result, message)
+
+    logger.info(
+        "ops: secrets-sync %s",
+        "succeeded" if ok else "failed",
+        extra={"component": "ops", "action": "secrets-sync", "ok": ok},
     )
 
     return 0 if ok else 2
