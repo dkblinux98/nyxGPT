@@ -183,17 +183,37 @@ heavier, full-stack path is what `terraform-local-smoke.yml` already covers
 end-to-end (scoped to `terraform/**` changes, not every push/PR).
 
 **Verified green on the release branch (2026-08-03):** `black --check .`,
-`ruff check src/ tests/`, `mypy src/`, and `pytest -v` (3026 passed, 215
-skipped, 0 failed) all pass on `v3.0.0` plus this change. One fix was needed
-to get there: `tests/integration/conftest.py`'s `api_base_url` fixture
-returned its URL unconditionally, so ~206 tests that call a live server
-directly over HTTP (as opposed to the in-process `client` TestClient
-fixture) hard-failed with a connection error instead of skipping, in any
-environment without the full stack running — inconsistent with the graceful-
-skip behavior `require_ollama`/`require_cassandra`/`require_grafana` already
-implement in the same file and that this doc's Notes section (and the
-`tests/integration/README.md`) already claims. The fixture now does the same
-reachability check and `pytest.skip`s if unreachable.
+`ruff check src/ tests/`, `mypy src/`, and `pytest -v` all pass on `v3.0.0`
+plus this change: `tests/unit/` alone is 3026 passed, 7 skipped, 0 failed;
+with no live API server/Cassandra/Ollama reachable (the lightweight CI
+runner's actual environment), `tests/integration/` is 17 passed, 192 skipped,
+0 failed — the 17 are tests that only need the in-process `client`
+TestClient, not a live server. Two fixes were needed to get there:
+
+1. `tests/integration/conftest.py`'s `api_base_url` fixture returned its URL
+   unconditionally, so ~206 tests that call a live server directly over HTTP
+   (as opposed to the in-process `client` TestClient fixture) hard-failed
+   with a connection error instead of skipping, in any environment without
+   the full stack running — inconsistent with the graceful-skip behavior
+   `require_ollama`/`require_cassandra`/`require_grafana` already implement
+   in the same file and that this doc's Notes section (and the
+   `tests/integration/README.md`) already claims. The fixture now does the
+   same reachability check and `pytest.skip`s if unreachable.
+2. That first fix introduced a regression caught in review: three
+   `autouse=True`, session-scoped cleanup fixtures
+   (`cleanup_test_rag_documents`, `cleanup_test_collections`,
+   `cleanup_test_sessions`) depended on `api_base_url` purely to read its
+   URL. Because pytest caches a `Skipped` exception raised by a
+   session-scoped fixture and re-raises it for every other requester in the
+   session, an unreachable server made `api_base_url`'s skip cascade to
+   *every* test in `tests/integration/` (208 skipped, 0 passed) rather than
+   only the tests that actually need a live server. Fixed by having those
+   three fixtures resolve the URL through a plain, non-skipping
+   `_resolve_api_base_url()` helper instead of depending on the `api_base_url`
+   fixture — they already tolerate an unreachable server via their own
+   try/except blocks, so they don't need the skip gate. Covered by
+   `tests/integration/test_conftest_fixtures.py`, which asserts none of the
+   three depend on `api_base_url`.
 
 **Known flake, not fixed here:** `test_gpu_detection_shell_false`
 (`tests/unit/test_embedding_optimization.py`) failed once in ~4 full-suite
