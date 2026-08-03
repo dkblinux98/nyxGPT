@@ -2611,6 +2611,44 @@ def test_cli_wizard_dispatch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
     assert calls == [output]
 
 
+# --- secrets setup dispatch ---
+
+
+def test_cli_secrets_setup_dispatch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import nyxgpt.cli as cli_mod
+
+    calls: list[tuple[Path | None, bool]] = []
+
+    def fake_run_secrets_setup(cfg_path=None, reconfigure=False):
+        calls.append((cfg_path, reconfigure))
+        return 0
+
+    monkeypatch.setattr(cli_mod, "run_secrets_setup", fake_run_secrets_setup)
+
+    output = tmp_path / "config.ini"
+    exit_code = cli(["secrets", "setup", "--config", str(output), "--reconfigure"])
+
+    assert exit_code == 0
+    assert calls == [(output, True)]
+
+
+def test_cli_secrets_setup_dispatch_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    import nyxgpt.cli as cli_mod
+
+    calls: list[tuple[Path | None, bool]] = []
+
+    def fake_run_secrets_setup(cfg_path=None, reconfigure=False):
+        calls.append((cfg_path, reconfigure))
+        return 0
+
+    monkeypatch.setattr(cli_mod, "run_secrets_setup", fake_run_secrets_setup)
+
+    exit_code = cli(["secrets", "setup"])
+
+    assert exit_code == 0
+    assert calls == [(None, False)]
+
+
 # --- ops command dispatch (status/doctor/restart/env-sync/logs) ---
 
 
@@ -2673,6 +2711,19 @@ def test_ops_env_sync_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert exit_code == 0
     assert len(calls) == 1
+
+
+def test_ops_secrets_sync_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    import nyxgpt.cli as cli_mod
+
+    calls: list[object] = []
+    monkeypatch.setattr(cli_mod.ops_mod, "secrets_sync", lambda args: (calls.append(args), 0)[1])
+
+    exit_code = cli(["ops", "secrets-sync", "--dry-run"])
+
+    assert exit_code == 0
+    assert len(calls) == 1
+    assert calls[0].dry_run is True
 
 
 def test_ops_logs_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
