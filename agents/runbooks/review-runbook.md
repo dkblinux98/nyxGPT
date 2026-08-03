@@ -49,6 +49,7 @@ The review-agent OWNS the review process:
 - Clear docs updates for user-facing changes
 - Reasonable maintainability
 - **End-to-end usability (Definition of Done, CLAUDE.md):** nyxGPT user features must be usable from the web interface; ops/SRE features must be operable from the SRE/admin dashboard. A backend-only implementation is a Medium (blocking) finding unless the issue explicitly scopes it backend-only with owner approval and a linked frontend follow-up issue.
+- **Workflow actor gates (#3600, going-public hardening):** any new or edited `.github/workflows/*.yml` job triggered by `issues`, `issue_comment`, `pull_request`, or `pull_request_review*` that carries write permissions or a secret-backed `GH_TOKEN` MUST gate its `if:` on the actor's identity (`comment.user.login`/`review.user.login` against `vars.HUMAN_OWNER` or the relevant agent var) — a trigger phrase with no author check is a Medium (blocking) finding. See `agents/runbooks/developer-runbook.md` §3b for the pattern and the fork-PR guard requirement on merge/review paths.
 
 ### Additional Quality Checks (comprehensive review)
 - Code quality and best practices (use CLAUDE.md for guidance)

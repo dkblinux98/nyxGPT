@@ -12,7 +12,11 @@ jobs:
   dispatch-next-issue:
     if: >
       vars.AGENTS_ENABLED == 'true' &&
-      contains(github.event.comment.body, 'READY_FOR_NEXT_ISSUE')
+      contains(github.event.comment.body, 'READY_FOR_NEXT_ISSUE') &&
+      (github.event.comment.user.login == vars.HUMAN_OWNER ||
+       github.event.comment.user.login == vars.SCRUM_AGENT ||
+       github.event.comment.user.login == vars.DEV_AGENT ||
+       github.event.comment.user.login == vars.REVIEW_AGENT)
     runs-on: ubuntu-latest
 
     env:
