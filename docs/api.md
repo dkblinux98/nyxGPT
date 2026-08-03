@@ -675,6 +675,104 @@ the save merge -- everything else in the file is untouched.
 }
 ```
 
+## Guided Secrets Setup
+
+These endpoints back `/admin/secrets` (#3505) -- the same guided flow
+`nyxgpt secrets setup` runs on the CLI, for the three human-provided
+secrets the Config Wizard above deliberately excludes (`openai`/`github`
+are agent-level sections, out of scope for `/config/sections`). See
+[`docs/configuration.md`](configuration.md#option-4-guided-secrets-setup)
+for the write-once canonical-store rationale.
+
+### `GET /api/v1/config/secrets`
+
+Returns each guided secret's metadata (label, description, where to obtain
+it, whether it can be generated) plus its current set/masked state. Never
+returns cleartext.
+
+**Response:**
+
+```json
+{
+  "secrets": [
+    {
+      "section": "auth", "key": "api_key", "full_key": "auth.api_key",
+      "label": "API authentication key",
+      "description": "Shared secret clients must send ... to call the nyxGPT API when [auth] enabled = true.",
+      "obtain": "nyxGPT can generate a strong one for you -- no external service involved.",
+      "can_generate": true, "set": false, "masked": null
+    },
+    {
+      "section": "github", "key": "pat", "full_key": "github.pat",
+      "label": "GitHub Personal Access Token",
+      "description": "Authenticates the GitHub agent system's automation ... and secrets-sync's calls to the GitHub Actions secrets API.",
+      "obtain": "https://github.com/settings/tokens -- generate a token with `repo` scope.",
+      "can_generate": false, "set": true, "masked": "ghp_****...wxyz"
+    }
+  ]
+}
+```
+
+### `POST /api/v1/config/secrets`
+
+Validates and writes one guided secret. Only `(section, key)` pairs in
+`secrets_setup.GUIDED_SECRETS` are accepted -- unlike `/config/sections`,
+this can't be used to write an arbitrary config.ini field. The value is
+never echoed back; only a masked preview is returned.
+
+**Request (manual value):**
+
+```json
+{ "section": "openai", "key": "api_key", "value": "sk-..." }
+```
+
+**Request (generate -- `auth.api_key` only):**
+
+```json
+{ "section": "auth", "key": "api_key", "generate": true }
+```
+
+**Response:**
+
+```json
+{
+  "set": "openai.api_key",
+  "masked": "sk-a****wxyz",
+  "secrets": { "...": "full updated list, same shape as GET" }
+}
+```
+
+Returns `404` for a section/key that isn't a guided secret, `400` if
+`section`/`key`/`value` is missing or malformed, and `422` with a
+`section.key: reason` detail if the value fails format validation.
+
+### `POST /api/v1/config/secrets/sync`
+
+Wraps `ops.sync_secrets_to_github_actions` -- the same function `nyxgpt ops
+secrets-sync` calls -- so the dashboard action and the CLI command can never
+drift. Pushes `config.SECRETS_SYNC_MANIFEST`'s config.ini values to this
+repo's GitHub Actions secrets, one direction only. Results carry secret
+*names* only; a value is never present in the response, logs, or the admin
+activity record.
+
+**Request:**
+
+```json
+{ "dry_run": false }
+```
+
+**Response:**
+
+```json
+{
+  "ok": true,
+  "dry_run": false,
+  "results": [
+    { "ok": true, "message": "Synced monitoring.slack_bot_token -> Actions secret SLACK_BOT_TOKEN", "details": "" }
+  ]
+}
+```
+
 ### `POST /api/v1/config/restart`
 
 Wraps `nyxgpt ops restart` in native mode. Superseded for the wizard/Admin

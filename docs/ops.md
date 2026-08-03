@@ -40,6 +40,7 @@ nyxgpt ops stop
 nyxgpt ops down
 nyxgpt ops doctor
 nyxgpt ops env-sync
+nyxgpt ops secrets-sync
 nyxgpt ops logs
 nyxgpt ops observability
 nyxgpt ops glitchtip-init
@@ -474,6 +475,31 @@ config.ini, before `docker compose up`.
 
 ---
 
+## `nyxgpt ops secrets-sync`
+
+Pushes a declared subset of `~/.nyxGPT/config.ini`'s write-once secrets
+(Slack bot token, agent PATs) to this repo's **GitHub Actions** secrets --
+one direction only, config.ini → Actions. See [Canonical secret store &
+sync to GitHub Actions](configuration.md#canonical-secret-store--sync-to-github-actions)
+for the full rationale and the `config.ini` key → Actions secret mapping.
+
+Usage:
+
+```bash
+nyxgpt ops secrets-sync            # push every mapped secret that has a value set
+nyxgpt ops secrets-sync --dry-run  # show which secrets would be pushed, by name only
+```
+
+Requires `[github] pat` (with permission to manage Actions secrets) and
+`[github] repo_owner`/`repo_name` in config.ini -- set them with `nyxgpt
+secrets setup` if you haven't already. Each value is sealed with the repo's
+Actions public key before it's sent (libsodium sealed-box, via PyNaCl); a
+value never appears in this command's output, logs, or tracebacks -- only
+the secret's name and success/failure. Also available from the web UI at
+`/admin/secrets`.
+
+---
+
 ## `nyxgpt ops logs`
 
 Prints recent logs for a single component — a wrapped `docker compose
@@ -792,7 +818,7 @@ see [homebrew.md](homebrew.md#api-logs).
 ### Structured `nyxgpt ops` activity logging
 
 Every `nyxgpt ops` command (`install`, `status`, `restart`, `stop`, `down`, `logs`,
-`env-sync`, `doctor`, `observability`, `glitchtip-init`) logs its steps and outcomes from
+`env-sync`, `secrets-sync`, `doctor`, `observability`, `glitchtip-init`) logs its steps and outcomes from
 `src/nyxgpt/ops.py` with structured fields (via the logging module's
 `extra={}`, rendered as JSON when `[logging] format = json` -- see
 [configuration.md](configuration.md#logging-section)), in addition to the
