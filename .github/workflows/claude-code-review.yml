@@ -31,7 +31,10 @@ jobs:
         contains(toJSON(github.event.pull_request.assignees.*.login),
                  vars.REVIEW_AGENT))) ||
       (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
-       contains(github.event.comment.body, '@review')) ||
+       contains(github.event.comment.body, '@review') &&
+       (github.event.comment.user.login == vars.HUMAN_OWNER ||
+        github.event.comment.user.login == vars.REVIEW_AGENT ||
+        github.event.comment.user.login == vars.DEV_AGENT)) ||
       github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
@@ -57,6 +60,27 @@ jobs:
           else
             echo "pr=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Verify PR head repo (fork guard)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          PR="${{ steps.pr_number.outputs.pr }}"
+
+          # A review that reaches APPROVE feeds review_agent_auto_review.yml's
+          # merge path via the pull_request_review event. Refusing fork PRs
+          # here closes the chain at its first link, regardless of trigger
+          # (review_requested/synchronize/@review comment/workflow_dispatch).
+          HEAD_REPO=$(gh pr view "$PR" --json headRepositoryOwner,headRepository \
+            --jq '"\(.headRepositoryOwner.login)/\(.headRepository.name)"')
+
+          if [[ "$HEAD_REPO" != "${{ github.repository }}" ]]; then
+            echo "::error::PR #$PR head repo ($HEAD_REPO) is not this repo -- refusing fork PR"
+            exit 1
+          fi
+
+          echo "✓ PR #$PR head repo matches ${{ github.repository }}"
 
       - name: Checkout PR head (workflow_dispatch / issue_comment)
         # workflow_dispatch and issue_comment have no pull_request context, so
