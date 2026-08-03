@@ -74,20 +74,22 @@ key, and [CLI](docs/cli.md) for the full command reference.
 ### Start services
 
 ```bash
-nyxgpt ops install    # installs and starts API, web UI, Cassandra helpers, observability
-nyxgpt ops doctor      # verify everything is healthy
+nyxgpt up    # installs and starts API, web UI, Cassandra helpers, observability;
+             # waits for everything to report healthy, then prints the web UI URL
 ```
 
 Then chat from the CLI or the [local web UI](docs/ui.md#local-web-ui-nextjs)
-(`http://127.0.0.1:3000`, started by `nyxgpt ops install` or
-`nyxgpt ops restart web`):
+(printed by `nyxgpt up`, normally `http://127.0.0.1:3000`):
 
 ```bash
 nyxgpt chat "Hello"
 ```
 
-`nyxgpt ops` also covers restarting, stopping, and tearing down every
-component — see [Ops helpers](docs/ops.md). Alternative deployment paths
+`nyxgpt up`/`nyxgpt down` are thin aliases for `nyxgpt ops install`/
+`nyxgpt ops down` (see [Ops helpers](docs/ops.md#nyxgpt-up--nyxgpt-down));
+`nyxgpt ops` itself also covers restarting, stopping, and checking the
+health of every component (`nyxgpt ops doctor`) — see
+[Ops helpers](docs/ops.md). Alternative deployment paths
 (a single-command containerized stack, a local Kubernetes cluster with
 canary rollout, or Terraform-managed local infrastructure)
 are documented in [Docker Compose](docs/docker-compose.md),

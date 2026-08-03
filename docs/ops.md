@@ -33,6 +33,8 @@ Logs default to:
 ## Command Summary
 
 ```bash
+nyxgpt up              # alias for `nyxgpt ops install` + health-wait + URL
+nyxgpt down            # alias for `nyxgpt ops down`
 nyxgpt ops install
 nyxgpt ops status
 nyxgpt ops restart
@@ -44,6 +46,47 @@ nyxgpt ops logs
 nyxgpt ops observability
 nyxgpt ops glitchtip-init
 nyxgpt ops migrate-volumes
+```
+
+---
+
+## `nyxgpt up` / `nyxgpt down`
+
+`nyxgpt up` and `nyxgpt down` are thin, top-level aliases for
+[`nyxgpt ops install`](#nyxgpt-ops-install) and
+[`nyxgpt ops down`](#nyxgpt-ops-down) -- same single code path, no forked
+behavior, every mode flag (`--terraform`, `--kubernetes`, `--local`,
+`--skip-observability`, `--app-only`, `--volumes --yes-really`, ...) passes
+straight through unchanged. They exist because `up`/`down` is the first
+thing most operators reach for, before discovering the fuller `nyxgpt ops`
+surface.
+
+`nyxgpt up`'s only difference from calling `install` directly: once the
+reconcile finishes, it waits for every desired component to report healthy
+(reusing the same cross-mode probes `nyxgpt self-heal status` uses --
+`self_heal.list_component_status()`) and then prints the web UI URL:
+
+```bash
+$ nyxgpt up
+...
+Waiting for components to report healthy...
+nyxGPT is up: http://127.0.0.1:3000
+```
+
+- `--timeout SECONDS` — how long to wait for health before giving up
+  (default 180)
+- `--no-wait` — return as soon as `install` finishes, without waiting for
+  health or printing the URL
+- Under `--kubernetes`, Services are ClusterIP-only, so `up` prints
+  `kubectl -n nyxgpt port-forward` instructions instead of claiming the URL
+  is directly reachable (see [kubernetes.md](kubernetes.md#4-verify))
+
+Both are idempotent, same as `install`/`down` themselves: re-running `up`
+just reconciles and re-waits; re-running `down` on an already-torn-down
+stack is a no-op.
+
+```bash
+nyxgpt down    # exactly `nyxgpt ops down`
 ```
 
 ---
