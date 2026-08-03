@@ -164,7 +164,7 @@ def find_guided_secret(section: str, key: str) -> GuidedSecret | None:
     return _BY_FULL_KEY.get(f"{section}.{key}")
 
 
-def _mask(value: str) -> str:
+def mask_secret(value: str) -> str:
     """Mask a secret for display, keeping only a few edge characters."""
     if not value:
         return ""
@@ -192,7 +192,7 @@ def secret_status(cfg: ConfigParser) -> list[dict[str, Any]]:
                 "obtain": s.obtain,
                 "can_generate": s.generate is not None,
                 "set": bool(raw),
-                "masked": _mask(raw) if raw else None,
+                "masked": mask_secret(raw) if raw else None,
             }
         )
     return out
@@ -259,17 +259,19 @@ def run_secrets_setup(cfg_path: Path | None = None, reconfigure: bool = False) -
 
         existing = cfg.get(spec.section, spec.key, fallback="").strip()
         if existing and not reconfigure:
-            print(f"Already set ({_mask(existing)}) -- skipping. Use --reconfigure to change it.")
+            print(
+                f"Already set ({mask_secret(existing)}) -- skipping. Use --reconfigure to change it."
+            )
             continue
         if existing and reconfigure:
-            print(f"Currently set ({_mask(existing)}).")
+            print(f"Currently set ({mask_secret(existing)}).")
 
         if spec.generate is not None:
             choice = input("Generate a value automatically? (Y/n): ").strip().lower()
             if choice in ("", "y", "yes"):
                 value = spec.generate()
                 write_secret(cfg_path, spec, value)
-                print(f"Generated and saved ({_mask(value)}).")
+                print(f"Generated and saved ({mask_secret(value)}).")
                 cfg = _read_config(cfg_path)
                 continue
 
@@ -289,7 +291,7 @@ def run_secrets_setup(cfg_path: Path | None = None, reconfigure: bool = False) -
                 attempts += 1
                 print(f"Invalid value: {e}")
                 continue
-            print(f"Saved ({_mask(value.strip())}).")
+            print(f"Saved ({mask_secret(value.strip())}).")
             cfg = _read_config(cfg_path)
             break
         else:
@@ -310,6 +312,7 @@ __all__ = [
     "GUIDED_SECRETS",
     "SecretValidationError",
     "find_guided_secret",
+    "mask_secret",
     "secret_status",
     "validate_secret_value",
     "write_secret",
