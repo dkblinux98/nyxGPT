@@ -912,6 +912,7 @@ def _apply_hot_config_updates(updates: dict[str, Any]) -> dict[str, Any]:
     # Persist changes
     with cfg_path.open("w", encoding="utf-8") as f:
         parser.write(f)
+    os.chmod(cfg_path, 0o600)
 
     # Invalidate config cache to force reload on next access
     # This ensures mtime-based caching works even for rapid writes/reads
@@ -971,6 +972,7 @@ def _apply_auth_config_updates(updates: dict[str, Any]) -> dict[str, Any]:
 
     with cfg_path.open("w", encoding="utf-8") as f:
         parser.write(f)
+    os.chmod(cfg_path, 0o600)
 
     nyxgpt.config._CACHED_CFG = None
     nyxgpt.config._CACHED_PATH = None

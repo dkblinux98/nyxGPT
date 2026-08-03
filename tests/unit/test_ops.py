@@ -2439,6 +2439,9 @@ def test_persist_compose_file_path_records_path(monkeypatch, tmp_path):
     parser.read(cfg_path)
     assert parser.get("paths", "compose_file") == str(repo / "docker-compose.yml")
 
+    # config.ini carries secrets ([auth] api_key etc.) -- must land 0600 (#3500).
+    assert oct(cfg_path.stat().st_mode & 0o777) == "0o600"
+
     # Idempotent: second run reports already-recorded, file unchanged.
     again = ops._persist_compose_file_path()
     assert again[0].ok is True
@@ -11018,6 +11021,11 @@ def test_generate_compose_config_derives_from_native(tmp_path, monkeypatch):
 
     results = ops._generate_compose_config()
     assert all(r.ok for r in results)
+
+    # Secrets ([auth] api_key, [monitoring] grafana_admin_password, ...) are
+    # copied verbatim from the native config -- must land 0600, same as the
+    # native file (#3500).
+    assert oct(out.stat().st_mode & 0o777) == "0o600"
 
     text = out.read_text(encoding="utf-8")
     # service endpoints rewritten for the container network
