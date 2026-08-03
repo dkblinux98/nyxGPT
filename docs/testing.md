@@ -102,6 +102,109 @@ See `web/tests/README.md` for detailed web UI testing documentation.
 
 ---
 
+## Standalone CI gate (#3502)
+
+`claude-code-review.yml` runs `pytest tests/unit/` and a non-blocking `mypy`
+only as part of an agent-driven review — there is no independent workflow
+that runs on every push/PR regardless of agent involvement, and what does run
+never covers `tests/integration/`.
+
+**Agent tokens cannot write `.github/workflows/*`** (same hand-carry pattern
+as #3454/#3479/#3480's `docs/sprint-autopilot.md`), so the workflow below is
+proposed here for the owner to apply by hand as a new file,
+`.github/workflows/ci-tests.yml`:
+
+```yaml
+name: CI - Tests & Type Check
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # Same push/PR scoping as terraform-local-smoke.yml: run on every PR, but
+    # only on pushes that land on the release branch (not every feature branch).
+    if: github.event_name == 'pull_request' || github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install nyxgpt (editable, dev extras)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: mypy src/ (blocking)
+        run: mypy src/
+
+      - name: pytest - full tests/ suite
+        run: pytest -v
+```
+
+A plain `pytest -v` already covers the full `tests/` suite (`testpaths =
+["tests"]` in `pyproject.toml`, no `-m` filter) — unit tests always run for
+real; integration tests run for real wherever a required service is
+reachable and skip gracefully otherwise (see Notes below), satisfying "unit +
+integration where environment-feasible" without provisioning a service
+container in this lightweight gate.
+
+**Why no Cassandra/Ollama service containers here:** standing up Cassandra as
+a GitHub Actions service container was evaluated directly (a fresh
+`cassandra:latest` container, port-mapped to `localhost:9042`) against the 7
+tests in `tests/unit/test_rag_update_detection.py` gated on
+`cassandra_test_setup`. They still fail — not skip — against a *truly* fresh
+Cassandra: `ingest_document`'s auto-bootstrap (`rag.py`'s `not ensure_schema
+and not store.schema_exists()` check, meant to create the keyspace on a
+collection's first ingest) never gets a chance to run, because
+`get_collection_settings()` is called unconditionally first (`rag.py:962`,
+to look up a per-collection embedding-model override) and that method calls
+`ensure_settings_table()` (`vectorstore_cassandra.py:1389`), which touches
+the keyspace before it exists and raises `Keyspace 'nyxgpt' doesn't exist`.
+In every environment these tests currently pass in, something upstream
+(`nyxgpt ops install`, a prior test run, a dev's live stack) already created
+the keyspace — a genuinely fresh Cassandra hits this ordering bug. Fixing
+`ingest_document`'s bootstrap ordering is out of scope for this CI-gate issue
+(a RAG core-module fix, not a testing-infrastructure one) and is left as a
+follow-up if the owner wants this class of integration test to run for real
+in CI rather than skip. `tests/integration/*` needing a live Ollama and/or a
+running `nyxgpt` API server (the large majority of the marked `integration`
+tests) are further out of reach for a lightweight gate regardless — that
+heavier, full-stack path is what `terraform-local-smoke.yml` already covers
+end-to-end (scoped to `terraform/**` changes, not every push/PR).
+
+**Verified green on the release branch (2026-08-03):** `black --check .`,
+`ruff check src/ tests/`, `mypy src/`, and `pytest -v` (3026 passed, 215
+skipped, 0 failed) all pass on `v3.0.0` plus this change. One fix was needed
+to get there: `tests/integration/conftest.py`'s `api_base_url` fixture
+returned its URL unconditionally, so ~206 tests that call a live server
+directly over HTTP (as opposed to the in-process `client` TestClient
+fixture) hard-failed with a connection error instead of skipping, in any
+environment without the full stack running — inconsistent with the graceful-
+skip behavior `require_ollama`/`require_cassandra`/`require_grafana` already
+implement in the same file and that this doc's Notes section (and the
+`tests/integration/README.md`) already claims. The fixture now does the same
+reachability check and `pytest.skip`s if unreachable.
+
+**Known flake, not fixed here:** `test_gpu_detection_shell_false`
+(`tests/unit/test_embedding_optimization.py`) failed once in ~4 full-suite
+runs during this verification, always passing in isolation and on rerun —
+consistent with the module-global `_gpu_info`/`_gpu_info_updated` cache in
+`nyxgpt/rag/embeddings.py` racing with a leftover background thread from an
+earlier async embedding test via the shared thread pool. Pre-existing and
+unrelated to this change; flagged here per this issue's "explicitly
+skip-with-comment anything red" allowance rather than fixed, since resolving
+the race is a concurrency fix in `embeddings.py`, not CI-gate scope.
+
 ## Notes
 
 - Integration tests will be skipped automatically if required services are not reachable.
