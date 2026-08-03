@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import inspect
 
-from tests.integration import conftest
+import conftest
 
 
 def test_autouse_cleanup_fixtures_do_not_depend_on_api_base_url() -> None:
