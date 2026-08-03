@@ -109,6 +109,70 @@ never rely on comment/body text alone (#3600, going-public hardening).
   the requirement is scoped to jobs that write `contents`, `issues`, or
   `pull-requests`, or that hold a write-scoped secret token.
 
+## 3c) Workflow actor-gate audit (#3600, 2026-08-03)
+
+Point-in-time audit of every `.github/workflows/*.yml` job triggered by
+`issues`, `issue_comment`, `pull_request`, or `pull_request_review*`, taken
+when the three gates in §3b were added ahead of the repo going public.
+Extend this table (don't replace it) the next time a workflow with one of
+these triggers is added or edited — the review-runbook checklist entry for
+§3b points back here.
+
+| Workflow | Trigger(s) | Write scope | Actor gate | Notes |
+|---|---|---|---|---|
+| `review_agent_auto_review.yml` | `issue_comment`, `pull_request_review` | `contents`/`pull-requests`/`issues: write`, `REVIEW_AGENT_TOKEN` | `comment.user == HUMAN_OWNER` (manual overrides) / `REVIEW_AGENT` (auto+structured) + fork-PR guard | Fixed by #3600 |
+| `notify_scrum_ready.yml` | `issue_comment` | `SCRUMMASTER_AGENT_TOKEN`, dispatches the scrummaster select-and-start loop | commenter ∈ `{HUMAN_OWNER, SCRUM_AGENT, DEV_AGENT, REVIEW_AGENT}` | Fixed by #3600 |
+| `claude-code-review.yml` | `pull_request`(review_requested,synchronize), `issue_comment`, `workflow_dispatch` | Bash/Write/Edit + `CLAUDE_CODE_OAUTH_TOKEN` | `@review` path: commenter ∈ `{HUMAN_OWNER, REVIEW_AGENT, DEV_AGENT}` + fork-PR guard; other triggers already gated on `requested_reviewer`/`assignee==REVIEW_AGENT` | Fixed by #3600 |
+| `handle_acceptance_failure.yml` | `issue_comment` | issues/PR write, `DEV_AGENT_TOKEN` | `comment.user == HUMAN_OWNER` | Reference pattern, unchanged |
+| `developer_auto_implement.yml` | `issues`(assigned), `issue_comment` | `contents`/`issues`/PR write, `DEV_AGENT_TOKEN` | assignee==DEV_AGENT (issues) / `author_association==OWNER` or `user.login==DEV_AGENT` (`RETRY_IMPLEMENTATION`) | Reference pattern, unchanged |
+| `scrummaster_sprint_reorg_apply.yml` | `issue_comment` | project field writes | `author_association==OWNER` + release-issue check | Unchanged |
+| `acceptance_plan.yml` | `issues`(edited) | issues write | `github.actor==HUMAN_OWNER` + plan marker in body | Unchanged |
+| `add-to-release-issue-on-milestone.yml` | `issues`(milestoned) | issues write (`GITHUB_TOKEN`) | none, but `milestoned` can only be produced by a user with write access — no public-actor path exists | Unchanged, no gate needed |
+| `assign_backlog.yml` | `issues`(opened,reopened) | issues write (`SCRUMMASTER_AGENT_TOKEN`), adds an assignee | none besides `AGENTS_ENABLED` | Unchanged — write is scoped to adding scrummaster-agent as assignee on the triggering issue itself; no cross-resource write, no code exec, no merge |
+| `ensure_project_hygiene.yml` | `issues`(opened,reopened), `pull_request`(opened,reopened) | issues/PR write (`SCRUMMASTER_AGENT_TOKEN`) | none besides `event_name` checks | Unchanged — writes only project fields/labels/milestone on the same issue/PR that triggered it; no cross-resource write |
+| `auto-check-tasklist.yml` | `issues`(closed), `repository_dispatch` | issues write | none besides `AGENTS_ENABLED` | Unchanged — only checks a box on a tracking issue that already contains an unchecked `- [ ] #<closed-issue-number>` line placed there by scrummaster automation beforehand; an attacker can close only issues they already have permission to close, and gains no reference in a tracking issue they don't already appear in |
+| `link_revert_pr_to_issue.yml` | `pull_request`(opened) | pull-requests write (`github.token`) | gated on `body` `startsWith('Reverts')` (attacker-controlled string) | Unchanged — re-verified during this audit: every write (`gh pr edit`, the informational comment) targets `github.event.pull_request.number`, i.e. the PR the attacker themselves just opened. Crafting a "Reverts owner/repo#N" body lets an attacker rewrite the body of *their own* PR to include a `Closes #ISSUE` line (extracted read-only from a real PR's linked issue) — this writes no resource the attacker doesn't already control, and any downstream merge/close of that PR is independently gated elsewhere. No actor gate added. |
+| `notify-merge-conflicts.yml` | `pull_request`(opened,synchronize,reopened) | issues write (comment only) | none | Unchanged — notification only, no merge/code-exec |
+| `delete_branch_on_pr_close.yml` | `pull_request`(closed) | contents write (branch delete) | none, but explicitly skips fork-head PRs + branch allow-pattern + deny-list | Unchanged — already scoped safely by construction |
+| `claude.yml` | `issue_comment`, `pull_request_review_comment`, `issues`(opened,assigned), `pull_request_review` | Bash/Read/Write/Edit, `CLAUDE_CODE_OAUTH_TOKEN`; job-level `GITHUB_TOKEN` is read-only | **none** — any `@claude` mention triggers a full agentic session | **Known gap, out of #3600's scope.** The read-only job token can't push/merge directly, but on a public repo any user can trigger a costly agent session that posts comments under the bot's identity. Flagged for an owner decision (gate to `HUMAN_OWNER`/agent identities, or accept the risk for public Q&A) via a fast-follow issue. |
+| `admin_label_rename.yml`, `bulk_set_issue_status.yml`, `promote_accepted_features.yml`, `reconcile_closed_backlog_status.yml`, `scrummaster_sprint_report.yml`, `usage_limit_retry.yml`, `terraform-local-smoke.yml`, `validate-web-routes.yml` | `workflow_dispatch`/`schedule`/path-filtered CI | varies | N/A | No comment/issue-content-driven public-actor path |
+
+**Verification.** Each new `if:` condition was hand-traced against
+representative actors:
+
+- `review_agent_auto_review.yml`: `comment.user.login == vars.HUMAN_OWNER &&
+  contains(body,'@approve-merge')` evaluates `true` only when HUMAN_OWNER
+  comments `@approve-merge`; `false` for any other commenter regardless of
+  body content, including a fork contributor.
+- `notify_scrum_ready.yml`: the commenter-in-set check evaluates `true` for
+  HUMAN_OWNER/SCRUM_AGENT/DEV_AGENT/REVIEW_AGENT comments containing
+  `READY_FOR_NEXT_ISSUE`; `false` otherwise.
+- `claude-code-review.yml`: the `@review` path evaluates `true` only for
+  HUMAN_OWNER/REVIEW_AGENT/DEV_AGENT; the `review_requested`/`synchronize`/
+  `workflow_dispatch` paths are unchanged and were not touched.
+- Fork-PR guard: `gh pr view <PR> --json headRepositoryOwner,headRepository`
+  compared against `github.repository` — traced against this repo's own PR
+  #3603 (`headRepositoryOwner/headRepository` == `dkblinux98/nyxGPT`) to
+  confirm the guard does not false-positive on same-repo PRs.
+
+`issue_comment`-triggered workflows execute the workflow definition from the
+repo's **default branch**, so these specific gates only take effect once
+merged (v3.0.0 is also the default branch — see the issue's Technical
+Details) and cannot be exercised live pre-merge. Two things stand in for a
+live run: (1) the gates reuse the exact `comment.user.login ==
+vars.HUMAN_OWNER`/`author_association` pattern already live in
+`handle_acceptance_failure.yml` and `developer_auto_implement.yml`, which
+fired successfully for the allowed actor multiple times over this issue's
+own lifecycle (developer-agent runs
+[30854816600](https://github.com/dkblinux98/nyxGPT/actions/runs/30854816600)
+and
+[30856730941](https://github.com/dkblinux98/nyxGPT/actions/runs/30856730941),
+both triggered by HUMAN_OWNER/DEV_AGENT actions on issue #3600) — proving the
+pattern in this exact CI environment, not just in the abstract; and (2) per
+the issue's own acceptance criteria, the next `@approve-merge`,
+`READY_FOR_NEXT_ISSUE`, and `@review` invocations in normal agent-loop
+operation after merge exercise the new gates for real, for an allowed actor.
+
 ## 4) Verification loop (MANDATORY - ALL must pass before commit)
 Run ALL of the following checks and fix issues until they pass:
 - `black --check .` - If fails, run `black .` to auto-format, then re-check
