@@ -9,6 +9,7 @@ parse errors by falling back to that default rather than raising.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
 import secrets
@@ -298,6 +299,58 @@ def get_vectorstore_dir(cfg: ConfigParser) -> Path:
 def get_api_host(cfg: ConfigParser) -> str:
     """Return the API bind host (``[api] host``), falling back to ``127.0.0.1``."""
     return cfg.get("api", "host", fallback="127.0.0.1")
+
+
+def is_loopback_host(host: str) -> bool:
+    """Return whether ``host`` only ever resolves within this machine.
+
+    True for ``localhost`` and any loopback IP (``127.0.0.0/8``, ``::1``).
+    Anything else -- ``0.0.0.0``, a LAN/public IP, a non-loopback hostname --
+    is a bind that other machines can potentially reach.
+    """
+    host = host.strip().lower()
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def get_auth_enabled(cfg: ConfigParser) -> bool:
+    """Return whether shared-secret API auth is enabled (``[auth] enabled``).
+
+    Disabled by default (local-first, single-trusted-user posture).
+    """
+    try:
+        return cfg.getboolean("auth", "enabled", fallback=False)
+    except ValueError as e:
+        _log_fallback_once("auth.enabled", f"Invalid auth.enabled in config, using False: {e}")
+        return False
+
+
+def validate_bind_security(cfg: ConfigParser) -> str | None:
+    """Return an actionable error message if the API would bind non-loopback with auth off.
+
+    A non-loopback ``[api] host`` (``0.0.0.0``, a LAN IP, ...) combined with
+    ``[auth] enabled`` unset or false lets anyone who can reach this host or
+    network call the API with no credentials -- exposure without auth must be
+    impossible, not just discouraged (see ``docs/security.md``). Returns
+    ``None`` when the bind is loopback-only, or when auth is enabled.
+    """
+    host = get_api_host(cfg)
+    if is_loopback_host(host):
+        return None
+    if get_auth_enabled(cfg):
+        return None
+    return (
+        f"Refusing to start: [api] host = {host} is not loopback-only, but "
+        "[auth] enabled is not set to true. Binding a non-loopback address "
+        "without authentication would let anyone who can reach this host or "
+        "network call the API with no credentials. Fix: run `nyxgpt wizard` "
+        "to set [auth] enabled = true with a generated api_key, or set "
+        "[api] host back to 127.0.0.1 for local-only use."
+    )
 
 
 def get_api_port(cfg: ConfigParser) -> int:
@@ -1439,6 +1492,9 @@ __all__ = [
     "get_vectorstore_dir",
     "get_api_host",
     "get_api_port",
+    "is_loopback_host",
+    "get_auth_enabled",
+    "validate_bind_security",
     "get_rag_enabled",
     "get_rag_chat_top_k",
     "get_rag_min_score",
