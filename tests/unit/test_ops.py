@@ -11188,3 +11188,133 @@ def test_env_sync_generates_compose_config(tmp_path, monkeypatch):
     assert rc == 0
     assert out.exists()
     assert "host = 0.0.0.0" in out.read_text(encoding="utf-8")
+
+
+@pytest.mark.unit
+def test_wait_for_stack_healthy_returns_true_when_all_healthy(monkeypatch):
+    """`_wait_for_stack_healthy` returns True immediately once every desired
+    component reports healthy, without needing to poll or sleep."""
+    statuses = [
+        self_heal.ComponentStatus(
+            service="api", container="nyxgpt-api", state="running", health="healthy", healthy=True
+        ),
+        self_heal.ComponentStatus(
+            service="web", container="nyxgpt-web", state="running", health="healthy", healthy=True
+        ),
+    ]
+    monkeypatch.setattr(self_heal, "list_component_status", lambda: statuses)
+    sleeps = []
+    monkeypatch.setattr(time, "sleep", lambda s: sleeps.append(s))
+
+    assert ops._wait_for_stack_healthy(timeout=5.0, poll_interval=1.0) is True
+    assert sleeps == []
+
+
+@pytest.mark.unit
+def test_wait_for_stack_healthy_ignores_non_desired_components(monkeypatch):
+    """An unhealthy but `desired=False` component (disabled profile, or
+    intentionally stopped -- see `list_component_status`) must not block the
+    wait, matching `heal_now`'s automatic-pass semantics."""
+    statuses = [
+        self_heal.ComponentStatus(
+            service="api", container="nyxgpt-api", state="running", health="healthy", healthy=True
+        ),
+        self_heal.ComponentStatus(
+            service="grafana",
+            container="grafana",
+            state="absent",
+            health="",
+            healthy=False,
+            desired=False,
+        ),
+    ]
+    monkeypatch.setattr(self_heal, "list_component_status", lambda: statuses)
+
+    assert ops._wait_for_stack_healthy(timeout=5.0, poll_interval=1.0) is True
+
+
+@pytest.mark.unit
+def test_wait_for_stack_healthy_returns_false_on_timeout(monkeypatch):
+    """Times out (returns False) rather than polling forever when a desired
+    component never reports healthy."""
+    unhealthy = [
+        self_heal.ComponentStatus(
+            service="ollama", container="ollama", state="running", health="starting", healthy=False
+        )
+    ]
+    monkeypatch.setattr(self_heal, "list_component_status", lambda: unhealthy)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+
+    assert ops._wait_for_stack_healthy(timeout=0.0, poll_interval=0.0) is False
+
+
+@pytest.mark.unit
+def test_ops_up_returns_install_failure_without_waiting(monkeypatch):
+    """`up` propagates a failing `install()` without ever calling the health-wait."""
+    monkeypatch.setattr(ops, "install", lambda args: 2)
+    waited = []
+    monkeypatch.setattr(ops, "_wait_for_stack_healthy", lambda **kw: waited.append(kw) or True)
+
+    rc = ops.up(MagicMock(no_wait=False, timeout=180.0, kubernetes=False))
+
+    assert rc == 2
+    assert waited == []
+
+
+@pytest.mark.unit
+def test_ops_up_no_wait_skips_health_wait_and_url(monkeypatch, capsys):
+    """`--no-wait` returns `install()`'s result as soon as it finishes."""
+    monkeypatch.setattr(ops, "install", lambda args: 0)
+    waited = []
+    monkeypatch.setattr(ops, "_wait_for_stack_healthy", lambda **kw: waited.append(kw) or True)
+
+    rc = ops.up(MagicMock(no_wait=True, timeout=180.0, kubernetes=False))
+
+    assert rc == 0
+    assert waited == []
+    assert ops.WEB_URL not in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_ops_up_waits_then_prints_web_url(monkeypatch, capsys):
+    """Once `install()` and the health-wait both succeed, `up` prints the web URL."""
+    monkeypatch.setattr(ops, "install", lambda args: 0)
+    calls = []
+    monkeypatch.setattr(ops, "_wait_for_stack_healthy", lambda **kw: calls.append(kw) or True)
+
+    rc = ops.up(MagicMock(no_wait=False, timeout=42.0, kubernetes=False))
+
+    assert rc == 0
+    assert calls == [{"timeout": 42.0}]
+    assert ops.WEB_URL in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_ops_up_times_out_returns_nonzero(monkeypatch, capsys):
+    """A health-wait timeout is reported and fails the command, even though
+    `install()` itself succeeded."""
+    monkeypatch.setattr(ops, "install", lambda args: 0)
+    monkeypatch.setattr(ops, "_wait_for_stack_healthy", lambda **kw: False)
+
+    rc = ops.up(MagicMock(no_wait=False, timeout=180.0, kubernetes=False))
+
+    assert rc == 2
+    captured = capsys.readouterr()
+    assert ops.WEB_URL not in captured.out
+    assert "not every component reported healthy" in captured.err
+
+
+@pytest.mark.unit
+def test_ops_up_kubernetes_mode_prints_port_forward_instructions(monkeypatch, capsys):
+    """Kubernetes Services are ClusterIP-only, so `up --kubernetes` must not
+    claim the web URL is directly reachable -- it needs a manual
+    `kubectl port-forward` first (see docs/kubernetes.md#4-verify)."""
+    monkeypatch.setattr(ops, "install", lambda args: 0)
+    monkeypatch.setattr(ops, "_wait_for_stack_healthy", lambda **kw: True)
+
+    rc = ops.up(MagicMock(no_wait=False, timeout=180.0, kubernetes=True))
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "port-forward" in out
+    assert ops.WEB_URL in out

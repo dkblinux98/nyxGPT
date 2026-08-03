@@ -1550,6 +1550,100 @@ def cmd_self_heal_heal(service: str | None) -> int:
     return 0 if ok else 2
 
 
+def _add_install_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add `ops install`'s arguments to `parser`.
+
+    Shared with the top-level `up` alias (#3504) so the two can never drift:
+    `up` is meant to accept exactly the same mode flags `ops install` does
+    and pass them straight through.
+    """
+    parser.add_argument("--repo-dir", help="Path to nyxGPT repo root")
+    parser.add_argument("--force", action="store_true", help="Overwrite existing files")
+    parser.add_argument(
+        "--skip-observability",
+        action="store_true",
+        help="Don't start the Grafana/Loki/Jaeger/GlitchTip Compose profiles",
+    )
+    parser.add_argument(
+        "--terraform",
+        action="store_true",
+        help=(
+            "Deploy the core stack via Terraform (init/plan/apply) instead of native/Homebrew "
+            "reconciliation -- requires --local"
+        ),
+    )
+    parser.add_argument(
+        "--kubernetes",
+        action="store_true",
+        help=(
+            "Deploy nyxgpt-api to a local Kubernetes cluster instead of native/Homebrew "
+            "reconciliation -- requires --local"
+        ),
+    )
+    locality = parser.add_mutually_exclusive_group()
+    locality.add_argument(
+        "--local",
+        action="store_true",
+        help=(
+            "Target the local machine (required with --terraform/--kubernetes; the only "
+            "locality implemented today)"
+        ),
+    )
+    locality.add_argument(
+        "--cloud",
+        action="store_true",
+        help="Target a cloud deployment (not yet implemented -- --local is the precursor)",
+    )
+    parser.add_argument(
+        "--api-key",
+        help=(
+            "API key for the Terraform/Kubernetes deploy's auth secret "
+            "(skips the interactive prompt/auto-generation)"
+        ),
+    )
+
+
+def _add_down_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add `ops down`'s arguments to `parser`.
+
+    Shared with the top-level `down` alias (#3504) so the two can never drift.
+    """
+    scope = parser.add_mutually_exclusive_group()
+    scope.add_argument(
+        "--app-only",
+        action="store_true",
+        dest="app_only",
+        help="Only tear down the core app tier (api/web/ollama/cassandra), leave observability up",
+    )
+    scope.add_argument(
+        "--observability-only",
+        action="store_true",
+        dest="observability_only",
+        help="Only tear down the observability Compose profiles, leave the app tier up",
+    )
+    scope.add_argument(
+        "--terraform",
+        action="store_true",
+        help="Tear down the Terraform-managed stack (terraform destroy) instead of native/Compose",
+    )
+    scope.add_argument(
+        "--kubernetes",
+        action="store_true",
+        help="Remove the nyxgpt namespace's Kubernetes resources instead of native/Compose",
+    )
+    parser.add_argument(
+        "--volumes",
+        action="store_true",
+        help="Also remove Compose data volumes (Cassandra/Postgres/Grafana/etc.) -- destructive",
+    )
+    parser.add_argument(
+        "--yes-really",
+        action="store_true",
+        dest="yes_really",
+        help="Required together with --volumes to confirm destructive volume removal",
+    )
+
+
 def cli(argv: list[str] | None = None) -> int:
     """Entry point for the `nyxgpt` command-line tool.
 
@@ -1816,55 +1910,36 @@ def cli(argv: list[str] | None = None) -> int:
         help="Output path for config.ini (default: ~/.nyxGPT/config.ini)",
     )
 
+    # Add up/down aliases (#3504): thin, single-code-path wrappers around
+    # `ops install`/`ops down` that most operators reach for by muscle memory
+    # before discovering `nyxgpt ops`.
+    up_p = sub.add_parser(
+        "up",
+        help="Bring up the full local stack (alias for `ops install`; waits for health, prints the web URL)",
+    )
+    _add_install_arguments(up_p)
+    up_p.add_argument(
+        "--timeout",
+        type=float,
+        default=180.0,
+        help="Seconds to wait for components to report healthy before giving up (default: 180)",
+    )
+    up_p.add_argument(
+        "--no-wait",
+        action="store_true",
+        dest="no_wait",
+        help="Return as soon as install finishes, without waiting for component health",
+    )
+
+    down_p = sub.add_parser("down", help="Tear down the full stack (alias for `ops down`)")
+    _add_down_arguments(down_p)
+
     # Add ops command
     ops_p = sub.add_parser("ops", help="Operational helpers")
     ops_sub = ops_p.add_subparsers(dest="ops_cmd", required=True)
 
     ops_install = ops_sub.add_parser("install", help="Install operational helpers")
-    ops_install.add_argument("--repo-dir", help="Path to nyxGPT repo root")
-    ops_install.add_argument("--force", action="store_true", help="Overwrite existing files")
-    ops_install.add_argument(
-        "--skip-observability",
-        action="store_true",
-        help="Don't start the Grafana/Loki/Jaeger/GlitchTip Compose profiles",
-    )
-    ops_install.add_argument(
-        "--terraform",
-        action="store_true",
-        help=(
-            "Deploy the core stack via Terraform (init/plan/apply) instead of native/Homebrew "
-            "reconciliation -- requires --local"
-        ),
-    )
-    ops_install.add_argument(
-        "--kubernetes",
-        action="store_true",
-        help=(
-            "Deploy nyxgpt-api to a local Kubernetes cluster instead of native/Homebrew "
-            "reconciliation -- requires --local"
-        ),
-    )
-    ops_install_locality = ops_install.add_mutually_exclusive_group()
-    ops_install_locality.add_argument(
-        "--local",
-        action="store_true",
-        help=(
-            "Target the local machine (required with --terraform/--kubernetes; the only "
-            "locality implemented today)"
-        ),
-    )
-    ops_install_locality.add_argument(
-        "--cloud",
-        action="store_true",
-        help="Target a cloud deployment (not yet implemented -- --local is the precursor)",
-    )
-    ops_install.add_argument(
-        "--api-key",
-        help=(
-            "API key for the Terraform/Kubernetes deploy's auth secret "
-            "(skips the interactive prompt/auto-generation)"
-        ),
-    )
+    _add_install_arguments(ops_install)
 
     ops_status = ops_sub.add_parser(
         "status", help="Show status of local services (docker/cassandra/agent/api)"
@@ -1924,40 +1999,7 @@ def cli(argv: list[str] | None = None) -> int:
     ops_down = ops_sub.add_parser(
         "down", help="Tear down the full stack (native services + Docker Compose)"
     )
-    ops_down_scope = ops_down.add_mutually_exclusive_group()
-    ops_down_scope.add_argument(
-        "--app-only",
-        action="store_true",
-        dest="app_only",
-        help="Only tear down the core app tier (api/web/ollama/cassandra), leave observability up",
-    )
-    ops_down_scope.add_argument(
-        "--observability-only",
-        action="store_true",
-        dest="observability_only",
-        help="Only tear down the observability Compose profiles, leave the app tier up",
-    )
-    ops_down_scope.add_argument(
-        "--terraform",
-        action="store_true",
-        help="Tear down the Terraform-managed stack (terraform destroy) instead of native/Compose",
-    )
-    ops_down_scope.add_argument(
-        "--kubernetes",
-        action="store_true",
-        help="Remove the nyxgpt namespace's Kubernetes resources instead of native/Compose",
-    )
-    ops_down.add_argument(
-        "--volumes",
-        action="store_true",
-        help="Also remove Compose data volumes (Cassandra/Postgres/Grafana/etc.) -- destructive",
-    )
-    ops_down.add_argument(
-        "--yes-really",
-        action="store_true",
-        dest="yes_really",
-        help="Required together with --volumes to confirm destructive volume removal",
-    )
+    _add_down_arguments(ops_down)
 
     ops_env_sync = ops_sub.add_parser(
         "env-sync",
@@ -2211,6 +2253,17 @@ def cli(argv: list[str] | None = None) -> int:
 
     if cmd == "wizard":
         return run_wizard(output_path=args.output)
+
+    if cmd == "up":
+        # Same correlation-id minting as `ops`/`canary`/`self-heal` below --
+        # `up` calls straight into ops_mod.install()/the health-wait, which
+        # both shell out and record actions the same way `ops install` does.
+        os.environ.setdefault("NYXGPT_CORRELATION_ID", mint_correlation_id())
+        return ops_mod.up(args)
+
+    if cmd == "down":
+        os.environ.setdefault("NYXGPT_CORRELATION_ID", mint_correlation_id())
+        return ops_mod.down(args)
 
     if cmd == "ops":
         # Mint a correlation id once per CLI invocation (#3430): every
