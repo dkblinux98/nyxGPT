@@ -45,7 +45,7 @@ EXPECTED="
 3583|PD-2|Sprint 7|web-ui|M
 3585|PD-3|Sprint 7|web-ui|M
 3588|PD-4|Sprint 7|sre|M
-3593|PD-5|Sprint 7|observability|M
+3593|PD-5|Sprint 7|sre|M
 3509|P6-8|Sprint 8|cli|XL
 3510|P6-9|Sprint 8|cli|M
 3511|P6-12|Sprint 8|cli|L
