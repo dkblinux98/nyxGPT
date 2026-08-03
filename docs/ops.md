@@ -161,6 +161,11 @@ Reports:
   running in *both* modes, `status` prints a **WARNING** — only one is actually serving
   traffic on the shared port, and config edits to `~/.nyxGPT/config.ini` (native) vs.
   `docker/config.docker.ini` (Compose) reach different, non-interchangeable processes.
+- **Terraform component state** for each `nyxgpt-tf-*` core container, when any are
+  running. If a component is reported running under Terraform *and* under native/Compose
+  at the same time, `status` prints a second **WARNING** — this means an incomplete mode
+  switch (e.g. `nyxgpt ops install` after `nyxgpt ops down` without `--terraform`) left
+  two whole core stacks up at once, each answering on its own network (#3565).
 - Homebrew service state (`started`, `stopped`, `error`)
 - Docker container state for Cassandra
 - LaunchAgent load state
@@ -434,6 +439,13 @@ Checks include:
   `restarting`) -- `nyxgpt ops status` already surfaces that state, but
   doctor now FAILs on it instead of leaving it as an easy-to-miss warning;
   points at `nyxgpt ops logs <service>` for the boot error (#3538)
+- Whether a Terraform-managed core component is running at the same time as
+  its native/Compose equivalent (dual-stack) -- doctor FAILs on it, since an
+  incomplete mode switch otherwise leaves two whole core stacks answering on
+  their own networks with `nyxgpt ops status`'s own conflict detector
+  reporting no conflict (it only ever compared native vs. Compose). Fix:
+  `nyxgpt ops down --terraform` or `nyxgpt ops down`, whichever mode you
+  don't want (#3565)
 
 Results are reported with clear PASS / FAIL indicators.
 
