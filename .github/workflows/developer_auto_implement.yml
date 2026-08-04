@@ -39,6 +39,20 @@ jobs:
       id-token: write
       actions: read
 
+    # Attribute the developer agent's commits to myGPT-developer-agent instead
+    # of the action's default `claude[bot]` identity. anthropics/claude-code-action
+    # commits via git, which honors these GIT_* env vars over git config -- the
+    # `git config user.name` step below is silently ignored by the action, which
+    # is why ~579 commits landed as claude[bot] on a public repo (#3626). Set at
+    # job level so all three action steps (initial / acceptance-failure / review
+    # fix) and any conflict-resolution merge commits inherit the identity. No
+    # history is rewritten; this changes future commits only.
+    env:
+      GIT_AUTHOR_NAME: myGPT-developer-agent
+      GIT_AUTHOR_EMAIL: 253622687+myGPT-developer-agent@users.noreply.github.com
+      GIT_COMMITTER_NAME: myGPT-developer-agent
+      GIT_COMMITTER_EMAIL: 253622687+myGPT-developer-agent@users.noreply.github.com
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
