@@ -1363,10 +1363,34 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
               color: isUser ? '#1a1a1a' : 'var(--foreground)',
             }}
           >
-            {/* Show RAG citations if available (streaming) or persisted (loaded from session) */}
-            {((m.ragChunks && m.ragChunks.length > 0) || (m.rag_chunks && m.rag_chunks.length > 0)) && (
-              <RagCitationsCollapsible initialChunks={(m.ragChunks || m.rag_chunks)!} />
-            )}
+            {/* Show RAG citations if available (streaming) or persisted (loaded from session).
+                An explicitly-empty array (as opposed to undefined) means RAG was
+                on for this turn but retrieval returned zero rows -- show an
+                honest "no sources" indicator so the answer is never ambiguously
+                uncited (issue #3585). */}
+            {(() => {
+              const ragChunksForMsg = m.ragChunks ?? m.rag_chunks;
+              if (!ragChunksForMsg) return null;
+              if (ragChunksForMsg.length > 0) {
+                return <RagCitationsCollapsible initialChunks={ragChunksForMsg} />;
+              }
+              return (
+                <div
+                  style={{
+                    marginBottom: 8,
+                    padding: 8,
+                    background: 'var(--rag-bg)',
+                    border: '1px solid var(--rag-border)',
+                    borderRadius: 6,
+                    fontSize: 12,
+                    color: 'var(--rag-text)',
+                    opacity: 0.8,
+                  }}
+                >
+                  No RAG sources retrieved for this reply
+                </div>
+              );
+            })()}
 
             {/* Inline attachment thumbnails in message bubble */}
             {isUser && m.attachments && m.attachments.length > 0 && (
@@ -1768,7 +1792,14 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
             </label>
             <select
               value={ragFilters.collection || ''}
-              onChange={(e) => setRagFilters((prev) => ({ ...prev, collection: e.target.value || undefined }))}
+              onChange={(e) =>
+                // Clear doc_ids on collection switch: a doc checked while a
+                // different collection was selected doesn't belong to the
+                // new collection, so keeping it selected pins the query to
+                // `collection=X AND doc_ids=[doc-not-in-X]` -> zero rows,
+                // every subsequent turn, silently (issue #3585).
+                setRagFilters((prev) => ({ ...prev, collection: e.target.value || undefined, doc_ids: undefined }))
+              }
               style={{
                 width: '100%',
                 padding: '6px 10px',
