@@ -2050,6 +2050,50 @@ def cli(argv: list[str] | None = None) -> int:
         ),
     )
 
+    ops_verify = ops_sub.add_parser(
+        "verify",
+        help=(
+            "Live smoke harness: boot the stack, generate known chat/RAG traffic, assert it "
+            "via Prometheus/Grafana, and screenshot the touched dashboards (#3555)"
+        ),
+    )
+    ops_verify.add_argument(
+        "--skip-boot",
+        action="store_true",
+        help="Assume the stack (native or Compose) is already up instead of booting it",
+    )
+    ops_verify.add_argument(
+        "--keep-up",
+        action="store_true",
+        help="Leave the stack running afterwards instead of tearing it down (ignored with --skip-boot)",
+    )
+    ops_verify.add_argument(
+        "--skip-screenshots",
+        action="store_true",
+        help="Skip Playwright dashboard screenshots (e.g. on a host with no browsers installed)",
+    )
+    ops_verify.add_argument(
+        "--screenshot-dir",
+        help="Where to write dashboard screenshots (default: ~/.nyxGPT/verify-artifacts)",
+    )
+    ops_verify.add_argument(
+        "--dashboards",
+        nargs="*",
+        help=(
+            "Dashboard filenames under docker/grafana/dashboards/ to assert/screenshot "
+            "(default: rag-performance, api-metrics -- the ones this harness's traffic touches)"
+        ),
+    )
+    ops_verify.add_argument(
+        "--api-url", help="Override API base URL (default: from config, http://127.0.0.1:<port>)"
+    )
+    ops_verify.add_argument(
+        "--timeout",
+        type=float,
+        default=300.0,
+        help="Seconds to wait for the booted stack to become healthy (default: 300)",
+    )
+
     # Add canary command (local weighted-traffic canary rollout on a local k8s cluster --
     # the sole deployment model since #3409 retired blue/green in favor of it)
     canary_p = sub.add_parser("canary", help="Local canary deployment (kind/minikube/k3s cluster)")
@@ -2288,6 +2332,8 @@ def cli(argv: list[str] | None = None) -> int:
             return ops_mod.observability(args)
         if args.ops_cmd == "migrate-volumes":
             return ops_mod.migrate_volumes_cmd(args)
+        if args.ops_cmd == "verify":
+            return ops_mod.verify(args)
 
     if cmd == "canary":
         # Same per-invocation correlation id as the `ops` dispatch above --

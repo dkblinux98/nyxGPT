@@ -37,6 +37,7 @@ from nacl import public as nacl_public
 
 from nyxgpt import metrics as prom_metrics
 from nyxgpt import self_heal, tracing
+from nyxgpt import verify as verify_mod
 from nyxgpt.config import (
     get_error_tracking_config,
     get_error_tracking_enabled,
@@ -7198,4 +7199,227 @@ def glitchtip_init(_args: Any) -> int:
         "succeeded" if ok else "failed",
         extra={"component": "ops", "action": "glitchtip-init", "ok": ok},
     )
+    return 0 if ok else 2
+
+
+# --- Live verification harness (`nyxgpt ops verify`, #3555 / P6-18) ---
+
+
+def _verify_repo_index_path(mode: DeploymentMode) -> str:
+    """Resolve the repo-ingest fixture's path as the running `api` process will see it.
+
+    Writes a tiny fixture repo under the shared `nyxgpt-data` volume
+    (`volume_dir("nyxgpt-data")`) and translates it to the API process's own
+    view of that path: the containerized `api` service bind-mounts that host
+    directory at `/root/.nyxGPT` (see docker-compose.yml), while a native
+    `api` process sees the same host path directly (both pass
+    `ingest_repository`'s "must be under Path.home()" check either way).
+    """
+    host_dir = volume_dir("nyxgpt-data") / "rag-verify-repo"
+    verify_mod.write_verify_repo_fixture(host_dir)
+    if mode.compose.get("api", "absent") not in ("absent", "none", ""):
+        rel = host_dir.relative_to(Path.home())
+        return f"/root/{rel.as_posix()}"
+    return str(host_dir)
+
+
+def _boot_verify_stack() -> list[OpsResult]:
+    """Bring up the full Compose stack (core app + observability profiles) for `nyxgpt ops verify`.
+
+    Unlike `_start_observability_stack` (which deliberately excludes
+    `CORE_APP_SERVICES` so a native-first install's own processes aren't
+    duplicated in Compose), `verify`'s target environment -- CI, or an
+    ephemeral local run -- has no native brew/launchd path at all, so this
+    issues a plain `docker compose --profile X... up -d` with no
+    service-list filtering: Compose brings up every default (core app)
+    service plus the requested observability profiles together, the same
+    shape `scripts/smoke-test.sh` deploys for its own live smoke test.
+    """
+    if not _compose_available():
+        return [
+            OpsResult(
+                False,
+                "docker not found -- `nyxgpt ops verify` needs the Compose stack",
+                "Install Docker, or pass --skip-boot if a stack (native or Compose) is "
+                "already up.",
+            )
+        ]
+    cmd = ["docker", "compose", "-f", str(self_heal.COMPOSE_FILE)]
+    for profile in OBSERVABILITY_PROFILES:
+        cmd += ["--profile", profile]
+    cmd += ["up", "-d"]
+    cp = _run(cmd, check=False)
+    if cp.returncode != 0:
+        return [OpsResult(False, "Failed to boot the Compose stack for verify", _cp_details(cp))]
+    return [OpsResult(True, "Compose stack up (core app + observability profiles)")]
+
+
+def _wait_for_verify_stack_healthy(
+    services: tuple[str, ...] = ("api", "web", "ollama", "cassandra"),
+    timeout: float = 300.0,
+    poll_interval: float = 5.0,
+) -> list[OpsResult]:
+    """Poll `self_heal.list_component_status()` until every service in `services` is healthy."""
+    deadline = time.monotonic() + timeout
+    pending = set(services)
+    while pending and time.monotonic() < deadline:
+        statuses = {s.service: s for s in self_heal.list_component_status()}
+        for service in list(pending):
+            status = statuses.get(service)
+            if status is not None and status.healthy:
+                pending.discard(service)
+        if pending:
+            time.sleep(poll_interval)
+    if pending:
+        return [
+            OpsResult(
+                False,
+                f"Timed out waiting for {', '.join(sorted(pending))} to become healthy",
+                f"Waited {timeout:g}s -- check `nyxgpt ops status` / `docker compose logs`.",
+            )
+        ]
+    return [OpsResult(True, f"{', '.join(services)} all healthy")]
+
+
+def _teardown_verify_stack() -> list[OpsResult]:
+    """Tear down the Compose stack `_boot_verify_stack` brought up (app + observability)."""
+    if not _compose_available():
+        return [OpsResult(True, "Skipped verify stack teardown (Docker not found)")]
+    cmd = ["docker", "compose", "-f", str(self_heal.COMPOSE_FILE)]
+    for profile in OBSERVABILITY_PROFILES:
+        cmd += ["--profile", profile]
+    cmd += ["down"]
+    cp = _run(cmd, check=False)
+    if cp.returncode != 0:
+        return [OpsResult(False, "Failed to tear down verify stack", _cp_details(cp))]
+    return [OpsResult(True, "Verify stack torn down")]
+
+
+def verify(args: Any) -> int:
+    """CLI entrypoint for `nyxgpt ops verify`.
+
+    The live smoke harness behind #3555/P6-18: boots the Compose stack
+    (core app + observability profiles) in an ephemeral environment unless
+    `--skip-boot` is passed, generates one known unit of traffic per
+    acceptance-criteria path (a chat round-trip, one RAG ingest per source
+    -- document/upload/repo -- and a RAG query -- see `nyxgpt.verify`),
+    then asserts it landed via two independent live checks: Prometheus
+    instant-query counter deltas, and Grafana's HTTP API re-executing each
+    touched dashboard panel's own query. Captures Playwright screenshots of
+    the touched dashboards as visual evidence for the review agent
+    (multimodal) to inspect. Tears the stack back down afterward unless
+    `--keep-up` is passed (or `--skip-boot` was used, in which case nothing
+    was booted to tear down).
+
+    This is what the review agent runs in CI on every PR touching
+    observability, metrics, or UI surfaces (see
+    agents/runbooks/review-runbook.md), and what the owner can run locally
+    as a one-command pre-check before acceptance testing.
+
+    Returns 0 if every check passed, else 2.
+    """
+    from nyxgpt.config import get_api_port, load_config
+
+    logger.info("ops: verify starting", extra={"component": "ops", "action": "verify"})
+
+    cfg_path = Path.home() / ".nyxGPT" / "config.ini"
+    if not cfg_path.exists():
+        precondition_results = [
+            OpsResult(
+                False, f"Missing config {cfg_path}", "Run `nyxgpt wizard` first to generate it."
+            )
+        ]
+        ok = _emit_results("verify", precondition_results)
+        return 0 if ok else 2
+
+    cfg = load_config(cfg_path)
+    monitoring = get_monitoring_config(cfg)
+    if not monitoring["enabled"]:
+        precondition_results = [
+            OpsResult(
+                False,
+                "Monitoring is disabled",
+                "Set [monitoring] enabled = true in config.ini, then run `nyxgpt ops install` "
+                "(or start the `monitoring` Compose profile) before running `nyxgpt ops "
+                "verify` -- it asserts against Prometheus/Grafana, which need to be up.",
+            )
+        ]
+        ok = _emit_results("verify", precondition_results)
+        return 0 if ok else 2
+
+    results: list[OpsResult] = []
+    booted = False
+    try:
+        if not getattr(args, "skip_boot", False):
+            boot_results = _boot_verify_stack()
+            results.extend(boot_results)
+            if not all(r.ok for r in boot_results):
+                ok = _emit_results("verify", results)
+                return 0 if ok else 2
+            booted = True
+
+            health_results = _wait_for_verify_stack_healthy(timeout=getattr(args, "timeout", 300.0))
+            results.extend(health_results)
+            results.extend(_reconcile_grafana_provisioning())
+            if not all(r.ok for r in health_results):
+                ok = _emit_results("verify", results)
+                return 0 if ok else 2
+
+        api_url = getattr(args, "api_url", None) or f"http://127.0.0.1:{get_api_port(cfg)}"
+        api_key = cfg.get("auth", "api_key", fallback="").strip() or None
+        grafana_admin_password = _grafana_admin_password(cfg)
+        prometheus_url = monitoring["prometheus_ui_url"]
+        grafana_url = monitoring["grafana_ui_url"]
+
+        repo_index_path = _verify_repo_index_path(detect_deployment_mode())
+
+        before = verify_mod.snapshot_counters(prometheus_url, verify_mod.EXPECTED_COUNTER_QUERIES)
+
+        _markers, traffic_checks = verify_mod.generate_traffic(
+            api_url, api_key, repo_index_path=repo_index_path
+        )
+        results.extend(OpsResult(c.ok, c.message, c.details) for c in traffic_checks)
+
+        prometheus_checks = verify_mod.assert_counter_deltas(
+            prometheus_url, before, verify_mod.EXPECTED_COUNTER_QUERIES
+        )
+        results.extend(OpsResult(c.ok, c.message, c.details) for c in prometheus_checks)
+
+        try:
+            dashboard_paths = verify_mod.resolve_touched_dashboards(
+                getattr(args, "dashboards", None)
+            )
+        except ValueError as e:
+            results.append(OpsResult(False, "Could not resolve touched dashboards", str(e)))
+            dashboard_paths = []
+
+        if dashboard_paths:
+            with _grafana_admin_client(grafana_url, grafana_admin_password) as grafana_client:
+                panel_checks = verify_mod.assert_panel_queries(grafana_client, dashboard_paths)
+            results.extend(OpsResult(c.ok, c.message, c.details) for c in panel_checks)
+
+            if not getattr(args, "skip_screenshots", False):
+                out_dir = Path(
+                    getattr(args, "screenshot_dir", None)
+                    or (Path.home() / ".nyxGPT" / "verify-artifacts")
+                )
+                screenshot_checks = verify_mod.capture_dashboard_screenshots(
+                    grafana_url,
+                    grafana_admin_password,
+                    [verify_mod.dashboard_uid(p) for p in dashboard_paths],
+                    out_dir,
+                )
+                results.extend(OpsResult(c.ok, c.message, c.details) for c in screenshot_checks)
+    finally:
+        if booted and not getattr(args, "keep_up", False):
+            results.extend(_teardown_verify_stack())
+
+    ok = _emit_results("verify", results)
+    logger.info(
+        "ops: verify %s",
+        "succeeded" if ok else "failed",
+        extra={"component": "ops", "action": "verify", "ok": ok},
+    )
+    result, message = _ops_action_outcome(results)
+    _record_ops_action("verify", "verify", result, message)
     return 0 if ok else 2
