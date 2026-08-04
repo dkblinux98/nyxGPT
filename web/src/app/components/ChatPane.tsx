@@ -1837,7 +1837,7 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
                 </div>
               ) : visibleDocuments.length === 0 ? (
                 <div style={{ fontSize: 12, opacity: 0.6, textAlign: 'center', padding: 8 }}>
-                  No documents match &quot;{ragFilters.filename}&quot;
+                  No documents match &quot;{ragFilters.filename?.trim()}&quot;
                 </div>
               ) : (
                 visibleDocuments.map((doc) => (

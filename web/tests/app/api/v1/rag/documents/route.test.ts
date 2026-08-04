@@ -71,7 +71,7 @@ describe('/api/v1/rag/documents GET route', () => {
     expect(calledUrl).toBe('http://127.0.0.1:8000/api/v1/rag/documents?collection=test_collection');
   });
 
-  it('makes no request when no collection is supplied (backend defaults to "default")', async () => {
+  it('omits the collection query param when none is supplied (backend defaults to "default")', async () => {
     mockFetch({ ok: true, status: 200, json: vi.fn().mockResolvedValue({ documents: [] }) });
 
     const { GET } = await import('../../../../../../src/app/api/v1/rag/documents/route');
