@@ -47,6 +47,8 @@ EXPECTED="
 3588|PD-4|Sprint 7|sre|M
 3593|PD-5|Sprint 7|sre|M
 3596|PD-6|Sprint 7|cli|M
+3621|P6-5A|Sprint 7|cli|L
+3622|P6-5B|Sprint 7|cli|L
 3509|P6-8|Sprint 8|cli|XL
 3510|P6-9|Sprint 8|cli|M
 3511|P6-12|Sprint 8|cli|L
