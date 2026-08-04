@@ -1816,7 +1816,7 @@ _NATIVE_API_WRAPPER_TEMPLATE = """#!/bin/bash
 set -euo pipefail
 
 CONFIG_FILE="$HOME/.nyxGPT/config.ini"
-SYS_PY="/usr/bin/python3"
+SYS_PY="$(command -v python3 || echo /usr/bin/python3)"
 
 HOST="127.0.0.1"
 PORT="8000"
@@ -1851,7 +1851,7 @@ _NATIVE_WEB_WRAPPER_TEMPLATE = """#!/usr/bin/env bash
 set -euo pipefail
 
 CONFIG_FILE="$HOME/.nyxGPT/config.ini"
-SYS_PY="/usr/bin/python3"
+SYS_PY="$(command -v python3 || echo /usr/bin/python3)"
 
 HOST="127.0.0.1"
 PORT="3000"
@@ -1969,12 +1969,21 @@ def _install_native_web_systemd() -> list[OpsResult]:
     then (re)start its systemd --user unit.
 
     Linux twin of `_install_homebrew_web`: vendors the `web/` source tree
-    (minus gitignored build artifacts, see `_WEB_VENDOR_EXCLUDES`) into
-    `~/.nyxGPT/opt/nyxgpt-web` (reusing `_create_dist_tarball`), extracts it,
-    runs `npm ci`/`npm run build` inside it, writes the wrapper script the
-    systemd unit execs, then installs/reloads the unit. Always rebuilds --
-    see `_install_native_api_systemd`'s docstring for why this doesn't do
+    (minus gitignored build artifacts, see `_WEB_VENDOR_EXCLUDES`) into a
+    staging directory (reusing `_create_dist_tarball`), extracts it, runs
+    `npm ci`/`npm run build` inside it, then -- only once that build has
+    succeeded -- swaps it into `~/.nyxGPT/opt/nyxgpt-web/build` in place of
+    the previous one, writes the wrapper script the systemd unit execs, and
+    installs/reloads the unit. Always rebuilds -- see
+    `_install_native_api_systemd`'s docstring for why this doesn't do
     `_install_homebrew_web`'s sha256-gated skip.
+
+    The build/swap is staged rather than done in place so a failed `npm ci`/
+    `npm run build` (transient registry issue, disk pressure, OOM, ...)
+    leaves the previous, still-running build untouched -- the live
+    `nyxgpt-web.service` wrapper keeps `cd`ing into a build that still
+    exists instead of a path a failed rebuild rmtree'd out from under it (a
+    real outage-on-restart bug found in review, #3508).
 
     Returns a list of OpsResult; fails early if `npm` isn't on PATH.
     """
@@ -1987,22 +1996,28 @@ def _install_native_web_systemd() -> list[OpsResult]:
     tar = _create_dist_tarball(root, "nyxgpt-web", version)
 
     build_dir = root / "build"
-    if build_dir.exists():
-        shutil.rmtree(build_dir)
-    _ensure_dir(build_dir)
+    staging_dir = root / "build.staging"
+    if staging_dir.exists():
+        shutil.rmtree(staging_dir)
+    _ensure_dir(staging_dir)
     with tarfile.open(tar) as tf:
         # Trusted input: `tar` was just built by `_create_dist_tarball` above
         # from this repo's own `web/` tree, not from an external/user source.
-        tf.extractall(build_dir, filter="data")
-    extracted = build_dir / f"nyxgpt-web-{version}"
+        tf.extractall(staging_dir, filter="data")
+    staged_extracted = staging_dir / f"nyxgpt-web-{version}"
 
     npm = _which("npm") or "npm"
     for step_name, npm_args in (("npm ci", ["ci"]), ("npm run build", ["run", "build"])):
         try:
             cp = subprocess.run(
-                [npm, *npm_args], cwd=str(extracted), text=True, capture_output=True, check=False
+                [npm, *npm_args],
+                cwd=str(staged_extracted),
+                text=True,
+                capture_output=True,
+                check=False,
             )
         except Exception as e:
+            shutil.rmtree(staging_dir, ignore_errors=True)
             results.append(
                 OpsResult(
                     False, f"Failed to run {step_name} for nyxgpt-web", f"{type(e).__name__}: {e}"
@@ -2010,6 +2025,7 @@ def _install_native_web_systemd() -> list[OpsResult]:
             )
             return results
         if cp.returncode != 0:
+            shutil.rmtree(staging_dir, ignore_errors=True)
             results.append(
                 OpsResult(
                     False,
@@ -2018,6 +2034,19 @@ def _install_native_web_systemd() -> list[OpsResult]:
                 )
             )
             return results
+
+    # The new build is known-good -- swap it into place. Two renames (both
+    # fast, same-filesystem) instead of an rmtree-then-build so the previous
+    # build is never gone from `build_dir` for longer than the swap itself.
+    old_dir = root / "build.old"
+    if old_dir.exists():
+        shutil.rmtree(old_dir)
+    if build_dir.exists():
+        build_dir.rename(old_dir)
+    staging_dir.rename(build_dir)
+    if old_dir.exists():
+        shutil.rmtree(old_dir, ignore_errors=True)
+    extracted = build_dir / f"nyxgpt-web-{version}"
     results.append(OpsResult(True, "Built nyxgpt-web production bundle", str(extracted)))
 
     wrapper = root / "bin" / "nyxgpt-web"

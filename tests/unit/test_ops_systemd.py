@@ -425,6 +425,47 @@ def test_install_native_web_systemd_npm_ci_failure_stops_early(monkeypatch, tmp_
     assert "npm ci failed" in results[-1].message
 
 
+def test_install_native_web_systemd_failed_rebuild_preserves_previous_build(monkeypatch, tmp_path):
+    """A failed rebuild must not destroy the previously-installed, still-running
+    build (#3508 review) -- the live `nyxgpt-web.service` wrapper keeps `cd`ing
+    into a build directory that must still exist after a failed `npm ci`/
+    `npm run build`, not one an in-place `rmtree` deleted before the rebuild
+    was known to succeed.
+    """
+    repo = _make_fake_web_repo(tmp_path)
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops, "REPO_ROOT", repo)
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "_which", lambda name: "/usr/bin/npm" if name == "npm" else None)
+    monkeypatch.setattr(ops.subprocess, "run", lambda cmd, **k: _cp(0, stdout="", stderr=""))
+    tpl = tmp_path / "nyxgpt-web.service"
+    tpl.write_text("ExecStart=__NYXGPT_HOME__/.nyxGPT/opt/nyxgpt-web/bin/nyxgpt-web\n")
+    monkeypatch.setattr(ops, "_find_systemd_unit_template", lambda name: (tpl, [tpl]))
+
+    # First install succeeds and leaves a real, "currently running" build.
+    results = ops._install_native_web_systemd()
+    assert all(r.ok for r in results), results
+    build_dir = home / ".nyxGPT" / "opt" / "nyxgpt-web" / "build"
+    live_extracted = build_dir / "nyxgpt-web-9.9.9"
+    assert live_extracted.is_dir()
+    marker = live_extracted / "MARKER"
+    marker.write_text("still the live build", encoding="utf-8")
+
+    # Second install's rebuild fails partway through (npm run build).
+    monkeypatch.setattr(
+        ops.subprocess,
+        "run",
+        lambda cmd, **k: _cp(0) if cmd[1:2] == ["ci"] else _cp(1, stderr="build failed"),
+    )
+    results = ops._install_native_web_systemd()
+    assert results[-1].ok is False
+    assert "npm run build failed" in results[-1].message
+
+    # The previous, still-running build must survive the failed rebuild.
+    assert live_extracted.is_dir()
+    assert marker.read_text(encoding="utf-8") == "still the live build"
+
+
 # --- Top-level dispatcher wrappers ---
 
 

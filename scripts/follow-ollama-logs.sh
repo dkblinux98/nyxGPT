@@ -65,15 +65,23 @@ compose_container_present() {
 # this script's rotation applies there too, uniformly with macOS.
 native_ollama_log() {
   local prefix candidate
+  # Homebrew's ollama.log only applies on macOS -- gate these candidates on
+  # `brew` actually being present so a Linux host with an unrelated
+  # distro-packaged /var/log/ollama.log doesn't get picked up ahead of the
+  # nyxGPT-managed ollama-native.log below (#3508 review).
   if command -v brew >/dev/null 2>&1; then
     prefix="$(brew --prefix 2>/dev/null || true)"
+    for candidate in "${prefix:-}/var/log/ollama.log" /opt/homebrew/var/log/ollama.log /usr/local/var/log/ollama.log; do
+      if [ -n "$candidate" ] && [ -f "$candidate" ]; then
+        echo "$candidate"
+        return 0
+      fi
+    done
   fi
-  for candidate in "${prefix:-}/var/log/ollama.log" /opt/homebrew/var/log/ollama.log /usr/local/var/log/ollama.log "$HOME/.nyxGPT/logs/ollama-native.log"; do
-    if [ -n "$candidate" ] && [ -f "$candidate" ]; then
-      echo "$candidate"
-      return 0
-    fi
-  done
+  if [ -f "$HOME/.nyxGPT/logs/ollama-native.log" ]; then
+    echo "$HOME/.nyxGPT/logs/ollama-native.log"
+    return 0
+  fi
   return 1
 }
 
