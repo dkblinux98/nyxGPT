@@ -6849,10 +6849,21 @@ def _stale_venv_doctor_issues() -> list[str]:
 
 
 def _glitchtip_container_healthy() -> bool:
-    """Whether the `glitchtip` Compose container currently reports healthy."""
+    """Whether the `glitchtip` Compose container has actually passed its health check.
+
+    Checks `health` directly rather than reusing `ComponentStatus.healthy`,
+    which deliberately treats a "starting" container as healthy (see
+    self_heal.py's start_period-grace comment) so the self-heal watchdog
+    doesn't restart something mid-boot -- the right call there, but the wrong
+    one here: a container freshly (re)started reports `state=running,
+    health=starting` for its whole healthcheck `start_period`, so a caller
+    waiting to know the container is *actually* ready (not just "not yet
+    proven broken") needs `health == "healthy"`, or this returns as soon as
+    the container exists (#3588's grafana mirror of this same bug).
+    """
     for status in self_heal.list_component_status():
         if status.service == "glitchtip":
-            return status.healthy
+            return status.state == "running" and status.health in ("", "healthy")
     return False
 
 
@@ -6874,7 +6885,7 @@ def _wait_for_glitchtip_healthy(timeout: float = 120.0, poll_interval: float = 3
     statuses = [s for s in self_heal.list_component_status() if s.service == "glitchtip"]
     if not statuses or statuses[0].state == "absent":
         return False
-    if statuses[0].healthy:
+    if statuses[0].state == "running" and statuses[0].health in ("", "healthy"):
         return True
 
     deadline = time.monotonic() + timeout
@@ -7475,10 +7486,23 @@ def _write_grafana_glitchtip_token(token: str) -> tuple[bool, OpsResult]:
 
 
 def _grafana_container_healthy() -> bool:
-    """Whether the `grafana` Compose container currently reports healthy."""
+    """Whether the `grafana` Compose container has actually passed its health check.
+
+    Checks `health` directly rather than reusing `ComponentStatus.healthy`
+    -- see `_glitchtip_container_healthy`'s docstring for why that flag's
+    "starting counts as healthy" semantics (correct for the self-heal
+    watchdog) are wrong for this caller. This was the actual cause of the
+    `terraform-local-smoke` CI race (#3588 review round 2): right after
+    `docker compose restart grafana`, `_wait_for_grafana_healthy` polled
+    `ComponentStatus.healthy`, which was already `True` while the container
+    was still in its healthcheck `start_period` (`state=running,
+    health=starting`) -- so the restart was reported done and the install
+    command returned before Grafana was actually reachable, and the smoke
+    test's immediate curl hit connection-refused.
+    """
     for status in self_heal.list_component_status():
         if status.service == "grafana":
-            return status.healthy
+            return status.state == "running" and status.health in ("", "healthy")
     return False
 
 
@@ -7500,7 +7524,7 @@ def _wait_for_grafana_healthy(timeout: float = 120.0, poll_interval: float = 3.0
     statuses = [s for s in self_heal.list_component_status() if s.service == "grafana"]
     if not statuses or statuses[0].state == "absent":
         return False
-    if statuses[0].healthy:
+    if statuses[0].state == "running" and statuses[0].health in ("", "healthy"):
         return True
 
     deadline = time.monotonic() + timeout

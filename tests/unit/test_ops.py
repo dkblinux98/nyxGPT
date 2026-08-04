@@ -7595,6 +7595,21 @@ def test_glitchtip_container_healthy_false_when_absent(monkeypatch):
 
 
 @pytest.mark.unit
+def test_glitchtip_container_healthy_false_when_still_starting(monkeypatch):
+    """Regression (#3588 review round 2): mirrors `_grafana_container_healthy`'s
+    fix -- a freshly (re)started container reports `state=running,
+    health=starting` throughout its healthcheck `start_period`, which
+    `ComponentStatus.healthy` treats as healthy (intentionally, for the
+    self-heal watchdog) but this caller must not.
+    """
+    status = self_heal.ComponentStatus(
+        service="glitchtip", container="c", state="running", health="starting", healthy=True
+    )
+    monkeypatch.setattr(ops.self_heal, "list_component_status", lambda: [status])
+    assert ops._glitchtip_container_healthy() is False
+
+
+@pytest.mark.unit
 def test_wait_for_glitchtip_healthy_absent_returns_false_without_sleeping(monkeypatch):
     monkeypatch.setattr(ops.self_heal, "list_component_status", lambda: [])
     sleeps = []
@@ -7615,6 +7630,33 @@ def test_wait_for_glitchtip_healthy_already_healthy_returns_true_immediately(mon
 
     assert ops._wait_for_glitchtip_healthy(timeout=5, poll_interval=0.01) is True
     assert sleeps == []
+
+
+@pytest.mark.unit
+def test_wait_for_glitchtip_healthy_polls_through_start_period(monkeypatch):
+    """Regression (#3588 review round 2), mirrors the grafana version of this
+    test: the initial check must not trust a `state=running, health=starting`
+    snapshot as done -- keep polling until the healthcheck actually passes.
+    """
+    starting = self_heal.ComponentStatus(
+        service="glitchtip", container="c", state="running", health="starting", healthy=True
+    )
+    healthy = self_heal.ComponentStatus(
+        service="glitchtip", container="c", state="running", health="healthy", healthy=True
+    )
+    calls = {"n": 0}
+
+    def fake_status():
+        calls["n"] += 1
+        return [healthy] if calls["n"] >= 3 else [starting]
+
+    monkeypatch.setattr(ops.self_heal, "list_component_status", fake_status)
+    sleeps = []
+    monkeypatch.setattr(ops.time, "sleep", lambda s: sleeps.append(s))
+
+    assert ops._wait_for_glitchtip_healthy(timeout=5, poll_interval=0.01) is True
+    assert calls["n"] >= 3
+    assert sleeps, "must poll at least once instead of trusting the starting-state snapshot"
 
 
 @pytest.mark.unit
@@ -7711,6 +7753,24 @@ def test_grafana_container_healthy_false_when_absent(monkeypatch):
 
 
 @pytest.mark.unit
+def test_grafana_container_healthy_false_when_still_starting(monkeypatch):
+    """Regression (#3588 review round 2): a container freshly (re)started by
+    `docker compose restart` immediately reports `state=running,
+    health=starting` for its whole healthcheck `start_period` -- the exact
+    shape `ComponentStatus.healthy` treats as healthy (by design, for the
+    self-heal watchdog). `_grafana_container_healthy` must not: this was the
+    root cause of `terraform-local-smoke`'s "grafana health -> 000000" CI
+    failure -- `_wait_for_grafana_healthy` returned True instantly after the
+    restart, before Grafana was actually reachable.
+    """
+    status = self_heal.ComponentStatus(
+        service="grafana", container="c", state="running", health="starting", healthy=True
+    )
+    monkeypatch.setattr(ops.self_heal, "list_component_status", lambda: [status])
+    assert ops._grafana_container_healthy() is False
+
+
+@pytest.mark.unit
 def test_wait_for_grafana_healthy_absent_returns_false_without_sleeping(monkeypatch):
     monkeypatch.setattr(ops.self_heal, "list_component_status", lambda: [])
     sleeps = []
@@ -7731,6 +7791,36 @@ def test_wait_for_grafana_healthy_already_healthy_returns_true_immediately(monke
 
     assert ops._wait_for_grafana_healthy(timeout=5, poll_interval=0.01) is True
     assert sleeps == []
+
+
+@pytest.mark.unit
+def test_wait_for_grafana_healthy_polls_through_start_period(monkeypatch):
+    """Regression (#3588 review round 2): the initial check right after a
+    `docker compose restart grafana` sees `state=running, health=starting`
+    (the container's whole healthcheck `start_period`) -- must keep polling
+    instead of returning True on that first look, or the caller reports the
+    restart done while Grafana is still unreachable (the exact
+    `terraform-local-smoke` "grafana health -> 000000" CI failure).
+    """
+    starting = self_heal.ComponentStatus(
+        service="grafana", container="c", state="running", health="starting", healthy=True
+    )
+    healthy = self_heal.ComponentStatus(
+        service="grafana", container="c", state="running", health="healthy", healthy=True
+    )
+    calls = {"n": 0}
+
+    def fake_status():
+        calls["n"] += 1
+        return [healthy] if calls["n"] >= 3 else [starting]
+
+    monkeypatch.setattr(ops.self_heal, "list_component_status", fake_status)
+    sleeps = []
+    monkeypatch.setattr(ops.time, "sleep", lambda s: sleeps.append(s))
+
+    assert ops._wait_for_grafana_healthy(timeout=5, poll_interval=0.01) is True
+    assert calls["n"] >= 3
+    assert sleeps, "must poll at least once instead of trusting the starting-state snapshot"
 
 
 @pytest.mark.unit
