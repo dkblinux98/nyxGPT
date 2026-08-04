@@ -910,4 +910,72 @@ describe('RAG toggle, filters, attach/detach, upload', () => {
     expect(requestedCollections).toContain('empty_coll');
   });
 
+  it('filters Select Documents live by filename as-you-type, shows a no-match state, and restores the full list when cleared (#3583)', async () => {
+    global.fetch = makeFetchMock({
+      '/metadata': () => ({ ok: true, status: 200, json: () => Promise.resolve({ rag_enabled: true, title: '', model: '' }) }),
+      '/rag/documents': () =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              documents: [
+                { doc_id: 'doc-a', filename: 'invoice.pdf', chunks: 2, tags: null, ingested_at: null },
+                { doc_id: 'doc-b', filename: 'report.pdf', chunks: 1, tags: null, ingested_at: null },
+              ],
+            }),
+        }),
+    }) as unknown as typeof fetch;
+
+    render(<ChatPane sessionName="ragfilenamefilter1" />);
+    const user = userEvent.setup();
+    await waitFor(() => expect(screen.getByText('RAG: ON')).toBeInTheDocument());
+
+    await user.click(screen.getByTitle('Filter RAG documents'));
+    expect(await screen.findByText('invoice.pdf')).toBeInTheDocument();
+    expect(screen.getByText('report.pdf')).toBeInTheDocument();
+
+    const filenameInput = screen.getByPlaceholderText('Filter by filename...');
+
+    // Live, no Enter/submit needed -- matching narrows the list to the hit,
+    // still rendered with its selection checkbox.
+    await user.type(filenameInput, 'inv');
+    await waitFor(() => expect(screen.queryByText('report.pdf')).not.toBeInTheDocument());
+    expect(screen.getByText('invoice.pdf')).toBeInTheDocument();
+    expect(screen.getAllByRole('checkbox').length).toBe(1);
+
+    // No-match query shows an explicit no-matches state, not the generic
+    // "No documents available" empty-collection message.
+    await user.clear(filenameInput);
+    await user.type(filenameInput, 'nonexistent');
+    await waitFor(() => expect(screen.getByText(/No documents match "nonexistent"/)).toBeInTheDocument());
+    expect(screen.queryByText('invoice.pdf')).not.toBeInTheDocument();
+    expect(screen.queryByText('No documents available')).not.toBeInTheDocument();
+
+    // Clearing the query restores the full list.
+    await user.clear(filenameInput);
+    await waitFor(() => expect(screen.getByText('invoice.pdf')).toBeInTheDocument());
+    expect(screen.getByText('report.pdf')).toBeInTheDocument();
+  });
+
+  it('shows the honest empty-collection state (not a no-match state) when filename-searching an empty collection', async () => {
+    global.fetch = makeFetchMock({
+      '/metadata': () => ({ ok: true, status: 200, json: () => Promise.resolve({ rag_enabled: true, title: '', model: '' }) }),
+      '/rag/documents': () =>
+        Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ documents: [] }) }),
+    }) as unknown as typeof fetch;
+
+    render(<ChatPane sessionName="ragfilenamefilterempty1" />);
+    const user = userEvent.setup();
+    await waitFor(() => expect(screen.getByText('RAG: ON')).toBeInTheDocument());
+
+    await user.click(screen.getByTitle('Filter RAG documents'));
+    expect(await screen.findByText('No documents available')).toBeInTheDocument();
+
+    const filenameInput = screen.getByPlaceholderText('Filter by filename...');
+    await user.type(filenameInput, 'anything');
+    expect(screen.getByText('No documents available')).toBeInTheDocument();
+    expect(screen.queryByText(/No documents match/)).not.toBeInTheDocument();
+  });
+
 });
