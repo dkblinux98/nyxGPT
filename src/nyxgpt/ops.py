@@ -6619,7 +6619,7 @@ def _glitchtip_secrets_dir_unwritable_result(path: Path) -> OpsResult:
         f"On Linux, dockerd runs as root and auto-creates a missing Docker bind-mount "
         f"source directory as root:root the first time a container starts -- if "
         f"Grafana started before this directory existed, that's almost certainly what "
-        f"happened here. Fix with: sudo chown -R $(whoami) {path} && chmod 700 {path}, "
+        f"happened here. Fix with: sudo chown -R $(whoami) {path} && chmod 755 {path}, "
         "then re-run `nyxgpt ops install` (or `nyxgpt ops glitchtip-init`).",
     )
 
@@ -6641,6 +6641,16 @@ def _ensure_glitchtip_secrets_dir() -> list[OpsResult]:
     never touches its ownership. macOS (Docker Desktop) doesn't hit this:
     its VM handles bind-mount ownership differently.
 
+    Mode is `0o755`, not `0o700` (#3588): the official Grafana image runs
+    as a fixed non-root uid (472) inside the container, and a native Linux
+    bind mount exposes host files under their literal host uid/gid -- no
+    user-namespace remapping -- so a `0o700` dir owned by the host user
+    blocks Grafana's uid from even traversing into it to stat the token
+    file it needs to read. `0o755` lets any uid traverse and read; only the
+    owning host user can write, which is what actually needs protecting
+    here (these are locally-scoped tokens for this machine's own GlitchTip/
+    Grafana instances, not high-value secrets).
+
     Run as a best-effort preflight step (`install()` / `_install_terraform_steps`
     catch and log any exception a step raises), so it never needs to raise
     itself -- it just reports whether the directory is now usable.
@@ -6648,7 +6658,7 @@ def _ensure_glitchtip_secrets_dir() -> list[OpsResult]:
     path = _glitchtip_grafana_token_path().parent
     if not path.exists():
         try:
-            path.mkdir(mode=0o700, parents=True, exist_ok=True)
+            path.mkdir(mode=0o755, parents=True, exist_ok=True)
         except OSError as e:
             return [OpsResult(False, f"Failed to create {path}", f"{type(e).__name__}: {e}")]
         return [OpsResult(True, f"Created {path}")]
@@ -6658,7 +6668,7 @@ def _ensure_glitchtip_secrets_dir() -> list[OpsResult]:
 
     # Owned-and-writable is what matters; a chmod that fails here is harmless.
     with contextlib.suppress(OSError):
-        os.chmod(path, 0o700)
+        os.chmod(path, 0o755)
     return [OpsResult(True, f"{path} exists and is writable")]
 
 
@@ -7466,15 +7476,24 @@ def _write_grafana_glitchtip_token(token: str) -> tuple[bool, OpsResult]:
     glitchtip-init` run skips that preflight -- so a permission problem
     surfaces as this actionable `OpsResult` instead of an uncaught
     `PermissionError` traceback bubbling up through `_provision_glitchtip`.
+
+    File mode is `0o644`, not `0o600` (#3588): Grafana's official image
+    runs as non-root uid 472, and a native Linux bind mount preserves host
+    uid/gid checks (no user-namespace remap), so a `0o600` file owned by
+    the host user is unreadable by Grafana's container process -- Grafana
+    fails to boot with a `stat ...: permission denied` on its GlitchTip
+    datasource provisioning. `0o644` keeps write access restricted to the
+    owning host user while letting any uid read it, matching the parent
+    directory's `0o755` in `_ensure_glitchtip_secrets_dir`.
     """
     path = _glitchtip_grafana_token_path()
     try:
         if path.exists() and path.read_text(encoding="utf-8").strip() == token:
             return False, OpsResult(True, f"{path} already holds the current GlitchTip token")
 
-        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
         path.write_text(token, encoding="utf-8")
-        os.chmod(path, 0o600)
+        os.chmod(path, 0o644)
     except OSError as e:
         result = _glitchtip_secrets_dir_unwritable_result(path.parent)
         return False, OpsResult(
@@ -7646,6 +7665,11 @@ def _write_grafana_slack_webhook_secret(url: str) -> tuple[bool, OpsResult]:
     Returns `(changed, result)` -- `changed` is False when the file already
     holds this exact value, which callers use to skip an unnecessary
     Grafana restart (mirrors `_write_grafana_glitchtip_token`).
+
+    File/dir modes are `0o644`/`0o755`, not `0o600`/`0o700`, for the same
+    reason as `_write_grafana_glitchtip_token` (#3588): Grafana's
+    non-root container uid needs to read this file across a native Linux
+    bind mount.
     """
     path = _slack_webhook_secret_path()
     resolved = url.strip() or GRAFANA_SLACK_WEBHOOK_PLACEHOLDER_URL
@@ -7653,9 +7677,9 @@ def _write_grafana_slack_webhook_secret(url: str) -> tuple[bool, OpsResult]:
         if path.exists() and path.read_text(encoding="utf-8").strip() == resolved:
             return False, OpsResult(True, f"{path} already holds the current Slack webhook URL")
 
-        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
         path.write_text(resolved, encoding="utf-8")
-        os.chmod(path, 0o600)
+        os.chmod(path, 0o644)
     except OSError as e:
         result = _glitchtip_secrets_dir_unwritable_result(path.parent)
         return False, OpsResult(

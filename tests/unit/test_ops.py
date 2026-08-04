@@ -8430,8 +8430,11 @@ def test_write_grafana_glitchtip_token_writes_and_chmods(tmp_path, monkeypatch):
     assert result.ok
     token_path = tmp_path / ".nyxGPT" / "secrets" / "glitchtip-grafana-token"
     assert token_path.read_text(encoding="utf-8") == "tok-123"
-    assert oct(token_path.stat().st_mode)[-3:] == "600"
-    assert oct(token_path.parent.stat().st_mode)[-3:] == "700"
+    # 644/755, not 600/700 (#3588): Grafana's container runs as non-root uid
+    # 472, and a native Linux bind mount needs the file/dir world-readable
+    # for that uid to stat/read it -- see _write_grafana_glitchtip_token.
+    assert oct(token_path.stat().st_mode)[-3:] == "644"
+    assert oct(token_path.parent.stat().st_mode)[-3:] == "755"
 
 
 @pytest.mark.unit
@@ -8471,7 +8474,9 @@ def test_write_grafana_slack_webhook_secret_writes_and_chmods(tmp_path, monkeypa
     assert result.ok
     secret_path = tmp_path / ".nyxGPT" / "secrets" / "slack-webhook-url"
     assert secret_path.read_text(encoding="utf-8") == "https://hooks.slack.com/x"
-    assert oct(secret_path.stat().st_mode)[-3:] == "600"
+    # 644, not 600 (#3588): same cross-uid-readability reasoning as the
+    # GlitchTip token -- see _write_grafana_glitchtip_token.
+    assert oct(secret_path.stat().st_mode)[-3:] == "644"
 
 
 @pytest.mark.unit
@@ -8840,7 +8845,10 @@ def test_ensure_glitchtip_secrets_dir_creates_when_missing(tmp_path, monkeypatch
     assert results[0].ok is True
     assert "Created" in results[0].message
     assert secrets_dir.is_dir()
-    assert oct(secrets_dir.stat().st_mode)[-3:] == "700"
+    # 755, not 700 (#3588): Grafana's non-root container uid needs to
+    # traverse into this dir across a native Linux bind mount -- see
+    # _ensure_glitchtip_secrets_dir.
+    assert oct(secrets_dir.stat().st_mode)[-3:] == "755"
 
 
 @pytest.mark.unit
@@ -9420,7 +9428,8 @@ def test_provision_glitchtip_full_happy_path(monkeypatch, tmp_path):
     # (#3411), never hand-pasted.
     token_path = tmp_path / ".nyxGPT" / "secrets" / "glitchtip-grafana-token"
     assert token_path.read_text(encoding="utf-8") == "tok"
-    assert oct(token_path.stat().st_mode)[-3:] == "600"
+    # 644, not 600 (#3588): see _write_grafana_glitchtip_token.
+    assert oct(token_path.stat().st_mode)[-3:] == "644"
 
     # The native `nyxgpt-api` brew service reads config.ini's DSN once, at
     # process startup (#3470 acceptance failure) -- the DSN here changed

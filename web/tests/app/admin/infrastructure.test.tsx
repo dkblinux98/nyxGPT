@@ -9,6 +9,7 @@ const mockStatusTerraform = {
   mode: 'terraform',
   native: {},
   compose: {},
+  compose_probe_available: true,
   conflicts: [],
   terraform: {
     probe_available: true,
@@ -33,6 +34,7 @@ const mockStatusEmpty = {
   mode: 'none',
   native: {},
   compose: {},
+  compose_probe_available: true,
   conflicts: [],
   terraform: {
     probe_available: true,
@@ -57,6 +59,7 @@ const mockStatusKubernetesNotConfigured = {
   mode: 'none',
   native: {},
   compose: {},
+  compose_probe_available: true,
   conflicts: [],
   terraform: {
     probe_available: true,
@@ -81,6 +84,7 @@ const mockStatusCannotDetermine = {
   mode: 'none',
   native: {},
   compose: {},
+  compose_probe_available: true,
   conflicts: [],
   terraform: {
     probe_available: false,
@@ -101,10 +105,36 @@ const mockStatusCannotDetermine = {
   },
 };
 
+const mockStatusComposeCannotDetermine = {
+  mode: 'terraform',
+  native: {},
+  compose: {},
+  compose_probe_available: false,
+  conflicts: [],
+  terraform: {
+    probe_available: true,
+    deployed: true,
+    containers: { api: 'running', web: 'running', cassandra: 'exited' },
+  },
+  kubernetes: {
+    available: true,
+    configured: true,
+    probe_available: true,
+    deployed: false,
+    namespace: 'nyxgpt',
+    pods: [],
+  },
+  serving: {
+    supported: false,
+    message: 'Single instance serving 100% of traffic -- traffic splitting is a Kubernetes-mode feature (see the Canary page).',
+  },
+};
+
 const mockStatusKubernetesServing = {
   mode: 'kubernetes',
   native: {},
   compose: {},
+  compose_probe_available: true,
   conflicts: [],
   terraform: { probe_available: true, deployed: false, containers: {} },
   kubernetes: {
@@ -238,6 +268,21 @@ describe('InfrastructurePage', () => {
     });
     expect(screen.queryByText('NOT DEPLOYED')).not.toBeInTheDocument();
     expect(screen.getAllByText(/Cannot determine from this deployment mode/)).toHaveLength(2);
+  });
+
+  it('renders "cannot determine" for the Compose section when the compose probe is unavailable (e.g. Terraform mode without a reachable compose file)', async () => {
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusComposeCannotDetermine)));
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Terraform' })).toBeInTheDocument();
+    });
+    expect(screen.getAllByText('CANNOT DETERMINE')).toHaveLength(1);
+    expect(
+      screen.getByText(/the Compose file isn.t reachable from wherever this API process is running/)
+    ).toBeInTheDocument();
+    expect(screen.getByText('DEPLOYED')).toBeInTheDocument();
   });
 
   it('never renders install/destroy controls or api key inputs', async () => {
