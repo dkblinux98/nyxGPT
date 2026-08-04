@@ -55,15 +55,20 @@ compose_container_present() {
   command -v docker >/dev/null 2>&1 && docker inspect "$CONTAINER_NAME" >/dev/null 2>&1
 }
 
-# Resolve Homebrew's own Ollama log path (native mode). Tries `brew --prefix`
-# first, then falls back to the two conventional prefixes (Apple
-# Silicon/Intel) -- mirrors docs/api.md's manual fallback instructions.
+# Resolve the native Ollama log path. On macOS this is Homebrew's own
+# ollama.log -- tries `brew --prefix` first, then falls back to the two
+# conventional prefixes (Apple Silicon/Intel), mirroring docs/api.md's manual
+# fallback instructions. On Linux, native Ollama runs as the
+# nyxgpt-ollama.service systemd --user unit (see src/nyxgpt/ops.py's
+# _install_native_ollama_systemd), which appends its own stdout/stderr
+# straight to ~/.nyxGPT/logs/ollama-native.log -- included as a candidate so
+# this script's rotation applies there too, uniformly with macOS.
 native_ollama_log() {
   local prefix candidate
   if command -v brew >/dev/null 2>&1; then
     prefix="$(brew --prefix 2>/dev/null || true)"
   fi
-  for candidate in "${prefix:-}/var/log/ollama.log" /opt/homebrew/var/log/ollama.log /usr/local/var/log/ollama.log; do
+  for candidate in "${prefix:-}/var/log/ollama.log" /opt/homebrew/var/log/ollama.log /usr/local/var/log/ollama.log "$HOME/.nyxGPT/logs/ollama-native.log"; do
     if [ -n "$candidate" ] && [ -f "$candidate" ]; then
       echo "$candidate"
       return 0

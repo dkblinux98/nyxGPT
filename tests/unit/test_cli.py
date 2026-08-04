@@ -1584,6 +1584,12 @@ def test_ops_install_skip_observability_flag_parses(
     import nyxgpt.cli as cli_mod
     from nyxgpt.ops import OpsResult
 
+    # Pin to the macOS (Homebrew/launchd) native dispatch branch so the
+    # low-level function names patched below are the ones `install()`'s
+    # steps actually call -- see test_ops.py's `_force_macos_native_path`
+    # fixture for the same reasoning (#3508).
+    monkeypatch.setattr(cli_mod.ops_mod.platform, "system", lambda: "Darwin")
+
     ok = [OpsResult(True, "ok")]
     for step in (
         "migrate_legacy_volumes",
