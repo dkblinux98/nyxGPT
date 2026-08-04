@@ -288,7 +288,7 @@ The Next.js web UI provides:
 - Session management and organization
 - RAG document upload and management
 - Comprehensive settings and configuration
-- Runs as background service via Homebrew
+- Runs as a background service via Homebrew (macOS) or systemd (Linux)
 
 Access at `http://127.0.0.1:3000` after starting the service.
 
