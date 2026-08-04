@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
@@ -117,6 +117,41 @@ describe('SecretsSetupPage', () => {
     expect(await screen.findByText('github.pat: must be at least 20 characters')).toBeInTheDocument();
   });
 
+  it('falls back to an HTTP status message when a save failure has neither error nor detail', async () => {
+    server.use(
+      http.get('/api/v1/config/secrets', () => HttpResponse.json({ secrets: mockSecrets })),
+      http.post('/api/v1/config/secrets', () => HttpResponse.json({}, { status: 500 }))
+    );
+    render(<SecretsSetupPage />);
+
+    await screen.findByText('GitHub Personal Access Token');
+    const inputs = screen.getAllByPlaceholderText('Paste value here');
+    await userEvent.type(inputs[inputs.length - 1], 'ghp_abcdefghijklmnopqrst');
+    const saveButtons = screen.getAllByRole('button', { name: 'Save' });
+    await userEvent.click(saveButtons[saveButtons.length - 1]);
+
+    expect(await screen.findByText('HTTP 500')).toBeInTheDocument();
+  });
+
+  it('reports a non-Error save failure with a stringified reason', async () => {
+    server.use(http.get('/api/v1/config/secrets', () => HttpResponse.json({ secrets: mockSecrets })));
+    render(<SecretsSetupPage />);
+
+    await screen.findByText('GitHub Personal Access Token');
+    const inputs = screen.getAllByPlaceholderText('Paste value here');
+    await userEvent.type(inputs[inputs.length - 1], 'ghp_abcdefghijklmnopqrst');
+
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn().mockRejectedValue('plain save failure');
+
+    const saveButtons = screen.getAllByRole('button', { name: 'Save' });
+    await userEvent.click(saveButtons[saveButtons.length - 1]);
+
+    expect(await screen.findByText('plain save failure')).toBeInTheDocument();
+
+    global.fetch = originalFetch;
+  });
+
   it('generates a value for the secret with a generator without requiring typed input', async () => {
     server.use(
       http.get('/api/v1/config/secrets', () => HttpResponse.json({ secrets: mockSecrets })),
@@ -175,5 +210,129 @@ describe('SecretsSetupPage', () => {
       'href',
       '/admin/dashboard'
     );
+  });
+
+  it('shows a page-level error when the initial secrets fetch fails', async () => {
+    server.use(
+      http.get('/api/v1/config/secrets', () => HttpResponse.json({ error: 'config backend unavailable' }, { status: 502 }))
+    );
+    render(<SecretsSetupPage />);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('config backend unavailable');
+  });
+
+  it('falls back to the detail message when the initial secrets fetch has no error field', async () => {
+    server.use(
+      http.get('/api/v1/config/secrets', () => HttpResponse.json({ detail: 'no error field' }, { status: 500 }))
+    );
+    render(<SecretsSetupPage />);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('no error field');
+  });
+
+  it('falls back to an HTTP status message when the initial secrets fetch has neither error nor detail', async () => {
+    server.use(http.get('/api/v1/config/secrets', () => HttpResponse.json({}, { status: 503 })));
+    render(<SecretsSetupPage />);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('HTTP 503');
+  });
+
+  it('reports a non-Error initial fetch failure with a stringified reason', async () => {
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn().mockRejectedValue('plain string failure');
+
+    render(<SecretsSetupPage />);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('plain string failure');
+
+    global.fetch = originalFetch;
+  });
+
+  it('shows a sync error and does not touch the secrets list when a full sync fails', async () => {
+    server.use(
+      http.get('/api/v1/config/secrets', () => HttpResponse.json({ secrets: mockSecrets })),
+      http.post('/api/v1/config/secrets/sync', async ({ request }) => {
+        const body = (await request.json()) as Record<string, unknown>;
+        expect(body).toEqual({ dry_run: false });
+        return HttpResponse.json({ error: 'sync backend unavailable' }, { status: 502 });
+      })
+    );
+    render(<SecretsSetupPage />);
+
+    await screen.findByText('API authentication key');
+    await userEvent.click(screen.getByRole('button', { name: 'Sync now' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('sync backend unavailable');
+    expect(screen.queryByText('Sync results:')).not.toBeInTheDocument();
+  });
+
+  it('falls back to the detail message when a sync failure has no error field', async () => {
+    server.use(
+      http.get('/api/v1/config/secrets', () => HttpResponse.json({ secrets: mockSecrets })),
+      http.post('/api/v1/config/secrets/sync', () =>
+        HttpResponse.json({ detail: 'sync detail message' }, { status: 500 })
+      )
+    );
+    render(<SecretsSetupPage />);
+
+    await screen.findByText('API authentication key');
+    await userEvent.click(screen.getByRole('button', { name: 'Sync now' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('sync detail message');
+  });
+
+  it('falls back to an HTTP status message when a sync failure has neither error nor detail', async () => {
+    server.use(
+      http.get('/api/v1/config/secrets', () => HttpResponse.json({ secrets: mockSecrets })),
+      http.post('/api/v1/config/secrets/sync', () => HttpResponse.json({}, { status: 503 }))
+    );
+    render(<SecretsSetupPage />);
+
+    await screen.findByText('API authentication key');
+    await userEvent.click(screen.getByRole('button', { name: 'Sync now' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('HTTP 503');
+  });
+
+  it('reports a non-Error sync failure with a stringified reason', async () => {
+    server.use(http.get('/api/v1/config/secrets', () => HttpResponse.json({ secrets: mockSecrets })));
+    render(<SecretsSetupPage />);
+    await screen.findByText('API authentication key');
+
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn().mockRejectedValue('plain sync failure');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Sync now' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('plain sync failure');
+
+    global.fetch = originalFetch;
+  });
+
+  it('runs a full sync and renders mixed success/failure results with details', async () => {
+    server.use(
+      http.get('/api/v1/config/secrets', () => HttpResponse.json({ secrets: mockSecrets })),
+      http.post('/api/v1/config/secrets/sync', async ({ request }) => {
+        const body = (await request.json()) as Record<string, unknown>;
+        expect(body).toEqual({ dry_run: false });
+        return HttpResponse.json({
+          ok: false,
+          dry_run: false,
+          results: [
+            { ok: true, message: 'synced monitoring.slack_bot_token -> Actions secret SLACK_BOT_TOKEN', details: '' },
+            { ok: false, message: 'failed to sync github.pat', details: 'invalid token scope' },
+          ],
+        });
+      })
+    );
+    render(<SecretsSetupPage />);
+
+    await screen.findByText('API authentication key');
+    await userEvent.click(screen.getByRole('button', { name: 'Sync now' }));
+
+    expect(await screen.findByText('Sync results:')).toBeInTheDocument();
+    expect(screen.getByText(/synced monitoring.slack_bot_token/)).toBeInTheDocument();
+    expect(screen.getByText(/failed to sync github.pat/)).toBeInTheDocument();
+    expect(screen.getByText('invalid token scope')).toBeInTheDocument();
   });
 });

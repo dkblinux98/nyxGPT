@@ -76,7 +76,7 @@ export default function SecretsSetupPage() {
     try {
       const body = generate
         ? { section: secret.section, key: secret.key, generate: true }
-        : { section: secret.section, key: secret.key, value: drafts[secret.full_key] || '' };
+        : { section: secret.section, key: secret.key, value: drafts[secret.full_key] };
       const res = await fetch('/api/v1/config/secrets', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
