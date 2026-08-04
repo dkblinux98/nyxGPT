@@ -21,6 +21,16 @@ from nyxgpt import ops
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def _force_macos_native_path(monkeypatch):
+    """Pin `platform.system()` to "Darwin" -- see test_ops.py's fixture of the
+    same name. This file's install/restart/stop call sites assume the
+    macOS-only (Homebrew/launchd) native path; the Linux/systemd path
+    (#3508) has its own tests in test_ops_systemd.py.
+    """
+    monkeypatch.setattr(ops.platform, "system", lambda: "Darwin")
+
+
 class CP:
     """Minimal stand-in for subprocess.CompletedProcess."""
 

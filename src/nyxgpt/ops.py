@@ -18,6 +18,7 @@ import importlib.metadata
 import json
 import logging
 import os
+import platform
 import re
 import secrets
 import shutil
@@ -33,9 +34,11 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from nacl import public as nacl_public
 
 from nyxgpt import metrics as prom_metrics
 from nyxgpt import self_heal, tracing
+from nyxgpt import verify as verify_mod
 from nyxgpt.config import (
     get_error_tracking_config,
     get_error_tracking_enabled,
@@ -63,6 +66,46 @@ NATIVE_BREW_SERVICES: dict[str, str] = {
     "web": "nyxgpt-web",
     "ollama": "ollama",
 }
+
+# Linux twin of NATIVE_BREW_SERVICES: maps a logical component to its
+# systemd --user unit name (see ops/systemd/*.service, #3508). "ollama" gets
+# its own nyxgpt-ollama.service (rather than the system-wide `ollama.service`
+# some distro installers create) so it's managed the same operator-facing
+# way as api/web -- `nyxgpt ops` never needs to distinguish a user unit it
+# owns from a system unit it doesn't.
+NATIVE_SYSTEMD_SERVICES: dict[str, str] = {
+    "api": "nyxgpt-api",
+    "web": "nyxgpt-web",
+    "ollama": "nyxgpt-ollama",
+}
+
+
+def _is_macos() -> bool:
+    """True if running on macOS -- the Homebrew services + launchd native path."""
+    return platform.system() == "Darwin"
+
+
+def _is_linux() -> bool:
+    """True if running on Linux -- the systemd --user native path (#3508)."""
+    return platform.system() == "Linux"
+
+
+def _unsupported_os_result(action: str) -> list[OpsResult]:
+    """Standard failure for a native-mode step on an OS with no dispatch branch.
+
+    Native install is supported on macOS (Homebrew/launchd) and Linux
+    (systemd) only -- Compose/Terraform/Kubernetes deployment modes are
+    unaffected since they never touch host service managers.
+    """
+    return [
+        OpsResult(
+            False,
+            f"{action}: unsupported OS for native mode ({platform.system()})",
+            "Native install (nyxgpt ops install, no --terraform/--kubernetes) supports "
+            "macOS and Linux only. Use --terraform or --kubernetes on other platforms.",
+        )
+    ]
+
 
 # Host port each component binds to under Docker Compose (see docker-compose.yml).
 # Used only for collision messaging -- detection itself is state-based.
@@ -527,11 +570,7 @@ def detect_deployment_mode() -> DeploymentMode:
     Cassandra container). This cross-checks the Compose stack so `status`/`restart`
     can see -- and avoid colliding with -- a Compose deployment left running.
     """
-    brew_snapshot = _brew_services_snapshot()
-    native = {
-        component: brew_snapshot.get(brew_name, "none")
-        for component, brew_name in NATIVE_BREW_SERVICES.items()
-    }
+    native = _native_services_snapshot()
     native["cassandra"] = _docker_container_state("nyxgpt-cassandra")
 
     compose = _compose_stack_snapshot()
@@ -1608,6 +1647,689 @@ def _ensure_ollama_service() -> list[OpsResult]:
         )
         results.append(OpsResult(False, "Failed to start brew service: ollama", details.strip()))
     return results
+
+
+# --- Linux native (systemd) install (#3508) ---
+#
+# Linux twin of the Homebrew-services + launchd section above. There's no
+# Homebrew Cellar to build inside, so `_install_native_api_systemd`/
+# `_install_native_web_systemd` create their own self-contained install roots
+# under ~/.nyxGPT/opt/<component> (a plain venv for the api, a built `web/`
+# tree for the web UI) instead -- reusing `_create_dist_tarball` (already
+# OS-agnostic: it just vendors source into a tarball) rather than duplicating
+# it. `ollama` is managed as its own systemd --user unit (`nyxgpt-ollama.service`)
+# rather than relying on a distro's system-wide `ollama.service`, so every
+# native component is reachable through the same `systemctl --user` surface.
+
+
+def _systemd_user_dir() -> Path:
+    """Return `~/.config/systemd/user`, the systemd --user unit search path."""
+    return Path.home() / ".config" / "systemd" / "user"
+
+
+def _find_systemd_unit_template(name: str) -> tuple[Path | None, list[Path]]:
+    """Locate a systemd unit template (by filename) inside the repo.
+
+    Mirrors `_find_launchagent_template`'s search strategy. Returns
+    (path_or_none, candidates_checked).
+    """
+    candidates = [
+        REPO_ROOT / "ops" / "systemd" / name,
+        REPO_ROOT / name,
+    ]
+    for p in candidates:
+        try:
+            if p.exists():
+                return p, candidates
+        except Exception as e:
+            logger.warning(
+                "Could not check candidate path %s, skipping: %s",
+                p,
+                e,
+                extra={"component": "ops"},
+            )
+            continue
+    return None, candidates
+
+
+def _install_systemd_unit_from_template(
+    tpl: Path, dst: Path, *, substitutions: dict[str, str] | None = None
+) -> None:
+    """Render a systemd unit template to `dst`.
+
+    Substitutes `LAUNCHAGENT_HOME_PLACEHOLDER` (the same `__NYXGPT_HOME__`
+    placeholder the launchd plist templates use) with the installing user's
+    actual home directory, plus any unit-specific `substitutions` (e.g. the
+    resolved `ollama` binary path for nyxgpt-ollama.service).
+    """
+    _ensure_dir(dst.parent)
+    text = tpl.read_text(encoding="utf-8")
+    text = text.replace(LAUNCHAGENT_HOME_PLACEHOLDER, str(Path.home()))
+    for placeholder, value in (substitutions or {}).items():
+        text = text.replace(placeholder, value)
+    dst.write_text(text, encoding="utf-8")
+
+
+def _reload_and_activate_systemd_unit(unit: str) -> list[OpsResult]:
+    """`daemon-reload`, enable, then restart (or start) a systemd --user unit.
+
+    Mirrors the launchd installers' bootout+bootstrap+kickstart pattern: a
+    changed unit file must be reloaded before systemd picks it up, `enable`
+    makes it start at every login (the launchd RunAtLoad equivalent), and
+    `restart` (rather than `start`) ensures a just-rebuilt venv/web bundle is
+    actually picked up instead of leaving an already-running process serving
+    stale code -- `systemctl restart` on a unit that isn't running yet is
+    equivalent to `start` (mirrors the brew-service restart-vs-start fix from
+    #3472/#3445).
+    """
+    results: list[OpsResult] = []
+    cp = _run(["systemctl", "--user", "daemon-reload"], check=False)
+    if cp.returncode != 0:
+        details = (cp.stdout or "").strip() + (
+            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+        )
+        results.append(OpsResult(False, "systemctl --user daemon-reload failed", details.strip()))
+        return results
+
+    _run(["systemctl", "--user", "enable", unit], check=False, expected=True)
+
+    cp = _run(["systemctl", "--user", "restart", unit], check=False)
+    if cp.returncode == 0:
+        results.append(OpsResult(True, f"Started/restarted systemd unit: {unit}"))
+    else:
+        details = (cp.stdout or "").strip() + (
+            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+        )
+        results.append(OpsResult(False, f"Failed to start systemd unit: {unit}", details.strip()))
+    return results
+
+
+def _install_cassandra_logs_systemd_unit() -> list[OpsResult]:
+    """Install and (re)start the Cassandra log-follower systemd --user unit.
+
+    Linux twin of `_install_cassandra_launchagent`: locates the unit template
+    in the repo, copies it into ~/.config/systemd/user/, then reloads and
+    (re)starts it. Returns a single-element list of OpsResult (plus the
+    reload/activate results); fails if the template can't be found.
+    """
+    results: list[OpsResult] = []
+    tpl, checked = _find_systemd_unit_template("nyxgpt-cassandra-logs.service")
+    if tpl is None:
+        details = "Tried:\n" + "\n".join(str(p) for p in checked) + f"\nREPO_ROOT={REPO_ROOT}"
+        results.append(OpsResult(False, "Missing Cassandra logs systemd unit template", details))
+        return results
+    dst = _systemd_user_dir() / tpl.name
+    _install_systemd_unit_from_template(tpl, dst)
+    results.append(OpsResult(True, "Installed Cassandra logs systemd unit", str(dst)))
+    results.extend(_reload_and_activate_systemd_unit("nyxgpt-cassandra-logs.service"))
+    return results
+
+
+def _install_ollama_logs_systemd_unit() -> list[OpsResult]:
+    """Install and (re)start the Ollama log-follower systemd --user unit.
+
+    Linux twin of `_install_ollama_launchagent`. Installed unconditionally by
+    `nyxgpt ops install` regardless of deployment mode, same as the Cassandra
+    unit -- `follow-ollama-logs.sh` (which this unit runs) handles both
+    Compose mode (follows the `nyxgpt-ollama` container) and native mode
+    (tails ~/.nyxGPT/logs/ollama-native.log, nyxgpt-ollama.service's own
+    stdout) on its own (see #3441).
+    """
+    results: list[OpsResult] = []
+    tpl, checked = _find_systemd_unit_template("nyxgpt-ollama-logs.service")
+    if tpl is None:
+        details = "Tried:\n" + "\n".join(str(p) for p in checked) + f"\nREPO_ROOT={REPO_ROOT}"
+        results.append(OpsResult(False, "Missing Ollama logs systemd unit template", details))
+        return results
+    dst = _systemd_user_dir() / tpl.name
+    _install_systemd_unit_from_template(tpl, dst)
+    results.append(OpsResult(True, "Installed Ollama logs systemd unit", str(dst)))
+    results.extend(_reload_and_activate_systemd_unit("nyxgpt-ollama-logs.service"))
+    return results
+
+
+def _linux_native_root(component: str) -> Path:
+    """Return `~/.nyxGPT/opt/<component>`, creating it if needed.
+
+    The self-contained install root Linux native mode uses in place of a
+    Homebrew Cellar keg -- holds the component's venv/build plus the wrapper
+    script its systemd unit execs.
+    """
+    p = Path.home() / ".nyxGPT" / "opt" / component
+    _ensure_dir(p)
+    return p
+
+
+def _venv_site_packages(venv_dir: Path) -> Path | None:
+    """Return a venv's `site-packages` directory, or None if the venv wasn't created."""
+    matches = sorted((venv_dir / "lib").glob("python3.*/site-packages"))
+    return matches[0] if matches else None
+
+
+def _write_executable(path: Path, content: str) -> None:
+    """Write `content` to `path` and mark it executable (0o755)."""
+    _ensure_dir(path.parent)
+    path.write_text(content, encoding="utf-8")
+    os.chmod(path, 0o755)
+
+
+# Wrapper script templates for the Linux native services -- plain-string
+# (not f-string) templates so the embedded Python heredocs' own `{...}`
+# formatting doesn't need brace-escaping; `__NYXGPT_API_VENV__`/
+# `__NYXGPT_WEB_ROOT__` are substituted via `str.replace` at install time.
+# Mirror homebrew/nyxgpt-api.rb's and nyxgpt-web.rb's `bin/nyxgpt-*` wrapper
+# scripts: read host/port (and, for web, the api_base_url override) from
+# ~/.nyxGPT/config.ini, then exec the real process.
+_NATIVE_API_WRAPPER_TEMPLATE = """#!/bin/bash
+set -euo pipefail
+
+CONFIG_FILE="$HOME/.nyxGPT/config.ini"
+SYS_PY="$(command -v python3 || echo /usr/bin/python3)"
+
+HOST="127.0.0.1"
+PORT="8000"
+
+if [ -f "$CONFIG_FILE" ]; then
+  IFS=$'\\t' read -r HOST PORT < <("$SYS_PY" - <<'PY'
+import configparser
+import os
+
+cfg = configparser.ConfigParser()
+cfg.read(os.path.expanduser('~/.nyxGPT/config.ini'), encoding='utf-8')
+
+host = cfg.get('api', 'host', fallback='127.0.0.1')
+try:
+    port = str(cfg.getint('api', 'port', fallback=8000))
+except Exception:
+    port = '8000'
+
+print(f"{host}\\t{port}")
+PY
+)
+fi
+
+echo "nyxgpt-api starting (self-contained venv)" >&2
+echo "  host: $HOST" >&2
+echo "  port: $PORT" >&2
+
+exec "__NYXGPT_API_VENV__/bin/python3" -m uvicorn nyxgpt.app:app --host "$HOST" --port "$PORT"
+"""
+
+_NATIVE_WEB_WRAPPER_TEMPLATE = """#!/usr/bin/env bash
+set -euo pipefail
+
+CONFIG_FILE="$HOME/.nyxGPT/config.ini"
+SYS_PY="$(command -v python3 || echo /usr/bin/python3)"
+
+HOST="127.0.0.1"
+PORT="3000"
+API_BASE=""
+
+if [ -f "$CONFIG_FILE" ]; then
+  IFS=$'\\t' read -r HOST PORT API_BASE < <("$SYS_PY" - <<'PY'
+import configparser
+import os
+
+cfg = configparser.ConfigParser()
+cfg.read(os.path.expanduser('~/.nyxGPT/config.ini'), encoding='utf-8')
+
+host = cfg.get('web', 'host', fallback='127.0.0.1')
+try:
+    port = str(cfg.getint('web', 'port', fallback=3000))
+except Exception:
+    port = '3000'
+api_base = cfg.get('web', 'api_base_url', fallback='')
+
+print(f"{host}\\t{port}\\t{api_base}")
+PY
+)
+fi
+
+export HOST="$HOST"
+export PORT="$PORT"
+if [ -n "$API_BASE" ]; then
+  export NEXT_PUBLIC_API_BASE="$API_BASE"
+fi
+
+echo "nyxgpt-web starting (self-contained build)" >&2
+echo "  host: $HOST" >&2
+echo "  port: $PORT" >&2
+
+cd "__NYXGPT_WEB_ROOT__"
+exec npm run start
+"""
+
+
+def _install_native_api_systemd() -> list[OpsResult]:
+    """Build and install a self-contained venv for `nyxgpt-api` on Linux, then
+    (re)start its systemd --user unit.
+
+    Linux twin of `_install_homebrew_api`: vendors `pyproject.toml` +
+    `src/nyxgpt/` into `~/.nyxGPT/opt/nyxgpt-api` (reusing
+    `_create_dist_tarball` -- it isn't brew-specific, just tarball-building),
+    creates a plain venv there, `pip install`s the vendored tarball into it,
+    copies `example.config.ini` next to the installed package
+    (`config_wizard`'s schema-source resolution finds it there with no repo
+    root above the venv, mirroring the brew formula's own fix, #3406), writes
+    the wrapper script the systemd unit execs, then installs/reloads the
+    unit.
+
+    Unlike `_install_homebrew_api`'s sha256-gated skip-if-unchanged
+    (`_brew_install_or_reinstall`), this always rebuilds -- a slower but
+    simpler first Linux implementation; `nyxgpt ops install` is not a hot
+    path. Returns a list of OpsResult.
+    """
+    results: list[OpsResult] = []
+    root = _linux_native_root("nyxgpt-api")
+    version = _read_project_version()
+    tar = _create_dist_tarball(root, "nyxgpt-api", version)
+    venv_dir = root / "venv"
+
+    cp = _run(["python3", "-m", "venv", str(venv_dir)], check=False)
+    if cp.returncode != 0:
+        details = (cp.stdout or "").strip() + (
+            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+        )
+        results.append(OpsResult(False, "Failed to create nyxgpt-api venv", details.strip()))
+        return results
+
+    pip = str(venv_dir / "bin" / "pip")
+    _run([pip, "install", "--upgrade", "pip"], check=False)
+    cp = _run([pip, "install", str(tar)], check=False)
+    if cp.returncode != 0:
+        details = (cp.stdout or "").strip() + (
+            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+        )
+        results.append(OpsResult(False, "Failed to pip install nyxgpt-api", details.strip()))
+        return results
+    results.append(
+        OpsResult(True, "Installed nyxgpt-api into a self-contained venv", str(venv_dir))
+    )
+
+    site_packages = _venv_site_packages(venv_dir)
+    example_config = REPO_ROOT / "example.config.ini"
+    if site_packages is not None and example_config.exists():
+        nyxgpt_pkg_dir = site_packages / "nyxgpt"
+        if nyxgpt_pkg_dir.exists():
+            _copy_file(example_config, nyxgpt_pkg_dir / "example.config.ini")
+
+    wrapper = root / "bin" / "nyxgpt-api"
+    _write_executable(
+        wrapper, _NATIVE_API_WRAPPER_TEMPLATE.replace("__NYXGPT_API_VENV__", str(venv_dir))
+    )
+    results.append(OpsResult(True, "Installed nyxgpt-api wrapper script", str(wrapper)))
+
+    tpl, checked = _find_systemd_unit_template("nyxgpt-api.service")
+    if tpl is None:
+        details = "Tried:\n" + "\n".join(str(p) for p in checked) + f"\nREPO_ROOT={REPO_ROOT}"
+        results.append(OpsResult(False, "Missing nyxgpt-api systemd unit template", details))
+        return results
+    dst = _systemd_user_dir() / tpl.name
+    _ensure_dir(Path.home() / ".nyxGPT" / "logs")
+    _install_systemd_unit_from_template(tpl, dst)
+    results.append(OpsResult(True, "Installed nyxgpt-api systemd unit", str(dst)))
+    results.extend(_reload_and_activate_systemd_unit("nyxgpt-api.service"))
+    return results
+
+
+def _install_native_web_systemd() -> list[OpsResult]:
+    """Build and install a self-contained web build for `nyxgpt-web` on Linux,
+    then (re)start its systemd --user unit.
+
+    Linux twin of `_install_homebrew_web`: vendors the `web/` source tree
+    (minus gitignored build artifacts, see `_WEB_VENDOR_EXCLUDES`) into a
+    staging directory (reusing `_create_dist_tarball`), extracts it, runs
+    `npm ci`/`npm run build` inside it, then -- only once that build has
+    succeeded -- swaps it into `~/.nyxGPT/opt/nyxgpt-web/build` in place of
+    the previous one, writes the wrapper script the systemd unit execs, and
+    installs/reloads the unit. Always rebuilds -- see
+    `_install_native_api_systemd`'s docstring for why this doesn't do
+    `_install_homebrew_web`'s sha256-gated skip.
+
+    The build/swap is staged rather than done in place so a failed `npm ci`/
+    `npm run build` (transient registry issue, disk pressure, OOM, ...)
+    leaves the previous, still-running build untouched -- the live
+    `nyxgpt-web.service` wrapper keeps `cd`ing into a build that still
+    exists instead of a path a failed rebuild rmtree'd out from under it (a
+    real outage-on-restart bug found in review, #3508).
+
+    Returns a list of OpsResult; fails early if `npm` isn't on PATH.
+    """
+    if _which("npm") is None:
+        return [OpsResult(False, "npm not found; cannot install nyxgpt-web", "")]
+
+    results: list[OpsResult] = []
+    root = _linux_native_root("nyxgpt-web")
+    version = _read_project_version()
+    tar = _create_dist_tarball(root, "nyxgpt-web", version)
+
+    build_dir = root / "build"
+    staging_dir = root / "build.staging"
+    if staging_dir.exists():
+        shutil.rmtree(staging_dir)
+    _ensure_dir(staging_dir)
+    with tarfile.open(tar) as tf:
+        # Trusted input: `tar` was just built by `_create_dist_tarball` above
+        # from this repo's own `web/` tree, not from an external/user source.
+        tf.extractall(staging_dir, filter="data")
+    staged_extracted = staging_dir / f"nyxgpt-web-{version}"
+
+    npm = _which("npm") or "npm"
+    for step_name, npm_args in (("npm ci", ["ci"]), ("npm run build", ["run", "build"])):
+        try:
+            cp = subprocess.run(
+                [npm, *npm_args],
+                cwd=str(staged_extracted),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        except Exception as e:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            results.append(
+                OpsResult(
+                    False, f"Failed to run {step_name} for nyxgpt-web", f"{type(e).__name__}: {e}"
+                )
+            )
+            return results
+        if cp.returncode != 0:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            results.append(
+                OpsResult(
+                    False,
+                    f"{step_name} failed for nyxgpt-web",
+                    (cp.stderr or cp.stdout or "").strip(),
+                )
+            )
+            return results
+
+    # The new build is known-good -- swap it into place. Two renames (both
+    # fast, same-filesystem) instead of an rmtree-then-build so the previous
+    # build is never gone from `build_dir` for longer than the swap itself.
+    old_dir = root / "build.old"
+    if old_dir.exists():
+        shutil.rmtree(old_dir)
+    if build_dir.exists():
+        build_dir.rename(old_dir)
+    staging_dir.rename(build_dir)
+    if old_dir.exists():
+        shutil.rmtree(old_dir, ignore_errors=True)
+    extracted = build_dir / f"nyxgpt-web-{version}"
+    results.append(OpsResult(True, "Built nyxgpt-web production bundle", str(extracted)))
+
+    wrapper = root / "bin" / "nyxgpt-web"
+    _write_executable(
+        wrapper, _NATIVE_WEB_WRAPPER_TEMPLATE.replace("__NYXGPT_WEB_ROOT__", str(extracted))
+    )
+    results.append(OpsResult(True, "Installed nyxgpt-web wrapper script", str(wrapper)))
+
+    tpl, checked = _find_systemd_unit_template("nyxgpt-web.service")
+    if tpl is None:
+        details = "Tried:\n" + "\n".join(str(p) for p in checked) + f"\nREPO_ROOT={REPO_ROOT}"
+        results.append(OpsResult(False, "Missing nyxgpt-web systemd unit template", details))
+        return results
+    dst = _systemd_user_dir() / tpl.name
+    _ensure_dir(Path.home() / ".nyxGPT" / "logs")
+    _install_systemd_unit_from_template(tpl, dst)
+    results.append(OpsResult(True, "Installed nyxgpt-web systemd unit", str(dst)))
+    results.extend(_reload_and_activate_systemd_unit("nyxgpt-web.service"))
+    return results
+
+
+def _install_native_ollama_systemd() -> list[OpsResult]:
+    """Ensure native Ollama is installed as the `nyxgpt-ollama.service` systemd
+    --user unit, pointed at the shared model store.
+
+    Linux twin of `_ensure_ollama_service`. Requires the `ollama` binary to
+    already be on PATH -- unlike api/web, nyxgpt doesn't install Ollama
+    itself on Linux (see the Linux install section in the docs for the
+    official installer). Migrates any models already pulled into Ollama's
+    own default store into the shared one (`_migrate_native_ollama_models`,
+    OS-agnostic, #3431), then installs/reloads a unit whose `Environment=`
+    already bakes in `OLLAMA_MODELS` -- no separate env-refresh unit is
+    needed the way launchd needs a RunAtLoad LaunchAgent (`Environment=`
+    applies on every unit start, unlike `launchctl setenv`'s per-session
+    scope; see ops/systemd/nyxgpt-ollama.service).
+    """
+    results: list[OpsResult] = []
+    ollama_bin = _which("ollama")
+    if ollama_bin is None:
+        return [
+            OpsResult(
+                False,
+                "ollama not found on PATH",
+                "Install it first: curl -fsSL https://ollama.com/install.sh | sh "
+                "(see the Linux install section in the docs)",
+            )
+        ]
+
+    models_dir = _shared_ollama_models_dir()
+    results.extend(_migrate_native_ollama_models(models_dir))
+
+    tpl, checked = _find_systemd_unit_template("nyxgpt-ollama.service")
+    if tpl is None:
+        details = "Tried:\n" + "\n".join(str(p) for p in checked) + f"\nREPO_ROOT={REPO_ROOT}"
+        results.append(OpsResult(False, "Missing nyxgpt-ollama systemd unit template", details))
+        return results
+    dst = _systemd_user_dir() / tpl.name
+    _ensure_dir(Path.home() / ".nyxGPT" / "logs")
+    _install_systemd_unit_from_template(
+        tpl, dst, substitutions={"__NYXGPT_OLLAMA_BIN__": ollama_bin}
+    )
+    results.append(OpsResult(True, "Installed nyxgpt-ollama systemd unit", str(dst)))
+    results.extend(_reload_and_activate_systemd_unit("nyxgpt-ollama.service"))
+    return results
+
+
+def _systemd_services_snapshot() -> dict[str, str]:
+    """Return {unit_name: state} for nyxGPT-managed systemd --user units.
+
+    Mirrors `_brew_services_snapshot()`'s vocabulary ("started" for a live
+    unit) *and* its "not in this dict" == "not installed" contract: a unit
+    is only included if its file actually exists in
+    `~/.config/systemd/user/` -- `systemctl --user is-active` on a
+    never-installed unit name reports "inactive"/"unknown" the same way it
+    would for an installed-but-stopped one, so checking activity alone would
+    misreport a fresh machine that's never run `nyxgpt ops install` as
+    having every native component "down" instead of simply absent. Empty on
+    any failure (systemctl not on PATH, no session bus reachable).
+    """
+    if _which("systemctl") is None:
+        return {}
+    unit_dir = _systemd_user_dir()
+    snapshot: dict[str, str] = {}
+    for unit in NATIVE_SYSTEMD_SERVICES.values():
+        if not (unit_dir / f"{unit}.service").exists():
+            continue
+        cp = _run(
+            ["systemctl", "--user", "is-active", f"{unit}.service"], check=False, expected=True
+        )
+        state = (cp.stdout or "").strip()
+        snapshot[unit] = "started" if state == "active" else "none"
+    return snapshot
+
+
+def _native_services_snapshot() -> dict[str, str]:
+    """{component: state} for the OS-appropriate native service manager.
+
+    Used by `detect_deployment_mode()` in place of a direct
+    `_brew_services_snapshot()` call so it reflects whichever native path
+    (Homebrew/launchd or systemd) actually applies on this host.
+    """
+    if _is_macos():
+        brew_snapshot = _brew_services_snapshot()
+        return {
+            component: brew_snapshot.get(brew_name, "none")
+            for component, brew_name in NATIVE_BREW_SERVICES.items()
+        }
+    if _is_linux():
+        systemd_snapshot = _systemd_services_snapshot()
+        return {
+            component: systemd_snapshot.get(unit, "none")
+            for component, unit in NATIVE_SYSTEMD_SERVICES.items()
+        }
+    return dict.fromkeys(NATIVE_BREW_SERVICES, "none")
+
+
+def _restart_systemd_service(unit: str) -> list[OpsResult]:
+    """Restart systemd --user unit `unit` via `systemctl --user restart`.
+
+    Returns a single-element list: an OpsResult reporting systemctl missing,
+    the restart command's success, or its failure with captured stdout/stderr.
+    """
+    if _which("systemctl") is None:
+        return [OpsResult(False, f"systemctl not found; cannot restart {unit}")]
+    try:
+        cp = _run(["systemctl", "--user", "restart", f"{unit}.service"], check=False)
+        if cp.returncode == 0:
+            return [OpsResult(True, f"Restarted systemd unit: {unit}")]
+        details = (cp.stdout or "").strip() + (
+            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+        )
+        return [OpsResult(False, f"Failed to restart systemd unit: {unit}", details.strip())]
+    except Exception as e:
+        return [
+            OpsResult(False, f"Failed to restart systemd unit: {unit}", f"{type(e).__name__}: {e}")
+        ]
+
+
+def _stop_systemd_service(unit: str) -> list[OpsResult]:
+    """Stop systemd --user unit `unit` via `systemctl --user stop`.
+
+    Returns a single-element list: an OpsResult reporting systemctl missing,
+    the stop command's success, or its failure with captured stdout/stderr.
+    """
+    if _which("systemctl") is None:
+        return [OpsResult(False, f"systemctl not found; cannot stop {unit}")]
+    try:
+        cp = _run(["systemctl", "--user", "stop", f"{unit}.service"], check=False)
+        if cp.returncode == 0:
+            return [OpsResult(True, f"Stopped systemd unit: {unit}")]
+        details = (cp.stdout or "").strip() + (
+            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+        )
+        return [OpsResult(False, f"Failed to stop systemd unit: {unit}", details.strip())]
+    except Exception as e:
+        return [
+            OpsResult(False, f"Failed to stop systemd unit: {unit}", f"{type(e).__name__}: {e}")
+        ]
+
+
+def _install_native_api() -> list[OpsResult]:
+    """Install/update the native `api` service via the OS-appropriate mechanism."""
+    if _is_macos():
+        return _install_homebrew_api()
+    if _is_linux():
+        return _install_native_api_systemd()
+    return _unsupported_os_result("native api install")
+
+
+def _install_native_web() -> list[OpsResult]:
+    """Install/update the native `web` service via the OS-appropriate mechanism."""
+    if _is_macos():
+        return _install_homebrew_web()
+    if _is_linux():
+        return _install_native_web_systemd()
+    return _unsupported_os_result("native web install")
+
+
+def _ensure_native_ollama_service() -> list[OpsResult]:
+    """Ensure the native `ollama` service is installed/running via the OS-appropriate mechanism."""
+    if _is_macos():
+        return _ensure_ollama_service()
+    if _is_linux():
+        return _install_native_ollama_systemd()
+    return _unsupported_os_result("native ollama service")
+
+
+def _install_cassandra_log_follower_service() -> list[OpsResult]:
+    """Install the Cassandra log-follower agent via the OS-appropriate mechanism."""
+    if _is_macos():
+        return _install_cassandra_launchagent()
+    if _is_linux():
+        return _install_cassandra_logs_systemd_unit()
+    return _unsupported_os_result("cassandra log follower")
+
+
+def _install_ollama_log_follower_service() -> list[OpsResult]:
+    """Install the Ollama log-follower agent via the OS-appropriate mechanism."""
+    if _is_macos():
+        return _install_ollama_launchagent()
+    if _is_linux():
+        return _install_ollama_logs_systemd_unit()
+    return _unsupported_os_result("ollama log follower")
+
+
+def _install_ollama_env_agent() -> list[OpsResult]:
+    """Install the Ollama shared-model-store env agent, on the OS that still needs one.
+
+    macOS needs a RunAtLoad LaunchAgent that reapplies `launchctl setenv
+    OLLAMA_MODELS` every login (#3431); Linux's `nyxgpt-ollama.service`
+    already bakes `Environment=OLLAMA_MODELS=...` into the unit file, which
+    applies on every unit start with no companion agent needed.
+    """
+    if _is_macos():
+        return _install_ollama_env_launchagent()
+    if _is_linux():
+        return [
+            OpsResult(
+                True,
+                "Ollama env agent: not needed on Linux",
+                "nyxgpt-ollama.service's Environment= directive sets OLLAMA_MODELS "
+                "directly -- unlike launchctl setenv, it doesn't need a RunAtLoad "
+                "companion to survive a reboot.",
+            )
+        ]
+    return _unsupported_os_result("ollama env agent")
+
+
+def _restart_native_service(component: str) -> list[OpsResult]:
+    """Restart the OS-appropriate native service for `component` ("api"/"web"/"ollama")."""
+    if _is_macos():
+        return _restart_brew_service(NATIVE_BREW_SERVICES[component])
+    if _is_linux():
+        return _restart_systemd_service(NATIVE_SYSTEMD_SERVICES[component])
+    return _unsupported_os_result(f"restart {component}")
+
+
+def _stop_native_service(component: str) -> list[OpsResult]:
+    """Stop the OS-appropriate native service for `component` ("api"/"web"/"ollama")."""
+    if _is_macos():
+        return _stop_brew_service(NATIVE_BREW_SERVICES[component])
+    if _is_linux():
+        return _stop_systemd_service(NATIVE_SYSTEMD_SERVICES[component])
+    return _unsupported_os_result(f"stop {component}")
+
+
+# Log-follower agent identifiers ("cassandra-logs"/"ollama-logs", matching
+# `nyxgpt ops restart`/`stop`'s `cassandra-logs` target) mapped to each OS's
+# native name for that agent.
+_NATIVE_LOG_FOLLOWER_LAUNCHD_LABELS: dict[str, str] = {
+    "cassandra-logs": "com.nyxgpt.cassandra-logs",
+    "ollama-logs": "com.nyxgpt.ollama-logs",
+}
+_NATIVE_LOG_FOLLOWER_SYSTEMD_UNITS: dict[str, str] = {
+    "cassandra-logs": "nyxgpt-cassandra-logs",
+    "ollama-logs": "nyxgpt-ollama-logs",
+}
+
+
+def _restart_native_log_follower(name: str) -> list[OpsResult]:
+    """Restart the OS-appropriate log-follower agent ("cassandra-logs"/"ollama-logs")."""
+    if _is_macos():
+        return _restart_launchagent(_NATIVE_LOG_FOLLOWER_LAUNCHD_LABELS[name])
+    if _is_linux():
+        return _restart_systemd_service(_NATIVE_LOG_FOLLOWER_SYSTEMD_UNITS[name])
+    return _unsupported_os_result(f"restart {name}")
+
+
+def _stop_native_log_follower(name: str) -> list[OpsResult]:
+    """Stop the OS-appropriate log-follower agent ("cassandra-logs"/"ollama-logs")."""
+    if _is_macos():
+        return _stop_launchagent(_NATIVE_LOG_FOLLOWER_LAUNCHD_LABELS[name])
+    if _is_linux():
+        return _stop_systemd_service(_NATIVE_LOG_FOLLOWER_SYSTEMD_UNITS[name])
+    return _unsupported_os_result(f"stop {name}")
 
 
 def _ensure_web_deps() -> list[OpsResult]:
@@ -3213,12 +3935,12 @@ def install(args) -> int:
         ("web deps", _ensure_web_deps),
         ("mcp deps", _ensure_mcp_deps),
         ("cassandra container", _ensure_cassandra_container),
-        ("cassandra launchagent", _install_cassandra_launchagent),
-        ("ollama logs launchagent", _install_ollama_launchagent),
-        ("ollama env launchagent", _install_ollama_env_launchagent),
-        ("homebrew api", _install_homebrew_api),
-        ("homebrew web", _install_homebrew_web),
-        ("ollama service", _ensure_ollama_service),
+        ("cassandra log follower service", _install_cassandra_log_follower_service),
+        ("ollama logs follower service", _install_ollama_log_follower_service),
+        ("ollama env agent", _install_ollama_env_agent),
+        ("native api service", _install_native_api),
+        ("native web service", _install_native_web),
+        ("ollama service", _ensure_native_ollama_service),
         ("stale log symlink cleanup", _cleanup_stale_log_symlinks),
         ("env sync", sync_env_from_config),
         ("compose config (derive from native)", _generate_compose_config),
@@ -3394,19 +4116,46 @@ def status(_args) -> int:
             "if Terraform is the mode you want to keep."
         )
 
-    if _which("brew"):
-        cp = _run(["brew", "services", "list"], check=False, expected=True)
-        print("\nHomebrew services:\n" + (cp.stdout or "").strip())
-    else:
-        print("\nHomebrew services: brew not found")
+    if _is_linux():
+        if _which("systemctl"):
+            cp = _run(
+                [
+                    "systemctl",
+                    "--user",
+                    "list-units",
+                    "--all",
+                    "--type=service",
+                    "--no-legend",
+                    "nyxgpt-*.service",
+                ],
+                check=False,
+                expected=True,
+            )
+            print("\nsystemd --user services:\n" + (cp.stdout or "").strip())
+        else:
+            print("\nsystemd --user services: systemctl not found")
 
-    label = "com.nyxgpt.cassandra-logs"
-    try:
-        cp = _run(["launchctl", "list"], check=False, expected=True)
-        loaded = label in (cp.stdout or "")
-        print(f"\nLaunchAgent {label}: {'LOADED' if loaded else 'NOT LOADED'}")
-    except Exception as e:
-        print(f"\nLaunchAgent {label}: ERROR ({e})")
+        unit = "nyxgpt-cassandra-logs.service"
+        try:
+            cp = _run(["systemctl", "--user", "is-active", unit], check=False, expected=True)
+            state = (cp.stdout or "").strip() or "inactive"
+            print(f"\nsystemd unit {unit}: {state.upper()}")
+        except Exception as e:
+            print(f"\nsystemd unit {unit}: ERROR ({e})")
+    else:
+        if _which("brew"):
+            cp = _run(["brew", "services", "list"], check=False, expected=True)
+            print("\nHomebrew services:\n" + (cp.stdout or "").strip())
+        else:
+            print("\nHomebrew services: brew not found")
+
+        label = "com.nyxgpt.cassandra-logs"
+        try:
+            cp = _run(["launchctl", "list"], check=False, expected=True)
+            loaded = label in (cp.stdout or "")
+            print(f"\nLaunchAgent {label}: {'LOADED' if loaded else 'NOT LOADED'}")
+        except Exception as e:
+            print(f"\nLaunchAgent {label}: ERROR ({e})")
 
     if _which("docker") is None:
         print("\nDocker: docker not found")
@@ -3788,8 +4537,9 @@ def doctor(_args) -> int:
     """CLI entrypoint for `nyxgpt ops doctor`.
 
     Checks for common misconfigurations: missing ~/.nyxGPT/config.ini,
-    non-executable helper scripts, missing brew/docker/node/npm tools on
-    PATH, missing/incomplete web dependencies (node_modules, undici),
+    non-executable helper scripts, missing native-service-manager/docker/
+    node/npm tools on PATH (brew on macOS, systemctl on Linux),
+    missing/incomplete web dependencies (node_modules, undici),
     (when log aggregation is enabled and native logs exist) whether
     promtail is actually wired to see native-mode host logs, (when tracing
     is enabled) whether the configured OTLP endpoint actually has something
@@ -3857,7 +4607,13 @@ def doctor(_args) -> int:
         if p.exists() and not os.access(p, os.X_OK):
             issues.append(f"Script not executable {p}")
 
-    for tool in ("brew", "docker"):
+    if _is_linux():
+        required_native_tools: tuple[str, ...] = ("systemctl", "docker")
+    elif _is_macos():
+        required_native_tools = ("brew", "docker")
+    else:
+        required_native_tools = ("docker",)
+    for tool in required_native_tools:
         if _which(tool) is None:
             issues.append(f"Missing tool in PATH: {tool}")
 
@@ -3923,9 +4679,14 @@ def doctor(_args) -> int:
     if tracing_packages_issue:
         issues.append(tracing_packages_issue)
 
-    ollama_env_issue = _ollama_env_drift_issue()
-    if ollama_env_issue:
-        issues.append(ollama_env_issue)
+    if _is_macos():
+        # Linux has no equivalent drift to check: nyxgpt-ollama.service's
+        # Environment=OLLAMA_MODELS is part of the unit file itself (applied
+        # fresh on every start), unlike launchd's per-session `launchctl
+        # setenv` -- see _install_ollama_env_agent.
+        ollama_env_issue = _ollama_env_drift_issue()
+        if ollama_env_issue:
+            issues.append(ollama_env_issue)
 
     issues += _glitchtip_secrets_doctor_issues()
     error_tracking_drift_issue = _error_tracking_dsn_drift_issue()
@@ -4050,7 +4811,7 @@ def restart(args) -> int:
             results.append(conflict)
         else:
             self_heal.clear_intentionally_stopped("api")
-            results.extend(_restart_brew_service("nyxgpt-api"))
+            results.extend(_restart_native_service("api"))
 
     if target in ("all", "web"):
         conflict = _compose_conflict_result("web", compose)
@@ -4058,7 +4819,7 @@ def restart(args) -> int:
             results.append(conflict)
         else:
             self_heal.clear_intentionally_stopped("web")
-            results.extend(_restart_brew_service("nyxgpt-web"))
+            results.extend(_restart_native_service("web"))
 
     if target in ("all", "ollama"):
         conflict = _compose_conflict_result("ollama", compose)
@@ -4066,7 +4827,7 @@ def restart(args) -> int:
             results.append(conflict)
         else:
             self_heal.clear_intentionally_stopped("ollama")
-            results.extend(_restart_brew_service("ollama"))
+            results.extend(_restart_native_service("ollama"))
 
     if target in ("all", "cassandra"):
         conflict = _compose_conflict_result("cassandra", compose)
@@ -4077,7 +4838,7 @@ def restart(args) -> int:
             results.extend(_restart_docker_container("nyxgpt-cassandra"))
 
     if target in ("all", "cassandra-logs"):
-        results += _restart_launchagent("com.nyxgpt.cassandra-logs")
+        results += _restart_native_log_follower("cassandra-logs")
 
     if target in ("all", "observability"):
         results.extend(_restart_observability_stack())
@@ -4403,9 +5164,7 @@ def stop(args) -> int:
     mode = detect_deployment_mode()
     tf_or_k8s = _terraform_or_kubernetes_managed_components()
 
-    def _stop_dual_mode(
-        component: str, native_stop: Callable[[str], list[OpsResult]], native_arg: str
-    ) -> None:
+    def _stop_dual_mode(component: str, native_stop: Callable[[], list[OpsResult]]) -> None:
         if component in tf_or_k8s:
             results.append(
                 OpsResult(
@@ -4440,24 +5199,24 @@ def stop(args) -> int:
                 )
             )
         if native_running:
-            results.extend(native_stop(native_arg))
+            results.extend(native_stop())
         if compose_running:
             results.extend(_compose_stop_service(component))
 
     if target in ("all", "api"):
-        _stop_dual_mode("api", _stop_brew_service, "nyxgpt-api")
+        _stop_dual_mode("api", lambda: _stop_native_service("api"))
 
     if target in ("all", "web"):
-        _stop_dual_mode("web", _stop_brew_service, "nyxgpt-web")
+        _stop_dual_mode("web", lambda: _stop_native_service("web"))
 
     if target in ("all", "ollama"):
-        _stop_dual_mode("ollama", _stop_brew_service, "ollama")
+        _stop_dual_mode("ollama", lambda: _stop_native_service("ollama"))
 
     if target in ("all", "cassandra"):
-        _stop_dual_mode("cassandra", _stop_docker_container, "nyxgpt-cassandra")
+        _stop_dual_mode("cassandra", lambda: _stop_docker_container("nyxgpt-cassandra"))
 
     if target in ("all", "cassandra-logs"):
-        results += _stop_launchagent("com.nyxgpt.cassandra-logs")
+        results += _stop_native_log_follower("cassandra-logs")
 
     if target == "observability":
         # Not part of "all" -- like `restart`, "all" only covers the core
@@ -4572,11 +5331,11 @@ def down(args) -> int:
                 )
             )
 
-        results.extend(_stop_brew_service("nyxgpt-api"))
-        results.extend(_stop_brew_service("nyxgpt-web"))
-        results.extend(_stop_brew_service("ollama"))
+        results.extend(_stop_native_service("api"))
+        results.extend(_stop_native_service("web"))
+        results.extend(_stop_native_service("ollama"))
         results.extend(_stop_docker_container("nyxgpt-cassandra"))
-        results.extend(_stop_launchagent("com.nyxgpt.cassandra-logs"))
+        results.extend(_stop_native_log_follower("cassandra-logs"))
 
     compose_services: list[str] = []
 
@@ -5701,6 +6460,205 @@ def env_sync(args) -> int:
         "ops: env-sync %s",
         "succeeded" if ok else "failed",
         extra={"component": "ops", "action": "env-sync", "ok": ok},
+    )
+
+    return 0 if ok else 2
+
+
+# --- Secrets sync: config.ini -> GitHub Actions secrets (#3505) ---
+#
+# The canonical-store pattern this codifies: several external tokens
+# (Slack bot tokens, agent PATs) are write-once -- the issuing service shows
+# them only at creation, so hand-editing a second copy into GitHub's
+# Settings -> Secrets UI lets the two silently drift. config.ini is the one
+# place a human ever pastes these in (via `nyxgpt secrets setup`); this
+# pushes them outward, one direction only, to the matching Actions secret.
+# `config.SECRETS_SYNC_MANIFEST` is the sole source of truth for *which*
+# config.ini keys are in scope -- anything not listed there is never pushed.
+
+GITHUB_API_BASE_URL = "https://api.github.com"
+
+
+def _github_actions_client(pat: str) -> httpx.Client:
+    """Construct an `httpx.Client` authenticated against the GitHub REST API."""
+    return httpx.Client(
+        base_url=GITHUB_API_BASE_URL,
+        timeout=15.0,
+        headers={
+            "Authorization": f"Bearer {pat}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+
+
+def _secrets_sync_targets(cfg: ConfigParser) -> list[tuple[str, str, str]]:
+    """Return `(full_key, value, actions_secret_name)` for every manifest entry with a value.
+
+    A manifest key absent or blank in config.ini is silently skipped (nothing
+    to sync yet, not an error) -- `nyxgpt secrets setup`/manual entry decides
+    when a given secret exists.
+    """
+    from nyxgpt.config import SECRETS_SYNC_MANIFEST
+
+    targets = []
+    for full_key, actions_secret in SECRETS_SYNC_MANIFEST.items():
+        section, key = full_key.split(".", 1)
+        value = cfg.get(section, key, fallback="").strip()
+        if value:
+            targets.append((full_key, value, actions_secret))
+    return targets
+
+
+def _encrypt_for_actions_secret(public_key_b64: str, value: str) -> str:
+    """Encrypt `value` for the GitHub Actions secrets API's libsodium sealed-box scheme.
+
+    GitHub requires each secret value sealed with the repo's public key
+    (base64-encoded in its API response) before it's PUT to the API -- see
+    https://docs.github.com/en/rest/actions/secrets. Returns the
+    base64-encoded ciphertext the API expects as `encrypted_value`.
+    """
+    public_key = nacl_public.PublicKey(base64.b64decode(public_key_b64))
+    sealed_box = nacl_public.SealedBox(public_key)
+    encrypted = sealed_box.encrypt(value.encode("utf-8"))
+    return base64.b64encode(encrypted).decode("utf-8")
+
+
+def sync_secrets_to_github_actions(
+    cfg_path: Path | None = None, dry_run: bool = False
+) -> list[OpsResult]:
+    """Push `config.SECRETS_SYNC_MANIFEST`'s config.ini values to GitHub Actions secrets.
+
+    One direction only: config.ini -> Actions. Never reads a secret back from
+    GitHub (the API can't return one anyway -- write-once). `dry_run=True`
+    reports which secrets *would* be pushed (names only, no network call, no
+    values) without touching the GitHub API or requiring a valid PAT.
+    Returns one `OpsResult` per synced secret (name only in the message --
+    never the value) plus, on failure, enough detail to fix the problem
+    (missing config field, HTTP status, etc.).
+    """
+    from nyxgpt.config import (
+        get_github_pat,
+        get_github_repo_name,
+        get_github_repo_owner,
+        load_config,
+    )
+
+    cfg_path = cfg_path or (Path.home() / ".nyxGPT" / "config.ini")
+    if not cfg_path.exists():
+        return [
+            OpsResult(
+                False,
+                f"Missing config {cfg_path}",
+                "Run `nyxgpt wizard` first to generate config.ini.",
+            )
+        ]
+
+    cfg = load_config(cfg_path)
+    targets = _secrets_sync_targets(cfg)
+    if not targets:
+        return [
+            OpsResult(
+                True,
+                "No mapped secrets have a value set in config.ini -- nothing to sync",
+                "Run `nyxgpt secrets setup` (or set a mapped [monitoring]/[github] key) "
+                "first, then retry.",
+            )
+        ]
+
+    if dry_run:
+        return [
+            OpsResult(True, f"[dry-run] would sync {full_key} -> Actions secret {actions_secret}")
+            for full_key, _value, actions_secret in targets
+        ]
+
+    pat = get_github_pat(cfg)
+    if not pat:
+        return [
+            OpsResult(
+                False,
+                "Cannot sync: [github] pat is not set",
+                "Run `nyxgpt secrets setup` to configure a GitHub PAT with repo scope.",
+            )
+        ]
+    repo_owner = get_github_repo_owner(cfg)
+    repo_name = get_github_repo_name(cfg)
+    if not repo_owner or not repo_name:
+        return [
+            OpsResult(
+                False,
+                "Cannot sync: [github] repo_owner/repo_name is not set in config.ini",
+                "Set both under [github] in config.ini, then retry.",
+            )
+        ]
+
+    results: list[OpsResult] = []
+    with _github_actions_client(pat) as client:
+        try:
+            response = client.get(f"/repos/{repo_owner}/{repo_name}/actions/secrets/public-key")
+            response.raise_for_status()
+        except httpx.HTTPError as e:
+            return [
+                OpsResult(
+                    False,
+                    "Failed to fetch the repo's Actions secrets public key",
+                    f"{e} -- check [github] pat has 'repo' (or 'actions:write') scope and "
+                    f"[github] repo_owner/repo_name are correct.",
+                )
+            ]
+        public_key_data = response.json()
+        key_id = public_key_data["key_id"]
+        public_key_b64 = public_key_data["key"]
+
+        for full_key, value, actions_secret in targets:
+            try:
+                encrypted_value = _encrypt_for_actions_secret(public_key_b64, value)
+                put_response = client.put(
+                    f"/repos/{repo_owner}/{repo_name}/actions/secrets/{actions_secret}",
+                    json={"encrypted_value": encrypted_value, "key_id": key_id},
+                )
+                put_response.raise_for_status()
+            except httpx.HTTPError as e:
+                results.append(
+                    OpsResult(
+                        False,
+                        f"Failed to sync {full_key} -> Actions secret {actions_secret}",
+                        f"{e} -- verify [github] pat has permission to manage Actions secrets "
+                        f"on {repo_owner}/{repo_name}.",
+                    )
+                )
+                continue
+            results.append(OpsResult(True, f"Synced {full_key} -> Actions secret {actions_secret}"))
+
+    return results
+
+
+def secrets_sync(args) -> int:
+    """CLI entrypoint for `nyxgpt ops secrets-sync`.
+
+    Returns 0 if every mapped secret with a value synced successfully
+    (or there was nothing to sync), else 2.
+    """
+    cfg_path = Path(args.config).expanduser() if getattr(args, "config", None) else None
+    dry_run = bool(getattr(args, "dry_run", False))
+
+    logger.info(
+        "ops: secrets-sync starting (config=%s, dry_run=%s)",
+        cfg_path,
+        dry_run,
+        extra={"component": "ops", "action": "secrets-sync"},
+    )
+
+    results = sync_secrets_to_github_actions(cfg_path=cfg_path, dry_run=dry_run)
+    ok = _emit_results("secrets-sync", results)
+
+    result, message = _ops_action_outcome(results)
+    _record_ops_action("secrets-sync", "github-actions", result, message)
+
+    logger.info(
+        "ops: secrets-sync %s",
+        "succeeded" if ok else "failed",
+        extra={"component": "ops", "action": "secrets-sync", "ok": ok},
     )
 
     return 0 if ok else 2
@@ -7112,4 +8070,227 @@ def glitchtip_init(_args: Any) -> int:
         "succeeded" if ok else "failed",
         extra={"component": "ops", "action": "glitchtip-init", "ok": ok},
     )
+    return 0 if ok else 2
+
+
+# --- Live verification harness (`nyxgpt ops verify`, #3555 / P6-18) ---
+
+
+def _verify_repo_index_path(mode: DeploymentMode) -> str:
+    """Resolve the repo-ingest fixture's path as the running `api` process will see it.
+
+    Writes a tiny fixture repo under the shared `nyxgpt-data` volume
+    (`volume_dir("nyxgpt-data")`) and translates it to the API process's own
+    view of that path: the containerized `api` service bind-mounts that host
+    directory at `/root/.nyxGPT` (see docker-compose.yml), while a native
+    `api` process sees the same host path directly (both pass
+    `ingest_repository`'s "must be under Path.home()" check either way).
+    """
+    host_dir = volume_dir("nyxgpt-data") / "rag-verify-repo"
+    verify_mod.write_verify_repo_fixture(host_dir)
+    if mode.compose.get("api", "absent") not in ("absent", "none", ""):
+        rel = host_dir.relative_to(Path.home())
+        return f"/root/{rel.as_posix()}"
+    return str(host_dir)
+
+
+def _boot_verify_stack() -> list[OpsResult]:
+    """Bring up the full Compose stack (core app + observability profiles) for `nyxgpt ops verify`.
+
+    Unlike `_start_observability_stack` (which deliberately excludes
+    `CORE_APP_SERVICES` so a native-first install's own processes aren't
+    duplicated in Compose), `verify`'s target environment -- CI, or an
+    ephemeral local run -- has no native brew/launchd path at all, so this
+    issues a plain `docker compose --profile X... up -d` with no
+    service-list filtering: Compose brings up every default (core app)
+    service plus the requested observability profiles together, the same
+    shape `scripts/smoke-test.sh` deploys for its own live smoke test.
+    """
+    if not _compose_available():
+        return [
+            OpsResult(
+                False,
+                "docker not found -- `nyxgpt ops verify` needs the Compose stack",
+                "Install Docker, or pass --skip-boot if a stack (native or Compose) is "
+                "already up.",
+            )
+        ]
+    cmd = ["docker", "compose", "-f", str(self_heal.COMPOSE_FILE)]
+    for profile in OBSERVABILITY_PROFILES:
+        cmd += ["--profile", profile]
+    cmd += ["up", "-d"]
+    cp = _run(cmd, check=False)
+    if cp.returncode != 0:
+        return [OpsResult(False, "Failed to boot the Compose stack for verify", _cp_details(cp))]
+    return [OpsResult(True, "Compose stack up (core app + observability profiles)")]
+
+
+def _wait_for_verify_stack_healthy(
+    services: tuple[str, ...] = ("api", "web", "ollama", "cassandra"),
+    timeout: float = 300.0,
+    poll_interval: float = 5.0,
+) -> list[OpsResult]:
+    """Poll `self_heal.list_component_status()` until every service in `services` is healthy."""
+    deadline = time.monotonic() + timeout
+    pending = set(services)
+    while pending and time.monotonic() < deadline:
+        statuses = {s.service: s for s in self_heal.list_component_status()}
+        for service in list(pending):
+            status = statuses.get(service)
+            if status is not None and status.healthy:
+                pending.discard(service)
+        if pending:
+            time.sleep(poll_interval)
+    if pending:
+        return [
+            OpsResult(
+                False,
+                f"Timed out waiting for {', '.join(sorted(pending))} to become healthy",
+                f"Waited {timeout:g}s -- check `nyxgpt ops status` / `docker compose logs`.",
+            )
+        ]
+    return [OpsResult(True, f"{', '.join(services)} all healthy")]
+
+
+def _teardown_verify_stack() -> list[OpsResult]:
+    """Tear down the Compose stack `_boot_verify_stack` brought up (app + observability)."""
+    if not _compose_available():
+        return [OpsResult(True, "Skipped verify stack teardown (Docker not found)")]
+    cmd = ["docker", "compose", "-f", str(self_heal.COMPOSE_FILE)]
+    for profile in OBSERVABILITY_PROFILES:
+        cmd += ["--profile", profile]
+    cmd += ["down"]
+    cp = _run(cmd, check=False)
+    if cp.returncode != 0:
+        return [OpsResult(False, "Failed to tear down verify stack", _cp_details(cp))]
+    return [OpsResult(True, "Verify stack torn down")]
+
+
+def verify(args: Any) -> int:
+    """CLI entrypoint for `nyxgpt ops verify`.
+
+    The live smoke harness behind #3555/P6-18: boots the Compose stack
+    (core app + observability profiles) in an ephemeral environment unless
+    `--skip-boot` is passed, generates one known unit of traffic per
+    acceptance-criteria path (a chat round-trip, one RAG ingest per source
+    -- document/upload/repo -- and a RAG query -- see `nyxgpt.verify`),
+    then asserts it landed via two independent live checks: Prometheus
+    instant-query counter deltas, and Grafana's HTTP API re-executing each
+    touched dashboard panel's own query. Captures Playwright screenshots of
+    the touched dashboards as visual evidence for the review agent
+    (multimodal) to inspect. Tears the stack back down afterward unless
+    `--keep-up` is passed (or `--skip-boot` was used, in which case nothing
+    was booted to tear down).
+
+    This is what the review agent runs in CI on every PR touching
+    observability, metrics, or UI surfaces (see
+    agents/runbooks/review-runbook.md), and what the owner can run locally
+    as a one-command pre-check before acceptance testing.
+
+    Returns 0 if every check passed, else 2.
+    """
+    from nyxgpt.config import get_api_port, load_config
+
+    logger.info("ops: verify starting", extra={"component": "ops", "action": "verify"})
+
+    cfg_path = Path.home() / ".nyxGPT" / "config.ini"
+    if not cfg_path.exists():
+        precondition_results = [
+            OpsResult(
+                False, f"Missing config {cfg_path}", "Run `nyxgpt wizard` first to generate it."
+            )
+        ]
+        ok = _emit_results("verify", precondition_results)
+        return 0 if ok else 2
+
+    cfg = load_config(cfg_path)
+    monitoring = get_monitoring_config(cfg)
+    if not monitoring["enabled"]:
+        precondition_results = [
+            OpsResult(
+                False,
+                "Monitoring is disabled",
+                "Set [monitoring] enabled = true in config.ini, then run `nyxgpt ops install` "
+                "(or start the `monitoring` Compose profile) before running `nyxgpt ops "
+                "verify` -- it asserts against Prometheus/Grafana, which need to be up.",
+            )
+        ]
+        ok = _emit_results("verify", precondition_results)
+        return 0 if ok else 2
+
+    results: list[OpsResult] = []
+    booted = False
+    try:
+        if not getattr(args, "skip_boot", False):
+            boot_results = _boot_verify_stack()
+            results.extend(boot_results)
+            if not all(r.ok for r in boot_results):
+                ok = _emit_results("verify", results)
+                return 0 if ok else 2
+            booted = True
+
+            health_results = _wait_for_verify_stack_healthy(timeout=getattr(args, "timeout", 300.0))
+            results.extend(health_results)
+            results.extend(_reconcile_grafana_provisioning())
+            if not all(r.ok for r in health_results):
+                ok = _emit_results("verify", results)
+                return 0 if ok else 2
+
+        api_url = getattr(args, "api_url", None) or f"http://127.0.0.1:{get_api_port(cfg)}"
+        api_key = cfg.get("auth", "api_key", fallback="").strip() or None
+        grafana_admin_password = _grafana_admin_password(cfg)
+        prometheus_url = monitoring["prometheus_ui_url"]
+        grafana_url = monitoring["grafana_ui_url"]
+
+        repo_index_path = _verify_repo_index_path(detect_deployment_mode())
+
+        before = verify_mod.snapshot_counters(prometheus_url, verify_mod.EXPECTED_COUNTER_QUERIES)
+
+        _markers, traffic_checks = verify_mod.generate_traffic(
+            api_url, api_key, repo_index_path=repo_index_path
+        )
+        results.extend(OpsResult(c.ok, c.message, c.details) for c in traffic_checks)
+
+        prometheus_checks = verify_mod.assert_counter_deltas(
+            prometheus_url, before, verify_mod.EXPECTED_COUNTER_QUERIES
+        )
+        results.extend(OpsResult(c.ok, c.message, c.details) for c in prometheus_checks)
+
+        try:
+            dashboard_paths = verify_mod.resolve_touched_dashboards(
+                getattr(args, "dashboards", None)
+            )
+        except ValueError as e:
+            results.append(OpsResult(False, "Could not resolve touched dashboards", str(e)))
+            dashboard_paths = []
+
+        if dashboard_paths:
+            with _grafana_admin_client(grafana_url, grafana_admin_password) as grafana_client:
+                panel_checks = verify_mod.assert_panel_queries(grafana_client, dashboard_paths)
+            results.extend(OpsResult(c.ok, c.message, c.details) for c in panel_checks)
+
+            if not getattr(args, "skip_screenshots", False):
+                out_dir = Path(
+                    getattr(args, "screenshot_dir", None)
+                    or (Path.home() / ".nyxGPT" / "verify-artifacts")
+                )
+                screenshot_checks = verify_mod.capture_dashboard_screenshots(
+                    grafana_url,
+                    grafana_admin_password,
+                    [verify_mod.dashboard_uid(p) for p in dashboard_paths],
+                    out_dir,
+                )
+                results.extend(OpsResult(c.ok, c.message, c.details) for c in screenshot_checks)
+    finally:
+        if booted and not getattr(args, "keep_up", False):
+            results.extend(_teardown_verify_stack())
+
+    ok = _emit_results("verify", results)
+    logger.info(
+        "ops: verify %s",
+        "succeeded" if ok else "failed",
+        extra={"component": "ops", "action": "verify", "ok": ok},
+    )
+    result, message = _ops_action_outcome(results)
+    _record_ops_action("verify", "verify", result, message)
     return 0 if ok else 2

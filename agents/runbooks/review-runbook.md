@@ -50,6 +50,7 @@ The review-agent OWNS the review process:
 - Reasonable maintainability
 - **End-to-end usability (Definition of Done, CLAUDE.md):** nyxGPT user features must be usable from the web interface; ops/SRE features must be operable from the SRE/admin dashboard. A backend-only implementation is a Medium (blocking) finding unless the issue explicitly scopes it backend-only with owner approval and a linked frontend follow-up issue.
 - **Workflow actor gates (#3600, going-public hardening):** any new or edited `.github/workflows/*.yml` job triggered by `issues`, `issue_comment`, `pull_request`, or `pull_request_review*` that carries write permissions or a secret-backed `GH_TOKEN` MUST gate its `if:` on the actor's identity (`comment.user.login`/`review.user.login` against `vars.HUMAN_OWNER` or the relevant agent var) — a trigger phrase with no author check is a Medium (blocking) finding. See `agents/runbooks/developer-runbook.md` §3b for the pattern and the fork-PR guard requirement on merge/review paths.
+- **Live verification (#3555/P6-18):** if the PR touches observability, metrics, or a UI surface, run `nyxgpt ops verify` yourself and cite its output/screenshots — see §2's "Live verification" entry below for the full rule.
 
 ### Additional Quality Checks (comprehensive review)
 - Code quality and best practices (use CLAUDE.md for guidance)
@@ -63,19 +64,50 @@ The review-agent OWNS the review process:
 - Medium: significant bug risk, missing tests, broken contract, poor maintainability; must block merge
 - Minor: style/nits, minor optimization opportunities; may proceed
 
-### Live-verification findings do NOT block (Owner decision, 2026-08-01)
-When the only outstanding finding is that an acceptance criterion requires
-exercising a **live running stack** (Grafana panels rendering, Slack delivery,
-browser behavior, a running Compose stack) that the agent environment cannot
-run, and everything the reviewer CAN verify — code correctness, tests and
-their effectiveness, static/empirical checks — is satisfied: **APPROVE and
-merge.** Owner acceptance testing after merge IS the live verification; that
-is exactly what the Acceptance Testing stage exists for. Do not REQUEST_CHANGES
-or burn escalation cycles demanding evidence the developer agent structurally
-cannot produce (PR #3548/#3469 deadlocked three cycles this way). Instead,
-list the deferred live checks explicitly in the APPROVE review so the owner
-knows precisely what to exercise during acceptance. Escalation is reserved
-for unresolved findings the agents *could* fix but haven't.
+### Live verification: run the harness, don't defer it (Owner decision
+2026-08-01, narrowed 2026-08-04 by #3555/P6-18)
+
+The original 2026-08-01 rule deferred every live-running-stack finding
+(Grafana panels rendering, a running Compose stack, chat/RAG round-trips) to
+owner acceptance testing, because neither agent had a running stack or eyes
+on rendered output (PR #3548/#3469 deadlocked three review cycles demanding
+evidence that couldn't structurally be produced). #3555/P6-18 closed that
+gap: `nyxgpt ops verify` (see `docs/live-verification-ci.md`) boots the
+Compose stack in CI, generates known chat/RAG traffic, asserts it landed via
+Prometheus instant queries and Grafana's HTTP API re-executing each touched
+dashboard panel's own query, and captures Playwright screenshots.
+
+**On every PR that touches observability, metrics, or a UI surface, the
+review agent runs this harness itself, in CI, before deciding:**
+
+1. Run `nyxgpt ops verify` (the review workflow's environment is prepared
+   for this — see `docs/live-verification-ci.md` for what CI installs).
+2. Read the full assertion output. A failing Prometheus counter delta or
+   Grafana panel-query check names the exact panel/query that failed —
+   treat it as a Critical or Medium finding per the severity model below,
+   the same as any other reproduced failure.
+3. Use the Read tool on every screenshot under
+   `~/.nyxGPT/verify-artifacts/` and *visually inspect* it (the review
+   agent is multimodal) — a rendered-but-empty or visibly broken panel is a
+   finding even if the underlying query technically returned data.
+4. Include a "### Live Verification" section in the review body summarizing
+   the harness run and what the screenshots show. **An APPROVE on an
+   eligible PR that skipped running the harness, or that has no "### Live
+   Verification" section, is a process violation** — not a style nit, treat
+   it the same as approving with failing tests.
+
+**What still defers to owner acceptance** — because CI genuinely cannot
+exercise it, not because it's inconvenient — is the short, explicit list
+`docs/live-verification-ci.md` documents: the Apple Silicon native
+brew-services install path (CI only exercises the Compose path), real Slack
+delivery (no real webhook secret in CI), and LLM response *quality* (CI's
+model is stubbed/tiny — the pipeline being intact end to end is what's
+asserted, not answer quality). List exactly which of these apply, explicitly,
+in the APPROVE review so the owner knows precisely what to exercise during
+acceptance. Do not REQUEST_CHANGES or burn escalation cycles demanding
+evidence the harness already produced, or evidence that's on the
+not-covered list above (still a structural impossibility for CI) — escalation
+is reserved for unresolved findings the agents *could* fix but haven't.
 
 ## 3) CI failure handling
 If CI fails during review (should not happen if developer phase worked correctly):

@@ -38,6 +38,22 @@ def _no_terraform_or_kubernetes_managed_components(monkeypatch):
     monkeypatch.setattr(ops, "_terraform_or_kubernetes_managed_components", lambda: set())
 
 
+@pytest.fixture(autouse=True)
+def _force_macos_native_path(monkeypatch):
+    """Pin `platform.system()` to "Darwin" for this file's tests.
+
+    This file predates the Linux/systemd native path (#3508) and its ~90
+    `ops.install`/`restart`/`stop`/`status`/`doctor` call sites assume the
+    original macOS-only (Homebrew/launchd) code path -- they patch
+    `_install_homebrew_api`, `_restart_brew_service`, etc. directly. Without
+    this, those tests would silently exercise the Linux dispatch branch
+    instead whenever the suite runs on a real Linux host (CI runs on
+    ubuntu-latest), since `ops.py` now branches on the real OS. The Linux
+    path has its own tests in test_ops_systemd.py.
+    """
+    monkeypatch.setattr(ops.platform, "system", lambda: "Darwin")
+
+
 @pytest.mark.unit
 def test_ops_install_returns_zero_when_all_ok(capsys):
     # Mock internal steps to all succeed

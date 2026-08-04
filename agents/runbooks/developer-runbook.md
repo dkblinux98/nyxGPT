@@ -135,7 +135,7 @@ these triggers is added or edited — the review-runbook checklist entry for
 | `notify-merge-conflicts.yml` | `pull_request`(opened,synchronize,reopened) | issues write (comment only) | none | Unchanged — notification only, no merge/code-exec |
 | `delete_branch_on_pr_close.yml` | `pull_request`(closed) | contents write (branch delete) | none, but explicitly skips fork-head PRs + branch allow-pattern + deny-list | Unchanged — already scoped safely by construction |
 | `claude.yml` | `issue_comment`, `pull_request_review_comment`, `issues`(opened,assigned), `pull_request_review` | Bash/Read/Write/Edit, `CLAUDE_CODE_OAUTH_TOKEN`; job-level `GITHUB_TOKEN` is read-only | **none** — any `@claude` mention triggers a full agentic session | **Known gap, out of #3600's scope.** The read-only job token can't push/merge directly, but on a public repo any user can trigger a costly agent session that posts comments under the bot's identity. Flagged for an owner decision (gate to `HUMAN_OWNER`/agent identities, or accept the risk for public Q&A). No fast-follow issue has been filed for this yet — file one before relying on this row as a tracked follow-up. |
-| `admin_label_rename.yml`, `bulk_set_issue_status.yml`, `promote_accepted_features.yml`, `reconcile_closed_backlog_status.yml`, `scrummaster_sprint_report.yml`, `usage_limit_retry.yml`, `terraform-local-smoke.yml`, `validate-web-routes.yml` | `workflow_dispatch`/`schedule`/path-filtered CI | varies | N/A | No comment/issue-content-driven public-actor path |
+| `admin_label_rename.yml`, `bulk_set_issue_status.yml`, `promote_accepted_features.yml`, `reconcile_closed_backlog_status.yml`, `scrummaster_sprint_report.yml`, `usage_limit_retry.yml`, `terraform-local-smoke.yml`, `validate-web-routes.yml`, `security-scan.yml` | `workflow_dispatch`/`schedule`/path-filtered CI | varies | N/A | No comment/issue-content-driven public-actor path. `security-scan.yml` (#3501, pending owner hand-carry per `docs/security-scanning-ci.md`) has no write permissions block and calls no `gh`/write APIs -- `pull_request`/`push` triggered but out of scope for this table's actor-gate requirement per §3b's "read-only automation is exempt." |
 
 **Verification.** Each new `if:` condition was hand-traced against
 representative actors:
@@ -173,6 +173,42 @@ next `@approve-merge`, `READY_FOR_NEXT_ISSUE`, and `@review` invocations in
 normal agent-loop operation after merge exercise the new gates for real, for
 an allowed actor.
 
+## 3d) Security scanning (#3501)
+
+CI runs three scanners on every push/PR (proposed workflow staged at
+`docs/security-scanning-ci.md` pending owner hand-carry into
+`.github/workflows/` -- see §3b, agents can't write that path directly):
+bandit (Python SAST), pip-audit (Python dependency vulnerabilities), and
+`npm audit` via `audit-ci` (web dependency vulnerabilities). Full scanner
+docs, gate thresholds, and the suppression-file format live in
+[`security/README.md`](../../security/README.md) -- this section covers
+when a developer needs to touch them.
+
+- **Run locally before pushing** if your change touches `src/` (bandit +
+  pip-audit) or `web/package.json`/`web/package-lock.json` (audit-ci):
+  ```bash
+  bandit -c pyproject.toml -r src/ --severity-level high --confidence-level high
+  pip-audit
+  cd web && npm run audit:ci
+  ```
+- **A new HIGH-severity/HIGH-confidence bandit finding, an unignored
+  pip-audit vulnerability, or a new high/critical npm advisory not already
+  in the allowlist will fail CI.** Fix the underlying issue (upgrade the
+  dependency, change the code pattern) rather than reaching for a
+  suppression by default.
+- **Only suppress after triage**, and only with a justification comment and
+  today's date, per the format in `security/README.md`:
+  - bandit: inline `# nosec <RULE_ID> -- <reason>` at the flagged line
+    (bandit's own mechanism -- no separate baseline file).
+  - pip-audit: add the vuln ID to `security/pip-audit-ignore.txt`.
+  - npm/audit-ci: add the module name (or the more specific advisory-ID /
+    dependency-path form) to the `allowlist` array in `web/audit-ci.jsonc`.
+  Call out any new suppression explicitly in the PR description so review
+  evaluates the justification, not just the diff.
+- A dependency bump that resolves an existing allowlisted/ignored finding
+  should remove that entry in the same PR -- don't let suppressions outlive
+  the vulnerability they were accepting.
+
 ## 4) Verification loop (MANDATORY - ALL must pass before commit)
 Run ALL of the following checks and fix issues until they pass:
 - `black --check .` - If fails, run `black .` to auto-format, then re-check
@@ -180,6 +216,9 @@ Run ALL of the following checks and fix issues until they pass:
 - `mypy src/` - Fix ALL type errors (0 errors required)
 - `pytest -v` - ALL tests MUST pass (0 failures, 0 errors)
 - `./scripts/agents/validate-web-routes.sh` - If you modified web routes or API endpoints
+- `bandit -c pyproject.toml -r src/ --severity-level high --confidence-level high` - If you modified `src/` (#3501)
+- `pip-audit` - If you modified Python dependencies (#3501)
+- `cd web && npm run audit:ci` - If you modified `web/package.json`/`web/package-lock.json` (#3501)
 
 **CRITICAL**: Keep working until all checks pass (like a human developer would).
 Pre-commit hooks MUST pass before commit succeeds.

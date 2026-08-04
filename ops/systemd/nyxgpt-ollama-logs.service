@@ -1,0 +1,24 @@
+# nyxGPT Ollama log follower -- systemd --user unit.
+#
+# Source template: `nyxgpt ops install` copies this into
+# ~/.config/systemd/user/, substituting __NYXGPT_HOME__ with the installing
+# user's actual home directory (see _install_systemd_unit_from_template in
+# src/nyxgpt/ops.py). Linux twin of ops/launchagents/com.nyxgpt.ollama-logs.plist:
+# runs the same OS-agnostic scripts/follow-ollama-logs.sh, which follows
+# either the Compose `nyxgpt-ollama` container or (native mode) the raw
+# stdout nyxgpt-ollama.service appends to ~/.nyxGPT/logs/ollama-native.log,
+# consolidating either source into ~/.nyxGPT/logs/ollama.log with rotation.
+[Unit]
+Description=nyxGPT Ollama log follower
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash -lc "__NYXGPT_HOME__/.nyxGPT/scripts/follow-ollama-logs.sh"
+Restart=always
+RestartSec=5
+StandardOutput=append:__NYXGPT_HOME__/.nyxGPT/logs/ollama-logfollower.out.log
+StandardError=append:__NYXGPT_HOME__/.nyxGPT/logs/ollama-logfollower.err.log
+
+[Install]
+WantedBy=default.target

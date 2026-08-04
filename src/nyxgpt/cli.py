@@ -38,6 +38,7 @@ from nyxgpt.config import (
 from nyxgpt.logging import configure_logging, mint_correlation_id
 from nyxgpt.rag.rag import ingest_document, retrieve_context
 from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
+from nyxgpt.secrets_setup import run_secrets_setup
 from nyxgpt.wizard import run_wizard
 
 
@@ -1934,6 +1935,28 @@ def cli(argv: list[str] | None = None) -> int:
     down_p = sub.add_parser("down", help="Tear down the full stack (alias for `ops down`)")
     _add_down_arguments(down_p)
 
+    # Add secrets command
+    secrets_p = sub.add_parser("secrets", help="Guided setup for human-provided secrets")
+    secrets_sub = secrets_p.add_subparsers(dest="secrets_cmd", required=True)
+
+    secrets_setup_p = secrets_sub.add_parser(
+        "setup",
+        help=(
+            "Interactively set [auth] api_key, [openai] api_key, and [github] pat with "
+            "masked input, per-key help, and format validation"
+        ),
+    )
+    secrets_setup_p.add_argument(
+        "--config",
+        type=Path,
+        help="Path to config.ini (default: ~/.nyxGPT/config.ini)",
+    )
+    secrets_setup_p.add_argument(
+        "--reconfigure",
+        action="store_true",
+        help="Prompt for every secret again, even ones already set",
+    )
+
     # Add ops command
     ops_p = sub.add_parser("ops", help="Operational helpers")
     ops_sub = ops_p.add_subparsers(dest="ops_cmd", required=True)
@@ -2010,6 +2033,22 @@ def cli(argv: list[str] | None = None) -> int:
         "--env-file", help="Path to the .env file to update (default: <repo>/.env)"
     )
 
+    ops_secrets_sync = ops_sub.add_parser(
+        "secrets-sync",
+        help=(
+            "Push config.ini's write-once secrets (Slack bot token, agent PATs, ...) to this "
+            "repo's GitHub Actions secrets, one direction only (config.ini -> Actions)"
+        ),
+    )
+    ops_secrets_sync.add_argument(
+        "--config", help="Path to config.ini (default: ~/.nyxGPT/config.ini)"
+    )
+    ops_secrets_sync.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show which secrets would be pushed without contacting the GitHub API",
+    )
+
     ops_logs = ops_sub.add_parser(
         "logs",
         help="Show recent logs for a component, in whichever mode it's actually running",
@@ -2062,6 +2101,50 @@ def cli(argv: list[str] | None = None) -> int:
     )
     ops_port_forward.add_argument(
         "--port", type=int, default=3000, help="Local port to forward to (default: 3000)"
+    )
+
+    ops_verify = ops_sub.add_parser(
+        "verify",
+        help=(
+            "Live smoke harness: boot the stack, generate known chat/RAG traffic, assert it "
+            "via Prometheus/Grafana, and screenshot the touched dashboards (#3555)"
+        ),
+    )
+    ops_verify.add_argument(
+        "--skip-boot",
+        action="store_true",
+        help="Assume the stack (native or Compose) is already up instead of booting it",
+    )
+    ops_verify.add_argument(
+        "--keep-up",
+        action="store_true",
+        help="Leave the stack running afterwards instead of tearing it down (ignored with --skip-boot)",
+    )
+    ops_verify.add_argument(
+        "--skip-screenshots",
+        action="store_true",
+        help="Skip Playwright dashboard screenshots (e.g. on a host with no browsers installed)",
+    )
+    ops_verify.add_argument(
+        "--screenshot-dir",
+        help="Where to write dashboard screenshots (default: ~/.nyxGPT/verify-artifacts)",
+    )
+    ops_verify.add_argument(
+        "--dashboards",
+        nargs="*",
+        help=(
+            "Dashboard filenames under docker/grafana/dashboards/ to assert/screenshot "
+            "(default: rag-performance, api-metrics -- the ones this harness's traffic touches)"
+        ),
+    )
+    ops_verify.add_argument(
+        "--api-url", help="Override API base URL (default: from config, http://127.0.0.1:<port>)"
+    )
+    ops_verify.add_argument(
+        "--timeout",
+        type=float,
+        default=300.0,
+        help="Seconds to wait for the booted stack to become healthy (default: 300)",
     )
 
     # Add canary command (local weighted-traffic canary rollout on a local k8s cluster --
@@ -2275,6 +2358,8 @@ def cli(argv: list[str] | None = None) -> int:
     if cmd == "down":
         os.environ.setdefault("NYXGPT_CORRELATION_ID", mint_correlation_id())
         return ops_mod.down(args)
+    if cmd == "secrets" and args.secrets_cmd == "setup":
+        return run_secrets_setup(cfg_path=args.config, reconfigure=args.reconfigure)
 
     if cmd == "ops":
         # Mint a correlation id once per CLI invocation (#3430): every
@@ -2298,6 +2383,8 @@ def cli(argv: list[str] | None = None) -> int:
             return ops_mod.down(args)
         if args.ops_cmd == "env-sync":
             return ops_mod.env_sync(args)
+        if args.ops_cmd == "secrets-sync":
+            return ops_mod.secrets_sync(args)
         if args.ops_cmd == "logs":
             return ops_mod.logs(args)
         if args.ops_cmd == "glitchtip-init":
@@ -2310,6 +2397,8 @@ def cli(argv: list[str] | None = None) -> int:
             return ops_mod.migrate_volumes_cmd(args)
         if args.ops_cmd == "port-forward":
             return ops_mod.port_forward(args)
+        if args.ops_cmd == "verify":
+            return ops_mod.verify(args)
 
     if cmd == "canary":
         # Same per-invocation correlation id as the `ops` dispatch above --

@@ -47,7 +47,7 @@ from starlette.status import HTTP_401_UNAUTHORIZED
 
 import nyxgpt.config
 from nyxgpt import admin_activity as admin_activity_module
-from nyxgpt import api_models, config_wizard, models, sessions
+from nyxgpt import api_models, config_wizard, models, secrets_setup, sessions
 from nyxgpt import canary as canary_module
 from nyxgpt import chat as chat_module
 from nyxgpt import error_tracking as error_tracking_module
@@ -1568,6 +1568,104 @@ def config_sections_update(request: Request, payload: dict[str, Any] = Body(...)
         "restart_required": restart_needed,
         "observability_reconciled": needs_observability,
         "observability_result": observability_result,
+    }
+
+
+# --- Guided secrets setup endpoints (#3505) ---
+#
+# Deliberately separate from `/config/sections` above: `config_wizard`
+# excludes `openai`/`github` entirely (#3388's `EXCLUDED_SECTIONS` -- an
+# agent-system concern, not a nyxGPT user option) and has no notion of
+# per-field "where to obtain this" guidance or a generate-for-me offer.
+# `secrets_setup.GUIDED_SECRETS` is the closed set this surface can write --
+# unlike `/config/sections`, it never accepts an arbitrary section/key.
+
+
+@api.get("/config/secrets")
+def config_secrets_get(request: Request) -> dict[str, Any]:
+    """Return the guided secrets' metadata plus each one's current set/masked state.
+
+    Backs both the CLI's `nyxgpt secrets setup` (same `secrets_setup` module)
+    and the `/admin` Guided Secrets Setup step (#3505's Definition of Done
+    requirement for a matching web surface). Never returns cleartext.
+    """
+    cfg = _req_cfg(request)
+    return {"secrets": secrets_setup.secret_status(cfg)}
+
+
+@api.post("/config/secrets")
+def config_secrets_update(request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """Validate, write, and reload one guided secret (#3505).
+
+    Payload shape: `{"section": ..., "key": ..., "value": ...}`, or
+    `{"section": ..., "key": ..., "generate": true}` for `[auth] api_key`
+    (the only guided secret with a generator). Only `(section, key)` pairs in
+    `secrets_setup.GUIDED_SECRETS` are accepted -- this can't be used to
+    write an arbitrary config.ini field. The value is never echoed back;
+    only a masked preview is returned.
+    """
+    section = payload.get("section")
+    key = payload.get("key")
+    if not isinstance(section, str) or not isinstance(key, str):
+        raise HTTPException(status_code=400, detail="'section' and 'key' are required")
+
+    spec = secrets_setup.find_guided_secret(section, key)
+    if spec is None:
+        raise HTTPException(status_code=404, detail=f"{section}.{key} is not a guided secret")
+
+    value: str
+    if payload.get("generate"):
+        if spec.generate is None:
+            raise HTTPException(status_code=400, detail=f"{spec.full_key} has no generator")
+        value = spec.generate()
+    else:
+        raw_value = payload.get("value")
+        if not isinstance(raw_value, str) or not raw_value.strip():
+            raise HTTPException(status_code=400, detail="'value' must be a non-empty string")
+        value = raw_value
+
+    try:
+        written = secrets_setup.write_secret(_config_file_path(), spec, value)
+    except secrets_setup.SecretValidationError as e:
+        raise HTTPException(status_code=422, detail=f"{spec.full_key}: {e}") from e
+
+    nyxgpt.config._CACHED_CFG = None
+    nyxgpt.config._CACHED_PATH = None
+    nyxgpt.config._CACHED_MTIME_NS = None
+    request.state.cfg = load_config(None)
+    cfg = _req_cfg(request)
+
+    admin_activity_module.record("config.secret_set", spec.full_key)
+
+    return {
+        "set": spec.full_key,
+        "masked": secrets_setup.mask_secret(written),
+        "secrets": secrets_setup.secret_status(cfg),
+    }
+
+
+@api.post("/config/secrets/sync")
+def config_secrets_sync(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Push `config.SECRETS_SYNC_MANIFEST`'s values to GitHub Actions secrets (#3505).
+
+    Wraps `ops.sync_secrets_to_github_actions` -- the same function
+    `nyxgpt ops secrets-sync` calls -- so this dashboard action never shells
+    out to a raw command and the two surfaces can't drift. Payload shape:
+    `{"dry_run": bool}` (default false). Results carry secret *names* only;
+    a value is never present in the response, logs, or the admin activity
+    record.
+    """
+    dry_run = bool(payload.get("dry_run", False))
+    results = ops_module.sync_secrets_to_github_actions(dry_run=dry_run)
+    ok = all(r.ok for r in results)
+    admin_activity_module.record(
+        "config.secrets_synced" if not dry_run else "config.secrets_sync_dry_run",
+        "; ".join(r.message for r in results),
+    )
+    return {
+        "ok": ok,
+        "dry_run": dry_run,
+        "results": [{"ok": r.ok, "message": r.message, "details": r.details} for r in results],
     }
 
 

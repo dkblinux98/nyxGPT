@@ -44,6 +44,12 @@ export const ADMIN_NAV: AdminNavDest[] = [
     group: 'observation',
   },
   { href: '/admin/infrastructure', label: 'Infrastructure Status', description: 'Detected deployment mode and per-component status', group: 'observation' },
+  {
+    href: '/admin/secrets',
+    label: 'Guided Secrets Setup',
+    description: 'Set write-once external tokens with masked entry and per-key help, and sync them to GitHub Actions',
+    group: 'operation',
+  },
   { href: '/admin/canary', label: 'Canary Operations', description: 'Deploy, gradual rollout, and promotion with automatic rollback', group: 'operation' },
   { href: '/admin/self-heal', label: 'Self-heal Operations', description: 'Watchdog that restarts unhealthy services', group: 'operation' },
   {

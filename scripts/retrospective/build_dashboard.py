@@ -38,6 +38,9 @@ MS_SHORT = [
     "Phase 5",
     "Phase 5.5",
     "Phase 6",
+    "Phase 7",
+    "Phase 8",
+    "Phase 9",
     "(none)",
 ]
 MS_PREFIX_RE = re.compile(r"^Phase\s+(\d+(?:\.\d+)?)\b")
@@ -52,7 +55,12 @@ def milestone_short(title):
 
 
 LABELS = ["Acceptance Failure", "Feature", "Release Management", "Improvement", "Documentation"]
-CAUSES = ["defect", "spec", "workflow"]
+# "pm" = product management failure: an Improvement filed during acceptance
+# testing is a spec gap (owner decision 2026-08-01/02), distinct from an
+# Acceptance Failure (implementation defect). Counted as its own failure
+# statistic everywhere; AF-only aggregates use AF_CAUSES.
+CAUSES = ["defect", "spec", "workflow", "pm"]
+AF_CAUSES = ("defect", "spec", "workflow")
 
 # Review-gate monthly series: PRs merged (GitHub API) vs PRs with >=1
 # REQUEST_CHANGES (notification-email archive). Update the current month on refresh.
@@ -71,7 +79,7 @@ GATE = [
 # Release annotations on the sprint axis.
 RELEASES = [
     {"date": "2026-01-29", "label": "v1.0.0"},
-    {"date": "2026-07-20", "label": "v2.0.0"},  # approx: Post Release 2.0.0 milestone created
+    {"date": "2026-08-03", "label": "v2.0.0"},  # 2.0.0 tag pushed, master fast-forwarded
 ]
 
 # Phase -> release era (owner mapping, 2026-07-31): Phases 0-3.5 built v1.0.0,
@@ -150,15 +158,17 @@ def detect_module(title):
 
 
 def classify(issue):
-    if "Acceptance Failure" not in issue["labels"]:
-        return None
-    if issue["n"] in SPEC_OVERRIDES:
-        return "spec"
-    if WORKFLOW_RE.search(issue["title"]):
-        return "workflow"
-    if SPEC_RE.search(issue["title"]):
-        return "spec"
-    return "defect"
+    if "Acceptance Failure" in issue["labels"]:
+        if issue["n"] in SPEC_OVERRIDES:
+            return "spec"
+        if WORKFLOW_RE.search(issue["title"]):
+            return "workflow"
+        if SPEC_RE.search(issue["title"]):
+            return "spec"
+        return "defect"
+    if "Improvement" in issue["labels"]:
+        return "pm"
+    return None
 
 
 def sprint_buckets(issues, project_fields):
@@ -216,11 +226,15 @@ def month_of(iso):
 def gate_series(issues, pr_times):
     gate = [dict(g) for g in GATE]
     for i in issues:
-        if i.get("cause"):
+        if i.get("cause") in AF_CAUSES:
             gate[month_of(i["created"]) - 1].setdefault("af", 0)
             gate[month_of(i["created"]) - 1]["af"] += 1
+        elif i.get("cause") == "pm":
+            gate[month_of(i["created"]) - 1].setdefault("pm", 0)
+            gate[month_of(i["created"]) - 1]["pm"] += 1
     for g in gate:
         g.setdefault("af", 0)
+        g.setdefault("pm", 0)
     if pr_times:
         by_month = defaultdict(list)
         merged_count = Counter()
@@ -238,7 +252,9 @@ def gate_series(issues, pr_times):
 
 
 def aging_flow(issues, now):
-    open_af = [i for i in issues if i.get("cause") and i.get("state", "").upper() == "OPEN"]
+    open_af = [
+        i for i in issues if i.get("cause") in AF_CAUSES and i.get("state", "").upper() == "OPEN"
+    ]
     buckets = [("<2d", 0, 2), ("2-7d", 2, 7), ("7-30d", 7, 30), (">30d", 30, 10**6)]
     aging = []
     for name, lo, hi in buckets:
@@ -250,7 +266,7 @@ def aging_flow(issues, now):
         aging.append({"bucket": name, "n": n})
     flow = [{"m": g["m"], "opened": 0, "closed": 0} for g in GATE]
     for i in issues:
-        if not i.get("cause"):
+        if i.get("cause") not in AF_CAUSES:
             continue
         flow[month_of(i["created"]) - 1]["opened"] += 1
         if i.get("closed"):
@@ -274,7 +290,11 @@ def finding_themes(reviews):
     return {"top": top, "other": other}
 
 
-def takeaways(_issues, dashboard, weeks, open_af):
+def af_sum(cause_dict):
+    return sum(v for k, v in cause_dict.items() if k in AF_CAUSES)
+
+
+def takeaways(issues, dashboard, weeks, open_af):
     out = []
     mods = dashboard.get("modules", {})
     if mods:
@@ -292,14 +312,12 @@ def takeaways(_issues, dashboard, weeks, open_af):
     def sprint_name(w):
         return w.get("sname") or w["w"]
 
-    fail_weeks = [
-        w for w in weeks if w.get("sname") != "(no sprint)" and sum(w["cause"].values()) > 0
-    ]
+    fail_weeks = [w for w in weeks if w.get("sname") != "(no sprint)" and af_sum(w["cause"]) > 0]
     if fail_weeks:
-        cur = sum(fail_weeks[-1]["cause"].values())
+        cur = af_sum(fail_weeks[-1]["cause"])
         name = sprint_name(fail_weeks[-1])
         if len(fail_weeks) >= 2:
-            prev = sum(fail_weeks[-2]["cause"].values())
+            prev = af_sum(fail_weeks[-2]["cause"])
             delta = cur - prev
             v = (
                 f"{cur} acceptance failure{'s' if cur != 1 else ''} in {name} "
@@ -321,6 +339,14 @@ def takeaways(_issues, dashboard, weeks, open_af):
         )
     out.append(
         {"k": "Open failure backlog", "v": f"{open_af} acceptance-failure issues currently open"}
+    )
+    pm = [i for i in issues if i.get("cause") == "pm"]
+    pm_open = sum(1 for i in pm if i.get("state", "").upper() == "OPEN")
+    out.append(
+        {
+            "k": "Product management failures",
+            "v": f"{len(pm)} Improvement issues (spec gaps found in acceptance), {pm_open} open",
+        }
     )
     return out
 
@@ -380,8 +406,9 @@ def build_qdata(issues, project_fields):
         ms[s]["module"][mod(i)] += 1
         ms[s]["total"] += 1
         if i["cause"]:
-            ms[s]["af"] += 1
             ms[s]["cause"][i["cause"]] += 1
+            if i["cause"] in AF_CAUSES:
+                ms[s]["af"] += 1
 
     return {
         "weeks": weeks,
@@ -391,10 +418,11 @@ def build_qdata(issues, project_fields):
         "issues_classified": issues,
         "qtotals": {
             "issues": len(issues),
-            "af": sum(1 for i in issues if i["cause"]),
+            "af": sum(1 for i in issues if i["cause"] in AF_CAUSES),
             "defect": sum(1 for i in issues if i["cause"] == "defect"),
             "spec": sum(1 for i in issues if i["cause"] == "spec"),
             "workflow": sum(1 for i in issues if i["cause"] == "workflow"),
+            "pm": sum(1 for i in issues if i["cause"] == "pm"),
             "production": sum(1 for i in issues if "Production Defect" in i["labels"]),
         },
         "lens": {"causes": CAUSES, "labels": LABELS, "modules": mods_all},
@@ -428,6 +456,16 @@ def main():
     qdata["releases"] = RELEASES
     html = Path(args.template).read_text()
     html = re.sub(r"across all \d+ issues", f"across all {qdata['qtotals']['issues']} issues", html)
+    html = re.sub(
+        r'The \d+ issues labeled <span class="mono">Acceptance Failure</span>',
+        f'The {qdata["qtotals"]["af"]} issues labeled <span class="mono">Acceptance Failure</span>',
+        html,
+    )
+    html = re.sub(
+        r'The \d+ issues labeled <span class="mono">Improvement</span>',
+        f'The {qdata["qtotals"]["pm"]} issues labeled <span class="mono">Improvement</span>',
+        html,
+    )
     html = html.replace("__QDATA__", json.dumps(qdata, separators=(",", ":")))
     html = html.replace("__DATA__", json.dumps(dashboard, separators=(",", ":")))
     Path(args.out).write_text(html)
