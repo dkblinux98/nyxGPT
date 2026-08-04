@@ -265,20 +265,24 @@ class _StepHeartbeat:
     """
 
     def __init__(self, step_name: str) -> None:
+        """Prepare (but don't yet start) a heartbeat for the step named `step_name`."""
         self._step_name = step_name
         self._stop_event = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
     def start(self) -> None:
+        """Start the background heartbeat thread."""
         self._thread.start()
 
     def _run(self) -> None:
+        """Print a "still running" line every `_STEP_HEARTBEAT_INTERVAL_S` until stopped."""
         elapsed = 0.0
         while not self._stop_event.wait(_STEP_HEARTBEAT_INTERVAL_S):
             elapsed += _STEP_HEARTBEAT_INTERVAL_S
             print(f"    ... still running ({elapsed:.0f}s): {self._step_name}")
 
     def stop(self) -> None:
+        """Signal the heartbeat thread to stop and wait for it to exit."""
         self._stop_event.set()
         self._thread.join(timeout=_STEP_HEARTBEAT_INTERVAL_S)
 
