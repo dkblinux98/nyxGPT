@@ -50,6 +50,22 @@ _real_list_kubernetes_component_status = self_heal._list_kubernetes_component_st
 
 
 @pytest.fixture(autouse=True)
+def _force_macos_native_path(monkeypatch):
+    """Pin `platform.system()` to "Darwin".
+
+    This file predates the Linux/systemd native path (#3508) and assumes
+    the original macOS-only (Homebrew) native code path throughout --
+    `_isolated_state` below neutralizes `_brew_services_snapshot` (not
+    `_systemd_services_snapshot`) by default, and several tests patch
+    `_brew_services_snapshot`/`_brew_prefix` directly. Without this, those
+    tests would silently exercise the Linux dispatch branch instead whenever
+    the suite runs on a real Linux host (CI runs on ubuntu-latest). The
+    Linux path has its own tests in test_self_heal_systemd.py.
+    """
+    monkeypatch.setattr(self_heal.platform, "system", lambda: "Darwin")
+
+
+@pytest.fixture(autouse=True)
 def _isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(self_heal, "_state_path", lambda: tmp_path / "self_heal_state.json")
     monkeypatch.setattr(self_heal, "_which", lambda _: "/usr/bin/docker")

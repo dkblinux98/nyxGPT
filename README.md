@@ -33,7 +33,7 @@ Your data stays on your machine. No cloud dependency is required.
 - Streaming responses (CLI, API, Web UI)
 - Unified core shared between CLI and FastAPI
 - Optional **API rate limiting** (disabled by default for localhost use)
-- Homebrew‑managed background services
+- Native background services — Homebrew on macOS, systemd on Linux (see [docs/homebrew.md](docs/homebrew.md) / [docs/systemd.md](docs/systemd.md))
 - Optional **Kubernetes deployment** for local clusters (kind/minikube/k3s)
 - **Local canary deployment** — deploy a versioned build to canary only, gate a gradual weighted rollout on live metrics, then promote it to stable (or roll back) — operable from the SRE/admin dashboard (`nyxgpt canary` CLI or `/admin/canary`)
 - **System health dashboard** — service uptime, dependency reachability checks (Ollama, Cassandra), resource utilization, and alert indicators live from Grafana's real alerting (falling back to a labeled local estimate if Grafana is unreachable), surfaced in the SRE/admin dashboard (`/admin/health`)
@@ -56,8 +56,8 @@ Your data stays on your machine. No cloud dependency is required.
 
 - Python 3.11+
 - Ollama
-- Homebrew
-- Docker Desktop (required for Cassandra / RAG)
+- Homebrew (macOS) or systemd (Linux) — see [docs/systemd.md](docs/systemd.md) for Linux prerequisites
+- Docker (required for Cassandra / RAG)
 - Node.js (for the local web UI)
 
 ### Install and configure

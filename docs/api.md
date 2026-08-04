@@ -3108,17 +3108,20 @@ nyxgpt ops restart
 
 `nyxgpt ops install` captures Ollama's logs into `~/.nyxGPT/logs/ollama.log`
 automatically, in whichever mode Ollama is actually running. The
-`com.nyxgpt.ollama-logs` LaunchAgent runs `scripts/follow-ollama-logs.sh`,
-which decides its source on its own and always writes a real file (never a
+Ollama logs agent (the `com.nyxgpt.ollama-logs` LaunchAgent on macOS, the
+`nyxgpt-ollama-logs.service` systemd --user unit on Linux -- see
+[systemd.md](systemd.md)) runs `scripts/follow-ollama-logs.sh`, which
+decides its source on its own and always writes a real file (never a
 symlink -- see below):
 
 - **Compose mode** (Ollama as the `ollama`/`nyxgpt-ollama` container): tails
   `docker logs -f nyxgpt-ollama` into `~/.nyxGPT/logs/ollama.log` --
   mirroring how the
   [Cassandra log follower](#cassandra-logs-via-docker-launchagent) works.
-- **Native mode** (Ollama as a Homebrew service): tails Homebrew's own
-  `ollama.log` (resolved via `brew --prefix`) directly into the same
-  `~/.nyxGPT/logs/ollama.log` path.
+- **Native mode**: macOS tails Homebrew's own `ollama.log` (resolved via
+  `brew --prefix`); Linux tails `~/.nyxGPT/logs/ollama-native.log`, the raw
+  stdout/stderr `nyxgpt-ollama.service` itself appends to -- either way,
+  directly into the same `~/.nyxGPT/logs/ollama.log` path.
 
 A prior nyxgpt version instead *symlinked* native-mode logs into
 `~/.nyxGPT/logs/ollama.log`. That never actually worked: promtail reads

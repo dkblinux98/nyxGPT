@@ -11,10 +11,12 @@ Four deployment modes are covered:
 - **Docker Compose**: containers listed via `docker compose ps`, healed via
   `docker compose restart <service>`.
 - **Native/local-first** (the default local deployment -- see
-  `nyxgpt ops install`): `api`/`web`/`ollama` run as Homebrew services and
-  `cassandra` runs as the plain (non-Compose) `nyxgpt-cassandra` Docker
-  container. Healed via `brew services restart <name>`/`docker restart
-  <container>` -- the same mechanisms `nyxgpt ops restart` uses.
+  `nyxgpt ops install`): `api`/`web`/`ollama` run as Homebrew services on
+  macOS or systemd --user units on Linux (#3508), and `cassandra` runs as
+  the plain (non-Compose) `nyxgpt-cassandra` Docker container. Healed via
+  `brew services restart <name>` / `systemctl --user restart <unit>` /
+  `docker restart <container>` -- the same mechanisms `nyxgpt ops restart`
+  uses.
 - **Terraform** (`nyxgpt ops install --terraform --local`): `ollama`/
   `cassandra`/`api`/`web` run as the plain (non-Compose) `nyxgpt-tf-*`
   Docker containers defined in `terraform/main.tf`. Checked/healed directly
@@ -76,6 +78,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import platform
 import shutil
 import subprocess
 import threading
@@ -158,9 +161,27 @@ NATIVE_BREW_SERVICES: dict[str, str] = {
     "web": "nyxgpt-web",
     "ollama": "ollama",
 }
+# Linux twin of NATIVE_BREW_SERVICES -- mirrors ops.NATIVE_SYSTEMD_SERVICES
+# for the same reason NATIVE_BREW_SERVICES is a separate copy here (#3508).
+NATIVE_SYSTEMD_SERVICES: dict[str, str] = {
+    "api": "nyxgpt-api",
+    "web": "nyxgpt-web",
+    "ollama": "nyxgpt-ollama",
+}
 # Mirrors ops.CASSANDRA_CONTAINER_NAME -- the one Docker-managed piece of a
 # native/local-first install.
 NATIVE_CASSANDRA_CONTAINER = "nyxgpt-cassandra"
+
+
+def _is_macos() -> bool:
+    """True if running on macOS -- the Homebrew services native path."""
+    return platform.system() == "Darwin"
+
+
+def _is_linux() -> bool:
+    """True if running on Linux -- the systemd --user native path (#3508)."""
+    return platform.system() == "Linux"
+
 
 # Maps a core component to its Terraform-managed container name (see
 # terraform/main.tf). Mirrors ops.TERRAFORM_CONTAINERS -- kept as a separate
@@ -492,6 +513,46 @@ def _brew_services_snapshot() -> dict[str, str]:
     return snapshot
 
 
+def _systemd_user_dir() -> Path:
+    """Return `~/.config/systemd/user`, the systemd --user unit search path.
+
+    Mirrors `ops._systemd_user_dir()` -- kept as a separate copy here for
+    the same reason `NATIVE_SYSTEMD_SERVICES` is (see its comment).
+    """
+    return Path.home() / ".config" / "systemd" / "user"
+
+
+def _systemd_services_snapshot() -> dict[str, str]:
+    """Return {unit_name: state} for nyxGPT-managed systemd --user units (Linux, #3508).
+
+    Mirrors `_brew_services_snapshot()`'s vocabulary ("started" for a live
+    unit) *and* its "not in this dict" == "not installed" contract: a unit
+    is only included if its file actually exists in
+    `~/.config/systemd/user/` -- `systemctl --user is-active` on a
+    never-installed unit name reports "inactive"/"unknown" the same way it
+    would for an installed-but-stopped one, so checking activity alone would
+    misreport a fresh machine that's never run `nyxgpt ops install` as
+    having every native component "down" instead of simply absent. Empty on
+    any failure (systemctl not on PATH, no session bus reachable, non-zero
+    exit).
+    """
+    if _which("systemctl") is None:
+        return {}
+    unit_dir = _systemd_user_dir()
+    snapshot: dict[str, str] = {}
+    for unit in NATIVE_SYSTEMD_SERVICES.values():
+        if not (unit_dir / f"{unit}.service").exists():
+            continue
+        try:
+            cp = _run(["systemctl", "--user", "is-active", f"{unit}.service"], expected=True)
+        except Exception as e:
+            logger.warning("self-heal: failed to query systemctl --user is-active %s: %s", unit, e)
+            continue
+        state = (cp.stdout or "").strip()
+        snapshot[unit] = "started" if state == "active" else "none"
+    return snapshot
+
+
 def _native_container_state(name: str) -> str:
     """Return the docker state ('running', 'exited', ...) for container `name`, or 'absent'."""
     if _which("docker") is None:
@@ -667,22 +728,28 @@ def _list_native_component_status() -> list[ComponentStatus]:
     rather than this function silently hiding it and losing the comparison
     entirely.
 
-    Only reports a component that's actually installed/created -- a brew
+    Only reports a component that's actually installed/created -- a native
     service never set up via `nyxgpt ops install`, or a not-yet-created
     Cassandra container, isn't "down", it's simply out of scope until
-    installed.
+    installed. Reads Homebrew services on macOS or systemd --user units on
+    Linux (#3508), whichever `platform.system()` reports.
     """
     statuses: list[ComponentStatus] = []
 
-    brew_snapshot = _brew_services_snapshot()
-    for component, brew_name in NATIVE_BREW_SERVICES.items():
-        state = brew_snapshot.get(brew_name)
+    if _is_linux():
+        native_snapshot = _systemd_services_snapshot()
+        native_names = NATIVE_SYSTEMD_SERVICES
+    else:
+        native_snapshot = _brew_services_snapshot()
+        native_names = NATIVE_BREW_SERVICES
+    for component, native_name in native_names.items():
+        state = native_snapshot.get(native_name)
         if state is None:
             continue
         statuses.append(
             ComponentStatus(
                 service=component,
-                container=brew_name,
+                container=native_name,
                 state=state,
                 health="",
                 healthy=state == "started",
@@ -1131,6 +1198,22 @@ def _restart_brew_service(name: str) -> HealResult:
     return HealResult(True, f"Restarted brew service: {name}")
 
 
+def _restart_systemd_service(unit: str) -> HealResult:
+    """Restart systemd --user unit `unit` via `systemctl --user restart` (native mode, Linux)."""
+    if _which("systemctl") is None:
+        return HealResult(False, f"systemctl not found; cannot restart {unit}")
+    try:
+        cp = _run(["systemctl", "--user", "restart", f"{unit}.service"], timeout=60.0)
+    except Exception as e:
+        return HealResult(False, f"Failed to restart {unit}", f"{type(e).__name__}: {e}")
+    if cp.returncode != 0:
+        details = (cp.stdout or "").strip() + (
+            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+        )
+        return HealResult(False, f"Failed to restart systemd unit: {unit}", details.strip())
+    return HealResult(True, f"Restarted systemd unit: {unit}")
+
+
 def _restart_native_container(name: str) -> HealResult:
     """Restart Docker container `name` via `docker restart` (native mode's Cassandra)."""
     if _which("docker") is None:
@@ -1175,10 +1258,12 @@ def _cassandra_active_elsewhere() -> str | None:
 def restart_native_component(component: str) -> HealResult:
     """Restart a native/local-first core component.
 
-    `api`/`web`/`ollama` restart via `brew services restart <name>`;
+    `api`/`web`/`ollama` restart via `brew services restart <name>` on
+    macOS or `systemctl --user restart <unit>` on Linux (#3508);
     `cassandra` (the one Docker-managed piece of a native install) restarts
     via `docker restart <container>` -- the same mechanisms `nyxgpt ops
-    restart` uses, so the user never needs a raw `brew`/`docker` command.
+    restart` uses, so the user never needs a raw `brew`/`systemctl`/`docker`
+    command.
 
     Refuses (rather than silently skipping) to touch the native Cassandra
     container if `_cassandra_active_elsewhere` finds Terraform or Compose
@@ -1197,6 +1282,11 @@ def restart_native_component(component: str) -> HealResult:
                 "to native mode.",
             )
         return _restart_native_container(NATIVE_CASSANDRA_CONTAINER)
+    if _is_linux():
+        unit = NATIVE_SYSTEMD_SERVICES.get(component)
+        if unit is None:
+            return HealResult(False, f"Unknown native component: {component}")
+        return _restart_systemd_service(unit)
     brew_name = NATIVE_BREW_SERVICES.get(component)
     if brew_name is None:
         return HealResult(False, f"Unknown native component: {component}")
@@ -1362,11 +1452,14 @@ def _native_component_logs(service: str, *, tail: int) -> HealResult:
     `cassandra` is the plain `nyxgpt-cassandra` Docker container, read via
     `_docker_container_logs` just like a Terraform component. `api`'s own
     structured logs and `ollama`'s aggregated logs (written regardless of
-    mode by the `com.nyxgpt.ollama-logs` LaunchAgent -- see
-    docs/api.md#ollama-logs) are both plain files under `~/.nyxGPT/logs`
-    (`api.log`/`ollama.log`). `web` has no structured logging of its own yet
-    (#3430), so it's read from Homebrew's own launchd stdout/stderr
-    (`nyxgpt-web.log`/`.err.log` -- see docs/homebrew.md#web-ui-logs).
+    mode by the ollama log-follower agent -- see docs/api.md#ollama-logs)
+    are both plain files under `~/.nyxGPT/logs` (`api.log`/`ollama.log`).
+    `web` has no structured logging of its own yet (#3430), so it's read
+    from its native service's own stdout/stderr: Homebrew's launchd log
+    path on macOS (`nyxgpt-web.log`/`.err.log` -- see
+    docs/homebrew.md#web-ui-logs), or the same names under `~/.nyxGPT/logs`
+    on Linux, where `nyxgpt-web.service`'s `StandardOutput`/`StandardError`
+    already point there directly (#3508).
     """
     if service == "cassandra":
         return _docker_container_logs(NATIVE_CASSANDRA_CONTAINER, tail=tail)
@@ -1382,11 +1475,15 @@ def _native_component_logs(service: str, *, tail: int) -> HealResult:
         )
 
     if service == "web":
-        prefix = _brew_prefix()
-        if prefix is None:
-            return HealResult(False, "Homebrew not found; cannot locate web service logs")
-        out_file = Path(prefix, "var", "log", "nyxgpt-web.log")
-        err_file = Path(prefix, "var", "log", "nyxgpt-web.err.log")
+        if _is_linux():
+            out_file = get_log_dir() / "nyxgpt-web.log"
+            err_file = get_log_dir() / "nyxgpt-web.err.log"
+        else:
+            prefix = _brew_prefix()
+            if prefix is None:
+                return HealResult(False, "Homebrew not found; cannot locate web service logs")
+            out_file = Path(prefix, "var", "log", "nyxgpt-web.log")
+            err_file = Path(prefix, "var", "log", "nyxgpt-web.err.log")
         if not out_file.exists() and not err_file.exists():
             return HealResult(False, f"No log files found for web: {out_file}, {err_file}")
         sections = []
