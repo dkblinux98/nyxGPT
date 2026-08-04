@@ -116,6 +116,13 @@ COMPOSE_COMPONENT_PORTS: dict[str, int] = {
     "cassandra": 9042,
 }
 
+# Local web UI URL once the stack is up. Native and Compose/Terraform modes
+# all bind `web` to the same host port (COMPOSE_COMPONENT_PORTS above,
+# app.py's CORS allowlist) -- Kubernetes mode is the one exception, since its
+# Services are ClusterIP-only and need a manual `kubectl port-forward` (see
+# `up()`, docs/kubernetes.md#4-verify).
+WEB_URL = "http://127.0.0.1:3000"
+
 NATIVE_CONFIG_HINT = "~/.nyxGPT/config.ini"
 COMPOSE_CONFIG_HINT = "docker/config.docker.ini (mounted into the Compose 'api' container)"
 
@@ -3680,6 +3687,48 @@ def _down_kubernetes(_args) -> int:
     return 0 if ok else 2
 
 
+def port_forward(args) -> int:
+    """`nyxgpt ops port-forward`: forward the Kubernetes web Service to localhost.
+
+    `k8s/`'s Services are ClusterIP-only -- there's no Ingress/LoadBalancer
+    (see docs/kubernetes.md#4-verify) -- so `kubectl port-forward` is the
+    only way to reach `nyxgpt-web` from the operator's own workstation. This
+    wraps that invocation so operators never type the raw `kubectl` command
+    themselves, per CLAUDE.md's Operational Command Wrapping requirement;
+    `nyxgpt up --kubernetes` points here instead of printing it directly.
+
+    Runs in the foreground until interrupted (Ctrl-C), same as `kubectl
+    port-forward` itself -- there's no "done" state to return early from.
+    """
+    if _which("kubectl") is None:
+        print("[FAIL] kubectl not found on PATH", file=sys.stderr)
+        return 2
+
+    local_port = getattr(args, "port", 3000) or 3000
+    logger.info(
+        "ops: port-forward starting",
+        extra={"component": "ops", "action": "port-forward", "local_port": local_port},
+    )
+    print(
+        f"Forwarding http://127.0.0.1:{local_port} -> "
+        f"{K8S_NAMESPACE}/svc/nyxgpt-web:3000 (Ctrl-C to stop)..."
+    )
+    try:
+        cp = subprocess.run(
+            [
+                "kubectl",
+                "-n",
+                K8S_NAMESPACE,
+                "port-forward",
+                "svc/nyxgpt-web",
+                f"{local_port}:3000",
+            ]
+        )
+    except KeyboardInterrupt:
+        return 0
+    return cp.returncode
+
+
 def infra_status() -> dict[str, Any]:
     """Honest, status-only deployment status for the Infrastructure admin page (see #3410).
 
@@ -3937,6 +3986,71 @@ def install(args) -> int:
     _record_ops_action("install", "all", result, message)
 
     return 0 if ok else 2
+
+
+def _wait_for_stack_healthy(timeout: float = 180.0, poll_interval: float = 3.0) -> bool:
+    """Poll every desired component's health until all report healthy, or `timeout` elapses.
+
+    Reuses `self_heal.list_component_status()` -- the same cross-mode
+    (native/Compose/Terraform/Kubernetes) probe set `nyxgpt self-heal status`
+    and the automatic heal loop already rely on -- so `up`'s health-wait can't
+    drift from what the rest of the system considers "healthy". A component
+    with `desired=False` (an operator-disabled observability profile, or one
+    marked intentionally stopped) is excluded, same as `heal_now`'s automatic
+    pass.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        pending = [
+            s.service for s in self_heal.list_component_status() if s.desired and not s.healthy
+        ]
+        if not pending:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(poll_interval)
+
+
+def up(args) -> int:
+    """CLI entrypoint for `nyxgpt up` -- a thin alias for `nyxgpt ops install`.
+
+    Runs the exact same reconciliation `install()` does -- mode flags
+    (`--terraform`, `--kubernetes`, `--local`, `--skip-observability`, etc.)
+    pass straight through, no forked behavior -- then waits for every desired
+    component to report healthy via `_wait_for_stack_healthy` and prints the
+    web UI URL once it's reachable. Idempotent, same as `install()` itself:
+    re-running it just reconciles and re-waits.
+
+    Pass `--no-wait` to return as soon as `install()` finishes, without
+    waiting for component health; `--timeout` controls how long to wait
+    before giving up (default 180s).
+
+    Returns whatever `install()` returned if it failed or `--no-wait` was
+    passed; 2 if the health-wait times out; 0 once every desired component is
+    healthy.
+    """
+    rc = install(args)
+    if rc != 0 or getattr(args, "no_wait", False):
+        return rc
+
+    print("\nWaiting for components to report healthy...")
+    if not _wait_for_stack_healthy(timeout=getattr(args, "timeout", 180.0)):
+        print(
+            "WARNING: not every component reported healthy within the timeout -- "
+            "run `nyxgpt ops status` or `nyxgpt self-heal status` for details.",
+            file=sys.stderr,
+        )
+        return 2
+
+    if getattr(args, "kubernetes", False):
+        print(
+            "nyxGPT is up. Kubernetes Services are ClusterIP-only -- run "
+            "`nyxgpt ops port-forward` in another terminal, then open "
+            f"{WEB_URL} (see docs/kubernetes.md#4-verify)."
+        )
+    else:
+        print(f"nyxGPT is up: {WEB_URL}")
+    return 0
 
 
 def status(_args) -> int:
