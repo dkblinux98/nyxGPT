@@ -83,11 +83,13 @@ class TrafficMarkers:
 
 
 def _api_client(base_url: str, api_key: str | None, timeout: float) -> httpx.Client:
+    """Build an `httpx.Client` for the API, attaching `X-API-Key` when auth is enabled."""
     headers = {"X-API-Key": api_key} if api_key else {}
     return httpx.Client(base_url=base_url, headers=headers, timeout=timeout)
 
 
 def _http_check(step: str, resp: httpx.Response) -> VerifyCheck:
+    """Turn one HTTP response into a `VerifyCheck`, ok for any non-error status code."""
     if resp.status_code < 400:
         return VerifyCheck(True, f"{step}: HTTP {resp.status_code}")
     return VerifyCheck(False, f"{step}: HTTP {resp.status_code}", resp.text[:500])
@@ -142,6 +144,7 @@ def generate_traffic(
 
 
 def _chat_round_trip(client: httpx.Client, markers: TrafficMarkers) -> VerifyCheck:
+    """POST one chat turn under `markers.chat_session` and check a reply came back."""
     resp = client.post(
         "/api/v1/chat",
         json={
@@ -160,6 +163,7 @@ def _chat_round_trip(client: httpx.Client, markers: TrafficMarkers) -> VerifyChe
 
 
 def _rag_ingest_document(client: httpx.Client, markers: TrafficMarkers) -> VerifyCheck:
+    """Exercise the `document` RAG ingest source path (`POST /rag/ingest`)."""
     resp = client.post(
         "/api/v1/rag/ingest",
         json={
@@ -172,6 +176,7 @@ def _rag_ingest_document(client: httpx.Client, markers: TrafficMarkers) -> Verif
 
 
 def _rag_ingest_upload(client: httpx.Client, markers: TrafficMarkers) -> VerifyCheck:
+    """Exercise the `upload` RAG ingest source path (`POST /rag/upload`)."""
     content = f"# Verify\n\nThe secret upload phrase is {markers.query_marker}.\n".encode()
     resp = client.post(
         "/api/v1/rag/upload",
@@ -183,6 +188,7 @@ def _rag_ingest_upload(client: httpx.Client, markers: TrafficMarkers) -> VerifyC
 def _rag_ingest_repo(
     client: httpx.Client, markers: TrafficMarkers, repo_index_path: str
 ) -> VerifyCheck:
+    """Exercise the `repo` RAG ingest source path (`POST /rag/index-repo`)."""
     resp = client.post(
         "/api/v1/rag/index-repo",
         json={
@@ -195,6 +201,7 @@ def _rag_ingest_repo(
 
 
 def _rag_query(client: httpx.Client, markers: TrafficMarkers) -> VerifyCheck:
+    """Query for the ingested verify phrase and note (non-fatally) whether it surfaced."""
     resp = client.post("/api/v1/rag/query", json={"query": "What is the secret verify phrase?"})
     check = _http_check("RAG query", resp)
     if not check.ok:
@@ -333,6 +340,7 @@ def assert_counter_deltas(
 
 
 def _resolve_panel_expr(expr: str) -> str:
+    """Substitute Grafana's dashboard-only template variables with a concrete query window."""
     return expr.replace("$__rate_interval", RATE_INTERVAL_SUBSTITUTE).replace(
         "$__interval", RATE_INTERVAL_SUBSTITUTE
     )

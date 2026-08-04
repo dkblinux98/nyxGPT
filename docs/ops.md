@@ -45,6 +45,7 @@ nyxgpt ops logs
 nyxgpt ops observability
 nyxgpt ops glitchtip-init
 nyxgpt ops migrate-volumes
+nyxgpt ops verify
 ```
 
 ---
@@ -785,6 +786,79 @@ Exit codes:
   nothing to migrate)
 - `2` -- a copy failed, or a component was refused because its destination
   was already populated while a legacy volume still exists for it
+
+---
+
+## `nyxgpt ops verify`
+
+The live smoke harness behind #3555/P6-18: boots the stack, generates known
+chat/RAG traffic, and asserts it landed via Prometheus and Grafana --
+deterministic, scriptable live verification instead of "looks right in the
+query syntax." This is what the review agent runs itself in CI on every PR
+touching observability, metrics, or UI surfaces (see
+[live-verification-ci.md](live-verification-ci.md) and
+[review-runbook.md](../agents/runbooks/review-runbook.md)); the same command
+also works as a one-command local pre-check before owner acceptance testing.
+
+Usage:
+
+```bash
+nyxgpt ops verify                    # boot, test, tear down (ephemeral -- CI's mode)
+nyxgpt ops verify --keep-up          # leave the stack up afterward to look around
+nyxgpt ops verify --skip-boot        # stack (native or Compose) is already up
+nyxgpt ops verify --skip-screenshots # no Playwright browsers installed
+nyxgpt ops verify --dashboards rag-performance api-metrics  # override the default set
+```
+
+Requires the optional `verify` extra (Playwright is a separate browser-binary
+install most commands never need):
+
+```bash
+pip install -e ".[verify]"
+playwright install --with-deps chromium
+```
+
+Behavior:
+
+1. Requires `[monitoring] enabled = true` (same precondition as `nyxgpt ops
+   alert-test`) -- exits with an actionable message otherwise.
+2. Unless `--skip-boot`: boots the full Docker Compose stack (core app +
+   `monitoring`/`logging`/`tracing`/`errors` profiles together -- unlike
+   `nyxgpt ops observability`, which deliberately excludes the core app tier
+   for native-first installs, this needs everything containerized since CI
+   has no native brew/launchd path), waits for `api`/`web`/`ollama`/
+   `cassandra` to report healthy, then reconciles Grafana's provisioning
+   (same step `install`/`observability` run).
+3. Generates one known unit of traffic per required source path: a chat
+   round-trip, a RAG document ingest (`POST /rag/ingest`), a RAG file-upload
+   ingest (`POST /rag/upload`), a RAG repo ingest (`POST /rag/index-repo`
+   against a tiny fixture repo written under the shared `nyxgpt-data`
+   volume), and a RAG query.
+4. Asserts the traffic landed two independent ways:
+   - **Prometheus instant queries** for each expected counter's delta
+     (`nyxgpt_chat_requests_total`, `nyxgpt_rag_ingests_total` per source,
+     `nyxgpt_rag_queries_total`), polling for Prometheus's next scrape
+     rather than racing its 15s interval.
+   - **Grafana's HTTP API**, re-executing each touched dashboard panel's own
+     query (read straight from the dashboard JSON under
+     `docker/grafana/dashboards/`, defaulting to `rag-performance.json` and
+     `api-metrics.json`) through Grafana's Prometheus datasource proxy --
+     this exercises the actual dashboard wiring, not just whether Prometheus
+     has the data. A failure names the exact panel and query.
+5. Captures a full-page Playwright screenshot of each touched dashboard to
+   `~/.nyxGPT/verify-artifacts/<dashboard-uid>.png` (override with
+   `--screenshot-dir`) -- visual evidence for a human, or the review agent's
+   Read tool (it's multimodal), to inspect directly.
+6. Unless `--skip-boot` was used, tears the stack back down afterward unless
+   `--keep-up` is passed.
+
+Exit codes:
+
+- `0` -- every traffic step, Prometheus assertion, Grafana panel assertion,
+  and screenshot capture succeeded
+- `2` -- config missing, monitoring disabled, the stack failed to boot or
+  become healthy, or any assertion/capture failed (each failure's message
+  names exactly what failed and why)
 
 ---
 
