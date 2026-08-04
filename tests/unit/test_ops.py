@@ -10454,6 +10454,42 @@ def test_down_kubernetes_returns_results_without_printing(monkeypatch, capsys):
 
 
 @pytest.mark.unit
+def test_infra_status_compose_probe_available_true_when_probe_can_run(monkeypatch):
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "absent"})
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: ops.DeploymentMode(native={}, compose={}, conflicts=[]),
+    )
+    monkeypatch.setattr(ops, "_which", lambda prog: None)
+    monkeypatch.setattr(ops.self_heal, "compose_probe_available", lambda: True)
+
+    assert ops.infra_status()["compose_probe_available"] is True
+
+
+@pytest.mark.unit
+def test_infra_status_compose_probe_available_false_when_compose_file_unreachable(monkeypatch):
+    # #3588: this is exactly what a Terraform-managed api container hit
+    # before the docker-compose.yml bind mount was added -- the observability
+    # tier's absence must be reported as "can't check", not "not running".
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "running"})
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: ops.DeploymentMode(native={}, compose={}, conflicts=[]),
+    )
+    monkeypatch.setattr(
+        ops, "_which", lambda prog: "/usr/local/bin/docker" if prog == "docker" else None
+    )
+    monkeypatch.setattr(ops.self_heal, "compose_probe_available", lambda: False)
+
+    result = ops.infra_status()
+    assert result["mode"] == "terraform"
+    assert result["compose"] == {}
+    assert result["compose_probe_available"] is False
+
+
+@pytest.mark.unit
 def test_infra_status_reports_terraform_and_kubernetes(monkeypatch):
     monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "running", "web": "absent"})
     monkeypatch.setattr(

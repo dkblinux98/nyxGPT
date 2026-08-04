@@ -320,6 +320,80 @@ def test_list_component_status_compose_failure(monkeypatch):
 
 
 @pytest.mark.unit
+def test_list_compose_component_status_nonzero_exit_logs_warning(monkeypatch, caplog):
+    # #3588: a failed `docker compose ps` (e.g. COMPOSE_FILE doesn't exist
+    # from this process's vantage point) must never fail silently -- that's
+    # exactly what made the observability tier vanish without a trace in
+    # Terraform mode.
+    monkeypatch.setattr(
+        self_heal, "_run", lambda cmd, timeout=30.0, **_k: CP(returncode=1, stderr="boom")
+    )
+    with caplog.at_level("WARNING", logger="nyxgpt.self_heal"):
+        assert self_heal._list_compose_component_status() == []
+    assert "docker compose ps exited" in caplog.text
+
+
+@pytest.mark.unit
+def test_compose_probe_available_true_when_docker_and_compose_file_present(monkeypatch, tmp_path):
+    compose_file = tmp_path / "docker-compose.yml"
+    compose_file.write_text("services: {}\n")
+    monkeypatch.setattr(self_heal, "_which", lambda _: "/usr/bin/docker")
+    monkeypatch.setattr(self_heal, "COMPOSE_FILE", compose_file)
+    assert self_heal.compose_probe_available() is True
+
+
+@pytest.mark.unit
+def test_compose_probe_available_false_when_docker_missing(monkeypatch, tmp_path):
+    compose_file = tmp_path / "docker-compose.yml"
+    compose_file.write_text("services: {}\n")
+    monkeypatch.setattr(self_heal, "_which", lambda _: None)
+    monkeypatch.setattr(self_heal, "COMPOSE_FILE", compose_file)
+    assert self_heal.compose_probe_available() is False
+
+
+@pytest.mark.unit
+def test_compose_probe_available_false_when_compose_file_unreachable(monkeypatch, tmp_path):
+    # The Terraform-managed api container's exact failure mode before #3588's
+    # fix: docker is on PATH, but COMPOSE_FILE resolved to a path that was
+    # never bind-mounted into this container.
+    monkeypatch.setattr(self_heal, "_which", lambda _: "/usr/bin/docker")
+    monkeypatch.setattr(self_heal, "COMPOSE_FILE", tmp_path / "does-not-exist.yml")
+    assert self_heal.compose_probe_available() is False
+
+
+@pytest.mark.unit
+def test_list_component_status_includes_observability_alongside_terraform_core(monkeypatch):
+    """Regression for #3588: the Compose observability survey must run (and
+    surface its results) no matter which mode owns the core components --
+    Terraform mode reporting the core four must never come at the cost of
+    silently dropping the observability tier."""
+    monkeypatch.setattr(
+        self_heal, "_list_terraform_component_status", _real_list_terraform_component_status
+    )
+    terraform_containers = set(self_heal.TERRAFORM_CONTAINERS.values())
+    monkeypatch.setattr(
+        self_heal,
+        "_native_container_state",
+        lambda name: "running" if name in terraform_containers else "absent",
+    )
+    monkeypatch.setattr(self_heal, "_native_container_health", lambda name: "")
+    monkeypatch.setattr(
+        self_heal,
+        "_run",
+        lambda cmd, timeout=30.0, **_k: CP(stdout=_ps_line("grafana", state="running")),
+    )
+    monkeypatch.setattr(self_heal, "_enabled_observability_profiles", lambda: set())
+
+    statuses = self_heal.list_component_status()
+    by_service = {s.service: s for s in statuses}
+
+    assert by_service["grafana"].source == "compose"
+    assert by_service["grafana"].healthy is True
+    for core in ("api", "web", "ollama", "cassandra"):
+        assert by_service[core].source == "terraform"
+
+
+@pytest.mark.unit
 def test_brew_services_snapshot_parses_output(monkeypatch):
     monkeypatch.setattr(
         self_heal,
@@ -1115,6 +1189,7 @@ def test_status_aggregates_enabled_components_and_events(monkeypatch):
     assert data["unhealthy_count"] == 1
     assert len(data["components"]) == 2
     assert data["events"] == []
+    assert "compose_probe_available" in data
 
 
 @pytest.mark.unit
