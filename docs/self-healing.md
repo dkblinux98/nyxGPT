@@ -272,26 +272,6 @@ across mode switches](#leftover-artifacts-across-mode-switches) for how a
 component reported by more than one mode is resolved, so the three modes
 never double-heal (or collide on) the same component.
 
-**Observability tier visibility (#3588)**: the opt-in observability profiles
-(Grafana/Loki/Jaeger/GlitchTip) always run under Compose, never Terraform --
-Terraform's scope is the core stack only (see [terraform.md](terraform.md)).
-Seeing and healing them from Terraform mode still requires `docker compose
-ps`/`up -d` to work from *inside* `nyxgpt-tf-api`, exactly like the Compose
-case: `terraform/main.tf`'s `docker_container.api` resource sets
-`NYXGPT_COMPOSE_FILE=/etc/nyxgpt/docker-compose.yml` and bind-mounts
-`docker-compose.yml` to that path, mirroring the Compose `api` service's own
-env var and mount. Without them, `self_heal.py`'s `_resolve_compose_file()`
-falls back to a path that doesn't exist inside this container (no repo
-checkout in the image, and `~/.nyxGPT/volumes/nyxgpt-data` -- this
-container's `/root/.nyxGPT` mount -- isn't the host's real
-`~/.nyxGPT/config.ini`), so every `docker compose ps` call silently failed
-and the entire observability tier was invisible on both the Self-Heal and
-Infrastructure Status pages whenever Terraform was the detected mode, even
-though the containers were running. `docker-compose.yml` pins its Compose
-project name (`name: nyxgpt`), so resolving it from this bind-mounted path
-still matches whatever project name the containers were started under on the
-host.
-
 ## Leftover artifacts across mode switches
 
 Native and Terraform mode default to the same host ports, and Cassandra
