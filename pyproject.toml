@@ -72,6 +72,13 @@ dev = [
   "reportlab>=4.0",
 ]
 
+# `nyxgpt ops verify` (#3555): Playwright dashboard screenshots. Kept out of
+# the base/dev dependency sets -- it pulls a browser binary via a separate
+# `playwright install` step, which most nyxGPT commands never need.
+verify = [
+  "playwright>=1.45,<2",
+]
+
 [project.scripts]
 nyxgpt = "nyxgpt.cli:cli"
 

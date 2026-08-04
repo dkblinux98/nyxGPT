@@ -41,3 +41,4 @@ started, read [Configuration](configuration.md) and the root
 
 - [GitHub tokens](github-tokens.md) — agent identities and required scopes
 - [Agent smoke test](agent-smoke.md) — verifying the scrummaster/developer/review loop
+- [Live verification in CI](live-verification-ci.md) — `nyxgpt ops verify`, and how the review agent runs it before APPROVE/REQUEST_CHANGES
