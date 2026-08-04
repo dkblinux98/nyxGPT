@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from nyxgpt.config import (
+    SECRETS_SYNC_MANIFEST,
     get_ann_oversample_factor,
     get_api_host,
     get_api_port,
@@ -30,12 +31,17 @@ from nyxgpt.config import (
     get_effective_config_summary,
     get_error_tracking_config,
     get_error_tracking_enabled,
+    get_github_pat,
+    get_github_repo_name,
+    get_github_repo_owner,
     get_log_aggregation_config,
     get_log_aggregation_enabled,
     get_monitoring_config,
     get_monitoring_enabled,
     get_monitoring_grafana_admin_password,
+    get_monitoring_slack_bot_token,
     get_monitoring_slack_webhook_url,
+    get_openai_api_key,
     get_prompt_mode_enabled,
     get_prompt_mode_long_threshold,
     get_prompt_mode_short_threshold,
@@ -2158,6 +2164,102 @@ def test_get_effective_config_summary_empty_secrets_stay_empty(tmp_path: Path) -
     assert summary["error_tracking.dsn"] == ""
     assert summary["monitoring.grafana_admin_password"] == ""
     assert summary["monitoring.slack_webhook_url"] == ""
+
+
+# --- Guided secrets getters (#3505) ---
+
+
+def test_get_monitoring_slack_bot_token_reads_value(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[monitoring]\nslack_bot_token = xoxb-1234-5678\n")
+    cfg = load_config(str(ini))
+    assert get_monitoring_slack_bot_token(cfg) == "xoxb-1234-5678"
+
+
+def test_get_monitoring_slack_bot_token_defaults_to_empty(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[nyxgpt]\ndefault_model = llama3.1:8b\n")
+    cfg = load_config(str(ini))
+    assert get_monitoring_slack_bot_token(cfg) == ""
+
+
+def test_get_openai_api_key_reads_value(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[openai]\napi_key = sk-abc123\n")
+    cfg = load_config(str(ini))
+    assert get_openai_api_key(cfg) == "sk-abc123"
+
+
+def test_get_github_pat_reads_value(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[github]\npat = ghp_abc123\n")
+    cfg = load_config(str(ini))
+    assert get_github_pat(cfg) == "ghp_abc123"
+
+
+def test_get_github_repo_owner_and_name_read_values(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[github]\nrepo_owner = dkblinux98\nrepo_name = nyxGPT\n")
+    cfg = load_config(str(ini))
+    assert get_github_repo_owner(cfg) == "dkblinux98"
+    assert get_github_repo_name(cfg) == "nyxGPT"
+
+
+def test_get_effective_config_summary_redacts_guided_secrets(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        "[openai]\napi_key = sk-abc123\n"
+        "[github]\npat = ghp_abc123\n"
+        "[monitoring]\nslack_bot_token = xoxb-abc123\n",
+    )
+    cfg = load_config(str(ini))
+
+    summary = get_effective_config_summary(cfg)
+
+    assert summary["openai.api_key"] == "***redacted***"
+    assert summary["github.pat"] == "***redacted***"
+    assert summary["monitoring.slack_bot_token"] == "***redacted***"
+    assert "sk-abc123" not in str(summary)
+    assert "ghp_abc123" not in str(summary)
+    assert "xoxb-abc123" not in str(summary)
+
+
+def test_get_effective_config_summary_guided_secrets_empty_stay_empty(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[nyxgpt]\ndefault_model = llama3.1:8b\n")
+    cfg = load_config(str(ini))
+
+    summary = get_effective_config_summary(cfg)
+
+    assert summary["openai.api_key"] == ""
+    assert summary["github.pat"] == ""
+    assert summary["monitoring.slack_bot_token"] == ""
+
+
+# --- SECRETS_SYNC_MANIFEST (#3505) ---
+
+
+def test_secrets_sync_manifest_keys_are_section_dot_key() -> None:
+    for full_key in SECRETS_SYNC_MANIFEST:
+        section, _, key = full_key.partition(".")
+        assert section and key, f"malformed manifest key: {full_key!r}"
+
+
+def test_secrets_sync_manifest_values_are_unique_actions_secret_names() -> None:
+    names = list(SECRETS_SYNC_MANIFEST.values())
+    assert len(names) == len(set(names))
+
+
+def test_secrets_sync_manifest_names_are_upper_snake_case() -> None:
+    for name in SECRETS_SYNC_MANIFEST.values():
+        assert name == name.upper()
+        assert " " not in name
+
+
+def test_secrets_sync_manifest_does_not_include_the_pat_itself() -> None:
+    # [github] pat authenticates the sync call -- it is never a sync *target*.
+    assert "github.pat" not in SECRETS_SYNC_MANIFEST
 
 
 def test_log_effective_config_logs_at_info(

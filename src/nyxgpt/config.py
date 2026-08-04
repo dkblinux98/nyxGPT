@@ -1341,6 +1341,70 @@ def get_monitoring_slack_webhook_url(cfg: ConfigParser) -> str:
     return cfg.get("monitoring", "slack_webhook_url", fallback="")
 
 
+def get_monitoring_slack_bot_token(cfg: ConfigParser) -> str:
+    """Get the Slack bot token used by CI workflows (e.g. merge-conflict notifications).
+
+    A write-once token: Slack shows it only at creation time, so `config.ini`
+    is its canonical store (#3505) and `nyxgpt ops secrets-sync` is the only
+    supported way to get it into the matching `SLACK_BOT_TOKEN` GitHub
+    Actions secret -- see `SECRETS_SYNC_MANIFEST`.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        The configured bot token, or "" if unset
+    """
+    return cfg.get("monitoring", "slack_bot_token", fallback="")
+
+
+def get_openai_api_key(cfg: ConfigParser) -> str:
+    """Get the OpenAI API key, human-provided and write-once at the issuing service.
+
+    Returns:
+        The configured key, or "" if unset
+    """
+    return cfg.get("openai", "api_key", fallback="")
+
+
+def get_github_pat(cfg: ConfigParser) -> str:
+    """Get the GitHub Personal Access Token used for repository/API operations.
+
+    Returns:
+        The configured PAT, or "" if unset
+    """
+    return cfg.get("github", "pat", fallback="")
+
+
+def get_github_repo_owner(cfg: ConfigParser) -> str:
+    """Get the GitHub repository owner `nyxgpt ops secrets-sync` pushes secrets to."""
+    return cfg.get("github", "repo_owner", fallback="")
+
+
+def get_github_repo_name(cfg: ConfigParser) -> str:
+    """Get the GitHub repository name `nyxgpt ops secrets-sync` pushes secrets to."""
+    return cfg.get("github", "repo_name", fallback="")
+
+
+# The canonical-store -> GitHub Actions secrets sync manifest (#3505).
+#
+# `config.ini` is the single canonical store for write-once external tokens
+# (Slack bot tokens, webhook URLs, PATs -- issuing services show them only
+# once, so hand-editing a second copy in Actions settings lets the two drift
+# silently). `nyxgpt ops secrets-sync` pushes the config.ini values declared
+# here to the matching GitHub Actions secret name, one direction only
+# (config.ini -> Actions); a key not listed here is never pushed, even if a
+# human adds an option under the same section. Extending sync to a new
+# secret is a one-line addition here.
+SECRETS_SYNC_MANIFEST: dict[str, str] = {
+    "github.claude_code_oauth_token": "CLAUDE_CODE_OAUTH_TOKEN",
+    "github.developer_agent_token": "DEVELOPER_AGENT_TOKEN",
+    "github.scrummaster_agent_token": "SCRUMMASTER_AGENT_TOKEN",
+    "github.review_agent_token": "REVIEW_AGENT_TOKEN",
+    "monitoring.slack_bot_token": "SLACK_BOT_TOKEN",
+}
+
+
 def get_log_aggregation_enabled(cfg: ConfigParser) -> bool:
     """Get whether the Loki/promtail log aggregation stack is enabled.
 
@@ -1467,6 +1531,9 @@ def get_effective_config_summary(cfg: ConfigParser) -> dict[str, object]:
         "monitoring.slack_webhook_url": (
             _REDACTED if get_monitoring_slack_webhook_url(cfg) else ""
         ),
+        "monitoring.slack_bot_token": (_REDACTED if get_monitoring_slack_bot_token(cfg) else ""),
+        "openai.api_key": (_REDACTED if get_openai_api_key(cfg) else ""),
+        "github.pat": (_REDACTED if get_github_pat(cfg) else ""),
         "log_aggregation.enabled": get_log_aggregation_enabled(cfg),
         "rate_limit.enabled": get_rate_limit_enabled(cfg),
         "rag.enabled": get_rag_enabled(cfg),
@@ -1526,6 +1593,12 @@ __all__ = [
     "grafana_admin_password_path",
     "resolve_grafana_admin_password",
     "get_monitoring_slack_webhook_url",
+    "get_monitoring_slack_bot_token",
+    "get_openai_api_key",
+    "get_github_pat",
+    "get_github_repo_owner",
+    "get_github_repo_name",
+    "SECRETS_SYNC_MANIFEST",
     "get_log_aggregation_enabled",
     "get_log_aggregation_config",
     "get_self_heal_default_enabled",

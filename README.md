@@ -43,6 +43,7 @@ Your data stays on your machine. No cloud dependency is required.
 - **Distributed tracing** (OpenTelemetry) — local-only request/RAG/Ollama/Cassandra spans exported to a local Jaeger instance and browsed inside Grafana via a Jaeger datasource, auto-started with `nyxgpt ops install`
 - **Error tracking** (self-hosted GlitchTip) — local-only backend exception and web UI client error reporting via the Sentry SDK protocol, auto-started and auto-provisioned (admin user, org, project, DSN, and a Grafana API token) with `nyxgpt ops install` — zero-touch, no manual sign-in step — surfaced as Grafana panels via the Infinity datasource
 - **SRE Overview** — Grafana is the single pane of glass: the Admin Dashboard's SRE Overview tile (`/admin/dashboard`) opens Grafana's SRE Home dashboard in a new tab, reaching every Grafana dashboard, Logs Drilldown, traces, and GlitchTip error tracking above, all provisioned as code
+- **Guided secrets setup** — masked entry, plain-language per-key help, and format validation for human-provided secrets (`nyxgpt secrets setup` CLI or `/admin/secrets`); `config.ini` is the canonical store for write-once external tokens, pushed one-way to this repo's GitHub Actions secrets via `nyxgpt ops secrets-sync`
 - Optional **Docker Compose** stack for one-command bring-up of every component
 - Robust unit and integration test suite
 
@@ -62,14 +63,17 @@ Your data stays on your machine. No cloud dependency is required.
 
 ```bash
 pip install -e .
-nyxgpt wizard        # interactive setup: Ollama connection, default model, RAG, config.ini
+nyxgpt wizard          # interactive setup: Ollama connection, default model, RAG, config.ini
+nyxgpt secrets setup   # guided, masked entry for [openai] api_key / [github] pat (optional)
 ```
 
 The wizard tests your Ollama connection, helps you pick a default model,
 optionally configures RAG, and generates `~/.nyxGPT/config.ini` — all
-runtime configuration lives outside the repository. See
-[Configuration](docs/configuration.md) for every `config.ini` section and
-key, and [CLI](docs/cli.md) for the full command reference.
+runtime configuration lives outside the repository. `nyxgpt secrets setup`
+walks through any remaining human-provided secrets one at a time (masked
+input, where to obtain each one, format validation) and is safe to re-run.
+See [Configuration](docs/configuration.md) for every `config.ini` section
+and key, and [CLI](docs/cli.md) for the full command reference.
 
 ### Start services
 
