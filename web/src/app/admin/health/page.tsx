@@ -279,7 +279,7 @@ export default function AdminHealthPage() {
                       {h.resource_metrics.memory.percent.toFixed(1)}%)
                     </div>
                     <div>
-                      CPU: <strong>{h.resource_metrics.cpu.process_percent.toFixed(1)}%</strong>
+                      CPU (process): <strong>{h.resource_metrics.cpu.process_percent.toFixed(1)}%</strong>
                     </div>
                     <div>
                       Disk: <strong>{h.resource_metrics.disk.percent.toFixed(1)}%</strong>
