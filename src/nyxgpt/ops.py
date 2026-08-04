@@ -3703,6 +3703,13 @@ def infra_status() -> dict[str, Any]:
     reserved for a *configured* context the probe couldn't reach (timeout,
     connection refused to a cluster that's meant to exist, auth failure),
     preserving #3410's original false-NOT-DEPLOYED protection for that case.
+
+    `compose_probe_available` extends the same "can't determine" distinction
+    to the `compose` section (#3588): `False` means `docker compose ps`
+    couldn't be queried from this vantage point at all (no `docker`, or the
+    Compose file isn't reachable -- e.g. a Terraform-managed api container
+    missing the bind mount), so an empty `compose` dict must not be read as
+    "nothing running" -- see `self_heal.compose_probe_available`.
     """
     mode_info = detect_deployment_mode()
 
@@ -3757,6 +3764,7 @@ def infra_status() -> dict[str, Any]:
         "mode": running_mode,
         "native": mode_info.native,
         "compose": mode_info.compose,
+        "compose_probe_available": self_heal.compose_probe_available(),
         "conflicts": sorted(mode_info.conflicts),
         "terraform": terraform,
         "kubernetes": kubernetes,

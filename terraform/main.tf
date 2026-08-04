@@ -127,17 +127,17 @@ resource "docker_container" "api" {
   env = [
     "NYXGPT_AUTH_API_KEY=${var.auth_api_key}",
     "NYXGPT_CORS_ORIGINS=${var.cors_origins}",
-    # Tells self_heal.py's `_resolve_compose_file()` which compose file to run
-    # `docker compose ps`/`up -d` against -- the same env var the Compose
-    # `api` service sets for itself (see docker-compose.yml and
-    # docs/self-healing.md). Without it, this container's module-relative and
-    # config.ini fallbacks in `_resolve_compose_file()` both miss (no repo
-    # checkout inside the image, and `~/.nyxGPT/volumes/nyxgpt-data` -- this
-    # container's `/root/.nyxGPT` mount below -- isn't the host's real
-    # `~/.nyxGPT/config.ini`), so every `docker compose ps` call in Terraform
-    # mode silently failed and the observability tier (Grafana/Loki/Jaeger/
-    # GlitchTip) never appeared on the Self-Heal or Infrastructure Status
-    # pages (#3588).
+    # Tells the self-heal watchdog (src/nyxgpt/self_heal.py), which runs
+    # inside this container, which compose file to run `docker compose
+    # ps/restart` against for the observability tier (Grafana/Loki/Jaeger/
+    # GlitchTip -- Terraform manages only the core four containers directly,
+    # see `_list_terraform_component_status`) -- mirrors docker-compose.yml's
+    # own `api` service env var of the same name. See the volume mount below
+    # and docs/self-healing.md. Without this, `_resolve_compose_file()`'s
+    # module-path and config.ini fallbacks both fail inside this container,
+    # `docker compose ps` fails every self-heal pass, and the observability
+    # tier is invisible to both the Self-Heal and Infrastructure Status pages
+    # in Terraform mode (#3588).
     "NYXGPT_COMPOSE_FILE=/etc/nyxgpt/docker-compose.yml",
   ]
 
@@ -147,23 +147,16 @@ resource "docker_container" "api" {
     read_only      = true
   }
 
-  volumes {
-    host_path      = pathexpand("~/.nyxGPT/volumes/nyxgpt-data")
-    container_path = "/root/.nyxGPT"
-  }
-
-  # Mirrors the Compose `api` service's own `./docker-compose.yml:/etc/nyxgpt/
-  # docker-compose.yml:ro` mount -- see the NYXGPT_COMPOSE_FILE env var above
-  # for why this container needs its own copy rather than resolving one from
-  # its own module path or config.ini. docker-compose.yml pins its Compose
-  # project name (`name: nyxgpt`), so `docker compose -f
-  # /etc/nyxgpt/docker-compose.yml ps` resolves to the same project
-  # regardless of the host checkout directory's name, matching whatever
-  # started the observability containers on the host.
+  # Paired with NYXGPT_COMPOSE_FILE above -- see that env var's comment.
   volumes {
     host_path      = "${var.repo_path}/docker-compose.yml"
     container_path = "/etc/nyxgpt/docker-compose.yml"
     read_only      = true
+  }
+
+  volumes {
+    host_path      = pathexpand("~/.nyxGPT/volumes/nyxgpt-data")
+    container_path = "/root/.nyxGPT"
   }
 
   # Lets the self-heal watchdog (src/nyxgpt/self_heal.py), which runs inside

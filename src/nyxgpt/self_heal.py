@@ -1019,6 +1019,26 @@ def list_component_status() -> list[ComponentStatus]:
     return all_statuses
 
 
+def compose_probe_available() -> bool:
+    """Whether the Compose observability survey can actually run from this process.
+
+    `False` means `_list_compose_component_status()` finding nothing can't be
+    trusted as "genuinely not running" -- e.g. no `docker` binary on PATH, or
+    `COMPOSE_FILE` doesn't exist from this process's vantage point. The latter
+    is exactly what happened to a Terraform-managed `nyxgpt-tf-api` container
+    before it got the same `docker-compose.yml` bind mount + `NYXGPT_COMPOSE_
+    FILE` env var docker-compose.yml's own `api` service already sets (#3588):
+    `_resolve_compose_file()`'s module-path and config.ini fallbacks both fail
+    inside that container, so `COMPOSE_FILE` resolves to a path that was never
+    mounted, and `docker compose ps` against it fails every pass -- silently
+    reporting zero observability containers indistinguishable from "nothing is
+    running". `status()`/`ops.infra_status()` surface this so the Self-Heal
+    and Infrastructure Status pages can say "can't check from here" instead of
+    a false "nothing running".
+    """
+    return _which("docker") is not None and COMPOSE_FILE.exists()
+
+
 def _list_compose_component_status() -> list[ComponentStatus]:
     """Query `docker compose ps -a` for every container the project has created.
 
@@ -1045,6 +1065,12 @@ def _list_compose_component_status() -> list[ComponentStatus]:
         logger.warning("self-heal: failed to query docker compose ps: %s", e)
         return []
     if cp.returncode != 0:
+        logger.warning(
+            "self-heal: docker compose ps exited %s querying %s -- observability survey "
+            "unavailable this pass (see compose_probe_available)",
+            cp.returncode,
+            COMPOSE_FILE,
+        )
         return []
 
     statuses: list[ComponentStatus] = []
@@ -1887,6 +1913,7 @@ def status() -> dict[str, Any]:
     return {
         "enabled": is_enabled(),
         "mode": detected_mode(components),
+        "compose_probe_available": compose_probe_available(),
         "components": component_dicts,
         "unhealthy_count": unhealthy_count,
         "events": recent_events(20),
@@ -1908,6 +1935,7 @@ __all__ = [
     "list_intentionally_stopped",
     "recent_events",
     "detected_mode",
+    "compose_probe_available",
     "list_component_status",
     "restart_component",
     "restart_native_component",
