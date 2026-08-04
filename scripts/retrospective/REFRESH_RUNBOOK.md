@@ -10,16 +10,20 @@ Artifact URL (republish to this URL, do not mint a new one):
 
 ## Steps
 
-1. **Check out the repository default branch** — this is always the current
-   release branch (v2.0.0 today; resolve it dynamically via `git ls-remote
-   --symref origin HEAD`, never hardcode a version). The template, builder, and
-   data seeds live under `scripts/retrospective/` there.
+1. **Check out the repository default branch** — resolve it dynamically via
+   `git ls-remote --symref origin HEAD`, never hardcode a version (v3.0.0 as of
+   2026-08-03; note the default branch is the *development* branch and may
+   differ from the `RELEASE_BRANCH` Actions variable during a cutover). The
+   template, builder, and data seeds live under `scripts/retrospective/` there.
 
 2. **Refresh the issue corpus** → `data/all_issues.json`.
    Via the GitHub MCP server: `search_issues` with query
    `repo:dkblinux98/nyxGPT is:issue`, `sort:created`, `order:asc`, 100/page, all
    pages. Keep per issue: `n` (number), `title`, `labels` (names), `milestone`
-   (title), `created` (created_at). Overwrite the file.
+   (title), `created` (created_at), `state`, `closed` (closed_at or null), and
+   `related` (the issue number from the first `Related feature: #N` line in the
+   body, or null — Acceptance Failure and Improvement issues carry this per the
+   2026-08-02 related-issue model). Overwrite the file.
 
 3. **Refresh real sprint assignments** → `data/project_fields.json`.
    Dispatch the workflow `retro_project_fields_dump.yml` on the default branch
@@ -76,3 +80,17 @@ sprint bucketing only; title inference remains for the 7-day view). Acceptance
 failures are classified defect/spec/workflow by the heuristics in
 `build_dashboard.py`; review new-issue classifications when they look off and add
 overrides to `SPEC_OVERRIDES` or the regexes as needed.
+
+**Product management failures (owner decision 2026-08-01/02):** issues labeled
+`Improvement` are a separate failure statistic with cause `pm` — an Improvement
+filed during acceptance testing means the spec was incomplete (a planning
+failure), distinct from an Acceptance Failure (implementation defect). The
+builder counts them separately everywhere (`qtotals.pm`, the `pm` cause lens,
+monthly `gate[].pm`); AF-only aggregates (aging, backlog flow, interception
+rate) exclude them.
+
+**Failure-issue model (2026-08-02):** a unique acceptance failure is filed as a
+NEW issue related to the feature via `Related feature: #N` + a blocking
+dependency; the original feature stays closed. A fix failing re-test REOPENS the
+same failure issue — so failure-issue counts understate failure rounds; watch
+for reopened failure issues when narrating trends.
