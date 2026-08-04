@@ -285,7 +285,7 @@ RESOURCE_MEMORY_RSS_MB = Gauge(
 
 RESOURCE_CPU_PERCENT = Gauge(
     "nyxgpt_resource_cpu_percent",
-    "CPU usage percentage of the API process",
+    "CPU usage percentage of the API process, normalized to 0-100 across all logical cores",
     registry=REGISTRY,
 )
 

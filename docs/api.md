@@ -181,7 +181,7 @@ Prometheus text exposition format metrics for scraping. Unauthenticated
 | `nyxgpt_rate_limit_rejections_total` | Counter | `path` | Requests rejected by the per-client rate limiter |
 | `nyxgpt_resource_memory_rss_mb` | Gauge | — | API process resident set size, in MB (refreshed on each `/metrics` scrape) |
 | `nyxgpt_resource_memory_percent` | Gauge | — | API process memory usage, as a percentage of system memory (refreshed on each `/metrics` scrape) |
-| `nyxgpt_resource_cpu_percent` | Gauge | — | API process CPU usage percentage (refreshed on each `/metrics` scrape) |
+| `nyxgpt_resource_cpu_percent` | Gauge | — | API process CPU usage percentage, normalized to 0-100 across all logical cores (refreshed on each `/metrics` scrape) |
 | `nyxgpt_resource_disk_percent` | Gauge | — | Disk usage percentage of the filesystem backing `~/.nyxGPT` (refreshed on each `/metrics` scrape) |
 | `nyxgpt_resource_queue_depth` | Gauge | — | Current number of requests in the batch processing queue |
 | `nyxgpt_selfheal_giveup_total` | Counter | `service` | Self-heal gave up on a component after exhausting its consecutive-restart budget. Backs the "NyxGPT self-heal giving up" alert, see [alerting.md](alerting.md) |
@@ -903,10 +903,12 @@ computation running in parallel with real alerting -- when Grafana is
 reachable, its state *is* the response's state.
 
 The local fallback's CPU alert evaluates `resource_metrics.cpu.system_percent`
--- the system-wide, core-normalized utilization (0-100%) also shown by the
-Resource Metrics history panel -- never `cpu.process_percent`, which is this
-process's own CPU usage and is not normalized by core count (it can read
-above 100% on a multi-core machine even while the system is otherwise idle).
+-- the system-wide utilization (0-100%) also shown by the Resource Metrics
+history panel -- never `cpu.process_percent`, which is this process's own
+CPU usage. Both fields are core-normalized to a 0-100 scale (see
+[`GET /api/v1/metrics`](#get-apiv1metrics) below), but process and system
+utilization are still different quantities and can diverge (e.g. this
+process idle while something else on the host is busy).
 
 **Response:**
 
@@ -3422,8 +3424,15 @@ curl http://127.0.0.1:8000/api/v1/metrics
 - `available_mb` - Available system memory in MB
 
 **CPU Metrics:**
-- `process_percent` - CPU usage percentage for this process (0-100 per core)
-- `system_percent` - Overall system CPU usage percentage
+- `process_percent` - CPU usage percentage for this process, normalized to a
+  0-100 scale across all logical cores (a process fully using 2 of 8 cores
+  reads 25%, not 200%)
+- `system_percent` - Overall system-wide CPU usage percentage (0-100)
+
+Both fields are measured with a short (~100ms) blocking sample, refreshed at
+most once per second -- never psutil's `interval=None` semantics, which are
+meaningless on the first call and otherwise average over an arbitrary window
+since whatever caller last sampled CPU.
 
 **Latency Metrics:**
 - `avg_ms` - Average request latency in milliseconds
