@@ -8,6 +8,7 @@ searching, merging, exporting, and batch-updating sessions.
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 import os
@@ -1021,7 +1022,13 @@ def export_session_html(name: str, sessions_dir: Path | None) -> tuple[bool, str
     msgs = load_session_messages(sf)
     meta = load_session_meta(mf)
 
-    title = meta.get("title", name)
+    # Everything below is served with `Content-Type: text/html`, so every
+    # interpolated value MUST be HTML-escaped or a session name / stored
+    # message / RAG chunk containing markup becomes reflected/stored XSS
+    # (CodeQL py/reflected-xss). `html.escape(..., quote=True)` covers the
+    # attribute and element contexts used here.
+    title = html.escape(str(meta.get("title", name)))
+    safe_name = html.escape(name)
     html_parts: list[str] = []
     html_parts.append("<!DOCTYPE html>")
     html_parts.append('<html lang="en">')
@@ -1066,20 +1073,27 @@ def export_session_html(name: str, sessions_dir: Path | None) -> tuple[bool, str
     html_parts.append(f"  <h1>{title}</h1>")
     html_parts.append('  <div class="metadata">')
     if meta.get("summary"):
-        html_parts.append(f"    <p><strong>Summary:</strong> {meta['summary']}</p>")
-    html_parts.append(f"    <p><strong>Session:</strong> {name}</p>")
-    html_parts.append(f"    <p><strong>Created:</strong> {meta.get('created_at', 'Unknown')}</p>")
-    html_parts.append(f"    <p><strong>Updated:</strong> {meta.get('updated_at', 'Unknown')}</p>")
+        html_parts.append(
+            f"    <p><strong>Summary:</strong> {html.escape(str(meta['summary']))}</p>"
+        )
+    html_parts.append(f"    <p><strong>Session:</strong> {safe_name}</p>")
+    html_parts.append(
+        f"    <p><strong>Created:</strong> {html.escape(str(meta.get('created_at', 'Unknown')))}</p>"
+    )
+    html_parts.append(
+        f"    <p><strong>Updated:</strong> {html.escape(str(meta.get('updated_at', 'Unknown')))}</p>"
+    )
     html_parts.append(f"    <p><strong>Messages:</strong> {len(msgs)}</p>")
     if meta.get("model"):
-        html_parts.append(f"    <p><strong>Model:</strong> {meta['model']}</p>")
+        html_parts.append(f"    <p><strong>Model:</strong> {html.escape(str(meta['model']))}</p>")
     if meta.get("tags"):
-        html_parts.append(f"    <p><strong>Tags:</strong> {', '.join(meta['tags'])}</p>")
+        tags = ", ".join(html.escape(str(t)) for t in meta["tags"])
+        html_parts.append(f"    <p><strong>Tags:</strong> {tags}</p>")
     html_parts.append("  </div>")
 
     for msg in msgs:
-        role = msg.get("role", "unknown")
-        content = msg.get("content", "").replace("<", "&lt;").replace(">", "&gt;")
+        role = html.escape(str(msg.get("role", "unknown")))
+        content = html.escape(str(msg.get("content", "")))
         html_parts.append(f'  <div class="message {role}">')
         html_parts.append(f'    <div class="role">{role}</div>')
         html_parts.append(f'    <div class="content">{content}</div>')
@@ -1091,17 +1105,14 @@ def export_session_html(name: str, sessions_dir: Path | None) -> tuple[bool, str
                 html_parts.append('    <div class="citations">')
                 html_parts.append('      <div class="citation-header">RAG Sources</div>')
                 for idx, chunk in enumerate(rag_chunks, 1):
-                    doc_id = chunk.get("doc_id", "Unknown")
+                    doc_id = html.escape(str(chunk.get("doc_id", "Unknown")))
                     # Use explicit None checking to avoid treating 0.0 as falsy
                     score = chunk.get("similarity_score")
                     if score is None:
                         score = chunk.get("score", 0.0)
                     text = chunk.get("text", "")
 
-                    # Escape HTML in text
-                    text = text.replace("<", "&lt;").replace(">", "&gt;")
-
-                    chunk_ref = format_chunk_ref(chunk)
+                    chunk_ref = html.escape(str(format_chunk_ref(chunk)))
                     html_parts.append('      <div class="citation-item">')
                     html_parts.append(
                         f'        <div class="citation-title">[{idx}] {doc_id} ({chunk_ref})</div>'
@@ -1110,10 +1121,12 @@ def export_session_html(name: str, sessions_dir: Path | None) -> tuple[bool, str
                         f'        <div class="citation-score">Confidence: {score:.3f}</div>'
                     )
 
-                    # Include preview of source text (first 200 chars)
+                    # Include preview of source text (first 200 chars), HTML-escaped.
                     if text:
                         preview = text[:200] + "..." if len(text) > 200 else text
-                        html_parts.append(f'        <div class="citation-text">{preview}</div>')
+                        html_parts.append(
+                            f'        <div class="citation-text">{html.escape(str(preview))}</div>'
+                        )
 
                     html_parts.append("      </div>")
                 html_parts.append("    </div>")
@@ -1360,7 +1373,9 @@ def sync_filename_with_title(
                 new_mf.unlink()
         except Exception:
             pass
-        return False, f"Rename failed: {e}", current_name
+        # The full exception is logged above; return a generic status so the
+        # detail never reaches an API client (CodeQL py/stack-trace-exposure).
+        return False, "Rename failed due to an internal error", current_name
 
 
 def edit_message(

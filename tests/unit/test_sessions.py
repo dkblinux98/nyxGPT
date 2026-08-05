@@ -344,6 +344,43 @@ def test_export_session_html(tmp_path: Path) -> None:
     assert '<div class="message assistant">' in content
 
 
+def test_export_session_html_escapes_untrusted_fields(tmp_path: Path) -> None:
+    """HTML export must escape the session name, title, summary, tags, and
+    message content so none can inject markup (CodeQL py/reflected-xss).
+
+    The endpoint serves this with ``Content-Type: text/html``; an unescaped
+    ``<script>`` in any user-controlled field would execute in the browser.
+    """
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    payload = "<script>alert('xss')</script>"
+    session_file = sessions.session_file_for("xss-test", sessions_dir)
+    meta_file = sessions.meta_file_for(session_file)
+
+    messages = [
+        {"role": "user", "content": payload},
+        {"role": "assistant", "content": "reply"},
+    ]
+    metadata = {
+        "title": payload,
+        "summary": payload,
+        "created_at": payload,
+        "updated_at": "2024-01-01T12:05:00",
+        "tags": [payload],
+        "model": payload,
+    }
+    sessions.save_session_messages(session_file, messages)
+    sessions.save_session_meta(meta_file, metadata)
+
+    ok, content = sessions.export_session_html("xss-test", sessions_dir)
+
+    assert ok
+    # The raw script tag must never appear; its escaped form must.
+    assert "<script>alert('xss')</script>" not in content
+    assert "&lt;script&gt;" in content
+
+
 def test_export_session_nonexistent(tmp_path: Path) -> None:
     """Test export of nonexistent session returns error."""
     sessions_dir = tmp_path / "sessions"
@@ -3017,7 +3054,10 @@ def test_sync_filename_with_title_rename_failure_cleans_up(
     )
 
     assert not success
-    assert message.startswith("Rename failed:")
+    # The generic message must not leak the underlying exception detail
+    # (CodeQL py/stack-trace-exposure); the real error is logged server-side.
+    assert message == "Rename failed due to an internal error"
+    assert "disk full" not in message
     assert new_name == "fail-rename-test"
 
     new_sf = sessions.session_file_for("fail-rename-title", sessions_dir)
@@ -3057,7 +3097,8 @@ def test_sync_filename_with_title_cleans_up_new_meta_file(
     )
 
     assert not success
-    assert message.startswith("Rename failed:")
+    assert message == "Rename failed due to an internal error"
+    assert "unlink failed" not in message
 
     new_sf = sessions.session_file_for("cleanup-meta-title", sessions_dir)
     new_mf = sessions.meta_file_for(new_sf)
@@ -3101,7 +3142,8 @@ def test_sync_filename_with_title_cleanup_failure_is_swallowed(
     )
 
     assert not success
-    assert message.startswith("Rename failed:")
+    assert message == "Rename failed due to an internal error"
+    assert "disk full" not in message
     # Original files should remain untouched
     assert sf.exists()
     assert mf.exists()

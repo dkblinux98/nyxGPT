@@ -18,6 +18,7 @@ import logging
 import os
 import secrets
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -1037,10 +1038,43 @@ def _sessions_dir_from_str(s: str | None) -> Path | None:
 
     Returns None for a falsy input (so callers can fall back to the
     config-derived sessions directory) instead of a bogus `Path("")`.
+
+    Security (CodeQL #8, py/path-injection): the sessions-dir override is a
+    client-controlled string. In normal operation the web UI never sends it --
+    it relies on the server-configured directory -- so honouring an arbitrary
+    absolute path here would only ever help an attacker read/write session
+    files outside the intended data area. We therefore accept the override only
+    when it resolves inside a known-safe root (the user's home directory, which
+    holds the default ~/.nyxGPT data area, or the system temp directory used by
+    tests and ephemeral runs). Anything else is refused (returns None -> caller
+    falls back to the configured default). The `resolve()` + `relative_to()`
+    containment check also neutralises `..` traversal.
     """
     if not s:
         return None
-    return Path(s).expanduser()
+    # Normalise the client string with os.path.realpath, then require the
+    # result to sit inside a fixed safe root via a string-prefix check. This is
+    # the canonical CodeQL-recognised path-injection barrier (py/path-injection)
+    # -- Path.relative_to() is NOT modelled as a sanitizer, so the guarded value
+    # must be produced by realpath and gated by `== root`/`startswith(root+sep)`
+    # before it is ever turned back into a Path. realpath also collapses `..`
+    # traversal. The web UI never sends this override (it uses the configured
+    # directory); accepting an arbitrary absolute path would only help an
+    # attacker read/write session files outside the intended data area.
+    try:
+        real = os.path.realpath(os.path.expanduser(s))
+    except (OSError, ValueError):
+        log.warning("Refused unresolvable sessions-dir override: %r", s)
+        return None
+    allowed_roots = [
+        os.path.realpath(os.path.expanduser("~")),
+        os.path.realpath(tempfile.gettempdir()),
+    ]
+    for root in allowed_roots:
+        if real == root or real.startswith(root + os.sep):
+            return Path(real)
+    log.warning("Refused sessions-dir override outside allowed roots: %r", s)
+    return None
 
 
 # ----------------------------
@@ -1443,8 +1477,12 @@ def _reconcile_observability(cfg: ConfigParser) -> dict[str, Any]:
     try:
         results = ops_module.reconcile_observability(any_enabled)
         return {"ok": all(r.ok for r in results), "messages": [r.message for r in results]}
-    except Exception as e:
-        return {"ok": False, "messages": [str(e)]}
+    except Exception:
+        # The full exception is logged server-side; the response carries only a
+        # generic message so no internal detail reaches the API client
+        # (CodeQL py/stack-trace-exposure, alert #24).
+        log.exception("Observability reconciliation failed")
+        return {"ok": False, "messages": ["Observability reconciliation failed"]}
 
 
 @api.get("/config/sections")
@@ -1789,12 +1827,17 @@ def admin_overview(request: Request) -> dict[str, Any]:
     cfg = _req_cfg(request)
 
     def _safe(fn, *args, **kwargs) -> dict[str, Any]:
-        """Call `fn`, returning `{"error": str(e)}` instead of raising on failure."""
+        """Call `fn`, degrading to a generic `{"error": ...}` payload on failure.
+
+        The real exception is logged server-side; the response never carries
+        the raw exception detail (CodeQL py/stack-trace-exposure, alert #25).
+        """
         try:
             result: dict[str, Any] = fn(*args, **kwargs)
             return result
-        except Exception as e:
-            return {"error": str(e)}
+        except Exception:
+            log.exception("admin/overview sub-section failed: %s", getattr(fn, "__name__", fn))
+            return {"error": "unavailable"}
 
     monitor = get_resource_monitor()
     resource_metrics_summary = monitor.get_metrics().to_dict() if monitor is not None else None
@@ -2228,7 +2271,11 @@ def models_pull(request: Request, payload: dict[str, Any] = Body(...)) -> Respon
                 admin_activity_module.record("model.pull", model)
                 yield f"data: {_json.dumps({'status': 'success', 'ok': True, 'model': model})}\n\n"
             except Exception as exc:
-                yield f"data: {_json.dumps({'error': str(exc)})}\n\n"
+                # Log the detail server-side; return a generic message so raw
+                # exception text isn't exposed to the client (CodeQL #26).
+                log.exception("model.pull failed")
+                del exc
+                yield f"data: {_json.dumps({'error': 'Model pull failed'})}\n\n"
 
         return StreamingResponse(
             _progress_generator(),
@@ -3488,12 +3535,15 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
                     },
                     exc_info=True,
                 )
-                # Send error event (only for SSE clients)
+                # Send error event (only for SSE clients). The full exception
+                # (message, type, traceback) is captured in the server-side log
+                # above; the client only ever sees a generic message so no
+                # internal detail is exposed (CodeQL py/stack-trace-exposure).
                 if capabilities.supports_sse and capabilities.supports_structured_events:
                     event_id += 1
                     elapsed = time.time() - start_time
                     error_data = {
-                        "error": str(e),
+                        "error": "The model request failed. Please try again.",
                         "elapsed": elapsed,
                     }
                     yield f"event: error\ndata: {json.dumps(error_data)}\nid: {event_id}\n\n"

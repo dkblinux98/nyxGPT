@@ -1,5 +1,9 @@
 name: Terraform Local Smoke
 
+# Least-privilege token: this smoke gate only reads the checked-out code (CodeQL #2).
+permissions:
+  contents: read
+
 # The full-stack `--local` deploy is `nyxgpt ops install --terraform --local`
 # (there is no raw `docker compose up` full-stack path). This gate exercises
 # that command end-to-end -- a real deploy of the Terraform stack + Docker
