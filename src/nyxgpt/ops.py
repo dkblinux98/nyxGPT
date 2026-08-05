@@ -6290,9 +6290,27 @@ def _start_observability_stack_terraform() -> list[OpsResult]:
                 "Cannot attach observability to the terraform network without the override.",
             )
         ]
-    return _start_observability_stack(
+    results = _start_observability_stack(
         extra_compose_files=[TERRAFORM_NET_OVERRIDE], force_recreate=True
     )
+    # Bounded wait-for-healthy (#3538), mirroring the native
+    # `_reconcile_grafana_provisioning` path: `docker compose up -d` returns as
+    # soon as the containers are created, but Grafana (57 plugins + provisioning)
+    # takes ~30s to actually serve, and `_terraform_stack_health` only gates on
+    # the core containers. Without this wait `ops install --terraform` returns
+    # before Grafana is reachable and callers (the smoke gate, a user opening the
+    # dashboard) race its startup. A container stuck crash-looping never reports
+    # healthy, so this surfaces as one clear failure instead of a silent race.
+    if _compose_stack_snapshot().get("grafana") == "running" and not _wait_for_grafana_healthy():
+        results.append(
+            OpsResult(
+                False,
+                "Grafana never became healthy",
+                "Check `nyxgpt ops status` (a compose service stuck `restarting` is the tell) "
+                "and `nyxgpt ops logs grafana` for the boot error.",
+            )
+        )
+    return results
 
 
 def _stop_observability_stack_terraform() -> list[OpsResult]:
