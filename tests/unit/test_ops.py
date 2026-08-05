@@ -8810,6 +8810,42 @@ def test_ensure_glitchtip_secrets_dir_ok_when_already_writable(tmp_path, monkeyp
 
 
 @pytest.mark.unit
+def test_ensure_glitchtip_secrets_dir_seeds_grafana_placeholders(tmp_path, monkeypatch):
+    # #3538: Grafana 13.x crash-loops on a missing/empty $__file{} secret. The
+    # preflight must seed valid, non-empty placeholders for both the GlitchTip
+    # token and the Slack webhook so the observability bring-up doesn't take
+    # Grafana down before the real values are written.
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+
+    ops._ensure_glitchtip_secrets_dir()
+
+    token_path = tmp_path / ".nyxGPT" / "secrets" / "glitchtip-grafana-token"
+    slack_path = tmp_path / ".nyxGPT" / "secrets" / "slack-webhook-url"
+    assert token_path.exists()
+    assert slack_path.exists()
+    # Non-empty: an empty file also crashes Grafana (#3538).
+    assert token_path.read_text(encoding="utf-8").strip()
+    assert slack_path.read_text(encoding="utf-8").strip()
+
+
+@pytest.mark.unit
+def test_ensure_glitchtip_secrets_dir_does_not_clobber_existing_secrets(tmp_path, monkeypatch):
+    # A real token/URL already on disk must survive the placeholder seeding.
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    secrets_dir = tmp_path / ".nyxGPT" / "secrets"
+    secrets_dir.mkdir(parents=True, mode=0o700)
+    (secrets_dir / "glitchtip-grafana-token").write_text("real-token", encoding="utf-8")
+    (secrets_dir / "slack-webhook-url").write_text(
+        "https://hooks.slack.com/services/REAL/REAL/REAL", encoding="utf-8"
+    )
+
+    ops._ensure_glitchtip_secrets_dir()
+
+    assert (secrets_dir / "glitchtip-grafana-token").read_text(encoding="utf-8") == "real-token"
+    assert "REAL" in (secrets_dir / "slack-webhook-url").read_text(encoding="utf-8")
+
+
+@pytest.mark.unit
 def test_ensure_glitchtip_secrets_dir_reports_actionable_error_when_unwritable(
     tmp_path, monkeypatch
 ):

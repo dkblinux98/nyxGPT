@@ -6771,6 +6771,44 @@ def _glitchtip_secrets_dir_unwritable_result(path: Path) -> OpsResult:
     )
 
 
+# A non-empty, syntactically-harmless stand-in for the GlitchTip Infinity
+# datasource bearer token, mirroring GRAFANA_SLACK_WEBHOOK_PLACEHOLDER_URL. Its
+# only job is to make the datasource's `$__file{}` reference resolve to a
+# non-empty value so Grafana boots; `ops glitchtip-init` overwrites it with the
+# real token when GlitchTip is provisioned.
+GRAFANA_GLITCHTIP_TOKEN_PLACEHOLDER = "UNCONFIGURED-glitchtip-token"
+
+
+def _ensure_grafana_secret_placeholders() -> None:
+    """Seed crash-safe placeholders for the secrets Grafana reads via `$__file{}`.
+
+    Grafana 13.x hard-fails its *entire* startup (crash-loops, never serves) when
+    a `$__file{}` datasource/contact-point secret references a file that is
+    missing -- or, per #3538, present but empty. On a fresh `ops install` neither
+    value exists yet: the GlitchTip Grafana token is minted later by
+    `ops glitchtip-init`/`_provision_glitchtip` (which runs *after* the
+    observability stack starts), and the Slack webhook file is only written when
+    one is configured. So provisioning would reference two unresolved files and
+    take Grafana down with it (observed on both the native and terraform smoke
+    gates). Seed valid, non-empty placeholders here -- ahead of the observability
+    bring-up, from `_ensure_glitchtip_secrets_dir` which both install paths run
+    first -- so `$__file{}` always resolves: a placeholder GlitchTip token is an
+    Infinity datasource that returns 401 until configured, and the placeholder
+    Slack URL is a contact point that won't deliver -- both degrade gracefully
+    instead of crashing Grafana. Only seeds when the file is absent, so a real
+    token/URL is never clobbered; the real writers overwrite the placeholder when
+    a value exists. Best-effort -- exceptions are swallowed so this never breaks
+    the preflight it runs inside.
+    """
+    if not _slack_webhook_secret_path().exists():
+        with contextlib.suppress(Exception):
+            # Passing "" makes the writer store GRAFANA_SLACK_WEBHOOK_PLACEHOLDER_URL.
+            _write_grafana_slack_webhook_secret("")
+    if not _glitchtip_grafana_token_path().exists():
+        with contextlib.suppress(Exception):
+            _write_grafana_glitchtip_token(GRAFANA_GLITCHTIP_TOKEN_PLACEHOLDER)
+
+
 def _ensure_glitchtip_secrets_dir() -> list[OpsResult]:
     """Ensure `~/.nyxGPT/secrets` exists and is writable by the invoking user
     *before* anything bind-mounts it (#3432).
@@ -6798,6 +6836,7 @@ def _ensure_glitchtip_secrets_dir() -> list[OpsResult]:
             path.mkdir(mode=0o700, parents=True, exist_ok=True)
         except OSError as e:
             return [OpsResult(False, f"Failed to create {path}", f"{type(e).__name__}: {e}")]
+        _ensure_grafana_secret_placeholders()
         return [OpsResult(True, f"Created {path}")]
 
     if not os.access(path, os.W_OK | os.X_OK):
@@ -6806,6 +6845,7 @@ def _ensure_glitchtip_secrets_dir() -> list[OpsResult]:
     # Owned-and-writable is what matters; a chmod that fails here is harmless.
     with contextlib.suppress(OSError):
         os.chmod(path, 0o700)
+    _ensure_grafana_secret_placeholders()
     return [OpsResult(True, f"{path} exists and is writable")]
 
 
