@@ -484,6 +484,22 @@ def test_heal_kubernetes_pod_rejects_unsafe_names(monkeypatch, bad):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("bad", ["--rm", "-d", "a b", "x;rm -rf /", "../etc", "$(id)", ""])
+def test_bring_up_compose_service_rejects_unsafe_names(monkeypatch, bad):
+    """An unsafe service name must be refused before it reaches `docker compose up`
+    (CodeQL #4, py/command-line-injection) -- closes the coverage gap for the third
+    guarded sink alongside restart_component / heal_kubernetes_pod."""
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal._bring_up_compose_service(bad)
+
+    assert not result.ok
+    assert "invalid service name" in result.message
+    run_mock.assert_not_called()
+
+
+@pytest.mark.unit
 def test_restart_component_failure(monkeypatch):
     monkeypatch.setattr(
         self_heal, "_run", lambda cmd, timeout=30.0, **_k: CP(returncode=1, stderr="boom")
