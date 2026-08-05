@@ -1469,8 +1469,12 @@ def _reconcile_observability(cfg: ConfigParser) -> dict[str, Any]:
     try:
         results = ops_module.reconcile_observability(any_enabled)
         return {"ok": all(r.ok for r in results), "messages": [r.message for r in results]}
-    except Exception as e:
-        return {"ok": False, "messages": [str(e)]}
+    except Exception:
+        # The full exception is logged server-side; the response carries only a
+        # generic message so no internal detail reaches the API client
+        # (CodeQL py/stack-trace-exposure, alert #24).
+        log.exception("Observability reconciliation failed")
+        return {"ok": False, "messages": ["Observability reconciliation failed"]}
 
 
 @api.get("/config/sections")
@@ -1815,12 +1819,17 @@ def admin_overview(request: Request) -> dict[str, Any]:
     cfg = _req_cfg(request)
 
     def _safe(fn, *args, **kwargs) -> dict[str, Any]:
-        """Call `fn`, returning `{"error": str(e)}` instead of raising on failure."""
+        """Call `fn`, degrading to a generic `{"error": ...}` payload on failure.
+
+        The real exception is logged server-side; the response never carries
+        the raw exception detail (CodeQL py/stack-trace-exposure, alert #25).
+        """
         try:
             result: dict[str, Any] = fn(*args, **kwargs)
             return result
-        except Exception as e:
-            return {"error": str(e)}
+        except Exception:
+            log.exception("admin/overview sub-section failed: %s", getattr(fn, "__name__", fn))
+            return {"error": "unavailable"}
 
     monitor = get_resource_monitor()
     resource_metrics_summary = monitor.get_metrics().to_dict() if monitor is not None else None
