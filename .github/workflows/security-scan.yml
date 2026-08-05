@@ -20,7 +20,7 @@ jobs:
 
       - name: Install Python project + security tooling
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install --upgrade pip setuptools
           pip install -e ".[dev]"
 
       - name: Python SAST (bandit) -- blocking on high severity/confidence
