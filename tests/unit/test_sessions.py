@@ -344,6 +344,43 @@ def test_export_session_html(tmp_path: Path) -> None:
     assert '<div class="message assistant">' in content
 
 
+def test_export_session_html_escapes_untrusted_fields(tmp_path: Path) -> None:
+    """HTML export must escape the session name, title, summary, tags, and
+    message content so none can inject markup (CodeQL py/reflected-xss).
+
+    The endpoint serves this with ``Content-Type: text/html``; an unescaped
+    ``<script>`` in any user-controlled field would execute in the browser.
+    """
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    payload = "<script>alert('xss')</script>"
+    session_file = sessions.session_file_for("xss-test", sessions_dir)
+    meta_file = sessions.meta_file_for(session_file)
+
+    messages = [
+        {"role": "user", "content": payload},
+        {"role": "assistant", "content": "reply"},
+    ]
+    metadata = {
+        "title": payload,
+        "summary": payload,
+        "created_at": payload,
+        "updated_at": "2024-01-01T12:05:00",
+        "tags": [payload],
+        "model": payload,
+    }
+    sessions.save_session_messages(session_file, messages)
+    sessions.save_session_meta(meta_file, metadata)
+
+    ok, content = sessions.export_session_html("xss-test", sessions_dir)
+
+    assert ok
+    # The raw script tag must never appear; its escaped form must.
+    assert "<script>alert('xss')</script>" not in content
+    assert "&lt;script&gt;" in content
+
+
 def test_export_session_nonexistent(tmp_path: Path) -> None:
     """Test export of nonexistent session returns error."""
     sessions_dir = tmp_path / "sessions"

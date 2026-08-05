@@ -385,6 +385,45 @@ def _run(
     return result
 
 
+# Argument names (and inline `--flag=value` forms) whose *value* may carry a
+# secret. When we log a failed command we mask those values so an API key,
+# password, or DSN can never reach Loki in clear text (CodeQL
+# py/clear-text-logging-sensitive-data). Matching is case-insensitive and
+# substring-based so `--api-key`, `--admin-password`, and `--glitchtip-dsn`
+# are all covered.
+_SECRET_ARG_HINTS = ("key", "token", "secret", "password", "passwd", "dsn", "credential")
+
+
+def _redact_cmd(cmd: list[str]) -> list[str]:
+    """Return a copy of `cmd` with any secret-bearing argument value masked.
+
+    Two shapes are redacted: a value in the position *after* a secret-named
+    flag (`--api-key VALUE` -> `--api-key ***`), and an inline
+    `--flag=value` where the flag name looks sensitive (`--dsn=... ` ->
+    `--dsn=***`). The returned list is freshly built so the sensitive value
+    never flows on to the logging sink.
+    """
+    redacted: list[str] = []
+    mask_next = False
+    for arg in cmd:
+        if mask_next:
+            redacted.append("***")
+            mask_next = False
+            continue
+        low = arg.lower()
+        if arg.startswith("-") and "=" in arg:
+            flag, _, _value = arg.partition("=")
+            if any(h in flag.lower() for h in _SECRET_ARG_HINTS):
+                redacted.append(f"{flag}=***")
+                continue
+        if arg.startswith("-") and any(h in low for h in _SECRET_ARG_HINTS):
+            redacted.append(arg)
+            mask_next = True
+            continue
+        redacted.append(arg)
+    return redacted
+
+
 def _log_nonzero_exit(
     cmd: list[str],
     returncode: int,
@@ -400,21 +439,23 @@ def _log_nonzero_exit(
     says the exit was expected, so it never reads as scary to the user
     (#3574). Everything else keeps the pre-existing WARNING/DEBUG split.
     """
+    safe_cmd = _redact_cmd(cmd)
+    safe_cmd_str = " ".join(safe_cmd)
     if expected_returncodes is not None and returncode in expected_returncodes:
         level = logging.INFO
         message = expected_message or (
             f"Subprocess exited with expected rc={returncode}, treated as "
-            f"success: {' '.join(cmd)}"
+            f"success: {safe_cmd_str}"
         )
     else:
         level = logging.DEBUG if expected else logging.WARNING
-        message = f"Subprocess exited non-zero (rc={returncode}): {' '.join(cmd)}"
+        message = f"Subprocess exited non-zero (rc={returncode}): {safe_cmd_str}"
     logger.log(
         level,
         message,
         extra={
             "component": "ops",
-            "cmd": cmd,
+            "cmd": safe_cmd,
             "returncode": returncode,
             "stderr_tail": stderr[-2000:] if stderr else "",
         },

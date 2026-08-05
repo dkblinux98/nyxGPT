@@ -1648,6 +1648,49 @@ def test_run_expected_true_logs_debug_not_warning_on_nonzero_exit_check_true(cap
 
 
 @pytest.mark.unit
+def test_redact_cmd_masks_secret_flag_values():
+    # A secret passed as the value after a secret-named flag is masked.
+    assert ops._redact_cmd(["kubectl", "--api-key", "s3cr3t", "get"]) == [
+        "kubectl",
+        "--api-key",
+        "***",
+        "get",
+    ]
+    # Inline --flag=value form is masked too.
+    assert ops._redact_cmd(["nyxgpt", "--glitchtip-dsn=https://abc@host/1"]) == [
+        "nyxgpt",
+        "--glitchtip-dsn=***",
+    ]
+    # Non-secret arguments pass through untouched.
+    assert ops._redact_cmd(["docker", "compose", "up", "-d"]) == [
+        "docker",
+        "compose",
+        "up",
+        "-d",
+    ]
+
+
+@pytest.mark.unit
+def test_run_redacts_secret_cmd_values_on_nonzero_exit(caplog):
+    # CodeQL py/clear-text-logging-sensitive-data: an api-key/password/DSN on
+    # the argv must never reach the log message or the structured `cmd` field.
+    with patch.object(ops.subprocess, "run") as run:
+        run.return_value = subprocess.CompletedProcess(
+            args=["tool", "--password", "hunter2"], returncode=1, stdout="", stderr="boom\n"
+        )
+        with caplog.at_level("DEBUG", logger="nyxgpt.ops"):
+            ops._run(["tool", "--password", "hunter2"], check=False)
+
+    records = [r for r in caplog.records if "Subprocess exited non-zero" in r.getMessage()]
+    assert records, "Expected _run to log the non-zero exit"
+    record = records[0]
+    assert "hunter2" not in record.getMessage()
+    assert "***" in record.getMessage()
+    assert "hunter2" not in record.cmd
+    assert record.cmd == ["tool", "--password", "***"]
+
+
+@pytest.mark.unit
 def test_run_expected_returncodes_logs_info_not_warning_with_expected_wording(caplog):
     # #3574: a declared-expected exit code (e.g. createsuperuser --noinput's
     # rc=1 when the account already exists) must never read as scary WARNING.
