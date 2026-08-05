@@ -9060,12 +9060,33 @@ def test_restart_grafana_if_running_skips_without_docker(monkeypatch):
 
 
 @pytest.mark.unit
-def test_restart_grafana_if_running_skips_when_not_running(monkeypatch):
+def test_restart_grafana_if_running_skips_when_absent(monkeypatch):
     monkeypatch.setattr(ops, "_compose_available", lambda: True)
-    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "exited"})
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
     result = ops._restart_grafana_if_running()
     assert result.ok
     assert "not running" in result.message
+
+
+@pytest.mark.unit
+def test_restart_grafana_if_running_restarts_when_exited(monkeypatch):
+    """Regression test (#3588): a crashed/exited Grafana container must still
+    be restarted, not skipped -- `docker compose restart` handles a stopped
+    container fine, and skipping here left Grafana dead after a from-scratch
+    install crash-looped it before the GlitchTip token existed."""
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "exited"})
+    monkeypatch.setattr(ops, "_wait_for_grafana_healthy", lambda: True)
+    captured_cmd = {}
+
+    def fake_run(cmd, check=False):
+        captured_cmd["cmd"] = cmd
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    result = ops._restart_grafana_if_running()
+    assert result.ok
+    assert captured_cmd["cmd"][-2:] == ["restart", "grafana"]
 
 
 @pytest.mark.unit

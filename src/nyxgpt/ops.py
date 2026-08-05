@@ -7555,12 +7555,22 @@ def _wait_for_grafana_healthy(timeout: float = 120.0, poll_interval: float = 3.0
 
 
 def _restart_grafana_if_running(reason: str = "the new GlitchTip token") -> OpsResult:
-    """Restart the `grafana` Compose container if it's currently running.
+    """Restart the `grafana` Compose container if its container exists.
 
     Grafana only reads `$__file{}` provisioning targets (the GlitchTip
     Infinity token, see `_write_grafana_glitchtip_token`, and the Slack
     alerting webhook, see `_write_grafana_slack_webhook_secret`) at startup,
     so a freshly (re)written secret needs this to actually take effect.
+
+    Only skips when the container is entirely `"absent"` (no container to
+    restart at all, e.g. the observability profile was never started) --
+    NOT merely non-`"running"`. On a from-scratch install, Grafana's
+    GlitchTip-Infinity datasource provisioning fails and crash-loops
+    (`state="exited"`) before `_provision_glitchtip` has written the token
+    this restart exists to deliver; skipping on anything but "running" left
+    it dead for good instead of bringing it back (#3588's `terraform-local-
+    smoke` regression). `docker compose restart` covers both a running and
+    an already-stopped container -- there's no need to branch to `up -d`.
 
     Waits for Grafana to report healthy again before returning (#3538) --
     without this, a restart that leaves Grafana crash-looping (e.g. a broken
@@ -7572,7 +7582,7 @@ def _restart_grafana_if_running(reason: str = "the new GlitchTip token") -> OpsR
         return OpsResult(True, "Skipped Grafana restart (Docker not found)")
 
     running = _compose_stack_snapshot()
-    if running.get("grafana") != "running":
+    if running.get("grafana", "absent") == "absent":
         return OpsResult(True, "Skipped Grafana restart (not running)")
 
     cmd = ["docker", "compose", "-f", str(self_heal.COMPOSE_FILE), "restart", "grafana"]
