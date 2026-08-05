@@ -1037,10 +1037,22 @@ def _sessions_dir_from_str(s: str | None) -> Path | None:
 
     Returns None for a falsy input (so callers can fall back to the
     config-derived sessions directory) instead of a bogus `Path("")`.
+
+    Security (CodeQL #8): the sessions-dir override is client-controlled, so a
+    resolved path outside the user's home directory is refused (returns None ->
+    caller falls back to the configured default) rather than letting a request
+    read/write session files at an arbitrary filesystem location.
     """
     if not s:
         return None
-    return Path(s).expanduser()
+    candidate = Path(s).expanduser()
+    try:
+        resolved = candidate.resolve()
+        resolved.relative_to(Path.home().resolve())
+    except (ValueError, OSError):
+        log.warning("Refused sessions-dir override outside home: %r", s)
+        return None
+    return candidate
 
 
 # ----------------------------
