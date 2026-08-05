@@ -1,6 +1,6 @@
 # Decision Record: AWS Compute Substrate — EC2 Single-Box vs EKS (P6-7)
 
-**Issue:** #3506 · **Status:** Proposed — awaiting owner review/approval on the issue
+**Issue:** #3506 · **Status:** Approved by owner, 2026-08-04
 **Author:** developer-agent · **Date:** 2026-08-03
 **Blocks:** P6-8 (Terraform AWS modules), P6-11 (`nyxgpt cloud deploy`), P6-12 (target-OS provisioning)
 
@@ -184,8 +184,9 @@ of the cost and with an operational model the codebase already implements.
 
 ## Owner review
 
-Per the issue's acceptance criteria, this decision needs owner
-review/approval **on issue #3506** before P6-8, P6-11, or P6-12 begin. Once
-approved, this section will be updated with the approval date; until then,
-downstream issues should treat this substrate choice as proposed, not
-final.
+**Approved by the owner on issue #3506, 2026-08-04**, as written: EC2
+single-box, with the existing `k8s/*.yaml` manifests optionally layered on
+a single-node k3s cluster for canary — no EKS. P6-8, P6-11, and P6-12 may
+now proceed against this substrate, together with the P6-4 private-access
+mechanism approved the same day (#3503: SSH tunnel + owner-IP-scoped
+port-22 security group).
