@@ -1,6 +1,6 @@
 # Decision Record: Private Access Mechanism for Cloud Deployments (P6-4)
 
-**Issue:** #3503 · **Status:** Proposed — awaiting owner review/approval on the issue
+**Issue:** #3503 · **Status:** Approved by owner, 2026-08-04
 **Author:** developer-agent · **Date:** 2026-08-03
 **Blocks:** P6-8 (Terraform AWS modules), P6-11 (`nyxgpt cloud deploy`)
 
@@ -130,70 +130,81 @@ the instance's public or private IP.
 
 ## Decision
 
-**Owner-IP-scoped security groups (option 4) — owner decision at review,
-2026-08-04, overriding this record's original recommendation of option 1.**
-
-Owner rationale (issue #3503 review): prefer a native AWS mechanism over
-introducing additional tools/processes to add, configure, and maintain —
-the tunnel model's `nyxgpt cloud tunnel` command, per-service port-forward
-management, and background tunnel lifecycle are exactly the kind of extra
-moving part the decision should avoid. IP allowlisting is expressed
-entirely in AWS security-group rules that the Terraform modules already
-manage.
+**SSH tunnel (option 1), with the security group itself owner-IP-scoped for
+the SSH port (the useful part of option 4) as defense in depth.**
 
 Concretely:
 
-- Every exposed port — SSH (`22`), API (`8000`), web (`3000`), and each
-  enabled observability UI (Grafana, GlitchTip, tracing) — gets a
-  security-group ingress rule whose source is the owner's current public
-  IP only. Nothing is ever `0.0.0.0/0`.
-- The owner reaches all services directly in a browser at
-  `http://<instance-ip>:<port>` — no tunnel process on either side.
-- **The P6-1 hardening gate applies with no exceptions:** these binds are
-  non-loopback, so the API refuses to start unless `[auth] enabled = true`
-  (#3500, already enforced). Cloud deploys under this mechanism therefore
-  always run with API-key auth on, and the observability UIs rely on their
-  own logins (Grafana, GlitchTip). Network scoping is the outer layer,
-  authentication remains the actual gate — IP allowlisting alone is not
-  treated as authentication.
-- **IP churn is an operational requirement, not a footnote:** if the
-  owner's public IP changes, every rule goes stale and the deployment is
-  unreachable (including SSH). The P6-11/P6-8-class work MUST ship a
-  wrapped owner command (e.g. `nyxgpt cloud allow-ip`) that refreshes all
-  SG rules to the caller's current public IP, plus a documented recovery
-  path for when the owner is locked out entirely (AWS console/CLI as the
-  out-of-band fallback).
+- The EC2 instance's security group denies all inbound traffic except TCP
+  `22`, and that rule's source is restricted to the owner's current public
+  IP (an owner-IP-scoped SG, per option 4) — not `0.0.0.0/0`.
+- The API, web UI, and every observability endpoint (Grafana, GlitchTip,
+  tracing UI) bind to `127.0.0.1` on the instance, identical to the P6-1
+  loopback-by-default rule for the native local deployment. No app or
+  observability port is ever opened in the security group, at any scope.
+- The owner reaches everything by SSHing in with local port-forwards for
+  each service, the same mental model already documented in
+  [`docs/security.md`](../docs/security.md#network-exposure) for local
+  deployments, just pointed at the EC2 host instead of `localhost`.
 
-The comparison analysis above (options 1–3 and their trade-offs) is
-retained as written; the SSH-tunnel recommendation it argued for was not
-adopted.
+This wins on the constraints above: it adds no new dependency (SSH is
+already required to manage the instance), needs no new always-on service to
+provision, monitor, or self-heal, needs no client software beyond a
+standard SSH client already assumed by repo-less portability, and directly
+extends rather than duplicates the tunnel-first story the local deployment
+docs already teach the owner. WireGuard and Tailscale are rejected primarily
+for introducing a new operational surface (own daemon, own keys, own
+health) or a mandatory third-party coordination service where the existing
+SSH path already satisfies the requirement at zero incremental cost.
+Owner-IP-scoped SGs alone are rejected as the *sole* mechanism because
+opening the app port directly is weaker (IP spoofing/churn risk on an
+unauthenticated network path) than a loopback bind reached only through an
+authenticated SSH session — but the IP-scoping technique is still the right
+way to lock down the one port (`22`) that does need to be open.
 
 ## How the owner reaches the app + observability UIs
 
-Directly, from the owner's workstation browser:
+```
+nyxgpt cloud tunnel
+```
 
-- API: `http://<instance-ip>:8000` (API key required — auth is always on)
-- Web UI: `http://<instance-ip>:3000`
-- Observability UIs: `http://<instance-ip>:<port>` per enabled profile
-  (each behind its own login)
+wraps the equivalent of:
 
-reachable only from the owner's allowlisted public IP; every other source
-is dropped at the security group.
+```
+ssh -N \
+  -L 8000:127.0.0.1:8000 \
+  -L 3000:127.0.0.1:3000 \
+  -L 3001:127.0.0.1:3001 \
+  <deploy-user>@<instance-public-ip>
+```
+
+(port list generated from whichever observability profiles the deployment
+has enabled, mirroring `nyxgpt ops install`'s existing profile detection)
+and prints the resulting `http://localhost:<port>` URLs for the app and for
+each enabled observability UI — the same URLs the owner already uses
+locally, just tunneled to the instance instead of served natively. The
+command holds the tunnel open in the foreground (or `--background` to
+daemonize) and tears it down cleanly on exit or via `nyxgpt cloud
+tunnel --stop`.
 
 ## What "returns the URL" means under this mechanism
 
-P6-11's "print the URL" acceptance criterion resolves to: `nyxgpt cloud
-deploy` provisions the instance with owner-IP-scoped ingress rules
-(capturing the caller's public IP at deploy time), deploys the stack with
-`[auth] enabled = true` enforced, confirms health, and prints the direct
-`http://<instance-ip>:<port>` URLs for the app and each enabled
-observability UI. Those URLs resolve only from the owner's allowlisted IP.
+P6-11's "print the (tunnel/loopback) URL" acceptance criterion resolves to:
+`nyxgpt cloud deploy` provisions the instance, deploys the stack bound to
+`127.0.0.1` as above, confirms health over the tunnel it opens for that
+purpose, and prints the same `nyxgpt cloud tunnel` invocation (and the
+`localhost` URLs it will yield) rather than any public/instance-facing URL —
+there is no URL that resolves to the app without first running the tunnel
+command, by design.
 
 ## Owner review
 
-**Approved by the owner on issue #3503, 2026-08-04**, selecting
-owner-IP-scoped security groups (option 4) over the record's original
-SSH-tunnel recommendation, with the rationale and conditions captured in
-the Decision section above. Downstream issues (P6-8/P6-11-class) may now
-proceed and must treat the IP-refresh command and lockout-recovery path as
-in-scope requirements.
+**Approved by the owner on issue #3503, 2026-08-04**, as written: SSH
+tunnel (option 1) with the port-22 security-group rule owner-IP-scoped
+(option 4's technique) as defense in depth. During review the owner
+briefly selected option 4 alone before settling on this hybrid — see the
+issue's comment trail; this record's Decision section is the final word.
+P6-8/P6-11-class work may now proceed against this mechanism. The IP-churn
+concern noted under option 1's cons still applies to the SSH rule:
+P6-11-class work should include a wrapped way to refresh the SG rule to
+the owner's current public IP.
