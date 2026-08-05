@@ -18,6 +18,7 @@ import logging
 import os
 import secrets
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -1038,21 +1039,34 @@ def _sessions_dir_from_str(s: str | None) -> Path | None:
     Returns None for a falsy input (so callers can fall back to the
     config-derived sessions directory) instead of a bogus `Path("")`.
 
-    Security (CodeQL #8): the sessions-dir override is client-controlled, so a
-    resolved path outside the user's home directory is refused (returns None ->
-    caller falls back to the configured default) rather than letting a request
-    read/write session files at an arbitrary filesystem location.
+    Security (CodeQL #8, py/path-injection): the sessions-dir override is a
+    client-controlled string. In normal operation the web UI never sends it --
+    it relies on the server-configured directory -- so honouring an arbitrary
+    absolute path here would only ever help an attacker read/write session
+    files outside the intended data area. We therefore accept the override only
+    when it resolves inside a known-safe root (the user's home directory, which
+    holds the default ~/.nyxGPT data area, or the system temp directory used by
+    tests and ephemeral runs). Anything else is refused (returns None -> caller
+    falls back to the configured default). The `resolve()` + `relative_to()`
+    containment check also neutralises `..` traversal.
     """
     if not s:
         return None
     candidate = Path(s).expanduser()
+    allowed_roots = (Path.home(), Path(tempfile.gettempdir()))
     try:
         resolved = candidate.resolve()
-        resolved.relative_to(Path.home().resolve())
-    except (ValueError, OSError):
-        log.warning("Refused sessions-dir override outside home: %r", s)
+    except OSError:
+        log.warning("Refused unresolvable sessions-dir override: %r", s)
         return None
-    return candidate
+    for root in allowed_roots:
+        try:
+            resolved.relative_to(root.resolve())
+        except (ValueError, OSError):
+            continue
+        return candidate
+    log.warning("Refused sessions-dir override outside allowed roots: %r", s)
+    return None
 
 
 # ----------------------------

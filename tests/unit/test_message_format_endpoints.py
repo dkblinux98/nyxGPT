@@ -17,10 +17,41 @@ import pytest
 from fastapi.testclient import TestClient
 
 from nyxgpt import sessions
-from nyxgpt.app import _escape_markdown, app
+from nyxgpt.app import _escape_markdown, _sessions_dir_from_str, app
 from nyxgpt.chat import ChatResult
 
 pytestmark = pytest.mark.unit
+
+
+# ============================================================================
+# _sessions_dir_from_str (CodeQL #8: client-controlled path override)
+# ============================================================================
+
+
+def test_sessions_dir_from_str_none_and_empty() -> None:
+    assert _sessions_dir_from_str(None) is None
+    assert _sessions_dir_from_str("") is None
+
+
+def test_sessions_dir_from_str_accepts_paths_under_tmp(tmp_path: Path) -> None:
+    override = tmp_path / "sessions"
+    assert _sessions_dir_from_str(str(override)) == override
+
+
+def test_sessions_dir_from_str_accepts_paths_under_home() -> None:
+    override = Path.home() / ".nyxGPT" / "sessions"
+    assert _sessions_dir_from_str(str(override)) == override
+
+
+def test_sessions_dir_from_str_rejects_arbitrary_system_path() -> None:
+    # A client must not be able to point session I/O at an arbitrary location.
+    assert _sessions_dir_from_str("/etc") is None
+    assert _sessions_dir_from_str("/var/lib/secrets") is None
+
+
+def test_sessions_dir_from_str_rejects_traversal_escape() -> None:
+    # `..` traversal that escapes the allowed roots is neutralised by resolve().
+    assert _sessions_dir_from_str(str(Path.home() / ".." / ".." / "etc")) is None
 
 
 def _make_session(
