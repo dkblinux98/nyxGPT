@@ -2228,7 +2228,11 @@ def models_pull(request: Request, payload: dict[str, Any] = Body(...)) -> Respon
                 admin_activity_module.record("model.pull", model)
                 yield f"data: {_json.dumps({'status': 'success', 'ok': True, 'model': model})}\n\n"
             except Exception as exc:
-                yield f"data: {_json.dumps({'error': str(exc)})}\n\n"
+                # Log the detail server-side; return a generic message so raw
+                # exception text isn't exposed to the client (CodeQL #26).
+                log.exception("model.pull failed")
+                del exc
+                yield f"data: {_json.dumps({'error': 'Model pull failed'})}\n\n"
 
         return StreamingResponse(
             _progress_generator(),

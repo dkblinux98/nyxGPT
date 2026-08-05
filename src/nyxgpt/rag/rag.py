@@ -447,7 +447,8 @@ def _split_sentences(text: str) -> list[str]:
     # Matches: period/question/exclamation followed by space and capital letter
     sentence_endings = re.compile(
         r"([.!?]+)"  # Sentence ending punctuation
-        r"(?:\s+|\n+)"  # Followed by whitespace
+        r"\s+"  # Followed by whitespace (\s already covers newlines; the prior
+        # `(?:\s+|\n+)` had ambiguous alternation -> polynomial backtracking, CodeQL #29)
         r"(?=[A-Z])"  # Lookahead for capital letter
     )
 

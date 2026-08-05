@@ -1,5 +1,9 @@
 name: Web Validation
 
+# Least-privilege token: this gate only reads the checked-out code (CodeQL #3).
+permissions:
+  contents: read
+
 on:
   pull_request:
     paths:
