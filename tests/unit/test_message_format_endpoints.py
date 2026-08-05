@@ -35,12 +35,13 @@ def test_sessions_dir_from_str_none_and_empty() -> None:
 
 def test_sessions_dir_from_str_accepts_paths_under_tmp(tmp_path: Path) -> None:
     override = tmp_path / "sessions"
-    assert _sessions_dir_from_str(str(override)) == override
+    # Returns the resolved (validated) path, not the raw string.
+    assert _sessions_dir_from_str(str(override)) == override.resolve()
 
 
 def test_sessions_dir_from_str_accepts_paths_under_home() -> None:
     override = Path.home() / ".nyxGPT" / "sessions"
-    assert _sessions_dir_from_str(str(override)) == override
+    assert _sessions_dir_from_str(str(override)) == override.resolve()
 
 
 def test_sessions_dir_from_str_rejects_arbitrary_system_path() -> None:

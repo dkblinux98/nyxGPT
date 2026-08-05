@@ -1064,7 +1064,12 @@ def _sessions_dir_from_str(s: str | None) -> Path | None:
             resolved.relative_to(root.resolve())
         except (ValueError, OSError):
             continue
-        return candidate
+        # Return the *resolved* path -- the exact value the containment check
+        # validated -- not the raw `candidate`. Returning `candidate` would let
+        # the un-sanitised, client-controlled string flow on to the callers'
+        # path expressions (py/path-injection); `resolved` is the canonical,
+        # already-verified directory.
+        return resolved
     log.warning("Refused sessions-dir override outside allowed roots: %r", s)
     return None
 
