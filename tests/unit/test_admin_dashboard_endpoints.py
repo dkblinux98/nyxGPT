@@ -62,8 +62,12 @@ def test_admin_overview_degrades_gracefully_when_canary_status_fails():
 
     assert response.status_code == 200
     body = response.json()
+    # The sub-section degrades to a generic error payload; the raw exception
+    # detail ("kubectl not found") is logged server-side but never returned to
+    # the client (CodeQL py/stack-trace-exposure).
     assert "error" in body["canary"]
-    assert "kubectl not found" in body["canary"]["error"]
+    assert "kubectl not found" not in body["canary"]["error"]
+    assert body["canary"]["error"] == "unavailable"
 
 
 # --- GET /admin/activity ---

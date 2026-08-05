@@ -1632,6 +1632,49 @@ def test_run_expected_true_logs_debug_not_warning_on_nonzero_exit_check_true(cap
 
 
 @pytest.mark.unit
+def test_redact_cmd_masks_secret_flag_values():
+    # A secret passed as the value after a secret-named flag is masked.
+    assert ops._redact_cmd(["kubectl", "--api-key", "s3cr3t", "get"]) == [
+        "kubectl",
+        "--api-key",
+        "***",
+        "get",
+    ]
+    # Inline --flag=value form is masked too.
+    assert ops._redact_cmd(["nyxgpt", "--glitchtip-dsn=https://abc@host/1"]) == [
+        "nyxgpt",
+        "--glitchtip-dsn=***",
+    ]
+    # Non-secret arguments pass through untouched.
+    assert ops._redact_cmd(["docker", "compose", "up", "-d"]) == [
+        "docker",
+        "compose",
+        "up",
+        "-d",
+    ]
+
+
+@pytest.mark.unit
+def test_run_redacts_secret_cmd_values_on_nonzero_exit(caplog):
+    # CodeQL py/clear-text-logging-sensitive-data: an api-key/password/DSN on
+    # the argv must never reach the log message or the structured `cmd` field.
+    with patch.object(ops.subprocess, "run") as run:
+        run.return_value = subprocess.CompletedProcess(
+            args=["tool", "--password", "hunter2"], returncode=1, stdout="", stderr="boom\n"
+        )
+        with caplog.at_level("DEBUG", logger="nyxgpt.ops"):
+            ops._run(["tool", "--password", "hunter2"], check=False)
+
+    records = [r for r in caplog.records if "Subprocess exited non-zero" in r.getMessage()]
+    assert records, "Expected _run to log the non-zero exit"
+    record = records[0]
+    assert "hunter2" not in record.getMessage()
+    assert "***" in record.getMessage()
+    assert "hunter2" not in record.cmd
+    assert record.cmd == ["tool", "--password", "***"]
+
+
+@pytest.mark.unit
 def test_run_expected_returncodes_logs_info_not_warning_with_expected_wording(caplog):
     # #3574: a declared-expected exit code (e.g. createsuperuser --noinput's
     # rc=1 when the account already exists) must never read as scary WARNING.
@@ -8745,6 +8788,42 @@ def test_ensure_glitchtip_secrets_dir_ok_when_already_writable(tmp_path, monkeyp
     assert len(results) == 1
     assert results[0].ok is True
     assert "writable" in results[0].message
+
+
+@pytest.mark.unit
+def test_ensure_glitchtip_secrets_dir_seeds_grafana_placeholders(tmp_path, monkeypatch):
+    # #3538: Grafana 13.x crash-loops on a missing/empty $__file{} secret. The
+    # preflight must seed valid, non-empty placeholders for both the GlitchTip
+    # token and the Slack webhook so the observability bring-up doesn't take
+    # Grafana down before the real values are written.
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+
+    ops._ensure_glitchtip_secrets_dir()
+
+    token_path = tmp_path / ".nyxGPT" / "secrets" / "glitchtip-grafana-token"
+    slack_path = tmp_path / ".nyxGPT" / "secrets" / "slack-webhook-url"
+    assert token_path.exists()
+    assert slack_path.exists()
+    # Non-empty: an empty file also crashes Grafana (#3538).
+    assert token_path.read_text(encoding="utf-8").strip()
+    assert slack_path.read_text(encoding="utf-8").strip()
+
+
+@pytest.mark.unit
+def test_ensure_glitchtip_secrets_dir_does_not_clobber_existing_secrets(tmp_path, monkeypatch):
+    # A real token/URL already on disk must survive the placeholder seeding.
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    secrets_dir = tmp_path / ".nyxGPT" / "secrets"
+    secrets_dir.mkdir(parents=True, mode=0o700)
+    (secrets_dir / "glitchtip-grafana-token").write_text("real-token", encoding="utf-8")
+    (secrets_dir / "slack-webhook-url").write_text(
+        "https://hooks.slack.com/services/REAL/REAL/REAL", encoding="utf-8"
+    )
+
+    ops._ensure_glitchtip_secrets_dir()
+
+    assert (secrets_dir / "glitchtip-grafana-token").read_text(encoding="utf-8") == "real-token"
+    assert "REAL" in (secrets_dir / "slack-webhook-url").read_text(encoding="utf-8")
 
 
 @pytest.mark.unit
