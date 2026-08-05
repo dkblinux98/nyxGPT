@@ -1080,23 +1080,15 @@ def _record_health_check(statuses: list[ComponentStatus]) -> int:
     return unhealthy
 
 
-def _reject_unsafe_name(kind: str, name: str) -> HealResult | None:
-    """Return a failed HealResult if `name` is unsafe to pass as a command
-    argument, else None.
-
-    Applied at every sink that puts an externally-influenced component/service/
-    pod name onto a `docker`/`kubectl` command line, so a value like `--flag`
-    or one carrying shell metacharacters can never reach `_run` (CodeQL #4).
-    """
-    if not isinstance(name, str) or not _SAFE_NAME_RE.match(name):
-        return HealResult(False, f"Refused to act on invalid {kind} name: {name!r}")
-    return None
-
-
 def restart_component(service: str) -> HealResult:
     """Restart a single Compose service: `docker compose restart <service>`."""
-    if (bad := _reject_unsafe_name("service", service)) is not None:
-        return bad
+    # Inline barrier (CodeQL #4, py/command-line-injection): an externally-
+    # influenced service name must be validated *in this function* so the
+    # taint tracker recognizes the guard on the value that reaches the argv.
+    # A prior helper-based check sanitized the same way but through one level
+    # of indirection CodeQL doesn't trace, so the alert stayed open.
+    if not _SAFE_NAME_RE.fullmatch(service):
+        return HealResult(False, f"Refused to act on invalid service name: {service!r}")
     if _which("docker") is None:
         return HealResult(False, "docker not found; cannot restart component")
     try:
@@ -1122,8 +1114,8 @@ def _bring_up_compose_service(service: str) -> HealResult:
     `ops._start_observability_stack`), since Compose requires a service's
     profile to be active for it to resolve even when named explicitly.
     """
-    if (bad := _reject_unsafe_name("service", service)) is not None:
-        return bad
+    if not _SAFE_NAME_RE.fullmatch(service):  # inline barrier, CodeQL #4
+        return HealResult(False, f"Refused to act on invalid service name: {service!r}")
     if _which("docker") is None:
         return HealResult(False, f"docker not found; cannot start {service}")
     cmd = ["docker", "compose", "-f", str(COMPOSE_FILE)]
@@ -1250,8 +1242,8 @@ def heal_kubernetes_pod(pod_name: str) -> HealResult:
     on a failed liveness probe, useful for a Pod that's stuck rather than
     cleanly crash-looping.
     """
-    if (bad := _reject_unsafe_name("pod", pod_name)) is not None:
-        return bad
+    if not _SAFE_NAME_RE.fullmatch(pod_name):  # inline barrier, CodeQL #4
+        return HealResult(False, f"Refused to act on invalid pod name: {pod_name!r}")
     if _which("kubectl") is None:
         return HealResult(False, f"kubectl not found; cannot heal pod {pod_name}")
     try:
