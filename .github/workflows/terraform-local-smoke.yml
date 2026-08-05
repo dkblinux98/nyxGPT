@@ -81,29 +81,15 @@ jobs:
         run: |
           set -uo pipefail
           fail=0
-          # `ops install --terraform` starts the observability stack but only
-          # waits on the *core* terraform containers (api/web/cassandra/ollama)
-          # for health -- not the Compose observability services. Grafana 13
-          # loads ~57 plugins and can take 30-60s to answer /api/health, so a
-          # single-shot probe races its startup (the classic `got 000`). Poll
-          # each endpoint until it returns the expected code or a deadline
-          # passes; this asserts the service *does* come up, just not instantly.
-          check() { # <label> <url> <expected> [timeout_secs]
-            local deadline=$(( SECONDS + ${4:-90} ))
-            local code=000
-            while :; do
-              code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$2" || echo 000)
-              if [ "$code" = "$3" ]; then break; fi
-              if [ "$SECONDS" -ge "$deadline" ]; then break; fi
-              sleep 3
-            done
+          check() { # <label> <url> <expected>
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$2" || echo 000)
             echo "  $1 -> $code (expect $3)"
-            if [ "$code" != "$3" ]; then echo "::error::$1 expected $3, got $code"; fail=1; fi
+            [ "$code" = "$3" ] || { echo "::error::$1 expected $3, got $code"; fail=1; }
           }
           check "api  /api/v1/models" http://localhost:8000/api/v1/models 200
           check "web  /"              http://localhost:3000/ 200
           check "web  /api/models"    http://localhost:3000/api/models 200
-          check "grafana health"      http://localhost:3001/api/health 200 120
+          check "grafana health"      http://localhost:3001/api/health 200
           check "jaeger UI"           http://localhost:16686/ 200
           check "glitchtip UI"        http://localhost:8080/ 200
           # Prometheus must be scraping the terraform api over the shared network.
