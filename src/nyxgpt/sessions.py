@@ -1373,7 +1373,9 @@ def sync_filename_with_title(
                 new_mf.unlink()
         except Exception:
             pass
-        return False, f"Rename failed: {e}", current_name
+        # The full exception is logged above; return a generic status so the
+        # detail never reaches an API client (CodeQL py/stack-trace-exposure).
+        return False, "Rename failed due to an internal error", current_name
 
 
 def edit_message(

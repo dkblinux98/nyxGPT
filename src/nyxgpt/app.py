@@ -3504,12 +3504,15 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
                     },
                     exc_info=True,
                 )
-                # Send error event (only for SSE clients)
+                # Send error event (only for SSE clients). The full exception
+                # (message, type, traceback) is captured in the server-side log
+                # above; the client only ever sees a generic message so no
+                # internal detail is exposed (CodeQL py/stack-trace-exposure).
                 if capabilities.supports_sse and capabilities.supports_structured_events:
                     event_id += 1
                     elapsed = time.time() - start_time
                     error_data = {
-                        "error": str(e),
+                        "error": "The model request failed. Please try again.",
                         "elapsed": elapsed,
                     }
                     yield f"event: error\ndata: {json.dumps(error_data)}\nid: {event_id}\n\n"

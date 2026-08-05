@@ -3054,7 +3054,10 @@ def test_sync_filename_with_title_rename_failure_cleans_up(
     )
 
     assert not success
-    assert message.startswith("Rename failed:")
+    # The generic message must not leak the underlying exception detail
+    # (CodeQL py/stack-trace-exposure); the real error is logged server-side.
+    assert message == "Rename failed due to an internal error"
+    assert "disk full" not in message
     assert new_name == "fail-rename-test"
 
     new_sf = sessions.session_file_for("fail-rename-title", sessions_dir)
@@ -3094,7 +3097,8 @@ def test_sync_filename_with_title_cleans_up_new_meta_file(
     )
 
     assert not success
-    assert message.startswith("Rename failed:")
+    assert message == "Rename failed due to an internal error"
+    assert "unlink failed" not in message
 
     new_sf = sessions.session_file_for("cleanup-meta-title", sessions_dir)
     new_mf = sessions.meta_file_for(new_sf)
@@ -3138,7 +3142,8 @@ def test_sync_filename_with_title_cleanup_failure_is_swallowed(
     )
 
     assert not success
-    assert message.startswith("Rename failed:")
+    assert message == "Rename failed due to an internal error"
+    assert "disk full" not in message
     # Original files should remain untouched
     assert sf.exists()
     assert mf.exists()
