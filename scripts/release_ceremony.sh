@@ -20,13 +20,29 @@
 #   scripts/release_ceremony.sh VERSION [options]
 #     VERSION                e.g. 2.1.0  (release branch is v<VERSION>)
 #   Options:
-#     --next-branch BRANCH   next development line (required for point
-#                            releases, e.g. v3.0.0; ignored for x.0.0)
-#     --next-release-issue N RELEASE_ISSUE_NUMBER after repoint (Phase 4)
+#     --next-branch BRANCH   next development line. Point release: must exist
+#                            (e.g. v3.0.0) — receives the forward-port merge.
+#                            Major (x.0.0): will be CREATED from the release
+#                            tag as the new release-candidate branch.
+#     --next-release-issue N RELEASE_ISSUE_NUMBER after repoint. Point
+#                            releases: required (issue exists). Major: omit —
+#                            the ceremony creates the release issue and uses
+#                            its number.
+#     --next-title TEXT      major only: descriptive suffix for the next
+#                            line's release issue + draft release name
+#     --phase4-only          resume at Phase 4 (line prep + repoint) after an
+#                            earlier abort; Phases 0-3 must already be done
 #     --skip-scan-gate       skip the code-scanning gate (v2.1.0 decision;
 #                            keep the gate for lines with the full CI suite)
 #     --skip-pypi            skip Phase 2
 #     --dry-run              run all read-only checks; print, don't mutate
+#
+# Major (x.0.0) line preparation — performed BEFORE any repoint, per owner
+# requirement (2026-08-06): (1) create the new RC branch from the release
+# tag, (2) create its release issue, (3) create its draft release, and
+# verify (4) phase milestone(s) and (5) sprint iteration(s) exist for the
+# new line. Only then do the GitHub vars, default branch, and config.ini
+# get repointed.
 #
 # Every mutation is re-verified by querying GitHub/PyPI afterwards — never
 # assume success from a non-error response (house rule).
@@ -45,11 +61,13 @@ fail() { echo "[ceremony] FATAL: $*" >&2; exit 1; }
 VERSION="${1:-}"; [[ -n "$VERSION" ]] || { grep -E '^#( |$)' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 shift
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "VERSION must be x.y.z, got: $VERSION"
-NEXT_BRANCH=""; NEXT_RELEASE_ISSUE=""; SKIP_SCAN=0; SKIP_PYPI=0; DRY=0
+NEXT_BRANCH=""; NEXT_RELEASE_ISSUE=""; NEXT_TITLE=""; SKIP_SCAN=0; SKIP_PYPI=0; DRY=0; PHASE4_ONLY=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --next-branch)        NEXT_BRANCH="$2"; shift 2 ;;
     --next-release-issue) NEXT_RELEASE_ISSUE="$2"; shift 2 ;;
+    --next-title)         NEXT_TITLE="$2"; shift 2 ;;
+    --phase4-only)        PHASE4_ONLY=1; shift ;;
     --skip-scan-gate)     SKIP_SCAN=1; shift ;;
     --skip-pypi)          SKIP_PYPI=1; shift ;;
     --dry-run)            DRY=1; shift ;;
@@ -59,9 +77,13 @@ done
 
 REL_BRANCH="v${VERSION}"
 if [[ "$VERSION" =~ ^[0-9]+\.0\.0$ ]]; then REL_TYPE="major"; else REL_TYPE="point"; fi
-if [[ "$REL_TYPE" == "point" && -z "$NEXT_BRANCH" && $DRY -eq 0 ]]; then
-  fail "point release requires --next-branch (the development line that must absorb these changes)"
+if [[ -z "$NEXT_BRANCH" && $DRY -eq 0 ]]; then
+  fail "--next-branch is required (point: existing line to forward-port into; major: new RC branch to create)"
 fi
+if [[ "$REL_TYPE" == "point" && -z "$NEXT_RELEASE_ISSUE" && $DRY -eq 0 ]]; then
+  fail "point release requires --next-release-issue (the next line's existing release issue)"
+fi
+NEXT_VERSION="${NEXT_BRANCH#v}"
 
 # --- credentials ---
 ini_get() { # ini_get SECTION KEY
@@ -245,13 +267,45 @@ else
   log "  verified: release issue #$RELEASE_ISSUE closed"
 fi
 
-# --- Phase 4: line reconciliation + repoint ---
-log "Phase 4: line reconciliation ($REL_TYPE release)"
+# --- Phase 4: next-line preparation + repoint ---
+log "Phase 4: next-line preparation ($REL_TYPE release)"
+
+# 4-pre: readiness gates for the next line — checked BEFORE any repoint.
+# (4) phase milestone(s) and (5) sprint iteration(s) must exist.
+LINE_GATE_FAIL=0
+MS_NEXT=$(gh api "repos/${REPO}/milestones?state=open&per_page=100" \
+  --jq "[.[] | select(.title | test(\"v${NEXT_VERSION}\"))] | length")
+if [[ "$MS_NEXT" == "0" ]]; then
+  log "  LINE GATE FAIL: no open milestone mentions v${NEXT_VERSION} — prepare the phase milestone(s) first"
+  LINE_GATE_FAIL=1
+else
+  log "  ok: $MS_NEXT open phase milestone(s) for v${NEXT_VERSION}:"
+  gh api "repos/${REPO}/milestones?state=open&per_page=100" \
+    --jq ".[] | select(.title | test(\"v${NEXT_VERSION}\")) | \"    \" + .title"
+fi
+PROJ_OWNER="$(ini_get github PROJECT_OWNER)"; PROJ_NUM="$(ini_get github PROJECT_NUMBER)"
+SPRINTS=$(gh api graphql -f owner="$PROJ_OWNER" -F num="${PROJ_NUM:-0}" -f query='
+  query($owner:String!,$num:Int!){ user(login:$owner){ projectV2(number:$num){
+    field(name:"Sprint"){ ... on ProjectV2IterationField {
+      configuration { iterations { title startDate } } } } } } }' \
+  --jq '.data.user.projectV2.field.configuration.iterations[].title' 2>/dev/null || true)
+if [[ -z "$SPRINTS" ]]; then
+  log "  LINE GATE FAIL: no active/upcoming Sprint iteration on the project — prepare the sprint(s) first"
+  LINE_GATE_FAIL=1
+else
+  log "  ok: active/upcoming sprint iteration(s): $(echo "$SPRINTS" | tr '\n' ' ')"
+fi
+[[ $LINE_GATE_FAIL -eq 0 || $DRY -eq 1 ]] || fail "next-line readiness gate failed — prepare milestones/sprints, then re-run with --phase4-only"
+
 if [[ "$REL_TYPE" == "point" ]]; then
-  # point release: the next development line must absorb the release content
+  # Point release: next line already exists — it must absorb the release
+  # content (forward-port), on top of master's fast-forward. Verify its
+  # release issue exists too (it is about to become RELEASE_ISSUE_NUMBER).
   if [[ $DRY -eq 1 ]]; then
     log "  DRY-RUN: would merge ${REL_BRANCH} into ${NEXT_BRANCH:-<next-branch>} (server-side merge)"
   else
+    [[ "$(gh issue view "$NEXT_RELEASE_ISSUE" -R "$REPO" --json state --jq .state 2>/dev/null)" == "OPEN" ]] \
+      || fail "next release issue #$NEXT_RELEASE_ISSUE is not an open issue"
     MERGE_RESP=$(gh api -X POST "repos/${REPO}/merges" \
       -f base="$NEXT_BRANCH" -f head="$TIP" \
       -f commit_message="merge: absorb release ${VERSION} into ${NEXT_BRANCH} (forward-port of release content)" \
@@ -264,31 +318,110 @@ if [[ "$REL_TYPE" == "point" ]]; then
     else
       log "  MERGE CONFLICT or error merging ${REL_BRANCH} -> ${NEXT_BRANCH}:"
       echo "$MERGE_RESP" | sed 's/^/    /'
-      log "  resolve manually (local merge + push), then continue with the repoint below"
+      log "  resolve manually (local merge + push), then re-run with --phase4-only"
     fi
   fi
 else
-  log "  major release: cut the next development line from tag ${VERSION} when ready (manual owner step)"
+  # Major release: BUILD the next line before anything points at it.
+  if [[ $DRY -eq 1 ]]; then
+    log "  DRY-RUN (major): would create branch ${NEXT_BRANCH:-<next>} from tag ${VERSION}, its release issue, and its draft release"
+  else
+    # (1) new release-candidate branch from the release tag
+    if gh api "repos/${REPO}/branches/${NEXT_BRANCH}" >/dev/null 2>&1; then
+      log "  branch ${NEXT_BRANCH} already exists (ok)"
+    else
+      mutate "create branch ${NEXT_BRANCH} at tag ${VERSION}" \
+        git push "$AUTH_URL" "${TIP}:refs/heads/${NEXT_BRANCH}"
+      [[ "$(gh api "repos/${REPO}/branches/${NEXT_BRANCH}" --jq .commit.sha)" == "$TIP" ]] \
+        || fail "verify failed: ${NEXT_BRANCH} not at release tip"
+      log "  verified: ${NEXT_BRANCH} created at release tip"
+    fi
+    # (2) release issue for the new line
+    if [[ -z "$NEXT_RELEASE_ISSUE" ]]; then
+      ISSUE_TITLE="Release ${NEXT_BRANCH}${NEXT_TITLE:+ — ${NEXT_TITLE}}"
+      NEXT_RELEASE_ISSUE=$(gh issue create -R "$REPO" --title "$ISSUE_TITLE" --body "## ${ISSUE_TITLE}
+
+**Release branch:** \`${NEXT_BRANCH}\` (cut from tag \`${VERSION}\`)
+**Milestone(s):** see open v${NEXT_VERSION} phase milestones
+
+## Included Work
+_Populated as work merges (add-to-release-issue automation + scrummaster)._
+
+## Ceremony Checklist (remaining)
+- [ ] Run \`scripts/release_ceremony.sh ${NEXT_VERSION}\` when scope completes" \
+        | grep -oE '[0-9]+$')
+      [[ -n "$NEXT_RELEASE_ISSUE" ]] || fail "could not create/parse next release issue"
+      log "  verified: release issue #${NEXT_RELEASE_ISSUE} created"
+    else
+      log "  using provided next release issue #${NEXT_RELEASE_ISSUE}"
+    fi
+    # (3) draft release for the new line (draft => no tag is created yet;
+    # tag_name/target are pre-normalized for the next ceremony)
+    EXISTING_DRAFT=$(gh api "repos/${REPO}/releases?per_page=30" \
+      --jq "[.[] | select(.draft==true) | select(.name | test(\"${NEXT_BRANCH}\"))] | length")
+    if [[ "$EXISTING_DRAFT" != "0" ]]; then
+      log "  draft release for ${NEXT_BRANCH} already exists (ok)"
+    else
+      gh api -X POST "repos/${REPO}/releases" \
+        -f tag_name="${NEXT_VERSION}" -f target_commitish="${NEXT_BRANCH}" \
+        -f name="nyxGPT Release ${NEXT_BRANCH}${NEXT_TITLE:+ — ${NEXT_TITLE}}" \
+        -f body="Draft — populated at ceremony time from the release issue." \
+        -F draft=true --silent
+      [[ "$(gh api "repos/${REPO}/releases?per_page=30" \
+        --jq "[.[] | select(.draft==true) | select(.name | test(\"${NEXT_BRANCH}\"))] | length")" != "0" ]] \
+        || fail "verify failed: draft release for ${NEXT_BRANCH} not found after create"
+      log "  verified: draft release created for ${NEXT_BRANCH}"
+    fi
+  fi
+fi
+
+# version bump on the next line: pyproject.toml must carry the next RC's
+# version once the release is live (owner requirement, 2026-08-06)
+if [[ $DRY -eq 1 ]]; then
+  log "  DRY-RUN: would ensure ${NEXT_BRANCH:-<next>}:pyproject.toml version == ${NEXT_VERSION:-<next>}"
+else
+  NEXT_PY_JSON=$(gh api "repos/${REPO}/contents/pyproject.toml?ref=${NEXT_BRANCH}")
+  NEXT_PY_SHA=$(jq -r .sha <<<"$NEXT_PY_JSON")
+  NEXT_PY_CUR=$(jq -r .content <<<"$NEXT_PY_JSON" | python3 -c 'import sys,base64; print(base64.b64decode(sys.stdin.read()).decode())' \
+    | awk -F'"' '/^version =/{print $2; exit}')
+  if [[ "$NEXT_PY_CUR" == "$NEXT_VERSION" ]]; then
+    log "  ok: ${NEXT_BRANCH} pyproject version already ${NEXT_VERSION}"
+  else
+    NEW_B64=$(jq -r .content <<<"$NEXT_PY_JSON" | python3 -c "
+import sys, base64, re
+t = base64.b64decode(sys.stdin.read()).decode()
+t = re.sub(r'^version = \"[^\"]+\"', 'version = \"${NEXT_VERSION}\"', t, count=1, flags=re.M)
+print(base64.b64encode(t.encode()).decode())")
+    gh api -X PUT "repos/${REPO}/contents/pyproject.toml" \
+      -f branch="$NEXT_BRANCH" -f sha="$NEXT_PY_SHA" -f content="$NEW_B64" \
+      -f message="chore: bump version to ${NEXT_VERSION} post-${VERSION}-release (ceremony)" --silent
+    NEW_CUR=$(gh api "repos/${REPO}/contents/pyproject.toml?ref=${NEXT_BRANCH}" --jq .content \
+      | python3 -c 'import sys,base64; print(base64.b64decode(sys.stdin.read()).decode())' \
+      | awk -F'"' '/^version =/{print $2; exit}')
+    [[ "$NEW_CUR" == "$NEXT_VERSION" ]] || fail "verify failed: ${NEXT_BRANCH} pyproject version is '$NEW_CUR'"
+    log "  verified: ${NEXT_BRANCH} pyproject version bumped ${NEXT_PY_CUR} -> ${NEXT_VERSION}"
+  fi
 fi
 
 confirm "repoint"
 if [[ $DRY -eq 1 ]]; then
-  log "DRY-RUN: would set default branch + RELEASE_BRANCH -> ${NEXT_BRANCH:-<next>}, RELEASE_ISSUE_NUMBER -> ${NEXT_RELEASE_ISSUE:-<unset>}"
+  log "DRY-RUN: would repoint default branch + RELEASE_BRANCH -> ${NEXT_BRANCH:-<next>}, RELEASE_ISSUE_NUMBER -> ${NEXT_RELEASE_ISSUE:-<from-created-issue>} (GitHub vars AND config.ini)"
 else
-  if [[ -n "$NEXT_BRANCH" ]]; then
-    gh api -X PATCH "repos/${REPO}" -f default_branch="$NEXT_BRANCH" --silent
-    [[ "$(gh api "repos/${REPO}" --jq .default_branch)" == "$NEXT_BRANCH" ]] || fail "verify failed: default branch"
-    gh variable set RELEASE_BRANCH -R "$REPO" --body "$NEXT_BRANCH"
-    log "  verified: default branch + RELEASE_BRANCH -> $NEXT_BRANCH"
-  else
-    log "  no --next-branch: leaving default branch and RELEASE_BRANCH untouched"
-  fi
-  if [[ -n "$NEXT_RELEASE_ISSUE" ]]; then
-    gh variable set RELEASE_ISSUE_NUMBER -R "$REPO" --body "$NEXT_RELEASE_ISSUE"
-    log "  RELEASE_ISSUE_NUMBER -> $NEXT_RELEASE_ISSUE"
-  else
-    log "  no --next-release-issue: RELEASE_ISSUE_NUMBER untouched — set it before the next cycle"
-  fi
+  gh api -X PATCH "repos/${REPO}" -f default_branch="$NEXT_BRANCH" --silent
+  [[ "$(gh api "repos/${REPO}" --jq .default_branch)" == "$NEXT_BRANCH" ]] || fail "verify failed: default branch"
+  gh variable set RELEASE_BRANCH -R "$REPO" --body "$NEXT_BRANCH"
+  gh variable set RELEASE_ISSUE_NUMBER -R "$REPO" --body "$NEXT_RELEASE_ISSUE"
+  log "  verified: default branch, RELEASE_BRANCH, RELEASE_ISSUE_NUMBER -> ${NEXT_BRANCH} / #${NEXT_RELEASE_ISSUE}"
+  # config.ini mirror (local scripts read these — must match the repo vars)
+  sed -i.cerbak -E \
+    -e "s|^(RELEASE_BRANCH[[:space:]]*=).*|\1${NEXT_BRANCH}|" \
+    -e "s|^(RELEASE_ISSUE_NUMBER[[:space:]]*=).*|\1${NEXT_RELEASE_ISSUE}|" \
+    "$CONFIG_FILE"
+  grep -q "^RELEASE_BRANCH[[:space:]]*=${NEXT_BRANCH}$" "$CONFIG_FILE" \
+    && grep -q "^RELEASE_ISSUE_NUMBER[[:space:]]*=${NEXT_RELEASE_ISSUE}$" "$CONFIG_FILE" \
+    || fail "verify failed: config.ini repoint (backup at ${CONFIG_FILE}.cerbak)"
+  rm -f "${CONFIG_FILE}.cerbak"
+  log "  verified: config.ini RELEASE_BRANCH/RELEASE_ISSUE_NUMBER updated"
 fi
 
 log "Ceremony complete for ${VERSION}."
