@@ -24,8 +24,8 @@ on:
         description: 'Delete unmerged orphan branches whose tip is older than this many days'
         default: '14'
       base_branch:
-        description: 'Base/release branch to check merges against'
-        default: 'v2.0.0'
+        description: 'Base/release branch to check merges against (blank = resolve dynamically)'
+        default: ''
 
 permissions:
   contents: write        # delete refs
@@ -44,15 +44,27 @@ jobs:
         env:
           # On a scheduled run there are no inputs, so these fall back to the
           # defaults below (dry_run=false → real deletions on the weekly sweep).
+          # BASE_BRANCH resolution order: workflow_dispatch override, then the
+          # repo variable vars.RELEASE_BRANCH; if both are unset/blank the
+          # script below falls back to the live repo default branch.
           DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
           STALE_DAYS: ${{ github.event.inputs.stale_days || '14' }}
-          BASE_BRANCH: ${{ github.event.inputs.base_branch || 'v2.0.0' }}
+          BASE_BRANCH: ${{ github.event.inputs.base_branch || vars.RELEASE_BRANCH }}
         with:
           script: |
             const dryRun = (process.env.DRY_RUN || 'false') === 'true';
             const staleDays = parseInt(process.env.STALE_DAYS || '14', 10);
-            const base = process.env.BASE_BRANCH || 'v2.0.0';
             const { owner, repo } = context.repo;
+
+            // No literal branch name here on purpose: release branches roll
+            // every version, so the base always resolves at run time —
+            // vars.RELEASE_BRANCH first, live repo default branch fallback.
+            let base = process.env.BASE_BRANCH || '';
+            if (!base) {
+              const repoInfo = await github.rest.repos.get({ owner, repo });
+              base = repoInfo.data.default_branch;
+            }
+            core.info(`Resolved base branch: ${base}`);
             const PREFIX = 'claude/';
             const now = Date.now();
             const staleMs = staleDays * 24 * 60 * 60 * 1000;
