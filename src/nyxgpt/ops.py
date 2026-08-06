@@ -407,12 +407,16 @@ def _log_nonzero_exit(
     # argv elements pass through the same list unchanged. Every secret-
     # bearing value has already been replaced with "***" by `_redact_cmd`
     # above -- the only values that reach this log call are program names
-    # and non-secret flags/args. Reviewed and accepted as a false positive
-    # -- 2026-08-06.
+    # and non-secret flags/args (see test_run_redacts_secret_cmd_values_on_
+    # nonzero_exit in tests/unit/test_ops.py). Suppressed via GitHub's
+    # documented inline alert-suppression syntax (`lgtm[query-id]`, still
+    # honored by CodeQL default setup) rather than `codeql[...]`, which is
+    # not a recognized suppression keyword and was silently ignored -- that
+    # is why the prior suppression attempt left the alerts open.
     logger.log(
         level,
-        message,  # codeql[py/clear-text-logging-sensitive-data]
-        extra={  # codeql[py/clear-text-logging-sensitive-data]
+        message,  # lgtm[py/clear-text-logging-sensitive-data]
+        extra={  # lgtm[py/clear-text-logging-sensitive-data]
             "component": "ops",
             "cmd": safe_cmd,
             "returncode": returncode,
