@@ -541,3 +541,27 @@ def test_sessions_export_success(
     assert response.status_code == 200
     assert content_type in response.headers["content-type"]
     assert f'filename="export-success-test.{extension}"' in response.headers["content-disposition"]
+    assert response.headers["x-content-type-options"] == "nosniff"
+
+
+@pytest.mark.parametrize(
+    "bad_name",
+    [
+        "foo..bar",
+        "foo bar",
+        "foo!bar",
+        "x" * 65,
+    ],
+)
+def test_sessions_export_rejects_invalid_name(tmp_path: Path, bad_name: str) -> None:
+    """The `name` path parameter is validated at the response boundary before
+    it can reach the HTML branch's markup or the Content-Disposition
+    filename (CodeQL py/reflected-xss, alert #14)."""
+    sd = tmp_path / "sessions"
+    sd.mkdir(parents=True, exist_ok=True)
+    client = TestClient(app)
+    response = client.get(
+        f"/api/v1/sessions/{bad_name}/export",
+        params={"sessions_dir": str(sd), "format": "markdown"},
+    )
+    assert response.status_code == 400
