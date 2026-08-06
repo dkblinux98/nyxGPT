@@ -10,6 +10,7 @@ was called directly on whatever `citation.get(...)` returned.
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -53,6 +54,14 @@ def test_sessions_dir_from_str_rejects_arbitrary_system_path() -> None:
 def test_sessions_dir_from_str_rejects_traversal_escape() -> None:
     # `..` traversal that escapes the allowed roots is neutralised by resolve().
     assert _sessions_dir_from_str(str(Path.home() / ".." / ".." / "etc")) is None
+
+
+def test_sessions_dir_from_str_rejects_exact_root_paths() -> None:
+    # Exactly $HOME or the temp root itself (not a subdirectory of one) is
+    # refused -- the barrier accepts strict descendants only. Pins the
+    # intentional behavior change from PR #3657.
+    assert _sessions_dir_from_str(str(Path.home())) is None
+    assert _sessions_dir_from_str(tempfile.gettempdir()) is None
 
 
 def _make_session(

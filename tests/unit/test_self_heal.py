@@ -484,6 +484,66 @@ def test_bring_up_compose_service_rejects_unsafe_names(monkeypatch, bad):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("bad", ["--privileged", "-rf", "a b", "x;rm -rf /", "../etc", "$(id)", ""])
+def test_restart_brew_service_rejects_unsafe_names(monkeypatch, bad):
+    """An unsafe name must be refused before it reaches `brew services restart`
+    (CodeQL #4, py/command-line-injection)."""
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal._restart_brew_service(bad)
+
+    assert not result.ok
+    assert "invalid service name" in result.message
+    run_mock.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", ["--privileged", "-rf", "a b", "x;rm -rf /", "../etc", "$(id)", ""])
+def test_restart_native_container_rejects_unsafe_names(monkeypatch, bad):
+    """An unsafe name must be refused before it reaches `docker restart`
+    (CodeQL #4, py/command-line-injection)."""
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal._restart_native_container(bad)
+
+    assert not result.ok
+    assert "invalid container name" in result.message
+    run_mock.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", ["--all", "-f", "a b", "x;reboot", "../etc", "$(id)", ""])
+def test_docker_container_logs_rejects_unsafe_names(monkeypatch, bad):
+    """An unsafe container name must be refused before it reaches `docker logs`
+    (CodeQL #4, py/command-line-injection)."""
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal._docker_container_logs(bad, tail=10)
+
+    assert not result.ok
+    assert "invalid container name" in result.message
+    run_mock.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", ["--all", "-n=evil", "pod;reboot", "../x", ""])
+def test_kubernetes_pod_logs_rejects_unsafe_names(monkeypatch, bad):
+    """An unsafe pod name must be refused before it reaches `kubectl logs`
+    (CodeQL #4, py/command-line-injection)."""
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal._kubernetes_pod_logs(bad, tail=10)
+
+    assert not result.ok
+    assert "invalid pod name" in result.message
+    run_mock.assert_not_called()
+
+
+@pytest.mark.unit
 def test_restart_component_failure(monkeypatch):
     monkeypatch.setattr(
         self_heal, "_run", lambda cmd, timeout=30.0, **_k: CP(returncode=1, stderr="boom")
