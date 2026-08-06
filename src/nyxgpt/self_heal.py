@@ -1443,6 +1443,15 @@ def component_logs(service: str, *, tail: int = 200) -> HealResult:
     name) falls through to `_compose_component_logs`, which already reports
     a clear failure for a nonexistent service.
     """
+    # Inline barrier (CodeQL #4, py/command-line-injection): the SRE-dashboard
+    # `GET /self-heal/logs` endpoint passes its `service` query parameter
+    # straight through to this function, and the `_compose_component_logs`
+    # fallback below puts it directly on a `docker compose logs` argv. Same
+    # pattern/message as restart_component/_bring_up_compose_service/
+    # heal_kubernetes_pod -- validated here, in this function, so the taint
+    # tracker recognizes the guard on the value that reaches the argv.
+    if not _SAFE_NAME_RE.fullmatch(service):
+        return HealResult(False, f"Refused to act on invalid service name: {service!r}")
     status = next((s for s in list_component_status() if s.service == service), None)
     if status is not None:
         if status.state == "absent":

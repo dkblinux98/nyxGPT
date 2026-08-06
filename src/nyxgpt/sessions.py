@@ -325,6 +325,20 @@ def load_session_messages(session_file: Path) -> list[dict[str, str]]:
         List of valid message dicts (each with string "role" and "content").
         Returns an empty list if the file is missing, unreadable, or invalid.
     """
+    # Inline sink-side barrier (CodeQL py/path-injection): CodeQL does not
+    # credit caller-side sanitization (session_file_for/_resolve_sessions_dir)
+    # across the function boundary, so every function containing filesystem
+    # sinks must guard and REBIND the received path itself -- same lesson as
+    # the self_heal.py inline barriers (#3624). Contract-preserving refusal.
+    real = os.path.realpath(str(session_file))
+    _home = os.path.realpath(os.path.expanduser("~"))
+    _tmp = os.path.realpath(tempfile.gettempdir())
+    if not (
+        real in (_home, _tmp) or real.startswith(_home + os.sep) or real.startswith(_tmp + os.sep)
+    ):
+        log.warning("Refused session file outside allowed data area: %r", str(session_file))
+        return []
+    session_file = Path(real)
     if not session_file.exists():
         return []
 
@@ -369,6 +383,17 @@ def load_session_messages_paginated(
         tuple of (messages, total_count) where messages is the paginated slice
         and total_count is the total number of valid messages in the file
     """
+    # Inline sink-side barrier (CodeQL py/path-injection) -- see
+    # load_session_messages for rationale.
+    real = os.path.realpath(str(session_file))
+    _home = os.path.realpath(os.path.expanduser("~"))
+    _tmp = os.path.realpath(tempfile.gettempdir())
+    if not (
+        real in (_home, _tmp) or real.startswith(_home + os.sep) or real.startswith(_tmp + os.sep)
+    ):
+        log.warning("Refused session file outside allowed data area: %r", str(session_file))
+        return ([], 0)
+    session_file = Path(real)
     if not session_file.exists():
         return ([], 0)
 
@@ -408,7 +433,21 @@ def save_session_messages(session_file: Path, messages: list[dict[str, str]]) ->
 
     Writes to a unique temp file first, then renames it into place, to
     avoid corrupting the file if multiple writers race or a write fails.
+
+    Raises:
+        ValueError: If `session_file` resolves outside the allowed data area
+            (a write is refused loudly rather than silently dropped).
     """
+    # Inline sink-side barrier (CodeQL py/path-injection) -- see
+    # load_session_messages for rationale.
+    real = os.path.realpath(str(session_file))
+    _home = os.path.realpath(os.path.expanduser("~"))
+    _tmp = os.path.realpath(tempfile.gettempdir())
+    if not (
+        real in (_home, _tmp) or real.startswith(_home + os.sep) or real.startswith(_tmp + os.sep)
+    ):
+        raise ValueError(f"Session file resolves outside the allowed data area: {session_file!r}")
+    session_file = Path(real)
     session_file.parent.mkdir(parents=True, exist_ok=True)
     # Use unique temp file name to avoid race conditions in concurrent writes
     tmp = session_file.parent / f".{session_file.name}.{uuid.uuid4().hex[:8]}.tmp"
@@ -418,6 +457,17 @@ def save_session_messages(session_file: Path, messages: list[dict[str, str]]) ->
 
 def load_session_meta(meta_file: Path) -> SessionMetaDict:
     """Load session metadata from `meta_file`, returning `{}` if absent/invalid."""
+    # Inline sink-side barrier (CodeQL py/path-injection) -- see
+    # load_session_messages for rationale.
+    real = os.path.realpath(str(meta_file))
+    _home = os.path.realpath(os.path.expanduser("~"))
+    _tmp = os.path.realpath(tempfile.gettempdir())
+    if not (
+        real in (_home, _tmp) or real.startswith(_home + os.sep) or real.startswith(_tmp + os.sep)
+    ):
+        log.warning("Refused metadata file outside allowed data area: %r", str(meta_file))
+        return {}
+    meta_file = Path(real)
     if not meta_file.exists():
         return {}
 
@@ -437,7 +487,20 @@ def save_session_meta(meta_file: Path, meta: SessionMetaDict) -> None:
 
     Writes to a unique temp file first, then renames it into place, to
     avoid corrupting the file if multiple writers race or a write fails.
+
+    Raises:
+        ValueError: If `meta_file` resolves outside the allowed data area.
     """
+    # Inline sink-side barrier (CodeQL py/path-injection) -- see
+    # load_session_messages for rationale.
+    real = os.path.realpath(str(meta_file))
+    _home = os.path.realpath(os.path.expanduser("~"))
+    _tmp = os.path.realpath(tempfile.gettempdir())
+    if not (
+        real in (_home, _tmp) or real.startswith(_home + os.sep) or real.startswith(_tmp + os.sep)
+    ):
+        raise ValueError(f"Metadata file resolves outside the allowed data area: {meta_file!r}")
+    meta_file = Path(real)
     meta_file.parent.mkdir(parents=True, exist_ok=True)
     # Use unique temp file name to avoid race conditions in concurrent writes
     tmp = meta_file.parent / f".{meta_file.name}.{uuid.uuid4().hex[:8]}.tmp"
@@ -895,6 +958,17 @@ def summarize_session(name: str, sessions_dir: Path | None) -> tuple[bool, str]:
     """
     sessions_dir = sessions_dir or default_sessions_dir()
     sf = session_file_for(name, sessions_dir)
+
+    # Inline sink-side barrier (CodeQL py/path-injection) -- see
+    # load_session_messages for rationale.
+    real = os.path.realpath(str(sf))
+    _home = os.path.realpath(os.path.expanduser("~"))
+    _tmp = os.path.realpath(tempfile.gettempdir())
+    if not (
+        real in (_home, _tmp) or real.startswith(_home + os.sep) or real.startswith(_tmp + os.sep)
+    ):
+        return False, "No such session"
+    sf = Path(real)
     mf = meta_file_for(sf)
 
     if not sf.exists():
@@ -968,6 +1042,17 @@ def export_session_markdown(name: str, sessions_dir: Path | None) -> tuple[bool,
     """Export session to Markdown format."""
     sessions_dir = sessions_dir or default_sessions_dir()
     sf = session_file_for(name, sessions_dir)
+
+    # Inline sink-side barrier (CodeQL py/path-injection) -- see
+    # load_session_messages for rationale.
+    real = os.path.realpath(str(sf))
+    _home = os.path.realpath(os.path.expanduser("~"))
+    _tmp = os.path.realpath(tempfile.gettempdir())
+    if not (
+        real in (_home, _tmp) or real.startswith(_home + os.sep) or real.startswith(_tmp + os.sep)
+    ):
+        return False, "No such session"
+    sf = Path(real)
     mf = meta_file_for(sf)
 
     if not sf.exists():
@@ -1043,6 +1128,17 @@ def export_session_json(name: str, sessions_dir: Path | None) -> tuple[bool, str
     """Export session to JSON format."""
     sessions_dir = sessions_dir or default_sessions_dir()
     sf = session_file_for(name, sessions_dir)
+
+    # Inline sink-side barrier (CodeQL py/path-injection) -- see
+    # load_session_messages for rationale.
+    real = os.path.realpath(str(sf))
+    _home = os.path.realpath(os.path.expanduser("~"))
+    _tmp = os.path.realpath(tempfile.gettempdir())
+    if not (
+        real in (_home, _tmp) or real.startswith(_home + os.sep) or real.startswith(_tmp + os.sep)
+    ):
+        return False, "No such session"
+    sf = Path(real)
     mf = meta_file_for(sf)
 
     if not sf.exists():
@@ -1064,6 +1160,17 @@ def export_session_html(name: str, sessions_dir: Path | None) -> tuple[bool, str
     """Export session to HTML format."""
     sessions_dir = sessions_dir or default_sessions_dir()
     sf = session_file_for(name, sessions_dir)
+
+    # Inline sink-side barrier (CodeQL py/path-injection) -- see
+    # load_session_messages for rationale.
+    real = os.path.realpath(str(sf))
+    _home = os.path.realpath(os.path.expanduser("~"))
+    _tmp = os.path.realpath(tempfile.gettempdir())
+    if not (
+        real in (_home, _tmp) or real.startswith(_home + os.sep) or real.startswith(_tmp + os.sep)
+    ):
+        return False, "No such session"
+    sf = Path(real)
     mf = meta_file_for(sf)
 
     if not sf.exists():
