@@ -8,6 +8,27 @@ Your data stays on your machine. No cloud dependency is required.
 
 ---
 
+## Installing 2.1.0 from PyPI — read this first
+
+The `nyxgpt` package on PyPI provides the Python package (CLI, API, core)
+as a versioned artifact, **but version 2.1.0 is not yet self-contained**:
+the stack-lifecycle tooling (`nyxgpt ops install` and friends) resolves its
+runtime resources relative to a source checkout. A bare `pip install nyxgpt`
+on a clean machine will import and run, but **full stack operation requires
+cloning this repository** and installing from it:
+
+```bash
+git clone https://github.com/dkblinux98/nyxGPT.git
+cd nyxGPT
+pip install -e .
+nyxgpt ops install
+```
+
+Repo-less, artifact-only installation is planned for a later release
+(tracked in #3621/#3622).
+
+---
+
 ## Why nyxGPT?
 
 - Local‑only by default (no cloud calls)

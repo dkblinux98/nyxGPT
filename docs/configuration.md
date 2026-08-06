@@ -182,8 +182,8 @@ system_prompt_minimize = false
 | Key | Description |
 |---|---|
 | `default_model` | Ollama model name used when none is specified (default: `llama3.1:8b`) |
-| `sessions_dir` | Directory for chat session storage (default: `~/.nyxGPT/sessions`) |
-| `vectorstore_dir` | Directory for vector embeddings and RAG data (default: `~/.nyxGPT/vectorstore`) |
+| `sessions_dir` | Directory for chat session storage (default: `~/.nyxGPT/sessions`). Must resolve inside your home directory or the system temp directory -- values outside either are rejected at load time (CodeQL py/path-injection hardening, #3639). |
+| `vectorstore_dir` | Directory for vector embeddings and RAG data (default: `~/.nyxGPT/vectorstore`). Same home-directory/temp-directory restriction as `sessions_dir`. |
 | `chat_timeout_seconds` | Timeout for a single chat request (default: `180`) |
 | `auto_summarize_enabled` | Automatically generate session title/summary/tags |
 | `auto_summarize_after_messages` | Trigger auto-summarization after N messages (0 to disable) |

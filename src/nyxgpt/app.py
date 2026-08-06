@@ -3013,6 +3013,7 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
         # If batching is enabled, route through batch processor
         if _batch_processor is not None:
             # Prepare request data for batch processing
+            _resolved_sessions_dir = _sessions_dir_from_str(req.sessions_dir)
             batch_req_data = {
                 "prompt": req.prompt,
                 "session": req.session,
@@ -3020,7 +3021,7 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
                 "model": chosen_model,
                 "system": req.system,
                 "config_path": None,
-                "sessions_dir": req.sessions_dir,
+                "sessions_dir": (str(_resolved_sessions_dir) if _resolved_sessions_dir else None),
                 "rag_enabled": rag_enabled,
                 "rag_filters": rag_filters_dict,
             }
@@ -3078,13 +3079,14 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
 
         else:
             # No batching - process directly
+            _resolved_sessions_dir = _sessions_dir_from_str(req.sessions_dir)
             kwargs: dict[str, Any] = {
                 "session": req.session,
                 "new": req.new,
                 "model": chosen_model,
                 "system": req.system,
                 "config_path": None,
-                "sessions_dir": req.sessions_dir,
+                "sessions_dir": (str(_resolved_sessions_dir) if _resolved_sessions_dir else None),
             }
 
             # Optional runtime override: only pass if chat implementation supports it.
@@ -3291,13 +3293,14 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
                 }
                 yield f"event: metadata\ndata: {json.dumps(metadata)}\nid: {event_id}\n\n"
 
+            _resolved_sessions_dir = _sessions_dir_from_str(req.sessions_dir)
             kwargs: dict[str, Any] = {
                 "session": req.session,
                 "new": req.new,
                 "model": chosen_model,
                 "system": req.system,
                 "config_path": None,
-                "sessions_dir": req.sessions_dir,
+                "sessions_dir": (str(_resolved_sessions_dir) if _resolved_sessions_dir else None),
             }
 
             if _maybe_kw(chat_stream, "rag_enabled"):
