@@ -1033,8 +1033,8 @@ def _sessions_dir_from_str(s: str | None) -> Path | None:
     # result to sit inside a fixed safe root via a string-prefix check. This is
     # the canonical CodeQL-recognised path-injection barrier (py/path-injection)
     # -- Path.relative_to() is NOT modelled as a sanitizer, so the guarded value
-    # must be produced by realpath and gated by `== root`/`startswith(root+sep)`
-    # before it is ever turned back into a Path. realpath also collapses `..`
+    # must be produced by realpath and gated by a single `startswith(root+sep)`
+    # check before it is ever turned back into a Path. realpath also collapses `..`
     # traversal. The web UI never sends this override (it uses the configured
     # directory); accepting an arbitrary absolute path would only help an
     # attacker read/write session files outside the intended data area.
@@ -1043,13 +1043,15 @@ def _sessions_dir_from_str(s: str | None) -> Path | None:
     except (OSError, ValueError):
         log.warning("Refused unresolvable sessions-dir override: %r", s)
         return None
-    allowed_roots = [
-        os.path.realpath(os.path.expanduser("~")),
-        os.path.realpath(tempfile.gettempdir()),
-    ]
-    for root in allowed_roots:
-        if real == root or real.startswith(root + os.sep):
-            return Path(real)
+    _home = os.path.realpath(os.path.expanduser("~"))
+    _tmp = os.path.realpath(tempfile.gettempdir())
+    # Each return below is controlled by exactly one condition: CodeQL's
+    # barrier-guard analysis only credits a guard whose branch is dominated
+    # by a single sanitizing comparison, never a disjunction or loop of them.
+    if real.startswith(_home + os.sep):
+        return Path(real)
+    if real.startswith(_tmp + os.sep):
+        return Path(real)
     log.warning("Refused sessions-dir override outside allowed roots: %r", s)
     return None
 

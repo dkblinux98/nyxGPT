@@ -1136,6 +1136,8 @@ def _bring_up_compose_service(service: str) -> HealResult:
 
 def _restart_brew_service(name: str) -> HealResult:
     """Restart Homebrew service `name` via `brew services restart` (native mode)."""
+    if not _SAFE_NAME_RE.fullmatch(name):  # inline barrier, CodeQL #4
+        return HealResult(False, f"Refused to act on invalid service name: {name!r}")
     if _which("brew") is None:
         return HealResult(False, f"brew not found; cannot restart {name}")
     try:
@@ -1152,6 +1154,8 @@ def _restart_brew_service(name: str) -> HealResult:
 
 def _restart_native_container(name: str) -> HealResult:
     """Restart Docker container `name` via `docker restart` (native mode's Cassandra)."""
+    if not _SAFE_NAME_RE.fullmatch(name):  # inline barrier, CodeQL #4
+        return HealResult(False, f"Refused to act on invalid container name: {name!r}")
     if _which("docker") is None:
         return HealResult(False, f"docker not found; cannot restart {name}")
     try:
@@ -1337,6 +1341,8 @@ def _docker_container_logs(container: str, *, tail: int) -> HealResult:
     containers rather than Compose services, so `docker compose logs` can't
     see them at all.
     """
+    if not _SAFE_NAME_RE.fullmatch(container):  # inline barrier, CodeQL #4
+        return HealResult(False, f"Refused to act on invalid container name: {container!r}")
     if _which("docker") is None:
         return HealResult(False, "docker not found; cannot fetch logs")
     try:
@@ -1358,6 +1364,8 @@ def _docker_container_logs(container: str, *, tail: int) -> HealResult:
 
 def _kubernetes_pod_logs(pod_name: str, *, tail: int) -> HealResult:
     """Fetch recent logs for a Kubernetes-managed Pod: `kubectl logs <pod>`."""
+    if not _SAFE_NAME_RE.fullmatch(pod_name):  # inline barrier, CodeQL #4
+        return HealResult(False, f"Refused to act on invalid pod name: {pod_name!r}")
     if _which("kubectl") is None:
         return HealResult(False, f"kubectl not found; cannot fetch logs for {pod_name}")
     try:
