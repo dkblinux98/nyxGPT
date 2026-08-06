@@ -344,6 +344,40 @@ def test_export_session_html(tmp_path: Path) -> None:
     assert '<div class="message assistant">' in content
 
 
+def test_sink_functions_refuse_paths_outside_allowed_roots() -> None:
+    """Inline sink-side barriers (CodeQL py/path-injection): the low-level
+    session I/O functions must refuse any path resolving outside the user's
+    home directory or the system temp directory, regardless of caller-side
+    validation -- read functions return their empty contract value, write
+    functions raise ValueError and never touch the filesystem."""
+    outside = Path("/etc/nyxgpt-attack-test.json")
+
+    assert sessions.load_session_messages(outside) == []
+    assert sessions.load_session_messages_paginated(outside) == ([], 0)
+    assert sessions.load_session_meta(outside) == {}
+    with pytest.raises(ValueError, match="allowed data area"):
+        sessions.save_session_messages(outside, [{"role": "user", "content": "x"}])
+    with pytest.raises(ValueError, match="allowed data area"):
+        sessions.save_session_meta(outside, {"title": "x"})
+    assert not outside.exists(), "Write barrier must trigger before any filesystem effect"
+
+
+def test_sink_functions_refuse_traversal_escapes(tmp_path: Path) -> None:
+    """A `..` traversal that escapes the allowed roots is collapsed by
+    realpath and refused at the sink."""
+    sneaky = tmp_path / ".." / ".." / ".." / ".." / ".." / ".." / "etc" / "shadow"
+    assert sessions.load_session_messages(sneaky) == []
+    assert sessions.load_session_meta(sneaky) == {}
+
+
+def test_export_functions_refuse_dir_outside_allowed_roots() -> None:
+    """The export functions' own inline barriers refuse a sessions dir that
+    escapes the allowed roots (the chokepoint raises first; either way no
+    filesystem access happens outside the data area)."""
+    with pytest.raises(ValueError):
+        sessions.export_session_markdown("valid-name", Path("/etc"))
+
+
 def test_export_session_html_escapes_untrusted_fields(tmp_path: Path) -> None:
     """HTML export must escape the session name, title, summary, tags, and
     message content so none can inject markup (CodeQL py/reflected-xss).
