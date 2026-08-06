@@ -334,9 +334,8 @@ def load_session_messages(session_file: Path) -> list[dict[str, str]]:
     _home = os.path.realpath(os.path.expanduser("~"))
     _tmp = os.path.realpath(tempfile.gettempdir())
     if not (
-        real == _home
+        real in (_home, _tmp)
         or real.startswith(_home + os.sep)
-        or real == _tmp
         or real.startswith(_tmp + os.sep)
     ):
         log.warning("Refused session file outside allowed data area: %r", str(session_file))
@@ -392,9 +391,8 @@ def load_session_messages_paginated(
     _home = os.path.realpath(os.path.expanduser("~"))
     _tmp = os.path.realpath(tempfile.gettempdir())
     if not (
-        real == _home
+        real in (_home, _tmp)
         or real.startswith(_home + os.sep)
-        or real == _tmp
         or real.startswith(_tmp + os.sep)
     ):
         log.warning("Refused session file outside allowed data area: %r", str(session_file))
@@ -450,9 +448,8 @@ def save_session_messages(session_file: Path, messages: list[dict[str, str]]) ->
     _home = os.path.realpath(os.path.expanduser("~"))
     _tmp = os.path.realpath(tempfile.gettempdir())
     if not (
-        real == _home
+        real in (_home, _tmp)
         or real.startswith(_home + os.sep)
-        or real == _tmp
         or real.startswith(_tmp + os.sep)
     ):
         raise ValueError(f"Session file resolves outside the allowed data area: {session_file!r}")
@@ -472,9 +469,8 @@ def load_session_meta(meta_file: Path) -> SessionMetaDict:
     _home = os.path.realpath(os.path.expanduser("~"))
     _tmp = os.path.realpath(tempfile.gettempdir())
     if not (
-        real == _home
+        real in (_home, _tmp)
         or real.startswith(_home + os.sep)
-        or real == _tmp
         or real.startswith(_tmp + os.sep)
     ):
         log.warning("Refused metadata file outside allowed data area: %r", str(meta_file))
@@ -509,9 +505,8 @@ def save_session_meta(meta_file: Path, meta: SessionMetaDict) -> None:
     _home = os.path.realpath(os.path.expanduser("~"))
     _tmp = os.path.realpath(tempfile.gettempdir())
     if not (
-        real == _home
+        real in (_home, _tmp)
         or real.startswith(_home + os.sep)
-        or real == _tmp
         or real.startswith(_tmp + os.sep)
     ):
         raise ValueError(f"Metadata file resolves outside the allowed data area: {meta_file!r}")
@@ -973,7 +968,6 @@ def summarize_session(name: str, sessions_dir: Path | None) -> tuple[bool, str]:
     """
     sessions_dir = sessions_dir or default_sessions_dir()
     sf = session_file_for(name, sessions_dir)
-    mf = meta_file_for(sf)
 
     # Inline sink-side barrier (CodeQL py/path-injection) -- see
     # load_session_messages for rationale.
@@ -981,9 +975,8 @@ def summarize_session(name: str, sessions_dir: Path | None) -> tuple[bool, str]:
     _home = os.path.realpath(os.path.expanduser("~"))
     _tmp = os.path.realpath(tempfile.gettempdir())
     if not (
-        real == _home
+        real in (_home, _tmp)
         or real.startswith(_home + os.sep)
-        or real == _tmp
         or real.startswith(_tmp + os.sep)
     ):
         return False, "No such session"
@@ -1061,7 +1054,6 @@ def export_session_markdown(name: str, sessions_dir: Path | None) -> tuple[bool,
     """Export session to Markdown format."""
     sessions_dir = sessions_dir or default_sessions_dir()
     sf = session_file_for(name, sessions_dir)
-    mf = meta_file_for(sf)
 
     # Inline sink-side barrier (CodeQL py/path-injection) -- see
     # load_session_messages for rationale.
@@ -1069,9 +1061,8 @@ def export_session_markdown(name: str, sessions_dir: Path | None) -> tuple[bool,
     _home = os.path.realpath(os.path.expanduser("~"))
     _tmp = os.path.realpath(tempfile.gettempdir())
     if not (
-        real == _home
+        real in (_home, _tmp)
         or real.startswith(_home + os.sep)
-        or real == _tmp
         or real.startswith(_tmp + os.sep)
     ):
         return False, "No such session"
@@ -1151,7 +1142,6 @@ def export_session_json(name: str, sessions_dir: Path | None) -> tuple[bool, str
     """Export session to JSON format."""
     sessions_dir = sessions_dir or default_sessions_dir()
     sf = session_file_for(name, sessions_dir)
-    mf = meta_file_for(sf)
 
     # Inline sink-side barrier (CodeQL py/path-injection) -- see
     # load_session_messages for rationale.
@@ -1159,9 +1149,8 @@ def export_session_json(name: str, sessions_dir: Path | None) -> tuple[bool, str
     _home = os.path.realpath(os.path.expanduser("~"))
     _tmp = os.path.realpath(tempfile.gettempdir())
     if not (
-        real == _home
+        real in (_home, _tmp)
         or real.startswith(_home + os.sep)
-        or real == _tmp
         or real.startswith(_tmp + os.sep)
     ):
         return False, "No such session"
@@ -1187,7 +1176,6 @@ def export_session_html(name: str, sessions_dir: Path | None) -> tuple[bool, str
     """Export session to HTML format."""
     sessions_dir = sessions_dir or default_sessions_dir()
     sf = session_file_for(name, sessions_dir)
-    mf = meta_file_for(sf)
 
     # Inline sink-side barrier (CodeQL py/path-injection) -- see
     # load_session_messages for rationale.
@@ -1195,9 +1183,8 @@ def export_session_html(name: str, sessions_dir: Path | None) -> tuple[bool, str
     _home = os.path.realpath(os.path.expanduser("~"))
     _tmp = os.path.realpath(tempfile.gettempdir())
     if not (
-        real == _home
+        real in (_home, _tmp)
         or real.startswith(_home + os.sep)
-        or real == _tmp
         or real.startswith(_tmp + os.sep)
     ):
         return False, "No such session"
