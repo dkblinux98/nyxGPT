@@ -287,14 +287,18 @@ def _expand_path(value: str) -> Path:
             directory or the system temp directory (the only roots nyxGPT
             data is ever allowed to live under).
     """
-    real = os.path.realpath(str(Path(value).expanduser()))
-    allowed_roots = [
-        os.path.realpath(os.path.expanduser("~")),
-        os.path.realpath(tempfile.gettempdir()),
-    ]
-    for root in allowed_roots:
-        if real == root or real.startswith(root + os.sep):
-            return Path(real)
+    # Keep the tainted value in string form until after the guard: building
+    # an intermediate Path(value) is itself flagged as a sink (alert #107).
+    real = os.path.realpath(os.path.expanduser(value))
+    _home = os.path.realpath(os.path.expanduser("~"))
+    _tmp = os.path.realpath(tempfile.gettempdir())
+    # Each return below is controlled by exactly one condition: CodeQL's
+    # barrier-guard analysis only credits a guard whose branch is dominated
+    # by a single sanitizing comparison, never a disjunction or loop of them.
+    if real.startswith(_home + os.sep):
+        return Path(real)
+    if real.startswith(_tmp + os.sep):
+        return Path(real)
     raise ValueError(f"Configured path resolves outside the allowed data area: {value!r}")
 
 

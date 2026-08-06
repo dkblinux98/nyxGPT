@@ -259,13 +259,15 @@ def _resolve_sessions_dir(sessions_dir: Path) -> Path:
         ValueError: If `sessions_dir` resolves outside the allowed roots.
     """
     real = os.path.realpath(str(sessions_dir))
-    allowed_roots = [
-        os.path.realpath(os.path.expanduser("~")),
-        os.path.realpath(tempfile.gettempdir()),
-    ]
-    for root in allowed_roots:
-        if real == root or real.startswith(root + os.sep):
-            return Path(real)
+    _home = os.path.realpath(os.path.expanduser("~"))
+    _tmp = os.path.realpath(tempfile.gettempdir())
+    # Each branch below is controlled by exactly one condition: CodeQL's
+    # barrier-guard analysis only credits a guard whose branch is dominated
+    # by a single sanitizing comparison, never a disjunction of them.
+    if real.startswith(_home + os.sep):
+        return Path(real)
+    if real.startswith(_tmp + os.sep):
+        return Path(real)
     raise ValueError(f"sessions_dir resolves outside the allowed data area: {sessions_dir!r}")
 
 
@@ -330,15 +332,20 @@ def load_session_messages(session_file: Path) -> list[dict[str, str]]:
     # across the function boundary, so every function containing filesystem
     # sinks must guard and REBIND the received path itself -- same lesson as
     # the self_heal.py inline barriers (#3624). Contract-preserving refusal.
+    # Each rebind must be dominated by exactly ONE `startswith` condition:
+    # CodeQL's barrier-guard analysis never credits a disjunction of checks.
     real = os.path.realpath(str(session_file))
     _home = os.path.realpath(os.path.expanduser("~"))
     _tmp = os.path.realpath(tempfile.gettempdir())
-    if not (
-        real in (_home, _tmp) or real.startswith(_home + os.sep) or real.startswith(_tmp + os.sep)
-    ):
+    # SIM114 wants these branches merged with `or`, but CodeQL only credits a
+    # barrier guard whose branch is dominated by a single condition.
+    if real.startswith(_home + os.sep):  # noqa: SIM114
+        session_file = Path(real)
+    elif real.startswith(_tmp + os.sep):
+        session_file = Path(real)
+    else:
         log.warning("Refused session file outside allowed data area: %r", str(session_file))
         return []
-    session_file = Path(real)
     if not session_file.exists():
         return []
 
@@ -388,12 +395,15 @@ def load_session_messages_paginated(
     real = os.path.realpath(str(session_file))
     _home = os.path.realpath(os.path.expanduser("~"))
     _tmp = os.path.realpath(tempfile.gettempdir())
-    if not (
-        real in (_home, _tmp) or real.startswith(_home + os.sep) or real.startswith(_tmp + os.sep)
-    ):
+    # SIM114 wants these branches merged with `or`, but CodeQL only credits a
+    # barrier guard whose branch is dominated by a single condition.
+    if real.startswith(_home + os.sep):  # noqa: SIM114
+        session_file = Path(real)
+    elif real.startswith(_tmp + os.sep):
+        session_file = Path(real)
+    else:
         log.warning("Refused session file outside allowed data area: %r", str(session_file))
         return ([], 0)
-    session_file = Path(real)
     if not session_file.exists():
         return ([], 0)
 
@@ -443,11 +453,14 @@ def save_session_messages(session_file: Path, messages: list[dict[str, str]]) ->
     real = os.path.realpath(str(session_file))
     _home = os.path.realpath(os.path.expanduser("~"))
     _tmp = os.path.realpath(tempfile.gettempdir())
-    if not (
-        real in (_home, _tmp) or real.startswith(_home + os.sep) or real.startswith(_tmp + os.sep)
-    ):
+    # SIM114 wants these branches merged with `or`, but CodeQL only credits a
+    # barrier guard whose branch is dominated by a single condition.
+    if real.startswith(_home + os.sep):  # noqa: SIM114
+        session_file = Path(real)
+    elif real.startswith(_tmp + os.sep):
+        session_file = Path(real)
+    else:
         raise ValueError(f"Session file resolves outside the allowed data area: {session_file!r}")
-    session_file = Path(real)
     session_file.parent.mkdir(parents=True, exist_ok=True)
     # Use unique temp file name to avoid race conditions in concurrent writes
     tmp = session_file.parent / f".{session_file.name}.{uuid.uuid4().hex[:8]}.tmp"
@@ -462,12 +475,15 @@ def load_session_meta(meta_file: Path) -> SessionMetaDict:
     real = os.path.realpath(str(meta_file))
     _home = os.path.realpath(os.path.expanduser("~"))
     _tmp = os.path.realpath(tempfile.gettempdir())
-    if not (
-        real in (_home, _tmp) or real.startswith(_home + os.sep) or real.startswith(_tmp + os.sep)
-    ):
+    # SIM114 wants these branches merged with `or`, but CodeQL only credits a
+    # barrier guard whose branch is dominated by a single condition.
+    if real.startswith(_home + os.sep):  # noqa: SIM114
+        meta_file = Path(real)
+    elif real.startswith(_tmp + os.sep):
+        meta_file = Path(real)
+    else:
         log.warning("Refused metadata file outside allowed data area: %r", str(meta_file))
         return {}
-    meta_file = Path(real)
     if not meta_file.exists():
         return {}
 
@@ -496,11 +512,14 @@ def save_session_meta(meta_file: Path, meta: SessionMetaDict) -> None:
     real = os.path.realpath(str(meta_file))
     _home = os.path.realpath(os.path.expanduser("~"))
     _tmp = os.path.realpath(tempfile.gettempdir())
-    if not (
-        real in (_home, _tmp) or real.startswith(_home + os.sep) or real.startswith(_tmp + os.sep)
-    ):
+    # SIM114 wants these branches merged with `or`, but CodeQL only credits a
+    # barrier guard whose branch is dominated by a single condition.
+    if real.startswith(_home + os.sep):  # noqa: SIM114
+        meta_file = Path(real)
+    elif real.startswith(_tmp + os.sep):
+        meta_file = Path(real)
+    else:
         raise ValueError(f"Metadata file resolves outside the allowed data area: {meta_file!r}")
-    meta_file = Path(real)
     meta_file.parent.mkdir(parents=True, exist_ok=True)
     # Use unique temp file name to avoid race conditions in concurrent writes
     tmp = meta_file.parent / f".{meta_file.name}.{uuid.uuid4().hex[:8]}.tmp"
@@ -964,11 +983,14 @@ def summarize_session(name: str, sessions_dir: Path | None) -> tuple[bool, str]:
     real = os.path.realpath(str(sf))
     _home = os.path.realpath(os.path.expanduser("~"))
     _tmp = os.path.realpath(tempfile.gettempdir())
-    if not (
-        real in (_home, _tmp) or real.startswith(_home + os.sep) or real.startswith(_tmp + os.sep)
-    ):
+    # SIM114 wants these branches merged with `or`, but CodeQL only credits a
+    # barrier guard whose branch is dominated by a single condition.
+    if real.startswith(_home + os.sep):  # noqa: SIM114
+        sf = Path(real)
+    elif real.startswith(_tmp + os.sep):
+        sf = Path(real)
+    else:
         return False, "No such session"
-    sf = Path(real)
     mf = meta_file_for(sf)
 
     if not sf.exists():
@@ -1048,11 +1070,14 @@ def export_session_markdown(name: str, sessions_dir: Path | None) -> tuple[bool,
     real = os.path.realpath(str(sf))
     _home = os.path.realpath(os.path.expanduser("~"))
     _tmp = os.path.realpath(tempfile.gettempdir())
-    if not (
-        real in (_home, _tmp) or real.startswith(_home + os.sep) or real.startswith(_tmp + os.sep)
-    ):
+    # SIM114 wants these branches merged with `or`, but CodeQL only credits a
+    # barrier guard whose branch is dominated by a single condition.
+    if real.startswith(_home + os.sep):  # noqa: SIM114
+        sf = Path(real)
+    elif real.startswith(_tmp + os.sep):
+        sf = Path(real)
+    else:
         return False, "No such session"
-    sf = Path(real)
     mf = meta_file_for(sf)
 
     if not sf.exists():
@@ -1134,11 +1159,14 @@ def export_session_json(name: str, sessions_dir: Path | None) -> tuple[bool, str
     real = os.path.realpath(str(sf))
     _home = os.path.realpath(os.path.expanduser("~"))
     _tmp = os.path.realpath(tempfile.gettempdir())
-    if not (
-        real in (_home, _tmp) or real.startswith(_home + os.sep) or real.startswith(_tmp + os.sep)
-    ):
+    # SIM114 wants these branches merged with `or`, but CodeQL only credits a
+    # barrier guard whose branch is dominated by a single condition.
+    if real.startswith(_home + os.sep):  # noqa: SIM114
+        sf = Path(real)
+    elif real.startswith(_tmp + os.sep):
+        sf = Path(real)
+    else:
         return False, "No such session"
-    sf = Path(real)
     mf = meta_file_for(sf)
 
     if not sf.exists():
@@ -1166,11 +1194,14 @@ def export_session_html(name: str, sessions_dir: Path | None) -> tuple[bool, str
     real = os.path.realpath(str(sf))
     _home = os.path.realpath(os.path.expanduser("~"))
     _tmp = os.path.realpath(tempfile.gettempdir())
-    if not (
-        real in (_home, _tmp) or real.startswith(_home + os.sep) or real.startswith(_tmp + os.sep)
-    ):
+    # SIM114 wants these branches merged with `or`, but CodeQL only credits a
+    # barrier guard whose branch is dominated by a single condition.
+    if real.startswith(_home + os.sep):  # noqa: SIM114
+        sf = Path(real)
+    elif real.startswith(_tmp + os.sep):
+        sf = Path(real)
+    else:
         return False, "No such session"
-    sf = Path(real)
     mf = meta_file_for(sf)
 
     if not sf.exists():
