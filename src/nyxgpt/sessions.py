@@ -334,9 +334,7 @@ def load_session_messages(session_file: Path) -> list[dict[str, str]]:
     _home = os.path.realpath(os.path.expanduser("~"))
     _tmp = os.path.realpath(tempfile.gettempdir())
     if not (
-        real in (_home, _tmp)
-        or real.startswith(_home + os.sep)
-        or real.startswith(_tmp + os.sep)
+        real in (_home, _tmp) or real.startswith(_home + os.sep) or real.startswith(_tmp + os.sep)
     ):
         log.warning("Refused session file outside allowed data area: %r", str(session_file))
         return []
@@ -391,9 +389,7 @@ def load_session_messages_paginated(
     _home = os.path.realpath(os.path.expanduser("~"))
     _tmp = os.path.realpath(tempfile.gettempdir())
     if not (
-        real in (_home, _tmp)
-        or real.startswith(_home + os.sep)
-        or real.startswith(_tmp + os.sep)
+        real in (_home, _tmp) or real.startswith(_home + os.sep) or real.startswith(_tmp + os.sep)
     ):
         log.warning("Refused session file outside allowed data area: %r", str(session_file))
         return ([], 0)
@@ -448,9 +444,7 @@ def save_session_messages(session_file: Path, messages: list[dict[str, str]]) ->
     _home = os.path.realpath(os.path.expanduser("~"))
     _tmp = os.path.realpath(tempfile.gettempdir())
     if not (
-        real in (_home, _tmp)
-        or real.startswith(_home + os.sep)
-        or real.startswith(_tmp + os.sep)
+        real in (_home, _tmp) or real.startswith(_home + os.sep) or real.startswith(_tmp + os.sep)
     ):
         raise ValueError(f"Session file resolves outside the allowed data area: {session_file!r}")
     session_file = Path(real)
@@ -469,9 +463,7 @@ def load_session_meta(meta_file: Path) -> SessionMetaDict:
     _home = os.path.realpath(os.path.expanduser("~"))
     _tmp = os.path.realpath(tempfile.gettempdir())
     if not (
-        real in (_home, _tmp)
-        or real.startswith(_home + os.sep)
-        or real.startswith(_tmp + os.sep)
+        real in (_home, _tmp) or real.startswith(_home + os.sep) or real.startswith(_tmp + os.sep)
     ):
         log.warning("Refused metadata file outside allowed data area: %r", str(meta_file))
         return {}
@@ -505,9 +497,7 @@ def save_session_meta(meta_file: Path, meta: SessionMetaDict) -> None:
     _home = os.path.realpath(os.path.expanduser("~"))
     _tmp = os.path.realpath(tempfile.gettempdir())
     if not (
-        real in (_home, _tmp)
-        or real.startswith(_home + os.sep)
-        or real.startswith(_tmp + os.sep)
+        real in (_home, _tmp) or real.startswith(_home + os.sep) or real.startswith(_tmp + os.sep)
     ):
         raise ValueError(f"Metadata file resolves outside the allowed data area: {meta_file!r}")
     meta_file = Path(real)
@@ -975,9 +965,7 @@ def summarize_session(name: str, sessions_dir: Path | None) -> tuple[bool, str]:
     _home = os.path.realpath(os.path.expanduser("~"))
     _tmp = os.path.realpath(tempfile.gettempdir())
     if not (
-        real in (_home, _tmp)
-        or real.startswith(_home + os.sep)
-        or real.startswith(_tmp + os.sep)
+        real in (_home, _tmp) or real.startswith(_home + os.sep) or real.startswith(_tmp + os.sep)
     ):
         return False, "No such session"
     sf = Path(real)
@@ -1061,9 +1049,7 @@ def export_session_markdown(name: str, sessions_dir: Path | None) -> tuple[bool,
     _home = os.path.realpath(os.path.expanduser("~"))
     _tmp = os.path.realpath(tempfile.gettempdir())
     if not (
-        real in (_home, _tmp)
-        or real.startswith(_home + os.sep)
-        or real.startswith(_tmp + os.sep)
+        real in (_home, _tmp) or real.startswith(_home + os.sep) or real.startswith(_tmp + os.sep)
     ):
         return False, "No such session"
     sf = Path(real)
@@ -1149,9 +1135,7 @@ def export_session_json(name: str, sessions_dir: Path | None) -> tuple[bool, str
     _home = os.path.realpath(os.path.expanduser("~"))
     _tmp = os.path.realpath(tempfile.gettempdir())
     if not (
-        real in (_home, _tmp)
-        or real.startswith(_home + os.sep)
-        or real.startswith(_tmp + os.sep)
+        real in (_home, _tmp) or real.startswith(_home + os.sep) or real.startswith(_tmp + os.sep)
     ):
         return False, "No such session"
     sf = Path(real)
@@ -1183,9 +1167,7 @@ def export_session_html(name: str, sessions_dir: Path | None) -> tuple[bool, str
     _home = os.path.realpath(os.path.expanduser("~"))
     _tmp = os.path.realpath(tempfile.gettempdir())
     if not (
-        real in (_home, _tmp)
-        or real.startswith(_home + os.sep)
-        or real.startswith(_tmp + os.sep)
+        real in (_home, _tmp) or real.startswith(_home + os.sep) or real.startswith(_tmp + os.sep)
     ):
         return False, "No such session"
     sf = Path(real)
