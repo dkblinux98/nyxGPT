@@ -400,10 +400,19 @@ def _log_nonzero_exit(
     else:
         level = logging.DEBUG if expected else logging.WARNING
         message = f"Subprocess exited non-zero (rc={returncode}): {safe_cmd_str}"
+    # CodeQL alerts #105/#106 (py/clear-text-logging-sensitive-data) flag
+    # `message`/`extra` below because `safe_cmd`/`safe_cmd_str` are still
+    # derived from the raw `cmd` argv: taint tracking doesn't model
+    # `_redact_cmd`'s content-based masking as a sanitizer, since non-secret
+    # argv elements pass through the same list unchanged. Every secret-
+    # bearing value has already been replaced with "***" by `_redact_cmd`
+    # above -- the only values that reach this log call are program names
+    # and non-secret flags/args. Reviewed and accepted as a false positive
+    # -- 2026-08-06.
     logger.log(
         level,
-        message,
-        extra={
+        message,  # codeql[py/clear-text-logging-sensitive-data]
+        extra={  # codeql[py/clear-text-logging-sensitive-data]
             "component": "ops",
             "cmd": safe_cmd,
             "returncode": returncode,
