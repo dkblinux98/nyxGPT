@@ -416,8 +416,6 @@ def _split_sentences(text: str) -> list[str]:
     Returns:
         List of sentences (with trailing whitespace stripped)
     """
-    import re
-
     # Common abbreviations to avoid splitting on
     abbrevs = {
         "dr",
@@ -443,34 +441,52 @@ def _split_sentences(text: str) -> list[str]:
         "blvd",
     }
 
-    # Pattern to match sentence boundaries
-    # Matches: period/question/exclamation followed by space and capital letter
-    sentence_endings = re.compile(
-        r"([.!?]+)"  # Sentence ending punctuation
-        r"\s+"  # Followed by whitespace (\s already covers newlines; the prior
-        # `(?:\s+|\n+)` had ambiguous alternation -> polynomial backtracking, CodeQL #29)
-        r"(?=[A-Z])"  # Lookahead for capital letter
-    )
-
+    # Sentence boundaries are found with a hand-written single-pass scanner
+    # rather than a regex. A regex of the form `[.!?]+\s+(?=[A-Z])` matched
+    # with `finditer` is quadratic on adversarial input: every position
+    # inside a long run of punctuation (or whitespace) is retried as its own
+    # match attempt when the lookahead fails, giving O(n^2) work overall
+    # (CodeQL py/polynomial-redos, alert #29). This scanner advances a single
+    # index monotonically, so it is O(n) regardless of input.
     sentences: list[str] = []
     last_end = 0
+    n = len(text)
+    i = 0
 
-    for match in sentence_endings.finditer(text):
-        end_pos = match.end()
-        sentence = text[last_end:end_pos].strip()
+    while i < n:
+        if text[i] not in ".!?":
+            i += 1
+            continue
 
-        # Check if this is an abbreviation (avoid false splits)
-        if sentence:
-            # Get the last word before the punctuation
-            words = sentence.split()
-            if words:
-                last_word = words[-1].rstrip(".!?").lower()
+        # Consume the run of sentence-ending punctuation.
+        punct_end = i + 1
+        while punct_end < n and text[punct_end] in ".!?":
+            punct_end += 1
+
+        # Consume the run of whitespace following it.
+        ws_end = punct_end
+        while ws_end < n and text[ws_end].isspace():
+            ws_end += 1
+
+        # A boundary requires at least one whitespace char and a following
+        # capital letter (matching the original `(?=[A-Z])` lookahead).
+        if ws_end > punct_end and ws_end < n and "A" <= text[ws_end] <= "Z":
+            end_pos = ws_end
+            sentence = text[last_end:end_pos].strip()
+
+            # Check if this is an abbreviation (avoid false splits)
+            if sentence:
+                # Get the last word before the punctuation
+                words = sentence.split()
+                last_word = words[-1].rstrip(".!?").lower() if words else ""
                 # If last word is an abbreviation, skip this split
-                if last_word in abbrevs:
-                    continue
+                if last_word not in abbrevs:
+                    sentences.append(sentence)
+                    last_end = end_pos
 
-            sentences.append(sentence)
-            last_end = end_pos
+            i = end_pos
+        else:
+            i = punct_end
 
     # Add remaining text if any
     if last_end < len(text):
