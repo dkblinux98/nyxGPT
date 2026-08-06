@@ -243,10 +243,22 @@ def default_sessions_dir() -> Path:
 
 
 def session_file_for(name: str, sessions_dir: Path) -> Path:
-    """Return the session JSON file path for a validated session `name`."""
+    """Return the session JSON file path for a validated session `name`.
+
+    `validate_session_name`'s allowlist regex already rules out `/`, `..`,
+    and null bytes, so traversal outside `sessions_dir` should be
+    impossible. The explicit containment check below is redundant belt-
+    and-suspenders defense, and -- unlike the regex check alone -- it's a
+    resolve()+is_relative_to() barrier pattern that static analysis tools
+    (e.g. CodeQL's py/path-injection query) recognize directly at this
+    single choke point used by every session-file path in this module,
+    rather than needing to trace sanitization back through each caller.
+    """
     name = validate_session_name(name)
-    # name is already validated and safe to use directly
-    return sessions_dir / f"{name}.json"
+    candidate = sessions_dir / f"{name}.json"
+    if not candidate.resolve().is_relative_to(sessions_dir.resolve()):
+        raise ValueError("Invalid session name")
+    return candidate
 
 
 def meta_file_for(session_file: Path) -> Path:
