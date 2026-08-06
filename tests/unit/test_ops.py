@@ -1555,7 +1555,9 @@ def test_run_invokes_subprocess_with_expected_kwargs():
             args=["echo", "hi"], returncode=0, stdout="hi\n", stderr=""
         )
         cp = ops._run(["echo", "hi"])
-        run.assert_called_once_with(["echo", "hi"], check=True, text=True, capture_output=True)
+        run.assert_called_once_with(
+            ["echo", "hi"], check=True, text=True, capture_output=True, input=None
+        )
         assert cp.stdout == "hi\n"
 
 
@@ -6344,9 +6346,11 @@ def test_reset_grafana_admin_password_runs_grafana_cli_via_compose_exec(tmp_path
     monkeypatch.setattr(ops, "_compose_available", lambda: True)
 
     captured_cmd = []
+    captured_input = []
 
-    def _fake_run(cmd, check=False):
+    def _fake_run(cmd, check=False, input=None):
         captured_cmd.extend(cmd)
+        captured_input.append(input)
         return subprocess.CompletedProcess(cmd, 0, stdout="Admin password changed", stderr="")
 
     monkeypatch.setattr(ops, "_run", _fake_run)
@@ -6362,12 +6366,15 @@ def test_reset_grafana_admin_password_runs_grafana_cli_via_compose_exec(tmp_path
         "exec",
         "-T",
         "grafana",
-        "grafana",
-        "cli",
-        "admin",
-        "reset-admin-password",
-        "new-secret",
+        "sh",
+        "-c",
+        'grafana cli admin reset-admin-password "$(cat)"',
     ]
+    # The password must travel over stdin, never as an argv element -- argv
+    # is visible to `ps`, shell history, and `_run`'s non-zero-exit logging
+    # (#3644, CodeQL py/clear-text-logging-sensitive-data #105/#106).
+    assert "new-secret" not in captured_cmd
+    assert captured_input == ["new-secret"]
 
 
 @pytest.mark.unit
@@ -6389,7 +6396,7 @@ def test_reset_grafana_admin_password_fails_on_nonzero_exit(tmp_path, monkeypatc
     monkeypatch.setattr(
         ops,
         "_run",
-        lambda cmd, check=False: subprocess.CompletedProcess(
+        lambda cmd, check=False, input=None: subprocess.CompletedProcess(
             cmd, 1, stdout="", stderr="grafana: no such service"
         ),
     )
