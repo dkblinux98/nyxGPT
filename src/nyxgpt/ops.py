@@ -304,6 +304,7 @@ def _run(
     expected: bool = False,
     expected_returncodes: Container[int] | None = None,
     expected_message: str | None = None,
+    input: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run `cmd`, capturing stdout/stderr as text.
 
@@ -320,9 +321,13 @@ def _run(
     INFO with `expected_message` (or a generic "expected exit" message)
     instead of WARNING, while any other non-zero exit still logs at WARNING
     exactly as today (#3574).
+    Pass `input` to feed the subprocess's stdin (e.g. a secret a caller
+    doesn't want to put on `cmd`'s argv at all -- argv is visible to `ps`,
+    shell history, and this function's own non-zero-exit logging, while
+    stdin is not (#3644, CodeQL py/clear-text-logging-sensitive-data)).
     """
     try:
-        result = subprocess.run(cmd, check=check, text=True, capture_output=True)
+        result = subprocess.run(cmd, check=check, text=True, capture_output=True, input=input)
     except subprocess.CalledProcessError as e:
         _log_nonzero_exit(
             cmd, e.returncode, e.stderr, expected, expected_returncodes, expected_message
@@ -400,6 +405,21 @@ def _log_nonzero_exit(
     else:
         level = logging.DEBUG if expected else logging.WARNING
         message = f"Subprocess exited non-zero (rc={returncode}): {safe_cmd_str}"
+    # CodeQL alerts #105/#106 (py/clear-text-logging-sensitive-data) flagged
+    # `message`/`extra` below: `_redact_cmd`'s flag-name-based masking only
+    # catches a secret passed as `--flag value` or `--flag=value` -- it does
+    # not catch a bare positional secret. `_reset_grafana_admin_password`
+    # used to pass its password that way, so it really could have reached
+    # this log call. That call site now pipes the password over stdin
+    # instead of putting it on argv at all (see `_reset_grafana_admin_password`
+    # in this module), which closes the actual gap CodeQL found rather than
+    # trying to convince its taint tracker that `_redact_cmd` is a sanitizer.
+    # Inline suppression comments (`codeql[...]`, then `lgtm[...]`) were
+    # tried in earlier rounds and neither took effect against this repo's
+    # CodeQL default-setup configuration -- don't reintroduce them.
+    # `test_run_redacts_secret_cmd_values_on_nonzero_exit` in
+    # `tests/unit/test_ops.py` covers the flag-based masking that remains as
+    # defense-in-depth for any other secret-bearing flag.
     logger.log(
         level,
         message,
@@ -4827,6 +4847,13 @@ def _reset_grafana_admin_password(password: str) -> OpsResult:
     whether the volume is fresh (first boot) or long-lived (env var is only
     applied at first boot -- irrelevant to an existing volume, which is
     exactly the deployment shape that reproduced #3458's 401s).
+
+    `password` is piped in over stdin rather than appended to `cmd` as a
+    positional argv value: `_redact_cmd`'s masking only recognizes secrets
+    that follow a secret-named flag (`--api-key VALUE`) or an inline
+    `--flag=value`, so a bare positional value like this one would reach
+    `_run`'s non-zero-exit logging -- and `ps`/shell history -- in clear
+    text (#3644, CodeQL py/clear-text-logging-sensitive-data #105/#106).
     """
     if not _compose_available():
         return OpsResult(
@@ -4842,13 +4869,11 @@ def _reset_grafana_admin_password(password: str) -> OpsResult:
         "exec",
         "-T",
         "grafana",
-        "grafana",
-        "cli",
-        "admin",
-        "reset-admin-password",
-        password,
+        "sh",
+        "-c",
+        'grafana cli admin reset-admin-password "$(cat)"',
     ]
-    cp = _run(cmd, check=False)
+    cp = _run(cmd, check=False, input=password)
     if cp.returncode != 0:
         return OpsResult(
             False,
