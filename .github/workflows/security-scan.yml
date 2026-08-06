@@ -4,6 +4,12 @@ on:
   pull_request: {}
   push: {}
 
+# Least-privilege token: this scan gate only reads the checked-out code
+# (CodeQL actions/missing-workflow-permissions, alert #30 — same pattern
+# as validate-web-routes.yml / terraform-local-smoke.yml from #3628).
+permissions:
+  contents: read
+
 jobs:
   security-scan:
     runs-on: ubuntu-latest
