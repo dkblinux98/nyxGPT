@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import sys
+import tempfile
 import time
 import uuid
 from contextlib import contextmanager
@@ -242,15 +243,59 @@ def default_sessions_dir() -> Path:
     return get_sessions_dir(cfg)
 
 
+def _resolve_sessions_dir(sessions_dir: Path) -> Path:
+    """Validate `sessions_dir` resolves inside an allowed root, return its realpath.
+
+    Sink-side barrier (CodeQL py/path-injection): this is the single
+    resolver every sessions.py function routes its `sessions_dir` through
+    before touching the filesystem, so present and future sinks in this
+    module are covered by one barrier. Uses `os.path.realpath` + string-prefix
+    containment against the user's home directory / system temp directory --
+    the CodeQL-recognised barrier pattern also used by
+    `app._sessions_dir_from_str` and `config._expand_path`.
+    `Path.relative_to()` is NOT modelled as a sanitizer.
+
+    Raises:
+        ValueError: If `sessions_dir` resolves outside the allowed roots.
+    """
+    real = os.path.realpath(str(sessions_dir))
+    allowed_roots = [
+        os.path.realpath(os.path.expanduser("~")),
+        os.path.realpath(tempfile.gettempdir()),
+    ]
+    for root in allowed_roots:
+        if real == root or real.startswith(root + os.sep):
+            return Path(real)
+    raise ValueError(f"sessions_dir resolves outside the allowed data area: {sessions_dir!r}")
+
+
 def session_file_for(name: str, sessions_dir: Path) -> Path:
     """Return the session JSON file path for a validated session `name`."""
-    name = validate_session_name(name)
-    # name is already validated and safe to use directly
-    return sessions_dir / f"{name}.json"
+    if not isinstance(name, str):
+        raise ValueError("session name must be a string")
+    stripped = name.strip()
+    # Inline `re.fullmatch` allowlist barrier (CodeQL py/path-injection sink-side
+    # chokepoint): must be a direct `re.fullmatch(...)` call in this function --
+    # delegating to a helper that wraps a precompiled `re.Pattern` is not
+    # recognised as a sanitizer by CodeQL's py/path-injection query.
+    if not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", stripped):
+        raise ValueError(
+            "Session name must be 1-64 alphanumeric characters, underscores, or hyphens"
+        )
+    resolved_dir = _resolve_sessions_dir(sessions_dir)
+    return resolved_dir / f"{stripped}.json"
 
 
 def meta_file_for(session_file: Path) -> Path:
     """Return the `.meta.json` metadata file path paired with a session file."""
+    # Inline `re.fullmatch` allowlist barrier, defense-in-depth: `session_file`
+    # is expected to already be a validated `session_file_for()` result, but
+    # this sink is validated independently so it is covered even if a future
+    # caller derives `session_file` some other way.
+    if not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", session_file.stem):
+        raise ValueError(
+            "Session file name must be 1-64 alphanumeric characters, underscores, or hyphens"
+        )
     return session_file.with_suffix(".meta.json")
 
 
@@ -676,6 +721,7 @@ def list_sessions(cfg: Any | None) -> list[dict[str, Any]]:
     else:
         sessions_dir = get_sessions_dir(cfg) if cfg is not None else default_sessions_dir()
 
+    sessions_dir = _resolve_sessions_dir(sessions_dir)
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
     files = [p for p in sessions_dir.glob("*.json") if not p.name.endswith(".meta.json")]
@@ -1521,7 +1567,7 @@ def search_messages(
             }
         ]
     """
-    sessions_dir = sessions_dir or default_sessions_dir()
+    sessions_dir = _resolve_sessions_dir(sessions_dir or default_sessions_dir())
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
     if not query:

@@ -13,6 +13,7 @@ import logging
 import os
 import secrets
 import sys
+import tempfile
 from configparser import ConfigParser
 from pathlib import Path
 
@@ -271,8 +272,30 @@ def get_chat_timeout_seconds(cfg: ConfigParser) -> int:
 
 
 def _expand_path(value: str) -> Path:
-    """Expand ``~`` in a config path string and return it as a ``Path``."""
-    return Path(value).expanduser()
+    """Expand ``~`` in a config path string and return a contained, resolved ``Path``.
+
+    Sink-side barrier (CodeQL py/path-injection, alert #45): config values
+    such as ``sessions_dir`` are remotely writable via the config API, so the
+    resulting filesystem path must be validated the same way as the chat-body
+    sessions-dir override in app.py (``os.path.realpath`` + string-prefix
+    containment -- the CodeQL-recognised barrier for this rule;
+    ``Path.relative_to()`` is NOT modelled as a sanitizer) before any caller
+    can use it for filesystem I/O.
+
+    Raises:
+        ValueError: If the expanded path resolves outside the user's home
+            directory or the system temp directory (the only roots nyxGPT
+            data is ever allowed to live under).
+    """
+    real = os.path.realpath(str(Path(value).expanduser()))
+    allowed_roots = [
+        os.path.realpath(os.path.expanduser("~")),
+        os.path.realpath(tempfile.gettempdir()),
+    ]
+    for root in allowed_roots:
+        if real == root or real.startswith(root + os.sep):
+            return Path(real)
+    raise ValueError(f"Configured path resolves outside the allowed data area: {value!r}")
 
 
 def get_sessions_dir(cfg: ConfigParser) -> Path:

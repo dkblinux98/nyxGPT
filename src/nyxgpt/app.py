@@ -2987,7 +2987,9 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
                 "model": chosen_model,
                 "system": req.system,
                 "config_path": None,
-                "sessions_dir": req.sessions_dir,
+                "sessions_dir": (
+                    str(_sessions_dir_from_str(req.sessions_dir)) if req.sessions_dir else None
+                ),
                 "rag_enabled": rag_enabled,
                 "rag_filters": rag_filters_dict,
             }
@@ -3051,7 +3053,9 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
                 "model": chosen_model,
                 "system": req.system,
                 "config_path": None,
-                "sessions_dir": req.sessions_dir,
+                "sessions_dir": (
+                    str(_sessions_dir_from_str(req.sessions_dir)) if req.sessions_dir else None
+                ),
             }
 
             # Optional runtime override: only pass if chat implementation supports it.
@@ -3264,7 +3268,9 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
                 "model": chosen_model,
                 "system": req.system,
                 "config_path": None,
-                "sessions_dir": req.sessions_dir,
+                "sessions_dir": (
+                    str(_sessions_dir_from_str(req.sessions_dir)) if req.sessions_dir else None
+                ),
             }
 
             if _maybe_kw(chat_stream, "rag_enabled"):
