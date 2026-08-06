@@ -536,6 +536,19 @@ class TestSinkSidePathValidationChokepoint:
         with pytest.raises(ValueError):
             list_sessions(Path("/etc"))
 
+    def test_list_sessions_skips_non_conforming_legacy_filenames(self, tmp_path):
+        """A single legacy/hand-copied session file whose name doesn't match
+        the chokepoint's allowlist (e.g. a dot or space in the name) must be
+        skipped, not take down the whole listing with an unhandled
+        ValueError."""
+        (tmp_path / "valid-name.json").write_text(json.dumps([]), encoding="utf-8")
+        (tmp_path / "legacy.backup file.json").write_text(json.dumps([]), encoding="utf-8")
+        (tmp_path / ".hidden.json").write_text(json.dumps([]), encoding="utf-8")
+
+        rows = list_sessions(tmp_path)
+
+        assert [r["name"] for r in rows] == ["valid-name"]
+
     def test_config_get_sessions_dir_rejects_path_outside_allowed_roots(self):
         cfg = ConfigParser()
         cfg.add_section("nyxgpt")
@@ -578,5 +591,36 @@ class TestSinkSidePathValidationChokepoint:
 
         assert response.status_code == 200
         # "/etc" is outside the allowed roots, so the override must be refused
-        # (falls back to None) rather than passed through raw.
-        assert captured_kwargs.get("sessions_dir") != "/etc"
+        # and fall back to None (not passed through raw, and not stringified
+        # to the literal "None").
+        assert captured_kwargs.get("sessions_dir") is None
+
+    def test_chat_endpoint_passes_through_valid_sessions_dir_override(self, client, tmp_path):
+        """A `sessions_dir` override that resolves inside an allowed root
+        (e.g. the system temp dir) must still reach run_chat() as the
+        resolved path string, not be swallowed by the None-fallback fix."""
+        captured_kwargs: dict = {}
+
+        def fake_run_chat(prompt, **kwargs):
+            captured_kwargs.update(kwargs)
+            return ChatResult(
+                session=kwargs.get("session", "default"),
+                model=kwargs.get("model") or "m",
+                reply="ok",
+                rag_used=False,
+                rag_chunks=0,
+                rag_context=None,
+            )
+
+        with patch("nyxgpt.app.run_chat", autospec=True, side_effect=fake_run_chat):
+            response = client.post(
+                "/api/v1/chat",
+                json={
+                    "prompt": "hi",
+                    "session": "valid-dir-test",
+                    "sessions_dir": str(tmp_path),
+                },
+            )
+
+        assert response.status_code == 200
+        assert captured_kwargs.get("sessions_dir") == str(tmp_path)

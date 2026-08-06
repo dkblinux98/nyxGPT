@@ -725,6 +725,10 @@ def list_sessions(cfg: Any | None) -> list[dict[str, Any]]:
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
     files = [p for p in sessions_dir.glob("*.json") if not p.name.endswith(".meta.json")]
+    # Skip files whose stem doesn't pass the meta_file_for() chokepoint's
+    # allowlist (e.g. legacy/hand-copied filenames) instead of letting a
+    # single non-conforming file take down the whole listing.
+    files = [p for p in files if VALID_SESSION_NAME_PATTERN.match(p.stem)]
 
     def sort_key(p: Path):
         meta = load_session_meta(meta_file_for(p))
