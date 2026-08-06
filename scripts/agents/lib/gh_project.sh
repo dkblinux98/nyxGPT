@@ -765,7 +765,7 @@ delete_remote_branch() {
 
 # Parses the issue number out of an agent-managed branch name
 # (claude/issue-<n>-* or (feat|fix|chore)/<n>-*). Prints "" for anything
-# else (e.g. v2.0.0-pre-nyxAgent-implementation, master, main).
+# else (e.g. a hand-created branch, master, main).
 extract_issue_number() {
   local b="$1"
   if [[ "$b" =~ ^claude/issue-([0-9]+)- ]]; then
