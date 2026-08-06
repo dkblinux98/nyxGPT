@@ -4,6 +4,7 @@ import configparser
 import json
 import logging
 import sys
+import tempfile
 import types
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -368,6 +369,18 @@ def test_sink_functions_refuse_traversal_escapes(tmp_path: Path) -> None:
     sneaky = tmp_path / ".." / ".." / ".." / ".." / ".." / ".." / "etc" / "shadow"
     assert sessions.load_session_messages(sneaky) == []
     assert sessions.load_session_meta(sneaky) == {}
+
+
+def test_resolve_sessions_dir_refuses_exact_allowed_roots() -> None:
+    """A sessions dir resolving EXACTLY to $HOME or the temp root -- rather
+    than strictly inside one -- is refused: the barriers accept descendants
+    only (`startswith(root + os.sep)`), and neither root itself is ever a
+    legitimate sessions directory. Pins the intentional behavior change from
+    the single-condition guard restructure (PR #3657)."""
+    with pytest.raises(ValueError, match="allowed data area"):
+        sessions._resolve_sessions_dir(Path.home())
+    with pytest.raises(ValueError, match="allowed data area"):
+        sessions._resolve_sessions_dir(Path(tempfile.gettempdir()))
 
 
 def test_export_functions_refuse_dir_outside_allowed_roots() -> None:
