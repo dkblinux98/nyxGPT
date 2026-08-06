@@ -11,8 +11,7 @@ name: Delete Branch on PR Close Without Merge
 # Guards mirror reconcile_dead_branches.sh:
 #   * merged PRs are ignored (their branches are handled by the repo setting),
 #   * only agent-pattern branches (claude/*, feat/*, fix/*, chore/*) are
-#     eligible — intentional branches like v2.0.0-pre-nyxAgent-implementation
-#     never match,
+#     eligible — intentional, hand-created branches never match,
 #   * the base/release branch, master, and main are always protected,
 #   * fork heads are ignored (we only manage branches in this repo),
 #   * a head that is still the head of ANOTHER open PR is left alone.
@@ -60,8 +59,7 @@ jobs:
               core.info(`Skip: ${head} does not match agent branch patterns`);
               return;
             }
-            const alwaysProtected = new Set([base, 'master', 'main', 'v2.0.0',
-              'v2.0.0-pre-nyxAgent-implementation']);
+            const alwaysProtected = new Set([base, 'master', 'main']);
             if (alwaysProtected.has(head)) {
               core.info(`Skip: ${head} is protected`);
               return;
