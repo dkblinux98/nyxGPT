@@ -164,15 +164,16 @@ kubectl -n nyxgpt port-forward svc/nyxgpt-api 8000:8000
 curl -H "X-API-Key: <your api-key>" http://127.0.0.1:8000/health
 ```
 
-To reach the web UI too, port-forward its Service on a second terminal (the
-default `nyxgpt-web:local` build expects the api at `127.0.0.1:8000`, so
-forward both at once):
+To reach the web UI too, forward its Service on a second terminal via
+`nyxgpt ops port-forward` (the default `nyxgpt-web:local` build expects the
+api at `127.0.0.1:8000`, so forward both at once):
 
 ```bash
-kubectl -n nyxgpt port-forward svc/nyxgpt-web 3000:3000
+nyxgpt ops port-forward
 ```
 
-Then open `http://127.0.0.1:3000`.
+Then open `http://127.0.0.1:3000`. `nyxgpt up --kubernetes` prints this same
+instruction once the stack reports healthy.
 
 The `nyxgpt-api` Pods deployed here are also watched by the same
 [self-heal watchdog](self-healing.md) as every other deployment path -- see

@@ -1,6 +1,6 @@
 'use client';
 
-import { Component, useCallback, useEffect, useRef, useState } from 'react';
+import { Component, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import { extractSseEvents, safeJsonParse } from '../lib/sse';
@@ -770,6 +770,18 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ragFilters.collection, ragEnabled]);
+
+  // Filename Search filters the "Select Documents" list client-side against
+  // whatever the selected collection returned -- live-as-you-type, no Enter
+  // or submit button required. Matches on filename (falling back to doc_id
+  // for documents with no filename metadata), case-insensitively.
+  const filenameQuery = ragFilters.filename?.trim().toLowerCase() ?? '';
+  const visibleDocuments = useMemo(() => {
+    if (!filenameQuery) return availableDocuments;
+    return availableDocuments.filter((doc) =>
+      (doc.filename || doc.doc_id).toLowerCase().includes(filenameQuery)
+    );
+  }, [availableDocuments, filenameQuery]);
 
   async function fetchAvailableCollections() {
     try {
@@ -1854,8 +1866,12 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
                 <div style={{ fontSize: 12, opacity: 0.6, textAlign: 'center', padding: 8 }}>
                   No documents available
                 </div>
+              ) : visibleDocuments.length === 0 ? (
+                <div style={{ fontSize: 12, opacity: 0.6, textAlign: 'center', padding: 8 }}>
+                  No documents match &quot;{ragFilters.filename?.trim()}&quot;
+                </div>
               ) : (
-                availableDocuments.map((doc) => (
+                visibleDocuments.map((doc) => (
                   <label
                     key={doc.doc_id}
                     style={{
@@ -1918,6 +1934,9 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
                 fontSize: 12,
               }}
             />
+            <p style={{ fontSize: 11, opacity: 0.7, marginTop: 4 }}>
+              Filters Select Documents above as you type; also scopes RAG search.
+            </p>
           </div>
 
           {/* Date range filter */}

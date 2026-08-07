@@ -454,6 +454,151 @@ def test_restart_component_success(monkeypatch):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("bad", ["--privileged", "-rf", "a b", "x;rm -rf /", "../etc", "$(id)", ""])
+def test_restart_component_rejects_unsafe_names(monkeypatch, bad):
+    """An externally-influenced service name that could inject a CLI flag or
+    shell metacharacter must be refused before it ever reaches `_run` (CodeQL
+    #4, py/command-line-injection)."""
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal.restart_component(bad)
+
+    assert not result.ok
+    assert "invalid service name" in result.message
+    run_mock.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", ["--all", "-n=evil", "pod;reboot", "../x", ""])
+def test_heal_kubernetes_pod_rejects_unsafe_names(monkeypatch, bad):
+    """A crafted pod name must not reach `kubectl delete pod` (CodeQL #4)."""
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal.heal_kubernetes_pod(bad)
+
+    assert not result.ok
+    assert "invalid pod name" in result.message
+    run_mock.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", ["--rm", "-d", "a b", "x;rm -rf /", "../etc", "$(id)", ""])
+def test_bring_up_compose_service_rejects_unsafe_names(monkeypatch, bad):
+    """An unsafe service name must be refused before it reaches `docker compose up`
+    (CodeQL #4, py/command-line-injection) -- closes the coverage gap for the third
+    guarded sink alongside restart_component / heal_kubernetes_pod."""
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal._bring_up_compose_service(bad)
+
+    assert not result.ok
+    assert "invalid service name" in result.message
+    run_mock.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", ["--privileged", "-rf", "a b", "x;rm -rf /", "../etc", "$(id)", ""])
+def test_restart_brew_service_rejects_unsafe_names(monkeypatch, bad):
+    """An unsafe name must be refused before it reaches `brew services restart`
+    (CodeQL #4, py/command-line-injection)."""
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal._restart_brew_service(bad)
+
+    assert not result.ok
+    assert "invalid service name" in result.message
+    run_mock.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", ["--privileged", "-rf", "a b", "x;rm -rf /", "../etc", "$(id)", ""])
+def test_restart_native_container_rejects_unsafe_names(monkeypatch, bad):
+    """An unsafe name must be refused before it reaches `docker restart`
+    (CodeQL #4, py/command-line-injection)."""
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal._restart_native_container(bad)
+
+    assert not result.ok
+    assert "invalid container name" in result.message
+    run_mock.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", ["--all", "-f", "a b", "x;reboot", "../etc", "$(id)", ""])
+def test_docker_container_logs_rejects_unsafe_names(monkeypatch, bad):
+    """An unsafe container name must be refused before it reaches `docker logs`
+    (CodeQL #4, py/command-line-injection)."""
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal._docker_container_logs(bad, tail=10)
+
+    assert not result.ok
+    assert "invalid container name" in result.message
+    run_mock.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", ["--all", "-n=evil", "pod;reboot", "../x", ""])
+def test_kubernetes_pod_logs_rejects_unsafe_names(monkeypatch, bad):
+    """An unsafe pod name must be refused before it reaches `kubectl logs`
+    (CodeQL #4, py/command-line-injection)."""
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal._kubernetes_pod_logs(bad, tail=10)
+
+    assert not result.ok
+    assert "invalid pod name" in result.message
+    run_mock.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", ["--filter", "-a", "a b", "x;id", "../etc", "$(id)", ""])
+def test_native_container_state_rejects_unsafe_names(monkeypatch, bad):
+    """An unsafe container name must be refused before it reaches
+    `docker ps --filter` (CodeQL #4, py/command-line-injection)."""
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    assert self_heal._native_container_state(bad) == "absent"
+    run_mock.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", ["--filter", "-a", "a b", "x;id", "../etc", "$(id)", ""])
+def test_native_container_health_rejects_unsafe_names(monkeypatch, bad):
+    """An unsafe container name must be refused before it reaches
+    `docker inspect` (CodeQL #4, py/command-line-injection)."""
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    assert self_heal._native_container_health(bad) == ""
+    run_mock.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", ["--tail=0", "-f", "a b", "x;id", "../etc", "$(id)", ""])
+def test_compose_component_logs_rejects_unsafe_names(monkeypatch, bad):
+    """An unsafe service name must be refused before it reaches
+    `docker compose logs` (CodeQL #4, py/command-line-injection)."""
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal._compose_component_logs(bad, tail=10)
+
+    assert not result.ok
+    assert "invalid service name" in result.message
+    run_mock.assert_not_called()
+
+
+@pytest.mark.unit
 def test_restart_component_failure(monkeypatch):
     monkeypatch.setattr(
         self_heal, "_run", lambda cmd, timeout=30.0, **_k: CP(returncode=1, stderr="boom")
@@ -571,6 +716,27 @@ def test_restart_native_component_unknown(monkeypatch):
 
 
 @pytest.mark.unit
+def test_compose_file_services_parses_declared_services():
+    services = self_heal._compose_file_services()
+    assert {"api", "web", "glitchtip", "grafana", "loki"} <= services
+
+
+@pytest.mark.unit
+def test_compose_component_logs_refuses_undeclared_service(monkeypatch):
+    """A well-formed name that is not declared in the compose file must be
+    refused without reaching `docker compose logs` (CodeQL #4: the argv only
+    ever receives service names selected from the compose file itself)."""
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal._compose_component_logs("not-a-declared-service", tail=10)
+
+    assert not result.ok
+    assert "Unknown compose service" in result.message
+    run_mock.assert_not_called()
+
+
+@pytest.mark.unit
 def test_component_logs_success(monkeypatch):
     run_mock = MagicMock(
         return_value=CP(stdout="glitchtip_1  | Confirm your account: http://...\n")
@@ -585,6 +751,22 @@ def test_component_logs_success(monkeypatch):
     cmd = run_mock.call_args[0][0]
     assert cmd[:3] == ["docker", "compose", "-f"]
     assert cmd[-5:] == ["logs", "--no-color", "--tail", "50", "glitchtip"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", ["--rm", "; rm -rf /", "../etc", "$(id)", ""])
+def test_component_logs_rejects_unsafe_names(monkeypatch, bad):
+    """An externally-influenced service name (`GET /self-heal/logs?service=`) must be
+    refused before it ever reaches a subprocess argv (CodeQL #4,
+    py/command-line-injection) -- mirrors test_restart_component_rejects_unsafe_names."""
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal.component_logs(bad)
+
+    assert not result.ok
+    assert "invalid service name" in result.message
+    run_mock.assert_not_called()
 
 
 @pytest.mark.unit

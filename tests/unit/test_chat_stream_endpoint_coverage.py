@@ -256,7 +256,12 @@ def test_stream_error_event_emitted_on_mid_stream_failure() -> None:
 
     error_events = [e for e in events if e["type"] == "error"]
     assert len(error_events) == 1
-    assert "upstream crashed" in json.loads(error_events[0]["data"])["error"]
+    # The client error event must carry only a generic message -- the raw
+    # exception detail ("upstream crashed") is logged server-side but never
+    # sent to the client (CodeQL py/stack-trace-exposure).
+    error_payload = json.loads(error_events[0]["data"])["error"]
+    assert "upstream crashed" not in error_payload
+    assert error_payload == "The model request failed. Please try again."
 
 
 def test_stream_usage_analytics_failure_does_not_break_stream() -> None:

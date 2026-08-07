@@ -6,6 +6,9 @@ documentation are linked out to instead of duplicated here:
 
 - Sessions (`nyxgpt sessions ...`) — see [Sessions](sessions.md)
 - RAG (`nyxgpt rag ...`) — see [RAG](rag.md)
+- Bring the stack up/down (`nyxgpt up` / `nyxgpt down`) — thin aliases for
+  `nyxgpt ops install`/`nyxgpt ops down`, see
+  [Ops helpers](ops.md#nyxgpt-up--nyxgpt-down)
 - Ops (`nyxgpt ops ...`) — see [Ops helpers](ops.md)
 - Canary (`nyxgpt canary ...`) — see [Kubernetes](kubernetes.md)
 - Configuration wizard (`nyxgpt wizard`) — see [Configuration](configuration.md)

@@ -1766,6 +1766,32 @@ def test_split_sentences_abbreviations(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.unit
+def test_split_sentences_adversarial_performance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_split_sentences must stay linear-time on adversarial punctuation runs.
+
+    Regression test for CodeQL #29 (py/polynomial-redos): a regex of the
+    form ``[.!?]+\\s+(?=[A-Z])`` matched with ``finditer`` is quadratic on
+    input like this, since every position within a long punctuation run is
+    retried as an independent (failing) match attempt.
+    """
+    import time
+
+    from nyxgpt.rag.rag import _split_sentences
+
+    text = "!!!! . . . " * 100_000
+
+    start = time.perf_counter()
+    _split_sentences(text)
+    elapsed = time.perf_counter() - start
+
+    # A linear-time scanner handles this in well under a second; a
+    # polynomially-backtracking regex would take minutes on input this size.
+    assert elapsed < 5.0
+
+
+@pytest.mark.unit
 def test_is_heading_atx_style(monkeypatch: pytest.MonkeyPatch) -> None:
     """_is_heading should detect ATX-style Markdown headings."""
     from nyxgpt.rag.rag import _is_heading

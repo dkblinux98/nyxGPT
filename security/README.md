@@ -41,10 +41,9 @@ excludes live in `pyproject.toml`'s `[tool.bandit]` table.
   empty.
 - **npm audit / audit-ci**: `"high": true` in `web/audit-ci.jsonc` -- fails
   on high or critical severity findings not in the `allowlist`. As of
-  2026-08-03, `next`, `postcss`, `sharp`, and `serialize-javascript` are
-  allowlisted (module-level) pending a Next.js 16.3.0 / `next-pwa` major
-  upgrade -- see the comments in `web/audit-ci.jsonc` for the per-package
-  rationale. Moderate/low findings are reported but non-blocking.
+  2026-08-06 (#3644), `npm audit` reports zero known vulnerabilities in
+  either the root or `web/` dependency closure, so the allowlist is empty.
+  Moderate/low findings are reported but non-blocking.
 
 ## Running locally
 

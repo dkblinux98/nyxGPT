@@ -159,6 +159,26 @@ def test_post_sections_triggers_observability_reconciliation(_isolated_config):
     mock_reconcile.assert_called_once_with(True)
 
 
+def test_post_sections_reconciliation_failure_does_not_leak_exception(_isolated_config):
+    # When reconciliation raises, the response must carry only a generic
+    # message -- the raw exception detail is logged server-side but never
+    # returned to the client (CodeQL py/stack-trace-exposure).
+    client = TestClient(app)
+    with patch(
+        "nyxgpt.app.ops_module.reconcile_observability",
+        side_effect=RuntimeError("docker socket permission denied at /var/run/docker.sock"),
+    ):
+        resp = client.post("/api/v1/config/sections", json={"tracing": {"enabled": True}})
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "docker socket permission denied" not in resp.text
+    assert data["observability_result"] == {
+        "ok": False,
+        "messages": ["Observability reconciliation failed"],
+    }
+
+
 def test_post_sections_no_reconciliation_when_observability_field_unchanged(_isolated_config):
     client = TestClient(app)
     with patch("nyxgpt.app.ops_module.reconcile_observability") as mock_reconcile:

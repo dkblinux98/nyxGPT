@@ -157,6 +157,11 @@ jobs:
       - name: Parse decision from event
         id: parse_decision
         shell: bash
+        env:
+          # Untrusted comment body passed via env, never interpolated into the
+          # script body, so a crafted comment cannot break out of the heredoc
+          # and inject shell (CodeQL alert #1: code injection).
+          COMMENT_BODY: ${{ github.event.comment.body }}
         run: |
           set -euo pipefail
 
@@ -181,10 +186,7 @@ jobs:
               exit 1
             fi
           else
-            COMMENT=$(cat <<'COMMENT_EOF'
-          ${{ github.event.comment.body }}
-          COMMENT_EOF
-          )
+            COMMENT="${COMMENT_BODY:-}"
             if echo "$COMMENT" | grep -q 'nyxgpt-structured-review'; then
               # Fallback trigger: the structured-review comment the review
               # workflow persists after every review. The primary trigger is

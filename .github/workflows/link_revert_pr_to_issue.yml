@@ -18,11 +18,14 @@ jobs:
         id: extract
         env:
           GH_TOKEN: ${{ github.token }}
+          # Untrusted PR body passed via env, never interpolated into the
+          # script body, so a crafted revert PR description cannot break out
+          # and inject shell (same class as CodeQL #1).
+          PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           set -euo pipefail
 
           PR_NUMBER="${{ github.event.pull_request.number }}"
-          PR_BODY="${{ github.event.pull_request.body }}"
 
           echo "Revert PR body: $PR_BODY"
 
