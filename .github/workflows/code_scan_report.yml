@@ -52,12 +52,19 @@ jobs:
           echo "Using analysis $ANALYSIS_ID"
           gh api "repos/${{ github.repository }}/code-scanning/analyses/$ANALYSIS_ID" \
             -H "Accept: application/sarif+json" > analysis.sarif
+          # Dump EVERY codeFlow per result, not just the first -- an alert
+          # stays open while ANY path lives, and fixing only codeFlows[0]
+          # reveals the next path one merge-and-rescan cycle at a time.
           jq -r '.runs[].results[]
             | select(.codeFlows != null)
+            | . as $r
             | "=== " + .ruleId + " sink " +
               (.locations[0].physicalLocation.artifactLocation.uri) + ":" +
-              (.locations[0].physicalLocation.region.startLine|tostring),
-              (.codeFlows[0].threadFlows[0].locations[]
-               | "  " + .location.physicalLocation.artifactLocation.uri + ":" +
-                 (.location.physicalLocation.region.startLine|tostring) + "  " +
-                 (.location.message.text // ""))' analysis.sarif
+              (.locations[0].physicalLocation.region.startLine|tostring) +
+              " (" + ($r.codeFlows|length|tostring) + " flow(s))",
+              ($r.codeFlows | to_entries[]
+               | "  -- flow " + (.key|tostring),
+                 (.value.threadFlows[0].locations[]
+                  | "     " + .location.physicalLocation.artifactLocation.uri + ":" +
+                    (.location.physicalLocation.region.startLine|tostring) + "  " +
+                    (.location.message.text // "")))' analysis.sarif
