@@ -148,14 +148,15 @@ DEFAULT_BACKOFF_SECONDS = 30.0
 # "down" in the self-heal sense -- they're expected to exit 0 and stay exited.
 ONE_SHOT_SERVICES = {"glitchtip-migrate"}
 
-# Strict pattern for component/service/pod names that flow into a subprocess
-# argv (`docker compose restart <svc>`, `kubectl delete pod <name>`). Must
-# start alphanumeric so a crafted name can't be read as a CLI flag (argument
-# injection), and it excludes shell metacharacters, whitespace, and path
-# separators entirely. Every real name ("api", "nyxgpt-web", "cassandra")
-# matches. Guards the restart/heal sinks against an untrusted name reaching
-# the command line (CodeQL alert #4, py/command-line-injection).
-_SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+# Component/service/pod names that flow into a subprocess argv
+# (`docker compose restart <svc>`, `kubectl delete pod <name>`) are guarded
+# at every call site with a DIRECT `re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", x)`
+# call: names must start alphanumeric so a crafted value can't be read as a
+# CLI flag, and shell metacharacters/whitespace/path separators are excluded
+# entirely (CodeQL alert #4, py/command-line-injection). The pattern is
+# deliberately inlined at each guard rather than precompiled -- CodeQL's
+# barrier-guard analysis recognizes the `re.fullmatch(...)` call form but
+# NOT the `.fullmatch` method of a precompiled `re.Pattern`.
 
 # Maps a core native component to its Homebrew service name, for native/
 # local-first mode health-checks/heals. Mirrors ops.NATIVE_BREW_SERVICES --
@@ -504,7 +505,7 @@ def _brew_services_snapshot() -> dict[str, str]:
 
 def _native_container_state(name: str) -> str:
     """Return the docker state ('running', 'exited', ...) for container `name`, or 'absent'."""
-    if not _SAFE_NAME_RE.fullmatch(name):  # inline barrier, CodeQL #4
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name):  # inline barrier, CodeQL #4
         return "absent"
     if _which("docker") is None:
         return "absent"
@@ -524,7 +525,7 @@ def _native_container_state(name: str) -> str:
 
 def _native_container_health(name: str) -> str:
     """Return the Docker `HEALTHCHECK` status for container `name` (``''`` if none/unavailable)."""
-    if not _SAFE_NAME_RE.fullmatch(name):  # inline barrier, CodeQL #4
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name):  # inline barrier, CodeQL #4
         return ""
     if _which("docker") is None:
         return ""
@@ -1091,7 +1092,7 @@ def restart_component(service: str) -> HealResult:
     # taint tracker recognizes the guard on the value that reaches the argv.
     # A prior helper-based check sanitized the same way but through one level
     # of indirection CodeQL doesn't trace, so the alert stayed open.
-    if not _SAFE_NAME_RE.fullmatch(service):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", service):
         return HealResult(False, f"Refused to act on invalid service name: {service!r}")
     if _which("docker") is None:
         return HealResult(False, "docker not found; cannot restart component")
@@ -1118,7 +1119,7 @@ def _bring_up_compose_service(service: str) -> HealResult:
     `ops._start_observability_stack`), since Compose requires a service's
     profile to be active for it to resolve even when named explicitly.
     """
-    if not _SAFE_NAME_RE.fullmatch(service):  # inline barrier, CodeQL #4
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", service):  # inline barrier, CodeQL #4
         return HealResult(False, f"Refused to act on invalid service name: {service!r}")
     if _which("docker") is None:
         return HealResult(False, f"docker not found; cannot start {service}")
@@ -1140,7 +1141,7 @@ def _bring_up_compose_service(service: str) -> HealResult:
 
 def _restart_brew_service(name: str) -> HealResult:
     """Restart Homebrew service `name` via `brew services restart` (native mode)."""
-    if not _SAFE_NAME_RE.fullmatch(name):  # inline barrier, CodeQL #4
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name):  # inline barrier, CodeQL #4
         return HealResult(False, f"Refused to act on invalid service name: {name!r}")
     if _which("brew") is None:
         return HealResult(False, f"brew not found; cannot restart {name}")
@@ -1158,7 +1159,7 @@ def _restart_brew_service(name: str) -> HealResult:
 
 def _restart_native_container(name: str) -> HealResult:
     """Restart Docker container `name` via `docker restart` (native mode's Cassandra)."""
-    if not _SAFE_NAME_RE.fullmatch(name):  # inline barrier, CodeQL #4
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name):  # inline barrier, CodeQL #4
         return HealResult(False, f"Refused to act on invalid container name: {name!r}")
     if _which("docker") is None:
         return HealResult(False, f"docker not found; cannot restart {name}")
@@ -1250,7 +1251,7 @@ def heal_kubernetes_pod(pod_name: str) -> HealResult:
     on a failed liveness probe, useful for a Pod that's stuck rather than
     cleanly crash-looping.
     """
-    if not _SAFE_NAME_RE.fullmatch(pod_name):  # inline barrier, CodeQL #4
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", pod_name):  # inline barrier, CodeQL #4
         return HealResult(False, f"Refused to act on invalid pod name: {pod_name!r}")
     if _which("kubectl") is None:
         return HealResult(False, f"kubectl not found; cannot heal pod {pod_name}")
@@ -1275,7 +1276,7 @@ def _compose_component_logs(service: str, *, tail: int = 200) -> HealResult:
     container's output without the user needing to run a raw `docker`/
     `docker compose` command themselves.
     """
-    if not _SAFE_NAME_RE.fullmatch(service):  # inline barrier, CodeQL #4
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", service):  # inline barrier, CodeQL #4
         return HealResult(False, f"Refused to act on invalid service name: {service!r}")
     if _which("docker") is None:
         return HealResult(False, "docker not found; cannot fetch logs")
@@ -1347,7 +1348,7 @@ def _docker_container_logs(container: str, *, tail: int) -> HealResult:
     containers rather than Compose services, so `docker compose logs` can't
     see them at all.
     """
-    if not _SAFE_NAME_RE.fullmatch(container):  # inline barrier, CodeQL #4
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", container):  # inline barrier, CodeQL #4
         return HealResult(False, f"Refused to act on invalid container name: {container!r}")
     if _which("docker") is None:
         return HealResult(False, "docker not found; cannot fetch logs")
@@ -1370,7 +1371,7 @@ def _docker_container_logs(container: str, *, tail: int) -> HealResult:
 
 def _kubernetes_pod_logs(pod_name: str, *, tail: int) -> HealResult:
     """Fetch recent logs for a Kubernetes-managed Pod: `kubectl logs <pod>`."""
-    if not _SAFE_NAME_RE.fullmatch(pod_name):  # inline barrier, CodeQL #4
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", pod_name):  # inline barrier, CodeQL #4
         return HealResult(False, f"Refused to act on invalid pod name: {pod_name!r}")
     if _which("kubectl") is None:
         return HealResult(False, f"kubectl not found; cannot fetch logs for {pod_name}")
@@ -1464,7 +1465,7 @@ def component_logs(service: str, *, tail: int = 200) -> HealResult:
     # pattern/message as restart_component/_bring_up_compose_service/
     # heal_kubernetes_pod -- validated here, in this function, so the taint
     # tracker recognizes the guard on the value that reaches the argv.
-    if not _SAFE_NAME_RE.fullmatch(service):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", service):
         return HealResult(False, f"Refused to act on invalid service name: {service!r}")
     status = next((s for s in list_component_status() if s.service == service), None)
     if status is not None:
