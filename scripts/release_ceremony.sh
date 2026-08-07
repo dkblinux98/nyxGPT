@@ -127,23 +127,26 @@ PY_VER=$(git show "origin/${REL_BRANCH}:pyproject.toml" | awk -F'"' '/^version =
 if [[ "$PY_VER" != "$VERSION" ]]; then log "  GATE FAIL: pyproject version on tip is '$PY_VER', expected '$VERSION'"; GATE_FAIL=1
 else log "  ok: pyproject version = $VERSION"; fi
 
-# 0.1 milestone: every issue closed
+# release issue number first — the milestone gate must exclude it (the
+# release issue itself stays open until Phase 3 closes it)
+RELEASE_ISSUE=$(gh variable get RELEASE_ISSUE_NUMBER -R "$REPO" 2>/dev/null || true)
+[[ -n "$RELEASE_ISSUE" ]] || fail "RELEASE_ISSUE_NUMBER repo variable not readable"
+
+# 0.1 milestone: every issue closed (except the release issue itself)
 MILESTONE_JSON=$(gh api "repos/${REPO}/milestones?state=all&per_page=100" \
   --jq "[.[] | select(.title | test(\"v${VERSION}\"))][0]")
 [[ -n "$MILESTONE_JSON" && "$MILESTONE_JSON" != "null" ]] || fail "no milestone matching v${VERSION}"
 MS_NUM=$(jq -r .number <<<"$MILESTONE_JSON"); MS_TITLE=$(jq -r .title <<<"$MILESTONE_JSON")
-MS_OPEN=$(jq -r .open_issues <<<"$MILESTONE_JSON")
-if [[ "$MS_OPEN" != "0" ]]; then
-  log "  GATE FAIL: milestone '$MS_TITLE' has $MS_OPEN open issue(s):"
-  gh issue list -R "$REPO" --milestone "$MS_TITLE" --state open --json number,title \
-    --jq '.[]|"    #\(.number) \(.title)"'
+MS_OPEN_LIST=$(gh api "repos/${REPO}/issues?milestone=${MS_NUM}&state=open&per_page=100" \
+  --jq "[.[] | select(.number != ${RELEASE_ISSUE})] | .[] | \"    #\(.number) \(.title)\"")
+if [[ -n "$MS_OPEN_LIST" ]]; then
+  log "  GATE FAIL: milestone '$MS_TITLE' has open issue(s) besides the release issue:"
+  echo "$MS_OPEN_LIST"
   GATE_FAIL=1
-else log "  ok: milestone '$MS_TITLE' fully closed"; fi
+else log "  ok: milestone '$MS_TITLE' fully closed (release issue #$RELEASE_ISSUE excluded)"; fi
 
 # 0.2 release issue: no unchecked issue-reference tasks
-RELEASE_ISSUE=$(gh variable get RELEASE_ISSUE_NUMBER -R "$REPO" 2>/dev/null || true)
-[[ -n "$RELEASE_ISSUE" ]] || fail "RELEASE_ISSUE_NUMBER repo variable not readable"
-UNCHECKED=$(gh issue view "$RELEASE_ISSUE" -R "$REPO" --json body --jq .body \
+UNCHECKED=$(gh api "repos/${REPO}/issues/${RELEASE_ISSUE}" --jq .body \
   | grep -cE '^\s*- \[ \] #[0-9]+' || true)
 if [[ "$UNCHECKED" != "0" ]]; then
   log "  GATE FAIL: release issue #$RELEASE_ISSUE has $UNCHECKED unchecked issue task(s)"; GATE_FAIL=1
@@ -284,16 +287,22 @@ else
     --jq ".[] | select(.title | test(\"v${NEXT_VERSION}\")) | \"    \" + .title"
 fi
 PROJ_OWNER="$(ini_get github PROJECT_OWNER)"; PROJ_NUM="$(ini_get github PROJECT_NUMBER)"
-SPRINTS=$(gh api graphql -f owner="$PROJ_OWNER" -F num="${PROJ_NUM:-0}" -f query='
+SPRINTS_RAW=$(gh api graphql -f owner="$PROJ_OWNER" -F num="${PROJ_NUM:-0}" -f query='
   query($owner:String!,$num:Int!){ user(login:$owner){ projectV2(number:$num){
     field(name:"Sprint"){ ... on ProjectV2IterationField {
-      configuration { iterations { title startDate } } } } } } }' \
-  --jq '.data.user.projectV2.field.configuration.iterations[].title' 2>/dev/null || true)
-if [[ -z "$SPRINTS" ]]; then
-  log "  LINE GATE FAIL: no active/upcoming Sprint iteration on the project — prepare the sprint(s) first"
+      configuration { iterations { title startDate } } } } } } }' 2>&1) || SPRINTS_RAW="QUERY_ERROR: $SPRINTS_RAW"
+if grep -qE 'QUERY_ERROR|"errors"|RATE_LIMIT' <<<"$SPRINTS_RAW"; then
+  log "  LINE GATE FAIL: could not verify Sprint iterations (GraphQL error/rate limit) — retry when the limit resets:"
+  head -2 <<<"$SPRINTS_RAW" | sed 's/^/    /'
   LINE_GATE_FAIL=1
 else
-  log "  ok: active/upcoming sprint iteration(s): $(echo "$SPRINTS" | tr '\n' ' ')"
+  SPRINTS=$(jq -r '.data.user.projectV2.field.configuration.iterations[].title' <<<"$SPRINTS_RAW" 2>/dev/null || true)
+  if [[ -z "$SPRINTS" ]]; then
+    log "  LINE GATE FAIL: no active/upcoming Sprint iteration on the project — prepare the sprint(s) first"
+    LINE_GATE_FAIL=1
+  else
+    log "  ok: active/upcoming sprint iteration(s): $(echo "$SPRINTS" | tr '\n' ' ')"
+  fi
 fi
 [[ $LINE_GATE_FAIL -eq 0 || $DRY -eq 1 ]] || fail "next-line readiness gate failed — prepare milestones/sprints, then re-run with --phase4-only"
 
