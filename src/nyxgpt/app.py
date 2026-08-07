@@ -2061,6 +2061,14 @@ def self_heal_logs(service: str, tail: int = Query(default=200, ge=1, le=2000)) 
     link, printed there by its console email backend) without running a raw
     `docker`/`docker compose`/`kubectl` command themselves.
     """
+    # CodeQL #4 (py/command-line-injection): `tail` reaches subprocess argv
+    # as `str(tail)` in the log dispatchers. FastAPI already coerces and
+    # bounds it (int, 1..2000), but CodeQL does not model that validation.
+    # Select the equal value from a trusted range so every downstream argv
+    # receives an untainted int -- the same equality-selection idiom as the
+    # compose-service resolution in self_heal (#3661). The fallback is
+    # unreachable: Query(ge=1, le=2000) guarantees membership.
+    tail = next((t for t in range(1, 2001) if t == tail), 200)
     result = self_heal_module.component_logs(service, tail=tail)
     if not result.ok:
         raise HTTPException(status_code=502, detail=result.message)
