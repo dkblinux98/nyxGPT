@@ -100,6 +100,7 @@ def file_lock(file_path: Path, timeout: float = 5.0):
     Raises:
         TimeoutError: If lock cannot be acquired within timeout
         OSError: If file cannot be opened or locked
+        ValueError: If `file_path` resolves outside the allowed data area
 
     Example:
         >>> with file_lock(Path("session.json"), timeout=10.0) as fd:
@@ -107,6 +108,19 @@ def file_lock(file_path: Path, timeout: float = 5.0):
         ...     data = Path("session.json").read_text()
         ...     # Lock automatically released when exiting block
     """
+    # Inline sink-side barrier (CodeQL py/path-injection): a lock target
+    # resolving outside the allowed data roots is refused before any
+    # filesystem effect. Rebind under a single-condition startswith guard
+    # (disjunctions are never credited -- see PR #3657).
+    real = os.path.realpath(str(file_path))
+    _home = os.path.realpath(os.path.expanduser("~"))
+    _tmp = os.path.realpath(tempfile.gettempdir())
+    if real.startswith(_home + os.sep):  # noqa: SIM114
+        file_path = Path(real)
+    elif real.startswith(_tmp + os.sep):
+        file_path = Path(real)
+    else:
+        raise ValueError(f"Lock file resolves outside the allowed data area: {file_path!r}")
     # Open file for reading (create if doesn't exist)
     file_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -285,7 +299,23 @@ def session_file_for(name: str, sessions_dir: Path) -> Path:
             "Session name must be 1-64 alphanumeric characters, underscores, or hyphens"
         )
     resolved_dir = _resolve_sessions_dir(sessions_dir)
-    return resolved_dir / f"{stripped}.json"
+    candidate = resolved_dir / f"{stripped}.json"
+    # Re-anchor the COMPOSED path before returning it (CodeQL
+    # py/path-injection): the `re.fullmatch` name check above is not a
+    # recognized barrier for this query (regex guards only credit for
+    # command-line injection), so without this the name-tainted composed
+    # path re-taints every caller's filesystem sink. A realpath +
+    # single-condition startswith rebind here is a barrier node on every
+    # caller's flow. It also refuses a session file that is a symlink
+    # escaping the allowed roots.
+    real = os.path.realpath(str(candidate))
+    _home = os.path.realpath(os.path.expanduser("~"))
+    _tmp = os.path.realpath(tempfile.gettempdir())
+    if real.startswith(_home + os.sep):
+        return Path(real)
+    if real.startswith(_tmp + os.sep):
+        return Path(real)
+    raise ValueError(f"Session file resolves outside the allowed data area: {candidate!r}")
 
 
 def meta_file_for(session_file: Path) -> Path:
@@ -298,7 +328,20 @@ def meta_file_for(session_file: Path) -> Path:
         raise ValueError(
             "Session file name must be 1-64 alphanumeric characters, underscores, or hyphens"
         )
-    return session_file.with_suffix(".meta.json")
+    candidate = session_file.with_suffix(".meta.json")
+    # Re-anchor the composed metadata path -- same chokepoint barrier as
+    # session_file_for (regex checks are not credited path-injection
+    # barriers, so the composed path must pass a realpath +
+    # single-condition startswith rebind to deliver a clean value to
+    # every caller's sink).
+    real = os.path.realpath(str(candidate))
+    _home = os.path.realpath(os.path.expanduser("~"))
+    _tmp = os.path.realpath(tempfile.gettempdir())
+    if real.startswith(_home + os.sep):
+        return Path(real)
+    if real.startswith(_tmp + os.sep):
+        return Path(real)
+    raise ValueError(f"Metadata file resolves outside the allowed data area: {candidate!r}")
 
 
 def iso_now() -> str:

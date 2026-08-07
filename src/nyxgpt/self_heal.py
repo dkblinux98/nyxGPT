@@ -504,6 +504,8 @@ def _brew_services_snapshot() -> dict[str, str]:
 
 def _native_container_state(name: str) -> str:
     """Return the docker state ('running', 'exited', ...) for container `name`, or 'absent'."""
+    if not _SAFE_NAME_RE.fullmatch(name):  # inline barrier, CodeQL #4
+        return "absent"
     if _which("docker") is None:
         return "absent"
     try:
@@ -522,6 +524,8 @@ def _native_container_state(name: str) -> str:
 
 def _native_container_health(name: str) -> str:
     """Return the Docker `HEALTHCHECK` status for container `name` (``''`` if none/unavailable)."""
+    if not _SAFE_NAME_RE.fullmatch(name):  # inline barrier, CodeQL #4
+        return ""
     if _which("docker") is None:
         return ""
     try:
@@ -1271,6 +1275,8 @@ def _compose_component_logs(service: str, *, tail: int = 200) -> HealResult:
     container's output without the user needing to run a raw `docker`/
     `docker compose` command themselves.
     """
+    if not _SAFE_NAME_RE.fullmatch(service):  # inline barrier, CodeQL #4
+        return HealResult(False, f"Refused to act on invalid service name: {service!r}")
     if _which("docker") is None:
         return HealResult(False, "docker not found; cannot fetch logs")
     try:

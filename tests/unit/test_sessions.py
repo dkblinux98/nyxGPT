@@ -371,6 +371,24 @@ def test_sink_functions_refuse_traversal_escapes(tmp_path: Path) -> None:
     assert sessions.load_session_meta(sneaky) == {}
 
 
+def test_file_lock_refuses_paths_outside_allowed_roots() -> None:
+    """file_lock's inline barrier refuses a lock target outside the allowed
+    data roots before any filesystem effect (no create, no lock)."""
+    outside = Path("/etc/nyxgpt-attack-lock-test.json")
+    with pytest.raises(ValueError, match="allowed data area"), sessions.file_lock(outside):
+        pass
+    assert not outside.exists(), "Lock barrier must trigger before any filesystem effect"
+
+
+def test_session_file_for_refuses_symlink_escape(tmp_path: Path) -> None:
+    """A session file that is a symlink pointing outside the allowed roots is
+    refused by the composed-path re-anchoring in session_file_for (realpath
+    collapses the link before the containment check)."""
+    (tmp_path / "escape.json").symlink_to("/etc/passwd")
+    with pytest.raises(ValueError, match="allowed data area"):
+        sessions.session_file_for("escape", tmp_path)
+
+
 def test_resolve_sessions_dir_refuses_exact_allowed_roots() -> None:
     """A sessions dir resolving EXACTLY to $HOME or the temp root -- rather
     than strictly inside one -- is refused: the barriers accept descendants
