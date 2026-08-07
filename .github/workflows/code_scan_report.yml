@@ -40,3 +40,24 @@ jobs:
             | sort -n | tee alerts.tsv
           echo "----"
           echo "TOTAL_OPEN=$(wc -l < alerts.tsv)"
+
+      - name: Flow paths for open alerts (SARIF codeFlows)
+        run: |
+          set -euo pipefail
+          # The alert list gives only sink locations; the SARIF for the
+          # analysis carries the full source->sink codeFlows, which is what
+          # an agent needs to place a guard on the right flow.
+          ANALYSIS_ID=$(gh api "repos/${{ github.repository }}/code-scanning/analyses?ref=$REF&per_page=20" \
+            --jq '[.[] | select(.category | contains("python"))][0].id')
+          echo "Using analysis $ANALYSIS_ID"
+          gh api "repos/${{ github.repository }}/code-scanning/analyses/$ANALYSIS_ID" \
+            -H "Accept: application/sarif+json" > analysis.sarif
+          jq -r '.runs[].results[]
+            | select(.codeFlows != null)
+            | "=== " + .ruleId + " sink " +
+              (.locations[0].physicalLocation.artifactLocation.uri) + ":" +
+              (.locations[0].physicalLocation.region.startLine|tostring),
+              (.codeFlows[0].threadFlows[0].locations[]
+               | "  " + .location.physicalLocation.artifactLocation.uri + ":" +
+                 (.location.physicalLocation.region.startLine|tostring) + "  " +
+                 (.location.message.text // ""))' analysis.sarif
