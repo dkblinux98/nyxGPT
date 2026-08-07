@@ -1267,6 +1267,34 @@ def heal_kubernetes_pod(pod_name: str) -> HealResult:
     return HealResult(True, f"Deleted pod {pod_name} for recreation")
 
 
+def _compose_file_services() -> set[str]:
+    """Service names declared in COMPOSE_FILE's top-level `services:` block.
+
+    Parsed with a line scanner rather than a YAML library (PyYAML is not a
+    runtime dependency): top-level keys start in column 0, and service names
+    are the 2-space-indented keys directly inside `services:`. Returns an
+    empty set when the compose file is missing/unreadable -- the same
+    "can't tell, so don't act" fallback the rest of this module uses.
+    """
+    try:
+        text = COMPOSE_FILE.read_text(encoding="utf-8")
+    except OSError:
+        return set()
+    services: set[str] = set()
+    in_services = False
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if not line[0].isspace():
+            in_services = line.startswith("services:")
+            continue
+        if in_services:
+            m = re.match(r"^  ([A-Za-z0-9][A-Za-z0-9._-]*):\s*(#.*)?$", line)
+            if m:
+                services.add(m.group(1))
+    return services
+
+
 def _compose_component_logs(service: str, *, tail: int = 200) -> HealResult:
     """Fetch recent logs for a Compose service: `docker compose logs <service>`.
 
@@ -1280,6 +1308,22 @@ def _compose_component_logs(service: str, *, tail: int = 200) -> HealResult:
         return HealResult(False, f"Refused to act on invalid service name: {service!r}")
     if _which("docker") is None:
         return HealResult(False, "docker not found; cannot fetch logs")
+    # Resolve the (client-influenced) name against the compose file's own
+    # service list and pass the DECLARED string to the argv, never the
+    # client's (CodeQL #4, py/command-line-injection): regex validation is
+    # not in this query's barrier set in any form, but equality-selection
+    # from a trusted local collection removes the tainted value from the
+    # flow entirely -- the same idiom heal_now uses with probe statuses.
+    for declared in sorted(_compose_file_services()):
+        if declared == service:
+            service = declared
+            break
+    else:
+        return HealResult(
+            False,
+            f"Unknown compose service: {service!r}",
+            f"not declared in {COMPOSE_FILE.name}; no logs to fetch",
+        )
     try:
         cp = _run(
             [
