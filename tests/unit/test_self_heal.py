@@ -700,6 +700,27 @@ def test_restart_native_component_unknown(monkeypatch):
 
 
 @pytest.mark.unit
+def test_compose_file_services_parses_declared_services():
+    services = self_heal._compose_file_services()
+    assert {"api", "web", "glitchtip", "grafana", "loki"} <= services
+
+
+@pytest.mark.unit
+def test_compose_component_logs_refuses_undeclared_service(monkeypatch):
+    """A well-formed name that is not declared in the compose file must be
+    refused without reaching `docker compose logs` (CodeQL #4: the argv only
+    ever receives service names selected from the compose file itself)."""
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal._compose_component_logs("not-a-declared-service", tail=10)
+
+    assert not result.ok
+    assert "Unknown compose service" in result.message
+    run_mock.assert_not_called()
+
+
+@pytest.mark.unit
 def test_component_logs_success(monkeypatch):
     run_mock = MagicMock(
         return_value=CP(stdout="glitchtip_1  | Confirm your account: http://...\n")
