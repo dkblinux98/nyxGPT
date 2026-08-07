@@ -977,8 +977,11 @@ def chat_stream(
         extra={"session": session, "model": context.chosen_model, "streaming": True},
     )
 
-    # Yield RAG metadata as first chunk if RAG was used
-    if context.rag_used and context.rag_context:
+    # Yield RAG metadata as first chunk whenever RAG was used, even when
+    # retrieval returned zero rows -- an empty `chunks` list lets the UI show
+    # an explicit "no sources retrieved" indicator instead of silently
+    # omitting the block, which is indistinguishable from a non-RAG answer.
+    if context.rag_used:
         import json
 
         rag_data = {
@@ -994,7 +997,7 @@ def chat_stream(
                     "chunk_number": chunk.get("chunk_number"),
                     "total_chunks": chunk.get("total_chunks"),
                 }
-                for chunk in context.rag_context
+                for chunk in (context.rag_context or [])
             ],
         }
         yield f"__RAG_START__{json.dumps(rag_data)}__RAG_END__\n"
