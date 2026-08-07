@@ -2895,7 +2895,9 @@ def regenerate_response(
 
 
 @api.get("/sessions/{name}/export")
-def sessions_export(name: str, format: str = "markdown", sessions_dir: str | None = None):
+def sessions_export(
+    name: str, format: str = "markdown", sessions_dir: str | None = None
+) -> Response:
     """Export session to markdown, JSON, or HTML format."""
     format_lower = format.lower()
     if format_lower not in ("markdown", "json", "html"):
@@ -2904,30 +2906,61 @@ def sessions_export(name: str, format: str = "markdown", sessions_dir: str | Non
             detail="Invalid format. Must be one of: markdown, json, html",
         )
 
+    # Validate the session name at this same response boundary -- the raw
+    # `name` path parameter must never reach the HTML branch's <title>/body
+    # or the Content-Disposition filename unvalidated (CodeQL py/reflected-xss,
+    # alert #14). `validate_session_name` only accepts
+    # `^[a-zA-Z0-9_-]{1,64}$`, which also rules out header-injection
+    # characters (quotes, CR/LF) in the filename.
+    try:
+        safe_name = sessions.validate_session_name(name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
     sd = _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None))
 
-    if format_lower == "markdown":
-        ok, content = sessions.export_session_markdown(name, sd)
-        media_type = "text/markdown; charset=utf-8"
-        extension = "md"
-    elif format_lower == "json":
-        ok, content = sessions.export_session_json(name, sd)
-        media_type = "application/json; charset=utf-8"
-        extension = "json"
-    else:
-        ok, content = sessions.export_session_html(name, sd)
-        media_type = "text/html; charset=utf-8"
-        extension = "html"
+    # nosniff guards the markdown/json branches against content-sniffing and
+    # is set explicitly here (rather than relying solely on the global
+    # security-headers middleware) so it's visible on the export response
+    # itself.
+    headers = {"X-Content-Type-Options": "nosniff"}
 
+    if format_lower == "markdown":
+        ok, content = sessions.export_session_markdown(safe_name, sd)
+        if not ok:
+            raise HTTPException(status_code=404, detail=content)
+        return Response(
+            content=content,
+            media_type="text/markdown; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="{safe_name}.md"',
+                **headers,
+            },
+        )
+
+    if format_lower == "json":
+        ok, content = sessions.export_session_json(safe_name, sd)
+        if not ok:
+            raise HTTPException(status_code=404, detail=content)
+        return Response(
+            content=content,
+            media_type="application/json; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="{safe_name}.json"',
+                **headers,
+            },
+        )
+
+    ok, content = sessions.export_session_html(safe_name, sd)
     if not ok:
         raise HTTPException(status_code=404, detail=content)
-
-    from fastapi.responses import Response
-
     return Response(
         content=content,
-        media_type=media_type,
-        headers={"Content-Disposition": f'attachment; filename="{name}.{extension}"'},
+        media_type="text/html; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_name}.html"',
+            **headers,
+        },
     )
 
 

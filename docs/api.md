@@ -1690,6 +1690,23 @@ Get RAG chunks associated with a specific message. Enables lazy loading of RAG c
 }
 ```
 
+### `GET /api/v1/sessions/{name}/export`
+
+Export a session as markdown, JSON, or HTML.
+
+**Query Parameters:**
+- `format` (str, default: `markdown`) - `markdown`, `json`, or `html`
+- `sessions_dir` (str, optional) - Override the sessions directory
+
+**Response:** returned as `text/markdown`, `application/json`, or
+`text/html` (matching `format`) with a `Content-Disposition:
+attachment; filename="{name}.{ext}"` header built from the validated
+session name, and an `X-Content-Type-Options: nosniff` header.
+
+**Error Responses:**
+- `400 Bad Request` - Invalid session name, or `format` is not `markdown`/`json`/`html`
+- `404 Not Found` - Session does not exist
+
 ### `GET /api/v1/sessions/{name}/citations/export`
 
 Export all RAG citations from a session's assistant messages, for
