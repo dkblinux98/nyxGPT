@@ -16,9 +16,14 @@ jobs:
   implement:
     # Triggers on assignment to DEV_AGENT, or on a RETRY_IMPLEMENTATION
     # comment on an issue (not a PR) from the owner (manual retry per the
-    # failure-comment instructions) or the dev agent itself (bounded
+    # failure-comment instructions), the dev agent itself (bounded
     # auto-retry -- the retry-count scan over prior RETRY_IMPLEMENTATION
-    # comments caps the loop).
+    # comments caps the loop), or the review agent (redispatch fallback:
+    # assign_and_trigger_developer posts this comment whenever it has to
+    # unassign-then-reassign an already-assigned dev agent, because that
+    # assignment-cycling event alone proved unreliable in production --
+    # #3647 -- and left a REQUEST_CHANGES redispatch stalled with no
+    # developer run started).
     # Developer agent reads issue history to determine if this is new work or a retry
     # Status verification will exit early if not "In Progress"
     if: >-
@@ -29,8 +34,19 @@ jobs:
                   && !github.event.issue.pull_request
                   && contains(github.event.comment.body, 'RETRY_IMPLEMENTATION')
                   && (github.event.comment.author_association == 'OWNER'
-                      || github.event.comment.user.login == vars.DEV_AGENT))) }}
+                      || github.event.comment.user.login == vars.DEV_AGENT
+                      || github.event.comment.user.login == vars.REVIEW_AGENT))) }}
     runs-on: ubuntu-latest
+    # Serialize runs per-issue: the redispatch fallback above deliberately
+    # fires two independent triggers (the assignment-cycling event AND the
+    # RETRY_IMPLEMENTATION comment) for the same handoff. Without this,
+    # both can start a job for the same issue at once (#3647 scope
+    # addition: duplicate developer runs observed 13s apart from an
+    # unrelated burst of triggers). cancel-in-progress stays false so a
+    # second trigger queues behind in-flight work instead of killing it.
+    concurrency:
+      group: developer-implement-${{ github.event.issue.number }}
+      cancel-in-progress: false
 
     permissions:
       contents: write
