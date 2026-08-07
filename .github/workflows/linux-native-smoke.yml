@@ -25,6 +25,12 @@ on:
       - 'scripts/systemd-native-smoke.sh'
       - '.github/workflows/linux-native-smoke.yml'
 
+# Read-only workflow: the smoke run only checks out the repo and drives the
+# local install; it never writes to the repository or its APIs (CodeQL #33,
+# actions/missing-workflow-permissions -- same pattern as #3628/#3642).
+permissions:
+  contents: read
+
 jobs:
   linux-native-smoke:
     runs-on: ubuntu-latest
