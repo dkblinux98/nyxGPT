@@ -228,6 +228,97 @@ LABELS_NORMAL='[{"name":"Feature"}]'
 _assert_eq "a normal single-label issue is unaffected" \
   "Feature" "$(real_label_names "$LABELS_NORMAL")"
 
+# --- Test 9: assign_and_trigger_developer on a fresh (unassigned) issue ---
+# --- just assigns -- no unassign dance, no fallback comment (the plain ---
+# --- assignment already fires a real 'issues.assigned' event) ---
+REPO_OWNER="test-owner"
+REPO_NAME="test-repo"
+DEV_AGENT="myGPT-developer-agent"
+
+GH_CALLS=()
+gh() {
+  GH_CALLS+=("$*")
+  case "$1 $2" in
+    "issue view") echo "" ;; # no assignees yet
+    "issue edit") : ;;
+    *) echo "[test] unexpected gh invocation: $*" >&2; return 1 ;;
+  esac
+}
+ASSIGN_ONLY_CALLS=()
+issue_assign_only() { ASSIGN_ONLY_CALLS+=("$1 $2"); }
+COMMENT_CALLS=()
+issue_comment() { COMMENT_CALLS+=("$1 $2"); }
+
+assign_and_trigger_developer "77"
+_assert_eq "fresh assignment calls issue_assign_only once" "1" "${#ASSIGN_ONLY_CALLS[@]}"
+_assert_eq "fresh assignment targets the dev agent" "77 myGPT-developer-agent" "${ASSIGN_ONLY_CALLS[0]}"
+_assert_eq "fresh assignment posts no fallback comment" "0" "${#COMMENT_CALLS[@]}"
+UNASSIGN_SEEN=0
+for c in "${GH_CALLS[@]}"; do [[ "$c" == "issue edit"* ]] && UNASSIGN_SEEN=1; done
+_assert_eq "fresh assignment never calls the unassign dance" "0" "$UNASSIGN_SEEN"
+
+# --- Test 10: assign_and_trigger_developer when the dev agent is already ---
+# --- assigned unassigns then reassigns (to force a real event) AND posts ---
+# --- a RETRY_IMPLEMENTATION fallback comment, per #3647's redispatch fix ---
+GH_CALLS=()
+gh() {
+  GH_CALLS+=("$*")
+  case "$1 $2" in
+    "issue view") echo "$DEV_AGENT" ;; # already assigned
+    "issue edit") : ;;
+    *) echo "[test] unexpected gh invocation: $*" >&2; return 1 ;;
+  esac
+}
+ASSIGN_ONLY_CALLS=()
+COMMENT_CALLS=()
+sleep() { :; } # no real backoff in tests
+
+assign_and_trigger_developer "78"
+_assert_eq "redispatch calls issue_assign_only once (the reassignment)" "1" "${#ASSIGN_ONLY_CALLS[@]}"
+_assert_eq "redispatch targets the dev agent" "78 myGPT-developer-agent" "${ASSIGN_ONLY_CALLS[0]}"
+_assert_eq "redispatch posts exactly one fallback comment" "1" "${#COMMENT_CALLS[@]}"
+_assert_eq "fallback comment body is the RETRY_IMPLEMENTATION marker" "78 RETRY_IMPLEMENTATION" "${COMMENT_CALLS[0]}"
+UNASSIGN_SEEN=0
+for c in "${GH_CALLS[@]}"; do [[ "$c" == "issue edit"* ]] && UNASSIGN_SEEN=1; done
+_assert_eq "redispatch unassigns before reassigning" "1" "$UNASSIGN_SEEN"
+
+# --- Test 11: issue_claimable_for_start gates scrummaster_start_issue.sh's ---
+# --- idempotency check (#3647 scope addition: duplicate concurrent ---
+# --- dispatches must not both claim the same issue) ---
+gh() {
+  case "$1 $2" in
+    "issue view") echo "${ISSUE_STATE_STUB:-OPEN}" ;;
+    *) echo "[test] unexpected gh invocation: $*" >&2; return 1 ;;
+  esac
+}
+
+ISSUE_STATE_STUB="OPEN"
+_issue_assignee_logins() { echo ""; }
+if issue_claimable_for_start "80"; then
+  echo "[ok] issue_claimable_for_start true for an open, unassigned issue"
+else
+  echo "[FAIL] issue_claimable_for_start should be true for an open, unassigned issue" >&2
+  FAILURES=$((FAILURES + 1))
+fi
+
+ISSUE_STATE_STUB="OPEN"
+_issue_assignee_logins() { echo "myGPT-developer-agent"; }
+if issue_claimable_for_start "81"; then
+  echo "[FAIL] issue_claimable_for_start should be false once another dispatch already assigned the issue" >&2
+  FAILURES=$((FAILURES + 1))
+else
+  echo "[ok] issue_claimable_for_start false once another dispatch already assigned the issue"
+fi
+
+ISSUE_STATE_STUB="CLOSED"
+_issue_assignee_logins() { echo ""; }
+if issue_claimable_for_start "82"; then
+  echo "[FAIL] issue_claimable_for_start should be false for a closed issue" >&2
+  FAILURES=$((FAILURES + 1))
+else
+  echo "[ok] issue_claimable_for_start false for a closed issue"
+fi
+
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "All tests passed."
   exit 0

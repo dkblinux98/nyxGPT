@@ -728,17 +728,55 @@ assign_and_trigger_developer() {
   current_assignee=$(gh issue view "$issue" --json assignees --jq '.assignees[].login' | grep -x "$DEV_AGENT" || echo "")
 
   if [[ -n "$current_assignee" ]]; then
-    # Developer already assigned - unassign first to force new assignment event
-    # This ensures workflow triggers even on retry/reopen scenarios
+    # Developer already assigned - unassign first to force a new 'assigned'
+    # event (reassigning the same login fires none). This alone proved
+    # insufficient in production (#3647: a REQUEST_CHANGES redispatch with
+    # the assignee already parked on the dev agent started nothing, and the
+    # issue sat idle until a manual RETRY_IMPLEMENTATION comment) -- so it
+    # is backed by a RETRY_IMPLEMENTATION comment as a second, independent
+    # trigger path. developer_auto_implement.yml's issue_comment gate
+    # accepts that comment from the dev agent, the human owner, or the
+    # review agent, so whichever caller hits this branch (review-agent
+    # redispatch, conflict-resolution round, human override) has a working
+    # fallback even if the assignment-cycling event never fires/propagates.
     _debug "Developer already assigned to #$issue - unassigning first to force event"
     gh issue edit "$issue" --remove-assignee "$DEV_AGENT"
     sleep 1  # Brief pause to ensure event processes
+    issue_assign_only "$issue" "$DEV_AGENT"
+    _debug "Reassigned developer to #$issue - workflow will trigger via assignment event"
+    issue_comment "$issue" "RETRY_IMPLEMENTATION"
+    _debug "Posted RETRY_IMPLEMENTATION fallback comment on #$issue"
+    return
   fi
 
-  # Assign developer - this will trigger workflow via 'issues.assigned' event
+  # New assignment - assign developer, which alone fires the 'issues.assigned'
+  # event (no fallback comment needed here: the assignee actually changes).
   # Developer agent reads issue history to determine if this is new work or a retry
   issue_assign_only "$issue" "$DEV_AGENT"
   _debug "Assigned developer to #$issue - workflow will trigger via assignment event"
+}
+
+# True (exit 0) if `issue` is OPEN and has no assignees yet -- i.e. safe for
+# scrummaster_start_issue.sh to claim. False otherwise (already assigned by
+# a concurrent/earlier dispatch, or closed), so the caller can skip a
+# duplicate start instead of re-triggering the developer workflow (#3647: a
+# burst of READY_FOR_NEXT_ISSUE triggers picked the same issue twice, firing
+# two developer_auto_implement runs 13 seconds apart, and one re-selected an
+# already-closed issue whose project-board Status hadn't propagated yet).
+issue_claimable_for_start() {
+  local issue="$1"
+  local state assignees
+  state="$(gh issue view "$issue" --repo "${REPO_OWNER}/${REPO_NAME}" --json state --jq '.state' 2>/dev/null || echo "UNKNOWN")"
+  if [[ "$state" != "OPEN" ]]; then
+    _warn "Issue #${issue} is not OPEN (state=${state}) -- skipping duplicate start."
+    return 1
+  fi
+  assignees="$(_issue_assignee_logins "$issue" 2>/dev/null || echo "")"
+  if [[ -n "$assignees" ]]; then
+    _warn "Issue #${issue} already has assignee(s) (${assignees}) -- a concurrent/earlier dispatch already claimed it. Skipping duplicate start."
+    return 1
+  fi
+  return 0
 }
 
 # -------------------------

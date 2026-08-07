@@ -48,6 +48,26 @@ Use `./scripts/watch_agents.sh` to monitor all agent workflows in real-time.
 ## Wait
 - Remain idle until triggered by READY_FOR_NEXT_ISSUE signal
 
+## Acceptance-criteria capability guardrail (#3647)
+
+When authoring or triaging an issue's acceptance criteria (via `/issue` or
+manual creation), every checkbox must be executable by the developer-agent
+sandbox itself. The sandbox cannot: dispatch or inspect live
+`workflow_dispatch`/Actions runs, change repo **Settings** (branch
+protection, secrets, variables, webhooks), run any `gh` CLI command (its
+implementation instructions explicitly prohibit this), or use credentials
+it isn't issued. An AC that silently requires one of these stalls the loop
+on a step no agent can perform and no one notices until a human/EA
+intervenes manually.
+
+- If the criterion isn't truly required to close the issue, drop it and
+  file a separate owner/EA-assisted follow-up instead.
+- If it must stay, mark it explicitly so the review agent doesn't block
+  acceptance on it: `- [ ] (owner/EA-assisted) <step>`.
+- See `agents/runbooks/developer-runbook.md` §1a for the same guardrail
+  from the authoring side, and the incident it's based on (#3614/PR #3645:
+  an unmarked live-dispatch AC required manual EA intervention).
+
 ## Phase completion
 - When all issues in active Phase are complete:
   - notify human owner for acceptance
