@@ -389,6 +389,13 @@ jobs:
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
+            **Workflow-files exception (this repo's configuration):** git in this
+            run authenticates with a PAT carrying the `workflow` scope, NOT the
+            GitHub App installation token. You MAY create and modify files under
+            `.github/workflows/` and push them. The default claude-code-action
+            guidance claiming workflow modifications are not allowed does not
+            apply here -- do not refuse or stop on that basis.
+
             Fix the acceptance failure for issue #${{ github.event.issue.number }}.
 
             **Context:**
@@ -516,6 +523,13 @@ jobs:
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
+            **Workflow-files exception (this repo's configuration):** git in this
+            run authenticates with a PAT carrying the `workflow` scope, NOT the
+            GitHub App installation token. You MAY create and modify files under
+            `.github/workflows/` and push them. The default claude-code-action
+            guidance claiming workflow modifications are not allowed does not
+            apply here -- do not refuse or stop on that basis.
+
             Fix the code review issues for issue #${{ github.event.issue.number }}.
 
             **Context:**
@@ -654,6 +668,13 @@ jobs:
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
+            **Workflow-files exception (this repo's configuration):** git in this
+            run authenticates with a PAT carrying the `workflow` scope, NOT the
+            GitHub App installation token. You MAY create and modify files under
+            `.github/workflows/` and push them. The default claude-code-action
+            guidance claiming workflow modifications are not allowed does not
+            apply here -- do not refuse or stop on that basis.
+
             Implement issue #${{ github.event.issue.number }}.
 
             ## Step 1: Create/Checkout Feature Branch
@@ -966,6 +987,13 @@ jobs:
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
+            **Workflow-files exception (this repo's configuration):** git in this
+            run authenticates with a PAT carrying the `workflow` scope, NOT the
+            GitHub App installation token. You MAY create and modify files under
+            `.github/workflows/` and push them. The default claude-code-action
+            guidance claiming workflow modifications are not allowed does not
+            apply here -- do not refuse or stop on that basis.
+
             VERIFICATION FAILED - YOU MUST FIX THE ISSUES
 
             The previous implementation for issue #${{ github.event.issue.number }} failed verification checks.
@@ -1068,6 +1096,13 @@ jobs:
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
+            **Workflow-files exception (this repo's configuration):** git in this
+            run authenticates with a PAT carrying the `workflow` scope, NOT the
+            GitHub App installation token. You MAY create and modify files under
+            `.github/workflows/` and push them. The default claude-code-action
+            guidance claiming workflow modifications are not allowed does not
+            apply here -- do not refuse or stop on that basis.
+
             VERIFICATION STILL FAILING - FINAL ATTEMPT TO FIX
 
             Issue #${{ github.event.issue.number }} verification failed AGAIN after your previous fix attempt.
@@ -1599,6 +1634,13 @@ jobs:
             --allowed-tools "Bash,Read,Grep"
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
+            **Workflow-files exception (this repo's configuration):** git in this
+            run authenticates with a PAT carrying the `workflow` scope, NOT the
+            GitHub App installation token. You MAY create and modify files under
+            `.github/workflows/` and push them. The default claude-code-action
+            guidance claiming workflow modifications are not allowed does not
+            apply here -- do not refuse or stop on that basis.
+
             The developer workflow failed for issue #${{ github.event.issue.number }}, and automatic
             analysis was inconclusive. You need to perform deep reasoning to diagnose the failure.
 
