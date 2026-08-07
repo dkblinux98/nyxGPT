@@ -12,6 +12,34 @@ This is the procedural “how” for implementing issues. Authority is defined i
 - Ensure issue is assigned to developer-agent and status is In Progress.
 - Confirm Phase/Sprint fields are set.
 
+## 1a) Acceptance-criteria capability guardrail (#3647)
+
+Applies whenever developer-agent authors or edits an issue's acceptance
+criteria — filing a follow-up issue, splitting scope, or proposing an AC
+during implementation. Every checkbox must be something the dev sandbox can
+actually execute and verify itself; otherwise the loop stalls on a step no
+one but a human/EA can perform, with no signal that it's stuck.
+
+- **Known sandbox gaps** (non-exhaustive — verify capability, don't assume):
+  live `workflow_dispatch`/Actions-API dispatch or run inspection, repo
+  **Settings** changes (branch protection, secrets, variables, webhooks),
+  anything requiring a `gh` CLI invocation (prohibited by this runbook's own
+  implementation instructions — see the "CRITICAL PROHIBITIONS" block in
+  the developer-implement prompt), and any step needing credentials/tokens
+  the sandbox isn't issued.
+- **If an AC needs one of these anyway**, don't file it as a plain
+  checkbox. Either drop it from the AC list (implementation + tests are
+  enough to close the issue) and file a **separate** owner/EA-assisted
+  follow-up, or keep it in this issue but mark it explicitly, e.g.:
+  `- [ ] (owner/EA-assisted) Dispatch a live workflow_dispatch run and
+  attach the run link as evidence.` The marker tells the review agent not
+  to block acceptance on a step the dev sandbox structurally cannot do.
+- **Context:** #3614/PR #3645 required live `workflow_dispatch` dry-run
+  evidence as an unmarked AC; the dev agent's sandbox had no Actions
+  dispatch capability (documented in its own commit `ae4160f5`), so the
+  executive assistant had to run it manually with no guardrail flagging the
+  gap ahead of time.
+
 ## 2) Branching
 - Create a short-lived branch named with issue reference, e.g.:
   - `feat/<issue-id>-<slug>` or `fix/<issue-id>-<slug>`
@@ -124,7 +152,7 @@ these triggers is added or edited — the review-runbook checklist entry for
 | `notify_scrum_ready.yml` | `issue_comment` | `SCRUMMASTER_AGENT_TOKEN`, dispatches the scrummaster select-and-start loop | commenter ∈ `{HUMAN_OWNER, SCRUM_AGENT, DEV_AGENT, REVIEW_AGENT}` | Fixed by #3600 |
 | `claude-code-review.yml` | `pull_request`(review_requested,synchronize), `issue_comment`, `workflow_dispatch` | Bash/Write/Edit + `CLAUDE_CODE_OAUTH_TOKEN` | `@review` path: commenter ∈ `{HUMAN_OWNER, REVIEW_AGENT, DEV_AGENT}` + fork-PR guard; other triggers already gated on `requested_reviewer`/`assignee==REVIEW_AGENT` | Fixed by #3600 |
 | `handle_acceptance_failure.yml` | `issue_comment` | issues/PR write, `DEV_AGENT_TOKEN` | `comment.user == HUMAN_OWNER` | Reference pattern, unchanged |
-| `developer_auto_implement.yml` | `issues`(assigned), `issue_comment` | `contents`/`issues`/PR write, `DEV_AGENT_TOKEN` | assignee==DEV_AGENT (issues) / `author_association==OWNER` or `user.login==DEV_AGENT` (`RETRY_IMPLEMENTATION`) | Reference pattern, unchanged |
+| `developer_auto_implement.yml` | `issues`(assigned), `issue_comment` | `contents`/`issues`/PR write, `DEV_AGENT_TOKEN` | assignee==DEV_AGENT (issues) / `author_association==OWNER` or `user.login` ∈ `{DEV_AGENT, REVIEW_AGENT}` (`RETRY_IMPLEMENTATION`) | #3647: extended to `REVIEW_AGENT` so `assign_and_trigger_developer`'s redispatch-fallback comment (posted whenever it has to unassign-then-reassign an already-assigned dev agent) actually starts a run |
 | `scrummaster_sprint_reorg_apply.yml` | `issue_comment` | project field writes | `author_association==OWNER` + release-issue check | Unchanged |
 | `acceptance_plan.yml` | `issues`(edited) | issues write | `github.actor==HUMAN_OWNER` + plan marker in body | Unchanged |
 | `add-to-release-issue-on-milestone.yml` | `issues`(milestoned) | issues write (`GITHUB_TOKEN`) | none, but `milestoned` can only be produced by a user with write access — no public-actor path exists | Unchanged, no gate needed |

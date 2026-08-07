@@ -1571,7 +1571,9 @@ def test_run_invokes_subprocess_with_expected_kwargs():
             args=["echo", "hi"], returncode=0, stdout="hi\n", stderr=""
         )
         cp = ops._run(["echo", "hi"])
-        run.assert_called_once_with(["echo", "hi"], check=True, text=True, capture_output=True)
+        run.assert_called_once_with(
+            ["echo", "hi"], check=True, text=True, capture_output=True, input=None, env=None
+        )
         assert cp.stdout == "hi\n"
 
 
@@ -1660,6 +1662,14 @@ def test_redact_cmd_masks_secret_flag_values():
     assert ops._redact_cmd(["nyxgpt", "--glitchtip-dsn=https://abc@host/1"]) == [
         "nyxgpt",
         "--glitchtip-dsn=***",
+    ]
+    # Env-style NAME=value with a secret-looking name (docker `-e` forwarding)
+    # is masked even without a leading dash (CodeQL #105/#106 regression).
+    assert ops._redact_cmd(["docker", "exec", "-e", "DJANGO_SUPERUSER_PASSWORD=pw"]) == [
+        "docker",
+        "exec",
+        "-e",
+        "DJANGO_SUPERUSER_PASSWORD=***",
     ]
     # Non-secret arguments pass through untouched.
     assert ops._redact_cmd(["docker", "compose", "up", "-d"]) == [
@@ -6363,9 +6373,11 @@ def test_reset_grafana_admin_password_runs_grafana_cli_via_compose_exec(tmp_path
     monkeypatch.setattr(ops, "_compose_available", lambda: True)
 
     captured_cmd = []
+    captured_input = []
 
-    def _fake_run(cmd, check=False):
+    def _fake_run(cmd, check=False, input=None):
         captured_cmd.extend(cmd)
+        captured_input.append(input)
         return subprocess.CompletedProcess(cmd, 0, stdout="Admin password changed", stderr="")
 
     monkeypatch.setattr(ops, "_run", _fake_run)
@@ -6381,12 +6393,15 @@ def test_reset_grafana_admin_password_runs_grafana_cli_via_compose_exec(tmp_path
         "exec",
         "-T",
         "grafana",
-        "grafana",
-        "cli",
-        "admin",
-        "reset-admin-password",
-        "new-secret",
+        "sh",
+        "-c",
+        'grafana cli admin reset-admin-password "$(cat)"',
     ]
+    # The password must travel over stdin, never as an argv element -- argv
+    # is visible to `ps`, shell history, and `_run`'s non-zero-exit logging
+    # (#3644, CodeQL py/clear-text-logging-sensitive-data #105/#106).
+    assert "new-secret" not in captured_cmd
+    assert captured_input == ["new-secret"]
 
 
 @pytest.mark.unit
@@ -6408,7 +6423,7 @@ def test_reset_grafana_admin_password_fails_on_nonzero_exit(tmp_path, monkeypatc
     monkeypatch.setattr(
         ops,
         "_run",
-        lambda cmd, check=False: subprocess.CompletedProcess(
+        lambda cmd, check=False, input=None: subprocess.CompletedProcess(
             cmd, 1, stdout="", stderr="grafana: no such service"
         ),
     )
@@ -7894,18 +7909,47 @@ def test_glitchtip_ensure_superuser_command_shape(monkeypatch):
 
     def fake_run(cmd, **k):
         captured["cmd"] = cmd
+        captured["env"] = k.get("env")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(ops, "_run", fake_run)
-    ops._glitchtip_ensure_superuser("admin@nyxgpt.local", "pw")
+    ops._glitchtip_ensure_superuser("admin@nyxgpt.local", "s3cr3t-pw")
 
     cmd = captured["cmd"]
     assert cmd[:4] == ["docker", "compose", "-f", str(ops.self_heal.COMPOSE_FILE)]
     assert "glitchtip" in cmd
     assert "createsuperuser" in cmd
     assert "--noinput" in cmd
-    assert "DJANGO_SUPERUSER_EMAIL=admin@nyxgpt.local" in cmd
-    assert "DJANGO_SUPERUSER_PASSWORD=pw" in cmd
+    # The credentials are forwarded via bare `-e VAR` + the process
+    # environment (CodeQL #105/#106): argv carries only the variable NAMES,
+    # never the password value.
+    assert "DJANGO_SUPERUSER_EMAIL" in cmd
+    assert "DJANGO_SUPERUSER_PASSWORD" in cmd
+    assert not any("s3cr3t-pw" in arg for arg in cmd)
+    env = captured["env"]
+    assert env["DJANGO_SUPERUSER_EMAIL"] == "admin@nyxgpt.local"
+    assert env["DJANGO_SUPERUSER_PASSWORD"] == "s3cr3t-pw"
+    assert env["DJANGO_SUPERUSER_USERNAME"] == "admin@nyxgpt.local"
+
+
+def test_glitchtip_ensure_superuser_password_never_logged(caplog):
+    # CodeQL #105/#106 regression: the idempotent rc=1 re-run logs at INFO
+    # with the command in `extra` -- the password must not appear anywhere
+    # in the log records (message or attributes) in any form.
+    with patch.object(ops.subprocess, "run") as run:
+        run.return_value = subprocess.CompletedProcess(
+            args=["docker"],
+            returncode=1,
+            stdout="",
+            stderr="Error: That email address is already taken.",
+        )
+        with caplog.at_level("DEBUG", logger="nyxgpt.ops"):
+            result = ops._glitchtip_ensure_superuser("admin@nyxgpt.local", "s3cr3t-pw")
+
+    assert result.ok
+    for record in caplog.records:
+        assert "s3cr3t-pw" not in record.getMessage()
+        assert "s3cr3t-pw" not in repr(vars(record))
 
 
 @pytest.mark.unit

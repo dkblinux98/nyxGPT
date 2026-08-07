@@ -16,9 +16,14 @@ jobs:
   implement:
     # Triggers on assignment to DEV_AGENT, or on a RETRY_IMPLEMENTATION
     # comment on an issue (not a PR) from the owner (manual retry per the
-    # failure-comment instructions) or the dev agent itself (bounded
+    # failure-comment instructions), the dev agent itself (bounded
     # auto-retry -- the retry-count scan over prior RETRY_IMPLEMENTATION
-    # comments caps the loop).
+    # comments caps the loop), or the review agent (redispatch fallback:
+    # assign_and_trigger_developer posts this comment whenever it has to
+    # unassign-then-reassign an already-assigned dev agent, because that
+    # assignment-cycling event alone proved unreliable in production --
+    # #3647 -- and left a REQUEST_CHANGES redispatch stalled with no
+    # developer run started).
     # Developer agent reads issue history to determine if this is new work or a retry
     # Status verification will exit early if not "In Progress"
     if: >-
@@ -29,8 +34,19 @@ jobs:
                   && !github.event.issue.pull_request
                   && contains(github.event.comment.body, 'RETRY_IMPLEMENTATION')
                   && (github.event.comment.author_association == 'OWNER'
-                      || github.event.comment.user.login == vars.DEV_AGENT))) }}
+                      || github.event.comment.user.login == vars.DEV_AGENT
+                      || github.event.comment.user.login == vars.REVIEW_AGENT))) }}
     runs-on: ubuntu-latest
+    # Serialize runs per-issue: the redispatch fallback above deliberately
+    # fires two independent triggers (the assignment-cycling event AND the
+    # RETRY_IMPLEMENTATION comment) for the same handoff. Without this,
+    # both can start a job for the same issue at once (#3647 scope
+    # addition: duplicate developer runs observed 13s apart from an
+    # unrelated burst of triggers). cancel-in-progress stays false so a
+    # second trigger queues behind in-flight work instead of killing it.
+    concurrency:
+      group: developer-implement-${{ github.event.issue.number }}
+      cancel-in-progress: false
 
     permissions:
       contents: write
@@ -373,6 +389,13 @@ jobs:
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
+            **Workflow-files exception (this repo's configuration):** git in this
+            run authenticates with a PAT carrying the `workflow` scope, NOT the
+            GitHub App installation token. You MAY create and modify files under
+            `.github/workflows/` and push them. The default claude-code-action
+            guidance claiming workflow modifications are not allowed does not
+            apply here -- do not refuse or stop on that basis.
+
             Fix the acceptance failure for issue #${{ github.event.issue.number }}.
 
             **Context:**
@@ -500,6 +523,13 @@ jobs:
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
+            **Workflow-files exception (this repo's configuration):** git in this
+            run authenticates with a PAT carrying the `workflow` scope, NOT the
+            GitHub App installation token. You MAY create and modify files under
+            `.github/workflows/` and push them. The default claude-code-action
+            guidance claiming workflow modifications are not allowed does not
+            apply here -- do not refuse or stop on that basis.
+
             Fix the code review issues for issue #${{ github.event.issue.number }}.
 
             **Context:**
@@ -638,6 +668,13 @@ jobs:
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
+            **Workflow-files exception (this repo's configuration):** git in this
+            run authenticates with a PAT carrying the `workflow` scope, NOT the
+            GitHub App installation token. You MAY create and modify files under
+            `.github/workflows/` and push them. The default claude-code-action
+            guidance claiming workflow modifications are not allowed does not
+            apply here -- do not refuse or stop on that basis.
+
             Implement issue #${{ github.event.issue.number }}.
 
             ## Step 1: Create/Checkout Feature Branch
@@ -950,6 +987,13 @@ jobs:
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
+            **Workflow-files exception (this repo's configuration):** git in this
+            run authenticates with a PAT carrying the `workflow` scope, NOT the
+            GitHub App installation token. You MAY create and modify files under
+            `.github/workflows/` and push them. The default claude-code-action
+            guidance claiming workflow modifications are not allowed does not
+            apply here -- do not refuse or stop on that basis.
+
             VERIFICATION FAILED - YOU MUST FIX THE ISSUES
 
             The previous implementation for issue #${{ github.event.issue.number }} failed verification checks.
@@ -1052,6 +1096,13 @@ jobs:
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
+            **Workflow-files exception (this repo's configuration):** git in this
+            run authenticates with a PAT carrying the `workflow` scope, NOT the
+            GitHub App installation token. You MAY create and modify files under
+            `.github/workflows/` and push them. The default claude-code-action
+            guidance claiming workflow modifications are not allowed does not
+            apply here -- do not refuse or stop on that basis.
+
             VERIFICATION STILL FAILING - FINAL ATTEMPT TO FIX
 
             Issue #${{ github.event.issue.number }} verification failed AGAIN after your previous fix attempt.
@@ -1583,6 +1634,13 @@ jobs:
             --allowed-tools "Bash,Read,Grep"
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
+            **Workflow-files exception (this repo's configuration):** git in this
+            run authenticates with a PAT carrying the `workflow` scope, NOT the
+            GitHub App installation token. You MAY create and modify files under
+            `.github/workflows/` and push them. The default claude-code-action
+            guidance claiming workflow modifications are not allowed does not
+            apply here -- do not refuse or stop on that basis.
+
             The developer workflow failed for issue #${{ github.event.issue.number }}, and automatic
             analysis was inconclusive. You need to perform deep reasoning to diagnose the failure.
 

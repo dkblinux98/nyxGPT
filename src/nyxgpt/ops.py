@@ -354,6 +354,8 @@ def _run(
     expected: bool = False,
     expected_returncodes: Container[int] | None = None,
     expected_message: str | None = None,
+    input: str | None = None,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run `cmd`, capturing stdout/stderr as text.
 
@@ -370,9 +372,19 @@ def _run(
     INFO with `expected_message` (or a generic "expected exit" message)
     instead of WARNING, while any other non-zero exit still logs at WARNING
     exactly as today (#3574).
+    Pass `input` to feed the subprocess's stdin (e.g. a secret a caller
+    doesn't want to put on `cmd`'s argv at all -- argv is visible to `ps`,
+    shell history, and this function's own non-zero-exit logging, while
+    stdin is not (#3644, CodeQL py/clear-text-logging-sensitive-data)).
+    Pass `env` to run with a modified environment -- the other secret-safe
+    channel: `docker compose exec -e VAR` (bare, no `=value`) forwards VAR
+    from this process's environment into the container without the value
+    ever appearing on argv (CodeQL #105/#106).
     """
     try:
-        result = subprocess.run(cmd, check=check, text=True, capture_output=True)
+        result = subprocess.run(
+            cmd, check=check, text=True, capture_output=True, input=input, env=env
+        )
     except subprocess.CalledProcessError as e:
         _log_nonzero_exit(
             cmd, e.returncode, e.stderr, expected, expected_returncodes, expected_message
@@ -398,10 +410,11 @@ def _redact_cmd(cmd: list[str]) -> list[str]:
     """Return a copy of `cmd` with any secret-bearing argument value masked.
 
     Two shapes are redacted: a value in the position *after* a secret-named
-    flag (`--api-key VALUE` -> `--api-key ***`), and an inline
-    `--flag=value` where the flag name looks sensitive (`--dsn=... ` ->
-    `--dsn=***`). The returned list is freshly built so the sensitive value
-    never flows on to the logging sink.
+    flag (`--api-key VALUE` -> `--api-key ***`), and an inline `NAME=value`
+    where the name looks sensitive -- with or without a leading dash, so
+    both `--dsn=...` and an env-style `DJANGO_SUPERUSER_PASSWORD=...`
+    (docker `-e NAME=value` forwarding) are masked. The returned list is
+    freshly built so the sensitive value never flows on to the logging sink.
     """
     redacted: list[str] = []
     mask_next = False
@@ -411,10 +424,10 @@ def _redact_cmd(cmd: list[str]) -> list[str]:
             mask_next = False
             continue
         low = arg.lower()
-        if arg.startswith("-") and "=" in arg:
-            flag, _, _value = arg.partition("=")
-            if any(h in flag.lower() for h in _SECRET_ARG_HINTS):
-                redacted.append(f"{flag}=***")
+        if "=" in arg:
+            name, _, _value = arg.partition("=")
+            if any(h in name.lower() for h in _SECRET_ARG_HINTS):
+                redacted.append(f"{name}=***")
                 continue
         if arg.startswith("-") and any(h in low for h in _SECRET_ARG_HINTS):
             redacted.append(arg)
@@ -450,6 +463,25 @@ def _log_nonzero_exit(
     else:
         level = logging.DEBUG if expected else logging.WARNING
         message = f"Subprocess exited non-zero (rc={returncode}): {safe_cmd_str}"
+    # CodeQL alerts #105/#106 (py/clear-text-logging-sensitive-data) flagged
+    # `message`/`extra` below, and were REAL twice over: a bare positional
+    # secret (`_reset_grafana_admin_password`, fixed in #3644 by piping it
+    # over stdin), and an env-style `-e DJANGO_SUPERUSER_PASSWORD=value`
+    # argv element (`_glitchtip_ensure_superuser`) that slipped past
+    # `_redact_cmd`'s dash-prefixed flag masking and reached this log's
+    # `extra` at INFO on every idempotent glitchtip-init re-run. That call
+    # site now forwards the secret via the process environment (bare `-e
+    # VAR` + `_run(env=...)`) so it never appears on argv, and `_redact_cmd`
+    # also masks dash-less `NAME=value` elements as defense-in-depth.
+    # Keep secrets off argv entirely (stdin or env) at any new call site --
+    # that kills the flow at the source instead of trying to convince
+    # CodeQL's taint tracker that `_redact_cmd` is a sanitizer. Inline
+    # suppression comments (`codeql[...]`, then `lgtm[...]`) were tried in
+    # earlier rounds and neither took effect against this repo's CodeQL
+    # default-setup configuration -- don't reintroduce them.
+    # `test_run_redacts_secret_cmd_values_on_nonzero_exit` in
+    # `tests/unit/test_ops.py` covers the masking that remains as
+    # defense-in-depth for any other secret-bearing flag.
     logger.log(
         level,
         message,
@@ -5705,6 +5737,13 @@ def _reset_grafana_admin_password(password: str) -> OpsResult:
     whether the volume is fresh (first boot) or long-lived (env var is only
     applied at first boot -- irrelevant to an existing volume, which is
     exactly the deployment shape that reproduced #3458's 401s).
+
+    `password` is piped in over stdin rather than appended to `cmd` as a
+    positional argv value: `_redact_cmd`'s masking only recognizes secrets
+    that follow a secret-named flag (`--api-key VALUE`) or an inline
+    `--flag=value`, so a bare positional value like this one would reach
+    `_run`'s non-zero-exit logging -- and `ps`/shell history -- in clear
+    text (#3644, CodeQL py/clear-text-logging-sensitive-data #105/#106).
     """
     if not _compose_available():
         return OpsResult(
@@ -5720,13 +5759,11 @@ def _reset_grafana_admin_password(password: str) -> OpsResult:
         "exec",
         "-T",
         "grafana",
-        "grafana",
-        "cli",
-        "admin",
-        "reset-admin-password",
-        password,
+        "sh",
+        "-c",
+        'grafana cli admin reset-admin-password "$(cat)"',
     ]
-    cp = _run(cmd, check=False)
+    cp = _run(cmd, check=False, input=password)
     if cp.returncode != 0:
         return OpsResult(
             False,
@@ -7141,6 +7178,16 @@ def _glitchtip_ensure_superuser(email: str, password: str) -> OpsResult:
     expected returncode so a healthy re-run of `glitchtip-init` logs at INFO
     instead of a scary WARNING (#3574), while still treating it as success
     so re-running after the first successful run is a no-op.
+
+    The password never touches argv (CodeQL #105/#106,
+    py/clear-text-logging-sensitive-data): bare `-e VAR` flags make
+    `docker compose exec` forward each variable's value from this process's
+    environment (passed via `_run(env=...)`) into the container, so
+    `_run`'s non-zero-exit logging -- which fires at INFO on every
+    idempotent rc=1 re-run -- only ever sees the variable NAMES. The old
+    `-e NAME=value` argv form slipped past `_redact_cmd`'s dash-prefixed
+    flag masking and put the real password in the log `extra` on every
+    re-run.
     """
     cmd = [
         "docker",
@@ -7150,11 +7197,11 @@ def _glitchtip_ensure_superuser(email: str, password: str) -> OpsResult:
         "exec",
         "-T",
         "-e",
-        f"DJANGO_SUPERUSER_EMAIL={email}",
+        "DJANGO_SUPERUSER_EMAIL",
         "-e",
-        f"DJANGO_SUPERUSER_PASSWORD={password}",
+        "DJANGO_SUPERUSER_PASSWORD",
         "-e",
-        f"DJANGO_SUPERUSER_USERNAME={email}",
+        "DJANGO_SUPERUSER_USERNAME",
         "glitchtip",
         "./manage.py",
         "createsuperuser",
@@ -7169,6 +7216,12 @@ def _glitchtip_ensure_superuser(email: str, password: str) -> OpsResult:
                 f"GlitchTip superuser {email} already exists -- expected rc=1, "
                 "treated as success"
             ),
+            env={
+                **os.environ,
+                "DJANGO_SUPERUSER_EMAIL": email,
+                "DJANGO_SUPERUSER_PASSWORD": password,
+                "DJANGO_SUPERUSER_USERNAME": email,
+            },
         )
     except Exception as e:
         return OpsResult(
