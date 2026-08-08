@@ -67,6 +67,7 @@ def _clean_env(monkeypatch):
         "ACTIVE_SPRINT_TITLE",
         "RELEASE_VERSION",
         "RELEASE_ISSUE",
+        "EXCLUDE_ISSUES",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -244,6 +245,58 @@ class TestReleaseWall:
         out = summarize_backlog_page.summarize(_page(items))
         assert out["backlog_open"] == 1
         assert out["best_issue"] == 42
+
+
+class TestExcludeIssues:
+    """EXCLUDE_ISSUES (#3665) lets scrummaster_dispatch_next.sh's
+    fall-through loop retry selection within one run after an earlier
+    candidate turned out to be unclaimable, without re-selecting the same
+    blocked issue forever."""
+
+    def test_excluded_issue_is_skipped_in_favor_of_the_next_candidate(self, monkeypatch):
+        monkeypatch.setenv("STATUS_FIELD", "Status")
+        monkeypatch.setenv("STATUS_BACKLOG", "Backlog")
+        monkeypatch.setenv("EXCLUDE_ISSUES", "10")
+        items = [
+            _item(10, status="Backlog"),
+            _item(20, status="Backlog"),
+        ]
+        out = summarize_backlog_page.summarize(_page(items))
+        assert out["backlog_open"] == 1
+        assert out["best_issue"] == 20
+
+    def test_multiple_excluded_issues(self, monkeypatch):
+        monkeypatch.setenv("STATUS_FIELD", "Status")
+        monkeypatch.setenv("STATUS_BACKLOG", "Backlog")
+        monkeypatch.setenv("EXCLUDE_ISSUES", "10,20")
+        items = [
+            _item(10, status="Backlog"),
+            _item(20, status="Backlog"),
+            _item(30, status="Backlog"),
+        ]
+        out = summarize_backlog_page.summarize(_page(items))
+        assert out["backlog_open"] == 1
+        assert out["best_issue"] == 30
+
+    def test_all_candidates_excluded_yields_no_candidate(self, monkeypatch):
+        monkeypatch.setenv("STATUS_FIELD", "Status")
+        monkeypatch.setenv("STATUS_BACKLOG", "Backlog")
+        monkeypatch.setenv("EXCLUDE_ISSUES", "10,20")
+        items = [
+            _item(10, status="Backlog"),
+            _item(20, status="Backlog"),
+        ]
+        out = summarize_backlog_page.summarize(_page(items))
+        assert out["backlog_open"] == 0
+        assert out["best_issue"] is None
+
+    def test_unset_exclude_issues_changes_nothing(self, monkeypatch):
+        monkeypatch.setenv("STATUS_FIELD", "Status")
+        monkeypatch.setenv("STATUS_BACKLOG", "Backlog")
+        items = [_item(10, status="Backlog")]
+        out = summarize_backlog_page.summarize(_page(items))
+        assert out["backlog_open"] == 1
+        assert out["best_issue"] == 10
 
 
 class TestReleaseIssueGuard:
