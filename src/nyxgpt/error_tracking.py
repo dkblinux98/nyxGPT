@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any, Literal
 from urllib.parse import urlsplit, urlunsplit
 
@@ -87,6 +88,34 @@ def _normalize_dsn_host(dsn: str) -> str:
     return rewritten
 
 
+_MEMORY_ADDRESS_RE = re.compile(r"0x[0-9a-fA-F]+")
+
+
+def _normalize_memory_address_fingerprint(
+    event: dict[str, Any], _hint: dict[str, Any]
+) -> dict[str, Any]:
+    """Sentry `before_send` hook: group events whose message embeds a raw
+    object address (e.g. `<Token var=... at 0x7f...>`) into one issue
+    instead of one per occurrence.
+
+    Defense in depth for #3593 (the OTel ASGI context-detach race, guarded
+    at the source in `tracing.py`) and any future exception of the same
+    shape: GlitchTip's default grouping is title-based, and a `repr()` that
+    embeds a memory address makes every occurrence's title unique, so a
+    single noisy root cause can flood the tracker with one issue per event
+    rather than grouping. This does not hide the event -- it only makes
+    address-bearing occurrences of the same underlying error group
+    together, the same way they would if the message were deterministic.
+    """
+    for exc_value in (event.get("exception") or {}).get("values") or []:
+        message = exc_value.get("value") or ""
+        if _MEMORY_ADDRESS_RE.search(message):
+            normalized = _MEMORY_ADDRESS_RE.sub("0x...", message)
+            event["fingerprint"] = ["{{ default }}", exc_value.get("type") or "", normalized]
+            break
+    return event
+
+
 def init_error_tracking(error_tracking_config: dict[str, Any]) -> None:
     """Set up the Sentry SDK against a local tracker, if enabled.
 
@@ -127,6 +156,7 @@ def init_error_tracking(error_tracking_config: dict[str, Any]) -> None:
         traces_sample_rate=float(error_tracking_config.get("traces_sample_rate", 0.0)),
         integrations=[StarletteIntegration(), FastApiIntegration()],
         send_default_pii=False,
+        before_send=_normalize_memory_address_fingerprint,
     )
 
     _enabled = True

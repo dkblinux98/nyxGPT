@@ -376,6 +376,78 @@ def test_error_tracking_report_endpoint_signals_inactive_when_disabled(
     assert response.json()["status"] == "inactive"
 
 
+def test_init_error_tracking_wires_fingerprint_normalizer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(error_tracking, "_enabled", False)
+    init_calls = []
+    monkeypatch.setattr(error_tracking.sentry_sdk, "init", lambda **kw: init_calls.append(kw))
+
+    error_tracking.init_error_tracking({"enabled": True, "dsn": "http://key@localhost:8080/1"})
+
+    assert init_calls[0]["before_send"] is error_tracking._normalize_memory_address_fingerprint
+
+
+def test_normalize_memory_address_fingerprint_groups_address_bearing_exceptions() -> None:
+    """Regression test for #3593: the OTel ASGI context-detach race embeds
+    ContextVar/Token object addresses in its message, so every occurrence
+    has a unique title and GlitchTip can't group them -- 139 separate
+    issues from one root cause. Two occurrences with different addresses
+    must normalize to the identical fingerprint so they group together."""
+    event_one = {
+        "exception": {
+            "values": [
+                {
+                    "type": "ValueError",
+                    "value": (
+                        "<Token var=<ContextVar name='current_context' default={} "
+                        "at 0x1090ed710> at 0x10a2f3ac0> was created in a different Context"
+                    ),
+                }
+            ]
+        }
+    }
+    event_two = {
+        "exception": {
+            "values": [
+                {
+                    "type": "ValueError",
+                    "value": (
+                        "<Token var=<ContextVar name='current_context' default={} "
+                        "at 0x7fdeadbeef00> at 0x7fcafef00d00> was created in a different Context"
+                    ),
+                }
+            ]
+        }
+    }
+
+    result_one = error_tracking._normalize_memory_address_fingerprint(event_one, {})
+    result_two = error_tracking._normalize_memory_address_fingerprint(event_two, {})
+
+    assert result_one["fingerprint"] == result_two["fingerprint"]
+    assert "0x1090ed710" not in str(result_one["fingerprint"])
+
+
+def test_normalize_memory_address_fingerprint_leaves_normal_exceptions_alone() -> None:
+    """An exception whose message has no embedded address must be left with
+    Sentry's default grouping -- no fingerprint override should be added."""
+    event = {"exception": {"values": [{"type": "ValueError", "value": "plain old error message"}]}}
+
+    result = error_tracking._normalize_memory_address_fingerprint(event, {})
+
+    assert "fingerprint" not in result
+
+
+def test_normalize_memory_address_fingerprint_handles_events_without_exception() -> None:
+    """Message-only events (e.g. from capture_message) have no `exception`
+    key at all -- the hook must not raise on them."""
+    event: dict[str, Any] = {"message": "something happened"}
+
+    result = error_tracking._normalize_memory_address_fingerprint(event, {})
+
+    assert result == {"message": "something happened"}
+
+
 def test_error_tracking_report_endpoint_forwards_to_tracker_when_enabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
