@@ -1,6 +1,6 @@
 # Decision Record: Private Access Mechanism for Cloud Deployments (P6-4)
 
-**Issue:** #3503 · **Status:** Proposed — awaiting owner review/approval on the issue
+**Issue:** #3503 · **Status:** Approved by owner, 2026-08-04
 **Author:** developer-agent · **Date:** 2026-08-03
 **Blocks:** P6-8 (Terraform AWS modules), P6-11 (`nyxgpt cloud deploy`)
 
@@ -199,7 +199,12 @@ command, by design.
 
 ## Owner review
 
-Per the issue's acceptance criteria, this decision needs owner
-review/approval **on issue #3503** before P6-8 or P6-11 begin. Once
-approved, this section will be updated with the approval date; until then,
-downstream issues should treat this mechanism as proposed, not final.
+**Approved by the owner on issue #3503, 2026-08-04**, as written: SSH
+tunnel (option 1) with the port-22 security-group rule owner-IP-scoped
+(option 4's technique) as defense in depth. During review the owner
+briefly selected option 4 alone before settling on this hybrid — see the
+issue's comment trail; this record's Decision section is the final word.
+P6-8/P6-11-class work may now proceed against this mechanism. The IP-churn
+concern noted under option 1's cons still applies to the SSH rule:
+P6-11-class work should include a wrapped way to refresh the SG rule to
+the owner's current public IP.

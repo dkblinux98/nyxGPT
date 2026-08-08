@@ -232,6 +232,50 @@ def test_chat_stream_emits_rag_metadata(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert chunks[1] == "answer"
 
 
+def test_chat_stream_emits_rag_metadata_with_empty_chunks_when_zero_rows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """chat_stream must still emit the rag_metadata marker when RAG found nothing.
+
+    Regression for #3585 (AC2): previously the marker was only yielded when
+    `rag_context` was non-empty, so a zero-row retrieval (e.g. a mid-session
+    filter mismatch) silently omitted the citations block -- indistinguishable
+    from the model answering out of conversation history instead of RAG.
+    """
+    cfg = _cfg(tmp_path, rag_enabled=True)
+
+    monkeypatch.setattr("nyxgpt.chat.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.sessions.load_config", lambda *_a, **_k: cfg)
+
+    monkeypatch.setattr("nyxgpt.chat.retrieve_context", lambda *a, **k: [])
+
+    def fake_stream_tokens(*args: Any, **kwargs: Any):
+        yield "answer"
+
+    monkeypatch.setattr("nyxgpt.chat.ollama_chat_stream_tokens", fake_stream_tokens)
+    monkeypatch.setattr("nyxgpt.chat.save_session", lambda *a, **k: None)
+
+    chunks = list(chat_stream("question", config_path=None))
+
+    assert len(chunks) >= 2
+    first_chunk = chunks[0]
+    assert "__RAG_START__" in first_chunk
+    assert "__RAG_END__" in first_chunk
+
+    import json
+
+    start_marker = "__RAG_START__"
+    end_marker = "__RAG_END__"
+    start_idx = first_chunk.index(start_marker) + len(start_marker)
+    end_idx = first_chunk.index(end_marker)
+    rag_data = json.loads(first_chunk[start_idx:end_idx])
+
+    assert rag_data["type"] == "rag_metadata"
+    assert rag_data["chunks"] == []
+
+    assert chunks[1] == "answer"
+
+
 def test_chat_with_rag_enabled_but_no_chunks_found(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

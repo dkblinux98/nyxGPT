@@ -1577,6 +1577,34 @@ def test_ops_migrate_volumes_dispatches_to_ops_module(
     assert "[OK] Migrated cassandra data" in capsys.readouterr().out
 
 
+def test_ops_port_forward_dispatches_to_ops_module(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`nyxgpt ops port-forward` parses and dispatches, with --port passed through."""
+    import nyxgpt.cli as cli_mod
+
+    calls = []
+    monkeypatch.setattr(cli_mod.ops_mod, "port_forward", lambda args: calls.append(args.port) or 0)
+
+    exit_code = cli(["ops", "port-forward", "--port", "3001"])
+
+    assert exit_code == 0
+    assert calls == [3001]
+
+
+def test_ops_port_forward_default_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`nyxgpt ops port-forward` defaults to port 3000 when --port is omitted."""
+    import nyxgpt.cli as cli_mod
+
+    calls = []
+    monkeypatch.setattr(cli_mod.ops_mod, "port_forward", lambda args: calls.append(args.port) or 0)
+
+    exit_code = cli(["ops", "port-forward"])
+
+    assert exit_code == 0
+    assert calls == [3000]
+
+
 def test_ops_install_skip_observability_flag_parses(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1618,6 +1646,83 @@ def test_ops_install_skip_observability_flag_parses(
 
     assert exit_code == 0
     assert called == []
+
+
+def test_up_dispatches_to_ops_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`nyxgpt up` (#3504) dispatches to `ops_mod.up`, not a reimplementation."""
+    import nyxgpt.cli as cli_mod
+
+    calls: list[object] = []
+    monkeypatch.setattr(cli_mod.ops_mod, "up", lambda args: (calls.append(args), 0)[1])
+
+    exit_code = cli(["up"])
+
+    assert exit_code == 0
+    assert len(calls) == 1
+
+
+def test_up_passes_through_install_mode_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`up`'s mode flags (--skip-observability etc.) must reach `ops_mod.up` unchanged --
+    it's a thin alias for `ops install`, not a fork with its own flag set."""
+    import nyxgpt.cli as cli_mod
+
+    calls: list[object] = []
+    monkeypatch.setattr(cli_mod.ops_mod, "up", lambda args: (calls.append(args), 0)[1])
+
+    exit_code = cli(["up", "--skip-observability", "--local", "--timeout", "5", "--no-wait"])
+
+    assert exit_code == 0
+    args = calls[0]
+    assert args.skip_observability is True
+    assert args.local is True
+    assert args.timeout == 5.0
+    assert args.no_wait is True
+
+
+def test_up_returns_nonzero_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    import nyxgpt.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod.ops_mod, "up", lambda args: 2)
+
+    exit_code = cli(["up"])
+
+    assert exit_code == 2
+
+
+def test_down_dispatches_to_ops_down(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`nyxgpt down` (#3504) dispatches to the exact same `ops_mod.down` that
+    `nyxgpt ops down` uses -- a thin alias, not a forked implementation."""
+    import nyxgpt.cli as cli_mod
+
+    calls: list[object] = []
+    monkeypatch.setattr(cli_mod.ops_mod, "down", lambda args: (calls.append(args), 0)[1])
+
+    exit_code = cli(["down"])
+
+    assert exit_code == 0
+    assert len(calls) == 1
+
+
+def test_down_passes_through_scope_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    import nyxgpt.cli as cli_mod
+
+    calls: list[object] = []
+    monkeypatch.setattr(cli_mod.ops_mod, "down", lambda args: (calls.append(args), 0)[1])
+
+    exit_code = cli(["down", "--app-only"])
+
+    assert exit_code == 0
+    assert calls[0].app_only is True
+
+
+def test_down_returns_nonzero_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    import nyxgpt.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod.ops_mod, "down", lambda args: 2)
+
+    exit_code = cli(["down"])
+
+    assert exit_code == 2
 
 
 # --- Interactive chat mode tests ---

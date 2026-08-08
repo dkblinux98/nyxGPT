@@ -8,11 +8,13 @@ searching, merging, exporting, and batch-updating sessions.
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 import os
 import re
 import sys
+import tempfile
 import time
 import uuid
 from contextlib import contextmanager
@@ -98,6 +100,7 @@ def file_lock(file_path: Path, timeout: float = 5.0):
     Raises:
         TimeoutError: If lock cannot be acquired within timeout
         OSError: If file cannot be opened or locked
+        ValueError: If `file_path` resolves outside the allowed data area
 
     Example:
         >>> with file_lock(Path("session.json"), timeout=10.0) as fd:
@@ -105,6 +108,19 @@ def file_lock(file_path: Path, timeout: float = 5.0):
         ...     data = Path("session.json").read_text()
         ...     # Lock automatically released when exiting block
     """
+    # Inline sink-side barrier (CodeQL py/path-injection): a lock target
+    # resolving outside the allowed data roots is refused before any
+    # filesystem effect. Rebind under a single-condition startswith guard
+    # (disjunctions are never credited -- see PR #3657).
+    real = os.path.realpath(str(file_path))
+    _home = os.path.realpath(os.path.expanduser("~"))
+    _tmp = os.path.realpath(tempfile.gettempdir())
+    if real.startswith(_home + os.sep):  # noqa: SIM114
+        file_path = Path(real)
+    elif real.startswith(_tmp + os.sep):
+        file_path = Path(real)
+    else:
+        raise ValueError(f"Lock file resolves outside the allowed data area: {file_path!r}")
     # Open file for reading (create if doesn't exist)
     file_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -241,16 +257,91 @@ def default_sessions_dir() -> Path:
     return get_sessions_dir(cfg)
 
 
+def _resolve_sessions_dir(sessions_dir: Path) -> Path:
+    """Validate `sessions_dir` resolves inside an allowed root, return its realpath.
+
+    Sink-side barrier (CodeQL py/path-injection): this is the single
+    resolver every sessions.py function routes its `sessions_dir` through
+    before touching the filesystem, so present and future sinks in this
+    module are covered by one barrier. Uses `os.path.realpath` + string-prefix
+    containment against the user's home directory / system temp directory --
+    the CodeQL-recognised barrier pattern also used by
+    `app._sessions_dir_from_str` and `config._expand_path`.
+    `Path.relative_to()` is NOT modelled as a sanitizer.
+
+    Raises:
+        ValueError: If `sessions_dir` resolves outside the allowed roots.
+    """
+    real = os.path.realpath(str(sessions_dir))
+    _home = os.path.realpath(os.path.expanduser("~"))
+    _tmp = os.path.realpath(tempfile.gettempdir())
+    # Each branch below is controlled by exactly one condition: CodeQL's
+    # barrier-guard analysis only credits a guard whose branch is dominated
+    # by a single sanitizing comparison, never a disjunction of them.
+    if real.startswith(_home + os.sep):
+        return Path(real)
+    if real.startswith(_tmp + os.sep):
+        return Path(real)
+    raise ValueError(f"sessions_dir resolves outside the allowed data area: {sessions_dir!r}")
+
+
 def session_file_for(name: str, sessions_dir: Path) -> Path:
     """Return the session JSON file path for a validated session `name`."""
-    name = validate_session_name(name)
-    # name is already validated and safe to use directly
-    return sessions_dir / f"{name}.json"
+    if not isinstance(name, str):
+        raise ValueError("session name must be a string")
+    stripped = name.strip()
+    # Inline `re.fullmatch` allowlist barrier (CodeQL py/path-injection sink-side
+    # chokepoint): must be a direct `re.fullmatch(...)` call in this function --
+    # delegating to a helper that wraps a precompiled `re.Pattern` is not
+    # recognised as a sanitizer by CodeQL's py/path-injection query.
+    if not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", stripped):
+        raise ValueError(
+            "Session name must be 1-64 alphanumeric characters, underscores, or hyphens"
+        )
+    resolved_dir = _resolve_sessions_dir(sessions_dir)
+    candidate = resolved_dir / f"{stripped}.json"
+    # Re-anchor the COMPOSED path before returning it (CodeQL
+    # py/path-injection): the `re.fullmatch` name check above is not a
+    # recognized barrier for this query (regex guards only credit for
+    # command-line injection), so without this the name-tainted composed
+    # path re-taints every caller's filesystem sink. A realpath +
+    # single-condition startswith rebind here is a barrier node on every
+    # caller's flow. It also refuses a session file that is a symlink
+    # escaping the allowed roots.
+    real = os.path.realpath(str(candidate))
+    _home = os.path.realpath(os.path.expanduser("~"))
+    _tmp = os.path.realpath(tempfile.gettempdir())
+    if real.startswith(_home + os.sep):
+        return Path(real)
+    if real.startswith(_tmp + os.sep):
+        return Path(real)
+    raise ValueError(f"Session file resolves outside the allowed data area: {candidate!r}")
 
 
 def meta_file_for(session_file: Path) -> Path:
     """Return the `.meta.json` metadata file path paired with a session file."""
-    return session_file.with_suffix(".meta.json")
+    # Inline `re.fullmatch` allowlist barrier, defense-in-depth: `session_file`
+    # is expected to already be a validated `session_file_for()` result, but
+    # this sink is validated independently so it is covered even if a future
+    # caller derives `session_file` some other way.
+    if not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", session_file.stem):
+        raise ValueError(
+            "Session file name must be 1-64 alphanumeric characters, underscores, or hyphens"
+        )
+    candidate = session_file.with_suffix(".meta.json")
+    # Re-anchor the composed metadata path -- same chokepoint barrier as
+    # session_file_for (regex checks are not credited path-injection
+    # barriers, so the composed path must pass a realpath +
+    # single-condition startswith rebind to deliver a clean value to
+    # every caller's sink).
+    real = os.path.realpath(str(candidate))
+    _home = os.path.realpath(os.path.expanduser("~"))
+    _tmp = os.path.realpath(tempfile.gettempdir())
+    if real.startswith(_home + os.sep):
+        return Path(real)
+    if real.startswith(_tmp + os.sep):
+        return Path(real)
+    raise ValueError(f"Metadata file resolves outside the allowed data area: {candidate!r}")
 
 
 def iso_now() -> str:
@@ -279,6 +370,25 @@ def load_session_messages(session_file: Path) -> list[dict[str, str]]:
         List of valid message dicts (each with string "role" and "content").
         Returns an empty list if the file is missing, unreadable, or invalid.
     """
+    # Inline sink-side barrier (CodeQL py/path-injection): CodeQL does not
+    # credit caller-side sanitization (session_file_for/_resolve_sessions_dir)
+    # across the function boundary, so every function containing filesystem
+    # sinks must guard and REBIND the received path itself -- same lesson as
+    # the self_heal.py inline barriers (#3624). Contract-preserving refusal.
+    # Each rebind must be dominated by exactly ONE `startswith` condition:
+    # CodeQL's barrier-guard analysis never credits a disjunction of checks.
+    real = os.path.realpath(str(session_file))
+    _home = os.path.realpath(os.path.expanduser("~"))
+    _tmp = os.path.realpath(tempfile.gettempdir())
+    # SIM114 wants these branches merged with `or`, but CodeQL only credits a
+    # barrier guard whose branch is dominated by a single condition.
+    if real.startswith(_home + os.sep):  # noqa: SIM114
+        session_file = Path(real)
+    elif real.startswith(_tmp + os.sep):
+        session_file = Path(real)
+    else:
+        log.warning("Refused session file outside allowed data area: %r", str(session_file))
+        return []
     if not session_file.exists():
         return []
 
@@ -323,6 +433,20 @@ def load_session_messages_paginated(
         tuple of (messages, total_count) where messages is the paginated slice
         and total_count is the total number of valid messages in the file
     """
+    # Inline sink-side barrier (CodeQL py/path-injection) -- see
+    # load_session_messages for rationale.
+    real = os.path.realpath(str(session_file))
+    _home = os.path.realpath(os.path.expanduser("~"))
+    _tmp = os.path.realpath(tempfile.gettempdir())
+    # SIM114 wants these branches merged with `or`, but CodeQL only credits a
+    # barrier guard whose branch is dominated by a single condition.
+    if real.startswith(_home + os.sep):  # noqa: SIM114
+        session_file = Path(real)
+    elif real.startswith(_tmp + os.sep):
+        session_file = Path(real)
+    else:
+        log.warning("Refused session file outside allowed data area: %r", str(session_file))
+        return ([], 0)
     if not session_file.exists():
         return ([], 0)
 
@@ -362,7 +486,24 @@ def save_session_messages(session_file: Path, messages: list[dict[str, str]]) ->
 
     Writes to a unique temp file first, then renames it into place, to
     avoid corrupting the file if multiple writers race or a write fails.
+
+    Raises:
+        ValueError: If `session_file` resolves outside the allowed data area
+            (a write is refused loudly rather than silently dropped).
     """
+    # Inline sink-side barrier (CodeQL py/path-injection) -- see
+    # load_session_messages for rationale.
+    real = os.path.realpath(str(session_file))
+    _home = os.path.realpath(os.path.expanduser("~"))
+    _tmp = os.path.realpath(tempfile.gettempdir())
+    # SIM114 wants these branches merged with `or`, but CodeQL only credits a
+    # barrier guard whose branch is dominated by a single condition.
+    if real.startswith(_home + os.sep):  # noqa: SIM114
+        session_file = Path(real)
+    elif real.startswith(_tmp + os.sep):
+        session_file = Path(real)
+    else:
+        raise ValueError(f"Session file resolves outside the allowed data area: {session_file!r}")
     session_file.parent.mkdir(parents=True, exist_ok=True)
     # Use unique temp file name to avoid race conditions in concurrent writes
     tmp = session_file.parent / f".{session_file.name}.{uuid.uuid4().hex[:8]}.tmp"
@@ -372,6 +513,20 @@ def save_session_messages(session_file: Path, messages: list[dict[str, str]]) ->
 
 def load_session_meta(meta_file: Path) -> SessionMetaDict:
     """Load session metadata from `meta_file`, returning `{}` if absent/invalid."""
+    # Inline sink-side barrier (CodeQL py/path-injection) -- see
+    # load_session_messages for rationale.
+    real = os.path.realpath(str(meta_file))
+    _home = os.path.realpath(os.path.expanduser("~"))
+    _tmp = os.path.realpath(tempfile.gettempdir())
+    # SIM114 wants these branches merged with `or`, but CodeQL only credits a
+    # barrier guard whose branch is dominated by a single condition.
+    if real.startswith(_home + os.sep):  # noqa: SIM114
+        meta_file = Path(real)
+    elif real.startswith(_tmp + os.sep):
+        meta_file = Path(real)
+    else:
+        log.warning("Refused metadata file outside allowed data area: %r", str(meta_file))
+        return {}
     if not meta_file.exists():
         return {}
 
@@ -391,7 +546,23 @@ def save_session_meta(meta_file: Path, meta: SessionMetaDict) -> None:
 
     Writes to a unique temp file first, then renames it into place, to
     avoid corrupting the file if multiple writers race or a write fails.
+
+    Raises:
+        ValueError: If `meta_file` resolves outside the allowed data area.
     """
+    # Inline sink-side barrier (CodeQL py/path-injection) -- see
+    # load_session_messages for rationale.
+    real = os.path.realpath(str(meta_file))
+    _home = os.path.realpath(os.path.expanduser("~"))
+    _tmp = os.path.realpath(tempfile.gettempdir())
+    # SIM114 wants these branches merged with `or`, but CodeQL only credits a
+    # barrier guard whose branch is dominated by a single condition.
+    if real.startswith(_home + os.sep):  # noqa: SIM114
+        meta_file = Path(real)
+    elif real.startswith(_tmp + os.sep):
+        meta_file = Path(real)
+    else:
+        raise ValueError(f"Metadata file resolves outside the allowed data area: {meta_file!r}")
     meta_file.parent.mkdir(parents=True, exist_ok=True)
     # Use unique temp file name to avoid race conditions in concurrent writes
     tmp = meta_file.parent / f".{meta_file.name}.{uuid.uuid4().hex[:8]}.tmp"
@@ -675,9 +846,14 @@ def list_sessions(cfg: Any | None) -> list[dict[str, Any]]:
     else:
         sessions_dir = get_sessions_dir(cfg) if cfg is not None else default_sessions_dir()
 
+    sessions_dir = _resolve_sessions_dir(sessions_dir)
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
     files = [p for p in sessions_dir.glob("*.json") if not p.name.endswith(".meta.json")]
+    # Skip files whose stem doesn't pass the meta_file_for() chokepoint's
+    # allowlist (e.g. legacy/hand-copied filenames) instead of letting a
+    # single non-conforming file take down the whole listing.
+    files = [p for p in files if VALID_SESSION_NAME_PATTERN.match(p.stem)]
 
     def sort_key(p: Path):
         meta = load_session_meta(meta_file_for(p))
@@ -844,6 +1020,20 @@ def summarize_session(name: str, sessions_dir: Path | None) -> tuple[bool, str]:
     """
     sessions_dir = sessions_dir or default_sessions_dir()
     sf = session_file_for(name, sessions_dir)
+
+    # Inline sink-side barrier (CodeQL py/path-injection) -- see
+    # load_session_messages for rationale.
+    real = os.path.realpath(str(sf))
+    _home = os.path.realpath(os.path.expanduser("~"))
+    _tmp = os.path.realpath(tempfile.gettempdir())
+    # SIM114 wants these branches merged with `or`, but CodeQL only credits a
+    # barrier guard whose branch is dominated by a single condition.
+    if real.startswith(_home + os.sep):  # noqa: SIM114
+        sf = Path(real)
+    elif real.startswith(_tmp + os.sep):
+        sf = Path(real)
+    else:
+        return False, "No such session"
     mf = meta_file_for(sf)
 
     if not sf.exists():
@@ -917,6 +1107,20 @@ def export_session_markdown(name: str, sessions_dir: Path | None) -> tuple[bool,
     """Export session to Markdown format."""
     sessions_dir = sessions_dir or default_sessions_dir()
     sf = session_file_for(name, sessions_dir)
+
+    # Inline sink-side barrier (CodeQL py/path-injection) -- see
+    # load_session_messages for rationale.
+    real = os.path.realpath(str(sf))
+    _home = os.path.realpath(os.path.expanduser("~"))
+    _tmp = os.path.realpath(tempfile.gettempdir())
+    # SIM114 wants these branches merged with `or`, but CodeQL only credits a
+    # barrier guard whose branch is dominated by a single condition.
+    if real.startswith(_home + os.sep):  # noqa: SIM114
+        sf = Path(real)
+    elif real.startswith(_tmp + os.sep):
+        sf = Path(real)
+    else:
+        return False, "No such session"
     mf = meta_file_for(sf)
 
     if not sf.exists():
@@ -992,6 +1196,20 @@ def export_session_json(name: str, sessions_dir: Path | None) -> tuple[bool, str
     """Export session to JSON format."""
     sessions_dir = sessions_dir or default_sessions_dir()
     sf = session_file_for(name, sessions_dir)
+
+    # Inline sink-side barrier (CodeQL py/path-injection) -- see
+    # load_session_messages for rationale.
+    real = os.path.realpath(str(sf))
+    _home = os.path.realpath(os.path.expanduser("~"))
+    _tmp = os.path.realpath(tempfile.gettempdir())
+    # SIM114 wants these branches merged with `or`, but CodeQL only credits a
+    # barrier guard whose branch is dominated by a single condition.
+    if real.startswith(_home + os.sep):  # noqa: SIM114
+        sf = Path(real)
+    elif real.startswith(_tmp + os.sep):
+        sf = Path(real)
+    else:
+        return False, "No such session"
     mf = meta_file_for(sf)
 
     if not sf.exists():
@@ -1013,6 +1231,20 @@ def export_session_html(name: str, sessions_dir: Path | None) -> tuple[bool, str
     """Export session to HTML format."""
     sessions_dir = sessions_dir or default_sessions_dir()
     sf = session_file_for(name, sessions_dir)
+
+    # Inline sink-side barrier (CodeQL py/path-injection) -- see
+    # load_session_messages for rationale.
+    real = os.path.realpath(str(sf))
+    _home = os.path.realpath(os.path.expanduser("~"))
+    _tmp = os.path.realpath(tempfile.gettempdir())
+    # SIM114 wants these branches merged with `or`, but CodeQL only credits a
+    # barrier guard whose branch is dominated by a single condition.
+    if real.startswith(_home + os.sep):  # noqa: SIM114
+        sf = Path(real)
+    elif real.startswith(_tmp + os.sep):
+        sf = Path(real)
+    else:
+        return False, "No such session"
     mf = meta_file_for(sf)
 
     if not sf.exists():
@@ -1021,7 +1253,13 @@ def export_session_html(name: str, sessions_dir: Path | None) -> tuple[bool, str
     msgs = load_session_messages(sf)
     meta = load_session_meta(mf)
 
-    title = meta.get("title", name)
+    # Everything below is served with `Content-Type: text/html`, so every
+    # interpolated value MUST be HTML-escaped or a session name / stored
+    # message / RAG chunk containing markup becomes reflected/stored XSS
+    # (CodeQL py/reflected-xss). `html.escape(..., quote=True)` covers the
+    # attribute and element contexts used here.
+    title = html.escape(str(meta.get("title", name)))
+    safe_name = html.escape(name)
     html_parts: list[str] = []
     html_parts.append("<!DOCTYPE html>")
     html_parts.append('<html lang="en">')
@@ -1066,20 +1304,27 @@ def export_session_html(name: str, sessions_dir: Path | None) -> tuple[bool, str
     html_parts.append(f"  <h1>{title}</h1>")
     html_parts.append('  <div class="metadata">')
     if meta.get("summary"):
-        html_parts.append(f"    <p><strong>Summary:</strong> {meta['summary']}</p>")
-    html_parts.append(f"    <p><strong>Session:</strong> {name}</p>")
-    html_parts.append(f"    <p><strong>Created:</strong> {meta.get('created_at', 'Unknown')}</p>")
-    html_parts.append(f"    <p><strong>Updated:</strong> {meta.get('updated_at', 'Unknown')}</p>")
+        html_parts.append(
+            f"    <p><strong>Summary:</strong> {html.escape(str(meta['summary']))}</p>"
+        )
+    html_parts.append(f"    <p><strong>Session:</strong> {safe_name}</p>")
+    html_parts.append(
+        f"    <p><strong>Created:</strong> {html.escape(str(meta.get('created_at', 'Unknown')))}</p>"
+    )
+    html_parts.append(
+        f"    <p><strong>Updated:</strong> {html.escape(str(meta.get('updated_at', 'Unknown')))}</p>"
+    )
     html_parts.append(f"    <p><strong>Messages:</strong> {len(msgs)}</p>")
     if meta.get("model"):
-        html_parts.append(f"    <p><strong>Model:</strong> {meta['model']}</p>")
+        html_parts.append(f"    <p><strong>Model:</strong> {html.escape(str(meta['model']))}</p>")
     if meta.get("tags"):
-        html_parts.append(f"    <p><strong>Tags:</strong> {', '.join(meta['tags'])}</p>")
+        tags = ", ".join(html.escape(str(t)) for t in meta["tags"])
+        html_parts.append(f"    <p><strong>Tags:</strong> {tags}</p>")
     html_parts.append("  </div>")
 
     for msg in msgs:
-        role = msg.get("role", "unknown")
-        content = msg.get("content", "").replace("<", "&lt;").replace(">", "&gt;")
+        role = html.escape(str(msg.get("role", "unknown")))
+        content = html.escape(str(msg.get("content", "")))
         html_parts.append(f'  <div class="message {role}">')
         html_parts.append(f'    <div class="role">{role}</div>')
         html_parts.append(f'    <div class="content">{content}</div>')
@@ -1091,17 +1336,14 @@ def export_session_html(name: str, sessions_dir: Path | None) -> tuple[bool, str
                 html_parts.append('    <div class="citations">')
                 html_parts.append('      <div class="citation-header">RAG Sources</div>')
                 for idx, chunk in enumerate(rag_chunks, 1):
-                    doc_id = chunk.get("doc_id", "Unknown")
+                    doc_id = html.escape(str(chunk.get("doc_id", "Unknown")))
                     # Use explicit None checking to avoid treating 0.0 as falsy
                     score = chunk.get("similarity_score")
                     if score is None:
                         score = chunk.get("score", 0.0)
                     text = chunk.get("text", "")
 
-                    # Escape HTML in text
-                    text = text.replace("<", "&lt;").replace(">", "&gt;")
-
-                    chunk_ref = format_chunk_ref(chunk)
+                    chunk_ref = html.escape(str(format_chunk_ref(chunk)))
                     html_parts.append('      <div class="citation-item">')
                     html_parts.append(
                         f'        <div class="citation-title">[{idx}] {doc_id} ({chunk_ref})</div>'
@@ -1110,10 +1352,12 @@ def export_session_html(name: str, sessions_dir: Path | None) -> tuple[bool, str
                         f'        <div class="citation-score">Confidence: {score:.3f}</div>'
                     )
 
-                    # Include preview of source text (first 200 chars)
+                    # Include preview of source text (first 200 chars), HTML-escaped.
                     if text:
                         preview = text[:200] + "..." if len(text) > 200 else text
-                        html_parts.append(f'        <div class="citation-text">{preview}</div>')
+                        html_parts.append(
+                            f'        <div class="citation-text">{html.escape(str(preview))}</div>'
+                        )
 
                     html_parts.append("      </div>")
                 html_parts.append("    </div>")
@@ -1360,7 +1604,9 @@ def sync_filename_with_title(
                 new_mf.unlink()
         except Exception:
             pass
-        return False, f"Rename failed: {e}", current_name
+        # The full exception is logged above; return a generic status so the
+        # detail never reaches an API client (CodeQL py/stack-trace-exposure).
+        return False, "Rename failed due to an internal error", current_name
 
 
 def edit_message(
@@ -1506,7 +1752,7 @@ def search_messages(
             }
         ]
     """
-    sessions_dir = sessions_dir or default_sessions_dir()
+    sessions_dir = _resolve_sessions_dir(sessions_dir or default_sessions_dir())
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
     if not query:

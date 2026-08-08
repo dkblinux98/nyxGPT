@@ -18,6 +18,18 @@ jobs:
        github.event.comment.user.login == vars.DEV_AGENT ||
        github.event.comment.user.login == vars.REVIEW_AGENT)
     runs-on: ubuntu-latest
+    # Serialize dispatches: a burst of READY_FOR_NEXT_ISSUE triggers landing
+    # within seconds of each other (post-merge autopilot kick + a manual
+    # kick + a stray retry, observed on #3647) each ran select-and-start
+    # independently, so more than one picked the same Backlog issue before
+    # the earlier run's status/assignment write had propagated -- producing
+    # duplicate developer runs. A single, non-cancelling concurrency group
+    # makes every dispatch see the prior run's committed state before it
+    # selects, on top of the per-issue idempotency guard in
+    # scrummaster_start_issue.sh (issue_claimable_for_start).
+    concurrency:
+      group: scrummaster-dispatch
+      cancel-in-progress: false
 
     env:
       GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}

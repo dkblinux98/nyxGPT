@@ -72,6 +72,16 @@ if [[ "$DRY_RUN" == "1" ]]; then
   exit 0
 fi
 
+# Idempotency guard (#3647): concurrent/duplicate dispatches (e.g. a burst
+# of READY_FOR_NEXT_ISSUE triggers) can select the same issue before an
+# earlier run's status/assignment write has propagated. Re-check via the
+# strongly-consistent issue endpoint immediately before mutating, and skip
+# cleanly instead of re-starting already-claimed or closed work.
+if ! issue_claimable_for_start "$ISSUE"; then
+  echo "Skipped issue #$ISSUE -- already claimed or closed, no duplicate start."
+  exit 0
+fi
+
 set_issue_status "$ISSUE" "$STATUS_IN_PROGRESS"
 assign_and_trigger_developer "$ISSUE"
 issue_comment "$ISSUE" "@${DEV_AGENT} selected as next work item by @${SCRUM_AGENT}. Status -> ${STATUS_IN_PROGRESS}."

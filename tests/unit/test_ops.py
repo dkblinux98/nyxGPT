@@ -1571,7 +1571,9 @@ def test_run_invokes_subprocess_with_expected_kwargs():
             args=["echo", "hi"], returncode=0, stdout="hi\n", stderr=""
         )
         cp = ops._run(["echo", "hi"])
-        run.assert_called_once_with(["echo", "hi"], check=True, text=True, capture_output=True)
+        run.assert_called_once_with(
+            ["echo", "hi"], check=True, text=True, capture_output=True, input=None, env=None
+        )
         assert cp.stdout == "hi\n"
 
 
@@ -1645,6 +1647,57 @@ def test_run_expected_true_logs_debug_not_warning_on_nonzero_exit_check_true(cap
     assert records, "Expected _run to log the non-zero exit at DEBUG before raising"
     assert records[0].levelno == logging.DEBUG
     assert not any(r.levelno == logging.WARNING for r in caplog.records)
+
+
+@pytest.mark.unit
+def test_redact_cmd_masks_secret_flag_values():
+    # A secret passed as the value after a secret-named flag is masked.
+    assert ops._redact_cmd(["kubectl", "--api-key", "s3cr3t", "get"]) == [
+        "kubectl",
+        "--api-key",
+        "***",
+        "get",
+    ]
+    # Inline --flag=value form is masked too.
+    assert ops._redact_cmd(["nyxgpt", "--glitchtip-dsn=https://abc@host/1"]) == [
+        "nyxgpt",
+        "--glitchtip-dsn=***",
+    ]
+    # Env-style NAME=value with a secret-looking name (docker `-e` forwarding)
+    # is masked even without a leading dash (CodeQL #105/#106 regression).
+    assert ops._redact_cmd(["docker", "exec", "-e", "DJANGO_SUPERUSER_PASSWORD=pw"]) == [
+        "docker",
+        "exec",
+        "-e",
+        "DJANGO_SUPERUSER_PASSWORD=***",
+    ]
+    # Non-secret arguments pass through untouched.
+    assert ops._redact_cmd(["docker", "compose", "up", "-d"]) == [
+        "docker",
+        "compose",
+        "up",
+        "-d",
+    ]
+
+
+@pytest.mark.unit
+def test_run_redacts_secret_cmd_values_on_nonzero_exit(caplog):
+    # CodeQL py/clear-text-logging-sensitive-data: an api-key/password/DSN on
+    # the argv must never reach the log message or the structured `cmd` field.
+    with patch.object(ops.subprocess, "run") as run:
+        run.return_value = subprocess.CompletedProcess(
+            args=["tool", "--password", "hunter2"], returncode=1, stdout="", stderr="boom\n"
+        )
+        with caplog.at_level("DEBUG", logger="nyxgpt.ops"):
+            ops._run(["tool", "--password", "hunter2"], check=False)
+
+    records = [r for r in caplog.records if "Subprocess exited non-zero" in r.getMessage()]
+    assert records, "Expected _run to log the non-zero exit"
+    record = records[0]
+    assert "hunter2" not in record.getMessage()
+    assert "***" in record.getMessage()
+    assert "hunter2" not in record.cmd
+    assert record.cmd == ["tool", "--password", "***"]
 
 
 @pytest.mark.unit
@@ -6320,9 +6373,11 @@ def test_reset_grafana_admin_password_runs_grafana_cli_via_compose_exec(tmp_path
     monkeypatch.setattr(ops, "_compose_available", lambda: True)
 
     captured_cmd = []
+    captured_input = []
 
-    def _fake_run(cmd, check=False):
+    def _fake_run(cmd, check=False, input=None):
         captured_cmd.extend(cmd)
+        captured_input.append(input)
         return subprocess.CompletedProcess(cmd, 0, stdout="Admin password changed", stderr="")
 
     monkeypatch.setattr(ops, "_run", _fake_run)
@@ -6338,12 +6393,15 @@ def test_reset_grafana_admin_password_runs_grafana_cli_via_compose_exec(tmp_path
         "exec",
         "-T",
         "grafana",
-        "grafana",
-        "cli",
-        "admin",
-        "reset-admin-password",
-        "new-secret",
+        "sh",
+        "-c",
+        'grafana cli admin reset-admin-password "$(cat)"',
     ]
+    # The password must travel over stdin, never as an argv element -- argv
+    # is visible to `ps`, shell history, and `_run`'s non-zero-exit logging
+    # (#3644, CodeQL py/clear-text-logging-sensitive-data #105/#106).
+    assert "new-secret" not in captured_cmd
+    assert captured_input == ["new-secret"]
 
 
 @pytest.mark.unit
@@ -6365,7 +6423,7 @@ def test_reset_grafana_admin_password_fails_on_nonzero_exit(tmp_path, monkeypatc
     monkeypatch.setattr(
         ops,
         "_run",
-        lambda cmd, check=False: subprocess.CompletedProcess(
+        lambda cmd, check=False, input=None: subprocess.CompletedProcess(
             cmd, 1, stdout="", stderr="grafana: no such service"
         ),
     )
@@ -7941,18 +7999,47 @@ def test_glitchtip_ensure_superuser_command_shape(monkeypatch):
 
     def fake_run(cmd, **k):
         captured["cmd"] = cmd
+        captured["env"] = k.get("env")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(ops, "_run", fake_run)
-    ops._glitchtip_ensure_superuser("admin@nyxgpt.local", "pw")
+    ops._glitchtip_ensure_superuser("admin@nyxgpt.local", "s3cr3t-pw")
 
     cmd = captured["cmd"]
     assert cmd[:4] == ["docker", "compose", "-f", str(ops.self_heal.COMPOSE_FILE)]
     assert "glitchtip" in cmd
     assert "createsuperuser" in cmd
     assert "--noinput" in cmd
-    assert "DJANGO_SUPERUSER_EMAIL=admin@nyxgpt.local" in cmd
-    assert "DJANGO_SUPERUSER_PASSWORD=pw" in cmd
+    # The credentials are forwarded via bare `-e VAR` + the process
+    # environment (CodeQL #105/#106): argv carries only the variable NAMES,
+    # never the password value.
+    assert "DJANGO_SUPERUSER_EMAIL" in cmd
+    assert "DJANGO_SUPERUSER_PASSWORD" in cmd
+    assert not any("s3cr3t-pw" in arg for arg in cmd)
+    env = captured["env"]
+    assert env["DJANGO_SUPERUSER_EMAIL"] == "admin@nyxgpt.local"
+    assert env["DJANGO_SUPERUSER_PASSWORD"] == "s3cr3t-pw"
+    assert env["DJANGO_SUPERUSER_USERNAME"] == "admin@nyxgpt.local"
+
+
+def test_glitchtip_ensure_superuser_password_never_logged(caplog):
+    # CodeQL #105/#106 regression: the idempotent rc=1 re-run logs at INFO
+    # with the command in `extra` -- the password must not appear anywhere
+    # in the log records (message or attributes) in any form.
+    with patch.object(ops.subprocess, "run") as run:
+        run.return_value = subprocess.CompletedProcess(
+            args=["docker"],
+            returncode=1,
+            stdout="",
+            stderr="Error: That email address is already taken.",
+        )
+        with caplog.at_level("DEBUG", logger="nyxgpt.ops"):
+            result = ops._glitchtip_ensure_superuser("admin@nyxgpt.local", "s3cr3t-pw")
+
+    assert result.ok
+    for record in caplog.records:
+        assert "s3cr3t-pw" not in record.getMessage()
+        assert "s3cr3t-pw" not in repr(vars(record))
 
 
 @pytest.mark.unit
@@ -8862,6 +8949,42 @@ def test_ensure_glitchtip_secrets_dir_ok_when_already_writable(tmp_path, monkeyp
     assert len(results) == 1
     assert results[0].ok is True
     assert "writable" in results[0].message
+
+
+@pytest.mark.unit
+def test_ensure_glitchtip_secrets_dir_seeds_grafana_placeholders(tmp_path, monkeypatch):
+    # #3538: Grafana 13.x crash-loops on a missing/empty $__file{} secret. The
+    # preflight must seed valid, non-empty placeholders for both the GlitchTip
+    # token and the Slack webhook so the observability bring-up doesn't take
+    # Grafana down before the real values are written.
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+
+    ops._ensure_glitchtip_secrets_dir()
+
+    token_path = tmp_path / ".nyxGPT" / "secrets" / "glitchtip-grafana-token"
+    slack_path = tmp_path / ".nyxGPT" / "secrets" / "slack-webhook-url"
+    assert token_path.exists()
+    assert slack_path.exists()
+    # Non-empty: an empty file also crashes Grafana (#3538).
+    assert token_path.read_text(encoding="utf-8").strip()
+    assert slack_path.read_text(encoding="utf-8").strip()
+
+
+@pytest.mark.unit
+def test_ensure_glitchtip_secrets_dir_does_not_clobber_existing_secrets(tmp_path, monkeypatch):
+    # A real token/URL already on disk must survive the placeholder seeding.
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    secrets_dir = tmp_path / ".nyxGPT" / "secrets"
+    secrets_dir.mkdir(parents=True, mode=0o700)
+    (secrets_dir / "glitchtip-grafana-token").write_text("real-token", encoding="utf-8")
+    (secrets_dir / "slack-webhook-url").write_text(
+        "https://hooks.slack.com/services/REAL/REAL/REAL", encoding="utf-8"
+    )
+
+    ops._ensure_glitchtip_secrets_dir()
+
+    assert (secrets_dir / "glitchtip-grafana-token").read_text(encoding="utf-8") == "real-token"
+    assert "REAL" in (secrets_dir / "slack-webhook-url").read_text(encoding="utf-8")
 
 
 @pytest.mark.unit
@@ -11408,3 +11531,197 @@ def test_env_sync_generates_compose_config(tmp_path, monkeypatch):
     assert rc == 0
     assert out.exists()
     assert "host = 0.0.0.0" in out.read_text(encoding="utf-8")
+
+
+@pytest.mark.unit
+def test_wait_for_stack_healthy_returns_true_when_all_healthy(monkeypatch):
+    """`_wait_for_stack_healthy` returns True immediately once every desired
+    component reports healthy, without needing to poll or sleep."""
+    statuses = [
+        self_heal.ComponentStatus(
+            service="api", container="nyxgpt-api", state="running", health="healthy", healthy=True
+        ),
+        self_heal.ComponentStatus(
+            service="web", container="nyxgpt-web", state="running", health="healthy", healthy=True
+        ),
+    ]
+    monkeypatch.setattr(self_heal, "list_component_status", lambda: statuses)
+    sleeps = []
+    monkeypatch.setattr(time, "sleep", lambda s: sleeps.append(s))
+
+    assert ops._wait_for_stack_healthy(timeout=5.0, poll_interval=1.0) is True
+    assert sleeps == []
+
+
+@pytest.mark.unit
+def test_wait_for_stack_healthy_ignores_non_desired_components(monkeypatch):
+    """An unhealthy but `desired=False` component (disabled profile, or
+    intentionally stopped -- see `list_component_status`) must not block the
+    wait, matching `heal_now`'s automatic-pass semantics."""
+    statuses = [
+        self_heal.ComponentStatus(
+            service="api", container="nyxgpt-api", state="running", health="healthy", healthy=True
+        ),
+        self_heal.ComponentStatus(
+            service="grafana",
+            container="grafana",
+            state="absent",
+            health="",
+            healthy=False,
+            desired=False,
+        ),
+    ]
+    monkeypatch.setattr(self_heal, "list_component_status", lambda: statuses)
+
+    assert ops._wait_for_stack_healthy(timeout=5.0, poll_interval=1.0) is True
+
+
+@pytest.mark.unit
+def test_wait_for_stack_healthy_returns_false_on_timeout(monkeypatch):
+    """Times out (returns False) rather than polling forever when a desired
+    component never reports healthy."""
+    unhealthy = [
+        self_heal.ComponentStatus(
+            service="ollama", container="ollama", state="running", health="starting", healthy=False
+        )
+    ]
+    monkeypatch.setattr(self_heal, "list_component_status", lambda: unhealthy)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+
+    assert ops._wait_for_stack_healthy(timeout=0.0, poll_interval=0.0) is False
+
+
+@pytest.mark.unit
+def test_ops_up_returns_install_failure_without_waiting(monkeypatch):
+    """`up` propagates a failing `install()` without ever calling the health-wait."""
+    monkeypatch.setattr(ops, "install", lambda args: 2)
+    waited = []
+    monkeypatch.setattr(ops, "_wait_for_stack_healthy", lambda **kw: waited.append(kw) or True)
+
+    rc = ops.up(MagicMock(no_wait=False, timeout=180.0, kubernetes=False))
+
+    assert rc == 2
+    assert waited == []
+
+
+@pytest.mark.unit
+def test_ops_up_no_wait_skips_health_wait_and_url(monkeypatch, capsys):
+    """`--no-wait` returns `install()`'s result as soon as it finishes."""
+    monkeypatch.setattr(ops, "install", lambda args: 0)
+    waited = []
+    monkeypatch.setattr(ops, "_wait_for_stack_healthy", lambda **kw: waited.append(kw) or True)
+
+    rc = ops.up(MagicMock(no_wait=True, timeout=180.0, kubernetes=False))
+
+    assert rc == 0
+    assert waited == []
+    assert ops.WEB_URL not in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_ops_up_waits_then_prints_web_url(monkeypatch, capsys):
+    """Once `install()` and the health-wait both succeed, `up` prints the web URL."""
+    monkeypatch.setattr(ops, "install", lambda args: 0)
+    calls = []
+    monkeypatch.setattr(ops, "_wait_for_stack_healthy", lambda **kw: calls.append(kw) or True)
+
+    rc = ops.up(MagicMock(no_wait=False, timeout=42.0, kubernetes=False))
+
+    assert rc == 0
+    assert calls == [{"timeout": 42.0}]
+    assert ops.WEB_URL in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_ops_up_times_out_returns_nonzero(monkeypatch, capsys):
+    """A health-wait timeout is reported and fails the command, even though
+    `install()` itself succeeded."""
+    monkeypatch.setattr(ops, "install", lambda args: 0)
+    monkeypatch.setattr(ops, "_wait_for_stack_healthy", lambda **kw: False)
+
+    rc = ops.up(MagicMock(no_wait=False, timeout=180.0, kubernetes=False))
+
+    assert rc == 2
+    captured = capsys.readouterr()
+    assert ops.WEB_URL not in captured.out
+    assert "not every component reported healthy" in captured.err
+
+
+@pytest.mark.unit
+def test_ops_up_kubernetes_mode_prints_port_forward_instructions(monkeypatch, capsys):
+    """Kubernetes Services are ClusterIP-only, so `up --kubernetes` must not
+    claim the web URL is directly reachable -- it needs a manual
+    `kubectl port-forward` first (see docs/kubernetes.md#4-verify)."""
+    monkeypatch.setattr(ops, "install", lambda args: 0)
+    monkeypatch.setattr(ops, "_wait_for_stack_healthy", lambda **kw: True)
+
+    rc = ops.up(MagicMock(no_wait=False, timeout=180.0, kubernetes=True))
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "port-forward" in out
+    assert "kubectl -n nyxgpt port-forward" not in out
+    assert ops.WEB_URL in out
+
+
+@pytest.mark.unit
+def test_ops_up_kubernetes_mode_wraps_kubectl_not_raw(monkeypatch, capsys):
+    """The Operational Command Wrapping policy (CLAUDE.md) forbids instructing
+    users to run a raw `kubectl` command -- `up --kubernetes` must point at
+    the `nyxgpt ops port-forward` wrapper instead."""
+    monkeypatch.setattr(ops, "install", lambda args: 0)
+    monkeypatch.setattr(ops, "_wait_for_stack_healthy", lambda **kw: True)
+
+    ops.up(MagicMock(no_wait=False, timeout=180.0, kubernetes=True))
+
+    out = capsys.readouterr().out
+    assert "nyxgpt ops port-forward" in out
+
+
+@pytest.mark.unit
+def test_ops_port_forward_missing_kubectl(monkeypatch, capsys):
+    """`nyxgpt ops port-forward` fails fast with a clear message if kubectl isn't installed."""
+    monkeypatch.setattr(ops, "_which", lambda _: None)
+
+    rc = ops.port_forward(MagicMock(port=3000))
+
+    assert rc == 2
+    assert "kubectl not found on PATH" in capsys.readouterr().err
+
+
+@pytest.mark.unit
+def test_ops_port_forward_invokes_kubectl(monkeypatch, capsys):
+    """`nyxgpt ops port-forward` shells out to `kubectl port-forward` for the
+    web Service, using the requested local port, and returns its exit code."""
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/kubectl")
+    calls = []
+
+    def fake_run(cmd):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, returncode=0)
+
+    monkeypatch.setattr(ops.subprocess, "run", fake_run)
+
+    rc = ops.port_forward(MagicMock(port=3001))
+
+    assert rc == 0
+    assert calls == [
+        ["kubectl", "-n", ops.K8S_NAMESPACE, "port-forward", "svc/nyxgpt-web", "3001:3000"]
+    ]
+    assert "3001" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_ops_port_forward_keyboard_interrupt_is_clean_exit(monkeypatch):
+    """Stopping `port-forward` with Ctrl-C (the normal way to end it) is a
+    clean exit, not a crash."""
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/kubectl")
+
+    def raise_interrupt(cmd):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(ops.subprocess, "run", raise_interrupt)
+
+    rc = ops.port_forward(MagicMock(port=3000))
+
+    assert rc == 0

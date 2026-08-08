@@ -116,6 +116,13 @@ COMPOSE_COMPONENT_PORTS: dict[str, int] = {
     "cassandra": 9042,
 }
 
+# Local web UI URL once the stack is up. Native and Compose/Terraform modes
+# all bind `web` to the same host port (COMPOSE_COMPONENT_PORTS above,
+# app.py's CORS allowlist) -- Kubernetes mode is the one exception, since its
+# Services are ClusterIP-only and need a manual `kubectl port-forward` (see
+# `up()`, docs/kubernetes.md#4-verify).
+WEB_URL = "http://127.0.0.1:3000"
+
 NATIVE_CONFIG_HINT = "~/.nyxGPT/config.ini"
 COMPOSE_CONFIG_HINT = "docker/config.docker.ini (mounted into the Compose 'api' container)"
 
@@ -347,6 +354,8 @@ def _run(
     expected: bool = False,
     expected_returncodes: Container[int] | None = None,
     expected_message: str | None = None,
+    input: str | None = None,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run `cmd`, capturing stdout/stderr as text.
 
@@ -363,9 +372,19 @@ def _run(
     INFO with `expected_message` (or a generic "expected exit" message)
     instead of WARNING, while any other non-zero exit still logs at WARNING
     exactly as today (#3574).
+    Pass `input` to feed the subprocess's stdin (e.g. a secret a caller
+    doesn't want to put on `cmd`'s argv at all -- argv is visible to `ps`,
+    shell history, and this function's own non-zero-exit logging, while
+    stdin is not (#3644, CodeQL py/clear-text-logging-sensitive-data)).
+    Pass `env` to run with a modified environment -- the other secret-safe
+    channel: `docker compose exec -e VAR` (bare, no `=value`) forwards VAR
+    from this process's environment into the container without the value
+    ever appearing on argv (CodeQL #105/#106).
     """
     try:
-        result = subprocess.run(cmd, check=check, text=True, capture_output=True)
+        result = subprocess.run(
+            cmd, check=check, text=True, capture_output=True, input=input, env=env
+        )
     except subprocess.CalledProcessError as e:
         _log_nonzero_exit(
             cmd, e.returncode, e.stderr, expected, expected_returncodes, expected_message
@@ -376,6 +395,46 @@ def _run(
             cmd, result.returncode, result.stderr, expected, expected_returncodes, expected_message
         )
     return result
+
+
+# Argument names (and inline `--flag=value` forms) whose *value* may carry a
+# secret. When we log a failed command we mask those values so an API key,
+# password, or DSN can never reach Loki in clear text (CodeQL
+# py/clear-text-logging-sensitive-data). Matching is case-insensitive and
+# substring-based so `--api-key`, `--admin-password`, and `--glitchtip-dsn`
+# are all covered.
+_SECRET_ARG_HINTS = ("key", "token", "secret", "password", "passwd", "dsn", "credential")
+
+
+def _redact_cmd(cmd: list[str]) -> list[str]:
+    """Return a copy of `cmd` with any secret-bearing argument value masked.
+
+    Two shapes are redacted: a value in the position *after* a secret-named
+    flag (`--api-key VALUE` -> `--api-key ***`), and an inline `NAME=value`
+    where the name looks sensitive -- with or without a leading dash, so
+    both `--dsn=...` and an env-style `DJANGO_SUPERUSER_PASSWORD=...`
+    (docker `-e NAME=value` forwarding) are masked. The returned list is
+    freshly built so the sensitive value never flows on to the logging sink.
+    """
+    redacted: list[str] = []
+    mask_next = False
+    for arg in cmd:
+        if mask_next:
+            redacted.append("***")
+            mask_next = False
+            continue
+        low = arg.lower()
+        if "=" in arg:
+            name, _, _value = arg.partition("=")
+            if any(h in name.lower() for h in _SECRET_ARG_HINTS):
+                redacted.append(f"{name}=***")
+                continue
+        if arg.startswith("-") and any(h in low for h in _SECRET_ARG_HINTS):
+            redacted.append(arg)
+            mask_next = True
+            continue
+        redacted.append(arg)
+    return redacted
 
 
 def _log_nonzero_exit(
@@ -393,21 +452,42 @@ def _log_nonzero_exit(
     says the exit was expected, so it never reads as scary to the user
     (#3574). Everything else keeps the pre-existing WARNING/DEBUG split.
     """
+    safe_cmd = _redact_cmd(cmd)
+    safe_cmd_str = " ".join(safe_cmd)
     if expected_returncodes is not None and returncode in expected_returncodes:
         level = logging.INFO
         message = expected_message or (
             f"Subprocess exited with expected rc={returncode}, treated as "
-            f"success: {' '.join(cmd)}"
+            f"success: {safe_cmd_str}"
         )
     else:
         level = logging.DEBUG if expected else logging.WARNING
-        message = f"Subprocess exited non-zero (rc={returncode}): {' '.join(cmd)}"
+        message = f"Subprocess exited non-zero (rc={returncode}): {safe_cmd_str}"
+    # CodeQL alerts #105/#106 (py/clear-text-logging-sensitive-data) flagged
+    # `message`/`extra` below, and were REAL twice over: a bare positional
+    # secret (`_reset_grafana_admin_password`, fixed in #3644 by piping it
+    # over stdin), and an env-style `-e DJANGO_SUPERUSER_PASSWORD=value`
+    # argv element (`_glitchtip_ensure_superuser`) that slipped past
+    # `_redact_cmd`'s dash-prefixed flag masking and reached this log's
+    # `extra` at INFO on every idempotent glitchtip-init re-run. That call
+    # site now forwards the secret via the process environment (bare `-e
+    # VAR` + `_run(env=...)`) so it never appears on argv, and `_redact_cmd`
+    # also masks dash-less `NAME=value` elements as defense-in-depth.
+    # Keep secrets off argv entirely (stdin or env) at any new call site --
+    # that kills the flow at the source instead of trying to convince
+    # CodeQL's taint tracker that `_redact_cmd` is a sanitizer. Inline
+    # suppression comments (`codeql[...]`, then `lgtm[...]`) were tried in
+    # earlier rounds and neither took effect against this repo's CodeQL
+    # default-setup configuration -- don't reintroduce them.
+    # `test_run_redacts_secret_cmd_values_on_nonzero_exit` in
+    # `tests/unit/test_ops.py` covers the masking that remains as
+    # defense-in-depth for any other secret-bearing flag.
     logger.log(
         level,
         message,
         extra={
             "component": "ops",
-            "cmd": cmd,
+            "cmd": safe_cmd,
             "returncode": returncode,
             "stderr_tail": stderr[-2000:] if stderr else "",
         },
@@ -3687,6 +3767,48 @@ def _down_kubernetes(_args) -> int:
     return 0 if ok else 2
 
 
+def port_forward(args) -> int:
+    """`nyxgpt ops port-forward`: forward the Kubernetes web Service to localhost.
+
+    `k8s/`'s Services are ClusterIP-only -- there's no Ingress/LoadBalancer
+    (see docs/kubernetes.md#4-verify) -- so `kubectl port-forward` is the
+    only way to reach `nyxgpt-web` from the operator's own workstation. This
+    wraps that invocation so operators never type the raw `kubectl` command
+    themselves, per CLAUDE.md's Operational Command Wrapping requirement;
+    `nyxgpt up --kubernetes` points here instead of printing it directly.
+
+    Runs in the foreground until interrupted (Ctrl-C), same as `kubectl
+    port-forward` itself -- there's no "done" state to return early from.
+    """
+    if _which("kubectl") is None:
+        print("[FAIL] kubectl not found on PATH", file=sys.stderr)
+        return 2
+
+    local_port = getattr(args, "port", 3000) or 3000
+    logger.info(
+        "ops: port-forward starting",
+        extra={"component": "ops", "action": "port-forward", "local_port": local_port},
+    )
+    print(
+        f"Forwarding http://127.0.0.1:{local_port} -> "
+        f"{K8S_NAMESPACE}/svc/nyxgpt-web:3000 (Ctrl-C to stop)..."
+    )
+    try:
+        cp = subprocess.run(
+            [
+                "kubectl",
+                "-n",
+                K8S_NAMESPACE,
+                "port-forward",
+                "svc/nyxgpt-web",
+                f"{local_port}:3000",
+            ]
+        )
+    except KeyboardInterrupt:
+        return 0
+    return cp.returncode
+
+
 def infra_status() -> dict[str, Any]:
     """Honest, status-only deployment status for the Infrastructure admin page (see #3410).
 
@@ -3952,6 +4074,71 @@ def install(args) -> int:
     _record_ops_action("install", "all", result, message)
 
     return 0 if ok else 2
+
+
+def _wait_for_stack_healthy(timeout: float = 180.0, poll_interval: float = 3.0) -> bool:
+    """Poll every desired component's health until all report healthy, or `timeout` elapses.
+
+    Reuses `self_heal.list_component_status()` -- the same cross-mode
+    (native/Compose/Terraform/Kubernetes) probe set `nyxgpt self-heal status`
+    and the automatic heal loop already rely on -- so `up`'s health-wait can't
+    drift from what the rest of the system considers "healthy". A component
+    with `desired=False` (an operator-disabled observability profile, or one
+    marked intentionally stopped) is excluded, same as `heal_now`'s automatic
+    pass.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        pending = [
+            s.service for s in self_heal.list_component_status() if s.desired and not s.healthy
+        ]
+        if not pending:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(poll_interval)
+
+
+def up(args) -> int:
+    """CLI entrypoint for `nyxgpt up` -- a thin alias for `nyxgpt ops install`.
+
+    Runs the exact same reconciliation `install()` does -- mode flags
+    (`--terraform`, `--kubernetes`, `--local`, `--skip-observability`, etc.)
+    pass straight through, no forked behavior -- then waits for every desired
+    component to report healthy via `_wait_for_stack_healthy` and prints the
+    web UI URL once it's reachable. Idempotent, same as `install()` itself:
+    re-running it just reconciles and re-waits.
+
+    Pass `--no-wait` to return as soon as `install()` finishes, without
+    waiting for component health; `--timeout` controls how long to wait
+    before giving up (default 180s).
+
+    Returns whatever `install()` returned if it failed or `--no-wait` was
+    passed; 2 if the health-wait times out; 0 once every desired component is
+    healthy.
+    """
+    rc = install(args)
+    if rc != 0 or getattr(args, "no_wait", False):
+        return rc
+
+    print("\nWaiting for components to report healthy...")
+    if not _wait_for_stack_healthy(timeout=getattr(args, "timeout", 180.0)):
+        print(
+            "WARNING: not every component reported healthy within the timeout -- "
+            "run `nyxgpt ops status` or `nyxgpt self-heal status` for details.",
+            file=sys.stderr,
+        )
+        return 2
+
+    if getattr(args, "kubernetes", False):
+        print(
+            "nyxGPT is up. Kubernetes Services are ClusterIP-only -- run "
+            "`nyxgpt ops port-forward` in another terminal, then open "
+            f"{WEB_URL} (see docs/kubernetes.md#4-verify)."
+        )
+    else:
+        print(f"nyxGPT is up: {WEB_URL}")
+    return 0
 
 
 def status(_args) -> int:
@@ -5565,6 +5752,13 @@ def _reset_grafana_admin_password(password: str) -> OpsResult:
     whether the volume is fresh (first boot) or long-lived (env var is only
     applied at first boot -- irrelevant to an existing volume, which is
     exactly the deployment shape that reproduced #3458's 401s).
+
+    `password` is piped in over stdin rather than appended to `cmd` as a
+    positional argv value: `_redact_cmd`'s masking only recognizes secrets
+    that follow a secret-named flag (`--api-key VALUE`) or an inline
+    `--flag=value`, so a bare positional value like this one would reach
+    `_run`'s non-zero-exit logging -- and `ps`/shell history -- in clear
+    text (#3644, CodeQL py/clear-text-logging-sensitive-data #105/#106).
     """
     if not _compose_available():
         return OpsResult(
@@ -5580,13 +5774,11 @@ def _reset_grafana_admin_password(password: str) -> OpsResult:
         "exec",
         "-T",
         "grafana",
-        "grafana",
-        "cli",
-        "admin",
-        "reset-admin-password",
-        password,
+        "sh",
+        "-c",
+        'grafana cli admin reset-admin-password "$(cat)"',
     ]
-    cp = _run(cmd, check=False)
+    cp = _run(cmd, check=False, input=password)
     if cp.returncode != 0:
         return OpsResult(
             False,
@@ -6150,9 +6342,27 @@ def _start_observability_stack_terraform() -> list[OpsResult]:
                 "Cannot attach observability to the terraform network without the override.",
             )
         ]
-    return _start_observability_stack(
+    results = _start_observability_stack(
         extra_compose_files=[TERRAFORM_NET_OVERRIDE], force_recreate=True
     )
+    # Bounded wait-for-healthy (#3538), mirroring the native
+    # `_reconcile_grafana_provisioning` path: `docker compose up -d` returns as
+    # soon as the containers are created, but Grafana (57 plugins + provisioning)
+    # takes ~30s to actually serve, and `_terraform_stack_health` only gates on
+    # the core containers. Without this wait `ops install --terraform` returns
+    # before Grafana is reachable and callers (the smoke gate, a user opening the
+    # dashboard) race its startup. A container stuck crash-looping never reports
+    # healthy, so this surfaces as one clear failure instead of a silent race.
+    if _compose_stack_snapshot().get("grafana") == "running" and not _wait_for_grafana_healthy():
+        results.append(
+            OpsResult(
+                False,
+                "Grafana never became healthy",
+                "Check `nyxgpt ops status` (a compose service stuck `restarting` is the tell) "
+                "and `nyxgpt ops logs grafana` for the boot error.",
+            )
+        )
+    return results
 
 
 def _stop_observability_stack_terraform() -> list[OpsResult]:
@@ -6631,6 +6841,44 @@ def _glitchtip_secrets_dir_unwritable_result(path: Path) -> OpsResult:
     )
 
 
+# A non-empty, syntactically-harmless stand-in for the GlitchTip Infinity
+# datasource bearer token, mirroring GRAFANA_SLACK_WEBHOOK_PLACEHOLDER_URL. Its
+# only job is to make the datasource's `$__file{}` reference resolve to a
+# non-empty value so Grafana boots; `ops glitchtip-init` overwrites it with the
+# real token when GlitchTip is provisioned.
+GRAFANA_GLITCHTIP_TOKEN_PLACEHOLDER = "UNCONFIGURED-glitchtip-token"
+
+
+def _ensure_grafana_secret_placeholders() -> None:
+    """Seed crash-safe placeholders for the secrets Grafana reads via `$__file{}`.
+
+    Grafana 13.x hard-fails its *entire* startup (crash-loops, never serves) when
+    a `$__file{}` datasource/contact-point secret references a file that is
+    missing -- or, per #3538, present but empty. On a fresh `ops install` neither
+    value exists yet: the GlitchTip Grafana token is minted later by
+    `ops glitchtip-init`/`_provision_glitchtip` (which runs *after* the
+    observability stack starts), and the Slack webhook file is only written when
+    one is configured. So provisioning would reference two unresolved files and
+    take Grafana down with it (observed on both the native and terraform smoke
+    gates). Seed valid, non-empty placeholders here -- ahead of the observability
+    bring-up, from `_ensure_glitchtip_secrets_dir` which both install paths run
+    first -- so `$__file{}` always resolves: a placeholder GlitchTip token is an
+    Infinity datasource that returns 401 until configured, and the placeholder
+    Slack URL is a contact point that won't deliver -- both degrade gracefully
+    instead of crashing Grafana. Only seeds when the file is absent, so a real
+    token/URL is never clobbered; the real writers overwrite the placeholder when
+    a value exists. Best-effort -- exceptions are swallowed so this never breaks
+    the preflight it runs inside.
+    """
+    if not _slack_webhook_secret_path().exists():
+        with contextlib.suppress(Exception):
+            # Passing "" makes the writer store GRAFANA_SLACK_WEBHOOK_PLACEHOLDER_URL.
+            _write_grafana_slack_webhook_secret("")
+    if not _glitchtip_grafana_token_path().exists():
+        with contextlib.suppress(Exception):
+            _write_grafana_glitchtip_token(GRAFANA_GLITCHTIP_TOKEN_PLACEHOLDER)
+
+
 def _ensure_glitchtip_secrets_dir() -> list[OpsResult]:
     """Ensure `~/.nyxGPT/secrets` exists and is writable by the invoking user
     *before* anything bind-mounts it (#3432).
@@ -6668,6 +6916,7 @@ def _ensure_glitchtip_secrets_dir() -> list[OpsResult]:
             path.mkdir(mode=0o755, parents=True, exist_ok=True)
         except OSError as e:
             return [OpsResult(False, f"Failed to create {path}", f"{type(e).__name__}: {e}")]
+        _ensure_grafana_secret_placeholders()
         return [OpsResult(True, f"Created {path}")]
 
     if not os.access(path, os.W_OK | os.X_OK):
@@ -6676,6 +6925,7 @@ def _ensure_glitchtip_secrets_dir() -> list[OpsResult]:
     # Owned-and-writable is what matters; a chmod that fails here is harmless.
     with contextlib.suppress(OSError):
         os.chmod(path, 0o755)
+    _ensure_grafana_secret_placeholders()
     return [OpsResult(True, f"{path} exists and is writable")]
 
 
@@ -6964,6 +7214,16 @@ def _glitchtip_ensure_superuser(email: str, password: str) -> OpsResult:
     expected returncode so a healthy re-run of `glitchtip-init` logs at INFO
     instead of a scary WARNING (#3574), while still treating it as success
     so re-running after the first successful run is a no-op.
+
+    The password never touches argv (CodeQL #105/#106,
+    py/clear-text-logging-sensitive-data): bare `-e VAR` flags make
+    `docker compose exec` forward each variable's value from this process's
+    environment (passed via `_run(env=...)`) into the container, so
+    `_run`'s non-zero-exit logging -- which fires at INFO on every
+    idempotent rc=1 re-run -- only ever sees the variable NAMES. The old
+    `-e NAME=value` argv form slipped past `_redact_cmd`'s dash-prefixed
+    flag masking and put the real password in the log `extra` on every
+    re-run.
     """
     cmd = [
         "docker",
@@ -6973,11 +7233,11 @@ def _glitchtip_ensure_superuser(email: str, password: str) -> OpsResult:
         "exec",
         "-T",
         "-e",
-        f"DJANGO_SUPERUSER_EMAIL={email}",
+        "DJANGO_SUPERUSER_EMAIL",
         "-e",
-        f"DJANGO_SUPERUSER_PASSWORD={password}",
+        "DJANGO_SUPERUSER_PASSWORD",
         "-e",
-        f"DJANGO_SUPERUSER_USERNAME={email}",
+        "DJANGO_SUPERUSER_USERNAME",
         "glitchtip",
         "./manage.py",
         "createsuperuser",
@@ -6992,6 +7252,12 @@ def _glitchtip_ensure_superuser(email: str, password: str) -> OpsResult:
                 f"GlitchTip superuser {email} already exists -- expected rc=1, "
                 "treated as success"
             ),
+            env={
+                **os.environ,
+                "DJANGO_SUPERUSER_EMAIL": email,
+                "DJANGO_SUPERUSER_PASSWORD": password,
+                "DJANGO_SUPERUSER_USERNAME": email,
+            },
         )
     except Exception as e:
         return OpsResult(

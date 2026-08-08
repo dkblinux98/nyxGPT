@@ -39,6 +39,8 @@ Logs default to:
 ## Command Summary
 
 ```bash
+nyxgpt up              # alias for `nyxgpt ops install` + health-wait + URL
+nyxgpt down            # alias for `nyxgpt ops down`
 nyxgpt ops install
 nyxgpt ops status
 nyxgpt ops restart
@@ -51,6 +53,48 @@ nyxgpt ops logs
 nyxgpt ops observability
 nyxgpt ops glitchtip-init
 nyxgpt ops migrate-volumes
+nyxgpt ops port-forward
+```
+
+---
+
+## `nyxgpt up` / `nyxgpt down`
+
+`nyxgpt up` and `nyxgpt down` are thin, top-level aliases for
+[`nyxgpt ops install`](#nyxgpt-ops-install) and
+[`nyxgpt ops down`](#nyxgpt-ops-down) -- same single code path, no forked
+behavior, every mode flag (`--terraform`, `--kubernetes`, `--local`,
+`--skip-observability`, `--app-only`, `--volumes --yes-really`, ...) passes
+straight through unchanged. They exist because `up`/`down` is the first
+thing most operators reach for, before discovering the fuller `nyxgpt ops`
+surface.
+
+`nyxgpt up`'s only difference from calling `install` directly: once the
+reconcile finishes, it waits for every desired component to report healthy
+(reusing the same cross-mode probes `nyxgpt self-heal status` uses --
+`self_heal.list_component_status()`) and then prints the web UI URL:
+
+```bash
+$ nyxgpt up
+...
+Waiting for components to report healthy...
+nyxGPT is up: http://127.0.0.1:3000
+```
+
+- `--timeout SECONDS` — how long to wait for health before giving up
+  (default 180)
+- `--no-wait` — return as soon as `install` finishes, without waiting for
+  health or printing the URL
+- Under `--kubernetes`, Services are ClusterIP-only, so `up` prints
+  `nyxgpt ops port-forward` instructions instead of claiming the URL is
+  directly reachable (see [kubernetes.md](kubernetes.md#4-verify))
+
+Both are idempotent, same as `install`/`down` themselves: re-running `up`
+just reconciles and re-waits; re-running `down` on an already-torn-down
+stack is a no-op.
+
+```bash
+nyxgpt down    # exactly `nyxgpt ops down`
 nyxgpt ops verify
 ```
 
@@ -814,6 +858,16 @@ Exit codes:
 
 ---
 
+## `nyxgpt ops port-forward`
+
+Forwards the Kubernetes `nyxgpt-web` Service to `127.0.0.1` so it's reachable
+from the operator's own workstation. `k8s/`'s Services are ClusterIP-only --
+there's no Ingress/LoadBalancer (see
+[kubernetes.md](kubernetes.md#4-verify)) -- so this is the only way to reach
+the web UI after a `--kubernetes` install. It's a thin wrapper around
+`kubectl port-forward` so operators never need to type the raw `kubectl`
+command themselves; `nyxgpt up --kubernetes` prints this command as its next
+step once the stack reports healthy.
 ## `nyxgpt ops verify`
 
 The live smoke harness behind #3555/P6-18: boots the stack, generates known
@@ -828,6 +882,13 @@ also works as a one-command local pre-check before owner acceptance testing.
 Usage:
 
 ```bash
+nyxgpt ops port-forward
+nyxgpt ops port-forward --port 3001   # forward to a different local port
+```
+
+Runs in the foreground until interrupted (`Ctrl-C`), same as `kubectl
+port-forward` itself. Exits `2` if `kubectl` isn't on `PATH`; otherwise
+returns `kubectl`'s own exit code once the forward stops.
 nyxgpt ops verify                    # boot, test, tear down (ephemeral -- CI's mode)
 nyxgpt ops verify --keep-up          # leave the stack up afterward to look around
 nyxgpt ops verify --skip-boot        # stack (native or Compose) is already up

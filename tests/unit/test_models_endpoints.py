@@ -182,7 +182,10 @@ def test_models_pull_streaming_error_emits_error_event():
         chunks = list(response.iter_lines())
 
     body = "\n".join(chunks)
-    assert "pull failed: no space left" in body
+    # The raw exception detail must NOT leak to the client; the SSE error event
+    # carries only a generic message (CodeQL py/stack-trace-exposure, #26).
+    assert "pull failed: no space left" not in body
+    assert "Model pull failed" in body
     assert '"error"' in body
 
 

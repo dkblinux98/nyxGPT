@@ -213,6 +213,26 @@ Use `/issue` skill for full guided workflow.
 - Use scripts in scripts/agents/
 - Do not modify Project fields directly outside scripts
 
+**Agents CAN modify `.github/workflows/` files (verified 2026-08-07).** The
+old belief that "the dev agent's GitHub App cannot write workflow files" was
+wrong: every `claude-code-action` invocation in the agent workflows passes
+`github_token: DEVELOPER_AGENT_TOKEN`, a classic PAT that carries the
+`workflow` scope, so pushes to workflow files succeed. The refusals seen on
+#3642 came from the action's built-in App-mode capability text, which the
+implement prompts now explicitly override (see the "Workflow-files
+exception" paragraph in `developer_auto_implement.yml`). Do not hand-carry
+workflow-file issues on that basis; if a workflow push is actually rejected,
+diagnose the real error rather than assuming a permissions wall.
+
+**Reading code-scanning state without owner help:** dispatch
+`.github/workflows/code_scan_report.yml` (workflow_dispatch, optional `ref`
+input) and read its run log — it prints recent analyses, the open-alert
+list with `TOTAL_OPEN`, and every SARIF codeFlow per open alert. Agent
+sessions cannot call the code-scanning API directly; this is the supported
+path. Note: CodeQL default setup only scans the repo's default branch (plus
+PRs) — a non-default branch's alert list is frozen until it becomes default
+again and receives a push.
+
 **IMPORTANT: Do not create project metadata without explicit user permission:**
 - Do NOT create labels (use existing labels only)
 - Do NOT create milestones

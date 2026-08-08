@@ -4,5 +4,12 @@
   "devDependencies": {
     "@modelcontextprotocol/server-github": "^2025.4.8",
     "@upstash/context7-mcp": "^3.2.4"
+  },
+  "overrides": {
+    "@modelcontextprotocol/sdk": "^1.24.0",
+    "@hono/node-server": "^2.0.5",
+    "fast-uri": "^3.1.5",
+    "ip-address": "^10.3.1",
+    "hono": "^4.12.34"
   }
 }
