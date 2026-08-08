@@ -3318,6 +3318,13 @@ def _install_terraform_steps(api_key: str | None) -> list[OpsResult]:
         # bind-mount auto-creates a missing ~/.nyxGPT/secrets root-owned on
         # Linux (#3432), which then blocks the token write below.
         ("glitchtip secrets dir", _ensure_glitchtip_secrets_dir),
+        # Must run before the observability stack starts: Grafana's alerting
+        # provisioning (docker/grafana/provisioning/alerting/contact-points.yml)
+        # unconditionally reads $__file{/etc/nyxgpt-secrets/slack-webhook-url}
+        # and refuses to boot if it's missing -- the native install() path
+        # writes this placeholder-or-real secret via the same function before
+        # starting its observability stack; the terraform path must too (#3588).
+        ("slack webhook secret", _sync_grafana_slack_webhook_secret),
         # After apply (network + core containers exist): bring the observability
         # stack up on the terraform network and auto-provision GlitchTip, so the
         # terraform deploy has the same full SRE view as the native install.
@@ -3825,6 +3832,13 @@ def infra_status() -> dict[str, Any]:
     reserved for a *configured* context the probe couldn't reach (timeout,
     connection refused to a cluster that's meant to exist, auth failure),
     preserving #3410's original false-NOT-DEPLOYED protection for that case.
+
+    `compose_probe_available` extends the same "can't determine" distinction
+    to the `compose` section (#3588): `False` means `docker compose ps`
+    couldn't be queried from this vantage point at all (no `docker`, or the
+    Compose file isn't reachable -- e.g. a Terraform-managed api container
+    missing the bind mount), so an empty `compose` dict must not be read as
+    "nothing running" -- see `self_heal.compose_probe_available`.
     """
     mode_info = detect_deployment_mode()
 
@@ -3879,6 +3893,7 @@ def infra_status() -> dict[str, Any]:
         "mode": running_mode,
         "native": mode_info.native,
         "compose": mode_info.compose,
+        "compose_probe_available": self_heal.compose_probe_available(),
         "conflicts": sorted(mode_info.conflicts),
         "terraform": terraform,
         "kubernetes": kubernetes,
@@ -6821,7 +6836,7 @@ def _glitchtip_secrets_dir_unwritable_result(path: Path) -> OpsResult:
         f"On Linux, dockerd runs as root and auto-creates a missing Docker bind-mount "
         f"source directory as root:root the first time a container starts -- if "
         f"Grafana started before this directory existed, that's almost certainly what "
-        f"happened here. Fix with: sudo chown -R $(whoami) {path} && chmod 700 {path}, "
+        f"happened here. Fix with: sudo chown -R $(whoami) {path} && chmod 755 {path}, "
         "then re-run `nyxgpt ops install` (or `nyxgpt ops glitchtip-init`).",
     )
 
@@ -6881,6 +6896,16 @@ def _ensure_glitchtip_secrets_dir() -> list[OpsResult]:
     never touches its ownership. macOS (Docker Desktop) doesn't hit this:
     its VM handles bind-mount ownership differently.
 
+    Mode is `0o755`, not `0o700` (#3588): the official Grafana image runs
+    as a fixed non-root uid (472) inside the container, and a native Linux
+    bind mount exposes host files under their literal host uid/gid -- no
+    user-namespace remapping -- so a `0o700` dir owned by the host user
+    blocks Grafana's uid from even traversing into it to stat the token
+    file it needs to read. `0o755` lets any uid traverse and read; only the
+    owning host user can write, which is what actually needs protecting
+    here (these are locally-scoped tokens for this machine's own GlitchTip/
+    Grafana instances, not high-value secrets).
+
     Run as a best-effort preflight step (`install()` / `_install_terraform_steps`
     catch and log any exception a step raises), so it never needs to raise
     itself -- it just reports whether the directory is now usable.
@@ -6888,7 +6913,7 @@ def _ensure_glitchtip_secrets_dir() -> list[OpsResult]:
     path = _glitchtip_grafana_token_path().parent
     if not path.exists():
         try:
-            path.mkdir(mode=0o700, parents=True, exist_ok=True)
+            path.mkdir(mode=0o755, parents=True, exist_ok=True)
         except OSError as e:
             return [OpsResult(False, f"Failed to create {path}", f"{type(e).__name__}: {e}")]
         _ensure_grafana_secret_placeholders()
@@ -6899,7 +6924,7 @@ def _ensure_glitchtip_secrets_dir() -> list[OpsResult]:
 
     # Owned-and-writable is what matters; a chmod that fails here is harmless.
     with contextlib.suppress(OSError):
-        os.chmod(path, 0o700)
+        os.chmod(path, 0o755)
     _ensure_grafana_secret_placeholders()
     return [OpsResult(True, f"{path} exists and is writable")]
 
@@ -7091,10 +7116,21 @@ def _stale_venv_doctor_issues() -> list[str]:
 
 
 def _glitchtip_container_healthy() -> bool:
-    """Whether the `glitchtip` Compose container currently reports healthy."""
+    """Whether the `glitchtip` Compose container has actually passed its health check.
+
+    Checks `health` directly rather than reusing `ComponentStatus.healthy`,
+    which deliberately treats a "starting" container as healthy (see
+    self_heal.py's start_period-grace comment) so the self-heal watchdog
+    doesn't restart something mid-boot -- the right call there, but the wrong
+    one here: a container freshly (re)started reports `state=running,
+    health=starting` for its whole healthcheck `start_period`, so a caller
+    waiting to know the container is *actually* ready (not just "not yet
+    proven broken") needs `health == "healthy"`, or this returns as soon as
+    the container exists (#3588's grafana mirror of this same bug).
+    """
     for status in self_heal.list_component_status():
         if status.service == "glitchtip":
-            return status.healthy
+            return status.state == "running" and status.health in ("", "healthy")
     return False
 
 
@@ -7116,7 +7152,7 @@ def _wait_for_glitchtip_healthy(timeout: float = 120.0, poll_interval: float = 3
     statuses = [s for s in self_heal.list_component_status() if s.service == "glitchtip"]
     if not statuses or statuses[0].state == "absent":
         return False
-    if statuses[0].healthy:
+    if statuses[0].state == "running" and statuses[0].health in ("", "healthy"):
         return True
 
     deadline = time.monotonic() + timeout
@@ -7713,15 +7749,24 @@ def _write_grafana_glitchtip_token(token: str) -> tuple[bool, OpsResult]:
     glitchtip-init` run skips that preflight -- so a permission problem
     surfaces as this actionable `OpsResult` instead of an uncaught
     `PermissionError` traceback bubbling up through `_provision_glitchtip`.
+
+    File mode is `0o644`, not `0o600` (#3588): Grafana's official image
+    runs as non-root uid 472, and a native Linux bind mount preserves host
+    uid/gid checks (no user-namespace remap), so a `0o600` file owned by
+    the host user is unreadable by Grafana's container process -- Grafana
+    fails to boot with a `stat ...: permission denied` on its GlitchTip
+    datasource provisioning. `0o644` keeps write access restricted to the
+    owning host user while letting any uid read it, matching the parent
+    directory's `0o755` in `_ensure_glitchtip_secrets_dir`.
     """
     path = _glitchtip_grafana_token_path()
     try:
         if path.exists() and path.read_text(encoding="utf-8").strip() == token:
             return False, OpsResult(True, f"{path} already holds the current GlitchTip token")
 
-        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
         path.write_text(token, encoding="utf-8")
-        os.chmod(path, 0o600)
+        os.chmod(path, 0o644)
     except OSError as e:
         result = _glitchtip_secrets_dir_unwritable_result(path.parent)
         return False, OpsResult(
@@ -7733,10 +7778,23 @@ def _write_grafana_glitchtip_token(token: str) -> tuple[bool, OpsResult]:
 
 
 def _grafana_container_healthy() -> bool:
-    """Whether the `grafana` Compose container currently reports healthy."""
+    """Whether the `grafana` Compose container has actually passed its health check.
+
+    Checks `health` directly rather than reusing `ComponentStatus.healthy`
+    -- see `_glitchtip_container_healthy`'s docstring for why that flag's
+    "starting counts as healthy" semantics (correct for the self-heal
+    watchdog) are wrong for this caller. This was the actual cause of the
+    `terraform-local-smoke` CI race (#3588 review round 2): right after
+    `docker compose restart grafana`, `_wait_for_grafana_healthy` polled
+    `ComponentStatus.healthy`, which was already `True` while the container
+    was still in its healthcheck `start_period` (`state=running,
+    health=starting`) -- so the restart was reported done and the install
+    command returned before Grafana was actually reachable, and the smoke
+    test's immediate curl hit connection-refused.
+    """
     for status in self_heal.list_component_status():
         if status.service == "grafana":
-            return status.healthy
+            return status.state == "running" and status.health in ("", "healthy")
     return False
 
 
@@ -7758,7 +7816,7 @@ def _wait_for_grafana_healthy(timeout: float = 120.0, poll_interval: float = 3.0
     statuses = [s for s in self_heal.list_component_status() if s.service == "grafana"]
     if not statuses or statuses[0].state == "absent":
         return False
-    if statuses[0].healthy:
+    if statuses[0].state == "running" and statuses[0].health in ("", "healthy"):
         return True
 
     deadline = time.monotonic() + timeout
@@ -7770,12 +7828,22 @@ def _wait_for_grafana_healthy(timeout: float = 120.0, poll_interval: float = 3.0
 
 
 def _restart_grafana_if_running(reason: str = "the new GlitchTip token") -> OpsResult:
-    """Restart the `grafana` Compose container if it's currently running.
+    """Restart the `grafana` Compose container if its container exists.
 
     Grafana only reads `$__file{}` provisioning targets (the GlitchTip
     Infinity token, see `_write_grafana_glitchtip_token`, and the Slack
     alerting webhook, see `_write_grafana_slack_webhook_secret`) at startup,
     so a freshly (re)written secret needs this to actually take effect.
+
+    Only skips when the container is entirely `"absent"` (no container to
+    restart at all, e.g. the observability profile was never started) --
+    NOT merely non-`"running"`. On a from-scratch install, Grafana's
+    GlitchTip-Infinity datasource provisioning fails and crash-loops
+    (`state="exited"`) before `_provision_glitchtip` has written the token
+    this restart exists to deliver; skipping on anything but "running" left
+    it dead for good instead of bringing it back (#3588's `terraform-local-
+    smoke` regression). `docker compose restart` covers both a running and
+    an already-stopped container -- there's no need to branch to `up -d`.
 
     Waits for Grafana to report healthy again before returning (#3538) --
     without this, a restart that leaves Grafana crash-looping (e.g. a broken
@@ -7787,7 +7855,7 @@ def _restart_grafana_if_running(reason: str = "the new GlitchTip token") -> OpsR
         return OpsResult(True, "Skipped Grafana restart (Docker not found)")
 
     running = _compose_stack_snapshot()
-    if running.get("grafana") != "running":
+    if running.get("grafana", "absent") == "absent":
         return OpsResult(True, "Skipped Grafana restart (not running)")
 
     cmd = ["docker", "compose", "-f", str(self_heal.COMPOSE_FILE), "restart", "grafana"]
@@ -7880,6 +7948,11 @@ def _write_grafana_slack_webhook_secret(url: str) -> tuple[bool, OpsResult]:
     Returns `(changed, result)` -- `changed` is False when the file already
     holds this exact value, which callers use to skip an unnecessary
     Grafana restart (mirrors `_write_grafana_glitchtip_token`).
+
+    File/dir modes are `0o644`/`0o755`, not `0o600`/`0o700`, for the same
+    reason as `_write_grafana_glitchtip_token` (#3588): Grafana's
+    non-root container uid needs to read this file across a native Linux
+    bind mount.
     """
     path = _slack_webhook_secret_path()
     resolved = url.strip() or GRAFANA_SLACK_WEBHOOK_PLACEHOLDER_URL
@@ -7887,9 +7960,9 @@ def _write_grafana_slack_webhook_secret(url: str) -> tuple[bool, OpsResult]:
         if path.exists() and path.read_text(encoding="utf-8").strip() == resolved:
             return False, OpsResult(True, f"{path} already holds the current Slack webhook URL")
 
-        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
         path.write_text(resolved, encoding="utf-8")
-        os.chmod(path, 0o600)
+        os.chmod(path, 0o644)
     except OSError as e:
         result = _glitchtip_secrets_dir_unwritable_result(path.parent)
         return False, OpsResult(

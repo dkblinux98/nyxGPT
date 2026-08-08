@@ -7653,6 +7653,21 @@ def test_glitchtip_container_healthy_false_when_absent(monkeypatch):
 
 
 @pytest.mark.unit
+def test_glitchtip_container_healthy_false_when_still_starting(monkeypatch):
+    """Regression (#3588 review round 2): mirrors `_grafana_container_healthy`'s
+    fix -- a freshly (re)started container reports `state=running,
+    health=starting` throughout its healthcheck `start_period`, which
+    `ComponentStatus.healthy` treats as healthy (intentionally, for the
+    self-heal watchdog) but this caller must not.
+    """
+    status = self_heal.ComponentStatus(
+        service="glitchtip", container="c", state="running", health="starting", healthy=True
+    )
+    monkeypatch.setattr(ops.self_heal, "list_component_status", lambda: [status])
+    assert ops._glitchtip_container_healthy() is False
+
+
+@pytest.mark.unit
 def test_wait_for_glitchtip_healthy_absent_returns_false_without_sleeping(monkeypatch):
     monkeypatch.setattr(ops.self_heal, "list_component_status", lambda: [])
     sleeps = []
@@ -7673,6 +7688,33 @@ def test_wait_for_glitchtip_healthy_already_healthy_returns_true_immediately(mon
 
     assert ops._wait_for_glitchtip_healthy(timeout=5, poll_interval=0.01) is True
     assert sleeps == []
+
+
+@pytest.mark.unit
+def test_wait_for_glitchtip_healthy_polls_through_start_period(monkeypatch):
+    """Regression (#3588 review round 2), mirrors the grafana version of this
+    test: the initial check must not trust a `state=running, health=starting`
+    snapshot as done -- keep polling until the healthcheck actually passes.
+    """
+    starting = self_heal.ComponentStatus(
+        service="glitchtip", container="c", state="running", health="starting", healthy=True
+    )
+    healthy = self_heal.ComponentStatus(
+        service="glitchtip", container="c", state="running", health="healthy", healthy=True
+    )
+    calls = {"n": 0}
+
+    def fake_status():
+        calls["n"] += 1
+        return [healthy] if calls["n"] >= 3 else [starting]
+
+    monkeypatch.setattr(ops.self_heal, "list_component_status", fake_status)
+    sleeps = []
+    monkeypatch.setattr(ops.time, "sleep", lambda s: sleeps.append(s))
+
+    assert ops._wait_for_glitchtip_healthy(timeout=5, poll_interval=0.01) is True
+    assert calls["n"] >= 3
+    assert sleeps, "must poll at least once instead of trusting the starting-state snapshot"
 
 
 @pytest.mark.unit
@@ -7769,6 +7811,24 @@ def test_grafana_container_healthy_false_when_absent(monkeypatch):
 
 
 @pytest.mark.unit
+def test_grafana_container_healthy_false_when_still_starting(monkeypatch):
+    """Regression (#3588 review round 2): a container freshly (re)started by
+    `docker compose restart` immediately reports `state=running,
+    health=starting` for its whole healthcheck `start_period` -- the exact
+    shape `ComponentStatus.healthy` treats as healthy (by design, for the
+    self-heal watchdog). `_grafana_container_healthy` must not: this was the
+    root cause of `terraform-local-smoke`'s "grafana health -> 000000" CI
+    failure -- `_wait_for_grafana_healthy` returned True instantly after the
+    restart, before Grafana was actually reachable.
+    """
+    status = self_heal.ComponentStatus(
+        service="grafana", container="c", state="running", health="starting", healthy=True
+    )
+    monkeypatch.setattr(ops.self_heal, "list_component_status", lambda: [status])
+    assert ops._grafana_container_healthy() is False
+
+
+@pytest.mark.unit
 def test_wait_for_grafana_healthy_absent_returns_false_without_sleeping(monkeypatch):
     monkeypatch.setattr(ops.self_heal, "list_component_status", lambda: [])
     sleeps = []
@@ -7789,6 +7849,36 @@ def test_wait_for_grafana_healthy_already_healthy_returns_true_immediately(monke
 
     assert ops._wait_for_grafana_healthy(timeout=5, poll_interval=0.01) is True
     assert sleeps == []
+
+
+@pytest.mark.unit
+def test_wait_for_grafana_healthy_polls_through_start_period(monkeypatch):
+    """Regression (#3588 review round 2): the initial check right after a
+    `docker compose restart grafana` sees `state=running, health=starting`
+    (the container's whole healthcheck `start_period`) -- must keep polling
+    instead of returning True on that first look, or the caller reports the
+    restart done while Grafana is still unreachable (the exact
+    `terraform-local-smoke` "grafana health -> 000000" CI failure).
+    """
+    starting = self_heal.ComponentStatus(
+        service="grafana", container="c", state="running", health="starting", healthy=True
+    )
+    healthy = self_heal.ComponentStatus(
+        service="grafana", container="c", state="running", health="healthy", healthy=True
+    )
+    calls = {"n": 0}
+
+    def fake_status():
+        calls["n"] += 1
+        return [healthy] if calls["n"] >= 3 else [starting]
+
+    monkeypatch.setattr(ops.self_heal, "list_component_status", fake_status)
+    sleeps = []
+    monkeypatch.setattr(ops.time, "sleep", lambda s: sleeps.append(s))
+
+    assert ops._wait_for_grafana_healthy(timeout=5, poll_interval=0.01) is True
+    assert calls["n"] >= 3
+    assert sleeps, "must poll at least once instead of trusting the starting-state snapshot"
 
 
 @pytest.mark.unit
@@ -8427,8 +8517,11 @@ def test_write_grafana_glitchtip_token_writes_and_chmods(tmp_path, monkeypatch):
     assert result.ok
     token_path = tmp_path / ".nyxGPT" / "secrets" / "glitchtip-grafana-token"
     assert token_path.read_text(encoding="utf-8") == "tok-123"
-    assert oct(token_path.stat().st_mode)[-3:] == "600"
-    assert oct(token_path.parent.stat().st_mode)[-3:] == "700"
+    # 644/755, not 600/700 (#3588): Grafana's container runs as non-root uid
+    # 472, and a native Linux bind mount needs the file/dir world-readable
+    # for that uid to stat/read it -- see _write_grafana_glitchtip_token.
+    assert oct(token_path.stat().st_mode)[-3:] == "644"
+    assert oct(token_path.parent.stat().st_mode)[-3:] == "755"
 
 
 @pytest.mark.unit
@@ -8468,7 +8561,9 @@ def test_write_grafana_slack_webhook_secret_writes_and_chmods(tmp_path, monkeypa
     assert result.ok
     secret_path = tmp_path / ".nyxGPT" / "secrets" / "slack-webhook-url"
     assert secret_path.read_text(encoding="utf-8") == "https://hooks.slack.com/x"
-    assert oct(secret_path.stat().st_mode)[-3:] == "600"
+    # 644, not 600 (#3588): same cross-uid-readability reasoning as the
+    # GlitchTip token -- see _write_grafana_glitchtip_token.
+    assert oct(secret_path.stat().st_mode)[-3:] == "644"
 
 
 @pytest.mark.unit
@@ -8837,7 +8932,10 @@ def test_ensure_glitchtip_secrets_dir_creates_when_missing(tmp_path, monkeypatch
     assert results[0].ok is True
     assert "Created" in results[0].message
     assert secrets_dir.is_dir()
-    assert oct(secrets_dir.stat().st_mode)[-3:] == "700"
+    # 755, not 700 (#3588): Grafana's non-root container uid needs to
+    # traverse into this dir across a native Linux bind mount -- see
+    # _ensure_glitchtip_secrets_dir.
+    assert oct(secrets_dir.stat().st_mode)[-3:] == "755"
 
 
 @pytest.mark.unit
@@ -9085,12 +9183,33 @@ def test_restart_grafana_if_running_skips_without_docker(monkeypatch):
 
 
 @pytest.mark.unit
-def test_restart_grafana_if_running_skips_when_not_running(monkeypatch):
+def test_restart_grafana_if_running_skips_when_absent(monkeypatch):
     monkeypatch.setattr(ops, "_compose_available", lambda: True)
-    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "exited"})
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
     result = ops._restart_grafana_if_running()
     assert result.ok
     assert "not running" in result.message
+
+
+@pytest.mark.unit
+def test_restart_grafana_if_running_restarts_when_exited(monkeypatch):
+    """Regression test (#3588): a crashed/exited Grafana container must still
+    be restarted, not skipped -- `docker compose restart` handles a stopped
+    container fine, and skipping here left Grafana dead after a from-scratch
+    install crash-looped it before the GlitchTip token existed."""
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "exited"})
+    monkeypatch.setattr(ops, "_wait_for_grafana_healthy", lambda: True)
+    captured_cmd = {}
+
+    def fake_run(cmd, check=False):
+        captured_cmd["cmd"] = cmd
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    result = ops._restart_grafana_if_running()
+    assert result.ok
+    assert captured_cmd["cmd"][-2:] == ["restart", "grafana"]
 
 
 @pytest.mark.unit
@@ -9453,7 +9572,8 @@ def test_provision_glitchtip_full_happy_path(monkeypatch, tmp_path):
     # (#3411), never hand-pasted.
     token_path = tmp_path / ".nyxGPT" / "secrets" / "glitchtip-grafana-token"
     assert token_path.read_text(encoding="utf-8") == "tok"
-    assert oct(token_path.stat().st_mode)[-3:] == "600"
+    # 644, not 600 (#3588): see _write_grafana_glitchtip_token.
+    assert oct(token_path.stat().st_mode)[-3:] == "644"
 
     # The native `nyxgpt-api` brew service reads config.ini's DSN once, at
     # process startup (#3470 acceptance failure) -- the DSN here changed
@@ -9903,6 +10023,7 @@ def test_install_terraform_success_runs_all_steps(monkeypatch, capsys):
         patch.object(ops, "_build_terraform_docker_images", return_value=ok),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok) as a,
         patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
+        patch.object(ops, "_sync_grafana_slack_webhook_secret", return_value=ok) as s,
         patch.object(ops, "_start_observability_stack_terraform", return_value=ok) as o,
         patch.object(ops, "_provision_glitchtip", return_value=ok) as g,
         patch.object(ops, "_terraform_stack_health", return_value=ok) as h,
@@ -9915,11 +10036,56 @@ def test_install_terraform_success_runs_all_steps(monkeypatch, capsys):
     # main.tf bind-mounts it, same as docker-compose.yml (regression: #3398).
     c.assert_called_once()
     a.assert_called_once()
+    # ...and provision Grafana's Slack webhook secret before observability
+    # starts, same as the native install() path (regression: #3588 round 4 --
+    # Grafana's alerting provisioning crash-loops without this file present).
+    s.assert_called_once()
     # ...and bring observability up on the terraform network + provision GlitchTip.
     o.assert_called_once()
     g.assert_called_once()
     h.assert_called_once()
     assert "[OK]" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_install_terraform_syncs_slack_webhook_before_observability_starts(monkeypatch):
+    """Regression (#3588 round 4): Grafana's alerting provisioning
+    (docker/grafana/provisioning/alerting/contact-points.yml) unconditionally
+    reads $__file{/etc/nyxgpt-secrets/slack-webhook-url} and refuses to boot
+    if it's missing. The native install() path writes that secret via
+    `_sync_grafana_slack_webhook_secret` before starting its observability
+    stack; the terraform path must run the same step in the same order, or
+    Grafana crash-loops on every from-scratch `nyxgpt ops install --terraform
+    --local` (this is what turned the required `terraform-local-smoke` CI
+    check red after the prior round's Grafana-restart fix unblocked it)."""
+    args = SimpleNamespace(local=True, cloud=False, api_key="k")
+    monkeypatch.setattr(ops, "_refuse_port_collision", lambda components: None)
+    ok = [ops.OpsResult(True, "ok")]
+    call_order: list[str] = []
+    with (
+        patch.object(ops, "migrate_legacy_volumes", return_value=ok),
+        patch.object(ops, "_ensure_terraform_binary", return_value=ok),
+        patch.object(ops, "_ensure_terraform_tfvars", return_value=ok),
+        patch.object(ops, "_generate_compose_config", return_value=ok),
+        patch.object(ops, "_build_terraform_docker_images", return_value=ok),
+        patch.object(ops, "_terraform_init_plan_apply", return_value=ok),
+        patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
+        patch.object(
+            ops,
+            "_sync_grafana_slack_webhook_secret",
+            side_effect=lambda: call_order.append("slack webhook secret") or ok,
+        ),
+        patch.object(
+            ops,
+            "_start_observability_stack_terraform",
+            side_effect=lambda: call_order.append("observability stack") or ok,
+        ),
+        patch.object(ops, "_provision_glitchtip", return_value=ok),
+        patch.object(ops, "_terraform_stack_health", return_value=ok),
+    ):
+        rc = ops._install_terraform(args)
+    assert rc == 0
+    assert call_order == ["slack webhook secret", "observability stack"]
 
 
 @pytest.mark.unit
@@ -9958,6 +10124,7 @@ def test_install_terraform_clears_intentional_stop_markers(monkeypatch, capsys):
         patch.object(ops, "_build_terraform_docker_images", return_value=ok),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok),
         patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
+        patch.object(ops, "_sync_grafana_slack_webhook_secret", return_value=ok),
         patch.object(ops, "_start_observability_stack_terraform", return_value=ok),
         patch.object(ops, "_provision_glitchtip", return_value=ok),
         patch.object(ops, "_terraform_stack_health", return_value=ok),
@@ -10483,6 +10650,7 @@ def test_install_terraform_local_runs_steps_and_returns_results(monkeypatch):
         patch.object(ops, "_build_terraform_docker_images", return_value=ok),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok),
         patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
+        patch.object(ops, "_sync_grafana_slack_webhook_secret", return_value=ok),
         patch.object(ops, "_start_observability_stack_terraform", return_value=ok),
         patch.object(ops, "_provision_glitchtip", return_value=ok),
         patch.object(ops, "_terraform_stack_health", return_value=ok),
@@ -10574,6 +10742,42 @@ def test_down_kubernetes_returns_results_without_printing(monkeypatch, capsys):
     assert len(results) == 1
     assert results[0].ok is True
     assert capsys.readouterr().out == ""
+
+
+@pytest.mark.unit
+def test_infra_status_compose_probe_available_true_when_probe_can_run(monkeypatch):
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "absent"})
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: ops.DeploymentMode(native={}, compose={}, conflicts=[]),
+    )
+    monkeypatch.setattr(ops, "_which", lambda prog: None)
+    monkeypatch.setattr(ops.self_heal, "compose_probe_available", lambda: True)
+
+    assert ops.infra_status()["compose_probe_available"] is True
+
+
+@pytest.mark.unit
+def test_infra_status_compose_probe_available_false_when_compose_file_unreachable(monkeypatch):
+    # #3588: this is exactly what a Terraform-managed api container hit
+    # before the docker-compose.yml bind mount was added -- the observability
+    # tier's absence must be reported as "can't check", not "not running".
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "running"})
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: ops.DeploymentMode(native={}, compose={}, conflicts=[]),
+    )
+    monkeypatch.setattr(
+        ops, "_which", lambda prog: "/usr/local/bin/docker" if prog == "docker" else None
+    )
+    monkeypatch.setattr(ops.self_heal, "compose_probe_available", lambda: False)
+
+    result = ops.infra_status()
+    assert result["mode"] == "terraform"
+    assert result["compose"] == {}
+    assert result["compose_probe_available"] is False
 
 
 @pytest.mark.unit

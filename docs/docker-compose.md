@@ -752,9 +752,12 @@ configure it by hand instead.
 
 `glitchtip-init` also mints a scoped GlitchTip API token for Grafana's
 Infinity datasource (never a hand-pasted token) and writes it to
-`~/.nyxGPT/secrets/glitchtip-grafana-token` (0600, git-ignored), which the
-`grafana` service mounts read-only and the Infinity datasource reads via
-Grafana's `$__file{}` provisioning expansion. Grafana only reads that file
+`~/.nyxGPT/secrets/glitchtip-grafana-token` (0644 in a 0755 dir --
+world-readable but owner-writable-only, git-ignored -- since Grafana's
+container runs as non-root uid 472 and a native Linux bind mount needs
+that uid able to read the file), which the `grafana` service mounts
+read-only and the Infinity datasource reads via Grafana's `$__file{}`
+provisioning expansion. Grafana only reads that file
 at startup, so `glitchtip-init` restarts the `grafana` container directly
 once the token is written (if it's already running); re-run
 `nyxgpt ops glitchtip-init` if the GlitchTip panels in the SRE Home

@@ -127,11 +127,30 @@ resource "docker_container" "api" {
   env = [
     "NYXGPT_AUTH_API_KEY=${var.auth_api_key}",
     "NYXGPT_CORS_ORIGINS=${var.cors_origins}",
+    # Tells the self-heal watchdog (src/nyxgpt/self_heal.py), which runs
+    # inside this container, which compose file to run `docker compose
+    # ps/restart` against for the observability tier (Grafana/Loki/Jaeger/
+    # GlitchTip -- Terraform manages only the core four containers directly,
+    # see `_list_terraform_component_status`) -- mirrors docker-compose.yml's
+    # own `api` service env var of the same name. See the volume mount below
+    # and docs/self-healing.md. Without this, `_resolve_compose_file()`'s
+    # module-path and config.ini fallbacks both fail inside this container,
+    # `docker compose ps` fails every self-heal pass, and the observability
+    # tier is invisible to both the Self-Heal and Infrastructure Status pages
+    # in Terraform mode (#3588).
+    "NYXGPT_COMPOSE_FILE=/etc/nyxgpt/docker-compose.yml",
   ]
 
   volumes {
     host_path      = "${var.repo_path}/docker/config.docker.ini"
     container_path = "/etc/nyxgpt/config/config.ini"
+    read_only      = true
+  }
+
+  # Paired with NYXGPT_COMPOSE_FILE above -- see that env var's comment.
+  volumes {
+    host_path      = "${var.repo_path}/docker-compose.yml"
+    container_path = "/etc/nyxgpt/docker-compose.yml"
     read_only      = true
   }
 

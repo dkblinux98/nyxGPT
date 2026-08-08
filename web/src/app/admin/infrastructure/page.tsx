@@ -10,6 +10,7 @@ type InfraStatus = {
   mode: DeploymentModeName;
   native: Record<string, string>;
   compose: Record<string, string>;
+  compose_probe_available: boolean;
   conflicts: string[];
   terraform: {
     probe_available: boolean;
@@ -249,8 +250,22 @@ export default function InfrastructurePage() {
 
           {/* --- Compose --- */}
           <div style={boxStyle}>
-            <h2 style={{ fontSize: '1.1rem', fontWeight: 'bold', marginBottom: '0.75rem' }}>Docker Compose</h2>
-            <ComponentList components={status.compose} />
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
+              <h2 style={{ fontSize: '1.1rem', fontWeight: 'bold' }}>Docker Compose</h2>
+              {!status.compose_probe_available && (
+                <span style={badgeStyle(false, true)}>CANNOT DETERMINE</span>
+              )}
+            </div>
+
+            {!status.compose_probe_available ? (
+              <p style={{ fontSize: '0.875rem', color: 'var(--foreground-muted)' }}>
+                Cannot determine from this deployment mode — the Compose file isn&apos;t reachable
+                from wherever this API process is running (e.g. a Terraform-managed container
+                missing the docker-compose.yml bind mount).
+              </p>
+            ) : (
+              <ComponentList components={status.compose} />
+            )}
           </div>
 
           {/* --- Terraform --- */}

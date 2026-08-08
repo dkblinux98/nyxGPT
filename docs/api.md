@@ -1252,13 +1252,21 @@ a core component an operator deliberately stopped via `nyxgpt ops down`/
 for the latter). Each component also carries `restart_count` (consecutive
 automatic restart attempts since it last recovered) and `giving_up` (`true`
 once that count has hit `max_consecutive_restarts` and the automatic loop
-has stopped retrying it).
+has stopped retrying it). `compose_probe_available: false` means `docker
+compose ps` couldn't be queried from this vantage point at all (no `docker`,
+or the compose file isn't reachable -- e.g. before #3588's fix, a
+Terraform-managed api container missing the bind mount) -- a caller should
+read that as "can't check the observability tier from here", never as "the
+observability tier isn't running", see
+[self-healing.md#docker-access-from-inside-the-api-container](self-healing.md#docker-access-from-inside-the-api-container).
 
 **Response:**
 
 ```json
 {
   "enabled": true,
+  "mode": "terraform",
+  "compose_probe_available": true,
   "components": [
     { "service": "api", "container": "nyxgpt-api", "state": "started", "health": "", "healthy": true, "source": "native", "desired": true, "restart_count": 0, "giving_up": false },
     { "service": "web", "container": "nyxgpt-web-1", "state": "running", "health": "healthy", "healthy": true, "source": "compose", "desired": true, "restart_count": 0, "giving_up": false },
