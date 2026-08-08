@@ -9900,6 +9900,7 @@ def test_install_terraform_success_runs_all_steps(monkeypatch, capsys):
         patch.object(ops, "_build_terraform_docker_images", return_value=ok),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok) as a,
         patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
+        patch.object(ops, "_sync_grafana_slack_webhook_secret", return_value=ok) as s,
         patch.object(ops, "_start_observability_stack_terraform", return_value=ok) as o,
         patch.object(ops, "_provision_glitchtip", return_value=ok) as g,
         patch.object(ops, "_terraform_stack_health", return_value=ok) as h,
@@ -9912,11 +9913,56 @@ def test_install_terraform_success_runs_all_steps(monkeypatch, capsys):
     # main.tf bind-mounts it, same as docker-compose.yml (regression: #3398).
     c.assert_called_once()
     a.assert_called_once()
+    # ...and provision Grafana's Slack webhook secret before observability
+    # starts, same as the native install() path (regression: #3588 round 4 --
+    # Grafana's alerting provisioning crash-loops without this file present).
+    s.assert_called_once()
     # ...and bring observability up on the terraform network + provision GlitchTip.
     o.assert_called_once()
     g.assert_called_once()
     h.assert_called_once()
     assert "[OK]" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_install_terraform_syncs_slack_webhook_before_observability_starts(monkeypatch):
+    """Regression (#3588 round 4): Grafana's alerting provisioning
+    (docker/grafana/provisioning/alerting/contact-points.yml) unconditionally
+    reads $__file{/etc/nyxgpt-secrets/slack-webhook-url} and refuses to boot
+    if it's missing. The native install() path writes that secret via
+    `_sync_grafana_slack_webhook_secret` before starting its observability
+    stack; the terraform path must run the same step in the same order, or
+    Grafana crash-loops on every from-scratch `nyxgpt ops install --terraform
+    --local` (this is what turned the required `terraform-local-smoke` CI
+    check red after the prior round's Grafana-restart fix unblocked it)."""
+    args = SimpleNamespace(local=True, cloud=False, api_key="k")
+    monkeypatch.setattr(ops, "_refuse_port_collision", lambda components: None)
+    ok = [ops.OpsResult(True, "ok")]
+    call_order: list[str] = []
+    with (
+        patch.object(ops, "migrate_legacy_volumes", return_value=ok),
+        patch.object(ops, "_ensure_terraform_binary", return_value=ok),
+        patch.object(ops, "_ensure_terraform_tfvars", return_value=ok),
+        patch.object(ops, "_generate_compose_config", return_value=ok),
+        patch.object(ops, "_build_terraform_docker_images", return_value=ok),
+        patch.object(ops, "_terraform_init_plan_apply", return_value=ok),
+        patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
+        patch.object(
+            ops,
+            "_sync_grafana_slack_webhook_secret",
+            side_effect=lambda: call_order.append("slack webhook secret") or ok,
+        ),
+        patch.object(
+            ops,
+            "_start_observability_stack_terraform",
+            side_effect=lambda: call_order.append("observability stack") or ok,
+        ),
+        patch.object(ops, "_provision_glitchtip", return_value=ok),
+        patch.object(ops, "_terraform_stack_health", return_value=ok),
+    ):
+        rc = ops._install_terraform(args)
+    assert rc == 0
+    assert call_order == ["slack webhook secret", "observability stack"]
 
 
 @pytest.mark.unit
@@ -9955,6 +10001,7 @@ def test_install_terraform_clears_intentional_stop_markers(monkeypatch, capsys):
         patch.object(ops, "_build_terraform_docker_images", return_value=ok),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok),
         patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
+        patch.object(ops, "_sync_grafana_slack_webhook_secret", return_value=ok),
         patch.object(ops, "_start_observability_stack_terraform", return_value=ok),
         patch.object(ops, "_provision_glitchtip", return_value=ok),
         patch.object(ops, "_terraform_stack_health", return_value=ok),
@@ -10480,6 +10527,7 @@ def test_install_terraform_local_runs_steps_and_returns_results(monkeypatch):
         patch.object(ops, "_build_terraform_docker_images", return_value=ok),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok),
         patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
+        patch.object(ops, "_sync_grafana_slack_webhook_secret", return_value=ok),
         patch.object(ops, "_start_observability_stack_terraform", return_value=ok),
         patch.object(ops, "_provision_glitchtip", return_value=ok),
         patch.object(ops, "_terraform_stack_health", return_value=ok),

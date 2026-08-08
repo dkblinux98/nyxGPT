@@ -3238,6 +3238,13 @@ def _install_terraform_steps(api_key: str | None) -> list[OpsResult]:
         # bind-mount auto-creates a missing ~/.nyxGPT/secrets root-owned on
         # Linux (#3432), which then blocks the token write below.
         ("glitchtip secrets dir", _ensure_glitchtip_secrets_dir),
+        # Must run before the observability stack starts: Grafana's alerting
+        # provisioning (docker/grafana/provisioning/alerting/contact-points.yml)
+        # unconditionally reads $__file{/etc/nyxgpt-secrets/slack-webhook-url}
+        # and refuses to boot if it's missing -- the native install() path
+        # writes this placeholder-or-real secret via the same function before
+        # starting its observability stack; the terraform path must too (#3588).
+        ("slack webhook secret", _sync_grafana_slack_webhook_secret),
         # After apply (network + core containers exist): bring the observability
         # stack up on the terraform network and auto-provision GlitchTip, so the
         # terraform deploy has the same full SRE view as the native install.
