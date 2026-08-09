@@ -149,6 +149,14 @@ container at all. `k8s/service.yaml` and `k8s/service-canary.yaml` are both
 routes this outside the cluster by default — see
 [`docs/kubernetes.md`](kubernetes.md).
 
+**AWS deployments** use the SSH-tunnel model above exclusively — no app or
+observability port is ever opened in the security group, only port 22,
+scoped to the owner's current public IP. That IP can change (ISP renewal,
+travel, tethering), which locks the owner out, including SSH — refresh the
+rule with `nyxgpt cloud allow-ip`, which talks only to the AWS API, so it
+works even while locked out. See [`docs/cloud.md`](cloud.md#lockout-recovery)
+for the full lockout-recovery path.
+
 ---
 
 ## Authentication configuration
