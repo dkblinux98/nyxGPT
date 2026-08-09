@@ -575,6 +575,25 @@ jobs:
             - Fix it yourself (fetch, clean stale refs, recreate if needed)
             - Do NOT wait for human intervention
 
+            ### Step 1.5: Check for a huddle decision (#3687)
+            Check whether a comment containing `HUDDLE_DECISION:` exists on this PR
+            (`gh pr view ${{ steps.check_pr.outputs.existing_pr }} --comments`). If one
+            does, this fix cycle is executing the *agreed* plan from a review huddle,
+            not an independent decision:
+            - `HUDDLE_DECISION: proceed` -- fix per the review's stated issues as usual.
+            - `HUDDLE_DECISION: change-approach` -- follow the specific different
+              approach stated in that comment's "What happens next" section, not the
+              original approach.
+            - `HUDDLE_DECISION: descope` -- perform the specific descope stated in
+              that comment (e.g. delete a named flaky test, split off a follow-up
+              issue) rather than continuing to chase the original ask as-is.
+            - `HUDDLE_DECISION: escalate` -- do not attempt a fix; this cycle should
+              not normally run at all when escalate was chosen (the issue goes to the
+              owner instead), so if you see this, stop and note it in your summary
+              rather than pushing a speculative fix.
+            If no `HUDDLE_DECISION:` comment exists, this is an ordinary review-fix
+            cycle -- proceed as below.
+
             ### Step 2: Fix review issues
             1. Read the issues to fix:
                - If /tmp/critical-issues.txt exists, these are the exact blocking issues (structured list — start here)

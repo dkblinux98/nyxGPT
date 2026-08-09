@@ -487,6 +487,28 @@ jobs:
             ### Minor Issues (if any)
             - **[Title]**: [Description or note that these don't block merge]
 
+            ### Disagreement Type (REQUIRED if REQUEST_CHANGES -- #3687 huddle protocol)
+
+            Classify this REQUEST_CHANGES round as exactly one of:
+            - **(a) verifiable defect**: a failing test/CI or a reproducible bug. You
+              MUST state a *new* diagnosis in this round -- do not just restate or
+              lightly reword the previous review's diagnosis. If the previous fix
+              attempt did not change your diagnosis at all, treat this as a signal
+              you may be looking at a (b) judgment call instead: the fix keeps not
+              landing not because the diagnosis is wrong, but because the
+              approach itself needs to change.
+            - **(b) judgment call**: a design/approach disagreement -- the code
+              does what was asked, but you believe a different approach is
+              needed. This type never loops -- it goes straight to a huddle
+              instead of another fix cycle.
+            - **(c) spec ambiguity**: the issue itself is unclear, or resolving
+              this needs owner authority no agent conversation can supply
+              (product/scope decision, not a code problem). This escalates to
+              the owner immediately, cycle zero.
+
+            **[a|b|c]**: [one letter, plus a one-sentence justification]
+            [If APPROVE, omit this section entirely.]
+
             ### Decision
             **[APPROVE|REQUEST_CHANGES]**
 
@@ -503,6 +525,10 @@ jobs:
             - Explain how to fix blocking issues
             - If tests are missing, add as a Medium issue: "Missing tests for code changes"
             - If documentation is missing, add as a Medium issue: "Missing documentation for user-facing changes"
+            - If REQUEST_CHANGES, you MUST include the "### Disagreement Type" section and its
+              a/b/c classification -- an automated workflow reads it to decide whether to loop,
+              huddle, or escalate (#3687). Type (a) with no new diagnosis this round should
+              usually be reclassified as (b).
 
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
@@ -513,7 +539,7 @@ jobs:
           claude_args: >-
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
             --mcp-config ${{ runner.temp }}/mcp-config.json
-            --json-schema '{"type":"object","properties":{"decision":{"type":"string","enum":["APPROVE","REQUEST_CHANGES"]},"summary":{"type":"string"},"critical_issues":{"type":"array","items":{"type":"string"}},"medium_issues":{"type":"array","items":{"type":"string"}}},"required":["decision"]}'
+            --json-schema '{"type":"object","properties":{"decision":{"type":"string","enum":["APPROVE","REQUEST_CHANGES"]},"summary":{"type":"string"},"critical_issues":{"type":"array","items":{"type":"string"}},"medium_issues":{"type":"array","items":{"type":"string"}},"disagreement_type":{"type":"string","enum":["a","b","c"],"description":"REQUIRED when decision is REQUEST_CHANGES (#3687 huddle protocol): (a) verifiable defect, (b) judgment call, (c) spec ambiguity. Omit for APPROVE."}},"required":["decision"]}'
           # yamllint enable rule:line-length
           # Note: review_agent_auto_review.yml triggers automatically on the comment
           # via issue_comment event

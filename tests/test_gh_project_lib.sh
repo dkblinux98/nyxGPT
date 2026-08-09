@@ -23,6 +23,16 @@ _assert_eq() {
   fi
 }
 
+_assert_contains() {
+  local desc="$1" haystack="$2" needle="$3"
+  if [[ "$haystack" == *"$needle"* ]]; then
+    echo "[ok] $desc"
+  else
+    echo "[FAIL] $desc: expected output to contain '$needle', got: $haystack" >&2
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
 # Load the library. It only defines functions at source time, so this is safe.
 # shellcheck source=/dev/null
 source "$ROOT_DIR/scripts/agents/lib/gh_project.sh"
@@ -599,6 +609,147 @@ _assert_eq "project_field_value reads a text field's value" \
   "some free text" "$(project_field_value "item-x" "Notes")"
 _assert_eq "project_field_value returns empty for a field the item has no value for" \
   "" "$(project_field_value "item-x" "Priority")"
+
+# --- Test 13: unresolved_escalation_issues (#3687) -- filters the raw open- ---
+# --- issues-assigned-to-owner fetch down to issues only (excludes PRs, ---
+# --- which the same REST endpoint also returns for an assignee) ---
+REPO_OWNER="test-owner"
+REPO_NAME="test-repo"
+HUMAN_OWNER="dkblinux98"
+
+_open_issues_assigned_to() {
+  [[ "$1" == "dkblinux98" ]] || { echo "[test] unexpected owner: $1" >&2; return 1; }
+  cat <<'JSON'
+[
+  {"number": 201, "title": "spec ambiguity on auth flow", "pull_request": null},
+  {"number": 202, "title": "some PR also assigned to owner", "pull_request": {"url": "x"}},
+  {"number": 203, "title": "flaky suite escalation", "pull_request": null}
+]
+JSON
+}
+
+ISSUES_OUT="$(unresolved_escalation_issues)"
+_assert_eq "unresolved_escalation_issues excludes PRs and lists both open issues" \
+  "#201 spec ambiguity on auth flow
+#203 flaky suite escalation" "$ISSUES_OUT"
+
+_open_issues_assigned_to() { echo "[]"; }
+_assert_eq "unresolved_escalation_issues is empty when nothing is assigned to the owner" \
+  "" "$(unresolved_escalation_issues)"
+
+# --- Test 14: count_unresolved_escalations (#3687) -- always echoes a ---
+# --- number, including zero (grep -c's exit-1-on-no-match must not leak) ---
+unresolved_escalation_issues() { echo ""; }
+_assert_eq "count_unresolved_escalations is 0 when nothing is unresolved" \
+  "0" "$(count_unresolved_escalations)"
+
+unresolved_escalation_issues() { printf '#201 a\n#203 b\n'; }
+_assert_eq "count_unresolved_escalations counts each listed issue" \
+  "2" "$(count_unresolved_escalations)"
+
+# --- Test 14b: _escalation_pause_comment_id (#3687) -- exercises the REAL ---
+# --- gh api + jq pipeline (only `gh` is stubbed, unlike the escalation_pause_gate ---
+# --- tests below which stub this function out entirely) so a regression in ---
+# --- the gh/jq invocation itself -- e.g. the Critical `gh api --jq --arg` ---
+# --- bug this fixes -- is caught. Two pages are returned to also cover the ---
+# --- --paginate-without-slurp pitfall (AGENTS.md): the matching comments ---
+# --- are split across pages with a later, non-matching comment on page 1, ---
+# --- so a per-page (unslurped) sort_by/last would pick the wrong id. ---
+gh() {
+  if [[ "$1" == "api" && "$2" == "repos/test-owner/test-repo/issues/3521/comments" && "$3" == "--paginate" ]]; then
+    cat <<JSON
+[{"id": 111, "created_at": "2026-08-03T00:00:00Z", "body": "unrelated, newer than the page-2 comments"}]
+[{"id": 222, "created_at": "2026-08-01T00:00:00Z", "body": "old pause report $_ESCALATION_PAUSE_MARKER"}, {"id": 333, "created_at": "2026-08-02T00:00:00Z", "body": "newest pause report $_ESCALATION_PAUSE_MARKER"}]
+JSON
+    return 0
+  fi
+  echo "[test] unexpected gh invocation: $*" >&2
+  return 1
+}
+_assert_eq "_escalation_pause_comment_id picks the latest matching comment across pages" \
+  "333" "$(_escalation_pause_comment_id 3521)"
+
+gh() { echo "[]"; }
+_assert_eq "_escalation_pause_comment_id is empty when no comment matches the marker" \
+  "" "$(_escalation_pause_comment_id 3521)"
+
+# --- Test 15: escalation_pause_gate (#3687) -- the dispatch-pause decision ---
+# --- itself: 0 or 1 unresolved escalations never pauses (even without a ---
+# --- release issue configured); >=2 pauses and posts/updates a loud report ---
+# --- on RELEASE_ISSUE_NUMBER; dropping back below 2 clears/updates it ---
+RELEASE_ISSUE_NUMBER=""
+unresolved_escalation_issues() { echo ""; }
+if escalation_pause_gate; then
+  echo "[ok] zero unresolved escalations: gate stays open"
+else
+  echo "[FAIL] zero unresolved escalations: gate should stay open" >&2
+  FAILURES=$((FAILURES + 1))
+fi
+
+unresolved_escalation_issues() { echo "#201 only one"; }
+if escalation_pause_gate; then
+  echo "[ok] exactly one unresolved escalation: gate stays open (normal traffic)"
+else
+  echo "[FAIL] exactly one unresolved escalation: gate should stay open" >&2
+  FAILURES=$((FAILURES + 1))
+fi
+
+RELEASE_ISSUE_NUMBER="3521"
+unresolved_escalation_issues() { printf '#201 first\n#203 second\n'; }
+_escalation_pause_comment_id() { echo ""; }
+POSTED_ISSUES=()
+POSTED_BODIES=()
+issue_comment() { POSTED_ISSUES+=("$1"); POSTED_BODIES+=("$2"); }
+PATCH_CALLS=()
+gh() {
+  if [[ "$1" == "api" && "$2" == "-X" && "$3" == "PATCH" ]]; then
+    PATCH_CALLS+=("$*")
+    return 0
+  fi
+  echo "[test] unexpected gh invocation: $*" >&2
+  return 1
+}
+
+if escalation_pause_gate; then
+  echo "[FAIL] two unresolved escalations: gate should pause" >&2
+  FAILURES=$((FAILURES + 1))
+else
+  echo "[ok] two unresolved escalations: gate pauses"
+fi
+_assert_eq "pausing posts exactly one report (no prior comment to update)" "1" "${#POSTED_ISSUES[@]}"
+_assert_eq "the report is posted on the release tracking issue" "3521" "${POSTED_ISSUES[0]}"
+_assert_contains "the report lists both escalated issues" "${POSTED_BODIES[0]}" "#201 first"
+_assert_contains "the report lists both escalated issues" "${POSTED_BODIES[0]}" "#203 second"
+_assert_eq "pausing does not PATCH (no existing comment)" "0" "${#PATCH_CALLS[@]}"
+
+# Already paused with an existing report comment -- update in place, don't
+# post a second comment.
+_escalation_pause_comment_id() { echo "999"; }
+POSTED_ISSUES=()
+POSTED_BODIES=()
+PATCH_CALLS=()
+if escalation_pause_gate; then
+  echo "[FAIL] still >=2 unresolved with an existing report: gate should stay paused" >&2
+  FAILURES=$((FAILURES + 1))
+else
+  echo "[ok] still >=2 unresolved with an existing report: gate stays paused"
+fi
+_assert_eq "an existing report is updated, not duplicated" "0" "${#POSTED_ISSUES[@]}"
+_assert_eq "updating the existing report PATCHes it once" "1" "${#PATCH_CALLS[@]}"
+_assert_contains "the PATCH targets the existing comment id" "${PATCH_CALLS[0]}" "issues/comments/999"
+
+# Count drops back below 2 with a stale report comment present -- the gate
+# reopens and the stale report is updated to say so (not left dangling).
+unresolved_escalation_issues() { echo "#201 first"; }
+PATCH_CALLS=()
+if escalation_pause_gate; then
+  echo "[ok] dropping below 2 with a stale report: gate reopens"
+else
+  echo "[FAIL] dropping below 2 with a stale report: gate should reopen" >&2
+  FAILURES=$((FAILURES + 1))
+fi
+_assert_eq "reopening updates the stale report exactly once" "1" "${#PATCH_CALLS[@]}"
+_assert_contains "the reopen PATCH targets the existing comment id" "${PATCH_CALLS[0]}" "issues/comments/999"
 
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "All tests passed."

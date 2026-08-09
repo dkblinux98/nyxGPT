@@ -799,6 +799,126 @@ READY_FOR_NEXT_ISSUE" \
 }
 
 # -------------------------
+# Unresolved-escalation pause backstop (#3687)
+# -------------------------
+# "Unresolved escalation" = an open issue currently assigned to
+# HUMAN_OWNER. Both escalation paths (the review agent's 3-cycle breaker
+# and the huddle's type-(c) immediate/spec-ambiguity escalation) end in
+# assign_issue_verified(issue, HUMAN_OWNER) on a still-open issue; the
+# owner resolving it means reassigning it away or closing it. Purely
+# derived from live issue state -- no hidden counter to drift out of sync.
+_ESCALATION_PAUSE_MARKER="<!-- escalation-pause-backstop:3687 -->"
+
+# One line per open issue assigned to `owner` (default HUMAN_OWNER):
+# "#<number> <title>". Empty output if none, or if no owner is configured.
+unresolved_escalation_issues() {
+  local owner="${1:-${HUMAN_OWNER:-}}"
+  require_cmd jq
+  if [[ -z "$owner" ]]; then
+    _warn "unresolved_escalation_issues: no owner configured (HUMAN_OWNER unset)"
+    return 0
+  fi
+  # Raw fetch and jq filtering are separate commands (rather than gh's
+  # own --jq) so tests can stub the `gh` call with canned JSON and let the
+  # real jq filter run -- same split as real_label_names above.
+  _open_issues_assigned_to "$owner" \
+    | jq -r '.[] | select(.pull_request == null) | "#\(.number) \(.title)"'
+}
+
+# Raw (unfiltered) JSON array of open issues/PRs assigned to `owner`. Split
+# out so tests can stub the `gh` call in isolation.
+_open_issues_assigned_to() {
+  local owner="$1"
+  gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues" \
+    --method GET \
+    -f state=open \
+    -f assignee="$owner" \
+    --paginate 2>/dev/null || echo "[]"
+}
+
+# Number of non-empty lines in `$1`. Always echoes a number and returns 0,
+# even when the count is zero (grep -c would otherwise exit 1). Shared by
+# count_unresolved_escalations and escalation_pause_gate so the two never
+# drift apart.
+_count_lines() {
+  local n
+  n="$(grep -c . <<<"$1")" || true
+  echo "${n:-0}"
+}
+
+# Count of unresolved_escalation_issues.
+count_unresolved_escalations() {
+  local owner="${1:-${HUMAN_OWNER:-}}"
+  _count_lines "$(unresolved_escalation_issues "$owner")"
+}
+
+# Finds the id of our most recent pause-backstop report comment on
+# release_issue, if any (empty if none). Split out so tests can stub it
+# without a real gh/GraphQL round trip.
+#
+# `gh api --jq` has no `--arg` support, so the marker filter can't be
+# chained onto gh's own --jq -- fetch the raw paginated JSON (one array per
+# page) and filter/aggregate in a separate `jq -s` call instead, slurping
+# and flattening one level before sort_by/last so the aggregation runs over
+# every page combined, not per-page (see AGENTS.md's --paginate note).
+_escalation_pause_comment_id() {
+  local release_issue="$1"
+  gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${release_issue}/comments" --paginate 2>/dev/null \
+    | jq -s --arg marker "$_ESCALATION_PAUSE_MARKER" \
+      '[.[][] | select(.body | contains($marker))] | sort_by(.created_at) | last | .id // empty' \
+    || true
+}
+
+# Dispatch gate for the unresolved-escalation pause backstop. Dispatch
+# continues unconditionally through the first unresolved escalation (one
+# escalated item is normal traffic); with >=2 unresolved, new dispatch
+# pauses and this posts (or updates, if already posted) a loud report on
+# RELEASE_ISSUE_NUMBER listing the escalated issues. It resumes
+# automatically -- there is no separate "resume" action, the gate simply
+# re-evaluates live board state on every call and reopens once the count
+# drops below 2 (updating the report comment to say so).
+#
+# Returns 0 if dispatch may proceed, 1 if dispatch is paused. Best-effort
+# on the reporting side: a comment failure is warned, not fatal -- the
+# pause/resume decision itself always reflects the live count.
+escalation_pause_gate() {
+  local owner="${HUMAN_OWNER:-}" release_issue="${RELEASE_ISSUE_NUMBER:-}"
+  local issues count comment_id body
+
+  issues="$(unresolved_escalation_issues "$owner")"
+  count="$(_count_lines "$issues")"
+
+  if [[ -z "$release_issue" ]]; then
+    if [[ "$count" -ge 2 ]]; then
+      _warn "escalation_pause_gate: ${count} unresolved escalations but RELEASE_ISSUE_NUMBER is not configured -- cannot report, gate stays open."
+    fi
+    return 0
+  fi
+
+  comment_id="$(_escalation_pause_comment_id "$release_issue")"
+
+  if [[ "$count" -ge 2 ]]; then
+    body="$(printf '⏸️ **Scrummaster**: dispatch paused -- %s unresolved escalations\n\n%s\n\nDispatch resumes automatically once the unresolved count drops below 2 (no action needed beyond resolving the escalations below).\n\n%s' \
+      "$count" "$issues" "$_ESCALATION_PAUSE_MARKER")"
+    if [[ -n "$comment_id" ]]; then
+      gh api -X PATCH "repos/${REPO_OWNER}/${REPO_NAME}/issues/comments/${comment_id}" -f "body=${body}" >/dev/null 2>&1 \
+        || _warn "escalation_pause_gate: failed to update pause report on #${release_issue}"
+    else
+      issue_comment "$release_issue" "$body" \
+        || _warn "escalation_pause_gate: failed to post pause report on #${release_issue}"
+    fi
+    return 1
+  fi
+
+  if [[ -n "$comment_id" ]]; then
+    body="$(printf '▶️ **Scrummaster**: dispatch resumed -- unresolved escalations dropped below 2\n\n%s' "$_ESCALATION_PAUSE_MARKER")"
+    gh api -X PATCH "repos/${REPO_OWNER}/${REPO_NAME}/issues/comments/${comment_id}" -f "body=${body}" >/dev/null 2>&1 \
+      || _warn "escalation_pause_gate: failed to clear pause report on #${release_issue}"
+  fi
+  return 0
+}
+
+# -------------------------
 # Issue operations
 # -------------------------
 issue_assign_only() {

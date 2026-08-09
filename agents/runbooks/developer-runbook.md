@@ -283,3 +283,38 @@ If flaky tests appear, isolate and fix; escalate if persistent.
   - Run ALL validation checks again (full suite from step 4)
   - Commit and push fixes (triggers automatic re-review)
   - Repeat until APPROVE or 3rd REQUEST_CHANGES (escalates to human)
+
+## 8b) Review huddle protocol (owner-ratified 2026-08-09, #3687)
+
+Not every REQUEST_CHANGES round is a "fix and resubmit": the review agent
+classifies each round as (a) verifiable defect, (b) judgment call, or (c)
+spec ambiguity (see `agents/runbooks/review-runbook.md` §6b for the full
+taxonomy). Type (c) escalates immediately — nothing for you to do. Type (b),
+or type (a) on its 2nd unresolved cycle, triggers a **huddle** instead of
+another fix cycle:
+
+1. `review_agent_auto_review.yml` posts a `HUDDLE_TRIGGERED` comment on the
+   PR instead of reassigning the issue for another fix.
+2. `developer_huddle_position.yml` runs you with a narrow job: read the PR
+   thread and the linked issue, then post **one** `## Developer Position`
+   comment covering what you believe the problem is, what was tried, and
+   what you propose (proceed / a specific different approach / a specific
+   descope / escalate). **Do not attempt a fix in this run** — post the
+   position, then post a second comment containing exactly
+   `HUDDLE_MEDIATION_REQUESTED`.
+3. A fresh scrummaster invocation (`scrummaster_huddle_mediation.yml`) reads
+   your position and the review's position (its review comment) and posts a
+   `## Huddle Decision` comment: `HUDDLE_DECISION: proceed|change-approach|
+   descope|escalate`.
+4. When the next fix cycle runs (`developer_auto_implement.yml`'s "Run
+   Claude Code to fix review issues" step), check for a `HUDDLE_DECISION:`
+   comment on the PR first (Step 1.5 in that prompt) and **execute the
+   agreed plan** — proceed with the original fix, follow the stated
+   different approach, or perform the stated descope (e.g. delete a named
+   flaky test, split off a follow-up issue) — rather than deciding
+   independently. If the decision was `escalate`, this cycle should not
+   normally run at all; if you see it anyway, do not push a speculative fix.
+
+The existing 3-cycle outer breaker (§8, review-runbook §6) is unchanged —
+the huddle changes what happens *between* cycles 2 and 3, not the limit
+itself.
