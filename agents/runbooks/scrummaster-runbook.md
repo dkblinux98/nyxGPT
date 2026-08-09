@@ -39,6 +39,29 @@ escalation, see below) end in exactly that state.
   gate; the stale release-issue report is updated to say so rather than
   left dangling.
 
+## Cross-issue infrastructure-anomaly dispatch pause backstop (#3694)
+
+Composes with the escalation-pause backstop above: `scrummaster_dispatch_next.sh`
+also checks `cross_issue_anomaly_pause_gate` (`scripts/agents/lib/gh_project.sh`)
+before selecting -- either gate pausing skips dispatch entirely
+(`paused=true`), and `pause_reason` (`"escalation"` or
+`"cross_issue_anomaly"`) tells `notify_scrum_ready.yml` which report to
+quote back on the triggering comment's issue.
+
+See `agents/runbooks/developer-runbook.md` §3f for the full detection
+mechanism (developer-side): the same step failing on multiple in-flight
+issues within a short window (default 60 minutes) is treated as one
+infrastructure event, not N coding problems, and the first issue to hit it
+opens a single tracking-record marker comment on the release tracking
+issue. While that record is open:
+
+- **New dispatch pauses.** A loud report is posted, or updated in place,
+  on the release tracking issue -- mirroring the escalation-pause report's
+  shape.
+- **Resuming:** automatic, once the tracking record is resolved (an
+  OWNER-authored `RESOLVE_ANOMALY` comment) or its detection window
+  elapses -- no separate "resume" action, same as the escalation backstop.
+
 ## Review huddle mediation (owner-ratified 2026-08-09, #3687)
 
 When `developer_huddle_position.yml` posts `HUDDLE_MEDIATION_REQUESTED` on
