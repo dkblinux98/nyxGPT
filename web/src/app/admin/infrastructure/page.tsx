@@ -24,6 +24,8 @@ type InfraStatus = {
     deployed: boolean;
     namespace: string;
     pods: string[];
+    context: string;
+    provisioned: boolean;
   };
   serving:
     | { supported: false; message: string }
@@ -156,9 +158,12 @@ export default function InfrastructurePage() {
         Full local Terraform and Kubernetes stacks are available today via{' '}
         <code>nyxgpt ops install --terraform --local</code> and{' '}
         <code>nyxgpt ops install --kubernetes --local</code> — see <code>docs/terraform.md</code>{' '}
-        and <code>docs/kubernetes.md</code>. Cloud targets are future work, not yet implemented.
-        This page only reports status; installing and destroying infrastructure is a{' '}
-        <code>nyxgpt ops</code> CLI operation, not a web one.
+        and <code>docs/kubernetes.md</code>. Neither requires a pre-existing cluster: the
+        Kubernetes path provisions a local <code>kind</code> cluster automatically when none is
+        reachable, and uses an existing cluster (minikube, Docker Desktop, ...) as-is when one
+        is. Cloud targets are future work, not yet implemented. This page only reports status;
+        installing and destroying infrastructure is a <code>nyxgpt ops</code> CLI operation, not
+        a web one.
       </div>
 
       {error && (
@@ -316,18 +321,28 @@ export default function InfrastructurePage() {
               <p style={{ fontSize: '0.875rem', color: 'var(--foreground-muted)' }}>
                 Cannot determine from this deployment mode — the cluster wasn&apos;t reachable.
               </p>
-            ) : status.kubernetes.pods.length > 0 ? (
-              <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: '0.8rem', fontFamily: 'monospace' }}>
-                {status.kubernetes.pods.map((line, idx) => (
-                  <li key={idx} style={{ padding: '2px 0' }}>
-                    {line}
-                  </li>
-                ))}
-              </ul>
             ) : (
-              <p style={{ fontSize: '0.875rem', color: 'var(--foreground-muted)' }}>
-                No pods in the <code>{status.kubernetes.namespace}</code> namespace.
-              </p>
+              <>
+                <p style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)', marginBottom: '0.5rem' }}>
+                  Context: <code>{status.kubernetes.context}</code>
+                  {status.kubernetes.provisioned
+                    ? ' — local kind cluster provisioned by nyxgpt (torn down together on `nyxgpt ops down --kubernetes`).'
+                    : ' — bring-your-own cluster (never destroyed by `nyxgpt ops down --kubernetes`).'}
+                </p>
+                {status.kubernetes.pods.length > 0 ? (
+                  <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: '0.8rem', fontFamily: 'monospace' }}>
+                    {status.kubernetes.pods.map((line, idx) => (
+                      <li key={idx} style={{ padding: '2px 0' }}>
+                        {line}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p style={{ fontSize: '0.875rem', color: 'var(--foreground-muted)' }}>
+                    No pods in the <code>{status.kubernetes.namespace}</code> namespace.
+                  </p>
+                )}
+              </>
             )}
           </div>
         </div>

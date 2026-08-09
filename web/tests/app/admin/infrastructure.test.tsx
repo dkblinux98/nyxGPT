@@ -23,6 +23,8 @@ const mockStatusTerraform = {
     deployed: true,
     namespace: 'nyxgpt',
     pods: ['pod/nyxgpt-api-abc123   1/1   Running'],
+    context: 'docker-desktop',
+    provisioned: false,
   },
   serving: {
     supported: false,
@@ -48,6 +50,8 @@ const mockStatusEmpty = {
     deployed: false,
     namespace: 'nyxgpt',
     pods: [],
+    context: '',
+    provisioned: false,
   },
   serving: {
     supported: false,
@@ -73,6 +77,8 @@ const mockStatusKubernetesNotConfigured = {
     deployed: false,
     namespace: 'nyxgpt',
     pods: [],
+    context: '',
+    provisioned: false,
   },
   serving: {
     supported: false,
@@ -98,6 +104,8 @@ const mockStatusCannotDetermine = {
     deployed: false,
     namespace: 'nyxgpt',
     pods: [],
+    context: 'kind-nyxgpt-local',
+    provisioned: true,
   },
   serving: {
     supported: false,
@@ -123,6 +131,8 @@ const mockStatusComposeCannotDetermine = {
     deployed: false,
     namespace: 'nyxgpt',
     pods: [],
+    context: 'kind-nyxgpt-local',
+    provisioned: true,
   },
   serving: {
     supported: false,
@@ -144,6 +154,8 @@ const mockStatusKubernetesServing = {
     deployed: true,
     namespace: 'nyxgpt',
     pods: ['pod/nyxgpt-api-stable-abc   1/1   Running'],
+    context: 'kind-nyxgpt-local',
+    provisioned: true,
   },
   serving: {
     supported: true,
@@ -342,6 +354,28 @@ describe('InfrastructurePage', () => {
     expect(screen.getByText(/nyxgpt-web-stable healthy/)).toBeInTheDocument();
     expect(screen.getByText(/nyxgpt-web-canary has 0 desired replicas \(idle\)/)).toBeInTheDocument();
     expect(screen.getByText('No canary rollout active -- stable serves 100% of traffic.')).toBeInTheDocument();
+  });
+
+  it('labels a nyxgpt-provisioned kind cluster and its teardown behavior (#3596)', async () => {
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusKubernetesServing)));
+
+    render(<InfrastructurePage />);
+
+    expect(await screen.findByText('kind-nyxgpt-local')).toBeInTheDocument();
+    expect(
+      screen.getByText(/local kind cluster provisioned by nyxgpt/)
+    ).toBeInTheDocument();
+  });
+
+  it('labels a bring-your-own cluster as never destroyed by ops down (#3596)', async () => {
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusTerraform)));
+
+    render(<InfrastructurePage />);
+
+    expect(await screen.findByText('docker-desktop')).toBeInTheDocument();
+    expect(
+      screen.getByText(/bring-your-own cluster \(never destroyed/)
+    ).toBeInTheDocument();
   });
 
   it('surfaces a port conflict warning when native and compose collide', async () => {
