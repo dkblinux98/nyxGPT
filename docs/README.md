@@ -40,6 +40,7 @@ started, read [Configuration](configuration.md) and the root
 
 ## Agent system
 
+- [How this project is run](how-this-project-is-run.md) — agent roles, the project board's status flow, decision records, the Definition of Done, and the retrospective
 - [GitHub tokens](github-tokens.md) — agent identities and required scopes
 - [Agent smoke test](agent-smoke.md) — verifying the scrummaster/developer/review loop
 - [Live verification in CI](live-verification-ci.md) — `nyxgpt ops verify`, and how the review agent runs it before APPROVE/REQUEST_CHANGES
