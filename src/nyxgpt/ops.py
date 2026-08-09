@@ -87,10 +87,11 @@ NATIVE_BREW_SERVICES: dict[str, str] = {
 
 # Linux twin of NATIVE_BREW_SERVICES: maps a logical component to its
 # systemd --user unit name (see ops/systemd/*.service, #3508). "ollama" gets
-# its own nyxgpt-ollama.service (rather than the system-wide `ollama.service`
-# some distro installers create) so it's managed the same operator-facing
-# way as api/web -- `nyxgpt ops` never needs to distinguish a user unit it
-# owns from a system unit it doesn't.
+# its own nyxgpt-ollama.service so it's managed the same operator-facing way
+# as api/web -- *unless* a distro-installed system-wide `ollama.service`
+# (e.g. from the official installer) already holds port 11434, in which case
+# nyxGPT adopts that unit instead of fighting it for the port (#3632; see
+# `_system_ollama_service_active`/`_reconcile_system_ollama_service`).
 NATIVE_SYSTEMD_SERVICES: dict[str, str] = {
     "api": "nyxgpt-api",
     "web": "nyxgpt-web",
@@ -1764,8 +1765,9 @@ def _ensure_ollama_service() -> list[OpsResult]:
 # tree for the web UI) instead -- reusing `_create_dist_tarball` (already
 # OS-agnostic: it just vendors source into a tarball) rather than duplicating
 # it. `ollama` is managed as its own systemd --user unit (`nyxgpt-ollama.service`)
-# rather than relying on a distro's system-wide `ollama.service`, so every
-# native component is reachable through the same `systemctl --user` surface.
+# so every native component is reachable through the same `systemctl --user`
+# surface -- unless a distro-installed system-wide `ollama.service` already
+# holds port 11434, in which case nyxGPT adopts it instead (#3632).
 
 
 def _systemd_user_dir() -> Path:
@@ -2200,6 +2202,66 @@ def _install_native_web_systemd() -> list[OpsResult]:
     return results
 
 
+def _system_ollama_service_active() -> bool:
+    """True if a distro-managed system-wide `ollama.service` is currently active.
+
+    The official Ollama Linux installer (`curl -fsSL https://ollama.com/install.sh
+    | sh`) auto-enables and starts this unit, bound to 127.0.0.1:11434 -- the
+    same port `nyxgpt-ollama.service` (nyxGPT's own systemd --user unit)
+    needs, so the two can never both hold the port at once (#3632: observed
+    in CI as `nyxgpt-ollama.service` crash-looping, "ollama serve" exiting
+    immediately with the port already taken). Checked with plain `systemctl
+    is-active` (system scope, no `--user`), since the installer's unit runs
+    system-wide, not per-user. False (never raises) if systemctl is missing
+    or the query fails -- an unknown/absent system unit is not a conflict.
+    """
+    if _which("systemctl") is None:
+        return False
+    cp = _run(["systemctl", "is-active", "ollama.service"], check=False, expected=True)
+    return (cp.stdout or "").strip() == "active"
+
+
+def _reconcile_system_ollama_service() -> list[OpsResult]:
+    """Adopt a pre-existing system-wide `ollama.service` instead of racing it for port 11434.
+
+    Chosen reconciliation for #3632 (documented in docs/systemd.md): stopping
+    or disabling a *system* unit needs root (`sudo systemctl disable --now
+    ollama.service`), and nyxGPT never shells out to sudo on its own for
+    anything else either -- so rather than requiring that, install just skips
+    creating/starting `nyxgpt-ollama.service` and lets the already-running
+    system unit keep serving on 127.0.0.1:11434. If a *previous* run already
+    installed `nyxgpt-ollama.service` (now crash-looping against the same
+    port), that one IS a `--user` unit nyxGPT owns outright, so it's stopped
+    and disabled here to stop the crash loop.
+    """
+    results = [
+        OpsResult(
+            True,
+            "Adopting system ollama.service (already serving on 127.0.0.1:11434)",
+            "Skipping nyxgpt-ollama.service install/start to avoid a port conflict. "
+            "To have nyxgpt manage Ollama itself instead, free the port first "
+            "(sudo systemctl disable --now ollama.service), then re-run "
+            "`nyxgpt ops install`.",
+        )
+    ]
+    unit_path = _systemd_user_dir() / "nyxgpt-ollama.service"
+    if unit_path.exists():
+        results.extend(_stop_systemd_service("nyxgpt-ollama"))
+        cp = _run(
+            ["systemctl", "--user", "disable", "nyxgpt-ollama.service"],
+            check=False,
+            expected=True,
+        )
+        if cp.returncode == 0:
+            results.append(
+                OpsResult(
+                    True,
+                    "Disabled stale nyxgpt-ollama.service in favor of the adopted system unit",
+                )
+            )
+    return results
+
+
 def _install_native_ollama_systemd() -> list[OpsResult]:
     """Ensure native Ollama is installed as the `nyxgpt-ollama.service` systemd
     --user unit, pointed at the shared model store.
@@ -2214,7 +2276,14 @@ def _install_native_ollama_systemd() -> list[OpsResult]:
     needed the way launchd needs a RunAtLoad LaunchAgent (`Environment=`
     applies on every unit start, unlike `launchctl setenv`'s per-session
     scope; see ops/systemd/nyxgpt-ollama.service).
+
+    If a system-wide `ollama.service` already holds port 11434, adopts it
+    instead of installing/starting the nyxgpt unit at all (#3632; see
+    `_reconcile_system_ollama_service`).
     """
+    if _system_ollama_service_active():
+        return _reconcile_system_ollama_service()
+
     results: list[OpsResult] = []
     ollama_bin = _which("ollama")
     if ollama_bin is None:
@@ -4708,6 +4777,36 @@ def _ollama_env_drift_issue() -> str | None:
     return None
 
 
+def _linux_ollama_port_conflict_issue() -> str | None:
+    """Detect the #3632 port-11434 conflict: a stale `nyxgpt-ollama.service`
+    crash-looping against a system-wide `ollama.service` that already holds
+    the port.
+
+    Only fires when `nyxgpt-ollama.service` is installed AND not active AND
+    the system unit is active -- the state a machine that installed before
+    the #3632 fix shipped (or that had `ollama.service` re-enabled after
+    `nyxgpt ops install` already adopted it) can be stuck in. A fresh
+    `nyxgpt ops install` self-heals this on its own
+    (`_install_native_ollama_systemd` adopts the system unit and disables
+    the stale one -- see `_reconcile_system_ollama_service`), so the
+    actionable remediation is just re-running install. Linux only; returns
+    None on macOS/other or when nothing conflicts.
+    """
+    if not _is_linux():
+        return None
+    if not (_systemd_user_dir() / "nyxgpt-ollama.service").exists():
+        return None
+    if not _system_ollama_service_active():
+        return None
+    if _systemd_services_snapshot().get("nyxgpt-ollama") == "started":
+        return None
+    return (
+        "System-wide ollama.service is bound to port 11434, so nyxgpt-ollama.service "
+        "can't start (run: nyxgpt ops install to adopt the system service, or "
+        "sudo systemctl disable --now ollama.service to free the port for nyxgpt-ollama)"
+    )
+
+
 # Curated per-component loggers surfaced in the Log Aggregation panel and
 # the "Operational Logs" Grafana dashboard (see app._loki_curated_queries).
 # `_loki_recent_volume_by_logger` reports each one's recent line count so
@@ -4953,6 +5052,10 @@ def doctor(_args) -> int:
         ollama_env_issue = _ollama_env_drift_issue()
         if ollama_env_issue:
             issues.append(ollama_env_issue)
+
+    linux_ollama_conflict_issue = _linux_ollama_port_conflict_issue()
+    if linux_ollama_conflict_issue:
+        issues.append(linux_ollama_conflict_issue)
 
     issues += _glitchtip_secrets_doctor_issues()
     error_tracking_drift_issue = _error_tracking_dsn_drift_issue()

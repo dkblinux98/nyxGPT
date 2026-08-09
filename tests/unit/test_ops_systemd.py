@@ -305,6 +305,100 @@ def test_install_native_ollama_systemd_happy_path(monkeypatch, tmp_path):
     assert "ExecStart=/usr/bin/ollama serve" in dst.read_text(encoding="utf-8")
 
 
+def test_install_native_ollama_systemd_adopts_system_service(monkeypatch, tmp_path):
+    """#3632: a running system-wide ollama.service must be adopted, not fought for the port."""
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(
+        ops, "_which", lambda name: "/usr/bin/systemctl" if name == "systemctl" else None
+    )
+    monkeypatch.setattr(ops, "_run", lambda cmd, **k: _cp(0, stdout="active"))
+    template_spy = []
+    monkeypatch.setattr(
+        ops, "_find_systemd_unit_template", lambda name: template_spy.append(name) or (None, [])
+    )
+
+    results = ops._install_native_ollama_systemd()
+    assert all(r.ok for r in results)
+    assert "Adopting system ollama.service" in results[0].message
+    # Never even tries to locate/install the nyxgpt-ollama.service template.
+    assert template_spy == []
+    dst = home / ".config" / "systemd" / "user" / "nyxgpt-ollama.service"
+    assert not dst.exists()
+
+
+# --- _system_ollama_service_active ---
+
+
+def test_system_ollama_service_active_true(monkeypatch):
+    monkeypatch.setattr(
+        ops, "_which", lambda name: "/usr/bin/systemctl" if name == "systemctl" else None
+    )
+    calls = []
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, **k: calls.append(cmd) or _cp(0, stdout="active\n")
+    )
+
+    assert ops._system_ollama_service_active() is True
+    assert calls == [["systemctl", "is-active", "ollama.service"]]
+
+
+@pytest.mark.parametrize("stdout", ["inactive\n", "unknown\n", "failed\n", ""])
+def test_system_ollama_service_active_false_when_not_active(monkeypatch, stdout):
+    monkeypatch.setattr(
+        ops, "_which", lambda name: "/usr/bin/systemctl" if name == "systemctl" else None
+    )
+    monkeypatch.setattr(ops, "_run", lambda cmd, **k: _cp(3, stdout=stdout))
+
+    assert ops._system_ollama_service_active() is False
+
+
+def test_system_ollama_service_active_false_without_systemctl(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda name: None)
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, **k: (_ for _ in ()).throw(AssertionError("should not be called"))
+    )
+
+    assert ops._system_ollama_service_active() is False
+
+
+# --- _reconcile_system_ollama_service ---
+
+
+def test_reconcile_system_ollama_service_no_stale_unit(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, **k: (_ for _ in ()).throw(AssertionError(f"unexpected: {cmd}"))
+    )
+
+    results = ops._reconcile_system_ollama_service()
+    assert len(results) == 1
+    assert results[0].ok is True
+    assert "Adopting system ollama.service" in results[0].message
+
+
+def test_reconcile_system_ollama_service_stops_and_disables_stale_unit(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    unit_dir = home / ".config" / "systemd" / "user"
+    unit_dir.mkdir(parents=True)
+    (unit_dir / "nyxgpt-ollama.service").write_text("[Service]\n", encoding="utf-8")
+    monkeypatch.setattr(
+        ops, "_which", lambda name: "/usr/bin/systemctl" if name == "systemctl" else None
+    )
+    calls = []
+    monkeypatch.setattr(ops, "_run", lambda cmd, **k: calls.append(cmd) or _cp(0))
+
+    results = ops._reconcile_system_ollama_service()
+    assert all(r.ok for r in results)
+    messages = " ".join(r.message for r in results)
+    assert "Stopped systemd unit: nyxgpt-ollama" in messages
+    assert "Disabled stale nyxgpt-ollama.service" in messages
+    assert ["systemctl", "--user", "stop", "nyxgpt-ollama.service"] in calls
+    assert ["systemctl", "--user", "disable", "nyxgpt-ollama.service"] in calls
+
+
 # --- _install_native_api_systemd ---
 
 
@@ -674,3 +768,76 @@ def test_doctor_requires_systemctl_not_brew_on_linux(monkeypatch, tmp_path):
     assert rc == 2
     # ollama env drift is a macOS-only check -- never invoked on Linux.
     assert ollama_drift_spy == []
+
+
+# --- _linux_ollama_port_conflict_issue ---
+
+
+def test_linux_ollama_port_conflict_issue_none_when_not_linux(monkeypatch):
+    monkeypatch.setattr(ops, "_is_linux", lambda: False)
+    assert ops._linux_ollama_port_conflict_issue() is None
+
+
+def test_linux_ollama_port_conflict_issue_none_when_nyxgpt_unit_not_installed(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path / "home")
+    monkeypatch.setattr(ops, "_system_ollama_service_active", lambda: True)
+    assert ops._linux_ollama_port_conflict_issue() is None
+
+
+def test_linux_ollama_port_conflict_issue_none_when_system_service_inactive(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    unit_dir = home / ".config" / "systemd" / "user"
+    unit_dir.mkdir(parents=True)
+    (unit_dir / "nyxgpt-ollama.service").write_text("[Service]\n", encoding="utf-8")
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "_system_ollama_service_active", lambda: False)
+    assert ops._linux_ollama_port_conflict_issue() is None
+
+
+def test_linux_ollama_port_conflict_issue_none_when_nyxgpt_unit_active(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    unit_dir = home / ".config" / "systemd" / "user"
+    unit_dir.mkdir(parents=True)
+    (unit_dir / "nyxgpt-ollama.service").write_text("[Service]\n", encoding="utf-8")
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "_system_ollama_service_active", lambda: True)
+    monkeypatch.setattr(ops, "_systemd_services_snapshot", lambda: {"nyxgpt-ollama": "started"})
+    assert ops._linux_ollama_port_conflict_issue() is None
+
+
+def test_linux_ollama_port_conflict_issue_flags_crash_loop(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    unit_dir = home / ".config" / "systemd" / "user"
+    unit_dir.mkdir(parents=True)
+    (unit_dir / "nyxgpt-ollama.service").write_text("[Service]\n", encoding="utf-8")
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "_system_ollama_service_active", lambda: True)
+    monkeypatch.setattr(ops, "_systemd_services_snapshot", lambda: {"nyxgpt-ollama": "none"})
+
+    issue = ops._linux_ollama_port_conflict_issue()
+    assert issue is not None
+    assert "port 11434" in issue
+    assert "nyxgpt ops install" in issue
+
+
+def test_doctor_reports_linux_ollama_port_conflict(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path / "repo")
+    monkeypatch.setattr(ops, "_which", lambda name: None)
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+    monkeypatch.setattr(ops, "_log_aggregation_wiring_issue", lambda: None)
+    monkeypatch.setattr(ops, "_tracing_wiring_issue", lambda: None)
+    monkeypatch.setattr(ops, "_tracing_packages_doctor_issue", lambda: None)
+    monkeypatch.setattr(ops, "_glitchtip_secrets_doctor_issues", lambda: [])
+    monkeypatch.setattr(ops, "_error_tracking_dsn_drift_issue", lambda: None)
+    monkeypatch.setattr(ops, "_stale_venv_doctor_issues", lambda: [])
+    monkeypatch.setattr(ops, "detect_deployment_mode", lambda: ops.DeploymentMode({}, {}, []))
+    monkeypatch.setattr(
+        ops, "_linux_ollama_port_conflict_issue", lambda: "System-wide ollama.service is bound..."
+    )
+
+    rc = ops.doctor(SimpleNamespaceLike())
+    assert rc == 2

@@ -550,6 +550,20 @@ def _systemd_services_snapshot() -> dict[str, str]:
     return snapshot
 
 
+def _system_ollama_service_active() -> bool:
+    """True if a distro-managed system-wide `ollama.service` is currently active.
+
+    Mirrors `ops._system_ollama_service_active()` -- kept as a separate copy
+    here for the same reason `NATIVE_SYSTEMD_SERVICES` is (see its comment).
+    Checked with plain `systemctl is-active` (system scope, no `--user`).
+    False (never raises) if systemctl is missing or the query fails.
+    """
+    if _which("systemctl") is None:
+        return False
+    cp = _run(["systemctl", "is-active", "ollama.service"], expected=True)
+    return (cp.stdout or "").strip() == "active"
+
+
 def _native_container_state(name: str) -> str:
     """Return the docker state ('running', 'exited', ...) for container `name`, or 'absent'."""
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name):  # inline barrier, CodeQL #4
@@ -744,6 +758,26 @@ def _list_native_component_status() -> list[ComponentStatus]:
         native_snapshot = _brew_services_snapshot()
         native_names = NATIVE_BREW_SERVICES
     for component, native_name in native_names.items():
+        if component == "ollama" and _is_linux() and _system_ollama_service_active():
+            # Adopted system ollama.service (#3632, see
+            # ops._reconcile_system_ollama_service): install deliberately
+            # skips/disables nyxgpt-ollama.service against it, so report
+            # health via the system unit instead of either flagging a
+            # doomed nyxgpt unit as down or silently omitting "ollama"
+            # (this component's out-of-scope-until-installed treatment
+            # below is for a component nobody's serving at all, not this
+            # one -- it IS being served, just not by our own unit).
+            statuses.append(
+                ComponentStatus(
+                    service="ollama",
+                    container="ollama.service",
+                    state="active",
+                    health="",
+                    healthy=True,
+                    source="native",
+                )
+            )
+            continue
         state = native_snapshot.get(native_name)
         if state is None:
             continue

@@ -13,11 +13,27 @@ from nyxgpt import self_heal
 
 pytestmark = pytest.mark.unit
 
+# Captured before the `_no_system_ollama_service_by_default` autouse fixture
+# below ever monkeypatches the module attribute -- the `_system_ollama_service_active`
+# tests exercise the real implementation and restore it via this reference.
+_real_system_ollama_service_active = self_heal._system_ollama_service_active
+
 
 @pytest.fixture(autouse=True)
 def _force_linux_native_path(monkeypatch):
     """Pin `platform.system()` to "Linux" for every test in this file."""
     monkeypatch.setattr(self_heal.platform, "system", lambda: "Linux")
+
+
+@pytest.fixture(autouse=True)
+def _no_system_ollama_service_by_default(monkeypatch):
+    """Default `_system_ollama_service_active()` to False (no real systemctl call).
+
+    Tests that specifically exercise the #3632 adoption path override this
+    with their own `monkeypatch.setattr` call, which -- since it runs after
+    this fixture on the same `monkeypatch` instance -- takes precedence.
+    """
+    monkeypatch.setattr(self_heal, "_system_ollama_service_active", lambda: False)
 
 
 def _cp(returncode=0, stdout="", stderr=""):
@@ -120,6 +136,55 @@ def test_list_native_component_status_includes_native_cassandra_on_linux(monkeyp
     cassandra = next(s for s in statuses if s.service == "cassandra")
     assert cassandra.healthy is True
     assert cassandra.source == "native"
+
+
+def test_list_native_component_status_reports_adopted_system_ollama(monkeypatch):
+    """#3632: an adopted system ollama.service must report healthy=True via
+    the system unit -- not fall through to a crash-looping/absent
+    nyxgpt-ollama.service and get flagged (or restart-looped) as down.
+    """
+    monkeypatch.setattr(self_heal, "_system_ollama_service_active", lambda: True)
+    # Even if a stale nyxgpt-ollama.service is still installed and crash-looping
+    # (snapshot reports it "none"), the adopted branch must win over it.
+    monkeypatch.setattr(self_heal, "_systemd_services_snapshot", lambda: {"nyxgpt-ollama": "none"})
+    monkeypatch.setattr(self_heal, "_native_container_state", lambda name: "absent")
+
+    statuses = self_heal._list_native_component_status()
+    by_service = {s.service: s for s in statuses}
+    assert by_service["ollama"].healthy is True
+    assert by_service["ollama"].state == "active"
+    assert by_service["ollama"].container == "ollama.service"
+    assert by_service["ollama"].source == "native"
+
+
+# --- _system_ollama_service_active ---
+
+
+def test_system_ollama_service_active_true(monkeypatch):
+    monkeypatch.setattr(self_heal, "_which", lambda name: "/usr/bin/systemctl")
+    calls = []
+    monkeypatch.setattr(
+        self_heal, "_run", lambda cmd, **k: calls.append(cmd) or _cp(0, stdout="active\n")
+    )
+
+    assert _real_system_ollama_service_active() is True
+    assert calls == [["systemctl", "is-active", "ollama.service"]]
+
+
+def test_system_ollama_service_active_false_when_inactive(monkeypatch):
+    monkeypatch.setattr(self_heal, "_which", lambda name: "/usr/bin/systemctl")
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, **k: _cp(3, stdout="inactive\n"))
+
+    assert _real_system_ollama_service_active() is False
+
+
+def test_system_ollama_service_active_false_without_systemctl(monkeypatch):
+    monkeypatch.setattr(self_heal, "_which", lambda name: None)
+    monkeypatch.setattr(
+        self_heal, "_run", lambda cmd, **k: (_ for _ in ()).throw(AssertionError("not called"))
+    )
+
+    assert _real_system_ollama_service_active() is False
 
 
 # --- _restart_systemd_service ---
