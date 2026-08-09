@@ -99,6 +99,7 @@ from nyxgpt.batch_processor import BatchProcessor, RequestPriority
 from nyxgpt.chat import chat as run_chat
 from nyxgpt.chat import chat_stream
 from nyxgpt.config import (
+    get_auth_api_key,
     get_canary_error_rate_threshold,
     get_canary_latency_p95_threshold_ms,
     get_canary_min_requests,
@@ -848,7 +849,7 @@ def _auth_cfg(cfg: ConfigParser | None = None) -> dict[str, Any]:
     """
     cfg = cfg or load_config(None)
     enabled = cfg.getboolean("auth", "enabled", fallback=False)
-    api_key = cfg.get("auth", "api_key", fallback="").strip()
+    api_key = get_auth_api_key(cfg)
     header = cfg.get("auth", "header", fallback="X-API-Key").strip() or "X-API-Key"
     return {
         "enabled": enabled,

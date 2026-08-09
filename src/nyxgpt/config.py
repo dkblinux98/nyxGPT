@@ -18,6 +18,8 @@ import tempfile
 from configparser import ConfigParser
 from pathlib import Path
 
+from nyxgpt import cloud_secrets
+
 DEFAULT_CONFIG_PATH = Path.home() / ".nyxGPT" / "config.ini"
 
 _CACHED_CFG: ConfigParser | None = None
@@ -168,6 +170,16 @@ def validate_config(cfg: ConfigParser) -> list[str]:
                         )
                 except ValueError as e:
                     errors.append(f"Invalid context.{option}: must be an integer ({e})")
+
+    # Validate the cloud secrets provider, if set (empty = local deploy, unchanged)
+    if cfg.has_option("secrets", "provider"):
+        provider = cfg.get("secrets", "provider").strip().lower()
+        valid_providers = {"", cloud_secrets.SSM_PROVIDER, cloud_secrets.SECRETS_MANAGER_PROVIDER}
+        if provider not in valid_providers:
+            errors.append(
+                f"Invalid secrets.provider: {provider!r} "
+                f"(must be one of {sorted(p for p in valid_providers if p)}, or empty)"
+            )
 
     return errors
 
@@ -1388,19 +1400,121 @@ def get_monitoring_slack_bot_token(cfg: ConfigParser) -> str:
 def get_openai_api_key(cfg: ConfigParser) -> str:
     """Get the OpenAI API key, human-provided and write-once at the issuing service.
 
+    On a cloud deploy with `[secrets] provider` set, resolves from AWS SSM
+    Parameter Store / Secrets Manager instead -- see `cloud_secrets.py` and
+    `docs/cloud.md#cloud-secrets-ssm--secrets-manager`. Local deploys
+    (`provider` unset) are unaffected.
+
     Returns:
         The configured key, or "" if unset
     """
+    cloud_value = _resolve_cloud_secret(cfg, "openai_api_key")
+    if cloud_value is not None:
+        return cloud_value
     return cfg.get("openai", "api_key", fallback="")
 
 
 def get_github_pat(cfg: ConfigParser) -> str:
     """Get the GitHub Personal Access Token used for repository/API operations.
 
+    On a cloud deploy with `[secrets] provider` set, resolves from AWS SSM
+    Parameter Store / Secrets Manager instead -- see `cloud_secrets.py` and
+    `docs/cloud.md#cloud-secrets-ssm--secrets-manager`. Local deploys
+    (`provider` unset) are unaffected.
+
     Returns:
         The configured PAT, or "" if unset
     """
+    cloud_value = _resolve_cloud_secret(cfg, "github_pat")
+    if cloud_value is not None:
+        return cloud_value
     return cfg.get("github", "pat", fallback="")
+
+
+def get_auth_api_key(cfg: ConfigParser) -> str:
+    """Get the shared-secret API key checked by the `[auth] enabled` middleware.
+
+    On a cloud deploy with `[secrets] provider` set, resolves from AWS SSM
+    Parameter Store / Secrets Manager instead of `config.ini` -- see
+    `cloud_secrets.py` and `docs/cloud.md#cloud-secrets-ssm--secrets-manager`.
+    Local deploys (`provider` unset) read `[auth] api_key` exactly as before.
+
+    Returns:
+        The configured key, or "" if unset
+    """
+    cloud_value = _resolve_cloud_secret(cfg, "auth_api_key")
+    if cloud_value is not None:
+        return cloud_value
+    return cfg.get("auth", "api_key", fallback="").strip()
+
+
+def get_secrets_provider(cfg: ConfigParser) -> str:
+    """Return the cloud secrets provider (`[secrets] provider`).
+
+    `""` (default) means credentials come from `config.ini` as usual --
+    local deploys are unaffected. Set to `"ssm"` or `"secretsmanager"` on
+    cloud deploys only; see `docs/cloud.md#cloud-secrets-ssm--secrets-manager`.
+    """
+    return cfg.get("secrets", "provider", fallback="").strip().lower()
+
+
+def get_secrets_region(cfg: ConfigParser) -> str | None:
+    """Return the AWS region to resolve cloud secrets from (`[secrets] region`), or `None`.
+
+    `None` lets boto3 fall back to its normal region resolution
+    (environment variables, instance metadata, profile config).
+    """
+    value = cfg.get("secrets", "region", fallback="").strip()
+    return value or None
+
+
+def get_secrets_ssm_prefix(cfg: ConfigParser) -> str:
+    """Return the SSM Parameter Store path prefix (`[secrets] ssm_prefix`).
+
+    Falls back to `"/nyxgpt"`. Each credential is stored as an individual
+    parameter at `f"{prefix}/{key}"` (e.g. `/nyxgpt/auth_api_key`).
+    """
+    return cfg.get("secrets", "ssm_prefix", fallback="/nyxgpt").strip() or "/nyxgpt"
+
+
+def get_secrets_secretsmanager_id(cfg: ConfigParser) -> str:
+    """Return the Secrets Manager secret id/ARN (`[secrets] secretsmanager_id`).
+
+    Falls back to `"nyxgpt"`. The secret is expected to hold a single JSON
+    object with one key per credential (`auth_api_key`, `openai_api_key`,
+    `github_pat`).
+    """
+    return cfg.get("secrets", "secretsmanager_id", fallback="nyxgpt").strip() or "nyxgpt"
+
+
+def _resolve_cloud_secret(cfg: ConfigParser, key: str) -> str | None:
+    """Resolve `key` from the configured cloud secrets provider.
+
+    Returns `None` when `[secrets] provider` is unset -- callers should
+    read the local `config.ini` value normally in that case. Returns `""`
+    (not `None`, and not the local `config.ini` value) when a provider IS
+    configured but resolution fails: cloud deploys never populate these
+    keys in `config.ini`, so falling back to it would just silently produce
+    the same empty result while hiding a real AWS-side problem from the
+    logs.
+    """
+    provider = get_secrets_provider(cfg)
+    if not provider:
+        return None
+    try:
+        return cloud_secrets.resolve_secret(
+            provider,
+            key,
+            region=get_secrets_region(cfg),
+            ssm_prefix=get_secrets_ssm_prefix(cfg),
+            secretsmanager_id=get_secrets_secretsmanager_id(cfg),
+        )
+    except cloud_secrets.CloudSecretsError as exc:
+        _log_fallback_once(
+            f"secrets.{key}",
+            f"Cloud secret resolution failed for {key!r} via provider {provider!r}: {exc}",
+        )
+        return ""
 
 
 def get_github_repo_owner(cfg: ConfigParser) -> str:
@@ -1561,6 +1675,7 @@ def get_effective_config_summary(cfg: ConfigParser) -> dict[str, object]:
         "monitoring.slack_bot_token": (_REDACTED if get_monitoring_slack_bot_token(cfg) else ""),
         "openai.api_key": (_REDACTED if get_openai_api_key(cfg) else ""),
         "github.pat": (_REDACTED if get_github_pat(cfg) else ""),
+        "secrets.provider": get_secrets_provider(cfg),
         "log_aggregation.enabled": get_log_aggregation_enabled(cfg),
         "rate_limit.enabled": get_rate_limit_enabled(cfg),
         "rag.enabled": get_rag_enabled(cfg),
@@ -1625,6 +1740,11 @@ __all__ = [
     "get_github_pat",
     "get_github_repo_owner",
     "get_github_repo_name",
+    "get_auth_api_key",
+    "get_secrets_provider",
+    "get_secrets_region",
+    "get_secrets_ssm_prefix",
+    "get_secrets_secretsmanager_id",
     "SECRETS_SYNC_MANIFEST",
     "get_log_aggregation_enabled",
     "get_log_aggregation_config",

@@ -8722,7 +8722,7 @@ def verify(args: Any) -> int:
 
     Returns 0 if every check passed, else 2.
     """
-    from nyxgpt.config import get_api_port, load_config
+    from nyxgpt.config import get_api_port, get_auth_api_key, load_config
 
     logger.info("ops: verify starting", extra={"component": "ops", "action": "verify"})
 
@@ -8770,7 +8770,7 @@ def verify(args: Any) -> int:
                 return 0 if ok else 2
 
         api_url = getattr(args, "api_url", None) or f"http://127.0.0.1:{get_api_port(cfg)}"
-        api_key = cfg.get("auth", "api_key", fallback="").strip() or None
+        api_key = get_auth_api_key(cfg) or None
         grafana_admin_password = _grafana_admin_password(cfg)
         prometheus_url = monitoring["prometheus_ui_url"]
         grafana_url = monitoring["grafana_ui_url"]
