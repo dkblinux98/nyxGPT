@@ -2058,6 +2058,17 @@ jobs:
           CAP_EXCEEDED="${{ steps.retry_budget.outputs.cap_exceeded }}"
           SAME_SIG="${{ steps.retry_budget.outputs.same_signature_as_last }}"
           NEXT_N="${{ steps.retry_budget.outputs.next_retry_number }}"
+          # Defensive defaults: if the "Compute retry budget" step itself
+          # failed (e.g. a transient `gh api` error fetching the comment
+          # thread), don't let an empty CAP_EXCEEDED/SAME_SIG silently block
+          # or crash this step -- fail open on the cap/disproof checks
+          # (worst case a comment-fetch flake costs one extra retry, not a
+          # stuck run) while still marking the retry as attempt 1 rather
+          # than crashing on an empty retry-number argument.
+          RETRY_COUNT="${RETRY_COUNT:-0}"
+          CAP_EXCEEDED="${CAP_EXCEEDED:-false}"
+          SAME_SIG="${SAME_SIG:-false}"
+          NEXT_N="${NEXT_N:-1}"
 
           WAIT_SECONDS="${{ steps.claude_result.outputs.wait_seconds }}"
           WAIT_SECONDS="${WAIT_SECONDS:-0}"
