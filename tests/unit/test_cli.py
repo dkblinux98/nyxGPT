@@ -1620,9 +1620,9 @@ def test_ops_install_skip_observability_flag_parses(
 
     ok = [OpsResult(True, "ok")]
     for step in (
+        "_sync_packaged_resources",
         "migrate_legacy_volumes",
         "_reconcile_phantom_compose_app_containers",
-        "_install_scripts",
         "_ensure_web_deps",
         "_ensure_mcp_deps",
         "_ensure_cassandra_container",

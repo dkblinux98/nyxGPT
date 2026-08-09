@@ -20,6 +20,13 @@ import pytest
 from nyxgpt import metrics as prom_metrics
 from nyxgpt import self_heal
 
+# The real project docker-compose.yml -- #3621 retired self_heal.COMPOSE_FILE's
+# REPO_ROOT-relative default (a dev-checkout-only fallback), so tests that
+# want to parse real declared services/fetch real service logs need to point
+# at this file explicitly rather than relying on the (now ops-managed,
+# ~/.nyxGPT-rooted) default resolving to it by accident.
+_REAL_COMPOSE_FILE = Path(__file__).resolve().parents[2] / "docker-compose.yml"
+
 
 class CP:
     def __init__(self, stdout="", stderr="", returncode=0):
@@ -125,45 +132,15 @@ def test_run_expected_true_logs_debug_not_warning_on_nonzero_exit(caplog):
 
 
 @pytest.mark.unit
-def test_resolve_compose_file_defaults_to_repo_root(monkeypatch):
+def test_resolve_compose_file_defaults_to_ops_managed_location(monkeypatch, tmp_path):
+    # #3621: no more REPO_ROOT module-path check or config.ini fallback --
+    # `nyxgpt ops install` syncs the packaged docker-compose.yml to this
+    # fixed, ops-managed location regardless of how nyxGPT is installed.
     monkeypatch.delenv("NYXGPT_COMPOSE_FILE", raising=False)
-    assert self_heal._resolve_compose_file() == self_heal.REPO_ROOT / "docker-compose.yml"
-
-
-@pytest.mark.unit
-def test_resolve_compose_file_falls_back_to_config_ini(monkeypatch, tmp_path):
-    # Brew-Cellar layout: no env override, no compose file on the module path;
-    # the path recorded by `nyxgpt ops install` in config.ini wins.
-    monkeypatch.delenv("NYXGPT_COMPOSE_FILE", raising=False)
-    monkeypatch.setattr(self_heal, "REPO_ROOT", tmp_path / "cellar")
-
-    compose = tmp_path / "repo" / "docker-compose.yml"
-    compose.parent.mkdir(parents=True)
-    compose.write_text("services: {}\n", encoding="utf-8")
-
     home = tmp_path / "home"
-    (home / ".nyxGPT").mkdir(parents=True)
-    (home / ".nyxGPT" / "config.ini").write_text(
-        f"[paths]\ncompose_file = {compose}\n", encoding="utf-8"
-    )
     monkeypatch.setattr(self_heal.Path, "home", lambda: home)
 
-    assert self_heal._resolve_compose_file() == compose
-
-
-@pytest.mark.unit
-def test_resolve_compose_file_ignores_config_when_path_missing(monkeypatch, tmp_path):
-    monkeypatch.delenv("NYXGPT_COMPOSE_FILE", raising=False)
-    monkeypatch.setattr(self_heal, "REPO_ROOT", tmp_path / "cellar")
-
-    home = tmp_path / "home"
-    (home / ".nyxGPT").mkdir(parents=True)
-    (home / ".nyxGPT" / "config.ini").write_text(
-        "[paths]\ncompose_file = /nonexistent/docker-compose.yml\n", encoding="utf-8"
-    )
-    monkeypatch.setattr(self_heal.Path, "home", lambda: home)
-
-    assert self_heal._resolve_compose_file() == tmp_path / "cellar" / "docker-compose.yml"
+    assert self_heal._resolve_compose_file() == home / ".nyxGPT" / "docker-compose.yml"
 
 
 @pytest.mark.unit
@@ -790,7 +767,8 @@ def test_restart_native_component_unknown(monkeypatch):
 
 
 @pytest.mark.unit
-def test_compose_file_services_parses_declared_services():
+def test_compose_file_services_parses_declared_services(monkeypatch):
+    monkeypatch.setattr(self_heal, "COMPOSE_FILE", _REAL_COMPOSE_FILE)
     services = self_heal._compose_file_services()
     assert {"api", "web", "glitchtip", "grafana", "loki"} <= services
 
@@ -812,6 +790,7 @@ def test_compose_component_logs_refuses_undeclared_service(monkeypatch):
 
 @pytest.mark.unit
 def test_component_logs_success(monkeypatch):
+    monkeypatch.setattr(self_heal, "COMPOSE_FILE", _REAL_COMPOSE_FILE)
     run_mock = MagicMock(
         return_value=CP(stdout="glitchtip_1  | Confirm your account: http://...\n")
     )
@@ -845,6 +824,7 @@ def test_component_logs_rejects_unsafe_names(monkeypatch, bad):
 
 @pytest.mark.unit
 def test_component_logs_failure(monkeypatch):
+    monkeypatch.setattr(self_heal, "COMPOSE_FILE", _REAL_COMPOSE_FILE)
     monkeypatch.setattr(
         self_heal,
         "_run",
@@ -857,6 +837,8 @@ def test_component_logs_failure(monkeypatch):
 
 @pytest.mark.unit
 def test_component_logs_run_raises(monkeypatch):
+    monkeypatch.setattr(self_heal, "COMPOSE_FILE", _REAL_COMPOSE_FILE)
+
     def _boom(cmd, timeout=30.0, **_k):
         raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
 
@@ -918,6 +900,7 @@ def test_component_logs_native_api_missing_file(monkeypatch, tmp_path):
 
 @pytest.mark.unit
 def test_component_logs_compose_api_uses_compose_logs(monkeypatch):
+    monkeypatch.setattr(self_heal, "COMPOSE_FILE", _REAL_COMPOSE_FILE)
     monkeypatch.setattr(
         self_heal, "list_component_status", lambda: [_status("api", source="compose")]
     )

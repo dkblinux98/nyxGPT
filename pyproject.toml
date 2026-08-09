@@ -101,6 +101,21 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# nyxgpt.resources ships the ops layer's runtime data (compose files, config
+# templates, launchd/systemd unit templates, Grafana/Prometheus/promtail
+# provisioning, helper scripts) inside the installable package, so an
+# installed (non-editable) build has no dependency on a source checkout --
+# see `nyxgpt.ops._sync_packaged_resources` and #3621. The package directory
+# itself contains symlinks back to the canonical top-level files
+# (docker/, docker-compose.yml, ops/, .env.example, four scripts/*.sh) rather
+# than copies, so there is exactly one place to edit each file; setuptools
+# dereferences symlinks when it builds the wheel/sdist, so the built
+# artifact contains real file content, not links.
+[tool.setuptools.package-data]
+# "**/*" (glob-style) doesn't match dotfiles, so .env.example needs its own
+# explicit entry.
+"nyxgpt.resources" = ["**/*", ".env.example"]
+
 [tool.mypy]
 python_version = "3.11"
 warn_return_any = true

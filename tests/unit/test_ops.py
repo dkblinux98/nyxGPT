@@ -62,7 +62,7 @@ def test_ops_install_returns_zero_when_all_ok(capsys):
         patch.object(ops, "_install_config", return_value=ok_results),
         patch.object(ops, "migrate_legacy_volumes", return_value=ok_results),
         patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok_results),
-        patch.object(ops, "_install_scripts", return_value=ok_results),
+        patch.object(ops, "_sync_packaged_resources", return_value=ok_results),
         patch.object(ops, "_ensure_web_deps", return_value=ok_results),
         patch.object(ops, "_ensure_mcp_deps", return_value=ok_results),
         patch.object(ops, "_ensure_cassandra_container", return_value=ok_results),
@@ -74,7 +74,6 @@ def test_ops_install_returns_zero_when_all_ok(capsys):
         patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
         patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok_results),
         patch.object(ops, "sync_env_from_config", return_value=ok_results),
-        patch.object(ops, "_persist_compose_file_path", return_value=ok_results),
         patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok_results),
         patch.object(ops, "_reconcile_grafana_provisioning", return_value=ok_results) as obs,
         patch.object(ops, "_provision_glitchtip", return_value=ok_results),
@@ -97,7 +96,7 @@ def test_ops_install_returns_nonzero_when_any_fail(capsys):
             "_reconcile_phantom_compose_app_containers",
             return_value=[ops.OpsResult(True, "ok")],
         ),
-        patch.object(ops, "_install_scripts", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_sync_packaged_resources", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_ensure_web_deps", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_ensure_mcp_deps", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_ensure_cassandra_container", return_value=[ops.OpsResult(True, "ok")]),
@@ -111,7 +110,6 @@ def test_ops_install_returns_nonzero_when_any_fail(capsys):
         patch.object(ops, "_ensure_ollama_service", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_cleanup_stale_log_symlinks", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "sync_env_from_config", return_value=[ops.OpsResult(True, "ok")]),
-        patch.object(ops, "_persist_compose_file_path", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(
             ops, "_ensure_glitchtip_secrets_dir", return_value=[ops.OpsResult(True, "ok")]
         ),
@@ -134,7 +132,7 @@ def test_ops_install_skip_observability_flag_skips_the_step(capsys):
         patch.object(ops, "_install_config", return_value=ok_results),
         patch.object(ops, "migrate_legacy_volumes", return_value=ok_results),
         patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok_results),
-        patch.object(ops, "_install_scripts", return_value=ok_results),
+        patch.object(ops, "_sync_packaged_resources", return_value=ok_results),
         patch.object(ops, "_ensure_web_deps", return_value=ok_results),
         patch.object(ops, "_ensure_mcp_deps", return_value=ok_results),
         patch.object(ops, "_ensure_cassandra_container", return_value=ok_results),
@@ -146,7 +144,6 @@ def test_ops_install_skip_observability_flag_skips_the_step(capsys):
         patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
         patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok_results),
         patch.object(ops, "sync_env_from_config", return_value=ok_results),
-        patch.object(ops, "_persist_compose_file_path", return_value=ok_results),
         patch.object(ops, "_reconcile_grafana_provisioning") as obs,
     ):
         rc = ops.install(MagicMock(skip_observability=True, terraform=False, kubernetes=False))
@@ -179,7 +176,9 @@ def test_ops_install_step_order_reconciles_before_creating(capsys):
         patch.object(
             ops, "_reconcile_phantom_compose_app_containers", side_effect=_record("reconcile")
         ),
-        patch.object(ops, "_install_scripts", side_effect=_record("scripts")),
+        patch.object(
+            ops, "_sync_packaged_resources", side_effect=_record("sync packaged ops resources")
+        ),
         patch.object(ops, "_ensure_web_deps", side_effect=_record("web deps")),
         patch.object(ops, "_ensure_mcp_deps", side_effect=_record("mcp deps")),
         patch.object(
@@ -195,22 +194,23 @@ def test_ops_install_step_order_reconciles_before_creating(capsys):
             ops, "_cleanup_stale_log_symlinks", side_effect=_record("stale log symlink cleanup")
         ),
         patch.object(ops, "sync_env_from_config", side_effect=_record("env sync")),
-        patch.object(ops, "_persist_compose_file_path", side_effect=_record("compose file path")),
     ):
         rc = ops.install(MagicMock(skip_observability=True, terraform=False, kubernetes=False))
         assert rc == 0
 
-    # Clearing intentional-stop markers comes first, then config (a fresh
-    # machine needs config.ini before any other step can act on it), then
-    # reconciliation before anything creates.
-    assert call_order[0] == "clear intentional stops"
-    assert call_order[1] == "config"
-    assert call_order[2] == "migrate volumes"
-    assert call_order[3] == "reconcile"
+    # Syncing packaged ops resources comes first (everything else assumes the
+    # packaged Compose file/templates/scripts are already synced to
+    # NYXGPT_HOME -- #3621), then clearing intentional-stop markers, then
+    # config (a fresh machine needs config.ini before any other step can act
+    # on it), then reconciliation before anything creates.
+    assert call_order[0] == "sync packaged ops resources"
+    assert call_order[1] == "clear intentional stops"
+    assert call_order[2] == "config"
+    assert call_order[3] == "migrate volumes"
+    assert call_order[4] == "reconcile"
     assert "cassandra container" in call_order
     assert "ollama service" in call_order
     assert "env sync" in call_order
-    assert "compose file path" in call_order
 
 
 @pytest.mark.unit
@@ -220,7 +220,7 @@ def test_ops_install_clears_intentional_stop_markers_for_core_components():
         patch.object(ops, "_install_config", return_value=ok_results),
         patch.object(ops, "migrate_legacy_volumes", return_value=ok_results),
         patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok_results),
-        patch.object(ops, "_install_scripts", return_value=ok_results),
+        patch.object(ops, "_sync_packaged_resources", return_value=ok_results),
         patch.object(ops, "_ensure_web_deps", return_value=ok_results),
         patch.object(ops, "_ensure_mcp_deps", return_value=ok_results),
         patch.object(ops, "_ensure_cassandra_container", return_value=ok_results),
@@ -232,7 +232,6 @@ def test_ops_install_clears_intentional_stop_markers_for_core_components():
         patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
         patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok_results),
         patch.object(ops, "sync_env_from_config", return_value=ok_results),
-        patch.object(ops, "_persist_compose_file_path", return_value=ok_results),
         patch.object(ops.self_heal, "clear_intentionally_stopped") as clear_stopped,
     ):
         rc = ops.install(MagicMock(skip_observability=True, terraform=False, kubernetes=False))
@@ -2221,29 +2220,31 @@ def test_restart_launchagent_exception(monkeypatch):
 
 
 @pytest.mark.unit
-def test_find_launchagent_template_returns_first_existing_candidate(monkeypatch, tmp_path):
-    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
-    target = tmp_path / "ops" / "launchagents" / "com.nyxgpt.cassandra-logs.plist"
+def test_find_launchagent_template_returns_the_synced_candidate(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops, "OPS_LAUNCHAGENTS_DIR", home / ".nyxGPT" / "ops" / "launchagents")
+    target = ops.OPS_LAUNCHAGENTS_DIR / "com.nyxgpt.cassandra-logs.plist"
     target.parent.mkdir(parents=True)
     target.write_text("<plist/>", encoding="utf-8")
 
     tpl, candidates = ops._find_launchagent_template()
     assert tpl == target
-    assert len(candidates) == 4
+    assert candidates == [target]
 
 
 @pytest.mark.unit
 def test_find_launchagent_template_returns_none_when_missing(monkeypatch, tmp_path):
-    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops, "OPS_LAUNCHAGENTS_DIR", tmp_path / "nowhere")
     tpl, candidates = ops._find_launchagent_template()
     assert tpl is None
-    assert len(candidates) == 4
+    assert len(candidates) == 1
 
 
 @pytest.mark.unit
 def test_find_launchagent_template_skips_candidate_that_errors(monkeypatch, tmp_path):
-    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
-    bad_path = tmp_path / "ops" / "launchagents" / "com.nyxgpt.cassandra-logs.plist"
+    launchagents_dir = tmp_path / ".nyxGPT" / "ops" / "launchagents"
+    monkeypatch.setattr(ops, "OPS_LAUNCHAGENTS_DIR", launchagents_dir)
+    bad_path = launchagents_dir / "com.nyxgpt.cassandra-logs.plist"
     real_exists = Path.exists
 
     def flaky_exists(self):
@@ -2254,56 +2255,91 @@ def test_find_launchagent_template_skips_candidate_that_errors(monkeypatch, tmp_
     monkeypatch.setattr(Path, "exists", flaky_exists)
     tpl, candidates = ops._find_launchagent_template()
     assert tpl is None
-    assert len(candidates) == 4
+    assert len(candidates) == 1
 
 
 @pytest.mark.unit
 def test_find_launchagent_template_accepts_a_different_plist_name(monkeypatch, tmp_path):
-    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
-    target = tmp_path / "ops" / "launchagents" / "com.nyxgpt.ollama-logs.plist"
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops, "OPS_LAUNCHAGENTS_DIR", home / ".nyxGPT" / "ops" / "launchagents")
+    target = ops.OPS_LAUNCHAGENTS_DIR / "com.nyxgpt.ollama-logs.plist"
     target.parent.mkdir(parents=True)
     target.write_text("<plist/>", encoding="utf-8")
 
     tpl, candidates = ops._find_launchagent_template("com.nyxgpt.ollama-logs.plist")
     assert tpl == target
-    assert len(candidates) == 4
-    assert all(c.name == "com.nyxgpt.ollama-logs.plist" for c in candidates)
+    assert candidates == [target]
 
 
-# --- _install_scripts ---
-
-
-@pytest.mark.unit
-def test_install_scripts_installs_present_scripts(monkeypatch, tmp_path):
-    repo_root = tmp_path / "repo"
-    home = tmp_path / "home"
-    (repo_root / "scripts").mkdir(parents=True)
-    (repo_root / "scripts" / "run-web.sh").write_text("#!/bin/sh\n", encoding="utf-8")
-    (repo_root / "scripts" / "follow-cassandra-logs.sh").write_text("#!/bin/sh\n", encoding="utf-8")
-    (repo_root / "scripts" / "follow-ollama-logs.sh").write_text("#!/bin/sh\n", encoding="utf-8")
-
-    monkeypatch.setattr(ops, "REPO_ROOT", repo_root)
-    monkeypatch.setattr(ops.Path, "home", lambda: home)
-
-    results = ops._install_scripts()
-    assert all(r.ok for r in results)
-    assert (home / ".nyxGPT" / "scripts" / "run-web.sh").exists()
-    assert (home / ".nyxGPT" / "scripts" / "follow-cassandra-logs.sh").exists()
-    assert (home / ".nyxGPT" / "scripts" / "follow-ollama-logs.sh").exists()
+# --- _sync_packaged_resources ---
 
 
 @pytest.mark.unit
-def test_install_scripts_skips_missing_scripts(monkeypatch, tmp_path):
-    repo_root = tmp_path / "repo"
+def test_sync_packaged_resources_copies_compose_env_docker_ops_scripts(monkeypatch, tmp_path):
+    src_root = tmp_path / "packaged"
+    (src_root / "docker" / "grafana").mkdir(parents=True)
+    (src_root / "docker" / "grafana" / "x.yml").write_text("x", encoding="utf-8")
+    (src_root / "ops" / "launchagents").mkdir(parents=True)
+    (src_root / "ops" / "launchagents" / "com.nyxgpt.cassandra-logs.plist").write_text(
+        "<plist/>", encoding="utf-8"
+    )
+    (src_root / "scripts").mkdir(parents=True)
+    (src_root / "scripts" / "run-web.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    (src_root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    (src_root / ".env.example").write_text("FOO=bar\n", encoding="utf-8")
+
     home = tmp_path / "home"
-    repo_root.mkdir()
+    monkeypatch.setattr(ops, "_packaged_resources_root", lambda: src_root)
+    monkeypatch.setattr(ops, "NYXGPT_HOME", home / ".nyxGPT")
+    monkeypatch.setattr(ops, "OPS_COMPOSE_FILE", home / ".nyxGPT" / "docker-compose.yml")
+    monkeypatch.setattr(ops, "OPS_SCRIPTS_SRC_DIR", home / ".nyxGPT" / "scripts")
 
-    monkeypatch.setattr(ops, "REPO_ROOT", repo_root)
-    monkeypatch.setattr(ops.Path, "home", lambda: home)
-
-    results = ops._install_scripts()
+    results = ops._sync_packaged_resources()
     assert all(r.ok for r in results)
-    assert all("skipped" in r.message for r in results)
+    assert (home / ".nyxGPT" / "docker-compose.yml").read_text(encoding="utf-8") == "services: {}\n"
+    assert (home / ".nyxGPT" / ".env.example").read_text(encoding="utf-8") == "FOO=bar\n"
+    assert (home / ".nyxGPT" / "docker" / "grafana" / "x.yml").exists()
+    assert (home / ".nyxGPT" / "ops" / "launchagents" / "com.nyxgpt.cassandra-logs.plist").exists()
+    script = home / ".nyxGPT" / "scripts" / "run-web.sh"
+    assert script.exists()
+    assert script.stat().st_mode & 0o777 == 0o755
+
+
+@pytest.mark.unit
+def test_sync_packaged_resources_is_idempotent_and_additive(monkeypatch, tmp_path):
+    # Re-running (e.g. a second `nyxgpt ops install`) must overwrite the
+    # synced copies with the current packaged content, without touching
+    # unrelated files an operator already has under NYXGPT_HOME (notably the
+    # separately generated docker/config.docker.ini -- #3621).
+    src_root = tmp_path / "packaged"
+    (src_root / "docker").mkdir(parents=True)
+    (src_root / "docker" / "prometheus.yml").write_text("v1", encoding="utf-8")
+    (src_root / "ops").mkdir(parents=True)
+    (src_root / "scripts").mkdir(parents=True)
+    (src_root / "docker-compose.yml").write_text("v1", encoding="utf-8")
+    (src_root / ".env.example").write_text("v1", encoding="utf-8")
+
+    home = tmp_path / "home"
+    nyxgpt_home = home / ".nyxGPT"
+    (nyxgpt_home / "docker").mkdir(parents=True)
+    generated_config = nyxgpt_home / "docker" / "config.docker.ini"
+    generated_config.write_text("operator's generated config", encoding="utf-8")
+
+    monkeypatch.setattr(ops, "_packaged_resources_root", lambda: src_root)
+    monkeypatch.setattr(ops, "NYXGPT_HOME", nyxgpt_home)
+    monkeypatch.setattr(ops, "OPS_COMPOSE_FILE", nyxgpt_home / "docker-compose.yml")
+    monkeypatch.setattr(ops, "OPS_SCRIPTS_SRC_DIR", nyxgpt_home / "scripts")
+
+    assert all(r.ok for r in ops._sync_packaged_resources())
+
+    (src_root / "docker" / "prometheus.yml").write_text("v2", encoding="utf-8")
+    (src_root / "docker-compose.yml").write_text("v2", encoding="utf-8")
+
+    results = ops._sync_packaged_resources()
+    assert all(r.ok for r in results)
+    assert (nyxgpt_home / "docker" / "prometheus.yml").read_text(encoding="utf-8") == "v2"
+    assert (nyxgpt_home / "docker-compose.yml").read_text(encoding="utf-8") == "v2"
+    assert generated_config.read_text(encoding="utf-8") == "operator's generated config"
 
 
 # --- _install_cassandra_launchagent ---
@@ -2482,60 +2518,6 @@ def test_install_launchagent_from_template_uses_installing_users_home(monkeypatc
     installed = dst.read_text(encoding="utf-8")
     assert "__NYXGPT_HOME__" not in installed
     assert installed == f"<plist>{home}/.nyxGPT/scripts/follow-ollama-logs.sh</plist>"
-
-
-# --- _persist_compose_file_path ---
-
-
-@pytest.mark.unit
-def test_persist_compose_file_path_records_path(monkeypatch, tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
-    monkeypatch.setattr(ops, "REPO_ROOT", repo)
-
-    home = tmp_path / "home"
-    (home / ".nyxGPT").mkdir(parents=True)
-    cfg_path = home / ".nyxGPT" / "config.ini"
-    cfg_path.write_text("[nyxgpt]\n", encoding="utf-8")
-    monkeypatch.setattr(ops.Path, "home", lambda: home)
-
-    results = ops._persist_compose_file_path()
-    assert results[0].ok is True
-    assert "Recorded compose-file path" in results[0].message
-
-    parser = ConfigParser()
-    parser.read(cfg_path)
-    assert parser.get("paths", "compose_file") == str(repo / "docker-compose.yml")
-
-    # config.ini carries secrets ([auth] api_key etc.) -- must land 0600 (#3500).
-    assert oct(cfg_path.stat().st_mode & 0o777) == "0o600"
-
-    # Idempotent: second run reports already-recorded, file unchanged.
-    again = ops._persist_compose_file_path()
-    assert again[0].ok is True
-    assert "already recorded" in again[0].message
-
-
-@pytest.mark.unit
-def test_persist_compose_file_path_skips_outside_repo_checkout(monkeypatch, tmp_path):
-    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path / "cellar")
-    results = ops._persist_compose_file_path()
-    assert results[0].ok is True
-    assert "not running from a repo checkout" in results[0].message
-
-
-@pytest.mark.unit
-def test_persist_compose_file_path_skips_without_config(monkeypatch, tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
-    monkeypatch.setattr(ops, "REPO_ROOT", repo)
-    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path / "empty-home")
-
-    results = ops._persist_compose_file_path()
-    assert results[0].ok is True
-    assert "no config.ini yet" in results[0].message
 
 
 # --- _ensure_ollama_service ---
@@ -4687,7 +4669,7 @@ def test_ops_install_catches_exception_from_a_step(capsys):
     with (
         patch.object(ops, "migrate_legacy_volumes", return_value=ok_results),
         patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok_results),
-        patch.object(ops, "_install_scripts", return_value=ok_results),
+        patch.object(ops, "_sync_packaged_resources", return_value=ok_results),
         patch.object(ops, "_ensure_web_deps", side_effect=RuntimeError("kaboom")),
         patch.object(ops, "_ensure_mcp_deps", return_value=ok_results),
         patch.object(ops, "_ensure_cassandra_container", return_value=ok_results),
@@ -4998,7 +4980,7 @@ def test_ops_install_logs_start_and_summary(caplog):
     with (
         patch.object(ops, "migrate_legacy_volumes", return_value=ok_results),
         patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok_results),
-        patch.object(ops, "_install_scripts", return_value=ok_results),
+        patch.object(ops, "_sync_packaged_resources", return_value=ok_results),
         patch.object(ops, "_ensure_web_deps", return_value=ok_results),
         patch.object(ops, "_ensure_mcp_deps", return_value=ok_results),
         patch.object(ops, "_ensure_cassandra_container", return_value=ok_results),
@@ -5022,9 +5004,9 @@ def test_ops_install_logs_start_and_summary(caplog):
 @pytest.mark.unit
 def test_ops_install_logs_error_when_step_raises(caplog):
     with (
+        patch.object(ops, "_sync_packaged_resources", side_effect=RuntimeError("boom")),
         patch.object(ops, "migrate_legacy_volumes", return_value=[]),
         patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=[]),
-        patch.object(ops, "_install_scripts", side_effect=RuntimeError("boom")),
         patch.object(ops, "_ensure_web_deps", return_value=[]),
         patch.object(ops, "_ensure_mcp_deps", return_value=[]),
         patch.object(ops, "_ensure_cassandra_container", return_value=[]),
@@ -5041,7 +5023,7 @@ def test_ops_install_logs_error_when_step_raises(caplog):
     assert rc == 2
     error_records = [r for r in caplog.records if r.levelname == "ERROR"]
     assert len(error_records) == 1
-    assert "scripts" in error_records[0].getMessage()
+    assert "sync packaged ops resources" in error_records[0].getMessage()
     assert error_records[0].exc_info is not None
 
 
@@ -5069,6 +5051,12 @@ def test_ops_restart_logs_target_and_summary(caplog):
 def test_ops_doctor_logs_issues_at_warning(caplog, monkeypatch, tmp_path):
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(ops, "_which", lambda _: None)
+    # self_heal has its own `_which`, independent of ops's -- without this,
+    # list_component_status()'s compose probe still finds the real `docker`
+    # on PATH and tries `docker compose ps` against the (now ops-managed,
+    # not-yet-synced -- #3621) default COMPOSE_FILE, which doesn't exist
+    # here and logs an extra, unrelated self_heal warning.
+    monkeypatch.setattr(ops.self_heal, "_which", lambda _: None)
 
     with caplog.at_level("INFO", logger="nyxgpt.ops"):
         rc = ops.doctor(MagicMock())
@@ -5421,7 +5409,11 @@ def _write_grafana_fixture(tmp_path, monkeypatch, *, datasource_yml: str, compos
     compose_path = tmp_path / "docker-compose.yml"
     compose_path.write_text(compose_yml, encoding="utf-8")
 
-    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    # OPS_DOCKER_DIR/NYXGPT_HOME are module-level constants computed once
+    # from Path.home() at import time (#3621), so patching Path.home() here
+    # (as before REPO_ROOT retirement) wouldn't retroactively change them --
+    # patch the already-resolved constants directly instead.
+    monkeypatch.setattr(ops, "OPS_DOCKER_DIR", tmp_path / "docker")
     monkeypatch.setattr(ops.self_heal, "COMPOSE_FILE", compose_path)
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
     return datasource_path, compose_path
@@ -5488,7 +5480,7 @@ def test_grafana_provisioning_fingerprint_changes_when_glitchtip_yml_changes(tmp
 
 @pytest.mark.unit
 def test_grafana_provisioned_datasource_uids_empty_when_file_missing(tmp_path, monkeypatch):
-    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops, "OPS_DOCKER_DIR", tmp_path / "docker")
     assert ops._grafana_provisioned_datasource_uids() == []
 
 
@@ -10016,6 +10008,7 @@ def test_install_terraform_success_runs_all_steps(monkeypatch, capsys):
     monkeypatch.setattr(ops, "_refuse_port_collision", lambda components: None)
     ok = [ops.OpsResult(True, "ok")]
     with (
+        patch.object(ops, "_sync_packaged_resources", return_value=ok),
         patch.object(ops, "migrate_legacy_volumes", return_value=ok),
         patch.object(ops, "_ensure_terraform_binary", return_value=ok) as b,
         patch.object(ops, "_ensure_terraform_tfvars", return_value=ok) as t,
@@ -10063,6 +10056,7 @@ def test_install_terraform_syncs_slack_webhook_before_observability_starts(monke
     ok = [ops.OpsResult(True, "ok")]
     call_order: list[str] = []
     with (
+        patch.object(ops, "_sync_packaged_resources", return_value=ok),
         patch.object(ops, "migrate_legacy_volumes", return_value=ok),
         patch.object(ops, "_ensure_terraform_binary", return_value=ok),
         patch.object(ops, "_ensure_terraform_tfvars", return_value=ok),
@@ -10093,6 +10087,7 @@ def test_install_terraform_stops_pipeline_on_step_failure(monkeypatch):
     args = SimpleNamespace(local=True, cloud=False, api_key=None)
     monkeypatch.setattr(ops, "_refuse_port_collision", lambda components: None)
     with (
+        patch.object(ops, "_sync_packaged_resources", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "migrate_legacy_volumes", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(
             ops, "_ensure_terraform_binary", return_value=[ops.OpsResult(False, "no terraform")]
@@ -10117,6 +10112,7 @@ def test_install_terraform_clears_intentional_stop_markers(monkeypatch, capsys):
     monkeypatch.setattr(ops, "_refuse_port_collision", lambda components: None)
     ok = [ops.OpsResult(True, "ok")]
     with (
+        patch.object(ops, "_sync_packaged_resources", return_value=ok),
         patch.object(ops, "migrate_legacy_volumes", return_value=ok),
         patch.object(ops, "_ensure_terraform_binary", return_value=ok),
         patch.object(ops, "_ensure_terraform_tfvars", return_value=ok),
@@ -10844,6 +10840,7 @@ def test_install_terraform_local_runs_steps_and_returns_results(monkeypatch):
     monkeypatch.setattr(ops, "_refuse_port_collision", lambda components: None)
     ok = [ops.OpsResult(True, "ok")]
     with (
+        patch.object(ops, "_sync_packaged_resources", return_value=ok),
         patch.object(ops, "migrate_legacy_volumes", return_value=ok),
         patch.object(ops, "_ensure_terraform_binary", return_value=ok),
         patch.object(ops, "_ensure_terraform_tfvars", return_value=ok) as t,
