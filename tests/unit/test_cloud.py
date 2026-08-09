@@ -185,6 +185,37 @@ def test_refresh_ssh_ingress_rule_replaces_stale_cidr():
     assert revoked_cidrs == ["198.51.100.1/32"]
 
 
+def test_refresh_ssh_ingress_rule_authorizes_before_revoking_stale_cidr():
+    """The new CIDR must be authorized before the stale one is revoked, so the
+    security group is never left with zero valid SSH sources between calls."""
+    client = _FakeEC2Client(existing_cidrs=["198.51.100.1/32"])
+
+    cloud.refresh_ssh_ingress_rule(client, "sg-123", "203.0.113.5/32")
+
+    call_names = [name for name, _ in client.calls]
+    assert call_names.index("authorize_security_group_ingress") < call_names.index(
+        "revoke_security_group_ingress"
+    )
+
+
+def test_refresh_ssh_ingress_rule_leaves_stale_cidr_when_authorize_fails():
+    """If authorize fails, the stale rule must not be revoked -- the group must
+    keep at least one valid SSH source rather than being left with none."""
+
+    class _FailingAuthorizeClient(_FakeEC2Client):
+        def authorize_security_group_ingress(self, **kwargs):
+            super().authorize_security_group_ingress(**kwargs)
+            raise RuntimeError("boom")
+
+    client = _FailingAuthorizeClient(existing_cidrs=["198.51.100.1/32"])
+
+    with pytest.raises(cloud.CloudCommandError):
+        cloud.refresh_ssh_ingress_rule(client, "sg-123", "203.0.113.5/32")
+
+    call_names = [name for name, _ in client.calls]
+    assert "revoke_security_group_ingress" not in call_names
+
+
 def test_refresh_ssh_ingress_rule_missing_group_raises():
     class _EmptyClient:
         def describe_security_groups(self, **kwargs):

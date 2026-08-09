@@ -175,33 +175,18 @@ def refresh_ssh_ingress_rule(
 ) -> tuple[list[str], bool]:
     """Point `security_group_id`'s port-22 ingress rule at `new_cidr`.
 
-    Revokes every other port-22 CIDR currently allowed and authorizes
-    `new_cidr` if it isn't already present. Returns `(old_cidrs, changed)`
-    -- `changed` is `False` when `new_cidr` was already the only allowed
-    source (idempotent no-op, no AWS API mutation calls made).
+    Authorizes `new_cidr` (if not already present) *before* revoking any
+    other port-22 CIDR currently allowed, so the security group is never
+    left without a valid SSH source between the two calls -- if the
+    authorize call fails, the stale rule(s) are left untouched instead of
+    the group being left with zero SSH ingress. Returns
+    `(old_cidrs, changed)` -- `changed` is `False` when `new_cidr` was
+    already the only allowed source (idempotent no-op, no AWS API mutation
+    calls made).
     """
     old_cidrs = _describe_ssh_ingress_cidrs(ec2_client, security_group_id)
     if old_cidrs == [new_cidr]:
         return old_cidrs, False
-
-    stale = [cidr for cidr in old_cidrs if cidr != new_cidr]
-    if stale:
-        try:
-            ec2_client.revoke_security_group_ingress(
-                GroupId=security_group_id,
-                IpPermissions=[
-                    {
-                        "IpProtocol": "tcp",
-                        "FromPort": SSH_PORT,
-                        "ToPort": SSH_PORT,
-                        "IpRanges": [{"CidrIp": cidr} for cidr in stale],
-                    }
-                ],
-            )
-        except Exception as exc:
-            raise CloudCommandError(
-                f"Failed to revoke stale SSH ingress rule(s) {stale}: {exc}"
-            ) from exc
 
     if new_cidr not in old_cidrs:
         try:
@@ -219,6 +204,27 @@ def refresh_ssh_ingress_rule(
         except Exception as exc:
             raise CloudCommandError(
                 f"Failed to authorize new SSH ingress rule {new_cidr}: {exc}"
+            ) from exc
+
+    stale = [cidr for cidr in old_cidrs if cidr != new_cidr]
+    if stale:
+        try:
+            ec2_client.revoke_security_group_ingress(
+                GroupId=security_group_id,
+                IpPermissions=[
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": SSH_PORT,
+                        "ToPort": SSH_PORT,
+                        "IpRanges": [{"CidrIp": cidr} for cidr in stale],
+                    }
+                ],
+            )
+        except Exception as exc:
+            raise CloudCommandError(
+                f"New SSH ingress rule {new_cidr} was authorized, but failed to revoke "
+                f"stale rule(s) {stale}: {exc}. Both the new and stale CIDRs are now "
+                "allowed -- re-run `nyxgpt cloud allow-ip` to retry the cleanup."
             ) from exc
 
     return old_cidrs, True
