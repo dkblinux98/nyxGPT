@@ -19,6 +19,7 @@ from typing import Any, cast
 # Canary and ops implementations live in separate modules for testability.
 # (blue/green lived in nyxgpt.deploy; retired in favor of canary -- see #3409.)
 from nyxgpt import canary as canary_mod
+from nyxgpt import cloud as cloud_mod
 from nyxgpt import models, sessions
 from nyxgpt import ops as ops_mod
 from nyxgpt import self_heal as self_heal_mod
@@ -1654,7 +1655,7 @@ def cli(argv: list[str] | None = None) -> int:
     """Entry point for the `nyxgpt` command-line tool.
 
     Builds the full argparse parser (chat, sessions, rag, models, mcp,
-    wizard, ops, deploy, canary, self-heal subcommands), parses `argv`,
+    wizard, ops, cloud, canary, self-heal subcommands), parses `argv`,
     initializes logging, and dispatches to the matching `cmd_*` handler. If
     no subcommand is given, defaults to `info`. Prints help and returns 2 if
     the resolved command/subcommand combination isn't recognized.
@@ -2152,6 +2153,46 @@ def cli(argv: list[str] | None = None) -> int:
         help="Seconds to wait for the booted stack to become healthy (default: 300)",
     )
 
+    # Add cloud command (AWS deployment lifecycle -- P6-11-class scope; today
+    # covers only `allow-ip`, the lockout-recovery path for the owner-IP-scoped
+    # SSH security group described in
+    # product_management/DECISION_PRIVATE_ACCESS_MECHANISM.md. `nyxgpt cloud
+    # deploy`/`destroy` (#3513) come later and are expected to write
+    # ~/.nyxGPT/cloud/state.json so allow-ip can auto-discover the security
+    # group without --security-group-id -- see nyxgpt.cloud's module docstring.
+    cloud_p = sub.add_parser("cloud", help="AWS cloud deployment lifecycle helpers")
+    cloud_sub = cloud_p.add_subparsers(dest="cloud_cmd", required=True)
+
+    cloud_allow_ip = cloud_sub.add_parser(
+        "allow-ip",
+        help=(
+            "Refresh the SSH (port 22) security-group ingress rule to the caller's "
+            "current public IP -- talks only to the AWS API, so it works even while "
+            "locked out of the instance"
+        ),
+    )
+    cloud_allow_ip.add_argument(
+        "--ip",
+        help=(
+            "Explicit IP or CIDR to allow instead of auto-detecting the caller's "
+            "current public IP (bare addresses are scoped to /32; 0.0.0.0/0 is refused)"
+        ),
+    )
+    cloud_allow_ip.add_argument(
+        "--security-group-id",
+        help=(
+            "Security group id to update (default: read from "
+            "~/.nyxGPT/cloud/state.json, written by `nyxgpt cloud deploy`)"
+        ),
+    )
+    cloud_allow_ip.add_argument(
+        "--region",
+        help=(
+            "AWS region (default: read from ~/.nyxGPT/cloud/state.json, then "
+            "boto3's normal region resolution)"
+        ),
+    )
+
     # Add canary command (local weighted-traffic canary rollout on a local k8s cluster --
     # the sole deployment model since #3409 retired blue/green in favor of it)
     canary_p = sub.add_parser("canary", help="Local canary deployment (kind/minikube/k3s cluster)")
@@ -2404,6 +2445,9 @@ def cli(argv: list[str] | None = None) -> int:
             return ops_mod.port_forward(args)
         if args.ops_cmd == "verify":
             return ops_mod.verify(args)
+
+    if cmd == "cloud" and args.cloud_cmd == "allow-ip":
+        return cloud_mod.allow_ip(args)
 
     if cmd == "canary":
         # Same per-invocation correlation id as the `ops` dispatch above --
