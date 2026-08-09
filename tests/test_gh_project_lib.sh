@@ -404,6 +404,154 @@ case "${COMMENT_CALLS[0]:-}" in
     ;;
 esac
 
+# --- Test 13: sweep_parked_blocked_issues (#3631) -- no parked issues is a ---
+# --- no-op that still reports a clean "Promoted 0" summary ---
+#
+# sweep_parked_blocked_issues's stubbed set_issue_status/assign_issue_verified/
+# issue_comment calls record into arrays declared in *this* shell -- calling
+# the function via `$(...)` would run it in a subshell (like Test 4-6's
+# assign_issue_verified capture above) and lose those array mutations when
+# the subshell exits. Route stdout through a temp file instead so the
+# function runs directly in this shell and its array writes survive.
+SWEEP_OUT_FILE="$(mktemp)"
+trap 'rm -f "$ASSIGN_COUNT_FILE" "$VERIFY_COUNT_FILE" "$SWEEP_OUT_FILE"' EXIT
+# Call directly (no `$(...)` around the call itself) so the function runs in
+# this shell, not a subshell; read its captured stdout back afterward.
+_run_sweep() { sweep_parked_blocked_issues >"$SWEEP_OUT_FILE"; }
+
+STATUS_IN_REVIEW="In Review"
+STATUS_ACCEPTANCE_TESTING="Acceptance Testing"
+STATUS_FOR_RELEASE="For Release"
+HUMAN_OWNER="dkblinux98"
+
+list_parked_blocked_issues() { :; }
+blocked_by_issues() { :; }
+_issue_open_state() { :; }
+issue_status() { :; }
+SET_STATUS_CALLS=(); ASSIGN_VERIFIED_CALLS=(); COMMENT_CALLS=()
+set_issue_status() { SET_STATUS_CALLS+=("$1 $2"); }
+assign_issue_verified() { ASSIGN_VERIFIED_CALLS+=("$1 $2"); }
+issue_comment() { COMMENT_CALLS+=("$2"); }
+
+DRY_RUN=0
+_run_sweep
+OUT="$(cat "$SWEEP_OUT_FILE")"
+_assert_eq "no parked issues -> Promoted 0 summary" "Promoted 0 issue(s)." "$OUT"
+_assert_eq "no parked issues -> no status mutation" "0" "${#SET_STATUS_CALLS[@]}"
+_assert_eq "no parked issues -> no assignment" "0" "${#ASSIGN_VERIFIED_CALLS[@]}"
+
+# --- Test 14: a parked issue whose single blocker has NOT completed is ---
+# --- left alone (no mutation, not counted as promoted) ---
+list_parked_blocked_issues() { echo "100"; }
+blocked_by_issues() {
+  case "$1" in
+    100) echo "200" ;;
+    *) : ;;
+  esac
+}
+_issue_open_state() {
+  case "$1" in
+    200) echo "OPEN" ;;
+    *) echo "" ;;
+  esac
+}
+issue_status() {
+  case "$1" in
+    200) echo "In Progress" ;;
+    *) echo "" ;;
+  esac
+}
+SET_STATUS_CALLS=(); ASSIGN_VERIFIED_CALLS=(); COMMENT_CALLS=()
+
+_run_sweep
+OUT="$(cat "$SWEEP_OUT_FILE")"
+_assert_eq "an unresolved blocker leaves the parked issue un-promoted" "Promoted 0 issue(s)." "$OUT"
+_assert_eq "an unresolved blocker triggers no status mutation" "0" "${#SET_STATUS_CALLS[@]}"
+
+# --- Test 15: a parked issue whose blocker is closed and already in ---
+# --- Acceptance Testing promotes -- status set, owner assigned, one ---
+# --- comment posted naming the completed blocker ---
+list_parked_blocked_issues() { echo "101"; }
+blocked_by_issues() {
+  case "$1" in
+    101) echo "201" ;;
+    *) : ;;
+  esac
+}
+_issue_open_state() {
+  case "$1" in
+    201) echo "CLOSED" ;;
+    *) echo "" ;;
+  esac
+}
+issue_status() {
+  case "$1" in
+    201) echo "Acceptance Testing" ;;
+    *) echo "" ;;
+  esac
+}
+SET_STATUS_CALLS=(); ASSIGN_VERIFIED_CALLS=(); COMMENT_CALLS=()
+
+_run_sweep
+OUT="$(cat "$SWEEP_OUT_FILE")"
+_assert_eq "a fully-complete blocker promotes the parked issue" "Promoted 1 issue(s)." "$OUT"
+_assert_eq "promotion sets Status -> Acceptance Testing" "101 Acceptance Testing" "${SET_STATUS_CALLS[0]:-}"
+_assert_eq "promotion assigns the human owner" "101 dkblinux98" "${ASSIGN_VERIFIED_CALLS[0]:-}"
+_assert_eq "promotion posts exactly one comment" "1" "${#COMMENT_CALLS[@]}"
+case "${COMMENT_CALLS[0]:-}" in
+  *"#201"*) echo "[ok] the promotion comment names the completed blocker" ;;
+  *)
+    echo "[FAIL] the promotion comment should name blocker #201, got: ${COMMENT_CALLS[0]:-<empty>}" >&2
+    FAILURES=$((FAILURES + 1))
+    ;;
+esac
+
+# --- Test 16: DRY_RUN=1 resolves the same promotion decision but makes no ---
+# --- mutating calls ---
+SET_STATUS_CALLS=(); ASSIGN_VERIFIED_CALLS=(); COMMENT_CALLS=()
+DRY_RUN=1
+_run_sweep
+OUT="$(cat "$SWEEP_OUT_FILE")"
+DRY_RUN=0
+_assert_eq "DRY_RUN still reports what would be promoted" "Promoted 1 issue(s)." "$OUT"
+_assert_eq "DRY_RUN sets no status" "0" "${#SET_STATUS_CALLS[@]}"
+_assert_eq "DRY_RUN assigns no owner" "0" "${#ASSIGN_VERIFIED_CALLS[@]}"
+_assert_eq "DRY_RUN posts no comment" "0" "${#COMMENT_CALLS[@]}"
+
+# --- Test 17: a parked blocker CHAIN (A blocked by B, B itself parked and ---
+# --- blocked by C) resolves transitively in a single sweep run -- once C ---
+# --- (already For Release) clears B, B's own promotion (recorded in the ---
+# --- same-run resolved-state cache) immediately clears A too, so both ---
+# --- promote in one pass instead of one hop per 30-minute sweep interval ---
+list_parked_blocked_issues() { printf '%s\n' 301 302; }
+blocked_by_issues() {
+  case "$1" in
+    301) echo "302" ;;  # A blocked by B
+    302) echo "303" ;;  # B blocked by C
+    *) : ;;
+  esac
+}
+_issue_open_state() {
+  case "$1" in
+    303) echo "CLOSED" ;;  # C already fully accepted
+    *) echo "" ;;
+  esac
+}
+issue_status() {
+  case "$1" in
+    303) echo "For Release" ;;
+    *) echo "" ;;
+  esac
+}
+SET_STATUS_CALLS=(); ASSIGN_VERIFIED_CALLS=(); COMMENT_CALLS=()
+
+_run_sweep
+OUT="$(cat "$SWEEP_OUT_FILE")"
+_assert_eq "a two-level parked chain promotes both issues in one run" "Promoted 2 issue(s)." "$OUT"
+_assert_eq "both issues in the chain get Status -> Acceptance Testing" "2" "${#SET_STATUS_CALLS[@]}"
+_assert_eq "both issues in the chain get the owner assigned" "2" "${#ASSIGN_VERIFIED_CALLS[@]}"
+_assert_eq "both issues in the chain get a promotion comment" "2" "${#COMMENT_CALLS[@]}"
+
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "All tests passed."
   exit 0
