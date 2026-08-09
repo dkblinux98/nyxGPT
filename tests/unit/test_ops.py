@@ -1398,7 +1398,7 @@ def test_sync_env_from_config_auth_enabled_but_no_secrets_fails(tmp_path, monkey
 
 
 @pytest.mark.unit
-def test_sync_env_from_config_creates_env_from_example(tmp_path, monkeypatch):
+def test_sync_env_from_config_creates_env_from_example(tmp_path):
     cfg_path = tmp_path / "config.ini"
     _write_config(cfg_path, api_key="real-api-key", grafana_password="real-grafana-pw")
 
@@ -1409,7 +1409,6 @@ def test_sync_env_from_config_creates_env_from_example(tmp_path, monkeypatch):
         "GRAFANA_ADMIN_PASSWORD=change-me\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
 
     env_path = tmp_path / ".env"
     results = ops.sync_env_from_config(cfg_path=cfg_path, env_path=env_path)
@@ -1455,8 +1454,7 @@ def test_sync_env_from_config_updates_existing_env_in_place(tmp_path):
 
 
 @pytest.mark.unit
-def test_sync_env_from_config_syncs_only_the_secret_that_is_set(tmp_path, monkeypatch):
-    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+def test_sync_env_from_config_syncs_only_the_secret_that_is_set(tmp_path):
     cfg_path = tmp_path / "config.ini"
     _write_config(cfg_path, api_key="only-api-key-set")
 
@@ -1477,6 +1475,7 @@ def test_env_sync_cli_wrapper_prints_result(tmp_path, capsys, monkeypatch):
     compose_cfg = tmp_path / "config.docker.ini"
     compose_cfg.write_text("[error_tracking]\nenabled = false\ndsn =\n", encoding="utf-8")
     monkeypatch.setattr(ops, "COMPOSE_CONFIG_FILE", compose_cfg)
+    monkeypatch.setattr(ops, "_sync_packaged_resources", lambda: [ops.OpsResult(True, "synced")])
 
     args = MagicMock()
     args.config = str(cfg_path)
@@ -1488,6 +1487,58 @@ def test_env_sync_cli_wrapper_prints_result(tmp_path, capsys, monkeypatch):
     out = capsys.readouterr().out
     assert "[OK]" in out
     assert env_path.exists()
+
+
+@pytest.mark.unit
+def test_env_sync_cli_wrapper_seeds_env_from_packaged_example_without_prior_install(
+    tmp_path, capsys, monkeypatch
+):
+    # Regression test (#3621): `nyxgpt ops env-sync` is documented (docs/ops.md,
+    # _sync_grafana_slack_webhook_secret's docstring) as runnable as the very
+    # first command -- e.g. the Compose-only Quickstart's `nyxgpt wizard` then
+    # `nyxgpt ops env-sync`, with no `nyxgpt ops install` beforehand. That means
+    # NYXGPT_HOME/.env.example doesn't exist yet unless env_sync() syncs the
+    # packaged resources itself; without that, sync_env_from_config()'s
+    # .env.example fallback silently finds nothing and .env ends up containing
+    # only the secret lines, dropping every non-secret default (ports, image
+    # tags, etc.).
+    src_root = tmp_path / "packaged"
+    (src_root / "docker").mkdir(parents=True)
+    (src_root / "ops").mkdir(parents=True)
+    (src_root / "scripts").mkdir(parents=True)
+    (src_root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    (src_root / ".env.example").write_text(
+        "NYXGPT_API_PORT=8000\nNYXGPT_AUTH_API_KEY=change-me\n", encoding="utf-8"
+    )
+
+    home = tmp_path / "home"
+    nyxgpt_home = home / ".nyxGPT"
+    monkeypatch.setattr(ops, "_packaged_resources_root", lambda: src_root)
+    monkeypatch.setattr(ops, "NYXGPT_HOME", nyxgpt_home)
+    monkeypatch.setattr(ops, "OPS_COMPOSE_FILE", nyxgpt_home / "docker-compose.yml")
+    monkeypatch.setattr(ops, "OPS_DOCKER_DIR", nyxgpt_home / "docker")
+    monkeypatch.setattr(ops, "OPS_SCRIPTS_SRC_DIR", nyxgpt_home / "scripts")
+    monkeypatch.setattr(ops, "COMPOSE_CONFIG_FILE", nyxgpt_home / "docker" / "config.docker.ini")
+
+    cfg_path = tmp_path / "config.ini"
+    _write_config(cfg_path, api_key="fresh-api-key")
+
+    args = MagicMock()
+    args.config = str(cfg_path)
+    args.env_file = None
+
+    assert not nyxgpt_home.exists()
+    rc = ops.env_sync(args)
+    assert rc == 0
+
+    env_path = nyxgpt_home / ".env"
+    assert env_path.exists()
+    content = env_path.read_text(encoding="utf-8")
+    assert "NYXGPT_AUTH_API_KEY=fresh-api-key" in content
+    # The non-secret default from the packaged .env.example must survive --
+    # this is the line that silently vanished before env_sync() synced the
+    # packaged resources first.
+    assert "NYXGPT_API_PORT=8000" in content
 
 
 @pytest.mark.unit
@@ -4933,6 +4984,7 @@ def test_env_sync_cli_wrapper_prints_details_on_failure(tmp_path, capsys, monkey
     compose_cfg = tmp_path / "config.docker.ini"
     compose_cfg.write_text("[error_tracking]\nenabled = false\ndsn =\n", encoding="utf-8")
     monkeypatch.setattr(ops, "COMPOSE_CONFIG_FILE", compose_cfg)
+    monkeypatch.setattr(ops, "_sync_packaged_resources", lambda: [ops.OpsResult(True, "synced")])
 
     args = MagicMock()
     args.config = str(cfg_path)
@@ -6622,8 +6674,11 @@ def test_reconcile_grafana_provisioning_skips_verification_when_start_fails(tmp_
 
 @pytest.mark.unit
 def test_observability_cli_entrypoint_returns_zero_on_success(capsys):
-    with patch.object(
-        ops, "_reconcile_grafana_provisioning", return_value=[ops.OpsResult(True, "up")]
+    with (
+        patch.object(ops, "_sync_packaged_resources", return_value=[ops.OpsResult(True, "synced")]),
+        patch.object(
+            ops, "_reconcile_grafana_provisioning", return_value=[ops.OpsResult(True, "up")]
+        ),
     ):
         rc = ops.observability(MagicMock())
         assert rc == 0
@@ -6632,13 +6687,30 @@ def test_observability_cli_entrypoint_returns_zero_on_success(capsys):
 
 @pytest.mark.unit
 def test_observability_cli_entrypoint_returns_nonzero_on_failure(capsys):
-    with patch.object(
-        ops,
-        "_reconcile_grafana_provisioning",
-        return_value=[ops.OpsResult(False, "down", "boom")],
+    with (
+        patch.object(ops, "_sync_packaged_resources", return_value=[ops.OpsResult(True, "synced")]),
+        patch.object(
+            ops,
+            "_reconcile_grafana_provisioning",
+            return_value=[ops.OpsResult(False, "down", "boom")],
+        ),
     ):
         rc = ops.observability(MagicMock())
         assert rc == 2
+        assert "[FAIL]" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_observability_cli_entrypoint_skips_reconcile_when_sync_fails(capsys):
+    with (
+        patch.object(
+            ops, "_sync_packaged_resources", return_value=[ops.OpsResult(False, "sync failed")]
+        ),
+        patch.object(ops, "_reconcile_grafana_provisioning") as reconcile,
+    ):
+        rc = ops.observability(MagicMock())
+        assert rc == 2
+        reconcile.assert_not_called()
         assert "[FAIL]" in capsys.readouterr().out
 
 

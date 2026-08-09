@@ -439,8 +439,11 @@ def test_down_kubernetes_steps_records_success():
 
 def test_observability_cli_records_success_action():
     before = _ops_actions_total("observability", "observability", "success")
-    with patch.object(
-        ops, "_reconcile_grafana_provisioning", return_value=[ops.OpsResult(True, "up")]
+    with (
+        patch.object(ops, "_sync_packaged_resources", return_value=[ops.OpsResult(True, "synced")]),
+        patch.object(
+            ops, "_reconcile_grafana_provisioning", return_value=[ops.OpsResult(True, "up")]
+        ),
     ):
         rc = ops.observability(MagicMock())
     assert rc == 0

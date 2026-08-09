@@ -1548,6 +1548,11 @@ def test_ops_observability_dispatches_to_ops_module(
 
     monkeypatch.setattr(
         cli_mod.ops_mod,
+        "_sync_packaged_resources",
+        lambda: [OpsResult(True, "Synced packaged ops resources")],
+    )
+    monkeypatch.setattr(
+        cli_mod.ops_mod,
         "_reconcile_grafana_provisioning",
         lambda: [OpsResult(True, "Observability stack up")],
     )

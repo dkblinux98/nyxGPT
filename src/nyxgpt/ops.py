@@ -6419,6 +6419,11 @@ def _reconcile_grafana_provisioning() -> list[OpsResult]:
     stack gets (re)started but stay out of `_start_observability_stack`
     itself (which several other call sites -- including the terraform-network
     variant and tests -- use as a narrower "just run compose up" primitive).
+
+    Assumes the packaged ops resources (`self_heal.COMPOSE_FILE`, the
+    Grafana provisioning directory) are already synced to `NYXGPT_HOME` --
+    `install()` sequences its own `_sync_packaged_resources` step before this
+    one; standalone callers (`observability()`) sync first themselves.
     """
     drift_result = _recreate_grafana_if_provisioning_drifted()
     results = [drift_result] if drift_result is not None else []
@@ -6573,12 +6578,20 @@ def observability(_args) -> int:
     operators never need to run a raw `docker compose --profile X up`
     themselves. Idempotent: re-running just confirms everything is already up.
 
+    Documented as runnable without `nyxgpt ops install` having gone first, so
+    syncs the packaged ops resources itself (#3621): `_reconcile_grafana_provisioning`
+    reads `self_heal.COMPOSE_FILE` and the Grafana provisioning directory,
+    both of which only exist under `NYXGPT_HOME` once
+    `_sync_packaged_resources` has copied them there.
+
     Returns 0 on success, else 2.
     """
     logger.info(
         "ops: observability starting", extra={"component": "ops", "action": "observability"}
     )
-    results = _reconcile_grafana_provisioning()
+    results = _sync_packaged_resources()
+    if all(r.ok for r in results):
+        results += _reconcile_grafana_provisioning()
     ok = _emit_results("observability", results)
     logger.info(
         "ops: observability %s",
@@ -6721,6 +6734,11 @@ def env_sync(args) -> int:
     the Compose-only Quickstart, which runs `nyxgpt ops env-sync` before
     `docker compose up` without going through the native install flow -- so a
     fresh checkout gets the bind-mounted file created before Compose needs it.
+    For that same install()-less Quickstart flow to seed `.env` from
+    `.env.example` (see `sync_env_from_config`), the packaged ops resources
+    have to be synced to `NYXGPT_HOME` first too (#3621) -- otherwise
+    `.env.example` isn't there yet and `.env` silently ends up with only the
+    secret lines.
 
     Returns 0 on success, else 2.
     """
@@ -6734,7 +6752,8 @@ def env_sync(args) -> int:
         extra={"component": "ops", "action": "env-sync"},
     )
 
-    results = _generate_compose_config()
+    results = _sync_packaged_resources()
+    results += _generate_compose_config()
     results += sync_env_from_config(cfg_path=cfg_path, env_path=env_path)
     results += _sync_grafana_slack_webhook_secret(cfg_path=cfg_path)
 

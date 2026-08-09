@@ -120,6 +120,19 @@ where = ["src"]
 # explicit entry.
 "nyxgpt.resources" = ["**/*", ".env.example"]
 
+[tool.setuptools.exclude-package-data]
+# docker/config.docker.ini is gitignored and generated at runtime by
+# `_generate_compose_config` -- never part of the tracked, packaged
+# resources. A dev checkout that ran a pre-#3621 `nyxgpt ops install` (back
+# when this file was written repo-relative into docker/, not
+# ~/.nyxGPT/docker/) could still have a stale copy sitting in the repo's
+# docker/ directory the resources/docker symlink resolves through; exclude
+# it explicitly so a wheel built from such a tree can't embed that
+# secret-bearing file (it carries [auth] api_key / [monitoring]
+# grafana_admin_password / an error-tracking DSN -- see
+# `_generate_compose_config`).
+"nyxgpt.resources" = ["docker/config.docker.ini"]
+
 [tool.mypy]
 python_version = "3.11"
 warn_return_any = true
