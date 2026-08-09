@@ -1,0 +1,1 @@
+../../../../scripts/follow-ollama-logs.sh

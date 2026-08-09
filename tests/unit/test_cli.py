@@ -1548,6 +1548,11 @@ def test_ops_observability_dispatches_to_ops_module(
 
     monkeypatch.setattr(
         cli_mod.ops_mod,
+        "_sync_packaged_resources",
+        lambda: [OpsResult(True, "Synced packaged ops resources")],
+    )
+    monkeypatch.setattr(
+        cli_mod.ops_mod,
         "_reconcile_grafana_provisioning",
         lambda: [OpsResult(True, "Observability stack up")],
     )
@@ -1620,9 +1625,9 @@ def test_ops_install_skip_observability_flag_parses(
 
     ok = [OpsResult(True, "ok")]
     for step in (
+        "_sync_packaged_resources",
         "migrate_legacy_volumes",
         "_reconcile_phantom_compose_app_containers",
-        "_install_scripts",
         "_ensure_web_deps",
         "_ensure_mcp_deps",
         "_ensure_cassandra_container",

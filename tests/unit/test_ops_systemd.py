@@ -73,22 +73,22 @@ def test_unsupported_os_result_reports_platform(monkeypatch):
 # --- _find_systemd_unit_template ---
 
 
-def test_find_systemd_unit_template_returns_first_existing_candidate(monkeypatch, tmp_path):
-    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
-    target = tmp_path / "ops" / "systemd" / "nyxgpt-api.service"
+def test_find_systemd_unit_template_returns_the_synced_candidate(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops, "OPS_SYSTEMD_TEMPLATES_DIR", tmp_path / ".nyxGPT" / "ops" / "systemd")
+    target = ops.OPS_SYSTEMD_TEMPLATES_DIR / "nyxgpt-api.service"
     target.parent.mkdir(parents=True)
     target.write_text("[Service]\n", encoding="utf-8")
 
     tpl, candidates = ops._find_systemd_unit_template("nyxgpt-api.service")
     assert tpl == target
-    assert len(candidates) == 2
+    assert candidates == [target]
 
 
 def test_find_systemd_unit_template_returns_none_when_missing(monkeypatch, tmp_path):
-    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops, "OPS_SYSTEMD_TEMPLATES_DIR", tmp_path / "nowhere")
     tpl, candidates = ops._find_systemd_unit_template("nyxgpt-api.service")
     assert tpl is None
-    assert len(candidates) == 2
+    assert len(candidates) == 1
 
 
 # --- _install_systemd_unit_from_template ---
@@ -555,11 +555,11 @@ def test_detect_deployment_mode_uses_systemd_snapshot_on_linux(monkeypatch):
 def test_install_uses_systemd_steps_on_linux(monkeypatch, capsys):
     ok_results = [ops.OpsResult(True, "ok")]
     for step in (
+        "_sync_packaged_resources",
         "_clear_intentional_stops",
         "_install_config",
         "migrate_legacy_volumes",
         "_reconcile_phantom_compose_app_containers",
-        "_install_scripts",
         "_ensure_web_deps",
         "_ensure_mcp_deps",
         "_ensure_cassandra_container",
@@ -572,7 +572,6 @@ def test_install_uses_systemd_steps_on_linux(monkeypatch, capsys):
         "_cleanup_stale_log_symlinks",
         "sync_env_from_config",
         "_generate_compose_config",
-        "_persist_compose_file_path",
     ):
         monkeypatch.setattr(ops, step, lambda *a, **k: ok_results)
     monkeypatch.setattr(ops, "_emit_results", lambda action, results: True)

@@ -112,6 +112,12 @@ container. (The full `docker-compose.yml` stack described in
 
 This command:
 
+- Syncs the packaged Compose file, config/provisioning templates,
+  launchd/systemd unit templates, and helper scripts into `~/.nyxGPT` (see
+  [Design Notes](#design-notes) below) — every other step in this list reads
+  from that synced copy, not from a source checkout, so `nyxgpt ops install`
+  works the same whether nyxGPT is running from `pip install -e .` or an
+  installed, non-editable package (#3621).
 - Ensures `~/.nyxGPT/config.ini` exists — on a fresh machine it launches the
   interactive setup wizard (the same one behind `nyxgpt wizard`) to create it
   before anything else runs. In a non-interactive shell (no TTY) this step
@@ -1049,5 +1055,20 @@ Avoid manually invoking `brew services`/`launchctl` (macOS), `systemctl` (Linux)
 - `nyxgpt ops` intentionally avoids destructive actions by default
 - Data loss requires explicit user action
 - All operations are local and user-scoped
+- Runtime data the ops layer needs (the Compose file, its
+  config/provisioning templates, launchd/systemd unit templates, and a
+  handful of helper scripts) ships inside the installed Python package
+  under `nyxgpt.resources`, resolved via `importlib.resources` -- not
+  relative to the repo checkout. `nyxgpt ops install` copies that packaged
+  tree into `~/.nyxGPT` once per run (`_sync_packaged_resources`); every
+  other step reads from that fixed, writable location afterwards. This is
+  what lets `nyxgpt ops install`/`up` work identically whether nyxGPT is
+  running from a source checkout (`pip install -e .`) or an installed,
+  non-editable package with no repo present at all (#3621). A few
+  genuinely repo-checkout-dependent operations -- building distributable
+  artifacts from source, the Terraform/Kubernetes local deploy paths
+  (`.tf`/`.yaml` files on disk), the `web/` npm project -- still resolve
+  paths relative to the checkout; see `tests/unit/test_repo_root_allowlist.py`
+  for the exact, reviewed list.
 
 ```

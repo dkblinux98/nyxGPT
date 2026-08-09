@@ -84,7 +84,6 @@ import shutil
 import subprocess
 import threading
 import time
-from configparser import ConfigParser
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -101,43 +100,30 @@ from nyxgpt.logging import get_correlation_id, get_log_dir, mint_correlation_id
 
 logger = logging.getLogger(__name__)
 
-# Repo root: .../nyxGPT/src/nyxgpt/self_heal.py -> parents[2] is repo root
-REPO_ROOT = Path(__file__).resolve().parents[2]
-
 
 def _resolve_compose_file() -> Path:
     """Resolve the docker-compose.yml the watchdog targets.
 
-    Three layouts, three answers:
+    Two layouts, two answers (#3621 -- previously three, with a REPO_ROOT
+    module-path check and a config.ini `[paths] compose_file` fallback for
+    the brew-installed-native-service case; both are gone now that the
+    Compose file lives at a single fixed, ops-managed location regardless of
+    how nyxGPT itself is installed):
     - api container: `self_heal.py` lives under site-packages with no repo
       checkout; the compose file is bind-mounted in and its in-container path
       passed via NYXGPT_COMPOSE_FILE (see the `api` service in
       docker-compose.yml and docs/self-healing.md).
-    - bare checkout (dev machine, `nyxgpt` running from the repo/venv): the
-      repo root computed above is correct.
-    - brew-installed native service: the module lives in the Homebrew Cellar,
-      so neither of the above applies; `nyxgpt ops install` records the repo's
-      compose path in config.ini `[paths] compose_file`, read here.
+    - every other layout (dev checkout, brew-installed native service,
+      installed non-editable package): `nyxgpt ops install` syncs the
+      packaged `nyxgpt.resources` docker-compose.yml to this fixed location
+      (see `nyxgpt.ops._sync_packaged_resources`), so it's always here once
+      install has run at least once.
     """
     override = os.environ.get("NYXGPT_COMPOSE_FILE", "").strip()
     if override:
         return Path(override)
 
-    repo_compose = REPO_ROOT / "docker-compose.yml"
-    if repo_compose.exists():
-        return repo_compose
-
-    cfg_path = Path.home() / ".nyxGPT" / "config.ini"
-    if cfg_path.exists():
-        parser = ConfigParser()
-        parser.read(cfg_path)
-        configured = parser.get("paths", "compose_file", fallback="").strip()
-        if configured:
-            configured_path = Path(configured).expanduser()
-            if configured_path.exists():
-                return configured_path
-
-    return repo_compose
+    return Path.home() / ".nyxGPT" / "docker-compose.yml"
 
 
 COMPOSE_FILE = _resolve_compose_file()

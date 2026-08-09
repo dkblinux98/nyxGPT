@@ -15,6 +15,7 @@ import contextlib
 import getpass
 import hashlib
 import importlib.metadata
+import importlib.resources
 import json
 import logging
 import os
@@ -54,7 +55,24 @@ from nyxgpt.logging import get_correlation_id
 
 logger = logging.getLogger(__name__)
 
-# Repo root: .../nyxGPT/src/nyxgpt/ops.py -> parents[2] is repo root
+# Repo root: .../nyxGPT/src/nyxgpt/ops.py -> parents[2] is repo root.
+#
+# #3621 retired every REPO_ROOT-relative lookup the `nyxgpt ops
+# install`/`up` local-stack reconciliation path depended on (Compose file,
+# config/provisioning templates, launchd/systemd unit templates, helper
+# scripts -- see `_sync_packaged_resources`) in favor of package data
+# resolved via `importlib.resources`. REPO_ROOT itself stays, scoped to
+# operations that are inherently repo-checkout-dependent regardless of
+# Python packaging: building distributable artifacts FROM source (Homebrew
+# tap tarball vendoring, the self-contained Linux venv build, Docker image
+# builds for Terraform/Kubernetes local deploy), Terraform/Kubernetes local
+# deploy itself (terraform/*.tf and k8s/*.yaml are files on disk, not
+# importable package data), the `web/` npm project (its own build/packaging
+# concern, not shipped as Python package data), and dev-checkout-only
+# doctor/version diagnostics that no-op cleanly when REPO_ROOT doesn't
+# exist. `tests/unit/test_repo_root_allowlist.py` guards this boundary: it
+# fails if a new REPO_ROOT-relative lookup appears anywhere it isn't already
+# on the allowlist.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Maps a logical component to its Homebrew service name for native mode.
@@ -124,19 +142,39 @@ COMPOSE_COMPONENT_PORTS: dict[str, int] = {
 WEB_URL = "http://127.0.0.1:3000"
 
 NATIVE_CONFIG_HINT = "~/.nyxGPT/config.ini"
-COMPOSE_CONFIG_HINT = "docker/config.docker.ini (mounted into the Compose 'api' container)"
+COMPOSE_CONFIG_HINT = (
+    "~/.nyxGPT/docker/config.docker.ini (mounted into the Compose 'api' container)"
+)
+
+# Runtime data the ops layer needs -- the Compose file, its config/provisioning
+# templates, launchd/systemd unit templates, and a handful of helper scripts
+# -- ships inside the installed package under `nyxgpt.resources` (see
+# pyproject.toml's package-data and `src/nyxgpt/resources/`) instead of being
+# resolved relative to REPO_ROOT: an installed, non-editable build has no
+# repo checkout alongside it for REPO_ROOT-relative lookups to find (#3621).
+# `_sync_packaged_resources` (called by `install()`) copies that packaged
+# tree into this fixed, writable, ops-managed location once per install;
+# every lookup below just reads from here afterwards, uniformly across a dev
+# checkout and an installed package.
+NYXGPT_HOME = Path.home() / ".nyxGPT"
+OPS_COMPOSE_FILE = NYXGPT_HOME / "docker-compose.yml"
+OPS_DOCKER_DIR = NYXGPT_HOME / "docker"
+OPS_LAUNCHAGENTS_DIR = NYXGPT_HOME / "ops" / "launchagents"
+OPS_SYSTEMD_TEMPLATES_DIR = NYXGPT_HOME / "ops" / "systemd"
+OPS_SCRIPTS_SRC_DIR = NYXGPT_HOME / "scripts"
 
 # The container api-config is a derived, per-machine artifact (like .env):
 # it's bind-mounted into the containerized api and gets its DSN filled in at
-# runtime by `nyxgpt ops glitchtip-init`, so it is git-ignored. `nyxgpt ops
+# runtime by `nyxgpt ops glitchtip-init`, so it isn't part of the packaged
+# resources synced by `_sync_packaged_resources`. `nyxgpt ops
 # install`/`env-sync` regenerates it from the native `~/.nyxGPT/config.ini`
 # (the single source of truth) via `_generate_compose_config`.
-COMPOSE_CONFIG_FILE = REPO_ROOT / "docker" / "config.docker.ini"
+COMPOSE_CONFIG_FILE = OPS_DOCKER_DIR / "config.docker.ini"
 
 # Compose override that attaches the observability profiles to the
 # terraform-managed network (`nyxgpt-terraform`) so they interoperate with the
 # terraform-managed core containers -- used by `install --terraform --local`.
-TERRAFORM_NET_OVERRIDE = REPO_ROOT / "docker" / "docker-compose.terraform-net.yml"
+TERRAFORM_NET_OVERRIDE = OPS_DOCKER_DIR / "docker-compose.terraform-net.yml"
 
 # Placeholder substituted with the installing user's home directory when a
 # LaunchAgent plist template is copied into ~/Library/LaunchAgents -- the
@@ -542,6 +580,51 @@ def _copy_file(src: Path, dst: Path, *, mode: int | None = None) -> None:
         os.chmod(dst, mode)
 
 
+def _packaged_resources_root() -> Path:
+    """Return the filesystem path backing the `nyxgpt.resources` package data.
+
+    Resolves via `importlib.resources`, so this works identically whether
+    nyxGPT is running from an editable dev checkout (`src/nyxgpt/resources/`
+    holds symlinks back to the canonical `docker/`, `docker-compose.yml`,
+    `ops/`, `.env.example`, `scripts/*.sh`) or an installed, non-editable
+    wheel (real copies of the same files, bundled at build time -- see
+    pyproject.toml's `[tool.setuptools.package-data]`).
+    """
+    return Path(str(importlib.resources.files("nyxgpt.resources")))
+
+
+def _sync_packaged_resources() -> list[OpsResult]:
+    """Copy the packaged Compose/config/provisioning/unit-template/script
+    tree into `NYXGPT_HOME` so every other ops step reads from one fixed,
+    writable location regardless of whether nyxGPT is running from a source
+    checkout or an installed package (#3621) -- see `_packaged_resources_root`.
+
+    Idempotent and safe to re-run: overwrites the synced copies (so a
+    `nyxgpt ops install` after an upgrade always ships the current
+    templates) without touching anything else already under `NYXGPT_HOME`,
+    notably `docker/config.docker.ini` (a separately generated, git-ignored
+    artifact -- see `_generate_compose_config` -- never part of the packaged
+    resources) and `config.ini`.
+    """
+    src_root = _packaged_resources_root()
+    try:
+        _copy_file(src_root / "docker-compose.yml", OPS_COMPOSE_FILE)
+        _copy_file(src_root / ".env.example", NYXGPT_HOME / ".env.example")
+        for subdir in ("docker", "ops", "scripts"):
+            shutil.copytree(src_root / subdir, NYXGPT_HOME / subdir, dirs_exist_ok=True)
+        for script in OPS_SCRIPTS_SRC_DIR.glob("*.sh"):
+            os.chmod(script, 0o755)
+    except OSError as e:
+        return [
+            OpsResult(
+                False,
+                "Failed to sync packaged ops resources",
+                f"{type(e).__name__}: {e}",
+            )
+        ]
+    return [OpsResult(True, f"Synced packaged ops resources to {NYXGPT_HOME}")]
+
+
 def _sha256_file(path: Path) -> str:
     """Return the hex-encoded SHA-256 digest of the file at `path`."""
     h = hashlib.sha256()
@@ -826,15 +909,11 @@ def _find_launchagent_template(
     name: str = "com.nyxgpt.cassandra-logs.plist",
 ) -> tuple[Path | None, list[Path]]:
     """
-    Locate a log-follower LaunchAgent template (by plist filename) inside the repo.
-    Returns (path_or_none, candidates_checked).
+    Locate a log-follower LaunchAgent template (by plist filename) among the
+    packaged resources `_sync_packaged_resources` synced to
+    `OPS_LAUNCHAGENTS_DIR`. Returns (path_or_none, candidates_checked).
     """
-    candidates = [
-        REPO_ROOT / "ops" / "launchagents" / name,
-        REPO_ROOT / "ops" / "LaunchAgents" / name,
-        REPO_ROOT / name,
-        REPO_ROOT / "homebrew" / name,
-    ]
+    candidates = [OPS_LAUNCHAGENTS_DIR / name]
     for p in candidates:
         try:
             if p.exists():
@@ -863,41 +942,10 @@ def _install_launchagent_from_template(tpl: Path, dst: Path) -> None:
     dst.write_text(text, encoding="utf-8")
 
 
-def _install_scripts() -> list[OpsResult]:
-    """Copy the run-web/follow-cassandra-logs/follow-ollama-logs/set-ollama-models-env
-    helper scripts into ~/.nyxGPT/scripts, executable.
-
-    Scripts not present in the repo's `scripts/` dir are skipped (reported
-    as ok, since not every deployment needs them). Returns one OpsResult per
-    script considered.
-    """
-    results: list[OpsResult] = []
-    src_dir = REPO_ROOT / "scripts"
-    dst_dir = Path.home() / ".nyxGPT" / "scripts"
-    _ensure_dir(dst_dir)
-
-    for name in (
-        "run-web.sh",
-        "follow-cassandra-logs.sh",
-        "follow-ollama-logs.sh",
-        "set-ollama-models-env.sh",
-    ):
-        src = src_dir / name
-        if not src.exists():
-            # Not required — some users run the web/API without wrappers.
-            results.append(OpsResult(True, f"Script not present (skipped): {name}", str(src)))
-            continue
-        dst = dst_dir / name
-        _copy_file(src, dst, mode=0o755)
-        results.append(OpsResult(True, f"Installed script {name}", str(dst)))
-
-    return results
-
-
 def _install_cassandra_launchagent() -> list[OpsResult]:
     """Install and (re)load the Cassandra log-follower LaunchAgent.
 
-    Locates the plist template in the repo, copies it into
+    Locates the synced plist template (see `_find_launchagent_template`), copies it into
     ~/Library/LaunchAgents, then boots it out and back in via `launchctl
     bootout`/`bootstrap`/`kickstart` so a stale prior load doesn't linger.
     Returns a single-element list of OpsResult; fails if the template can't
@@ -906,7 +954,12 @@ def _install_cassandra_launchagent() -> list[OpsResult]:
     results: list[OpsResult] = []
     tpl, checked = _find_launchagent_template()
     if tpl is None:
-        details = "Tried:\n" + "\n".join(str(p) for p in checked) + f"\nREPO_ROOT={REPO_ROOT}"
+        details = (
+            "Tried:\n"
+            + "\n".join(str(p) for p in checked)
+            + "\nRun `nyxgpt ops install` first to sync packaged templates into "
+            f"{NYXGPT_HOME}."
+        )
         results.append(OpsResult(False, "Missing Cassandra logs LaunchAgent template", details))
         return results
     la_dir = Path.home() / "Library" / "LaunchAgents"
@@ -942,7 +995,12 @@ def _install_ollama_launchagent() -> list[OpsResult]:
     results: list[OpsResult] = []
     tpl, checked = _find_launchagent_template("com.nyxgpt.ollama-logs.plist")
     if tpl is None:
-        details = "Tried:\n" + "\n".join(str(p) for p in checked) + f"\nREPO_ROOT={REPO_ROOT}"
+        details = (
+            "Tried:\n"
+            + "\n".join(str(p) for p in checked)
+            + "\nRun `nyxgpt ops install` first to sync packaged templates into "
+            f"{NYXGPT_HOME}."
+        )
         results.append(OpsResult(False, "Missing Ollama logs LaunchAgent template", details))
         return results
     la_dir = Path.home() / "Library" / "LaunchAgents"
@@ -977,7 +1035,12 @@ def _install_ollama_env_launchagent() -> list[OpsResult]:
     results: list[OpsResult] = []
     tpl, checked = _find_launchagent_template("com.nyxgpt.ollama-env.plist")
     if tpl is None:
-        details = "Tried:\n" + "\n".join(str(p) for p in checked) + f"\nREPO_ROOT={REPO_ROOT}"
+        details = (
+            "Tried:\n"
+            + "\n".join(str(p) for p in checked)
+            + "\nRun `nyxgpt ops install` first to sync packaged templates into "
+            f"{NYXGPT_HOME}."
+        )
         results.append(OpsResult(False, "Missing Ollama env LaunchAgent template", details))
         return results
     la_dir = Path.home() / "Library" / "LaunchAgents"
@@ -1498,50 +1561,6 @@ def _generate_compose_config() -> list[OpsResult]:
     return [OpsResult(True, f"Generated {COMPOSE_CONFIG_FILE} from {native}")]
 
 
-def _persist_compose_file_path() -> list[OpsResult]:
-    """Record the repo's docker-compose.yml path in config.ini `[paths] compose_file`.
-
-    The brew-installed native API runs from the Homebrew Cellar, where
-    self_heal's module-path fallback can't find a docker-compose.yml -- so the
-    self-heal watchdog and dashboard silently reported zero components. This
-    gives `self_heal._resolve_compose_file` a config-based fallback that
-    survives the Cellar layout. No-ops (successfully) when run outside a repo
-    checkout or before `nyxgpt wizard` has created config.ini.
-    """
-    compose_path = REPO_ROOT / "docker-compose.yml"
-    if not compose_path.exists():
-        return [
-            OpsResult(
-                True,
-                "Skipped compose-file path (not running from a repo checkout)",
-                "self-heal keeps its current compose-file resolution.",
-            )
-        ]
-
-    cfg_path = Path.home() / ".nyxGPT" / "config.ini"
-    if not cfg_path.exists():
-        return [
-            OpsResult(
-                True,
-                "Skipped compose-file path (no config.ini yet)",
-                "Run `nyxgpt wizard` to create config.ini, then re-run `nyxgpt ops install`.",
-            )
-        ]
-
-    parser = ConfigParser()
-    parser.optionxform = str  # type: ignore[assignment]
-    parser.read(cfg_path)
-    if parser.get("paths", "compose_file", fallback="") == str(compose_path):
-        return [OpsResult(True, f"Compose-file path already recorded: {compose_path}")]
-    if not parser.has_section("paths"):
-        parser.add_section("paths")
-    parser.set("paths", "compose_file", str(compose_path))
-    with cfg_path.open("w", encoding="utf-8") as f:
-        parser.write(f)
-    os.chmod(cfg_path, 0o600)
-    return [OpsResult(True, f"Recorded compose-file path in config.ini: {compose_path}")]
-
-
 def _shared_ollama_models_dir() -> Path:
     """Path native Ollama's `OLLAMA_MODELS` must point at to read the same
     models as Compose/Terraform (#3431).
@@ -1741,15 +1760,13 @@ def _systemd_user_dir() -> Path:
 
 
 def _find_systemd_unit_template(name: str) -> tuple[Path | None, list[Path]]:
-    """Locate a systemd unit template (by filename) inside the repo.
+    """Locate a systemd unit template (by filename) among the packaged
+    resources `_sync_packaged_resources` synced to `OPS_SYSTEMD_TEMPLATES_DIR`.
 
     Mirrors `_find_launchagent_template`'s search strategy. Returns
     (path_or_none, candidates_checked).
     """
-    candidates = [
-        REPO_ROOT / "ops" / "systemd" / name,
-        REPO_ROOT / name,
-    ]
+    candidates = [OPS_SYSTEMD_TEMPLATES_DIR / name]
     for p in candidates:
         try:
             if p.exists():
@@ -1828,7 +1845,12 @@ def _install_cassandra_logs_systemd_unit() -> list[OpsResult]:
     results: list[OpsResult] = []
     tpl, checked = _find_systemd_unit_template("nyxgpt-cassandra-logs.service")
     if tpl is None:
-        details = "Tried:\n" + "\n".join(str(p) for p in checked) + f"\nREPO_ROOT={REPO_ROOT}"
+        details = (
+            "Tried:\n"
+            + "\n".join(str(p) for p in checked)
+            + "\nRun `nyxgpt ops install` first to sync packaged templates into "
+            f"{NYXGPT_HOME}."
+        )
         results.append(OpsResult(False, "Missing Cassandra logs systemd unit template", details))
         return results
     dst = _systemd_user_dir() / tpl.name
@@ -1851,7 +1873,12 @@ def _install_ollama_logs_systemd_unit() -> list[OpsResult]:
     results: list[OpsResult] = []
     tpl, checked = _find_systemd_unit_template("nyxgpt-ollama-logs.service")
     if tpl is None:
-        details = "Tried:\n" + "\n".join(str(p) for p in checked) + f"\nREPO_ROOT={REPO_ROOT}"
+        details = (
+            "Tried:\n"
+            + "\n".join(str(p) for p in checked)
+            + "\nRun `nyxgpt ops install` first to sync packaged templates into "
+            f"{NYXGPT_HOME}."
+        )
         results.append(OpsResult(False, "Missing Ollama logs systemd unit template", details))
         return results
     dst = _systemd_user_dir() / tpl.name
@@ -2034,7 +2061,12 @@ def _install_native_api_systemd() -> list[OpsResult]:
 
     tpl, checked = _find_systemd_unit_template("nyxgpt-api.service")
     if tpl is None:
-        details = "Tried:\n" + "\n".join(str(p) for p in checked) + f"\nREPO_ROOT={REPO_ROOT}"
+        details = (
+            "Tried:\n"
+            + "\n".join(str(p) for p in checked)
+            + "\nRun `nyxgpt ops install` first to sync packaged templates into "
+            f"{NYXGPT_HOME}."
+        )
         results.append(OpsResult(False, "Missing nyxgpt-api systemd unit template", details))
         return results
     dst = _systemd_user_dir() / tpl.name
@@ -2138,7 +2170,12 @@ def _install_native_web_systemd() -> list[OpsResult]:
 
     tpl, checked = _find_systemd_unit_template("nyxgpt-web.service")
     if tpl is None:
-        details = "Tried:\n" + "\n".join(str(p) for p in checked) + f"\nREPO_ROOT={REPO_ROOT}"
+        details = (
+            "Tried:\n"
+            + "\n".join(str(p) for p in checked)
+            + "\nRun `nyxgpt ops install` first to sync packaged templates into "
+            f"{NYXGPT_HOME}."
+        )
         results.append(OpsResult(False, "Missing nyxgpt-web systemd unit template", details))
         return results
     dst = _systemd_user_dir() / tpl.name
@@ -2181,7 +2218,12 @@ def _install_native_ollama_systemd() -> list[OpsResult]:
 
     tpl, checked = _find_systemd_unit_template("nyxgpt-ollama.service")
     if tpl is None:
-        details = "Tried:\n" + "\n".join(str(p) for p in checked) + f"\nREPO_ROOT={REPO_ROOT}"
+        details = (
+            "Tried:\n"
+            + "\n".join(str(p) for p in checked)
+            + "\nRun `nyxgpt ops install` first to sync packaged templates into "
+            f"{NYXGPT_HOME}."
+        )
         results.append(OpsResult(False, "Missing nyxgpt-ollama systemd unit template", details))
         return results
     dst = _systemd_user_dir() / tpl.name
@@ -3292,6 +3334,11 @@ def _install_terraform_steps(api_key: str | None) -> list[OpsResult]:
     )
     results: list[OpsResult] = []
     steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
+        # Must run first: `_start_observability_stack_terraform` targets
+        # self_heal.COMPOSE_FILE and TERRAFORM_NET_OVERRIDE, both of which
+        # live under NYXGPT_HOME once synced from the packaged resources
+        # (#3621).
+        ("sync packaged ops resources", _sync_packaged_resources),
         (
             "clear intentional-stop markers",
             lambda: _clear_intentional_stops(["api", "web", "ollama", "cassandra"]),
@@ -4120,6 +4167,10 @@ def install(args) -> int:
 
     results: list[OpsResult] = []
     steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
+        # Must run first: every step below that reads a Compose file, config
+        # template, launchd/systemd unit template, or helper script assumes
+        # the packaged copies are already synced to NYXGPT_HOME (#3621).
+        ("sync packaged ops resources", _sync_packaged_resources),
         (
             "clear intentional-stop markers",
             lambda: _clear_intentional_stops(["api", "web", "ollama", "cassandra"]),
@@ -4127,7 +4178,6 @@ def install(args) -> int:
         ("config", _install_config),
         ("migrate legacy volumes", migrate_legacy_volumes),
         ("phantom compose reconciliation", _reconcile_phantom_compose_app_containers),
-        ("scripts", _install_scripts),
         ("web deps", _ensure_web_deps),
         ("mcp deps", _ensure_mcp_deps),
         ("cassandra container", _ensure_cassandra_container),
@@ -4140,7 +4190,6 @@ def install(args) -> int:
         ("stale log symlink cleanup", _cleanup_stale_log_symlinks),
         ("env sync", sync_env_from_config),
         ("compose config (derive from native)", _generate_compose_config),
-        ("compose file path", _persist_compose_file_path),
     ]
     if not getattr(args, "skip_observability", False):
         # Must run before the observability stack starts: Grafana's Compose
@@ -5704,12 +5753,13 @@ def _enable_observability_config(cfg_path: Path | None = None) -> None:
 
 
 def _grafana_datasources_dir() -> Path:
-    """`docker/grafana/provisioning/datasources/` -- one YAML file per
-    datasource group (GlitchTip lives in its own file, `glitchtip.yml`,
-    separate from `datasource.yml`'s Prometheus/Loki/Jaeger -- #3432 -- so a
-    `$__file{}` interpolation failure in one file can't take the others
-    down; see `docker/grafana/provisioning/datasources/glitchtip.yml`)."""
-    return REPO_ROOT / "docker" / "grafana" / "provisioning" / "datasources"
+    """`~/.nyxGPT/docker/grafana/provisioning/datasources/` (synced from the
+    packaged `nyxgpt.resources` tree by `_sync_packaged_resources`) -- one
+    YAML file per datasource group (GlitchTip lives in its own file,
+    `glitchtip.yml`, separate from `datasource.yml`'s Prometheus/Loki/Jaeger
+    -- #3432 -- so a `$__file{}` interpolation failure in one file can't take
+    the others down; see `docker/grafana/provisioning/datasources/glitchtip.yml`)."""
+    return OPS_DOCKER_DIR / "grafana" / "provisioning" / "datasources"
 
 
 def _grafana_provisioning_fingerprint() -> str:
@@ -6369,6 +6419,11 @@ def _reconcile_grafana_provisioning() -> list[OpsResult]:
     stack gets (re)started but stay out of `_start_observability_stack`
     itself (which several other call sites -- including the terraform-network
     variant and tests -- use as a narrower "just run compose up" primitive).
+
+    Assumes the packaged ops resources (`self_heal.COMPOSE_FILE`, the
+    Grafana provisioning directory) are already synced to `NYXGPT_HOME` --
+    `install()` sequences its own `_sync_packaged_resources` step before this
+    one; standalone callers (`observability()`) sync first themselves.
     """
     drift_result = _recreate_grafana_if_provisioning_drifted()
     results = [drift_result] if drift_result is not None else []
@@ -6523,12 +6578,20 @@ def observability(_args) -> int:
     operators never need to run a raw `docker compose --profile X up`
     themselves. Idempotent: re-running just confirms everything is already up.
 
+    Documented as runnable without `nyxgpt ops install` having gone first, so
+    syncs the packaged ops resources itself (#3621): `_reconcile_grafana_provisioning`
+    reads `self_heal.COMPOSE_FILE` and the Grafana provisioning directory,
+    both of which only exist under `NYXGPT_HOME` once
+    `_sync_packaged_resources` has copied them there.
+
     Returns 0 on success, else 2.
     """
     logger.info(
         "ops: observability starting", extra={"component": "ops", "action": "observability"}
     )
-    results = _reconcile_grafana_provisioning()
+    results = _sync_packaged_resources()
+    if all(r.ok for r in results):
+        results += _reconcile_grafana_provisioning()
     ok = _emit_results("observability", results)
     logger.info(
         "ops: observability %s",
@@ -6596,8 +6659,15 @@ def sync_env_from_config(
 
     cfg = load_config(cfg_path)
 
-    env_path = env_path or (REPO_ROOT / ".env")
-    example_path = REPO_ROOT / ".env.example"
+    # `.env` lives alongside OPS_COMPOSE_FILE (NYXGPT_HOME by default) since
+    # Docker Compose resolves it relative to the compose file's own
+    # directory. `.env.example` -- the packaged template
+    # `_sync_packaged_resources` copies there (#3621) -- always sits next to
+    # whichever `.env` this call targets, so an explicit `env_path` override
+    # (as `env_sync`'s `--env-file` and this function's own tests use) still
+    # finds the matching example alongside it rather than NYXGPT_HOME's.
+    env_path = env_path or (NYXGPT_HOME / ".env")
+    example_path = env_path.parent / ".env.example"
     if env_path.exists():
         lines = env_path.read_text(encoding="utf-8").splitlines()
     elif example_path.exists():
@@ -6664,6 +6734,11 @@ def env_sync(args) -> int:
     the Compose-only Quickstart, which runs `nyxgpt ops env-sync` before
     `docker compose up` without going through the native install flow -- so a
     fresh checkout gets the bind-mounted file created before Compose needs it.
+    For that same install()-less Quickstart flow to seed `.env` from
+    `.env.example` (see `sync_env_from_config`), the packaged ops resources
+    have to be synced to `NYXGPT_HOME` first too (#3621) -- otherwise
+    `.env.example` isn't there yet and `.env` silently ends up with only the
+    secret lines.
 
     Returns 0 on success, else 2.
     """
@@ -6677,7 +6752,8 @@ def env_sync(args) -> int:
         extra={"component": "ops", "action": "env-sync"},
     )
 
-    results = _generate_compose_config()
+    results = _sync_packaged_resources()
+    results += _generate_compose_config()
     results += sync_env_from_config(cfg_path=cfg_path, env_path=env_path)
     results += _sync_grafana_slack_webhook_secret(cfg_path=cfg_path)
 
