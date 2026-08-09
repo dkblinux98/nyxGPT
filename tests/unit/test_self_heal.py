@@ -876,13 +876,14 @@ def test_component_logs_native_api_tails_file(monkeypatch, tmp_path):
         self_heal, "list_component_status", lambda: [_status("api", source="native")]
     )
     monkeypatch.setattr(self_heal, "get_log_dir", lambda: tmp_path)
+    monkeypatch.setattr(self_heal, "_brew_prefix", lambda: None)
     (tmp_path / "api.log").write_text("line1\nline2\nline3\n", encoding="utf-8")
 
     result = self_heal.component_logs("api", tail=2)
 
     assert result.ok
     assert "api" in result.message
-    assert result.details == "line2\nline3"
+    assert "line2\nline3" in result.details
 
 
 @pytest.mark.unit
@@ -891,11 +892,53 @@ def test_component_logs_native_api_missing_file(monkeypatch, tmp_path):
         self_heal, "list_component_status", lambda: [_status("api", source="native")]
     )
     monkeypatch.setattr(self_heal, "get_log_dir", lambda: tmp_path)
+    monkeypatch.setattr(self_heal, "_brew_prefix", lambda: None)
 
     result = self_heal.component_logs("api")
 
     assert not result.ok
-    assert "No log file found for api" in result.message
+    assert "No log files found for api" in result.message
+
+
+@pytest.mark.unit
+def test_component_logs_native_api_reads_launchd_files(monkeypatch, tmp_path):
+    # #3629: a startup refusal (e.g. P6-1's bind-address check in app.py's
+    # lifespan, #3500) fires before configure_logging runs, so it never
+    # reaches api.log -- only Homebrew's own launchd stderr file.
+    monkeypatch.setattr(
+        self_heal, "list_component_status", lambda: [_status("api", source="native")]
+    )
+    monkeypatch.setattr(self_heal, "get_log_dir", lambda: tmp_path)
+    monkeypatch.setattr(self_heal, "_brew_prefix", lambda: str(tmp_path))
+    log_dir = tmp_path / "var" / "log"
+    log_dir.mkdir(parents=True)
+    (log_dir / "nyxgpt-api.log").write_text("api starting\n", encoding="utf-8")
+    (log_dir / "nyxgpt-api.err.log").write_text(
+        "ERROR: Refusing to start: [api] host ...\n", encoding="utf-8"
+    )
+
+    result = self_heal.component_logs("api")
+
+    assert result.ok
+    assert "api starting" in result.details
+    assert "Refusing to start" in result.details
+
+
+@pytest.mark.unit
+def test_component_logs_native_api_missing_launchd_files_falls_back_to_structured(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        self_heal, "list_component_status", lambda: [_status("api", source="native")]
+    )
+    monkeypatch.setattr(self_heal, "get_log_dir", lambda: tmp_path)
+    monkeypatch.setattr(self_heal, "_brew_prefix", lambda: None)
+    (tmp_path / "api.log").write_text("structured only\n", encoding="utf-8")
+
+    result = self_heal.component_logs("api")
+
+    assert result.ok
+    assert "structured only" in result.details
 
 
 @pytest.mark.unit

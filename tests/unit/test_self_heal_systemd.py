@@ -216,3 +216,56 @@ def test_native_component_logs_web_never_calls_brew_prefix_on_linux(monkeypatch,
     monkeypatch.setattr(self_heal, "_brew_prefix", _boom)
     result = self_heal._native_component_logs("web", tail=10)
     assert result.ok is True
+
+
+# --- _native_component_logs (api branch, Linux, #3629) ---
+
+
+def test_native_component_logs_api_combines_structured_and_launchd_files_on_linux(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(self_heal, "get_log_dir", lambda: tmp_path)
+    (tmp_path / "api.log").write_text("structured line\n", encoding="utf-8")
+    (tmp_path / "nyxgpt-api.log").write_text("stdout line\n", encoding="utf-8")
+    (tmp_path / "nyxgpt-api.err.log").write_text("stderr line\n", encoding="utf-8")
+
+    result = self_heal._native_component_logs("api", tail=10)
+    assert result.ok is True
+    assert "structured line" in result.details
+    assert "stdout line" in result.details
+    assert "stderr line" in result.details
+
+
+def test_native_component_logs_api_pre_logging_failure_visible_via_stderr_on_linux(
+    monkeypatch, tmp_path
+):
+    # #3629: the P6-1 startup refusal (#3500) fires before configure_logging
+    # runs, so api.log never exists at all -- only the systemd unit's own
+    # stderr file does.
+    monkeypatch.setattr(self_heal, "get_log_dir", lambda: tmp_path)
+    (tmp_path / "nyxgpt-api.err.log").write_text(
+        "ERROR: Refusing to start: [api] host ...\n", encoding="utf-8"
+    )
+
+    result = self_heal._native_component_logs("api", tail=10)
+    assert result.ok is True
+    assert "Refusing to start" in result.details
+
+
+def test_native_component_logs_api_missing_files_on_linux(monkeypatch, tmp_path):
+    monkeypatch.setattr(self_heal, "get_log_dir", lambda: tmp_path)
+    result = self_heal._native_component_logs("api", tail=10)
+    assert result.ok is False
+    assert "No log files found for api" in result.message
+
+
+def test_native_component_logs_api_never_calls_brew_prefix_on_linux(monkeypatch, tmp_path):
+    monkeypatch.setattr(self_heal, "get_log_dir", lambda: tmp_path)
+    (tmp_path / "api.log").write_text("hi\n", encoding="utf-8")
+
+    def _boom():
+        raise AssertionError("_brew_prefix should not be called on Linux")
+
+    monkeypatch.setattr(self_heal, "_brew_prefix", _boom)
+    result = self_heal._native_component_logs("api", tail=10)
+    assert result.ok is True
