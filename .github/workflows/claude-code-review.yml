@@ -287,11 +287,13 @@ jobs:
 
           # Get most recent CHANGES_REQUESTED review
           # Check actual GitHub reviews, not comments
+          # --jq runs once per fetched page, not once over the combined
+          # result set -- stream matching reviews across all pages first,
+          # then slurp+last in a second jq pass (see AGENTS.md).
           PREVIOUS_ISSUES=$(gh api "repos/${{ github.repository }}/pulls/$PR/reviews" --paginate --jq '
-            [.[] |
-             select(.state == "CHANGES_REQUESTED")] |
-            last |
-            .body // ""
+            .[] | select(.state == "CHANGES_REQUESTED")
+          ' | jq -s -r '
+            last | .body // ""
           ')
 
           if [[ -n "$PREVIOUS_ISSUES" ]]; then
@@ -537,9 +539,12 @@ jobs:
           GH_TOKEN: ${{ secrets.REVIEW_AGENT_TOKEN }}
         run: |
           PR="${{ steps.pr_number.outputs.pr }}"
-          # Find the most recent progress comment posted by track_progress
+          # Find the most recent progress comment posted by track_progress.
+          # --jq runs once per fetched page -- stream matching comments
+          # across all pages first, then slurp+last (see AGENTS.md).
           PROGRESS_BODY=$(gh api "repos/${{ github.repository }}/issues/$PR/comments" --paginate \
-            --jq '[.[] | select(.body | test("- \\[[ x]\\]"))] | last | .body // ""')
+            --jq '.[] | select(.body | test("- \\[[ x]\\]"))' \
+            | jq -s -r 'last | .body // ""')
           if [[ -n "$PROGRESS_BODY" ]]; then
             TOTAL=$(echo "$PROGRESS_BODY" | grep -cE -- "- \[[ x]\]" || true)
             DONE=$(echo "$PROGRESS_BODY" | grep -cE -- "- \[x\]" || true)
@@ -587,8 +592,11 @@ jobs:
           fi
           echo "::warning::Usage-limit signature: $FAST_CLAUDE_STEPS Claude step(s) finished in <90s"
 
+          # --jq runs once per fetched page -- stream matching comments
+          # across all pages first, then slurp+count (see AGENTS.md).
           ATTEMPTS=$(gh api "repos/${{ github.repository }}/issues/$PR/comments" --paginate \
-            --jq '[.[].body | select(test("<!-- usage-limit-retry-after:"))] | length' 2>/dev/null || echo 0)
+            --jq '.[].body | select(test("<!-- usage-limit-retry-after:"))' 2>/dev/null \
+            | jq -s 'length' || echo 0)
           if [ "${ATTEMPTS:-0}" -ge 8 ]; then
             gh pr comment "$PR" --body "🛑 **Review Agent**: Usage-limit auto-retry gave up after $ATTEMPTS attempts — manual investigation needed (check the CLAUDE_CODE_OAUTH_TOKEN account's limits). Re-request @${{ vars.REVIEW_AGENT }} as reviewer to retry."
             gh pr edit "$PR" --remove-label "usage-limit-retry" 2>/dev/null || true

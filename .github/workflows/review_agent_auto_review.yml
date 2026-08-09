@@ -215,8 +215,11 @@ jobs:
                   echo "::notice::PR #$PR already merged by the pull_request_review path; skipping"
                 fi
               else
+                # --jq runs once per fetched page -- stream matching comments
+                # across all pages first, then slurp+count (see AGENTS.md).
                 HANDLED=$(gh api "repos/${{ github.repository }}/issues/$PR/comments" --paginate --jq \
-                  "[.[] | select((.created_at > \"$COMMENT_CREATED\") and ((.body | contains(\"review loop\")) or (.body | contains(\"Escalated after 3 review cycles\"))))] | length" || echo 0)
+                  ".[] | select((.created_at > \"$COMMENT_CREATED\") and ((.body | contains(\"review loop\")) or (.body | contains(\"Escalated after 3 review cycles\"))))" \
+                  | jq -s 'length' || echo 0)
                 if [[ "${HANDLED:-0}" -gt 0 ]]; then
                   DECISION="ALREADY_HANDLED"
                   echo "::notice::REQUEST_CHANGES for PR #$PR already executed by the pull_request_review path; skipping"

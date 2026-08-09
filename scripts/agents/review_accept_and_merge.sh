@@ -83,9 +83,12 @@ if [[ "$pr_mergeable" == "CONFLICTING" ]]; then
   # string below is the loop guard -- if a prior automated round already ran
   # on this PR and it is conflicted again, escalate to the human owner.
   CONFLICT_ROUND_MARKER="Automated conflict-resolution round"
+  # --jq runs once per fetched page, not once over the combined result set --
+  # stream matching items across all pages first, then slurp+count in a
+  # second jq pass so `length` reflects the true total (see AGENTS.md).
   prior_rounds=$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${PR}/comments" --paginate \
-    --jq "[.[] | select(.body | contains(\"${CONFLICT_ROUND_MARKER}\"))] | length" \
-    2>/dev/null || echo 0)
+    --jq ".[] | select(.body | contains(\"${CONFLICT_ROUND_MARKER}\"))" 2>/dev/null \
+    | jq -s 'length' || echo 0)
   if [[ "${prior_rounds:-0}" -eq 0 ]]; then
     echo "[review] Dispatching automated conflict-resolution round to developer agent..." >&2
     AUTO_MSG="⚠️ **Merge Conflicts Detected** — ${CONFLICT_ROUND_MARKER} dispatched.

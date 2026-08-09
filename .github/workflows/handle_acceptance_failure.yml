@@ -138,9 +138,12 @@ jobs:
           # Unique-failure number = existing related failure issues + 1
           # (exact body-marker match, not text search, so #34 never counts
           # for #3). Usually 1.
+          # --jq runs once per fetched page -- stream matching issues across
+          # all pages first, then slurp+count (see AGENTS.md).
           EXISTING="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues?labels=Acceptance%20Failure&state=all&per_page=100" \
             --paginate \
-            --jq "[.[] | select(has(\"pull_request\") | not) | select(.body | test(\"(Parent|Related) feature: #${FEATURE}\\\\b\"))] | length")"
+            --jq ".[] | select(has(\"pull_request\") | not) | select(.body | test(\"(Parent|Related) feature: #${FEATURE}\\\\b\"))" \
+            | jq -s 'length')"
           NUM=$((EXISTING + 1))
 
           TITLE="bug: acceptance failure ${NUM} for #${FEATURE} - ${FEATURE_TITLE#*: }"

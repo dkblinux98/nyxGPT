@@ -683,10 +683,13 @@ sprint_autopilot_paused() {
   local release_issue="$1"
   require_cmd jq
 
+  # --jq runs once per fetched page -- stream matching comments across all
+  # pages first, then slurp+sort+last in a second jq pass (see AGENTS.md).
   local last_state
   last_state="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${release_issue}/comments" --paginate \
-    --jq '[.[] | select(.body | test("^\\s*(PAUSE_SPRINT|RESUME_SPRINT)\\s*$"))] | sort_by(.created_at) | last | .body // empty' \
-    2>/dev/null | tr -d '[:space:]')"
+    --jq '.[] | select(.body | test("^\\s*(PAUSE_SPRINT|RESUME_SPRINT)\\s*$"))' 2>/dev/null \
+    | jq -s -r 'sort_by(.created_at) | last | .body // empty' \
+    | tr -d '[:space:]')"
   [[ "$last_state" == "PAUSE_SPRINT" ]]
 }
 
@@ -970,9 +973,12 @@ extract_issue_number() {
 # `base_branch` — an explicit abandonment signal, safe to act on immediately.
 closed_unmerged_pr_exists() {
   local branch="$1" base_branch="$2" count
+  # --paginate emits one JSON array per page (not merged) -- slurp (-s) all
+  # pages into an outer array and flatten one level (`.[][]`) before
+  # counting, so `length` reflects the true total (see AGENTS.md).
   count="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/pulls?head=${REPO_OWNER}:${branch}&state=closed&per_page=100" \
       --paginate 2>/dev/null \
-    | jq --arg base "$base_branch" '[.[] | select(.merged_at == null and .base.ref == $base)] | length')"
+    | jq -s --arg base "$base_branch" '[.[][] | select(.merged_at == null and .base.ref == $base)] | length')"
   [[ "${count:-0}" -gt 0 ]]
 }
 

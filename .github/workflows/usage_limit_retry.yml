@@ -45,9 +45,11 @@ jobs:
           for ISSUE in $ISSUES; do
             echo "::group::Issue #$ISSUE"
 
+            # --jq runs once per fetched page -- stream matches across all
+            # pages first, then slurp+last (see AGENTS.md).
             RETRY_AFTER=$(gh api "repos/$REPO/issues/$ISSUE/comments" --paginate \
-              --jq '[.[].body | capture("<!-- usage-limit-retry-after: (?<t>[0-9]+) -->").t] | last // empty' \
-              2>/dev/null || true)
+              --jq '.[].body | capture("<!-- usage-limit-retry-after: (?<t>[0-9]+) -->").t' 2>/dev/null \
+              | jq -s -r 'last // empty' || true)
 
             if [ -n "$RETRY_AFTER" ] && [ "$NOW" -lt "$RETRY_AFTER" ]; then
               echo "Not yet: retry scheduled for epoch $RETRY_AFTER (now $NOW)."
@@ -87,9 +89,11 @@ jobs:
           for PR in $PRS; do
             echo "::group::PR #$PR"
 
+            # --jq runs once per fetched page -- stream matches across all
+            # pages first, then slurp+last (see AGENTS.md).
             RETRY_AFTER=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-              --jq '[.[].body | capture("<!-- usage-limit-retry-after: (?<t>[0-9]+) -->").t] | last // empty' \
-              2>/dev/null || true)
+              --jq '.[].body | capture("<!-- usage-limit-retry-after: (?<t>[0-9]+) -->").t' 2>/dev/null \
+              | jq -s -r 'last // empty' || true)
 
             if [ -n "$RETRY_AFTER" ] && [ "$NOW" -lt "$RETRY_AFTER" ]; then
               echo "Not yet: retry scheduled for epoch $RETRY_AFTER (now $NOW)."

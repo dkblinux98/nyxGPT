@@ -64,6 +64,28 @@ Rule for new scripts/workflows:
   enum -- re-derive it with `if .mergeable == null then "UNKNOWN" elif
   .mergeable_state == "dirty" then "CONFLICTING" else "MERGEABLE" end`
   rather than comparing REST fields directly against the old GraphQL values.
+- **`--paginate` + `--jq` never aggregates across pages.** `gh api ...
+  --paginate --jq FILTER` runs `FILTER` once per fetched page, not once over
+  the combined result set -- each page is a separate JSON document. Any
+  `FILTER` that reduces across the whole list (`last`, `length`, `first`,
+  `sort_by(...) | ...`) silently computes that reduction per page instead of
+  over the true total once a list crosses the page boundary (default 30,
+  or `per_page`'s value). This is invisible in manual testing against small
+  result sets and only breaks once a PR/issue accumulates enough
+  comments/reviews to span multiple pages. Verify: `gh api
+  ".../issues/<N>/comments?per_page=10" --paginate --jq 'length'` on an
+  issue with >10 comments prints one number per page, not the combined
+  total. Fix: never combine an aggregate into the `--jq` passed to `gh api`
+  when `--paginate` is used. Stream flat, already-filtered items instead
+  (`--jq '.[] | select(COND)'`, no enclosing `[...]`), then pipe into a
+  second `jq -s '...'` (slurp) call that does the aggregation over the full
+  combined array, e.g.:
+  `gh api ".../comments" --paginate --jq '.[] | select(COND)' | jq -s 'last | .body // empty'`.
+  The same applies when `--paginate` is used *without* `--jq` and the raw
+  output is piped to a separate `jq` afterward -- that `jq` still sees one
+  top-level JSON array per page unless invoked with `-s`; slurp and flatten
+  one level (`jq -s '[.[][]]'` or `'[.[][] | select(...)] | length'`) before
+  aggregating.
 
 ---
 
