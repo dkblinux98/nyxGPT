@@ -239,16 +239,18 @@ GH_CALLS=()
 gh() {
   GH_CALLS+=("$*")
   case "$1 $2" in
-    "issue view") echo "" ;; # no assignees yet
     "issue edit") : ;;
     *) echo "[test] unexpected gh invocation: $*" >&2; return 1 ;;
   esac
 }
+_issue_assignee_logins() { echo ""; } # no assignees yet (REST-backed read, stubbed directly)
 ASSIGN_ONLY_CALLS=()
 issue_assign_only() { ASSIGN_ONLY_CALLS+=("$1 $2"); }
 COMMENT_CALLS=()
 issue_comment() { COMMENT_CALLS+=("$1 $2"); }
 
+# shellcheck disable=SC2218 # exercises the real gh_project.sh function
+# sourced above; Test 12 below shadows it with a mock for a different unit.
 assign_and_trigger_developer "77"
 _assert_eq "fresh assignment calls issue_assign_only once" "1" "${#ASSIGN_ONLY_CALLS[@]}"
 _assert_eq "fresh assignment targets the dev agent" "77 myGPT-developer-agent" "${ASSIGN_ONLY_CALLS[0]}"
@@ -264,15 +266,17 @@ GH_CALLS=()
 gh() {
   GH_CALLS+=("$*")
   case "$1 $2" in
-    "issue view") echo "$DEV_AGENT" ;; # already assigned
     "issue edit") : ;;
     *) echo "[test] unexpected gh invocation: $*" >&2; return 1 ;;
   esac
 }
+_issue_assignee_logins() { echo "$DEV_AGENT"; } # already assigned (REST-backed read, stubbed directly)
 ASSIGN_ONLY_CALLS=()
 COMMENT_CALLS=()
 sleep() { :; } # no real backoff in tests
 
+# shellcheck disable=SC2218 # exercises the real gh_project.sh function
+# sourced above; Test 12 below shadows it with a mock for a different unit.
 assign_and_trigger_developer "78"
 _assert_eq "redispatch calls issue_assign_only once (the reassignment)" "1" "${#ASSIGN_ONLY_CALLS[@]}"
 _assert_eq "redispatch targets the dev agent" "78 myGPT-developer-agent" "${ASSIGN_ONLY_CALLS[0]}"
@@ -288,8 +292,8 @@ _assert_eq "redispatch unassigns before reassigning" "1" "$UNASSIGN_SEEN"
 # --- routine SCRUM_AGENT stamp on every fresh Backlog issue was itself ---
 # --- treated as "already claimed", permanently blocking the queue) ---
 gh() {
-  case "$1 $2" in
-    "issue view") echo "${ISSUE_STATE_STUB:-OPEN}" ;;
+  case "$1" in
+    api) echo "${ISSUE_STATE_STUB:-OPEN}" ;; # REST issue read + ascii_upcase, stubbed at the gh layer
     *) echo "[test] unexpected gh invocation: $*" >&2; return 1 ;;
   esac
 }

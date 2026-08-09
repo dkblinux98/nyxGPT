@@ -165,10 +165,16 @@ in_review_issues="$(jq -c --arg in_review "$STATUS_IN_REVIEW" '[.[] | select(.st
 
 blockers="[]"
 if [[ "$(echo "$in_review_issues" | jq 'length')" -gt 0 ]]; then
-  pr_numbers="$(gh pr list --repo "${REPO_OWNER}/${REPO_NAME}" --state open --json number --limit 200 --jq '.[].number' || echo "")"
+  # --jq runs once per fetched page, so `[.[] | {number, body}]` yields one
+  # array per page (concatenated docs), not a single merged array -- stream
+  # flat items and slurp them into one array in a second jq pass instead
+  # (see AGENTS.md).
+  pr_bodies_json="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/pulls?state=open&per_page=100" \
+    --paginate --jq '.[] | {number, body}' 2>/dev/null | jq -s '.' || echo "[]")"
+  pr_numbers="$(echo "$pr_bodies_json" | jq -r '.[].number')"
   while IFS= read -r pr_num; do
     [[ -n "$pr_num" ]] || continue
-    body="$(gh pr view "$pr_num" --repo "${REPO_OWNER}/${REPO_NAME}" --json body --jq '.body' 2>/dev/null || echo "")"
+    body="$(echo "$pr_bodies_json" | jq -r --argjson n "$pr_num" '.[] | select(.number == $n) | .body // ""')"
     issue_num="$(echo "$body" | sed -n 's/.*Closes #\([0-9]*\).*/\1/p' | head -1)"
     [[ -n "$issue_num" ]] || continue
     is_in_review="$(jq --argjson n "$issue_num" 'index($n) != null' <<<"$in_review_issues")"

@@ -676,7 +676,7 @@ count_sprint_backlog_open() {
 # or nothing if the issue/title has no version.
 release_version_from_issue() {
   local release_issue="$1"
-  gh issue view "$release_issue" --repo "${REPO_OWNER}/${REPO_NAME}" --json title \
+  gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${release_issue}" \
     --jq '.title' 2>/dev/null | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1
 }
 
@@ -726,10 +726,13 @@ sprint_autopilot_paused() {
   local release_issue="$1"
   require_cmd jq
 
+  # --jq runs once per fetched page -- stream matching comments across all
+  # pages first, then slurp+sort+last in a second jq pass (see AGENTS.md).
   local last_state
   last_state="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${release_issue}/comments" --paginate \
-    --jq '[.[] | select(.body | test("^\\s*(PAUSE_SPRINT|RESUME_SPRINT)\\s*$"))] | sort_by(.created_at) | last | .body // empty' \
-    2>/dev/null | tr -d '[:space:]')"
+    --jq '.[] | select(.body | test("^\\s*(PAUSE_SPRINT|RESUME_SPRINT)\\s*$"))' 2>/dev/null \
+    | jq -s -r 'sort_by(.created_at) | last | .body // empty' \
+    | tr -d '[:space:]')"
   [[ "$last_state" == "PAUSE_SPRINT" ]]
 }
 
@@ -746,7 +749,7 @@ issue_assign_only() {
 # touching `gh`.
 _issue_assignee_logins() {
   local issue="$1"
-  gh issue view "$issue" --repo "${REPO_OWNER}/${REPO_NAME}" --json assignees \
+  gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}" \
     --jq '[.assignees[].login] | sort | join(",")'
 }
 
@@ -814,7 +817,7 @@ assign_and_trigger_developer() {
 
   # Check if developer is already assigned
   local current_assignee
-  current_assignee=$(gh issue view "$issue" --json assignees --jq '.assignees[].login' | grep -x "$DEV_AGENT" || echo "")
+  current_assignee=$(_issue_assignee_logins "$issue" 2>/dev/null | tr ',' '\n' | grep -x "$DEV_AGENT" || echo "")
 
   if [[ -n "$current_assignee" ]]; then
     # Developer already assigned - unassign first to force a new 'assigned'
@@ -872,7 +875,7 @@ assign_and_trigger_developer() {
 classify_backlog_claim_state() {
   local issue="$1"
   local state assignees
-  state="$(gh issue view "$issue" --repo "${REPO_OWNER}/${REPO_NAME}" --json state --jq '.state' 2>/dev/null || echo "UNKNOWN")"
+  state="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}" --jq '.state | ascii_upcase' 2>/dev/null || echo "UNKNOWN")"
   if [[ "$state" != "OPEN" ]]; then
     echo "closed"
     return 0
@@ -981,8 +984,8 @@ scrummaster_attempt_start() {
 # Prints the headRefName of every OPEN pull request, one per line. These are
 # always protected from any branch-deletion sweep.
 open_pr_head_branches() {
-  gh pr list --repo "${REPO_OWNER}/${REPO_NAME}" --state open \
-    --json headRefName --limit 200 --jq '.[].headRefName'
+  gh api "repos/${REPO_OWNER}/${REPO_NAME}/pulls?state=open&per_page=100" \
+    --paginate --jq '.[].head.ref'
 }
 
 # Best-effort remote branch delete: never fails the caller, since branch
@@ -1013,9 +1016,12 @@ extract_issue_number() {
 # `base_branch` — an explicit abandonment signal, safe to act on immediately.
 closed_unmerged_pr_exists() {
   local branch="$1" base_branch="$2" count
-  count="$(gh pr list --repo "${REPO_OWNER}/${REPO_NAME}" --head "$branch" --state closed \
-      --json merged,baseRefName --limit 20 2>/dev/null \
-    | jq --arg base "$base_branch" '[.[] | select(.merged == false and .baseRefName == $base)] | length')"
+  # --paginate emits one JSON array per page (not merged) -- slurp (-s) all
+  # pages into an outer array and flatten one level (`.[][]`) before
+  # counting, so `length` reflects the true total (see AGENTS.md).
+  count="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/pulls?head=${REPO_OWNER}:${branch}&state=closed&per_page=100" \
+      --paginate 2>/dev/null \
+    | jq -s --arg base "$base_branch" '[.[][] | select(.merged_at == null and .base.ref == $base)] | length')"
   [[ "${count:-0}" -gt 0 ]]
 }
 
@@ -1048,7 +1054,7 @@ classify_mergeable() {
   [[ -n "$issue" ]] || { echo ""; return 0; }
 
   local issue_state
-  issue_state="$(gh issue view "$issue" --repo "${REPO_OWNER}/${REPO_NAME}" --json state --jq '.state' 2>/dev/null || echo "")"
+  issue_state="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}" --jq '.state | ascii_upcase' 2>/dev/null || echo "")"
   [[ "$issue_state" == "CLOSED" ]] || { echo ""; return 0; }
 
   local mb
@@ -1092,7 +1098,7 @@ classify_mergeable() {
 #   1. it is not the head of any currently OPEN pull request, and
 #   2. classify_mergeable/closed_unmerged_pr_exists positively confirms it is
 #      merged, superseded, or explicitly abandoned (closed without merge).
-# Gate 1 alone is not sufficient: if the `gh pr list` call behind it fails
+# Gate 1 alone is not sufficient: if the REST pulls-list call behind it fails
 # transiently (rate limit, network blip, auth hiccup), it can silently
 # report zero open PRs, which previously left gate 2 blank and deleted every
 # sibling branch unconditionally — including the head of a live, unmerged PR
@@ -1336,11 +1342,12 @@ list_parked_blocked_issues() {
   rm -f "$tmp"
 }
 
-# GraphQL/REST state (OPEN/CLOSED) of an issue, split out from the sweep so
-# tests can stub it without mocking `gh` end-to-end.
+# REST state (OPEN/CLOSED, upper-cased to match historical GraphQL semantics)
+# of an issue, split out from the sweep so tests can stub it without mocking
+# `gh` end-to-end.
 _issue_open_state() {
   local n="$1"
-  gh issue view "$n" --repo "${REPO_OWNER}/${REPO_NAME}" --json state --jq '.state' 2>/dev/null || echo ""
+  gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${n}" --jq '.state | ascii_upcase' 2>/dev/null || echo ""
 }
 
 # Runs the sweep: lists parked issues (list_parked_blocked_issues), then

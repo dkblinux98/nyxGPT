@@ -144,8 +144,7 @@ jobs:
           # and REVIEW_AGENT_TOKEN, so a fork PR reaching the merge step
           # would let an external contributor's code land on the release
           # branch with no additional review.
-          HEAD_REPO=$(gh pr view "$PR" --json headRepositoryOwner,headRepository \
-            --jq '"\(.headRepositoryOwner.login)/\(.headRepository.name)"')
+          HEAD_REPO=$(gh api "repos/${{ github.repository }}/pulls/$PR" --jq '.head.repo.full_name')
 
           if [[ "$HEAD_REPO" != "${{ github.repository }}" ]]; then
             echo "::error::PR #$PR head repo ($HEAD_REPO) is not this repo -- refusing fork PR"
@@ -209,14 +208,18 @@ jobs:
               PR="${{ steps.get_pr.outputs.pr_number }}"
               COMMENT_CREATED="${{ github.event.comment.created_at }}"
               if [[ "$DECISION" == "APPROVE" ]]; then
-                STATE=$(gh pr view "$PR" --json state -q .state || echo "")
+                STATE=$(gh api "repos/${{ github.repository }}/pulls/$PR" \
+                  --jq 'if .merged then "MERGED" else (.state | ascii_upcase) end' || echo "")
                 if [[ "$STATE" == "MERGED" ]]; then
                   DECISION="ALREADY_HANDLED"
                   echo "::notice::PR #$PR already merged by the pull_request_review path; skipping"
                 fi
               else
-                HANDLED=$(gh pr view "$PR" --json comments --jq \
-                  "[.comments[] | select((.createdAt > \"$COMMENT_CREATED\") and ((.body | contains(\"review loop\")) or (.body | contains(\"Escalated after 3 review cycles\"))))] | length" || echo 0)
+                # --jq runs once per fetched page -- stream matching comments
+                # across all pages first, then slurp+count (see AGENTS.md).
+                HANDLED=$(gh api "repos/${{ github.repository }}/issues/$PR/comments" --paginate --jq \
+                  ".[] | select((.created_at > \"$COMMENT_CREATED\") and ((.body | contains(\"review loop\")) or (.body | contains(\"Escalated after 3 review cycles\"))))" \
+                  | jq -s 'length' || echo 0)
                 if [[ "${HANDLED:-0}" -gt 0 ]]; then
                   DECISION="ALREADY_HANDLED"
                   echo "::notice::REQUEST_CHANGES for PR #$PR already executed by the pull_request_review path; skipping"
@@ -255,7 +258,7 @@ jobs:
           set -euo pipefail
           PR="${{ steps.get_pr.outputs.pr_number }}"
 
-          ISSUE=$(gh pr view "$PR" --json body -q '.body' | sed -n 's/.*Closes #\([0-9]*\).*/\1/p' | head -1)
+          ISSUE=$(gh api "repos/${{ github.repository }}/pulls/$PR" --jq '.body // ""' | sed -n 's/.*Closes #\([0-9]*\).*/\1/p' | head -1)
 
           if [[ -z "$ISSUE" ]]; then
             echo "::error::PR #$PR body does not contain 'Closes #N'"

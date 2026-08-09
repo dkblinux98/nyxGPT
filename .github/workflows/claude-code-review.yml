@@ -72,8 +72,7 @@ jobs:
           # merge path via the pull_request_review event. Refusing fork PRs
           # here closes the chain at its first link, regardless of trigger
           # (review_requested/synchronize/@review comment/workflow_dispatch).
-          HEAD_REPO=$(gh pr view "$PR" --json headRepositoryOwner,headRepository \
-            --jq '"\(.headRepositoryOwner.login)/\(.headRepository.name)"')
+          HEAD_REPO=$(gh api "repos/${{ github.repository }}/pulls/$PR" --jq '.head.repo.full_name')
 
           if [[ "$HEAD_REPO" != "${{ github.repository }}" ]]; then
             echo "::error::PR #$PR head repo ($HEAD_REPO) is not this repo -- refusing fork PR"
@@ -98,7 +97,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           PR="${{ steps.pr_number.outputs.pr }}"
-          HEAD_REF="$(gh pr view "$PR" --json headRefName --jq .headRefName)"
+          HEAD_REF="$(gh api "repos/${{ github.repository }}/pulls/$PR" --jq '.head.ref')"
           git fetch origin "$HEAD_REF"
           git checkout "$HEAD_REF"
 
@@ -108,7 +107,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           PR="${{ steps.pr_number.outputs.pr }}"
-          CHANGED_FILES=$(gh pr view "$PR" --json files --jq '.files[].path')
+          # Cached to $RUNNER_TEMP/pr-changed-files.txt: the coverage and
+          # docs-check steps below reuse this instead of re-fetching the
+          # same file list from the API.
+          CHANGED_FILES=$(gh api "repos/${{ github.repository }}/pulls/$PR/files" \
+            --paginate --jq '.[].filename')
+          echo "$CHANGED_FILES" > "$RUNNER_TEMP/pr-changed-files.txt"
 
           if echo "$CHANGED_FILES" | grep -qE '^web/'; then
             echo "web_changed=true" >> "$GITHUB_OUTPUT"
@@ -195,8 +199,9 @@ jobs:
 
           echo "Checking if tests were updated with code changes..."
 
-          # Get list of changed files
-          CHANGED_FILES=$(gh pr view "$PR" --json files --jq '.files[].path')
+          # Reuse the file list cached by the "Detect changed languages" step
+          # instead of re-fetching it from the API.
+          CHANGED_FILES=$(cat "$RUNNER_TEMP/pr-changed-files.txt")
 
           # Check if source code changed (Python src/, or web/src TS/JS, excluding test files)
           SRC_CODE_CHANGED=$(echo "$CHANGED_FILES" |
@@ -235,8 +240,9 @@ jobs:
 
           echo "Checking if documentation was updated..."
 
-          # Get list of changed files
-          CHANGED_FILES=$(gh pr view "$PR" --json files --jq '.files[].path')
+          # Reuse the file list cached by the "Detect changed languages" step
+          # instead of re-fetching it from the API.
+          CHANGED_FILES=$(cat "$RUNNER_TEMP/pr-changed-files.txt")
 
           # Check if code files changed (Python src/, or web/src TS/JS, excluding tests)
           CODE_CHANGED=$(echo "$CHANGED_FILES" |
@@ -281,11 +287,13 @@ jobs:
 
           # Get most recent CHANGES_REQUESTED review
           # Check actual GitHub reviews, not comments
-          PREVIOUS_ISSUES=$(gh pr view "$PR" --json reviews --jq '
-            [.reviews[] |
-             select(.state == "CHANGES_REQUESTED")] |
-            last |
-            .body // ""
+          # --jq runs once per fetched page, not once over the combined
+          # result set -- stream matching reviews across all pages first,
+          # then slurp+last in a second jq pass (see AGENTS.md).
+          PREVIOUS_ISSUES=$(gh api "repos/${{ github.repository }}/pulls/$PR/reviews" --paginate --jq '
+            .[] | select(.state == "CHANGES_REQUESTED")
+          ' | jq -s -r '
+            last | .body // ""
           ')
 
           if [[ -n "$PREVIOUS_ISSUES" ]]; then
@@ -531,9 +539,12 @@ jobs:
           GH_TOKEN: ${{ secrets.REVIEW_AGENT_TOKEN }}
         run: |
           PR="${{ steps.pr_number.outputs.pr }}"
-          # Find the most recent progress comment posted by track_progress
-          PROGRESS_BODY=$(gh pr view "$PR" --json comments \
-            --jq '[.comments[] | select(.body | test("- \\[[ x]\\]"))] | last | .body // ""')
+          # Find the most recent progress comment posted by track_progress.
+          # --jq runs once per fetched page -- stream matching comments
+          # across all pages first, then slurp+last (see AGENTS.md).
+          PROGRESS_BODY=$(gh api "repos/${{ github.repository }}/issues/$PR/comments" --paginate \
+            --jq '.[] | select(.body | test("- \\[[ x]\\]"))' \
+            | jq -s -r 'last | .body // ""')
           if [[ -n "$PROGRESS_BODY" ]]; then
             TOTAL=$(echo "$PROGRESS_BODY" | grep -cE -- "- \[[ x]\]" || true)
             DONE=$(echo "$PROGRESS_BODY" | grep -cE -- "- \[x\]" || true)
@@ -581,8 +592,11 @@ jobs:
           fi
           echo "::warning::Usage-limit signature: $FAST_CLAUDE_STEPS Claude step(s) finished in <90s"
 
-          ATTEMPTS=$(gh pr view "$PR" --json comments \
-            --jq '[.comments[].body | select(test("<!-- usage-limit-retry-after:"))] | length' 2>/dev/null || echo 0)
+          # --jq runs once per fetched page -- stream matching comments
+          # across all pages first, then slurp+count (see AGENTS.md).
+          ATTEMPTS=$(gh api "repos/${{ github.repository }}/issues/$PR/comments" --paginate \
+            --jq '.[].body | select(test("<!-- usage-limit-retry-after:"))' 2>/dev/null \
+            | jq -s 'length' || echo 0)
           if [ "${ATTEMPTS:-0}" -ge 8 ]; then
             gh pr comment "$PR" --body "🛑 **Review Agent**: Usage-limit auto-retry gave up after $ATTEMPTS attempts — manual investigation needed (check the CLAUDE_CODE_OAUTH_TOKEN account's limits). Re-request @${{ vars.REVIEW_AGENT }} as reviewer to retry."
             gh pr edit "$PR" --remove-label "usage-limit-retry" 2>/dev/null || true

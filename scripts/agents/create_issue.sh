@@ -441,7 +441,7 @@ if [[ -n "$BLOCKS" ]]; then
   echo "[create-issue] Setting blocking relationship..." >&2
 
   # Check if blocked issue is closed
-  BLOCKED_STATE=$(gh issue view "$BLOCKS" --repo "${REPO_OWNER}/${REPO_NAME}" --json state --jq '.state')
+  BLOCKED_STATE=$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${BLOCKS}" --jq '.state | ascii_upcase')
 
   if [[ "$BLOCKED_STATE" == "CLOSED" ]]; then
     echo "[create-issue]   Blocked issue #${BLOCKS} is closed - reopening..." >&2
