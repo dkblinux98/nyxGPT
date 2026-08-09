@@ -3,14 +3,9 @@
 #
 # Mirrors terraform-local-smoke.yml's shape (install -> verify -> diagnostics
 # -> teardown) but exercises `nyxgpt ops install` (no --terraform/--kubernetes
-# flag), the Homebrew-services-equivalent native path, on Linux.
-#
-# NOTE: this script is intentionally NOT wired into a GitHub Actions workflow
-# yet -- .github/workflows/* changes are outside this change's scope (see
-# the PR description). A maintainer should add a workflow that runs this on
-# `ubuntu-latest`, mirroring terraform-local-smoke.yml's structure, scoped to
-# changes under src/nyxgpt/ops.py, src/nyxgpt/self_heal.py, ops/systemd/**,
-# and this script.
+# flag), the Homebrew-services-equivalent native path, on Linux. Wired into
+# .github/workflows/linux-native-smoke.yml, scoped to changes under
+# src/nyxgpt/ops.py, src/nyxgpt/self_heal.py, ops/systemd/**, and this script.
 #
 # Usage:
 #   ./scripts/systemd-native-smoke.sh                # full run
@@ -88,10 +83,22 @@ for unit in nyxgpt-api nyxgpt-web nyxgpt-ollama nyxgpt-cassandra-logs nyxgpt-oll
 done
 
 log "Verifying core services are actually serving"
-check() { # <label> <url> <expected>
-  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$2" || echo 000)
-  echo "  $1 -> $code (expect $3)"
-  [[ "$code" == "$3" ]] || { echo "::error::$1 expected $3, got $code"; fail_count=1; }
+# `nyxgpt ops install` returns as soon as the systemd unit reports "active" --
+# that only means the process was launched, not that it's finished booting and
+# answering requests. Next.js in particular takes a few seconds past that to
+# actually serve, so a single-shot check here races startup (#3636). Poll for
+# up to 60s (20 attempts * 3s) before giving up, mirroring
+# `_wait_for_grafana_healthy`'s bounded-wait shape in src/nyxgpt/ops.py.
+check() { # <label> <url> <expected> [<attempts>] [<delay>]
+  local label="$1" url="$2" expected="$3" attempts="${4:-20}" delay="${5:-3}"
+  local code=000
+  for ((i = 1; i <= attempts; i++)); do
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$url" || echo 000)
+    [[ "$code" == "$expected" ]] && break
+    sleep "$delay"
+  done
+  echo "  $label -> $code (expect $expected)"
+  [[ "$code" == "$expected" ]] || { echo "::error::$label expected $expected, got $code"; fail_count=1; }
 }
 check "api  /health" http://127.0.0.1:8000/health 200
 check "web  /"       http://127.0.0.1:3000/ 200
