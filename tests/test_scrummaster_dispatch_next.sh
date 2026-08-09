@@ -45,15 +45,20 @@ source "$ROOT_DIR/scripts/agents/scrummaster_dispatch_next.sh"
 
 # Default stub: dispatch is not paused. Scenarios (a)-(c) below exercise
 # the fall-through loop itself and don't care about the #3687
-# escalation-pause backstop, so they rely on this default. Scenario (d)
-# overrides it to exercise the paused path.
+# escalation-pause backstop or the #3694 cross-issue-anomaly backstop, so
+# they rely on these defaults. Scenario (d) overrides the escalation stub
+# and scenario (e) overrides the anomaly stub to exercise each paused path.
 _escalation_pause_check() { return 0; }
+_cross_issue_anomaly_check() { return 0; }
 
-# Parses paused=/next_issue=/tried<<EOF...EOF out of scrummaster_dispatch_next's
-# $GITHUB_OUTPUT-formatted stdout, the same way the workflow's downstream
-# comment steps read `steps.start.outputs.*`.
+# Parses paused=/pause_reason=/next_issue=/tried<<EOF...EOF out of
+# scrummaster_dispatch_next's $GITHUB_OUTPUT-formatted stdout, the same way
+# the workflow's downstream comment steps read `steps.start.outputs.*`.
 _parse_paused() {
   echo "$1" | sed -n 's/^paused=//p'
+}
+_parse_pause_reason() {
+  echo "$1" | sed -n 's/^pause_reason=//p'
 }
 _parse_next_issue() {
   echo "$1" | sed -n 's/^next_issue=//p'
@@ -165,13 +170,39 @@ scrummaster_attempt_start() {
 
 OUT="$(scrummaster_dispatch_next "0" 2>/dev/null)"
 _assert_eq "(d) escalation-paused: reported as paused" "true" "$(_parse_paused "$OUT")"
+_assert_eq "(d) escalation-paused: pause_reason is escalation" "escalation" "$(_parse_pause_reason "$OUT")"
 _assert_eq "(d) escalation-paused: nothing started" "" "$(_parse_next_issue "$OUT")"
 _assert_eq "(d) escalation-paused: nothing recorded as tried" "" "$(_parse_tried "$OUT")"
 
-# Restore the default stub for good measure (no further scenarios today,
-# but keeps this file safe to extend below without re-triggering (d)'s
+# Restore the default stub before scenario (e) so only the anomaly gate is
+# exercised there.
+_escalation_pause_check() { return 0; }
+
+# --- Scenario (e): the #3694 cross-issue infrastructure-anomaly pause ---
+# --- backstop is tripped -- dispatch must not attempt candidate selection ---
+# --- either, and must report paused=true with pause_reason=cross_issue_anomaly ---
+# --- so the workflow's comment step picks the right message ---
+_cross_issue_anomaly_check() { return 1; }
+_select_next_candidate() {
+  echo "[test] _select_next_candidate must not run while anomaly-paused" >&2
+  return 1
+}
+scrummaster_attempt_start() {
+  echo "[test] scrummaster_attempt_start must not run while anomaly-paused" >&2
+  return 1
+}
+
+OUT="$(scrummaster_dispatch_next "0" 2>/dev/null)"
+_assert_eq "(e) anomaly-paused: reported as paused" "true" "$(_parse_paused "$OUT")"
+_assert_eq "(e) anomaly-paused: pause_reason is cross_issue_anomaly" "cross_issue_anomaly" "$(_parse_pause_reason "$OUT")"
+_assert_eq "(e) anomaly-paused: nothing started" "" "$(_parse_next_issue "$OUT")"
+_assert_eq "(e) anomaly-paused: nothing recorded as tried" "" "$(_parse_tried "$OUT")"
+
+# Restore the default stubs for good measure (no further scenarios today,
+# but keeps this file safe to extend below without re-triggering (d)/(e)'s
 # "must not run" stubs).
 _escalation_pause_check() { return 0; }
+_cross_issue_anomaly_check() { return 0; }
 
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "All tests passed."

@@ -137,16 +137,22 @@ jobs:
           github-token: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
           script: |
             const issue_number = context.payload.issue.number;
+            const reason = '${{ steps.start.outputs.pause_reason }}';
+            const body = reason === 'cross_issue_anomaly'
+              ? '⏸️ **Scrummaster Agent**: Dispatch paused -- an unresolved cross-issue ' +
+                'infrastructure anomaly is open. See the loud report on the release ' +
+                'tracking issue (#3694 cross-issue infrastructure-anomaly pause backstop). ' +
+                'Dispatch resumes once the anomaly is resolved (an owner `RESOLVE_ANOMALY` ' +
+                'comment) or its detection window elapses.'
+              : '⏸️ **Scrummaster Agent**: Dispatch paused -- 2 or more unresolved ' +
+                'escalations (open issues assigned to the owner). See the loud report on ' +
+                'the release tracking issue (#3687 unresolved-escalation pause backstop). ' +
+                'Dispatch resumes automatically once the count drops below 2.';
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number,
-              body: (
-                '⏸️ **Scrummaster Agent**: Dispatch paused -- 2 or more unresolved ' +
-                'escalations (open issues assigned to the owner). See the loud report on ' +
-                'the release tracking issue (#3687 unresolved-escalation pause backstop). ' +
-                'Dispatch resumes automatically once the count drops below 2.'
-              )
+              body
             });
 
       - name: Post no issues comment
