@@ -730,6 +730,31 @@ Actions](#canonical-secret-store--sync-to-github-actions).
 
 ---
 
+## `[secrets]` section
+
+Cloud secrets provider for `[auth] api_key`, `[openai] api_key`, and
+`[github] pat` (P6-10, #3507) -- AWS-only, and only relevant on a cloud
+deploy. Local deploys leave this section unset and are unaffected.
+
+```ini
+[secrets]
+provider =
+region =
+ssm_prefix = /nyxgpt
+secretsmanager_id = nyxgpt
+```
+
+| Key | Description |
+|---|---|
+| `provider` | `""` (default, local deploy) reads the three credentials from `config.ini` as usual. `ssm` or `secretsmanager` resolves them from AWS instead -- see [`docs/cloud.md`](cloud.md#cloud-secrets-ssm--secrets-manager) for full setup, layout, and rotation. |
+| `region` | AWS region to resolve secrets from. Blank falls back to boto3's normal region resolution. |
+| `ssm_prefix` | SSM Parameter Store path prefix (`provider = ssm`). Each credential is one parameter at `f"{ssm_prefix}/{key}"`. |
+| `secretsmanager_id` | Secrets Manager secret id/ARN (`provider = secretsmanager`). Holds one JSON object with all three credentials. |
+
+See [`docs/cloud.md`](cloud.md#cloud-secrets-ssm--secrets-manager) for setup, the AWS-side layout, IAM permissions, and rotation.
+
+---
+
 ## `[tracing]` section
 
 Distributed tracing via OpenTelemetry. Enabled by default (2026-07-28 owner
