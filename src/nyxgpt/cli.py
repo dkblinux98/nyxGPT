@@ -1967,8 +1967,23 @@ def cli(argv: list[str] | None = None) -> int:
     ops_p = sub.add_parser("ops", help="Operational helpers")
     ops_sub = ops_p.add_subparsers(dest="ops_cmd", required=True)
 
+    def _add_quiet_flag(parser: argparse.ArgumentParser) -> None:
+        """Add the shared `--quiet` flag to a long-running `ops` subcommand's parser.
+
+        Default is live per-step progress (`[n/m] step...` announcements, a
+        heartbeat for slow steps, and a final slow-step summary); `--quiet`
+        drops back to the old terse OK/FAIL-only-per-result output, for
+        scripting (#3558).
+        """
+        parser.add_argument(
+            "--quiet",
+            action="store_true",
+            help="Terse output for scripting: OK/FAIL/SKIP per step, no live progress",
+        )
+
     ops_install = ops_sub.add_parser("install", help="Install operational helpers")
     _add_install_arguments(ops_install)
+    _add_quiet_flag(ops_install)
 
     ops_status = ops_sub.add_parser(
         "status", help="Show status of local services (docker/cassandra/agent/api)"
@@ -2007,6 +2022,7 @@ def cli(argv: list[str] | None = None) -> int:
             "observability Compose service (monitoring/logging/tracing/errors)"
         ),
     )
+    _add_quiet_flag(ops_restart)
 
     ops_stop = ops_sub.add_parser("stop", help="Stop local services (native and/or Docker Compose)")
     ops_stop.add_argument(
@@ -2024,11 +2040,13 @@ def cli(argv: list[str] | None = None) -> int:
         ],
         help="Service to stop",
     )
+    _add_quiet_flag(ops_stop)
 
     ops_down = ops_sub.add_parser(
         "down", help="Tear down the full stack (native services + Docker Compose)"
     )
     _add_down_arguments(ops_down)
+    _add_quiet_flag(ops_down)
 
     ops_env_sync = ops_sub.add_parser(
         "env-sync",
@@ -2038,6 +2056,7 @@ def cli(argv: list[str] | None = None) -> int:
     ops_env_sync.add_argument(
         "--env-file", help="Path to the .env file to update (default: <repo>/.env)"
     )
+    _add_quiet_flag(ops_env_sync)
 
     ops_secrets_sync = ops_sub.add_parser(
         "secrets-sync",
@@ -2066,13 +2085,14 @@ def cli(argv: list[str] | None = None) -> int:
         "--tail", type=int, default=200, help="Number of trailing log lines to show (default: 200)"
     )
 
-    ops_sub.add_parser(
+    ops_glitchtip_init = ops_sub.add_parser(
         "glitchtip-init",
         help=(
             "Auto-provision a GlitchTip admin user, org, project, and DSN "
             "(zero-touch error tracking); no-ops if glitchtip isn't up/healthy"
         ),
     )
+    _add_quiet_flag(ops_glitchtip_init)
 
     ops_sub.add_parser(
         "alert-test",
@@ -2082,13 +2102,14 @@ def cli(argv: list[str] | None = None) -> int:
         ),
     )
 
-    ops_sub.add_parser(
+    ops_observability = ops_sub.add_parser(
         "observability",
         help=(
             "Start the Grafana/Loki/Jaeger/GlitchTip Compose profiles "
             "(monitoring/logging/tracing/errors) without a raw docker compose command"
         ),
     )
+    _add_quiet_flag(ops_observability)
 
     ops_sub.add_parser(
         "migrate-volumes",

@@ -26,6 +26,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import threading
 import time
 import tomllib
 from collections.abc import Callable, Container, Iterator
@@ -268,17 +269,33 @@ class OpsResult:
     details: str = ""
 
 
+def _result_status_label(r: OpsResult) -> str:
+    """Return the stdout status label for `r`: "OK", "FAIL", or "SKIP".
+
+    A skip is still `ok=True` (accounting/exit-code logic is unaffected) but
+    reads misleadingly as a plain "OK" -- results whose message starts with
+    "Skipped" (the existing convention for a deliberate no-op, e.g. "no
+    docker found") print as SKIP instead (#3558).
+    """
+    if not r.ok:
+        return "FAIL"
+    if r.message.strip().lower().startswith("skip"):
+        return "SKIP"
+    return "OK"
+
+
 def _emit_results(action: str, results: list[OpsResult]) -> bool:
     """Print and structured-log each OpsResult from an ops step, returning overall success.
 
-    Preserves the `[OK]`/`[FAIL]` stdout lines every CLI entrypoint already
-    printed, and additionally logs one INFO/WARNING record per result
-    (service/action/result plus any subprocess failure detail in `details`)
-    so `nyxgpt ops` activity lands in the log files instead of only stdout.
+    Preserves the `[OK]`/`[FAIL]`/`[SKIP]` stdout lines every CLI entrypoint
+    already printed, and additionally logs one INFO/WARNING record per
+    result (service/action/result plus any subprocess failure detail in
+    `details`) so `nyxgpt ops` activity lands in the log files instead of
+    only stdout.
     """
     ok = True
     for r in results:
-        print(f"[{'OK' if r.ok else 'FAIL'}] {r.message}")
+        print(f"[{_result_status_label(r)}] {r.message}")
         if r.details:
             print(f"  {r.details}")
         log = logger.info if r.ok else logger.warning
@@ -297,6 +314,134 @@ def _emit_results(action: str, results: list[OpsResult]) -> bool:
         )
         ok = ok and r.ok
     return ok
+
+
+# --- Live step progress (#3558) ---
+#
+# `install()`/`down()`/`restart()`/`stop()`/`observability()`/`env_sync()`/
+# `glitchtip_init()` used to build up a `results` list across every step and
+# print it all at once via a single `_emit_results()` call at the end --
+# meaning a ~52-step `nyxgpt ops install` run stayed completely silent until
+# the very last step finished, with no way to tell a slow step from a hung
+# one. `_run_steps()` below is the shared replacement: it announces each
+# step before running it, prints that step's own outcome immediately after
+# (so output streams live), and runs a background heartbeat while a step is
+# still in flight. `--quiet` (per CLI entrypoint) suppresses the
+# announcements/heartbeat/summary and falls back to the old terse
+# OK/FAIL-only-per-result output, for scripting.
+
+# Seconds between "still running" heartbeat lines for an in-flight step.
+_STEP_HEARTBEAT_INTERVAL_S = 5.0
+
+# Elapsed seconds at/over which a step is called out in the final "slow
+# steps" summary.
+_SLOW_STEP_THRESHOLD_S = 3.0
+
+_STEP_FAILURE_HINT = (
+    "Run `nyxgpt ops doctor` for diagnostics or `nyxgpt ops logs <service>` to inspect "
+    "recent logs, then retry."
+)
+
+
+class _StepHeartbeat:
+    """Background thread printing periodic elapsed-time lines for an in-flight step.
+
+    Started right before a step's function runs and stopped right after, so
+    an operator watching a long silent step (brew install, image pull,
+    Cassandra readiness wait) can tell "still working" from "hung" (#3558).
+    """
+
+    def __init__(self, step_name: str) -> None:
+        """Prepare (but don't yet start) a heartbeat for the step named `step_name`."""
+        self._step_name = step_name
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> None:
+        """Start the background heartbeat thread."""
+        self._thread.start()
+
+    def _run(self) -> None:
+        """Print a "still running" line every `_STEP_HEARTBEAT_INTERVAL_S` until stopped."""
+        elapsed = 0.0
+        while not self._stop_event.wait(_STEP_HEARTBEAT_INTERVAL_S):
+            elapsed += _STEP_HEARTBEAT_INTERVAL_S
+            print(f"    ... still running ({elapsed:.0f}s): {self._step_name}")
+
+    def stop(self) -> None:
+        """Signal the heartbeat thread to stop and wait for it to exit."""
+        self._stop_event.set()
+        self._thread.join(timeout=_STEP_HEARTBEAT_INTERVAL_S)
+
+
+def _run_steps(
+    action: str,
+    steps: list[tuple[str, Callable[[], list[OpsResult]]]],
+    *,
+    quiet: bool = False,
+) -> tuple[list[OpsResult], list[tuple[str, float]]]:
+    """Run `steps` in order, streaming live progress instead of buffering to the end (#3558).
+
+    Before each step (unless `quiet`): prints "[n/m] step_name..." and
+    starts a background heartbeat (`_StepHeartbeat`). After each step: prints
+    its OK/FAIL/SKIP outcome via `_emit_results` right away, so a long
+    `nyxgpt ops install` run shows progress as it happens. A step whose
+    function raises is turned into a single FAIL result naming the step, the
+    error, and a remediation hint -- exactly like a returned failure -- so
+    one bad step doesn't abort the rest (matches the pre-existing
+    best-effort contract of these step loops).
+
+    Returns the combined results plus `(step_name, elapsed_seconds)` for
+    every step at/over `_SLOW_STEP_THRESHOLD_S`, for the caller's final
+    slow-step summary.
+    """
+    results: list[OpsResult] = []
+    slow_steps: list[tuple[str, float]] = []
+    total = len(steps)
+    for i, (step_name, fn) in enumerate(steps, start=1):
+        if not quiet:
+            print(f"[{i}/{total}] {step_name}...")
+        heartbeat = None if quiet else _StepHeartbeat(step_name)
+        start_time = time.monotonic()
+        if heartbeat is not None:
+            heartbeat.start()
+        try:
+            step_results = fn()
+        except Exception as e:
+            logger.error(
+                "ops: %s step %s raised %s: %s",
+                action,
+                step_name,
+                type(e).__name__,
+                e,
+                extra={"component": "ops", "action": action, "step": step_name},
+                exc_info=True,
+            )
+            step_results = [
+                OpsResult(
+                    False,
+                    f"ops {action} failed: {step_name}",
+                    f"{type(e).__name__}: {e}. {_STEP_FAILURE_HINT}",
+                )
+            ]
+        finally:
+            if heartbeat is not None:
+                heartbeat.stop()
+        elapsed = time.monotonic() - start_time
+        if elapsed >= _SLOW_STEP_THRESHOLD_S:
+            slow_steps.append((step_name, elapsed))
+        _emit_results(action, step_results)
+        results.extend(step_results)
+    return results, slow_steps
+
+
+def _print_slow_steps_summary(slow_steps: list[tuple[str, float]]) -> None:
+    """Print the final "slow steps" summary for a live-progress step run (#3558)."""
+    if not slow_steps:
+        return
+    print(f"\nSlow steps (over {_SLOW_STEP_THRESHOLD_S:.0f}s):")
+    for step_name, elapsed in slow_steps:
+        print(f"  {step_name}: {elapsed:.1f}s")
 
 
 def _ops_action_outcome(results: list[OpsResult]) -> tuple[str, str]:
@@ -4248,7 +4393,6 @@ def install(args) -> int:
 
     logger.info("ops: install starting", extra={"component": "ops", "action": "install"})
 
-    results: list[OpsResult] = []
     steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
         # Must run first: every step below that reads a Compose file, config
         # template, launchd/systemd unit template, or helper script assumes
@@ -4282,27 +4426,12 @@ def install(args) -> int:
         steps.append(("slack webhook secret", _sync_grafana_slack_webhook_secret))
         steps.append(("observability stack", _reconcile_grafana_provisioning))
         steps.append(("glitchtip auto-provisioning", _provision_glitchtip))
-    for step_name, fn in steps:
-        try:
-            results += fn()
-        except Exception as e:
-            logger.error(
-                "ops: install step %s raised %s: %s",
-                step_name,
-                type(e).__name__,
-                e,
-                extra={"component": "ops", "action": "install", "step": step_name},
-                exc_info=True,
-            )
-            results.append(
-                OpsResult(
-                    False,
-                    f"ops install failed: {step_name}",
-                    f"{type(e).__name__}: {e}",
-                )
-            )
 
-    ok = _emit_results("install", results)
+    quiet = bool(getattr(args, "quiet", False))
+    results, slow_steps = _run_steps("install", steps, quiet=quiet)
+    ok = all(r.ok for r in results)
+    if not quiet:
+        _print_slow_steps_summary(slow_steps)
     logger.info(
         "ops: install %s (%d/%d steps ok)",
         "succeeded" if ok else "failed",
@@ -5148,6 +5277,36 @@ def _compose_conflict_result(component: str, compose: dict[str, str]) -> OpsResu
     )
 
 
+def _restart_component(component: str, compose: dict[str, str]) -> list[OpsResult]:
+    """Restart a native (Homebrew/systemd) component, refusing first if Compose already runs it.
+
+    Shared by `restart()`'s api/web/ollama steps (#3558) -- factored out of
+    the old inline per-component `if` blocks so each component becomes a
+    single named step for the live-progress step runner. Restarts via
+    `_restart_native_service`, which dispatches to the OS-appropriate
+    mechanism (brew on macOS, systemd on Linux).
+    """
+    conflict = _compose_conflict_result(component, compose)
+    if conflict:
+        return [conflict]
+    self_heal.clear_intentionally_stopped(component)
+    return _restart_native_service(component)
+
+
+def _restart_cassandra_component(compose: dict[str, str]) -> list[OpsResult]:
+    """Restart the Cassandra Docker container, refusing first if Compose already runs it.
+
+    Cassandra restarts via `_restart_docker_container` rather than
+    `_restart_brew_service` (it has no Homebrew service), so it needs its own
+    step function alongside `_restart_component` (#3558).
+    """
+    conflict = _compose_conflict_result("cassandra", compose)
+    if conflict:
+        return [conflict]
+    self_heal.clear_intentionally_stopped("cassandra")
+    return _restart_docker_container("nyxgpt-cassandra")
+
+
 def restart(args) -> int:
     """Restart operational components.
 
@@ -5171,48 +5330,32 @@ def restart(args) -> int:
         extra={"component": "ops", "action": "restart", "target": target},
     )
 
-    results: list[OpsResult] = []
     compose = _compose_stack_snapshot()
 
+    steps: list[tuple[str, Callable[[], list[OpsResult]]]] = []
     if target in ("all", "api"):
-        conflict = _compose_conflict_result("api", compose)
-        if conflict:
-            results.append(conflict)
-        else:
-            self_heal.clear_intentionally_stopped("api")
-            results.extend(_restart_native_service("api"))
-
+        steps.append(("restart api", lambda: _restart_component("api", compose)))
     if target in ("all", "web"):
-        conflict = _compose_conflict_result("web", compose)
-        if conflict:
-            results.append(conflict)
-        else:
-            self_heal.clear_intentionally_stopped("web")
-            results.extend(_restart_native_service("web"))
-
+        steps.append(("restart web", lambda: _restart_component("web", compose)))
     if target in ("all", "ollama"):
-        conflict = _compose_conflict_result("ollama", compose)
-        if conflict:
-            results.append(conflict)
-        else:
-            self_heal.clear_intentionally_stopped("ollama")
-            results.extend(_restart_native_service("ollama"))
-
+        steps.append(("restart ollama", lambda: _restart_component("ollama", compose)))
     if target in ("all", "cassandra"):
-        conflict = _compose_conflict_result("cassandra", compose)
-        if conflict:
-            results.append(conflict)
-        else:
-            self_heal.clear_intentionally_stopped("cassandra")
-            results.extend(_restart_docker_container("nyxgpt-cassandra"))
-
+        steps.append(("restart cassandra", lambda: _restart_cassandra_component(compose)))
     if target in ("all", "cassandra-logs"):
-        results += _restart_native_log_follower("cassandra-logs")
-
+        steps.append(
+            (
+                "restart cassandra-logs agent",
+                lambda: _restart_native_log_follower("cassandra-logs"),
+            )
+        )
     if target in ("all", "observability"):
-        results.extend(_restart_observability_stack())
+        steps.append(("restart observability stack", _restart_observability_stack))
 
-    ok = _emit_results("restart", results)
+    quiet = bool(getattr(args, "quiet", False))
+    results, slow_steps = _run_steps("restart", steps, quiet=quiet)
+    ok = all(r.ok for r in results)
+    if not quiet:
+        _print_slow_steps_summary(slow_steps)
     logger.info(
         "ops: restart %s (target=%s, %d/%d ok)",
         "succeeded" if ok else "failed",
@@ -5507,6 +5650,59 @@ def _compose_down(services: list[str], *, volumes: bool) -> list[OpsResult]:
     return results
 
 
+def _stop_dual_mode(
+    component: str,
+    native_stop: Callable[[], list[OpsResult]],
+    mode: DeploymentMode,
+    tf_or_k8s: Container[str],
+) -> list[OpsResult]:
+    """Stop `component` in whichever mode(s) it's actually running -- native, Compose, or both.
+
+    Factored out of `stop()`'s old inline per-component closure (#3558) so
+    each component becomes a single named step for the live-progress step
+    runner. Marks the component intentionally stopped first (unless it's
+    Terraform/Kubernetes-managed, which this call never touches) so self-heal
+    doesn't immediately restart what this stops.
+    """
+    if component in tf_or_k8s:
+        return [
+            OpsResult(
+                True,
+                f"{component}: running under Terraform/Kubernetes, not native/Compose -- "
+                "left alone (self-heal still guards it; use --terraform/--kubernetes to "
+                "tear it down)",
+            )
+        ]
+    results: list[OpsResult] = []
+    try:
+        self_heal.mark_intentionally_stopped(component)
+    except Exception as e:  # never let self-heal bookkeeping block a stop
+        results.append(
+            OpsResult(
+                True,
+                f"Could not mark {component} as intentionally stopped "
+                f"({type(e).__name__}: {e})",
+            )
+        )
+    native_running = mode.native.get(component) in ("started", "running")
+    compose_running = mode.compose.get(component) == "running"
+    if not native_running and not compose_running:
+        results.append(OpsResult(True, f"{component}: already stopped"))
+        return results
+    if native_running and compose_running:
+        results.append(
+            OpsResult(
+                True,
+                f"{component}: running in BOTH native and Compose (mixed mode) -- stopping both",
+            )
+        )
+    if native_running:
+        results.extend(native_stop())
+    if compose_running:
+        results.extend(_compose_stop_service(component))
+    return results
+
+
 def stop(args) -> int:
     """Stop operational components.
 
@@ -5529,71 +5725,67 @@ def stop(args) -> int:
         extra={"component": "ops", "action": "stop", "target": target},
     )
 
-    results: list[OpsResult] = []
     mode = detect_deployment_mode()
     tf_or_k8s = _terraform_or_kubernetes_managed_components()
 
-    def _stop_dual_mode(component: str, native_stop: Callable[[], list[OpsResult]]) -> None:
-        if component in tf_or_k8s:
-            results.append(
-                OpsResult(
-                    True,
-                    f"{component}: running under Terraform/Kubernetes, not native/Compose -- "
-                    "left alone (self-heal still guards it; use --terraform/--kubernetes to "
-                    "tear it down)",
-                )
-            )
-            return
-        try:
-            self_heal.mark_intentionally_stopped(component)
-        except Exception as e:  # never let self-heal bookkeeping block a stop
-            results.append(
-                OpsResult(
-                    True,
-                    f"Could not mark {component} as intentionally stopped "
-                    f"({type(e).__name__}: {e})",
-                )
-            )
-        native_running = mode.native.get(component) in ("started", "running")
-        compose_running = mode.compose.get(component) == "running"
-        if not native_running and not compose_running:
-            results.append(OpsResult(True, f"{component}: already stopped"))
-            return
-        if native_running and compose_running:
-            results.append(
-                OpsResult(
-                    True,
-                    f"{component}: running in BOTH native and Compose (mixed mode) -- "
-                    "stopping both",
-                )
-            )
-        if native_running:
-            results.extend(native_stop())
-        if compose_running:
-            results.extend(_compose_stop_service(component))
-
+    steps: list[tuple[str, Callable[[], list[OpsResult]]]] = []
     if target in ("all", "api"):
-        _stop_dual_mode("api", lambda: _stop_native_service("api"))
-
+        steps.append(
+            (
+                "stop api",
+                lambda: _stop_dual_mode(
+                    "api", lambda: _stop_native_service("api"), mode, tf_or_k8s
+                ),
+            )
+        )
     if target in ("all", "web"):
-        _stop_dual_mode("web", lambda: _stop_native_service("web"))
-
+        steps.append(
+            (
+                "stop web",
+                lambda: _stop_dual_mode(
+                    "web", lambda: _stop_native_service("web"), mode, tf_or_k8s
+                ),
+            )
+        )
     if target in ("all", "ollama"):
-        _stop_dual_mode("ollama", lambda: _stop_native_service("ollama"))
-
+        steps.append(
+            (
+                "stop ollama",
+                lambda: _stop_dual_mode(
+                    "ollama", lambda: _stop_native_service("ollama"), mode, tf_or_k8s
+                ),
+            )
+        )
     if target in ("all", "cassandra"):
-        _stop_dual_mode("cassandra", lambda: _stop_docker_container("nyxgpt-cassandra"))
-
+        steps.append(
+            (
+                "stop cassandra",
+                lambda: _stop_dual_mode(
+                    "cassandra",
+                    lambda: _stop_docker_container("nyxgpt-cassandra"),
+                    mode,
+                    tf_or_k8s,
+                ),
+            )
+        )
     if target in ("all", "cassandra-logs"):
-        results += _stop_native_log_follower("cassandra-logs")
-
+        steps.append(
+            (
+                "stop cassandra-logs agent",
+                lambda: _stop_native_log_follower("cassandra-logs"),
+            )
+        )
     if target == "observability":
         # Not part of "all" -- like `restart`, "all" only covers the core
         # api/web/ollama/cassandra/cassandra-logs components; observability
         # has no native equivalent and is opt-in via its own target/command.
-        results += _stop_observability_stack()
+        steps.append(("stop observability stack", _stop_observability_stack))
 
-    ok = _emit_results("stop", results)
+    quiet = bool(getattr(args, "quiet", False))
+    results, slow_steps = _run_steps("stop", steps, quiet=quiet)
+    ok = all(r.ok for r in results)
+    if not quiet:
+        _print_slow_steps_summary(slow_steps)
     logger.info(
         "ops: stop %s (target=%s, %d/%d ok)",
         "succeeded" if ok else "failed",
@@ -5606,6 +5798,86 @@ def stop(args) -> int:
     _record_ops_action("stop", target, result, message)
 
     return 0 if ok else 2
+
+
+def _down_mark_intentional_stops() -> list[OpsResult]:
+    """Mark api/web/ollama/cassandra intentionally stopped before `down` tears them down.
+
+    Extracted from `down()`'s inline prelude (#3558) into its own named step
+    for the live-progress step runner -- see `down()`'s own docstring/comment
+    for why this has to happen before any component is actually stopped.
+    """
+    tf_or_k8s = _terraform_or_kubernetes_managed_components()
+    results: list[OpsResult] = []
+    try:
+        marked = [
+            component
+            for component in ("api", "web", "ollama", "cassandra")
+            if component not in tf_or_k8s
+        ]
+        for component in marked:
+            self_heal.mark_intentionally_stopped(component)
+        if marked:
+            results.append(
+                OpsResult(
+                    True,
+                    f"Marked {', '.join(marked)} as intentionally stopped "
+                    "(self-heal will leave them alone until brought back up)",
+                )
+            )
+        skipped = [c for c in ("api", "web", "ollama", "cassandra") if c in tf_or_k8s]
+        if skipped:
+            results.append(
+                OpsResult(
+                    True,
+                    f"Left {', '.join(skipped)} alone -- running under Terraform/"
+                    "Kubernetes, not native/Compose (self-heal still guards them; "
+                    "use --terraform/--kubernetes to tear those down)",
+                )
+            )
+    except Exception as e:  # never let self-heal bookkeeping block a teardown
+        results.append(
+            OpsResult(
+                True,
+                f"Could not mark components as intentionally stopped ({type(e).__name__}: {e})",
+            )
+        )
+    return results
+
+
+def _down_compose_teardown(scope: str, volumes: bool) -> list[OpsResult]:
+    """Tear down the Compose app/observability tiers for `down`'s `scope`.
+
+    Extracted from `down()`'s inline Compose block (#3558) into its own
+    named step for the live-progress step runner. Runs for every scope
+    (including `--app-only`/`--observability-only`) since it's the single
+    place that resolves and tears down whichever Compose services the scope
+    selects.
+    """
+    if not _compose_available():
+        return [OpsResult(True, "Skipped Compose teardown (Docker not found)")]
+
+    compose_services: list[str] = []
+    results: list[OpsResult] = []
+    if scope in ("all", "app"):
+        app_services, err = _resolve_app_services()
+        if err is not None:
+            results.append(err)
+        elif app_services:
+            compose_services += app_services
+
+    if scope in ("all", "observability"):
+        obs_services, err = _resolve_observability_services()
+        if err is not None:
+            results.append(err)
+        elif obs_services:
+            compose_services += obs_services
+
+    if compose_services:
+        results.extend(_compose_down(compose_services, volumes=volumes))
+    else:
+        results.append(OpsResult(True, "No Compose services running for this scope"))
+    return results
 
 
 def down(args) -> int:
@@ -5651,86 +5923,38 @@ def down(args) -> int:
         extra={"component": "ops", "action": "down", "scope": scope, "volumes": volumes},
     )
 
-    results: list[OpsResult] = []
-
+    # Mark api/web/ollama/cassandra as intentionally stopped BEFORE stopping
+    # anything. Otherwise the next heal pass sees them as unhealthy and
+    # restarts them (`brew services restart` / `docker restart`), fighting
+    # the teardown -- the ports get re-occupied within seconds, which then
+    # blocks `nyxgpt ops install --terraform --local` with a spurious port
+    # collision. This is per-component (self_heal.py's intentional-stop
+    # registry, #3406), not a global watchdog disable: an armed watchdog
+    # keeps healing genuine crashes of every other component the whole
+    # time. `nyxgpt ops install`/`restart`/`up` of a component clears its
+    # marker automatically.
+    steps: list[tuple[str, Callable[[], list[OpsResult]]]] = []
     if scope in ("all", "app"):
-        # Mark api/web/ollama/cassandra as intentionally stopped BEFORE
-        # stopping anything. Otherwise the next heal pass sees them as
-        # unhealthy and restarts them (`brew services restart` / `docker
-        # restart`), fighting the teardown -- the ports get re-occupied
-        # within seconds, which then blocks `nyxgpt ops install --terraform
-        # --local` with a spurious port collision. This is per-component
-        # (self_heal.py's intentional-stop registry, #3406), not a global
-        # watchdog disable: an armed watchdog keeps healing genuine crashes
-        # of every other component the whole time. `nyxgpt ops install`/
-        # `restart`/`up` of a component clears its marker automatically.
-        tf_or_k8s = _terraform_or_kubernetes_managed_components()
-        try:
-            marked = [
-                component
-                for component in ("api", "web", "ollama", "cassandra")
-                if component not in tf_or_k8s
-            ]
-            for component in marked:
-                self_heal.mark_intentionally_stopped(component)
-            if marked:
-                results.append(
-                    OpsResult(
-                        True,
-                        f"Marked {', '.join(marked)} as intentionally stopped "
-                        "(self-heal will leave them alone until brought back up)",
-                    )
-                )
-            skipped = [c for c in ("api", "web", "ollama", "cassandra") if c in tf_or_k8s]
-            if skipped:
-                results.append(
-                    OpsResult(
-                        True,
-                        f"Left {', '.join(skipped)} alone -- running under Terraform/"
-                        "Kubernetes, not native/Compose (self-heal still guards them; "
-                        "use --terraform/--kubernetes to tear those down)",
-                    )
-                )
-        except Exception as e:  # never let self-heal bookkeeping block a teardown
-            results.append(
-                OpsResult(
-                    True,
-                    "Could not mark components as intentionally stopped "
-                    f"({type(e).__name__}: {e})",
-                )
+        steps.append(("mark intentionally stopped", _down_mark_intentional_stops))
+        steps.append(("stop api", lambda: _stop_native_service("api")))
+        steps.append(("stop web", lambda: _stop_native_service("web")))
+        steps.append(("stop ollama", lambda: _stop_native_service("ollama")))
+        steps.append(
+            ("stop cassandra container", lambda: _stop_docker_container("nyxgpt-cassandra"))
+        )
+        steps.append(
+            (
+                "stop cassandra-logs agent",
+                lambda: _stop_native_log_follower("cassandra-logs"),
             )
+        )
+    steps.append(("compose teardown", lambda: _down_compose_teardown(scope, volumes)))
 
-        results.extend(_stop_native_service("api"))
-        results.extend(_stop_native_service("web"))
-        results.extend(_stop_native_service("ollama"))
-        results.extend(_stop_docker_container("nyxgpt-cassandra"))
-        results.extend(_stop_native_log_follower("cassandra-logs"))
-
-    compose_services: list[str] = []
-
-    if not _compose_available():
-        results.append(OpsResult(True, "Skipped Compose teardown (Docker not found)"))
-    else:
-        if scope in ("all", "app"):
-            app_services, err = _resolve_app_services()
-            if err is not None:
-                results.append(err)
-            elif app_services:
-                compose_services += app_services
-
-        if scope in ("all", "observability"):
-            obs_services, err = _resolve_observability_services()
-            if err is not None:
-                results.append(err)
-            elif obs_services:
-                compose_services += obs_services
-
-        if compose_services:
-            results.extend(_compose_down(compose_services, volumes=volumes))
-        else:
-            results.append(OpsResult(True, "No Compose services running for this scope"))
-
-    ok = _emit_results("down", results)
+    quiet = bool(getattr(args, "quiet", False))
+    results, slow_steps = _run_steps("down", steps, quiet=quiet)
+    ok = all(r.ok for r in results)
+    if not quiet:
+        _print_slow_steps_summary(slow_steps)
     logger.info(
         "ops: down %s (scope=%s, volumes=%s, %d/%d ok)",
         "succeeded" if ok else "failed",
@@ -6687,7 +6911,7 @@ def _stop_observability_stack_terraform() -> list[OpsResult]:
     return [OpsResult(True, "Observability stack torn down (detached from terraform network)")]
 
 
-def observability(_args) -> int:
+def observability(args) -> int:
     """CLI entrypoint for `nyxgpt ops observability`.
 
     Starts the monitoring/logging/tracing/errors Compose profiles (Grafana,
@@ -6706,10 +6930,32 @@ def observability(_args) -> int:
     logger.info(
         "ops: observability starting", extra={"component": "ops", "action": "observability"}
     )
-    results = _sync_packaged_resources()
-    if all(r.ok for r in results):
-        results += _reconcile_grafana_provisioning()
-    ok = _emit_results("observability", results)
+    sync_results: list[OpsResult] = []
+
+    def _observability_sync_step() -> list[OpsResult]:
+        nonlocal sync_results
+        sync_results = _sync_packaged_resources()
+        return sync_results
+
+    def _observability_reconcile_step() -> list[OpsResult]:
+        if not all(r.ok for r in sync_results):
+            return [
+                OpsResult(
+                    True,
+                    "Skipped Grafana provisioning reconcile (packaged resource sync failed)",
+                )
+            ]
+        return _reconcile_grafana_provisioning()
+
+    steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
+        ("sync packaged resources", _observability_sync_step),
+        ("reconcile observability stack", _observability_reconcile_step),
+    ]
+    quiet = bool(getattr(args, "quiet", False))
+    results, slow_steps = _run_steps("observability", steps, quiet=quiet)
+    ok = all(r.ok for r in results)
+    if not quiet:
+        _print_slow_steps_summary(slow_steps)
     logger.info(
         "ops: observability %s",
         "succeeded" if ok else "failed",
@@ -6869,12 +7115,23 @@ def env_sync(args) -> int:
         extra={"component": "ops", "action": "env-sync"},
     )
 
-    results = _sync_packaged_resources()
-    results += _generate_compose_config()
-    results += sync_env_from_config(cfg_path=cfg_path, env_path=env_path)
-    results += _sync_grafana_slack_webhook_secret(cfg_path=cfg_path)
-
-    ok = _emit_results("env-sync", results)
+    steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
+        ("sync packaged resources", _sync_packaged_resources),
+        ("compose config (derive from native)", _generate_compose_config),
+        (
+            "sync secrets from config.ini",
+            lambda: sync_env_from_config(cfg_path=cfg_path, env_path=env_path),
+        ),
+        (
+            "sync grafana slack webhook secret",
+            lambda: _sync_grafana_slack_webhook_secret(cfg_path=cfg_path),
+        ),
+    ]
+    quiet = bool(getattr(args, "quiet", False))
+    results, slow_steps = _run_steps("env-sync", steps, quiet=quiet)
+    ok = all(r.ok for r in results)
+    if not quiet:
+        _print_slow_steps_summary(slow_steps)
     logger.info(
         "ops: env-sync %s",
         "succeeded" if ok else "failed",
@@ -8583,7 +8840,7 @@ def _provision_glitchtip() -> list[OpsResult]:
     return results
 
 
-def glitchtip_init(_args: Any) -> int:
+def glitchtip_init(args: Any) -> int:
     """CLI entrypoint for `nyxgpt ops glitchtip-init`.
 
     Auto-provisions a GlitchTip admin user, organization, project, and DSN
@@ -8596,8 +8853,14 @@ def glitchtip_init(_args: Any) -> int:
     logger.info(
         "ops: glitchtip-init starting", extra={"component": "ops", "action": "glitchtip-init"}
     )
-    results = _provision_glitchtip()
-    ok = _emit_results("glitchtip-init", results)
+    steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
+        ("provision glitchtip", _provision_glitchtip),
+    ]
+    quiet = bool(getattr(args, "quiet", False))
+    results, slow_steps = _run_steps("glitchtip-init", steps, quiet=quiet)
+    ok = all(r.ok for r in results)
+    if not quiet:
+        _print_slow_steps_summary(slow_steps)
     logger.info(
         "ops: glitchtip-init %s",
         "succeeded" if ok else "failed",
