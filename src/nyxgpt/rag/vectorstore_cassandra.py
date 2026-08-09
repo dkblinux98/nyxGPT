@@ -1360,16 +1360,24 @@ class CassandraVectorStore:
     # ----------------------------
 
     def ensure_settings_table(self) -> None:
-        """Ensure the collection_settings table exists.
+        """Ensure the keyspace and collection_settings table exist.
 
         This table stores per-collection configuration like:
         - Preferred embedding model
         - Default chunk size
         - Default chunk overlap
 
-        Note: This assumes keyspace is already selected or uses fully qualified table name.
+        Note: Uses a fully qualified table name so it works in any context.
+        Callers (e.g. `get_collection_settings`) may run before `ensure_schema`
+        has ever executed for this collection -- on a genuinely fresh
+        Cassandra instance the keyspace itself doesn't exist yet, so it's
+        created here too (idempotent, same as `ensure_schema`).
         """
-        # Use fully qualified table name to work in any context
+        self.session.execute(f"""
+            CREATE KEYSPACE IF NOT EXISTS {self.cfg.keyspace}
+            WITH REPLICATION = {{'class':'SimpleStrategy','replication_factor':1}};
+            """)
+
         self.session.execute(f"""
             CREATE TABLE IF NOT EXISTS {self.cfg.keyspace}.collection_settings (
                 collection_name text PRIMARY KEY,
