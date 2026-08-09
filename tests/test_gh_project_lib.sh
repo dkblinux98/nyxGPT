@@ -249,6 +249,8 @@ issue_assign_only() { ASSIGN_ONLY_CALLS+=("$1 $2"); }
 COMMENT_CALLS=()
 issue_comment() { COMMENT_CALLS+=("$1 $2"); }
 
+# shellcheck disable=SC2218 # exercises the real gh_project.sh function
+# sourced above; Test 12 below shadows it with a mock for a different unit.
 assign_and_trigger_developer "77"
 _assert_eq "fresh assignment calls issue_assign_only once" "1" "${#ASSIGN_ONLY_CALLS[@]}"
 _assert_eq "fresh assignment targets the dev agent" "77 myGPT-developer-agent" "${ASSIGN_ONLY_CALLS[0]}"
@@ -273,6 +275,8 @@ ASSIGN_ONLY_CALLS=()
 COMMENT_CALLS=()
 sleep() { :; } # no real backoff in tests
 
+# shellcheck disable=SC2218 # exercises the real gh_project.sh function
+# sourced above; Test 12 below shadows it with a mock for a different unit.
 assign_and_trigger_developer "78"
 _assert_eq "redispatch calls issue_assign_only once (the reassignment)" "1" "${#ASSIGN_ONLY_CALLS[@]}"
 _assert_eq "redispatch targets the dev agent" "78 myGPT-developer-agent" "${ASSIGN_ONLY_CALLS[0]}"
@@ -551,6 +555,50 @@ _assert_eq "a two-level parked chain promotes both issues in one run" "Promoted 
 _assert_eq "both issues in the chain get Status -> Acceptance Testing" "2" "${#SET_STATUS_CALLS[@]}"
 _assert_eq "both issues in the chain get the owner assigned" "2" "${#ASSIGN_VERIFIED_CALLS[@]}"
 _assert_eq "both issues in the chain get a promotion comment" "2" "${#COMMENT_CALLS[@]}"
+
+# --- Test 18: project_field_value (#3666) -- the fill-if-missing hygiene ---
+# --- read helper. Stub graphql() directly (project_field_value's only ---
+# --- collaborator) with a fixture item carrying a single-select value, an ---
+# --- iteration value, and a text value, then check each field name resolves ---
+# --- to the right one and an absent field name resolves to empty ---
+graphql() {
+  cat <<'JSON'
+{
+  "data": {
+    "node": {
+      "fieldValues": {
+        "nodes": [
+          {
+            "__typename": "ProjectV2ItemFieldSingleSelectValue",
+            "field": { "name": "Status" },
+            "name": "In Review"
+          },
+          {
+            "__typename": "ProjectV2ItemFieldIterationValue",
+            "field": { "name": "Sprint" },
+            "title": "Sprint 8"
+          },
+          {
+            "__typename": "ProjectV2ItemFieldTextValue",
+            "field": { "name": "Notes" },
+            "text": "some free text"
+          }
+        ]
+      }
+    }
+  }
+}
+JSON
+}
+
+_assert_eq "project_field_value reads a single-select field's selected option" \
+  "In Review" "$(project_field_value "item-x" "Status")"
+_assert_eq "project_field_value reads an iteration field's title" \
+  "Sprint 8" "$(project_field_value "item-x" "Sprint")"
+_assert_eq "project_field_value reads a text field's value" \
+  "some free text" "$(project_field_value "item-x" "Notes")"
+_assert_eq "project_field_value returns empty for a field the item has no value for" \
+  "" "$(project_field_value "item-x" "Priority")"
 
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "All tests passed."
