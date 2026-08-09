@@ -1381,7 +1381,7 @@ sweep_parked_blocked_issues() {
             || echo "[sweep-parked] [warn] Failed to set status on #$p to ${STATUS_ACCEPTANCE_TESTING}" >&2
           assign_issue_verified "$p" "$HUMAN_OWNER" \
             || echo "[sweep-parked] [warn] Could not verify #$p assigned to @${HUMAN_OWNER}" >&2
-          issue_comment "$p" "✅ **Scrummaster Agent**: every blocking dependency (${blocker_refs:-none}) is now merged and complete -- moving this parked issue to **${STATUS_ACCEPTANCE_TESTING}** together with its blocker set (owner process rule, 2026-08-04, #3631) and assigning @${HUMAN_OWNER} for acceptance." \
+          issue_comment "$p" "✅ **Review Agent**: every blocking dependency (${blocker_refs:-none}) is now merged and complete -- moving this parked issue to **${STATUS_ACCEPTANCE_TESTING}** together with its blocker set (owner process rule, 2026-08-04, #3631) and assigning @${HUMAN_OWNER} for acceptance." \
             || echo "[sweep-parked] [warn] Failed to post promotion comment on #$p" >&2
           echo "[sweep-parked] Promoted #$p to '${STATUS_ACCEPTANCE_TESTING}' (blockers complete: ${blocker_refs:-none})" >&2
         fi
