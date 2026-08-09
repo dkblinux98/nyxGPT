@@ -55,15 +55,45 @@ def test_resolve_example_config_prefers_package_adjacent(monkeypatch, tmp_path):
     assert config_wizard._resolve_example_config_path() == packaged.resolve()
 
 
+def test_resolve_example_config_prefers_packaged_resource(monkeypatch, tmp_path):
+    """A bare `pip install nyxgpt` (no Homebrew/systemd installer step to
+    place the package-adjacent copy, no repo checkout) still finds
+    example.config.ini via the `nyxgpt.resources` package data (#3622) --
+    it's symlinked in there the same way `.env.example` is."""
+    monkeypatch.delenv("NYXGPT_EXAMPLE_CONFIG", raising=False)
+    module = tmp_path / "site-packages" / "nyxgpt" / "config_wizard.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("", encoding="utf-8")
+    # deliberately no package-adjacent example.config.ini
+    monkeypatch.setattr(config_wizard, "__file__", str(module))
+    resolved = config_wizard._resolve_example_config_path()
+    assert resolved.name == "example.config.ini"
+    assert resolved.is_file()
+    assert resolved != module.parent / "example.config.ini"
+
+
 def test_resolve_example_config_falls_back_to_repo_root(monkeypatch, tmp_path):
-    """Source checkout: no env and no package-adjacent copy -> the repo-root
-    file (module at src/nyxgpt/config_wizard.py, so parents[2] is the root)."""
+    """Source checkout with no packaged resource available either -> the
+    repo-root file (module at src/nyxgpt/config_wizard.py, so parents[2] is
+    the root)."""
     monkeypatch.delenv("NYXGPT_EXAMPLE_CONFIG", raising=False)
     module = tmp_path / "repo" / "src" / "nyxgpt" / "config_wizard.py"
     module.parent.mkdir(parents=True)
     module.write_text("", encoding="utf-8")
     # deliberately no example.config.ini next to the module
+
+    class _MissingResource:
+        def is_file(self) -> bool:
+            return False
+
+    class _MissingResourcesRoot:
+        def joinpath(self, _name: str) -> _MissingResource:
+            return _MissingResource()
+
     monkeypatch.setattr(config_wizard, "__file__", str(module))
+    monkeypatch.setattr(
+        config_wizard.importlib.resources, "files", lambda _pkg: _MissingResourcesRoot()
+    )
     assert (
         config_wizard._resolve_example_config_path()
         == module.resolve().parents[2] / "example.config.ini"

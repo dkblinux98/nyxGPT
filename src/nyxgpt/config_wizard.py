@@ -20,6 +20,7 @@ silently -- `apply_updates` itself never deletes anything.
 
 from __future__ import annotations
 
+import importlib.resources
 import os
 import re
 from collections.abc import Callable
@@ -51,7 +52,15 @@ def _resolve_example_config_path() -> Path:
          this module. Found here, the app imports with no env var -- which the
          formula's ``test`` block and the always-on self-heal watchdog both
          rely on.
-      3. ``<repo root>/example.config.ini`` -- the source-checkout / local-first
+      3. ``<nyxgpt.resources>/example.config.ini`` -- packaged resource data
+         (#3622). A bare `pip install nyxgpt` from PyPI (no Homebrew/systemd
+         installer step to copy the package-adjacent case-2 file, no repo
+         checkout for case 4 below) still needs `import nyxgpt.app` to work --
+         example.config.ini is symlinked into `src/nyxgpt/resources/` the same
+         way `.env.example` is (see `nyxgpt.resources` and #3621's
+         importlib.resources treatment), so setuptools bundles a real copy
+         into the wheel and this resolves with no repo checkout present.
+      4. ``<repo root>/example.config.ini`` -- the source-checkout / local-first
          layout, where this module is at ``src/nyxgpt/config_wizard.py`` so
          ``parents[2]`` is the repo root.
     """
@@ -61,6 +70,9 @@ def _resolve_example_config_path() -> Path:
     packaged = Path(__file__).resolve().parent / "example.config.ini"
     if packaged.exists():
         return packaged
+    resource = importlib.resources.files("nyxgpt.resources").joinpath("example.config.ini")
+    if resource.is_file():
+        return Path(str(resource))
     return Path(__file__).resolve().parents[2] / "example.config.ini"
 
 

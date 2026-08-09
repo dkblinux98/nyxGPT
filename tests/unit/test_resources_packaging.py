@@ -46,6 +46,21 @@ assert unit.is_file(), f"missing {unit}"
 script = root.joinpath("scripts/run-web.sh")
 assert script.is_file(), f"missing {script}"
 
+example_config = root.joinpath("example.config.ini")
+assert example_config.is_file(), f"missing {example_config}"
+assert "[nyxgpt]" in example_config.read_text(encoding="utf-8")
+
+# #3622: a bare `pip install nyxgpt` (no Homebrew/systemd installer step)
+# must still resolve example.config.ini -- config_wizard.WIZARD_SCHEMA
+# (which `nyxgpt.app` builds at import time) derives from this file, and
+# with no repo checkout and no installer-placed package-adjacent copy, the
+# packaged nyxgpt.resources copy is the only place left to find it.
+from nyxgpt import config_wizard
+
+resolved = config_wizard._resolve_example_config_path()
+assert resolved.is_file(), f"config_wizard could not resolve {resolved}"
+assert config_wizard.WIZARD_SCHEMA, "WIZARD_SCHEMA built empty from the packaged resource"
+
 print("RESOURCE_RESOLUTION_OK")
 """
 
