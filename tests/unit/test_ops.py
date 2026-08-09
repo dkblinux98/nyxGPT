@@ -10204,7 +10204,7 @@ def test_down_terraform_cache_prune_failure_is_non_fatal(monkeypatch):
     assert rc == 0
 
 
-# --- Kubernetes: _ensure_kubectl_and_cluster ---
+# --- Kubernetes: _ensure_kubectl_and_cluster (#3596: kind provisioning fallback) ---
 
 
 @pytest.mark.unit
@@ -10216,22 +10216,130 @@ def test_ensure_kubectl_and_cluster_missing_kubectl(monkeypatch):
 
 
 @pytest.mark.unit
-def test_ensure_kubectl_and_cluster_unreachable(monkeypatch):
-    monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/kubectl")
+def test_ensure_kubectl_and_cluster_reachable(monkeypatch):
+    monkeypatch.setattr(
+        ops, "_which", lambda prog: "/usr/local/bin/kubectl" if prog == "kubectl" else None
+    )
+    monkeypatch.setattr(ops, "_run", lambda cmd, check=True, **_k: CP(returncode=0))
+    results = ops._ensure_kubectl_and_cluster()
+    assert results[0].ok is True
+    assert "Kubernetes cluster reachable" in results[0].message
+
+
+@pytest.mark.unit
+def test_ensure_kubectl_and_cluster_unreachable_no_kind(monkeypatch):
+    """No cluster reachable and kind isn't installed -- actionable error, no raw-tool
+    instructions (CLAUDE.md's Operational Command Wrapping rule)."""
+    monkeypatch.setattr(
+        ops, "_which", lambda prog: "/usr/local/bin/kubectl" if prog == "kubectl" else None
+    )
     monkeypatch.setattr(
         ops, "_run", lambda cmd, check=True, **_k: CP(returncode=1, stderr="refused")
     )
     results = ops._ensure_kubectl_and_cluster()
     assert results[0].ok is False
-    assert "No reachable" in results[0].message
+    assert "kind is not installed" in results[0].message
+    assert "Install kind" in results[0].details
 
 
 @pytest.mark.unit
-def test_ensure_kubectl_and_cluster_reachable(monkeypatch):
-    monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/kubectl")
-    monkeypatch.setattr(ops, "_run", lambda cmd, check=True, **_k: CP(returncode=0))
+def test_ensure_kubectl_and_cluster_unreachable_no_docker(monkeypatch):
+    """kind is installed but Docker (which kind needs to create a cluster) is not."""
+    monkeypatch.setattr(
+        ops,
+        "_which",
+        lambda prog: "/usr/local/bin/" + prog if prog in ("kubectl", "kind") else None,
+    )
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, check=True, **_k: CP(returncode=1, stderr="refused")
+    )
     results = ops._ensure_kubectl_and_cluster()
-    assert results[0].ok is True
+    assert results[0].ok is False
+    assert "kind needs Docker" in results[0].message
+
+
+@pytest.mark.unit
+def test_ensure_kubectl_and_cluster_provisions_kind_when_absent(monkeypatch):
+    """No reachable cluster, kind+docker present, no existing nyxgpt-local cluster --
+    provisions one from scratch (#3596, owner decision 2026-08-03)."""
+    monkeypatch.setattr(
+        ops,
+        "_which",
+        lambda prog: "/usr/local/bin/" + prog if prog in ("kubectl", "kind", "docker") else None,
+    )
+    calls = []
+
+    def fake_run(cmd, check=True, **_k):
+        calls.append(cmd)
+        if cmd[:2] == ["kubectl", "cluster-info"]:
+            # First call (before provisioning): unreachable. Second call (after
+            # kind create): reachable.
+            return CP(returncode=1 if calls.count(cmd) == 1 else 0, stderr="refused")
+        if cmd[:3] == ["kind", "get", "clusters"]:
+            return CP(returncode=0, stdout="")
+        if cmd[:3] == ["kind", "create", "cluster"]:
+            return CP(returncode=0, stdout="created")
+        if cmd[:3] == ["kubectl", "config", "current-context"]:
+            return CP(returncode=0, stdout=ops.KIND_CONTEXT)
+        raise AssertionError(f"unexpected: {cmd}")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    results = ops._ensure_kubectl_and_cluster()
+    assert all(r.ok for r in results)
+    assert any("Created local kind cluster: nyxgpt-local" in r.message for r in results)
+    assert ["kind", "create", "cluster", "--name", "nyxgpt-local", "--wait", "60s"] in calls
+
+
+@pytest.mark.unit
+def test_ensure_kubectl_and_cluster_reuses_existing_kind_cluster(monkeypatch):
+    """A `nyxgpt-local` kind cluster from a previous run is reused, not recreated."""
+    monkeypatch.setattr(
+        ops,
+        "_which",
+        lambda prog: "/usr/local/bin/" + prog if prog in ("kubectl", "kind", "docker") else None,
+    )
+    calls = []
+
+    def fake_run(cmd, check=True, **_k):
+        calls.append(cmd)
+        if cmd[:2] == ["kubectl", "cluster-info"]:
+            return CP(returncode=1 if calls.count(cmd) == 1 else 0, stderr="refused")
+        if cmd[:3] == ["kind", "get", "clusters"]:
+            return CP(returncode=0, stdout="nyxgpt-local\n")
+        if cmd[:3] == ["kubectl", "config", "use-context"]:
+            return CP(returncode=0)
+        if cmd[:3] == ["kubectl", "config", "current-context"]:
+            return CP(returncode=0, stdout=ops.KIND_CONTEXT)
+        raise AssertionError(f"unexpected: {cmd}")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    results = ops._ensure_kubectl_and_cluster()
+    assert all(r.ok for r in results)
+    assert any("Reusing existing kind cluster" in r.message for r in results)
+    assert not any(cmd[:3] == ["kind", "create", "cluster"] for cmd in calls)
+
+
+@pytest.mark.unit
+def test_ensure_kubectl_and_cluster_provision_failure_reported(monkeypatch):
+    monkeypatch.setattr(
+        ops,
+        "_which",
+        lambda prog: "/usr/local/bin/" + prog if prog in ("kubectl", "kind", "docker") else None,
+    )
+
+    def fake_run(cmd, check=True, **_k):
+        if cmd[:2] == ["kubectl", "cluster-info"]:
+            return CP(returncode=1, stderr="refused")
+        if cmd[:3] == ["kind", "get", "clusters"]:
+            return CP(returncode=0, stdout="")
+        if cmd[:3] == ["kind", "create", "cluster"]:
+            return CP(returncode=1, stderr="docker daemon not running")
+        raise AssertionError(f"unexpected: {cmd}")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    results = ops._ensure_kubectl_and_cluster()
+    assert results[-1].ok is False
+    assert "kind create cluster" in results[-1].message
 
 
 # --- Kubernetes: _build_and_load_k8s_image ---
@@ -10635,6 +10743,99 @@ def test_down_kubernetes_delete_failure(monkeypatch):
     assert rc == 2
 
 
+# --- Kubernetes: kind cluster provision/teardown helpers (#3596) ---
+
+
+@pytest.mark.unit
+def test_kind_cluster_exists_true(monkeypatch):
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, check=True, **_k: CP(returncode=0, stdout="nyxgpt-local\nother\n")
+    )
+    assert ops._kind_cluster_exists() is True
+
+
+@pytest.mark.unit
+def test_kind_cluster_exists_false(monkeypatch):
+    monkeypatch.setattr(ops, "_run", lambda cmd, check=True, **_k: CP(returncode=0, stdout=""))
+    assert ops._kind_cluster_exists() is False
+
+
+@pytest.mark.unit
+def test_delete_kind_cluster_absent_is_a_noop_success(monkeypatch):
+    monkeypatch.setattr(ops, "_run", lambda cmd, check=True, **_k: CP(returncode=0, stdout=""))
+    results = ops._delete_kind_cluster()
+    assert results[0].ok is True
+    assert "already absent" in results[0].message
+
+
+@pytest.mark.unit
+def test_delete_kind_cluster_success(monkeypatch):
+    def fake_run(cmd, check=True, **_k):
+        if cmd[:3] == ["kind", "get", "clusters"]:
+            return CP(returncode=0, stdout="nyxgpt-local\n")
+        if cmd[:3] == ["kind", "delete", "cluster"]:
+            return CP(returncode=0, stdout="deleted")
+        raise AssertionError(f"unexpected: {cmd}")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    results = ops._delete_kind_cluster()
+    assert results[0].ok is True
+    assert "Deleted local kind cluster" in results[0].message
+
+
+@pytest.mark.unit
+def test_down_kubernetes_deletes_provisioned_kind_cluster(monkeypatch):
+    """#3596: tearing down a deployment on the nyxgpt-provisioned kind cluster also
+    deletes that cluster."""
+    calls = []
+
+    def fake_which(prog):
+        return "/usr/local/bin/" + prog if prog in ("kubectl", "kind") else None
+
+    def fake_run(cmd, check=True, **_k):
+        calls.append(cmd)
+        if cmd[:3] == ["kubectl", "delete", "-k"]:
+            return CP(returncode=0, stdout="deleted")
+        if cmd[:2] == ["kubectl", "config"]:
+            return CP(returncode=0, stdout=ops.KIND_CONTEXT)
+        if cmd[:3] == ["kind", "get", "clusters"]:
+            return CP(returncode=0, stdout="nyxgpt-local\n")
+        if cmd[:3] == ["kind", "delete", "cluster"]:
+            return CP(returncode=0, stdout="deleted")
+        raise AssertionError(f"unexpected: {cmd}")
+
+    monkeypatch.setattr(ops, "_which", fake_which)
+    monkeypatch.setattr(ops, "_run", fake_run)
+    results = ops.down_kubernetes()
+    assert all(r.ok for r in results)
+    assert any("Deleted local kind cluster" in r.message for r in results)
+    assert ["kind", "delete", "cluster", "--name", "nyxgpt-local"] in calls
+
+
+@pytest.mark.unit
+def test_down_kubernetes_never_deletes_bring_your_own_cluster(monkeypatch):
+    """A non-nyxgpt context (minikube, Docker Desktop, an operator's own kind cluster
+    under a different name) must never be deleted by `nyxgpt ops down --kubernetes`."""
+    calls = []
+
+    def fake_which(prog):
+        return "/usr/local/bin/" + prog if prog in ("kubectl", "kind") else None
+
+    def fake_run(cmd, check=True, **_k):
+        calls.append(cmd)
+        if cmd[:3] == ["kubectl", "delete", "-k"]:
+            return CP(returncode=0, stdout="deleted")
+        if cmd[:2] == ["kubectl", "config"]:
+            return CP(returncode=0, stdout="minikube")
+        raise AssertionError(f"unexpected: {cmd}")
+
+    monkeypatch.setattr(ops, "_which", fake_which)
+    monkeypatch.setattr(ops, "_run", fake_run)
+    results = ops.down_kubernetes()
+    assert all(r.ok for r in results)
+    assert not any(cmd[:3] == ["kind", "delete", "cluster"] for cmd in calls)
+
+
 # --- Structured (non-printing) Terraform/Kubernetes functions for the SRE/admin dashboard API ---
 
 
@@ -10809,6 +11010,60 @@ def test_infra_status_reports_terraform_and_kubernetes(monkeypatch):
     assert result["kubernetes"]["deployed"] is True
     assert result["kubernetes"]["namespace"] == "nyxgpt"
     assert result["kubernetes"]["pods"] == ["nyxgpt-api-abc   1/1   Running"]
+
+
+@pytest.mark.unit
+def test_infra_status_reports_provisioned_kind_cluster(monkeypatch):
+    """#3596: the Infrastructure page (and self-heal) must be able to tell a
+    nyxgpt-provisioned kind cluster apart from a bring-your-own one."""
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "absent"})
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: ops.DeploymentMode(native={}, compose={}, conflicts=[]),
+    )
+    monkeypatch.setattr(
+        ops, "_which", lambda prog: "/usr/local/bin/kubectl" if prog == "kubectl" else None
+    )
+
+    def fake_run(cmd, check=True, **_k):
+        if cmd[:2] == ["kubectl", "config"]:
+            return CP(returncode=0, stdout=f"{ops.KIND_CONTEXT}\n")
+        if cmd[:4] == ["kubectl", "-n", "nyxgpt", "get"]:
+            return CP(returncode=0, stdout="nyxgpt-api-abc   1/1   Running\n")
+        raise AssertionError(f"unexpected kubectl command: {cmd}")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+
+    result = ops.infra_status()
+    assert result["kubernetes"]["context"] == ops.KIND_CONTEXT
+    assert result["kubernetes"]["provisioned"] is True
+
+
+@pytest.mark.unit
+def test_infra_status_reports_bring_your_own_cluster_not_provisioned(monkeypatch):
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "absent"})
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: ops.DeploymentMode(native={}, compose={}, conflicts=[]),
+    )
+    monkeypatch.setattr(
+        ops, "_which", lambda prog: "/usr/local/bin/kubectl" if prog == "kubectl" else None
+    )
+
+    def fake_run(cmd, check=True, **_k):
+        if cmd[:2] == ["kubectl", "config"]:
+            return CP(returncode=0, stdout="docker-desktop\n")
+        if cmd[:4] == ["kubectl", "-n", "nyxgpt", "get"]:
+            return CP(returncode=0, stdout="")
+        raise AssertionError(f"unexpected kubectl command: {cmd}")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+
+    result = ops.infra_status()
+    assert result["kubernetes"]["context"] == "docker-desktop"
+    assert result["kubernetes"]["provisioned"] is False
 
 
 @pytest.mark.unit

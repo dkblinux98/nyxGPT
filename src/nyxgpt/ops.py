@@ -3439,9 +3439,55 @@ K8S_DIR = REPO_ROOT / "k8s"
 K8S_NAMESPACE = "nyxgpt"
 K8S_IMAGE = "nyxgpt-api:local"
 
+# The local cluster `nyxgpt ops install --kubernetes --local` provisions via `kind`
+# when kubectl's current context has no reachable cluster (#3596, owner decision
+# 2026-08-03). The name is reserved for nyxgpt: `nyxgpt ops down --kubernetes` only
+# ever deletes a kind cluster with this exact name, which is what lets it tell a
+# cluster it provisioned apart from a bring-your-own one (minikube, Docker Desktop,
+# an operator's own differently-named kind cluster) without needing separate state.
+KIND_CLUSTER_NAME = "nyxgpt-local"
+KIND_CONTEXT = f"kind-{KIND_CLUSTER_NAME}"
+
+
+def _kind_cluster_exists(name: str = KIND_CLUSTER_NAME) -> bool:
+    """Return whether a kind cluster named `name` already exists."""
+    cp = _run(["kind", "get", "clusters"], check=False, expected=True)
+    if cp.returncode != 0:
+        return False
+    return name in (cp.stdout or "").split()
+
+
+def _create_kind_cluster(name: str = KIND_CLUSTER_NAME) -> list[OpsResult]:
+    """Create the local `kind` cluster nyxgpt provisions when no cluster is reachable."""
+    cp = _run(["kind", "create", "cluster", "--name", name, "--wait", "60s"], check=False)
+    if cp.returncode != 0:
+        return [OpsResult(False, f"kind create cluster --name {name} failed", _cp_details(cp))]
+    return [OpsResult(True, f"Created local kind cluster: {name}", _cp_details(cp))]
+
+
+def _delete_kind_cluster(name: str = KIND_CLUSTER_NAME) -> list[OpsResult]:
+    """Delete the named kind cluster if it exists; no-op (not a failure) if it doesn't."""
+    if not _kind_cluster_exists(name):
+        return [OpsResult(True, f"kind cluster {name} already absent -- nothing to delete")]
+    cp = _run(["kind", "delete", "cluster", "--name", name], check=False)
+    if cp.returncode != 0:
+        return [OpsResult(False, f"kind delete cluster --name {name} failed", _cp_details(cp))]
+    return [OpsResult(True, f"Deleted local kind cluster: {name}", _cp_details(cp))]
+
 
 def _ensure_kubectl_and_cluster() -> list[OpsResult]:
-    """Check `kubectl` is on PATH and a cluster is reachable."""
+    """Check `kubectl` is on PATH and a cluster is reachable, provisioning one if not.
+
+    Bring-your-own-cluster stays supported unchanged: if kubectl's current context
+    already reaches a cluster (minikube, Docker Desktop, an existing kind cluster,
+    a remote context, ...) that cluster is used as-is and nothing is provisioned.
+    Only when no cluster is reachable at all does this fall back to `kind` (#3596,
+    owner decision 2026-08-03: kind is the provisioned local substrate) --
+    reusing the `nyxgpt-local` cluster from a previous run if one is already there,
+    or creating it fresh otherwise. `kind`/Docker themselves remain real
+    prerequisites this can't install for the operator; a missing one produces an
+    actionable error naming where to get it rather than a raw command to run.
+    """
     if _which("kubectl") is None:
         return [
             OpsResult(
@@ -3450,10 +3496,53 @@ def _ensure_kubectl_and_cluster() -> list[OpsResult]:
                 "Install kubectl: https://kubernetes.io/docs/tasks/tools/",
             )
         ]
+    cp = _run(["kubectl", "cluster-info"], check=False, expected=True)
+    if cp.returncode == 0:
+        return [OpsResult(True, "Kubernetes cluster reachable", f"context: {_kubectl_context()}")]
+
+    if _which("kind") is None:
+        return [
+            OpsResult(
+                False,
+                "No reachable Kubernetes cluster, and kind is not installed to provision one",
+                "Install kind (https://kind.sigs.k8s.io/#installation) so `nyxgpt ops install "
+                "--kubernetes --local` can create a local cluster for you, or point kubectl's "
+                "current context at an existing cluster (minikube, Docker Desktop, ...) "
+                "yourself first.",
+            )
+        ]
+    if _which("docker") is None:
+        return [
+            OpsResult(
+                False,
+                "No reachable Kubernetes cluster, and kind needs Docker to create one",
+                "Install/start Docker so `nyxgpt ops install --kubernetes --local` can "
+                "provision a local kind cluster.",
+            )
+        ]
+
+    if _kind_cluster_exists():
+        cp = _run(["kubectl", "config", "use-context", KIND_CONTEXT], check=False)
+        if cp.returncode != 0:
+            return [
+                OpsResult(
+                    False, f"kubectl config use-context {KIND_CONTEXT} failed", _cp_details(cp)
+                )
+            ]
+        results = [OpsResult(True, f"Reusing existing kind cluster: {KIND_CLUSTER_NAME}")]
+    else:
+        results = _create_kind_cluster()
+        if not all(r.ok for r in results):
+            return results
+
     cp = _run(["kubectl", "cluster-info"], check=False)
     if cp.returncode != 0:
-        return [OpsResult(False, "No reachable Kubernetes cluster", _cp_details(cp))]
-    return [OpsResult(True, "Kubernetes cluster reachable")]
+        return results + [
+            OpsResult(False, "Provisioned kind cluster is not reachable", _cp_details(cp))
+        ]
+    return results + [
+        OpsResult(True, "Kubernetes cluster reachable", f"context: {_kubectl_context()}")
+    ]
 
 
 def _kubectl_context() -> str:
@@ -3736,7 +3825,17 @@ def _install_kubernetes(args) -> int:
 
 
 def _down_kubernetes_steps() -> list[OpsResult]:
-    """Remove the `nyxgpt` namespace's Kubernetes resources and return structured results."""
+    """Remove the `nyxgpt` namespace's Kubernetes resources and return structured results.
+
+    Also tears down the local `kind` cluster (#3596) *iff* kubectl's current context is
+    the `nyxgpt-local` cluster nyxgpt reserves for itself (see `_ensure_kubectl_and_cluster`)
+    -- a bring-your-own cluster (minikube, Docker Desktop, an operator's own differently
+    named kind cluster) is never destroyed, only the deployment inside it is. This is what
+    keeps "never destroys a cluster nyxgpt did not create" true without needing a separate
+    flag or state file: the reserved name is the only signal, and it's authoritative by
+    construction -- `_ensure_kubectl_and_cluster` is the only code path that ever creates a
+    cluster by that name.
+    """
     if _which("kubectl") is None:
         results = [OpsResult(False, "kubectl not found on PATH -- nothing to tear down")]
     else:
@@ -3749,6 +3848,9 @@ def _down_kubernetes_steps() -> list[OpsResult]:
             ]
         else:
             results = [OpsResult(False, "kubectl delete -k k8s/ failed", _cp_details(cp))]
+
+        if results[-1].ok and _kubectl_context() == KIND_CONTEXT and _which("kind") is not None:
+            results += _delete_kind_cluster()
 
     result, message = _ops_action_outcome(results)
     _record_ops_action("down", "kubernetes", result, message)
@@ -3851,7 +3953,8 @@ def infra_status() -> dict[str, Any]:
     }
 
     kubectl_available = _which("kubectl") is not None
-    kubernetes_configured = kubectl_available and bool(_kubectl_context())
+    kubernetes_context = _kubectl_context() if kubectl_available else ""
+    kubernetes_configured = bool(kubernetes_context)
     pods: list[str] = []
     # No kubeconfig/current-context means no cluster was ever configured here --
     # that's a confidently-determined NOT DEPLOYED (#3468), not the CANNOT
@@ -3875,6 +3978,11 @@ def infra_status() -> dict[str, Any]:
         "deployed": bool(pods),
         "namespace": K8S_NAMESPACE,
         "pods": pods,
+        # (#3596) which cluster is configured, and whether it's the local `kind`
+        # cluster nyxgpt provisions when nothing else is reachable, vs. a
+        # bring-your-own cluster (minikube, Docker Desktop, a remote context, ...).
+        "context": kubernetes_context,
+        "provisioned": kubernetes_context == KIND_CONTEXT,
     }
 
     native_running = any(state in ("started", "running") for state in mode_info.native.values())
@@ -4262,9 +4370,16 @@ def status(_args) -> int:
         )
         pod_lines = [line for line in (cp.stdout or "").splitlines() if line.strip()]
         if cp.returncode == 0 and pod_lines:
+            context = _kubectl_context()
+            cluster_note = (
+                " (kind cluster nyxgpt provisioned -- torn down together on "
+                "nyxgpt ops down --kubernetes)"
+                if context == KIND_CONTEXT
+                else f" (bring-your-own cluster, context: {context})"
+            )
             print(
                 f"\nKubernetes ({K8S_NAMESPACE} namespace, nyxgpt ops down --kubernetes to "
-                f"tear down): {len(pod_lines)} pod(s)"
+                f"tear down): {len(pod_lines)} pod(s){cluster_note}"
             )
             for line in pod_lines:
                 print(f"  {line}")

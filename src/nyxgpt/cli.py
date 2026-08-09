@@ -1578,7 +1578,8 @@ def _add_install_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help=(
             "Deploy nyxgpt-api to a local Kubernetes cluster instead of native/Homebrew "
-            "reconciliation -- requires --local"
+            "reconciliation -- requires --local. Uses an existing reachable cluster if "
+            "kubectl is already configured, otherwise provisions a local kind cluster"
         ),
     )
     locality = parser.add_mutually_exclusive_group()
@@ -1630,7 +1631,11 @@ def _add_down_arguments(parser: argparse.ArgumentParser) -> None:
     scope.add_argument(
         "--kubernetes",
         action="store_true",
-        help="Remove the nyxgpt namespace's Kubernetes resources instead of native/Compose",
+        help=(
+            "Remove the nyxgpt namespace's Kubernetes resources instead of native/Compose "
+            "-- also deletes the local kind cluster if nyxgpt provisioned it, never a "
+            "bring-your-own cluster"
+        ),
     )
     parser.add_argument(
         "--volumes",
