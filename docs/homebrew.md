@@ -33,6 +33,47 @@ Add the tap:
 brew tap dkblinux98/nyxgpt-local
 ```
 
+`nyxgpt ops install` generates this tap's formulas **locally from a repo
+checkout** (it vendors `pyproject.toml`/`src/nyxgpt/` and `web/` into a
+tarball and points the formula at it via a `file://` URL) -- see
+[Remote tap](#remote-tap) below for the repo-less alternative.
+
+---
+
+## Remote tap
+
+For a machine that has never cloned nyxGPT, `nyxgpt ops install`'s local
+`file://` tap above isn't an option -- there's no checkout to vendor a
+tarball from. `.github/workflows/release-artifacts.yml` publishes a
+**remote** tap instead (#3622): on every GitHub Release, it builds the same
+`nyxgpt-api`/`nyxgpt-web` source tarballs, attaches them as release assets,
+and pushes stamped formulas (real `url`/`sha256`/`version`, no placeholders)
+to a separate tap repository the owner provisions once.
+
+```bash
+brew tap dkblinux98/homebrew-nyxgpt
+brew install nyxgpt-api nyxgpt-web
+```
+
+Everything past `brew install` (services, wrappers, config resolution) is
+identical to the local tap above -- the remote formulas
+(`homebrew/tap/*.rb.tmpl`) are near-duplicates of the local ones
+(`homebrew/nyxgpt-api.rb` / `nyxgpt-web.rb`), differing only in where the
+tarball's `url` points.
+
+**Owner setup (one-time, required before this tap exists):**
+
+1. Create a public GitHub repo named `homebrew-nyxgpt` (the `homebrew-`
+   prefix is Homebrew's tap-naming convention).
+2. Add a repo variable `HOMEBREW_TAP_REPO` = `dkblinux98/homebrew-nyxgpt`
+   and a secret `HOMEBREW_TAP_TOKEN` (a PAT with push access to that repo)
+   to this repo's Actions settings.
+
+Until both exist, `release-artifacts.yml`'s `homebrew-tap` job still builds
+and attaches the tarballs to each GitHub Release and uploads the stamped
+formulas as a workflow artifact -- it just skips the tap push (logged as a
+notice, not a failure) until the owner completes the two steps above.
+
 ---
 
 ## Installing the services
