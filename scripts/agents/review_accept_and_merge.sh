@@ -10,9 +10,13 @@ Usage:
   review_accept_and_merge.sh [--dry-run] <pr_number_or_url> <issue_number>
 
 Merges the PR into the current release branch (merge commit) and deletes the PR branch, then:
-  - Issue Status -> Acceptance Testing
-  - Issue assignee -> HUMAN_OWNER
-  - Comment on issue with merge info
+  - If the issue has open native blocked-by dependencies (owner process rule,
+    2026-08-04, #3631): Status -> In Review (parked), owner NOT assigned,
+    comment explains why and lists the open blockers. The whole dependency
+    set moves to Acceptance Testing together once every blocker completes
+    (see sweep_parked_blocked_issues.sh).
+  - Otherwise: Issue Status -> Acceptance Testing, Issue assignee ->
+    HUMAN_OWNER, comment on issue with merge info
 EOF
 }
 
@@ -137,8 +141,13 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "[dry-run] pr_head_branch=$pr_head_branch" >&2
   echo "[dry-run] would: gh pr merge $PR --merge --delete-branch" >&2
   echo "[dry-run] would: gh issue close $ISSUE" >&2
-  echo "[dry-run] would: set_issue_status #$ISSUE -> '$STATUS_ACCEPTANCE_TESTING'" >&2
-  echo "[dry-run] would: assign issue #$ISSUE -> @$HUMAN_OWNER" >&2
+  dry_run_open_blockers="$(open_blocked_by_issues "$ISSUE" 2>/dev/null || true)"
+  if [[ -n "$dry_run_open_blockers" ]]; then
+    echo "[dry-run] issue #$ISSUE has open blockers ($(echo "$dry_run_open_blockers" | tr '\n' ' ')) -- would park at '$STATUS_IN_REVIEW', skip owner assignment (#3631)" >&2
+  else
+    echo "[dry-run] would: set_issue_status #$ISSUE -> '$STATUS_ACCEPTANCE_TESTING'" >&2
+    echo "[dry-run] would: assign issue #$ISSUE -> @$HUMAN_OWNER" >&2
+  fi
   exit 0
 fi
 
@@ -178,29 +187,56 @@ else
   fi
 fi
 
-# Set issue status to Acceptance Testing (owner acceptance gate, 2026-07-31)
-echo "[review] Setting issue #${ISSUE} status to '${STATUS_ACCEPTANCE_TESTING}'..." >&2
-if ! set_issue_status "$ISSUE" "$STATUS_ACCEPTANCE_TESTING" 2>&1; then
-  _warn "Failed to set issue status. PR is merged but project status may be incorrect. Continuing..."
-fi
+# Blocked-issue park gate (owner process rule, 2026-08-04, #3631): a merged
+# issue with open native blocked_by dependencies cannot be meaningfully
+# accepted yet -- its own acceptance criteria may depend on the unfinished
+# blockers. Park it at STATUS_IN_REVIEW instead of Acceptance Testing and
+# skip the owner handoff; sweep_parked_blocked_issues.sh moves the whole
+# dependency set to Acceptance Testing together once every blocker
+# completes (merged and itself Acceptance Testing or beyond).
+PARKED=0
+echo "[review] Checking issue #${ISSUE} for open blocking dependencies..." >&2
+mapfile -t open_blockers < <(open_blocked_by_issues "$ISSUE")
 
-# Assign issue to human owner
-echo "[review] Assigning issue #${ISSUE} to @${HUMAN_OWNER}..." >&2
-if ! assign_issue_verified "$ISSUE" "$HUMAN_OWNER"; then
-  echo "::error::PR #${PR} is merged but issue #${ISSUE} could not be verified as assigned to @${HUMAN_OWNER} — it may still show @${REVIEW_AGENT} as assignee. Manual fix: gh issue edit ${ISSUE} --add-assignee ${HUMAN_OWNER}" >&2
-  OWNER_ASSIGN_FAILED=1
-fi
+if [[ "${#open_blockers[@]}" -gt 0 ]]; then
+  PARKED=1
+  blocker_refs="$(printf '#%s, ' "${open_blockers[@]}")"
+  blocker_refs="${blocker_refs%, }"
+  echo "[review] Issue #${ISSUE} has open blockers: ${blocker_refs} -- parking at '${STATUS_IN_REVIEW}' instead of '${STATUS_ACCEPTANCE_TESTING}'." >&2
 
-# Assign PR to human owner
-echo "[review] Assigning PR #${PR} to @${HUMAN_OWNER}..." >&2
-if ! gh api -X PATCH "repos/${REPO_OWNER}/${REPO_NAME}/issues/${PR}" -f "assignees[]=${HUMAN_OWNER}" >/dev/null 2>&1; then
-  _warn "Failed to assign PR to ${HUMAN_OWNER}. PR is merged but PR assignee may be incorrect. Continuing..."
-fi
+  if ! set_issue_status "$ISSUE" "$STATUS_IN_REVIEW" 2>&1; then
+    _warn "Failed to set issue status to ${STATUS_IN_REVIEW}. PR is merged but project status may be incorrect. Continuing..."
+  fi
 
-# Post final comment
-echo "[review] Posting completion comment..." >&2
-if ! issue_comment "$ISSUE" "PR #${PR} merged into \`${pr_base_branch}\` and branch deleted. Status -> ${STATUS_ACCEPTANCE_TESTING}. Assigned -> @${HUMAN_OWNER}." 2>&1; then
-  _warn "Failed to post comment. PR is merged and issue updated, but comment missing."
+  PARK_MSG="⏸️ **Parked, not Acceptance Testing**: PR #${PR} merged into \`${pr_base_branch}\` and branch deleted, but issue #${ISSUE} has open blocking dependencies (${blocker_refs}) -- its acceptance criteria cannot be meaningfully tested until they land. Status -> ${STATUS_IN_REVIEW}; owner not assigned yet (owner process rule, 2026-08-04). This issue moves to ${STATUS_ACCEPTANCE_TESTING} together with its whole blocker set once every blocker is merged and itself in ${STATUS_ACCEPTANCE_TESTING} or beyond."
+  if ! issue_comment "$ISSUE" "$PARK_MSG" 2>&1; then
+    _warn "Failed to post park comment. PR is merged and issue parked, but comment missing."
+  fi
+else
+  # Set issue status to Acceptance Testing (owner acceptance gate, 2026-07-31)
+  echo "[review] Setting issue #${ISSUE} status to '${STATUS_ACCEPTANCE_TESTING}'..." >&2
+  if ! set_issue_status "$ISSUE" "$STATUS_ACCEPTANCE_TESTING" 2>&1; then
+    _warn "Failed to set issue status. PR is merged but project status may be incorrect. Continuing..."
+  fi
+
+  # Assign issue to human owner
+  echo "[review] Assigning issue #${ISSUE} to @${HUMAN_OWNER}..." >&2
+  if ! assign_issue_verified "$ISSUE" "$HUMAN_OWNER"; then
+    echo "::error::PR #${PR} is merged but issue #${ISSUE} could not be verified as assigned to @${HUMAN_OWNER} — it may still show @${REVIEW_AGENT} as assignee. Manual fix: gh issue edit ${ISSUE} --add-assignee ${HUMAN_OWNER}" >&2
+    OWNER_ASSIGN_FAILED=1
+  fi
+
+  # Assign PR to human owner
+  echo "[review] Assigning PR #${PR} to @${HUMAN_OWNER}..." >&2
+  if ! gh api -X PATCH "repos/${REPO_OWNER}/${REPO_NAME}/issues/${PR}" -f "assignees[]=${HUMAN_OWNER}" >/dev/null 2>&1; then
+    _warn "Failed to assign PR to ${HUMAN_OWNER}. PR is merged but PR assignee may be incorrect. Continuing..."
+  fi
+
+  # Post final comment
+  echo "[review] Posting completion comment..." >&2
+  if ! issue_comment "$ISSUE" "PR #${PR} merged into \`${pr_base_branch}\` and branch deleted. Status -> ${STATUS_ACCEPTANCE_TESTING}. Assigned -> @${HUMAN_OWNER}." 2>&1; then
+    _warn "Failed to post comment. PR is merged and issue updated, but comment missing."
+  fi
 fi
 
 echo "[review] ✓ Critical path complete" >&2
@@ -296,6 +332,11 @@ else
 fi
 
 echo "[review] ===== Merge process complete =====" >&2
+
+if [[ "$PARKED" == "1" ]]; then
+  echo "SUCCESS: Merged PR #${PR}. Issue #${ISSUE} closed and parked at ${STATUS_IN_REVIEW} (blocked by: ${blocker_refs})."
+  exit 0
+fi
 
 if [[ "$OWNER_ASSIGN_FAILED" == "1" ]]; then
   echo "FAILURE: Merged PR #${PR} and closed issue #${ISSUE}, but the @${HUMAN_OWNER} assignment could not be verified. See the ::error:: above — manual assignee fix required." >&2

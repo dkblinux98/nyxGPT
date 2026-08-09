@@ -498,6 +498,30 @@ set_issue_status() {
   set_project_field_value "$item_id" "$STATUS_FIELD" "$status"
 }
 
+# Project Status of an issue (first project item), empty if none. Shared by
+# promote_accepted_features.sh and the parked-blocked-issue sweep (#3631) --
+# both need to read another issue's Status field without mutating it.
+issue_status() {
+  local num="$1"
+  graphql "query(\$owner:String!, \$name:String!, \$num:Int!) {
+    repository(owner:\$owner, name:\$name) {
+      issue(number:\$num) {
+        projectItems(first:5) {
+          nodes {
+            fieldValues(first:20) {
+              nodes {
+                ... on ProjectV2ItemFieldSingleSelectValue { field { ... on ProjectV2SingleSelectField { name } } name }
+              }
+            }
+          }
+        }
+      }
+    }
+  }" -F owner="$REPO_OWNER" -F name="$REPO_NAME" -F num="$num" \
+    | jq -r --arg field "$STATUS_FIELD" '.data.repository.issue.projectItems.nodes[0].fieldValues.nodes[]? | select(.field.name==$field) | .name' \
+    | head -1
+}
+
 # Clears (unsets) a project field on an item -- used by
 # scrummaster_sprint_reorg_apply.sh to move an issue out of a Sprint
 # iteration field. There is no "unset" case in set_project_field_value
@@ -715,6 +739,28 @@ assign_issue_verified() {
 issue_comment() {
   local issue="$1" body="$2"
   gh api -X POST "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}/comments" -f "body=${body}" >/dev/null
+}
+
+# -------------------------
+# Native issue-dependency helpers (blocked_by), shared by
+# promote_accepted_features.sh (heals the failure->feature blocking link)
+# and the merged-but-blocked park/sweep flow (#3631).
+# -------------------------
+
+# All issue numbers listed in `issue`'s native blocked_by dependencies
+# (regardless of state), one per line. Empty output means no blockers.
+blocked_by_issues() {
+  local issue="$1"
+  gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}/dependencies/blocked_by" \
+    --jq '.[].number' 2>/dev/null || true
+}
+
+# Issue numbers among `issue`'s blocked_by dependencies that are still open
+# (REST state=="open"), one per line. Empty output means no open blockers.
+open_blocked_by_issues() {
+  local issue="$1"
+  gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}/dependencies/blocked_by" \
+    --jq '.[] | select(.state=="open") | .number' 2>/dev/null || true
 }
 
 # Assign issue to developer and trigger workflow
@@ -1193,4 +1239,162 @@ ensure_pr_project_hygiene() {
   fi
 
   echo "[dev] PR #${pr_number} project hygiene: ✓ Added to project, ✓ Fields copied, ✓ Milestone set" >&2
+}
+
+# -------------------------
+# Parked-blocked-issue park/sweep (#3631, owner process rule 2026-08-04)
+# -------------------------
+# A merged issue with open native blocked_by dependencies cannot be
+# meaningfully accepted -- its own acceptance criteria may depend on the
+# unfinished blockers -- so review_accept_and_merge.sh parks it at
+# Status=STATUS_IN_REVIEW (issue closed, not Acceptance Testing) instead of
+# handing it straight to the owner. This sweep finds every such parked issue
+# and promotes it once ALL of its blockers have completed.
+
+# Issue numbers (one per line) that are currently parked: the project Status
+# equals `park_status` (the STATUS_IN_REVIEW value) AND the issue itself is
+# CLOSED. A normal issue still awaiting PR review is OPEN + In Review and is
+# never matched by this -- only the review_accept_and_merge.sh park
+# signature (merged/closed but blocked) is.
+list_parked_blocked_issues() {
+  local park_status="$1"
+  require_cmd jq
+
+  local project_id cursor="" tmp has_next next_cursor
+  project_id="$(get_project_id)"
+  tmp="$(mktemp)"
+
+  local max_pages="${MAX_PAGES:-200}"
+  local page
+  for ((page = 1; page <= max_pages; page++)); do
+    if [[ -n "$cursor" ]]; then
+      graphql "$BACKLOG_PAGE_QUERY" -F project="$project_id" -F after="$cursor" >"$tmp"
+    else
+      graphql "$BACKLOG_PAGE_QUERY" -F project="$project_id" >"$tmp"
+    fi
+
+    jq -r --arg field "$STATUS_FIELD" --arg status "$park_status" '
+      .data.node.items.nodes[]
+      | select(.content.__typename == "Issue" and .content.state == "CLOSED")
+      | select(
+          [.fieldValues.nodes[]
+           | select(.__typename == "ProjectV2ItemFieldSingleSelectValue" and .field.name == $field)
+           | .name] | index($status) != null
+        )
+      | .content.number
+    ' "$tmp"
+
+    has_next="$(jq -r '.data.node.items.pageInfo.hasNextPage' "$tmp")"
+    next_cursor="$(jq -r '.data.node.items.pageInfo.endCursor // empty' "$tmp")"
+    [[ "$has_next" == "true" && -n "$next_cursor" ]] || break
+    cursor="$next_cursor"
+  done
+
+  rm -f "$tmp"
+}
+
+# GraphQL/REST state (OPEN/CLOSED) of an issue, split out from the sweep so
+# tests can stub it without mocking `gh` end-to-end.
+_issue_open_state() {
+  local n="$1"
+  gh issue view "$n" --repo "${REPO_OWNER}/${REPO_NAME}" --json state --jq '.state' 2>/dev/null || echo ""
+}
+
+# Runs the sweep: lists parked issues (list_parked_blocked_issues), then
+# iterates to a fixed point promoting any whose blockers (blocked_by_issues)
+# have ALL completed -- "complete" = the blocker is CLOSED and its Status is
+# STATUS_ACCEPTANCE_TESTING or STATUS_FOR_RELEASE. A promotion made mid-run
+# updates the same in-memory resolved-state cache the completeness check
+# reads, so a parked blocker chain (A blocked by B blocked by C) resolves
+# transitively in one run instead of one hop per sweep interval. Honors
+# DRY_RUN=1 (report only; still simulates promotions in the cache so
+# downstream chain links are evaluated as they would really resolve).
+#
+# Reads: STATUS_IN_REVIEW, STATUS_ACCEPTANCE_TESTING, STATUS_FOR_RELEASE,
+# HUMAN_OWNER (from load_config). Prints a final "Promoted N issue(s)." line
+# to stdout; all progress detail goes to stderr.
+sweep_parked_blocked_issues() {
+  require_cmd jq
+  local dry_run="${DRY_RUN:-0}"
+  local n p b info bstate bstatus blocker_refs
+  local iter changed all_complete promoted_count max_iterations
+
+  local -a parked=()
+  while IFS= read -r n; do
+    [[ -n "$n" ]] && parked+=("$n")
+  done < <(list_parked_blocked_issues "$STATUS_IN_REVIEW")
+
+  if [[ "${#parked[@]}" -eq 0 ]]; then
+    echo "[sweep-parked] No parked issues found. Nothing to do." >&2
+    echo "Promoted 0 issue(s)."
+    return 0
+  fi
+
+  echo "[sweep-parked] Parked candidates: ${parked[*]}" >&2
+
+  # issue -> "STATE:STATUS", seeded lazily; a promotion made this run
+  # updates this cache directly instead of re-querying (avoids relying on
+  # read-after-write consistency, and lets same-run chains resolve).
+  local -A resolved=()
+  local -A promoted_this_run=()
+
+  promoted_count=0
+  max_iterations=$((${#parked[@]} + 1))
+
+  for ((iter = 1; iter <= max_iterations; iter++)); do
+    changed=0
+    for p in "${parked[@]}"; do
+      [[ -n "${promoted_this_run[$p]:-}" ]] && continue
+
+      local -a blockers=()
+      while IFS= read -r b; do
+        [[ -n "$b" ]] && blockers+=("$b")
+      done < <(blocked_by_issues "$p")
+
+      all_complete=1
+      for b in "${blockers[@]}"; do
+        if [[ -z "${resolved[$b]:-}" ]]; then
+          bstate="$(_issue_open_state "$b")"
+          bstatus="$(issue_status "$b")"
+          resolved["$b"]="${bstate}:${bstatus}"
+        fi
+        info="${resolved[$b]}"
+        bstate="${info%%:*}"
+        bstatus="${info#*:}"
+        if [[ "$bstate" != "CLOSED" ]] || { [[ "$bstatus" != "$STATUS_ACCEPTANCE_TESTING" ]] && [[ "$bstatus" != "$STATUS_FOR_RELEASE" ]]; }; then
+          all_complete=0
+          break
+        fi
+      done
+
+      if [[ "$all_complete" == "1" ]]; then
+        blocker_refs=""
+        if [[ "${#blockers[@]}" -gt 0 ]]; then
+          blocker_refs="$(printf '#%s, ' "${blockers[@]}")"
+          blocker_refs="${blocker_refs%, }"
+        fi
+
+        if [[ "$dry_run" == "1" ]]; then
+          echo "[sweep-parked] DRY_RUN: would promote #$p to '${STATUS_ACCEPTANCE_TESTING}', assign @${HUMAN_OWNER} (blockers complete: ${blocker_refs:-none})" >&2
+        else
+          set_issue_status "$p" "$STATUS_ACCEPTANCE_TESTING" \
+            || echo "[sweep-parked] [warn] Failed to set status on #$p to ${STATUS_ACCEPTANCE_TESTING}" >&2
+          assign_issue_verified "$p" "$HUMAN_OWNER" \
+            || echo "[sweep-parked] [warn] Could not verify #$p assigned to @${HUMAN_OWNER}" >&2
+          issue_comment "$p" "✅ **Scrummaster Agent**: every blocking dependency (${blocker_refs:-none}) is now merged and complete -- moving this parked issue to **${STATUS_ACCEPTANCE_TESTING}** together with its blocker set (owner process rule, 2026-08-04, #3631) and assigning @${HUMAN_OWNER} for acceptance." \
+            || echo "[sweep-parked] [warn] Failed to post promotion comment on #$p" >&2
+          echo "[sweep-parked] Promoted #$p to '${STATUS_ACCEPTANCE_TESTING}' (blockers complete: ${blocker_refs:-none})" >&2
+        fi
+
+        resolved["$p"]="CLOSED:${STATUS_ACCEPTANCE_TESTING}"
+        promoted_this_run["$p"]=1
+        promoted_count=$((promoted_count + 1))
+        changed=1
+      fi
+    done
+    [[ "$changed" == "1" ]] || break
+  done
+
+  echo "[sweep-parked] Done. Promoted ${promoted_count} issue(s)." >&2
+  echo "Promoted ${promoted_count} issue(s)."
 }
