@@ -128,7 +128,9 @@ canary rollout, or Terraform-managed local infrastructure)
 are documented in [Docker Compose](docs/docker-compose.md),
 [Kubernetes](docs/kubernetes.md), and [Terraform](docs/terraform.md) —
 each is driven through `nyxgpt`-wrapped commands, never a raw
-`docker`/`docker compose`/`kubectl`/`terraform` invocation.
+`docker`/`docker compose`/`kubectl`/`terraform` invocation. AWS deployments
+are `nyxgpt cloud`-wrapped too — see [Cloud (AWS)](docs/cloud.md), currently
+covering `nyxgpt cloud allow-ip` (SSH security-group lockout recovery).
 
 ---
 

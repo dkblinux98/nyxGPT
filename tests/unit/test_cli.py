@@ -2878,6 +2878,49 @@ def test_ops_alert_test_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(calls) == 1
 
 
+# --- cloud command dispatch ---
+
+
+def test_cloud_allow_ip_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    import nyxgpt.cli as cli_mod
+
+    calls: list[object] = []
+    monkeypatch.setattr(cli_mod.cloud_mod, "allow_ip", lambda args: (calls.append(args), 0)[1])
+
+    exit_code = cli(["cloud", "allow-ip"])
+
+    assert exit_code == 0
+    assert len(calls) == 1
+    assert calls[0].ip is None
+    assert calls[0].security_group_id is None
+    assert calls[0].region is None
+
+
+def test_cloud_allow_ip_dispatch_with_options(monkeypatch: pytest.MonkeyPatch) -> None:
+    import nyxgpt.cli as cli_mod
+
+    calls: list[object] = []
+    monkeypatch.setattr(cli_mod.cloud_mod, "allow_ip", lambda args: (calls.append(args), 0)[1])
+
+    exit_code = cli(
+        [
+            "cloud",
+            "allow-ip",
+            "--ip",
+            "203.0.113.5",
+            "--security-group-id",
+            "sg-abc123",
+            "--region",
+            "us-east-1",
+        ]
+    )
+
+    assert exit_code == 0
+    assert calls[0].ip == "203.0.113.5"
+    assert calls[0].security_group_id == "sg-abc123"
+    assert calls[0].region == "us-east-1"
+
+
 # --- canary command dispatch ---
 
 
