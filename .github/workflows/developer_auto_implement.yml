@@ -254,13 +254,30 @@ jobs:
           set -e
           echo "::endgroup::"
 
-          if [[ $RC -eq 3 ]]; then
+          if [[ $RC -eq 0 ]]; then
+            echo "gate_stopped=false" >> "$GITHUB_OUTPUT"
+          elif [[ $RC -eq 3 ]]; then
             echo "gate_stopped=true" >> "$GITHUB_OUTPUT"
             echo "::error::Issue #$ISSUE_NUMBER is not In Progress; stopping the workflow (manual circuit breaker engaged -- this is an intentional stop, not a failure requiring self-heal)."
             gh issue comment "$ISSUE_NUMBER" --body "⏹️ **Developer Agent**: Stopping -- issue is no longer In Progress in the project (or is not in the project). This run will not proceed past this check. If this was a manual circuit breaker, no action is needed; move the issue back to In Progress and comment \`RETRY_IMPLEMENTATION\` to resume." 2>/dev/null || true
             exit 1
+          else
+            # #3689 review: RC here is neither 0 (verified In Progress) nor
+            # 3 (this check's own explicit "not in progress" signal) -- it's
+            # a genuine check failure (e.g. require_gh_auth's auth error, or
+            # issue_status's underlying GraphQL call erroring on a transient
+            # API hiccup). Do NOT set gate_stopped=true: that would make the
+            # downstream `failure() && gate_stopped != 'true'` self-heal
+            # conditions treat this run as an intentional policy-gate stop
+            # and skip themselves, silently letting the run proceed past
+            # this step as if the In-Progress status had been verified when
+            # it wasn't -- the exact fail-open bug this rewrite was meant to
+            # close, just via a different trigger. Leave gate_stopped unset
+            # and fail with the original exit code so the run is routed
+            # into the normal self-heal chain (Phase 0-3) instead.
+            echo "::error::Failed to verify issue #$ISSUE_NUMBER status (exit $RC) -- not a policy-gate stop; routing to self-heal."
+            exit "$RC"
           fi
-          echo "gate_stopped=false" >> "$GITHUB_OUTPUT"
 
       - name: Check if PR already exists
         id: check_pr
