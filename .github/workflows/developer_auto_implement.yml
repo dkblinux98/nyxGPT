@@ -2298,4 +2298,8 @@ jobs:
           source scripts/agents/lib/gh_project.sh
           load_config
           require_gh_auth
-          sprint_autopilot_kick "${{ github.event.issue.number }}" escalated
+          if [[ "${{ steps.cross_issue_anomaly.outputs.matched }}" == "true" ]]; then
+            sprint_autopilot_kick "${{ github.event.issue.number }}" anomaly
+          else
+            sprint_autopilot_kick "${{ github.event.issue.number }}" escalated
+          fi

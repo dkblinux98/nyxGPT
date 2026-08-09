@@ -308,8 +308,8 @@ run without triggering a spurious Phase 1-3 diagnosis or a misleading
 
 ## 3f) Cross-issue infrastructure-anomaly collapse (#3694)
 
-The 2026-08-09 postmortem (`product_management/AGENTIC_SDLC_DESIGN.md` §9):
-a runner-image change made `gh api search/issues` fail deterministically in
+The 2026-08-09 postmortem (see issue #3694's "Problem / Motivation" for the
+full account): a runner-image change made `gh api search/issues` fail deterministically in
 the "Check if PR already exists" step. Five issues were in flight, so the
 self-heal chain ran five independent Phase 1-3 diagnoses against the same
 infrastructure fault -- ~45-50 Claude invocations to re-derive the same

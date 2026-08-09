@@ -740,16 +740,26 @@ sprint_autopilot_paused() {
 # (review_accept_and_merge.sh) and the 3-cycle review escalation path
 # (review_agent_auto_review.yml): both outcomes free the reviewer for the
 # next issue, so both post the same gated READY_FOR_NEXT_ISSUE kick on the
-# release tracking issue. `verb` is "merged" or "escalated" and only changes
-# the comment wording; every gate (SPRINT_AUTOPILOT, RELEASE_ISSUE_NUMBER,
-# PAUSE_SPRINT, release version parse, release-drained park) is identical.
-# Best-effort by design: always returns 0 so a kick failure never fails the
-# merge or the escalation that invoked it.
+# release tracking issue. `verb` is "merged", "escalated", or "anomaly" and
+# only changes the comment wording; every gate (SPRINT_AUTOPILOT,
+# RELEASE_ISSUE_NUMBER, PAUSE_SPRINT, release version parse, release-drained
+# park) is identical. Best-effort by design: always returns 0 so a kick
+# failure never fails the merge, escalation, or anomaly detection that
+# invoked it.
 sprint_autopilot_kick() {
   local issue="$1" verb="${2:-merged}"
   local event_phrase continue_phrase
   if [[ "$verb" == "escalated" ]]; then
     event_phrase="Issue #${issue} escalated to the owner after 3 review cycles"
+    continue_phrase="continuing with other work"
+  elif [[ "$verb" == "anomaly" ]]; then
+    # Distinct from "escalated" (#3694 review finding): this issue was not
+    # escalated to the owner and no review cycles occurred -- it hit a
+    # cross-issue infrastructure anomaly another issue already diagnosed.
+    # Reusing the "escalated" phrase here would misreport the cause on the
+    # release tracking issue, the exact channel this feature exists to keep
+    # accurate.
+    event_phrase="Issue #${issue} paused pending a cross-issue infrastructure anomaly (#3694)"
     continue_phrase="continuing with other work"
   else
     event_phrase="Issue #${issue} merged"
@@ -921,8 +931,8 @@ escalation_pause_gate() {
 # -------------------------
 # Cross-issue infrastructure-anomaly collapse (#3694)
 # -------------------------
-# The 2026-08-09 postmortem (product_management/AGENTIC_SDLC_DESIGN.md §9):
-# a single infra fault (`gh api search/issues` failing deterministically in
+# The 2026-08-09 postmortem (see issue #3694's "Problem / Motivation" for the
+# full account): a single infra fault (`gh api search/issues` failing deterministically in
 # the "Check if PR already exists" step) failed the same step on 5 in-flight
 # issues, and each ran its own independent Phase 1-3 self-heal diagnosis --
 # ~45-50 Claude invocations for one fault. The same step failing on
