@@ -170,6 +170,12 @@ conflicts should be rare by construction rather than resolved after the fact.
 
 ## 8. Implementation plan (issue-ready)
 
+**Timing (owner decision, 2026-08-09): W1–W6 are NOT filed during the v3.0.0
+cycle.** This is post-v3 work and folds into the **nyxAgent** effort (together
+with the §9 agent-dashboard/intelligent-watcher consequences). The breakdown
+below stays issue-ready so filing is mechanical when the owner gives the go —
+the owner creates the milestone and chooses the target release at that point.
+
 Stage 1 (this document) is complete when this file merges. Stages 2–4 below
 are written to file directly with `scripts/agents/create_issue.sh`: each item
 gives the title (house format), suggested Module / Priority / Effort, the
