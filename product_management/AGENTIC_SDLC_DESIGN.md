@@ -286,20 +286,22 @@ Design consequences:
    regular cadence and ask "does anything here look wrong?" — anomaly
    judgment, not pattern matching. Scripted checks remain as cheap tripwires,
    but they are the floor, never the ceiling.
-2. **Budget-shaped circuit breakers alongside correctness-shaped ones**:
-   per-issue and global caps on expensive invocations per unit time; breach
-   pauses the pipeline and notifies, unconditionally.
-3. **Cross-issue anomaly rule**: the same step failing on *different* issues
+2. **Cross-issue anomaly rule**: the same step failing on *different* issues
    in a short window is one infrastructure event, not N coding problems —
    one diagnosis, global pause, never N parallel loops.
-4. **Escalations reach a human channel** (push/email/dashboard alert), never
+3. **Escalations reach a human channel** (push/email/dashboard alert), never
    only a thread comment.
-5. **Spend telemetry is first-class sprint data**: Claude-invocation counts
+4. **Spend telemetry is first-class sprint data**: Claude-invocation counts
    and runner minutes per issue land in the retro data substrate (§7), so
    every issue has a price and retrospectives surface cost regressions.
 
-Action items 2–5 were proposed to the owner on 2026-08-09 and are **pending
-owner direction** — not yet filed as issues.
+A global hard budget circuit breaker (fixed caps on expensive invocations per
+unit time) was proposed and **rejected by the owner (2026-08-09)**: a
+threshold constant is itself a scripted guard of the kind this section rules
+out — the intelligent watcher reading the spend telemetry (item 4) provides
+the same protection with judgment instead of a constant. Items 2–4 are
+owner-endorsed direction; filing them as issues awaits explicit owner
+go-ahead.
 
 ## 10. Non-goals
 
