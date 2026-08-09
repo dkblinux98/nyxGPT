@@ -1173,6 +1173,20 @@ def _create_dist_tarball(tap_dir: Path, name: str, version: str) -> Path:
     return tar_path
 
 
+def build_release_dist_tarball(name: str, version: str, dist_root: Path) -> Path:
+    """Public wrapper around `_create_dist_tarball` for release tooling (#3622).
+
+    Builds the same vendored `nyxgpt-api`/`nyxgpt-web` source tarball the
+    local file:// Homebrew tap flow (`_install_homebrew_api`/`_web`) has
+    always built, but at an arbitrary output directory rather than a live
+    `brew --repo` tap checkout -- one implementation of "what goes in the
+    tarball", used both by the local install path and by
+    scripts/release/build_homebrew_artifacts.py to produce the tarballs a
+    *remote* tap's formula points at (attached as GitHub Release assets).
+    """
+    return _create_dist_tarball(dist_root, name, version)
+
+
 def _brew_install_or_reinstall(spec: str, name: str, *, sha256: str, marker_dir: Path) -> str:
     """`brew install`/`reinstall` formula `name`, skipping the work when unchanged.
 

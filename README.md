@@ -8,14 +8,23 @@ Your data stays on your machine. No cloud dependency is required.
 
 ---
 
-## Installing 2.1.0 from PyPI — read this first
+## Installing from PyPI — read this first
 
 The `nyxgpt` package on PyPI provides the Python package (CLI, API, core)
-as a versioned artifact, **but version 2.1.0 is not yet self-contained**:
-the stack-lifecycle tooling (`nyxgpt ops install` and friends) resolves its
-runtime resources relative to a source checkout. A bare `pip install nyxgpt`
-on a clean machine will import and run, but **full stack operation requires
-cloning this repository** and installing from it:
+as a versioned artifact. As of this codebase, `nyxgpt ops install`/`up` no
+longer resolve any runtime resource (Compose file, config templates,
+launchd/systemd unit templates, Grafana/Prometheus/promtail provisioning,
+helper scripts) relative to a source checkout — everything ships as package
+data (#3621), so `pip install nyxgpt` and `nyxgpt ops install` work
+end-to-end with **no repo checkout**. Container images for the Compose/k8s
+paths are also published to GHCR, and a remote Homebrew tap replaces the
+old local `file://` tap for macOS (#3622) — see
+[docs/homebrew.md#remote-tap](docs/homebrew.md#remote-tap).
+
+**This has not shipped in a PyPI release yet** — the currently published
+version predates this self-containment work. Until the next version is
+published (owner-run release ceremony, `scripts/release_ceremony.sh`), a
+repo checkout is still required:
 
 ```bash
 git clone https://github.com/dkblinux98/nyxGPT.git
@@ -23,9 +32,6 @@ cd nyxGPT
 pip install -e .
 nyxgpt ops install
 ```
-
-Repo-less, artifact-only installation is planned for a later release
-(tracked in #3621/#3622).
 
 ---
 
@@ -67,6 +73,7 @@ Repo-less, artifact-only installation is planned for a later release
 - **SRE Overview** — Grafana is the single pane of glass: the Admin Dashboard's SRE Overview tile (`/admin/dashboard`) opens Grafana's SRE Home dashboard in a new tab, reaching every Grafana dashboard, Logs Drilldown, traces, and GlitchTip error tracking above, all provisioned as code
 - **Guided secrets setup** — masked entry, plain-language per-key help, and format validation for human-provided secrets (`nyxgpt secrets setup` CLI or `/admin/secrets`); `config.ini` is the canonical store for write-once external tokens, pushed one-way to this repo's GitHub Actions secrets via `nyxgpt ops secrets-sync`
 - Optional **Docker Compose** stack for one-command bring-up of every component
+- **Published install artifacts** — container images for the Compose/k8s paths on GHCR (`ghcr.io/dkblinux98/nyxgpt-{api,web}`) and a remote Homebrew tap, built and published by `.github/workflows/release-artifacts.yml` on every GitHub Release, alongside the owner-run PyPI publish (`scripts/release_ceremony.sh`) — see [docs/homebrew.md#remote-tap](docs/homebrew.md#remote-tap)
 - Robust unit and integration test suite
 
 ---
