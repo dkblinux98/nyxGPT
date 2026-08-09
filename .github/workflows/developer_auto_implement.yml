@@ -287,7 +287,7 @@ jobs:
           # ones). Look for a PR with "Closes #ISSUE" in the body via the REST
           # Search API (its own rate pool, separate from GraphQL and core
           # REST) instead of paging every PR in the repo via gh pr list.
-          FOUND_PR=$(gh api search/issues \
+          FOUND_PR=$(gh api search/issues --method GET \
             -f q="\"Closes #${ISSUE}\" in:body type:pr repo:${{ github.repository }}" \
             --jq '.items[0].number // empty')
 
@@ -1715,7 +1715,7 @@ jobs:
             **For PR-related errors:** (REST Search API -- its own rate pool,
             separate from both core REST and GraphQL)
             ```bash
-            gh api search/issues \
+            gh api search/issues --method GET \
               -f q="${{ github.event.issue.number }} in:body type:pr repo:${{ github.repository }}" \
               --jq '.items[] | {number, state, closed_at, merged_at: .pull_request.merged_at}'
             ```
