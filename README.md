@@ -73,6 +73,7 @@ nyxgpt ops install
 - **SRE Overview** — Grafana is the single pane of glass: the Admin Dashboard's SRE Overview tile (`/admin/dashboard`) opens Grafana's SRE Home dashboard in a new tab, reaching every Grafana dashboard, Logs Drilldown, traces, and GlitchTip error tracking above, all provisioned as code
 - **Guided secrets setup** — masked entry, plain-language per-key help, and format validation for human-provided secrets (`nyxgpt secrets setup` CLI or `/admin/secrets`); `config.ini` is the canonical store for write-once external tokens, pushed one-way to this repo's GitHub Actions secrets via `nyxgpt ops secrets-sync`
 - Optional **Docker Compose** stack for one-command bring-up of every component
+- **Published install artifacts** — container images for the Compose/k8s paths on GHCR (`ghcr.io/dkblinux98/nyxgpt-{api,web}`) and a remote Homebrew tap, built and published by `.github/workflows/release-artifacts.yml` on every GitHub Release, alongside the owner-run PyPI publish (`scripts/release_ceremony.sh`) — see [docs/homebrew.md#remote-tap](docs/homebrew.md#remote-tap)
 - Robust unit and integration test suite
 
 ---
