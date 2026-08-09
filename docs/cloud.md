@@ -1,8 +1,9 @@
 # nyxGPT Cloud (AWS)
 
 `nyxgpt cloud` is the CLI surface for AWS-deployed nyxGPT stacks (P6-11-class
-scope). It currently covers `allow-ip` (#3630); provisioning and teardown
-(`nyxgpt cloud deploy`/`destroy`, #3513) land separately.
+scope). It currently covers `allow-ip` (#3630) and `user-data` (#3511,
+target-OS provisioning); full provisioning and teardown (`nyxgpt cloud
+deploy`/`destroy`, #3513) land separately.
 
 Install the AWS SDK dependency with:
 
@@ -84,6 +85,88 @@ store AWS credentials itself. Guided credential collection is separate scope
 
 ---
 
+## Target-OS provisioning (P6-12/#3511)
+
+`nyxgpt cloud user-data` renders the EC2 user-data bootstrap script that
+installs nyxGPT on a fresh instance and brings up the native stack --
+per-target-OS, from published artifacts only. This is the OS-dispatch layer
+the not-yet-implemented Terraform AWS module (P6-8) and `nyxgpt cloud
+deploy` (P6-11) will consume; it doesn't talk to AWS itself.
+
+```bash
+nyxgpt cloud user-data --os linux
+nyxgpt cloud user-data --os macos
+```
+
+### Options
+
+| Flag | Description |
+| --- | --- |
+| `--os {linux,macos}` | Required. Target instance OS family. |
+| `--version <version>` | Pin the installed nyxGPT version. Linux: `pip install nyxgpt==<version>`. macOS: recorded in the script for reference only -- the Homebrew tap always tracks its current formula (see [Remote tap](homebrew.md#remote-tap)), not an arbitrary pinned release. Default: latest. |
+| `--output <path>` | Write the rendered script to `path` instead of stdout. |
+
+### What the rendered script does
+
+**`--os linux`** (Amazon Linux 2023, Ubuntu 22.04/24.04 LTS -- see the
+[support matrix](#target-os-support-matrix) below): installs Python 3 +
+pip via the AMI's own package manager (`dnf`/`apt`), `pip install`s nyxGPT
+from PyPI under the AMI's default login user (`ec2-user`/`ubuntu`, never
+root), installs Ollama via its official installer, seeds
+`~/.nyxGPT/config.ini` from the packaged `example.config.ini`, enables
+`loginctl` lingering (so a systemd --user unit survives with no interactive
+login), and runs `nyxgpt ops install --skip-observability` -- the same
+native (systemd --user) path #3508 added and
+`scripts/systemd-native-smoke.sh` exercises in CI.
+
+**`--os macos`** (EC2 Mac -- see the [support matrix](#target-os-support-matrix)
+below): installs Homebrew if missing, `brew tap`s the remote tap
+(`dkblinux98/homebrew-nyxgpt`) and installs `nyxgpt-api`/`nyxgpt-web`,
+seeds `~/.nyxGPT/config.ini`, and starts both via `brew services`. This
+follows [the documented local remote-tap flow](homebrew.md#remote-tap)
+exactly -- it deliberately does **not** call `nyxgpt ops install`, whose
+macOS path builds a *local* tap from a repo checkout
+(`_install_homebrew_api` in `src/nyxgpt/ops.py`) that doesn't exist on a
+fresh instance.
+
+**Repo-less (CLAUDE.md, 2026-08-01):** neither script ever runs `git
+clone` -- the PyPI package and the remote Homebrew tap are the only
+sources of the application, so both work on an instance with no repo
+checkout.
+
+### Target-OS support matrix
+
+| Target | Family / instance type | OS version | Install path |
+| --- | --- | --- | --- |
+| Linux AMI | Amazon Linux 2023 (x86_64, arm64) | current | PyPI + systemd --user (#3508) |
+| Linux AMI | Ubuntu 22.04 / 24.04 LTS (x86_64, arm64) | current | PyPI + systemd --user (#3508) |
+| EC2 Mac | `mac2.metal` / `mac2-m2.metal` / `mac2-m2pro.metal` (Apple Silicon) | Sonoma 14, Sequoia 15 | Remote Homebrew tap + launchd |
+| EC2 Mac | `mac1.metal` (Intel) | Ventura 13, Sonoma 14 | Remote Homebrew tap + launchd |
+
+EC2 Mac instances require a
+[Dedicated Host](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-mac-instances.html)
+with a 24-hour minimum allocation -- an AWS billing/allocation constraint,
+not a nyxGPT one. Any other Linux distro (no systemd, e.g. Alpine) or
+Windows AMI is out of scope, per the native-install OS dispatch
+(`_unsupported_os_result` in `src/nyxgpt/ops.py`) and CLAUDE.md's
+Repo-less Portability section (Windows explicitly out of scope for
+portability targets).
+
+`LINUX_AMI_SUPPORT_MATRIX`/`MACOS_EC2_SUPPORT_MATRIX` in
+`src/nyxgpt/cloud_provision.py` are this table's source of truth.
+
+### CI coverage
+
+`.github/workflows/release-artifacts.yml`'s `ec2-linux-user-data-smoke` job
+renders the Linux script with `nyxgpt cloud user-data` from the
+just-published PyPI artifact (no repo checkout) and runs it end-to-end on
+`ubuntu-latest`, verifying the same install → verify → down cycle as
+`artifact-install-smoke`. EC2 Mac has no CI coverage -- GitHub Actions has
+no macOS EC2 runner, and Apple's licensing does not permit running macOS in
+a container -- so the macOS support matrix above is documentation-verified,
+not CI-verified (the acceptance criteria call for CI coverage "where
+feasible (Linux at minimum)").
+
 ## Note for the AWS Terraform module (P6-8)
 
 `allow-ip` mutates the security group's port-22 ingress rule directly via
@@ -94,7 +177,9 @@ security-group resource must not fight that: give the ingress rule a
 `terraform apply` doesn't revert an `allow-ip` refresh back to a stale IP.
 The module should also write `security_group_id` and `region` to
 `~/.nyxGPT/cloud/state.json` on apply, so `allow-ip` can auto-discover its
-target without `--security-group-id`/`--region`.
+target without `--security-group-id`/`--region`. Its `user_data` should be
+`nyxgpt cloud user-data --os <linux|macos>`'s rendered output for the
+instance's chosen AMI family.
 
 ## Lockout recovery
 
