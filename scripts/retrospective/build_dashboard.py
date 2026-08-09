@@ -8,12 +8,18 @@ Inputs (all under scripts/retrospective/data/ unless overridden):
                          "Retro Dashboard - Dump Project Fields" workflow. When present,
                          the sprint axis uses the Project's actual Sprint iterations;
                          otherwise calendar weeks stand in (labeled provisional).
+  reviews_final.json   - every REQUEST_CHANGES review round, all time, produced by the
+                         "Retro Dashboard - Dump Review Rounds" workflow from the GitHub
+                         PR-review API (owner decision 2026-08-08, #3667 — this used to be
+                         a Gmail notification-email parse; no live API calls happen here,
+                         this script only reads the committed dump).
 
 Output: retro.html next to this script (publish it as the Artifact).
 
-The review-gate monthly series is seeded below (Jan-Jun are historical constants
-mined from the complete GitHub notification-email archive); refresh July+ counts
-when regenerating.
+The review-gate monthly series is seeded below (older months are historical
+constants mined before the review agent posted rounds as PR reviews); the
+current month's rejected count is instead computed live from
+data/reviews_final.json in gate_series().
 """
 
 import argparse
@@ -63,8 +69,10 @@ CAUSES = ["defect", "spec", "workflow", "pm"]
 AF_CAUSES = ("defect", "spec", "workflow")
 
 # Review-gate monthly series: PRs merged (GitHub API) vs PRs with >=1
-# REQUEST_CHANGES (notification-email archive). Update the current month on refresh.
-# merged/medianHrs are recomputed from data/pr_times.json when present.
+# REQUEST_CHANGES round (GitHub PR-review API, data/reviews_final.json).
+# merged/medianHrs are recomputed from data/pr_times.json when present; the
+# current month's "rejected" is recomputed from reviews_final.json in
+# gate_series() — older months predate that dump and keep their seeded value.
 GATE = [
     {"m": "Jan", "merged": 153, "rejected": 62},
     {"m": "Feb", "merged": 15, "rejected": 26},
@@ -223,8 +231,14 @@ def month_of(iso):
     return int(iso[5:7])
 
 
-def gate_series(issues, pr_times):
+def gate_series(issues, pr_times, reviews, now=None):
     gate = [dict(g) for g in GATE]
+    now = now or datetime.now(UTC)
+    current_month = now.month
+    if 1 <= current_month <= len(gate):
+        gate[current_month - 1]["rejected"] = sum(
+            1 for r in reviews if month_of(r["date"]) == current_month
+        )
     for i in issues:
         if i.get("cause") in AF_CAUSES:
             gate[month_of(i["created"]) - 1].setdefault("af", 0)
@@ -448,7 +462,7 @@ def main():
 
     qdata = build_qdata(issues, project_fields)
     classified = qdata.pop("issues_classified")
-    qdata["gate"] = gate_series(classified, pr_times)
+    qdata["gate"] = gate_series(classified, pr_times, reviews)
     now = datetime.now(UTC)
     qdata["aging"], qdata["flow"], open_af = aging_flow(classified, now)
     qdata["themes"] = finding_themes(reviews)
