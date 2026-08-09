@@ -80,6 +80,9 @@ scrummaster_dispatch_next() {
     echo "paused=true"
     echo "next_issue="
     printf 'tried<<NYXGPT_TRIED_EOF\n%sNYXGPT_TRIED_EOF\n' ""
+    _notify_dispatch_block "dispatch-paused" \
+      "Scrummaster dispatch paused -- 2 or more unresolved escalations (open issues assigned to the owner)." \
+      "Resolve the unresolved escalations reported on the release tracking issue; dispatch resumes automatically once the count drops below 2."
     return 0
   fi
   echo "paused=false"
@@ -107,6 +110,29 @@ scrummaster_dispatch_next() {
 
   echo "next_issue=${started}"
   printf 'tried<<NYXGPT_TRIED_EOF\n%sNYXGPT_TRIED_EOF\n' "$tried"
+
+  if [[ -z "$started" && -n "$tried" ]]; then
+    _notify_dispatch_block "queue-blocked" \
+      "Scrummaster dispatch started nothing -- every eligible Backlog candidate was unclaimable." \
+      "Inspect the unclaimable candidate(s) reported on the release tracking issue and resolve manually (#3665 decision matrix)."
+  fi
+}
+
+# #3695: human-channel (Slack DM) notification for the two dispatch-wide
+# terminal outcomes above (escalation-pause backstop, queue fully blocked)
+# -- both are head-of-line blocks on the whole sprint-autopilot queue, not
+# tied to any single issue, so they are attached to (and de-duplicated
+# against) RELEASE_ISSUE_NUMBER, the same target sprint_autopilot_kick and
+# escalation_pause_gate already report to. Silently skipped if
+# RELEASE_ISSUE_NUMBER is not configured -- same conservative default as
+# escalation_pause_gate's own reporting. Best-effort: never fails the
+# caller's dispatch loop.
+_notify_dispatch_block() {
+  local state="$1" diagnosis="$2" action="$3"
+  [[ -n "${RELEASE_ISSUE_NUMBER:-}" ]] || return 0
+  notify_human_escalation "$RELEASE_ISSUE_NUMBER" "$state" "$diagnosis" "$action" \
+    "${RELEASE_ISSUE_NUMBER}:${state}" \
+    || true
 }
 
 # Only run for real when executed directly -- tests source this file to

@@ -39,6 +39,18 @@ escalation, see below) end in exactly that state.
   gate; the stale release-issue report is updated to say so rather than
   left dangling.
 
+Both this pause and the "every eligible Backlog candidate was unclaimable"
+queue-blocked case (`scrummaster_dispatch_next.sh`'s fall-through loop
+exhausting `MAX_ATTEMPTS`) are head-of-line blocks on the whole queue, so
+`scrummaster_dispatch_next.sh` also sends a Slack DM to the owner for each
+(`notify_human_escalation`, `scripts/agents/lib/gh_project.sh`, #3695),
+attached to and deduped against `RELEASE_ISSUE_NUMBER` -- the same
+dispatch-wide target the release-issue report above and
+`sprint_autopilot_kick` already use. Skipped silently if
+`RELEASE_ISSUE_NUMBER` is not configured, and never blocks the dispatch
+loop itself on a Slack failure (same graceful-degradation contract as
+every other `notify_human_escalation` caller).
+
 ## Review huddle mediation (owner-ratified 2026-08-09, #3687)
 
 When `developer_huddle_position.yml` posts `HUDDLE_MEDIATION_REQUESTED` on

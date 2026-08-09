@@ -799,6 +799,106 @@ READY_FOR_NEXT_ISSUE" \
 }
 
 # -------------------------
+# Human-channel escalation notifications (Slack DM, #3695)
+# -------------------------
+# On 2026-08-09 a Phase 3 self-heal FATAL diagnosis on #3513 sat unread in a
+# GitHub issue thread for ~8 hours while the pipeline burned ~50 redundant
+# retries -- comments alone don't reach a human who isn't actively watching.
+# This sends a DM to HUMAN_OWNER's Slack account for terminal agent outcomes
+# (review-agent 3-cycle escalation, self-heal FATAL/FIXED_REQUIRES_MERGE,
+# retry-budget exhaustion (#3689), scrummaster queue-blocked/pause reports).
+#
+# Owner decision 2026-08-09: reuse this repo's existing SLACK_BOT_TOKEN +
+# SLACK_USER_ID Actions secrets (SLACK_BOT_TOKEN already wired for
+# notify-merge-conflicts.yml; SLACK_USER_ID is the owner's Slack member id
+# for the DM channel param) -- no new secrets, no provider choice made by
+# this code. Every caller's GitHub-comment escalation path runs first and
+# unconditionally; this is purely additive and must never block or fail
+# that path, so every failure mode here (missing secrets, curl error,
+# non-ok Slack response) is a `_warn` + `return 0`, never a propagated
+# failure.
+_SLACK_NOTIFY_MARKER_PREFIX="<!-- slack-notify:"
+
+# True if a dedup marker for `dedup_key` was posted on `issue`'s comments
+# within `window_minutes` minutes (default 60). Prevents the same terminal
+# state re-firing a Slack DM on every retry/re-check of a stuck loop
+# (acceptance criterion: de-duplicated within a window). Best effort: a
+# lookup failure is treated as "not a duplicate" so a transient API/parse
+# error never permanently silences the channel.
+_slack_notify_recent() {
+  local issue="$1" dedup_key="$2" window_minutes="${3:-60}"
+  require_cmd jq
+  local marker="${_SLACK_NOTIFY_MARKER_PREFIX}${dedup_key} -->"
+  local cutoff
+  cutoff="$(python3 -c "
+import datetime, sys
+print((datetime.datetime.utcnow() - datetime.timedelta(minutes=int(sys.argv[1]))).strftime('%Y-%m-%dT%H:%M:%SZ'))
+" "$window_minutes" 2>/dev/null)"
+  [[ -n "$cutoff" ]] || return 1
+
+  # --paginate emits one JSON array per page -- slurp (-s) and flatten one
+  # level before filtering so the window check runs over the full combined
+  # comment history, not per-page (see AGENTS.md's --paginate note).
+  gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}/comments" --paginate 2>/dev/null \
+    | jq -s --arg marker "$marker" --arg cutoff "$cutoff" \
+      '[.[][] | select(.body | contains($marker)) | select(.created_at >= $cutoff)] | length > 0' 2>/dev/null \
+    | grep -q true
+}
+
+# Sends a Slack DM to HUMAN_OWNER for a terminal agent outcome. Args:
+#   $1 issue      issue/PR number the escalation is about
+#   $2 state      short terminal-state label (e.g. "FATAL", "review-escalation")
+#   $3 diagnosis  one-line diagnosis
+#   $4 action     recommended human action (e.g. "merge <sha> to v3.0.0")
+#   $5 dedup_key  stable key identifying this issue+step
+#                 (default: "${issue}:${state}")
+#   $6 window_minutes  dedup window in minutes (default: 60)
+#
+# Absent SLACK_BOT_TOKEN/SLACK_USER_ID degrades gracefully to comment-only
+# behavior (no-op here; the caller's own GitHub comment already carries the
+# escalation). Always returns 0 -- see header comment above.
+notify_human_escalation() {
+  local issue="$1" state="$2" diagnosis="$3" action="$4"
+  local dedup_key="${5:-${issue}:${state}}"
+  local window_minutes="${6:-60}"
+  require_cmd jq
+
+  if [[ -z "${SLACK_BOT_TOKEN:-}" || -z "${SLACK_USER_ID:-}" ]]; then
+    _warn "notify_human_escalation: SLACK_BOT_TOKEN/SLACK_USER_ID not configured -- skipping Slack DM (comment-only fallback stands)."
+    return 0
+  fi
+
+  if _slack_notify_recent "$issue" "$dedup_key" "$window_minutes"; then
+    _debug "notify_human_escalation: recent notification found for '${dedup_key}' -- skipping duplicate."
+    return 0
+  fi
+
+  local issue_url text payload response ok
+  issue_url="https://github.com/${REPO_OWNER}/${REPO_NAME}/issues/${issue}"
+  text="$(printf ':rotating_light: *%s* on <%s|#%s>\n*Diagnosis:* %s\n*Recommended action:* %s' \
+    "$state" "$issue_url" "$issue" "$diagnosis" "$action")"
+  payload="$(jq -n --arg channel "$SLACK_USER_ID" --arg text "$text" '{channel: $channel, text: $text}')"
+
+  response="$(curl -sS -X POST https://slack.com/api/chat.postMessage \
+    -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+    -H "Content-Type: application/json; charset=utf-8" \
+    -d "$payload" 2>/dev/null)" || response=""
+  ok="$(echo "$response" | jq -r '.ok // false' 2>/dev/null)"
+
+  if [[ "$ok" != "true" ]]; then
+    _warn "notify_human_escalation: Slack API call failed for issue #${issue} (response=${response:-<empty>}) -- falling back to comment-only."
+    return 0
+  fi
+
+  local marker
+  marker="${_SLACK_NOTIFY_MARKER_PREFIX}${dedup_key} -->"
+  issue_comment "$issue" "$(printf ':envelope: Notified @%s via Slack DM (%s).\n\n%s' "${HUMAN_OWNER:-the human owner}" "$state" "$marker")" \
+    || _warn "notify_human_escalation: Slack DM sent but failed to post dedup marker comment on #${issue}."
+
+  return 0
+}
+
+# -------------------------
 # Unresolved-escalation pause backstop (#3687)
 # -------------------------
 # "Unresolved escalation" = an open issue currently assigned to

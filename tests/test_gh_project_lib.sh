@@ -751,6 +751,95 @@ fi
 _assert_eq "reopening updates the stale report exactly once" "1" "${#PATCH_CALLS[@]}"
 _assert_contains "the reopen PATCH targets the existing comment id" "${PATCH_CALLS[0]}" "issues/comments/999"
 
+# --- Test 16: _slack_notify_recent (#3695) -- exercises the REAL gh api + ---
+# --- jq + python3 cutoff pipeline (only `gh` is stubbed) so a regression ---
+# --- in that pipeline itself is caught, not just the higher-level mock ---
+# --- tests below. A large window makes a comment from 2020 count as ---
+# --- "recent"; a 1-minute window does not (2020 is never within 1 minute ---
+# --- of "now", whenever this test runs). ---
+REPO_OWNER="test-owner"
+REPO_NAME="test-repo"
+gh() {
+  if [[ "$1" == "api" && "$2" == "repos/test-owner/test-repo/issues/42/comments" && "$3" == "--paginate" ]]; then
+    cat <<'JSON'
+[{"id": 1, "created_at": "2020-01-01T00:00:00Z", "body": "notified <!-- slack-notify:42:FATAL -->"}]
+JSON
+    return 0
+  fi
+  echo "[test] unexpected gh invocation: $*" >&2
+  return 1
+}
+if _slack_notify_recent "42" "42:FATAL" 999999999; then
+  echo "[ok] _slack_notify_recent: a huge window counts an old marker as recent"
+else
+  echo "[FAIL] _slack_notify_recent: a huge window should count an old marker as recent" >&2
+  FAILURES=$((FAILURES + 1))
+fi
+if _slack_notify_recent "42" "42:FATAL" 1; then
+  echo "[FAIL] _slack_notify_recent: a 1-minute window should not count a 2020 marker as recent" >&2
+  FAILURES=$((FAILURES + 1))
+else
+  echo "[ok] _slack_notify_recent: a 1-minute window does not count a 2020 marker as recent"
+fi
+if _slack_notify_recent "42" "42:OTHER_KEY" 999999999; then
+  echo "[FAIL] _slack_notify_recent: a non-matching dedup key should never count as recent" >&2
+  FAILURES=$((FAILURES + 1))
+else
+  echo "[ok] _slack_notify_recent: a non-matching dedup key never counts as recent"
+fi
+
+# --- Test 17: notify_human_escalation (#3695) -- graceful degradation, ---
+# --- dedup skip, success path (Slack call + marker comment), and Slack- ---
+# --- failure fallback. curl/issue_comment/_slack_notify_recent are all ---
+# --- stubbed here; the real gh/jq/python3 pipeline is covered by Test 16 ---
+# --- above. ---
+SLACK_BOT_TOKEN=""
+SLACK_USER_ID=""
+CURL_CALLS=0
+curl() { CURL_CALLS=$((CURL_CALLS + 1)); echo '{"ok":true}'; }
+COMMENT_CALLS=()
+issue_comment() { COMMENT_CALLS+=("$1|$2"); }
+
+notify_human_escalation "42" "FATAL" "diag" "action"
+_assert_eq "missing SLACK_BOT_TOKEN/SLACK_USER_ID: no curl call attempted" "0" "$CURL_CALLS"
+_assert_eq "missing SLACK_BOT_TOKEN/SLACK_USER_ID: no marker comment posted" "0" "${#COMMENT_CALLS[@]}"
+
+SLACK_BOT_TOKEN="xoxb-test"
+SLACK_USER_ID="U12345"
+CURL_CALLS=0
+COMMENT_CALLS=()
+_slack_notify_recent() { return 0; } # dedup: already notified recently
+notify_human_escalation "42" "FATAL" "diag" "action"
+_assert_eq "recent duplicate: no curl call attempted" "0" "$CURL_CALLS"
+_assert_eq "recent duplicate: no marker comment posted" "0" "${#COMMENT_CALLS[@]}"
+
+# curl runs inside `response="$(curl ...)"` (command substitution), which is
+# a subshell -- a plain CURL_CALLS=$((CURL_CALLS+1)) inside the stub would
+# not be visible back here, so count calls via a file instead (file writes
+# from a subshell persist; variable assignments do not).
+CURL_CALL_LOG="$(mktemp)"
+COMMENT_CALLS=()
+_slack_notify_recent() { return 1; } # not a duplicate
+curl() { echo called >>"$CURL_CALL_LOG"; echo '{"ok":true}'; }
+notify_human_escalation "42" "FATAL" "one-line diagnosis" "merge abc123 to v3.0.0" "42:FATAL"
+_assert_eq "success path: exactly one Slack API call" "1" "$(wc -l <"$CURL_CALL_LOG")"
+_assert_eq "success path: exactly one marker comment posted" "1" "${#COMMENT_CALLS[@]}"
+_assert_eq "success path: marker comment targets the right issue" "42" "${COMMENT_CALLS[0]%%|*}"
+_assert_contains "success path: marker comment carries the dedup marker" \
+  "${COMMENT_CALLS[0]}" "<!-- slack-notify:42:FATAL -->"
+
+: >"$CURL_CALL_LOG"
+COMMENT_CALLS=()
+curl() { echo called >>"$CURL_CALL_LOG"; echo '{"ok":false,"error":"channel_not_found"}'; }
+if notify_human_escalation "42" "FATAL" "diag" "action"; then
+  echo "[ok] Slack API failure: notify_human_escalation still returns success (never blocks the caller)"
+else
+  echo "[FAIL] Slack API failure: notify_human_escalation must always return 0" >&2
+  FAILURES=$((FAILURES + 1))
+fi
+_assert_eq "Slack API failure: no marker comment posted (no false record of success)" "0" "${#COMMENT_CALLS[@]}"
+rm -f "$CURL_CALL_LOG"
+
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "All tests passed."
   exit 0

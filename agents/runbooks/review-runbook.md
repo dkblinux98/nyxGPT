@@ -149,7 +149,13 @@ The review workflow tracks cumulative review cycles:
 - After 3rd REQUEST_CHANGES review:
   - Issue remains Status -> In Review
   - Issue reassigned to HUMAN_OWNER
-  - Slack DM sent to human
+  - Slack DM sent to human (`notify_human_escalation`,
+    `scripts/agents/lib/gh_project.sh`, #3695 -- reuses the existing
+    `SLACK_BOT_TOKEN` + `SLACK_USER_ID` secrets already configured for
+    `notify-merge-conflicts.yml`; missing secrets or a failed Slack call
+    degrade gracefully to the GitHub comment alone, which is always posted
+    first and unconditionally; repeat escalations on the same PR within a
+    60-minute window are deduped)
   - Human intervenes to resolve
 
 All fixes happen on the PR branch (no separate issues created).
