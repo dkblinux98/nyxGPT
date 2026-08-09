@@ -43,8 +43,17 @@ echo "[review] ===== Starting merge process for PR #${PR}, Issue #${ISSUE} =====
 # ---- Pre-merge validation ----
 echo "[review] Validating PR is mergeable..." >&2
 
-# Get PR details
-pr_data="$(gh pr view "$PR" --repo "${REPO_OWNER}/${REPO_NAME}" --json headRefName,baseRefName,mergeable,mergeStateStatus,state)"
+# Get PR details. REST's mergeable/mergeable_state/state/merged shapes
+# differ from the old GraphQL query -- re-derive the same three-value
+# mergeable enum (MERGEABLE/CONFLICTING/UNKNOWN) and OPEN/CLOSED/MERGED
+# state this script's downstream checks were written against.
+pr_data="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/pulls/${PR}" --jq '{
+  headRefName: .head.ref,
+  baseRefName: .base.ref,
+  mergeable: (if .mergeable == null then "UNKNOWN" elif .mergeable_state == "dirty" then "CONFLICTING" else "MERGEABLE" end),
+  mergeStateStatus: (.mergeable_state | ascii_upcase),
+  state: (if .merged then "MERGED" elif .state == "closed" then "CLOSED" else "OPEN" end)
+}')"
 pr_head_branch="$(echo "$pr_data" | jq -r '.headRefName')"
 pr_base_branch="$(echo "$pr_data" | jq -r '.baseRefName')"
 pr_mergeable="$(echo "$pr_data" | jq -r '.mergeable')"
@@ -74,8 +83,8 @@ if [[ "$pr_mergeable" == "CONFLICTING" ]]; then
   # string below is the loop guard -- if a prior automated round already ran
   # on this PR and it is conflicted again, escalate to the human owner.
   CONFLICT_ROUND_MARKER="Automated conflict-resolution round"
-  prior_rounds=$(gh pr view "$PR" --repo "${REPO_OWNER}/${REPO_NAME}" --json comments \
-    --jq "[.comments[] | select(.body | contains(\"${CONFLICT_ROUND_MARKER}\"))] | length" \
+  prior_rounds=$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${PR}/comments" --paginate \
+    --jq "[.[] | select(.body | contains(\"${CONFLICT_ROUND_MARKER}\"))] | length" \
     2>/dev/null || echo 0)
   if [[ "${prior_rounds:-0}" -eq 0 ]]; then
     echo "[review] Dispatching automated conflict-resolution round to developer agent..." >&2
