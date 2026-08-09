@@ -8,6 +8,58 @@ Your data stays on your machine. No cloud dependency is required.
 
 ---
 
+## What nyxGPT actually is
+
+The chat/RAG application above is real and working, but the code is not
+the point — it's the vehicle. **nyxGPT is a reference implementation of
+full-lifecycle software delivery discipline** — observability, canary
+deployment, self-healing, release management, and an agent-run delivery
+process — held together at a scale small enough for one person to read
+end-to-end and check every claim against the actual commit and issue
+history.
+
+**This is an agent-coded project — AI agents wrote the overwhelming
+majority of the code — managed by a person with 25 years of SRE and
+Release Management experience, from individual-contributor through
+Director-level leadership roles, in medium-size startups and mature
+organizations.** That background is the explanation for the project's
+shape, not a bio aside: what follows is what running an engineering
+organization staffed by AI agents, part-time, looks like when the person
+building the guardrails has spent a career running release trains and
+on-call rotations.
+
+The core story is standard SRE/release discipline pointed at a new kind of
+worker:
+
+- **Work is specified precisely enough to delegate.** Every issue carries
+  acceptance criteria before an agent writes a line of implementation
+  (see [Creating Issues](CLAUDE.md#creating-issues)).
+- **Gates exist because delegated work fails, and are built to catch it.**
+  Code review with automatic escalation after repeated rejection, CI that
+  blocks merge, and human acceptance testing after every merge (see
+  [How this project is run](docs/how-this-project-is-run.md) below) are
+  failure catchers for AI-agent output, not bureaucracy. **Agent failures
+  are expected and routine — it is the surrounding process, not agent
+  infallibility, that turns that into production-grade output.** A
+  rejected review, a red CI run, or a bounced acceptance test is the
+  system working, not the system failing; this project's own history of
+  those gates firing (see the retrospective linked below) is the
+  credibility evidence, not a claim taken on faith.
+- **Release discipline holds even though no one reviews every line.** A
+  system that produces changes faster than any one person could review
+  line-by-line still needs a release manager's judgment about what ships,
+  when, and what gets rolled back — that judgment is recorded in this
+  repo's phased releases and [decision records](product_management/).
+
+The agent system itself (charters, runbooks, prompts, and the workflow
+automation under `.github/workflows/`) is planned to become its own
+project, with nyxGPT as its primary case study.
+
+See **[How this project is run](docs/how-this-project-is-run.md)** for the
+mechanics.
+
+---
+
 ## Installing from PyPI — read this first
 
 The `nyxgpt` package on PyPI provides the Python package (CLI, API, core)
@@ -184,6 +236,19 @@ several Claude Code automations (MCP servers, hooks, a subagent, a skill)
 that activate automatically in this directory. See
 [docs/development.md](docs/development.md) for the full workflow reference
 and [AGENTS.md](AGENTS.md) for agent roles and permissions.
+
+---
+
+## How this project is run
+
+nyxGPT's engineering process is itself part of what this project
+demonstrates — see [What nyxGPT actually is](#what-nyxgpt-actually-is)
+above for why. **[How this project is run](docs/how-this-project-is-run.md)**
+indexes the mechanics: the agent roles and their charters/runbooks, the
+GitHub project board's status flow (Backlog → In Progress → In Review →
+Acceptance Testing → For Release), the decision-record practice, the
+Definition of Done and the acceptance-failure/improvement taxonomy, and
+the retrospective.
 
 ---
 
