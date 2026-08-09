@@ -79,22 +79,62 @@ fi
 log "nyxgpt ops install --skip-observability"
 nyxgpt ops install --skip-observability
 
-log "Verifying systemd --user units are active"
-fail_count=0
-for unit in nyxgpt-api nyxgpt-web nyxgpt-ollama nyxgpt-cassandra-logs nyxgpt-ollama-logs; do
-  state=$(systemctl --user is-active "$unit.service" 2>/dev/null || echo "inactive")
-  echo "  $unit -> $state"
-  [[ "$state" == "active" ]] || { echo "::error::$unit is not active"; fail_count=1; }
-done
+# Both checks below wait with a bounded retry window instead of probing once
+# immediately: a unit freshly (re)started by `nyxgpt ops install` -- and
+# especially `npm run start`'s Next.js boot behind nyxgpt-web -- can still be
+# coming up when this script reaches its verification step, so a single
+# immediate probe races startup rather than testing actual health (#3632: a
+# 464ms-old nyxgpt-web unit returned `000` before Next.js had bound its port).
+WAIT_TIMEOUT_SECONDS=60
+WAIT_INTERVAL_SECONDS=2
 
-log "Verifying core services are actually serving"
-check() { # <label> <url> <expected>
-  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$2" || echo 000)
-  echo "  $1 -> $code (expect $3)"
-  [[ "$code" == "$3" ]] || { echo "::error::$1 expected $3, got $code"; fail_count=1; }
+log "Verifying systemd --user units are active (up to ${WAIT_TIMEOUT_SECONDS}s each)"
+fail_count=0
+wait_for_unit_active() { # <unit>
+  local unit="$1" elapsed=0 state
+  while :; do
+    state=$(systemctl --user is-active "$unit.service" 2>/dev/null || echo "inactive")
+    [[ "$state" == "active" ]] && { echo "  $unit -> $state"; return 0; }
+    elapsed=$((elapsed + WAIT_INTERVAL_SECONDS))
+    [[ "$elapsed" -ge "$WAIT_TIMEOUT_SECONDS" ]] && { echo "  $unit -> $state (gave up after ${elapsed}s)"; return 1; }
+    sleep "$WAIT_INTERVAL_SECONDS"
+  done
 }
-check "api  /health" http://127.0.0.1:8000/health 200
-check "web  /"       http://127.0.0.1:3000/ 200
+# The official installer run above auto-enables a *system-wide*
+# `ollama.service` bound to the same port `nyxgpt-ollama.service` needs --
+# `nyxgpt ops install` now detects that and adopts the system unit instead of
+# installing/starting its own (see `_reconcile_system_ollama_service` in
+# src/nyxgpt/ops.py, #3632), so nyxgpt-ollama.service is only expected to be
+# active when nothing else already claimed the port.
+ollama_adopted=0
+if systemctl is-active --quiet ollama.service 2>/dev/null; then
+  ollama_adopted=1
+  log "System-wide ollama.service is active -- nyxgpt adopts it (nyxgpt-ollama.service is not installed/started, see docs/systemd.md)"
+fi
+
+for unit in nyxgpt-api nyxgpt-web nyxgpt-cassandra-logs nyxgpt-ollama-logs; do
+  wait_for_unit_active "$unit" || { echo "::error::$unit is not active"; fail_count=1; }
+done
+if [[ "$ollama_adopted" -eq 1 ]]; then
+  echo "  nyxgpt-ollama -> skipped (system ollama.service adopted instead)"
+else
+  wait_for_unit_active nyxgpt-ollama || { echo "::error::nyxgpt-ollama is not active"; fail_count=1; }
+fi
+
+log "Verifying core services are actually serving (up to ${WAIT_TIMEOUT_SECONDS}s each)"
+check() { # <label> <url> <expected>
+  local label="$1" url="$2" expected="$3" elapsed=0 code
+  while :; do
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$url" || echo 000)
+    [[ "$code" == "$expected" ]] && { echo "  $label -> $code (expect $expected)"; return 0; }
+    elapsed=$((elapsed + WAIT_INTERVAL_SECONDS))
+    [[ "$elapsed" -ge "$WAIT_TIMEOUT_SECONDS" ]] && { echo "  $label -> $code (expect $expected, gave up after ${elapsed}s)"; return 1; }
+    sleep "$WAIT_INTERVAL_SECONDS"
+  done
+}
+check "api    /health" http://127.0.0.1:8000/health 200 || { echo "::error::api    /health expected 200"; fail_count=1; }
+check "web    /"       http://127.0.0.1:3000/ 200       || { echo "::error::web    / expected 200"; fail_count=1; }
+check "ollama /"       http://127.0.0.1:11434/ 200      || { echo "::error::ollama / expected 200"; fail_count=1; }
 
 if [[ "$fail_count" -ne 0 ]]; then
   log "Dumping diagnostics"
