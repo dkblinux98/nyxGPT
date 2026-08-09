@@ -87,7 +87,25 @@ def cfg() -> Any:
 
 @pytest.fixture(scope="session")
 def api_base_url() -> str:
-    return os.environ.get("NYXGPT_TEST_API_BASE", "http://127.0.0.1:8000").rstrip("/")
+    """Base URL of a live nyxgpt API server for integration tests that talk to it
+    over real HTTP (as opposed to the in-process `client` TestClient fixture).
+
+    Skips gracefully when no server is reachable, matching `require_ollama`/
+    `require_cassandra`/`require_grafana` below and the graceful-skip behavior
+    documented in tests/integration/README.md -- without this check, every test
+    depending on this fixture hard-fails with a connection error in any
+    environment (e.g. a lightweight CI runner) that doesn't have the full stack
+    running, instead of skipping like the rest of the integration suite.
+    """
+    base_url = os.environ.get("NYXGPT_TEST_API_BASE", "http://127.0.0.1:8000").rstrip("/")
+    u = urlparse(base_url)
+    host = u.hostname or "127.0.0.1"
+    port = u.port or (443 if u.scheme == "https" else 80)
+
+    if not _can_connect(host, port, timeout=2.0):
+        pytest.skip(f"nyxgpt API server not reachable at {base_url}")
+
+    return base_url
 
 
 @pytest.fixture(scope="session")
