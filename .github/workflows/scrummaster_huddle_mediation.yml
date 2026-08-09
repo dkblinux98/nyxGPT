@@ -67,6 +67,12 @@ jobs:
           PR="${{ github.event.issue.number }}"
           ISSUE=$(gh api "repos/${{ github.repository }}/pulls/$PR" --jq '.body // ""' \
             | sed -n 's/.*Closes #\([0-9]*\).*/\1/p' | head -1)
+
+          if [[ -z "$ISSUE" ]]; then
+            echo "::error::PR #$PR body does not contain 'Closes #N' -- cannot mediate without a linked issue"
+            exit 1
+          fi
+
           echo "pr_number=$PR" >> "$GITHUB_OUTPUT"
           echo "issue_number=$ISSUE" >> "$GITHUB_OUTPUT"
 

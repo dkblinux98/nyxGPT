@@ -836,24 +836,37 @@ _open_issues_assigned_to() {
     --paginate 2>/dev/null || echo "[]"
 }
 
-# Count of unresolved_escalation_issues. Always echoes a number and returns
-# 0, even when the count is zero (grep -c would otherwise exit 1).
+# Number of non-empty lines in `$1`. Always echoes a number and returns 0,
+# even when the count is zero (grep -c would otherwise exit 1). Shared by
+# count_unresolved_escalations and escalation_pause_gate so the two never
+# drift apart.
+_count_lines() {
+  local n
+  n="$(grep -c . <<<"$1")" || true
+  echo "${n:-0}"
+}
+
+# Count of unresolved_escalation_issues.
 count_unresolved_escalations() {
   local owner="${1:-${HUMAN_OWNER:-}}"
-  local n
-  n="$(unresolved_escalation_issues "$owner" | grep -c .)" || true
-  echo "${n:-0}"
+  _count_lines "$(unresolved_escalation_issues "$owner")"
 }
 
 # Finds the id of our most recent pause-backstop report comment on
 # release_issue, if any (empty if none). Split out so tests can stub it
 # without a real gh/GraphQL round trip.
+#
+# `gh api --jq` has no `--arg` support, so the marker filter can't be
+# chained onto gh's own --jq -- fetch the raw paginated JSON (one array per
+# page) and filter/aggregate in a separate `jq -s` call instead, slurping
+# and flattening one level before sort_by/last so the aggregation runs over
+# every page combined, not per-page (see AGENTS.md's --paginate note).
 _escalation_pause_comment_id() {
   local release_issue="$1"
-  gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${release_issue}/comments" --paginate \
-    --jq --arg marker "$_ESCALATION_PAUSE_MARKER" \
-    '[.[] | select(.body | contains($marker))] | sort_by(.created_at) | last | .id // empty' \
-    2>/dev/null || true
+  gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${release_issue}/comments" --paginate 2>/dev/null \
+    | jq -s --arg marker "$_ESCALATION_PAUSE_MARKER" \
+      '[.[][] | select(.body | contains($marker))] | sort_by(.created_at) | last | .id // empty' \
+    || true
 }
 
 # Dispatch gate for the unresolved-escalation pause backstop. Dispatch
@@ -873,8 +886,7 @@ escalation_pause_gate() {
   local issues count comment_id body
 
   issues="$(unresolved_escalation_issues "$owner")"
-  count="$(printf '%s\n' "$issues" | grep -c .)" || true
-  count="${count:-0}"
+  count="$(_count_lines "$issues")"
 
   if [[ -z "$release_issue" ]]; then
     if [[ "$count" -ge 2 ]]; then

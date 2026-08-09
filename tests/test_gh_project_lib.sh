@@ -647,6 +647,32 @@ unresolved_escalation_issues() { printf '#201 a\n#203 b\n'; }
 _assert_eq "count_unresolved_escalations counts each listed issue" \
   "2" "$(count_unresolved_escalations)"
 
+# --- Test 14b: _escalation_pause_comment_id (#3687) -- exercises the REAL ---
+# --- gh api + jq pipeline (only `gh` is stubbed, unlike the escalation_pause_gate ---
+# --- tests below which stub this function out entirely) so a regression in ---
+# --- the gh/jq invocation itself -- e.g. the Critical `gh api --jq --arg` ---
+# --- bug this fixes -- is caught. Two pages are returned to also cover the ---
+# --- --paginate-without-slurp pitfall (AGENTS.md): the matching comments ---
+# --- are split across pages with a later, non-matching comment on page 1, ---
+# --- so a per-page (unslurped) sort_by/last would pick the wrong id. ---
+gh() {
+  if [[ "$1" == "api" && "$2" == "repos/test-owner/test-repo/issues/3521/comments" && "$3" == "--paginate" ]]; then
+    cat <<JSON
+[{"id": 111, "created_at": "2026-08-03T00:00:00Z", "body": "unrelated, newer than the page-2 comments"}]
+[{"id": 222, "created_at": "2026-08-01T00:00:00Z", "body": "old pause report $_ESCALATION_PAUSE_MARKER"}, {"id": 333, "created_at": "2026-08-02T00:00:00Z", "body": "newest pause report $_ESCALATION_PAUSE_MARKER"}]
+JSON
+    return 0
+  fi
+  echo "[test] unexpected gh invocation: $*" >&2
+  return 1
+}
+_assert_eq "_escalation_pause_comment_id picks the latest matching comment across pages" \
+  "333" "$(_escalation_pause_comment_id 3521)"
+
+gh() { echo "[]"; }
+_assert_eq "_escalation_pause_comment_id is empty when no comment matches the marker" \
+  "" "$(_escalation_pause_comment_id 3521)"
+
 # --- Test 15: escalation_pause_gate (#3687) -- the dispatch-pause decision ---
 # --- itself: 0 or 1 unresolved escalations never pauses (even without a ---
 # --- release issue configured); >=2 pauses and posts/updates a loud report ---
