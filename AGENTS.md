@@ -50,9 +50,14 @@ Rule for new scripts/workflows:
   filter for/against `select(has("pull_request"))` to get PRs vs. issues.
 - Full-text search ("does a PR exist with 'Closes #N' in its body", "was
   this issue mentioned in a merged PR") -> the REST Search API
-  (`gh api search/issues -f q=...`), not `gh issue/pr list --search`. The
-  Search API has its own separate rate pool (distinct from both core REST
-  and GraphQL), so it never contends with either.
+  (`gh api search/issues --method GET -f q=...`), not `gh issue/pr list
+  --search`. The Search API has its own separate rate pool (distinct from
+  both core REST and GraphQL), so it never contends with either.
+  **`--method GET` is required**: `gh api` defaults to POST whenever `-f`/
+  `-F` params are present unless `--method`/`-X` says otherwise, and
+  `search/issues` only accepts GET -- omitting the flag makes every call
+  404 deterministically (confirmed via `gh api ... --verbose`, not a
+  rate-limit or flake; see issue #3687's diagnosis comment).
 - Projects v2 field reads/writes (Status, Sprint, Priority, Effort, Module,
   iteration metadata) -> GraphQL, via `gh_project.sh`'s `graphql()` helper.
   This is the one case where GraphQL is correct: Projects v2 has no REST API.

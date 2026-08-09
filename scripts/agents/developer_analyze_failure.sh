@@ -116,6 +116,7 @@ case "$ERROR_TYPE" in
         # Check for merged PR (REST Search API -- its own rate pool, separate
         # from both core REST and GraphQL)
         MERGED_PR=$(gh api search/issues \
+          --method GET \
           -f q="${ISSUE} in:body type:pr state:merged repo:${REPO_OWNER}/${REPO_NAME}" \
           --jq '.items[0].number // ""' || echo "")
 

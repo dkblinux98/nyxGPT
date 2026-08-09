@@ -82,6 +82,7 @@ echo "[phase6] Sprint split: early='$SPRINT_EARLY' late='$SPRINT_LATE'"
 # from both core REST and GraphQL)
 P61_TITLE="feat: refuse non-loopback API bind without auth enabled"
 dupe="$(gh api search/issues \
+  --method GET \
   -f q="\"$P61_TITLE\" in:title state:open type:issue repo:${REPO_OWNER}/${REPO_NAME}" \
   --jq '.items[0].number // empty')"
 if [[ -n "$dupe" ]]; then
