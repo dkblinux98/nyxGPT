@@ -163,19 +163,54 @@ When PR is merged (automatically on APPROVE or via human `@approve-merge` overri
 - Automation merges into active release branch (NEVER merge to master/main)
 - Delete short-lived feature/fix branches created for the feature
 - Close the issue (GitHub state)
-- Set issue status -> Acceptance Testing (for human stakeholder acceptance)
-- Assign issue -> human owner (dkblinux98)
+- Check the issue's native blocked-by dependencies (`/issues/{n}/dependencies/blocked_by`):
+  - **No open blockers (normal case):** set issue status -> Acceptance
+    Testing, assign issue -> human owner (dkblinux98)
+  - **Open blockers exist (parked case, owner process rule, 2026-08-04,
+    #3631):** set issue status -> In Review instead, do NOT assign the human
+    owner, comment on the issue naming the open blockers. See §9 "Parked
+    issues" for how the set later moves to Acceptance Testing together.
 - Notify scrummaster-agent that developer-agent is ready for next issue
 
 ### Important: Issue auto-close behavior
 - PRs merged to the release branch (e.g., v1.0.0) do NOT auto-close linked issues
 - GitHub only auto-closes issues when PRs merge to the default branch (master)
 - Automation manually closes issues after merging to release branch
-- Post-merge: issue should be CLOSED (GitHub state) + Acceptance Testing (project status) + assigned to human
+- Post-merge, non-parked case: issue should be CLOSED (GitHub state) +
+  Acceptance Testing (project status) + assigned to human
+- Post-merge, parked case: issue should be CLOSED (GitHub state) + In Review
+  (project status) + NOT assigned to human (still shows the review agent /
+  prior assignee) until the sweep promotes it
 
 ## 9) Human stakeholder acceptance
 
 After merge, each issue is assigned to the human owner with status "Acceptance Testing" for final acceptance -- the owner-created gate (2026-07-31) that marks work as merged and ready to acceptance-test, so unmerged In Review issues are never tested by mistake.
+
+### Parked issues (merged but blocked, owner process rule 2026-08-04, #3631)
+
+A merged issue whose acceptance criteria depend on other, still-open issues
+cannot be meaningfully accepted -- the owner would be testing against
+unfinished work. `review_accept_and_merge.sh`'s post-merge step checks the
+issue's native blocked-by dependencies; if any are still open, it parks the
+issue at **In Review** instead of Acceptance Testing and does NOT assign the
+human owner, commenting why and listing the open blockers. This never blocks
+the merge itself or branch/PR cleanup -- only the acceptance handoff.
+
+The parked issue moves to Acceptance Testing (and the owner is assigned)
+only once **every** blocker is complete -- merged and itself in Acceptance
+Testing or beyond (For Release). This is enforced by a sweep
+(`sweep_parked_blocked_issues.sh`, run via
+`.github/workflows/sweep_parked_blocked_issues.yml`, every 30 min +
+`workflow_dispatch` with a `dry_run` input): it finds every parked issue and
+promotes any whose blockers have all completed, posting a promotion comment
+on each. A chain of parked issues (A blocked by B blocked by C) resolves
+transitively within one sweep run -- once C completes, B promotes in the
+same pass, which in turn makes A eligible and it promotes too, rather than
+each hop waiting for a separate 30-minute cycle.
+
+Motivating case: #3508 was parked back to In Review by the owner, blocked by
+#3621/#3622 -- its repo-less-portability acceptance criteria are unmeetable
+until those land.
 
 ### If acceptance passes
 Move the issue to "For Release" in the project board. No action needed in GitHub.
