@@ -237,6 +237,75 @@ when a developer needs to touch them.
   should remove that entry in the same PR -- don't let suppressions outlive
   the vulnerability they were accepting.
 
+## 3e) Self-heal retry budget, same-signature disproof, and reachability-aware FIXED (#3689)
+
+`developer_auto_implement.yml`'s Phase 0-3 self-heal chain (usage-limit
+detection, deterministic classification, scripted fix attempts, then Claude
+reasoning) auto-retries a failed run when it judges the error transient.
+The 2026-08-09 #3687 incident showed the original design could loop
+indefinitely: the retry cap was keyed to a label each Phase 3 diagnosis
+invented fresh, and its "manual intervention resets the count" check
+matched this workflow's *own* comments (posted via `DEVELOPER_AGENT_TOKEN`
+under the real login `myGPT-developer-agent`, not `github-actions[bot]`),
+so the cap never actually bound anything. Three fixes:
+
+- **Unforgeable retry cap, keyed to (issue, failed step).** Every
+  auto-retry comment carries a machine-readable marker:
+  `<!-- nyxgpt-retry: step=<slug> sig=<hash> n=<N> -->`. The "Compute retry
+  budget" step (`scripts/agents/lib/retry_budget.py`, called from
+  `developer_auto_implement.yml`) counts markers for the current failed
+  step since the last comment from `author_association == "OWNER"` --
+  the same signal the workflow's own `RETRY_IMPLEMENTATION` trigger gate
+  already uses for "human intervention" (§3b). Nothing else resets the
+  count: not a fresh Phase-3-invented error-type label, not a `STATUS`
+  change, not this workflow's own bot comments. The cap is 3, hard-coded in
+  `retry_budget.MAX_RETRIES`. Pure logic lives in `retry_budget.py`
+  (unit-tested in `tests/unit/test_retry_budget.py`); the workflow only
+  does the `gh api`/marker-rendering glue, mirroring the `sprint_calc.py`
+  pattern (#3480).
+- **Same-signature disproof.** The signature is a hash of (failed step,
+  normalized error excerpt). If the immediately preceding auto-retry's
+  marker carries the same signature as the current failure, that
+  empirically disproves "transient" -- a retry already happened and
+  reproduced the identical failure. The Phase 3 prompt is told this
+  up front (its "Step 0") and instructed not to write `STATUS=TRANSIENT`
+  again; the "Auto-retry on failure" step also enforces it as a hard
+  backstop for Phase 3 verdicts and for `retriable:test_failure` (flaky-or-
+  deterministic test failures deserve a human look on the 2nd identical
+  failure, not a 3rd blind retry). Deterministic rate-limit/network/
+  stale-ref backoffs are intentionally excluded -- their signature is
+  expected to legitimately repeat across successive waits.
+- **Reachability-aware `FIXED` vs `FIXED_REQUIRES_MERGE`.** Phase 3 must
+  reason about *where its fix landed* vs. *where the failing step executes
+  from*, not just whether the fix is correct. `issue_comment`-triggered
+  runs of this workflow always execute the workflow definition and any
+  scripts it shells out to from the repository's **default branch** (§3c)
+  -- never from whatever work branch a fix commit landed on. Before writing
+  `STATUS=FIXED` for a code/script/workflow-file fix, Phase 3 checks
+  `git merge-base --is-ancestor <FIX_SHA> origin/<RELEASE_BRANCH>`. If the
+  fix isn't reachable, it writes the new terminal status
+  `STATUS=FIXED_REQUIRES_MERGE` with `COMMIT_SHA` and `RECOMMENDATION`
+  instead -- this never auto-retries; a dedicated step escalates
+  immediately to the owner with the commit SHA and a cherry-pick/merge
+  recommendation.
+
+All three exhaustion paths (retry cap exceeded, same-signature forced
+escalation, `FIXED_REQUIRES_MERGE`, and the pre-existing `FATAL`
+classification) route through the standard escalation comment and now also
+call `sprint_autopilot_kick` (`scripts/agents/lib/gh_project.sh`, #3480) --
+previously only the review-agent's escalation path did this, so a
+developer-side escalation could silently park the sprint-autopilot queue
+instead of freeing it to move to the next issue.
+
+Separately, the "Verify issue is In Progress" and "Verify issue is assigned
+to developer-agent" gates are policy stops, not infra failures: they now
+set a `gate_stopped` step output that the self-heal entry points
+(`usage_limit`, `classify_error`, `retry_budget`) and the generic
+"Post verification failure comment" step check before running, so a manual
+circuit-breaker (moving an issue out of In Progress) reliably stops the
+run without triggering a spurious Phase 1-3 diagnosis or a misleading
+"Failed after 3 attempts" comment.
+
 ## 4) Verification loop (MANDATORY - ALL must pass before commit)
 Run ALL of the following checks and fix issues until they pass:
 - `black --check .` - If fails, run `black .` to auto-format, then re-check
