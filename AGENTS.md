@@ -27,6 +27,46 @@ Every agent is responsible for verifying project hygiene before reassigning issu
 
 ---
 
+## GitHub API Usage: REST vs GraphQL
+
+Issue/PR reads and Projects v2 field operations draw from two separate
+GitHub API rate pools: GraphQL (5,000 points/hour) and REST (5,000
+requests/hour). Projects v2 field reads/writes (Status, Sprint, Priority,
+Effort, Module, iteration lookups -- everything behind
+`scripts/agents/lib/gh_project.sh`'s `graphql()` wrapper) have no REST
+equivalent and are the only thing that should draw from the GraphQL pool.
+Every plain issue/PR read (title, body, labels, state, assignees, comments,
+reviews, files, mergeable status, PR/issue lists) is available via REST and
+MUST use it (#3663) -- freeing the shared GraphQL budget for what only it
+can do.
+
+Rule for new scripts/workflows:
+- Plain issue/PR data -> `gh api repos/<owner>/<repo>/issues|pulls/<n>`
+  (REST). Never `gh issue view` / `gh pr view` for this -- they are
+  GraphQL-backed regardless of which `--json` fields are requested.
+- List-shaped reads -> REST list endpoints with `--paginate` and
+  `per_page=100` (never rely on gh's default page size). `gh pr list`
+  has no `--label` filter; use the `/issues` endpoint with `labels=` and
+  filter for/against `select(has("pull_request"))` to get PRs vs. issues.
+- Full-text search ("does a PR exist with 'Closes #N' in its body", "was
+  this issue mentioned in a merged PR") -> the REST Search API
+  (`gh api search/issues -f q=...`), not `gh issue/pr list --search`. The
+  Search API has its own separate rate pool (distinct from both core REST
+  and GraphQL), so it never contends with either.
+- Projects v2 field reads/writes (Status, Sprint, Priority, Effort, Module,
+  iteration metadata) -> GraphQL, via `gh_project.sh`'s `graphql()` helper.
+  This is the one case where GraphQL is correct: Projects v2 has no REST API.
+- REST issue `state` is lowercase (`open`/`closed`); GraphQL's is uppercase
+  (`OPEN`/`CLOSED`). When reading state, pipe through
+  `jq '.state | ascii_upcase'` to match the uppercase comparisons used
+  throughout the codebase. REST PR `mergeable`/`mergeable_state` is shaped
+  differently than GraphQL's single `MERGEABLE`/`CONFLICTING`/`UNKNOWN`
+  enum -- re-derive it with `if .mergeable == null then "UNKNOWN" elif
+  .mergeable_state == "dirty" then "CONFLICTING" else "MERGEABLE" end`
+  rather than comparing REST fields directly against the old GraphQL values.
+
+---
+
 ## Project Status Semantics
 
 Backlog      – approved, unscheduled
