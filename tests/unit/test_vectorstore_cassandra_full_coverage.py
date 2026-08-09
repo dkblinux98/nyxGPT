@@ -764,6 +764,31 @@ def test_get_all_chunks_handles_none_embedding(monkeypatch):
 
 
 @pytest.mark.unit
+def test_ensure_settings_table_creates_keyspace_before_table(monkeypatch):
+    """Regression test for #3634: on a genuinely fresh Cassandra (no keyspace
+    yet), `ensure_settings_table` must create the keyspace itself instead of
+    assuming something else (e.g. a prior `ensure_schema` call) already did.
+
+    `get_collection_settings` is reachable from `ingest_document` before
+    `ensure_schema` ever runs (per-collection embedding-model override
+    lookup), so without this the fully qualified `CREATE TABLE
+    <keyspace>.collection_settings` fails with "Keyspace ... doesn't exist"
+    on a first ingest.
+    """
+    store, mock_session = _make_store(monkeypatch)
+    mock_session.execute.return_value = Mock()
+
+    store.ensure_settings_table()
+
+    statements = [str(call.args[0]) for call in mock_session.execute.call_args_list]
+    assert any("CREATE KEYSPACE IF NOT EXISTS test_ks" in s for s in statements)
+    assert any("CREATE TABLE IF NOT EXISTS test_ks.collection_settings" in s for s in statements)
+    keyspace_idx = next(i for i, s in enumerate(statements) if "CREATE KEYSPACE" in s)
+    table_idx = next(i for i, s in enumerate(statements) if "collection_settings" in s)
+    assert keyspace_idx < table_idx
+
+
+@pytest.mark.unit
 def test_get_collection_settings_returns_defaults_when_no_row(monkeypatch):
     store, mock_session = _make_store(monkeypatch)
 
