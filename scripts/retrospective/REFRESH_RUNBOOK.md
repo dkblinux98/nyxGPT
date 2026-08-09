@@ -31,28 +31,36 @@ Artifact URL (republish to this URL, do not mint a new one):
    then `git pull` — the workflow commits the JSON to the dispatching branch. If
    dispatch fails, skip; the builder falls back to calendar weeks automatically.
 
-4. **Refresh the last-7-days review detail** → `data/dashboard_data.json`.
-   a. Gmail MCP `search_threads`:
-      `from:notifications@github.com "Code Review - REQUEST_CHANGES" newer_than:8d`,
-      fetch each thread (`get_thread`), and parse every message containing
-      `## Code Review - REQUEST_CHANGES`: findings live under
-      `### Critical|Medium|Minor Issues` headings (`(if any)` suffix and `####`
-      variants occur) as `- **title**` bullets; `None.` means empty. Subject gives
-      `(#ISSUE)` and `(PR #N)`. Count one round per pullrequestreview id; keep only
-      rounds dated inside the trailing 7-day window.
-   b. GitHub `search_pull_requests`: PRs merged in the window
-      (`merged:YYYY-MM-DD..YYYY-MM-DD`), and unreviewed merges (`review:none`).
-      Clean passes = merged, reviewed, and not in the rejected set — spot-check the
-      earliest ones' review history for pre-window rejections.
-   c. Rebuild the JSON with the same shape as the checked-in seed: `modules`
-      (C/M/m/rounds/issues per module), `days`, `issues` (per-work-item rollup with
-      finding titles), `cleanPRs`, `cleanByModule`, `totals`
-      (rounds/C/M/m/items/clean/reviewed/merged/unreviewed).
-   d. Refresh `data/pr_times.json` (all merged PRs Jan 1→now: number → [created_at, merged_at], via search_pull_requests) and update the current month in `GATE` inside `build_dashboard.py` (rejected count
-      via a Gmail month-window search). Merged counts and median time-to-merge are derived from pr_times.json automatically.
-   e. Update the hard-coded window copy in `retro_template.html` (the
-      "Last 7 days in review · <dates>" divider and the totals sentences in the
-      first-pass panel and footer) to the new window.
+4. **Refresh review-round detail** → `data/reviews_final.json` and
+   `data/dashboard_data.json`.
+   a. Dispatch the workflow `retro_review_rounds_dump.yml` on the default
+      branch (`actions_run_trigger`, method `run_workflow`), wait for
+      completion (~5 min — it walks every PR's reviews via the GitHub API),
+      then `git pull` — the workflow commits both JSON files to the
+      dispatching branch (same shape as `retro_project_fields_dump.yml`).
+      The dump derives review rounds directly from PR reviews (the review
+      agent posts every `## Code Review - REQUEST_CHANGES` round as a formal
+      PR review, so this is GitHub-native, not a Gmail parse — owner decision
+      2026-08-08, #3667): `### Critical|Medium|Minor Issues` headings
+      (`(if any)` suffix and `####` variants included) hold `- **title**`
+      bullets (or a bare bullet line when there's no bold lead-in); `None.`
+      with no bullet means empty. One round per pull-request-review id.
+      `reviews_final.json` keeps every round ever seen (used for `GATE`'s
+      monthly rejected count and the finding-theme lens); `dashboard_data.json`
+      is the trailing-7-day rollup (`modules`, `days`, `issues`, `cleanPRs`,
+      `cleanByModule`, `totals`) — clean passes are merged PRs that were
+      reviewed (not `review:none`) and never appear in `reviews_final.json`'s
+      full history, not just the 7-day window.
+   b. Refresh `data/pr_times.json` (all merged PRs Jan 1→now: number →
+      [created_at, merged_at], via `search_pull_requests`). Merged counts and
+      median time-to-merge in `GATE` are derived from it automatically; the
+      current month's rejected count is derived from `reviews_final.json`
+      automatically too (`gate_series()` in `build_dashboard.py`) — no manual
+      Gmail month-window search. Older months in `GATE` predate the
+      PR-review dump and stay as seeded historical constants.
+   c. Update the hard-coded window copy in `retro_template.html` (the
+      "Last 7 days in review · <dates>" divider and the totals sentences in
+      the first-pass panel and footer) to the new window.
 
 5. **Build**: `python3 scripts/retrospective/build_dashboard.py`
    → `scripts/retrospective/retro.html`.
