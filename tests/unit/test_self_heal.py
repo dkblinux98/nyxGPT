@@ -20,6 +20,13 @@ import pytest
 from nyxgpt import metrics as prom_metrics
 from nyxgpt import self_heal
 
+# The real project docker-compose.yml -- #3621 retired self_heal.COMPOSE_FILE's
+# REPO_ROOT-relative default (a dev-checkout-only fallback), so tests that
+# want to parse real declared services/fetch real service logs need to point
+# at this file explicitly rather than relying on the (now ops-managed,
+# ~/.nyxGPT-rooted) default resolving to it by accident.
+_REAL_COMPOSE_FILE = Path(__file__).resolve().parents[2] / "docker-compose.yml"
+
 
 class CP:
     def __init__(self, stdout="", stderr="", returncode=0):
@@ -47,6 +54,22 @@ _real_brew_services_snapshot = self_heal._brew_services_snapshot
 _real_native_container_state = self_heal._native_container_state
 _real_list_terraform_component_status = self_heal._list_terraform_component_status
 _real_list_kubernetes_component_status = self_heal._list_kubernetes_component_status
+
+
+@pytest.fixture(autouse=True)
+def _force_macos_native_path(monkeypatch):
+    """Pin `platform.system()` to "Darwin".
+
+    This file predates the Linux/systemd native path (#3508) and assumes
+    the original macOS-only (Homebrew) native code path throughout --
+    `_isolated_state` below neutralizes `_brew_services_snapshot` (not
+    `_systemd_services_snapshot`) by default, and several tests patch
+    `_brew_services_snapshot`/`_brew_prefix` directly. Without this, those
+    tests would silently exercise the Linux dispatch branch instead whenever
+    the suite runs on a real Linux host (CI runs on ubuntu-latest). The
+    Linux path has its own tests in test_self_heal_systemd.py.
+    """
+    monkeypatch.setattr(self_heal.platform, "system", lambda: "Darwin")
 
 
 @pytest.fixture(autouse=True)
@@ -109,45 +132,15 @@ def test_run_expected_true_logs_debug_not_warning_on_nonzero_exit(caplog):
 
 
 @pytest.mark.unit
-def test_resolve_compose_file_defaults_to_repo_root(monkeypatch):
+def test_resolve_compose_file_defaults_to_ops_managed_location(monkeypatch, tmp_path):
+    # #3621: no more REPO_ROOT module-path check or config.ini fallback --
+    # `nyxgpt ops install` syncs the packaged docker-compose.yml to this
+    # fixed, ops-managed location regardless of how nyxGPT is installed.
     monkeypatch.delenv("NYXGPT_COMPOSE_FILE", raising=False)
-    assert self_heal._resolve_compose_file() == self_heal.REPO_ROOT / "docker-compose.yml"
-
-
-@pytest.mark.unit
-def test_resolve_compose_file_falls_back_to_config_ini(monkeypatch, tmp_path):
-    # Brew-Cellar layout: no env override, no compose file on the module path;
-    # the path recorded by `nyxgpt ops install` in config.ini wins.
-    monkeypatch.delenv("NYXGPT_COMPOSE_FILE", raising=False)
-    monkeypatch.setattr(self_heal, "REPO_ROOT", tmp_path / "cellar")
-
-    compose = tmp_path / "repo" / "docker-compose.yml"
-    compose.parent.mkdir(parents=True)
-    compose.write_text("services: {}\n", encoding="utf-8")
-
     home = tmp_path / "home"
-    (home / ".nyxGPT").mkdir(parents=True)
-    (home / ".nyxGPT" / "config.ini").write_text(
-        f"[paths]\ncompose_file = {compose}\n", encoding="utf-8"
-    )
     monkeypatch.setattr(self_heal.Path, "home", lambda: home)
 
-    assert self_heal._resolve_compose_file() == compose
-
-
-@pytest.mark.unit
-def test_resolve_compose_file_ignores_config_when_path_missing(monkeypatch, tmp_path):
-    monkeypatch.delenv("NYXGPT_COMPOSE_FILE", raising=False)
-    monkeypatch.setattr(self_heal, "REPO_ROOT", tmp_path / "cellar")
-
-    home = tmp_path / "home"
-    (home / ".nyxGPT").mkdir(parents=True)
-    (home / ".nyxGPT" / "config.ini").write_text(
-        "[paths]\ncompose_file = /nonexistent/docker-compose.yml\n", encoding="utf-8"
-    )
-    monkeypatch.setattr(self_heal.Path, "home", lambda: home)
-
-    assert self_heal._resolve_compose_file() == tmp_path / "cellar" / "docker-compose.yml"
+    assert self_heal._resolve_compose_file() == home / ".nyxGPT" / "docker-compose.yml"
 
 
 @pytest.mark.unit
@@ -304,6 +297,80 @@ def test_list_component_status_compose_failure(monkeypatch):
 
 
 @pytest.mark.unit
+def test_list_compose_component_status_nonzero_exit_logs_warning(monkeypatch, caplog):
+    # #3588: a failed `docker compose ps` (e.g. COMPOSE_FILE doesn't exist
+    # from this process's vantage point) must never fail silently -- that's
+    # exactly what made the observability tier vanish without a trace in
+    # Terraform mode.
+    monkeypatch.setattr(
+        self_heal, "_run", lambda cmd, timeout=30.0, **_k: CP(returncode=1, stderr="boom")
+    )
+    with caplog.at_level("WARNING", logger="nyxgpt.self_heal"):
+        assert self_heal._list_compose_component_status() == []
+    assert "docker compose ps exited" in caplog.text
+
+
+@pytest.mark.unit
+def test_compose_probe_available_true_when_docker_and_compose_file_present(monkeypatch, tmp_path):
+    compose_file = tmp_path / "docker-compose.yml"
+    compose_file.write_text("services: {}\n")
+    monkeypatch.setattr(self_heal, "_which", lambda _: "/usr/bin/docker")
+    monkeypatch.setattr(self_heal, "COMPOSE_FILE", compose_file)
+    assert self_heal.compose_probe_available() is True
+
+
+@pytest.mark.unit
+def test_compose_probe_available_false_when_docker_missing(monkeypatch, tmp_path):
+    compose_file = tmp_path / "docker-compose.yml"
+    compose_file.write_text("services: {}\n")
+    monkeypatch.setattr(self_heal, "_which", lambda _: None)
+    monkeypatch.setattr(self_heal, "COMPOSE_FILE", compose_file)
+    assert self_heal.compose_probe_available() is False
+
+
+@pytest.mark.unit
+def test_compose_probe_available_false_when_compose_file_unreachable(monkeypatch, tmp_path):
+    # The Terraform-managed api container's exact failure mode before #3588's
+    # fix: docker is on PATH, but COMPOSE_FILE resolved to a path that was
+    # never bind-mounted into this container.
+    monkeypatch.setattr(self_heal, "_which", lambda _: "/usr/bin/docker")
+    monkeypatch.setattr(self_heal, "COMPOSE_FILE", tmp_path / "does-not-exist.yml")
+    assert self_heal.compose_probe_available() is False
+
+
+@pytest.mark.unit
+def test_list_component_status_includes_observability_alongside_terraform_core(monkeypatch):
+    """Regression for #3588: the Compose observability survey must run (and
+    surface its results) no matter which mode owns the core components --
+    Terraform mode reporting the core four must never come at the cost of
+    silently dropping the observability tier."""
+    monkeypatch.setattr(
+        self_heal, "_list_terraform_component_status", _real_list_terraform_component_status
+    )
+    terraform_containers = set(self_heal.TERRAFORM_CONTAINERS.values())
+    monkeypatch.setattr(
+        self_heal,
+        "_native_container_state",
+        lambda name: "running" if name in terraform_containers else "absent",
+    )
+    monkeypatch.setattr(self_heal, "_native_container_health", lambda name: "")
+    monkeypatch.setattr(
+        self_heal,
+        "_run",
+        lambda cmd, timeout=30.0, **_k: CP(stdout=_ps_line("grafana", state="running")),
+    )
+    monkeypatch.setattr(self_heal, "_enabled_observability_profiles", lambda: set())
+
+    statuses = self_heal.list_component_status()
+    by_service = {s.service: s for s in statuses}
+
+    assert by_service["grafana"].source == "compose"
+    assert by_service["grafana"].healthy is True
+    for core in ("api", "web", "ollama", "cassandra"):
+        assert by_service[core].source == "terraform"
+
+
+@pytest.mark.unit
 def test_brew_services_snapshot_parses_output(monkeypatch):
     monkeypatch.setattr(
         self_heal,
@@ -438,6 +505,151 @@ def test_restart_component_success(monkeypatch):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("bad", ["--privileged", "-rf", "a b", "x;rm -rf /", "../etc", "$(id)", ""])
+def test_restart_component_rejects_unsafe_names(monkeypatch, bad):
+    """An externally-influenced service name that could inject a CLI flag or
+    shell metacharacter must be refused before it ever reaches `_run` (CodeQL
+    #4, py/command-line-injection)."""
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal.restart_component(bad)
+
+    assert not result.ok
+    assert "invalid service name" in result.message
+    run_mock.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", ["--all", "-n=evil", "pod;reboot", "../x", ""])
+def test_heal_kubernetes_pod_rejects_unsafe_names(monkeypatch, bad):
+    """A crafted pod name must not reach `kubectl delete pod` (CodeQL #4)."""
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal.heal_kubernetes_pod(bad)
+
+    assert not result.ok
+    assert "invalid pod name" in result.message
+    run_mock.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", ["--rm", "-d", "a b", "x;rm -rf /", "../etc", "$(id)", ""])
+def test_bring_up_compose_service_rejects_unsafe_names(monkeypatch, bad):
+    """An unsafe service name must be refused before it reaches `docker compose up`
+    (CodeQL #4, py/command-line-injection) -- closes the coverage gap for the third
+    guarded sink alongside restart_component / heal_kubernetes_pod."""
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal._bring_up_compose_service(bad)
+
+    assert not result.ok
+    assert "invalid service name" in result.message
+    run_mock.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", ["--privileged", "-rf", "a b", "x;rm -rf /", "../etc", "$(id)", ""])
+def test_restart_brew_service_rejects_unsafe_names(monkeypatch, bad):
+    """An unsafe name must be refused before it reaches `brew services restart`
+    (CodeQL #4, py/command-line-injection)."""
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal._restart_brew_service(bad)
+
+    assert not result.ok
+    assert "invalid service name" in result.message
+    run_mock.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", ["--privileged", "-rf", "a b", "x;rm -rf /", "../etc", "$(id)", ""])
+def test_restart_native_container_rejects_unsafe_names(monkeypatch, bad):
+    """An unsafe name must be refused before it reaches `docker restart`
+    (CodeQL #4, py/command-line-injection)."""
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal._restart_native_container(bad)
+
+    assert not result.ok
+    assert "invalid container name" in result.message
+    run_mock.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", ["--all", "-f", "a b", "x;reboot", "../etc", "$(id)", ""])
+def test_docker_container_logs_rejects_unsafe_names(monkeypatch, bad):
+    """An unsafe container name must be refused before it reaches `docker logs`
+    (CodeQL #4, py/command-line-injection)."""
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal._docker_container_logs(bad, tail=10)
+
+    assert not result.ok
+    assert "invalid container name" in result.message
+    run_mock.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", ["--all", "-n=evil", "pod;reboot", "../x", ""])
+def test_kubernetes_pod_logs_rejects_unsafe_names(monkeypatch, bad):
+    """An unsafe pod name must be refused before it reaches `kubectl logs`
+    (CodeQL #4, py/command-line-injection)."""
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal._kubernetes_pod_logs(bad, tail=10)
+
+    assert not result.ok
+    assert "invalid pod name" in result.message
+    run_mock.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", ["--filter", "-a", "a b", "x;id", "../etc", "$(id)", ""])
+def test_native_container_state_rejects_unsafe_names(monkeypatch, bad):
+    """An unsafe container name must be refused before it reaches
+    `docker ps --filter` (CodeQL #4, py/command-line-injection)."""
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    assert self_heal._native_container_state(bad) == "absent"
+    run_mock.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", ["--filter", "-a", "a b", "x;id", "../etc", "$(id)", ""])
+def test_native_container_health_rejects_unsafe_names(monkeypatch, bad):
+    """An unsafe container name must be refused before it reaches
+    `docker inspect` (CodeQL #4, py/command-line-injection)."""
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    assert self_heal._native_container_health(bad) == ""
+    run_mock.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", ["--tail=0", "-f", "a b", "x;id", "../etc", "$(id)", ""])
+def test_compose_component_logs_rejects_unsafe_names(monkeypatch, bad):
+    """An unsafe service name must be refused before it reaches
+    `docker compose logs` (CodeQL #4, py/command-line-injection)."""
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal._compose_component_logs(bad, tail=10)
+
+    assert not result.ok
+    assert "invalid service name" in result.message
+    run_mock.assert_not_called()
+
+
+@pytest.mark.unit
 def test_restart_component_failure(monkeypatch):
     monkeypatch.setattr(
         self_heal, "_run", lambda cmd, timeout=30.0, **_k: CP(returncode=1, stderr="boom")
@@ -555,7 +767,30 @@ def test_restart_native_component_unknown(monkeypatch):
 
 
 @pytest.mark.unit
+def test_compose_file_services_parses_declared_services(monkeypatch):
+    monkeypatch.setattr(self_heal, "COMPOSE_FILE", _REAL_COMPOSE_FILE)
+    services = self_heal._compose_file_services()
+    assert {"api", "web", "glitchtip", "grafana", "loki"} <= services
+
+
+@pytest.mark.unit
+def test_compose_component_logs_refuses_undeclared_service(monkeypatch):
+    """A well-formed name that is not declared in the compose file must be
+    refused without reaching `docker compose logs` (CodeQL #4: the argv only
+    ever receives service names selected from the compose file itself)."""
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal._compose_component_logs("not-a-declared-service", tail=10)
+
+    assert not result.ok
+    assert "Unknown compose service" in result.message
+    run_mock.assert_not_called()
+
+
+@pytest.mark.unit
 def test_component_logs_success(monkeypatch):
+    monkeypatch.setattr(self_heal, "COMPOSE_FILE", _REAL_COMPOSE_FILE)
     run_mock = MagicMock(
         return_value=CP(stdout="glitchtip_1  | Confirm your account: http://...\n")
     )
@@ -572,7 +807,24 @@ def test_component_logs_success(monkeypatch):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("bad", ["--rm", "; rm -rf /", "../etc", "$(id)", ""])
+def test_component_logs_rejects_unsafe_names(monkeypatch, bad):
+    """An externally-influenced service name (`GET /self-heal/logs?service=`) must be
+    refused before it ever reaches a subprocess argv (CodeQL #4,
+    py/command-line-injection) -- mirrors test_restart_component_rejects_unsafe_names."""
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal.component_logs(bad)
+
+    assert not result.ok
+    assert "invalid service name" in result.message
+    run_mock.assert_not_called()
+
+
+@pytest.mark.unit
 def test_component_logs_failure(monkeypatch):
+    monkeypatch.setattr(self_heal, "COMPOSE_FILE", _REAL_COMPOSE_FILE)
     monkeypatch.setattr(
         self_heal,
         "_run",
@@ -585,6 +837,8 @@ def test_component_logs_failure(monkeypatch):
 
 @pytest.mark.unit
 def test_component_logs_run_raises(monkeypatch):
+    monkeypatch.setattr(self_heal, "COMPOSE_FILE", _REAL_COMPOSE_FILE)
+
     def _boom(cmd, timeout=30.0, **_k):
         raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
 
@@ -622,13 +876,14 @@ def test_component_logs_native_api_tails_file(monkeypatch, tmp_path):
         self_heal, "list_component_status", lambda: [_status("api", source="native")]
     )
     monkeypatch.setattr(self_heal, "get_log_dir", lambda: tmp_path)
+    monkeypatch.setattr(self_heal, "_brew_prefix", lambda: None)
     (tmp_path / "api.log").write_text("line1\nline2\nline3\n", encoding="utf-8")
 
     result = self_heal.component_logs("api", tail=2)
 
     assert result.ok
     assert "api" in result.message
-    assert result.details == "line2\nline3"
+    assert "line2\nline3" in result.details
 
 
 @pytest.mark.unit
@@ -637,15 +892,58 @@ def test_component_logs_native_api_missing_file(monkeypatch, tmp_path):
         self_heal, "list_component_status", lambda: [_status("api", source="native")]
     )
     monkeypatch.setattr(self_heal, "get_log_dir", lambda: tmp_path)
+    monkeypatch.setattr(self_heal, "_brew_prefix", lambda: None)
 
     result = self_heal.component_logs("api")
 
     assert not result.ok
-    assert "No log file found for api" in result.message
+    assert "No log files found for api" in result.message
+
+
+@pytest.mark.unit
+def test_component_logs_native_api_reads_launchd_files(monkeypatch, tmp_path):
+    # #3629: a startup refusal (e.g. P6-1's bind-address check in app.py's
+    # lifespan, #3500) fires before configure_logging runs, so it never
+    # reaches api.log -- only Homebrew's own launchd stderr file.
+    monkeypatch.setattr(
+        self_heal, "list_component_status", lambda: [_status("api", source="native")]
+    )
+    monkeypatch.setattr(self_heal, "get_log_dir", lambda: tmp_path)
+    monkeypatch.setattr(self_heal, "_brew_prefix", lambda: str(tmp_path))
+    log_dir = tmp_path / "var" / "log"
+    log_dir.mkdir(parents=True)
+    (log_dir / "nyxgpt-api.log").write_text("api starting\n", encoding="utf-8")
+    (log_dir / "nyxgpt-api.err.log").write_text(
+        "ERROR: Refusing to start: [api] host ...\n", encoding="utf-8"
+    )
+
+    result = self_heal.component_logs("api")
+
+    assert result.ok
+    assert "api starting" in result.details
+    assert "Refusing to start" in result.details
+
+
+@pytest.mark.unit
+def test_component_logs_native_api_missing_launchd_files_falls_back_to_structured(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        self_heal, "list_component_status", lambda: [_status("api", source="native")]
+    )
+    monkeypatch.setattr(self_heal, "get_log_dir", lambda: tmp_path)
+    monkeypatch.setattr(self_heal, "_brew_prefix", lambda: None)
+    (tmp_path / "api.log").write_text("structured only\n", encoding="utf-8")
+
+    result = self_heal.component_logs("api")
+
+    assert result.ok
+    assert "structured only" in result.details
 
 
 @pytest.mark.unit
 def test_component_logs_compose_api_uses_compose_logs(monkeypatch):
+    monkeypatch.setattr(self_heal, "COMPOSE_FILE", _REAL_COMPOSE_FILE)
     monkeypatch.setattr(
         self_heal, "list_component_status", lambda: [_status("api", source="compose")]
     )
@@ -1099,6 +1397,7 @@ def test_status_aggregates_enabled_components_and_events(monkeypatch):
     assert data["unhealthy_count"] == 1
     assert len(data["components"]) == 2
     assert data["events"] == []
+    assert "compose_probe_available" in data
 
 
 @pytest.mark.unit

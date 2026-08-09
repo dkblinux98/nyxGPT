@@ -1,0 +1,23 @@
+# nyxGPT Cassandra Docker log follower -- systemd --user unit.
+#
+# Source template: `nyxgpt ops install` copies this into
+# ~/.config/systemd/user/, substituting __NYXGPT_HOME__ with the installing
+# user's actual home directory (see _install_systemd_unit_from_template in
+# src/nyxgpt/ops.py). Linux twin of ops/launchagents/com.nyxgpt.cassandra-logs.plist:
+# runs the same OS-agnostic scripts/follow-cassandra-logs.sh that tails the
+# `nyxgpt-cassandra` Docker container's logs into ~/.nyxGPT/logs/cassandra.log
+# with rotation, so promtail's bind mount sees the same log regardless of OS.
+[Unit]
+Description=nyxGPT Cassandra Docker log follower
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash -lc "__NYXGPT_HOME__/.nyxGPT/scripts/follow-cassandra-logs.sh"
+Restart=always
+RestartSec=5
+StandardOutput=append:__NYXGPT_HOME__/.nyxGPT/logs/cassandra-logfollower.out.log
+StandardError=append:__NYXGPT_HOME__/.nyxGPT/logs/cassandra-logfollower.err.log
+
+[Install]
+WantedBy=default.target

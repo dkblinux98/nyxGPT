@@ -156,6 +156,30 @@ def test_self_heal_logs_endpoint_defaults_tail_to_200():
     mock_logs.assert_called_once_with("api", tail=200)
 
 
+def test_self_heal_logs_endpoint_passes_boundary_tails_unchanged():
+    # The trusted-range selection (CodeQL #4) must be behavior-neutral across
+    # the full validated domain, including both boundaries.
+    for tail in (1, 2000):
+        result = self_heal.HealResult(True, "ok", "log output")
+        with patch("nyxgpt.app.self_heal_module.component_logs", return_value=result) as mock_logs:
+            client = TestClient(app)
+            response = client.get("/api/v1/self-heal/logs", params={"service": "api", "tail": tail})
+        assert response.status_code == 200
+        assert response.json()["tail"] == tail
+        mock_logs.assert_called_once_with("api", tail=tail)
+
+
+def test_self_heal_logs_endpoint_rejects_out_of_range_tail():
+    # FastAPI's Query(ge=1, le=2000) still rejects out-of-range values before
+    # the handler runs -- the range selection does not widen the domain.
+    client = TestClient(app)
+    for tail in (0, 2001):
+        with patch("nyxgpt.app.self_heal_module.component_logs") as mock_logs:
+            response = client.get("/api/v1/self-heal/logs", params={"service": "api", "tail": tail})
+        assert response.status_code == 422
+        mock_logs.assert_not_called()
+
+
 def test_self_heal_logs_endpoint_returns_502_on_failure():
     result = self_heal.HealResult(False, "Failed to fetch logs for nope", "no such service")
     with patch("nyxgpt.app.self_heal_module.component_logs", return_value=result):

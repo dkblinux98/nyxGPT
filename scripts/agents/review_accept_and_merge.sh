@@ -10,9 +10,13 @@ Usage:
   review_accept_and_merge.sh [--dry-run] <pr_number_or_url> <issue_number>
 
 Merges the PR into the current release branch (merge commit) and deletes the PR branch, then:
-  - Issue Status -> Acceptance Testing
-  - Issue assignee -> HUMAN_OWNER
-  - Comment on issue with merge info
+  - If the issue has open native blocked-by dependencies (owner process rule,
+    2026-08-04, #3631): Status -> In Review (parked), owner NOT assigned,
+    comment explains why and lists the open blockers. The whole dependency
+    set moves to Acceptance Testing together once every blocker completes
+    (see sweep_parked_blocked_issues.sh).
+  - Otherwise: Issue Status -> Acceptance Testing, Issue assignee ->
+    HUMAN_OWNER, comment on issue with merge info
 EOF
 }
 
@@ -39,8 +43,17 @@ echo "[review] ===== Starting merge process for PR #${PR}, Issue #${ISSUE} =====
 # ---- Pre-merge validation ----
 echo "[review] Validating PR is mergeable..." >&2
 
-# Get PR details
-pr_data="$(gh pr view "$PR" --repo "${REPO_OWNER}/${REPO_NAME}" --json headRefName,baseRefName,mergeable,mergeStateStatus,state)"
+# Get PR details. REST's mergeable/mergeable_state/state/merged shapes
+# differ from the old GraphQL query -- re-derive the same three-value
+# mergeable enum (MERGEABLE/CONFLICTING/UNKNOWN) and OPEN/CLOSED/MERGED
+# state this script's downstream checks were written against.
+pr_data="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/pulls/${PR}" --jq '{
+  headRefName: .head.ref,
+  baseRefName: .base.ref,
+  mergeable: (if .mergeable == null then "UNKNOWN" elif .mergeable_state == "dirty" then "CONFLICTING" else "MERGEABLE" end),
+  mergeStateStatus: (.mergeable_state | ascii_upcase),
+  state: (if .merged then "MERGED" elif .state == "closed" then "CLOSED" else "OPEN" end)
+}')"
 pr_head_branch="$(echo "$pr_data" | jq -r '.headRefName')"
 pr_base_branch="$(echo "$pr_data" | jq -r '.baseRefName')"
 pr_mergeable="$(echo "$pr_data" | jq -r '.mergeable')"
@@ -70,9 +83,12 @@ if [[ "$pr_mergeable" == "CONFLICTING" ]]; then
   # string below is the loop guard -- if a prior automated round already ran
   # on this PR and it is conflicted again, escalate to the human owner.
   CONFLICT_ROUND_MARKER="Automated conflict-resolution round"
-  prior_rounds=$(gh pr view "$PR" --repo "${REPO_OWNER}/${REPO_NAME}" --json comments \
-    --jq "[.comments[] | select(.body | contains(\"${CONFLICT_ROUND_MARKER}\"))] | length" \
-    2>/dev/null || echo 0)
+  # --jq runs once per fetched page, not once over the combined result set --
+  # stream matching items across all pages first, then slurp+count in a
+  # second jq pass so `length` reflects the true total (see AGENTS.md).
+  prior_rounds=$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${PR}/comments" --paginate \
+    --jq ".[] | select(.body | contains(\"${CONFLICT_ROUND_MARKER}\"))" 2>/dev/null \
+    | jq -s 'length' || echo 0)
   if [[ "${prior_rounds:-0}" -eq 0 ]]; then
     echo "[review] Dispatching automated conflict-resolution round to developer agent..." >&2
     AUTO_MSG="⚠️ **Merge Conflicts Detected** — ${CONFLICT_ROUND_MARKER} dispatched.
@@ -137,8 +153,13 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "[dry-run] pr_head_branch=$pr_head_branch" >&2
   echo "[dry-run] would: gh pr merge $PR --merge --delete-branch" >&2
   echo "[dry-run] would: gh issue close $ISSUE" >&2
-  echo "[dry-run] would: set_issue_status #$ISSUE -> '$STATUS_ACCEPTANCE_TESTING'" >&2
-  echo "[dry-run] would: assign issue #$ISSUE -> @$HUMAN_OWNER" >&2
+  dry_run_open_blockers="$(open_blocked_by_issues "$ISSUE" 2>/dev/null || true)"
+  if [[ -n "$dry_run_open_blockers" ]]; then
+    echo "[dry-run] issue #$ISSUE has open blockers ($(echo "$dry_run_open_blockers" | tr '\n' ' ')) -- would park at '$STATUS_IN_REVIEW', skip owner assignment (#3631)" >&2
+  else
+    echo "[dry-run] would: set_issue_status #$ISSUE -> '$STATUS_ACCEPTANCE_TESTING'" >&2
+    echo "[dry-run] would: assign issue #$ISSUE -> @$HUMAN_OWNER" >&2
+  fi
   exit 0
 fi
 
@@ -178,29 +199,56 @@ else
   fi
 fi
 
-# Set issue status to Acceptance Testing (owner acceptance gate, 2026-07-31)
-echo "[review] Setting issue #${ISSUE} status to '${STATUS_ACCEPTANCE_TESTING}'..." >&2
-if ! set_issue_status "$ISSUE" "$STATUS_ACCEPTANCE_TESTING" 2>&1; then
-  _warn "Failed to set issue status. PR is merged but project status may be incorrect. Continuing..."
-fi
+# Blocked-issue park gate (owner process rule, 2026-08-04, #3631): a merged
+# issue with open native blocked_by dependencies cannot be meaningfully
+# accepted yet -- its own acceptance criteria may depend on the unfinished
+# blockers. Park it at STATUS_IN_REVIEW instead of Acceptance Testing and
+# skip the owner handoff; sweep_parked_blocked_issues.sh moves the whole
+# dependency set to Acceptance Testing together once every blocker
+# completes (merged and itself Acceptance Testing or beyond).
+PARKED=0
+echo "[review] Checking issue #${ISSUE} for open blocking dependencies..." >&2
+mapfile -t open_blockers < <(open_blocked_by_issues "$ISSUE")
 
-# Assign issue to human owner
-echo "[review] Assigning issue #${ISSUE} to @${HUMAN_OWNER}..." >&2
-if ! assign_issue_verified "$ISSUE" "$HUMAN_OWNER"; then
-  echo "::error::PR #${PR} is merged but issue #${ISSUE} could not be verified as assigned to @${HUMAN_OWNER} — it may still show @${REVIEW_AGENT} as assignee. Manual fix: gh issue edit ${ISSUE} --add-assignee ${HUMAN_OWNER}" >&2
-  OWNER_ASSIGN_FAILED=1
-fi
+if [[ "${#open_blockers[@]}" -gt 0 ]]; then
+  PARKED=1
+  blocker_refs="$(printf '#%s, ' "${open_blockers[@]}")"
+  blocker_refs="${blocker_refs%, }"
+  echo "[review] Issue #${ISSUE} has open blockers: ${blocker_refs} -- parking at '${STATUS_IN_REVIEW}' instead of '${STATUS_ACCEPTANCE_TESTING}'." >&2
 
-# Assign PR to human owner
-echo "[review] Assigning PR #${PR} to @${HUMAN_OWNER}..." >&2
-if ! gh api -X PATCH "repos/${REPO_OWNER}/${REPO_NAME}/issues/${PR}" -f "assignees[]=${HUMAN_OWNER}" >/dev/null 2>&1; then
-  _warn "Failed to assign PR to ${HUMAN_OWNER}. PR is merged but PR assignee may be incorrect. Continuing..."
-fi
+  if ! set_issue_status "$ISSUE" "$STATUS_IN_REVIEW" 2>&1; then
+    _warn "Failed to set issue status to ${STATUS_IN_REVIEW}. PR is merged but project status may be incorrect. Continuing..."
+  fi
 
-# Post final comment
-echo "[review] Posting completion comment..." >&2
-if ! issue_comment "$ISSUE" "PR #${PR} merged into \`${pr_base_branch}\` and branch deleted. Status -> ${STATUS_ACCEPTANCE_TESTING}. Assigned -> @${HUMAN_OWNER}." 2>&1; then
-  _warn "Failed to post comment. PR is merged and issue updated, but comment missing."
+  PARK_MSG="⏸️ **Parked, not Acceptance Testing**: PR #${PR} merged into \`${pr_base_branch}\` and branch deleted, but issue #${ISSUE} has open blocking dependencies (${blocker_refs}) -- its acceptance criteria cannot be meaningfully tested until they land. Status -> ${STATUS_IN_REVIEW}; owner not assigned yet (owner process rule, 2026-08-04). This issue moves to ${STATUS_ACCEPTANCE_TESTING} together with its whole blocker set once every blocker is merged and itself in ${STATUS_ACCEPTANCE_TESTING} or beyond."
+  if ! issue_comment "$ISSUE" "$PARK_MSG" 2>&1; then
+    _warn "Failed to post park comment. PR is merged and issue parked, but comment missing."
+  fi
+else
+  # Set issue status to Acceptance Testing (owner acceptance gate, 2026-07-31)
+  echo "[review] Setting issue #${ISSUE} status to '${STATUS_ACCEPTANCE_TESTING}'..." >&2
+  if ! set_issue_status "$ISSUE" "$STATUS_ACCEPTANCE_TESTING" 2>&1; then
+    _warn "Failed to set issue status. PR is merged but project status may be incorrect. Continuing..."
+  fi
+
+  # Assign issue to human owner
+  echo "[review] Assigning issue #${ISSUE} to @${HUMAN_OWNER}..." >&2
+  if ! assign_issue_verified "$ISSUE" "$HUMAN_OWNER"; then
+    echo "::error::PR #${PR} is merged but issue #${ISSUE} could not be verified as assigned to @${HUMAN_OWNER} — it may still show @${REVIEW_AGENT} as assignee. Manual fix: gh issue edit ${ISSUE} --add-assignee ${HUMAN_OWNER}" >&2
+    OWNER_ASSIGN_FAILED=1
+  fi
+
+  # Assign PR to human owner
+  echo "[review] Assigning PR #${PR} to @${HUMAN_OWNER}..." >&2
+  if ! gh api -X PATCH "repos/${REPO_OWNER}/${REPO_NAME}/issues/${PR}" -f "assignees[]=${HUMAN_OWNER}" >/dev/null 2>&1; then
+    _warn "Failed to assign PR to ${HUMAN_OWNER}. PR is merged but PR assignee may be incorrect. Continuing..."
+  fi
+
+  # Post final comment
+  echo "[review] Posting completion comment..." >&2
+  if ! issue_comment "$ISSUE" "PR #${PR} merged into \`${pr_base_branch}\` and branch deleted. Status -> ${STATUS_ACCEPTANCE_TESTING}. Assigned -> @${HUMAN_OWNER}." 2>&1; then
+    _warn "Failed to post comment. PR is merged and issue updated, but comment missing."
+  fi
 fi
 
 echo "[review] ✓ Critical path complete" >&2
@@ -213,44 +261,10 @@ echo "[review] ✓ Critical path complete" >&2
 # human kick is still required to start work outside the sprint. Off by
 # default (SPRINT_AUTOPILOT unset/false): behavior is then exactly the
 # pre-#3480 manual-kick flow. Best-effort: never fails the merge itself.
-echo "[review] ===== Sprint autopilot =====" >&2
-SPRINT_AUTOPILOT_VALUE="${SPRINT_AUTOPILOT:-false}"
-if [[ "$SPRINT_AUTOPILOT_VALUE" != "true" ]]; then
-  echo "[review] Sprint autopilot disabled (SPRINT_AUTOPILOT=${SPRINT_AUTOPILOT_VALUE}) -- no auto-kick." >&2
-elif [[ -z "${RELEASE_ISSUE_NUMBER:-}" ]]; then
-  _warn "SPRINT_AUTOPILOT is on but RELEASE_ISSUE_NUMBER is not configured -- skipping auto-kick."
-elif sprint_autopilot_paused "$RELEASE_ISSUE_NUMBER"; then
-  echo "[review] Sprint autopilot paused (PAUSE_SPRINT) -- no auto-kick." >&2
-  issue_comment "$RELEASE_ISSUE_NUMBER" "⏸️ **Sprint Autopilot**: Issue #${ISSUE} merged, but autopilot is paused (\`PAUSE_SPRINT\`) -- no automatic kick posted. Comment \`RESUME_SPRINT\` to continue, or \`READY_FOR_NEXT_ISSUE\` to kick manually." \
-    || _warn "Failed to post autopilot-paused notice."
-else
-  # The continue/park decision is RELEASE-gated, not sprint-gated (owner
-  # decision 2026-07-31): sprint dates drift and future sprints exist on the
-  # board before their release starts, so the boundary is the release
-  # version carried by the tracking issue's title and the milestone titles.
-  # The autopilot continues while the CURRENT release has open Backlog work
-  # (any sprint) and parks when it drains; it never crosses into the next
-  # release -- the gate reopens when the owner points RELEASE_ISSUE_NUMBER /
-  # RELEASE_BRANCH at the next release as part of the release ceremony.
-  release_version="$(release_version_from_issue "$RELEASE_ISSUE_NUMBER" 2>/dev/null || echo "")"
-  if [[ -z "$release_version" ]]; then
-    _warn "Autopilot: could not parse a vX.Y.Z version from release issue #${RELEASE_ISSUE_NUMBER}'s title -- no auto-kick (conservative stop)."
-  else
-    remaining="$(count_release_backlog_open "$release_version" 2>/dev/null || echo "")"
-    decision="$(python3 "${_LIB_DIR}/sprint_calc.py" autopilot-decision "${remaining:-0}")"
-    if [[ "$decision" == "continue" ]]; then
-      issue_comment "$RELEASE_ISSUE_NUMBER" "🔁 **Sprint Autopilot**: Issue #${ISSUE} merged. Release ${release_version} still has ${remaining} open Backlog issue(s) -- continuing automatically.
-
-READY_FOR_NEXT_ISSUE" \
-        && echo "[review] Autopilot: posted READY_FOR_NEXT_ISSUE (release ${release_version} has ${remaining} remaining)." >&2 \
-        || _warn "Autopilot: failed to post READY_FOR_NEXT_ISSUE kick."
-    else
-      issue_comment "$RELEASE_ISSUE_NUMBER" "🏁 **Sprint Autopilot**: Issue #${ISSUE} merged. Release ${release_version} has no open Backlog issues remaining -- the release backlog is drained and autopilot is parked. Merged work is in **Acceptance Testing** for stakeholder sign-off. Autopilot resumes automatically when \`RELEASE_ISSUE_NUMBER\` and \`RELEASE_BRANCH\` point at the next release; it never crosses a release boundary on its own." \
-        && echo "[review] Autopilot: release ${release_version} drained -- parked, no kick." >&2 \
-        || _warn "Autopilot: failed to post release-drained note."
-    fi
-  fi
-fi
+# The gated kick itself lives in sprint_autopilot_kick (lib/gh_project.sh),
+# shared with the 3-cycle review escalation path so an escalation continues
+# the queue the same way a merge does.
+sprint_autopilot_kick "$ISSUE" merged || _warn "Autopilot: kick helper failed unexpectedly."
 
 # ---- OPTIONAL: Branch cleanup ----
 echo "[review] ===== Performing optional cleanup =====" >&2
@@ -296,6 +310,11 @@ else
 fi
 
 echo "[review] ===== Merge process complete =====" >&2
+
+if [[ "$PARKED" == "1" ]]; then
+  echo "SUCCESS: Merged PR #${PR}. Issue #${ISSUE} closed and parked at ${STATUS_IN_REVIEW} (blocked by: ${blocker_refs})."
+  exit 0
+fi
 
 if [[ "$OWNER_ASSIGN_FAILED" == "1" ]]; then
   echo "FAILURE: Merged PR #${PR} and closed issue #${ISSUE}, but the @${HUMAN_OWNER} assignment could not be verified. See the ::error:: above — manual assignee fix required." >&2

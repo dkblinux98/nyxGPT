@@ -1,7 +1,8 @@
 [project]
 name = "nyxGPT"
-version = "2.0.0"
+version = "3.0.0"
 description = "Local ChatGPT-style system"
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.110",
@@ -48,6 +49,10 @@ dev = [
   "pytest-cov>=5.0",
   "pytest-mock>=3.12",
   "pytest-asyncio>=0.23",
+  # Builds an installable wheel in test_resources_packaging.py to verify
+  # nyxgpt.resources resolves via importlib.resources from a real,
+  # non-editable install with no repo checkout present (#3621).
+  "build>=1.0",
 
   # Type checking
   "mypy>=1.8",
@@ -79,6 +84,14 @@ verify = [
   "playwright>=1.45,<2",
 ]
 
+# `nyxgpt cloud` (#3630, P6-11-class): AWS SDK for the cloud deployment
+# lifecycle commands (allow-ip today; deploy/destroy later, #3513). Kept out
+# of the base dependency set -- only AWS deployments need it, not the local
+# stack every other command drives.
+cloud = [
+  "boto3>=1.34",
+]
+
 [project.scripts]
 nyxgpt = "nyxgpt.cli:cli"
 
@@ -99,6 +112,34 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# nyxgpt.resources ships the ops layer's runtime data (compose files, config
+# templates, launchd/systemd unit templates, Grafana/Prometheus/promtail
+# provisioning, helper scripts) inside the installable package, so an
+# installed (non-editable) build has no dependency on a source checkout --
+# see `nyxgpt.ops._sync_packaged_resources` and #3621. The package directory
+# itself contains symlinks back to the canonical top-level files
+# (docker/, docker-compose.yml, ops/, .env.example, four scripts/*.sh) rather
+# than copies, so there is exactly one place to edit each file; setuptools
+# dereferences symlinks when it builds the wheel/sdist, so the built
+# artifact contains real file content, not links.
+[tool.setuptools.package-data]
+# "**/*" (glob-style) doesn't match dotfiles, so .env.example needs its own
+# explicit entry.
+"nyxgpt.resources" = ["**/*", ".env.example"]
+
+[tool.setuptools.exclude-package-data]
+# docker/config.docker.ini is gitignored and generated at runtime by
+# `_generate_compose_config` -- never part of the tracked, packaged
+# resources. A dev checkout that ran a pre-#3621 `nyxgpt ops install` (back
+# when this file was written repo-relative into docker/, not
+# ~/.nyxGPT/docker/) could still have a stale copy sitting in the repo's
+# docker/ directory the resources/docker symlink resolves through; exclude
+# it explicitly so a wheel built from such a tree can't embed that
+# secret-bearing file (it carries [auth] api_key / [monitoring]
+# grafana_admin_password / an error-tracking DSN -- see
+# `_generate_compose_config`).
+"nyxgpt.resources" = ["docker/config.docker.ini"]
 
 [tool.mypy]
 python_version = "3.11"
@@ -147,6 +188,8 @@ ignore_missing_imports = true
 [tool.ruff]
 target-version = "py311"
 line-length = 100
+
+[tool.ruff.lint]
 select = [
     "E",   # pycodestyle errors
     "W",   # pycodestyle warnings
@@ -164,11 +207,11 @@ ignore = [
     "C901",  # too complex
 ]
 
-[tool.ruff.per-file-ignores]
+[tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
 "tests/**/*.py" = ["ARG"]
 
-[tool.ruff.isort]
+[tool.ruff.lint.isort]
 known-first-party = ["nyxgpt"]
 
 [tool.interrogate]

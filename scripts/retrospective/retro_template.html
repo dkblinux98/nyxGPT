@@ -213,7 +213,8 @@
     <h1>nyxGPT Project Retrospective</h1>
     <p class="sub">The overall quality picture across all 377 issues, from the perspective of final
     acceptance: where each failure came from — code defects that escaped review, gaps in the spec,
-    or misses in the agent workflow itself — over time, by milestone, by label, and by module.</p>
+    misses in the agent workflow itself, or product-management failures (Improvements filed at
+    acceptance) — over time, by milestone, by label, and by module.</p>
   </header>
 
   <div class="tiles" id="qtiles"></div>
@@ -340,13 +341,22 @@
   </section>
 
   <footer>
-    <p><strong>Acceptance-perspective classification.</strong> The 182 issues labeled
-    <span class="mono">Acceptance Failure</span> (defects found at stakeholder acceptance, before release)
+    <p><strong>Acceptance-perspective classification.</strong> The 182 issues labeled <span class="mono">Acceptance Failure</span>
+    (implementation defects found at stakeholder acceptance, before release)
     are classified by root cause: <em>escaped defect</em> — broken behavior in code that had passed
     review (a review miss); <em>spec gap</em> — the delivered work matched the issue but the requirement
     itself was wrong or incomplete (redesigns, consolidations, UX corrections); <em>workflow miss</em> —
     the agent pipeline itself failed (review gate, branch hygiene, submission workflows). Classification
-    is keyword-heuristic over titles and bodies, hand-reviewed. No issue carries a Production Defect label.</p>
+    is keyword-heuristic over titles and bodies, hand-reviewed.</p>
+    <p><strong>Product management failures.</strong> The 27 issues labeled <span class="mono">Improvement</span>
+    are counted as a separate failure statistic: an Improvement filed during acceptance testing means the
+    spec itself was incomplete — a product-management (planning) failure, distinct from an Acceptance
+    Failure (implementation defect). Improvements never gate a feature's move to release.</p>
+    <p><strong>Failure-issue model (since 2026-08-02).</strong> A unique acceptance failure becomes a
+    <em>new</em> issue labeled Acceptance Failure, related to the original feature via a
+    <span class="mono">Related feature: #N</span> body line and a blocking dependency; the original stays
+    closed. A fix that later fails stakeholder re-test <em>reopens the same failure issue</em> rather than
+    filing a new one — so failure-issue counts understate total failure rounds.</p>
     <p><strong>Sprints.</strong> Sprint buckets are the Project's real Sprint iterations, read from the
     snapshot committed by the "Retro Dashboard - Dump Project Fields" workflow
     (scripts/retrospective/data/project_fields.json) — each issue lands in the sprint it was actually
@@ -385,6 +395,7 @@ document.getElementById('qtiles').innerHTML = [
   {label:'Escaped defects', value:qt.defect, note:'review misses', color:'var(--c1)'},
   {label:'Spec gaps', value:qt.spec, note:'bad or incomplete spec', color:'var(--c2)'},
   {label:'Workflow misses', value:qt.workflow, note:'agent pipeline failures', color:'var(--c3)'},
+  {label:'PM failures', value:qt.pm, note:'Improvements — spec gaps found in acceptance', color:'var(--c4)'},
   {label:'Production defects', value:qt.production,
    note: qt.production ? 'owner-reported in production' : 'none reported',
    color: qt.production ? 'var(--c1)' : 'var(--good)'},
@@ -396,8 +407,9 @@ const LENSES = {
   cause: {
     title: 'Acceptance view',
     keys: QDATA.lens.causes,
-    names: {defect:'Escaped defect (review miss)', spec:'Spec gap', workflow:'Agent workflow miss'},
-    desc: 'Acceptance failures by root cause — what the stakeholder found after review had approved the work.',
+    names: {defect:'Escaped defect (review miss)', spec:'Spec gap', workflow:'Agent workflow miss',
+            pm:'Product management failure (Improvement)'},
+    desc: 'Failures found at stakeholder acceptance, by root cause — implementation defects (Acceptance Failure issues) alongside product-management failures (Improvement issues: the spec itself was incomplete).',
   },
   label: {
     title: 'By label',

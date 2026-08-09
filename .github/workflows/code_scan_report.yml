@@ -1,0 +1,70 @@
+name: Code Scan Report
+
+# Read-only reporting: prints the open code-scanning alerts and the most
+# recent analyses for a ref into the run log, so agents (which cannot call
+# the code-scanning API directly) can read the current state via run logs
+# instead of asking the owner for a local `gh api` export. Uses the
+# built-in GITHUB_TOKEN -- `security-events: read` is all this needs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref to report alerts for'
+        required: false
+        default: 'refs/heads/v2.1.0'
+
+permissions:
+  security-events: read
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REF: ${{ inputs.ref }}
+    steps:
+      - name: Recent analyses
+        run: |
+          set -euo pipefail
+          echo "Most recent code-scanning analyses for $REF:"
+          gh api "repos/${{ github.repository }}/code-scanning/analyses?ref=$REF&per_page=6" \
+            --jq '.[] | [.created_at, .commit_sha[0:8], .category, (.results_count|tostring)] | @tsv'
+
+      - name: Open alerts
+        run: |
+          set -euo pipefail
+          echo "Open code-scanning alerts for $REF:"
+          gh api --paginate "repos/${{ github.repository }}/code-scanning/alerts?state=open&ref=$REF&per_page=100" \
+            --jq '.[] | [.number, .rule.id, .most_recent_instance.location.path + ":" + (.most_recent_instance.location.start_line|tostring)] | @tsv' \
+            | sort -n | tee alerts.tsv
+          echo "----"
+          echo "TOTAL_OPEN=$(wc -l < alerts.tsv)"
+
+      - name: Flow paths for open alerts (SARIF codeFlows)
+        run: |
+          set -euo pipefail
+          # The alert list gives only sink locations; the SARIF for the
+          # analysis carries the full source->sink codeFlows, which is what
+          # an agent needs to place a guard on the right flow.
+          ANALYSIS_ID=$(gh api "repos/${{ github.repository }}/code-scanning/analyses?ref=$REF&per_page=20" \
+            --jq '[.[] | select(.category | contains("python"))][0].id')
+          echo "Using analysis $ANALYSIS_ID"
+          gh api "repos/${{ github.repository }}/code-scanning/analyses/$ANALYSIS_ID" \
+            -H "Accept: application/sarif+json" > analysis.sarif
+          # Dump EVERY codeFlow per result, not just the first -- an alert
+          # stays open while ANY path lives, and fixing only codeFlows[0]
+          # reveals the next path one merge-and-rescan cycle at a time.
+          jq -r '.runs[].results[]
+            | select(.codeFlows != null)
+            | . as $r
+            | "=== " + .ruleId + " sink " +
+              (.locations[0].physicalLocation.artifactLocation.uri) + ":" +
+              (.locations[0].physicalLocation.region.startLine|tostring) +
+              " (" + ($r.codeFlows|length|tostring) + " flow(s))",
+              ($r.codeFlows | to_entries[]
+               | "  -- flow " + (.key|tostring),
+                 (.value.threadFlows[0].locations[]
+                  | "     " + .location.physicalLocation.artifactLocation.uri + ":" +
+                    (.location.physicalLocation.region.startLine|tostring) + "  " +
+                    (.location.message.text // "")))' analysis.sarif

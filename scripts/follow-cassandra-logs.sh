@@ -52,7 +52,7 @@ while true; do
 
   while kill -0 "$DOCKER_PID" 2>/dev/null; do
     sleep "$CHECK_INTERVAL"
-    SIZE=$(stat -f%z "$LOG_FILE" 2>/dev/null || echo 0)
+    SIZE=$(stat -f%z "$LOG_FILE" 2>/dev/null || stat -c%s "$LOG_FILE" 2>/dev/null || echo 0)
     if [ "$SIZE" -gt "$MAX_BYTES" ]; then
       kill "$DOCKER_PID" 2>/dev/null
       wait "$DOCKER_PID" 2>/dev/null || true

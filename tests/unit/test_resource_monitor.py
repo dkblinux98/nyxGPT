@@ -1,7 +1,10 @@
 """Unit tests for resource monitoring."""
 
+from unittest.mock import patch
+
 import pytest
 
+from nyxgpt import resource_monitor as resource_monitor_module
 from nyxgpt.resource_monitor import ResourceMetrics, ResourceMonitor
 
 
@@ -261,6 +264,82 @@ def test_batch_processor_queue_access_failure_falls_back_to_zero():
     metrics = monitor.get_metrics()
 
     assert metrics.queue_depth == 0
+
+
+@pytest.mark.unit
+def test_cpu_percent_process_normalized_by_core_count():
+    """Process CPU is divided by the logical core count so it stays 0-100.
+
+    Without normalization, a process pegging 2.5 of 5 cores would report
+    250% instead of 50% -- see #3581.
+    """
+    with patch("nyxgpt.resource_monitor.psutil.cpu_count", return_value=5):
+        monitor = ResourceMonitor(max_samples=10)
+
+    with (
+        patch.object(monitor._process, "cpu_percent", return_value=250.0),
+        patch("nyxgpt.resource_monitor.psutil.cpu_percent", return_value=42.0),
+    ):
+        metrics = monitor.get_metrics()
+
+    assert metrics.cpu_percent_process == pytest.approx(50.0)
+    assert metrics.cpu_percent_system == pytest.approx(42.0)
+
+
+@pytest.mark.unit
+def test_cpu_count_none_falls_back_to_single_core():
+    """psutil.cpu_count() can return None in some environments; must not crash or divide by zero."""
+    with patch("nyxgpt.resource_monitor.psutil.cpu_count", return_value=None):
+        monitor = ResourceMonitor(max_samples=10)
+
+    assert monitor._cpu_count == 1
+
+
+@pytest.mark.unit
+def test_first_metrics_call_takes_a_real_blocking_sample():
+    """The first call must take an explicit, well-defined measurement instead
+    of relying on psutil's `interval=None` first-call value, which psutil's
+    own docs call meaningless."""
+    monitor = ResourceMonitor(max_samples=10)
+
+    with patch("nyxgpt.resource_monitor.psutil.cpu_percent", return_value=7.5) as mock_cpu:
+        metrics = monitor.get_metrics()
+
+    mock_cpu.assert_called_once_with(interval=resource_monitor_module._CPU_MEASURE_INTERVAL_SECONDS)
+    assert metrics.cpu_percent_system == pytest.approx(7.5)
+
+
+@pytest.mark.unit
+def test_cpu_sample_reused_within_throttle_window():
+    """Calls that land within the minimum sample interval reuse the cached
+    reading instead of triggering another blocking psutil measurement."""
+    monitor = ResourceMonitor(max_samples=10)
+
+    with patch("nyxgpt.resource_monitor.psutil.cpu_percent", return_value=10.0) as mock_cpu:
+        first = monitor.get_metrics()
+        second = monitor.get_metrics()
+
+    assert mock_cpu.call_count == 1
+    assert first.cpu_percent_system == pytest.approx(10.0)
+    assert second.cpu_percent_system == pytest.approx(10.0)
+
+
+@pytest.mark.unit
+def test_cpu_sample_refreshes_after_min_interval_elapses():
+    """Once the minimum sample interval has passed, the next call takes a
+    fresh measurement rather than reusing the stale cached value."""
+    monitor = ResourceMonitor(max_samples=10)
+
+    with (
+        patch("nyxgpt.resource_monitor.time.monotonic", side_effect=[0.0, 0.0, 2.0, 2.0]),
+        patch("nyxgpt.resource_monitor.psutil.cpu_percent", side_effect=[10.0, 20.0]) as mock_cpu,
+    ):
+        first = monitor.get_metrics()
+        second = monitor.get_metrics()
+
+    assert mock_cpu.call_count == 2
+    assert first.cpu_percent_system == pytest.approx(10.0)
+    assert second.cpu_percent_system == pytest.approx(20.0)
 
 
 @pytest.mark.unit

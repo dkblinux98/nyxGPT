@@ -9,6 +9,7 @@ const mockStatusTerraform = {
   mode: 'terraform',
   native: {},
   compose: {},
+  compose_probe_available: true,
   conflicts: [],
   terraform: {
     probe_available: true,
@@ -22,6 +23,8 @@ const mockStatusTerraform = {
     deployed: true,
     namespace: 'nyxgpt',
     pods: ['pod/nyxgpt-api-abc123   1/1   Running'],
+    context: 'docker-desktop',
+    provisioned: false,
   },
   serving: {
     supported: false,
@@ -33,6 +36,7 @@ const mockStatusEmpty = {
   mode: 'none',
   native: {},
   compose: {},
+  compose_probe_available: true,
   conflicts: [],
   terraform: {
     probe_available: true,
@@ -46,6 +50,8 @@ const mockStatusEmpty = {
     deployed: false,
     namespace: 'nyxgpt',
     pods: [],
+    context: '',
+    provisioned: false,
   },
   serving: {
     supported: false,
@@ -57,6 +63,7 @@ const mockStatusKubernetesNotConfigured = {
   mode: 'none',
   native: {},
   compose: {},
+  compose_probe_available: true,
   conflicts: [],
   terraform: {
     probe_available: true,
@@ -70,6 +77,8 @@ const mockStatusKubernetesNotConfigured = {
     deployed: false,
     namespace: 'nyxgpt',
     pods: [],
+    context: '',
+    provisioned: false,
   },
   serving: {
     supported: false,
@@ -81,6 +90,7 @@ const mockStatusCannotDetermine = {
   mode: 'none',
   native: {},
   compose: {},
+  compose_probe_available: true,
   conflicts: [],
   terraform: {
     probe_available: false,
@@ -94,6 +104,35 @@ const mockStatusCannotDetermine = {
     deployed: false,
     namespace: 'nyxgpt',
     pods: [],
+    context: 'kind-nyxgpt-local',
+    provisioned: true,
+  },
+  serving: {
+    supported: false,
+    message: 'Single instance serving 100% of traffic -- traffic splitting is a Kubernetes-mode feature (see the Canary page).',
+  },
+};
+
+const mockStatusComposeCannotDetermine = {
+  mode: 'terraform',
+  native: {},
+  compose: {},
+  compose_probe_available: false,
+  conflicts: [],
+  terraform: {
+    probe_available: true,
+    deployed: true,
+    containers: { api: 'running', web: 'running', cassandra: 'exited' },
+  },
+  kubernetes: {
+    available: true,
+    configured: true,
+    probe_available: true,
+    deployed: false,
+    namespace: 'nyxgpt',
+    pods: [],
+    context: 'kind-nyxgpt-local',
+    provisioned: true,
   },
   serving: {
     supported: false,
@@ -105,6 +144,7 @@ const mockStatusKubernetesServing = {
   mode: 'kubernetes',
   native: {},
   compose: {},
+  compose_probe_available: true,
   conflicts: [],
   terraform: { probe_available: true, deployed: false, containers: {} },
   kubernetes: {
@@ -114,6 +154,8 @@ const mockStatusKubernetesServing = {
     deployed: true,
     namespace: 'nyxgpt',
     pods: ['pod/nyxgpt-api-stable-abc   1/1   Running'],
+    context: 'kind-nyxgpt-local',
+    provisioned: true,
   },
   serving: {
     supported: true,
@@ -240,6 +282,21 @@ describe('InfrastructurePage', () => {
     expect(screen.getAllByText(/Cannot determine from this deployment mode/)).toHaveLength(2);
   });
 
+  it('renders "cannot determine" for the Compose section when the compose probe is unavailable (e.g. Terraform mode without a reachable compose file)', async () => {
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusComposeCannotDetermine)));
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Terraform' })).toBeInTheDocument();
+    });
+    expect(screen.getAllByText('CANNOT DETERMINE')).toHaveLength(1);
+    expect(
+      screen.getByText(/the Compose file isn.t reachable from wherever this API process is running/)
+    ).toBeInTheDocument();
+    expect(screen.getByText('DEPLOYED')).toBeInTheDocument();
+  });
+
   it('never renders install/destroy controls or api key inputs', async () => {
     server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusTerraform)));
 
@@ -297,6 +354,28 @@ describe('InfrastructurePage', () => {
     expect(screen.getByText(/nyxgpt-web-stable healthy/)).toBeInTheDocument();
     expect(screen.getByText(/nyxgpt-web-canary has 0 desired replicas \(idle\)/)).toBeInTheDocument();
     expect(screen.getByText('No canary rollout active -- stable serves 100% of traffic.')).toBeInTheDocument();
+  });
+
+  it('labels a nyxgpt-provisioned kind cluster and its teardown behavior (#3596)', async () => {
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusKubernetesServing)));
+
+    render(<InfrastructurePage />);
+
+    expect(await screen.findByText('kind-nyxgpt-local')).toBeInTheDocument();
+    expect(
+      screen.getByText(/local kind cluster provisioned by nyxgpt/)
+    ).toBeInTheDocument();
+  });
+
+  it('labels a bring-your-own cluster as never destroyed by ops down (#3596)', async () => {
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusTerraform)));
+
+    render(<InfrastructurePage />);
+
+    expect(await screen.findByText('docker-desktop')).toBeInTheDocument();
+    expect(
+      screen.getByText(/bring-your-own cluster \(never destroyed/)
+    ).toBeInTheDocument();
   });
 
   it('surfaces a port conflict warning when native and compose collide', async () => {

@@ -127,11 +127,34 @@ resource "docker_container" "api" {
   env = [
     "NYXGPT_AUTH_API_KEY=${var.auth_api_key}",
     "NYXGPT_CORS_ORIGINS=${var.cors_origins}",
+    # Tells the self-heal watchdog (src/nyxgpt/self_heal.py), which runs
+    # inside this container, which compose file to run `docker compose
+    # ps/restart` against for the observability tier (Grafana/Loki/Jaeger/
+    # GlitchTip -- Terraform manages only the core four containers directly,
+    # see `_list_terraform_component_status`) -- mirrors docker-compose.yml's
+    # own `api` service env var of the same name. See the volume mount below
+    # and docs/self-healing.md. Without this, `_resolve_compose_file()`'s
+    # `~/.nyxGPT/docker-compose.yml` default resolves to a path that doesn't
+    # exist inside this container, `docker compose ps` fails every self-heal
+    # pass, and the observability tier is invisible to both the Self-Heal and
+    # Infrastructure Status pages in Terraform mode (#3588).
+    "NYXGPT_COMPOSE_FILE=/etc/nyxgpt/docker-compose.yml",
   ]
 
   volumes {
-    host_path      = "${var.repo_path}/docker/config.docker.ini"
+    # `nyxgpt ops install`'s `_generate_compose_config` writes this file to
+    # the same fixed, ops-managed location regardless of deployment mode
+    # (#3621) -- not `${var.repo_path}/docker/config.docker.ini`, so this
+    # bind mount doesn't depend on the Terraform host having a repo checkout.
+    host_path      = pathexpand("~/.nyxGPT/docker/config.docker.ini")
     container_path = "/etc/nyxgpt/config/config.ini"
+    read_only      = true
+  }
+
+  # Paired with NYXGPT_COMPOSE_FILE above -- see that env var's comment.
+  volumes {
+    host_path      = "${var.repo_path}/docker-compose.yml"
+    container_path = "/etc/nyxgpt/docker-compose.yml"
     read_only      = true
   }
 

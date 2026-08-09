@@ -1,8 +1,14 @@
 # nyxGPT Operations Guide
 
-This document describes operational commands provided by `nyxgpt ops`. These commands manage local services and infrastructure required by nyxGPT, without requiring direct use of `brew`, `docker`, or `launchctl`.
+This document describes operational commands provided by `nyxgpt ops`. These commands manage local services and infrastructure required by nyxGPT, without requiring direct use of `brew`/`launchctl` (macOS) or `systemctl` (Linux), or `docker`.
 
 All commands are safe to run multiple times and are designed for local, single-user systems.
+
+`nyxgpt ops` dispatches by OS: macOS uses Homebrew services + launchd (see
+[homebrew.md](homebrew.md)), Linux uses systemd --user units (see
+[systemd.md](systemd.md), #3508). The command surface below (`install`,
+`status`, `restart`, `stop`, `down`, `doctor`, `logs`, ...) is identical on
+both -- only the native service-manager underneath differs.
 
 ---
 
@@ -12,9 +18,9 @@ All commands are safe to run multiple times and are designed for local, single-u
 
 - FastAPI backend (`nyxgpt-api`)
 - Local Web UI (`nyxgpt-web` / Next.js)
-- Ollama (via Homebrew)
+- Ollama (via Homebrew on macOS, its own `nyxgpt-ollama.service` on Linux)
 - Cassandra container (Docker)
-- Cassandra log follower (LaunchAgent)
+- Cassandra log follower (LaunchAgent on macOS, systemd --user unit on Linux)
 
 Configuration lives outside the repository in:
 
@@ -33,6 +39,8 @@ Logs default to:
 ## Command Summary
 
 ```bash
+nyxgpt up              # alias for `nyxgpt ops install` + health-wait + URL
+nyxgpt down            # alias for `nyxgpt ops down`
 nyxgpt ops install
 nyxgpt ops status
 nyxgpt ops restart
@@ -45,6 +53,48 @@ nyxgpt ops logs
 nyxgpt ops observability
 nyxgpt ops glitchtip-init
 nyxgpt ops migrate-volumes
+nyxgpt ops port-forward
+```
+
+---
+
+## `nyxgpt up` / `nyxgpt down`
+
+`nyxgpt up` and `nyxgpt down` are thin, top-level aliases for
+[`nyxgpt ops install`](#nyxgpt-ops-install) and
+[`nyxgpt ops down`](#nyxgpt-ops-down) -- same single code path, no forked
+behavior, every mode flag (`--terraform`, `--kubernetes`, `--local`,
+`--skip-observability`, `--app-only`, `--volumes --yes-really`, ...) passes
+straight through unchanged. They exist because `up`/`down` is the first
+thing most operators reach for, before discovering the fuller `nyxgpt ops`
+surface.
+
+`nyxgpt up`'s only difference from calling `install` directly: once the
+reconcile finishes, it waits for every desired component to report healthy
+(reusing the same cross-mode probes `nyxgpt self-heal status` uses --
+`self_heal.list_component_status()`) and then prints the web UI URL:
+
+```bash
+$ nyxgpt up
+...
+Waiting for components to report healthy...
+nyxGPT is up: http://127.0.0.1:3000
+```
+
+- `--timeout SECONDS` — how long to wait for health before giving up
+  (default 180)
+- `--no-wait` — return as soon as `install` finishes, without waiting for
+  health or printing the URL
+- Under `--kubernetes`, Services are ClusterIP-only, so `up` prints
+  `nyxgpt ops port-forward` instructions instead of claiming the URL is
+  directly reachable (see [kubernetes.md](kubernetes.md#4-verify))
+
+Both are idempotent, same as `install`/`down` themselves: re-running `up`
+just reconciles and re-waits; re-running `down` on an already-torn-down
+stack is a no-op.
+
+```bash
+nyxgpt down    # exactly `nyxgpt ops down`
 nyxgpt ops verify
 ```
 
@@ -103,14 +153,21 @@ nyxgpt ops install --quiet
 ## `nyxgpt ops install`
 
 Reconciles the local machine to nyxGPT's intended **local** topology:
-`api`/`web`/`ollama` running natively (Homebrew), plus the single
-ops-managed local Cassandra container. (The full `docker-compose.yml` stack
-described in [docker-compose.md](docker-compose.md) is a separate,
-alternative **cloud/server** deployment path — `nyxgpt ops install` never
-starts it.)
+`api`/`web`/`ollama` running natively (Homebrew services on macOS, systemd
+--user units on Linux -- see [homebrew.md](homebrew.md) /
+[systemd.md](systemd.md)), plus the single ops-managed local Cassandra
+container. (The full `docker-compose.yml` stack described in
+[docker-compose.md](docker-compose.md) is a separate, alternative
+**cloud/server** deployment path — `nyxgpt ops install` never starts it.)
 
 This command:
 
+- Syncs the packaged Compose file, config/provisioning templates,
+  launchd/systemd unit templates, and helper scripts into `~/.nyxGPT` (see
+  [Design Notes](#design-notes) below) — every other step in this list reads
+  from that synced copy, not from a source checkout, so `nyxgpt ops install`
+  works the same whether nyxGPT is running from `pip install -e .` or an
+  installed, non-editable package (#3621).
 - Ensures `~/.nyxGPT/config.ini` exists — on a fresh machine it launches the
   interactive setup wizard (the same one behind `nyxgpt wizard`) to create it
   before anything else runs. In a non-interactive shell (no TTY) this step
@@ -121,20 +178,30 @@ This command:
 - Detects and stops any Docker Compose app-tier containers (`api`, `web`,
   `ollama`, `cassandra`) left running from an earlier raw `docker compose
   up` or a previous mixed-mode install, reporting what it stopped
-- Installs Homebrew formulas (`nyxgpt-api`, `nyxgpt-web`) if missing, or
-  reinstalls them when the vendored source has changed since the last
-  install. When `nyxgpt-web` is actually rebuilt this way, the service is
-  **restarted** (not just started) so the running `next start` process picks
-  up the new `.next` build output instead of continuing to serve the old
-  build's chunk manifest against the new on-disk chunks -- see
+- **macOS**: installs Homebrew formulas (`nyxgpt-api`, `nyxgpt-web`) if
+  missing, or reinstalls them when the vendored source has changed since the
+  last install. When `nyxgpt-web` is actually rebuilt this way, the service
+  is **restarted** (not just started) so the running `next start` process
+  picks up the new `.next` build output instead of continuing to serve the
+  old build's chunk manifest against the new on-disk chunks -- see
   [Automatic update recovery](service-worker-pwa.md#automatic-update-recovery)
   for the client-side half of this (#3445).
-- Registers and loads required LaunchAgents, including `com.nyxgpt.ollama-logs`
+  **Linux**: builds a self-contained venv (`nyxgpt-api`) and web bundle
+  (`nyxgpt-web`) under `~/.nyxGPT/opt/<component>` and (re)starts their
+  systemd --user units, unconditionally rebuilding on every run -- see
+  [systemd.md](systemd.md#installing-the-services).
+- Registers and loads the required log-follower agents (LaunchAgents on
+  macOS, systemd --user units on Linux), including the Ollama logs follower
   (tails Ollama's logs into `~/.nyxGPT/logs/ollama.log`, from the
-  `nyxgpt-ollama` container's docker logs in Compose mode or Homebrew's own
-  ollama.log natively — see [Ollama logs](api.md#ollama-logs)) and
-  `com.nyxgpt.ollama-env` (reapplies native Ollama's `OLLAMA_MODELS` env var
-  at every login — see [Ollama model store](homebrew.md#ollama-model-store))
+  `nyxgpt-ollama` container's docker logs in Compose mode, or natively from
+  Homebrew's own ollama.log on macOS / `nyxgpt-ollama.service`'s own log on
+  Linux — see [Ollama logs](api.md#ollama-logs)). On macOS this also
+  installs `com.nyxgpt.ollama-env`, which reapplies native Ollama's
+  `OLLAMA_MODELS` env var at every login (see
+  [Ollama model store](homebrew.md#ollama-model-store)); Linux's
+  `nyxgpt-ollama.service` bakes `OLLAMA_MODELS` into the unit's
+  `Environment=` directly, so no equivalent agent is needed there (see
+  [systemd.md](systemd.md#managing-the-ollama-service-nyxgpt-ollama)).
 - Points native Ollama's model store at the same
   `~/.nyxGPT/volumes/ollama/models` directory Compose/Terraform's `ollama`
   container uses, via `OLLAMA_MODELS` (never a symlink), merging in any
@@ -218,9 +285,11 @@ Reports:
   at the same time, `status` prints a second **WARNING** — this means an incomplete mode
   switch (e.g. `nyxgpt ops install` after `nyxgpt ops down` without `--terraform`) left
   two whole core stacks up at once, each answering on its own network (#3565).
-- Homebrew service state (`started`, `stopped`, `error`)
+- Native service state (`started`, `stopped`, `error`) — Homebrew services
+  on macOS, systemd --user units on Linux
 - Docker container state for Cassandra
-- LaunchAgent load state
+- Log-follower agent load state (LaunchAgent on macOS, systemd --user unit
+  on Linux)
 - A closing pointer to [`nyxgpt ops stop`](#nyxgpt-ops-stop) (stop one
   component) and [`nyxgpt ops down`](#nyxgpt-ops-down) (tear down the whole
   stack) for cleanup
@@ -269,7 +338,8 @@ nyxgpt ops restart observability
 - Services are stopped and started cleanly
 - Docker containers are **not recreated** unless missing
 - Persistent volumes are preserved
-- LaunchAgents are reloaded if installed
+- Log-follower agents are reloaded if installed (LaunchAgents on macOS,
+  systemd --user units on Linux)
 - Before restarting a component, `restart` checks whether a Docker Compose deployment of
   that same component is already running. If so, it **refuses** rather than starting a
   second native process/container that would collide on the same port — you'll see a
@@ -340,9 +410,10 @@ nyxgpt ops stop observability
   than silently leaving the other one live.
 - If a component isn't running in either mode, `stop` reports
   `already stopped` and does nothing.
-- `cassandra-logs` unloads the LaunchAgent (`launchctl bootout`) so it
-  doesn't immediately relaunch; an already-unloaded agent is reported as
-  already stopped rather than a failure.
+- `cassandra-logs` unloads the log-follower agent (`launchctl bootout` on
+  macOS, `systemctl --user stop` on Linux) so it doesn't immediately
+  relaunch; an already-unloaded/stopped agent is reported as already stopped
+  rather than a failure.
 - `observability` stops the running `monitoring`/`logging`/`tracing`/`errors`
   Compose containers (via `docker compose stop`) -- their data (Grafana
   dashboards, Loki logs, GlitchTip issues) is preserved.
@@ -442,7 +513,7 @@ nyxgpt ops doctor
 Checks include:
 
 - Required files under `~/.nyxGPT/`
-- Homebrew availability
+- Native service-manager availability (`brew` on macOS, `systemctl` on Linux)
 - Running services
 - Docker daemon availability
 - Local Cassandra container presence (flags a missing `nyxgpt-cassandra`
@@ -468,11 +539,15 @@ Checks include:
   uninstalled) running degraded: missing instrumentors are silently skipped,
   or tracing is disabled outright if the exporter itself is missing. Flags
   the missing package names and points at `nyxgpt ops install`
-- (once the shared Ollama store has been configured) whether native
-  Ollama's live `launchctl getenv OLLAMA_MODELS` still matches the expected
-  shared `~/.nyxGPT/volumes/ollama/models` path -- catches drift back to
-  Ollama's own default store (see
-  [homebrew.md#ollama-model-store](homebrew.md#ollama-model-store))
+- (macOS only, once the shared Ollama store has been configured) whether
+  native Ollama's live `launchctl getenv OLLAMA_MODELS` still matches the
+  expected shared `~/.nyxGPT/volumes/ollama/models` path -- catches drift
+  back to Ollama's own default store (see
+  [homebrew.md#ollama-model-store](homebrew.md#ollama-model-store)). Linux
+  has no equivalent check: `nyxgpt-ollama.service`'s `Environment=` is part
+  of the unit file itself and can't drift the way a per-session
+  `launchctl setenv` can (see
+  [systemd.md](systemd.md#managing-the-ollama-service-nyxgpt-ollama))
 - (when error tracking is enabled and GlitchTip is reachable) whether the
   configured `[error_tracking] dsn`'s public key still matches a live
   GlitchTip project key -- if GlitchTip's org/project/key ever gets
@@ -565,9 +640,9 @@ reads the matching source:
 | Mode | Source |
 | --- | --- |
 | Docker Compose | `docker compose logs <service>` |
-| Native (`api`) | `~/.nyxGPT/logs/api.log` |
+| Native (`api`) | `~/.nyxGPT/logs/api.log` plus the native service's own stdout/stderr, as labeled sections (macOS: Homebrew's `nyxgpt-api.log`/`.err.log`, see [homebrew.md](homebrew.md#api-logs); Linux: `~/.nyxGPT/logs/nyxgpt-api.log`/`.err.log`, see [systemd.md](systemd.md#api-logs)) -- so a pre-logging startup failure (e.g. the P6-1 bind refusal, #3500) is still visible (#3629) |
 | Native (`ollama`) | `~/.nyxGPT/logs/ollama.log` (see [Ollama logs](api.md#ollama-logs)) |
-| Native (`web`) | Homebrew's own `nyxgpt-web.log`/`.err.log` (see [homebrew.md](homebrew.md#web-ui-logs)) |
+| Native (`web`) | macOS: Homebrew's own `nyxgpt-web.log`/`.err.log` (see [homebrew.md](homebrew.md#web-ui-logs)). Linux: `~/.nyxGPT/logs/nyxgpt-web.log`/`.err.log` (see [systemd.md](systemd.md#web-ui-logs)) |
 | Native (`cassandra`) | `docker logs nyxgpt-cassandra` |
 | Terraform | `docker logs <nyxgpt-tf-* container>` |
 | Kubernetes | `kubectl logs <pod>` |
@@ -839,6 +914,16 @@ Exit codes:
 
 ---
 
+## `nyxgpt ops port-forward`
+
+Forwards the Kubernetes `nyxgpt-web` Service to `127.0.0.1` so it's reachable
+from the operator's own workstation. `k8s/`'s Services are ClusterIP-only --
+there's no Ingress/LoadBalancer (see
+[kubernetes.md](kubernetes.md#4-verify)) -- so this is the only way to reach
+the web UI after a `--kubernetes` install. It's a thin wrapper around
+`kubectl port-forward` so operators never need to type the raw `kubectl`
+command themselves; `nyxgpt up --kubernetes` prints this command as its next
+step once the stack reports healthy.
 ## `nyxgpt ops verify`
 
 The live smoke harness behind #3555/P6-18: boots the stack, generates known
@@ -853,6 +938,13 @@ also works as a one-command local pre-check before owner acceptance testing.
 Usage:
 
 ```bash
+nyxgpt ops port-forward
+nyxgpt ops port-forward --port 3001   # forward to a different local port
+```
+
+Runs in the foreground until interrupted (`Ctrl-C`), same as `kubectl
+port-forward` itself. Exits `2` if `kubectl` isn't on `PATH`; otherwise
+returns `kubectl`'s own exit code once the forward stops.
 nyxgpt ops verify                    # boot, test, tear down (ephemeral -- CI's mode)
 nyxgpt ops verify --keep-up          # leave the stack up afterward to look around
 nyxgpt ops verify --skip-boot        # stack (native or Compose) is already up
@@ -927,17 +1019,25 @@ Typical files include:
 - `cli.log` -- every `nyxgpt` CLI invocation's own structured logs
 - `ollama.log` -- Ollama's logs, tailed in by `follow-ollama-logs.sh`
   (Compose mode: from `docker logs`; native mode: from Homebrew's own
-  ollama.log -- see [Ollama logs](api.md#ollama-logs))
+  ollama.log on macOS, or `nyxgpt-ollama.service`'s own
+  `ollama-native.log` on Linux -- see [Ollama logs](api.md#ollama-logs))
 - `cassandra.log` -- Cassandra's container logs, tailed in by
   `follow-cassandra-logs.sh`
 - `cassandra-logfollower.out.log` / `.err.log`, `ollama-logfollower.out.log`
-  / `.err.log` -- the log-follower LaunchAgents' own stdout/stderr, not the
-  service logs themselves (useful only for debugging the follower)
+  / `.err.log` -- the log-follower agents' own stdout/stderr (LaunchAgents
+  on macOS, systemd --user units on Linux), not the service logs themselves
+  (useful only for debugging the follower)
+- `ollama-native.log` / `.err.log` -- Linux only: `nyxgpt-ollama.service`'s
+  raw `ollama serve` stdout/stderr, the source `follow-ollama-logs.sh` tails
+  into the canonical `ollama.log` above
 
 Homebrew's own per-service `nyxgpt-api.log`/`.err.log`/`nyxgpt-web.log`/
 `.err.log` (raw process stdout/stderr, useful for a crash before Python/Node
-logging is even configured) live under Homebrew's own `var/log`, not here --
-see [homebrew.md](homebrew.md#api-logs).
+logging is even configured) live under Homebrew's own `var/log` on macOS --
+see [homebrew.md](homebrew.md#api-logs). On Linux, the systemd --user units'
+equivalent raw stdout/stderr write directly to
+`~/.nyxGPT/logs/nyxgpt-api.log`/`.err.log`/`nyxgpt-web.log`/`.err.log` --
+see [systemd.md](systemd.md).
 
 ### Structured `nyxgpt ops` activity logging
 
@@ -951,8 +1051,8 @@ Every `nyxgpt ops` command (`install`, `status`, `restart`, `stop`, `down`, `log
 - **Command start** (`ops: <action> starting ...`) -- `INFO`.
 - **Per-step outcome** (`ops: <action> ok/failed: <message>`, with any
   subprocess failure output in `extra["details"]`) -- `INFO` on success,
-  `WARNING` on failure (e.g. a missing `brew`/`docker` binary, a port
-  conflict, a failed `npm ci`).
+  `WARNING` on failure (e.g. a missing `brew`/`systemctl`/`docker` binary, a
+  port conflict, a failed `npm ci`).
 - **Unexpected exception during install** (`ops: install step <step>
   raised ...`) -- `ERROR`, with a full traceback.
 - **Deployment-mode conflict** (`ops: native/Compose deployment conflict on
@@ -996,7 +1096,7 @@ If a service fails to start:
    nyxgpt ops doctor
    ```
 
-Avoid manually invoking `brew services`, `docker run`, or `launchctl` unless explicitly debugging.
+Avoid manually invoking `brew services`/`launchctl` (macOS), `systemctl` (Linux), or `docker run` unless explicitly debugging.
 
 ---
 
@@ -1005,5 +1105,20 @@ Avoid manually invoking `brew services`, `docker run`, or `launchctl` unless exp
 - `nyxgpt ops` intentionally avoids destructive actions by default
 - Data loss requires explicit user action
 - All operations are local and user-scoped
+- Runtime data the ops layer needs (the Compose file, its
+  config/provisioning templates, launchd/systemd unit templates, and a
+  handful of helper scripts) ships inside the installed Python package
+  under `nyxgpt.resources`, resolved via `importlib.resources` -- not
+  relative to the repo checkout. `nyxgpt ops install` copies that packaged
+  tree into `~/.nyxGPT` once per run (`_sync_packaged_resources`); every
+  other step reads from that fixed, writable location afterwards. This is
+  what lets `nyxgpt ops install`/`up` work identically whether nyxGPT is
+  running from a source checkout (`pip install -e .`) or an installed,
+  non-editable package with no repo present at all (#3621). A few
+  genuinely repo-checkout-dependent operations -- building distributable
+  artifacts from source, the Terraform/Kubernetes local deploy paths
+  (`.tf`/`.yaml` files on disk), the `web/` npm project -- still resolve
+  paths relative to the checkout; see `tests/unit/test_repo_root_allowlist.py`
+  for the exact, reviewed list.
 
 ```

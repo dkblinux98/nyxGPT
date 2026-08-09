@@ -34,6 +34,7 @@ type DetectedMode = 'native' | 'compose' | 'terraform' | 'kubernetes' | 'none';
 type SelfHealStatus = {
   enabled: boolean;
   mode: DetectedMode;
+  compose_probe_available: boolean;
   components: Component[];
   unhealthy_count: number;
   events: HealEvent[];
@@ -282,6 +283,24 @@ export default function SelfHealPage() {
                 "(the Deployment's controller recreates it), on top of -- not instead of -- " +
                 "kubelet's own liveness-probe restarts and the canary rollout's auto-rollback."}
           </p>
+
+          {!status.compose_probe_available && (
+            <p
+              style={{
+                fontSize: '0.875rem',
+                color: 'var(--foreground-muted)',
+                marginBottom: '1rem',
+                padding: '0.5rem 0.75rem',
+                borderRadius: '0.375rem',
+                border: '1px solid var(--border-color)',
+              }}
+            >
+              Observability tier: cannot determine from this deployment mode — the Compose file
+              isn&apos;t reachable from wherever this API process is running, so a missing
+              Grafana/Loki/Jaeger/GlitchTip row here means &quot;can&apos;t check&quot;, not
+              &quot;not running&quot;.
+            </p>
+          )}
 
           <div
             style={{

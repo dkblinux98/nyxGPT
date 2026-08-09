@@ -15,9 +15,11 @@ import contextlib
 import getpass
 import hashlib
 import importlib.metadata
+import importlib.resources
 import json
 import logging
 import os
+import platform
 import re
 import secrets
 import shutil
@@ -54,7 +56,24 @@ from nyxgpt.logging import get_correlation_id
 
 logger = logging.getLogger(__name__)
 
-# Repo root: .../nyxGPT/src/nyxgpt/ops.py -> parents[2] is repo root
+# Repo root: .../nyxGPT/src/nyxgpt/ops.py -> parents[2] is repo root.
+#
+# #3621 retired every REPO_ROOT-relative lookup the `nyxgpt ops
+# install`/`up` local-stack reconciliation path depended on (Compose file,
+# config/provisioning templates, launchd/systemd unit templates, helper
+# scripts -- see `_sync_packaged_resources`) in favor of package data
+# resolved via `importlib.resources`. REPO_ROOT itself stays, scoped to
+# operations that are inherently repo-checkout-dependent regardless of
+# Python packaging: building distributable artifacts FROM source (Homebrew
+# tap tarball vendoring, the self-contained Linux venv build, Docker image
+# builds for Terraform/Kubernetes local deploy), Terraform/Kubernetes local
+# deploy itself (terraform/*.tf and k8s/*.yaml are files on disk, not
+# importable package data), the `web/` npm project (its own build/packaging
+# concern, not shipped as Python package data), and dev-checkout-only
+# doctor/version diagnostics that no-op cleanly when REPO_ROOT doesn't
+# exist. `tests/unit/test_repo_root_allowlist.py` guards this boundary: it
+# fails if a new REPO_ROOT-relative lookup appears anywhere it isn't already
+# on the allowlist.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Maps a logical component to its Homebrew service name for native mode.
@@ -67,6 +86,47 @@ NATIVE_BREW_SERVICES: dict[str, str] = {
     "ollama": "ollama",
 }
 
+# Linux twin of NATIVE_BREW_SERVICES: maps a logical component to its
+# systemd --user unit name (see ops/systemd/*.service, #3508). "ollama" gets
+# its own nyxgpt-ollama.service so it's managed the same operator-facing way
+# as api/web -- *unless* a distro-installed system-wide `ollama.service`
+# (e.g. from the official installer) already holds port 11434, in which case
+# nyxGPT adopts that unit instead of fighting it for the port (#3632; see
+# `_system_ollama_service_active`/`_reconcile_system_ollama_service`).
+NATIVE_SYSTEMD_SERVICES: dict[str, str] = {
+    "api": "nyxgpt-api",
+    "web": "nyxgpt-web",
+    "ollama": "nyxgpt-ollama",
+}
+
+
+def _is_macos() -> bool:
+    """True if running on macOS -- the Homebrew services + launchd native path."""
+    return platform.system() == "Darwin"
+
+
+def _is_linux() -> bool:
+    """True if running on Linux -- the systemd --user native path (#3508)."""
+    return platform.system() == "Linux"
+
+
+def _unsupported_os_result(action: str) -> list[OpsResult]:
+    """Standard failure for a native-mode step on an OS with no dispatch branch.
+
+    Native install is supported on macOS (Homebrew/launchd) and Linux
+    (systemd) only -- Compose/Terraform/Kubernetes deployment modes are
+    unaffected since they never touch host service managers.
+    """
+    return [
+        OpsResult(
+            False,
+            f"{action}: unsupported OS for native mode ({platform.system()})",
+            "Native install (nyxgpt ops install, no --terraform/--kubernetes) supports "
+            "macOS and Linux only. Use --terraform or --kubernetes on other platforms.",
+        )
+    ]
+
+
 # Host port each component binds to under Docker Compose (see docker-compose.yml).
 # Used only for collision messaging -- detection itself is state-based.
 COMPOSE_COMPONENT_PORTS: dict[str, int] = {
@@ -76,20 +136,47 @@ COMPOSE_COMPONENT_PORTS: dict[str, int] = {
     "cassandra": 9042,
 }
 
+# Local web UI URL once the stack is up. Native and Compose/Terraform modes
+# all bind `web` to the same host port (COMPOSE_COMPONENT_PORTS above,
+# app.py's CORS allowlist) -- Kubernetes mode is the one exception, since its
+# Services are ClusterIP-only and need a manual `kubectl port-forward` (see
+# `up()`, docs/kubernetes.md#4-verify).
+WEB_URL = "http://127.0.0.1:3000"
+
 NATIVE_CONFIG_HINT = "~/.nyxGPT/config.ini"
-COMPOSE_CONFIG_HINT = "docker/config.docker.ini (mounted into the Compose 'api' container)"
+COMPOSE_CONFIG_HINT = (
+    "~/.nyxGPT/docker/config.docker.ini (mounted into the Compose 'api' container)"
+)
+
+# Runtime data the ops layer needs -- the Compose file, its config/provisioning
+# templates, launchd/systemd unit templates, and a handful of helper scripts
+# -- ships inside the installed package under `nyxgpt.resources` (see
+# pyproject.toml's package-data and `src/nyxgpt/resources/`) instead of being
+# resolved relative to REPO_ROOT: an installed, non-editable build has no
+# repo checkout alongside it for REPO_ROOT-relative lookups to find (#3621).
+# `_sync_packaged_resources` (called by `install()`) copies that packaged
+# tree into this fixed, writable, ops-managed location once per install;
+# every lookup below just reads from here afterwards, uniformly across a dev
+# checkout and an installed package.
+NYXGPT_HOME = Path.home() / ".nyxGPT"
+OPS_COMPOSE_FILE = NYXGPT_HOME / "docker-compose.yml"
+OPS_DOCKER_DIR = NYXGPT_HOME / "docker"
+OPS_LAUNCHAGENTS_DIR = NYXGPT_HOME / "ops" / "launchagents"
+OPS_SYSTEMD_TEMPLATES_DIR = NYXGPT_HOME / "ops" / "systemd"
+OPS_SCRIPTS_SRC_DIR = NYXGPT_HOME / "scripts"
 
 # The container api-config is a derived, per-machine artifact (like .env):
 # it's bind-mounted into the containerized api and gets its DSN filled in at
-# runtime by `nyxgpt ops glitchtip-init`, so it is git-ignored. `nyxgpt ops
+# runtime by `nyxgpt ops glitchtip-init`, so it isn't part of the packaged
+# resources synced by `_sync_packaged_resources`. `nyxgpt ops
 # install`/`env-sync` regenerates it from the native `~/.nyxGPT/config.ini`
 # (the single source of truth) via `_generate_compose_config`.
-COMPOSE_CONFIG_FILE = REPO_ROOT / "docker" / "config.docker.ini"
+COMPOSE_CONFIG_FILE = OPS_DOCKER_DIR / "config.docker.ini"
 
 # Compose override that attaches the observability profiles to the
 # terraform-managed network (`nyxgpt-terraform`) so they interoperate with the
 # terraform-managed core containers -- used by `install --terraform --local`.
-TERRAFORM_NET_OVERRIDE = REPO_ROOT / "docker" / "docker-compose.terraform-net.yml"
+TERRAFORM_NET_OVERRIDE = OPS_DOCKER_DIR / "docker-compose.terraform-net.yml"
 
 # Placeholder substituted with the installing user's home directory when a
 # LaunchAgent plist template is copied into ~/Library/LaunchAgents -- the
@@ -451,6 +538,8 @@ def _run(
     expected: bool = False,
     expected_returncodes: Container[int] | None = None,
     expected_message: str | None = None,
+    input: str | None = None,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run `cmd`, capturing stdout/stderr as text.
 
@@ -467,9 +556,19 @@ def _run(
     INFO with `expected_message` (or a generic "expected exit" message)
     instead of WARNING, while any other non-zero exit still logs at WARNING
     exactly as today (#3574).
+    Pass `input` to feed the subprocess's stdin (e.g. a secret a caller
+    doesn't want to put on `cmd`'s argv at all -- argv is visible to `ps`,
+    shell history, and this function's own non-zero-exit logging, while
+    stdin is not (#3644, CodeQL py/clear-text-logging-sensitive-data)).
+    Pass `env` to run with a modified environment -- the other secret-safe
+    channel: `docker compose exec -e VAR` (bare, no `=value`) forwards VAR
+    from this process's environment into the container without the value
+    ever appearing on argv (CodeQL #105/#106).
     """
     try:
-        result = subprocess.run(cmd, check=check, text=True, capture_output=True)
+        result = subprocess.run(
+            cmd, check=check, text=True, capture_output=True, input=input, env=env
+        )
     except subprocess.CalledProcessError as e:
         _log_nonzero_exit(
             cmd, e.returncode, e.stderr, expected, expected_returncodes, expected_message
@@ -480,6 +579,46 @@ def _run(
             cmd, result.returncode, result.stderr, expected, expected_returncodes, expected_message
         )
     return result
+
+
+# Argument names (and inline `--flag=value` forms) whose *value* may carry a
+# secret. When we log a failed command we mask those values so an API key,
+# password, or DSN can never reach Loki in clear text (CodeQL
+# py/clear-text-logging-sensitive-data). Matching is case-insensitive and
+# substring-based so `--api-key`, `--admin-password`, and `--glitchtip-dsn`
+# are all covered.
+_SECRET_ARG_HINTS = ("key", "token", "secret", "password", "passwd", "dsn", "credential")
+
+
+def _redact_cmd(cmd: list[str]) -> list[str]:
+    """Return a copy of `cmd` with any secret-bearing argument value masked.
+
+    Two shapes are redacted: a value in the position *after* a secret-named
+    flag (`--api-key VALUE` -> `--api-key ***`), and an inline `NAME=value`
+    where the name looks sensitive -- with or without a leading dash, so
+    both `--dsn=...` and an env-style `DJANGO_SUPERUSER_PASSWORD=...`
+    (docker `-e NAME=value` forwarding) are masked. The returned list is
+    freshly built so the sensitive value never flows on to the logging sink.
+    """
+    redacted: list[str] = []
+    mask_next = False
+    for arg in cmd:
+        if mask_next:
+            redacted.append("***")
+            mask_next = False
+            continue
+        low = arg.lower()
+        if "=" in arg:
+            name, _, _value = arg.partition("=")
+            if any(h in name.lower() for h in _SECRET_ARG_HINTS):
+                redacted.append(f"{name}=***")
+                continue
+        if arg.startswith("-") and any(h in low for h in _SECRET_ARG_HINTS):
+            redacted.append(arg)
+            mask_next = True
+            continue
+        redacted.append(arg)
+    return redacted
 
 
 def _log_nonzero_exit(
@@ -497,21 +636,42 @@ def _log_nonzero_exit(
     says the exit was expected, so it never reads as scary to the user
     (#3574). Everything else keeps the pre-existing WARNING/DEBUG split.
     """
+    safe_cmd = _redact_cmd(cmd)
+    safe_cmd_str = " ".join(safe_cmd)
     if expected_returncodes is not None and returncode in expected_returncodes:
         level = logging.INFO
         message = expected_message or (
             f"Subprocess exited with expected rc={returncode}, treated as "
-            f"success: {' '.join(cmd)}"
+            f"success: {safe_cmd_str}"
         )
     else:
         level = logging.DEBUG if expected else logging.WARNING
-        message = f"Subprocess exited non-zero (rc={returncode}): {' '.join(cmd)}"
+        message = f"Subprocess exited non-zero (rc={returncode}): {safe_cmd_str}"
+    # CodeQL alerts #105/#106 (py/clear-text-logging-sensitive-data) flagged
+    # `message`/`extra` below, and were REAL twice over: a bare positional
+    # secret (`_reset_grafana_admin_password`, fixed in #3644 by piping it
+    # over stdin), and an env-style `-e DJANGO_SUPERUSER_PASSWORD=value`
+    # argv element (`_glitchtip_ensure_superuser`) that slipped past
+    # `_redact_cmd`'s dash-prefixed flag masking and reached this log's
+    # `extra` at INFO on every idempotent glitchtip-init re-run. That call
+    # site now forwards the secret via the process environment (bare `-e
+    # VAR` + `_run(env=...)`) so it never appears on argv, and `_redact_cmd`
+    # also masks dash-less `NAME=value` elements as defense-in-depth.
+    # Keep secrets off argv entirely (stdin or env) at any new call site --
+    # that kills the flow at the source instead of trying to convince
+    # CodeQL's taint tracker that `_redact_cmd` is a sanitizer. Inline
+    # suppression comments (`codeql[...]`, then `lgtm[...]`) were tried in
+    # earlier rounds and neither took effect against this repo's CodeQL
+    # default-setup configuration -- don't reintroduce them.
+    # `test_run_redacts_secret_cmd_values_on_nonzero_exit` in
+    # `tests/unit/test_ops.py` covers the masking that remains as
+    # defense-in-depth for any other secret-bearing flag.
     logger.log(
         level,
         message,
         extra={
             "component": "ops",
-            "cmd": cmd,
+            "cmd": safe_cmd,
             "returncode": returncode,
             "stderr_tail": stderr[-2000:] if stderr else "",
         },
@@ -564,6 +724,51 @@ def _copy_file(src: Path, dst: Path, *, mode: int | None = None) -> None:
     shutil.copy2(src, dst)
     if mode is not None:
         os.chmod(dst, mode)
+
+
+def _packaged_resources_root() -> Path:
+    """Return the filesystem path backing the `nyxgpt.resources` package data.
+
+    Resolves via `importlib.resources`, so this works identically whether
+    nyxGPT is running from an editable dev checkout (`src/nyxgpt/resources/`
+    holds symlinks back to the canonical `docker/`, `docker-compose.yml`,
+    `ops/`, `.env.example`, `scripts/*.sh`) or an installed, non-editable
+    wheel (real copies of the same files, bundled at build time -- see
+    pyproject.toml's `[tool.setuptools.package-data]`).
+    """
+    return Path(str(importlib.resources.files("nyxgpt.resources")))
+
+
+def _sync_packaged_resources() -> list[OpsResult]:
+    """Copy the packaged Compose/config/provisioning/unit-template/script
+    tree into `NYXGPT_HOME` so every other ops step reads from one fixed,
+    writable location regardless of whether nyxGPT is running from a source
+    checkout or an installed package (#3621) -- see `_packaged_resources_root`.
+
+    Idempotent and safe to re-run: overwrites the synced copies (so a
+    `nyxgpt ops install` after an upgrade always ships the current
+    templates) without touching anything else already under `NYXGPT_HOME`,
+    notably `docker/config.docker.ini` (a separately generated, git-ignored
+    artifact -- see `_generate_compose_config` -- never part of the packaged
+    resources) and `config.ini`.
+    """
+    src_root = _packaged_resources_root()
+    try:
+        _copy_file(src_root / "docker-compose.yml", OPS_COMPOSE_FILE)
+        _copy_file(src_root / ".env.example", NYXGPT_HOME / ".env.example")
+        for subdir in ("docker", "ops", "scripts"):
+            shutil.copytree(src_root / subdir, NYXGPT_HOME / subdir, dirs_exist_ok=True)
+        for script in OPS_SCRIPTS_SRC_DIR.glob("*.sh"):
+            os.chmod(script, 0o755)
+    except OSError as e:
+        return [
+            OpsResult(
+                False,
+                "Failed to sync packaged ops resources",
+                f"{type(e).__name__}: {e}",
+            )
+        ]
+    return [OpsResult(True, f"Synced packaged ops resources to {NYXGPT_HOME}")]
 
 
 def _sha256_file(path: Path) -> str:
@@ -667,11 +872,7 @@ def detect_deployment_mode() -> DeploymentMode:
     Cassandra container). This cross-checks the Compose stack so `status`/`restart`
     can see -- and avoid colliding with -- a Compose deployment left running.
     """
-    brew_snapshot = _brew_services_snapshot()
-    native = {
-        component: brew_snapshot.get(brew_name, "none")
-        for component, brew_name in NATIVE_BREW_SERVICES.items()
-    }
+    native = _native_services_snapshot()
     native["cassandra"] = _docker_container_state("nyxgpt-cassandra")
 
     compose = _compose_stack_snapshot()
@@ -854,15 +1055,11 @@ def _find_launchagent_template(
     name: str = "com.nyxgpt.cassandra-logs.plist",
 ) -> tuple[Path | None, list[Path]]:
     """
-    Locate a log-follower LaunchAgent template (by plist filename) inside the repo.
-    Returns (path_or_none, candidates_checked).
+    Locate a log-follower LaunchAgent template (by plist filename) among the
+    packaged resources `_sync_packaged_resources` synced to
+    `OPS_LAUNCHAGENTS_DIR`. Returns (path_or_none, candidates_checked).
     """
-    candidates = [
-        REPO_ROOT / "ops" / "launchagents" / name,
-        REPO_ROOT / "ops" / "LaunchAgents" / name,
-        REPO_ROOT / name,
-        REPO_ROOT / "homebrew" / name,
-    ]
+    candidates = [OPS_LAUNCHAGENTS_DIR / name]
     for p in candidates:
         try:
             if p.exists():
@@ -891,41 +1088,10 @@ def _install_launchagent_from_template(tpl: Path, dst: Path) -> None:
     dst.write_text(text, encoding="utf-8")
 
 
-def _install_scripts() -> list[OpsResult]:
-    """Copy the run-web/follow-cassandra-logs/follow-ollama-logs/set-ollama-models-env
-    helper scripts into ~/.nyxGPT/scripts, executable.
-
-    Scripts not present in the repo's `scripts/` dir are skipped (reported
-    as ok, since not every deployment needs them). Returns one OpsResult per
-    script considered.
-    """
-    results: list[OpsResult] = []
-    src_dir = REPO_ROOT / "scripts"
-    dst_dir = Path.home() / ".nyxGPT" / "scripts"
-    _ensure_dir(dst_dir)
-
-    for name in (
-        "run-web.sh",
-        "follow-cassandra-logs.sh",
-        "follow-ollama-logs.sh",
-        "set-ollama-models-env.sh",
-    ):
-        src = src_dir / name
-        if not src.exists():
-            # Not required — some users run the web/API without wrappers.
-            results.append(OpsResult(True, f"Script not present (skipped): {name}", str(src)))
-            continue
-        dst = dst_dir / name
-        _copy_file(src, dst, mode=0o755)
-        results.append(OpsResult(True, f"Installed script {name}", str(dst)))
-
-    return results
-
-
 def _install_cassandra_launchagent() -> list[OpsResult]:
     """Install and (re)load the Cassandra log-follower LaunchAgent.
 
-    Locates the plist template in the repo, copies it into
+    Locates the synced plist template (see `_find_launchagent_template`), copies it into
     ~/Library/LaunchAgents, then boots it out and back in via `launchctl
     bootout`/`bootstrap`/`kickstart` so a stale prior load doesn't linger.
     Returns a single-element list of OpsResult; fails if the template can't
@@ -934,7 +1100,12 @@ def _install_cassandra_launchagent() -> list[OpsResult]:
     results: list[OpsResult] = []
     tpl, checked = _find_launchagent_template()
     if tpl is None:
-        details = "Tried:\n" + "\n".join(str(p) for p in checked) + f"\nREPO_ROOT={REPO_ROOT}"
+        details = (
+            "Tried:\n"
+            + "\n".join(str(p) for p in checked)
+            + "\nRun `nyxgpt ops install` first to sync packaged templates into "
+            f"{NYXGPT_HOME}."
+        )
         results.append(OpsResult(False, "Missing Cassandra logs LaunchAgent template", details))
         return results
     la_dir = Path.home() / "Library" / "LaunchAgents"
@@ -970,7 +1141,12 @@ def _install_ollama_launchagent() -> list[OpsResult]:
     results: list[OpsResult] = []
     tpl, checked = _find_launchagent_template("com.nyxgpt.ollama-logs.plist")
     if tpl is None:
-        details = "Tried:\n" + "\n".join(str(p) for p in checked) + f"\nREPO_ROOT={REPO_ROOT}"
+        details = (
+            "Tried:\n"
+            + "\n".join(str(p) for p in checked)
+            + "\nRun `nyxgpt ops install` first to sync packaged templates into "
+            f"{NYXGPT_HOME}."
+        )
         results.append(OpsResult(False, "Missing Ollama logs LaunchAgent template", details))
         return results
     la_dir = Path.home() / "Library" / "LaunchAgents"
@@ -1005,7 +1181,12 @@ def _install_ollama_env_launchagent() -> list[OpsResult]:
     results: list[OpsResult] = []
     tpl, checked = _find_launchagent_template("com.nyxgpt.ollama-env.plist")
     if tpl is None:
-        details = "Tried:\n" + "\n".join(str(p) for p in checked) + f"\nREPO_ROOT={REPO_ROOT}"
+        details = (
+            "Tried:\n"
+            + "\n".join(str(p) for p in checked)
+            + "\nRun `nyxgpt ops install` first to sync packaged templates into "
+            f"{NYXGPT_HOME}."
+        )
         results.append(OpsResult(False, "Missing Ollama env LaunchAgent template", details))
         return results
     la_dir = Path.home() / "Library" / "LaunchAgents"
@@ -1136,6 +1317,20 @@ def _create_dist_tarball(tap_dir: Path, name: str, version: str) -> Path:
 
     shutil.rmtree(tmp, ignore_errors=True)
     return tar_path
+
+
+def build_release_dist_tarball(name: str, version: str, dist_root: Path) -> Path:
+    """Public wrapper around `_create_dist_tarball` for release tooling (#3622).
+
+    Builds the same vendored `nyxgpt-api`/`nyxgpt-web` source tarball the
+    local file:// Homebrew tap flow (`_install_homebrew_api`/`_web`) has
+    always built, but at an arbitrary output directory rather than a live
+    `brew --repo` tap checkout -- one implementation of "what goes in the
+    tarball", used both by the local install path and by
+    scripts/release/build_homebrew_artifacts.py to produce the tarballs a
+    *remote* tap's formula points at (attached as GitHub Release assets).
+    """
+    return _create_dist_tarball(dist_root, name, version)
 
 
 def _brew_install_or_reinstall(spec: str, name: str, *, sha256: str, marker_dir: Path) -> str:
@@ -1526,50 +1721,6 @@ def _generate_compose_config() -> list[OpsResult]:
     return [OpsResult(True, f"Generated {COMPOSE_CONFIG_FILE} from {native}")]
 
 
-def _persist_compose_file_path() -> list[OpsResult]:
-    """Record the repo's docker-compose.yml path in config.ini `[paths] compose_file`.
-
-    The brew-installed native API runs from the Homebrew Cellar, where
-    self_heal's module-path fallback can't find a docker-compose.yml -- so the
-    self-heal watchdog and dashboard silently reported zero components. This
-    gives `self_heal._resolve_compose_file` a config-based fallback that
-    survives the Cellar layout. No-ops (successfully) when run outside a repo
-    checkout or before `nyxgpt wizard` has created config.ini.
-    """
-    compose_path = REPO_ROOT / "docker-compose.yml"
-    if not compose_path.exists():
-        return [
-            OpsResult(
-                True,
-                "Skipped compose-file path (not running from a repo checkout)",
-                "self-heal keeps its current compose-file resolution.",
-            )
-        ]
-
-    cfg_path = Path.home() / ".nyxGPT" / "config.ini"
-    if not cfg_path.exists():
-        return [
-            OpsResult(
-                True,
-                "Skipped compose-file path (no config.ini yet)",
-                "Run `nyxgpt wizard` to create config.ini, then re-run `nyxgpt ops install`.",
-            )
-        ]
-
-    parser = ConfigParser()
-    parser.optionxform = str  # type: ignore[assignment]
-    parser.read(cfg_path)
-    if parser.get("paths", "compose_file", fallback="") == str(compose_path):
-        return [OpsResult(True, f"Compose-file path already recorded: {compose_path}")]
-    if not parser.has_section("paths"):
-        parser.add_section("paths")
-    parser.set("paths", "compose_file", str(compose_path))
-    with cfg_path.open("w", encoding="utf-8") as f:
-        parser.write(f)
-    os.chmod(cfg_path, 0o600)
-    return [OpsResult(True, f"Recorded compose-file path in config.ini: {compose_path}")]
-
-
 def _shared_ollama_models_dir() -> Path:
     """Path native Ollama's `OLLAMA_MODELS` must point at to read the same
     models as Compose/Terraform (#3431).
@@ -1748,6 +1899,780 @@ def _ensure_ollama_service() -> list[OpsResult]:
         )
         results.append(OpsResult(False, "Failed to start brew service: ollama", details.strip()))
     return results
+
+
+# --- Linux native (systemd) install (#3508) ---
+#
+# Linux twin of the Homebrew-services + launchd section above. There's no
+# Homebrew Cellar to build inside, so `_install_native_api_systemd`/
+# `_install_native_web_systemd` create their own self-contained install roots
+# under ~/.nyxGPT/opt/<component> (a plain venv for the api, a built `web/`
+# tree for the web UI) instead -- reusing `_create_dist_tarball` (already
+# OS-agnostic: it just vendors source into a tarball) rather than duplicating
+# it. `ollama` is managed as its own systemd --user unit (`nyxgpt-ollama.service`)
+# so every native component is reachable through the same `systemctl --user`
+# surface -- unless a distro-installed system-wide `ollama.service` already
+# holds port 11434, in which case nyxGPT adopts it instead (#3632).
+
+
+def _systemd_user_dir() -> Path:
+    """Return `~/.config/systemd/user`, the systemd --user unit search path."""
+    return Path.home() / ".config" / "systemd" / "user"
+
+
+def _find_systemd_unit_template(name: str) -> tuple[Path | None, list[Path]]:
+    """Locate a systemd unit template (by filename) among the packaged
+    resources `_sync_packaged_resources` synced to `OPS_SYSTEMD_TEMPLATES_DIR`.
+
+    Mirrors `_find_launchagent_template`'s search strategy. Returns
+    (path_or_none, candidates_checked).
+    """
+    candidates = [OPS_SYSTEMD_TEMPLATES_DIR / name]
+    for p in candidates:
+        try:
+            if p.exists():
+                return p, candidates
+        except Exception as e:
+            logger.warning(
+                "Could not check candidate path %s, skipping: %s",
+                p,
+                e,
+                extra={"component": "ops"},
+            )
+            continue
+    return None, candidates
+
+
+def _install_systemd_unit_from_template(
+    tpl: Path, dst: Path, *, substitutions: dict[str, str] | None = None
+) -> None:
+    """Render a systemd unit template to `dst`.
+
+    Substitutes `LAUNCHAGENT_HOME_PLACEHOLDER` (the same `__NYXGPT_HOME__`
+    placeholder the launchd plist templates use) with the installing user's
+    actual home directory, plus any unit-specific `substitutions` (e.g. the
+    resolved `ollama` binary path for nyxgpt-ollama.service).
+    """
+    _ensure_dir(dst.parent)
+    text = tpl.read_text(encoding="utf-8")
+    text = text.replace(LAUNCHAGENT_HOME_PLACEHOLDER, str(Path.home()))
+    for placeholder, value in (substitutions or {}).items():
+        text = text.replace(placeholder, value)
+    dst.write_text(text, encoding="utf-8")
+
+
+def _reload_and_activate_systemd_unit(unit: str) -> list[OpsResult]:
+    """`daemon-reload`, enable, then restart (or start) a systemd --user unit.
+
+    Mirrors the launchd installers' bootout+bootstrap+kickstart pattern: a
+    changed unit file must be reloaded before systemd picks it up, `enable`
+    makes it start at every login (the launchd RunAtLoad equivalent), and
+    `restart` (rather than `start`) ensures a just-rebuilt venv/web bundle is
+    actually picked up instead of leaving an already-running process serving
+    stale code -- `systemctl restart` on a unit that isn't running yet is
+    equivalent to `start` (mirrors the brew-service restart-vs-start fix from
+    #3472/#3445).
+    """
+    results: list[OpsResult] = []
+    cp = _run(["systemctl", "--user", "daemon-reload"], check=False)
+    if cp.returncode != 0:
+        details = (cp.stdout or "").strip() + (
+            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+        )
+        results.append(OpsResult(False, "systemctl --user daemon-reload failed", details.strip()))
+        return results
+
+    _run(["systemctl", "--user", "enable", unit], check=False, expected=True)
+
+    cp = _run(["systemctl", "--user", "restart", unit], check=False)
+    if cp.returncode == 0:
+        results.append(OpsResult(True, f"Started/restarted systemd unit: {unit}"))
+    else:
+        details = (cp.stdout or "").strip() + (
+            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+        )
+        results.append(OpsResult(False, f"Failed to start systemd unit: {unit}", details.strip()))
+    return results
+
+
+def _install_cassandra_logs_systemd_unit() -> list[OpsResult]:
+    """Install and (re)start the Cassandra log-follower systemd --user unit.
+
+    Linux twin of `_install_cassandra_launchagent`: locates the unit template
+    in the repo, copies it into ~/.config/systemd/user/, then reloads and
+    (re)starts it. Returns a single-element list of OpsResult (plus the
+    reload/activate results); fails if the template can't be found.
+    """
+    results: list[OpsResult] = []
+    tpl, checked = _find_systemd_unit_template("nyxgpt-cassandra-logs.service")
+    if tpl is None:
+        details = (
+            "Tried:\n"
+            + "\n".join(str(p) for p in checked)
+            + "\nRun `nyxgpt ops install` first to sync packaged templates into "
+            f"{NYXGPT_HOME}."
+        )
+        results.append(OpsResult(False, "Missing Cassandra logs systemd unit template", details))
+        return results
+    dst = _systemd_user_dir() / tpl.name
+    _install_systemd_unit_from_template(tpl, dst)
+    results.append(OpsResult(True, "Installed Cassandra logs systemd unit", str(dst)))
+    results.extend(_reload_and_activate_systemd_unit("nyxgpt-cassandra-logs.service"))
+    return results
+
+
+def _install_ollama_logs_systemd_unit() -> list[OpsResult]:
+    """Install and (re)start the Ollama log-follower systemd --user unit.
+
+    Linux twin of `_install_ollama_launchagent`. Installed unconditionally by
+    `nyxgpt ops install` regardless of deployment mode, same as the Cassandra
+    unit -- `follow-ollama-logs.sh` (which this unit runs) handles both
+    Compose mode (follows the `nyxgpt-ollama` container) and native mode
+    (tails ~/.nyxGPT/logs/ollama-native.log, nyxgpt-ollama.service's own
+    stdout) on its own (see #3441).
+    """
+    results: list[OpsResult] = []
+    tpl, checked = _find_systemd_unit_template("nyxgpt-ollama-logs.service")
+    if tpl is None:
+        details = (
+            "Tried:\n"
+            + "\n".join(str(p) for p in checked)
+            + "\nRun `nyxgpt ops install` first to sync packaged templates into "
+            f"{NYXGPT_HOME}."
+        )
+        results.append(OpsResult(False, "Missing Ollama logs systemd unit template", details))
+        return results
+    dst = _systemd_user_dir() / tpl.name
+    _install_systemd_unit_from_template(tpl, dst)
+    results.append(OpsResult(True, "Installed Ollama logs systemd unit", str(dst)))
+    results.extend(_reload_and_activate_systemd_unit("nyxgpt-ollama-logs.service"))
+    return results
+
+
+def _linux_native_root(component: str) -> Path:
+    """Return `~/.nyxGPT/opt/<component>`, creating it if needed.
+
+    The self-contained install root Linux native mode uses in place of a
+    Homebrew Cellar keg -- holds the component's venv/build plus the wrapper
+    script its systemd unit execs.
+    """
+    p = Path.home() / ".nyxGPT" / "opt" / component
+    _ensure_dir(p)
+    return p
+
+
+def _venv_site_packages(venv_dir: Path) -> Path | None:
+    """Return a venv's `site-packages` directory, or None if the venv wasn't created."""
+    matches = sorted((venv_dir / "lib").glob("python3.*/site-packages"))
+    return matches[0] if matches else None
+
+
+def _write_executable(path: Path, content: str) -> None:
+    """Write `content` to `path` and mark it executable (0o755)."""
+    _ensure_dir(path.parent)
+    path.write_text(content, encoding="utf-8")
+    os.chmod(path, 0o755)
+
+
+# Wrapper script templates for the Linux native services -- plain-string
+# (not f-string) templates so the embedded Python heredocs' own `{...}`
+# formatting doesn't need brace-escaping; `__NYXGPT_API_VENV__`/
+# `__NYXGPT_WEB_ROOT__` are substituted via `str.replace` at install time.
+# Mirror homebrew/nyxgpt-api.rb's and nyxgpt-web.rb's `bin/nyxgpt-*` wrapper
+# scripts: read host/port (and, for web, the api_base_url override) from
+# ~/.nyxGPT/config.ini, then exec the real process.
+_NATIVE_API_WRAPPER_TEMPLATE = """#!/bin/bash
+set -euo pipefail
+
+CONFIG_FILE="$HOME/.nyxGPT/config.ini"
+SYS_PY="$(command -v python3 || echo /usr/bin/python3)"
+
+HOST="127.0.0.1"
+PORT="8000"
+
+if [ -f "$CONFIG_FILE" ]; then
+  IFS=$'\\t' read -r HOST PORT < <("$SYS_PY" - <<'PY'
+import configparser
+import os
+
+cfg = configparser.ConfigParser()
+cfg.read(os.path.expanduser('~/.nyxGPT/config.ini'), encoding='utf-8')
+
+host = cfg.get('api', 'host', fallback='127.0.0.1')
+try:
+    port = str(cfg.getint('api', 'port', fallback=8000))
+except Exception:
+    port = '8000'
+
+print(f"{host}\\t{port}")
+PY
+)
+fi
+
+echo "nyxgpt-api starting (self-contained venv)" >&2
+echo "  host: $HOST" >&2
+echo "  port: $PORT" >&2
+
+exec "__NYXGPT_API_VENV__/bin/python3" -m uvicorn nyxgpt.app:app --host "$HOST" --port "$PORT"
+"""
+
+_NATIVE_WEB_WRAPPER_TEMPLATE = """#!/usr/bin/env bash
+set -euo pipefail
+
+CONFIG_FILE="$HOME/.nyxGPT/config.ini"
+SYS_PY="$(command -v python3 || echo /usr/bin/python3)"
+
+HOST="127.0.0.1"
+PORT="3000"
+API_BASE=""
+
+if [ -f "$CONFIG_FILE" ]; then
+  IFS=$'\\t' read -r HOST PORT API_BASE < <("$SYS_PY" - <<'PY'
+import configparser
+import os
+
+cfg = configparser.ConfigParser()
+cfg.read(os.path.expanduser('~/.nyxGPT/config.ini'), encoding='utf-8')
+
+host = cfg.get('web', 'host', fallback='127.0.0.1')
+try:
+    port = str(cfg.getint('web', 'port', fallback=3000))
+except Exception:
+    port = '3000'
+api_base = cfg.get('web', 'api_base_url', fallback='')
+
+print(f"{host}\\t{port}\\t{api_base}")
+PY
+)
+fi
+
+export HOST="$HOST"
+export PORT="$PORT"
+if [ -n "$API_BASE" ]; then
+  export NEXT_PUBLIC_API_BASE="$API_BASE"
+fi
+
+echo "nyxgpt-web starting (self-contained build)" >&2
+echo "  host: $HOST" >&2
+echo "  port: $PORT" >&2
+
+cd "__NYXGPT_WEB_ROOT__"
+exec npm run start
+"""
+
+
+def _install_native_api_systemd() -> list[OpsResult]:
+    """Build and install a self-contained venv for `nyxgpt-api` on Linux, then
+    (re)start its systemd --user unit.
+
+    Linux twin of `_install_homebrew_api`: vendors `pyproject.toml` +
+    `src/nyxgpt/` into `~/.nyxGPT/opt/nyxgpt-api` (reusing
+    `_create_dist_tarball` -- it isn't brew-specific, just tarball-building),
+    creates a plain venv there, `pip install`s the vendored tarball into it,
+    copies `example.config.ini` next to the installed package
+    (`config_wizard`'s schema-source resolution finds it there with no repo
+    root above the venv, mirroring the brew formula's own fix, #3406), writes
+    the wrapper script the systemd unit execs, then installs/reloads the
+    unit.
+
+    Unlike `_install_homebrew_api`'s sha256-gated skip-if-unchanged
+    (`_brew_install_or_reinstall`), this always rebuilds -- a slower but
+    simpler first Linux implementation; `nyxgpt ops install` is not a hot
+    path. Returns a list of OpsResult.
+    """
+    results: list[OpsResult] = []
+    root = _linux_native_root("nyxgpt-api")
+    version = _read_project_version()
+    tar = _create_dist_tarball(root, "nyxgpt-api", version)
+    venv_dir = root / "venv"
+
+    cp = _run(["python3", "-m", "venv", str(venv_dir)], check=False)
+    if cp.returncode != 0:
+        details = (cp.stdout or "").strip() + (
+            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+        )
+        results.append(OpsResult(False, "Failed to create nyxgpt-api venv", details.strip()))
+        return results
+
+    pip = str(venv_dir / "bin" / "pip")
+    _run([pip, "install", "--upgrade", "pip"], check=False)
+    cp = _run([pip, "install", str(tar)], check=False)
+    if cp.returncode != 0:
+        details = (cp.stdout or "").strip() + (
+            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+        )
+        results.append(OpsResult(False, "Failed to pip install nyxgpt-api", details.strip()))
+        return results
+    results.append(
+        OpsResult(True, "Installed nyxgpt-api into a self-contained venv", str(venv_dir))
+    )
+
+    site_packages = _venv_site_packages(venv_dir)
+    example_config = REPO_ROOT / "example.config.ini"
+    if site_packages is not None and example_config.exists():
+        nyxgpt_pkg_dir = site_packages / "nyxgpt"
+        if nyxgpt_pkg_dir.exists():
+            _copy_file(example_config, nyxgpt_pkg_dir / "example.config.ini")
+
+    wrapper = root / "bin" / "nyxgpt-api"
+    _write_executable(
+        wrapper, _NATIVE_API_WRAPPER_TEMPLATE.replace("__NYXGPT_API_VENV__", str(venv_dir))
+    )
+    results.append(OpsResult(True, "Installed nyxgpt-api wrapper script", str(wrapper)))
+
+    tpl, checked = _find_systemd_unit_template("nyxgpt-api.service")
+    if tpl is None:
+        details = (
+            "Tried:\n"
+            + "\n".join(str(p) for p in checked)
+            + "\nRun `nyxgpt ops install` first to sync packaged templates into "
+            f"{NYXGPT_HOME}."
+        )
+        results.append(OpsResult(False, "Missing nyxgpt-api systemd unit template", details))
+        return results
+    dst = _systemd_user_dir() / tpl.name
+    _ensure_dir(Path.home() / ".nyxGPT" / "logs")
+    _install_systemd_unit_from_template(tpl, dst)
+    results.append(OpsResult(True, "Installed nyxgpt-api systemd unit", str(dst)))
+    results.extend(_reload_and_activate_systemd_unit("nyxgpt-api.service"))
+    return results
+
+
+def _install_native_web_systemd() -> list[OpsResult]:
+    """Build and install a self-contained web build for `nyxgpt-web` on Linux,
+    then (re)start its systemd --user unit.
+
+    Linux twin of `_install_homebrew_web`: vendors the `web/` source tree
+    (minus gitignored build artifacts, see `_WEB_VENDOR_EXCLUDES`) into a
+    staging directory (reusing `_create_dist_tarball`), extracts it, runs
+    `npm ci`/`npm run build` inside it, then -- only once that build has
+    succeeded -- swaps it into `~/.nyxGPT/opt/nyxgpt-web/build` in place of
+    the previous one, writes the wrapper script the systemd unit execs, and
+    installs/reloads the unit. Always rebuilds -- see
+    `_install_native_api_systemd`'s docstring for why this doesn't do
+    `_install_homebrew_web`'s sha256-gated skip.
+
+    The build/swap is staged rather than done in place so a failed `npm ci`/
+    `npm run build` (transient registry issue, disk pressure, OOM, ...)
+    leaves the previous, still-running build untouched -- the live
+    `nyxgpt-web.service` wrapper keeps `cd`ing into a build that still
+    exists instead of a path a failed rebuild rmtree'd out from under it (a
+    real outage-on-restart bug found in review, #3508).
+
+    Returns a list of OpsResult; fails early if `npm` isn't on PATH.
+    """
+    if _which("npm") is None:
+        return [OpsResult(False, "npm not found; cannot install nyxgpt-web", "")]
+
+    results: list[OpsResult] = []
+    root = _linux_native_root("nyxgpt-web")
+    version = _read_project_version()
+    tar = _create_dist_tarball(root, "nyxgpt-web", version)
+
+    build_dir = root / "build"
+    staging_dir = root / "build.staging"
+    if staging_dir.exists():
+        shutil.rmtree(staging_dir)
+    _ensure_dir(staging_dir)
+    with tarfile.open(tar) as tf:
+        # Trusted input: `tar` was just built by `_create_dist_tarball` above
+        # from this repo's own `web/` tree, not from an external/user source.
+        tf.extractall(staging_dir, filter="data")
+    staged_extracted = staging_dir / f"nyxgpt-web-{version}"
+
+    npm = _which("npm") or "npm"
+    for step_name, npm_args in (("npm ci", ["ci"]), ("npm run build", ["run", "build"])):
+        try:
+            cp = subprocess.run(
+                [npm, *npm_args],
+                cwd=str(staged_extracted),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        except Exception as e:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            results.append(
+                OpsResult(
+                    False, f"Failed to run {step_name} for nyxgpt-web", f"{type(e).__name__}: {e}"
+                )
+            )
+            return results
+        if cp.returncode != 0:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            results.append(
+                OpsResult(
+                    False,
+                    f"{step_name} failed for nyxgpt-web",
+                    (cp.stderr or cp.stdout or "").strip(),
+                )
+            )
+            return results
+
+    # The new build is known-good -- swap it into place. Two renames (both
+    # fast, same-filesystem) instead of an rmtree-then-build so the previous
+    # build is never gone from `build_dir` for longer than the swap itself.
+    old_dir = root / "build.old"
+    if old_dir.exists():
+        shutil.rmtree(old_dir)
+    if build_dir.exists():
+        build_dir.rename(old_dir)
+    staging_dir.rename(build_dir)
+    if old_dir.exists():
+        shutil.rmtree(old_dir, ignore_errors=True)
+    extracted = build_dir / f"nyxgpt-web-{version}"
+    results.append(OpsResult(True, "Built nyxgpt-web production bundle", str(extracted)))
+
+    wrapper = root / "bin" / "nyxgpt-web"
+    _write_executable(
+        wrapper, _NATIVE_WEB_WRAPPER_TEMPLATE.replace("__NYXGPT_WEB_ROOT__", str(extracted))
+    )
+    results.append(OpsResult(True, "Installed nyxgpt-web wrapper script", str(wrapper)))
+
+    tpl, checked = _find_systemd_unit_template("nyxgpt-web.service")
+    if tpl is None:
+        details = (
+            "Tried:\n"
+            + "\n".join(str(p) for p in checked)
+            + "\nRun `nyxgpt ops install` first to sync packaged templates into "
+            f"{NYXGPT_HOME}."
+        )
+        results.append(OpsResult(False, "Missing nyxgpt-web systemd unit template", details))
+        return results
+    dst = _systemd_user_dir() / tpl.name
+    _ensure_dir(Path.home() / ".nyxGPT" / "logs")
+    _install_systemd_unit_from_template(tpl, dst)
+    results.append(OpsResult(True, "Installed nyxgpt-web systemd unit", str(dst)))
+    results.extend(_reload_and_activate_systemd_unit("nyxgpt-web.service"))
+    return results
+
+
+def _system_ollama_service_active() -> bool:
+    """True if a distro-managed system-wide `ollama.service` is currently active.
+
+    The official Ollama Linux installer (`curl -fsSL https://ollama.com/install.sh
+    | sh`) auto-enables and starts this unit, bound to 127.0.0.1:11434 -- the
+    same port `nyxgpt-ollama.service` (nyxGPT's own systemd --user unit)
+    needs, so the two can never both hold the port at once (#3632: observed
+    in CI as `nyxgpt-ollama.service` crash-looping, "ollama serve" exiting
+    immediately with the port already taken). Checked with plain `systemctl
+    is-active` (system scope, no `--user`), since the installer's unit runs
+    system-wide, not per-user. False (never raises) if systemctl is missing
+    or the query fails -- an unknown/absent system unit is not a conflict.
+    """
+    if _which("systemctl") is None:
+        return False
+    cp = _run(["systemctl", "is-active", "ollama.service"], check=False, expected=True)
+    return (cp.stdout or "").strip() == "active"
+
+
+def _reconcile_system_ollama_service() -> list[OpsResult]:
+    """Adopt a pre-existing system-wide `ollama.service` instead of racing it for port 11434.
+
+    Chosen reconciliation for #3632 (documented in docs/systemd.md): stopping
+    or disabling a *system* unit needs root (`sudo systemctl disable --now
+    ollama.service`), and nyxGPT never shells out to sudo on its own for
+    anything else either -- so rather than requiring that, install just skips
+    creating/starting `nyxgpt-ollama.service` and lets the already-running
+    system unit keep serving on 127.0.0.1:11434. If a *previous* run already
+    installed `nyxgpt-ollama.service` (now crash-looping against the same
+    port), that one IS a `--user` unit nyxGPT owns outright, so it's stopped
+    and disabled here to stop the crash loop.
+    """
+    results = [
+        OpsResult(
+            True,
+            "Adopting system ollama.service (already serving on 127.0.0.1:11434)",
+            "Skipping nyxgpt-ollama.service install/start to avoid a port conflict. "
+            "To have nyxgpt manage Ollama itself instead, free the port first "
+            "(sudo systemctl disable --now ollama.service), then re-run "
+            "`nyxgpt ops install`.",
+        )
+    ]
+    unit_path = _systemd_user_dir() / "nyxgpt-ollama.service"
+    if unit_path.exists():
+        results.extend(_stop_systemd_service("nyxgpt-ollama"))
+        cp = _run(
+            ["systemctl", "--user", "disable", "nyxgpt-ollama.service"],
+            check=False,
+            expected=True,
+        )
+        if cp.returncode == 0:
+            results.append(
+                OpsResult(
+                    True,
+                    "Disabled stale nyxgpt-ollama.service in favor of the adopted system unit",
+                )
+            )
+    return results
+
+
+def _install_native_ollama_systemd() -> list[OpsResult]:
+    """Ensure native Ollama is installed as the `nyxgpt-ollama.service` systemd
+    --user unit, pointed at the shared model store.
+
+    Linux twin of `_ensure_ollama_service`. Requires the `ollama` binary to
+    already be on PATH -- unlike api/web, nyxgpt doesn't install Ollama
+    itself on Linux (see the Linux install section in the docs for the
+    official installer). Migrates any models already pulled into Ollama's
+    own default store into the shared one (`_migrate_native_ollama_models`,
+    OS-agnostic, #3431), then installs/reloads a unit whose `Environment=`
+    already bakes in `OLLAMA_MODELS` -- no separate env-refresh unit is
+    needed the way launchd needs a RunAtLoad LaunchAgent (`Environment=`
+    applies on every unit start, unlike `launchctl setenv`'s per-session
+    scope; see ops/systemd/nyxgpt-ollama.service).
+
+    If a system-wide `ollama.service` already holds port 11434, adopts it
+    instead of installing/starting the nyxgpt unit at all (#3632; see
+    `_reconcile_system_ollama_service`).
+    """
+    if _system_ollama_service_active():
+        return _reconcile_system_ollama_service()
+
+    results: list[OpsResult] = []
+    ollama_bin = _which("ollama")
+    if ollama_bin is None:
+        return [
+            OpsResult(
+                False,
+                "ollama not found on PATH",
+                "Install it first: curl -fsSL https://ollama.com/install.sh | sh "
+                "(see the Linux install section in the docs)",
+            )
+        ]
+
+    models_dir = _shared_ollama_models_dir()
+    results.extend(_migrate_native_ollama_models(models_dir))
+
+    tpl, checked = _find_systemd_unit_template("nyxgpt-ollama.service")
+    if tpl is None:
+        details = (
+            "Tried:\n"
+            + "\n".join(str(p) for p in checked)
+            + "\nRun `nyxgpt ops install` first to sync packaged templates into "
+            f"{NYXGPT_HOME}."
+        )
+        results.append(OpsResult(False, "Missing nyxgpt-ollama systemd unit template", details))
+        return results
+    dst = _systemd_user_dir() / tpl.name
+    _ensure_dir(Path.home() / ".nyxGPT" / "logs")
+    _install_systemd_unit_from_template(
+        tpl, dst, substitutions={"__NYXGPT_OLLAMA_BIN__": ollama_bin}
+    )
+    results.append(OpsResult(True, "Installed nyxgpt-ollama systemd unit", str(dst)))
+    results.extend(_reload_and_activate_systemd_unit("nyxgpt-ollama.service"))
+    return results
+
+
+def _systemd_services_snapshot() -> dict[str, str]:
+    """Return {unit_name: state} for nyxGPT-managed systemd --user units.
+
+    Mirrors `_brew_services_snapshot()`'s vocabulary ("started" for a live
+    unit) *and* its "not in this dict" == "not installed" contract: a unit
+    is only included if its file actually exists in
+    `~/.config/systemd/user/` -- `systemctl --user is-active` on a
+    never-installed unit name reports "inactive"/"unknown" the same way it
+    would for an installed-but-stopped one, so checking activity alone would
+    misreport a fresh machine that's never run `nyxgpt ops install` as
+    having every native component "down" instead of simply absent. Empty on
+    any failure (systemctl not on PATH, no session bus reachable).
+    """
+    if _which("systemctl") is None:
+        return {}
+    unit_dir = _systemd_user_dir()
+    snapshot: dict[str, str] = {}
+    for unit in NATIVE_SYSTEMD_SERVICES.values():
+        if not (unit_dir / f"{unit}.service").exists():
+            continue
+        cp = _run(
+            ["systemctl", "--user", "is-active", f"{unit}.service"], check=False, expected=True
+        )
+        state = (cp.stdout or "").strip()
+        snapshot[unit] = "started" if state == "active" else "none"
+    return snapshot
+
+
+def _native_services_snapshot() -> dict[str, str]:
+    """{component: state} for the OS-appropriate native service manager.
+
+    Used by `detect_deployment_mode()` in place of a direct
+    `_brew_services_snapshot()` call so it reflects whichever native path
+    (Homebrew/launchd or systemd) actually applies on this host.
+    """
+    if _is_macos():
+        brew_snapshot = _brew_services_snapshot()
+        return {
+            component: brew_snapshot.get(brew_name, "none")
+            for component, brew_name in NATIVE_BREW_SERVICES.items()
+        }
+    if _is_linux():
+        systemd_snapshot = _systemd_services_snapshot()
+        return {
+            component: systemd_snapshot.get(unit, "none")
+            for component, unit in NATIVE_SYSTEMD_SERVICES.items()
+        }
+    return dict.fromkeys(NATIVE_BREW_SERVICES, "none")
+
+
+def _restart_systemd_service(unit: str) -> list[OpsResult]:
+    """Restart systemd --user unit `unit` via `systemctl --user restart`.
+
+    Returns a single-element list: an OpsResult reporting systemctl missing,
+    the restart command's success, or its failure with captured stdout/stderr.
+    """
+    if _which("systemctl") is None:
+        return [OpsResult(False, f"systemctl not found; cannot restart {unit}")]
+    try:
+        cp = _run(["systemctl", "--user", "restart", f"{unit}.service"], check=False)
+        if cp.returncode == 0:
+            return [OpsResult(True, f"Restarted systemd unit: {unit}")]
+        details = (cp.stdout or "").strip() + (
+            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+        )
+        return [OpsResult(False, f"Failed to restart systemd unit: {unit}", details.strip())]
+    except Exception as e:
+        return [
+            OpsResult(False, f"Failed to restart systemd unit: {unit}", f"{type(e).__name__}: {e}")
+        ]
+
+
+def _stop_systemd_service(unit: str) -> list[OpsResult]:
+    """Stop systemd --user unit `unit` via `systemctl --user stop`.
+
+    Returns a single-element list: an OpsResult reporting systemctl missing,
+    the stop command's success, or its failure with captured stdout/stderr.
+    """
+    if _which("systemctl") is None:
+        return [OpsResult(False, f"systemctl not found; cannot stop {unit}")]
+    try:
+        cp = _run(["systemctl", "--user", "stop", f"{unit}.service"], check=False)
+        if cp.returncode == 0:
+            return [OpsResult(True, f"Stopped systemd unit: {unit}")]
+        details = (cp.stdout or "").strip() + (
+            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+        )
+        return [OpsResult(False, f"Failed to stop systemd unit: {unit}", details.strip())]
+    except Exception as e:
+        return [
+            OpsResult(False, f"Failed to stop systemd unit: {unit}", f"{type(e).__name__}: {e}")
+        ]
+
+
+def _install_native_api() -> list[OpsResult]:
+    """Install/update the native `api` service via the OS-appropriate mechanism."""
+    if _is_macos():
+        return _install_homebrew_api()
+    if _is_linux():
+        return _install_native_api_systemd()
+    return _unsupported_os_result("native api install")
+
+
+def _install_native_web() -> list[OpsResult]:
+    """Install/update the native `web` service via the OS-appropriate mechanism."""
+    if _is_macos():
+        return _install_homebrew_web()
+    if _is_linux():
+        return _install_native_web_systemd()
+    return _unsupported_os_result("native web install")
+
+
+def _ensure_native_ollama_service() -> list[OpsResult]:
+    """Ensure the native `ollama` service is installed/running via the OS-appropriate mechanism."""
+    if _is_macos():
+        return _ensure_ollama_service()
+    if _is_linux():
+        return _install_native_ollama_systemd()
+    return _unsupported_os_result("native ollama service")
+
+
+def _install_cassandra_log_follower_service() -> list[OpsResult]:
+    """Install the Cassandra log-follower agent via the OS-appropriate mechanism."""
+    if _is_macos():
+        return _install_cassandra_launchagent()
+    if _is_linux():
+        return _install_cassandra_logs_systemd_unit()
+    return _unsupported_os_result("cassandra log follower")
+
+
+def _install_ollama_log_follower_service() -> list[OpsResult]:
+    """Install the Ollama log-follower agent via the OS-appropriate mechanism."""
+    if _is_macos():
+        return _install_ollama_launchagent()
+    if _is_linux():
+        return _install_ollama_logs_systemd_unit()
+    return _unsupported_os_result("ollama log follower")
+
+
+def _install_ollama_env_agent() -> list[OpsResult]:
+    """Install the Ollama shared-model-store env agent, on the OS that still needs one.
+
+    macOS needs a RunAtLoad LaunchAgent that reapplies `launchctl setenv
+    OLLAMA_MODELS` every login (#3431); Linux's `nyxgpt-ollama.service`
+    already bakes `Environment=OLLAMA_MODELS=...` into the unit file, which
+    applies on every unit start with no companion agent needed.
+    """
+    if _is_macos():
+        return _install_ollama_env_launchagent()
+    if _is_linux():
+        return [
+            OpsResult(
+                True,
+                "Ollama env agent: not needed on Linux",
+                "nyxgpt-ollama.service's Environment= directive sets OLLAMA_MODELS "
+                "directly -- unlike launchctl setenv, it doesn't need a RunAtLoad "
+                "companion to survive a reboot.",
+            )
+        ]
+    return _unsupported_os_result("ollama env agent")
+
+
+def _restart_native_service(component: str) -> list[OpsResult]:
+    """Restart the OS-appropriate native service for `component` ("api"/"web"/"ollama")."""
+    if _is_macos():
+        return _restart_brew_service(NATIVE_BREW_SERVICES[component])
+    if _is_linux():
+        return _restart_systemd_service(NATIVE_SYSTEMD_SERVICES[component])
+    return _unsupported_os_result(f"restart {component}")
+
+
+def _stop_native_service(component: str) -> list[OpsResult]:
+    """Stop the OS-appropriate native service for `component` ("api"/"web"/"ollama")."""
+    if _is_macos():
+        return _stop_brew_service(NATIVE_BREW_SERVICES[component])
+    if _is_linux():
+        return _stop_systemd_service(NATIVE_SYSTEMD_SERVICES[component])
+    return _unsupported_os_result(f"stop {component}")
+
+
+# Log-follower agent identifiers ("cassandra-logs"/"ollama-logs", matching
+# `nyxgpt ops restart`/`stop`'s `cassandra-logs` target) mapped to each OS's
+# native name for that agent.
+_NATIVE_LOG_FOLLOWER_LAUNCHD_LABELS: dict[str, str] = {
+    "cassandra-logs": "com.nyxgpt.cassandra-logs",
+    "ollama-logs": "com.nyxgpt.ollama-logs",
+}
+_NATIVE_LOG_FOLLOWER_SYSTEMD_UNITS: dict[str, str] = {
+    "cassandra-logs": "nyxgpt-cassandra-logs",
+    "ollama-logs": "nyxgpt-ollama-logs",
+}
+
+
+def _restart_native_log_follower(name: str) -> list[OpsResult]:
+    """Restart the OS-appropriate log-follower agent ("cassandra-logs"/"ollama-logs")."""
+    if _is_macos():
+        return _restart_launchagent(_NATIVE_LOG_FOLLOWER_LAUNCHD_LABELS[name])
+    if _is_linux():
+        return _restart_systemd_service(_NATIVE_LOG_FOLLOWER_SYSTEMD_UNITS[name])
+    return _unsupported_os_result(f"restart {name}")
+
+
+def _stop_native_log_follower(name: str) -> list[OpsResult]:
+    """Stop the OS-appropriate log-follower agent ("cassandra-logs"/"ollama-logs")."""
+    if _is_macos():
+        return _stop_launchagent(_NATIVE_LOG_FOLLOWER_LAUNCHD_LABELS[name])
+    if _is_linux():
+        return _stop_systemd_service(_NATIVE_LOG_FOLLOWER_SYSTEMD_UNITS[name])
+    return _unsupported_os_result(f"stop {name}")
 
 
 def _ensure_web_deps() -> list[OpsResult]:
@@ -2637,6 +3562,11 @@ def _install_terraform_steps(api_key: str | None) -> list[OpsResult]:
     )
     results: list[OpsResult] = []
     steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
+        # Must run first: `_start_observability_stack_terraform` targets
+        # self_heal.COMPOSE_FILE and TERRAFORM_NET_OVERRIDE, both of which
+        # live under NYXGPT_HOME once synced from the packaged resources
+        # (#3621).
+        ("sync packaged ops resources", _sync_packaged_resources),
         (
             "clear intentional-stop markers",
             lambda: _clear_intentional_stops(["api", "web", "ollama", "cassandra"]),
@@ -2663,6 +3593,13 @@ def _install_terraform_steps(api_key: str | None) -> list[OpsResult]:
         # bind-mount auto-creates a missing ~/.nyxGPT/secrets root-owned on
         # Linux (#3432), which then blocks the token write below.
         ("glitchtip secrets dir", _ensure_glitchtip_secrets_dir),
+        # Must run before the observability stack starts: Grafana's alerting
+        # provisioning (docker/grafana/provisioning/alerting/contact-points.yml)
+        # unconditionally reads $__file{/etc/nyxgpt-secrets/slack-webhook-url}
+        # and refuses to boot if it's missing -- the native install() path
+        # writes this placeholder-or-real secret via the same function before
+        # starting its observability stack; the terraform path must too (#3588).
+        ("slack webhook secret", _sync_grafana_slack_webhook_secret),
         # After apply (network + core containers exist): bring the observability
         # stack up on the terraform network and auto-provision GlitchTip, so the
         # terraform deploy has the same full SRE view as the native install.
@@ -2777,9 +3714,55 @@ K8S_DIR = REPO_ROOT / "k8s"
 K8S_NAMESPACE = "nyxgpt"
 K8S_IMAGE = "nyxgpt-api:local"
 
+# The local cluster `nyxgpt ops install --kubernetes --local` provisions via `kind`
+# when kubectl's current context has no reachable cluster (#3596, owner decision
+# 2026-08-03). The name is reserved for nyxgpt: `nyxgpt ops down --kubernetes` only
+# ever deletes a kind cluster with this exact name, which is what lets it tell a
+# cluster it provisioned apart from a bring-your-own one (minikube, Docker Desktop,
+# an operator's own differently-named kind cluster) without needing separate state.
+KIND_CLUSTER_NAME = "nyxgpt-local"
+KIND_CONTEXT = f"kind-{KIND_CLUSTER_NAME}"
+
+
+def _kind_cluster_exists(name: str = KIND_CLUSTER_NAME) -> bool:
+    """Return whether a kind cluster named `name` already exists."""
+    cp = _run(["kind", "get", "clusters"], check=False, expected=True)
+    if cp.returncode != 0:
+        return False
+    return name in (cp.stdout or "").split()
+
+
+def _create_kind_cluster(name: str = KIND_CLUSTER_NAME) -> list[OpsResult]:
+    """Create the local `kind` cluster nyxgpt provisions when no cluster is reachable."""
+    cp = _run(["kind", "create", "cluster", "--name", name, "--wait", "60s"], check=False)
+    if cp.returncode != 0:
+        return [OpsResult(False, f"kind create cluster --name {name} failed", _cp_details(cp))]
+    return [OpsResult(True, f"Created local kind cluster: {name}", _cp_details(cp))]
+
+
+def _delete_kind_cluster(name: str = KIND_CLUSTER_NAME) -> list[OpsResult]:
+    """Delete the named kind cluster if it exists; no-op (not a failure) if it doesn't."""
+    if not _kind_cluster_exists(name):
+        return [OpsResult(True, f"kind cluster {name} already absent -- nothing to delete")]
+    cp = _run(["kind", "delete", "cluster", "--name", name], check=False)
+    if cp.returncode != 0:
+        return [OpsResult(False, f"kind delete cluster --name {name} failed", _cp_details(cp))]
+    return [OpsResult(True, f"Deleted local kind cluster: {name}", _cp_details(cp))]
+
 
 def _ensure_kubectl_and_cluster() -> list[OpsResult]:
-    """Check `kubectl` is on PATH and a cluster is reachable."""
+    """Check `kubectl` is on PATH and a cluster is reachable, provisioning one if not.
+
+    Bring-your-own-cluster stays supported unchanged: if kubectl's current context
+    already reaches a cluster (minikube, Docker Desktop, an existing kind cluster,
+    a remote context, ...) that cluster is used as-is and nothing is provisioned.
+    Only when no cluster is reachable at all does this fall back to `kind` (#3596,
+    owner decision 2026-08-03: kind is the provisioned local substrate) --
+    reusing the `nyxgpt-local` cluster from a previous run if one is already there,
+    or creating it fresh otherwise. `kind`/Docker themselves remain real
+    prerequisites this can't install for the operator; a missing one produces an
+    actionable error naming where to get it rather than a raw command to run.
+    """
     if _which("kubectl") is None:
         return [
             OpsResult(
@@ -2788,10 +3771,53 @@ def _ensure_kubectl_and_cluster() -> list[OpsResult]:
                 "Install kubectl: https://kubernetes.io/docs/tasks/tools/",
             )
         ]
+    cp = _run(["kubectl", "cluster-info"], check=False, expected=True)
+    if cp.returncode == 0:
+        return [OpsResult(True, "Kubernetes cluster reachable", f"context: {_kubectl_context()}")]
+
+    if _which("kind") is None:
+        return [
+            OpsResult(
+                False,
+                "No reachable Kubernetes cluster, and kind is not installed to provision one",
+                "Install kind (https://kind.sigs.k8s.io/#installation) so `nyxgpt ops install "
+                "--kubernetes --local` can create a local cluster for you, or point kubectl's "
+                "current context at an existing cluster (minikube, Docker Desktop, ...) "
+                "yourself first.",
+            )
+        ]
+    if _which("docker") is None:
+        return [
+            OpsResult(
+                False,
+                "No reachable Kubernetes cluster, and kind needs Docker to create one",
+                "Install/start Docker so `nyxgpt ops install --kubernetes --local` can "
+                "provision a local kind cluster.",
+            )
+        ]
+
+    if _kind_cluster_exists():
+        cp = _run(["kubectl", "config", "use-context", KIND_CONTEXT], check=False)
+        if cp.returncode != 0:
+            return [
+                OpsResult(
+                    False, f"kubectl config use-context {KIND_CONTEXT} failed", _cp_details(cp)
+                )
+            ]
+        results = [OpsResult(True, f"Reusing existing kind cluster: {KIND_CLUSTER_NAME}")]
+    else:
+        results = _create_kind_cluster()
+        if not all(r.ok for r in results):
+            return results
+
     cp = _run(["kubectl", "cluster-info"], check=False)
     if cp.returncode != 0:
-        return [OpsResult(False, "No reachable Kubernetes cluster", _cp_details(cp))]
-    return [OpsResult(True, "Kubernetes cluster reachable")]
+        return results + [
+            OpsResult(False, "Provisioned kind cluster is not reachable", _cp_details(cp))
+        ]
+    return results + [
+        OpsResult(True, "Kubernetes cluster reachable", f"context: {_kubectl_context()}")
+    ]
 
 
 def _kubectl_context() -> str:
@@ -3074,7 +4100,17 @@ def _install_kubernetes(args) -> int:
 
 
 def _down_kubernetes_steps() -> list[OpsResult]:
-    """Remove the `nyxgpt` namespace's Kubernetes resources and return structured results."""
+    """Remove the `nyxgpt` namespace's Kubernetes resources and return structured results.
+
+    Also tears down the local `kind` cluster (#3596) *iff* kubectl's current context is
+    the `nyxgpt-local` cluster nyxgpt reserves for itself (see `_ensure_kubectl_and_cluster`)
+    -- a bring-your-own cluster (minikube, Docker Desktop, an operator's own differently
+    named kind cluster) is never destroyed, only the deployment inside it is. This is what
+    keeps "never destroys a cluster nyxgpt did not create" true without needing a separate
+    flag or state file: the reserved name is the only signal, and it's authoritative by
+    construction -- `_ensure_kubectl_and_cluster` is the only code path that ever creates a
+    cluster by that name.
+    """
     if _which("kubectl") is None:
         results = [OpsResult(False, "kubectl not found on PATH -- nothing to tear down")]
     else:
@@ -3087,6 +4123,9 @@ def _down_kubernetes_steps() -> list[OpsResult]:
             ]
         else:
             results = [OpsResult(False, "kubectl delete -k k8s/ failed", _cp_details(cp))]
+
+        if results[-1].ok and _kubectl_context() == KIND_CONTEXT and _which("kind") is not None:
+            results += _delete_kind_cluster()
 
     result, message = _ops_action_outcome(results)
     _record_ops_action("down", "kubernetes", result, message)
@@ -3103,6 +4142,48 @@ def _down_kubernetes(_args) -> int:
     results = _down_kubernetes_steps()
     ok = _emit_results("down --kubernetes", results)
     return 0 if ok else 2
+
+
+def port_forward(args) -> int:
+    """`nyxgpt ops port-forward`: forward the Kubernetes web Service to localhost.
+
+    `k8s/`'s Services are ClusterIP-only -- there's no Ingress/LoadBalancer
+    (see docs/kubernetes.md#4-verify) -- so `kubectl port-forward` is the
+    only way to reach `nyxgpt-web` from the operator's own workstation. This
+    wraps that invocation so operators never type the raw `kubectl` command
+    themselves, per CLAUDE.md's Operational Command Wrapping requirement;
+    `nyxgpt up --kubernetes` points here instead of printing it directly.
+
+    Runs in the foreground until interrupted (Ctrl-C), same as `kubectl
+    port-forward` itself -- there's no "done" state to return early from.
+    """
+    if _which("kubectl") is None:
+        print("[FAIL] kubectl not found on PATH", file=sys.stderr)
+        return 2
+
+    local_port = getattr(args, "port", 3000) or 3000
+    logger.info(
+        "ops: port-forward starting",
+        extra={"component": "ops", "action": "port-forward", "local_port": local_port},
+    )
+    print(
+        f"Forwarding http://127.0.0.1:{local_port} -> "
+        f"{K8S_NAMESPACE}/svc/nyxgpt-web:3000 (Ctrl-C to stop)..."
+    )
+    try:
+        cp = subprocess.run(
+            [
+                "kubectl",
+                "-n",
+                K8S_NAMESPACE,
+                "port-forward",
+                "svc/nyxgpt-web",
+                f"{local_port}:3000",
+            ]
+        )
+    except KeyboardInterrupt:
+        return 0
+    return cp.returncode
 
 
 def infra_status() -> dict[str, Any]:
@@ -3128,6 +4209,13 @@ def infra_status() -> dict[str, Any]:
     reserved for a *configured* context the probe couldn't reach (timeout,
     connection refused to a cluster that's meant to exist, auth failure),
     preserving #3410's original false-NOT-DEPLOYED protection for that case.
+
+    `compose_probe_available` extends the same "can't determine" distinction
+    to the `compose` section (#3588): `False` means `docker compose ps`
+    couldn't be queried from this vantage point at all (no `docker`, or the
+    Compose file isn't reachable -- e.g. a Terraform-managed api container
+    missing the bind mount), so an empty `compose` dict must not be read as
+    "nothing running" -- see `self_heal.compose_probe_available`.
     """
     mode_info = detect_deployment_mode()
 
@@ -3140,7 +4228,8 @@ def infra_status() -> dict[str, Any]:
     }
 
     kubectl_available = _which("kubectl") is not None
-    kubernetes_configured = kubectl_available and bool(_kubectl_context())
+    kubernetes_context = _kubectl_context() if kubectl_available else ""
+    kubernetes_configured = bool(kubernetes_context)
     pods: list[str] = []
     # No kubeconfig/current-context means no cluster was ever configured here --
     # that's a confidently-determined NOT DEPLOYED (#3468), not the CANNOT
@@ -3164,6 +4253,11 @@ def infra_status() -> dict[str, Any]:
         "deployed": bool(pods),
         "namespace": K8S_NAMESPACE,
         "pods": pods,
+        # (#3596) which cluster is configured, and whether it's the local `kind`
+        # cluster nyxgpt provisions when nothing else is reachable, vs. a
+        # bring-your-own cluster (minikube, Docker Desktop, a remote context, ...).
+        "context": kubernetes_context,
+        "provisioned": kubernetes_context == KIND_CONTEXT,
     }
 
     native_running = any(state in ("started", "running") for state in mode_info.native.values())
@@ -3182,6 +4276,7 @@ def infra_status() -> dict[str, Any]:
         "mode": running_mode,
         "native": mode_info.native,
         "compose": mode_info.compose,
+        "compose_probe_available": self_heal.compose_probe_available(),
         "conflicts": sorted(mode_info.conflicts),
         "terraform": terraform,
         "kubernetes": kubernetes,
@@ -3299,6 +4394,10 @@ def install(args) -> int:
     logger.info("ops: install starting", extra={"component": "ops", "action": "install"})
 
     steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
+        # Must run first: every step below that reads a Compose file, config
+        # template, launchd/systemd unit template, or helper script assumes
+        # the packaged copies are already synced to NYXGPT_HOME (#3621).
+        ("sync packaged ops resources", _sync_packaged_resources),
         (
             "clear intentional-stop markers",
             lambda: _clear_intentional_stops(["api", "web", "ollama", "cassandra"]),
@@ -3306,20 +4405,18 @@ def install(args) -> int:
         ("config", _install_config),
         ("migrate legacy volumes", migrate_legacy_volumes),
         ("phantom compose reconciliation", _reconcile_phantom_compose_app_containers),
-        ("scripts", _install_scripts),
         ("web deps", _ensure_web_deps),
         ("mcp deps", _ensure_mcp_deps),
         ("cassandra container", _ensure_cassandra_container),
-        ("cassandra launchagent", _install_cassandra_launchagent),
-        ("ollama logs launchagent", _install_ollama_launchagent),
-        ("ollama env launchagent", _install_ollama_env_launchagent),
-        ("homebrew api", _install_homebrew_api),
-        ("homebrew web", _install_homebrew_web),
-        ("ollama service", _ensure_ollama_service),
+        ("cassandra log follower service", _install_cassandra_log_follower_service),
+        ("ollama logs follower service", _install_ollama_log_follower_service),
+        ("ollama env agent", _install_ollama_env_agent),
+        ("native api service", _install_native_api),
+        ("native web service", _install_native_web),
+        ("ollama service", _ensure_native_ollama_service),
         ("stale log symlink cleanup", _cleanup_stale_log_symlinks),
         ("env sync", sync_env_from_config),
         ("compose config (derive from native)", _generate_compose_config),
-        ("compose file path", _persist_compose_file_path),
     ]
     if not getattr(args, "skip_observability", False):
         # Must run before the observability stack starts: Grafana's Compose
@@ -3346,6 +4443,71 @@ def install(args) -> int:
     _record_ops_action("install", "all", result, message)
 
     return 0 if ok else 2
+
+
+def _wait_for_stack_healthy(timeout: float = 180.0, poll_interval: float = 3.0) -> bool:
+    """Poll every desired component's health until all report healthy, or `timeout` elapses.
+
+    Reuses `self_heal.list_component_status()` -- the same cross-mode
+    (native/Compose/Terraform/Kubernetes) probe set `nyxgpt self-heal status`
+    and the automatic heal loop already rely on -- so `up`'s health-wait can't
+    drift from what the rest of the system considers "healthy". A component
+    with `desired=False` (an operator-disabled observability profile, or one
+    marked intentionally stopped) is excluded, same as `heal_now`'s automatic
+    pass.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        pending = [
+            s.service for s in self_heal.list_component_status() if s.desired and not s.healthy
+        ]
+        if not pending:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(poll_interval)
+
+
+def up(args) -> int:
+    """CLI entrypoint for `nyxgpt up` -- a thin alias for `nyxgpt ops install`.
+
+    Runs the exact same reconciliation `install()` does -- mode flags
+    (`--terraform`, `--kubernetes`, `--local`, `--skip-observability`, etc.)
+    pass straight through, no forked behavior -- then waits for every desired
+    component to report healthy via `_wait_for_stack_healthy` and prints the
+    web UI URL once it's reachable. Idempotent, same as `install()` itself:
+    re-running it just reconciles and re-waits.
+
+    Pass `--no-wait` to return as soon as `install()` finishes, without
+    waiting for component health; `--timeout` controls how long to wait
+    before giving up (default 180s).
+
+    Returns whatever `install()` returned if it failed or `--no-wait` was
+    passed; 2 if the health-wait times out; 0 once every desired component is
+    healthy.
+    """
+    rc = install(args)
+    if rc != 0 or getattr(args, "no_wait", False):
+        return rc
+
+    print("\nWaiting for components to report healthy...")
+    if not _wait_for_stack_healthy(timeout=getattr(args, "timeout", 180.0)):
+        print(
+            "WARNING: not every component reported healthy within the timeout -- "
+            "run `nyxgpt ops status` or `nyxgpt self-heal status` for details.",
+            file=sys.stderr,
+        )
+        return 2
+
+    if getattr(args, "kubernetes", False):
+        print(
+            "nyxGPT is up. Kubernetes Services are ClusterIP-only -- run "
+            "`nyxgpt ops port-forward` in another terminal, then open "
+            f"{WEB_URL} (see docs/kubernetes.md#4-verify)."
+        )
+    else:
+        print(f"nyxGPT is up: {WEB_URL}")
+    return 0
 
 
 def status(_args) -> int:
@@ -3411,19 +4573,46 @@ def status(_args) -> int:
             "if Terraform is the mode you want to keep."
         )
 
-    if _which("brew"):
-        cp = _run(["brew", "services", "list"], check=False, expected=True)
-        print("\nHomebrew services:\n" + (cp.stdout or "").strip())
-    else:
-        print("\nHomebrew services: brew not found")
+    if _is_linux():
+        if _which("systemctl"):
+            cp = _run(
+                [
+                    "systemctl",
+                    "--user",
+                    "list-units",
+                    "--all",
+                    "--type=service",
+                    "--no-legend",
+                    "nyxgpt-*.service",
+                ],
+                check=False,
+                expected=True,
+            )
+            print("\nsystemd --user services:\n" + (cp.stdout or "").strip())
+        else:
+            print("\nsystemd --user services: systemctl not found")
 
-    label = "com.nyxgpt.cassandra-logs"
-    try:
-        cp = _run(["launchctl", "list"], check=False, expected=True)
-        loaded = label in (cp.stdout or "")
-        print(f"\nLaunchAgent {label}: {'LOADED' if loaded else 'NOT LOADED'}")
-    except Exception as e:
-        print(f"\nLaunchAgent {label}: ERROR ({e})")
+        unit = "nyxgpt-cassandra-logs.service"
+        try:
+            cp = _run(["systemctl", "--user", "is-active", unit], check=False, expected=True)
+            state = (cp.stdout or "").strip() or "inactive"
+            print(f"\nsystemd unit {unit}: {state.upper()}")
+        except Exception as e:
+            print(f"\nsystemd unit {unit}: ERROR ({e})")
+    else:
+        if _which("brew"):
+            cp = _run(["brew", "services", "list"], check=False, expected=True)
+            print("\nHomebrew services:\n" + (cp.stdout or "").strip())
+        else:
+            print("\nHomebrew services: brew not found")
+
+        label = "com.nyxgpt.cassandra-logs"
+        try:
+            cp = _run(["launchctl", "list"], check=False, expected=True)
+            loaded = label in (cp.stdout or "")
+            print(f"\nLaunchAgent {label}: {'LOADED' if loaded else 'NOT LOADED'}")
+        except Exception as e:
+            print(f"\nLaunchAgent {label}: ERROR ({e})")
 
     if _which("docker") is None:
         print("\nDocker: docker not found")
@@ -3442,9 +4631,16 @@ def status(_args) -> int:
         )
         pod_lines = [line for line in (cp.stdout or "").splitlines() if line.strip()]
         if cp.returncode == 0 and pod_lines:
+            context = _kubectl_context()
+            cluster_note = (
+                " (kind cluster nyxgpt provisioned -- torn down together on "
+                "nyxgpt ops down --kubernetes)"
+                if context == KIND_CONTEXT
+                else f" (bring-your-own cluster, context: {context})"
+            )
             print(
                 f"\nKubernetes ({K8S_NAMESPACE} namespace, nyxgpt ops down --kubernetes to "
-                f"tear down): {len(pod_lines)} pod(s)"
+                f"tear down): {len(pod_lines)} pod(s){cluster_note}"
             )
             for line in pod_lines:
                 print(f"  {line}")
@@ -3710,6 +4906,36 @@ def _ollama_env_drift_issue() -> str | None:
     return None
 
 
+def _linux_ollama_port_conflict_issue() -> str | None:
+    """Detect the #3632 port-11434 conflict: a stale `nyxgpt-ollama.service`
+    crash-looping against a system-wide `ollama.service` that already holds
+    the port.
+
+    Only fires when `nyxgpt-ollama.service` is installed AND not active AND
+    the system unit is active -- the state a machine that installed before
+    the #3632 fix shipped (or that had `ollama.service` re-enabled after
+    `nyxgpt ops install` already adopted it) can be stuck in. A fresh
+    `nyxgpt ops install` self-heals this on its own
+    (`_install_native_ollama_systemd` adopts the system unit and disables
+    the stale one -- see `_reconcile_system_ollama_service`), so the
+    actionable remediation is just re-running install. Linux only; returns
+    None on macOS/other or when nothing conflicts.
+    """
+    if not _is_linux():
+        return None
+    if not (_systemd_user_dir() / "nyxgpt-ollama.service").exists():
+        return None
+    if not _system_ollama_service_active():
+        return None
+    if _systemd_services_snapshot().get("nyxgpt-ollama") == "started":
+        return None
+    return (
+        "System-wide ollama.service is bound to port 11434, so nyxgpt-ollama.service "
+        "can't start (run: nyxgpt ops install to adopt the system service, or "
+        "sudo systemctl disable --now ollama.service to free the port for nyxgpt-ollama)"
+    )
+
+
 # Curated per-component loggers surfaced in the Log Aggregation panel and
 # the "Operational Logs" Grafana dashboard (see app._loki_curated_queries).
 # `_loki_recent_volume_by_logger` reports each one's recent line count so
@@ -3805,8 +5031,9 @@ def doctor(_args) -> int:
     """CLI entrypoint for `nyxgpt ops doctor`.
 
     Checks for common misconfigurations: missing ~/.nyxGPT/config.ini,
-    non-executable helper scripts, missing brew/docker/node/npm tools on
-    PATH, missing/incomplete web dependencies (node_modules, undici),
+    non-executable helper scripts, missing native-service-manager/docker/
+    node/npm tools on PATH (brew on macOS, systemctl on Linux),
+    missing/incomplete web dependencies (node_modules, undici),
     (when log aggregation is enabled and native logs exist) whether
     promtail is actually wired to see native-mode host logs, (when tracing
     is enabled) whether the configured OTLP endpoint actually has something
@@ -3874,7 +5101,13 @@ def doctor(_args) -> int:
         if p.exists() and not os.access(p, os.X_OK):
             issues.append(f"Script not executable {p}")
 
-    for tool in ("brew", "docker"):
+    if _is_linux():
+        required_native_tools: tuple[str, ...] = ("systemctl", "docker")
+    elif _is_macos():
+        required_native_tools = ("brew", "docker")
+    else:
+        required_native_tools = ("docker",)
+    for tool in required_native_tools:
         if _which(tool) is None:
             issues.append(f"Missing tool in PATH: {tool}")
 
@@ -3940,9 +5173,18 @@ def doctor(_args) -> int:
     if tracing_packages_issue:
         issues.append(tracing_packages_issue)
 
-    ollama_env_issue = _ollama_env_drift_issue()
-    if ollama_env_issue:
-        issues.append(ollama_env_issue)
+    if _is_macos():
+        # Linux has no equivalent drift to check: nyxgpt-ollama.service's
+        # Environment=OLLAMA_MODELS is part of the unit file itself (applied
+        # fresh on every start), unlike launchd's per-session `launchctl
+        # setenv` -- see _install_ollama_env_agent.
+        ollama_env_issue = _ollama_env_drift_issue()
+        if ollama_env_issue:
+            issues.append(ollama_env_issue)
+
+    linux_ollama_conflict_issue = _linux_ollama_port_conflict_issue()
+    if linux_ollama_conflict_issue:
+        issues.append(linux_ollama_conflict_issue)
 
     issues += _glitchtip_secrets_doctor_issues()
     error_tracking_drift_issue = _error_tracking_dsn_drift_issue()
@@ -4035,18 +5277,20 @@ def _compose_conflict_result(component: str, compose: dict[str, str]) -> OpsResu
     )
 
 
-def _restart_component(component: str, compose: dict[str, str], brew_name: str) -> list[OpsResult]:
-    """Restart a Homebrew-backed component, refusing first if Compose already runs it.
+def _restart_component(component: str, compose: dict[str, str]) -> list[OpsResult]:
+    """Restart a native (Homebrew/systemd) component, refusing first if Compose already runs it.
 
     Shared by `restart()`'s api/web/ollama steps (#3558) -- factored out of
     the old inline per-component `if` blocks so each component becomes a
-    single named step for the live-progress step runner.
+    single named step for the live-progress step runner. Restarts via
+    `_restart_native_service`, which dispatches to the OS-appropriate
+    mechanism (brew on macOS, systemd on Linux).
     """
     conflict = _compose_conflict_result(component, compose)
     if conflict:
         return [conflict]
     self_heal.clear_intentionally_stopped(component)
-    return _restart_brew_service(brew_name)
+    return _restart_native_service(component)
 
 
 def _restart_cassandra_component(compose: dict[str, str]) -> list[OpsResult]:
@@ -4090,18 +5334,18 @@ def restart(args) -> int:
 
     steps: list[tuple[str, Callable[[], list[OpsResult]]]] = []
     if target in ("all", "api"):
-        steps.append(("restart api", lambda: _restart_component("api", compose, "nyxgpt-api")))
+        steps.append(("restart api", lambda: _restart_component("api", compose)))
     if target in ("all", "web"):
-        steps.append(("restart web", lambda: _restart_component("web", compose, "nyxgpt-web")))
+        steps.append(("restart web", lambda: _restart_component("web", compose)))
     if target in ("all", "ollama"):
-        steps.append(("restart ollama", lambda: _restart_component("ollama", compose, "ollama")))
+        steps.append(("restart ollama", lambda: _restart_component("ollama", compose)))
     if target in ("all", "cassandra"):
         steps.append(("restart cassandra", lambda: _restart_cassandra_component(compose)))
     if target in ("all", "cassandra-logs"):
         steps.append(
             (
-                "restart cassandra-logs launchagent",
-                lambda: _restart_launchagent("com.nyxgpt.cassandra-logs"),
+                "restart cassandra-logs agent",
+                lambda: _restart_native_log_follower("cassandra-logs"),
             )
         )
     if target in ("all", "observability"):
@@ -4408,8 +5652,7 @@ def _compose_down(services: list[str], *, volumes: bool) -> list[OpsResult]:
 
 def _stop_dual_mode(
     component: str,
-    native_stop: Callable[[str], list[OpsResult]],
-    native_arg: str,
+    native_stop: Callable[[], list[OpsResult]],
     mode: DeploymentMode,
     tf_or_k8s: Container[str],
 ) -> list[OpsResult]:
@@ -4454,7 +5697,7 @@ def _stop_dual_mode(
             )
         )
     if native_running:
-        results.extend(native_stop(native_arg))
+        results.extend(native_stop())
     if compose_running:
         results.extend(_compose_stop_service(component))
     return results
@@ -4490,21 +5733,27 @@ def stop(args) -> int:
         steps.append(
             (
                 "stop api",
-                lambda: _stop_dual_mode("api", _stop_brew_service, "nyxgpt-api", mode, tf_or_k8s),
+                lambda: _stop_dual_mode(
+                    "api", lambda: _stop_native_service("api"), mode, tf_or_k8s
+                ),
             )
         )
     if target in ("all", "web"):
         steps.append(
             (
                 "stop web",
-                lambda: _stop_dual_mode("web", _stop_brew_service, "nyxgpt-web", mode, tf_or_k8s),
+                lambda: _stop_dual_mode(
+                    "web", lambda: _stop_native_service("web"), mode, tf_or_k8s
+                ),
             )
         )
     if target in ("all", "ollama"):
         steps.append(
             (
                 "stop ollama",
-                lambda: _stop_dual_mode("ollama", _stop_brew_service, "ollama", mode, tf_or_k8s),
+                lambda: _stop_dual_mode(
+                    "ollama", lambda: _stop_native_service("ollama"), mode, tf_or_k8s
+                ),
             )
         )
     if target in ("all", "cassandra"):
@@ -4512,15 +5761,18 @@ def stop(args) -> int:
             (
                 "stop cassandra",
                 lambda: _stop_dual_mode(
-                    "cassandra", _stop_docker_container, "nyxgpt-cassandra", mode, tf_or_k8s
+                    "cassandra",
+                    lambda: _stop_docker_container("nyxgpt-cassandra"),
+                    mode,
+                    tf_or_k8s,
                 ),
             )
         )
     if target in ("all", "cassandra-logs"):
         steps.append(
             (
-                "stop cassandra-logs launchagent",
-                lambda: _stop_launchagent("com.nyxgpt.cassandra-logs"),
+                "stop cassandra-logs agent",
+                lambda: _stop_native_log_follower("cassandra-logs"),
             )
         )
     if target == "observability":
@@ -4684,16 +5936,16 @@ def down(args) -> int:
     steps: list[tuple[str, Callable[[], list[OpsResult]]]] = []
     if scope in ("all", "app"):
         steps.append(("mark intentionally stopped", _down_mark_intentional_stops))
-        steps.append(("stop api", lambda: _stop_brew_service("nyxgpt-api")))
-        steps.append(("stop web", lambda: _stop_brew_service("nyxgpt-web")))
-        steps.append(("stop ollama", lambda: _stop_brew_service("ollama")))
+        steps.append(("stop api", lambda: _stop_native_service("api")))
+        steps.append(("stop web", lambda: _stop_native_service("web")))
+        steps.append(("stop ollama", lambda: _stop_native_service("ollama")))
         steps.append(
             ("stop cassandra container", lambda: _stop_docker_container("nyxgpt-cassandra"))
         )
         steps.append(
             (
-                "stop cassandra-logs launchagent",
-                lambda: _stop_launchagent("com.nyxgpt.cassandra-logs"),
+                "stop cassandra-logs agent",
+                lambda: _stop_native_log_follower("cassandra-logs"),
             )
         )
     steps.append(("compose teardown", lambda: _down_compose_teardown(scope, volumes)))
@@ -4842,12 +6094,13 @@ def _enable_observability_config(cfg_path: Path | None = None) -> None:
 
 
 def _grafana_datasources_dir() -> Path:
-    """`docker/grafana/provisioning/datasources/` -- one YAML file per
-    datasource group (GlitchTip lives in its own file, `glitchtip.yml`,
-    separate from `datasource.yml`'s Prometheus/Loki/Jaeger -- #3432 -- so a
-    `$__file{}` interpolation failure in one file can't take the others
-    down; see `docker/grafana/provisioning/datasources/glitchtip.yml`)."""
-    return REPO_ROOT / "docker" / "grafana" / "provisioning" / "datasources"
+    """`~/.nyxGPT/docker/grafana/provisioning/datasources/` (synced from the
+    packaged `nyxgpt.resources` tree by `_sync_packaged_resources`) -- one
+    YAML file per datasource group (GlitchTip lives in its own file,
+    `glitchtip.yml`, separate from `datasource.yml`'s Prometheus/Loki/Jaeger
+    -- #3432 -- so a `$__file{}` interpolation failure in one file can't take
+    the others down; see `docker/grafana/provisioning/datasources/glitchtip.yml`)."""
+    return OPS_DOCKER_DIR / "grafana" / "provisioning" / "datasources"
 
 
 def _grafana_provisioning_fingerprint() -> str:
@@ -5005,6 +6258,13 @@ def _reset_grafana_admin_password(password: str) -> OpsResult:
     whether the volume is fresh (first boot) or long-lived (env var is only
     applied at first boot -- irrelevant to an existing volume, which is
     exactly the deployment shape that reproduced #3458's 401s).
+
+    `password` is piped in over stdin rather than appended to `cmd` as a
+    positional argv value: `_redact_cmd`'s masking only recognizes secrets
+    that follow a secret-named flag (`--api-key VALUE`) or an inline
+    `--flag=value`, so a bare positional value like this one would reach
+    `_run`'s non-zero-exit logging -- and `ps`/shell history -- in clear
+    text (#3644, CodeQL py/clear-text-logging-sensitive-data #105/#106).
     """
     if not _compose_available():
         return OpsResult(
@@ -5020,13 +6280,11 @@ def _reset_grafana_admin_password(password: str) -> OpsResult:
         "exec",
         "-T",
         "grafana",
-        "grafana",
-        "cli",
-        "admin",
-        "reset-admin-password",
-        password,
+        "sh",
+        "-c",
+        'grafana cli admin reset-admin-password "$(cat)"',
     ]
-    cp = _run(cmd, check=False)
+    cp = _run(cmd, check=False, input=password)
     if cp.returncode != 0:
         return OpsResult(
             False,
@@ -5502,6 +6760,11 @@ def _reconcile_grafana_provisioning() -> list[OpsResult]:
     stack gets (re)started but stay out of `_start_observability_stack`
     itself (which several other call sites -- including the terraform-network
     variant and tests -- use as a narrower "just run compose up" primitive).
+
+    Assumes the packaged ops resources (`self_heal.COMPOSE_FILE`, the
+    Grafana provisioning directory) are already synced to `NYXGPT_HOME` --
+    `install()` sequences its own `_sync_packaged_resources` step before this
+    one; standalone callers (`observability()`) sync first themselves.
     """
     drift_result = _recreate_grafana_if_provisioning_drifted()
     results = [drift_result] if drift_result is not None else []
@@ -5590,9 +6853,27 @@ def _start_observability_stack_terraform() -> list[OpsResult]:
                 "Cannot attach observability to the terraform network without the override.",
             )
         ]
-    return _start_observability_stack(
+    results = _start_observability_stack(
         extra_compose_files=[TERRAFORM_NET_OVERRIDE], force_recreate=True
     )
+    # Bounded wait-for-healthy (#3538), mirroring the native
+    # `_reconcile_grafana_provisioning` path: `docker compose up -d` returns as
+    # soon as the containers are created, but Grafana (57 plugins + provisioning)
+    # takes ~30s to actually serve, and `_terraform_stack_health` only gates on
+    # the core containers. Without this wait `ops install --terraform` returns
+    # before Grafana is reachable and callers (the smoke gate, a user opening the
+    # dashboard) race its startup. A container stuck crash-looping never reports
+    # healthy, so this surfaces as one clear failure instead of a silent race.
+    if _compose_stack_snapshot().get("grafana") == "running" and not _wait_for_grafana_healthy():
+        results.append(
+            OpsResult(
+                False,
+                "Grafana never became healthy",
+                "Check `nyxgpt ops status` (a compose service stuck `restarting` is the tell) "
+                "and `nyxgpt ops logs grafana` for the boot error.",
+            )
+        )
+    return results
 
 
 def _stop_observability_stack_terraform() -> list[OpsResult]:
@@ -5638,13 +6919,37 @@ def observability(args) -> int:
     operators never need to run a raw `docker compose --profile X up`
     themselves. Idempotent: re-running just confirms everything is already up.
 
+    Documented as runnable without `nyxgpt ops install` having gone first, so
+    syncs the packaged ops resources itself (#3621): `_reconcile_grafana_provisioning`
+    reads `self_heal.COMPOSE_FILE` and the Grafana provisioning directory,
+    both of which only exist under `NYXGPT_HOME` once
+    `_sync_packaged_resources` has copied them there.
+
     Returns 0 on success, else 2.
     """
     logger.info(
         "ops: observability starting", extra={"component": "ops", "action": "observability"}
     )
+    sync_results: list[OpsResult] = []
+
+    def _observability_sync_step() -> list[OpsResult]:
+        nonlocal sync_results
+        sync_results = _sync_packaged_resources()
+        return sync_results
+
+    def _observability_reconcile_step() -> list[OpsResult]:
+        if not all(r.ok for r in sync_results):
+            return [
+                OpsResult(
+                    True,
+                    "Skipped Grafana provisioning reconcile (packaged resource sync failed)",
+                )
+            ]
+        return _reconcile_grafana_provisioning()
+
     steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
-        ("reconcile observability stack", _reconcile_grafana_provisioning),
+        ("sync packaged resources", _observability_sync_step),
+        ("reconcile observability stack", _observability_reconcile_step),
     ]
     quiet = bool(getattr(args, "quiet", False))
     results, slow_steps = _run_steps("observability", steps, quiet=quiet)
@@ -5717,8 +7022,15 @@ def sync_env_from_config(
 
     cfg = load_config(cfg_path)
 
-    env_path = env_path or (REPO_ROOT / ".env")
-    example_path = REPO_ROOT / ".env.example"
+    # `.env` lives alongside OPS_COMPOSE_FILE (NYXGPT_HOME by default) since
+    # Docker Compose resolves it relative to the compose file's own
+    # directory. `.env.example` -- the packaged template
+    # `_sync_packaged_resources` copies there (#3621) -- always sits next to
+    # whichever `.env` this call targets, so an explicit `env_path` override
+    # (as `env_sync`'s `--env-file` and this function's own tests use) still
+    # finds the matching example alongside it rather than NYXGPT_HOME's.
+    env_path = env_path or (NYXGPT_HOME / ".env")
+    example_path = env_path.parent / ".env.example"
     if env_path.exists():
         lines = env_path.read_text(encoding="utf-8").splitlines()
     elif example_path.exists():
@@ -5785,6 +7097,11 @@ def env_sync(args) -> int:
     the Compose-only Quickstart, which runs `nyxgpt ops env-sync` before
     `docker compose up` without going through the native install flow -- so a
     fresh checkout gets the bind-mounted file created before Compose needs it.
+    For that same install()-less Quickstart flow to seed `.env` from
+    `.env.example` (see `sync_env_from_config`), the packaged ops resources
+    have to be synced to `NYXGPT_HOME` first too (#3621) -- otherwise
+    `.env.example` isn't there yet and `.env` silently ends up with only the
+    secret lines.
 
     Returns 0 on success, else 2.
     """
@@ -5799,6 +7116,7 @@ def env_sync(args) -> int:
     )
 
     steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
+        ("sync packaged resources", _sync_packaged_resources),
         ("compose config (derive from native)", _generate_compose_config),
         (
             "sync secrets from config.ini",
@@ -6083,9 +7401,47 @@ def _glitchtip_secrets_dir_unwritable_result(path: Path) -> OpsResult:
         f"On Linux, dockerd runs as root and auto-creates a missing Docker bind-mount "
         f"source directory as root:root the first time a container starts -- if "
         f"Grafana started before this directory existed, that's almost certainly what "
-        f"happened here. Fix with: sudo chown -R $(whoami) {path} && chmod 700 {path}, "
+        f"happened here. Fix with: sudo chown -R $(whoami) {path} && chmod 755 {path}, "
         "then re-run `nyxgpt ops install` (or `nyxgpt ops glitchtip-init`).",
     )
+
+
+# A non-empty, syntactically-harmless stand-in for the GlitchTip Infinity
+# datasource bearer token, mirroring GRAFANA_SLACK_WEBHOOK_PLACEHOLDER_URL. Its
+# only job is to make the datasource's `$__file{}` reference resolve to a
+# non-empty value so Grafana boots; `ops glitchtip-init` overwrites it with the
+# real token when GlitchTip is provisioned.
+GRAFANA_GLITCHTIP_TOKEN_PLACEHOLDER = "UNCONFIGURED-glitchtip-token"
+
+
+def _ensure_grafana_secret_placeholders() -> None:
+    """Seed crash-safe placeholders for the secrets Grafana reads via `$__file{}`.
+
+    Grafana 13.x hard-fails its *entire* startup (crash-loops, never serves) when
+    a `$__file{}` datasource/contact-point secret references a file that is
+    missing -- or, per #3538, present but empty. On a fresh `ops install` neither
+    value exists yet: the GlitchTip Grafana token is minted later by
+    `ops glitchtip-init`/`_provision_glitchtip` (which runs *after* the
+    observability stack starts), and the Slack webhook file is only written when
+    one is configured. So provisioning would reference two unresolved files and
+    take Grafana down with it (observed on both the native and terraform smoke
+    gates). Seed valid, non-empty placeholders here -- ahead of the observability
+    bring-up, from `_ensure_glitchtip_secrets_dir` which both install paths run
+    first -- so `$__file{}` always resolves: a placeholder GlitchTip token is an
+    Infinity datasource that returns 401 until configured, and the placeholder
+    Slack URL is a contact point that won't deliver -- both degrade gracefully
+    instead of crashing Grafana. Only seeds when the file is absent, so a real
+    token/URL is never clobbered; the real writers overwrite the placeholder when
+    a value exists. Best-effort -- exceptions are swallowed so this never breaks
+    the preflight it runs inside.
+    """
+    if not _slack_webhook_secret_path().exists():
+        with contextlib.suppress(Exception):
+            # Passing "" makes the writer store GRAFANA_SLACK_WEBHOOK_PLACEHOLDER_URL.
+            _write_grafana_slack_webhook_secret("")
+    if not _glitchtip_grafana_token_path().exists():
+        with contextlib.suppress(Exception):
+            _write_grafana_glitchtip_token(GRAFANA_GLITCHTIP_TOKEN_PLACEHOLDER)
 
 
 def _ensure_glitchtip_secrets_dir() -> list[OpsResult]:
@@ -6105,6 +7461,16 @@ def _ensure_glitchtip_secrets_dir() -> list[OpsResult]:
     never touches its ownership. macOS (Docker Desktop) doesn't hit this:
     its VM handles bind-mount ownership differently.
 
+    Mode is `0o755`, not `0o700` (#3588): the official Grafana image runs
+    as a fixed non-root uid (472) inside the container, and a native Linux
+    bind mount exposes host files under their literal host uid/gid -- no
+    user-namespace remapping -- so a `0o700` dir owned by the host user
+    blocks Grafana's uid from even traversing into it to stat the token
+    file it needs to read. `0o755` lets any uid traverse and read; only the
+    owning host user can write, which is what actually needs protecting
+    here (these are locally-scoped tokens for this machine's own GlitchTip/
+    Grafana instances, not high-value secrets).
+
     Run as a best-effort preflight step (`install()` / `_install_terraform_steps`
     catch and log any exception a step raises), so it never needs to raise
     itself -- it just reports whether the directory is now usable.
@@ -6112,9 +7478,10 @@ def _ensure_glitchtip_secrets_dir() -> list[OpsResult]:
     path = _glitchtip_grafana_token_path().parent
     if not path.exists():
         try:
-            path.mkdir(mode=0o700, parents=True, exist_ok=True)
+            path.mkdir(mode=0o755, parents=True, exist_ok=True)
         except OSError as e:
             return [OpsResult(False, f"Failed to create {path}", f"{type(e).__name__}: {e}")]
+        _ensure_grafana_secret_placeholders()
         return [OpsResult(True, f"Created {path}")]
 
     if not os.access(path, os.W_OK | os.X_OK):
@@ -6122,7 +7489,8 @@ def _ensure_glitchtip_secrets_dir() -> list[OpsResult]:
 
     # Owned-and-writable is what matters; a chmod that fails here is harmless.
     with contextlib.suppress(OSError):
-        os.chmod(path, 0o700)
+        os.chmod(path, 0o755)
+    _ensure_grafana_secret_placeholders()
     return [OpsResult(True, f"{path} exists and is writable")]
 
 
@@ -6313,10 +7681,21 @@ def _stale_venv_doctor_issues() -> list[str]:
 
 
 def _glitchtip_container_healthy() -> bool:
-    """Whether the `glitchtip` Compose container currently reports healthy."""
+    """Whether the `glitchtip` Compose container has actually passed its health check.
+
+    Checks `health` directly rather than reusing `ComponentStatus.healthy`,
+    which deliberately treats a "starting" container as healthy (see
+    self_heal.py's start_period-grace comment) so the self-heal watchdog
+    doesn't restart something mid-boot -- the right call there, but the wrong
+    one here: a container freshly (re)started reports `state=running,
+    health=starting` for its whole healthcheck `start_period`, so a caller
+    waiting to know the container is *actually* ready (not just "not yet
+    proven broken") needs `health == "healthy"`, or this returns as soon as
+    the container exists (#3588's grafana mirror of this same bug).
+    """
     for status in self_heal.list_component_status():
         if status.service == "glitchtip":
-            return status.healthy
+            return status.state == "running" and status.health in ("", "healthy")
     return False
 
 
@@ -6338,7 +7717,7 @@ def _wait_for_glitchtip_healthy(timeout: float = 120.0, poll_interval: float = 3
     statuses = [s for s in self_heal.list_component_status() if s.service == "glitchtip"]
     if not statuses or statuses[0].state == "absent":
         return False
-    if statuses[0].healthy:
+    if statuses[0].state == "running" and statuses[0].health in ("", "healthy"):
         return True
 
     deadline = time.monotonic() + timeout
@@ -6400,6 +7779,16 @@ def _glitchtip_ensure_superuser(email: str, password: str) -> OpsResult:
     expected returncode so a healthy re-run of `glitchtip-init` logs at INFO
     instead of a scary WARNING (#3574), while still treating it as success
     so re-running after the first successful run is a no-op.
+
+    The password never touches argv (CodeQL #105/#106,
+    py/clear-text-logging-sensitive-data): bare `-e VAR` flags make
+    `docker compose exec` forward each variable's value from this process's
+    environment (passed via `_run(env=...)`) into the container, so
+    `_run`'s non-zero-exit logging -- which fires at INFO on every
+    idempotent rc=1 re-run -- only ever sees the variable NAMES. The old
+    `-e NAME=value` argv form slipped past `_redact_cmd`'s dash-prefixed
+    flag masking and put the real password in the log `extra` on every
+    re-run.
     """
     cmd = [
         "docker",
@@ -6409,11 +7798,11 @@ def _glitchtip_ensure_superuser(email: str, password: str) -> OpsResult:
         "exec",
         "-T",
         "-e",
-        f"DJANGO_SUPERUSER_EMAIL={email}",
+        "DJANGO_SUPERUSER_EMAIL",
         "-e",
-        f"DJANGO_SUPERUSER_PASSWORD={password}",
+        "DJANGO_SUPERUSER_PASSWORD",
         "-e",
-        f"DJANGO_SUPERUSER_USERNAME={email}",
+        "DJANGO_SUPERUSER_USERNAME",
         "glitchtip",
         "./manage.py",
         "createsuperuser",
@@ -6428,6 +7817,12 @@ def _glitchtip_ensure_superuser(email: str, password: str) -> OpsResult:
                 f"GlitchTip superuser {email} already exists -- expected rc=1, "
                 "treated as success"
             ),
+            env={
+                **os.environ,
+                "DJANGO_SUPERUSER_EMAIL": email,
+                "DJANGO_SUPERUSER_PASSWORD": password,
+                "DJANGO_SUPERUSER_USERNAME": email,
+            },
         )
     except Exception as e:
         return OpsResult(
@@ -6919,15 +8314,24 @@ def _write_grafana_glitchtip_token(token: str) -> tuple[bool, OpsResult]:
     glitchtip-init` run skips that preflight -- so a permission problem
     surfaces as this actionable `OpsResult` instead of an uncaught
     `PermissionError` traceback bubbling up through `_provision_glitchtip`.
+
+    File mode is `0o644`, not `0o600` (#3588): Grafana's official image
+    runs as non-root uid 472, and a native Linux bind mount preserves host
+    uid/gid checks (no user-namespace remap), so a `0o600` file owned by
+    the host user is unreadable by Grafana's container process -- Grafana
+    fails to boot with a `stat ...: permission denied` on its GlitchTip
+    datasource provisioning. `0o644` keeps write access restricted to the
+    owning host user while letting any uid read it, matching the parent
+    directory's `0o755` in `_ensure_glitchtip_secrets_dir`.
     """
     path = _glitchtip_grafana_token_path()
     try:
         if path.exists() and path.read_text(encoding="utf-8").strip() == token:
             return False, OpsResult(True, f"{path} already holds the current GlitchTip token")
 
-        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
         path.write_text(token, encoding="utf-8")
-        os.chmod(path, 0o600)
+        os.chmod(path, 0o644)
     except OSError as e:
         result = _glitchtip_secrets_dir_unwritable_result(path.parent)
         return False, OpsResult(
@@ -6939,10 +8343,23 @@ def _write_grafana_glitchtip_token(token: str) -> tuple[bool, OpsResult]:
 
 
 def _grafana_container_healthy() -> bool:
-    """Whether the `grafana` Compose container currently reports healthy."""
+    """Whether the `grafana` Compose container has actually passed its health check.
+
+    Checks `health` directly rather than reusing `ComponentStatus.healthy`
+    -- see `_glitchtip_container_healthy`'s docstring for why that flag's
+    "starting counts as healthy" semantics (correct for the self-heal
+    watchdog) are wrong for this caller. This was the actual cause of the
+    `terraform-local-smoke` CI race (#3588 review round 2): right after
+    `docker compose restart grafana`, `_wait_for_grafana_healthy` polled
+    `ComponentStatus.healthy`, which was already `True` while the container
+    was still in its healthcheck `start_period` (`state=running,
+    health=starting`) -- so the restart was reported done and the install
+    command returned before Grafana was actually reachable, and the smoke
+    test's immediate curl hit connection-refused.
+    """
     for status in self_heal.list_component_status():
         if status.service == "grafana":
-            return status.healthy
+            return status.state == "running" and status.health in ("", "healthy")
     return False
 
 
@@ -6964,7 +8381,7 @@ def _wait_for_grafana_healthy(timeout: float = 120.0, poll_interval: float = 3.0
     statuses = [s for s in self_heal.list_component_status() if s.service == "grafana"]
     if not statuses or statuses[0].state == "absent":
         return False
-    if statuses[0].healthy:
+    if statuses[0].state == "running" and statuses[0].health in ("", "healthy"):
         return True
 
     deadline = time.monotonic() + timeout
@@ -6976,12 +8393,22 @@ def _wait_for_grafana_healthy(timeout: float = 120.0, poll_interval: float = 3.0
 
 
 def _restart_grafana_if_running(reason: str = "the new GlitchTip token") -> OpsResult:
-    """Restart the `grafana` Compose container if it's currently running.
+    """Restart the `grafana` Compose container if its container exists.
 
     Grafana only reads `$__file{}` provisioning targets (the GlitchTip
     Infinity token, see `_write_grafana_glitchtip_token`, and the Slack
     alerting webhook, see `_write_grafana_slack_webhook_secret`) at startup,
     so a freshly (re)written secret needs this to actually take effect.
+
+    Only skips when the container is entirely `"absent"` (no container to
+    restart at all, e.g. the observability profile was never started) --
+    NOT merely non-`"running"`. On a from-scratch install, Grafana's
+    GlitchTip-Infinity datasource provisioning fails and crash-loops
+    (`state="exited"`) before `_provision_glitchtip` has written the token
+    this restart exists to deliver; skipping on anything but "running" left
+    it dead for good instead of bringing it back (#3588's `terraform-local-
+    smoke` regression). `docker compose restart` covers both a running and
+    an already-stopped container -- there's no need to branch to `up -d`.
 
     Waits for Grafana to report healthy again before returning (#3538) --
     without this, a restart that leaves Grafana crash-looping (e.g. a broken
@@ -6993,7 +8420,7 @@ def _restart_grafana_if_running(reason: str = "the new GlitchTip token") -> OpsR
         return OpsResult(True, "Skipped Grafana restart (Docker not found)")
 
     running = _compose_stack_snapshot()
-    if running.get("grafana") != "running":
+    if running.get("grafana", "absent") == "absent":
         return OpsResult(True, "Skipped Grafana restart (not running)")
 
     cmd = ["docker", "compose", "-f", str(self_heal.COMPOSE_FILE), "restart", "grafana"]
@@ -7086,6 +8513,11 @@ def _write_grafana_slack_webhook_secret(url: str) -> tuple[bool, OpsResult]:
     Returns `(changed, result)` -- `changed` is False when the file already
     holds this exact value, which callers use to skip an unnecessary
     Grafana restart (mirrors `_write_grafana_glitchtip_token`).
+
+    File/dir modes are `0o644`/`0o755`, not `0o600`/`0o700`, for the same
+    reason as `_write_grafana_glitchtip_token` (#3588): Grafana's
+    non-root container uid needs to read this file across a native Linux
+    bind mount.
     """
     path = _slack_webhook_secret_path()
     resolved = url.strip() or GRAFANA_SLACK_WEBHOOK_PLACEHOLDER_URL
@@ -7093,9 +8525,9 @@ def _write_grafana_slack_webhook_secret(url: str) -> tuple[bool, OpsResult]:
         if path.exists() and path.read_text(encoding="utf-8").strip() == resolved:
             return False, OpsResult(True, f"{path} already holds the current Slack webhook URL")
 
-        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
         path.write_text(resolved, encoding="utf-8")
-        os.chmod(path, 0o600)
+        os.chmod(path, 0o644)
     except OSError as e:
         result = _glitchtip_secrets_dir_unwritable_result(path.parent)
         return False, OpsResult(

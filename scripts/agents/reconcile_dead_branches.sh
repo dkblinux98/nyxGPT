@@ -22,8 +22,8 @@ A candidate branch is deleted only if one of these is true:
 
 A branch is never deleted just because it is old or unmerged. The head of
 any OPEN pull request, base_branch itself, master/main, and branches with no
-recognizable issue number (e.g. v2.0.0-pre-nyxAgent-implementation) are
-always left alone.
+recognizable issue number (e.g. a hand-created branch with no issue-<n>
+pattern) are always left alone.
 
 Defaults to base_branch = the configured release branch.
 Use --dry-run to preview without deleting anything.
@@ -52,7 +52,7 @@ BASE_BRANCH="${1:-$(get_release_branch)}"
 # the exact same merge/supersede verification (#3392).
 
 # Intentional non-issue branches that must never be swept (#3392).
-ALWAYS_PROTECTED=("$BASE_BRANCH" "master" "main" "v2.0.0-pre-nyxAgent-implementation")
+ALWAYS_PROTECTED=("$BASE_BRANCH" "master" "main")
 
 is_always_protected() {
   local b="$1" p

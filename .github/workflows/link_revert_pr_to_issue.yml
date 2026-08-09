@@ -18,11 +18,14 @@ jobs:
         id: extract
         env:
           GH_TOKEN: ${{ github.token }}
+          # Untrusted PR body passed via env, never interpolated into the
+          # script body, so a crafted revert PR description cannot break out
+          # and inject shell (same class as CodeQL #1).
+          PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           set -euo pipefail
 
           PR_NUMBER="${{ github.event.pull_request.number }}"
-          PR_BODY="${{ github.event.pull_request.body }}"
 
           echo "Revert PR body: $PR_BODY"
 
@@ -49,8 +52,9 @@ jobs:
 
           ORIGINAL_PR="${{ steps.extract.outputs.original_pr }}"
 
-          # Get original PR body
-          ORIGINAL_BODY=$(gh pr view "$ORIGINAL_PR" --json body -q '.body')
+          # Get original PR body (REST -- plain PR data has no GraphQL-only
+          # dependency, keeps this off the GraphQL/Projects-v2 rate pool)
+          ORIGINAL_BODY=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${ORIGINAL_PR}" --jq '.body')
 
           echo "Original PR #$ORIGINAL_PR body:"
           echo "$ORIGINAL_BODY"

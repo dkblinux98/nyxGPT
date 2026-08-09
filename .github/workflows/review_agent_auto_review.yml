@@ -144,8 +144,7 @@ jobs:
           # and REVIEW_AGENT_TOKEN, so a fork PR reaching the merge step
           # would let an external contributor's code land on the release
           # branch with no additional review.
-          HEAD_REPO=$(gh pr view "$PR" --json headRepositoryOwner,headRepository \
-            --jq '"\(.headRepositoryOwner.login)/\(.headRepository.name)"')
+          HEAD_REPO=$(gh api "repos/${{ github.repository }}/pulls/$PR" --jq '.head.repo.full_name')
 
           if [[ "$HEAD_REPO" != "${{ github.repository }}" ]]; then
             echo "::error::PR #$PR head repo ($HEAD_REPO) is not this repo -- refusing fork PR"
@@ -157,6 +156,11 @@ jobs:
       - name: Parse decision from event
         id: parse_decision
         shell: bash
+        env:
+          # Untrusted comment body passed via env, never interpolated into the
+          # script body, so a crafted comment cannot break out of the heredoc
+          # and inject shell (CodeQL alert #1: code injection).
+          COMMENT_BODY: ${{ github.event.comment.body }}
         run: |
           set -euo pipefail
 
@@ -181,10 +185,7 @@ jobs:
               exit 1
             fi
           else
-            COMMENT=$(cat <<'COMMENT_EOF'
-          ${{ github.event.comment.body }}
-          COMMENT_EOF
-          )
+            COMMENT="${COMMENT_BODY:-}"
             if echo "$COMMENT" | grep -q 'nyxgpt-structured-review'; then
               # Fallback trigger: the structured-review comment the review
               # workflow persists after every review. The primary trigger is
@@ -207,14 +208,18 @@ jobs:
               PR="${{ steps.get_pr.outputs.pr_number }}"
               COMMENT_CREATED="${{ github.event.comment.created_at }}"
               if [[ "$DECISION" == "APPROVE" ]]; then
-                STATE=$(gh pr view "$PR" --json state -q .state || echo "")
+                STATE=$(gh api "repos/${{ github.repository }}/pulls/$PR" \
+                  --jq 'if .merged then "MERGED" else (.state | ascii_upcase) end' || echo "")
                 if [[ "$STATE" == "MERGED" ]]; then
                   DECISION="ALREADY_HANDLED"
                   echo "::notice::PR #$PR already merged by the pull_request_review path; skipping"
                 fi
               else
-                HANDLED=$(gh pr view "$PR" --json comments --jq \
-                  "[.comments[] | select((.createdAt > \"$COMMENT_CREATED\") and ((.body | contains(\"review loop\")) or (.body | contains(\"Escalated after 3 review cycles\"))))] | length" || echo 0)
+                # --jq runs once per fetched page -- stream matching comments
+                # across all pages first, then slurp+count (see AGENTS.md).
+                HANDLED=$(gh api "repos/${{ github.repository }}/issues/$PR/comments" --paginate --jq \
+                  ".[] | select((.created_at > \"$COMMENT_CREATED\") and ((.body | contains(\"review loop\")) or (.body | contains(\"Escalated after 3 review cycles\"))))" \
+                  | jq -s 'length' || echo 0)
                 if [[ "${HANDLED:-0}" -gt 0 ]]; then
                   DECISION="ALREADY_HANDLED"
                   echo "::notice::REQUEST_CHANGES for PR #$PR already executed by the pull_request_review path; skipping"
@@ -253,7 +258,7 @@ jobs:
           set -euo pipefail
           PR="${{ steps.get_pr.outputs.pr_number }}"
 
-          ISSUE=$(gh pr view "$PR" --json body -q '.body' | sed -n 's/.*Closes #\([0-9]*\).*/\1/p' | head -1)
+          ISSUE=$(gh api "repos/${{ github.repository }}/pulls/$PR" --jq '.body // ""' | sed -n 's/.*Closes #\([0-9]*\).*/\1/p' | head -1)
 
           if [[ -z "$ISSUE" ]]; then
             echo "::error::PR #$PR body does not contain 'Closes #N'"
@@ -277,7 +282,7 @@ jobs:
             load_config && \
             bash scripts/agents/review_accept_and_merge.sh '$PR' '$ISSUE'"
 
-      - name: Count review iterations (if changes requested)
+      - name: Count review iterations and classify disagreement (if changes requested)
         if: steps.parse_decision.outputs.decision == 'REQUEST_CHANGES'
         id: count
         shell: bash
@@ -298,24 +303,64 @@ jobs:
           echo "loop_count=$COUNT" >> "$GITHUB_OUTPUT"
           echo "Review loop count (REQUEST_CHANGES only): $COUNT"
 
-          # Escalate when COUNT >= 3 (already 3 reviews exist, this would be 4th attempt)
-          if [[ "$COUNT" -ge 3 ]]; then
-            echo "escalate=true" >> "$GITHUB_OUTPUT"
-            echo "Escalation required: 3 review loops completed"
-          else
-            echo "escalate=false" >> "$GITHUB_OUTPUT"
-            echo "Continuing with auto-fix (loop $(($COUNT + 1))/3)"
-          fi
+          # #3687 huddle protocol: read the disagreement-type classification
+          # (a/b/c) the review agent posted in its most recent
+          # nyxgpt-structured-review comment (claude-code-review.yml's
+          # "Persist structured review output to PR" step). Same
+          # fetch-then-slurp-last pattern as "Check for previous
+          # REQUEST_CHANGES reviews" in claude-code-review.yml -- --jq runs
+          # once per fetched page, so matching bodies are streamed across
+          # pages first, then slurped+last in a second jq pass (see
+          # AGENTS.md). Falls back to "a" (the pre-#3687 default --
+          # verifiable defect, loops as before) on any parse failure, so a
+          # missing/malformed classification degrades to prior behavior
+          # instead of blocking the loop or over-escalating.
+          LATEST_STRUCTURED=$(gh api "repos/${{ github.repository }}/issues/$PR/comments" --paginate --jq '
+            .[] | select(.body | contains("nyxgpt-structured-review"))
+          ' 2>/dev/null | jq -s -r '
+            last | .body // ""
+          ' || echo "")
+          DTYPE=$(echo "$LATEST_STRUCTURED" | grep -o '"disagreement_type":"[abc]"' | head -1 | cut -d'"' -f4 || true)
+          [[ "$DTYPE" == "a" || "$DTYPE" == "b" || "$DTYPE" == "c" ]] || DTYPE="a"
+          echo "disagreement_type=$DTYPE" >> "$GITHUB_OUTPUT"
+          echo "Disagreement type: $DTYPE"
 
-      - name: Escalate to human (if 3+ loops)
+          ROUTE=$(python3 "$GITHUB_WORKSPACE/scripts/agents/lib/sprint_calc.py" huddle-routing "$DTYPE" "$COUNT")
+          echo "Huddle routing decision: $ROUTE (type=$DTYPE, count=$COUNT)"
+
+          case "$ROUTE" in
+            escalate_spec_ambiguity)
+              echo "escalate=true" >> "$GITHUB_OUTPUT"
+              echo "escalate_reason=spec_ambiguity" >> "$GITHUB_OUTPUT"
+              echo "huddle=false" >> "$GITHUB_OUTPUT"
+              ;;
+            escalate_cycle_limit)
+              echo "escalate=true" >> "$GITHUB_OUTPUT"
+              echo "escalate_reason=cycle_limit" >> "$GITHUB_OUTPUT"
+              echo "huddle=false" >> "$GITHUB_OUTPUT"
+              ;;
+            huddle)
+              echo "escalate=false" >> "$GITHUB_OUTPUT"
+              echo "escalate_reason=" >> "$GITHUB_OUTPUT"
+              echo "huddle=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "escalate=false" >> "$GITHUB_OUTPUT"
+              echo "escalate_reason=" >> "$GITHUB_OUTPUT"
+              echo "huddle=false" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+      - name: Escalate to human (if 3+ loops, or immediately on spec ambiguity)
         if: steps.parse_decision.outputs.decision == 'REQUEST_CHANGES' && steps.count.outputs.escalate == 'true'
         shell: bash
         run: |
           set -euo pipefail
           PR="${{ steps.get_pr.outputs.pr_number }}"
           ISSUE="${{ steps.get_issue.outputs.issue_number }}"
+          REASON="${{ steps.count.outputs.escalate_reason }}"
 
-          echo "::group::Escalating to human after 3 review cycles"
+          echo "::group::Escalating to human ($REASON)"
 
           # Keep issue in "In Review" status and assign to human owner.
           # Verified + retried (not a bare issue_assign_only call) because
@@ -331,7 +376,7 @@ jobs:
 
           if [[ "$ASSIGN_OK" != "1" ]]; then
             echo "::error::Could not verify issue #${ISSUE} was assigned to" \
-              "@${{ vars.HUMAN_OWNER }} after 3 review cycles — it may still show" \
+              "@${{ vars.HUMAN_OWNER }} on escalation ($REASON) — it may still show" \
               "@${{ vars.REVIEW_AGENT }} as assignee. Manual fix:" \
               "gh issue edit ${ISSUE} --add-assignee ${{ vars.HUMAN_OWNER }}"
           fi
@@ -339,25 +384,53 @@ jobs:
           # Assign PR to human owner
           gh pr edit "$PR" --add-assignee "${{ vars.HUMAN_OWNER }}"
 
-          # Post escalation comment
+          # Post escalation comment. Wording depends on why (#3687): the
+          # 3-cycle outer breaker is unchanged (cycle_limit), but a type-(c)
+          # spec-ambiguity classification escalates at cycle zero -- no
+          # agent conversation can resolve what only the PM knows, so it
+          # never gets to loop first.
           HUMAN_OWNER="${{ vars.HUMAN_OWNER }}"
           REPO="${{ github.repository }}"
-          BODY=$(printf '%s\n\n%s\n\n%s\n%s\n%s\n%s\n\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n\n%s' \
-            "⚠️ **Review Agent**: Escalated after 3 review cycles" \
-            "@${HUMAN_OWNER} This PR has gone through 3 review cycles with requested changes, but issues persist." \
-            "**Review History:**" \
-            "- 3 code reviews completed with REQUEST_CHANGES" \
-            "- Developer made fixes after each review" \
-            "- Issues still remain after 3 cycles" \
-            "**Status:**" \
-            "- Issue #${ISSUE} remains in **In Review** status" \
-            "- Issue and PR assigned to you for manual review" \
-            "- You can either:" \
-            "  - Manually review and merge if acceptable" \
-            "  - Provide specific guidance to developer" \
-            "  - Close PR if not viable" \
-            "[View all review comments](https://github.com/${REPO}/pull/${PR})")
+          if [[ "$REASON" == "spec_ambiguity" ]]; then
+            BODY=$(printf '%s\n\n%s\n\n%s\n%s\n%s\n\n%s' \
+              "⚠️ **Review Agent**: Escalated immediately — spec ambiguity (#3687 huddle protocol, type c)" \
+              "@${HUMAN_OWNER} The review agent classified this REQUEST_CHANGES round as a spec ambiguity: the issue itself is unclear, or resolving it needs owner authority no agent conversation can supply. Escalating at cycle zero rather than looping." \
+              "**Status:**" \
+              "- Issue #${ISSUE} remains in **In Review** status" \
+              "- Issue and PR assigned to you for a scope/spec decision" \
+              "[View all review comments](https://github.com/${REPO}/pull/${PR})")
+          else
+            BODY=$(printf '%s\n\n%s\n\n%s\n%s\n%s\n%s\n\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n\n%s' \
+              "⚠️ **Review Agent**: Escalated after 3 review cycles" \
+              "@${HUMAN_OWNER} This PR has gone through 3 review cycles with requested changes, but issues persist." \
+              "**Review History:**" \
+              "- 3 code reviews completed with REQUEST_CHANGES" \
+              "- Developer made fixes after each review" \
+              "- Issues still remain after 3 cycles" \
+              "**Status:**" \
+              "- Issue #${ISSUE} remains in **In Review** status" \
+              "- Issue and PR assigned to you for manual review" \
+              "- You can either:" \
+              "  - Manually review and merge if acceptable" \
+              "  - Provide specific guidance to developer" \
+              "  - Close PR if not viable" \
+              "[View all review comments](https://github.com/${REPO}/pull/${PR})")
+          fi
           gh pr comment "$PR" --body "$BODY"
+
+          # Sprint-autopilot continuation kick: only merges used to post
+          # READY_FOR_NEXT_ISSUE, so an escalation starved dispatch even
+          # though nothing was blocked. The reviewer has handed this PR to
+          # the owner — post the same gated kick a merge posts (identical
+          # SPRINT_AUTOPILOT / pause / release-drained checks) so the queue
+          # continues with other work. Best-effort: a kick failure never
+          # fails the escalation itself.
+          bash -lc "cd '$GITHUB_WORKSPACE' && \
+            source scripts/agents/lib/gh_project.sh && \
+            load_config && \
+            require_gh_auth && \
+            sprint_autopilot_kick '$ISSUE' escalated" \
+            || echo "::warning::Sprint-autopilot kick after escalation failed for issue #${ISSUE} — escalation itself is unaffected."
 
           echo "::endgroup::"
 
@@ -369,8 +442,8 @@ jobs:
           echo "✓ Escalation complete - issue kept in 'In Review', assigned to human"
           exit 0
 
-      - name: Return to developer (if changes requested and not escalated)
-        if: steps.parse_decision.outputs.decision == 'REQUEST_CHANGES' && steps.count.outputs.escalate == 'false'
+      - name: Return to developer (if changes requested and not escalated or huddling)
+        if: steps.parse_decision.outputs.decision == 'REQUEST_CHANGES' && steps.count.outputs.escalate == 'false' && steps.count.outputs.huddle == 'false'
         shell: bash
         run: |
           set -euo pipefail
@@ -407,6 +480,43 @@ jobs:
 
           echo "::endgroup::"
           echo "✓ Issue returned to developer-agent, auto-fix triggered"
+
+      - name: Trigger huddle (judgment call, or 2nd failed verifiable-defect cycle)
+        if: steps.parse_decision.outputs.decision == 'REQUEST_CHANGES' && steps.count.outputs.huddle == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          PR="${{ steps.get_pr.outputs.pr_number }}"
+          ISSUE="${{ steps.get_issue.outputs.issue_number }}"
+          DTYPE="${{ steps.count.outputs.disagreement_type }}"
+          DEV_AGENT="${{ vars.DEV_AGENT }}"
+
+          echo "::group::Triggering huddle for issue #$ISSUE (type $DTYPE)"
+
+          if [[ "$DTYPE" == "b" ]]; then
+            REASON_LINE="This is a **judgment call** (design/approach disagreement) -- those never loop through another blind fix cycle, they go straight to a huddle."
+          else
+            REASON_LINE="This is the **2nd** REQUEST_CHANGES cycle for a verifiable defect that still hasn't converged -- instead of a 3rd blind retry, the team huddles first."
+          fi
+
+          # Not another auto-fix dispatch: the huddle needs the dev agent's
+          # *position* (what it believes the problem is, what was tried,
+          # what it proposes), not another attempted patch. The review
+          # agent's position is the code review comment already posted
+          # above on this PR. HUDDLE_TRIGGERED is the marker
+          # developer_huddle_position.yml listens for.
+          BODY=$(printf '%s\n\n%s\n\n%s\n%s\n%s\n%s\n\n%s' \
+            "🤝 **Review Agent**: Huddle triggered" \
+            "$REASON_LINE" \
+            "**Review position:** see the code review comment above on this PR -- that is the review agent's position." \
+            "**Next:** @${DEV_AGENT}, post a written position (what you believe the problem is, what was tried, what you propose) rather than attempting another fix. A fresh scrummaster mediation run will then read this thread and decide: proceed as-is / change approach / descope / escalate to owner." \
+            "Issue #${ISSUE} stays in **In Review** status pending the huddle decision." \
+            "See agents/runbooks/review-runbook.md for the huddle protocol (#3687)." \
+            "HUDDLE_TRIGGERED")
+          gh pr comment "$PR" --body "$BODY"
+
+          echo "::endgroup::"
+          echo "✓ Huddle triggered for issue #${ISSUE} -- awaiting developer position"
 
       - name: Send to developer (human override after escalation)
         if: steps.parse_decision.outputs.decision == 'SEND_TO_DEVELOPER'

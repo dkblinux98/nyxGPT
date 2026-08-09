@@ -47,6 +47,8 @@ EXPECTED="
 3588|PD-4|Sprint 7|sre|M
 3593|PD-5|Sprint 7|sre|M
 3596|PD-6|Sprint 7|cli|M
+3621|P6-5A|Sprint 7|cli|L
+3622|P6-5B|Sprint 7|cli|L
 3509|P6-8|Sprint 8|cli|XL
 3510|P6-9|Sprint 8|cli|M
 3511|P6-12|Sprint 8|cli|L
@@ -94,7 +96,12 @@ while IFS='|' read -r issue key want_sprint want_module want_effort; do
 
   bad=""
   [[ "$a_milestone" == "$MILESTONE" ]] || bad+=" milestone='$a_milestone'"
-  [[ "$a_status"   == "Backlog" ]]      || bad+=" status='$a_status'"
+  # Status is a MOVING field (Backlog -> In Progress -> In Review -> Acceptance
+  # Testing -> For Release -> Closed). This verifier checks only the STABLE
+  # fields; it must never treat a progressed status as a defect. Flag only a
+  # genuinely unset status (a fresh hygiene-race artifact). Forcing Backlog on
+  # progressed issues clobbered 15 of them on 2026-08-04.
+  [[ -n "$a_status" ]]                  || bad+=" status='(unset)'"
   [[ "$a_sprint"   == "$want_sprint" ]] || bad+=" sprint='$a_sprint'"
   [[ "$a_module"   == "$want_module" ]] || bad+=" module='$a_module'"
   [[ "$a_effort"   == "$want_effort" ]] || bad+=" effort='$a_effort'"
@@ -111,7 +118,7 @@ while IFS='|' read -r issue key want_sprint want_module want_effort; do
   if [[ "$REPAIR" == "1" ]]; then
     [[ -n "$item_id" ]] || item_id="$(ensure_issue_in_project "$issue")"
     [[ "$a_milestone" == "$MILESTONE" ]]  || gh issue edit "$issue" --repo "${REPO_OWNER}/${REPO_NAME}" --milestone "$MILESTONE"
-    [[ "$a_status"   == "Backlog" ]]      || set_issue_status "$issue" "Backlog"
+    [[ -n "$a_status" ]]                  || set_issue_status "$issue" "Backlog"  # only when unset; never downgrade
     [[ "$a_sprint"   == "$want_sprint" ]] || set_project_field_value "$item_id" "Sprint" "$want_sprint"
     [[ "$a_module"   == "$want_module" ]] || set_project_field_value "$item_id" "Module" "$want_module"
     [[ "$a_effort"   == "$want_effort" ]] || set_project_field_value "$item_id" "Effort" "$want_effort"

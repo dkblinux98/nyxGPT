@@ -4,6 +4,7 @@ import configparser
 import json
 import logging
 import sys
+import tempfile
 import types
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -342,6 +343,107 @@ def test_export_session_html(tmp_path: Path) -> None:
     assert "&gt; works" in content, "Should escape > character"
     assert '<div class="message user">' in content
     assert '<div class="message assistant">' in content
+
+
+def test_sink_functions_refuse_paths_outside_allowed_roots() -> None:
+    """Inline sink-side barriers (CodeQL py/path-injection): the low-level
+    session I/O functions must refuse any path resolving outside the user's
+    home directory or the system temp directory, regardless of caller-side
+    validation -- read functions return their empty contract value, write
+    functions raise ValueError and never touch the filesystem."""
+    outside = Path("/etc/nyxgpt-attack-test.json")
+
+    assert sessions.load_session_messages(outside) == []
+    assert sessions.load_session_messages_paginated(outside) == ([], 0)
+    assert sessions.load_session_meta(outside) == {}
+    with pytest.raises(ValueError, match="allowed data area"):
+        sessions.save_session_messages(outside, [{"role": "user", "content": "x"}])
+    with pytest.raises(ValueError, match="allowed data area"):
+        sessions.save_session_meta(outside, {"title": "x"})
+    assert not outside.exists(), "Write barrier must trigger before any filesystem effect"
+
+
+def test_sink_functions_refuse_traversal_escapes(tmp_path: Path) -> None:
+    """A `..` traversal that escapes the allowed roots is collapsed by
+    realpath and refused at the sink."""
+    sneaky = tmp_path / ".." / ".." / ".." / ".." / ".." / ".." / "etc" / "shadow"
+    assert sessions.load_session_messages(sneaky) == []
+    assert sessions.load_session_meta(sneaky) == {}
+
+
+def test_file_lock_refuses_paths_outside_allowed_roots() -> None:
+    """file_lock's inline barrier refuses a lock target outside the allowed
+    data roots before any filesystem effect (no create, no lock)."""
+    outside = Path("/etc/nyxgpt-attack-lock-test.json")
+    with pytest.raises(ValueError, match="allowed data area"), sessions.file_lock(outside):
+        pass
+    assert not outside.exists(), "Lock barrier must trigger before any filesystem effect"
+
+
+def test_session_file_for_refuses_symlink_escape(tmp_path: Path) -> None:
+    """A session file that is a symlink pointing outside the allowed roots is
+    refused by the composed-path re-anchoring in session_file_for (realpath
+    collapses the link before the containment check)."""
+    (tmp_path / "escape.json").symlink_to("/etc/passwd")
+    with pytest.raises(ValueError, match="allowed data area"):
+        sessions.session_file_for("escape", tmp_path)
+
+
+def test_resolve_sessions_dir_refuses_exact_allowed_roots() -> None:
+    """A sessions dir resolving EXACTLY to $HOME or the temp root -- rather
+    than strictly inside one -- is refused: the barriers accept descendants
+    only (`startswith(root + os.sep)`), and neither root itself is ever a
+    legitimate sessions directory. Pins the intentional behavior change from
+    the single-condition guard restructure (PR #3657)."""
+    with pytest.raises(ValueError, match="allowed data area"):
+        sessions._resolve_sessions_dir(Path.home())
+    with pytest.raises(ValueError, match="allowed data area"):
+        sessions._resolve_sessions_dir(Path(tempfile.gettempdir()))
+
+
+def test_export_functions_refuse_dir_outside_allowed_roots() -> None:
+    """The export functions' own inline barriers refuse a sessions dir that
+    escapes the allowed roots (the chokepoint raises first; either way no
+    filesystem access happens outside the data area)."""
+    with pytest.raises(ValueError):
+        sessions.export_session_markdown("valid-name", Path("/etc"))
+
+
+def test_export_session_html_escapes_untrusted_fields(tmp_path: Path) -> None:
+    """HTML export must escape the session name, title, summary, tags, and
+    message content so none can inject markup (CodeQL py/reflected-xss).
+
+    The endpoint serves this with ``Content-Type: text/html``; an unescaped
+    ``<script>`` in any user-controlled field would execute in the browser.
+    """
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    payload = "<script>alert('xss')</script>"
+    session_file = sessions.session_file_for("xss-test", sessions_dir)
+    meta_file = sessions.meta_file_for(session_file)
+
+    messages = [
+        {"role": "user", "content": payload},
+        {"role": "assistant", "content": "reply"},
+    ]
+    metadata = {
+        "title": payload,
+        "summary": payload,
+        "created_at": payload,
+        "updated_at": "2024-01-01T12:05:00",
+        "tags": [payload],
+        "model": payload,
+    }
+    sessions.save_session_messages(session_file, messages)
+    sessions.save_session_meta(meta_file, metadata)
+
+    ok, content = sessions.export_session_html("xss-test", sessions_dir)
+
+    assert ok
+    # The raw script tag must never appear; its escaped form must.
+    assert "<script>alert('xss')</script>" not in content
+    assert "&lt;script&gt;" in content
 
 
 def test_export_session_nonexistent(tmp_path: Path) -> None:
@@ -3017,7 +3119,10 @@ def test_sync_filename_with_title_rename_failure_cleans_up(
     )
 
     assert not success
-    assert message.startswith("Rename failed:")
+    # The generic message must not leak the underlying exception detail
+    # (CodeQL py/stack-trace-exposure); the real error is logged server-side.
+    assert message == "Rename failed due to an internal error"
+    assert "disk full" not in message
     assert new_name == "fail-rename-test"
 
     new_sf = sessions.session_file_for("fail-rename-title", sessions_dir)
@@ -3057,7 +3162,8 @@ def test_sync_filename_with_title_cleans_up_new_meta_file(
     )
 
     assert not success
-    assert message.startswith("Rename failed:")
+    assert message == "Rename failed due to an internal error"
+    assert "unlink failed" not in message
 
     new_sf = sessions.session_file_for("cleanup-meta-title", sessions_dir)
     new_mf = sessions.meta_file_for(new_sf)
@@ -3101,7 +3207,8 @@ def test_sync_filename_with_title_cleanup_failure_is_swallowed(
     )
 
     assert not success
-    assert message.startswith("Rename failed:")
+    assert message == "Rename failed due to an internal error"
+    assert "disk full" not in message
     # Original files should remain untouched
     assert sf.exists()
     assert mf.exists()

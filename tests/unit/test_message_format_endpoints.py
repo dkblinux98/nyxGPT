@@ -10,6 +10,7 @@ was called directly on whatever `citation.get(...)` returned.
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,10 +18,50 @@ import pytest
 from fastapi.testclient import TestClient
 
 from nyxgpt import sessions
-from nyxgpt.app import _escape_markdown, app
+from nyxgpt.app import _escape_markdown, _sessions_dir_from_str, app
 from nyxgpt.chat import ChatResult
 
 pytestmark = pytest.mark.unit
+
+
+# ============================================================================
+# _sessions_dir_from_str (CodeQL #8: client-controlled path override)
+# ============================================================================
+
+
+def test_sessions_dir_from_str_none_and_empty() -> None:
+    assert _sessions_dir_from_str(None) is None
+    assert _sessions_dir_from_str("") is None
+
+
+def test_sessions_dir_from_str_accepts_paths_under_tmp(tmp_path: Path) -> None:
+    override = tmp_path / "sessions"
+    # Returns the resolved (validated) path, not the raw string.
+    assert _sessions_dir_from_str(str(override)) == override.resolve()
+
+
+def test_sessions_dir_from_str_accepts_paths_under_home() -> None:
+    override = Path.home() / ".nyxGPT" / "sessions"
+    assert _sessions_dir_from_str(str(override)) == override.resolve()
+
+
+def test_sessions_dir_from_str_rejects_arbitrary_system_path() -> None:
+    # A client must not be able to point session I/O at an arbitrary location.
+    assert _sessions_dir_from_str("/etc") is None
+    assert _sessions_dir_from_str("/var/lib/secrets") is None
+
+
+def test_sessions_dir_from_str_rejects_traversal_escape() -> None:
+    # `..` traversal that escapes the allowed roots is neutralised by resolve().
+    assert _sessions_dir_from_str(str(Path.home() / ".." / ".." / "etc")) is None
+
+
+def test_sessions_dir_from_str_rejects_exact_root_paths() -> None:
+    # Exactly $HOME or the temp root itself (not a subdirectory of one) is
+    # refused -- the barrier accepts strict descendants only. Pins the
+    # intentional behavior change from PR #3657.
+    assert _sessions_dir_from_str(str(Path.home())) is None
+    assert _sessions_dir_from_str(tempfile.gettempdir()) is None
 
 
 def _make_session(
@@ -509,3 +550,27 @@ def test_sessions_export_success(
     assert response.status_code == 200
     assert content_type in response.headers["content-type"]
     assert f'filename="export-success-test.{extension}"' in response.headers["content-disposition"]
+    assert response.headers["x-content-type-options"] == "nosniff"
+
+
+@pytest.mark.parametrize(
+    "bad_name",
+    [
+        "foo..bar",
+        "foo bar",
+        "foo!bar",
+        "x" * 65,
+    ],
+)
+def test_sessions_export_rejects_invalid_name(tmp_path: Path, bad_name: str) -> None:
+    """The `name` path parameter is validated at the response boundary before
+    it can reach the HTML branch's markup or the Content-Disposition
+    filename (CodeQL py/reflected-xss, alert #14)."""
+    sd = tmp_path / "sessions"
+    sd.mkdir(parents=True, exist_ok=True)
+    client = TestClient(app)
+    response = client.get(
+        f"/api/v1/sessions/{bad_name}/export",
+        params={"sessions_dir": str(sd), "format": "markdown"},
+    )
+    assert response.status_code == 400

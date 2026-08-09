@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +20,21 @@ from typing import Any
 import psutil
 
 logger = logging.getLogger(__name__)
+
+# How long a real CPU sample blocks for, in seconds. Passing this as psutil's
+# `interval` makes every sample a self-contained, well-defined measurement
+# window instead of relying on `interval=None`, which psutil's own docs call
+# meaningless on the first call and which -- on every call after -- averages
+# over however long it's been since *any* caller last touched `cpu_percent()`
+# (an on-demand dashboard poll may be the first call ever, or may land
+# minutes after the previous one; see #3581).
+_CPU_MEASURE_INTERVAL_SECONDS = 0.1
+
+# Minimum time between real CPU measurements. A caller within this window of
+# the last real sample reuses the cached value instead of triggering another
+# blocking measurement, so a dashboard polling every few seconds doesn't pay
+# a fresh `_CPU_MEASURE_INTERVAL_SECONDS` blocking call on every poll.
+_CPU_SAMPLE_MIN_INTERVAL_SECONDS = 1.0
 
 
 @dataclass
@@ -30,8 +46,11 @@ class ResourceMetrics:
         memory_vms_mb: Virtual Memory Size in MB
         memory_percent: Percentage of system memory used by process
         memory_available_mb: Available system memory in MB
-        cpu_percent_process: CPU usage percentage for this process
-        cpu_percent_system: Overall system CPU usage percentage
+        cpu_percent_process: CPU usage percentage for this process, normalized
+            to a 0-100 scale by dividing by the logical core count (without
+            this, a process using multiple cores could read above 100%)
+        cpu_percent_system: Overall system-wide CPU usage percentage (already
+            0-100 normalized by psutil)
         disk_percent: Usage percentage of the filesystem backing ~/.nyxGPT
         avg_request_latency_ms: Average request latency in milliseconds
         p50_request_latency_ms: 50th percentile (median) request latency
@@ -121,8 +140,19 @@ class ResourceMonitor:
         self._lock = threading.Lock()
         self._batch_processor = batch_processor
 
-        # Initialize CPU percent (first call always returns 0.0)
-        self._process.cpu_percent()
+        # Logical core count used to normalize process CPU to a 0-100 scale;
+        # psutil.cpu_count() can return None in rare/containerized
+        # environments, so fall back to treating it as a single core.
+        self._cpu_count = psutil.cpu_count() or 1
+
+        # CPU sampling state. Each real sample resets the process's own
+        # measurement window immediately before a short blocking system-wide
+        # sample, so both readings cover the same well-defined window
+        # regardless of when any other caller last touched `cpu_percent()`.
+        self._cpu_lock = threading.Lock()
+        self._cached_cpu_percent_process = 0.0
+        self._cached_cpu_percent_system = 0.0
+        self._last_cpu_sample_at: float | None = None
 
     def record_request_latency(self, latency_ms: float, is_error: bool = False) -> None:
         """Record a request latency sample.
@@ -149,9 +179,7 @@ class ResourceMonitor:
         mem_percent = self._process.memory_percent()
         system_mem = psutil.virtual_memory()
 
-        # Get CPU info (interval=None uses cached value from previous call)
-        cpu_percent_process = self._process.cpu_percent()
-        cpu_percent_system = psutil.cpu_percent()
+        cpu_percent_process, cpu_percent_system = self._sample_cpu()
 
         # Disk usage of the filesystem backing ~/.nyxGPT (sessions, vectorstore,
         # logs, config) -- falls back to the home directory if ~/.nyxGPT hasn't
@@ -204,6 +232,33 @@ class ResourceMonitor:
             error_count=error_count,
             error_rate_percent=error_rate_percent,
         )
+
+    def _sample_cpu(self) -> tuple[float, float]:
+        """Return (process_percent, system_percent), each 0-100 normalized.
+
+        Refreshes at most once per `_CPU_SAMPLE_MIN_INTERVAL_SECONDS`; calls
+        within that window reuse the cached reading. A real refresh resets
+        the process's psutil measurement window to "now" and then takes one
+        short blocking system-wide sample, so both readings cover the same
+        well-defined window -- never psutil's `interval=None` "meaningless
+        on first call, arbitrary window after" semantics.
+        """
+        with self._cpu_lock:
+            now = time.monotonic()
+            if (
+                self._last_cpu_sample_at is not None
+                and now - self._last_cpu_sample_at < _CPU_SAMPLE_MIN_INTERVAL_SECONDS
+            ):
+                return self._cached_cpu_percent_process, self._cached_cpu_percent_system
+
+            self._process.cpu_percent(interval=None)  # reset process window to "now"
+            system_percent = psutil.cpu_percent(interval=_CPU_MEASURE_INTERVAL_SECONDS)
+            process_percent_raw = self._process.cpu_percent(interval=None)
+
+            self._cached_cpu_percent_process = process_percent_raw / self._cpu_count
+            self._cached_cpu_percent_system = system_percent
+            self._last_cpu_sample_at = time.monotonic()
+            return self._cached_cpu_percent_process, self._cached_cpu_percent_system
 
     @staticmethod
     def _percentile(sorted_samples: list[float], percentile: int) -> float:

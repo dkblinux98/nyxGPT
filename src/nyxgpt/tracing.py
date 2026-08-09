@@ -107,6 +107,51 @@ def _warn_missing_package(symbol_name: str) -> None:
     )
 
 
+_OTEL_CONTEXT_DETACH_LOGGER_NAME = "opentelemetry.context"
+_OTEL_CONTEXT_DETACH_LOG_MESSAGE = "Failed to detach context"
+_OTEL_CONTEXT_DETACH_RACE_TEXT = "was created in a different Context"
+
+
+class _SuppressContextDetachRaceFilter(logging.Filter):
+    """Drops the benign OTel ASGI context-detach-race log record (#3593).
+
+    Streamed responses can run the response body iterator in a different
+    asyncio task -- and therefore a different `contextvars.Context` copy --
+    than the one the ASGI middleware installed by `instrument_fastapi_app`
+    attached the request's span context in. Detaching that span context
+    back in the original task then raises
+    ``ValueError: ... was created in a different Context``, which
+    `opentelemetry.context.detach` already catches -- but it re-logs the
+    catch via `logger.exception(...)` at ERROR level. Sentry's default
+    `LoggingIntegration` turns every ERROR-level log with `exc_info` into a
+    captured event, and the exception's repr embeds `Token`/`ContextVar`
+    object addresses, so every occurrence gets a unique title and GlitchTip
+    can't group them -- a chat session with a handful of streamed turns
+    produced 139 separate issues from this single harmless race. Chat
+    itself is unaffected; this is purely an artifact of running the span
+    context across a task boundary, not a real error.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Return False for the known detach-race record, True for everything else."""
+        if record.name != _OTEL_CONTEXT_DETACH_LOGGER_NAME or not record.exc_info:
+            return True
+        exc = record.exc_info[1]
+        is_detach_race = isinstance(exc, ValueError) and _OTEL_CONTEXT_DETACH_RACE_TEXT in str(exc)
+        return not is_detach_race
+
+
+def _suppress_context_detach_race_logs() -> None:
+    """Install `_SuppressContextDetachRaceFilter` on the OTel context logger.
+
+    Idempotent so repeated calls (e.g. `instrument_fastapi_app` running more
+    than once, as tests do) don't stack duplicate filters.
+    """
+    otel_logger = logging.getLogger(_OTEL_CONTEXT_DETACH_LOGGER_NAME)
+    if not any(isinstance(f, _SuppressContextDetachRaceFilter) for f in otel_logger.filters):
+        otel_logger.addFilter(_SuppressContextDetachRaceFilter())
+
+
 def instrument_fastapi_app(app: FastAPI) -> None:
     """Wire OTel's ASGI instrumentation into the app for HTTP request spans.
 
@@ -130,6 +175,7 @@ def instrument_fastapi_app(app: FastAPI) -> None:
     if FastAPIInstrumentor is None:
         _warn_missing_package("FastAPIInstrumentor")
         return
+    _suppress_context_detach_race_logs()
     FastAPIInstrumentor.instrument_app(app)
 
 

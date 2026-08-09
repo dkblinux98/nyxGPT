@@ -1,0 +1,80 @@
+name: Admin Set Item Fields
+
+# Owner tooling (manual): set assignee / milestone / Sprint / Status on a
+# batch of issues OR pull requests by number — the writes a claude.ai session
+# cannot perform on PRs through its API surface (owner decision, 2026-08-09).
+# Companion to bulk_set_issue_status.yml. Dry-run by default.
+
+on:
+  workflow_dispatch:
+    inputs:
+      items:
+        description: 'Issue/PR numbers (comma/space separated)'
+        required: true
+      assignee:
+        description: 'Login to add as assignee (blank = leave unchanged)'
+        default: ''
+      milestone:
+        description: 'Milestone title to set (blank = leave unchanged; never creates milestones)'
+        default: ''
+      clear_sprint:
+        description: 'Clear the Sprint iteration field'
+        type: boolean
+        default: false
+      status:
+        description: 'Status option to set (blank = leave unchanged)'
+        default: ''
+      dry_run:
+        description: 'Preview only — change nothing'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: admin-set-fields
+  cancel-in-progress: false
+
+jobs:
+  set-fields:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.RELEASE_BRANCH }}
+
+      - name: Set fields on items
+        env:
+          GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+          ITEMS: ${{ github.event.inputs.items }}
+          ASSIGNEE: ${{ github.event.inputs.assignee }}
+          MILESTONE: ${{ github.event.inputs.milestone }}
+          CLEAR_SPRINT: ${{ github.event.inputs.clear_sprint }}
+          STATUS: ${{ github.event.inputs.status }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+        run: |
+          cat > /tmp/nyxgpt-config.ini <<CFG
+          REPO_OWNER=${{ vars.REPO_OWNER }}
+          REPO_NAME=${{ vars.REPO_NAME }}
+          PROJECT_OWNER=${{ vars.PROJECT_OWNER }}
+          PROJECT_NUMBER=${{ vars.PROJECT_NUMBER }}
+
+          DEV_AGENT=${{ vars.DEV_AGENT }}
+          REVIEW_AGENT=${{ vars.REVIEW_AGENT }}
+          SCRUM_AGENT=${{ vars.SCRUM_AGENT }}
+          HUMAN_OWNER=${{ vars.HUMAN_OWNER }}
+
+          STATUS_FIELD=${{ vars.STATUS_FIELD }}
+          STATUS_BACKLOG=${{ vars.STATUS_BACKLOG }}
+          STATUS_IN_PROGRESS=${{ vars.STATUS_IN_PROGRESS }}
+          STATUS_IN_REVIEW=${{ vars.STATUS_IN_REVIEW }}
+          STATUS_FOR_RELEASE=${{ vars.STATUS_FOR_RELEASE }}
+
+          RELEASE_BRANCH=${{ vars.RELEASE_BRANCH }}
+          CFG
+          export NYXGPT_CONFIG_FILE=/tmp/nyxgpt-config.ini
+          bash scripts/agents/admin_set_fields.sh

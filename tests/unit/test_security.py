@@ -12,16 +12,23 @@ from __future__ import annotations
 
 import json
 from configparser import ConfigParser
+from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 import nyxgpt.app as app_module
 from nyxgpt.app import app
+from nyxgpt.chat import ChatResult
+from nyxgpt.config import get_sessions_dir
 from nyxgpt.rate_limiter import RateLimiter
 from nyxgpt.sessions import (
     VALID_SESSION_NAME_PATTERN,
+    list_sessions,
+    meta_file_for,
     sanitize_title_for_filename,
+    session_file_for,
     validate_session_name,
 )
 
@@ -471,3 +478,149 @@ class TestInputSanitization:
         resp = client.post("/api/v1/sessions/init", json={"name": 12345})
 
         assert resp.status_code == 400
+
+
+# ----------------------------
+# Sink-side path validation chokepoint (issue #3639)
+# ----------------------------
+
+
+class TestSinkSidePathValidationChokepoint:
+    """`session_file_for()`/`meta_file_for()` in sessions.py and
+    `get_sessions_dir()`/`_expand_path()` in config.py are the sink-side
+    barriers that close the CodeQL py/path-injection alerts. These tests
+    exercise the barriers directly rather than through validate_session_name,
+    since a delegated call is not what CodeQL recognises as the sanitizer."""
+
+    @pytest.mark.parametrize(
+        "malicious_name",
+        [
+            "../escape",
+            "../../etc/passwd",
+            "/etc/passwd",
+            "session/../../secrets",
+            "session\x00.json",
+            "session; rm -rf /",
+            "x" * 65,
+            "",
+        ],
+    )
+    def test_session_file_for_rejects_malicious_names(self, tmp_path, malicious_name):
+        with pytest.raises(ValueError):
+            session_file_for(malicious_name, tmp_path)
+
+    def test_session_file_for_accepts_valid_name(self, tmp_path):
+        sf = session_file_for("valid-name", tmp_path)
+        assert sf == tmp_path / "valid-name.json"
+
+    @pytest.mark.parametrize(
+        # `Path.stem` only ever yields the final path component (a leading
+        # "../" can't survive into it), so these cover the metacharacter/
+        # empty/oversized cases meta_file_for's own barrier must catch.
+        "malicious_stem",
+        ["session\x00", "session; rm -rf /", "", "x" * 65],
+    )
+    def test_meta_file_for_rejects_malicious_session_file(self, tmp_path, malicious_stem):
+        with pytest.raises(ValueError):
+            meta_file_for(tmp_path / f"{malicious_stem}.json")
+
+    def test_meta_file_for_accepts_valid_session_file(self, tmp_path):
+        sf = tmp_path / "valid-name.json"
+        assert meta_file_for(sf) == tmp_path / "valid-name.meta.json"
+
+    def test_session_file_for_rejects_sessions_dir_outside_allowed_roots(self):
+        with pytest.raises(ValueError):
+            session_file_for("valid-name", Path("/etc"))
+
+    def test_list_sessions_rejects_sessions_dir_outside_allowed_roots(self):
+        with pytest.raises(ValueError):
+            list_sessions(Path("/etc"))
+
+    def test_list_sessions_skips_non_conforming_legacy_filenames(self, tmp_path):
+        """A single legacy/hand-copied session file whose name doesn't match
+        the chokepoint's allowlist (e.g. a dot or space in the name) must be
+        skipped, not take down the whole listing with an unhandled
+        ValueError."""
+        (tmp_path / "valid-name.json").write_text(json.dumps([]), encoding="utf-8")
+        (tmp_path / "legacy.backup file.json").write_text(json.dumps([]), encoding="utf-8")
+        (tmp_path / ".hidden.json").write_text(json.dumps([]), encoding="utf-8")
+
+        rows = list_sessions(tmp_path)
+
+        assert [r["name"] for r in rows] == ["valid-name"]
+
+    def test_config_get_sessions_dir_rejects_path_outside_allowed_roots(self):
+        cfg = ConfigParser()
+        cfg.add_section("nyxgpt")
+        cfg.set("nyxgpt", "sessions_dir", "/etc/nyxgpt-sessions")
+
+        with pytest.raises(ValueError):
+            get_sessions_dir(cfg)
+
+    def test_config_get_sessions_dir_accepts_home_relative_path(self):
+        cfg = ConfigParser()
+        cfg.add_section("nyxgpt")
+        cfg.set("nyxgpt", "sessions_dir", "~/.nyxGPT/sessions")
+
+        resolved = get_sessions_dir(cfg)
+        assert resolved == Path.home() / ".nyxGPT" / "sessions"
+
+    def test_chat_endpoint_sanitizes_malicious_sessions_dir_override(self, client):
+        """A malicious `sessions_dir` in the chat request body must never
+        reach run_chat() raw -- it must be routed through
+        `_sessions_dir_from_str` first (defense-in-depth at the boundary,
+        app.py:2990/3054/3267)."""
+        captured_kwargs: dict = {}
+
+        def fake_run_chat(prompt, **kwargs):
+            captured_kwargs.update(kwargs)
+            return ChatResult(
+                session=kwargs.get("session", "default"),
+                model=kwargs.get("model") or "m",
+                reply="ok",
+                rag_used=False,
+                rag_chunks=0,
+                rag_context=None,
+            )
+
+        with patch("nyxgpt.app.run_chat", autospec=True, side_effect=fake_run_chat):
+            response = client.post(
+                "/api/v1/chat",
+                json={"prompt": "hi", "session": "sanitize-dir-test", "sessions_dir": "/etc"},
+            )
+
+        assert response.status_code == 200
+        # "/etc" is outside the allowed roots, so the override must be refused
+        # and fall back to None (not passed through raw, and not stringified
+        # to the literal "None").
+        assert captured_kwargs.get("sessions_dir") is None
+
+    def test_chat_endpoint_passes_through_valid_sessions_dir_override(self, client, tmp_path):
+        """A `sessions_dir` override that resolves inside an allowed root
+        (e.g. the system temp dir) must still reach run_chat() as the
+        resolved path string, not be swallowed by the None-fallback fix."""
+        captured_kwargs: dict = {}
+
+        def fake_run_chat(prompt, **kwargs):
+            captured_kwargs.update(kwargs)
+            return ChatResult(
+                session=kwargs.get("session", "default"),
+                model=kwargs.get("model") or "m",
+                reply="ok",
+                rag_used=False,
+                rag_chunks=0,
+                rag_context=None,
+            )
+
+        with patch("nyxgpt.app.run_chat", autospec=True, side_effect=fake_run_chat):
+            response = client.post(
+                "/api/v1/chat",
+                json={
+                    "prompt": "hi",
+                    "session": "valid-dir-test",
+                    "sessions_dir": str(tmp_path),
+                },
+            )
+
+        assert response.status_code == 200
+        assert captured_kwargs.get("sessions_dir") == str(tmp_path)

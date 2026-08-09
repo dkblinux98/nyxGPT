@@ -2,9 +2,10 @@ import { apiFetch } from "@/lib/apiProxy";
 import { logger } from "@/lib/logger";
 import { withRequestLog } from "@/lib/withRequestLog";
 
-export const GET = withRequestLog(async function GET() {
+export const GET = withRequestLog(async function GET(request: Request) {
   try {
-    const res = await apiFetch(`/api/v1/rag/documents`, {
+    const { search } = new URL(request.url);
+    const res = await apiFetch(`/api/v1/rag/documents${search}`, {
       method: "GET",
       headers: { "Content-Type": "application/json" },
       cache: "no-store",

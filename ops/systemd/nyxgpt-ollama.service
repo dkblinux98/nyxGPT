@@ -1,0 +1,28 @@
+# nyxGPT native Ollama service -- systemd --user unit.
+#
+# Source template: `nyxgpt ops install` copies this into
+# ~/.config/systemd/user/, substituting __NYXGPT_HOME__ with the installing
+# user's actual home directory and __NYXGPT_OLLAMA_BIN__ with the resolved
+# `ollama` binary path (see _install_native_ollama_systemd in
+# src/nyxgpt/ops.py). Linux twin of macOS's "ollama" Homebrew service --
+# unlike launchd (which needs a separate RunAtLoad LaunchAgent,
+# com.nyxgpt.ollama-env.plist, to reapply `launchctl setenv OLLAMA_MODELS`
+# every login, see #3431), systemd's Environment= directive below is part of
+# the unit file itself: it applies on every start with no companion agent
+# needed, so native Ollama is pointed at the same shared model store
+# Compose/Terraform's `ollama` container uses with no extra moving parts.
+[Unit]
+Description=nyxGPT native Ollama service
+After=network.target
+
+[Service]
+Type=simple
+Environment=OLLAMA_MODELS=__NYXGPT_HOME__/.nyxGPT/volumes/ollama/models
+ExecStart=__NYXGPT_OLLAMA_BIN__ serve
+Restart=always
+RestartSec=5
+StandardOutput=append:__NYXGPT_HOME__/.nyxGPT/logs/ollama-native.log
+StandardError=append:__NYXGPT_HOME__/.nyxGPT/logs/ollama-native.err.log
+
+[Install]
+WantedBy=default.target

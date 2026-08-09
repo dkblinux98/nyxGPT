@@ -1,6 +1,6 @@
 'use client';
 
-import { Component, useCallback, useEffect, useRef, useState } from 'react';
+import { Component, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import { extractSseEvents, safeJsonParse } from '../lib/sse';
@@ -771,6 +771,18 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ragFilters.collection, ragEnabled]);
 
+  // Filename Search filters the "Select Documents" list client-side against
+  // whatever the selected collection returned -- live-as-you-type, no Enter
+  // or submit button required. Matches on filename (falling back to doc_id
+  // for documents with no filename metadata), case-insensitively.
+  const filenameQuery = ragFilters.filename?.trim().toLowerCase() ?? '';
+  const visibleDocuments = useMemo(() => {
+    if (!filenameQuery) return availableDocuments;
+    return availableDocuments.filter((doc) =>
+      (doc.filename || doc.doc_id).toLowerCase().includes(filenameQuery)
+    );
+  }, [availableDocuments, filenameQuery]);
+
   async function fetchAvailableCollections() {
     try {
       const res = await fetch('/api/v1/rag/collections');
@@ -1363,10 +1375,34 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
               color: isUser ? '#1a1a1a' : 'var(--foreground)',
             }}
           >
-            {/* Show RAG citations if available (streaming) or persisted (loaded from session) */}
-            {((m.ragChunks && m.ragChunks.length > 0) || (m.rag_chunks && m.rag_chunks.length > 0)) && (
-              <RagCitationsCollapsible initialChunks={(m.ragChunks || m.rag_chunks)!} />
-            )}
+            {/* Show RAG citations if available (streaming) or persisted (loaded from session).
+                An explicitly-empty array (as opposed to undefined) means RAG was
+                on for this turn but retrieval returned zero rows -- show an
+                honest "no sources" indicator so the answer is never ambiguously
+                uncited (issue #3585). */}
+            {(() => {
+              const ragChunksForMsg = m.ragChunks ?? m.rag_chunks;
+              if (!ragChunksForMsg) return null;
+              if (ragChunksForMsg.length > 0) {
+                return <RagCitationsCollapsible initialChunks={ragChunksForMsg} />;
+              }
+              return (
+                <div
+                  style={{
+                    marginBottom: 8,
+                    padding: 8,
+                    background: 'var(--rag-bg)',
+                    border: '1px solid var(--rag-border)',
+                    borderRadius: 6,
+                    fontSize: 12,
+                    color: 'var(--rag-text)',
+                    opacity: 0.8,
+                  }}
+                >
+                  No RAG sources retrieved for this reply
+                </div>
+              );
+            })()}
 
             {/* Inline attachment thumbnails in message bubble */}
             {isUser && m.attachments && m.attachments.length > 0 && (
@@ -1768,7 +1804,14 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
             </label>
             <select
               value={ragFilters.collection || ''}
-              onChange={(e) => setRagFilters((prev) => ({ ...prev, collection: e.target.value || undefined }))}
+              onChange={(e) =>
+                // Clear doc_ids on collection switch: a doc checked while a
+                // different collection was selected doesn't belong to the
+                // new collection, so keeping it selected pins the query to
+                // `collection=X AND doc_ids=[doc-not-in-X]` -> zero rows,
+                // every subsequent turn, silently (issue #3585).
+                setRagFilters((prev) => ({ ...prev, collection: e.target.value || undefined, doc_ids: undefined }))
+              }
               style={{
                 width: '100%',
                 padding: '6px 10px',
@@ -1823,8 +1866,12 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
                 <div style={{ fontSize: 12, opacity: 0.6, textAlign: 'center', padding: 8 }}>
                   No documents available
                 </div>
+              ) : visibleDocuments.length === 0 ? (
+                <div style={{ fontSize: 12, opacity: 0.6, textAlign: 'center', padding: 8 }}>
+                  No documents match &quot;{ragFilters.filename?.trim()}&quot;
+                </div>
               ) : (
-                availableDocuments.map((doc) => (
+                visibleDocuments.map((doc) => (
                   <label
                     key={doc.doc_id}
                     style={{
@@ -1887,6 +1934,9 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
                 fontSize: 12,
               }}
             />
+            <p style={{ fontSize: 11, opacity: 0.7, marginTop: 4 }}>
+              Filters Select Documents above as you type; also scopes RAG search.
+            </p>
           </div>
 
           {/* Date range filter */}

@@ -18,6 +18,7 @@ import logging
 import os
 import secrets
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -1037,10 +1038,45 @@ def _sessions_dir_from_str(s: str | None) -> Path | None:
 
     Returns None for a falsy input (so callers can fall back to the
     config-derived sessions directory) instead of a bogus `Path("")`.
+
+    Security (CodeQL #8, py/path-injection): the sessions-dir override is a
+    client-controlled string. In normal operation the web UI never sends it --
+    it relies on the server-configured directory -- so honouring an arbitrary
+    absolute path here would only ever help an attacker read/write session
+    files outside the intended data area. We therefore accept the override only
+    when it resolves inside a known-safe root (the user's home directory, which
+    holds the default ~/.nyxGPT data area, or the system temp directory used by
+    tests and ephemeral runs). Anything else is refused (returns None -> caller
+    falls back to the configured default). The `resolve()` + `relative_to()`
+    containment check also neutralises `..` traversal.
     """
     if not s:
         return None
-    return Path(s).expanduser()
+    # Normalise the client string with os.path.realpath, then require the
+    # result to sit inside a fixed safe root via a string-prefix check. This is
+    # the canonical CodeQL-recognised path-injection barrier (py/path-injection)
+    # -- Path.relative_to() is NOT modelled as a sanitizer, so the guarded value
+    # must be produced by realpath and gated by a single `startswith(root+sep)`
+    # check before it is ever turned back into a Path. realpath also collapses `..`
+    # traversal. The web UI never sends this override (it uses the configured
+    # directory); accepting an arbitrary absolute path would only help an
+    # attacker read/write session files outside the intended data area.
+    try:
+        real = os.path.realpath(os.path.expanduser(s))
+    except (OSError, ValueError):
+        log.warning("Refused unresolvable sessions-dir override: %r", s)
+        return None
+    _home = os.path.realpath(os.path.expanduser("~"))
+    _tmp = os.path.realpath(tempfile.gettempdir())
+    # Each return below is controlled by exactly one condition: CodeQL's
+    # barrier-guard analysis only credits a guard whose branch is dominated
+    # by a single sanitizing comparison, never a disjunction or loop of them.
+    if real.startswith(_home + os.sep):
+        return Path(real)
+    if real.startswith(_tmp + os.sep):
+        return Path(real)
+    log.warning("Refused sessions-dir override outside allowed roots: %r", s)
+    return None
 
 
 # ----------------------------
@@ -1443,8 +1479,12 @@ def _reconcile_observability(cfg: ConfigParser) -> dict[str, Any]:
     try:
         results = ops_module.reconcile_observability(any_enabled)
         return {"ok": all(r.ok for r in results), "messages": [r.message for r in results]}
-    except Exception as e:
-        return {"ok": False, "messages": [str(e)]}
+    except Exception:
+        # The full exception is logged server-side; the response carries only a
+        # generic message so no internal detail reaches the API client
+        # (CodeQL py/stack-trace-exposure, alert #24).
+        log.exception("Observability reconciliation failed")
+        return {"ok": False, "messages": ["Observability reconciliation failed"]}
 
 
 @api.get("/config/sections")
@@ -1789,12 +1829,17 @@ def admin_overview(request: Request) -> dict[str, Any]:
     cfg = _req_cfg(request)
 
     def _safe(fn, *args, **kwargs) -> dict[str, Any]:
-        """Call `fn`, returning `{"error": str(e)}` instead of raising on failure."""
+        """Call `fn`, degrading to a generic `{"error": ...}` payload on failure.
+
+        The real exception is logged server-side; the response never carries
+        the raw exception detail (CodeQL py/stack-trace-exposure, alert #25).
+        """
         try:
             result: dict[str, Any] = fn(*args, **kwargs)
             return result
-        except Exception as e:
-            return {"error": str(e)}
+        except Exception:
+            log.exception("admin/overview sub-section failed: %s", getattr(fn, "__name__", fn))
+            return {"error": "unavailable"}
 
     monitor = get_resource_monitor()
     resource_metrics_summary = monitor.get_metrics().to_dict() if monitor is not None else None
@@ -2137,6 +2182,14 @@ def self_heal_logs(service: str, tail: int = Query(default=200, ge=1, le=2000)) 
     link, printed there by its console email backend) without running a raw
     `docker`/`docker compose`/`kubectl` command themselves.
     """
+    # CodeQL #4 (py/command-line-injection): `tail` reaches subprocess argv
+    # as `str(tail)` in the log dispatchers. FastAPI already coerces and
+    # bounds it (int, 1..2000), but CodeQL does not model that validation.
+    # Select the equal value from a trusted range so every downstream argv
+    # receives an untainted int -- the same equality-selection idiom as the
+    # compose-service resolution in self_heal (#3661). The fallback is
+    # unreachable: Query(ge=1, le=2000) guarantees membership.
+    tail = next((t for t in range(1, 2001) if t == tail), 200)
     result = self_heal_module.component_logs(service, tail=tail)
     if not result.ok:
         raise HTTPException(status_code=502, detail=result.message)
@@ -2228,7 +2281,11 @@ def models_pull(request: Request, payload: dict[str, Any] = Body(...)) -> Respon
                 admin_activity_module.record("model.pull", model)
                 yield f"data: {_json.dumps({'status': 'success', 'ok': True, 'model': model})}\n\n"
             except Exception as exc:
-                yield f"data: {_json.dumps({'error': str(exc)})}\n\n"
+                # Log the detail server-side; return a generic message so raw
+                # exception text isn't exposed to the client (CodeQL #26).
+                log.exception("model.pull failed")
+                del exc
+                yield f"data: {_json.dumps({'error': 'Model pull failed'})}\n\n"
 
         return StreamingResponse(
             _progress_generator(),
@@ -2967,7 +3024,9 @@ def regenerate_response(
 
 
 @api.get("/sessions/{name}/export")
-def sessions_export(name: str, format: str = "markdown", sessions_dir: str | None = None):
+def sessions_export(
+    name: str, format: str = "markdown", sessions_dir: str | None = None
+) -> Response:
     """Export session to markdown, JSON, or HTML format."""
     format_lower = format.lower()
     if format_lower not in ("markdown", "json", "html"):
@@ -2976,30 +3035,61 @@ def sessions_export(name: str, format: str = "markdown", sessions_dir: str | Non
             detail="Invalid format. Must be one of: markdown, json, html",
         )
 
+    # Validate the session name at this same response boundary -- the raw
+    # `name` path parameter must never reach the HTML branch's <title>/body
+    # or the Content-Disposition filename unvalidated (CodeQL py/reflected-xss,
+    # alert #14). `validate_session_name` only accepts
+    # `^[a-zA-Z0-9_-]{1,64}$`, which also rules out header-injection
+    # characters (quotes, CR/LF) in the filename.
+    try:
+        safe_name = sessions.validate_session_name(name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
     sd = _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None))
 
-    if format_lower == "markdown":
-        ok, content = sessions.export_session_markdown(name, sd)
-        media_type = "text/markdown; charset=utf-8"
-        extension = "md"
-    elif format_lower == "json":
-        ok, content = sessions.export_session_json(name, sd)
-        media_type = "application/json; charset=utf-8"
-        extension = "json"
-    else:
-        ok, content = sessions.export_session_html(name, sd)
-        media_type = "text/html; charset=utf-8"
-        extension = "html"
+    # nosniff guards the markdown/json branches against content-sniffing and
+    # is set explicitly here (rather than relying solely on the global
+    # security-headers middleware) so it's visible on the export response
+    # itself.
+    headers = {"X-Content-Type-Options": "nosniff"}
 
+    if format_lower == "markdown":
+        ok, content = sessions.export_session_markdown(safe_name, sd)
+        if not ok:
+            raise HTTPException(status_code=404, detail=content)
+        return Response(
+            content=content,
+            media_type="text/markdown; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="{safe_name}.md"',
+                **headers,
+            },
+        )
+
+    if format_lower == "json":
+        ok, content = sessions.export_session_json(safe_name, sd)
+        if not ok:
+            raise HTTPException(status_code=404, detail=content)
+        return Response(
+            content=content,
+            media_type="application/json; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="{safe_name}.json"',
+                **headers,
+            },
+        )
+
+    ok, content = sessions.export_session_html(safe_name, sd)
     if not ok:
         raise HTTPException(status_code=404, detail=content)
-
-    from fastapi.responses import Response
-
     return Response(
         content=content,
-        media_type=media_type,
-        headers={"Content-Disposition": f'attachment; filename="{name}.{extension}"'},
+        media_type="text/html; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_name}.html"',
+            **headers,
+        },
     )
 
 
@@ -3054,6 +3144,7 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
         # If batching is enabled, route through batch processor
         if _batch_processor is not None:
             # Prepare request data for batch processing
+            _resolved_sessions_dir = _sessions_dir_from_str(req.sessions_dir)
             batch_req_data = {
                 "prompt": req.prompt,
                 "session": req.session,
@@ -3061,7 +3152,7 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
                 "model": chosen_model,
                 "system": req.system,
                 "config_path": None,
-                "sessions_dir": req.sessions_dir,
+                "sessions_dir": (str(_resolved_sessions_dir) if _resolved_sessions_dir else None),
                 "rag_enabled": rag_enabled,
                 "rag_filters": rag_filters_dict,
             }
@@ -3119,13 +3210,14 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
 
         else:
             # No batching - process directly
+            _resolved_sessions_dir = _sessions_dir_from_str(req.sessions_dir)
             kwargs: dict[str, Any] = {
                 "session": req.session,
                 "new": req.new,
                 "model": chosen_model,
                 "system": req.system,
                 "config_path": None,
-                "sessions_dir": req.sessions_dir,
+                "sessions_dir": (str(_resolved_sessions_dir) if _resolved_sessions_dir else None),
             }
 
             # Optional runtime override: only pass if chat implementation supports it.
@@ -3332,13 +3424,14 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
                 }
                 yield f"event: metadata\ndata: {json.dumps(metadata)}\nid: {event_id}\n\n"
 
+            _resolved_sessions_dir = _sessions_dir_from_str(req.sessions_dir)
             kwargs: dict[str, Any] = {
                 "session": req.session,
                 "new": req.new,
                 "model": chosen_model,
                 "system": req.system,
                 "config_path": None,
-                "sessions_dir": req.sessions_dir,
+                "sessions_dir": (str(_resolved_sessions_dir) if _resolved_sessions_dir else None),
             }
 
             if _maybe_kw(chat_stream, "rag_enabled"):
@@ -3488,12 +3581,15 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
                     },
                     exc_info=True,
                 )
-                # Send error event (only for SSE clients)
+                # Send error event (only for SSE clients). The full exception
+                # (message, type, traceback) is captured in the server-side log
+                # above; the client only ever sees a generic message so no
+                # internal detail is exposed (CodeQL py/stack-trace-exposure).
                 if capabilities.supports_sse and capabilities.supports_structured_events:
                     event_id += 1
                     elapsed = time.time() - start_time
                     error_data = {
-                        "error": str(e),
+                        "error": "The model request failed. Please try again.",
                         "elapsed": elapsed,
                     }
                     yield f"event: error\ndata: {json.dumps(error_data)}\nid: {event_id}\n\n"

@@ -1,0 +1,25 @@
+# nyxGPT local web UI (Next.js) service wrapper -- systemd --user unit.
+#
+# Source template: `nyxgpt ops install` copies this into
+# ~/.config/systemd/user/, substituting __NYXGPT_HOME__ with the installing
+# user's actual home directory (see _install_systemd_unit_from_template in
+# src/nyxgpt/ops.py). Linux twin of homebrew/nyxgpt-web.rb's `service` block:
+# runs the wrapper script `_install_native_web_systemd` writes to
+# ~/.nyxGPT/opt/nyxgpt-web/bin/nyxgpt-web, which execs `npm run start`
+# against a production build vendored + built the same way the Homebrew
+# Cellar keg's `install` step does on macOS -- the installed app never
+# depends on the repo checkout.
+[Unit]
+Description=nyxGPT local web UI (Next.js) service wrapper
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=__NYXGPT_HOME__/.nyxGPT/opt/nyxgpt-web/bin/nyxgpt-web
+Restart=always
+RestartSec=5
+StandardOutput=append:__NYXGPT_HOME__/.nyxGPT/logs/nyxgpt-web.log
+StandardError=append:__NYXGPT_HOME__/.nyxGPT/logs/nyxgpt-web.err.log
+
+[Install]
+WantedBy=default.target

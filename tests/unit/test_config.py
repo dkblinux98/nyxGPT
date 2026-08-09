@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import logging
+import tempfile
 from pathlib import Path
 
 import pytest
 
 from nyxgpt.config import (
     SECRETS_SYNC_MANIFEST,
+    _expand_path,
     get_ann_oversample_factor,
     get_api_host,
     get_api_port,
@@ -1385,6 +1387,25 @@ chat_timeout_seconds = not_a_number
 # ---------------------------------------------------------------------------
 # get_vectorstore_dir / get_api_host: never directly exercised
 # ---------------------------------------------------------------------------
+
+
+def test_expand_path_refuses_exact_allowed_roots() -> None:
+    """A configured path resolving EXACTLY to $HOME or the temp root -- rather
+    than strictly inside one -- is refused: the barrier accepts descendants
+    only (`startswith(root + os.sep)`). Pins the intentional behavior change
+    from the single-condition guard restructure (PR #3657)."""
+    with pytest.raises(ValueError, match="allowed data area"):
+        _expand_path(str(Path.home()))
+    with pytest.raises(ValueError, match="allowed data area"):
+        _expand_path(tempfile.gettempdir())
+
+
+def test_expand_path_accepts_descendants_of_allowed_roots(tmp_path: Path) -> None:
+    """Sanity companion to the exact-root refusal: strict descendants of both
+    allowed roots still resolve."""
+    assert _expand_path(str(tmp_path / "data")) == (tmp_path / "data").resolve()
+    home_child = Path.home() / ".nyxGPT" / "sessions"
+    assert _expand_path(str(home_child)) == home_child.resolve()
 
 
 def test_get_vectorstore_dir_default(tmp_path: Path) -> None:
