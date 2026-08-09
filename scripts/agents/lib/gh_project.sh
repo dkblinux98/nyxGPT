@@ -919,6 +919,126 @@ escalation_pause_gate() {
 }
 
 # -------------------------
+# Cross-issue infrastructure-anomaly collapse (#3694)
+# -------------------------
+# The 2026-08-09 postmortem (product_management/AGENTIC_SDLC_DESIGN.md §9):
+# a single infra fault (`gh api search/issues` failing deterministically in
+# the "Check if PR already exists" step) failed the same step on 5 in-flight
+# issues, and each ran its own independent Phase 1-3 self-heal diagnosis --
+# ~45-50 Claude invocations for one fault. The same step failing on
+# different issues within a short window is one infrastructure event, not N
+# coding problems.
+#
+# The "run history" signal this derives from is the trail of failure
+# comments developer_auto_implement.yml already posts on every failed run --
+# plain issue-comment REST calls, deliberately NOT `gh api search/issues`
+# (the endpoint that caused the incident), so detection itself can't be
+# taken out by the same class of fault. The single tracking record is a
+# marker comment on RELEASE_ISSUE_NUMBER, re-derived fresh from the live
+# comment thread on every check -- same level-triggered shape as
+# escalation_pause_gate above, no hidden counter to drift out of sync. It
+# self-expires after CROSS_ISSUE_ANOMALY_WINDOW_MINUTES and can be cleared
+# early by an OWNER-authored `RESOLVE_ANOMALY` comment.
+CROSS_ISSUE_ANOMALY_WINDOW_MINUTES="${CROSS_ISSUE_ANOMALY_WINDOW_MINUTES:-60}"
+_CROSS_ISSUE_ANOMALY_PAUSE_MARKER="<!-- cross-issue-anomaly-pause:3694 -->"
+
+# Chronological (body, author_association, created_at) triples for
+# `release_issue`'s comment thread, as the compact JSON array
+# cross_issue_anomaly.py expects. Split out so tests can stub the `gh` call
+# in isolation, mirroring _escalation_pause_comment_id's fetch above.
+_release_issue_comments_json() {
+  local release_issue="$1"
+  gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${release_issue}/comments" --paginate \
+    --jq '[.[] | {id: .id, body: .body, author_association: .author_association, created_at: .created_at}]' \
+    | jq -s 'add // []'
+}
+
+# Cross-issue anomaly decision for (issue, failed_step): echoes the JSON
+# `cross_issue_anomaly.py decide` produces --
+# {"action":"skip"|"open"|"proceed", "origin_issue":N, ...}. "skip" means a
+# DIFFERENT issue already opened a matching, unresolved, in-window tracking
+# record for this step -- the caller should skip its own diagnosis and link
+# to origin_issue instead. Best-effort: any gh/jq/python failure degrades to
+# "open" (treat this issue as a fresh, standalone occurrence) so a
+# detection flake costs one extra one-off diagnosis, never a stuck run.
+cross_issue_anomaly_decision() {
+  local release_issue="$1" issue="$2" failed_step="$3" now_epoch="$4"
+  require_cmd jq; require_cmd python3
+  local fallback="{\"action\":\"open\",\"origin_issue\":${issue}}"
+  if [[ -z "$release_issue" ]]; then
+    echo "$fallback"
+    return 0
+  fi
+  local comments_json
+  comments_json="$(_release_issue_comments_json "$release_issue" 2>/dev/null)" || comments_json="[]"
+  echo "$comments_json" \
+    | python3 "${_LIB_DIR}/cross_issue_anomaly.py" decide "$issue" "$failed_step" "$now_epoch" "$CROSS_ISSUE_ANOMALY_WINDOW_MINUTES" \
+    2>/dev/null || echo "$fallback"
+}
+
+# Posts (or reuses) the single tracking-record marker comment for a newly-
+# opened anomaly -- "one diagnosis performed once, referenced by every
+# affected issue" (#3694). Called once, by the issue that `decide` returned
+# action="open" for. Idempotent in effect: a second call for the same
+# (step, still-open) pair just posts a fresh marker that `decide` will treat
+# as the newer of two markers for that step -- harmless, but callers should
+# still gate this on decide's actual "open" action to avoid the extra
+# comment. Best-effort: a post failure is warned, not fatal.
+open_cross_issue_anomaly() {
+  local release_issue="$1" origin_issue="$2" failed_step="$3" now_epoch="$4" run_url="$5"
+  [[ -z "$release_issue" ]] && return 0
+  require_cmd python3
+  local marker body
+  marker="$(python3 "${_LIB_DIR}/cross_issue_anomaly.py" marker "$failed_step" "$origin_issue" "$now_epoch")"
+  body="$(printf '🚨 **Cross-issue infrastructure anomaly detected** (#3694)\n\nStep `%s` failed on #%s and is being diagnosed now. If the same step fails on another issue within %s minutes, that issue will link here instead of repeating the diagnosis.\n\n[Failed run](%s)\n\nComment `RESOLVE_ANOMALY` (as the repo owner) once the underlying infrastructure fault is fixed, to close this out early.\n\n%s' \
+    "$failed_step" "$origin_issue" "$CROSS_ISSUE_ANOMALY_WINDOW_MINUTES" "$run_url" "$marker")"
+  issue_comment "$release_issue" "$body" \
+    || _warn "open_cross_issue_anomaly: failed to post tracking record on #${release_issue}"
+}
+
+# Dispatch gate composing with escalation_pause_gate (#3687): dispatch
+# pauses while ANY step currently has an open, unresolved cross-issue
+# anomaly marker on RELEASE_ISSUE_NUMBER (cleared by an OWNER
+# `RESOLVE_ANOMALY` comment, or by the detection window elapsing). Returns 0
+# if dispatch may proceed, 1 if paused; posts/updates a loud report exactly
+# like escalation_pause_gate.
+cross_issue_anomaly_pause_gate() {
+  local release_issue="${RELEASE_ISSUE_NUMBER:-}"
+  [[ -z "$release_issue" ]] && return 0
+  require_cmd jq; require_cmd python3
+
+  local comments_json is_open comment_id body
+  comments_json="$(_release_issue_comments_json "$release_issue" 2>/dev/null)" || comments_json="[]"
+  is_open="$(echo "$comments_json" \
+    | python3 "${_LIB_DIR}/cross_issue_anomaly.py" any-open "$(date +%s)" "$CROSS_ISSUE_ANOMALY_WINDOW_MINUTES" \
+    2>/dev/null)" || is_open="false"
+
+  comment_id="$(echo "$comments_json" \
+    | jq -r --arg marker "$_CROSS_ISSUE_ANOMALY_PAUSE_MARKER" \
+      '[.[] | select(.body | contains($marker))] | sort_by(.created_at) | last | .id // empty' 2>/dev/null || true)"
+
+  if [[ "$is_open" == "true" ]]; then
+    body="$(printf '⏸️ **Scrummaster**: dispatch paused -- an unresolved cross-issue infrastructure anomaly is open\n\nSee the anomaly tracking comment above for the affected step and originating issue. Comment `RESOLVE_ANOMALY` (as the repo owner) once the infrastructure fault is fixed, or wait for the %s-minute detection window to elapse.\n\n%s' \
+      "$CROSS_ISSUE_ANOMALY_WINDOW_MINUTES" "$_CROSS_ISSUE_ANOMALY_PAUSE_MARKER")"
+    if [[ -n "$comment_id" ]]; then
+      gh api -X PATCH "repos/${REPO_OWNER}/${REPO_NAME}/issues/comments/${comment_id}" -f "body=${body}" >/dev/null 2>&1 \
+        || _warn "cross_issue_anomaly_pause_gate: failed to update pause report on #${release_issue}"
+    else
+      issue_comment "$release_issue" "$body" \
+        || _warn "cross_issue_anomaly_pause_gate: failed to post pause report on #${release_issue}"
+    fi
+    return 1
+  fi
+
+  if [[ -n "$comment_id" ]]; then
+    body="$(printf '▶️ **Scrummaster**: dispatch resumed -- cross-issue infrastructure anomaly cleared\n\n%s' "$_CROSS_ISSUE_ANOMALY_PAUSE_MARKER")"
+    gh api -X PATCH "repos/${REPO_OWNER}/${REPO_NAME}/issues/comments/${comment_id}" -f "body=${body}" >/dev/null 2>&1 \
+      || _warn "cross_issue_anomaly_pause_gate: failed to clear pause report on #${release_issue}"
+  fi
+  return 0
+}
+
+# -------------------------
 # Issue operations
 # -------------------------
 issue_assign_only() {

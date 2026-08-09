@@ -751,6 +751,166 @@ fi
 _assert_eq "reopening updates the stale report exactly once" "1" "${#PATCH_CALLS[@]}"
 _assert_contains "the reopen PATCH targets the existing comment id" "${PATCH_CALLS[0]}" "issues/comments/999"
 
+# --- Test 16: _release_issue_comments_json (#3694) -- exercises the REAL ---
+# --- gh api + jq pipeline (only `gh` is stubbed) across two pages, the ---
+# --- same --paginate-without-slurp pitfall coverage as Test 14b above, ---
+# --- plus the `id` field cross_issue_anomaly_pause_gate needs that ---
+# --- unresolved_escalation_issues' equivalent fetch doesn't carry. ---
+gh() {
+  if [[ "$1" == "api" && "$2" == "repos/test-owner/test-repo/issues/3521/comments" && "$3" == "--paginate" ]]; then
+    cat <<JSON
+[{"id": 1, "body": "page 1 comment", "author_association": "NONE", "created_at": "2026-08-09T00:00:00Z"}]
+[{"id": 2, "body": "page 2 comment", "author_association": "OWNER", "created_at": "2026-08-09T00:01:00Z"}]
+JSON
+    return 0
+  fi
+  echo "[test] unexpected gh invocation: $*" >&2
+  return 1
+}
+COMMENTS_OUT="$(_release_issue_comments_json 3521)"
+_assert_eq "_release_issue_comments_json flattens both pages into one array" \
+  "2" "$(echo "$COMMENTS_OUT" | jq 'length')"
+_assert_eq "_release_issue_comments_json keeps the id field" \
+  "1" "$(echo "$COMMENTS_OUT" | jq '.[0].id')"
+
+# --- Test 17: cross_issue_anomaly_decision (#3694) -- the (issue, ---
+# --- failed_step) decision wrapper: empty release issue fails open ---
+# --- ("open", never blocks a run on missing config); a real comment ---
+# --- thread with a matching marker from a DIFFERENT issue reports "skip" ---
+ANOMALY_MARKER_3667="<!-- nyxgpt-anomaly: step=check_if_pr_already_exists issue=3667 opened=1000 -->"
+
+_assert_eq "cross_issue_anomaly_decision with no release issue configured opens (fails open)" \
+  "open" "$(cross_issue_anomaly_decision "" 3511 "Check if PR already exists" 1500 | jq -r '.action')"
+
+gh() {
+  if [[ "$1" == "api" && "$2" == "repos/test-owner/test-repo/issues/3521/comments" && "$3" == "--paginate" ]]; then
+    printf '[{"id": 9, "body": "%s", "author_association": "NONE", "created_at": "2026-08-09T00:00:00Z"}]\n' "$ANOMALY_MARKER_3667"
+    return 0
+  fi
+  echo "[test] unexpected gh invocation: $*" >&2
+  return 1
+}
+DECISION="$(cross_issue_anomaly_decision 3521 3511 "Check if PR already exists" 1500)"
+_assert_eq "cross_issue_anomaly_decision reports skip for a matching open anomaly from another issue" \
+  "skip" "$(echo "$DECISION" | jq -r '.action')"
+_assert_eq "cross_issue_anomaly_decision reports the originating issue" \
+  "3667" "$(echo "$DECISION" | jq -r '.origin_issue')"
+
+DECISION="$(cross_issue_anomaly_decision 3521 3667 "Check if PR already exists" 1500)"
+_assert_eq "cross_issue_anomaly_decision reports proceed for the origin issue itself" \
+  "proceed" "$(echo "$DECISION" | jq -r '.action')"
+
+# --- Test 18: open_cross_issue_anomaly (#3694) -- posts the tracking-record ---
+# --- marker comment on the release issue for the issue `decide` said should ---
+# --- open one ---
+POSTED_ISSUES=()
+POSTED_BODIES=()
+issue_comment() { POSTED_ISSUES+=("$1"); POSTED_BODIES+=("$2"); }
+open_cross_issue_anomaly 3521 3667 "Check if PR already exists" 1000 "https://github.com/test-owner/test-repo/actions/runs/111"
+_assert_eq "open_cross_issue_anomaly posts exactly one comment" "1" "${#POSTED_ISSUES[@]}"
+_assert_eq "open_cross_issue_anomaly posts on the release tracking issue" "3521" "${POSTED_ISSUES[0]}"
+_assert_contains "the tracking record embeds the anomaly marker" "${POSTED_BODIES[0]}" "$ANOMALY_MARKER_3667"
+_assert_contains "the tracking record links the originating issue" "${POSTED_BODIES[0]}" "#3667"
+
+# --- Test 19: cross_issue_anomaly_pause_gate (#3694) -- the dispatch-pause ---
+# --- decision: no open anomaly never pauses; an open anomaly pauses and ---
+# --- posts/updates a loud report; resolving it (RESOLVE_ANOMALY, or the ---
+# --- window elapsing) reopens the gate. Unlike cross_issue_anomaly_decision ---
+# --- above (which takes now_epoch as an explicit argument), the gate ---
+# --- itself checks against the real clock -- so its marker must carry a ---
+# --- genuinely recent "opened" timestamp, not the synthetic epoch 1000 ---
+# --- used above. ---
+ANOMALY_MARKER_3667="<!-- nyxgpt-anomaly: step=check_if_pr_already_exists issue=3667 opened=$(( $(date +%s) - 300 )) -->"
+RELEASE_ISSUE_NUMBER=""
+gh() { echo "[test] unexpected gh invocation while no release issue is configured: $*" >&2; return 1; }
+if cross_issue_anomaly_pause_gate; then
+  echo "[ok] no release issue configured: gate stays open (fails open)"
+else
+  echo "[FAIL] no release issue configured: gate should stay open" >&2
+  FAILURES=$((FAILURES + 1))
+fi
+
+RELEASE_ISSUE_NUMBER="3521"
+gh() {
+  if [[ "$1" == "api" && "$2" == "repos/test-owner/test-repo/issues/3521/comments" && "$3" == "--paginate" ]]; then
+    printf '[{"id": 9, "body": "%s", "author_association": "NONE", "created_at": "2026-08-09T00:00:00Z"}]\n' "$ANOMALY_MARKER_3667"
+    return 0
+  elif [[ "$1" == "api" && "$2" == "-X" && "$3" == "PATCH" ]]; then
+    PATCH_CALLS+=("$*")
+    return 0
+  fi
+  echo "[test] unexpected gh invocation: $*" >&2
+  return 1
+}
+POSTED_ISSUES=()
+POSTED_BODIES=()
+PATCH_CALLS=()
+if cross_issue_anomaly_pause_gate; then
+  echo "[FAIL] an open anomaly: gate should pause" >&2
+  FAILURES=$((FAILURES + 1))
+else
+  echo "[ok] an open anomaly: gate pauses"
+fi
+_assert_eq "pausing posts exactly one report (no prior comment to update)" "1" "${#POSTED_ISSUES[@]}"
+_assert_eq "the report is posted on the release tracking issue" "3521" "${POSTED_ISSUES[0]}"
+_assert_eq "pausing does not PATCH (no existing report comment)" "0" "${#PATCH_CALLS[@]}"
+
+# Already paused with an existing report comment (the anomaly marker AND a
+# prior pause-report comment are both present) -- update in place, don't
+# post a second comment.
+gh() {
+  if [[ "$1" == "api" && "$2" == "repos/test-owner/test-repo/issues/3521/comments" && "$3" == "--paginate" ]]; then
+    printf '[{"id": 9, "body": "%s", "author_association": "NONE", "created_at": "2026-08-09T00:00:00Z"},
+             {"id": 42, "body": "prior pause report %s", "author_association": "NONE", "created_at": "2026-08-09T00:05:00Z"}]\n' \
+      "$ANOMALY_MARKER_3667" "$_CROSS_ISSUE_ANOMALY_PAUSE_MARKER"
+    return 0
+  elif [[ "$1" == "api" && "$2" == "-X" && "$3" == "PATCH" ]]; then
+    PATCH_CALLS+=("$*")
+    return 0
+  fi
+  echo "[test] unexpected gh invocation: $*" >&2
+  return 1
+}
+POSTED_ISSUES=()
+POSTED_BODIES=()
+PATCH_CALLS=()
+if cross_issue_anomaly_pause_gate; then
+  echo "[FAIL] still open with an existing report: gate should stay paused" >&2
+  FAILURES=$((FAILURES + 1))
+else
+  echo "[ok] still open with an existing report: gate stays paused"
+fi
+_assert_eq "an existing report is updated, not duplicated" "0" "${#POSTED_ISSUES[@]}"
+_assert_eq "updating the existing report PATCHes it once" "1" "${#PATCH_CALLS[@]}"
+_assert_contains "the PATCH targets the existing comment id" "${PATCH_CALLS[0]}" "issues/comments/42"
+
+# The anomaly resolves (RESOLVE_ANOMALY from the owner) with a stale report
+# comment present -- the gate reopens and the stale report is updated to
+# say so (not left dangling).
+gh() {
+  if [[ "$1" == "api" && "$2" == "repos/test-owner/test-repo/issues/3521/comments" && "$3" == "--paginate" ]]; then
+    printf '[{"id": 9, "body": "%s", "author_association": "NONE", "created_at": "2026-08-09T00:00:00Z"},
+             {"id": 42, "body": "prior pause report %s", "author_association": "NONE", "created_at": "2026-08-09T00:05:00Z"},
+             {"id": 43, "body": "RESOLVE_ANOMALY", "author_association": "OWNER", "created_at": "2026-08-09T00:06:00Z"}]\n' \
+      "$ANOMALY_MARKER_3667" "$_CROSS_ISSUE_ANOMALY_PAUSE_MARKER"
+    return 0
+  elif [[ "$1" == "api" && "$2" == "-X" && "$3" == "PATCH" ]]; then
+    PATCH_CALLS+=("$*")
+    return 0
+  fi
+  echo "[test] unexpected gh invocation: $*" >&2
+  return 1
+}
+PATCH_CALLS=()
+if cross_issue_anomaly_pause_gate; then
+  echo "[ok] anomaly resolved with a stale report: gate reopens"
+else
+  echo "[FAIL] anomaly resolved with a stale report: gate should reopen" >&2
+  FAILURES=$((FAILURES + 1))
+fi
+_assert_eq "reopening updates the stale report exactly once" "1" "${#PATCH_CALLS[@]}"
+_assert_contains "the reopen PATCH targets the existing comment id" "${PATCH_CALLS[0]}" "issues/comments/42"
+
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "All tests passed."
   exit 0
