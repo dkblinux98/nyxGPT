@@ -21,6 +21,7 @@ import atexit
 import concurrent.futures
 import json
 import logging
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -102,9 +103,12 @@ _embedding_cache: CacheBackend[list[list[float]]] | None = None
 # Global thread pool for async operations (initialized lazily)
 _thread_pool: concurrent.futures.ThreadPoolExecutor | None = None
 
-# Global GPU info cache (updated periodically)
+# Global GPU info cache (updated periodically). `_gpu_info_lock` guards the
+# check-then-act read/recompute/write sequence in `_detect_gpu()` so concurrent
+# callers (e.g. parallel embedding requests) can't race on these globals.
 _gpu_info: GPUInfo | None = None
 _gpu_info_updated: float = 0.0
+_gpu_info_lock = threading.Lock()
 _GPU_INFO_TTL = 60.0  # Cache GPU info for 60 seconds
 
 
@@ -227,58 +231,64 @@ def _detect_gpu() -> GPUInfo:
     """
     global _gpu_info, _gpu_info_updated
 
-    # Return cached info if still valid
-    now = time.time()
-    if _gpu_info is not None and (now - _gpu_info_updated) < _GPU_INFO_TTL:
+    # Hold the lock across the whole check-then-act sequence: without it, two
+    # concurrent callers can both observe a cold/expired cache, both shell out
+    # to nvidia-smi, and race writing `_gpu_info`/`_gpu_info_updated`.
+    with _gpu_info_lock:
+        # Return cached info if still valid
+        now = time.time()
+        if _gpu_info is not None and (now - _gpu_info_updated) < _GPU_INFO_TTL:
+            return _gpu_info
+
+        # Try to detect NVIDIA GPU via nvidia-smi
+        try:
+            import subprocess
+
+            result = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=memory.total,memory.used,utilization.gpu",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+                shell=False,
+            )
+
+            if result.returncode == 0 and result.stdout.strip():
+                lines = result.stdout.strip().split("\n")
+                gpu_count = len(lines)
+
+                # Parse first GPU metrics
+                if gpu_count > 0:
+                    parts = lines[0].split(",")
+                    if len(parts) >= 3:
+                        memory_total = int(float(parts[0].strip()))
+                        memory_used = int(float(parts[1].strip()))
+                        utilization = float(parts[2].strip())
+
+                        _gpu_info = GPUInfo(
+                            available=True,
+                            device_count=gpu_count,
+                            memory_total=memory_total,
+                            memory_used=memory_used,
+                            utilization=utilization,
+                        )
+                        _gpu_info_updated = now
+                        logger.debug(
+                            f"GPU detected: {gpu_count} device(s), {utilization}% utilization"
+                        )
+                        return _gpu_info
+
+        except (FileNotFoundError, subprocess.TimeoutExpired, ValueError, Exception) as e:
+            logger.debug(f"GPU detection failed: {e}")
+
+        # No GPU or detection failed
+        _gpu_info = GPUInfo(available=False)
+        _gpu_info_updated = now
         return _gpu_info
-
-    # Try to detect NVIDIA GPU via nvidia-smi
-    try:
-        import subprocess
-
-        result = subprocess.run(
-            [
-                "nvidia-smi",
-                "--query-gpu=memory.total,memory.used,utilization.gpu",
-                "--format=csv,noheader,nounits",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=False,
-            shell=False,
-        )
-
-        if result.returncode == 0 and result.stdout.strip():
-            lines = result.stdout.strip().split("\n")
-            gpu_count = len(lines)
-
-            # Parse first GPU metrics
-            if gpu_count > 0:
-                parts = lines[0].split(",")
-                if len(parts) >= 3:
-                    memory_total = int(float(parts[0].strip()))
-                    memory_used = int(float(parts[1].strip()))
-                    utilization = float(parts[2].strip())
-
-                    _gpu_info = GPUInfo(
-                        available=True,
-                        device_count=gpu_count,
-                        memory_total=memory_total,
-                        memory_used=memory_used,
-                        utilization=utilization,
-                    )
-                    _gpu_info_updated = now
-                    logger.debug(f"GPU detected: {gpu_count} device(s), {utilization}% utilization")
-                    return _gpu_info
-
-    except (FileNotFoundError, subprocess.TimeoutExpired, ValueError, Exception) as e:
-        logger.debug(f"GPU detection failed: {e}")
-
-    # No GPU or detection failed
-    _gpu_info = GPUInfo(available=False)
-    _gpu_info_updated = now
-    return _gpu_info
 
 
 def _get_thread_pool(max_workers: int) -> concurrent.futures.ThreadPoolExecutor:

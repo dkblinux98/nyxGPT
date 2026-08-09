@@ -6,6 +6,7 @@ import asyncio
 import io
 import json
 import tempfile
+import threading
 import time
 import unittest
 import urllib.error
@@ -33,11 +34,25 @@ class TestGPUDetection(unittest.TestCase):
     """Test GPU detection functionality."""
 
     def setUp(self):
-        """Reset GPU info cache before each test."""
+        """Reset GPU info cache before each test.
+
+        Resets are taken under `_gpu_info_lock` (the same lock `_detect_gpu`
+        holds across its check-then-act sequence) so a reset can't interleave
+        with an in-flight detection from another thread.
+        """
         import nyxgpt.rag.embeddings as emb_module
 
-        emb_module._gpu_info = None
-        emb_module._gpu_info_updated = 0.0
+        with emb_module._gpu_info_lock:
+            emb_module._gpu_info = None
+            emb_module._gpu_info_updated = 0.0
+
+    def tearDown(self):
+        """Leave no cached GPU info behind for later tests."""
+        import nyxgpt.rag.embeddings as emb_module
+
+        with emb_module._gpu_info_lock:
+            emb_module._gpu_info = None
+            emb_module._gpu_info_updated = 0.0
 
     @patch("subprocess.run")
     def test_gpu_detected_successfully(self, mock_run):
@@ -83,6 +98,88 @@ class TestGPUDetection(unittest.TestCase):
         # Verify shell=False was passed
         call_kwargs = mock_run.call_args[1]
         self.assertIs(call_kwargs.get("shell"), False)
+
+
+class TestGPUDetectionConcurrency(unittest.TestCase):
+    """Regression test for the `_gpu_info`/`_gpu_info_updated` cache race.
+
+    Before `_detect_gpu` held `_gpu_info_lock` across its whole check-then-act
+    sequence, concurrent callers racing a cold cache could all observe
+    `_gpu_info is None`, all shell out to nvidia-smi, and race writing the
+    shared globals -- exactly the interleaving that made
+    `test_gpu_detection_shell_false` flake under full-suite runs.
+    """
+
+    def setUp(self):
+        with embeddings_module._gpu_info_lock:
+            embeddings_module._gpu_info = None
+            embeddings_module._gpu_info_updated = 0.0
+
+    def tearDown(self):
+        with embeddings_module._gpu_info_lock:
+            embeddings_module._gpu_info = None
+            embeddings_module._gpu_info_updated = 0.0
+
+    @patch("subprocess.run")
+    def test_concurrent_detect_gpu_calls_are_serialized(self, mock_run):
+        """Many threads racing a cold cache must never enter nvidia-smi concurrently.
+
+        This does NOT assert an exact `mock_run.call_count`: `subprocess.run`
+        is patched process-wide for the test's duration, so a leftover
+        background thread from an earlier test (e.g. one leaked into the
+        shared thread pool by an async-embedding test) can itself call
+        `_detect_gpu()` during our widened race window and add an extra,
+        unrelated invocation -- inflating the count without indicating a
+        serialization failure. Instead, a non-blocking reentrancy guard
+        around the call body directly proves mutual exclusion: no two
+        invocations (ours or an interloper's) may ever be in-flight at once,
+        which is the actual property `_gpu_info_lock` is meant to guarantee.
+        """
+        num_threads = 8
+        start_barrier = threading.Barrier(num_threads)
+
+        reentrancy_guard = threading.Lock()
+        overlap_detected = threading.Event()
+
+        def slow_nvidia_smi(*args, **kwargs):
+            if not reentrancy_guard.acquire(blocking=False):
+                overlap_detected.set()
+                return Mock(returncode=0, stdout="16384, 8192, 75.5\n")
+            try:
+                # Widen the race window: without the lock, other threads have
+                # ample time to also observe the still-cold cache.
+                time.sleep(0.05)
+                return Mock(returncode=0, stdout="16384, 8192, 75.5\n")
+            finally:
+                reentrancy_guard.release()
+
+        mock_run.side_effect = slow_nvidia_smi
+
+        results: list[GPUInfo] = []
+        results_lock = threading.Lock()
+
+        def worker():
+            start_barrier.wait(timeout=5)
+            gpu_info = _detect_gpu()
+            with results_lock:
+                results.append(gpu_info)
+
+        threads = [threading.Thread(target=worker) for _ in range(num_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        self.assertEqual(len(results), num_threads)
+        for gpu_info in results:
+            self.assertTrue(gpu_info.available)
+            self.assertEqual(gpu_info.memory_total, 16384)
+
+        self.assertFalse(
+            overlap_detected.is_set(),
+            "subprocess.run was entered concurrently -- _gpu_info_lock failed to "
+            "serialize callers",
+        )
 
 
 class TestThreadPoolCleanup(unittest.TestCase):
@@ -449,19 +546,22 @@ class TestGPUCachedInfo(unittest.TestCase):
     """Test that _detect_gpu returns cached info within the TTL window."""
 
     def setUp(self):
-        embeddings_module._gpu_info = None
-        embeddings_module._gpu_info_updated = 0.0
+        with embeddings_module._gpu_info_lock:
+            embeddings_module._gpu_info = None
+            embeddings_module._gpu_info_updated = 0.0
 
     def tearDown(self):
-        embeddings_module._gpu_info = None
-        embeddings_module._gpu_info_updated = 0.0
+        with embeddings_module._gpu_info_lock:
+            embeddings_module._gpu_info = None
+            embeddings_module._gpu_info_updated = 0.0
 
     def test_returns_cached_gpu_info_within_ttl(self):
         cached = GPUInfo(
             available=True, device_count=1, memory_total=100, memory_used=10, utilization=5.0
         )
-        embeddings_module._gpu_info = cached
-        embeddings_module._gpu_info_updated = time.time()
+        with embeddings_module._gpu_info_lock:
+            embeddings_module._gpu_info = cached
+            embeddings_module._gpu_info_updated = time.time()
 
         result = _detect_gpu()
         self.assertIs(result, cached)
