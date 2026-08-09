@@ -112,6 +112,11 @@ tail -f ~/.nyxGPT/logs/nyxgpt-api.log
 tail -f ~/.nyxGPT/logs/nyxgpt-api.err.log
 ```
 
+`nyxgpt ops logs api` (and its `GET /api/v1/self-heal/logs?service=api`
+API equivalent) already tails all three as labeled sections, so a
+pre-logging startup failure -- e.g. the `[api] host`/`[auth] enabled` bind
+refusal -- shows up there too, without needing the raw paths above (#3629).
+
 ---
 
 ## Managing the Web UI service (nyxgpt-web)

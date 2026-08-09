@@ -1542,10 +1542,29 @@ def _native_component_logs(service: str, *, tail: int) -> HealResult:
     """Fetch recent logs for a native/local-first core component from its real source.
 
     `cassandra` is the plain `nyxgpt-cassandra` Docker container, read via
-    `_docker_container_logs` just like a Terraform component. `api`'s own
-    structured logs and `ollama`'s aggregated logs (written regardless of
-    mode by the ollama log-follower agent -- see docs/api.md#ollama-logs)
-    are both plain files under `~/.nyxGPT/logs` (`api.log`/`ollama.log`).
+    `_docker_container_logs` just like a Terraform component.
+
+    `api` combines its own structured logs (`~/.nyxGPT/logs/api.log`) with
+    its native service's raw stdout/stderr, as labeled sections -- same
+    pattern as `web` below (#3629). This matters because a startup failure
+    that happens *before* `configure_logging` runs (e.g. the P6-1 bind-
+    address refusal in `app.py`'s lifespan, see #3500) is printed straight to
+    the process's stderr and never reaches `api.log` at all -- without the
+    stderr section, `nyxgpt ops logs api` would report a hollow "no logs"
+    while the actual reason the API is down sits in a native log path the
+    operator has to hunt for by hand, exactly what this function exists to
+    avoid. Read from Homebrew's launchd log path on macOS (`nyxgpt-api.log`/
+    `.err.log` -- see docs/homebrew.md#api-logs), or the same names under
+    `~/.nyxGPT/logs` on Linux, where `nyxgpt-api.service`'s
+    `StandardOutput`/`StandardError` already point there directly (#3508).
+
+    `ollama` reads only its aggregated `~/.nyxGPT/logs/ollama.log` -- no
+    separate stderr section, unlike `api`/`web`: the log-follower agent that
+    maintains it (`scripts/follow-ollama-logs.sh`, see docs/api.md#ollama-
+    logs) already tails its native source with `2>&1`, so stdout and stderr
+    are combined into that one file by construction rather than split across
+    two native files the way `api`/`web`'s launchd/systemd logs are.
+
     `web` has no structured logging of its own yet (#3430), so it's read
     from its native service's own stdout/stderr: Homebrew's launchd log
     path on macOS (`nyxgpt-web.log`/`.err.log` -- see
@@ -1556,8 +1575,8 @@ def _native_component_logs(service: str, *, tail: int) -> HealResult:
     if service == "cassandra":
         return _docker_container_logs(NATIVE_CASSANDRA_CONTAINER, tail=tail)
 
-    if service in ("api", "ollama"):
-        log_file = get_log_dir() / f"{service}.log"
+    if service == "ollama":
+        log_file = get_log_dir() / "ollama.log"
         if not log_file.exists():
             return HealResult(False, f"No log file found for {service}: {log_file}")
         return HealResult(
@@ -1565,6 +1584,30 @@ def _native_component_logs(service: str, *, tail: int) -> HealResult:
             f"Fetched last {tail} log line(s) for {service}",
             _tail_text_file(log_file, tail),
         )
+
+    if service == "api":
+        structured_log = get_log_dir() / "api.log"
+        if _is_linux():
+            out_file: Path | None = get_log_dir() / "nyxgpt-api.log"
+            err_file: Path | None = get_log_dir() / "nyxgpt-api.err.log"
+        else:
+            prefix = _brew_prefix()
+            out_file = Path(prefix, "var", "log", "nyxgpt-api.log") if prefix else None
+            err_file = Path(prefix, "var", "log", "nyxgpt-api.err.log") if prefix else None
+
+        sections = []
+        if structured_log.exists():
+            sections.append(
+                f"--- api.log ({structured_log}) ---\n{_tail_text_file(structured_log, tail)}"
+            )
+        if out_file is not None and out_file.exists():
+            sections.append(f"--- stdout ({out_file}) ---\n{_tail_text_file(out_file, tail)}")
+        if err_file is not None and err_file.exists():
+            sections.append(f"--- stderr ({err_file}) ---\n{_tail_text_file(err_file, tail)}")
+
+        if not sections:
+            return HealResult(False, f"No log files found for api: {structured_log}")
+        return HealResult(True, f"Fetched last {tail} log line(s) for api", "\n".join(sections))
 
     if service == "web":
         if _is_linux():

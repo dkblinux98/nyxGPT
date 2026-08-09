@@ -590,7 +590,7 @@ reads the matching source:
 | Mode | Source |
 | --- | --- |
 | Docker Compose | `docker compose logs <service>` |
-| Native (`api`) | `~/.nyxGPT/logs/api.log` |
+| Native (`api`) | `~/.nyxGPT/logs/api.log` plus the native service's own stdout/stderr, as labeled sections (macOS: Homebrew's `nyxgpt-api.log`/`.err.log`, see [homebrew.md](homebrew.md#api-logs); Linux: `~/.nyxGPT/logs/nyxgpt-api.log`/`.err.log`, see [systemd.md](systemd.md#api-logs)) -- so a pre-logging startup failure (e.g. the P6-1 bind refusal, #3500) is still visible (#3629) |
 | Native (`ollama`) | `~/.nyxGPT/logs/ollama.log` (see [Ollama logs](api.md#ollama-logs)) |
 | Native (`web`) | macOS: Homebrew's own `nyxgpt-web.log`/`.err.log` (see [homebrew.md](homebrew.md#web-ui-logs)). Linux: `~/.nyxGPT/logs/nyxgpt-web.log`/`.err.log` (see [systemd.md](systemd.md#web-ui-logs)) |
 | Native (`cassandra`) | `docker logs nyxgpt-cassandra` |
