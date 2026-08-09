@@ -420,6 +420,49 @@ ensure_issue_in_project() {
 }
 
 # -------------------------
+# Project field reads (fill-if-missing hygiene, #3666)
+# -------------------------
+# Current value of `field_name` on project item `item_id`: the selected
+# option name for a single-select field, the iteration title for an
+# iteration field, or the raw string for a text field. Empty output means
+# the field is unset. This is the ONLY signal fill-if-missing hygiene may
+# use to decide whether to write a field -- no comment reading, no markers
+# (owner design principle, #3666): a field with any existing value must be
+# left untouched, and this is how callers check that before writing.
+project_field_value() {
+  require_cmd jq
+  local item_id="$1" field_name="$2"
+  local q='query($item:ID!) {
+    node(id:$item) {
+      ... on ProjectV2Item {
+        fieldValues(first:50) {
+          nodes {
+            __typename
+            ... on ProjectV2ItemFieldSingleSelectValue {
+              field { ... on ProjectV2SingleSelectField { name } }
+              name
+            }
+            ... on ProjectV2ItemFieldIterationValue {
+              field { ... on ProjectV2IterationField { name } }
+              title
+            }
+            ... on ProjectV2ItemFieldTextValue {
+              field { ... on ProjectV2FieldCommon { name } }
+              text
+            }
+          }
+        }
+      }
+    }
+  }'
+  graphql "$q" -F item="$item_id" | jq -r --arg f "$field_name" '
+    .data.node.fieldValues.nodes[]
+    | select(.field.name == $f)
+    | (.name // .title // .text // empty)
+  ' | head -n 1
+}
+
+# -------------------------
 # Project field updates
 # (already uses inline value:{...} — no ProjectV2FieldValue variables)
 # -------------------------

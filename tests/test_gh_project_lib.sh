@@ -552,6 +552,50 @@ _assert_eq "both issues in the chain get Status -> Acceptance Testing" "2" "${#S
 _assert_eq "both issues in the chain get the owner assigned" "2" "${#ASSIGN_VERIFIED_CALLS[@]}"
 _assert_eq "both issues in the chain get a promotion comment" "2" "${#COMMENT_CALLS[@]}"
 
+# --- Test 18: project_field_value (#3666) -- the fill-if-missing hygiene ---
+# --- read helper. Stub graphql() directly (project_field_value's only ---
+# --- collaborator) with a fixture item carrying a single-select value, an ---
+# --- iteration value, and a text value, then check each field name resolves ---
+# --- to the right one and an absent field name resolves to empty ---
+graphql() {
+  cat <<'JSON'
+{
+  "data": {
+    "node": {
+      "fieldValues": {
+        "nodes": [
+          {
+            "__typename": "ProjectV2ItemFieldSingleSelectValue",
+            "field": { "name": "Status" },
+            "name": "In Review"
+          },
+          {
+            "__typename": "ProjectV2ItemFieldIterationValue",
+            "field": { "name": "Sprint" },
+            "title": "Sprint 8"
+          },
+          {
+            "__typename": "ProjectV2ItemFieldTextValue",
+            "field": { "name": "Notes" },
+            "text": "some free text"
+          }
+        ]
+      }
+    }
+  }
+}
+JSON
+}
+
+_assert_eq "project_field_value reads a single-select field's selected option" \
+  "In Review" "$(project_field_value "item-x" "Status")"
+_assert_eq "project_field_value reads an iteration field's title" \
+  "Sprint 8" "$(project_field_value "item-x" "Sprint")"
+_assert_eq "project_field_value reads a text field's value" \
+  "some free text" "$(project_field_value "item-x" "Notes")"
+_assert_eq "project_field_value returns empty for a field the item has no value for" \
+  "" "$(project_field_value "item-x" "Priority")"
+
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "All tests passed."
   exit 0

@@ -2,7 +2,7 @@ name: Ensure Project Hygiene
 
 on:
   issues:
-    types: [opened, reopened]
+    types: [opened]
   pull_request:
     types: [opened, reopened]
 
@@ -47,79 +47,73 @@ jobs:
 
           echo "NYXGPT_CONFIG_FILE=/tmp/nyxgpt-config.ini" >> "$GITHUB_ENV"
 
-      - name: Check if hygiene needed
-        id: check_hygiene
-        env:
-          GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
-        run: |
-          ISSUE=${{ github.event.issue.number }}
-
-          # Issues authored by the scrummaster agent come from
-          # create_issue.sh, which applies full hygiene (Status/Sprint/
-          # Module/Effort/Priority/Milestone) itself in the seconds after
-          # creation. Racing it here stamped defaults (current sprint,
-          # earliest milestone, Effort XS) over #3500's intended Phase 6
-          # fields on 2026-07-31 -- the Status check below ran before
-          # create_issue.sh's Status write landed. Skip them entirely.
-          if [[ "${{ github.event.issue.user.login }}" == "${{ vars.SCRUM_AGENT }}" ]]; then
-            echo "Issue #$ISSUE authored by scrummaster agent - create_issue.sh handles hygiene, skipping"
-            echo "needs_hygiene=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # Check if issue already has Status set (web UI issues will)
-          STATUS=$(gh issue view "$ISSUE" --json projectItems \
-                   --jq '.projectItems[0].status.name // empty' \
-                   2>/dev/null || echo "")
-
-          if [[ -n "$STATUS" ]]; then
-            echo "Issue #$ISSUE already has Status: $STATUS"
-            echo "Skipping - likely created via web UI with proper hygiene"
-            echo "needs_hygiene=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "Issue #$ISSUE has no Status - needs hygiene setup"
-            echo "needs_hygiene=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Set all required project fields
+      - name: Fill missing project fields
         id: set_fields
-        if: steps.check_hygiene.outputs.needs_hygiene == 'true'
         env:
           GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
         run: |
           ISSUE=${{ github.event.issue.number }}
 
-          echo "Setting up project hygiene for issue #$ISSUE..."
+          echo "Applying fill-if-missing project hygiene for issue #$ISSUE..."
 
           # Source library functions
           source scripts/agents/lib/gh_project.sh
           load_config
           require_gh_auth
 
-          # Add to project if not already there
+          # Add to project if not already there (idempotent: a no-op if the
+          # issue is already on the board, e.g. via create_issue.sh or
+          # assign_backlog.yml).
           ITEM_ID=$(ensure_issue_in_project "$ISSUE")
           echo "Issue #$ISSUE in project: $ITEM_ID"
 
           # Get issue details for intelligent defaults
-          ISSUE_DATA=$(gh issue view "$ISSUE" --json title,body,labels)
+          ISSUE_DATA=$(gh issue view "$ISSUE" --json title,body,labels,milestone)
           TITLE=$(echo "$ISSUE_DATA" | jq -r '.title')
           BODY=$(echo "$ISSUE_DATA" | jq -r '.body // ""')
           LABELS=$(echo "$ISSUE_DATA" | jq -r '.labels[].name' | tr '\n' ' ')
 
-          # Set Status to Backlog (required)
-          set_issue_status "$ISSUE" "Backlog"
-          echo "✓ Status: Backlog"
+          FILLED=()
 
-          # Set Priority to P1 (required default)
-          set_project_field_value "$ITEM_ID" "Priority" "P1 - High"
-          echo "✓ Priority: P1 - High"
+          # Every field below is fill-if-missing: project_field_value is the
+          # ONLY signal consulted (owner design principle, #3666) -- a field
+          # that already carries any value, however it got there, is left
+          # untouched. This makes the creation-time race with create_issue.sh
+          # (or a human editing fields on a fresh issue) harmless by
+          # construction, so no author-based special case is needed.
 
-          # Set Effort to XS (required default)
-          set_project_field_value "$ITEM_ID" "Effort" "XS"
-          echo "✓ Effort: XS"
+          # Status
+          CURRENT_STATUS=$(project_field_value "$ITEM_ID" "$STATUS_FIELD")
+          if [[ -z "$CURRENT_STATUS" ]]; then
+            set_issue_status "$ISSUE" "Backlog"
+            echo "✓ Status: Backlog (was unset)"
+            FILLED+=("Status: Backlog")
+          else
+            echo "✓ Status: already '$CURRENT_STATUS' — leaving as-is"
+          fi
 
-          # Set Label (Feature by default) -- but only when the issue carries
-          # no recognized label yet. The single-label rule
+          # Priority
+          CURRENT_PRIORITY=$(project_field_value "$ITEM_ID" "Priority")
+          if [[ -z "$CURRENT_PRIORITY" ]]; then
+            set_project_field_value "$ITEM_ID" "Priority" "P1 - High"
+            echo "✓ Priority: P1 - High (was unset)"
+            FILLED+=("Priority: P1 - High")
+          else
+            echo "✓ Priority: already '$CURRENT_PRIORITY' — leaving as-is"
+          fi
+
+          # Effort
+          CURRENT_EFFORT=$(project_field_value "$ITEM_ID" "Effort")
+          if [[ -z "$CURRENT_EFFORT" ]]; then
+            set_project_field_value "$ITEM_ID" "Effort" "XS"
+            echo "✓ Effort: XS (was unset)"
+            FILLED+=("Effort: XS")
+          else
+            echo "✓ Effort: already '$CURRENT_EFFORT' — leaving as-is"
+          fi
+
+          # Label (Feature by default) -- but only when the issue carries no
+          # recognized label yet. The single-label rule
           # (developer_submit_for_review.sh requires exactly one) means adding
           # Feature on top of an existing Improvement/Release Management label
           # created a two-label deadlock that had to be trimmed by hand every
@@ -128,164 +122,150 @@ jobs:
             echo "✓ Label: already labeled ($LABELS), leaving as-is"
           else
             gh issue edit "$ISSUE" --add-label "Feature"
-            echo "✓ Label: Feature"
+            echo "✓ Label: Feature (was unset)"
+            FILLED+=("Label: Feature")
           fi
 
-          # Determine Module based on title/body keywords.
+          # Module -- determined from title/body keywords, only when unset.
           # The sre branch runs FIRST: observability/SRE issues routinely
           # mention "web"/"api"/"log" in passing, and the old greedy
           # web|ui first-match mis-stamped them (e.g. #3415 stamped web-ui
           # because its body said "Web tier"). The project's Module option
           # was renamed observability -> sre (owner, 2026-07-29).
-          MODULE=""
-          if echo "$TITLE $BODY" | grep -qiE "\bsre\b|observab|monitor|metric|grafana|prometheus|loki|jaeger|glitchtip|self.heal|tracing|instrumentation"; then
-            MODULE="sre"
-          elif echo "$TITLE $BODY" | grep -qiE "web|ui|frontend|react|vue"; then
-            MODULE="web-ui"
-          elif echo "$TITLE $BODY" | grep -qiE "api|endpoint|rest|graphql"; then
-            MODULE="api"
-          elif echo "$TITLE $BODY" | grep -qiE "rag|embedding|vector|semantic"; then
-            MODULE="rag"
-          elif echo "$TITLE $BODY" | grep -qiE "cli|command.line|terminal"; then
-            MODULE="cli"
-          elif echo "$TITLE $BODY" | grep -qiE "tui|terminal.ui"; then
-            MODULE="tui"
-          elif echo "$TITLE $BODY" | grep -qiE "test|testing|pytest"; then
-            MODULE="testing"
-          elif echo "$TITLE $BODY" | grep -qiE "doc|documentation|readme"; then
-            MODULE="documentation"
-          elif echo "$TITLE $BODY" | grep -qiE "security|auth|permission"; then
-            MODULE="security"
-          elif echo "$TITLE $BODY" | grep -qiE "logging|\blogs?\b"; then
-            # Logging/observability catch-all that didn't match the sre
-            # branch above (option renamed observability -> sre).
-            MODULE="sre"
+          CURRENT_MODULE=$(project_field_value "$ITEM_ID" "Module")
+          if [[ -z "$CURRENT_MODULE" ]]; then
+            MODULE=""
+            if echo "$TITLE $BODY" | grep -qiE "\bsre\b|observab|monitor|metric|grafana|prometheus|loki|jaeger|glitchtip|self.heal|tracing|instrumentation"; then
+              MODULE="sre"
+            elif echo "$TITLE $BODY" | grep -qiE "web|ui|frontend|react|vue"; then
+              MODULE="web-ui"
+            elif echo "$TITLE $BODY" | grep -qiE "api|endpoint|rest|graphql"; then
+              MODULE="api"
+            elif echo "$TITLE $BODY" | grep -qiE "rag|embedding|vector|semantic"; then
+              MODULE="rag"
+            elif echo "$TITLE $BODY" | grep -qiE "cli|command.line|terminal"; then
+              MODULE="cli"
+            elif echo "$TITLE $BODY" | grep -qiE "tui|terminal.ui"; then
+              MODULE="tui"
+            elif echo "$TITLE $BODY" | grep -qiE "test|testing|pytest"; then
+              MODULE="testing"
+            elif echo "$TITLE $BODY" | grep -qiE "doc|documentation|readme"; then
+              MODULE="documentation"
+            elif echo "$TITLE $BODY" | grep -qiE "security|auth|permission"; then
+              MODULE="security"
+            elif echo "$TITLE $BODY" | grep -qiE "logging|\blogs?\b"; then
+              # Logging/observability catch-all that didn't match the sre
+              # branch above (option renamed observability -> sre).
+              MODULE="sre"
+            else
+              MODULE="api"  # Default fallback
+            fi
+            set_project_field_value "$ITEM_ID" "Module" "$MODULE"
+            echo "✓ Module: $MODULE (was unset)"
+            FILLED+=("Module: $MODULE")
           else
-            MODULE="api"  # Default fallback
+            echo "✓ Module: already '$CURRENT_MODULE' — leaving as-is"
           fi
-          set_project_field_value "$ITEM_ID" "Module" "$MODULE"
-          echo "✓ Module: $MODULE"
 
-          # Set Sprint to current sprint (get first active/current sprint).
-          # Capture raw output first so a transport/API failure (empty due to
-          # error) is distinguishable from a genuinely empty iteration list.
-          if ! SPRINT_JSON=$(gh api graphql -f query='
-            query($owner:String!, $number:Int!) {
-              user(login:$owner) {
-                projectV2(number:$number) {
-                  fields(first:20) {
-                    nodes {
-                      ... on ProjectV2IterationField {
-                        name
-                        configuration {
-                          iterations {
-                            id
-                            title
-                            startDate
+          # Sprint -- current sprint (first active iteration), only when unset.
+          CURRENT_SPRINT=$(project_field_value "$ITEM_ID" "Sprint")
+          if [[ -z "$CURRENT_SPRINT" ]]; then
+            # Capture raw output first so a transport/API failure (empty due
+            # to error) is distinguishable from a genuinely empty iteration
+            # list.
+            if ! SPRINT_JSON=$(gh api graphql -f query='
+              query($owner:String!, $number:Int!) {
+                user(login:$owner) {
+                  projectV2(number:$number) {
+                    fields(first:20) {
+                      nodes {
+                        ... on ProjectV2IterationField {
+                          name
+                          configuration {
+                            iterations {
+                              id
+                              title
+                              startDate
+                            }
                           }
                         }
                       }
                     }
                   }
                 }
-              }
-            }' -F owner="$PROJECT_OWNER" -F number="$PROJECT_NUMBER" 2>&1); then
-            echo "::error::Failed to query Sprint iterations for issue #$ISSUE: $SPRINT_JSON"
-            echo "sprint_result=error" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
+              }' -F owner="$PROJECT_OWNER" -F number="$PROJECT_NUMBER" 2>&1); then
+              echo "::error::Failed to query Sprint iterations for issue #$ISSUE: $SPRINT_JSON"
+              exit 1
+            fi
 
-          # sprint_today() evaluates "today" in SPRINT_TIMEZONE (owner rule:
-          # sprint midnights are Eastern, not UTC) -- from lib/gh_project.sh,
-          # sourced above.
-          CURRENT_SPRINT=$(echo "$SPRINT_JSON" | jq -r --arg today "$(sprint_today)" '
-                   .data.user.projectV2.fields.nodes[] |
-                   select(.name=="Sprint") |
-                   .configuration.iterations |
-                   map(select(.startDate <= $today)) |
-                   sort_by(.startDate) |
-                   (last // empty) | .title // empty')
+            # sprint_today() evaluates "today" in SPRINT_TIMEZONE (owner rule:
+            # sprint midnights are Eastern, not UTC) -- from lib/gh_project.sh,
+            # sourced above.
+            ACTIVE_SPRINT=$(echo "$SPRINT_JSON" | jq -r --arg today "$(sprint_today)" '
+                     .data.user.projectV2.fields.nodes[] |
+                     select(.name=="Sprint") |
+                     .configuration.iterations |
+                     map(select(.startDate <= $today)) |
+                     sort_by(.startDate) |
+                     (last // empty) | .title // empty')
 
-          # set_project_field_value resolves iteration by TITLE (not id), and a
-          # failed Sprint set must never abort hygiene — Milestone still needs
-          # to be applied below (Sprint is "current sprint (if active)").
-          if [[ -n "$CURRENT_SPRINT" ]]; then
-            if set_project_field_value "$ITEM_ID" "Sprint" "$CURRENT_SPRINT"; then
-              echo "✓ Sprint: $CURRENT_SPRINT"
-              echo "sprint_result=set:$CURRENT_SPRINT" >> "$GITHUB_OUTPUT"
+            if [[ -n "$ACTIVE_SPRINT" ]]; then
+              if set_project_field_value "$ITEM_ID" "Sprint" "$ACTIVE_SPRINT"; then
+                echo "✓ Sprint: $ACTIVE_SPRINT (was unset)"
+                FILLED+=("Sprint: $ACTIVE_SPRINT")
+              else
+                echo "⚠ Sprint: could not set '$ACTIVE_SPRINT' (iteration may have ended) — continuing"
+              fi
             else
-              echo "⚠ Sprint: could not set '$CURRENT_SPRINT' (iteration may have ended) — continuing"
-              echo "sprint_result=failed-set" >> "$GITHUB_OUTPUT"
+              echo "⚠ Sprint: No active sprint found — skipping"
             fi
           else
-            echo "⚠ Sprint: No active sprint found — skipping"
-            echo "sprint_result=none" >> "$GITHUB_OUTPUT"
+            echo "✓ Sprint: already '$CURRENT_SPRINT' — leaving as-is"
           fi
 
-          # Set Milestone to current open milestone. Distinguish an API error
-          # from a genuinely empty open-milestone list: a transient failure
-          # (e.g. rate limit) must fail the step loud (red, re-runnable)
-          # rather than silently reporting "no open milestone found".
-          if ! MILESTONES_JSON=$(gh api repos/"$REPO_OWNER"/"$REPO_NAME"/milestones 2>&1); then
-            echo "::error::Failed to list milestones for issue #$ISSUE: $MILESTONES_JSON"
-            echo "milestone_result=error" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
+          # Milestone -- current open milestone, only when unset. Milestone is
+          # an issue attribute, not a project field, so read it straight from
+          # the issue payload fetched above rather than project_field_value.
+          CURRENT_MILESTONE=$(echo "$ISSUE_DATA" | jq -r '.milestone.title // empty')
+          if [[ -z "$CURRENT_MILESTONE" ]]; then
+            # Distinguish an API error from a genuinely empty open-milestone
+            # list: a transient failure (e.g. rate limit) must fail the step
+            # loud (red, re-runnable) rather than silently reporting "no open
+            # milestone found".
+            if ! MILESTONES_JSON=$(gh api repos/"$REPO_OWNER"/"$REPO_NAME"/milestones 2>&1); then
+              echo "::error::Failed to list milestones for issue #$ISSUE: $MILESTONES_JSON"
+              exit 1
+            fi
 
-          CURRENT_MILESTONE=$(echo "$MILESTONES_JSON" | jq -r \
-            'map(select(.state=="open")) | sort_by(.due_on) | .[0].title // empty')
+            OPEN_MILESTONE=$(echo "$MILESTONES_JSON" | jq -r \
+              'map(select(.state=="open")) | sort_by(.due_on) | .[0].title // empty')
 
-          if [[ -n "$CURRENT_MILESTONE" ]]; then
-            gh issue edit "$ISSUE" --milestone "$CURRENT_MILESTONE"
-            echo "✓ Milestone: $CURRENT_MILESTONE"
-            echo "milestone_result=set:$CURRENT_MILESTONE" >> "$GITHUB_OUTPUT"
+            if [[ -n "$OPEN_MILESTONE" ]]; then
+              gh issue edit "$ISSUE" --milestone "$OPEN_MILESTONE"
+              echo "✓ Milestone: $OPEN_MILESTONE (was unset)"
+              FILLED+=("Milestone: $OPEN_MILESTONE")
+            else
+              echo "⚠ Milestone: No open milestone found"
+            fi
           else
-            echo "⚠ Milestone: No open milestone found"
-            echo "milestone_result=none" >> "$GITHUB_OUTPUT"
+            echo "✓ Milestone: already '$CURRENT_MILESTONE' — leaving as-is"
           fi
 
           echo ""
           echo "✅ Project hygiene complete for issue #$ISSUE"
 
-      - name: Comment on issue
-        if: success() && steps.check_hygiene.outputs.needs_hygiene == 'true'
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
-          script: |
-            const issue_number = context.payload.issue.number;
-
-            // Status/Priority/Effort/Label/Module don't need per-field outcome
-            // tracking: Actions `run:` steps use `bash -e`, so a `gh` failure
-            // on any of those already aborts the step and this comment step
-            // (gated on success()) never runs. Sprint/Milestone are different:
-            // the previous step deliberately continues past a Sprint/Milestone
-            // skip, so we render their actual outcome here instead of a static
-            // "always succeeded" claim.
-            const sprintResult = `${{ steps.set_fields.outputs.sprint_result }}`;
-            const milestoneResult = `${{ steps.set_fields.outputs.milestone_result }}`;
-
-            const sprintLine = sprintResult.startsWith('set:')
-              ? `- Sprint: ${sprintResult.slice(4)}\n`
-              : `- ⚠ Sprint: not set (${sprintResult === 'none' ? 'no active sprint' : 'failed to apply'})\n`;
-
-            const milestoneLine = milestoneResult.startsWith('set:')
-              ? `- Milestone: ${milestoneResult.slice(4)}\n`
-              : `- ⚠ Milestone: not set (${milestoneResult === 'none' ? 'no open milestone' : 'API error'})\n`;
-
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number,
-              body: `✅ **Project Hygiene**: Issue automatically configured with required fields:\n\n` +
-                    `- Status: Backlog\n` +
-                    `- Priority: P1 - High\n` +
-                    `- Effort: XS\n` +
-                    `- Label: Feature\n` +
-                    `- Module: (auto-detected)\n` +
-                    sprintLine +
-                    milestoneLine
-            });
+          # Comment only when hygiene actually filled something -- a fully
+          # pre-populated issue (e.g. create_issue.sh already ran) gets no
+          # redundant "configured" comment.
+          if [[ "${#FILLED[@]}" -gt 0 ]]; then
+            COMMENT_BODY="✅ **Project Hygiene**: filled missing fields on issue #$ISSUE:"$'\n\n'
+            for line in "${FILLED[@]}"; do
+              COMMENT_BODY+="- ${line}"$'\n'
+            done
+            gh issue comment "$ISSUE" --body "$COMMENT_BODY"
+          else
+            echo "No fields needed filling — skipping comment"
+          fi
 
   pr-hygiene:
     if: github.event_name == 'pull_request'
