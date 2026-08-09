@@ -76,8 +76,8 @@ case "$ERROR_TYPE" in
     echo "[analyze] Handling issue_closed error..." >&2
 
     # Gather context
-    ISSUE_STATE=$(gh issue view "$ISSUE" --json state,closedAt,assignees \
-      --jq '{state, closedAt, assignedToMe: ([.assignees[].login] | contains(["'"$DEV_AGENT"'"]))}')
+    ISSUE_STATE=$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${ISSUE}" \
+      --jq '{state: (.state | ascii_upcase), closedAt: .closed_at, assignedToMe: ([.assignees[].login] | contains(["'"$DEV_AGENT"'"]))}')
 
     STATE=$(echo "$ISSUE_STATE" | jq -r '.state')
     CLOSED_AT=$(echo "$ISSUE_STATE" | jq -r '.closedAt // ""')
@@ -113,9 +113,12 @@ case "$ERROR_TYPE" in
       echo "[analyze] Issue closed $HOURS_AGO hour(s) ago" >&2
 
       if [[ $HOURS_AGO -lt 6 ]]; then
-        # Check for merged PR
-        MERGED_PR=$(gh pr list --search "$ISSUE in:body" --state merged \
-          --json number --jq '.[0].number // ""' || echo "")
+        # Check for merged PR (REST Search API -- its own rate pool, separate
+        # from both core REST and GraphQL)
+        MERGED_PR=$(gh api search/issues \
+          --method GET \
+          -f q="${ISSUE} in:body type:pr state:merged repo:${REPO_OWNER}/${REPO_NAME}" \
+          --jq '.items[0].number // ""' || echo "")
 
         if [[ -n "$MERGED_PR" ]]; then
           echo "[fatal] Issue has merged PR #$MERGED_PR - work complete" >&2

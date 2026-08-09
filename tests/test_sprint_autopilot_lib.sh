@@ -116,15 +116,30 @@ _assert_eq "zero remaining backlog issues" "0" "$result"
 
 # --- Test 4: sprint_autopilot_paused reads the most recent PAUSE/RESUME ---
 # --- control comment (kill switch, #3480) ---
+#
+# The mock below simulates real `gh api ... --paginate --jq FILTER`
+# semantics rather than pre-computing the answer in Python: it splits
+# MOCK_COMMENTS_JSON into two "pages" and runs the *actual* --jq FILTER
+# (via the real jq binary) against each page separately, exactly like `gh`
+# does across real HTTP pages -- then gh_project.sh's own second `jq -s`
+# pass combines the two pages' streamed output. This exercises the real
+# two-stage pipeline end to end, so a regression that moves `last`/`length`
+# back into the per-page --jq (the #3663 pagination bug) is caught here
+# instead of being masked by a mock that bypasses jq entirely.
 gh() {
-  # Simulates: gh api repos/.../issues/N/comments --paginate --jq '...'
-  echo "$MOCK_COMMENTS_JSON" | python3 -c '
-import json, sys
-d = json.load(sys.stdin)
-matches = [c for c in d if c["body"].strip() in ("PAUSE_SPRINT", "RESUME_SPRINT")]
-matches.sort(key=lambda c: c["created_at"])
-print(matches[-1]["body"] if matches else "")
-'
+  local filter=""
+  while [[ $# -gt 0 ]]; do
+    if [[ "$1" == "--jq" ]]; then
+      filter="$2"
+      shift
+    fi
+    shift
+  done
+  local n half
+  n="$(jq 'length' <<<"$MOCK_COMMENTS_JSON")"
+  half=$(((n + 1) / 2))
+  jq -c ".[0:$half]" <<<"$MOCK_COMMENTS_JSON" | jq -r "$filter"
+  jq -c ".[$half:]" <<<"$MOCK_COMMENTS_JSON" | jq -r "$filter"
 }
 
 MOCK_COMMENTS_JSON='[{"body":"some other comment","created_at":"2026-07-01T00:00:00Z"},{"body":"PAUSE_SPRINT","created_at":"2026-07-02T00:00:00Z"}]'
@@ -149,6 +164,17 @@ if sprint_autopilot_paused "2759"; then
   FAILURES=$((FAILURES + 1))
 else
   echo "[ok] sprint_autopilot_paused defaults to false with no PAUSE_SPRINT/RESUME_SPRINT comments"
+fi
+
+# --- Test 4b: the true latest control comment sits on a *later page* than ---
+# --- another match on an earlier page (the exact #3663 regression shape: ---
+# --- `last` must be computed across the combined pages, not per page) ---
+MOCK_COMMENTS_JSON='[{"body":"noise","created_at":"2026-07-01T00:00:00Z"},{"body":"RESUME_SPRINT","created_at":"2026-07-02T00:00:00Z"},{"body":"PAUSE_SPRINT","created_at":"2026-07-03T00:00:00Z"}]'
+if sprint_autopilot_paused "2759"; then
+  echo "[ok] sprint_autopilot_paused is true when the latest PAUSE_SPRINT falls on a later page than an earlier RESUME_SPRINT"
+else
+  echo "[FAIL] sprint_autopilot_paused should be true: PAUSE_SPRINT (page 2) is chronologically after RESUME_SPRINT (page 1)" >&2
+  FAILURES=$((FAILURES + 1))
 fi
 
 # --- Test 5: clear_project_field_value resolves the field id and sends a ---

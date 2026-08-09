@@ -43,9 +43,18 @@ _assert_contains() {
 # shellcheck source=/dev/null
 source "$ROOT_DIR/scripts/agents/scrummaster_dispatch_next.sh"
 
-# Parses next_issue=/tried<<EOF...EOF out of scrummaster_dispatch_next's
+# Default stub: dispatch is not paused. Scenarios (a)-(c) below exercise
+# the fall-through loop itself and don't care about the #3687
+# escalation-pause backstop, so they rely on this default. Scenario (d)
+# overrides it to exercise the paused path.
+_escalation_pause_check() { return 0; }
+
+# Parses paused=/next_issue=/tried<<EOF...EOF out of scrummaster_dispatch_next's
 # $GITHUB_OUTPUT-formatted stdout, the same way the workflow's downstream
 # comment steps read `steps.start.outputs.*`.
+_parse_paused() {
+  echo "$1" | sed -n 's/^paused=//p'
+}
 _parse_next_issue() {
   echo "$1" | sed -n 's/^next_issue=//p'
 }
@@ -133,9 +142,36 @@ scrummaster_attempt_start() {
 
 OUT="$(scrummaster_dispatch_next "0" 2>/dev/null)"
 _assert_eq "(c) all candidates blocked: nothing started" "" "$(_parse_next_issue "$OUT")"
+_assert_eq "(c) all candidates blocked: not reported as paused" "false" "$(_parse_paused "$OUT")"
 TRIED="$(_parse_tried "$OUT")"
 _assert_contains "(c) all candidates blocked: the anomaly is reported" "$TRIED" "SKIPPED #90 reason=anomaly assignee=myGPT-review-agent"
 _assert_contains "(c) all candidates blocked: the human hold is reported" "$TRIED" "SKIPPED #91 reason=human_hold"
+
+# --- Scenario (d): the #3687 unresolved-escalation pause backstop is ---
+# --- tripped (>=2 unresolved escalations) -- dispatch must not even ---
+# --- attempt candidate selection, and must report paused=true with an ---
+# --- empty next_issue/tried so the workflow's completion/no-issues/ ---
+# --- queue-blocked comments all stay silent (a dedicated pause comment ---
+# --- covers it instead) ---
+_escalation_pause_check() { return 1; }
+_select_next_candidate() {
+  echo "[test] _select_next_candidate must not run while paused" >&2
+  return 1
+}
+scrummaster_attempt_start() {
+  echo "[test] scrummaster_attempt_start must not run while paused" >&2
+  return 1
+}
+
+OUT="$(scrummaster_dispatch_next "0" 2>/dev/null)"
+_assert_eq "(d) escalation-paused: reported as paused" "true" "$(_parse_paused "$OUT")"
+_assert_eq "(d) escalation-paused: nothing started" "" "$(_parse_next_issue "$OUT")"
+_assert_eq "(d) escalation-paused: nothing recorded as tried" "" "$(_parse_tried "$OUT")"
+
+# Restore the default stub for good measure (no further scenarios today,
+# but keeps this file safe to extend below without re-triggering (d)'s
+# "must not run" stubs).
+_escalation_pause_check() { return 0; }
 
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "All tests passed."

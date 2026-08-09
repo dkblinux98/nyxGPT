@@ -7,9 +7,13 @@ Homebrew services on macOS (#3508):
 1. **nyxgpt-api** - FastAPI backend (REST API)
 2. **nyxgpt-web** - Next.js web UI
 
-A third unit, **nyxgpt-ollama**, runs native Ollama itself (rather than
-relying on a distro's system-wide `ollama.service`), so every native
-component is managed through the same `systemctl --user` surface.
+A third unit, **nyxgpt-ollama**, runs native Ollama itself, so every native
+component is managed through the same `systemctl --user` surface -- *unless*
+a distro-installed system-wide `ollama.service` already holds Ollama's port
+(11434) when you run `nyxgpt ops install`, in which case nyxGPT adopts that
+unit instead of fighting it for the port. See
+[Managing the Ollama service](#managing-the-ollama-service-nyxgpt-ollama)
+below for what "adopt" means and how to switch back.
 
 This is the recommended way to keep all three running locally without
 keeping terminals open -- and it's what `nyxgpt ops install` sets up for
@@ -20,12 +24,13 @@ you; the commands below are for troubleshooting a component directly.
 ## CI
 
 `scripts/systemd-native-smoke.sh` exercises this whole path end-to-end
-(`nyxgpt ops install` -> verify every unit is active and the api/web
-respond -> `nyxgpt ops down`), mirroring
+(`nyxgpt ops install` -> verify every unit is active and the api/web/ollama
+respond, each with a bounded retry window rather than a single immediate
+probe -> `nyxgpt ops down`), mirroring
 `.github/workflows/terraform-local-smoke.yml`'s shape for the Terraform
-path. It isn't wired into a workflow yet -- run it by hand, or add a
-`ubuntu-latest` job that calls it, scoped to `src/nyxgpt/ops.py`,
-`src/nyxgpt/self_heal.py`, `ops/systemd/**`, and the script itself.
+path. It runs via `.github/workflows/linux-native-smoke.yml`, scoped to
+`src/nyxgpt/ops.py`, `src/nyxgpt/self_heal.py`, `ops/systemd/**`, and the
+script itself -- or run it by hand with `./scripts/systemd-native-smoke.sh`.
 
 ---
 
@@ -149,6 +154,42 @@ tail -f ~/.nyxGPT/logs/nyxgpt-web.err.log
 ---
 
 ## Managing the Ollama service (nyxgpt-ollama)
+
+### System-wide `ollama.service` conflicts (adoption)
+
+The official Ollama Linux installer
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+```
+
+auto-enables and starts a **system-wide** `ollama.service` bound to
+`127.0.0.1:11434` -- the same port `nyxgpt-ollama.service` needs. Since
+stopping/disabling a system-scope unit needs root, and nyxGPT never invokes
+`sudo` on its own for anything else either, `nyxgpt ops install` does not try
+to take the port by force. Instead it **adopts** the system unit: it detects
+the running `ollama.service` and skips installing/starting
+`nyxgpt-ollama.service` entirely, leaving the system unit to keep serving
+Ollama. If a previous install already created `nyxgpt-ollama.service` (e.g.
+before this reconciliation existed, now crash-looping against the same
+port), that unit -- unlike the system one -- IS a `--user` unit nyxGPT owns
+outright, so `nyxgpt ops install` stops and disables it.
+
+While adopted, `nyxgpt ops status`/the SRE dashboard report `ollama` healthy
+via the system unit, and self-heal does not try to restart the absent
+`nyxgpt-ollama.service`. `nyxgpt ops doctor` flags the crash-loop state (a
+stale `nyxgpt-ollama.service` installed but not active while the system unit
+is active) actionably if it's ever encountered.
+
+To have nyxGPT manage Ollama itself instead of the distro's system service,
+free the port first, then reinstall:
+
+```bash
+sudo systemctl disable --now ollama.service
+nyxgpt ops install
+```
+
+### Commands (nyxgpt-managed Ollama)
 
 ```bash
 systemctl --user start nyxgpt-ollama
@@ -354,6 +395,22 @@ container that has no active login session.
    ```
 
 2. Re-run `nyxgpt ops install`.
+
+### nyxgpt-ollama.service crash-looping / port 11434 already in use
+
+**Symptom**: `systemctl --user status nyxgpt-ollama` shows
+`activating (auto-restart)` or `failed`, and `nyxgpt ops doctor` reports
+`System-wide ollama.service is bound to port 11434, so nyxgpt-ollama.service
+can't start`.
+
+**Cause**: a distro-installed system-wide `ollama.service` is already
+serving on the port `nyxgpt-ollama.service` needs -- see
+[System-wide ollama.service conflicts](#system-wide-ollamaservice-conflicts-adoption)
+above. This only happens on a machine that installed before that
+reconciliation existed, or that had `ollama.service` re-enabled afterwards.
+
+**Solution**: re-run `nyxgpt ops install` -- it detects the conflict, stops
+and disables the stale `nyxgpt-ollama.service`, and adopts the system unit.
 
 ---
 

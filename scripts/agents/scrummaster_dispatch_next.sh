@@ -19,7 +19,14 @@ longer become a permanent head-of-line block on the whole queue.
 Bounded by MAX_ATTEMPTS (default 25) so a systemic problem fails loudly
 instead of looping forever.
 
+Before selecting, checks the #3687 unresolved-escalation pause backstop
+(escalation_pause_gate, lib/gh_project.sh): with >=2 unresolved escalated
+issues, dispatch is skipped entirely (paused=true) rather than selecting a
+candidate, and a loud report is posted/updated on the release tracking
+issue. Resumes automatically on a later run once the count drops below 2.
+
 Prints, in $GITHUB_OUTPUT format (`key=value` / `key<<EOF ... EOF`):
+  paused=<true if the escalation-pause backstop skipped dispatch, else false>
   next_issue=<issue number, or empty if nothing started>
   tried<<NYXGPT_TRIED_EOF
   <newline-separated "SKIPPED #<n> reason=<reason>..." lines, may be empty>
@@ -52,14 +59,30 @@ _select_next_candidate() {
   EXCLUDE_ISSUES="$exclude" "$DIR/scrummaster_next_issue.sh" --select-only "${args[@]}" 2>/dev/null || echo ""
 }
 
-# Runs the fall-through loop described above and prints next_issue=/tried
-# to stdout in $GITHUB_OUTPUT format. Split out from the script's
+# Wraps escalation_pause_gate (lib/gh_project.sh). Split out so tests can
+# stub it without a real gh round trip. Returns 0 if dispatch may proceed,
+# 1 if paused.
+_escalation_pause_check() {
+  escalation_pause_gate
+}
+
+# Runs the fall-through loop described above and prints paused=/next_issue=/
+# tried to stdout in $GITHUB_OUTPUT format. Split out from the script's
 # direct-execution guard so tests can source this file and call it directly
-# with stubbed _select_next_candidate/scrummaster_attempt_start.
+# with stubbed _escalation_pause_check/_select_next_candidate/
+# scrummaster_attempt_start.
 scrummaster_dispatch_next() {
   local sprint_scoped="${1:-0}"
   local exclude="" tried="" started=""
   local i next_issue output rc reason
+
+  if ! _escalation_pause_check; then
+    echo "paused=true"
+    echo "next_issue="
+    printf 'tried<<NYXGPT_TRIED_EOF\n%sNYXGPT_TRIED_EOF\n' ""
+    return 0
+  fi
+  echo "paused=false"
 
   for ((i = 1; i <= MAX_ATTEMPTS; i++)); do
     next_issue="$(_select_next_candidate "$exclude" "$sprint_scoped")"

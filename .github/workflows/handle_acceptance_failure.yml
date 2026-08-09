@@ -99,7 +99,8 @@ jobs:
           load_config
           require_gh_auth
 
-          issue_json="$(gh issue view "$COMMENTED" --repo "${REPO_OWNER}/${REPO_NAME}" --json state,title,labels,body)"
+          issue_json="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${COMMENTED}" \
+            --jq '{state: (.state | ascii_upcase), title, labels, body}')"
           RELATED="$(echo "$issue_json" | jq -r '.body' \
             | grep -m1 -oE '(Parent|Related) feature: #[0-9]+' | grep -oE '[0-9]+' || true)"
 
@@ -137,9 +138,12 @@ jobs:
           # Unique-failure number = existing related failure issues + 1
           # (exact body-marker match, not text search, so #34 never counts
           # for #3). Usually 1.
-          EXISTING="$(gh issue list --repo "${REPO_OWNER}/${REPO_NAME}" \
-            --label "Acceptance Failure" --state all --limit 500 --json number,body \
-            -q "[.[] | select(.body | test(\"(Parent|Related) feature: #${FEATURE}\\\\b\"))] | length")"
+          # --jq runs once per fetched page -- stream matching issues across
+          # all pages first, then slurp+count (see AGENTS.md).
+          EXISTING="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues?labels=Acceptance%20Failure&state=all&per_page=100" \
+            --paginate \
+            --jq ".[] | select(has(\"pull_request\") | not) | select(.body | test(\"(Parent|Related) feature: #${FEATURE}\\\\b\"))" \
+            | jq -s 'length')"
           NUM=$((EXISTING + 1))
 
           TITLE="bug: acceptance failure ${NUM} for #${FEATURE} - ${FEATURE_TITLE#*: }"
