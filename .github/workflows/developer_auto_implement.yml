@@ -412,6 +412,7 @@ jobs:
           track_progress: true
           show_full_output: true
           claude_args: >-
+            --model claude-fable-5
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
@@ -551,6 +552,7 @@ jobs:
           track_progress: true
           show_full_output: true
           claude_args: >-
+            --model claude-fable-5
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
@@ -715,6 +717,7 @@ jobs:
           track_progress: true
           show_full_output: true
           claude_args: >-
+            --model claude-fable-5
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
@@ -1037,6 +1040,7 @@ jobs:
           track_progress: true
           show_full_output: true
           claude_args: >-
+            --model claude-fable-5
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
@@ -1146,6 +1150,7 @@ jobs:
           track_progress: true
           show_full_output: true
           claude_args: >-
+            --model claude-fable-5
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
@@ -1766,6 +1771,7 @@ jobs:
           track_progress: true
           show_full_output: false
           claude_args: >-
+            --model claude-fable-5
             --allowed-tools "Bash,Read,Grep"
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
