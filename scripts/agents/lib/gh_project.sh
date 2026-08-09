@@ -736,6 +736,68 @@ sprint_autopilot_paused() {
   [[ "$last_state" == "PAUSE_SPRINT" ]]
 }
 
+# Sprint-autopilot continuation kick (#3480), shared by the post-merge path
+# (review_accept_and_merge.sh) and the 3-cycle review escalation path
+# (review_agent_auto_review.yml): both outcomes free the reviewer for the
+# next issue, so both post the same gated READY_FOR_NEXT_ISSUE kick on the
+# release tracking issue. `verb` is "merged" or "escalated" and only changes
+# the comment wording; every gate (SPRINT_AUTOPILOT, RELEASE_ISSUE_NUMBER,
+# PAUSE_SPRINT, release version parse, release-drained park) is identical.
+# Best-effort by design: always returns 0 so a kick failure never fails the
+# merge or the escalation that invoked it.
+sprint_autopilot_kick() {
+  local issue="$1" verb="${2:-merged}"
+  local event_phrase continue_phrase
+  if [[ "$verb" == "escalated" ]]; then
+    event_phrase="Issue #${issue} escalated to the owner after 3 review cycles"
+    continue_phrase="continuing with other work"
+  else
+    event_phrase="Issue #${issue} merged"
+    continue_phrase="continuing automatically"
+  fi
+
+  echo "[review] ===== Sprint autopilot =====" >&2
+  local autopilot_value="${SPRINT_AUTOPILOT:-false}"
+  if [[ "$autopilot_value" != "true" ]]; then
+    echo "[review] Sprint autopilot disabled (SPRINT_AUTOPILOT=${autopilot_value}) -- no auto-kick." >&2
+  elif [[ -z "${RELEASE_ISSUE_NUMBER:-}" ]]; then
+    _warn "SPRINT_AUTOPILOT is on but RELEASE_ISSUE_NUMBER is not configured -- skipping auto-kick."
+  elif sprint_autopilot_paused "$RELEASE_ISSUE_NUMBER"; then
+    echo "[review] Sprint autopilot paused (PAUSE_SPRINT) -- no auto-kick." >&2
+    issue_comment "$RELEASE_ISSUE_NUMBER" "⏸️ **Sprint Autopilot**: ${event_phrase}, but autopilot is paused (\`PAUSE_SPRINT\`) -- no automatic kick posted. Comment \`RESUME_SPRINT\` to continue, or \`READY_FOR_NEXT_ISSUE\` to kick manually." \
+      || _warn "Failed to post autopilot-paused notice."
+  else
+    # The continue/park decision is RELEASE-gated, not sprint-gated (owner
+    # decision 2026-07-31): sprint dates drift and future sprints exist on the
+    # board before their release starts, so the boundary is the release
+    # version carried by the tracking issue's title and the milestone titles.
+    # The autopilot continues while the CURRENT release has open Backlog work
+    # (any sprint) and parks when it drains; it never crosses into the next
+    # release -- the gate reopens when the owner points RELEASE_ISSUE_NUMBER /
+    # RELEASE_BRANCH at the next release as part of the release ceremony.
+    local release_version remaining decision
+    release_version="$(release_version_from_issue "$RELEASE_ISSUE_NUMBER" 2>/dev/null || echo "")"
+    if [[ -z "$release_version" ]]; then
+      _warn "Autopilot: could not parse a vX.Y.Z version from release issue #${RELEASE_ISSUE_NUMBER}'s title -- no auto-kick (conservative stop)."
+    else
+      remaining="$(count_release_backlog_open "$release_version" 2>/dev/null || echo "")"
+      decision="$(python3 "${_LIB_DIR}/sprint_calc.py" autopilot-decision "${remaining:-0}")"
+      if [[ "$decision" == "continue" ]]; then
+        issue_comment "$RELEASE_ISSUE_NUMBER" "🔁 **Sprint Autopilot**: ${event_phrase}. Release ${release_version} still has ${remaining} open Backlog issue(s) -- ${continue_phrase}.
+
+READY_FOR_NEXT_ISSUE" \
+          && echo "[review] Autopilot: posted READY_FOR_NEXT_ISSUE (release ${release_version} has ${remaining} remaining)." >&2 \
+          || _warn "Autopilot: failed to post READY_FOR_NEXT_ISSUE kick."
+      else
+        issue_comment "$RELEASE_ISSUE_NUMBER" "🏁 **Sprint Autopilot**: ${event_phrase}. Release ${release_version} has no open Backlog issues remaining -- the release backlog is drained and autopilot is parked. Merged work is in **Acceptance Testing** for stakeholder sign-off. Autopilot resumes automatically when \`RELEASE_ISSUE_NUMBER\` and \`RELEASE_BRANCH\` point at the next release; it never crosses a release boundary on its own." \
+          && echo "[review] Autopilot: release ${release_version} drained -- parked, no kick." >&2 \
+          || _warn "Autopilot: failed to post release-drained note."
+      fi
+    fi
+  fi
+  return 0
+}
+
 # -------------------------
 # Issue operations
 # -------------------------

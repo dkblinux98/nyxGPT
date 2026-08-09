@@ -364,6 +364,20 @@ jobs:
             "[View all review comments](https://github.com/${REPO}/pull/${PR})")
           gh pr comment "$PR" --body "$BODY"
 
+          # Sprint-autopilot continuation kick: only merges used to post
+          # READY_FOR_NEXT_ISSUE, so an escalation starved dispatch even
+          # though nothing was blocked. The reviewer has handed this PR to
+          # the owner — post the same gated kick a merge posts (identical
+          # SPRINT_AUTOPILOT / pause / release-drained checks) so the queue
+          # continues with other work. Best-effort: a kick failure never
+          # fails the escalation itself.
+          bash -lc "cd '$GITHUB_WORKSPACE' && \
+            source scripts/agents/lib/gh_project.sh && \
+            load_config && \
+            require_gh_auth && \
+            sprint_autopilot_kick '$ISSUE' escalated" \
+            || echo "::warning::Sprint-autopilot kick after escalation failed for issue #${ISSUE} — escalation itself is unaffected."
+
           echo "::endgroup::"
 
           if [[ "$ASSIGN_OK" != "1" ]]; then
