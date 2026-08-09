@@ -43,6 +43,12 @@ jobs:
 
     env:
       GH_TOKEN: ${{ secrets.REVIEW_AGENT_TOKEN }}
+      # #3695 human-channel (Slack DM) escalation notifications -- reused
+      # from the secrets notify-merge-conflicts.yml already configures.
+      # Absent/failing degrades gracefully to comment-only (see
+      # notify_human_escalation, scripts/agents/lib/gh_project.sh).
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_USER_ID: ${{ secrets.SLACK_USER_ID }}
 
     steps:
       - name: Checkout
@@ -418,19 +424,30 @@ jobs:
           fi
           gh pr comment "$PR" --body "$BODY"
 
+          # #3695: human-visible channel outside GitHub threads for this
+          # terminal outcome -- the GitHub comment above already carries the
+          # full escalation, this is additive (Slack DM, best-effort).
+          if [[ "$REASON" == "spec_ambiguity" ]]; then
+            NOTIFY_DIAGNOSIS="Review agent classified a REQUEST_CHANGES round on PR #$PR as spec ambiguity -- the issue is unclear, or needs owner authority no agent conversation can supply."
+          else
+            NOTIFY_DIAGNOSIS="PR #$PR has gone through 3 review cycles with requested changes and issues still remain."
+          fi
+          NOTIFY_ACTION="Review PR #$PR: merge if acceptable, give the developer specific guidance, or close it."
+
           # Sprint-autopilot continuation kick: only merges used to post
           # READY_FOR_NEXT_ISSUE, so an escalation starved dispatch even
           # though nothing was blocked. The reviewer has handed this PR to
           # the owner — post the same gated kick a merge posts (identical
           # SPRINT_AUTOPILOT / pause / release-drained checks) so the queue
-          # continues with other work. Best-effort: a kick failure never
-          # fails the escalation itself.
+          # continues with other work. Best-effort: neither the kick nor the
+          # notification failing blocks the escalation itself.
           bash -lc "cd '$GITHUB_WORKSPACE' && \
             source scripts/agents/lib/gh_project.sh && \
             load_config && \
             require_gh_auth && \
-            sprint_autopilot_kick '$ISSUE' escalated" \
-            || echo "::warning::Sprint-autopilot kick after escalation failed for issue #${ISSUE} — escalation itself is unaffected."
+            sprint_autopilot_kick '$ISSUE' escalated && \
+            notify_human_escalation '$ISSUE' 'review-escalation' '$NOTIFY_DIAGNOSIS' '$NOTIFY_ACTION' '$ISSUE:review_escalation'" \
+            || echo "::warning::Sprint-autopilot kick / human notification after escalation failed for issue #${ISSUE} — escalation itself is unaffected."
 
           echo "::endgroup::"
 
