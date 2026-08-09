@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# EC2 user-data bootstrap: Linux AMI (target-OS provisioning, P6-12/#3511).
+#
+# Installs nyxGPT from the published PyPI artifact (P6-5, #3504/#3622) and
+# brings up the native (systemd --user) stack (#3508) -- the same install
+# path scripts/systemd-native-smoke.sh exercises in CI, run here as EC2
+# cloud-init user-data instead of an interactive SSH session.
+#
+# Repo-less (CLAUDE.md, 2026-08-01): this script never runs `git clone` --
+# `pip install nyxgpt` is the only source of the application, so it works on
+# a target instance with no repo checkout.
+#
+# Rendered by `nyxgpt cloud user-data --os linux` (src/nyxgpt/cloud_provision.py),
+# which fills in NYXGPT_VERSION below with a pinned PyPI version (from
+# --version), or leaves it blank for "latest". The result is meant to be
+# used verbatim as an EC2 instance's user-data (cloud-init runs it as root
+# on first boot).
+#
+# Supported AMI families and instance types: see docs/cloud.md's target-OS
+# support matrix.
+set -euxo pipefail
+
+NYXGPT_VERSION="__NYXGPT_VERSION__"
+# Override to target a login user other than the AMI's default (rarely
+# needed -- only if a custom AMI ships a different default account).
+NYXGPT_TARGET_USER="${NYXGPT_TARGET_USER:-}"
+
+if [ "$(id -u)" -ne 0 ]; then
+  echo "ec2-user-data-linux: must run as root (EC2 user-data does by default)" >&2
+  exit 1
+fi
+
+# The native install path is per-user (systemd --user, never root) -- resolve
+# the AMI's default non-root login account so services run under it, exactly
+# like a manual `nyxgpt ops install` would on an interactive SSH session.
+if [ -z "$NYXGPT_TARGET_USER" ]; then
+  # shellcheck disable=SC1091
+  . /etc/os-release
+  case "$ID" in
+    amzn) NYXGPT_TARGET_USER="ec2-user" ;;
+    ubuntu) NYXGPT_TARGET_USER="ubuntu" ;;
+    *)
+      echo "ec2-user-data-linux: unrecognized distro ID='$ID' -- set NYXGPT_TARGET_USER explicitly (see docs/cloud.md's target-OS support matrix)" >&2
+      exit 1
+      ;;
+  esac
+fi
+
+TARGET_HOME=$(getent passwd "$NYXGPT_TARGET_USER" | cut -d: -f6)
+if [ -z "$TARGET_HOME" ]; then
+  echo "ec2-user-data-linux: user '$NYXGPT_TARGET_USER' does not exist on this instance" >&2
+  exit 1
+fi
+
+# Python 3 + pip via the distro's own package manager -- dnf on Amazon
+# Linux, apt on Ubuntu, the two families in the support matrix.
+if command -v dnf >/dev/null 2>&1; then
+  dnf install -y python3 python3-pip
+elif command -v apt-get >/dev/null 2>&1; then
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -y
+  apt-get install -y python3 python3-pip python3-venv
+else
+  echo "ec2-user-data-linux: no supported package manager found (need dnf or apt-get)" >&2
+  exit 1
+fi
+
+# Install nyxgpt from PyPI as the target user, never root -- no repo clone.
+PIP_SPEC="nyxgpt"
+if [ -n "$NYXGPT_VERSION" ]; then
+  PIP_SPEC="nyxgpt==${NYXGPT_VERSION}"
+fi
+sudo -u "$NYXGPT_TARGET_USER" -H python3 -m pip install --user "$PIP_SPEC"
+
+# Ollama's official installer (also no repo clone).
+if ! command -v ollama >/dev/null 2>&1; then
+  curl -fsSL https://ollama.com/install.sh | sh
+fi
+
+# There is no interactive login on first boot, so a systemd --user unit
+# needs lingering enabled to keep running once user-data finishes.
+loginctl enable-linger "$NYXGPT_TARGET_USER"
+
+USER_BIN="$TARGET_HOME/.local/bin"
+NYXGPT_CLI="$USER_BIN/nyxgpt"
+
+sudo -u "$NYXGPT_TARGET_USER" -H mkdir -p "$TARGET_HOME/.nyxGPT"
+if [ ! -f "$TARGET_HOME/.nyxGPT/config.ini" ]; then
+  EXAMPLE_CONFIG=$(sudo -u "$NYXGPT_TARGET_USER" -H python3 -c \
+    "from nyxgpt import config_wizard; print(config_wizard._EXAMPLE_CONFIG_PATH)")
+  sudo -u "$NYXGPT_TARGET_USER" -H cp "$EXAMPLE_CONFIG" "$TARGET_HOME/.nyxGPT/config.ini"
+fi
+
+sudo -u "$NYXGPT_TARGET_USER" -H env "PATH=$USER_BIN:$PATH" "$NYXGPT_CLI" ops install --skip-observability
+
+echo "ec2-user-data-linux: nyxGPT installed and started for user '$NYXGPT_TARGET_USER'"

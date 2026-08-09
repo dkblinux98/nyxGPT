@@ -2921,6 +2921,46 @@ def test_cloud_allow_ip_dispatch_with_options(monkeypatch: pytest.MonkeyPatch) -
     assert calls[0].region == "us-east-1"
 
 
+def test_cloud_user_data_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    import nyxgpt.cli as cli_mod
+
+    calls: list[object] = []
+    monkeypatch.setattr(
+        cli_mod.cloud_provision_mod, "user_data", lambda args: (calls.append(args), 0)[1]
+    )
+
+    exit_code = cli(["cloud", "user-data", "--os", "linux"])
+
+    assert exit_code == 0
+    assert len(calls) == 1
+    assert calls[0].os == "linux"
+    assert calls[0].version is None
+    assert calls[0].output is None
+
+
+def test_cloud_user_data_dispatch_with_options(monkeypatch: pytest.MonkeyPatch) -> None:
+    import nyxgpt.cli as cli_mod
+
+    calls: list[object] = []
+    monkeypatch.setattr(
+        cli_mod.cloud_provision_mod, "user_data", lambda args: (calls.append(args), 0)[1]
+    )
+
+    exit_code = cli(
+        ["cloud", "user-data", "--os", "macos", "--version", "3.0.0", "--output", "/tmp/out.sh"]
+    )
+
+    assert exit_code == 0
+    assert calls[0].os == "macos"
+    assert calls[0].version == "3.0.0"
+    assert calls[0].output == "/tmp/out.sh"
+
+
+def test_cloud_user_data_rejects_unknown_os() -> None:
+    with pytest.raises(SystemExit):
+        cli(["cloud", "user-data", "--os", "windows"])
+
+
 # --- canary command dispatch ---
 
 
