@@ -67,7 +67,8 @@ jobs:
             exit 0
           fi
 
-          # Check if issue already has Status set (web UI issues will)
+          # Check if issue already has Status set (web UI issues will).
+          # projectItems is Projects-v2 data -- GraphQL-only, stays on GraphQL.
           STATUS=$(gh issue view "$ISSUE" --json projectItems \
                    --jq '.projectItems[0].status.name // empty' \
                    2>/dev/null || echo "")
@@ -100,8 +101,10 @@ jobs:
           ITEM_ID=$(ensure_issue_in_project "$ISSUE")
           echo "Issue #$ISSUE in project: $ITEM_ID"
 
-          # Get issue details for intelligent defaults
-          ISSUE_DATA=$(gh issue view "$ISSUE" --json title,body,labels)
+          # Get issue details for intelligent defaults (plain issue data --
+          # REST; no Projects-v2 dependency)
+          ISSUE_DATA=$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${ISSUE}" \
+            --jq '{title, body, labels}')
           TITLE=$(echo "$ISSUE_DATA" | jq -r '.title')
           BODY=$(echo "$ISSUE_DATA" | jq -r '.body // ""')
           LABELS=$(echo "$ISSUE_DATA" | jq -r '.labels[].name' | tr '\n' ' ')
@@ -332,6 +335,7 @@ jobs:
           GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
         run: |
           PR=${{ github.event.pull_request.number }}
+          # projectItems is Projects-v2 data -- GraphQL-only, stays on GraphQL.
           STATUS=$(gh pr view "$PR" --json projectItems \
                    --jq '.projectItems[0].status.name // empty' 2>/dev/null || echo "")
           if [[ -n "$STATUS" ]]; then
@@ -362,8 +366,9 @@ jobs:
           load_config
           require_gh_auth
 
-          # Linked issue from "Closes #N" in the body, if any.
-          BODY=$(gh pr view "$PR" --json body --jq '.body // ""')
+          # Linked issue from "Closes #N" in the body, if any (plain PR data
+          # -- REST; no Projects-v2 dependency).
+          BODY=$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/pulls/${PR}" --jq '.body // ""')
           ISSUE=$(echo "$BODY" | grep -oiE 'closes #[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
 
           if [[ -n "$ISSUE" ]]; then
