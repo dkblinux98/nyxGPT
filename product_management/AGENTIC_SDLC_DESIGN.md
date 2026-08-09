@@ -256,7 +256,52 @@ W5 ──▶ W6 (charters/runbooks/docs)
 - **#3667** — review-round data from GitHub via dump workflow (unblocks W4's
   statistics inputs).
 
-## 9. Non-goals
+## 9. Watching must be intelligent, not scripted (owner principle, 2026-08-09)
+
+Recorded from the 2026-08-09 incident post-mortem, **binding on the future
+nyxAgent agent-dashboard design**:
+
+> Process-based scripted watching doesn't work. You have to think of every
+> possible vector of failure and script for that — it's untenable. A human
+> watcher would have caught this quickly.
+
+The incident that proves it: a runner-image change flipped `gh api`'s HTTP
+method, a step every dev run passes through began failing deterministically,
+and the self-heal pipeline — plus this owner-session's own scripted monitors —
+burned ~50 redundant Claude invocations across five issues over ten hours.
+Every safety mechanism in the loop was *correctness*-shaped (retry,
+re-diagnose, keep trying); none was *budget*-shaped (stop — this is costing
+money faster than it is producing value). The scripted watchers missed it
+because they watched pre-enumerated signals (specific branch names, specific
+status transitions), and the failure arrived on a vector nobody had enumerated
+— which is the only kind of failure that matters. Meanwhile the system's own
+FATAL self-diagnosis, containing the complete correct remedy, sat unread in an
+issue thread for eight hours because escalations had no route to a human.
+
+Design consequences:
+
+1. **The watcher is an agent, not a script.** The nyxAgent dashboard's
+   monitoring layer must put an intelligent context in front of *raw, broad
+   state* (run history, failure counts, spend counters, board state) at a
+   regular cadence and ask "does anything here look wrong?" — anomaly
+   judgment, not pattern matching. Scripted checks remain as cheap tripwires,
+   but they are the floor, never the ceiling.
+2. **Budget-shaped circuit breakers alongside correctness-shaped ones**:
+   per-issue and global caps on expensive invocations per unit time; breach
+   pauses the pipeline and notifies, unconditionally.
+3. **Cross-issue anomaly rule**: the same step failing on *different* issues
+   in a short window is one infrastructure event, not N coding problems —
+   one diagnosis, global pause, never N parallel loops.
+4. **Escalations reach a human channel** (push/email/dashboard alert), never
+   only a thread comment.
+5. **Spend telemetry is first-class sprint data**: Claude-invocation counts
+   and runner minutes per issue land in the retro data substrate (§7), so
+   every issue has a price and retrospectives surface cost regressions.
+
+Action items 2–5 were proposed to the owner on 2026-08-09 and are **pending
+owner direction** — not yet filed as issues.
+
+## 10. Non-goals
 
 - No sub-issues — relationships live in the native Relationships field only.
 - No rebase tooling of any kind; no force-push allowances.
