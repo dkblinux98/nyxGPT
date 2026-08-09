@@ -34,7 +34,17 @@ SECRETS_MANAGER_PROVIDER = "secretsmanager"
 # secret takes effect without a process restart.
 _CACHE_TTL_SECONDS = 300.0
 
+# How long a *failed* resolution is remembered before retrying AWS. Much
+# shorter than the success TTL (a fix should take effect quickly), but long
+# enough that a sustained outage/misconfiguration (bad IAM, wrong prefix,
+# missing boto3) degrades to "one AWS round trip every N seconds" instead of
+# "one AWS round trip per caller" -- callers on a hot path (e.g. the
+# `[auth] api_key` check on every `/api/v1/*` request) would otherwise retry
+# unboundedly.
+_NEGATIVE_CACHE_TTL_SECONDS = 30.0
+
 _cache: dict[str, tuple[float, str]] = {}
+_failure_cache: dict[str, tuple[float, str]] = {}
 
 
 class CloudSecretsError(RuntimeError):
@@ -44,6 +54,7 @@ class CloudSecretsError(RuntimeError):
 def clear_cache() -> None:
     """Clear the in-process resolved-secret cache (test helper, also useful after a manual rotation)."""
     _cache.clear()
+    _failure_cache.clear()
 
 
 def _cache_get(cache_key: str) -> str | None:
@@ -55,6 +66,17 @@ def _cache_get(cache_key: str) -> str | None:
     if time.monotonic() - fetched_at > _CACHE_TTL_SECONDS:
         return None
     return value
+
+
+def _failure_cache_get(cache_key: str) -> str | None:
+    """Return the cached failure message for `cache_key` if present and not yet expired, else `None`."""
+    entry = _failure_cache.get(cache_key)
+    if entry is None:
+        return None
+    fetched_at, message = entry
+    if time.monotonic() - fetched_at > _NEGATIVE_CACHE_TTL_SECONDS:
+        return None
+    return message
 
 
 def _get_boto3_client(service: str, region: str | None) -> Any:
@@ -133,22 +155,35 @@ def resolve_secret(
     `f"{ssm_prefix}/{key}"`) or `SECRETS_MANAGER_PROVIDER` (one JSON secret
     holding every key, at `secretsmanager_id`). Cached for
     `_CACHE_TTL_SECONDS` per `(provider, region, prefix/id, key)`. Raises
-    `CloudSecretsError` on any failure -- callers decide how to degrade.
+    `CloudSecretsError` on any failure -- callers decide how to degrade. A
+    fetch failure (unlike a success) is remembered for only
+    `_NEGATIVE_CACHE_TTL_SECONDS`, so a sustained AWS-side failure still
+    retries periodically rather than being cached for the full success TTL.
     """
-    cache_key = f"{provider}:{region}:{ssm_prefix}:{secretsmanager_id}:{key}"
-    cached = _cache_get(cache_key)
-    if cached is not None:
-        return cached
-
-    if provider == SSM_PROVIDER:
-        value = fetch_ssm_parameter(f"{ssm_prefix.rstrip('/')}/{key}", region=region)
-    elif provider == SECRETS_MANAGER_PROVIDER:
-        value = fetch_secretsmanager_key(secretsmanager_id, key, region=region)
-    else:
+    if provider not in (SSM_PROVIDER, SECRETS_MANAGER_PROVIDER):
         raise CloudSecretsError(
             f"Unknown [secrets] provider {provider!r} -- expected "
             f"{SSM_PROVIDER!r} or {SECRETS_MANAGER_PROVIDER!r}"
         )
 
+    cache_key = f"{provider}:{region}:{ssm_prefix}:{secretsmanager_id}:{key}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    cached_failure = _failure_cache_get(cache_key)
+    if cached_failure is not None:
+        raise CloudSecretsError(cached_failure)
+
+    try:
+        if provider == SSM_PROVIDER:
+            value = fetch_ssm_parameter(f"{ssm_prefix.rstrip('/')}/{key}", region=region)
+        else:
+            value = fetch_secretsmanager_key(secretsmanager_id, key, region=region)
+    except CloudSecretsError as exc:
+        _failure_cache[cache_key] = (time.monotonic(), str(exc))
+        raise
+
     _cache[cache_key] = (time.monotonic(), value)
+    _failure_cache.pop(cache_key, None)
     return value

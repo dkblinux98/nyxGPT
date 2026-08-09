@@ -195,6 +195,66 @@ def test_resolve_secret_cache_expires(monkeypatch):
     assert len(client.calls) == 2
 
 
+def test_resolve_secret_caches_failures_and_does_not_retry_immediately(monkeypatch):
+    client = _FakeSSMClient({})
+    monkeypatch.setattr(cloud_secrets, "_get_boto3_client", lambda service, region: client)
+
+    with pytest.raises(cloud_secrets.CloudSecretsError, match="ParameterNotFound"):
+        cloud_secrets.resolve_secret(cloud_secrets.SSM_PROVIDER, "auth_api_key")
+    with pytest.raises(cloud_secrets.CloudSecretsError, match="ParameterNotFound"):
+        cloud_secrets.resolve_secret(cloud_secrets.SSM_PROVIDER, "auth_api_key")
+
+    # Second call hit the negative cache, not AWS again.
+    assert len(client.calls) == 1
+
+
+def test_resolve_secret_retries_after_negative_cache_expires(monkeypatch):
+    client = _FakeSSMClient({})
+    monkeypatch.setattr(cloud_secrets, "_get_boto3_client", lambda service, region: client)
+
+    times = iter([100.0, 200.0, 200.0])
+    monkeypatch.setattr(cloud_secrets.time, "monotonic", lambda: next(times))
+
+    with pytest.raises(cloud_secrets.CloudSecretsError):
+        cloud_secrets.resolve_secret(cloud_secrets.SSM_PROVIDER, "auth_api_key")
+    with pytest.raises(cloud_secrets.CloudSecretsError):
+        cloud_secrets.resolve_secret(cloud_secrets.SSM_PROVIDER, "auth_api_key")
+
+    assert len(client.calls) == 2
+
+
+def test_resolve_secret_success_after_failure_clears_negative_cache(monkeypatch):
+    client = _FakeSSMClient({})
+    monkeypatch.setattr(cloud_secrets, "_get_boto3_client", lambda service, region: client)
+
+    with pytest.raises(cloud_secrets.CloudSecretsError):
+        cloud_secrets.resolve_secret(cloud_secrets.SSM_PROVIDER, "auth_api_key")
+
+    client.params["/nyxgpt/auth_api_key"] = "sk-recovered"
+    cloud_secrets.clear_cache()
+    value = cloud_secrets.resolve_secret(cloud_secrets.SSM_PROVIDER, "auth_api_key")
+
+    assert value == "sk-recovered"
+    # A subsequent call reuses the success cache rather than the (now stale) failure.
+    value_again = cloud_secrets.resolve_secret(cloud_secrets.SSM_PROVIDER, "auth_api_key")
+    assert value_again == "sk-recovered"
+    assert len(client.calls) == 2
+
+
+def test_resolve_secret_rejects_unknown_provider_without_touching_cache(monkeypatch):
+    calls = []
+    monkeypatch.setattr(cloud_secrets, "_get_boto3_client", lambda service, region: calls.append(1))
+
+    with pytest.raises(cloud_secrets.CloudSecretsError, match="Unknown \\[secrets\\] provider"):
+        cloud_secrets.resolve_secret("vault", "auth_api_key")
+    with pytest.raises(cloud_secrets.CloudSecretsError, match="Unknown \\[secrets\\] provider"):
+        cloud_secrets.resolve_secret("vault", "auth_api_key")
+
+    # Never touched AWS -- the unknown-provider check is a static config
+    # error, independent of the success/failure caches.
+    assert calls == []
+
+
 def test_clear_cache_forces_refetch(monkeypatch):
     client = _FakeSSMClient({"/nyxgpt/auth_api_key": "sk-ssm-secret"})
     monkeypatch.setattr(cloud_secrets, "_get_boto3_client", lambda service, region: client)

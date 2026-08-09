@@ -162,6 +162,14 @@ the instance needs to change:
   effect on its own within that window without a restart.
 - To force it immediately, restart the API: `nyxgpt ops restart api`.
 
+**The `/admin/access` dashboard's "rotate API key" button is disabled when a
+cloud secrets provider is configured.** `get_auth_api_key` always prefers the
+AWS-resolved value over `config.ini`, so a rotation written to `config.ini`
+by that endpoint would be inert -- the middleware would keep enforcing the
+old cloud-stored key while the dashboard reported the new one as active.
+`POST /admin/access` rejects `{"rotate": true}` with `400` in that case;
+rotate via the AWS CLI/console as above instead.
+
 ### Failure behavior
 
 If a provider is configured but AWS resolution fails (missing parameter,
@@ -174,6 +182,11 @@ than accepting none. For `[openai] api_key` / `[github] pat`, that
 integration simply doesn't work until the underlying AWS issue is fixed;
 check the nyxGPT process logs for a `Cloud secret resolution failed for
 ...` warning naming the failing key and provider.
+
+A sustained failure (outage, bad IAM, wrong prefix) is remembered for only
+30 seconds (vs. the 5-minute success cache), so resolution is retried
+periodically rather than requiring a restart once the underlying issue is
+fixed.
 
 ### Testing
 
