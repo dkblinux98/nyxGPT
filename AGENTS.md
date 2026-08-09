@@ -53,6 +53,9 @@ Allowed:
 Scripts:
 - scrummaster_next_issue.sh
 - scrummaster_start_issue.sh <ISSUE>
+- scrummaster_dispatch_next.sh — select-and-start with fall-through: one
+  unclaimable candidate (stray assignee, human hold) excludes and retries
+  the next candidate instead of blocking the whole queue (#3665)
 
 Forbidden:
 - Writing code

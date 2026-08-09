@@ -756,27 +756,132 @@ assign_and_trigger_developer() {
   _debug "Assigned developer to #$issue - workflow will trigger via assignment event"
 }
 
-# True (exit 0) if `issue` is OPEN and has no assignees yet -- i.e. safe for
-# scrummaster_start_issue.sh to claim. False otherwise (already assigned by
-# a concurrent/earlier dispatch, or closed), so the caller can skip a
-# duplicate start instead of re-triggering the developer workflow (#3647: a
-# burst of READY_FOR_NEXT_ISSUE triggers picked the same issue twice, firing
-# two developer_auto_implement runs 13 seconds apart, and one re-selected an
-# already-closed issue whose project-board Status hadn't propagated yet).
-issue_claimable_for_start() {
+# Classifies the current claim state of a Backlog issue for
+# scrummaster_start_issue.sh's start-guard decision matrix (owner ruling,
+# 2026-08-08, #3665). The #3647 guard treated ANY existing assignee as
+# "already claimed" and halted the whole dispatch -- but assign_backlog.yml
+# deliberately assigns SCRUM_AGENT to every fresh Backlog issue, so that
+# guard turned the normal steady state into a permanent, silent,
+# head-of-line block (#3593 stalled the sprint loop ~5 days). This
+# distinguishes *who* holds the claim instead of halting on any assignee.
+# Prints exactly one of:
+#
+#   claimable   -- unassigned, or assigned only to SCRUM_AGENT (the normal
+#                  Backlog-ownership state). Caller proceeds with the start.
+#   duplicate   -- DEV_AGENT is among the assignees: a concurrent/earlier
+#                  dispatch already started this issue (the #3647 burst-race
+#                  pattern, a known/benign playbook). Not a block -- skip
+#                  quietly, try the next candidate.
+#   human_hold  -- assigned only to HUMAN_OWNER: a deliberate hold. No
+#                  process may reassign it. Skip quietly, try the next
+#                  candidate.
+#   anomaly     -- any other assignee combination (unrecognized -- e.g. the
+#                  review agent while still Backlog). Caller must report
+#                  loudly (never silently reassign) and try the next
+#                  candidate.
+#   closed      -- issue is no longer OPEN. Skip quietly.
+classify_backlog_claim_state() {
   local issue="$1"
   local state assignees
   state="$(gh issue view "$issue" --repo "${REPO_OWNER}/${REPO_NAME}" --json state --jq '.state' 2>/dev/null || echo "UNKNOWN")"
   if [[ "$state" != "OPEN" ]]; then
-    _warn "Issue #${issue} is not OPEN (state=${state}) -- skipping duplicate start."
-    return 1
+    echo "closed"
+    return 0
   fi
+
   assignees="$(_issue_assignee_logins "$issue" 2>/dev/null || echo "")"
-  if [[ -n "$assignees" ]]; then
-    _warn "Issue #${issue} already has assignee(s) (${assignees}) -- a concurrent/earlier dispatch already claimed it. Skipping duplicate start."
-    return 1
+
+  if [[ -z "$assignees" || "$assignees" == "$SCRUM_AGENT" ]]; then
+    echo "claimable"
+    return 0
   fi
+
+  if [[ ",${assignees}," == *",${DEV_AGENT},"* ]]; then
+    echo "duplicate"
+    return 0
+  fi
+
+  if [[ -n "${HUMAN_OWNER:-}" && "$assignees" == "$HUMAN_OWNER" ]]; then
+    echo "human_hold"
+    return 0
+  fi
+
+  echo "anomaly"
   return 0
+}
+
+# Executes the #3665 start-guard decision matrix for one Backlog candidate:
+# classifies its claim state via classify_backlog_claim_state, then either
+# performs the start (history-correct for a freshly unassigned issue --
+# assign scrummaster, assign developer, then Status -> In Progress -- or the
+# normal order for an already scrummaster-assigned issue) or skips per the
+# matrix. Split out of scrummaster_start_issue.sh so both the script and
+# scrummaster_dispatch_next.sh's fall-through loop share one implementation,
+# and so it can be unit-tested by stubbing the individual primitives below
+# instead of mocking `gh` end to end.
+#
+# Prints a human-readable status line plus, on any skip, a machine-parseable
+# "SKIPPED #<issue> reason=<reason>[ assignee=<logins>]" line. Returns:
+#   0   started
+#   10  skipped quietly (duplicate in-flight start, a deliberate human hold,
+#       or the issue is no longer open) -- not a block
+#   11  skipped loudly (unrecognized assignee) -- a comment was posted on
+#       the issue
+scrummaster_attempt_start() {
+  local issue="$1"
+  local claim_state assignees
+
+  claim_state="$(classify_backlog_claim_state "$issue")"
+
+  case "$claim_state" in
+    closed)
+      echo "SKIPPED #$issue reason=closed"
+      echo "Skipped issue #$issue -- not OPEN, no start."
+      return 10
+      ;;
+    duplicate)
+      echo "SKIPPED #$issue reason=duplicate"
+      echo "Skipped issue #$issue -- @${DEV_AGENT} already assigned (a concurrent/earlier dispatch already started it). Not a block; moving on."
+      return 10
+      ;;
+    human_hold)
+      echo "SKIPPED #$issue reason=human_hold"
+      echo "Skipped issue #$issue -- held by @${HUMAN_OWNER:-the human owner}. Deliberate hold; moving on."
+      return 10
+      ;;
+    anomaly)
+      assignees="$(_issue_assignee_logins "$issue" 2>/dev/null || echo "")"
+      issue_comment "$issue" "⚠️ **Scrummaster Agent**: Backlog issue #${issue} has an unexpected assignee (\`${assignees}\`) -- expected unassigned, @${SCRUM_AGENT}, or @${HUMAN_OWNER:-the human owner}. Skipping and moving to the next candidate; please inspect the assignment history and resolve manually. (No process reassigns this automatically.)"
+      echo "SKIPPED #$issue reason=anomaly assignee=${assignees}"
+      echo "Skipped issue #$issue -- unrecognized assignee(s): ${assignees}. Reported on the issue."
+      return 11
+      ;;
+    claimable)
+      assignees="$(_issue_assignee_logins "$issue" 2>/dev/null || echo "")"
+      if [[ -z "$assignees" ]]; then
+        # Unassigned Backlog is treated as belonging to the scrummaster
+        # (owner ruling 2026-08-08): keep the assignment history correct by
+        # assigning the scrummaster first so the timeline reads identically
+        # to an issue that was stamped by assign_backlog.yml at creation,
+        # then continue with the normal history-correct sequence: dev
+        # assignment, then Status -> In Progress.
+        assign_issue_verified "$issue" "$SCRUM_AGENT"
+        assign_and_trigger_developer "$issue"
+        set_issue_status "$issue" "$STATUS_IN_PROGRESS"
+      else
+        set_issue_status "$issue" "$STATUS_IN_PROGRESS"
+        assign_and_trigger_developer "$issue"
+      fi
+      issue_comment "$issue" "@${DEV_AGENT} selected as next work item by @${SCRUM_AGENT}. Status -> ${STATUS_IN_PROGRESS}."
+      echo "STARTED #$issue"
+      echo "Started issue #$issue -> ${STATUS_IN_PROGRESS}, assignee: $DEV_AGENT"
+      return 0
+      ;;
+    *)
+      echo "[error] classify_backlog_claim_state returned unexpected state '${claim_state}' for issue #${issue}" >&2
+      return 1
+      ;;
+  esac
 }
 
 # -------------------------

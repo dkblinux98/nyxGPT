@@ -282,9 +282,11 @@ UNASSIGN_SEEN=0
 for c in "${GH_CALLS[@]}"; do [[ "$c" == "issue edit"* ]] && UNASSIGN_SEEN=1; done
 _assert_eq "redispatch unassigns before reassigning" "1" "$UNASSIGN_SEEN"
 
-# --- Test 11: issue_claimable_for_start gates scrummaster_start_issue.sh's ---
-# --- idempotency check (#3647 scope addition: duplicate concurrent ---
-# --- dispatches must not both claim the same issue) ---
+# --- Test 11: classify_backlog_claim_state implements the #3665 start-guard ---
+# --- decision matrix -- distinguishing *who* holds the claim instead of ---
+# --- halting on any assignee (the #3647 guard's bug: assign_backlog.yml's ---
+# --- routine SCRUM_AGENT stamp on every fresh Backlog issue was itself ---
+# --- treated as "already claimed", permanently blocking the queue) ---
 gh() {
   case "$1 $2" in
     "issue view") echo "${ISSUE_STATE_STUB:-OPEN}" ;;
@@ -292,32 +294,115 @@ gh() {
   esac
 }
 
-ISSUE_STATE_STUB="OPEN"
-_issue_assignee_logins() { echo ""; }
-if issue_claimable_for_start "80"; then
-  echo "[ok] issue_claimable_for_start true for an open, unassigned issue"
-else
-  echo "[FAIL] issue_claimable_for_start should be true for an open, unassigned issue" >&2
-  FAILURES=$((FAILURES + 1))
-fi
+SCRUM_AGENT="myGPT-scrummaster-agent"
+DEV_AGENT="myGPT-developer-agent"
+HUMAN_OWNER="dkblinux98"
 
 ISSUE_STATE_STUB="OPEN"
-_issue_assignee_logins() { echo "myGPT-developer-agent"; }
-if issue_claimable_for_start "81"; then
-  echo "[FAIL] issue_claimable_for_start should be false once another dispatch already assigned the issue" >&2
-  FAILURES=$((FAILURES + 1))
-else
-  echo "[ok] issue_claimable_for_start false once another dispatch already assigned the issue"
-fi
+_issue_assignee_logins() { echo ""; }
+_assert_eq "unassigned Backlog issue classifies as claimable" \
+  "claimable" "$(classify_backlog_claim_state "80")"
+
+ISSUE_STATE_STUB="OPEN"
+_issue_assignee_logins() { echo "$SCRUM_AGENT"; }
+_assert_eq "scrummaster-assigned Backlog issue classifies as claimable (the routine assign_backlog.yml stamp)" \
+  "claimable" "$(classify_backlog_claim_state "81")"
+
+ISSUE_STATE_STUB="OPEN"
+_issue_assignee_logins() { echo "$DEV_AGENT"; }
+_assert_eq "dev-agent-assigned issue classifies as duplicate (in-flight start, not a block)" \
+  "duplicate" "$(classify_backlog_claim_state "82")"
+
+ISSUE_STATE_STUB="OPEN"
+_issue_assignee_logins() { echo "$HUMAN_OWNER"; }
+_assert_eq "human-owner-assigned issue classifies as human_hold" \
+  "human_hold" "$(classify_backlog_claim_state "83")"
+
+ISSUE_STATE_STUB="OPEN"
+_issue_assignee_logins() { echo "myGPT-review-agent"; }
+_assert_eq "unrecognized assignee classifies as anomaly" \
+  "anomaly" "$(classify_backlog_claim_state "84")"
 
 ISSUE_STATE_STUB="CLOSED"
 _issue_assignee_logins() { echo ""; }
-if issue_claimable_for_start "82"; then
-  echo "[FAIL] issue_claimable_for_start should be false for a closed issue" >&2
-  FAILURES=$((FAILURES + 1))
+_assert_eq "closed issue classifies as closed" \
+  "closed" "$(classify_backlog_claim_state "85")"
+
+# --- Test 12: scrummaster_attempt_start acts on classify_backlog_claim_state's ---
+# --- verdict (#3665 acceptance criteria a/b/c) -- stub the classifier and ---
+# --- every mutating primitive directly so this exercises the decision logic ---
+# --- alone, independent of Test 11's `gh` stubbing ---
+STATUS_IN_PROGRESS="In Progress"
+
+ASSIGN_VERIFIED_CALLS=()
+assign_issue_verified() { ASSIGN_VERIFIED_CALLS+=("$1 $2"); }
+TRIGGER_DEV_CALLS=()
+assign_and_trigger_developer() { TRIGGER_DEV_CALLS+=("$1"); }
+SET_STATUS_CALLS=()
+set_issue_status() { SET_STATUS_CALLS+=("$1 $2"); }
+COMMENT_CALLS=()
+issue_comment() { COMMENT_CALLS+=("$1 $2"); }
+
+# (a) A stale scrummaster self-claim (#3593's actual trigger state) is a
+# routine "claimable" verdict with an existing assignee -- reclaimed via the
+# normal (non-history-correct) order and started.
+classify_backlog_claim_state() { echo "claimable"; }
+_issue_assignee_logins() { echo "$SCRUM_AGENT"; }
+ASSIGN_VERIFIED_CALLS=(); TRIGGER_DEV_CALLS=(); SET_STATUS_CALLS=(); COMMENT_CALLS=()
+if scrummaster_attempt_start "3593" >/dev/null; then
+  echo "[ok] scrummaster_attempt_start returns 0 for a stale scrummaster self-claim"
 else
-  echo "[ok] issue_claimable_for_start false for a closed issue"
+  echo "[FAIL] scrummaster_attempt_start should return 0 for a stale scrummaster self-claim" >&2
+  FAILURES=$((FAILURES + 1))
 fi
+_assert_eq "reclaiming a scrummaster-assigned issue does not re-assign the scrummaster" "0" "${#ASSIGN_VERIFIED_CALLS[@]}"
+_assert_eq "reclaiming a scrummaster-assigned issue assigns the developer" "1" "${#TRIGGER_DEV_CALLS[@]}"
+_assert_eq "reclaiming a scrummaster-assigned issue sets Status -> In Progress" "1" "${#SET_STATUS_CALLS[@]}"
+
+# A genuinely unassigned Backlog issue gets the history-correct sequence:
+# scrummaster assigned first, then developer, then Status.
+_issue_assignee_logins() { echo ""; }
+ASSIGN_VERIFIED_CALLS=(); TRIGGER_DEV_CALLS=(); SET_STATUS_CALLS=(); COMMENT_CALLS=()
+scrummaster_attempt_start "3594" >/dev/null
+_assert_eq "an unassigned Backlog issue is assigned to the scrummaster first" "1" "${#ASSIGN_VERIFIED_CALLS[@]}"
+_assert_eq "history-correct start targets the scrummaster" "3594 $SCRUM_AGENT" "${ASSIGN_VERIFIED_CALLS[0]}"
+
+# (b) A candidate already assigned to the dev agent is a duplicate in-flight
+# start -- skip quietly (exit 10), no mutation, no comment. gh_project.sh's
+# own `set -euo pipefail` is in effect in this sourcing shell, so a
+# non-zero return from a bare top-level call would abort the test script --
+# guard it like the earlier `set_field_with_retry` failure-path tests do.
+classify_backlog_claim_state() { echo "duplicate"; }
+ASSIGN_VERIFIED_CALLS=(); TRIGGER_DEV_CALLS=(); SET_STATUS_CALLS=(); COMMENT_CALLS=()
+set +e
+scrummaster_attempt_start "3595" >/dev/null
+RC=$?
+set -e
+_assert_eq "a dev-assigned candidate returns 10 (quiet skip)" "10" "$RC"
+_assert_eq "a dev-assigned candidate is never mutated" "0" "$((${#ASSIGN_VERIFIED_CALLS[@]} + ${#TRIGGER_DEV_CALLS[@]} + ${#SET_STATUS_CALLS[@]}))"
+_assert_eq "a dev-assigned candidate posts no comment" "0" "${#COMMENT_CALLS[@]}"
+
+# (c) An unrecognized assignee is an anomaly -- skip loudly (exit 11), a
+# comment naming the issue and the anomalous assignee is posted, no mutation.
+classify_backlog_claim_state() { echo "anomaly"; }
+_issue_assignee_logins() { echo "myGPT-review-agent"; }
+ASSIGN_VERIFIED_CALLS=(); TRIGGER_DEV_CALLS=(); SET_STATUS_CALLS=(); COMMENT_CALLS=()
+set +e
+scrummaster_attempt_start "3596" >/dev/null
+RC=$?
+set -e
+_assert_eq "an anomalous candidate returns 11 (loud skip)" "11" "$RC"
+_assert_eq "an anomalous candidate is never mutated" "0" "$((${#ASSIGN_VERIFIED_CALLS[@]} + ${#TRIGGER_DEV_CALLS[@]} + ${#SET_STATUS_CALLS[@]}))"
+_assert_eq "an anomalous candidate posts exactly one report comment" "1" "${#COMMENT_CALLS[@]}"
+case "${COMMENT_CALLS[0]:-}" in
+  "3596 "*"myGPT-review-agent"*)
+    echo "[ok] the anomaly comment names the issue and the anomalous assignee"
+    ;;
+  *)
+    echo "[FAIL] the anomaly comment should name the issue and the anomalous assignee, got: ${COMMENT_CALLS[0]:-<empty>}" >&2
+    FAILURES=$((FAILURES + 1))
+    ;;
+esac
 
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "All tests passed."
