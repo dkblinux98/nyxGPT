@@ -1,13 +1,28 @@
 'use client';
 
-// SRE/admin surface for the AWS substrate (P6-8, #3509) -- the dashboard
-// counterpart of `nyxgpt cloud infra`. Both drive the same backend functions,
-// so the access model (SSH on port 22 only, scoped to the owner's IP, never
-// 0.0.0.0/0) is identical whichever surface provisions the instance.
+// SRE/admin surface for the AWS substrate (P6-8, #3509) and the deployment on
+// it (P6-11, #3513) -- the dashboard counterpart of `nyxgpt cloud infra` and
+// `nyxgpt cloud deploy`.
 //
-// Provisioning is a slow, real-money operation, so this page is deliberately
-// explicit: plan is always available, apply states what it will create, and
-// destroy requires typing the word DESTROY.
+// **This page does not deploy or tear anything down.** The owner's 2026-08-09
+// decision on P6-15 (#3514) extends the #3410 status-only precedent from the
+// local Infrastructure page to cloud: the cloud surface is
+// status-plus-CLI-pointers, because cloud lifecycle actions are rare,
+// consequential operations for which a deliberate CLI invocation is the safer
+// surface. So the Apply, Deploy and Destroy controls that #3509/#3513 shipped
+// here are gone, replaced by the wrapped `nyxgpt` commands that own them
+// (rendered from the backend's own LIFECYCLE_COMMANDS, so this page can never
+// drift from what the CLI actually accepts).
+//
+// What stays interactive is deliberately narrow and follows the decision's
+// own rationale -- neither rare nor consequential nor irreversible:
+//   * Plan, which previews what would change and creates nothing.
+//   * The access tunnel, which is a local SSH forward, not a lifecycle action;
+//     closing and reopening it changes nothing in AWS.
+//   * The Terraform state panel (P6-9, #3510), a separate subsystem with its
+//     own merged acceptance. The #3514 decision names `nyxgpt cloud deploy` /
+//     `nyxgpt cloud destroy`, so it is left as it was rather than reworked on
+//     an inference.
 
 import { useCallback, useEffect, useState } from 'react';
 import LoadingSpinner from '../../../components/LoadingSpinner';
@@ -80,6 +95,32 @@ type TunnelStatus = {
   urls: Record<string, string>;
 };
 
+// Whether the deployed stack answers /health through the tunnel. `checked` is
+// false when the backend was not asked to probe, or when there is no tunnel
+// open to probe through -- which is a different thing from "unhealthy", and is
+// rendered as such.
+type DeployHealth = {
+  checked: boolean;
+  healthy: boolean;
+  status: number;
+  url?: string;
+  reason: string;
+};
+
+// One deploy or teardown, as recorded by whichever surface ran it (P6-15,
+// #3514). The CLI writes these too, so the dashboard shows the terminal's
+// history and not just its own.
+type DeployHistoryEntry = {
+  ts: number;
+  action: string;
+  outcome: string;
+  version?: string;
+  host?: string;
+  instance_id?: string;
+  region?: string;
+  detail?: string;
+};
+
 type CloudDeployStatus = {
   deployed: boolean;
   version: string;
@@ -88,8 +129,11 @@ type CloudDeployStatus = {
   region: string;
   profiles: string[];
   tunnel: TunnelStatus;
+  health: DeployHealth;
+  history: DeployHistoryEntry[];
   urls: Record<string, string>;
   access_command: string;
+  commands: Record<string, string>;
 };
 
 const boxStyle: React.CSSProperties = {
@@ -144,6 +188,22 @@ function errorText(data: unknown, fallback: string): string {
   return fallback;
 }
 
+// "Not checked" is reported as its own answer rather than collapsed into
+// "unhealthy": a closed tunnel means the stack is unreachable from here, which
+// says nothing about whether it is running on the instance.
+function healthLabel(health: DeployHealth | undefined): string {
+  if (!health) return '';
+  if (health.healthy) return 'healthy (HTTP 200 over the tunnel)';
+  if (!health.checked) return `not checked — ${health.reason || 'no probe was run'}`;
+  return `unhealthy — ${health.status ? `HTTP ${health.status}` : 'no response'} over the tunnel`;
+}
+
+function historyLabel(entry: DeployHistoryEntry): string {
+  const when = Number.isFinite(entry.ts) ? new Date(entry.ts * 1000).toLocaleString() : '';
+  const what = entry.version ? `${entry.action} ${entry.version}` : entry.action;
+  return `${when} · ${what} · ${entry.outcome}`;
+}
+
 function Row({ label, value }: { label: string; value: string }) {
   return (
     <li style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', padding: '2px 0' }}>
@@ -156,11 +216,10 @@ function Row({ label, value }: { label: string; value: string }) {
 export default function CloudInfrastructurePage() {
   const [status, setStatus] = useState<CloudInfraStatus | null>(null);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState<'' | 'plan' | 'apply' | 'destroy'>('');
+  const [busy, setBusy] = useState<'' | 'plan'>('');
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [stateMessage, setStateMessage] = useState<string | null>(null);
-  const [confirmText, setConfirmText] = useState('');
   const [inputs, setInputs] = useState<ProvisionInputs>({
     region: '',
     ssh_key_name: '',
@@ -181,11 +240,9 @@ export default function CloudInfrastructurePage() {
   const [pendingRestore, setPendingRestore] = useState<string | null>(null);
 
   const [deployStatus, setDeployStatus] = useState<CloudDeployStatus | null>(null);
-  const [deployBusy, setDeployBusy] = useState<'' | 'deploy' | 'tunnel' | 'tunnel-stop'>('');
+  const [deployBusy, setDeployBusy] = useState<'' | 'refresh' | 'tunnel' | 'tunnel-stop'>('');
   const [deployError, setDeployError] = useState<string | null>(null);
   const [deployMessage, setDeployMessage] = useState<string | null>(null);
-  const [deployVersion, setDeployVersion] = useState('');
-  const [skipObservability, setSkipObservability] = useState(false);
 
   const loadStatus = useCallback(async () => {
     setError(null);
@@ -216,9 +273,15 @@ export default function CloudInfrastructurePage() {
   }, []);
 
   // Third independent subsystem, third error slot, same reasoning as above.
+  //
+  // `probe_health=true` is what turns "we recorded a deploy" into "the stack
+  // is answering right now". It costs one short request through the tunnel,
+  // which is why the backend makes it opt-in and why this page asks for it
+  // only on load and on an explicit Refresh, never on a timer.
   const loadDeployStatus = useCallback(async () => {
+    setDeployError(null);
     try {
-      const res = await fetch('/api/v1/cloud/deploy', { cache: 'no-store' });
+      const res = await fetch('/api/v1/cloud/deploy?probe_health=true', { cache: 'no-store' });
       const data = await res.json();
       if (!res.ok) throw new Error(errorText(data, `HTTP ${res.status}`));
       setDeployStatus(data as CloudDeployStatus);
@@ -227,64 +290,55 @@ export default function CloudInfrastructurePage() {
     }
   }, []);
 
+  const refreshDeployStatus = useCallback(async () => {
+    setDeployBusy('refresh');
+    setDeployMessage(null);
+    try {
+      await loadDeployStatus();
+    } finally {
+      setDeployBusy('');
+    }
+  }, [loadDeployStatus]);
+
   useEffect(() => {
     void loadStatus();
     void loadStateStatus();
     void loadDeployStatus();
   }, [loadStatus, loadStateStatus, loadDeployStatus]);
 
-  const runAction = useCallback(
-    async (action: 'plan' | 'apply' | 'destroy') => {
-      setBusy(action);
-      setError(null);
-      setMessage(null);
-      try {
-        // Empty strings mean "unchanged" -- the backend falls back to the
-        // settings the last run saved, exactly as the CLI flags do.
-        const body: Record<string, unknown> = {};
-        for (const [key, value] of Object.entries(inputs)) {
-          if (value.trim()) body[key] = value.trim();
-        }
-        if (action === 'destroy') body.confirm = true;
-
-        // Teardown goes through the deploy endpoint rather than the substrate
-        // one: it closes the access tunnel first and then performs the exact
-        // same Terraform destroy, so the dashboard never leaves a tunnel
-        // pointing at an instance that no longer exists.
-        const path =
-          action === 'destroy' ? '/api/v1/cloud/deploy/destroy' : `/api/v1/cloud/infra/${action}`;
-        const res = await fetch(path, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-          cache: 'no-store',
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(errorText(data, `HTTP ${res.status}`));
-
-        if (action === 'plan') {
-          setMessage('Plan complete. Nothing was created — review it, then Apply.');
-        } else if (action === 'apply') {
-          const outputs = (data.outputs ?? {}) as Record<string, string>;
-          setMessage(
-            `Substrate applied. Instance ${outputs.instance_id ?? 'unknown'} in ${
-              outputs.region ?? 'the configured region'
-            }. Reach it with an SSH tunnel; if your public IP changes, run \`nyxgpt cloud allow-ip\`.`
-          );
-        } else {
-          setMessage('Deployment destroyed: tunnel closed, substrate torn down.');
-          setConfirmText('');
-        }
-        await loadStatus();
-        if (action !== 'plan') await loadDeployStatus();
-      } catch (e: unknown) {
-        setError(e instanceof Error ? e.message : String(e));
-      } finally {
-        setBusy('');
+  // Plan is the one substrate action this page still runs, and it is safe to:
+  // it reports what an apply *would* change and creates nothing. Applying it
+  // is `nyxgpt cloud infra apply` (or `nyxgpt cloud deploy`, which applies as
+  // its first step) -- see the file header for why that is not a button.
+  const runPlan = useCallback(async () => {
+    setBusy('plan');
+    setError(null);
+    setMessage(null);
+    try {
+      // Empty strings mean "unchanged" -- the backend falls back to the
+      // settings the last run saved, exactly as the CLI flags do.
+      const body: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(inputs)) {
+        if (value.trim()) body[key] = value.trim();
       }
-    },
-    [inputs, loadStatus, loadDeployStatus]
-  );
+
+      const res = await fetch('/api/v1/cloud/infra/plan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        cache: 'no-store',
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(errorText(data, `HTTP ${res.status}`));
+
+      setMessage('Plan complete. Nothing was created or changed.');
+      await loadStatus();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy('');
+    }
+  }, [inputs, loadStatus]);
 
   const runStateAction = useCallback(
     async (action: 'migrate' | 'unlock' | 'versions' | 'restore', versionId?: string) => {
@@ -348,41 +402,6 @@ export default function CloudInfrastructurePage() {
     [lockId, loadStateStatus]
   );
 
-  // Deploy runs Terraform *and* a remote install, so it is the slowest action
-  // on this page by a wide margin; the button stays in its busy state for the
-  // whole synchronous request rather than optimistically returning.
-  const runDeploy = useCallback(async () => {
-    setDeployBusy('deploy');
-    setDeployError(null);
-    setDeployMessage(null);
-    try {
-      const body: Record<string, unknown> = {};
-      for (const [key, value] of Object.entries(inputs)) {
-        if (value.trim()) body[key] = value.trim();
-      }
-      if (deployVersion.trim()) body.version = deployVersion.trim();
-      if (skipObservability) body.skip_observability = true;
-
-      const res = await fetch('/api/v1/cloud/deploy', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        cache: 'no-store',
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(errorText(data, `HTTP ${res.status}`));
-      const plan = (data.plan ?? {}) as Record<string, string>;
-      setDeployMessage(
-        `nyxGPT ${plan.version ?? ''} deployed and healthy. The access tunnel is open — the URLs below are live.`
-      );
-      await Promise.all([loadDeployStatus(), loadStatus()]);
-    } catch (e: unknown) {
-      setDeployError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setDeployBusy('');
-    }
-  }, [inputs, deployVersion, skipObservability, loadDeployStatus, loadStatus]);
-
   const runTunnel = useCallback(
     async (action: 'start' | 'stop') => {
       setDeployBusy(action === 'stop' ? 'tunnel-stop' : 'tunnel');
@@ -432,9 +451,8 @@ export default function CloudInfrastructurePage() {
           AWS Cloud Infrastructure
         </h1>
         <p style={{ color: 'var(--foreground-muted)', marginBottom: 8 }}>
-          Provision the AWS substrate — a VPC, a public subnet, one SSH-only security group,
-          and a single EC2 instance — deploy the full nyxGPT stack onto it, and tear it all
-          back down.
+          The state of the AWS substrate — a VPC, a public subnet, one SSH-only security group,
+          and a single EC2 instance — and of the nyxGPT release deployed onto it.
         </p>
         <a href="/admin/dashboard" style={{ color: '#0066cc', textDecoration: 'none' }}>
           ← Back to Admin Dashboard
@@ -453,10 +471,16 @@ export default function CloudInfrastructurePage() {
       >
         The instance opens <strong>port 22 only</strong>, scoped to your public IP — never{' '}
         <code>0.0.0.0/0</code>. The app, web UI, and every observability endpoint bind{' '}
-        <code>127.0.0.1</code> on the instance and are reached over an SSH tunnel. This page
-        both provisions the substrate and deploys the stack onto it. The same operations are
-        available as <code>nyxgpt cloud infra plan|apply|status</code> and{' '}
-        <code>nyxgpt cloud deploy|destroy|tunnel</code>.
+        <code>127.0.0.1</code> on the instance and are reached over an SSH tunnel.{' '}
+        <strong>This page reports; it does not deploy.</strong> Deploying and tearing down are
+        deliberate CLI operations — rare, consequential and irreversible enough that they should
+        not be one stray click away — so they live in <code>nyxgpt cloud deploy</code> and{' '}
+        <code>nyxgpt cloud destroy</code>, listed below. This follows the same status-only
+        judgment as the local{' '}
+        <a href="/admin/infrastructure" style={{ color: '#0066cc' }}>
+          Infrastructure Status
+        </a>{' '}
+        page.
       </div>
 
       {error && (
@@ -528,7 +552,7 @@ export default function CloudInfrastructurePage() {
 
         <div style={boxStyle}>
           <h2 style={{ fontSize: '1.1rem', fontWeight: 'bold', marginBottom: '0.75rem' }}>
-            Provisioning inputs
+            Preview a substrate change
           </h2>
           <p
             style={{
@@ -537,8 +561,10 @@ export default function CloudInfrastructurePage() {
               marginBottom: '1rem',
             }}
           >
-            Anything left blank keeps the value saved by the previous run. The SSH source
-            defaults to this machine&apos;s current public IP.
+            Plan reports what an apply <em>would</em> change and creates nothing. Anything left
+            blank keeps the value saved by the previous run; the SSH source defaults to this
+            machine&apos;s current public IP. To actually apply what the plan shows, run{' '}
+            <code>{deployStatus?.commands?.deploy ?? 'nyxgpt cloud deploy'}</code>.
           </p>
 
           <div style={{ display: 'grid', gap: '0.75rem', gridTemplateColumns: '1fr 1fr' }}>
@@ -606,20 +632,12 @@ export default function CloudInfrastructurePage() {
 
           <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1.25rem' }}>
             <button
-              onClick={() => void runAction('plan')}
+              onClick={() => void runPlan()}
               disabled={anyBusy}
               style={buttonStyle(anyBusy)}
               title="Show what would change. Creates nothing."
             >
               {busy === 'plan' ? 'Planning…' : 'Plan'}
-            </button>
-            <button
-              onClick={() => void runAction('apply')}
-              disabled={anyBusy}
-              style={buttonStyle(anyBusy)}
-              title="Provision or reconcile the substrate"
-            >
-              {busy === 'apply' ? 'Applying…' : 'Apply'}
             </button>
           </div>
         </div>
@@ -884,11 +902,11 @@ export default function CloudInfrastructurePage() {
           <p
             style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)', marginBottom: '1rem' }}
           >
-            Applies the substrate above, installs a <strong>published</strong> nyxGPT release
-            onto the instance (never a copy of a repository), opens the SSH tunnel that is the
-            only access path, and waits for the stack to answer <code>/health</code> through it.
-            Re-running reconciles rather than duplicating. Same operation as{' '}
-            <code>nyxgpt cloud deploy</code>.
+            What <code>nyxgpt cloud deploy</code> last put on the instance: a{' '}
+            <strong>published</strong> nyxGPT release (never a copy of a repository), the
+            observability profiles it enabled, and whether the SSH tunnel that is the only
+            access path is currently open. Re-running the deploy reconciles rather than
+            duplicating.
           </p>
 
           {deployError && (
@@ -917,6 +935,7 @@ export default function CloudInfrastructurePage() {
           >
             <Row label="Installed version" value={deployStatus?.version ?? ''} />
             <Row label="Instance" value={deployStatus?.instance_id ?? ''} />
+            <Row label="Region" value={deployStatus?.region ?? ''} />
             <Row
               label="Observability profiles"
               value={(deployStatus?.profiles ?? []).join(', ')}
@@ -927,47 +946,17 @@ export default function CloudInfrastructurePage() {
                 deployStatus?.tunnel.running ? `open (pid ${deployStatus.tunnel.pid})` : 'closed'
               }
             />
+            <Row label="Stack health" value={healthLabel(deployStatus?.health)} />
           </ul>
-
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-              gap: '1rem',
-              marginBottom: '1rem',
-            }}
-          >
-            <div>
-              <label style={labelStyle} htmlFor="deploy-version">
-                Release to install
-              </label>
-              <input
-                id="deploy-version"
-                style={fieldStyle}
-                placeholder="default: this dashboard's version"
-                value={deployVersion}
-                onChange={(e) => setDeployVersion(e.target.value)}
-              />
-            </div>
-            <div style={{ display: 'flex', alignItems: 'flex-end' }}>
-              <label style={{ fontSize: '0.8rem', display: 'flex', gap: '0.5rem' }}>
-                <input
-                  type="checkbox"
-                  checked={skipObservability}
-                  onChange={(e) => setSkipObservability(e.target.checked)}
-                />
-                Core app only (skip monitoring, logging, tracing, errors)
-              </label>
-            </div>
-          </div>
 
           <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
             <button
-              onClick={() => void runDeploy()}
+              onClick={() => void refreshDeployStatus()}
               disabled={deployBusy !== ''}
               style={buttonStyle(deployBusy !== '')}
+              title="Re-read the deployment state and re-probe health. Changes nothing."
             >
-              {deployBusy === 'deploy' ? 'Deploying…' : 'Deploy'}
+              {deployBusy === 'refresh' ? 'Refreshing…' : 'Refresh status'}
             </button>
             {deployStatus?.tunnel.running ? (
               <button
@@ -1016,31 +1005,94 @@ export default function CloudInfrastructurePage() {
           )}
         </div>
 
-        <div style={{ ...boxStyle, borderColor: '#ef4444' }}>
+        {/* --- Deploy history (P6-15, #3514) ---
+            Written by `nyxgpt.cloud_deploy` itself, so a deploy run from the
+            terminal appears here too -- a dashboard that only showed its own
+            actions would be silent about the surface the owner's decision
+            makes primary. */}
+        <div style={boxStyle}>
           <h2 style={{ fontSize: '1.1rem', fontWeight: 'bold', marginBottom: '0.5rem' }}>
-            Destroy the deployment
+            Deploy history
           </h2>
-          <p style={{ fontSize: '0.875rem', marginBottom: '0.75rem' }}>
-            Closes the access tunnel, then deletes the instance and its root volume. Anything
-            stored only on that box — models, Cassandra data, logs — is lost. Type{' '}
-            <code>DESTROY</code> to enable the button.
+          <p
+            style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)', marginBottom: '0.75rem' }}
+          >
+            Every deploy and teardown of this cloud deployment, newest first, whether it was run
+            from the CLI or elsewhere. A deploy that installed the stack but never went healthy
+            is recorded as failed.
           </p>
-          <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
-            <input
-              aria-label="Type DESTROY to confirm"
-              style={{ ...fieldStyle, maxWidth: 200 }}
-              placeholder="DESTROY"
-              value={confirmText}
-              onChange={(e) => setConfirmText(e.target.value)}
-            />
-            <button
-              onClick={() => void runAction('destroy')}
-              disabled={anyBusy || confirmText !== 'DESTROY'}
-              style={buttonStyle(anyBusy || confirmText !== 'DESTROY', true)}
-            >
-              {busy === 'destroy' ? 'Destroying…' : 'Destroy'}
-            </button>
-          </div>
+          {deployStatus && deployStatus.history.length > 0 ? (
+            <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: '0.85rem' }}>
+              {deployStatus.history.map((entry, index) => (
+                <li
+                  key={`${entry.ts}-${index}`}
+                  style={{
+                    padding: '0.4rem 0',
+                    borderBottom: '1px solid var(--border-color)',
+                    display: 'flex',
+                    gap: '0.75rem',
+                    alignItems: 'baseline',
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: '0.7rem',
+                      fontWeight: 700,
+                      color: entry.outcome === 'succeeded' ? '#22c55e' : '#ef4444',
+                      minWidth: 70,
+                    }}
+                  >
+                    {entry.outcome}
+                  </span>
+                  <span>
+                    {historyLabel(entry)}
+                    {entry.detail ? (
+                      <span style={{ color: 'var(--foreground-muted)' }}> — {entry.detail}</span>
+                    ) : null}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p style={{ fontSize: '0.875rem', color: 'var(--foreground-muted)' }}>
+              Nothing has been deployed or torn down from this machine yet.
+            </p>
+          )}
+        </div>
+
+        {/* --- Lifecycle actions: pointers, not buttons (P6-15, #3514) ---
+            Rendered from the backend's LIFECYCLE_COMMANDS so the page cannot
+            drift from what the CLI actually accepts. Every one is a wrapped
+            `nyxgpt` command -- CLAUDE.md forbids handing the user a raw
+            docker/terraform/kubectl one. */}
+        <div style={boxStyle}>
+          <h2 style={{ fontSize: '1.1rem', fontWeight: 'bold', marginBottom: '0.5rem' }}>
+            Lifecycle actions
+          </h2>
+          <p
+            style={{ fontSize: '0.875rem', color: 'var(--foreground-muted)', marginBottom: '1rem' }}
+          >
+            Deploying and tearing down are not dashboard buttons. They create and delete real,
+            billed infrastructure — a teardown deletes the instance and its root volume, and
+            anything stored only on that box is lost — so they are run deliberately from a
+            terminal:
+          </p>
+          <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: '0.875rem' }}>
+            {[
+              ['Deploy or redeploy the stack', deployStatus?.commands?.deploy],
+              ['Tear the whole deployment down', deployStatus?.commands?.destroy],
+              ['Show this state from a terminal', deployStatus?.commands?.status],
+              ['Re-allow SSH after your public IP changes', deployStatus?.commands?.allow_ip],
+            ]
+              .filter(([, command]) => Boolean(command))
+              .map(([label, command]) => (
+                <li key={command} style={{ padding: '0.3rem 0' }}>
+                  <span style={{ color: 'var(--foreground-muted)' }}>{label}</span>
+                  <br />
+                  <code>{command}</code>
+                </li>
+              ))}
+          </ul>
         </div>
       </div>
     </div>

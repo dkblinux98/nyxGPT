@@ -2606,13 +2606,16 @@ def _cloud_deploy_args(payload: dict[str, Any]) -> argparse.Namespace:
 
 
 @api.get("/cloud/deploy")
-def cloud_deploy_status(_request: Request) -> dict[str, Any]:
-    """What is deployed, at what version, and whether the access tunnel is open.
+def cloud_deploy_status(_request: Request, probe_health: bool = False) -> dict[str, Any]:
+    """What is deployed, at what version, whether the tunnel is open, and its history.
 
-    Side-effect free -- reads the recorded deploy/tunnel state rather than
-    calling AWS or the instance -- so the dashboard can poll it.
+    Side-effect free by default -- reads the recorded deploy/tunnel state and
+    the lifecycle history rather than calling AWS or the instance -- so the
+    dashboard can poll it. `probe_health=true` adds one short request to the
+    tunneled API health endpoint, which is what the Cloud Deployment page asks
+    for on an explicit load or refresh.
     """
-    return cloud_deploy_module.deploy_status()
+    return cloud_deploy_module.deploy_status(probe_health=probe_health)
 
 
 @api.post("/cloud/deploy")

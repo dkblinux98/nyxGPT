@@ -67,6 +67,20 @@ CLOUD_DIR = cloud_infra.CLOUD_DIR
 # touching AWS or the instance, and a re-run can default to the same version.
 DEPLOY_STATE_FILE = CLOUD_DIR / "deploy.json"
 
+# Append-only record of every deploy and teardown, so the admin dashboard can
+# answer "what happened to this deployment" and not just "what is it now"
+# (P6-15, #3514). JSONL rather than one rewritten JSON document because two
+# processes write it -- the operator's CLI and the API server -- and appending
+# a single short line is the closest thing to an atomic write available
+# without introducing a lock file. Entries are small and a deploy takes
+# minutes, so the file does not meaningfully grow; readers take the tail.
+DEPLOY_HISTORY_FILE = CLOUD_DIR / "history.jsonl"
+
+# How many history entries `deploy_status` carries. Enough to cover the
+# redeploy-until-it-works sequence an operator is usually trying to
+# reconstruct, small enough that the status payload stays pollable.
+HISTORY_LIMIT = 20
+
 # The background tunnel's pid + forwarded ports, so `--stop`/`status` can find
 # a tunnel started by an earlier process (including one started by the admin
 # dashboard and stopped from the CLI, or the reverse).
@@ -197,6 +211,51 @@ def load_deploy_state() -> dict[str, Any]:
 def _cloud_state() -> dict[str, Any]:
     """Return the substrate outputs `cloud_infra.apply_infra` recorded."""
     return _read_json(cloud_infra.CLOUD_STATE_FILE)
+
+
+def record_history(action: str, outcome: str, **fields: Any) -> dict[str, Any]:
+    """Append one lifecycle event to the deploy history and return it.
+
+    Called from `deploy`/`destroy` themselves rather than from the CLI or the
+    API handler, so a deploy run either way lands in the same history -- the
+    dashboard's job here is to report what an operator did at the terminal,
+    which it could not do if only its own requests were recorded.
+
+    Best-effort: an unwritable history file never fails a deploy that
+    otherwise succeeded.
+    """
+    event: dict[str, Any] = {"ts": time.time(), "action": action, "outcome": outcome, **fields}
+    try:
+        DEPLOY_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with DEPLOY_HISTORY_FILE.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(event) + "\n")
+    except OSError:
+        pass
+    return event
+
+
+def deploy_history(limit: int = HISTORY_LIMIT) -> list[dict[str, Any]]:
+    """Return the most recent lifecycle events, newest first.
+
+    Unparseable lines are skipped rather than raising: a truncated final line
+    (a process killed mid-append) must not take the whole history with it.
+    """
+    if limit <= 0:
+        return []
+    try:
+        lines = DEPLOY_HISTORY_FILE.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    events: list[dict[str, Any]] = []
+    for line in lines[-limit:]:
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            events.append(parsed)
+    events.reverse()
+    return events
 
 
 # --- Resolution --------------------------------------------------------
@@ -735,12 +794,44 @@ def deploy(args: argparse.Namespace) -> dict[str, Any]:
         health = wait_for_health(plan.health_timeout)
         steps.append({"step": "health", **health})
         if not health["healthy"]:
+            # Recorded before raising: a deploy that installed the stack but
+            # never went healthy is exactly the event the dashboard's history
+            # exists to show, and it is the one an exception would otherwise
+            # leave no trace of.
+            record_history(
+                "deploy",
+                "failed",
+                version=plan.version,
+                host=target.host,
+                instance_id=target.instance_id,
+                region=target.region,
+                profiles=list(plan.profiles),
+                detail=(
+                    f"stack installed but {health['url']} never returned 200 within "
+                    f"{plan.health_timeout:.0f}s"
+                ),
+            )
             raise CloudCommandError(
                 f"The stack was installed but {health['url']} never returned 200 within "
                 f"{plan.health_timeout:.0f}s (last status: {health['status'] or 'unreachable'}).\n"
                 "The tunnel is still open -- `nyxgpt cloud deploy --status` and the instance's "
                 "own `nyxgpt ops doctor` will say more."
             )
+
+    record_history(
+        "deploy",
+        "succeeded",
+        version=plan.version,
+        host=target.host,
+        instance_id=target.instance_id,
+        region=target.region,
+        profiles=list(plan.profiles),
+        detail=(
+            "healthy over the access tunnel"
+            if health.get("healthy")
+            else "installed; health not checked (no tunnel opened)"
+        ),
+    )
 
     return {
         "action": "deploy",
@@ -755,21 +846,88 @@ def deploy(args: argparse.Namespace) -> dict[str, Any]:
 
 def destroy(args: argparse.Namespace) -> dict[str, Any]:
     """Tear the whole deployment down: tunnel first, then the substrate."""
+    # Read before the teardown deletes it -- the history entry names what was
+    # torn down, which is unrecoverable once `deploy.json` is gone.
+    previous = load_deploy_state()
     tunnel = stop_tunnel()
-    result = cloud_infra.destroy_infra(args)
+    try:
+        result = cloud_infra.destroy_infra(args)
+    except Exception as exc:
+        # Symmetric with the failed-deploy path above: a teardown that was
+        # attempted and did not finish is exactly the event an operator comes
+        # to the history panel to reconstruct, and a half-destroyed substrate
+        # is the state most worth leaving a trace of.
+        record_history(
+            "destroy",
+            "failed",
+            version=str(previous.get("version") or ""),
+            host=str(previous.get("host") or ""),
+            instance_id=str(previous.get("instance_id") or ""),
+            region=str(previous.get("region") or ""),
+            detail=f"tunnel closed, but the substrate teardown failed: {exc}",
+        )
+        raise
     DEPLOY_STATE_FILE.unlink(missing_ok=True)
-    return {"action": "destroy", "tunnel": tunnel, "settings": result.get("settings", {})}
+    settings = result.get("settings", {})
+    record_history(
+        "destroy",
+        "succeeded",
+        version=str(previous.get("version") or ""),
+        host=str(previous.get("host") or ""),
+        instance_id=str(previous.get("instance_id") or ""),
+        region=str(previous.get("region") or settings.get("aws_region") or ""),
+        detail="tunnel closed, substrate torn down",
+    )
+    return {"action": "destroy", "tunnel": tunnel, "settings": settings}
 
 
-def deploy_status() -> dict[str, Any]:
+# The wrapped commands that own each cloud lifecycle action, returned with
+# every status so the dashboard renders exactly what the CLI documents rather
+# than its own hand-typed copy. The owner's 2026-08-09 decision on #3514 makes
+# the cloud page status-plus-pointers -- these are the pointers, and per
+# CLAUDE.md's wrapper requirement every one of them is a `nyxgpt` command.
+LIFECYCLE_COMMANDS: dict[str, str] = {
+    "deploy": "nyxgpt cloud deploy",
+    "redeploy": "nyxgpt cloud deploy",
+    "destroy": "nyxgpt cloud destroy --yes",
+    "tunnel": "nyxgpt cloud tunnel",
+    "tunnel_stop": "nyxgpt cloud tunnel --stop",
+    "status": "nyxgpt cloud deploy --status",
+    "allow_ip": "nyxgpt cloud allow-ip",
+}
+
+
+def deploy_status(probe_health: bool = False) -> dict[str, Any]:
     """Report the deployment's state without touching AWS or the instance.
 
     Cheap enough for the dashboard to poll, and still answers on a machine
     whose AWS credentials have expired.
+
+    `probe_health=True` additionally makes one short request to the tunneled
+    API health endpoint. Opt-in rather than always-on so the polled default
+    stays free of network calls; the dashboard asks for it on an explicit
+    load or refresh, where waiting a moment for a real answer is the point.
+    A probe with no tunnel open would only ever time out, so it is skipped.
     """
     record = load_deploy_state()
     infra = cloud_infra.infra_status()
     profiles = [str(p) for p in (record.get("profiles") or [])]
+    tunnel = tunnel_status()
+
+    health: dict[str, Any] = {"checked": False, "healthy": False, "status": 0, "reason": ""}
+    if probe_health and not tunnel["running"]:
+        health["reason"] = "no access tunnel is open, so the instance is not reachable from here"
+    elif probe_health:
+        url = f"http://localhost:8000{HEALTH_PATH}"
+        status = _probe(url, timeout=5.0)
+        health = {
+            "checked": True,
+            "healthy": status == 200,
+            "status": status,
+            "url": url,
+            "reason": "" if status == 200 else "the tunneled API did not answer with 200",
+        }
+
     return {
         "deployed": bool(record.get("host")),
         "version": str(record.get("version") or ""),
@@ -778,9 +936,12 @@ def deploy_status() -> dict[str, Any]:
         "region": str(record.get("region") or infra.get("region") or ""),
         "profiles": profiles,
         "infra": infra,
-        "tunnel": tunnel_status(),
+        "tunnel": tunnel,
+        "health": health,
+        "history": deploy_history(),
         "urls": tunnel_urls(profiles),
         "access_command": "nyxgpt cloud tunnel",
+        "commands": dict(LIFECYCLE_COMMANDS),
     }
 
 

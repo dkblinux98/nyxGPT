@@ -62,8 +62,11 @@ export const ADMIN_NAV: AdminNavDest[] = [
     // verbatim, so punctuation with regex meaning would never match its tile.
     label: 'AWS Cloud Infrastructure',
     description:
-      'Provision and tear down the AWS substrate -- VPC, subnet, SSH-only owner-IP-scoped security group, and the single EC2 instance',
-    group: 'operation',
+      'State of the AWS substrate and the release deployed onto it -- version, access tunnel, health, and deploy history. Deploying and tearing down are CLI operations (#3514)',
+    // Observation, not operation, since the owner's #3514 decision made the
+    // cloud surface status-plus-CLI-pointers: nothing on this page creates or
+    // destroys cloud resources.
+    group: 'observation',
   },
   { href: '/admin/canary', label: 'Canary Operations', description: 'Deploy, gradual rollout, and promotion with automatic rollback', group: 'operation' },
   { href: '/admin/self-heal', label: 'Self-heal Operations', description: 'Watchdog that restarts unhealthy services', group: 'operation' },
