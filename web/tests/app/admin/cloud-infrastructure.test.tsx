@@ -91,12 +91,57 @@ function mockStateStatus(payload: unknown, status = 200) {
   server.use(http.get('/api/v1/cloud/state', () => HttpResponse.json(payload, { status })));
 }
 
+// The deployment itself (#3513): what release is on the instance, and whether
+// the SSH tunnel that is the only way to reach it is open.
+const notDeployed = {
+  deployed: false,
+  version: '',
+  host: '',
+  instance_id: '',
+  region: '',
+  profiles: [],
+  tunnel: { running: false, pid: 0, host: '', profiles: [], urls: {} },
+  urls: { api: 'http://localhost:8000', web: 'http://localhost:3000' },
+  access_command: 'nyxgpt cloud tunnel',
+};
+
+const deployedTunnelClosed = {
+  ...notDeployed,
+  deployed: true,
+  version: '3.0.0',
+  host: '198.51.100.200',
+  instance_id: 'i-0abc123',
+  region: 'us-east-1',
+  profiles: ['monitoring', 'logging', 'tracing', 'errors'],
+  urls: {
+    api: 'http://localhost:8000',
+    web: 'http://localhost:3000',
+    grafana: 'http://localhost:3001',
+  },
+};
+
+const deployedTunnelOpen = {
+  ...deployedTunnelClosed,
+  tunnel: {
+    running: true,
+    pid: 4242,
+    host: '198.51.100.200',
+    profiles: deployedTunnelClosed.profiles,
+    urls: deployedTunnelClosed.urls,
+  },
+};
+
+function mockDeployStatus(payload: unknown) {
+  server.use(http.get('/api/v1/cloud/deploy', () => HttpResponse.json(payload)));
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
-  // The page loads the state backend on mount, so every test needs this
-  // answered -- MSW is set to error on unhandled requests. Individual tests
-  // override it with a later `server.use`.
+  // The page loads the state backend and the deployment on mount, so every
+  // test needs both answered -- MSW is set to error on unhandled requests.
+  // Individual tests override them with a later `server.use`.
   mockStateStatus(localBackend);
+  mockDeployStatus(notDeployed);
 });
 
 describe('CloudInfrastructurePage', () => {
@@ -292,9 +337,11 @@ describe('CloudInfrastructurePage', () => {
     mockStatus(provisioned);
     let body: Record<string, unknown> | null = null;
     server.use(
-      http.post('/api/v1/cloud/infra/destroy', async ({ request }) => {
+      // Teardown goes through the deploy endpoint so the access tunnel is
+      // closed before the instance it points at disappears (#3513).
+      http.post('/api/v1/cloud/deploy/destroy', async ({ request }) => {
         body = (await request.json()) as Record<string, unknown>;
-        return HttpResponse.json({ action: 'destroy', settings: {} });
+        return HttpResponse.json({ action: 'destroy', tunnel: {}, settings: {} });
       })
     );
 
@@ -304,7 +351,11 @@ describe('CloudInfrastructurePage', () => {
     await userEvent.type(screen.getByLabelText('Type DESTROY to confirm'), 'DESTROY');
     await userEvent.click(screen.getByRole('button', { name: 'Destroy' }));
 
-    await waitFor(() => expect(screen.getByText('Substrate destroyed.')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(
+        screen.getByText('Deployment destroyed: tunnel closed, substrate torn down.')
+      ).toBeInTheDocument()
+    );
     expect(body).toEqual({ confirm: true });
   });
 });
@@ -394,8 +445,12 @@ describe('CloudInfrastructurePage — Terraform state', () => {
     render(<CloudInfrastructurePage />);
 
     expect(await screen.findByText('S3 + DynamoDB lock')).toBeInTheDocument();
-    // Backend, Locking, Bucket, Object key, Lock table, Region -- all blank.
-    expect(screen.getAllByText('—')).toHaveLength(6);
+    // The state panel's Backend, Locking, Bucket, Object key, Lock table and
+    // Region are all blank, as are the deployment panel's version, instance
+    // and profiles on an undeployed substrate -- nine placeholders, and not a
+    // single literal "undefined" anywhere on the page.
+    expect(screen.getAllByText('—')).toHaveLength(9);
+    expect(screen.queryByText(/undefined/)).not.toBeInTheDocument();
   });
 
   it('lists stored versions, newest first and marked as current', async () => {
@@ -645,5 +700,125 @@ describe('CloudInfrastructurePage — Terraform state', () => {
 
     expect(await screen.findByText(/state fetch exploded/)).toBeInTheDocument();
     spy.mockRestore();
+  });
+});
+
+// The deployment panel (P6-11, #3513). It is the dashboard half of `nyxgpt
+// cloud deploy`/`tunnel`, and the point of these tests is that the whole
+// one-command story -- deploy, see the localhost URLs, open and close the
+// access tunnel -- is reachable without a terminal (CLAUDE.md's Definition of
+// Done), and that nothing ever advertises an instance-facing URL.
+describe('CloudInfrastructurePage deployment panel', () => {
+  it('reports nothing deployed on a fresh substrate', async () => {
+    mockStatus(notProvisioned);
+    render(<CloudInfrastructurePage />);
+
+    expect(await screen.findByText('not deployed')).toBeInTheDocument();
+    // Opening a tunnel to a box with nothing on it is meaningless.
+    expect(screen.getByRole('button', { name: 'Open tunnel' })).toBeDisabled();
+  });
+
+  it('deploys with the provisioning inputs plus the release and profile choice', async () => {
+    mockStatus(provisioned);
+    let body: Record<string, unknown> | null = null;
+    server.use(
+      http.post('/api/v1/cloud/deploy', async ({ request }) => {
+        body = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({
+          action: 'deploy',
+          plan: { version: '3.0.0' },
+          target: { instance_id: 'i-0abc123' },
+          urls: deployedTunnelClosed.urls,
+        });
+      })
+    );
+
+    render(<CloudInfrastructurePage />);
+    await screen.findByText('not deployed');
+
+    await userEvent.type(screen.getByLabelText('AWS region'), 'us-east-1');
+    await userEvent.type(screen.getByLabelText('Release to install'), '3.0.0');
+    await userEvent.click(screen.getByLabelText(/Core app only/));
+    await userEvent.click(screen.getByRole('button', { name: 'Deploy' }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/nyxGPT 3.0.0 deployed and healthy/)).toBeInTheDocument()
+    );
+    expect(body).toEqual({ region: 'us-east-1', version: '3.0.0', skip_observability: true });
+  });
+
+  it('shows the installed release and the localhost-only URLs once deployed', async () => {
+    mockStatus(provisioned);
+    mockDeployStatus(deployedTunnelOpen);
+    render(<CloudInfrastructurePage />);
+
+    expect(await screen.findByText('deployed')).toBeInTheDocument();
+    expect(screen.getByText('3.0.0')).toBeInTheDocument();
+    expect(screen.getByText('open (pid 4242)')).toBeInTheDocument();
+    expect(screen.getByText('http://localhost:3001')).toBeInTheDocument();
+    // The instance's own address must never be offered as a way in.
+    expect(screen.queryByText(/http:\/\/198\.51\.100\.200/)).not.toBeInTheDocument();
+  });
+
+  it('opens the access tunnel on request', async () => {
+    mockStatus(provisioned);
+    mockDeployStatus(deployedTunnelClosed);
+    let body: Record<string, unknown> | null = null;
+    server.use(
+      http.post('/api/v1/cloud/deploy/tunnel', async ({ request }) => {
+        body = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({ action: 'tunnel', running: true, pid: 4242, urls: {} });
+      })
+    );
+
+    render(<CloudInfrastructurePage />);
+    await screen.findByText('deployed');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Open tunnel' }));
+
+    await waitFor(() => expect(screen.getByText(/Access tunnel open/)).toBeInTheDocument());
+    expect(body).toEqual({ action: 'start' });
+  });
+
+  it('closes the access tunnel and says what that costs', async () => {
+    mockStatus(provisioned);
+    mockDeployStatus(deployedTunnelOpen);
+    let body: Record<string, unknown> | null = null;
+    server.use(
+      http.post('/api/v1/cloud/deploy/tunnel', async ({ request }) => {
+        body = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({ action: 'tunnel-stop', stopped: true, pid: 4242 });
+      })
+    );
+
+    render(<CloudInfrastructurePage />);
+    await screen.findByText('deployed');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Close tunnel' }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/Nothing on the instance is reachable/)).toBeInTheDocument()
+    );
+    expect(body).toEqual({ action: 'stop' });
+  });
+
+  it('surfaces a failed deploy without disturbing the other panels', async () => {
+    mockStatus(provisioned);
+    server.use(
+      http.post('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({ detail: 'instance never accepted SSH' }, { status: 409 })
+      )
+    );
+
+    render(<CloudInfrastructurePage />);
+    await screen.findByText('not deployed');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Deploy' }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/instance never accepted SSH/)).toBeInTheDocument()
+    );
+    // The substrate panel is a separate subsystem and must be untouched.
+    expect(screen.getByText('provisioned')).toBeInTheDocument();
   });
 });

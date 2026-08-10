@@ -53,6 +53,7 @@ from nyxgpt import admin_activity as admin_activity_module
 from nyxgpt import api_models, aws_credentials_setup, config_wizard, models, secrets_setup, sessions
 from nyxgpt import canary as canary_module
 from nyxgpt import chat as chat_module
+from nyxgpt import cloud_deploy as cloud_deploy_module
 from nyxgpt import cloud_infra as cloud_infra_module
 from nyxgpt import cloud_state as cloud_state_module
 from nyxgpt import error_tracking as error_tracking_module
@@ -2569,6 +2570,108 @@ def cloud_state_restore(payload: dict[str, Any] = Body(default={})) -> dict[str,
     except CloudCommandError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
     admin_activity_module.record("cloud_state.restore", version_id)
+    return result
+
+
+# --- Cloud deploy endpoints (P6-11, #3513) ---
+#
+# The dashboard half of `nyxgpt cloud deploy`/`destroy`/`tunnel`: provision
+# AWS, install a published nyxGPT release onto the instance, open the SSH
+# tunnel that is the only access path, and hand back the localhost URLs.
+# CLAUDE.md's Definition of Done requires ops features to be operable from the
+# SRE dashboard, and both surfaces call the same `nyxgpt.cloud_deploy`
+# functions so there is one deploy implementation, not two.
+#
+# `deploy`/`destroy` run Terraform and a remote install and take minutes; like
+# the provisioning endpoints above they are deliberately synchronous and the
+# dashboard shows a pending state while they run.
+
+
+def _cloud_deploy_args(payload: dict[str, Any]) -> argparse.Namespace:
+    """Build the namespace `nyxgpt.cloud_deploy` expects from a JSON body.
+
+    A superset of `_cloud_infra_args` -- `deploy` applies the substrate first,
+    so it takes every provisioning input as well as the deploy-specific ones.
+    """
+    namespace = _cloud_infra_args(payload)
+    namespace.host = payload.get("host") or None
+    namespace.ssh_user = payload.get("ssh_user") or None
+    namespace.identity_file = payload.get("identity_file") or None
+    namespace.version = payload.get("version") or None
+    namespace.skip_observability = bool(payload.get("skip_observability"))
+    namespace.no_tunnel = bool(payload.get("no_tunnel"))
+    namespace.health_timeout = payload.get("health_timeout") or None
+    namespace.ssh_timeout = payload.get("ssh_timeout") or None
+    return namespace
+
+
+@api.get("/cloud/deploy")
+def cloud_deploy_status(_request: Request) -> dict[str, Any]:
+    """What is deployed, at what version, and whether the access tunnel is open.
+
+    Side-effect free -- reads the recorded deploy/tunnel state rather than
+    calling AWS or the instance -- so the dashboard can poll it.
+    """
+    return cloud_deploy_module.deploy_status()
+
+
+@api.post("/cloud/deploy")
+def cloud_deploy_run(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Provision AWS and deploy the full stack onto it. Idempotent."""
+    try:
+        result = cloud_deploy_module.deploy(_cloud_deploy_args(payload))
+    except CloudCommandError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    admin_activity_module.record(
+        "cloud_deploy.deploy",
+        f"version={result['plan']['version']} instance={result['target']['instance_id'] or 'unknown'}",
+    )
+    return result
+
+
+@api.post("/cloud/deploy/destroy")
+def cloud_deploy_destroy(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Close the tunnel and tear the whole cloud deployment down.
+
+    Requires `{"confirm": true}` for the same reason the substrate teardown
+    does: the instance and its root volume go with it.
+    """
+    if not payload.get("confirm"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Destroying the cloud deployment deletes the instance and its root volume. "
+                'Re-send with {"confirm": true} to proceed.'
+            ),
+        )
+    try:
+        result = cloud_deploy_module.destroy(_cloud_deploy_args(payload))
+    except CloudCommandError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    admin_activity_module.record("cloud_deploy.destroy", result["settings"].get("aws_region", ""))
+    return result
+
+
+@api.post("/cloud/deploy/tunnel")
+def cloud_deploy_tunnel(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Open or close the SSH access tunnel.
+
+    `{"action": "stop"}` closes it; anything else opens it in the background
+    (a dashboard request cannot hold a foreground tunnel). Opening is
+    idempotent -- an already-running tunnel is reported, not duplicated.
+    """
+    if str(payload.get("action") or "start") == "stop":
+        try:
+            return cloud_deploy_module.stop_tunnel()
+        except CloudCommandError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
+    try:
+        target = cloud_deploy_module.resolve_target(_cloud_deploy_args(payload))
+        profiles = [str(p) for p in (cloud_deploy_module.load_deploy_state().get("profiles") or [])]
+        result = cloud_deploy_module.start_tunnel(target, profiles)
+    except CloudCommandError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    admin_activity_module.record("cloud_deploy.tunnel", target.host)
     return result
 
 
