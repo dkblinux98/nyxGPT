@@ -51,6 +51,11 @@ Quick reference of all 81 available endpoints:
 | `/api/v1/cloud/infra/plan` | POST | Plan the AWS substrate; creates nothing |
 | `/api/v1/cloud/infra/apply` | POST | Provision/reconcile the AWS substrate and record its ids |
 | `/api/v1/cloud/infra/destroy` | POST | Tear the AWS substrate down (requires `{"confirm": true}`) |
+| `/api/v1/cloud/state` | GET | Terraform state backend: local file, or S3 with DynamoDB locking |
+| `/api/v1/cloud/state/migrate` | POST | Create the S3 bucket + lock table and move existing state into them |
+| `/api/v1/cloud/state/versions` | GET | Stored versions of the remote state object, newest first |
+| `/api/v1/cloud/state/restore` | POST | Roll state back to a version (requires `version_id` + `{"confirm": true}`) |
+| `/api/v1/cloud/state/unlock` | POST | Release a lock left by a killed apply (requires `lock_id`) |
 | `/api/v1/models` | GET | List Ollama models |
 | `/api/v1/models/pull` | POST | Pull model from Ollama |
 | `/api/v1/models/{model_name}` | DELETE | Delete model |
@@ -1427,6 +1432,59 @@ rather than acted on.
 All three return `409` with the underlying message when Terraform or input
 validation fails (no SSH key configured, a refused `0.0.0.0/0` source, a
 Terraform error, ...).
+
+### `GET /api/v1/cloud/state`
+
+Where the substrate's Terraform state lives and how it is locked. Offline by
+default (recorded configuration only), so it is cheap to poll. Pass
+`?verify=true` to additionally confirm against AWS that the bucket and lock
+table exist and that versioning — the whole recovery story — is on.
+
+```json
+{
+  "backend": "s3",
+  "remote_enabled": true,
+  "bootstrapped": true,
+  "bucket": "nyxgpt-tfstate-123456789012-us-west-2",
+  "table": "nyxgpt-tfstate-locks",
+  "key": "nyxgpt/aws/terraform.tfstate",
+  "region": "us-west-2",
+  "locking": "dynamodb",
+  "local_state_file": "/home/you/.nyxGPT/cloud/terraform.tfstate",
+  "local_state_exists": true,
+  "verified": false
+}
+```
+
+### `POST /api/v1/cloud/state/migrate`
+
+Create the S3 bucket (versioned, AES256-encrypted, public access blocked) and
+the DynamoDB lock table, then move existing state into them. Body fields are
+all optional — `bucket`, `table`, `key`, `region`, `profile` — and fall back
+to saved settings, then to derived defaults. Safe to re-run.
+
+### `GET /api/v1/cloud/state/versions`
+
+List stored versions of the remote state object, newest first (`?limit=`,
+default 20). Each is a complete state file as it stood after one apply.
+
+### `POST /api/v1/cloud/state/restore`
+
+Make a previous version the current state. Requires both `version_id` and
+`{"confirm": true}` — a later apply against a wrong restore can destroy live
+resources. Reversible: the version being replaced stays in the bucket.
+
+### `POST /api/v1/cloud/state/unlock`
+
+Release a state lock left held by a run that was killed mid-apply. Requires
+`lock_id` (the id Terraform prints in the error that refused to run); there
+is deliberately no "release whatever is held", since breaking a live run's
+lock is what locking exists to prevent.
+
+These return `409` when remote state isn't configured yet or Terraform/AWS
+fails, and `400` when a required confirmation or id is missing. Moving state
+back to a local file is CLI-only (`nyxgpt cloud state local`) — it is the
+escape hatch for a backend the API host may itself be unable to reach.
 
 ---
 
