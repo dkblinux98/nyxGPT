@@ -56,6 +56,15 @@ export const ADMIN_NAV: AdminNavDest[] = [
     description: 'Guided AWS identity setup for cloud deploy -- routed to ~/.aws/credentials, the OS keychain, or an existing source, never config.ini',
     group: 'operation',
   },
+  {
+    href: '/admin/cloud-infrastructure',
+    // No parentheses in the label: dashboard.test.tsx builds a RegExp from it
+    // verbatim, so punctuation with regex meaning would never match its tile.
+    label: 'AWS Cloud Infrastructure',
+    description:
+      'Provision and tear down the AWS substrate -- VPC, subnet, SSH-only owner-IP-scoped security group, and the single EC2 instance',
+    group: 'operation',
+  },
   { href: '/admin/canary', label: 'Canary Operations', description: 'Deploy, gradual rollout, and promotion with automatic rollback', group: 'operation' },
   { href: '/admin/self-heal', label: 'Self-heal Operations', description: 'Watchdog that restarts unhealthy services', group: 'operation' },
   {
