@@ -385,6 +385,15 @@ Run ALL of the following checks and fix issues until they pass:
 - `pip-audit` - If you modified Python dependencies (#3501)
 - `cd web && npm run audit:ci` - If you modified `web/package.json`/`web/package-lock.json` (#3501)
 
+Run this loop locally exactly as described — do not rely on `claude-code-review.yml`'s
+in-review checks alone, since that job only runs `pytest tests/unit/` (non-blocking
+`mypy`) as part of an agent-driven review, not the full `tests/` suite (#3502). A
+standalone push/PR gate proposed for this repo (`docs/testing.md`'s "Standalone CI
+gate" section — hand-carry doc pending owner application per #3502, same pattern as
+#3454/#3479/#3480) runs the full suite plus a blocking `mypy src/` independent of
+agent involvement once applied; until then, this local loop is the only thing that
+exercises `tests/integration/` for a change.
+
 **CRITICAL**: Keep working until all checks pass (like a human developer would).
 Pre-commit hooks MUST pass before commit succeeds.
 
