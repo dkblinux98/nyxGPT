@@ -55,7 +55,7 @@ def reorg_target_count(remaining: float, velocity: float, days_left: float | Non
     if days_left is None:
         return 0
     if velocity <= 0:
-        return remaining if remaining > 0 else 0
+        return int(remaining) if remaining > 0 else 0
     needed = remaining / velocity
     excess_days = needed - days_left
     if excess_days <= 0:
