@@ -27,6 +27,7 @@ from nyxgpt import cloud_smoke as cloud_smoke_mod
 from nyxgpt import cloud_state as cloud_state_mod
 from nyxgpt import models, sessions
 from nyxgpt import ops as ops_mod
+from nyxgpt import portability as portability_mod
 from nyxgpt import self_heal as self_heal_mod
 from nyxgpt.aws_credentials_setup import run_aws_credentials_setup
 from nyxgpt.chat import chat, chat_stream
@@ -2189,6 +2190,31 @@ def cli(argv: list[str] | None = None) -> int:
         help="Seconds to wait for the booted stack to become healthy (default: 300)",
     )
 
+    # `ops portability` -- the repo-less portability matrix and the
+    # clean-machine acceptance sequence (P6-16, #3516). A report by default so
+    # it runs anywhere; `--strict` turns it into a gate that fails while any
+    # target still needs a repo checkout.
+    ops_portability = ops_sub.add_parser(
+        "portability",
+        help=(
+            "Report the repo-less portability matrix (macOS, Linux, Compose, Kubernetes, "
+            "AWS EC2) and the clean-machine acceptance sequence (#3516)"
+        ),
+    )
+    ops_portability.add_argument(
+        "--strict",
+        action="store_true",
+        help=(
+            "Exit non-zero unless every in-scope target is installable and operable "
+            "without a repo checkout (for CI, once the open gaps close)"
+        ),
+    )
+    ops_portability.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the machine-readable matrix instead of the operator report",
+    )
+
     # Add cloud command (AWS deployment lifecycle -- P6-11-class scope). Today
     # covers `allow-ip`, the lockout-recovery path for the owner-IP-scoped
     # SSH security group described in
@@ -2953,6 +2979,8 @@ def cli(argv: list[str] | None = None) -> int:
             return ops_mod.port_forward(args)
         if args.ops_cmd == "verify":
             return ops_mod.verify(args)
+        if args.ops_cmd == "portability":
+            return portability_mod.portability(args)
 
     if cmd == "cloud" and args.cloud_cmd == "allow-ip":
         return cloud_mod.allow_ip(args)

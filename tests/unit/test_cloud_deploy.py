@@ -165,6 +165,41 @@ def test_provision_script_skips_observability_when_asked():
     assert 'NYXGPT_PROFILES=""' in without
 
 
+def test_provision_script_enables_self_healing(monkeypatch):
+    """P6-16 (#3516) accepts a *self-healing* deployment, not merely a running one.
+
+    The watchdog ships disabled (example.config.ini's `[self_heal] enabled =
+    false` seeds the runtime flag), and a cloud instance is unattended by
+    definition, so the deploy turns it on explicitly.
+    """
+    script = cloud_deploy.render_provision_script(cloud_deploy.resolve_plan(_args()))
+
+    assert '"$NYXGPT" self-heal enable' in script
+    # After the stack exists, not before -- enabling the watchdog is
+    # meaningless until there are components for it to watch.
+    assert script.index("ops install") < script.index("self-heal enable")
+
+
+def test_provision_script_enables_self_healing_without_observability(monkeypatch):
+    script = cloud_deploy.render_provision_script(
+        cloud_deploy.resolve_plan(_args(skip_observability=True))
+    )
+
+    assert '"$NYXGPT" self-heal enable' in script
+
+
+def test_provision_instance_reports_self_heal_enabled(monkeypatch):
+    def fake_run(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(cloud_deploy.subprocess, "run", fake_run)
+    target = cloud_deploy.DeployTarget(host="198.51.100.10")
+
+    result = cloud_deploy.provision_instance(target, cloud_deploy.resolve_plan(_args()))
+
+    assert result["self_heal_enabled"] is True
+
+
 def test_provision_instance_raises_with_the_remote_diagnostic(monkeypatch):
     def fake_run(argv, **kwargs):
         return subprocess.CompletedProcess(argv, 1, stdout="", stderr="dnf: no such package")
