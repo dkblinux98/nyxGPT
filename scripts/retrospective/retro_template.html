@@ -294,7 +294,7 @@
     </details>
   </section>
 
-  <h2 class="divider">Last 7 days in review · Jul 28 – Aug 3</h2>
+  <h2 class="divider">Last 7 days in review · Aug 2 – Aug 9</h2>
 
   <div class="tiles" id="tiles"></div>
 
@@ -387,10 +387,11 @@
     (the sprint-axis caption says which mode is active). The last-7-days section always uses title-inferred
     modules. Milestones are the repo's phase milestones, ordered. The six issues under the
     "Phase X: Rejected" milestone (rejected, never worked) are excluded throughout.</p>
-    <p><strong>Review gate.</strong> Monthly counts of PRs with ≥1 REQUEST_CHANGES come from the complete
-    GitHub notification-email archive (thread-level, so a PR rejected in two months counts in both);
-    merged-PR counts from the GitHub API. Feb shows more rejected than merged because rejected PRs often
-    merged in a later month or were superseded.</p>
+    <p><strong>Review gate.</strong> The current month's count of REQUEST_CHANGES rounds is derived from the
+    GitHub pull-request review API (one round per review; a PR rejected in two months counts in both);
+    earlier months are historical constants mined before the review agent posted rounds as formal PR
+    reviews. Merged-PR counts come from the GitHub API. Feb shows more rejected than merged because
+    rejected PRs often merged in a later month or were superseded.</p>
     <p><strong>Spend telemetry.</strong> Per-issue Claude-invoking workflow steps, total workflow
     runs, billable Actions runner minutes, and retry/self-heal cycle count, derived from GitHub
     workflow-run history and attributed to an issue via its branch name (owner-endorsed direction
@@ -400,11 +401,11 @@
     "unattributed" bucket rather than being dropped. Shown only when
     <span class="mono">data/spend.json</span> has been refreshed by the "Retro Dashboard - Dump
     Spend Telemetry" workflow.</p>
-    <p><strong>Last 7 days.</strong> The 52 REQUEST_CHANGES reviews on nyxGPT PRs between 2026-07-28 and
-    2026-08-03, parsed from the structured review comments (Critical / Medium / Minor findings sections).
-    Re-review rejections with no new findings count as a round with zero findings. Of 109 PRs merged in the
-    window, 41 owner-carried workflow merges bypassed agent review and are excluded from first-pass stats;
-    of the 68 reviewed PRs, 36 were approved first-pass — verified
+    <p><strong>Last 7 days.</strong> The 57 REQUEST_CHANGES reviews on nyxGPT PRs between 2026-08-02 and
+    2026-08-09, parsed from the pull-request reviews themselves (Critical / Medium / Minor findings sections).
+    Re-review rejections with no new findings count as a round with zero findings. Of 72 PRs merged in the
+    window, 19 owner-carried workflow merges bypassed agent review and are excluded from first-pass stats;
+    of the 53 reviewed PRs, 29 were approved first-pass — verified
     against each PR's review history. <strong>Module attribution</strong> follows the repo's module taxonomy,
     inferred from issue titles (the Project's Module field is not API-readable here).</p>
   </footer>

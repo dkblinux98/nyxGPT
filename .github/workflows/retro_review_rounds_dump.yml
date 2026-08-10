@@ -1,0 +1,44 @@
+name: Retro Dashboard - Dump Review Rounds
+
+# Derives review-round detail (rounds per PR, Critical/Medium/Minor finding
+# titles, issue/PR linkage) from GitHub pull-request reviews and commits it to
+# scripts/retrospective/data/{reviews_final,dashboard_data}.json on the
+# dispatching branch. Replaces the Gmail notification-email parse (owner
+# decision 2026-08-08, #3667) — the review agent posts every review round as a
+# PR review, so this is queryable via the GitHub API instead of a personal
+# mailbox. Read-only against GitHub; writes only the two JSON snapshots. Used
+# by the owner's retrospective dashboard.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Dump review rounds
+        env:
+          GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: python3 scripts/retrospective/dump_review_rounds.py
+
+      - name: Commit snapshot
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scripts/retrospective/data/reviews_final.json scripts/retrospective/data/dashboard_data.json
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore(retro): refresh review-rounds snapshot"
+            git push origin "HEAD:${{ github.ref_name }}"
+          fi
