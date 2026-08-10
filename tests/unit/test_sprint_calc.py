@@ -472,3 +472,17 @@ class TestParkNoteStates:
             note = self._note({"state": state, "open_by_status": {}, "open_total": 0})
             assert "READY_FOR_NEXT_ISSUE" not in note
             assert sprint_calc.AUTOPILOT_INFO_MARKER in note
+
+    def test_in_flight_note_explains_the_loop_drives_itself(self):
+        note = self._note(
+            {
+                "state": sprint_calc.PARK_WORK_IN_FLIGHT,
+                "open_total": 1,
+                "open_by_status": {"In Progress": 1},
+            }
+        )
+        assert "the in-flight issues above finish" in note
+        # Boundary states do not claim that -- there is nothing in flight.
+        assert "the in-flight issues above finish" not in self._note(
+            {"state": sprint_calc.PARK_SPRINT_COMPLETE, "accepted": [1]}
+        )

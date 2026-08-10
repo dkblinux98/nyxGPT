@@ -972,8 +972,8 @@ _autopilot_post_resume() {
   require_cmd python3
   local budget n max marker
   budget="$(_autopilot_resume_budget "$issue")"
-  n="$(jq -r '.next_resume_number // 1' <<<"$budget")"
-  max="$(jq -r '.max_resumes // 3' <<<"$budget")"
+  n="$(jq -r '.next_resume_number // 1' <<<"$budget" 2>/dev/null || echo 1)"
+  max="$(jq -r '.max_resumes // 3' <<<"$budget" 2>/dev/null || echo 3)"
   marker="$(python3 "${_LIB_DIR}/parked_resume.py" marker "$issue" "$n")"
 
   issue_comment "$issue" "🔁 **Sprint Autopilot — auto-resume (${n}/${max})**: this issue is In Progress but parked (no open PR, no running developer job), and every dependency it declares is now closed. Restarting implementation automatically (#3709) -- no human trigger needed.
@@ -1105,8 +1105,8 @@ ${AUTOPILOT_INFO_MARKER}" \
       fi
 
       if [[ -n "$park_state" ]]; then
-        state="$(jq -r '.state' <<<"$park_state")"
-        remaining="$(jq -r '.backlog_open' <<<"$park_state")"
+        state="$(jq -r '.state // empty' <<<"$park_state" 2>/dev/null || echo "")"
+        remaining="$(jq -r '.backlog_open // 0' <<<"$park_state" 2>/dev/null || echo 0)"
         decision="$([[ "$state" == "continue" ]] && echo continue || echo complete)"
       else
         # Snapshot unavailable (GraphQL/parse failure): fall back to the

@@ -375,6 +375,13 @@ def build_sprint_park_note(payload: dict[str, Any]) -> str:
     lines.append("")
     lines.append("**Work resumes when either:**")
     lines.append("")
+    if park_state.get("state") == PARK_WORK_IN_FLIGHT:
+        # This state is not a boundary stop: the sprint's own open issues
+        # drive the loop from here, so say that first (#3709).
+        lines.append(
+            "- the in-flight issues above finish — every merge kicks this loop again, "
+            "and the parked-issue scan resumes anything whose gates have closed, or"
+        )
     lines.append(
         "- the next sprint's date window opens (iteration boundaries are evaluated in "
         "`SPRINT_TIMEZONE`, default `America/New_York`) and a kick is posted, or"
