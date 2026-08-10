@@ -179,6 +179,56 @@ post `PAUSE_SPRINT` as a comment on the release tracking issue (resume with
 `RESUME_SPRINT`). With autopilot off or no active Sprint, behavior is
 exactly the manual-kick flow above.
 
+## The sprint boundary is where the auto loop stops (owner policy 2026-08-10, #3706)
+
+**The automatic loop is bound by the current sprint.** Sprint membership is
+a real work boundary, not bookkeeping:
+
+- The autopilot's continue/park decision counts open Backlog issues in the
+  **active sprint iteration only** -- the iteration whose date window
+  contains today, evaluated in `SPRINT_TIMEZONE`
+  (`iteration_active_title` + `count_sprint_backlog_open`,
+  `scripts/agents/lib/gh_project.sh`).
+- Agent-posted kicks select `--sprint-scoped`, and that scope is **hard**:
+  Backlog issues in a future sprint, or with no Sprint set, are skipped with
+  a log line and are never dispatched automatically. There is no
+  release-wide fall-through.
+- When the active sprint's pool drains, the autopilot **parks with a loud
+  note** on the release tracking issue: the sprint is complete, what remains
+  in the release per future sprint (and how much has no sprint at all), and
+  that work resumes when the next sprint's window opens or a human posts a
+  kick.
+- **Human override stays.** A `READY_FOR_NEXT_ISSUE` posted by the owner
+  runs unscoped (`notify_scrum_ready.yml`), so the owner can deliberately
+  pull work forward across the sprint boundary. Agent-posted kicks cannot.
+- The **release wall** survives, but only as the outer boundary: agents
+  merge to `RELEASE_BRANCH`, so no candidate outside the current release's
+  milestone version is ever eligible, scoped or not.
+- The claim-state matrix (#3665) and the escalation/anomaly dispatch pause
+  backstops (#3687, #3694) are unchanged by this -- only the sprint filter
+  moved.
+
+**Drift caveat (load-bearing):** because the boundary now decides whether
+work continues, sprint iteration date windows must be kept current on the
+project board. If no iteration's window contains today, there is no active
+sprint, and the autopilot parks (conservative stop) rather than falling back
+to release-wide work. Check this in the daily sprint report.
+
+**History, so the record is accurate:** the autopilot code previously gated
+on the *release* -- work continued while the release had open Backlog issues
+in any sprint -- and its comments attributed that to an "owner decision
+2026-07-31". The owner has stated that attribution was wrong: the quoted
+rationale was out of context and release-gating across sprint boundaries was
+never intended. That rationale was agent-authored; sprint-gating is the
+owner's standing policy. The observed consequence of the release-gated
+window: issues moved out of Sprint 8 by the 2026-08-08 reorg were dispatched
+and worked on 2026-08-09/10 with no planning event.
+
+**Process rule (same decision):** a code comment or runbook line claiming
+"owner decision" must cite a traceable source -- an issue number or a link
+to the owner's comment. An uncited decision claim is agent rationale, not
+policy, and may be corrected as such.
+
 ## Sprint reporting and reorganization (#3480)
 
 On a schedule (intended: daily), post sprint standing to the release
