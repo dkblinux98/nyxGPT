@@ -414,8 +414,8 @@ def test_wizard_schema_covers_every_active_key_in_example_config():
         assert known_keys == set(parser.options(section)), section
 
 
-def test_excluded_sections_are_the_documented_three():
-    assert frozenset({"paths", "openai", "github"}) == config_wizard.EXCLUDED_SECTIONS
+def test_excluded_sections_are_the_documented_four():
+    assert frozenset({"paths", "openai", "github", "cloud"}) == config_wizard.EXCLUDED_SECTIONS
 
 
 def test_rag_gains_full_tuning_surface_not_just_original_six_fields():

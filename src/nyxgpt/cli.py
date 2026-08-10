@@ -23,6 +23,7 @@ from nyxgpt import cloud as cloud_mod
 from nyxgpt import models, sessions
 from nyxgpt import ops as ops_mod
 from nyxgpt import self_heal as self_heal_mod
+from nyxgpt.aws_credentials_setup import run_aws_credentials_setup
 from nyxgpt.chat import chat, chat_stream
 from nyxgpt.config import (
     get_canary_error_rate_threshold,
@@ -2174,10 +2175,12 @@ def cli(argv: list[str] | None = None) -> int:
         help="Seconds to wait for the booted stack to become healthy (default: 300)",
     )
 
-    # Add cloud command (AWS deployment lifecycle -- P6-11-class scope; today
-    # covers only `allow-ip`, the lockout-recovery path for the owner-IP-scoped
+    # Add cloud command (AWS deployment lifecycle -- P6-11-class scope). Today
+    # covers `allow-ip`, the lockout-recovery path for the owner-IP-scoped
     # SSH security group described in
-    # product_management/DECISION_PRIVATE_ACCESS_MECHANISM.md. `nyxgpt cloud
+    # product_management/DECISION_PRIVATE_ACCESS_MECHANISM.md, and
+    # `credentials-setup`, the guided AWS identity flow (P6-13, #3512) --
+    # see nyxgpt.aws_credentials_setup's module docstring. `nyxgpt cloud
     # deploy`/`destroy` (#3513) come later and are expected to write
     # ~/.nyxGPT/cloud/state.json so allow-ip can auto-discover the security
     # group without --security-group-id -- see nyxgpt.cloud's module docstring.
@@ -2212,6 +2215,20 @@ def cli(argv: list[str] | None = None) -> int:
             "AWS region (default: read from ~/.nyxGPT/cloud/state.json, then "
             "boto3's normal region resolution)"
         ),
+    )
+
+    cloud_credentials_setup = cloud_sub.add_parser(
+        "credentials-setup",
+        help=(
+            "Guided setup for the AWS identity nyxGPT uses for its own AWS API calls "
+            "(P6-13, #3512) -- masked entry, routed to ~/.aws/credentials, the OS "
+            "keychain, or left to an already-configured source; never config.ini"
+        ),
+    )
+    cloud_credentials_setup.add_argument(
+        "--config",
+        type=Path,
+        help="Path to config.ini (default: ~/.nyxGPT/config.ini)",
     )
 
     # Add canary command (local weighted-traffic canary rollout on a local k8s cluster --
@@ -2469,6 +2486,9 @@ def cli(argv: list[str] | None = None) -> int:
 
     if cmd == "cloud" and args.cloud_cmd == "allow-ip":
         return cloud_mod.allow_ip(args)
+
+    if cmd == "cloud" and args.cloud_cmd == "credentials-setup":
+        return run_aws_credentials_setup(cfg_path=args.config)
 
     if cmd == "canary":
         # Same per-invocation correlation id as the `ops` dispatch above --

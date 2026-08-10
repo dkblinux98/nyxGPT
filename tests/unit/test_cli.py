@@ -3004,6 +3004,41 @@ def test_cloud_allow_ip_dispatch_with_options(monkeypatch: pytest.MonkeyPatch) -
     assert calls[0].region == "us-east-1"
 
 
+def test_cloud_credentials_setup_dispatch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import nyxgpt.cli as cli_mod
+
+    calls: list[Path | None] = []
+
+    def fake_run_aws_credentials_setup(cfg_path=None):
+        calls.append(cfg_path)
+        return 0
+
+    monkeypatch.setattr(cli_mod, "run_aws_credentials_setup", fake_run_aws_credentials_setup)
+
+    output = tmp_path / "config.ini"
+    exit_code = cli(["cloud", "credentials-setup", "--config", str(output)])
+
+    assert exit_code == 0
+    assert calls == [output]
+
+
+def test_cloud_credentials_setup_dispatch_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    import nyxgpt.cli as cli_mod
+
+    calls: list[Path | None] = []
+
+    def fake_run_aws_credentials_setup(cfg_path=None):
+        calls.append(cfg_path)
+        return 0
+
+    monkeypatch.setattr(cli_mod, "run_aws_credentials_setup", fake_run_aws_credentials_setup)
+
+    exit_code = cli(["cloud", "credentials-setup"])
+
+    assert exit_code == 0
+    assert calls == [None]
+
+
 # --- canary command dispatch ---
 
 

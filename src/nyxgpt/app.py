@@ -49,7 +49,7 @@ from starlette.status import HTTP_401_UNAUTHORIZED
 
 import nyxgpt.config
 from nyxgpt import admin_activity as admin_activity_module
-from nyxgpt import api_models, config_wizard, models, secrets_setup, sessions
+from nyxgpt import api_models, aws_credentials_setup, config_wizard, models, secrets_setup, sessions
 from nyxgpt import canary as canary_module
 from nyxgpt import chat as chat_module
 from nyxgpt import error_tracking as error_tracking_module
@@ -1716,6 +1716,110 @@ def config_secrets_sync(payload: dict[str, Any] = Body(default={})) -> dict[str,
         "dry_run": dry_run,
         "results": [{"ok": r.ok, "message": r.message, "details": r.details} for r in results],
     }
+
+
+# --- Guided AWS credentials setup endpoints (P6-13, #3512) ---
+#
+# Deliberately separate from `/config/sections` and `/config/secrets`
+# above: the access key pair collected here is never written to
+# config.ini -- it's routed to ~/.aws/credentials or the OS keychain by
+# `aws_credentials_setup.save_aws_credentials`. Only the non-secret
+# `[cloud]` reference (profile/region/destination) goes through
+# `config_wizard.apply_updates`, and `[cloud]` is excluded from the
+# general wizard's schema for exactly this reason.
+
+
+@api.get("/config/aws-credentials")
+def config_aws_credentials_get(request: Request) -> dict[str, Any]:
+    """Return the guided AWS credentials flow's status: fields, `[cloud]` reference, and
+    where the access key pair is currently stored (masked). Never returns cleartext.
+    """
+    cfg = _req_cfg(request)
+    return aws_credentials_setup.aws_credentials_status(cfg)
+
+
+@api.post("/config/aws-credentials")
+def config_aws_credentials_update(
+    request: Request, payload: dict[str, Any] = Body(...)
+) -> dict[str, Any]:
+    """Validate and save AWS credentials via the guided flow (#3512).
+
+    Payload: `{"destination": "profile"|"keychain"|"ambient", "profile": ...,
+    "region": ..., "access_key_id"?: ..., "secret_access_key"?: ...}`. The
+    key pair (required for `profile`/`keychain`) is routed to
+    `~/.aws/credentials` or the OS keychain -- never config.ini. Only
+    profile/region/destination are written to config.ini's `[cloud]`
+    section.
+    """
+    destination = payload.get("destination")
+    profile = payload.get("profile")
+    region = payload.get("region")
+    if (
+        not isinstance(destination, str)
+        or not isinstance(profile, str)
+        or not isinstance(region, str)
+    ):
+        raise HTTPException(
+            status_code=400, detail="'destination', 'profile', and 'region' are required"
+        )
+
+    access_key_id = payload.get("access_key_id")
+    secret_access_key = payload.get("secret_access_key")
+    if access_key_id is not None and not isinstance(access_key_id, str):
+        raise HTTPException(status_code=400, detail="'access_key_id' must be a string")
+    if secret_access_key is not None and not isinstance(secret_access_key, str):
+        raise HTTPException(status_code=400, detail="'secret_access_key' must be a string")
+
+    try:
+        aws_credentials_setup.save_aws_credentials(
+            _config_file_path(), destination, profile, region, access_key_id, secret_access_key
+        )
+    except aws_credentials_setup.SecretValidationError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    except aws_credentials_setup.AwsCredentialsError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    nyxgpt.config._CACHED_CFG = None
+    nyxgpt.config._CACHED_PATH = None
+    nyxgpt.config._CACHED_MTIME_NS = None
+    request.state.cfg = load_config(None)
+    cfg = _req_cfg(request)
+
+    admin_activity_module.record(
+        "config.aws_credentials_set", f"profile={profile} destination={destination}"
+    )
+
+    return aws_credentials_setup.aws_credentials_status(cfg)
+
+
+@api.post("/config/aws-credentials/secret-store")
+def config_aws_secret_store_update(
+    request: Request, payload: dict[str, Any] = Body(...)
+) -> dict[str, Any]:
+    """Validate and save #3507's `[secrets]` provider reference (#3512's guided-flow parity).
+
+    Payload: `{"provider"?: ..., "region"?: ..., "ssm_prefix"?: ...,
+    "secretsmanager_id"?: ...}`. These aren't secret values themselves --
+    the actual application secrets stay in SSM/Secrets Manager -- so
+    they're written to config.ini like every other setting.
+    """
+    values = {
+        f.key: payload.get(f.key, "") for f in aws_credentials_setup.SECRET_STORE_REFERENCE_FIELDS
+    }
+    try:
+        aws_credentials_setup.save_secret_store_reference(_config_file_path(), values)
+    except aws_credentials_setup.SecretValidationError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+
+    nyxgpt.config._CACHED_CFG = None
+    nyxgpt.config._CACHED_PATH = None
+    nyxgpt.config._CACHED_MTIME_NS = None
+    request.state.cfg = load_config(None)
+    cfg = _req_cfg(request)
+
+    admin_activity_module.record("config.secret_store_reference_set", "secrets section updated")
+
+    return aws_credentials_setup.aws_credentials_status(cfg)
 
 
 _RESTART_TARGETS = {"api", "web", "ollama", "cassandra", "observability", "all"}
