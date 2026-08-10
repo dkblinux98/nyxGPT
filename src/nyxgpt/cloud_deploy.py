@@ -890,6 +890,11 @@ LIFECYCLE_COMMANDS: dict[str, str] = {
     "deploy": "nyxgpt cloud deploy",
     "redeploy": "nyxgpt cloud deploy",
     "destroy": "nyxgpt cloud destroy --yes",
+    # The cloud end-to-end test (P6-17, #3515). Listed here so the dashboard
+    # offers it as a pointer like every other lifecycle action -- it deploys
+    # and destroys real billed infrastructure, which is exactly why it is a
+    # deliberate terminal command and not a button.
+    "smoke": "nyxgpt cloud smoke",
     "tunnel": "nyxgpt cloud tunnel",
     "tunnel_stop": "nyxgpt cloud tunnel --stop",
     "status": "nyxgpt cloud deploy --status",

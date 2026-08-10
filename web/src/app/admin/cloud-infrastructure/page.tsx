@@ -1017,9 +1017,10 @@ export default function CloudInfrastructurePage() {
           <p
             style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)', marginBottom: '0.75rem' }}
           >
-            Every deploy and teardown of this cloud deployment, newest first, whether it was run
-            from the CLI or elsewhere. A deploy that installed the stack but never went healthy
-            is recorded as failed.
+            Every deploy, teardown and end-to-end smoke run of this cloud deployment, newest
+            first, whether it was run from the CLI or elsewhere. A deploy that installed the
+            stack but never went healthy is recorded as failed, as is a smoke run whose
+            teardown left resources behind.
           </p>
           {deployStatus && deployStatus.history.length > 0 ? (
             <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: '0.85rem' }}>
@@ -1081,6 +1082,10 @@ export default function CloudInfrastructurePage() {
             {[
               ['Deploy or redeploy the stack', deployStatus?.commands?.deploy],
               ['Tear the whole deployment down', deployStatus?.commands?.destroy],
+              [
+                'Run the end-to-end cloud test (deploys, verifies chat/RAG/observability, then tears down)',
+                deployStatus?.commands?.smoke,
+              ],
               ['Show this state from a terminal', deployStatus?.commands?.status],
               ['Re-allow SSH after your public IP changes', deployStatus?.commands?.allow_ip],
             ]
