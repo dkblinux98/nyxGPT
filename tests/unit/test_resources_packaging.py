@@ -24,6 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _RESOLUTION_SCRIPT = """
 import importlib.resources
+from pathlib import Path
 
 root = importlib.resources.files("nyxgpt.resources")
 
@@ -49,6 +50,34 @@ assert script.is_file(), f"missing {script}"
 example_config = root.joinpath("example.config.ini")
 assert example_config.is_file(), f"missing {example_config}"
 assert "[nyxgpt]" in example_config.read_text(encoding="utf-8")
+
+# #3509: `nyxgpt cloud infra` provisions the AWS substrate from the packaged
+# terraform/aws configuration (nyxgpt.cloud_infra.packaged_terraform_dir), so
+# a checkout-free machine must find the whole module tree here.
+for tf in (
+    "terraform/aws/main.tf",
+    "terraform/aws/variables.tf",
+    "terraform/aws/outputs.tf",
+    "terraform/aws/versions.tf",
+    "terraform/aws/modules/network/main.tf",
+    "terraform/aws/modules/security/main.tf",
+    "terraform/aws/modules/compute/main.tf",
+    "terraform/aws/tests/plan.tftest.hcl",
+):
+    assert root.joinpath(tf).is_file(), f"missing {tf}"
+
+# ...and must NOT find a developer's local Terraform working files: state and
+# tfvars carry infrastructure ids and the .terraform plugin cache is hundreds
+# of megabytes. They are gitignored and excluded in pyproject.toml, but a
+# wheel built from a tree where someone ran Terraform in-place would otherwise
+# quietly embed them.
+tf_dir = root.joinpath("terraform/aws")
+leaked = [
+    str(p)
+    for p in Path(str(tf_dir)).rglob("*")
+    if p.name == ".terraform" or p.suffix == ".tfvars" or ".tfstate" in p.name
+]
+assert not leaked, f"local Terraform working files leaked into the wheel: {leaked}"
 
 # #3622: a bare `pip install nyxgpt` (no Homebrew/systemd installer step)
 # must still resolve example.config.ini -- config_wizard.WIZARD_SCHEMA

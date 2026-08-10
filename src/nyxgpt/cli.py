@@ -20,6 +20,7 @@ from typing import Any, cast
 # (blue/green lived in nyxgpt.deploy; retired in favor of canary -- see #3409.)
 from nyxgpt import canary as canary_mod
 from nyxgpt import cloud as cloud_mod
+from nyxgpt import cloud_infra as cloud_infra_mod
 from nyxgpt import models, sessions
 from nyxgpt import ops as ops_mod
 from nyxgpt import self_heal as self_heal_mod
@@ -2240,6 +2241,101 @@ def cli(argv: list[str] | None = None) -> int:
         help="Path to config.ini (default: ~/.nyxGPT/config.ini)",
     )
 
+    # `cloud infra` -- the wrapped lifecycle of the AWS substrate itself
+    # (P6-8, #3509): VPC, public subnet(s), the SSH-only owner-IP-scoped
+    # security group, and the single EC2 instance from
+    # product_management/DECISION_AWS_COMPUTE_SUBSTRATE.md. This is the only
+    # supported way to drive terraform/aws (CLAUDE.md: no raw `terraform` in
+    # any user flow), and `apply` is what writes ~/.nyxGPT/cloud/state.json so
+    # `allow-ip` above works with no arguments afterwards. Deploying the stack
+    # onto the instance is separate (#3513).
+    cloud_infra_p = cloud_sub.add_parser(
+        "infra",
+        help=(
+            "Provision and tear down the AWS substrate (VPC, subnets, SSH-only "
+            "security group, EC2 instance)"
+        ),
+    )
+    cloud_infra_sub = cloud_infra_p.add_subparsers(dest="infra_cmd", required=True)
+
+    def _add_infra_provision_flags(parser: argparse.ArgumentParser) -> None:
+        """Attach the inputs shared by `infra plan`/`apply`/`destroy`.
+
+        Every one of them is remembered in ~/.nyxGPT/cloud/infra.json after a
+        run, so a later invocation needs only the flags that change.
+        """
+        parser.add_argument(
+            "--region",
+            help="AWS region (default: saved value, then config.ini [cloud] region, then AWS_REGION, then us-east-1)",
+        )
+        parser.add_argument(
+            "--profile",
+            help="AWS profile to authenticate with (default: saved value, then config.ini [cloud] profile, then AWS_PROFILE)",
+        )
+        parser.add_argument(
+            "--owner-ip",
+            help=(
+                "IP or CIDR allowed to SSH to the instance (default: auto-detect this "
+                "machine's current public IP; bare addresses are scoped to /32; "
+                "0.0.0.0/0 is refused)"
+            ),
+        )
+        parser.add_argument(
+            "--ssh-public-key",
+            help=(
+                "Path to an OpenSSH public key (e.g. ~/.ssh/id_ed25519.pub) to register "
+                "as a new EC2 key pair. Mutually exclusive with --ssh-key-name"
+            ),
+        )
+        parser.add_argument(
+            "--ssh-key-name",
+            help="Name of an EC2 key pair that already exists in the region. Mutually exclusive with --ssh-public-key",
+        )
+        parser.add_argument(
+            "--instance-type",
+            help="EC2 instance type (default: saved value, then m5.large)",
+        )
+        parser.add_argument(
+            "--root-volume-size",
+            type=int,
+            help="Root EBS volume size in GiB (default: saved value, then 100)",
+        )
+
+    cloud_infra_plan = cloud_infra_sub.add_parser(
+        "plan", help="Show what would be provisioned or changed, creating nothing"
+    )
+    _add_infra_provision_flags(cloud_infra_plan)
+
+    cloud_infra_apply = cloud_infra_sub.add_parser(
+        "apply",
+        help=(
+            "Provision (or reconcile) the substrate and record its ids for the other "
+            "`nyxgpt cloud` commands"
+        ),
+    )
+    _add_infra_provision_flags(cloud_infra_apply)
+
+    cloud_infra_destroy = cloud_infra_sub.add_parser(
+        "destroy", help="Tear the substrate down, including the instance and its root volume"
+    )
+    _add_infra_provision_flags(cloud_infra_destroy)
+    cloud_infra_destroy.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirm the teardown (required -- data that exists only on the instance is lost)",
+    )
+
+    cloud_infra_sub.add_parser(
+        "status", help="Report what is currently provisioned and how it is reachable"
+    )
+    cloud_infra_sub.add_parser(
+        "test",
+        help=(
+            "Run the substrate's plan-level tests offline (the same access-model checks "
+            "CI runs) -- creates nothing and needs no AWS account"
+        ),
+    )
+
     # Add canary command (local weighted-traffic canary rollout on a local k8s cluster --
     # the sole deployment model since #3409 retired blue/green in favor of it)
     canary_p = sub.add_parser("canary", help="Local canary deployment (kind/minikube/k3s cluster)")
@@ -2498,6 +2594,9 @@ def cli(argv: list[str] | None = None) -> int:
 
     if cmd == "cloud" and args.cloud_cmd == "credentials-setup":
         return run_aws_credentials_setup(cfg_path=args.config)
+
+    if cmd == "cloud" and args.cloud_cmd == "infra":
+        return cloud_infra_mod.infra_command(args)
 
     if cmd == "canary":
         # Same per-invocation correlation id as the `ops` dispatch above --

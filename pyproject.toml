@@ -124,10 +124,11 @@ where = ["src"]
 # installed (non-editable) build has no dependency on a source checkout --
 # see `nyxgpt.ops._sync_packaged_resources` and #3621. The package directory
 # itself contains symlinks back to the canonical top-level files
-# (docker/, docker-compose.yml, ops/, .env.example, four scripts/*.sh) rather
-# than copies, so there is exactly one place to edit each file; setuptools
-# dereferences symlinks when it builds the wheel/sdist, so the built
-# artifact contains real file content, not links.
+# (docker/, docker-compose.yml, ops/, .env.example, four scripts/*.sh,
+# terraform/aws/ for the AWS substrate `nyxgpt cloud infra` provisions --
+# #3509) rather than copies, so there is exactly one place to edit each file;
+# setuptools dereferences symlinks when it builds the wheel/sdist, so the
+# built artifact contains real file content, not links.
 [tool.setuptools.package-data]
 # "**/*" (glob-style) doesn't match dotfiles, so .env.example needs its own
 # explicit entry.
@@ -144,7 +145,24 @@ where = ["src"]
 # secret-bearing file (it carries [auth] api_key / [monitoring]
 # grafana_admin_password / an error-tracking DSN -- see
 # `_generate_compose_config`).
-"nyxgpt.resources" = ["docker/config.docker.ini"]
+#
+# The terraform/aws entries are the same defence for the AWS substrate
+# (#3509): `terraform init` run directly in that directory (as CI's validate
+# gate does) leaves a multi-hundred-megabyte .terraform/ plugin cache behind,
+# and a hand-run `terraform apply` there would drop state/tfvars carrying
+# real infrastructure ids next to the tracked config. All of it is
+# gitignored, none of it belongs in a wheel -- `nyxgpt cloud infra` keeps the
+# real state and tfvars under ~/.nyxGPT/cloud/ instead.
+"nyxgpt.resources" = [
+  "docker/config.docker.ini",
+  "terraform/aws/.terraform/*",
+  "terraform/aws/.terraform/**/*",
+  "terraform/aws/.terraform.lock.hcl",
+  "terraform/aws/*.tfstate",
+  "terraform/aws/*.tfstate.*",
+  "terraform/aws/*.tfvars",
+  "terraform/aws/tfplan",
+]
 
 [tool.mypy]
 python_version = "3.11"
