@@ -301,6 +301,21 @@ Design consequences:
    and runner minutes per issue land in the retro data substrate (§7), so
    every issue has a price and retrospectives surface cost regressions.
 
+**Deferred cost item — intelligent test selection (owner, 2026-08-10, to be
+filed post-v3.0.0):** CI gates and the developer workflow's verification loop
+run the full Python *and* Node test suites regardless of a change's footprint.
+Observed on #3709's PR: a bash/workflow/runbook-only change ran the entire
+pytest and vitest suites — and the dev workflow's verification phase repeats
+the full suites on up to three fix attempts for *every* issue, making this the
+largest recurring runner-spend multiplier in the pipeline. Test runs should be
+chosen intelligently from the change's path/dependency impact: script- or
+workflow-only diffs run `bash -n`/shellcheck/YAML lint plus any directly
+related tests only; Python-only diffs skip the Node suite and scope pytest;
+web-only diffs skip Python. Applies to `ci-tests.yml` and the verification
+steps in `developer_auto_implement.yml`. Owner scheduling (2026-08-10): this
+is part of the **next sprint (Sprint 9), which is nyxAgent-focused** — file it
+there at grooming.
+
 A global hard budget circuit breaker (fixed caps on expensive invocations per
 unit time) was proposed and **rejected by the owner (2026-08-09)**: a
 threshold constant is itself a scripted guard of the kind this section rules
