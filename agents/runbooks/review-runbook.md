@@ -18,7 +18,8 @@ The review workflow is triggered when review-agent is assigned as reviewer:
 - **Manual re-trigger options**:
   - Push new commit to PR branch (triggers on synchronize)
   - Comment `@review` on the PR
-  - Run via GitHub Actions UI: `gh workflow run claude-code-review.yml -f pr_number=<N>`
+  - Dispatch-mode recovery: `scripts/agents/manually_trigger_pr_review.sh <N>`
+    (see §5a — always use the script, not a bare `gh workflow run`)
 
 The review-agent OWNS the review process:
 - Review workflow uses `REVIEW_AGENT_TOKEN` for all GitHub operations
@@ -140,6 +141,65 @@ The review decision is automatically executed based on the review comment:
 Manual override (optional):
 - `@approve-merge` - Human can manually trigger merge
 - `@request-changes` - Human can manually trigger changes workflow (legacy)
+
+## 5a) Dispatch-mode recovery (`workflow_dispatch`, #3704)
+
+**When to use it.** A PR is orphaned: it is open, the review agent is the
+requested reviewer, and no review workflow run exists for it (the automatic
+`review_requested`/`synchronize` trigger never fired, or its run died before
+posting a verdict). This is the *only* supported way to start a review from
+outside the PR event stream.
+
+```bash
+scripts/agents/manually_trigger_pr_review.sh <PR_NUMBER>
+```
+
+**Always use the script, never a bare `gh workflow run claude-code-review.yml`.**
+Without `--ref`, `gh workflow run` dispatches the copy of the workflow on the
+repo **default branch** (`master`), which under this project's branch rules
+only moves on releases and is therefore arbitrarily far behind the active
+release branch. Dispatched reviews were consequently executing a stale
+workflow definition — including one whose `--json-schema` predated the #3687
+`disagreement_type` field, so every dispatched REQUEST_CHANGES silently fell
+back to type (a) and, on its second cycle, routed to a huddle instead of the
+fix cycle the reviewer had actually called for. The script now pins
+`--ref "$RELEASE_BRANCH"`.
+
+**What dispatch mode guarantees.** Same outcome as an event-triggered review,
+for both verdicts:
+
+- **APPROVE** — merged by `review_agent_auto_review.yml` exactly as before.
+- **REQUEST_CHANGES** — the handoff is guaranteed, not merely attempted.
+  The primary path is still the event chain (`pull_request_review`, with the
+  `nyxgpt-structured-review` comment as the `issue_comment` fallback). On top
+  of that, the review run's own final step
+  (`scripts/agents/review_ensure_handoff.sh`) waits ~4 minutes for that chain
+  to leave a footprint on the PR and, if none appears, executes the same
+  routing decision itself: resolve the linked issue from the PR body's
+  `Closes #N`, then loop / huddle / escalate per §6b.
+
+  Routing is not duplicated — the backstop calls the same
+  `huddle_routing_decision` in `scripts/agents/lib/sprint_calc.py` the primary
+  workflow does, so the two can never disagree. It is idempotent: every action
+  it takes writes one of the handoff markers the footprint check looks for, so
+  a re-run (or a late-firing event chain) is a no-op.
+
+  The footprint check ignores the `nyxgpt-structured-review` comment itself.
+  That comment is the event chain's *trigger*, never its footprint, and it
+  embeds the review's free text — a summary that happens to say "review loop"
+  or "spec ambiguity" (ordinary words when the PR under review is about the
+  review machinery) would otherwise look like a handoff that never happened.
+  The primary path excludes it the same way, by scanning only comments newer
+  than it.
+
+  Backstop-posted comments carry a "_Posted by the dispatch-mode review
+  handoff backstop_" footer. **Seeing that footer means the event chain
+  dropped a handoff** — worth a look at the review run's logs, even though
+  the cycle itself recovered.
+
+This closes the failure observed 2026-08-09/10, where dispatched
+REQUEST_CHANGES verdicts on PRs #3684, #3683 and #3606 produced zero fix
+activity for 9+ hours until a human posted `RETRY_IMPLEMENTATION` by hand.
 
 ## 6) Review cycle escalation
 The review workflow tracks cumulative review cycles:
