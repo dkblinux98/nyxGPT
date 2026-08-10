@@ -176,6 +176,21 @@ const withHistory = {
   ],
 };
 
+// A teardown, which is half of what the history panel exists to show and has
+// a different shape from a deploy. Every field missing here is missing for a
+// reason the backend produces:
+//   - no `version`/`detail`: `cloud_deploy.destroy` records `version: ''` when
+//     `deploy.json` was already gone, and a failed teardown carries only what
+//     Terraform said.
+//   - no `ts`: `deploy_history` keeps any line that parses as an object, so an
+//     entry from a hand-edited or older-format history file arrives without a
+//     usable timestamp. It must still render, without an "Invalid Date".
+const withTeardownHistory = {
+  ...deployedTunnelOpen,
+  deployed: true,
+  history: [{ action: 'destroy', outcome: 'succeeded' }],
+};
+
 function mockDeployStatus(payload: unknown) {
   server.use(http.get('/api/v1/cloud/deploy', () => HttpResponse.json(payload)));
 }
@@ -751,6 +766,28 @@ describe('CloudInfrastructurePage deployment panel', () => {
     expect(screen.getByText(/unhealthy — HTTP 503 over the tunnel/)).toBeInTheDocument();
   });
 
+  it('reports an unhealthy stack that answered nothing at all separately from a 5xx', async () => {
+    // `_probe` returns 0 for anything that is not an HTTP answer -- connection
+    // refused, the tunnel dropping mid-probe -- and that is a different
+    // problem from a 503, which proves the API is up and unhappy. Reporting
+    // "HTTP 0" would be worse than saying no response came back.
+    mockStatus(provisioned);
+    mockDeployStatus({
+      ...deployedTunnelOpen,
+      health: {
+        checked: true,
+        healthy: false,
+        status: 0,
+        url: 'http://localhost:8000/health',
+        reason: 'the tunneled API could not be reached',
+      },
+    });
+    render(<CloudInfrastructurePage />);
+    await screen.findByText('deployed');
+
+    expect(screen.getByText(/unhealthy — no response over the tunnel/)).toBeInTheDocument();
+  });
+
   it('re-reads the deployment state on an explicit refresh', async () => {
     mockStatus(provisioned);
     let calls = 0;
@@ -782,6 +819,18 @@ describe('CloudInfrastructurePage deployment panel', () => {
 
     const outcomes = screen.getAllByText(/^(succeeded|failed)$/).map((el) => el.textContent);
     expect(outcomes).toEqual(['succeeded', 'failed']);
+  });
+
+  it('renders a teardown that carries no version, timestamp or detail', async () => {
+    mockStatus(provisioned);
+    mockDeployStatus(withTeardownHistory);
+    render(<CloudInfrastructurePage />);
+    await screen.findByText('deployed');
+
+    // The action stands in for the version, the date is simply absent, and
+    // nothing renders an "Invalid Date" or a trailing dangling separator.
+    expect(screen.getByText(/· destroy · succeeded/)).toBeInTheDocument();
+    expect(screen.queryByText(/Invalid Date/)).not.toBeInTheDocument();
   });
 
   it('says so plainly when nothing has ever been deployed from this machine', async () => {

@@ -180,7 +180,9 @@ The history is appended by `deploy` and `destroy` themselves rather than by
 whichever surface invoked them, so a deploy run from a terminal shows up on
 the dashboard exactly like any other. A deploy that installed the stack but
 never went healthy is recorded as `failed` before the error is raised —
-that is precisely the event the history exists to preserve.
+that is precisely the event the history exists to preserve. A teardown whose
+substrate destroy fails is recorded the same way, and leaves `deploy.json` in
+place: nothing has proved the deployment is gone.
 
 ### Troubleshooting
 

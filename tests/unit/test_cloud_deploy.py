@@ -563,6 +563,31 @@ def test_destroy_records_what_it_tore_down_before_the_record_is_deleted(
     assert history[0]["instance_id"] == "i-0abc"
 
 
+def test_a_teardown_that_fails_partway_is_still_in_the_history(monkeypatch, _isolated_cloud_home):
+    """Symmetric with the failed deploy: a half-torn-down substrate is the
+    state most worth a trace, and `deploy.json` must survive it."""
+    (_isolated_cloud_home / "deploy.json").write_text(
+        json.dumps({"host": "198.51.100.10", "version": "3.0.0", "instance_id": "i-0abc"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cloud_deploy, "stop_tunnel", lambda: {"stopped": True})
+    monkeypatch.setattr(
+        cloud_infra,
+        "destroy_infra",
+        lambda args: (_ for _ in ()).throw(CloudCommandError("terraform destroy failed")),
+    )
+    with pytest.raises(CloudCommandError):
+        cloud_deploy.destroy(_args(yes=True))
+    history = cloud_deploy.deploy_history()
+    assert len(history) == 1
+    assert history[0]["action"] == "destroy"
+    assert history[0]["outcome"] == "failed"
+    assert history[0]["instance_id"] == "i-0abc"
+    assert "terraform destroy failed" in history[0]["detail"]
+    # The deployment record is left in place: nothing proved it is gone.
+    assert (_isolated_cloud_home / "deploy.json").exists()
+
+
 def test_history_skips_a_truncated_line_rather_than_losing_everything(_isolated_cloud_home):
     (_isolated_cloud_home / "history.jsonl").write_text(
         json.dumps({"action": "deploy", "outcome": "succeeded", "ts": 1.0})

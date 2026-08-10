@@ -850,7 +850,23 @@ def destroy(args: argparse.Namespace) -> dict[str, Any]:
     # torn down, which is unrecoverable once `deploy.json` is gone.
     previous = load_deploy_state()
     tunnel = stop_tunnel()
-    result = cloud_infra.destroy_infra(args)
+    try:
+        result = cloud_infra.destroy_infra(args)
+    except Exception as exc:
+        # Symmetric with the failed-deploy path above: a teardown that was
+        # attempted and did not finish is exactly the event an operator comes
+        # to the history panel to reconstruct, and a half-destroyed substrate
+        # is the state most worth leaving a trace of.
+        record_history(
+            "destroy",
+            "failed",
+            version=str(previous.get("version") or ""),
+            host=str(previous.get("host") or ""),
+            instance_id=str(previous.get("instance_id") or ""),
+            region=str(previous.get("region") or ""),
+            detail=f"tunnel closed, but the substrate teardown failed: {exc}",
+        )
+        raise
     DEPLOY_STATE_FILE.unlink(missing_ok=True)
     settings = result.get("settings", {})
     record_history(
