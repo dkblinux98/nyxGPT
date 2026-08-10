@@ -219,3 +219,101 @@ class TestHuddleRoutingDecision:
             check=True,
         )
         assert result.stdout.strip() == "huddle"
+
+
+class TestSprintParkNote:
+    """#3706: when the active sprint's pool drains the autopilot parks with a
+    loud note -- sprint complete, what remains per future sprint, and how
+    work resumes."""
+
+    def _note(self, **overrides):
+        payload = {
+            "event_phrase": "Issue #3706 merged",
+            "sprint_title": "Sprint 8",
+            "release_version": "v3.0.0",
+            "by_sprint": {"Sprint 8": 0, "Sprint 9": 11, "Sprint 10": 2, "": 3},
+        }
+        payload.update(overrides)
+        return sprint_calc.build_sprint_park_note(payload)
+
+    def test_states_the_sprint_is_complete_and_the_event(self):
+        note = self._note()
+        assert "Issue #3706 merged" in note
+        assert "Sprint 8" in note
+        assert "no open Backlog issues left" in note
+        assert "parked at the sprint boundary" in note
+
+    def test_lists_remaining_release_work_per_future_sprint(self):
+        note = self._note()
+        assert "- Sprint 9: 11 open Backlog issue(s)" in note
+        assert "- Sprint 10: 2 open Backlog issue(s)" in note
+        assert "- _No sprint set_: 3 open Backlog issue(s)" in note
+        assert "**16**" in note  # 11 + 2 + 3
+        # Numeric sprint ordering: "Sprint 9" precedes "Sprint 10".
+        assert note.index("Sprint 9:") < note.index("Sprint 10:")
+        # The no-sprint bucket sorts last.
+        assert note.index("Sprint 10:") < note.index("_No sprint set_")
+
+    def test_active_sprint_is_not_listed_as_waiting_work(self):
+        note = self._note(by_sprint={"Sprint 8": 4, "Sprint 9": 1})
+        # A nonzero active-sprint bucket is a data race at worst; it must
+        # never be reported as work waiting behind the boundary.
+        assert "Sprint 8: 4" not in note
+        assert "- Sprint 9: 1 open Backlog issue(s)" in note
+        assert "**1**" in note
+
+    def test_explains_how_work_resumes_and_the_owner_override(self):
+        note = self._note()
+        assert "SPRINT_TIMEZONE" in note
+        assert "documented in `docs/sprint-autopilot.md`" in note
+        assert "#3706" in note
+
+    def test_never_contains_the_dispatch_kick_token(self):
+        # notify_scrum_ready.yml dispatches on a bare substring test of the
+        # comment body, with the agent accounts on its actor allowlist. A
+        # park note that names the kick token anywhere -- prose included --
+        # therefore starts the next issue, so "park" became "kick" (#3706
+        # review). Cover every rendered variant.
+        variants = [
+            self._note(),
+            self._note(sprint_title=""),
+            self._note(by_sprint={"Sprint 8": 0}),
+            self._note(release_version="", by_sprint={"Sprint 9": 2}),
+        ]
+        for note in variants:
+            assert "READY_FOR_NEXT_ISSUE" not in note
+            # Structural backstop: the marker notify_scrum_ready.yml negates,
+            # so the note stays undispatchable even if the prose drifts.
+            assert sprint_calc.AUTOPILOT_INFO_MARKER in note
+
+    def test_sprint_complete_variant_names_acceptance_testing_as_next_step(self):
+        # Owner context 2026-08-10: the sprint boundary is an acceptance
+        # gate, so the note must say acceptance testing comes next rather
+        # than reading as a neutral pause.
+        note = self._note()
+        assert "Next step: acceptance testing of this sprint" in note
+        assert "Acceptance Testing" in note
+        # ...and only for a completed sprint -- there is nothing to accept
+        # when no iteration was active in the first place.
+        assert "Next step: acceptance testing" not in self._note(sprint_title="")
+
+    def test_release_drained_variant_when_nothing_is_waiting(self):
+        note = self._note(by_sprint={"Sprint 8": 0})
+        assert "release backlog is drained" in note
+        assert "RELEASE_ISSUE_NUMBER" in note
+        assert "open Backlog issue(s)" not in note
+
+    def test_no_active_sprint_variant(self):
+        note = self._note(sprint_title="")
+        assert "No sprint iteration is currently active" in note
+        assert "- Sprint 9: 11 open Backlog issue(s)" in note
+        # With no active sprint the "" key is the *no sprint set* bucket,
+        # not the active sprint. Excluding it here hid 3 waiting issues and
+        # reported a total of 13 instead of 16 (#3706 review).
+        assert "- _No sprint set_: 3 open Backlog issue(s)" in note
+        assert "**16**" in note  # 11 + 2 + 3
+
+    def test_missing_release_version_degrades_gracefully(self):
+        note = self._note(release_version="", by_sprint={"Sprint 9": 2})
+        assert "this release" in note
+        assert "- Sprint 9: 2 open Backlog issue(s)" in note

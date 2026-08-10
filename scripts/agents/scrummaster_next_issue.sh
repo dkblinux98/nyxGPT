@@ -22,9 +22,15 @@ Options:
   --sprint-scoped  Only consider issues whose Sprint field matches the
                     active Sprint iteration (SPRINT_FIELD, default "Sprint").
                     Used by sprint autopilot (#3480) so continuation never
-                    pulls in work from outside the active sprint. Without
-                    this flag, behavior is unchanged from before #3480
-                    (Sprint is not considered at all).
+                    pulls in work from outside the active sprint. The
+                    boundary is hard (#3706): issues in a future sprint, or
+                    with no sprint set, are skipped with a log line and are
+                    never dispatched automatically -- there is no
+                    release-wide fall-through, and no active iteration means
+                    a conservative stop (exit 1). Without this flag, behavior
+                    is unchanged from before #3480 (Sprint is not considered
+                    at all), which is what a human `READY_FOR_NEXT_ISSUE`
+                    kick uses to pull work forward deliberately.
   -h, --help       Show this help
 
 Environment:
@@ -77,26 +83,36 @@ ACTIVE_SPRINT_TITLE=""
 if [[ "$SPRINT_SCOPED_FLAG" == "1" ]]; then
   ACTIVE_SPRINT_TITLE="$(iteration_active_title "$SPRINT_FIELD" 2>/dev/null || echo "")"
   if [[ -z "$ACTIVE_SPRINT_TITLE" || "$ACTIVE_SPRINT_TITLE" == "null" ]]; then
-    # No active Sprint: sprint scoping has nothing to scope to. Per #3480,
-    # "no active sprint" falls back to today's unscoped manual-kick
-    # behavior rather than reporting "no eligible work" -- only "autopilot
-    # on AND a sprint is active" restricts selection.
-    log "No active Sprint on field '${SPRINT_FIELD}' -- falling back to unscoped selection."
-    SPRINT_SCOPED_FLAG=0
+    # No active Sprint and sprint scoping was requested: STOP (conservative
+    # stop, #3706). This used to fall back to unscoped selection, which
+    # quietly re-opened the boundary the flag exists to close -- an agent
+    # kick arriving after the iteration's window closed (the
+    # `scrummaster-dispatch` concurrency queue makes that delay real), or a
+    # re-run of an older dispatch run, would select and START future-sprint
+    # or no-sprint work with no planning event and no human in the loop.
+    # Deliberate pull-forward is unaffected: an owner kick never passes
+    # --sprint-scoped, so it still selects unscoped.
+    log "No active Sprint on field '${SPRINT_FIELD}' -- stopping (conservative stop, #3706): sprint-scoped selection has nothing to scope to and never falls back to release-wide work."
+    exit 1
   else
     log "Sprint-scoped selection: active sprint '${ACTIVE_SPRINT_TITLE}'"
   fi
 fi
 
-# Release wall (owner decision 2026-07-31): when a release tracking issue is
+# Release wall (outer boundary): when a release tracking issue is
 # configured, selection NEVER crosses into another release's work -- every
 # candidate's milestone must carry the current release's version (parsed
 # from the tracking issue's title, e.g. "Release v2.0.0"). This applies to
 # manual kicks too: agents merge to RELEASE_BRANCH, so starting next-release
 # work before the owner performs the release ceremony (new branch + new
-# tracking issue + repo-var flip) would land it on the wrong branch. Sprint
-# scoping remains a soft PREFERENCE inside the wall (fallback below);
-# release membership is the hard boundary.
+# tracking issue + repo-var flip) would land it on the wrong branch.
+#
+# Inside that wall, --sprint-scoped is a HARD boundary as well, not a
+# preference (owner policy 2026-08-10, #3706): there is no release-wide
+# fall-through when the active sprint drains. The earlier fall-through was
+# introduced with a "sprint scoping is soft" rationale attributed to an
+# owner decision of 2026-07-31; the owner has since stated that attribution
+# was wrong, and that the auto loop is bound by the current sprint.
 RELEASE_VERSION=""
 if [[ -n "${RELEASE_ISSUE_NUMBER:-}" ]]; then
   RELEASE_VERSION="$(release_version_from_issue "$RELEASE_ISSUE_NUMBER" 2>/dev/null || echo "")"
@@ -138,7 +154,11 @@ summarize_page_file() {
 }
 
 tmp="$(mktemp)"
-trap 'rm -f "$tmp"' EXIT
+# Per-page {sprint title: open Backlog count} objects, accumulated during a
+# sprint-scoped pass so an empty-handed pass can report exactly what it
+# skipped instead of silently pulling it forward (#3706).
+skipped_tmp="$(mktemp)"
+trap 'rm -f "$tmp" "$skipped_tmp"' EXIT
 
 # One full paging pass over the project items with the current scoping env
 # (SPRINT_SCOPED_FLAG / ACTIVE_SPRINT_TITLE / RELEASE_VERSION). Exits the
@@ -165,6 +185,15 @@ for page in $(seq 1 "$MAX_PAGES"); do
   best_issue="$(echo "$summary" | jq -r '.best_issue // empty')"
 
   log "Page ${page}: bytes=${bytes} hasNext=${has_next} backlog_open=${backlog_open} best_issue=${best_issue:-null}"
+
+  if [[ "$SPRINT_SCOPED_FLAG" == "1" ]]; then
+    echo "$summary" | jq -c '.sprint_counts' >>"$skipped_tmp"
+    other_sprint="$(echo "$summary" | jq -r --arg s "$ACTIVE_SPRINT_TITLE" \
+      '[.sprint_counts | to_entries[] | select(.key != $s) | .value] | add // 0')"
+    if [[ "${other_sprint:-0}" != "0" ]]; then
+      log "Page ${page}: skipped ${other_sprint} Backlog issue(s) outside active sprint '${ACTIVE_SPRINT_TITLE}' (not dispatched automatically)."
+    fi
+  fi
 
   if [[ -n "${best_issue:-}" && "${best_issue:-}" != "null" ]]; then
     log "Selected issue #${best_issue} (first candidate page ${page})"
@@ -198,15 +227,26 @@ return 1
 
 selection_pass || true
 
-# Sprint preference is soft INSIDE the release wall: when the active sprint
-# has no eligible work left but the release still does (e.g. a slipped item
-# from the previous sprint after the next one started), fall back to
-# release-wide selection rather than stranding the loop. The release wall
-# itself stays up -- there is no fallback across a release boundary.
-if [[ "$SPRINT_SCOPED_FLAG" == "1" && -n "$RELEASE_VERSION" ]]; then
-  log "Active sprint '${ACTIVE_SPRINT_TITLE}' has no eligible Backlog work -- retrying release-wide (wall '${RELEASE_VERSION}' stays up)."
-  SPRINT_SCOPED_FLAG=0
-  selection_pass || true
+# The sprint boundary is hard (#3706): when the active sprint has no
+# eligible Backlog work left, selection stops here. It does NOT fall back to
+# release-wide selection -- work queued in a future sprint (or with no
+# sprint set) waits for that sprint's window to open, or for a deliberate
+# human `READY_FOR_NEXT_ISSUE` kick, which runs unscoped and can pull it
+# forward on purpose.
+if [[ "$SPRINT_SCOPED_FLAG" == "1" ]]; then
+  waiting="$(jq -s -r --arg s "$ACTIVE_SPRINT_TITLE" '
+    reduce .[] as $p ({}; reduce ($p | to_entries[]) as $e (.; .[$e.key] = ((.[$e.key] // 0) + $e.value)))
+    | to_entries
+    | map(select(.key != $s and .value > 0))
+    | sort_by(.key)
+    | map("  - \(if .key == "" then "(no sprint set)" else .key end): \(.value)")
+    | join("\n")
+  ' "$skipped_tmp" 2>/dev/null || echo "")"
+  log "Active sprint '${ACTIVE_SPRINT_TITLE}' has no eligible Backlog work -- stopping at the sprint boundary (no release-wide fall-through, #3706)."
+  if [[ -n "$waiting" ]]; then
+    log "Backlog waiting outside the active sprint (not dispatched automatically):"
+    while IFS= read -r line; do log "$line"; done <<<"$waiting"
+  fi
 fi
 
 log "No Backlog+OPEN issues found."

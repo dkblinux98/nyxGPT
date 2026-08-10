@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import sys
 from datetime import date
 from typing import Any
@@ -88,8 +89,141 @@ def select_reorg_candidates(issues: list[dict[str, Any]], count: int) -> list[di
 
 def autopilot_decision(remaining_open_backlog: int) -> str:
     """ "continue" while eligible backlog work remains in the active sprint,
-    "complete" once it hits zero -- the sprint autopilot's stop condition."""
+    "complete" once it hits zero -- the sprint autopilot's stop condition.
+
+    The count handed in is the ACTIVE SPRINT's open Backlog count, not the
+    release's (owner policy 2026-08-10, #3706): the automatic loop is bound
+    by the current sprint, so a release that still has work queued in a
+    future sprint parks here rather than pulling it forward.
+    """
     return "continue" if remaining_open_backlog > 0 else "complete"
+
+
+def _sprint_sort_key(title: str) -> tuple[int, int | str, str]:
+    """Orders sprint buckets for the park note: numbered sprints in numeric
+    order ("Sprint 9" before "Sprint 10", which a plain string sort gets
+    backwards), then any non-numbered titles, then the no-sprint bucket."""
+    if not title:
+        return (2, 0, "")
+    m = re.search(r"(\d+)", title)
+    if m:
+        return (0, int(m.group(1)), title)
+    return (1, title, title)
+
+
+# Machine marker for autopilot notes that are INFORMATIONAL (park notes,
+# paused notices) rather than dispatch kicks. `notify_scrum_ready.yml`
+# negates this marker in its job `if:`, so such a note can never trigger a
+# dispatch run even if its prose later drifts back to naming the kick token
+# (#3706 review finding). Belt and braces: informational notes also avoid
+# writing the literal kick token at all -- see `_kick_token_ref()`.
+AUTOPILOT_INFO_MARKER = "<!-- nyxgpt-autopilot-informational -->"
+
+
+# How an informational note refers to the manual kick signal WITHOUT
+# spelling it out. `notify_scrum_ready.yml` triggers on a bare
+# `contains(comment.body, "<kick token>")` substring test with the agent
+# accounts on its actor allowlist, so a note that names the token dispatches
+# work merely by being posted -- which is how a "park" became a kick (#3706
+# review). Never inline the token here, at source or by concatenation: what
+# matters is the RENDERED body.
+KICK_SIGNAL_REF = "the manual kick signal documented in `docs/sprint-autopilot.md`"
+
+
+def build_sprint_park_note(payload: dict[str, Any]) -> str:
+    """Renders the loud park note posted on the release tracking issue when
+    the active sprint's Backlog pool drains (#3706).
+
+    Payload keys:
+      event_phrase     what just happened (e.g. "Issue #123 merged")
+      sprint_title     the active sprint that just completed ("" if there is
+                       no active iteration at all -- the conservative-stop
+                       case)
+      release_version  e.g. "v3.0.0" (may be empty)
+      by_sprint        {sprint title or "": open Backlog count} for the rest
+                       of the release, active sprint included (it is zero by
+                       definition when this note is rendered)
+    """
+    event_phrase = payload.get("event_phrase", "Work completed")
+    sprint_title = payload.get("sprint_title") or ""
+    release_version = payload.get("release_version") or ""
+    by_sprint: dict[str, int] = {
+        str(k): int(v) for k, v in (payload.get("by_sprint") or {}).items() if int(v) > 0
+    }
+    # Only exclude the active-sprint bucket when there IS an active sprint.
+    # With sprint_title == "" (the conservative-stop case) the `""` key is
+    # the *no sprint set* bucket, not the active sprint -- dropping it hid
+    # real waiting work from the note and undercounted the total (#3706
+    # review).
+    remaining_elsewhere = {
+        k: v for k, v in by_sprint.items() if not (sprint_title and k == sprint_title)
+    }
+    total_elsewhere = sum(remaining_elsewhere.values())
+
+    release_label = f"release {release_version}" if release_version else "this release"
+    scope_label = "outside the active sprint" if sprint_title else "in a sprint"
+
+    lines: list[str] = []
+    if sprint_title:
+        lines.append(
+            f"🏁 **Sprint Autopilot — sprint complete**: {event_phrase}. "
+            f'**"{sprint_title}" has no open Backlog issues left**, so autopilot is '
+            f"parked at the sprint boundary."
+        )
+        lines.append("")
+        lines.append(
+            "**Next step: acceptance testing of this sprint.** The sprint boundary is "
+            "an acceptance gate (owner context, 2026-08-10) — merged work sits in "
+            "**Acceptance Testing** for the owner's pass before the next sprint starts. "
+            "Autopilot does not resume on its own, so the acceptance window is not "
+            "consumed by the next sprint's work."
+        )
+    else:
+        lines.append(
+            f"🏁 **Sprint Autopilot — parked**: {event_phrase}. No sprint iteration is "
+            f"currently active (no iteration's date window contains today), so there is "
+            f"no sprint pool to draw from and autopilot is parked."
+        )
+    lines.append("")
+
+    if total_elsewhere:
+        lines.append(f"**Still open in {release_label}, {scope_label}:**")
+        lines.append("")
+        for title in sorted(remaining_elsewhere, key=_sprint_sort_key):
+            label = title if title else "_No sprint set_"
+            count = remaining_elsewhere[title]
+            lines.append(f"- {label}: {count} open Backlog issue(s)")
+        lines.append("")
+        lines.append(f"Total waiting {scope_label}: **{total_elsewhere}**.")
+    else:
+        lines.append(
+            f"**Nothing is left in {release_label}'s Backlog either** — the release "
+            f"backlog is drained. Merged work is in **Acceptance Testing** for "
+            f"stakeholder sign-off. Autopilot resumes when `RELEASE_ISSUE_NUMBER` and "
+            f"`RELEASE_BRANCH` point at the next release; it never crosses a release "
+            f"boundary on its own."
+        )
+
+    lines.append("")
+    lines.append(
+        "The automatic loop is bound by the **current sprint**, not the release "
+        "(owner policy 2026-08-10, #3706): queued work in a future sprint is not "
+        "pulled forward without a planning event."
+    )
+    lines.append("")
+    lines.append("**Work resumes when either:**")
+    lines.append("")
+    lines.append(
+        "- the next sprint's date window opens (iteration boundaries are evaluated in "
+        "`SPRINT_TIMEZONE`, default `America/New_York`) and a kick is posted, or"
+    )
+    lines.append(
+        f"- the owner posts {KICK_SIGNAL_REF} here to pull work forward deliberately "
+        f"— a human kick still overrides the sprint boundary."
+    )
+    lines.append("")
+    lines.append(AUTOPILOT_INFO_MARKER)
+    return "\n".join(lines)
 
 
 _HUDDLE_DECISION_TYPES = frozenset({"a", "b", "c"})
@@ -241,7 +375,10 @@ def build_sprint_report(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _main(argv: list[str]) -> int:
     if not argv:
-        print("usage: sprint_calc.py <report|autopilot-decision|huddle-routing>", file=sys.stderr)
+        print(
+            "usage: sprint_calc.py <report|autopilot-decision|park-note|huddle-routing>",
+            file=sys.stderr,
+        )
         return 2
 
     cmd = argv[0]
@@ -252,6 +389,10 @@ def _main(argv: list[str]) -> int:
     if cmd == "autopilot-decision":
         remaining = int(argv[1])
         print(autopilot_decision(remaining))
+        return 0
+    if cmd == "park-note":
+        payload = json.loads(sys.stdin.read())
+        print(build_sprint_park_note(payload))
         return 0
     if cmd == "huddle-routing":
         disagreement_type, request_changes_count = argv[1], int(argv[2])

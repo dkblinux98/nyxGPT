@@ -10,9 +10,18 @@ permissions:
 
 jobs:
   dispatch-next-issue:
+    # The kick test is a bare substring match and the actor allowlist
+    # includes the agents, so ANY agent comment that merely *names* the kick
+    # token dispatches work. That is how the #3706 sprint-boundary park note
+    # became a kick (and how a PAUSE_SPRINT notice could dispatch despite the
+    # pause). Informational autopilot notes are therefore stamped with
+    # AUTOPILOT_INFO_MARKER (lib/gh_project.sh, lib/sprint_calc.py) and
+    # excluded here -- a structural guard that holds even if a note's prose
+    # drifts back into naming the token.
     if: >
       vars.AGENTS_ENABLED == 'true' &&
       contains(github.event.comment.body, 'READY_FOR_NEXT_ISSUE') &&
+      !contains(github.event.comment.body, 'nyxgpt-autopilot-informational') &&
       (github.event.comment.user.login == vars.HUMAN_OWNER ||
        github.event.comment.user.login == vars.SCRUM_AGENT ||
        github.event.comment.user.login == vars.DEV_AGENT ||
@@ -114,14 +123,34 @@ jobs:
       - name: Select and start next issue (fall through on unclaimable candidates)
         id: start
         shell: bash
+        env:
+          SPRINT_AUTOPILOT: ${{ vars.SPRINT_AUTOPILOT }}
+          KICK_ACTOR: ${{ github.event.comment.user.login }}
+          KICK_OWNER: ${{ vars.HUMAN_OWNER }}
         run: |
           set -euo pipefail
-          # Sprint-scope selection while autopilot is on (#3480) -- the
-          # script itself falls back to unscoped selection if no Sprint is
-          # currently active, so this is safe to pass unconditionally.
+          # Sprint-scope selection for AGENT-posted kicks while autopilot is
+          # on (#3480, tightened by #3706): the automatic loop is bound by
+          # the current sprint, so an agent kick may only claim work in the
+          # active iteration. With no active iteration the script now STOPS
+          # (exit 1) rather than falling back to unscoped selection -- the
+          # conservative stop the policy documents; the fallback let a kick
+          # that arrived just after the window closed dispatch future-sprint
+          # work automatically.
+          #
+          # A kick posted by the human owner stays UNSCOPED -- the owner
+          # override in #3706: a deliberate manual kick may pull work
+          # forward across the sprint boundary. The release wall applies to
+          # both paths regardless. The login comparison is case-insensitive
+          # to match the job-level `if:` above (GitHub expression `==` on
+          # strings ignores case; bash `!=` does not), so an owner kick can
+          # never be scoped merely because vars.HUMAN_OWNER is cased
+          # differently from the actual login.
           SPRINT_ARGS=""
-          if [[ "${{ vars.SPRINT_AUTOPILOT }}" == "true" ]]; then
+          if [[ "$SPRINT_AUTOPILOT" == "true" && "${KICK_ACTOR,,}" != "${KICK_OWNER,,}" ]]; then
             SPRINT_ARGS="--sprint-scoped"
+          else
+            echo "Unscoped selection (autopilot=${SPRINT_AUTOPILOT}, kick by ${KICK_ACTOR})."
           fi
 
           # scrummaster_dispatch_next.sh (#3665) runs the fall-through
