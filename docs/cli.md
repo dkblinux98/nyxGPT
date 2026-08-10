@@ -10,6 +10,9 @@ documentation are linked out to instead of duplicated here:
   `nyxgpt ops install`/`nyxgpt ops down`, see
   [Ops helpers](ops.md#nyxgpt-up--nyxgpt-down)
 - Ops (`nyxgpt ops ...`) — see [Ops helpers](ops.md)
+- Cloud/AWS (`nyxgpt cloud ...`) — deploy, tunnel, destroy, the end-to-end
+  `nyxgpt cloud smoke` test, Terraform state, and credentials setup; see
+  [Cloud (AWS)](cloud.md)
 - Canary (`nyxgpt canary ...`) — see [Kubernetes](kubernetes.md)
 - Configuration wizard (`nyxgpt wizard`) — see [Configuration](configuration.md)
 - Guided secrets setup (`nyxgpt secrets setup`) — see [Configuration: Guided secrets setup](configuration.md#option-4-guided-secrets-setup)

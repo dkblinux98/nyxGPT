@@ -148,6 +148,7 @@ and it points at the wrapped commands below for anything that changes state:
 | --- | --- |
 | Deploy or redeploy the stack | `nyxgpt cloud deploy` |
 | Tear the whole deployment down | `nyxgpt cloud destroy --yes` |
+| Run the end-to-end cloud test (deploys, verifies, tears down) | `nyxgpt cloud smoke` |
 | Show the same state from a terminal | `nyxgpt cloud deploy --status` |
 | Re-allow SSH after your public IP changes | `nyxgpt cloud allow-ip` |
 
@@ -170,7 +171,7 @@ the lifecycle commands it displays come from the backend's own
 | --- | --- |
 | `~/.nyxGPT/cloud/deploy.json` | What the last successful deploy installed: version, host, instance, region, enabled profiles |
 | `~/.nyxGPT/cloud/tunnel.json` | The backgrounded tunnel's pid and forwarded profiles, so `--stop`/`--status` (and the dashboard) find a tunnel another process started |
-| `~/.nyxGPT/cloud/history.jsonl` | One line per deploy and teardown — timestamp, action, outcome, version, instance, and what went wrong on a failure |
+| `~/.nyxGPT/cloud/history.jsonl` | One line per deploy, teardown and [smoke run](#nyxgpt-cloud-smoke--the-end-to-end-cloud-test-p6-17-3515) — timestamp, action, outcome, version, instance, and what went wrong on a failure |
 
 All three are read-only inputs to `nyxgpt cloud deploy --status`, which
 answers without calling AWS or touching the instance — safe to poll, and it
@@ -192,6 +193,67 @@ place: nothing has proved the deployment is gone.
 | `Provisioning the instance failed` | The remote install's own diagnostic is included. Re-running `nyxgpt cloud deploy` is safe — provisioning is idempotent. |
 | `never returned 200 within 900s` | The stack installed but isn't healthy. The tunnel is left open; `nyxgpt cloud deploy --status` and the instance's own `nyxgpt ops doctor` say more. |
 | `Could not open the SSH tunnel` | A local port is already bound, most often by a local nyxGPT stack. |
+
+---
+
+## `nyxgpt cloud smoke` — the end-to-end cloud test (P6-17, #3515)
+
+The cloud counterpart of `scripts/smoke-test.sh`. One command provisions a
+deployment, proves it actually works over the private access path, and then
+destroys it again:
+
+```bash
+nyxgpt cloud smoke
+```
+
+| Phase | What it proves |
+| --- | --- |
+| `deploy` | `nyxgpt cloud deploy` succeeds: substrate applied, published release installed, tunnel opened |
+| `access` | The API answers `/health` on `http://localhost:8000` — i.e. the SSH tunnel *is* a working access path |
+| `model` | The instance's configured default model is present, pulling it if it is not |
+| `chat` | A real chat round-trip through `/api/v1/chat` returns a non-empty reply |
+| `rag` | A document containing a unique marker is ingested, then a query for it returns that marker |
+| `observability` | Every UI the deploy's enabled profiles forward — Grafana, Prometheus, Jaeger, GlitchTip — answers through the tunnel |
+| `teardown` | `nyxgpt cloud destroy` ran and the substrate is gone |
+
+Exit code is `0` only when every phase passed **and** the teardown succeeded.
+
+### It always tears down
+
+This is the point of the command, so it is worth being explicit: the teardown
+runs on **every** exit path — a failed verification, an unexpected error, a
+deploy that died half-applied, or a Ctrl-C. A run that leaves AWS resources
+behind is reported as a failure even if every check passed, and the message
+tells you to run `nyxgpt cloud destroy --yes`. The only thing that skips the
+teardown is `--keep`, which prints a warning that the deployment is still
+billing.
+
+Because the test both creates and destroys, `--skip-deploy` (verify the
+deployment that already exists) additionally requires `--yes` — otherwise the
+run would destroy a deployment it did not create.
+
+### Options
+
+| Flag | Effect |
+| --- | --- |
+| `--version <release>` | Deploy and test a specific published release (default: this CLI's version) |
+| `--skip-observability` | Core app only — skips the observability stack and its reachability check |
+| `--skip-deploy` | Verify the existing deployment instead of deploying one (requires `--yes`, or `--keep`) |
+| `--keep` | Leave the deployment running afterwards. **It keeps billing** until `nyxgpt cloud destroy --yes` |
+| `--api-key <key>` | API key for the deployed stack (default: `$NYXGPT_AUTH_API_KEY`, then the key the instance itself is configured with) |
+| `--json` | Print the full machine-readable record of the run instead of a summary |
+| `--model-timeout` / `--chat-timeout` / `--rag-timeout` / `--observability-timeout` / `--health-timeout` / `--ssh-timeout` | Per-phase budgets in seconds (defaults 1800 / 300 / 120 / 300 / 900 / 300) |
+
+Every run is appended to `~/.nyxGPT/cloud/history.jsonl` as a `smoke` entry, so
+it appears in the dashboard's deploy history alongside deploys and teardowns.
+The admin **AWS Cloud Infrastructure** page lists the command as a pointer (it
+is a lifecycle action, so it is not a dashboard button — see
+[From the dashboard](#from-the-dashboard-status-not-controls-p6-15-3514)).
+
+It is a wrapped CLI command rather than a script in this repository on purpose:
+per CLAUDE.md's repo-less portability requirement it has to run on a machine
+that has never cloned the repo, which is exactly the machine P6-16 accepts the
+cloud path from.
 
 ---
 

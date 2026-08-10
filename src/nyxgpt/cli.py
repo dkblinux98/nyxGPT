@@ -22,6 +22,7 @@ from nyxgpt import canary as canary_mod
 from nyxgpt import cloud as cloud_mod
 from nyxgpt import cloud_deploy as cloud_deploy_mod
 from nyxgpt import cloud_infra as cloud_infra_mod
+from nyxgpt import cloud_smoke as cloud_smoke_mod
 from nyxgpt import cloud_state as cloud_state_mod
 from nyxgpt import models, sessions
 from nyxgpt import ops as ops_mod
@@ -2573,6 +2574,98 @@ def cli(argv: list[str] | None = None) -> int:
         help="Report whether a background tunnel is open, and what it forwards",
     )
 
+    # `cloud smoke` -- the cloud counterpart of scripts/smoke-test.sh (P6-17,
+    # #3515). Deploys, verifies chat/RAG/observability over the access tunnel,
+    # and always tears the deployment down again -- on failure as well as on
+    # success, so a run can never leave billed AWS resources behind. A wrapped
+    # command rather than a repo script because P6-16 accepts the cloud path
+    # from a machine with no checkout (CLAUDE.md, repo-less portability).
+    cloud_smoke_p = cloud_sub.add_parser(
+        "smoke",
+        help=(
+            "End-to-end cloud test: deploy, verify chat/RAG/observability over the "
+            "access tunnel, then tear the deployment down (always, even on failure)"
+        ),
+    )
+    _add_infra_provision_flags(cloud_smoke_p)
+    _add_ssh_access_flags(cloud_smoke_p)
+    cloud_smoke_p.add_argument(
+        "--version",
+        dest="version",
+        help="Published nyxGPT release to deploy and test (default: the version of this CLI)",
+    )
+    cloud_smoke_p.add_argument(
+        "--skip-observability",
+        action="store_true",
+        help=(
+            "Deploy and verify the core app only, skipping the "
+            "monitoring/logging/tracing/errors stack and its reachability check"
+        ),
+    )
+    cloud_smoke_p.add_argument(
+        "--skip-deploy",
+        action="store_true",
+        help=(
+            "Verify the deployment that already exists instead of deploying one "
+            "(still torn down afterwards -- requires --yes, or --keep to leave it up)"
+        ),
+    )
+    cloud_smoke_p.add_argument(
+        "--keep",
+        action="store_true",
+        help=(
+            "Leave the deployment running after the test instead of destroying it. "
+            "It keeps billing until you run `nyxgpt cloud destroy --yes`"
+        ),
+    )
+    cloud_smoke_p.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirm destroying a deployment this run did not create (with --skip-deploy)",
+    )
+    cloud_smoke_p.add_argument(
+        "--api-key",
+        help=(
+            "API key for the deployed stack (default: $NYXGPT_AUTH_API_KEY, then the "
+            "key the instance itself is configured with)"
+        ),
+    )
+    cloud_smoke_p.add_argument(
+        "--health-timeout",
+        type=float,
+        help="Seconds to wait for the deployed stack to answer /health (default: 900)",
+    )
+    cloud_smoke_p.add_argument(
+        "--ssh-timeout",
+        type=float,
+        help="Seconds to wait for the instance to accept SSH after apply (default: 300)",
+    )
+    cloud_smoke_p.add_argument(
+        "--model-timeout",
+        type=float,
+        help="Seconds to allow for pulling the default model on the instance (default: 1800)",
+    )
+    cloud_smoke_p.add_argument(
+        "--chat-timeout",
+        type=float,
+        help="Seconds to allow for the chat round-trip (default: 300)",
+    )
+    cloud_smoke_p.add_argument(
+        "--rag-timeout",
+        type=float,
+        help="Seconds to allow for each RAG ingest/query call (default: 120)",
+    )
+    cloud_smoke_p.add_argument(
+        "--observability-timeout",
+        type=float,
+        help="Seconds to wait for every observability UI to answer (default: 300)",
+    )
+    cloud_smoke_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the full machine-readable record of the run instead of a summary",
+    )
+
     # Add canary command (local weighted-traffic canary rollout on a local k8s cluster --
     # the sole deployment model since #3409 retired blue/green in favor of it)
     canary_p = sub.add_parser("canary", help="Local canary deployment (kind/minikube/k3s cluster)")
@@ -2840,6 +2933,9 @@ def cli(argv: list[str] | None = None) -> int:
 
     if cmd == "cloud" and args.cloud_cmd in ("deploy", "destroy", "tunnel"):
         return cloud_deploy_mod.deploy_command(args)
+
+    if cmd == "cloud" and args.cloud_cmd == "smoke":
+        return cloud_smoke_mod.smoke_command(args)
 
     if cmd == "canary":
         # Same per-invocation correlation id as the `ops` dispatch above --

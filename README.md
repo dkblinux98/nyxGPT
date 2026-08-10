@@ -186,6 +186,9 @@ are `nyxgpt cloud`-wrapped too — see [Cloud (AWS)](docs/cloud.md), covering
 nyxGPT release onto the instance, opens the SSH tunnel that is the only way
 in, waits for health, and prints the `localhost` URLs), its
 `nyxgpt cloud destroy` and `nyxgpt cloud tunnel` counterparts,
+`nyxgpt cloud smoke` (the end-to-end cloud test: deploys, verifies a chat
+round-trip, RAG ingest+query and every observability UI over the tunnel,
+then always tears the deployment down so nothing is left billing),
 `nyxgpt cloud infra` (the AWS substrate underneath it: a VPC, subnet, an
 SSH-only security group scoped to your own IP, and one EC2 instance),
 `nyxgpt cloud state` (moves that substrate's Terraform state to a shared,
