@@ -25,6 +25,7 @@ def _isolated_cloud_home(tmp_path, monkeypatch):
     monkeypatch.setattr(cloud_deploy, "CLOUD_DIR", cloud_dir)
     monkeypatch.setattr(cloud_deploy, "DEPLOY_STATE_FILE", cloud_dir / "deploy.json")
     monkeypatch.setattr(cloud_deploy, "TUNNEL_STATE_FILE", cloud_dir / "tunnel.json")
+    monkeypatch.setattr(cloud_deploy, "TUNNEL_LOG_FILE", cloud_dir / "tunnel.log")
     monkeypatch.setattr(cloud_infra, "CLOUD_STATE_FILE", cloud_dir / "state.json")
     monkeypatch.setattr(cloud_infra, "SETTINGS_FILE", cloud_dir / "infra.json")
     return cloud_dir
@@ -113,6 +114,27 @@ def test_resolve_plan_without_any_resolvable_version_is_an_error(monkeypatch):
         cloud_deploy.resolve_plan(_args(version=None))
 
 
+@pytest.mark.parametrize("bad", ['3.0.0"; rm -rf /', "$(id)", "-3.0.0", ""])
+def test_resolve_plan_rejects_a_version_that_would_not_survive_the_remote_shell(bad, monkeypatch):
+    """The version is spliced into the provisioning script; catch it locally.
+
+    Without this the operator's first sign of trouble is a confusing shell
+    error ten minutes into a remote run.
+    """
+    monkeypatch.setattr(cloud_deploy, "installed_version", lambda: "")
+    with pytest.raises(CloudCommandError):
+        cloud_deploy.resolve_plan(_args(version=bad))
+
+
+def test_resolve_plan_restores_the_identity_file_the_last_deploy_used(_isolated_cloud_home):
+    """A re-run shouldn't have to repeat --identity-file, same as --version."""
+    (_isolated_cloud_home / "deploy.json").write_text(
+        json.dumps({"version": "3.0.0", "identity_file": "/keys/owner"}), encoding="utf-8"
+    )
+    plan = cloud_deploy.resolve_plan(_args(version=None, identity_file=None))
+    assert plan.identity_file == "/keys/owner"
+
+
 # --- The provisioning script (repo-less requirement) ----------------------
 
 
@@ -155,7 +177,7 @@ def test_provision_instance_raises_with_the_remote_diagnostic(monkeypatch):
 # --- SSH command construction --------------------------------------------
 
 
-def test_ssh_argv_uses_batch_mode_and_the_given_identity(tmp_path):
+def test_ssh_argv_uses_batch_mode_and_the_given_identity():
     target = cloud_deploy.DeployTarget(host="198.51.100.10", identity_file="/keys/id")
     argv = cloud_deploy.ssh_argv(target)
     assert argv[0] == "ssh"
@@ -231,25 +253,32 @@ def test_tunnel_urls_are_localhost_only():
 class _FakeProcess:
     """Stand-in for the backgrounded `ssh -N` child."""
 
-    def __init__(self, pid=4242, alive=True, stderr_text=""):
+    def __init__(self, pid=4242, alive=True):
         self.pid = pid
         self._alive = alive
-        self.stderr = None if alive else _FakeStderr(stderr_text)
 
     def poll(self):
         return None if self._alive else 1
 
 
-class _FakeStderr:
-    def __init__(self, text):
-        self._text = text
+def _fake_popen(*, alive=True, stderr_text=""):
+    """Popen replacement that writes ssh's diagnostics into the log it is handed.
 
-    def read(self):
-        return self._text
+    The real child is detached and outlives its parent, so the module hands it
+    a log file rather than a pipe; the failure path reads that file back.
+    """
+
+    def popen(_argv, **kwargs):
+        log = kwargs.get("stderr")
+        if stderr_text and hasattr(log, "write"):
+            log.write(stderr_text)
+        return _FakeProcess(alive=alive)
+
+    return popen
 
 
 def test_start_tunnel_records_the_pid_for_later_stop(monkeypatch, _isolated_cloud_home):
-    monkeypatch.setattr(cloud_deploy.subprocess, "Popen", lambda *a, **k: _FakeProcess())
+    monkeypatch.setattr(cloud_deploy.subprocess, "Popen", _fake_popen())
     monkeypatch.setattr(cloud_deploy.time, "sleep", lambda _s: None)
     monkeypatch.setattr(cloud_deploy, "_process_alive", lambda pid: pid == 4242)
 
@@ -277,11 +306,35 @@ def test_start_tunnel_reports_a_failed_local_port_bind(monkeypatch):
     monkeypatch.setattr(
         cloud_deploy.subprocess,
         "Popen",
-        lambda *a, **k: _FakeProcess(alive=False, stderr_text="bind: Address already in use"),
+        _fake_popen(alive=False, stderr_text="bind: Address already in use"),
     )
     monkeypatch.setattr(cloud_deploy.time, "sleep", lambda _s: None)
     with pytest.raises(CloudCommandError, match="Address already in use"):
         cloud_deploy.start_tunnel(cloud_deploy.DeployTarget(host="h"))
+
+
+def test_start_tunnel_never_leaves_ssh_writing_to_a_pipe(monkeypatch, _isolated_cloud_home):
+    """The detached child outlives the CLI, so its stderr must be a file, not a pipe.
+
+    A pipe would be left unread under the API server, and closed under the
+    tunnel's feet once the CLI process exits -- a later ssh write (a
+    ServerAlive notice, say) could then take the tunnel down with SIGPIPE.
+    """
+    handed: dict[str, object] = {}
+
+    def popen(_argv, **kwargs):
+        handed.update(kwargs)
+        return _FakeProcess()
+
+    monkeypatch.setattr(cloud_deploy.subprocess, "Popen", popen)
+    monkeypatch.setattr(cloud_deploy.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(cloud_deploy, "_process_alive", lambda pid: pid == 4242)
+
+    cloud_deploy.start_tunnel(cloud_deploy.DeployTarget(host="h"))
+
+    assert handed["stderr"] is not subprocess.PIPE
+    assert getattr(handed["stderr"], "name", "") == str(_isolated_cloud_home / "tunnel.log")
+    assert handed["start_new_session"] is True
 
 
 def test_tunnel_status_clears_a_stale_record(_isolated_cloud_home, monkeypatch):

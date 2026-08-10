@@ -802,6 +802,96 @@ describe('CloudInfrastructurePage deployment panel', () => {
     expect(body).toEqual({ action: 'stop' });
   });
 
+  it('says so when the deployment status cannot be read on mount', async () => {
+    mockStatus(provisioned);
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({ detail: 'deploy state unreadable' }, { status: 500 })
+      )
+    );
+
+    render(<CloudInfrastructurePage />);
+
+    // A deployment panel that silently showed "not deployed" here would be
+    // claiming the instance is empty on no evidence at all.
+    expect(await screen.findByText(/deploy state unreadable/)).toBeInTheDocument();
+    expect(screen.getByText('provisioned')).toBeInTheDocument();
+  });
+
+  it('surfaces a failed tunnel request rather than claiming the access state changed', async () => {
+    mockStatus(provisioned);
+    mockDeployStatus(deployedTunnelClosed);
+    server.use(
+      http.post('/api/v1/cloud/deploy/tunnel', () =>
+        HttpResponse.json({ detail: 'bind: Address already in use' }, { status: 409 })
+      )
+    );
+
+    render(<CloudInfrastructurePage />);
+    await screen.findByText('deployed');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Open tunnel' }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/Address already in use/)).toBeInTheDocument()
+    );
+    expect(screen.queryByText(/Access tunnel open/)).not.toBeInTheDocument();
+  });
+
+  it('falls back to String(e) on a non-Error rejection from the deployment status load', async () => {
+    mockStatus(provisioned);
+    const realFetch = globalThis.fetch;
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+      const url = typeof input === 'string' ? input : String(input);
+      if (url === '/api/v1/cloud/deploy') return Promise.reject('deploy fetch exploded');
+      return realFetch(input, init);
+    });
+
+    render(<CloudInfrastructurePage />);
+
+    expect(await screen.findByText(/deploy fetch exploded/)).toBeInTheDocument();
+    spy.mockRestore();
+  });
+
+  it('falls back to String(e) on a non-Error rejection from a tunnel request', async () => {
+    mockStatus(provisioned);
+    mockDeployStatus(deployedTunnelClosed);
+    render(<CloudInfrastructurePage />);
+    await screen.findByText('deployed');
+
+    const spy = vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce('tunnel exploded');
+    await userEvent.click(screen.getByRole('button', { name: 'Open tunnel' }));
+
+    await waitFor(() => expect(screen.getByText(/tunnel exploded/)).toBeInTheDocument());
+    spy.mockRestore();
+  });
+
+  it('falls back to String(e) on a non-Error rejection from the deploy request', async () => {
+    mockStatus(provisioned);
+    render(<CloudInfrastructurePage />);
+    await screen.findByText('not deployed');
+
+    const spy = vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce('deploy exploded');
+    await userEvent.click(screen.getByRole('button', { name: 'Deploy' }));
+
+    await waitFor(() => expect(screen.getByText(/deploy exploded/)).toBeInTheDocument());
+    spy.mockRestore();
+  });
+
+  it('still reports a successful deploy when the backend omits the resolved plan', async () => {
+    mockStatus(provisioned);
+    server.use(http.post('/api/v1/cloud/deploy', () => HttpResponse.json({ action: 'deploy' })));
+
+    render(<CloudInfrastructurePage />);
+    await screen.findByText('not deployed');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Deploy' }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/deployed and healthy/)).toBeInTheDocument()
+    );
+  });
+
   it('surfaces a failed deploy without disturbing the other panels', async () => {
     mockStatus(provisioned);
     server.use(

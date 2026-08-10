@@ -72,7 +72,7 @@ works here too and is remembered for later runs, plus:
 | `--skip-observability` | Deploy the core app only, without monitoring/logging/tracing/errors |
 | `--no-tunnel` | Don't open the tunnel (and so don't health-check through it); prints the `nyxgpt cloud tunnel` command to run instead |
 | `--ssh-user` | Login user on the instance (default `ec2-user`, the Amazon Linux 2023 default) |
-| `--identity-file` | Private key to authenticate with (default: whatever `ssh` would use from `~/.ssh` and your agent) |
+| `--identity-file` | Private key to authenticate with (default: whatever the last deploy used, then whatever `ssh` would pick from `~/.ssh` and your agent) |
 | `--host` | Target an existing box instead of the provisioned instance |
 | `--health-timeout` / `--ssh-timeout` | Seconds to wait for `/health` (default 900) and for SSH (default 300) |
 | `--status` | Print the deployment's state as JSON and exit, touching nothing |

@@ -42,6 +42,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -70,6 +71,16 @@ DEPLOY_STATE_FILE = CLOUD_DIR / "deploy.json"
 # a tunnel started by an earlier process (including one started by the admin
 # dashboard and stopped from the CLI, or the reverse).
 TUNNEL_STATE_FILE = CLOUD_DIR / "tunnel.json"
+
+# Where the detached background tunnel's ssh stderr goes. A long-lived `ssh -N`
+# child outlives the CLI process that started it, so its stderr cannot stay on
+# a pipe nobody will ever read -- a later write (a ServerAlive notice, say)
+# would hit a closed pipe once the parent exits.
+TUNNEL_LOG_FILE = CLOUD_DIR / "tunnel.log"
+
+# A release is spliced into the remote provisioning script; keep it to what a
+# published artifact version can actually look like.
+_VERSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 # Amazon Linux 2023's default login user -- the AMI the compute module
 # resolves by default (terraform/aws/modules/compute/main.tf).
@@ -247,7 +258,13 @@ def resolve_target(args: argparse.Namespace) -> DeployTarget:
 
 
 def resolve_plan(args: argparse.Namespace) -> DeployPlan:
-    """Merge flags over the last deploy's recorded choices."""
+    """Merge flags over the last deploy's recorded choices.
+
+    The choices that carry over are the ones `deploy.json` records: the
+    release, the SSH user and the identity file. Everything else (profiles,
+    timeouts, whether to open a tunnel) is per-run and comes from the flags
+    or their defaults.
+    """
     previous = load_deploy_state()
     version = str(
         getattr(args, "version", None) or previous.get("version") or installed_version() or ""
@@ -257,6 +274,14 @@ def resolve_plan(args: argparse.Namespace) -> DeployPlan:
             "Could not determine which nyxGPT release to install on the instance. "
             "Pass --version <release> (e.g. --version 3.0.0) -- the instance installs a "
             "published artifact, never a copy of your working tree."
+        )
+    # The version is spliced into the remote provisioning script, so a stray
+    # quote or `$` in it would surface as a confusing shell error ten minutes
+    # into a remote run. Fail here instead, where the operator can see why.
+    if not _VERSION_RE.fullmatch(version):
+        raise CloudCommandError(
+            f"{version!r} is not a valid release to install. Pass a published version such as "
+            "--version 3.0.0 (digits, letters, dot, dash and underscore only)."
         )
     if getattr(args, "skip_observability", False):
         profiles: list[str] = []
@@ -270,7 +295,9 @@ def resolve_plan(args: argparse.Namespace) -> DeployPlan:
         ssh_user=str(
             getattr(args, "ssh_user", None) or previous.get("ssh_user") or DEFAULT_SSH_USER
         ),
-        identity_file=str(getattr(args, "identity_file", None) or ""),
+        identity_file=str(
+            getattr(args, "identity_file", None) or previous.get("identity_file") or ""
+        ),
         open_tunnel=not getattr(args, "no_tunnel", False),
         health_timeout=float(getattr(args, "health_timeout", None) or 900.0),
         ssh_timeout=float(getattr(args, "ssh_timeout", None) or 300.0),
@@ -547,20 +574,27 @@ def start_tunnel(
             "urls": tunnel_urls(profiles),
         }
 
-    process = subprocess.Popen(
-        argv,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
-        text=True,
-    )
+    # stderr goes to a log file rather than a pipe: this child is detached and
+    # outlives the process that started it, so a pipe would either be left
+    # unread (under the API server) or closed under the tunnel's feet when the
+    # CLI exits. The file keeps the early-exit diagnostic readable either way.
+    TUNNEL_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(TUNNEL_LOG_FILE, "w", encoding="utf-8") as log:
+        process = subprocess.Popen(
+            argv,
+            stdout=subprocess.DEVNULL,
+            stderr=log,
+            start_new_session=True,
+            text=True,
+        )
     # ssh exits within a moment when the port bind or the auth fails; a short
     # settle avoids reporting "tunnel open" for a process that is already gone.
     time.sleep(1.0)
     if process.poll() is not None:
-        detail = ""
-        if process.stderr is not None:
-            detail = (process.stderr.read() or "").strip()
+        try:
+            detail = TUNNEL_LOG_FILE.read_text(encoding="utf-8").strip()
+        except OSError:
+            detail = ""
         raise CloudCommandError(
             "Could not open the SSH tunnel"
             + (f": {detail}" if detail else ".")
@@ -683,6 +717,10 @@ def deploy(args: argparse.Namespace) -> dict[str, Any]:
         "version": plan.version,
         "profiles": list(plan.profiles),
         "ssh_user": plan.ssh_user,
+        # Recorded so a re-run that needed a non-default key doesn't have to
+        # pass --identity-file again, the same way --version and --ssh-user
+        # carry over.
+        "identity_file": plan.identity_file,
         "host": target.host,
         "instance_id": target.instance_id,
         "region": target.region,
@@ -700,7 +738,7 @@ def deploy(args: argparse.Namespace) -> dict[str, Any]:
             raise CloudCommandError(
                 f"The stack was installed but {health['url']} never returned 200 within "
                 f"{plan.health_timeout:.0f}s (last status: {health['status'] or 'unreachable'}).\n"
-                "The tunnel is still open -- `nyxgpt cloud deploy status` and the instance's "
+                "The tunnel is still open -- `nyxgpt cloud deploy --status` and the instance's "
                 "own `nyxgpt ops doctor` will say more."
             )
 
