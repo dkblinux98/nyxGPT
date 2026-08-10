@@ -1813,6 +1813,43 @@ def test_ops_quiet_flag_parses_and_reaches_args_for_every_long_running_command(
     assert seen_args[0].quiet is True
 
 
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["ops", "portability"], {"strict": False, "json": False}),
+        (["ops", "portability", "--strict"], {"strict": True, "json": False}),
+        (["ops", "portability", "--json"], {"strict": False, "json": True}),
+    ],
+)
+def test_ops_portability_parses_and_dispatches(
+    monkeypatch: pytest.MonkeyPatch, argv: list[str], expected: dict[str, bool]
+) -> None:
+    """`nyxgpt ops portability` (P6-16, #3516) reaches nyxgpt.portability with its flags."""
+    import nyxgpt.cli as cli_mod
+
+    seen_args = []
+    monkeypatch.setattr(
+        cli_mod.portability_mod, "portability", lambda args: seen_args.append(args) or 0
+    )
+
+    exit_code = cli(argv)
+
+    assert exit_code == 0
+    assert len(seen_args) == 1
+    assert seen_args[0].strict is expected["strict"]
+    assert seen_args[0].json is expected["json"]
+
+
+def test_ops_portability_propagates_the_strict_gate_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import nyxgpt.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod.portability_mod, "portability", lambda args: 1)
+
+    assert cli(["ops", "portability", "--strict"]) == 1
+
+
 # --- Interactive chat mode tests ---
 
 

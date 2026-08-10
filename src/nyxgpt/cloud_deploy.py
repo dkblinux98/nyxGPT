@@ -501,6 +501,19 @@ else
     || "$NYXGPT" ops install --skip-observability
 fi
 
+# --- Self-healing ------------------------------------------------------
+# A cloud deployment is unattended by definition: nobody is watching the
+# instance to restart a component that dies, and the tunnel makes the stack
+# reachable only while the operator is at their workstation. The watchdog
+# ships disabled (example.config.ini's `[self_heal] enabled = false`, which
+# seeds the runtime flag on first run), so a cloud deploy turns it on
+# explicitly -- P6-16's acceptance criterion is a *self-healing* deployment,
+# not merely a running one. Idempotent: it writes one flag in
+# ~/.nyxGPT/self_heal_state.json, and the watchdog thread the API server
+# already runs re-reads that flag every interval, so this takes effect
+# without a restart on a re-deploy too.
+"$NYXGPT" self-heal enable
+
 echo "==> nyxGPT ${NYXGPT_VERSION} provisioned"
 """
 
@@ -535,7 +548,10 @@ def provision_instance(target: DeployTarget, plan: DeployPlan) -> dict[str, Any]
             "Provisioning the instance failed"
             + (f": {detail[-2000:]}" if detail else " (no diagnostic returned).")
         )
-    return {"version": plan.version, "profiles": list(plan.profiles)}
+    # `self_heal_enabled` is safe to assert rather than re-probe: the script
+    # runs under `set -euo pipefail`, so a failed `self-heal enable` would
+    # have made this a non-zero exit and raised above.
+    return {"version": plan.version, "profiles": list(plan.profiles), "self_heal_enabled": True}
 
 
 # --- The tunnel (the P6-4 access path) ---------------------------------

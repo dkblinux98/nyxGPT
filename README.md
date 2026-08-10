@@ -126,6 +126,7 @@ nyxgpt ops install
 - **Guided secrets setup** — masked entry, plain-language per-key help, and format validation for human-provided secrets (`nyxgpt secrets setup` CLI or `/admin/secrets`); `config.ini` is the canonical store for write-once external tokens, pushed one-way to this repo's GitHub Actions secrets via `nyxgpt ops secrets-sync`
 - Optional **Docker Compose** stack for one-command bring-up of every component
 - **Published install artifacts** — container images for the Compose/k8s paths on GHCR (`ghcr.io/dkblinux98/nyxgpt-{api,web}`) and a remote Homebrew tap, built and published by `.github/workflows/release-artifacts.yml` on every GitHub Release, alongside the owner-run PyPI publish (`scripts/release_ceremony.sh`) — see [docs/homebrew.md#remote-tap](docs/homebrew.md#remote-tap)
+- **Repo-less portability, checked mechanically** (`nyxgpt ops portability`) — the matrix of deployment targets that install and operate with **no repo checkout** (macOS native, Linux systemd, Docker/Compose, Kubernetes, AWS EC2; Windows out of scope), each row asserting that no command fetches source and none is a raw `docker`/`kubectl`/`terraform` invocation, plus the clean-machine acceptance run — reported on the SRE dashboard at `/admin/portability` and documented in [docs/portability-matrix.md](docs/portability-matrix.md)
 - Robust unit and integration test suite
 
 ---
@@ -231,6 +232,7 @@ Common starting points:
 - **Sessions & Memory** – [`docs/sessions.md`](docs/sessions.md)
 - **Docker Compose** – [`docs/docker-compose.md`](docs/docker-compose.md)
 - **Self-healing** – [`docs/self-healing.md`](docs/self-healing.md)
+- **Portability matrix & acceptance** – [`docs/portability-matrix.md`](docs/portability-matrix.md)
 - **Security** – [`docs/security.md`](docs/security.md)
 - **Architecture** – [`docs/architecture.md`](docs/architecture.md)
 - **Troubleshooting** – [`docs/troubleshooting.md`](docs/troubleshooting.md)

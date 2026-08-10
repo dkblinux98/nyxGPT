@@ -12,7 +12,7 @@ The API is designed to run **locally only** by default.
 
 ## API Endpoint Reference
 
-Quick reference of all 81 available endpoints:
+Quick reference of all 82 available endpoints:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -60,6 +60,7 @@ Quick reference of all 81 available endpoints:
 | `/api/v1/cloud/deploy` | POST | Provision AWS and deploy the full stack onto it (idempotent) |
 | `/api/v1/cloud/deploy/destroy` | POST | Close the tunnel and tear the deployment down (requires `{"confirm": true}`) |
 | `/api/v1/cloud/deploy/tunnel` | POST | Open or close (`{"action": "stop"}`) the SSH access tunnel |
+| `/api/v1/ops/portability` | GET | Repo-less portability matrix per deployment target, its mechanical checks and open gaps, plus the clean-machine acceptance sequence |
 | `/api/v1/models` | GET | List Ollama models |
 | `/api/v1/models/pull` | POST | Pull model from Ollama |
 | `/api/v1/models/{model_name}` | DELETE | Delete model |
@@ -1611,6 +1612,76 @@ foreground tunnel); an already-running tunnel is reported, not duplicated.
 
 These return `409` when the deploy fails or nothing is provisioned yet, and
 `400` when the teardown confirmation is missing.
+
+---
+
+## Portability matrix
+
+### `GET /api/v1/ops/portability`
+
+Report the repo-less portability matrix and the clean-machine acceptance
+sequence (P6-16, #3516) — the dashboard half of `nyxgpt ops portability`. See
+[portability-matrix.md](portability-matrix.md).
+
+Read-only, and there is deliberately no `POST` counterpart: the matrix
+describes the *product* (which artifacts are published, which commands are
+wrapped, which targets still need a checkout), not the state of this machine,
+so there is nothing to act on. Cheap enough to load on every dashboard visit —
+no subprocesses, no network, no AWS.
+
+```json
+{
+  "targets": [
+    {
+      "key": "linux-native",
+      "name": "Linux native (systemd --user)",
+      "artifact": "PyPI wheel (nyxgpt)",
+      "install": ["pip install nyxgpt"],
+      "operate": ["nyxgpt up", "nyxgpt ops status", "nyxgpt ops doctor"],
+      "teardown": "nyxgpt down",
+      "status": "ci-verified",
+      "evidence": [".github/workflows/linux-native-smoke.yml"],
+      "notes": "...",
+      "gaps": [],
+      "checks": [
+        {
+          "check": "repo_less",
+          "passed": true,
+          "skipped": false,
+          "detail": "all 5 commands install/operate from published artifacts"
+        }
+      ],
+      "invariants_passed": true,
+      "acceptance_ready": true
+    }
+  ],
+  "acceptance_sequence": [
+    {
+      "step": "install",
+      "command": "pip install nyxgpt",
+      "expect": "`nyxgpt --version` prints the released version; no checkout exists"
+    }
+  ],
+  "commands": { "report": "nyxgpt ops portability" },
+  "checkout": "/path/to/checkout-or-empty",
+  "summary": {
+    "total": 5,
+    "acceptance_ready": 3,
+    "invariants_failed": 0,
+    "open_gaps": 3,
+    "windows_in_scope": false
+  },
+  "acceptance_ready": false
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `targets[].status` | `ci-verified` (a release workflow installs and operates it from published artifacts), `acceptance` (implemented, but the final demonstration needs hardware or an account no runner has), or `gap` (still needs a repo checkout) |
+| `targets[].checks` | Per-row mechanical results: `repo_less`, `wrapped`, `evidence`. `skipped: true` on `evidence` means there is no checkout here to resolve paths against — the normal state on a target machine |
+| `targets[].acceptance_ready` | Checks passed *and* no open gap |
+| `checkout` | The checkout evidence was resolved against, or `""` when running from an installed package |
+| `acceptance_ready` | Every in-scope target is installable and operable without a checkout — the capstone's portability criterion in one boolean |
 
 ---
 
