@@ -54,6 +54,8 @@ nyxgpt ops observability
 nyxgpt ops glitchtip-init
 nyxgpt ops migrate-volumes
 nyxgpt ops port-forward
+nyxgpt ops verify
+nyxgpt ops portability
 ```
 
 ---
@@ -1001,6 +1003,42 @@ Exit codes:
 - `2` -- config missing, monitoring disabled, the stack failed to boot or
   become healthy, or any assertion/capture failed (each failure's message
   names exactly what failed and why)
+
+---
+
+## `nyxgpt ops portability`
+
+Reports the **repo-less portability matrix** — which deployment targets install
+and operate with no repo checkout, what evidence backs each one, and which gaps
+are still open — plus the clean-machine sequence that accepts Phase 6. See
+[portability-matrix.md](portability-matrix.md) for the matrix itself and the
+full acceptance runbook.
+
+```bash
+nyxgpt ops portability            # the operator report
+nyxgpt ops portability --json     # machine-readable
+nyxgpt ops portability --strict   # gate: non-zero while any target needs a checkout
+```
+
+Reads nothing but the matrix definition and (when run from a checkout) the
+existence of the paths each row cites as evidence: no subprocesses, no network,
+no AWS. Safe to run anywhere, including on a target machine you are accepting.
+
+Each row is checked, not merely printed — no command may fetch source
+(`git clone` and friends), and none may be a raw
+`docker`/`kubectl`/`terraform` invocation, per CLAUDE.md's Repo-less
+Portability and Operational Command Wrapping requirements.
+
+Exit codes:
+
+- `0` -- every row's mechanical checks passed (the default reporting mode
+  succeeds even when a target still has an open gap, so the report is usable
+  as a status command)
+- `1` -- a row failed a check, or `--strict` was passed and at least one
+  target is not yet installable without a checkout
+
+The same report is on the SRE/admin dashboard at **Portability and
+Acceptance** (`/admin/portability`), read-only.
 
 ---
 

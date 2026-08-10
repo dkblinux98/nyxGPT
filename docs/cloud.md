@@ -59,7 +59,10 @@ reach from your workstation. It:
    packages, Docker, Ollama, and a **published** `nyxgpt` release, then runs
    `nyxgpt ops install` on the box. See
    [Repo-less by construction](#repo-less-by-construction) below.
-4. **Opens the tunnel and waits for health** — starts the SSH tunnel in the
+4. **Enables self-healing** — a cloud instance is unattended by definition,
+   so the deploy turns the watchdog on explicitly once the stack is up (it
+   ships disabled). See [self-healing.md](self-healing.md#turning-it-on).
+5. **Opens the tunnel and waits for health** — starts the SSH tunnel in the
    background, polls `http://localhost:8000/health` through it, and prints
    the localhost URLs, which are live the moment the command returns.
 
@@ -255,6 +258,13 @@ It is a wrapped CLI command rather than a script in this repository on purpose:
 per CLAUDE.md's repo-less portability requirement it has to run on a machine
 that has never cloned the repo, which is exactly the machine P6-16 accepts the
 cloud path from.
+
+Inside that acceptance run the invocation is
+`nyxgpt cloud smoke --skip-deploy --keep`, so it verifies the deployment being
+accepted rather than deploying a second, throwaway one — see
+[portability-matrix.md](portability-matrix.md#clean-machine-acceptance-run) for
+the whole sequence, and `nyxgpt ops portability` to print it from the machine
+you are accepting from.
 
 ---
 

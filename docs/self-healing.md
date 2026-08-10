@@ -382,6 +382,13 @@ action when **enabled** — controlled at runtime, not by editing
 exist yet); once that file exists, the dashboard/CLI/API toggle is the
 source of truth and config.ini is no longer consulted.
 
+**AWS deployments enable it for you.** A cloud instance is unattended by
+definition — nobody is watching it to restart a component that dies, and the
+access tunnel only exists while you are at your workstation — so
+`nyxgpt cloud deploy` runs `nyxgpt self-heal enable` on the instance once the
+stack is up (#3516). Local installs are unchanged: they still ship disabled and
+you turn it on with the toggle above.
+
 ## Observability: logs, metrics, and the Self-Healing dashboard
 
 Every self-heal decision is logged from `src/nyxgpt/self_heal.py` with

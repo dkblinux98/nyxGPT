@@ -22,6 +22,7 @@ started, read [Configuration](configuration.md) and the root
 - [Kubernetes](kubernetes.md) — local-cluster manifests, canary deploy/gate/promote
 - [Terraform](terraform.md) — local-first infrastructure-as-code
 - [Cloud (AWS)](cloud.md) — `nyxgpt cloud` (AWS substrate provisioning, SSH-rule IP refresh, lockout recovery)
+- [Portability matrix](portability-matrix.md) — which targets install with no repo checkout, and the clean-machine acceptance run
 - [Self-healing](self-healing.md) — the watchdog, healthchecks, and `/admin/self-heal`
 - [Deployment checklist](deployment-checklist.md) — pre-deploy security/perf/monitoring
 - [Ops helpers](ops.md) — `nyxgpt ops` service management
