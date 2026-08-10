@@ -46,7 +46,18 @@ def test_status_endpoint_returns_module_status():
 
     assert response.status_code == 200
     assert response.json() == expected
-    mock.assert_called_once()
+    # Default is the cheap, side-effect-free read the dashboard can poll.
+    mock.assert_called_once_with(probe_health=False)
+
+
+def test_status_endpoint_forwards_an_explicit_health_probe():
+    """The Cloud Deployment page asks for a real health answer on refresh (#3514)."""
+    with patch("nyxgpt.app.cloud_deploy_module.deploy_status", return_value={}) as mock:
+        client = TestClient(app)
+        response = client.get("/api/v1/cloud/deploy?probe_health=true")
+
+    assert response.status_code == 200
+    mock.assert_called_once_with(probe_health=True)
 
 
 def test_deploy_endpoint_passes_dashboard_inputs_through():

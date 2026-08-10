@@ -24,6 +24,7 @@ def _isolated_cloud_home(tmp_path, monkeypatch):
     cloud_dir.mkdir(parents=True)
     monkeypatch.setattr(cloud_deploy, "CLOUD_DIR", cloud_dir)
     monkeypatch.setattr(cloud_deploy, "DEPLOY_STATE_FILE", cloud_dir / "deploy.json")
+    monkeypatch.setattr(cloud_deploy, "DEPLOY_HISTORY_FILE", cloud_dir / "history.jsonl")
     monkeypatch.setattr(cloud_deploy, "TUNNEL_STATE_FILE", cloud_dir / "tunnel.json")
     monkeypatch.setattr(cloud_deploy, "TUNNEL_LOG_FILE", cloud_dir / "tunnel.log")
     monkeypatch.setattr(cloud_infra, "CLOUD_STATE_FILE", cloud_dir / "state.json")
@@ -502,6 +503,102 @@ def test_destroy_closes_the_tunnel_before_tearing_down(monkeypatch, _isolated_cl
     assert not (_isolated_cloud_home / "deploy.json").exists()
 
 
+# --- lifecycle history (P6-15, #3514) -------------------------------------
+
+
+def test_history_is_empty_before_anything_has_been_deployed():
+    assert cloud_deploy.deploy_history() == []
+
+
+def test_deploy_records_a_succeeded_history_entry(stubbed_deploy):
+    cloud_deploy.deploy(_args())
+    history = cloud_deploy.deploy_history()
+    assert len(history) == 1
+    assert history[0]["action"] == "deploy"
+    assert history[0]["outcome"] == "succeeded"
+    assert history[0]["version"] == "3.0.0"
+    assert history[0]["host"] == "198.51.100.10"
+    assert history[0]["instance_id"] == "i-0abc"
+    assert history[0]["ts"] > 0
+
+
+def test_history_is_newest_first_across_repeated_deploys(stubbed_deploy):
+    cloud_deploy.deploy(_args(version="3.0.0"))
+    cloud_deploy.deploy(_args(version="3.0.1"))
+    history = cloud_deploy.deploy_history()
+    assert [entry["version"] for entry in history] == ["3.0.1", "3.0.0"]
+
+
+def test_a_deploy_that_never_goes_healthy_is_still_in_the_history(stubbed_deploy, monkeypatch):
+    """The failure case is the one the history most needs to show."""
+    monkeypatch.setattr(
+        cloud_deploy,
+        "wait_for_health",
+        lambda timeout, **k: {"healthy": False, "url": "u", "status": 0, "waited": 1.0},
+    )
+    with pytest.raises(CloudCommandError):
+        cloud_deploy.deploy(_args())
+    history = cloud_deploy.deploy_history()
+    assert len(history) == 1
+    assert history[0]["outcome"] == "failed"
+    assert "never returned 200" in history[0]["detail"]
+
+
+def test_destroy_records_what_it_tore_down_before_the_record_is_deleted(
+    monkeypatch, _isolated_cloud_home
+):
+    (_isolated_cloud_home / "deploy.json").write_text(
+        json.dumps({"host": "198.51.100.10", "version": "3.0.0", "instance_id": "i-0abc"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cloud_deploy, "stop_tunnel", lambda: {"stopped": True})
+    monkeypatch.setattr(
+        cloud_infra, "destroy_infra", lambda args: {"settings": {"aws_region": "us-east-1"}}
+    )
+    cloud_deploy.destroy(_args(yes=True))
+    history = cloud_deploy.deploy_history()
+    assert history[0]["action"] == "destroy"
+    assert history[0]["outcome"] == "succeeded"
+    assert history[0]["version"] == "3.0.0"
+    assert history[0]["instance_id"] == "i-0abc"
+
+
+def test_history_skips_a_truncated_line_rather_than_losing_everything(_isolated_cloud_home):
+    (_isolated_cloud_home / "history.jsonl").write_text(
+        json.dumps({"action": "deploy", "outcome": "succeeded", "ts": 1.0})
+        + "\n"
+        + '{"action": "destroy", "outc',
+        encoding="utf-8",
+    )
+    history = cloud_deploy.deploy_history()
+    assert len(history) == 1
+    assert history[0]["action"] == "deploy"
+
+
+def test_history_honours_its_limit(_isolated_cloud_home):
+    (_isolated_cloud_home / "history.jsonl").write_text(
+        "".join(json.dumps({"action": "deploy", "ts": float(i)}) + "\n" for i in range(30)),
+        encoding="utf-8",
+    )
+    assert len(cloud_deploy.deploy_history()) == cloud_deploy.HISTORY_LIMIT
+    assert len(cloud_deploy.deploy_history(limit=5)) == 5
+    assert cloud_deploy.deploy_history(limit=0) == []
+    # Newest first: the last line written is the first one returned.
+    assert cloud_deploy.deploy_history(limit=5)[0]["ts"] == 29.0
+
+
+def test_recording_history_never_fails_a_deploy(monkeypatch, _isolated_cloud_home):
+    """An unwritable history file is a reporting problem, not a deploy failure."""
+    # A plain file where the history's parent directory should be: mkdir and
+    # the append both fail with an OSError, which is what has to be swallowed.
+    blocker = _isolated_cloud_home / "blocker"
+    blocker.write_text("not a directory", encoding="utf-8")
+    monkeypatch.setattr(cloud_deploy, "DEPLOY_HISTORY_FILE", blocker / "history.jsonl")
+
+    assert cloud_deploy.record_history("deploy", "succeeded")["outcome"] == "succeeded"
+    assert cloud_deploy.deploy_history() == []
+
+
 # --- status --------------------------------------------------------------
 
 
@@ -511,6 +608,54 @@ def test_deploy_status_reports_nothing_deployed_on_a_fresh_machine(monkeypatch):
     assert status["deployed"] is False
     assert status["tunnel"]["running"] is False
     assert status["access_command"] == "nyxgpt cloud tunnel"
+    assert status["history"] == []
+    # Every lifecycle pointer the dashboard renders is a wrapped `nyxgpt`
+    # command -- CLAUDE.md forbids handing the user a raw docker/terraform one.
+    assert all(command.startswith("nyxgpt ") for command in status["commands"].values())
+
+
+def test_deploy_status_does_not_probe_health_unless_asked(monkeypatch):
+    """The polled default must make no network calls."""
+    monkeypatch.setattr(cloud_infra, "infra_status", lambda: {"provisioned": True})
+    monkeypatch.setattr(
+        cloud_deploy, "_probe", lambda url, timeout: pytest.fail("probed without being asked")
+    )
+    assert cloud_deploy.deploy_status()["health"]["checked"] is False
+
+
+def test_deploy_status_skips_the_health_probe_when_no_tunnel_is_open(monkeypatch):
+    monkeypatch.setattr(cloud_infra, "infra_status", lambda: {"provisioned": True})
+    monkeypatch.setattr(cloud_deploy, "tunnel_status", lambda: {"running": False, "urls": {}})
+    monkeypatch.setattr(
+        cloud_deploy, "_probe", lambda url, timeout: pytest.fail("probed with no tunnel open")
+    )
+    health = cloud_deploy.deploy_status(probe_health=True)["health"]
+    assert health["checked"] is False
+    assert "tunnel" in health["reason"]
+
+
+def test_deploy_status_probes_the_tunneled_health_endpoint_when_asked(monkeypatch):
+    monkeypatch.setattr(cloud_infra, "infra_status", lambda: {"provisioned": True})
+    monkeypatch.setattr(cloud_deploy, "tunnel_status", lambda: {"running": True, "urls": {}})
+    monkeypatch.setattr(cloud_deploy, "_probe", lambda url, timeout: 200)
+    health = cloud_deploy.deploy_status(probe_health=True)["health"]
+    assert health == {
+        "checked": True,
+        "healthy": True,
+        "status": 200,
+        "url": "http://localhost:8000/health",
+        "reason": "",
+    }
+
+
+def test_deploy_status_reports_an_unhealthy_probe(monkeypatch):
+    monkeypatch.setattr(cloud_infra, "infra_status", lambda: {"provisioned": True})
+    monkeypatch.setattr(cloud_deploy, "tunnel_status", lambda: {"running": True, "urls": {}})
+    monkeypatch.setattr(cloud_deploy, "_probe", lambda url, timeout: 503)
+    health = cloud_deploy.deploy_status(probe_health=True)["health"]
+    assert health["checked"] is True
+    assert health["healthy"] is False
+    assert health["status"] == 503
 
 
 def test_deploy_status_reflects_the_last_deploy(monkeypatch, _isolated_cloud_home):

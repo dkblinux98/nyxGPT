@@ -2,13 +2,20 @@ import { apiFetch } from "@/lib/apiProxy";
 import { logger } from "@/lib/logger";
 import { withRequestLog } from "@/lib/withRequestLog";
 
-export const GET = withRequestLog(async function GET() {
+export const GET = withRequestLog(async function GET(request: Request) {
   try {
-    const res = await apiFetch(`/api/v1/cloud/deploy`, {
-      method: "GET",
-      headers: { "Content-Type": "application/json" },
-      cache: "no-store",
-    });
+    // Forwarded rather than always-on: the backend only probes the tunneled
+    // instance health when asked, so a polling caller stays free of network
+    // calls (see cloud_deploy.deploy_status).
+    const probeHealth = new URL(request.url).searchParams.get("probe_health");
+    const res = await apiFetch(
+      `/api/v1/cloud/deploy${probeHealth ? `?probe_health=${encodeURIComponent(probeHealth)}` : ""}`,
+      {
+        method: "GET",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+      }
+    );
 
     const data = await res.json();
 
