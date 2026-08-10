@@ -1,0 +1,66 @@
+#!/bin/bash
+# EC2 user-data bootstrap: EC2 Mac (target-OS provisioning, P6-12/#3511).
+#
+# Installs nyxGPT from the published remote Homebrew tap (P6-5, #3622) and
+# brings up the native (Homebrew services + launchd) stack -- exactly the
+# flow docs/homebrew.md documents for local macOS installs
+# (`brew tap`/`brew install nyxgpt-api nyxgpt-web`/`brew services start`).
+# Run via EC2 Mac's `ec2-macos-init` first-boot user-data support (AWS's own
+# agent for Mac instances -- there is no cloud-init on macOS).
+#
+# Repo-less (CLAUDE.md, 2026-08-01): this script never runs `git clone` --
+# the remote Homebrew tap is the only source of the application, so it works
+# on a target instance with no repo checkout. `nyxgpt ops install`'s macOS
+# path is NOT used here: that path builds a *local* tap from a repo
+# checkout (see src/nyxgpt/ops.py's `_install_homebrew_api`), which doesn't
+# exist on a fresh instance -- the documented remote-tap flow below is the
+# one already proven repo-less (docs/homebrew.md#remote-tap).
+#
+# Rendered by `nyxgpt cloud user-data --os macos` (src/nyxgpt/cloud_provision.py).
+# --version is accepted for interface parity with the Linux template's
+# --version flag and recorded in NYXGPT_VERSION below, but only for
+# reference: Homebrew formulas track the tap's current formula, not an
+# arbitrary pinned release, so this script always installs whatever
+# `dkblinux98/homebrew-nyxgpt` currently serves.
+#
+# Supported instance types and macOS versions: see docs/cloud.md's
+# target-OS support matrix (EC2 Mac requires a Dedicated Host, allocated for
+# a 24-hour minimum -- an AWS billing/allocation constraint, not a nyxGPT
+# one; provisioning the host itself is P6-8/P6-11 scope, not this script's).
+set -euxo pipefail
+
+# nyxgpt version requested at render time (informational only -- see above).
+NYXGPT_VERSION="__NYXGPT_VERSION__"
+
+if [ "$(id -u)" -ne 0 ]; then
+  echo "ec2-user-data-macos: must run as root (ec2-macos-init user-data does by default)" >&2
+  exit 1
+fi
+
+# AWS's own macOS AMIs default to 'ec2-user'.
+NYXGPT_TARGET_USER="${NYXGPT_TARGET_USER:-ec2-user}"
+TARGET_HOME=$(dscl . -read "/Users/$NYXGPT_TARGET_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
+if [ -z "$TARGET_HOME" ]; then
+  echo "ec2-user-data-macos: user '$NYXGPT_TARGET_USER' does not exist on this instance" >&2
+  exit 1
+fi
+
+if ! sudo -u "$NYXGPT_TARGET_USER" -H bash -lc 'command -v brew' >/dev/null 2>&1; then
+  NONINTERACTIVE=1 sudo -u "$NYXGPT_TARGET_USER" -H /bin/bash -c \
+    "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+fi
+BREW_BIN=$(sudo -u "$NYXGPT_TARGET_USER" -H bash -lc 'command -v brew')
+
+sudo -u "$NYXGPT_TARGET_USER" -H "$BREW_BIN" tap dkblinux98/homebrew-nyxgpt
+sudo -u "$NYXGPT_TARGET_USER" -H "$BREW_BIN" install nyxgpt-api nyxgpt-web
+
+sudo -u "$NYXGPT_TARGET_USER" -H mkdir -p "$TARGET_HOME/.nyxGPT"
+if [ ! -f "$TARGET_HOME/.nyxGPT/config.ini" ]; then
+  EXAMPLE_CONFIG="$($BREW_BIN --prefix)/opt/nyxgpt-api/libexec/venv/lib/python3.12/site-packages/nyxgpt/example.config.ini"
+  sudo -u "$NYXGPT_TARGET_USER" -H cp "$EXAMPLE_CONFIG" "$TARGET_HOME/.nyxGPT/config.ini"
+fi
+
+sudo -u "$NYXGPT_TARGET_USER" -H "$BREW_BIN" services start nyxgpt-api
+sudo -u "$NYXGPT_TARGET_USER" -H "$BREW_BIN" services start nyxgpt-web
+
+echo "ec2-user-data-macos: nyxGPT installed and started for user '$NYXGPT_TARGET_USER'"

@@ -15,6 +15,11 @@ module identifies the target security group via `--security-group-id`/
 `--region`, or by reading `CLOUD_STATE_FILE` -- the contract future
 `nyxgpt cloud deploy` work should write to (`{"security_group_id": ...,
 "region": ...}`) so `allow-ip` keeps working unmodified once that lands.
+
+`nyxgpt cloud user-data` (P6-12/#3511, `nyxgpt.cloud_provision`) is a
+separate module: it renders the EC2 user-data bootstrap script the
+not-yet-implemented deploy/Terraform work above will eventually embed as an
+instance's `user_data`.
 """
 
 from __future__ import annotations

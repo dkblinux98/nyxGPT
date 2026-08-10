@@ -22,6 +22,7 @@ from nyxgpt import canary as canary_mod
 from nyxgpt import cloud as cloud_mod
 from nyxgpt import cloud_deploy as cloud_deploy_mod
 from nyxgpt import cloud_infra as cloud_infra_mod
+from nyxgpt import cloud_provision as cloud_provision_mod
 from nyxgpt import cloud_smoke as cloud_smoke_mod
 from nyxgpt import cloud_state as cloud_state_mod
 from nyxgpt import models, sessions
@@ -2191,12 +2192,14 @@ def cli(argv: list[str] | None = None) -> int:
     # Add cloud command (AWS deployment lifecycle -- P6-11-class scope). Today
     # covers `allow-ip`, the lockout-recovery path for the owner-IP-scoped
     # SSH security group described in
-    # product_management/DECISION_PRIVATE_ACCESS_MECHANISM.md, and
-    # `credentials-setup`, the guided AWS identity flow (P6-13, #3512) --
-    # see nyxgpt.aws_credentials_setup's module docstring. `nyxgpt cloud
-    # deploy`/`destroy` (#3513) come later and are expected to write
-    # ~/.nyxGPT/cloud/state.json so allow-ip can auto-discover the security
-    # group without --security-group-id -- see nyxgpt.cloud's module docstring.
+    # product_management/DECISION_PRIVATE_ACCESS_MECHANISM.md;
+    # `credentials-setup`, the guided AWS identity flow (P6-13, #3512) -- see
+    # nyxgpt.aws_credentials_setup's module docstring; `user-data`
+    # (P6-12/#3511's target-OS provisioning bootstrap-script renderer); and
+    # `infra`/`state`/`deploy`/`destroy`/`tunnel`/`smoke`. `deploy` is what
+    # writes ~/.nyxGPT/cloud/state.json so allow-ip can auto-discover the
+    # security group without --security-group-id -- see nyxgpt.cloud's module
+    # docstring.
     cloud_p = sub.add_parser("cloud", help="AWS cloud deployment lifecycle helpers")
     cloud_sub = cloud_p.add_subparsers(dest="cloud_cmd", required=True)
 
@@ -2228,6 +2231,38 @@ def cli(argv: list[str] | None = None) -> int:
             "AWS region (default: read from ~/.nyxGPT/cloud/state.json, then "
             "boto3's normal region resolution)"
         ),
+    )
+
+    # nyxgpt cloud user-data (P6-12/#3511): renders the EC2 user-data
+    # bootstrap script for a target instance OS -- the OS-dispatch layer
+    # future `nyxgpt cloud deploy`/the Terraform AWS module (P6-11/P6-8)
+    # will embed as an instance's `user_data`. See
+    # src/nyxgpt/cloud_provision.py and docs/cloud.md's target-OS support
+    # matrix.
+    cloud_user_data = cloud_sub.add_parser(
+        "user-data",
+        help=(
+            "Render the EC2 user-data bootstrap script that installs nyxGPT from "
+            "published artifacts (no git clone) for a target instance OS"
+        ),
+    )
+    cloud_user_data.add_argument(
+        "--os",
+        required=True,
+        choices=cloud_provision_mod.OS_FAMILIES,
+        help="Target instance OS family",
+    )
+    cloud_user_data.add_argument(
+        "--version",
+        help=(
+            "Pin the installed nyxGPT version (Linux: pip install nyxgpt==<version>; "
+            "macOS: recorded for reference only -- the Homebrew tap always tracks its "
+            "current formula). Default: latest."
+        ),
+    )
+    cloud_user_data.add_argument(
+        "--output",
+        help="Write the rendered script to this path instead of stdout",
     )
 
     cloud_credentials_setup = cloud_sub.add_parser(
@@ -2921,6 +2956,9 @@ def cli(argv: list[str] | None = None) -> int:
 
     if cmd == "cloud" and args.cloud_cmd == "allow-ip":
         return cloud_mod.allow_ip(args)
+
+    if cmd == "cloud" and args.cloud_cmd == "user-data":
+        return cloud_provision_mod.user_data(args)
 
     if cmd == "cloud" and args.cloud_cmd == "credentials-setup":
         return run_aws_credentials_setup(cfg_path=args.config)

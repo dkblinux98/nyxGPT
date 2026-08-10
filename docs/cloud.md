@@ -3,8 +3,9 @@
 `nyxgpt cloud` is the CLI surface for AWS-deployed nyxGPT stacks. It covers
 `deploy`/`destroy`/`tunnel` -- the one-command story from nothing to a
 running, monitored stack (#3513) -- `infra`, the substrate underneath it
-(#3509), `state`, that substrate's Terraform state (#3510), and `allow-ip`,
-SSH lockout recovery (#3630).
+(#3509), `state`, that substrate's Terraform state (#3510), `user-data`, the
+target-OS provisioning bootstrap those instances boot with (#3511), and
+`allow-ip`, SSH lockout recovery (#3630).
 
 **In a hurry?** [`nyxgpt cloud deploy`](#nyxgpt-cloud-deploy--the-one-command-path-p6-11-3513)
 is the only command most operators need; everything below it is the
@@ -524,6 +525,146 @@ how to get a profile in place.
 
 ---
 
+## Target-OS provisioning (P6-12/#3511)
+
+`nyxgpt cloud user-data` renders the EC2 user-data bootstrap script that
+installs nyxGPT on a fresh instance and brings up the native stack --
+per-target-OS, from published artifacts only. It doesn't talk to AWS
+itself: it prints a script, which is what an instance's `user_data`
+consumes so the machine provisions itself on first boot.
+
+**Relationship to `nyxgpt cloud deploy`.** `deploy` (P6-11, #3513) reaches
+an already-running instance over SSH and provisions it there
+(`render_provision_script` in `src/nyxgpt/cloud_deploy.py`); the substrate
+module (P6-8, #3509) currently sets no `user_data` at all. The two
+bootstraps therefore overlap -- both `pip install` a published release and
+run `nyxgpt ops install`, never a clone -- but they answer different
+questions: `user-data` is the first-boot, no-SSH-required path and the only
+one that covers **EC2 Mac**, which `deploy`'s Linux-only SSH script does
+not. Collapsing them onto one renderer is follow-up work, not something
+either issue scoped.
+
+```bash
+nyxgpt cloud user-data --os linux
+nyxgpt cloud user-data --os macos
+```
+
+### Options
+
+| Flag | Description |
+| --- | --- |
+| `--os {linux,macos}` | Required. Target instance OS family. |
+| `--version <version>` | Pin the installed nyxGPT version. Linux: `pip install nyxgpt==<version>`. macOS: recorded in the script for reference only -- the Homebrew tap always tracks its current formula (see [Remote tap](homebrew.md#remote-tap)), not an arbitrary pinned release. Default: latest. |
+| `--output <path>` | Write the rendered script to `path` instead of stdout. |
+
+### What the rendered script does
+
+**`--os linux`** (Amazon Linux 2023, Ubuntu 22.04/24.04 LTS -- see the
+[support matrix](#target-os-support-matrix) below), in order:
+
+1. **Prerequisites**, via the AMI's own package manager (`dnf`/`apt`):
+   Python 3 + pip (+ `python3-venv` on Ubuntu), a Docker engine
+   (`docker`/`docker.io`), and Node 20 from NodeSource. All three are
+   required by `nyxgpt ops install` and none ship on a stock AL2023 or
+   Canonical Ubuntu AMI: it builds a Python venv for the API, runs `npm
+   ci`/`npm run build` for the web bundle, and creates the
+   `nyxgpt-cassandra` container (`_ensure_cassandra_container` in
+   `src/nyxgpt/ops.py`) -- the one Docker-managed piece of an otherwise
+   native install. The distro Node packages are too old (Ubuntu 22.04 ships
+   Node 12, AL2023 ships Node 18), hence NodeSource.
+2. **Docker enablement**: `systemctl enable --now docker`, plus
+   `usermod -aG docker` for the target user, since `ops install` shells out
+   to `docker` as that user and never as root.
+3. **nyxGPT itself**, from PyPI, under the AMI's default login user
+   (`ec2-user`/`ubuntu`, never root), into a dedicated venv at
+   `~/.nyxGPT/opt/nyxgpt-cli`. A venv rather than `pip install --user`
+   because Ubuntu 24.04 LTS marks its system Python
+   [PEP 668](https://peps.python.org/pep-0668/) externally-managed, which
+   makes a `--user` install a hard error.
+4. **Ollama**, via its official installer.
+5. **A usable systemd --user session**: `loginctl enable-linger` (so units
+   survive with no interactive login), then a bounded wait for
+   systemd-logind to create `/run/user/<uid>` and its per-user D-Bus bus.
+   Every subsequent `sudo -u` call forwards `XDG_RUNTIME_DIR` and
+   `DBUS_SESSION_BUS_ADDRESS` -- `sudo -u` starts a bare process with none
+   of a login session's environment, so without them `systemctl --user`
+   inside `ops install` has no service manager to talk to and every unit
+   fails to start.
+6. **Preflight assertions** that `systemctl --user` and `docker` are both
+   reachable *as the target user*, so a broken instance fails with a message
+   naming the cause instead of a pile of unit-start errors.
+7. Seeds `~/.nyxGPT/config.ini` from the packaged `example.config.ini` and
+   runs `nyxgpt ops install --skip-observability` -- the same native
+   (systemd --user) path #3508 added and `scripts/systemd-native-smoke.sh`
+   exercises in CI.
+
+**`--os macos`** (EC2 Mac -- see the [support matrix](#target-os-support-matrix)
+below): installs Homebrew if missing, `brew tap`s the remote tap
+(`dkblinux98/homebrew-nyxgpt`) and installs `nyxgpt-api`/`nyxgpt-web`,
+seeds `~/.nyxGPT/config.ini`, and starts both via `brew services`. This
+follows [the documented local remote-tap flow](homebrew.md#remote-tap)
+exactly -- it deliberately does **not** call `nyxgpt ops install`, whose
+macOS path builds a *local* tap from a repo checkout
+(`_install_homebrew_api` in `src/nyxgpt/ops.py`) that doesn't exist on a
+fresh instance.
+
+**Repo-less (CLAUDE.md, 2026-08-01):** neither script ever runs `git
+clone` -- the PyPI package and the remote Homebrew tap are the only
+sources of the application, so both work on an instance with no repo
+checkout.
+
+### Target-OS support matrix
+
+| Target | Family / instance type | OS version | Install path |
+| --- | --- | --- | --- |
+| Linux AMI | Amazon Linux 2023 (x86_64, arm64) | current | PyPI + systemd --user (#3508) |
+| Linux AMI | Ubuntu 22.04 / 24.04 LTS (x86_64, arm64) | current | PyPI + systemd --user (#3508) |
+| EC2 Mac | `mac2.metal` / `mac2-m2.metal` / `mac2-m2pro.metal` (Apple Silicon) | Sonoma 14, Sequoia 15 | Remote Homebrew tap + launchd |
+| EC2 Mac | `mac1.metal` (Intel) | Ventura 13, Sonoma 14 | Remote Homebrew tap + launchd |
+
+EC2 Mac instances require a
+[Dedicated Host](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-mac-instances.html)
+with a 24-hour minimum allocation -- an AWS billing/allocation constraint,
+not a nyxGPT one. Any other Linux distro (no systemd, e.g. Alpine) or
+Windows AMI is out of scope, per the native-install OS dispatch
+(`_unsupported_os_result` in `src/nyxgpt/ops.py`) and CLAUDE.md's
+Repo-less Portability section (Windows explicitly out of scope for
+portability targets).
+
+`LINUX_AMI_SUPPORT_MATRIX`/`MACOS_EC2_SUPPORT_MATRIX` in
+`src/nyxgpt/cloud_provision.py` are this table's source of truth.
+
+### CI coverage
+
+`.github/workflows/release-artifacts.yml`'s `ec2-linux-user-data-smoke` job
+renders the Linux script with `nyxgpt cloud user-data` from the
+just-published PyPI artifact (no repo checkout) and runs it end-to-end on
+`ubuntu-latest`, verifying the same install → verify → down cycle as
+`artifact-install-smoke`.
+
+Crucially, it targets a **purpose-created account that has never logged
+in** (`nyxgpt-ec2`), not the runner's own `runner` account. `runner` has an
+active logind session and is already in the `docker` group, so bootstrapping
+into it would pass even if the script forgot to install Docker or to forward
+`XDG_RUNTIME_DIR`/`DBUS_SESSION_BUS_ADDRESS` -- exactly the failure modes an
+EC2 instance's first boot hits. The job asserts both preconditions (no
+`/run/user/<uid>`, no Docker access) *before* running the bootstrap, so it
+cannot silently drift back into masking them, and it verifies units and the
+`nyxgpt-cassandra` container as the target user afterwards.
+
+EC2 Mac has no CI coverage -- GitHub Actions has no macOS EC2 runner, and
+Apple's licensing does not permit running macOS in a container -- so the
+macOS support matrix above is documentation-verified, not CI-verified (the
+acceptance criteria call for CI coverage "where feasible (Linux at
+minimum)"). One consequence worth an owner/manual verification pass on a
+real `mac*.metal` instance: the macOS script's `brew services start` calls
+depend on a launchd session for the login user, the launchd analogue of the
+systemd session the Linux script sets up explicitly. EC2 Mac's default
+`ec2-user` does auto-login to a GUI session at boot, so this is expected to
+work, but it has not been exercised on real hardware.
+
+---
+
 ## Guided AWS credentials setup (P6-13, #3512)
 
 Every `nyxgpt cloud` command (and `[secrets] provider = ssm`/`secretsmanager`
@@ -720,6 +861,13 @@ substrate module (below) is built so a routine apply doesn't fight it:
 - `nyxgpt cloud infra apply` writes `security_group_id` and `region` (plus the
   instance/VPC ids) to `~/.nyxGPT/cloud/state.json`, so `allow-ip`
   auto-discovers its target with no `--security-group-id`/`--region`.
+- The module sets no `user_data` today: `nyxgpt cloud deploy` provisions the
+  instance over SSH after apply. If a first-boot bootstrap is ever wanted
+  there (it is the only path that works for **EC2 Mac**), the `user_data`
+  should be
+  [`nyxgpt cloud user-data --os <linux|macos>`](#target-os-provisioning-p6-12-3511)'s
+  rendered output for the chosen AMI family rather than a script templated
+  inside the module.
 
 ## Lockout recovery
 

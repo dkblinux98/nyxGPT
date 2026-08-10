@@ -227,3 +227,148 @@ jobs:
       - name: nyxgpt ops down
         if: always()
         run: nyxgpt ops down || true
+
+  ec2-linux-user-data-smoke:
+    # Target-OS provisioning CI coverage (P6-12/#3511): renders the Linux
+    # EC2 user-data bootstrap script via `nyxgpt cloud user-data` from the
+    # just-published PyPI artifact (no repo checkout), then executes the
+    # *rendered script itself* as root -- exercising the actual artifact
+    # this feature produces, not a hand-copied equivalent of its steps
+    # (unlike artifact-install-smoke above, which drives the same
+    # install -> verify -> down cycle by hand). See docs/cloud.md's target-OS
+    # support matrix: this covers the Linux-AMI half; EC2 Mac has no
+    # available GitHub Actions runner and is documentation-verified only.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ github.event.release.tag_name || inputs.version }}
+      # A purpose-created account that has never logged in -- the same state
+      # `ec2-user`/`ubuntu` are in on an EC2 instance's first boot.
+      #
+      # Deliberately NOT the `runner` account. `runner` already has an active
+      # logind session (so /run/user/<uid> and its D-Bus bus exist) and is
+      # already in the `docker` group, which would mask the two failure modes
+      # this job exists to catch: a bootstrap that never forwards
+      # XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS across the `sudo -u`
+      # boundary, and one that never installs Docker or grants the target
+      # user access to it. The "Create a fresh, never-logged-in target user"
+      # step below asserts both preconditions actually hold before the
+      # bootstrap runs, so this job can never silently drift back to masking.
+      NYXGPT_TARGET_USER: nyxgpt-ec2
+    steps:
+      - name: Wait for PyPI to serve this version
+        run: |
+          code=000
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/nyxgpt/${VERSION}/json")
+            [ "$code" = "200" ] && break
+            echo "pypi.org does not serve nyxgpt==${VERSION} yet (attempt $i/30, http $code) -- retrying in 20s"
+            sleep 20
+          done
+          if [ "$code" != "200" ]; then
+            echo "::error::pypi.org never served nyxgpt==${VERSION} -- is release_ceremony.sh Phase 2 done?"
+            exit 1
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install nyxgpt from PyPI (no repo checkout)
+        run: pip install "nyxgpt==${VERSION}"
+
+      - name: Create a fresh, never-logged-in target user
+        run: |
+          sudo useradd --create-home --shell /bin/bash "$NYXGPT_TARGET_USER"
+          uid=$(id -u "$NYXGPT_TARGET_USER")
+
+          # Assert the preconditions that make this job meaningful. If either
+          # is already satisfied the run would prove nothing, so fail loudly
+          # rather than quietly going back to masking the bugs.
+          if [ -d "/run/user/$uid" ]; then
+            echo "::error::$NYXGPT_TARGET_USER already has a runtime dir (/run/user/$uid) -- this job would mask the D-Bus/session bug"
+            exit 1
+          fi
+          if sudo -u "$NYXGPT_TARGET_USER" docker info >/dev/null 2>&1; then
+            echo "::error::$NYXGPT_TARGET_USER can already reach the Docker daemon -- this job would mask the docker-group bug"
+            exit 1
+          fi
+          echo "$NYXGPT_TARGET_USER: no logind session, no Docker access -- matches an EC2 instance's first boot"
+
+      - name: Render and run the Linux EC2 user-data bootstrap script
+        run: |
+          nyxgpt cloud user-data --os linux --version "$VERSION" --output /tmp/ec2-user-data.sh
+          sudo env "NYXGPT_TARGET_USER=${NYXGPT_TARGET_USER}" bash /tmp/ec2-user-data.sh
+
+      - name: Verify systemd --user units and endpoints are up
+        run: |
+          uid=$(id -u "$NYXGPT_TARGET_USER")
+          # Every check runs as the target user, through the same environment
+          # the bootstrap is responsible for making usable -- inspecting the
+          # `runner` account's own units would not test anything the
+          # bootstrap did.
+          as_target() {
+            sudo -u "$NYXGPT_TARGET_USER" -H env \
+              "XDG_RUNTIME_DIR=/run/user/$uid" \
+              "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus" "$@"
+          }
+
+          fail=0
+          units="nyxgpt-api nyxgpt-web nyxgpt-cassandra-logs nyxgpt-ollama-logs"
+          # Ollama's official installer enables a *system-wide* ollama.service
+          # on the same port; `ops install` adopts it rather than starting its
+          # own nyxgpt-ollama.service when it is already up
+          # (_reconcile_system_ollama_service, #3632).
+          if systemctl is-active --quiet ollama.service; then
+            echo "  nyxgpt-ollama -> skipped (system ollama.service adopted instead)"
+          else
+            units="$units nyxgpt-ollama"
+          fi
+          for unit in $units; do
+            state=$(as_target systemctl --user is-active "$unit.service" 2>/dev/null || echo inactive)
+            echo "  $unit -> $state"
+            [ "$state" = "active" ] || { echo "::error::$unit is not active"; fail=1; }
+          done
+
+          # The Docker install and docker-group membership the bootstrap adds
+          # are what let `_ensure_cassandra_container` run as the target user
+          # -- assert the container it is supposed to create is actually up,
+          # not just that `ops install` exited 0.
+          cassandra=$(docker inspect -f '{{.State.Status}}' nyxgpt-cassandra 2>/dev/null || echo absent)
+          echo "  nyxgpt-cassandra (docker) -> $cassandra"
+          [ "$cassandra" = "running" ] || { echo "::error::nyxgpt-cassandra container is not running"; fail=1; }
+
+          check() {
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$2")
+            echo "  $1 -> $code (expect $3)"
+            [ "$code" = "$3" ] || { echo "::error::$1 expected $3, got $code"; fail=1; }
+          }
+          check "api  /health" http://127.0.0.1:8000/health 200
+          check "web  /"       http://127.0.0.1:3000/ 200
+          exit "$fail"
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          uid=$(id -u "$NYXGPT_TARGET_USER") || exit 0
+          target_home=$(getent passwd "$NYXGPT_TARGET_USER" | cut -d: -f6)
+          as_target() {
+            sudo -u "$NYXGPT_TARGET_USER" -H env \
+              "XDG_RUNTIME_DIR=/run/user/$uid" \
+              "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus" "$@"
+          }
+          as_target systemctl --user status nyxgpt-api nyxgpt-web nyxgpt-ollama --no-pager -l || true
+          sudo tail -n 80 "$target_home/.nyxGPT/logs/nyxgpt-api.err.log" 2>/dev/null || true
+          sudo tail -n 80 "$target_home/.nyxGPT/logs/nyxgpt-web.err.log" 2>/dev/null || true
+          docker logs --tail 40 nyxgpt-cassandra 2>&1 || true
+
+      - name: nyxgpt ops down
+        if: always()
+        run: |
+          uid=$(id -u "$NYXGPT_TARGET_USER") || exit 0
+          target_home=$(getent passwd "$NYXGPT_TARGET_USER" | cut -d: -f6)
+          sudo -u "$NYXGPT_TARGET_USER" -H env \
+            "XDG_RUNTIME_DIR=/run/user/$uid" \
+            "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus" \
+            "$target_home/.nyxGPT/opt/nyxgpt-cli/bin/nyxgpt" ops down || true
