@@ -3284,9 +3284,12 @@ def _resolve_locality(args) -> str | None:
     """Validate the `--local`/`--cloud` locality flag shared by `--terraform`/`--kubernetes`.
 
     Only `--local` is implemented today. `--cloud` is accepted by the CLI
-    surface (so it doesn't need a redesign later) but always rejected with a
-    "not yet implemented" message -- the local deployment is the precursor
-    to a future cloud target, not an alternative to it (see issue #3344).
+    surface (so it doesn't need a redesign later) but always rejected -- the
+    local deployment is the precursor to a future cloud target, not an
+    alternative to it (see issue #3344). The AWS substrate itself is
+    provisioned by `nyxgpt cloud infra` (#3509); deploying this stack onto
+    that instance is #3513, which is what will make `--cloud` meaningful
+    here.
 
     Returns "local" once implemented, or None (having already printed an
     error) if the flag is missing or unimplemented.
@@ -3295,7 +3298,9 @@ def _resolve_locality(args) -> str | None:
         print(
             "ERROR: --cloud is not yet implemented. Local Terraform/Kubernetes deployment "
             "(--local) is the precursor to a future cloud target -- see docs/terraform.md "
-            "and docs/kubernetes.md.",
+            "and docs/kubernetes.md. To provision the AWS substrate itself, use "
+            "`nyxgpt cloud infra apply` (see docs/cloud.md); deploying this stack onto "
+            "that instance lands with `nyxgpt cloud deploy`.",
             file=sys.stderr,
         )
         return None

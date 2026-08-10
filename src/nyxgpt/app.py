@@ -12,6 +12,7 @@ context manager below.
 
 from __future__ import annotations
 
+import argparse
 import inspect
 import io
 import logging
@@ -52,6 +53,7 @@ from nyxgpt import admin_activity as admin_activity_module
 from nyxgpt import api_models, aws_credentials_setup, config_wizard, models, secrets_setup, sessions
 from nyxgpt import canary as canary_module
 from nyxgpt import chat as chat_module
+from nyxgpt import cloud_infra as cloud_infra_module
 from nyxgpt import error_tracking as error_tracking_module
 from nyxgpt import health as health_module
 from nyxgpt import metrics as prom_metrics
@@ -99,6 +101,7 @@ from nyxgpt.api_models import (
 from nyxgpt.batch_processor import BatchProcessor, RequestPriority
 from nyxgpt.chat import chat as run_chat
 from nyxgpt.chat import chat_stream
+from nyxgpt.cloud import CloudCommandError
 from nyxgpt.config import (
     get_auth_api_key,
     get_canary_error_rate_threshold,
@@ -2364,6 +2367,95 @@ def self_heal_logs(service: str, tail: int = Query(default=200, ge=1, le=2000)) 
 def infra_status(_request: Request) -> dict[str, Any]:
     """Deployment status: detected mode plus per-mode component/pod state."""
     return ops_module.infra_status()
+
+
+# --- Cloud substrate endpoints (AWS, P6-8/#3509) ---
+#
+# The SRE/admin dashboard's counterpart to `nyxgpt cloud infra` (CLAUDE.md's
+# Definition of Done: ops features are operable from the dashboard, not just
+# the CLI). Both surfaces call the same `nyxgpt.cloud_infra` functions, so the
+# access model -- port 22 only, scoped to the owner's IP -- is enforced in one
+# place regardless of who triggers provisioning.
+#
+# `plan`/`apply`/`destroy` shell out to Terraform and can take minutes; they
+# are deliberately synchronous (same shape as the canary deploy endpoints
+# above) and the dashboard shows a pending state while they run.
+
+
+def _cloud_infra_args(payload: dict[str, Any]) -> argparse.Namespace:
+    """Build the argparse-shaped namespace `nyxgpt.cloud_infra` expects from a JSON body.
+
+    The dashboard posts the same inputs the CLI flags carry; anything omitted
+    falls back to the settings a previous run saved, exactly as on the CLI.
+    """
+    return argparse.Namespace(
+        region=payload.get("region") or None,
+        profile=payload.get("profile") or None,
+        owner_ip=payload.get("owner_ip") or None,
+        ssh_public_key=payload.get("ssh_public_key") or None,
+        ssh_key_name=payload.get("ssh_key_name") or None,
+        instance_type=payload.get("instance_type") or None,
+        root_volume_size=payload.get("root_volume_size") or None,
+    )
+
+
+@api.get("/cloud/infra")
+def cloud_infra_status(_request: Request) -> dict[str, Any]:
+    """What AWS substrate is provisioned, and how it is reachable.
+
+    Cheap and side-effect free -- reads the recorded state rather than
+    calling AWS -- so the dashboard can poll it.
+    """
+    return cloud_infra_module.infra_status()
+
+
+@api.post("/cloud/infra/plan")
+def cloud_infra_plan(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Plan the AWS substrate. Creates nothing; returns the resolved settings."""
+    try:
+        result = cloud_infra_module.plan_infra(_cloud_infra_args(payload))
+    except CloudCommandError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    admin_activity_module.record("cloud_infra.plan", result["settings"]["aws_region"])
+    return result
+
+
+@api.post("/cloud/infra/apply")
+def cloud_infra_apply(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Provision (or reconcile) the AWS substrate and record its ids."""
+    try:
+        result = cloud_infra_module.apply_infra(_cloud_infra_args(payload))
+    except CloudCommandError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    outputs = result.get("outputs") or {}
+    admin_activity_module.record(
+        "cloud_infra.apply",
+        f"instance={outputs.get('instance_id', 'unknown')} region={result['settings']['aws_region']}",
+    )
+    return result
+
+
+@api.post("/cloud/infra/destroy")
+def cloud_infra_destroy(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Tear the AWS substrate down.
+
+    Requires `{"confirm": true}`: this deletes the instance and its root
+    volume, and anything living only on that box goes with it.
+    """
+    if not payload.get("confirm"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Destroying the AWS substrate deletes the instance and its root volume. "
+                'Re-send with {"confirm": true} to proceed.'
+            ),
+        )
+    try:
+        result = cloud_infra_module.destroy_infra(_cloud_infra_args(payload))
+    except CloudCommandError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    admin_activity_module.record("cloud_infra.destroy", result["settings"]["aws_region"])
+    return result
 
 
 # --- Model management endpoints ---

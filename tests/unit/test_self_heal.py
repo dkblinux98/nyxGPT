@@ -1652,7 +1652,14 @@ def test_status_updates_unhealthy_components_gauge(monkeypatch):
 
 
 @pytest.mark.unit
-def test_watchdog_stop_logs(caplog):
+def test_watchdog_stop_logs(monkeypatch, caplog):
+    # Disabled like every sibling watchdog test: left enabled, the loop thread
+    # runs the *real* heal pass, which shells out to `systemctl restart
+    # nyxgpt-api.service`. That outlives stop()'s join timeout and its
+    # "Subprocess exited non-zero" record then lands in whichever later test
+    # happens to hold caplog (it was reaching test_error_tracking.py).
+    monkeypatch.setattr(self_heal, "is_enabled", lambda: False)
+
     watchdog = self_heal.Watchdog(interval_seconds=0.01)
     watchdog.start()
     with caplog.at_level("INFO"):

@@ -1,0 +1,68 @@
+name: Terraform AWS Validate
+
+# Least-privilege token: this gate only reads the checked-out code (CodeQL #2).
+permissions:
+  contents: read
+
+# Plan-level gate for the AWS substrate (P6-8/#3509): `terraform fmt -check`,
+# `terraform validate`, and the offline plan-level test suite in
+# terraform/aws/tests/*.tftest.hcl -- which asserts the access model
+# (port 22 only, owner-IP scoped, never 0.0.0.0/0) and the instance hardening
+# flags on a real Terraform plan.
+#
+# Unlike terraform-local-smoke.yml this stands nothing up and needs no AWS
+# account: the provider's skip_* escape hatches plus a pinned ami_id in the
+# test file keep every run block offline, so it is cheap enough to run on
+# every change to the AWS config.
+on:
+  pull_request:
+    paths:
+      - 'terraform/aws/**'
+      - '.github/workflows/terraform-aws-validate.yml'
+  push:
+    paths:
+      - 'terraform/aws/**'
+      - '.github/workflows/terraform-aws-validate.yml'
+
+jobs:
+  terraform-aws-validate:
+    runs-on: ubuntu-latest
+    # Same trigger scoping as terraform-local-smoke.yml: every PR, plus pushes
+    # to the active release branch (feature-branch pushes are already covered
+    # by that branch's PR).
+    if: github.event_name == 'pull_request' || github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
+    defaults:
+      run:
+        working-directory: terraform/aws
+    env:
+      # Dummy credentials so the AWS provider can be configured at all. Nothing
+      # here reaches AWS -- the test file sets skip_credentials_validation,
+      # skip_requesting_account_id, and skip_metadata_api_check, and pins
+      # ami_id so no data source is instantiated.
+      AWS_ACCESS_KEY_ID: testing
+      AWS_SECRET_ACCESS_KEY: testing
+      AWS_REGION: us-east-1
+      AWS_EC2_METADATA_DISABLED: 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.9.5'
+          # The wrapper writes machine-readable output; the human-friendly
+          # wrapper script would corrupt `terraform output -json`-style usage
+          # and adds nothing here.
+          terraform_wrapper: false
+
+      - name: terraform fmt -check
+        run: terraform fmt -check -recursive -diff
+
+      - name: terraform init (no backend)
+        run: terraform init -backend=false -input=false
+
+      - name: terraform validate
+        run: terraform validate
+
+      - name: terraform test (plan-level)
+        run: terraform test

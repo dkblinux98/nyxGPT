@@ -7,14 +7,23 @@ provider, as an alternative bring-up path for anyone who prefers `terraform
 apply`/`destroy` over `docker compose up`/`down` for local infrastructure
 management (drift detection, plan review, etc).
 
-This is **local-only infrastructure as code**, consistent with the project's
-local-first [VISION.md](../product_management/VISION.md):
+The `terraform/` root module is **local-only infrastructure as code**,
+consistent with the project's local-first
+[VISION.md](../product_management/VISION.md):
 
-- No cloud provider modules (no AWS/GCP/Azure providers).
+- No cloud provider modules (no AWS/GCP/Azure providers) in *this* module.
 - No cloud networking or security groups — the stack runs on a single Docker
   bridge network on your workstation, same as Compose.
 - No remote state backend — state is a local file (see
   [State Management](#state-management) below).
+
+> **The AWS substrate is a separate root module.** `terraform/aws/` (P6-8,
+> #3509) provisions a VPC, public subnet, an SSH-only owner-IP-scoped
+> security group, and one EC2 instance for a cloud deployment. It is driven
+> by `nyxgpt cloud infra`, never by the `nyxgpt ops --terraform` commands on
+> this page, and is documented in
+> [Cloud (AWS)](cloud.md#nyxgpt-cloud-infra--provisioning-the-aws-substrate-p6-8-3509).
+> Everything below is about the local Docker stack.
 
 > **Scope note:** issue #2690 originally asked for cloud provider modules,
 > cloud networking/security groups, and remote state management. The owner
@@ -22,9 +31,13 @@ local-first [VISION.md](../product_management/VISION.md):
 > with `product_management/VISION.md`'s local-first constraint, then reversed and re-scoped the
 > issue on 2026-07-09 with the local-only requirements implemented here
 > (docker provider, no cloud networking/security groups, local state) —
-> see the issue's comment thread for the full rationale. Cloud provider
-> modules are intentionally not planned; there is no follow-up issue for
-> them because the project has no cloud infrastructure to provision.
+> see the issue's comment thread for the full rationale.
+>
+> **Superseded in part (2026-08-10, #3509):** the "cloud provider modules are
+> intentionally not planned" part of that scoping no longer holds. Phase 6's
+> standing owner decision (2026-07-15) added an AWS deployment target, and
+> P6-8 delivered `terraform/aws/` for it. The *local* module on this page is
+> still docker-provider-only, exactly as scoped above.
 
 Scope: this covers the core stack only (`ollama`, `cassandra`, `api`, `web`).
 The opt-in Compose profiles (`monitoring`, `logging`, `tracing`, `errors`) are
@@ -187,6 +200,7 @@ design. To actually delete it, remove the host directories yourself or use
 | [Docker Compose](docker-compose.md) | One-command bring-up, including opt-in observability profiles |
 | **Terraform** (this doc) | You want plan/apply/destroy semantics and drift detection for the core stack |
 | [Kubernetes](kubernetes.md) | Local cluster (kind/minikube/k3s), canary rollout of the API |
+| [Cloud (AWS)](cloud.md) | You want the stack on an EC2 instance in your own AWS account, reachable only over an SSH tunnel (`nyxgpt cloud infra`) |
 
 This deployment is watched by the same [self-heal watchdog](self-healing.md)
 as every other deployment path -- see [self-healing.md#terraform-mode](self-healing.md#terraform-mode)
