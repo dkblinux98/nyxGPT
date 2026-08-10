@@ -56,6 +56,10 @@ Quick reference of all 81 available endpoints:
 | `/api/v1/cloud/state/versions` | GET | Stored versions of the remote state object, newest first |
 | `/api/v1/cloud/state/restore` | POST | Roll state back to a version (requires `version_id` + `{"confirm": true}`) |
 | `/api/v1/cloud/state/unlock` | POST | Release a lock left by a killed apply (requires `lock_id`) |
+| `/api/v1/cloud/deploy` | GET | Cloud deployment status: installed version, instance, tunnel, localhost URLs (no AWS call) |
+| `/api/v1/cloud/deploy` | POST | Provision AWS and deploy the full stack onto it (idempotent) |
+| `/api/v1/cloud/deploy/destroy` | POST | Close the tunnel and tear the deployment down (requires `{"confirm": true}`) |
+| `/api/v1/cloud/deploy/tunnel` | POST | Open or close (`{"action": "stop"}`) the SSH access tunnel |
 | `/api/v1/models` | GET | List Ollama models |
 | `/api/v1/models/pull` | POST | Pull model from Ollama |
 | `/api/v1/models/{model_name}` | DELETE | Delete model |
@@ -1485,6 +1489,72 @@ These return `409` when remote state isn't configured yet or Terraform/AWS
 fails, and `400` when a required confirmation or id is missing. Moving state
 back to a local file is CLI-only (`nyxgpt cloud state local`) — it is the
 escape hatch for a backend the API host may itself be unable to reach.
+
+## Cloud deploy endpoints
+
+The dashboard half of `nyxgpt cloud deploy`/`destroy`/`tunnel` (P6-11,
+#3513): provision AWS, install a published nyxGPT release onto the instance,
+and open the SSH tunnel that is the only way to reach it. They call the same
+`nyxgpt.cloud_deploy` functions the CLI does, so there is one deploy
+implementation regardless of surface. See
+[cloud.md](cloud.md#nyxgpt-cloud-deploy--the-one-command-path-p6-11-3513).
+
+`deploy`/`destroy` run Terraform *and* a remote install and can take many
+minutes; they are synchronous. Mutations are recorded in the admin activity
+log (`cloud_deploy.deploy`/`.destroy`/`.tunnel`).
+
+### `GET /api/v1/cloud/deploy`
+
+Report what is deployed and whether the access tunnel is open. Reads
+recorded state only — no AWS call and no connection to the instance — so it
+is cheap to poll.
+
+```json
+{
+  "deployed": true,
+  "version": "3.0.0",
+  "host": "198.51.100.200",
+  "instance_id": "i-0abc123",
+  "region": "us-east-1",
+  "profiles": ["monitoring", "logging", "tracing", "errors"],
+  "tunnel": { "running": true, "pid": 4242, "host": "198.51.100.200" },
+  "urls": {
+    "api": "http://localhost:8000",
+    "web": "http://localhost:3000",
+    "grafana": "http://localhost:3001"
+  },
+  "access_command": "nyxgpt cloud tunnel"
+}
+```
+
+Every URL is a `localhost` one and resolves only while the tunnel is open —
+there is no instance-facing URL, by design.
+
+### `POST /api/v1/cloud/deploy`
+
+Provision AWS and deploy the full stack onto it. Idempotent: a re-run
+reconciles rather than creating a second deployment. Accepts every
+provisioning input `POST /api/v1/cloud/infra/apply` does, plus `version`,
+`skip_observability`, `no_tunnel`, `ssh_user`, `identity_file`, `host`,
+`health_timeout`, and `ssh_timeout`. Omitted fields fall back to the settings
+the last run saved.
+
+Returns the resolved `plan` and `target`, a step-by-step `steps` record, the
+`tunnel` and `health` results, and the `urls`.
+
+### `POST /api/v1/cloud/deploy/destroy`
+
+Close the tunnel, then tear the deployment down. Requires
+`{"confirm": true}` — the instance and its root volume go with it.
+
+### `POST /api/v1/cloud/deploy/tunnel`
+
+Open the SSH access tunnel, or close it with `{"action": "stop"}`. Opening
+is idempotent and always backgrounded (an HTTP request cannot hold a
+foreground tunnel); an already-running tunnel is reported, not duplicated.
+
+These return `409` when the deploy fails or nothing is provisioned yet, and
+`400` when the teardown confirmation is missing.
 
 ---
 
