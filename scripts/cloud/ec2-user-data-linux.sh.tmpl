@@ -52,25 +52,81 @@ if [ -z "$TARGET_HOME" ]; then
   exit 1
 fi
 
-# Python 3 + pip via the distro's own package manager -- dnf on Amazon
-# Linux, apt on Ubuntu, the two families in the support matrix.
+# --- Prerequisites `nyxgpt ops install` needs on a bare AMI -----------------
+#
+# `ops install` is not self-contained: it builds a Python venv for
+# nyxgpt-api, runs `npm ci`/`npm run build` for nyxgpt-web, and creates the
+# `nyxgpt-cassandra` Docker container (`_ensure_cassandra_container` in
+# src/nyxgpt/ops.py -- the one Docker-managed piece of an otherwise-native
+# install). None of Python-venv, Node/npm, or a Docker engine ship on a
+# stock Amazon Linux 2023 or Canonical Ubuntu AMI, and each missing one is a
+# hard failure inside `ops install`, which exits non-zero and, under `set
+# -e`, aborts this whole bootstrap. Install them before we get there.
 if command -v dnf >/dev/null 2>&1; then
-  dnf install -y python3 python3-pip
+  dnf install -y python3 python3-pip docker
 elif command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
-  apt-get install -y python3 python3-pip python3-venv
+  apt-get install -y python3 python3-pip python3-venv docker.io
 else
   echo "ec2-user-data-linux: no supported package manager found (need dnf or apt-get)" >&2
   exit 1
 fi
 
+# Node 20 from NodeSource rather than the distro repos: Ubuntu 22.04 LTS
+# still ships Node 12 and AL2023 ships Node 18, both below the Node 20 the
+# web bundle's build is standardized on (see linux-native-smoke.yml).
+NODE_MAJOR=0
+if command -v node >/dev/null 2>&1; then
+  NODE_MAJOR=$(node -v | sed 's/^v//' | cut -d. -f1)
+fi
+if ! command -v npm >/dev/null 2>&1 || [ "$NODE_MAJOR" -lt 20 ]; then
+  if command -v dnf >/dev/null 2>&1; then
+    curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
+    dnf install -y nodejs
+  else
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+    apt-get install -y nodejs
+  fi
+fi
+
+# The engine is installed but inert on a fresh AMI, and the target user is
+# not in the `docker` group. Both matter: `ops install` shells out to
+# `docker` as the *target user*, never as root. `sudo -u` re-reads group
+# membership at every invocation (initgroups), so the calls below pick the
+# new group up without needing a re-login.
+systemctl enable --now docker
+usermod -aG docker "$NYXGPT_TARGET_USER"
+for _ in $(seq 1 30); do
+  if docker info >/dev/null 2>&1; then
+    break
+  fi
+  sleep 2
+done
+if ! docker info >/dev/null 2>&1; then
+  echo "ec2-user-data-linux: the Docker daemon never became ready -- 'nyxgpt ops install' cannot create the nyxgpt-cassandra container without it" >&2
+  exit 1
+fi
+
 # Install nyxgpt from PyPI as the target user, never root -- no repo clone.
+# A dedicated venv rather than `pip install --user`: Ubuntu 24.04 LTS marks
+# its system Python PEP 668 externally-managed, which makes a `--user`
+# install a hard error (`externally-managed-environment`), and 24.04 is in
+# the support matrix. `ops install` builds its own self-contained venvs for
+# the API and web services regardless, so this venv only ever holds the
+# `nyxgpt` CLI that drives them.
 PIP_SPEC="nyxgpt"
 if [ -n "$NYXGPT_VERSION" ]; then
   PIP_SPEC="nyxgpt==${NYXGPT_VERSION}"
 fi
-sudo -u "$NYXGPT_TARGET_USER" -H python3 -m pip install --user "$PIP_SPEC"
+CLI_VENV="$TARGET_HOME/.nyxGPT/opt/nyxgpt-cli"
+USER_BIN="$CLI_VENV/bin"
+NYXGPT_CLI="$USER_BIN/nyxgpt"
+
+sudo -u "$NYXGPT_TARGET_USER" -H mkdir -p "$TARGET_HOME/.nyxGPT/opt"
+sudo -u "$NYXGPT_TARGET_USER" -H python3 -m venv "$CLI_VENV"
+sudo -u "$NYXGPT_TARGET_USER" -H "$CLI_VENV/bin/python" -m pip install --upgrade pip
+sudo -u "$NYXGPT_TARGET_USER" -H "$CLI_VENV/bin/python" -m pip install "$PIP_SPEC"
 
 # Ollama's official installer (also no repo clone).
 if ! command -v ollama >/dev/null 2>&1; then
@@ -78,19 +134,59 @@ if ! command -v ollama >/dev/null 2>&1; then
 fi
 
 # There is no interactive login on first boot, so a systemd --user unit
-# needs lingering enabled to keep running once user-data finishes.
+# needs lingering enabled to keep running once user-data finishes. Lingering
+# is also what makes systemd-logind create the target user's runtime
+# directory (/run/user/<uid>) and start its per-user D-Bus bus -- without
+# those, `systemctl --user` has nothing to talk to.
 loginctl enable-linger "$NYXGPT_TARGET_USER"
 
-USER_BIN="$TARGET_HOME/.local/bin"
-NYXGPT_CLI="$USER_BIN/nyxgpt"
+TARGET_UID=$(id -u "$NYXGPT_TARGET_USER")
+TARGET_RUNTIME_DIR="/run/user/$TARGET_UID"
 
-sudo -u "$NYXGPT_TARGET_USER" -H mkdir -p "$TARGET_HOME/.nyxGPT"
-if [ ! -f "$TARGET_HOME/.nyxGPT/config.ini" ]; then
-  EXAMPLE_CONFIG=$(sudo -u "$NYXGPT_TARGET_USER" -H python3 -c \
-    "from nyxgpt import config_wizard; print(config_wizard._EXAMPLE_CONFIG_PATH)")
-  sudo -u "$NYXGPT_TARGET_USER" -H cp "$EXAMPLE_CONFIG" "$TARGET_HOME/.nyxGPT/config.ini"
+# logind brings the user manager (and its bus socket) up asynchronously, so
+# `enable-linger` returning does not mean the bus is there yet.
+for _ in $(seq 1 60); do
+  if [ -S "$TARGET_RUNTIME_DIR/bus" ]; then
+    break
+  fi
+  sleep 1
+done
+if [ ! -S "$TARGET_RUNTIME_DIR/bus" ]; then
+  echo "ec2-user-data-linux: $TARGET_RUNTIME_DIR/bus never appeared after 'loginctl enable-linger $NYXGPT_TARGET_USER' -- systemd --user is unusable for this account" >&2
+  exit 1
 fi
 
-sudo -u "$NYXGPT_TARGET_USER" -H env "PATH=$USER_BIN:$PATH" "$NYXGPT_CLI" ops install --skip-observability
+# `sudo -u` starts a bare process with none of a login session's
+# environment. Without XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS the
+# `systemctl --user` calls inside `nyxgpt ops install` cannot reach the
+# target user's service manager, so every unit it installs fails to
+# enable/start, `ops install` exits non-zero, and `set -e` aborts this
+# bootstrap. Forward the two variables an interactive login would have set.
+run_as_target() {
+  sudo -u "$NYXGPT_TARGET_USER" -H \
+    env "PATH=$USER_BIN:$PATH" \
+        "XDG_RUNTIME_DIR=$TARGET_RUNTIME_DIR" \
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=$TARGET_RUNTIME_DIR/bus" \
+        "$@"
+}
+
+# Fail here, with a message naming the actual problem, rather than part-way
+# through `ops install` with a pile of unit-start errors.
+if ! run_as_target systemctl --user show-environment >/dev/null; then
+  echo "ec2-user-data-linux: 'systemctl --user' is not reachable as '$NYXGPT_TARGET_USER' -- the user service manager did not start" >&2
+  exit 1
+fi
+if ! run_as_target docker info >/dev/null 2>&1; then
+  echo "ec2-user-data-linux: '$NYXGPT_TARGET_USER' cannot reach the Docker daemon -- docker-group membership did not take effect" >&2
+  exit 1
+fi
+
+if [ ! -f "$TARGET_HOME/.nyxGPT/config.ini" ]; then
+  EXAMPLE_CONFIG=$(run_as_target "$CLI_VENV/bin/python" -c \
+    "from nyxgpt import config_wizard; print(config_wizard._EXAMPLE_CONFIG_PATH)")
+  run_as_target cp "$EXAMPLE_CONFIG" "$TARGET_HOME/.nyxGPT/config.ini"
+fi
+
+run_as_target "$NYXGPT_CLI" ops install --skip-observability
 
 echo "ec2-user-data-linux: nyxGPT installed and started for user '$NYXGPT_TARGET_USER'"

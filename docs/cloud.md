@@ -109,15 +109,43 @@ nyxgpt cloud user-data --os macos
 ### What the rendered script does
 
 **`--os linux`** (Amazon Linux 2023, Ubuntu 22.04/24.04 LTS -- see the
-[support matrix](#target-os-support-matrix) below): installs Python 3 +
-pip via the AMI's own package manager (`dnf`/`apt`), `pip install`s nyxGPT
-from PyPI under the AMI's default login user (`ec2-user`/`ubuntu`, never
-root), installs Ollama via its official installer, seeds
-`~/.nyxGPT/config.ini` from the packaged `example.config.ini`, enables
-`loginctl` lingering (so a systemd --user unit survives with no interactive
-login), and runs `nyxgpt ops install --skip-observability` -- the same
-native (systemd --user) path #3508 added and
-`scripts/systemd-native-smoke.sh` exercises in CI.
+[support matrix](#target-os-support-matrix) below), in order:
+
+1. **Prerequisites**, via the AMI's own package manager (`dnf`/`apt`):
+   Python 3 + pip (+ `python3-venv` on Ubuntu), a Docker engine
+   (`docker`/`docker.io`), and Node 20 from NodeSource. All three are
+   required by `nyxgpt ops install` and none ship on a stock AL2023 or
+   Canonical Ubuntu AMI: it builds a Python venv for the API, runs `npm
+   ci`/`npm run build` for the web bundle, and creates the
+   `nyxgpt-cassandra` container (`_ensure_cassandra_container` in
+   `src/nyxgpt/ops.py`) -- the one Docker-managed piece of an otherwise
+   native install. The distro Node packages are too old (Ubuntu 22.04 ships
+   Node 12, AL2023 ships Node 18), hence NodeSource.
+2. **Docker enablement**: `systemctl enable --now docker`, plus
+   `usermod -aG docker` for the target user, since `ops install` shells out
+   to `docker` as that user and never as root.
+3. **nyxGPT itself**, from PyPI, under the AMI's default login user
+   (`ec2-user`/`ubuntu`, never root), into a dedicated venv at
+   `~/.nyxGPT/opt/nyxgpt-cli`. A venv rather than `pip install --user`
+   because Ubuntu 24.04 LTS marks its system Python
+   [PEP 668](https://peps.python.org/pep-0668/) externally-managed, which
+   makes a `--user` install a hard error.
+4. **Ollama**, via its official installer.
+5. **A usable systemd --user session**: `loginctl enable-linger` (so units
+   survive with no interactive login), then a bounded wait for
+   systemd-logind to create `/run/user/<uid>` and its per-user D-Bus bus.
+   Every subsequent `sudo -u` call forwards `XDG_RUNTIME_DIR` and
+   `DBUS_SESSION_BUS_ADDRESS` -- `sudo -u` starts a bare process with none
+   of a login session's environment, so without them `systemctl --user`
+   inside `ops install` has no service manager to talk to and every unit
+   fails to start.
+6. **Preflight assertions** that `systemctl --user` and `docker` are both
+   reachable *as the target user*, so a broken instance fails with a message
+   naming the cause instead of a pile of unit-start errors.
+7. Seeds `~/.nyxGPT/config.ini` from the packaged `example.config.ini` and
+   runs `nyxgpt ops install --skip-observability` -- the same native
+   (systemd --user) path #3508 added and `scripts/systemd-native-smoke.sh`
+   exercises in CI.
 
 **`--os macos`** (EC2 Mac -- see the [support matrix](#target-os-support-matrix)
 below): installs Homebrew if missing, `brew tap`s the remote tap
@@ -161,11 +189,28 @@ portability targets).
 renders the Linux script with `nyxgpt cloud user-data` from the
 just-published PyPI artifact (no repo checkout) and runs it end-to-end on
 `ubuntu-latest`, verifying the same install → verify → down cycle as
-`artifact-install-smoke`. EC2 Mac has no CI coverage -- GitHub Actions has
-no macOS EC2 runner, and Apple's licensing does not permit running macOS in
-a container -- so the macOS support matrix above is documentation-verified,
-not CI-verified (the acceptance criteria call for CI coverage "where
-feasible (Linux at minimum)").
+`artifact-install-smoke`.
+
+Crucially, it targets a **purpose-created account that has never logged
+in** (`nyxgpt-ec2`), not the runner's own `runner` account. `runner` has an
+active logind session and is already in the `docker` group, so bootstrapping
+into it would pass even if the script forgot to install Docker or to forward
+`XDG_RUNTIME_DIR`/`DBUS_SESSION_BUS_ADDRESS` -- exactly the failure modes an
+EC2 instance's first boot hits. The job asserts both preconditions (no
+`/run/user/<uid>`, no Docker access) *before* running the bootstrap, so it
+cannot silently drift back into masking them, and it verifies units and the
+`nyxgpt-cassandra` container as the target user afterwards.
+
+EC2 Mac has no CI coverage -- GitHub Actions has no macOS EC2 runner, and
+Apple's licensing does not permit running macOS in a container -- so the
+macOS support matrix above is documentation-verified, not CI-verified (the
+acceptance criteria call for CI coverage "where feasible (Linux at
+minimum)"). One consequence worth an owner/manual verification pass on a
+real `mac*.metal` instance: the macOS script's `brew services start` calls
+depend on a launchd session for the login user, the launchd analogue of the
+systemd session the Linux script sets up explicitly. EC2 Mac's default
+`ec2-user` does auto-login to a GUI session at boot, so this is expected to
+work, but it has not been exercised on real hardware.
 
 ## Note for the AWS Terraform module (P6-8)
 

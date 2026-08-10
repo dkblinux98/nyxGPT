@@ -69,6 +69,83 @@ def test_rendered_scripts_are_syntactically_valid_bash(os_family):
     assert result.returncode == 0, result.stderr
 
 
+# --- Linux bootstrap prerequisites (review findings on #3684) --------------
+#
+# `nyxgpt ops install` is not self-contained, and `sudo -u` does not carry a
+# login session's environment. Each test below pins one prerequisite the
+# Linux bootstrap must set up itself; without them `ops install` exits
+# non-zero on a real AMI and `set -e` aborts the whole user-data run. CI's
+# `ec2-linux-user-data-smoke` job proves these end to end against a fresh
+# account, but only at release time -- these keep the regressions cheap to
+# catch.
+
+
+def _linux_executable_lines() -> list[str]:
+    rendered = cloud_provision.render_user_data("linux")
+    return [
+        line for line in rendered.splitlines() if line.strip() and not line.strip().startswith("#")
+    ]
+
+
+def test_linux_bootstrap_forwards_user_session_env_across_the_sudo_boundary():
+    # Without these, every `systemctl --user` call inside `ops install` has
+    # no service manager to reach and each unit fails to enable/start.
+    body = "\n".join(_linux_executable_lines())
+
+    assert "XDG_RUNTIME_DIR=$TARGET_RUNTIME_DIR" in body
+    assert "DBUS_SESSION_BUS_ADDRESS=unix:path=$TARGET_RUNTIME_DIR/bus" in body
+    # ...and `ops install` must actually be invoked through that wrapper.
+    assert 'run_as_target "$NYXGPT_CLI" ops install --skip-observability' in body
+
+
+def test_linux_bootstrap_waits_for_the_user_dbus_socket_after_enabling_lingering():
+    # logind creates /run/user/<uid> and its bus asynchronously, so
+    # `enable-linger` returning is not proof the session is usable.
+    body = "\n".join(_linux_executable_lines())
+
+    assert 'loginctl enable-linger "$NYXGPT_TARGET_USER"' in body
+    assert 'TARGET_RUNTIME_DIR="/run/user/$TARGET_UID"' in body
+    assert '[ -S "$TARGET_RUNTIME_DIR/bus" ]' in body
+
+
+def test_linux_bootstrap_installs_and_enables_docker_for_the_target_user():
+    # `_ensure_cassandra_container` shells out to `docker` as the target
+    # user; no stock AL2023/Ubuntu AMI ships an engine or that group.
+    body = "\n".join(_linux_executable_lines())
+
+    assert "dnf install -y python3 python3-pip docker" in body
+    assert "apt-get install -y python3 python3-pip python3-venv docker.io" in body
+    assert "systemctl enable --now docker" in body
+    assert 'usermod -aG docker "$NYXGPT_TARGET_USER"' in body
+
+
+def test_linux_bootstrap_installs_node_for_the_web_bundle_build():
+    # `_install_native_web_systemd` runs `npm ci`/`npm run build` and fails
+    # outright without npm; the distro packages are below Node 20.
+    body = "\n".join(_linux_executable_lines())
+
+    assert "nodesource.com/setup_20.x" in body
+    assert '[ "$NODE_MAJOR" -lt 20 ]' in body
+
+
+def test_linux_bootstrap_installs_the_cli_into_a_venv_not_pip_user():
+    # Ubuntu 24.04 LTS (in the support matrix) marks its system Python PEP
+    # 668 externally-managed, making `pip install --user` a hard error.
+    body = "\n".join(_linux_executable_lines())
+
+    assert "python3 -m venv" in body
+    assert "pip install --user" not in body
+
+
+def test_linux_bootstrap_preflights_the_target_user_environment():
+    # Fail with a message naming the cause, rather than midway through
+    # `ops install` with a pile of unit-start errors.
+    body = "\n".join(_linux_executable_lines())
+
+    assert "run_as_target systemctl --user show-environment" in body
+    assert "run_as_target docker info" in body
+
+
 # --- support matrix --------------------------------------------------------
 
 
