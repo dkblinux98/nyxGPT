@@ -139,7 +139,13 @@ def test_empty_collection_chat_returns_zero_chunks(api_client: TestClient) -> No
 
 
 def test_empty_collection_chat_stream_returns_zero_chunks(api_client: TestClient) -> None:
-    """Same guarantee on the streaming chat path used by ChatPane."""
+    """Same guarantee on the streaming chat path used by ChatPane.
+
+    Per #3585 (AC2), a RAG-on turn that retrieves zero rows must still emit
+    a `rag_context` event with an empty `chunks` list -- silently omitting
+    the event entirely was indistinguishable in the UI from a cited answer,
+    letting conversation-history answers masquerade as RAG-grounded ones.
+    """
     secret_doc_id = f"test-secret-{uuid.uuid4().hex[:10]}"
     secret_phrase = f"XYZZY-{uuid.uuid4().hex[:8]}-ACCEPT"
     _ingest(api_client, secret_doc_id, f"The secret phrase is {secret_phrase}.")
@@ -162,11 +168,10 @@ def test_empty_collection_chat_stream_returns_zero_chunks(api_client: TestClient
         },
     )
     assert resp.status_code == 200, resp.text
-    # No RAG chunks were retrieved, so no rag_context event/marker should be
-    # emitted at all (see chat.py chat_stream: the marker is only yielded
-    # when rag_used and rag_context are both truthy).
-    assert "rag_context" not in resp.text
-    assert "__RAG_START__" not in resp.text
+    # The zero-chunk indicator event is emitted (AC2)...
+    assert "event: rag_context" in resp.text
+    assert '"chunks": []' in resp.text or '"chunks":[]' in resp.text
+    # ...but it never cites a chunk from a collection it wasn't scoped to.
     assert secret_doc_id not in resp.text
 
 

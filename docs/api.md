@@ -181,7 +181,7 @@ Prometheus text exposition format metrics for scraping. Unauthenticated
 | `nyxgpt_rate_limit_rejections_total` | Counter | `path` | Requests rejected by the per-client rate limiter |
 | `nyxgpt_resource_memory_rss_mb` | Gauge | — | API process resident set size, in MB (refreshed on each `/metrics` scrape) |
 | `nyxgpt_resource_memory_percent` | Gauge | — | API process memory usage, as a percentage of system memory (refreshed on each `/metrics` scrape) |
-| `nyxgpt_resource_cpu_percent` | Gauge | — | API process CPU usage percentage (refreshed on each `/metrics` scrape) |
+| `nyxgpt_resource_cpu_percent` | Gauge | — | API process CPU usage percentage, normalized to 0-100 across all logical cores (refreshed on each `/metrics` scrape) |
 | `nyxgpt_resource_disk_percent` | Gauge | — | Disk usage percentage of the filesystem backing `~/.nyxGPT` (refreshed on each `/metrics` scrape) |
 | `nyxgpt_resource_queue_depth` | Gauge | — | Current number of requests in the batch processing queue |
 | `nyxgpt_selfheal_giveup_total` | Counter | `service` | Self-heal gave up on a component after exhausting its consecutive-restart budget. Backs the "NyxGPT self-heal giving up" alert, see [alerting.md](alerting.md) |
@@ -675,6 +675,104 @@ the save merge -- everything else in the file is untouched.
 }
 ```
 
+## Guided Secrets Setup
+
+These endpoints back `/admin/secrets` (#3505) -- the same guided flow
+`nyxgpt secrets setup` runs on the CLI, for the three human-provided
+secrets the Config Wizard above deliberately excludes (`openai`/`github`
+are agent-level sections, out of scope for `/config/sections`). See
+[`docs/configuration.md`](configuration.md#option-4-guided-secrets-setup)
+for the write-once canonical-store rationale.
+
+### `GET /api/v1/config/secrets`
+
+Returns each guided secret's metadata (label, description, where to obtain
+it, whether it can be generated) plus its current set/masked state. Never
+returns cleartext.
+
+**Response:**
+
+```json
+{
+  "secrets": [
+    {
+      "section": "auth", "key": "api_key", "full_key": "auth.api_key",
+      "label": "API authentication key",
+      "description": "Shared secret clients must send ... to call the nyxGPT API when [auth] enabled = true.",
+      "obtain": "nyxGPT can generate a strong one for you -- no external service involved.",
+      "can_generate": true, "set": false, "masked": null
+    },
+    {
+      "section": "github", "key": "pat", "full_key": "github.pat",
+      "label": "GitHub Personal Access Token",
+      "description": "Authenticates the GitHub agent system's automation ... and secrets-sync's calls to the GitHub Actions secrets API.",
+      "obtain": "https://github.com/settings/tokens -- generate a token with `repo` scope.",
+      "can_generate": false, "set": true, "masked": "ghp_****...wxyz"
+    }
+  ]
+}
+```
+
+### `POST /api/v1/config/secrets`
+
+Validates and writes one guided secret. Only `(section, key)` pairs in
+`secrets_setup.GUIDED_SECRETS` are accepted -- unlike `/config/sections`,
+this can't be used to write an arbitrary config.ini field. The value is
+never echoed back; only a masked preview is returned.
+
+**Request (manual value):**
+
+```json
+{ "section": "openai", "key": "api_key", "value": "sk-..." }
+```
+
+**Request (generate -- `auth.api_key` only):**
+
+```json
+{ "section": "auth", "key": "api_key", "generate": true }
+```
+
+**Response:**
+
+```json
+{
+  "set": "openai.api_key",
+  "masked": "sk-a****wxyz",
+  "secrets": { "...": "full updated list, same shape as GET" }
+}
+```
+
+Returns `404` for a section/key that isn't a guided secret, `400` if
+`section`/`key`/`value` is missing or malformed, and `422` with a
+`section.key: reason` detail if the value fails format validation.
+
+### `POST /api/v1/config/secrets/sync`
+
+Wraps `ops.sync_secrets_to_github_actions` -- the same function `nyxgpt ops
+secrets-sync` calls -- so the dashboard action and the CLI command can never
+drift. Pushes `config.SECRETS_SYNC_MANIFEST`'s config.ini values to this
+repo's GitHub Actions secrets, one direction only. Results carry secret
+*names* only; a value is never present in the response, logs, or the admin
+activity record.
+
+**Request:**
+
+```json
+{ "dry_run": false }
+```
+
+**Response:**
+
+```json
+{
+  "ok": true,
+  "dry_run": false,
+  "results": [
+    { "ok": true, "message": "Synced monitoring.slack_bot_token -> Actions secret SLACK_BOT_TOKEN", "details": "" }
+  ]
+}
+```
+
 ### `POST /api/v1/config/restart`
 
 Wraps `nyxgpt ops restart` in native mode. Superseded for the wizard/Admin
@@ -805,10 +903,12 @@ computation running in parallel with real alerting -- when Grafana is
 reachable, its state *is* the response's state.
 
 The local fallback's CPU alert evaluates `resource_metrics.cpu.system_percent`
--- the system-wide, core-normalized utilization (0-100%) also shown by the
-Resource Metrics history panel -- never `cpu.process_percent`, which is this
-process's own CPU usage and is not normalized by core count (it can read
-above 100% on a multi-core machine even while the system is otherwise idle).
+-- the system-wide utilization (0-100%) also shown by the Resource Metrics
+history panel -- never `cpu.process_percent`, which is this process's own
+CPU usage. Both fields are core-normalized to a 0-100 scale (see
+[`GET /api/v1/metrics`](#get-apiv1metrics) below), but process and system
+utilization are still different quantities and can diverge (e.g. this
+process idle while something else on the host is busy).
 
 **Response:**
 
@@ -1152,13 +1252,21 @@ a core component an operator deliberately stopped via `nyxgpt ops down`/
 for the latter). Each component also carries `restart_count` (consecutive
 automatic restart attempts since it last recovered) and `giving_up` (`true`
 once that count has hit `max_consecutive_restarts` and the automatic loop
-has stopped retrying it).
+has stopped retrying it). `compose_probe_available: false` means `docker
+compose ps` couldn't be queried from this vantage point at all (no `docker`,
+or the compose file isn't reachable -- e.g. before #3588's fix, a
+Terraform-managed api container missing the bind mount) -- a caller should
+read that as "can't check the observability tier from here", never as "the
+observability tier isn't running", see
+[self-healing.md#docker-access-from-inside-the-api-container](self-healing.md#docker-access-from-inside-the-api-container).
 
 **Response:**
 
 ```json
 {
   "enabled": true,
+  "mode": "terraform",
+  "compose_probe_available": true,
   "components": [
     { "service": "api", "container": "nyxgpt-api", "state": "started", "health": "", "healthy": true, "source": "native", "desired": true, "restart_count": 0, "giving_up": false },
     { "service": "web", "container": "nyxgpt-web-1", "state": "running", "health": "healthy", "healthy": true, "source": "compose", "desired": true, "restart_count": 0, "giving_up": false },
@@ -1246,7 +1354,15 @@ Returns `502` if the service is unknown or the logs can't be fetched.
 
 ## Sessions endpoints
 
-Sessions store conversation history and metadata and are persisted automatically on disk.
+Sessions store conversation history and metadata and are persisted
+automatically — either as JSON files on disk (the default `file` backend) or
+in the stack's Cassandra (`[nyxgpt] session_backend = cassandra`), which
+gives every deployment mode pointed at the same Cassandra an identical
+session list (see [session-storage.md](session-storage.md), #3590). The
+endpoints behave identically under both backends; the optional
+`sessions_dir` query-parameter override accepted by several of them applies
+only to the `file` backend and is ignored under `cassandra` (there is
+exactly one shared store).
 
 ### `GET /api/v1/sessions`
 
@@ -1689,6 +1805,23 @@ Get RAG chunks associated with a specific message. Enables lazy loading of RAG c
   ]
 }
 ```
+
+### `GET /api/v1/sessions/{name}/export`
+
+Export a session as markdown, JSON, or HTML.
+
+**Query Parameters:**
+- `format` (str, default: `markdown`) - `markdown`, `json`, or `html`
+- `sessions_dir` (str, optional) - Override the sessions directory
+
+**Response:** returned as `text/markdown`, `application/json`, or
+`text/html` (matching `format`) with a `Content-Disposition:
+attachment; filename="{name}.{ext}"` header built from the validated
+session name, and an `X-Content-Type-Options: nosniff` header.
+
+**Error Responses:**
+- `400 Bad Request` - Invalid session name, or `format` is not `markdown`/`json`/`html`
+- `404 Not Found` - Session does not exist
 
 ### `GET /api/v1/sessions/{name}/citations/export`
 
@@ -2395,6 +2528,17 @@ When authentication is enabled:
 - Invalid or missing API keys return `401 Unauthorized` with a request ID for debugging
 - API keys are compared using constant-time comparison to prevent timing attacks
 
+### Startup enforcement
+
+The API refuses to start if `[api] host` is bound to a non-loopback address
+(`0.0.0.0`, a LAN IP, ...) while `[auth] enabled` isn't `true` — it exits
+with an actionable error instead of silently serving an unauthenticated API
+to the network. Loopback binds (`127.0.0.1`, `localhost`, `::1`, the
+default) are never affected regardless of the auth setting. This check
+applies to the native process only — see
+[`docs/security.md#network-security`](security.md#network-security) for why
+containerized (Compose/Kubernetes) deployments are unaffected.
+
 ### Configuration
 
 Authentication is configured in `~/.nyxGPT/config.ini` under the `[auth]` section.
@@ -2999,17 +3143,20 @@ nyxgpt ops restart
 
 `nyxgpt ops install` captures Ollama's logs into `~/.nyxGPT/logs/ollama.log`
 automatically, in whichever mode Ollama is actually running. The
-`com.nyxgpt.ollama-logs` LaunchAgent runs `scripts/follow-ollama-logs.sh`,
-which decides its source on its own and always writes a real file (never a
+Ollama logs agent (the `com.nyxgpt.ollama-logs` LaunchAgent on macOS, the
+`nyxgpt-ollama-logs.service` systemd --user unit on Linux -- see
+[systemd.md](systemd.md)) runs `scripts/follow-ollama-logs.sh`, which
+decides its source on its own and always writes a real file (never a
 symlink -- see below):
 
 - **Compose mode** (Ollama as the `ollama`/`nyxgpt-ollama` container): tails
   `docker logs -f nyxgpt-ollama` into `~/.nyxGPT/logs/ollama.log` --
   mirroring how the
   [Cassandra log follower](#cassandra-logs-via-docker-launchagent) works.
-- **Native mode** (Ollama as a Homebrew service): tails Homebrew's own
-  `ollama.log` (resolved via `brew --prefix`) directly into the same
-  `~/.nyxGPT/logs/ollama.log` path.
+- **Native mode**: macOS tails Homebrew's own `ollama.log` (resolved via
+  `brew --prefix`); Linux tails `~/.nyxGPT/logs/ollama-native.log`, the raw
+  stdout/stderr `nyxgpt-ollama.service` itself appends to -- either way,
+  directly into the same `~/.nyxGPT/logs/ollama.log` path.
 
 A prior nyxgpt version instead *symlinked* native-mode logs into
 `~/.nyxGPT/logs/ollama.log`. That never actually worked: promtail reads
@@ -3310,8 +3457,15 @@ curl http://127.0.0.1:8000/api/v1/metrics
 - `available_mb` - Available system memory in MB
 
 **CPU Metrics:**
-- `process_percent` - CPU usage percentage for this process (0-100 per core)
-- `system_percent` - Overall system CPU usage percentage
+- `process_percent` - CPU usage percentage for this process, normalized to a
+  0-100 scale across all logical cores (a process fully using 2 of 8 cores
+  reads 25%, not 200%)
+- `system_percent` - Overall system-wide CPU usage percentage (0-100)
+
+Both fields are measured with a short (~100ms) blocking sample, refreshed at
+most once per second -- never psutil's `interval=None` semantics, which are
+meaningless on the first call and otherwise average over an arbitrary window
+since whatever caller last sampled CPU.
 
 **Latency Metrics:**
 - `avg_ms` - Average request latency in milliseconds

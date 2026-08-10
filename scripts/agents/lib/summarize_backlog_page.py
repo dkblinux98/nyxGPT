@@ -28,6 +28,13 @@ Env vars:
                                        not the calendar. Empty/unset means
                                        no release filtering (pre-wall
                                        behavior).
+  EXCLUDE_ISSUES                      Comma-separated issue numbers to skip
+                                       as candidates (#3665: lets the
+                                       dispatch fall through to the next
+                                       eligible issue within one run after
+                                       an earlier candidate turned out to be
+                                       unclaimable, without re-selecting the
+                                       same blocked issue forever).
 """
 
 from __future__ import annotations
@@ -53,6 +60,7 @@ def summarize(page: dict) -> dict:
     active_sprint_title = os.getenv("ACTIVE_SPRINT_TITLE", "")
     release_version = os.getenv("RELEASE_VERSION", "")
     release_issue = os.getenv("RELEASE_ISSUE", "")
+    exclude_issues = {n.strip() for n in os.getenv("EXCLUDE_ISSUES", "").split(",") if n.strip()}
 
     items = page["data"]["node"]["items"]["nodes"]
     total = len(items)
@@ -82,6 +90,9 @@ def summarize(page: dict) -> dict:
                 sprint_title = fv.get("title")
 
         if status != status_backlog:
+            continue
+
+        if str(c.get("number")) in exclude_issues:
             continue
 
         ms_title = ((c.get("milestone") or {}) or {}).get("title")

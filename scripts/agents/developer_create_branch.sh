@@ -36,7 +36,7 @@ load_config
 # If slug is "auto", derive it from the issue title
 if [[ "$SLUG" == "auto" ]]; then
   echo "Deriving branch slug from issue title..." >&2
-  TITLE=$(gh issue view "$ISSUE" --json title -q '.title' 2>/dev/null || echo "issue-${ISSUE}")
+  TITLE=$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${ISSUE}" --jq '.title' 2>/dev/null || echo "issue-${ISSUE}")
   SLUG=$(echo "$TITLE" | \
     tr '[:upper:]' '[:lower:]' | \
     sed 's/[^a-z0-9]/-/g' | \

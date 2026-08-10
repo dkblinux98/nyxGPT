@@ -38,6 +38,22 @@ def _no_terraform_or_kubernetes_managed_components(monkeypatch):
     monkeypatch.setattr(ops, "_terraform_or_kubernetes_managed_components", lambda: set())
 
 
+@pytest.fixture(autouse=True)
+def _force_macos_native_path(monkeypatch):
+    """Pin `platform.system()` to "Darwin" for this file's tests.
+
+    This file predates the Linux/systemd native path (#3508) and its ~90
+    `ops.install`/`restart`/`stop`/`status`/`doctor` call sites assume the
+    original macOS-only (Homebrew/launchd) code path -- they patch
+    `_install_homebrew_api`, `_restart_brew_service`, etc. directly. Without
+    this, those tests would silently exercise the Linux dispatch branch
+    instead whenever the suite runs on a real Linux host (CI runs on
+    ubuntu-latest), since `ops.py` now branches on the real OS. The Linux
+    path has its own tests in test_ops_systemd.py.
+    """
+    monkeypatch.setattr(ops.platform, "system", lambda: "Darwin")
+
+
 @pytest.mark.unit
 def test_ops_install_returns_zero_when_all_ok(capsys):
     # Mock internal steps to all succeed
@@ -46,7 +62,7 @@ def test_ops_install_returns_zero_when_all_ok(capsys):
         patch.object(ops, "_install_config", return_value=ok_results),
         patch.object(ops, "migrate_legacy_volumes", return_value=ok_results),
         patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok_results),
-        patch.object(ops, "_install_scripts", return_value=ok_results),
+        patch.object(ops, "_sync_packaged_resources", return_value=ok_results),
         patch.object(ops, "_ensure_web_deps", return_value=ok_results),
         patch.object(ops, "_ensure_mcp_deps", return_value=ok_results),
         patch.object(ops, "_ensure_cassandra_container", return_value=ok_results),
@@ -58,7 +74,6 @@ def test_ops_install_returns_zero_when_all_ok(capsys):
         patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
         patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok_results),
         patch.object(ops, "sync_env_from_config", return_value=ok_results),
-        patch.object(ops, "_persist_compose_file_path", return_value=ok_results),
         patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok_results),
         patch.object(ops, "_reconcile_grafana_provisioning", return_value=ok_results) as obs,
         patch.object(ops, "_provision_glitchtip", return_value=ok_results),
@@ -81,7 +96,7 @@ def test_ops_install_returns_nonzero_when_any_fail(capsys):
             "_reconcile_phantom_compose_app_containers",
             return_value=[ops.OpsResult(True, "ok")],
         ),
-        patch.object(ops, "_install_scripts", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_sync_packaged_resources", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_ensure_web_deps", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_ensure_mcp_deps", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_ensure_cassandra_container", return_value=[ops.OpsResult(True, "ok")]),
@@ -95,7 +110,6 @@ def test_ops_install_returns_nonzero_when_any_fail(capsys):
         patch.object(ops, "_ensure_ollama_service", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_cleanup_stale_log_symlinks", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "sync_env_from_config", return_value=[ops.OpsResult(True, "ok")]),
-        patch.object(ops, "_persist_compose_file_path", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(
             ops, "_ensure_glitchtip_secrets_dir", return_value=[ops.OpsResult(True, "ok")]
         ),
@@ -118,7 +132,7 @@ def test_ops_install_skip_observability_flag_skips_the_step(capsys):
         patch.object(ops, "_install_config", return_value=ok_results),
         patch.object(ops, "migrate_legacy_volumes", return_value=ok_results),
         patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok_results),
-        patch.object(ops, "_install_scripts", return_value=ok_results),
+        patch.object(ops, "_sync_packaged_resources", return_value=ok_results),
         patch.object(ops, "_ensure_web_deps", return_value=ok_results),
         patch.object(ops, "_ensure_mcp_deps", return_value=ok_results),
         patch.object(ops, "_ensure_cassandra_container", return_value=ok_results),
@@ -130,7 +144,6 @@ def test_ops_install_skip_observability_flag_skips_the_step(capsys):
         patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
         patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok_results),
         patch.object(ops, "sync_env_from_config", return_value=ok_results),
-        patch.object(ops, "_persist_compose_file_path", return_value=ok_results),
         patch.object(ops, "_reconcile_grafana_provisioning") as obs,
     ):
         rc = ops.install(MagicMock(skip_observability=True, terraform=False, kubernetes=False))
@@ -163,7 +176,9 @@ def test_ops_install_step_order_reconciles_before_creating(capsys):
         patch.object(
             ops, "_reconcile_phantom_compose_app_containers", side_effect=_record("reconcile")
         ),
-        patch.object(ops, "_install_scripts", side_effect=_record("scripts")),
+        patch.object(
+            ops, "_sync_packaged_resources", side_effect=_record("sync packaged ops resources")
+        ),
         patch.object(ops, "_ensure_web_deps", side_effect=_record("web deps")),
         patch.object(ops, "_ensure_mcp_deps", side_effect=_record("mcp deps")),
         patch.object(
@@ -179,22 +194,23 @@ def test_ops_install_step_order_reconciles_before_creating(capsys):
             ops, "_cleanup_stale_log_symlinks", side_effect=_record("stale log symlink cleanup")
         ),
         patch.object(ops, "sync_env_from_config", side_effect=_record("env sync")),
-        patch.object(ops, "_persist_compose_file_path", side_effect=_record("compose file path")),
     ):
         rc = ops.install(MagicMock(skip_observability=True, terraform=False, kubernetes=False))
         assert rc == 0
 
-    # Clearing intentional-stop markers comes first, then config (a fresh
-    # machine needs config.ini before any other step can act on it), then
-    # reconciliation before anything creates.
-    assert call_order[0] == "clear intentional stops"
-    assert call_order[1] == "config"
-    assert call_order[2] == "migrate volumes"
-    assert call_order[3] == "reconcile"
+    # Syncing packaged ops resources comes first (everything else assumes the
+    # packaged Compose file/templates/scripts are already synced to
+    # NYXGPT_HOME -- #3621), then clearing intentional-stop markers, then
+    # config (a fresh machine needs config.ini before any other step can act
+    # on it), then reconciliation before anything creates.
+    assert call_order[0] == "sync packaged ops resources"
+    assert call_order[1] == "clear intentional stops"
+    assert call_order[2] == "config"
+    assert call_order[3] == "migrate volumes"
+    assert call_order[4] == "reconcile"
     assert "cassandra container" in call_order
     assert "ollama service" in call_order
     assert "env sync" in call_order
-    assert "compose file path" in call_order
 
 
 @pytest.mark.unit
@@ -204,7 +220,7 @@ def test_ops_install_clears_intentional_stop_markers_for_core_components():
         patch.object(ops, "_install_config", return_value=ok_results),
         patch.object(ops, "migrate_legacy_volumes", return_value=ok_results),
         patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok_results),
-        patch.object(ops, "_install_scripts", return_value=ok_results),
+        patch.object(ops, "_sync_packaged_resources", return_value=ok_results),
         patch.object(ops, "_ensure_web_deps", return_value=ok_results),
         patch.object(ops, "_ensure_mcp_deps", return_value=ok_results),
         patch.object(ops, "_ensure_cassandra_container", return_value=ok_results),
@@ -216,7 +232,6 @@ def test_ops_install_clears_intentional_stop_markers_for_core_components():
         patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
         patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok_results),
         patch.object(ops, "sync_env_from_config", return_value=ok_results),
-        patch.object(ops, "_persist_compose_file_path", return_value=ok_results),
         patch.object(ops.self_heal, "clear_intentionally_stopped") as clear_stopped,
     ):
         rc = ops.install(MagicMock(skip_observability=True, terraform=False, kubernetes=False))
@@ -1383,7 +1398,7 @@ def test_sync_env_from_config_auth_enabled_but_no_secrets_fails(tmp_path, monkey
 
 
 @pytest.mark.unit
-def test_sync_env_from_config_creates_env_from_example(tmp_path, monkeypatch):
+def test_sync_env_from_config_creates_env_from_example(tmp_path):
     cfg_path = tmp_path / "config.ini"
     _write_config(cfg_path, api_key="real-api-key", grafana_password="real-grafana-pw")
 
@@ -1394,7 +1409,6 @@ def test_sync_env_from_config_creates_env_from_example(tmp_path, monkeypatch):
         "GRAFANA_ADMIN_PASSWORD=change-me\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
 
     env_path = tmp_path / ".env"
     results = ops.sync_env_from_config(cfg_path=cfg_path, env_path=env_path)
@@ -1440,8 +1454,7 @@ def test_sync_env_from_config_updates_existing_env_in_place(tmp_path):
 
 
 @pytest.mark.unit
-def test_sync_env_from_config_syncs_only_the_secret_that_is_set(tmp_path, monkeypatch):
-    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+def test_sync_env_from_config_syncs_only_the_secret_that_is_set(tmp_path):
     cfg_path = tmp_path / "config.ini"
     _write_config(cfg_path, api_key="only-api-key-set")
 
@@ -1462,6 +1475,7 @@ def test_env_sync_cli_wrapper_prints_result(tmp_path, capsys, monkeypatch):
     compose_cfg = tmp_path / "config.docker.ini"
     compose_cfg.write_text("[error_tracking]\nenabled = false\ndsn =\n", encoding="utf-8")
     monkeypatch.setattr(ops, "COMPOSE_CONFIG_FILE", compose_cfg)
+    monkeypatch.setattr(ops, "_sync_packaged_resources", lambda: [ops.OpsResult(True, "synced")])
 
     args = MagicMock()
     args.config = str(cfg_path)
@@ -1473,6 +1487,58 @@ def test_env_sync_cli_wrapper_prints_result(tmp_path, capsys, monkeypatch):
     out = capsys.readouterr().out
     assert "[OK]" in out
     assert env_path.exists()
+
+
+@pytest.mark.unit
+def test_env_sync_cli_wrapper_seeds_env_from_packaged_example_without_prior_install(
+    tmp_path, capsys, monkeypatch
+):
+    # Regression test (#3621): `nyxgpt ops env-sync` is documented (docs/ops.md,
+    # _sync_grafana_slack_webhook_secret's docstring) as runnable as the very
+    # first command -- e.g. the Compose-only Quickstart's `nyxgpt wizard` then
+    # `nyxgpt ops env-sync`, with no `nyxgpt ops install` beforehand. That means
+    # NYXGPT_HOME/.env.example doesn't exist yet unless env_sync() syncs the
+    # packaged resources itself; without that, sync_env_from_config()'s
+    # .env.example fallback silently finds nothing and .env ends up containing
+    # only the secret lines, dropping every non-secret default (ports, image
+    # tags, etc.).
+    src_root = tmp_path / "packaged"
+    (src_root / "docker").mkdir(parents=True)
+    (src_root / "ops").mkdir(parents=True)
+    (src_root / "scripts").mkdir(parents=True)
+    (src_root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    (src_root / ".env.example").write_text(
+        "NYXGPT_API_PORT=8000\nNYXGPT_AUTH_API_KEY=change-me\n", encoding="utf-8"
+    )
+
+    home = tmp_path / "home"
+    nyxgpt_home = home / ".nyxGPT"
+    monkeypatch.setattr(ops, "_packaged_resources_root", lambda: src_root)
+    monkeypatch.setattr(ops, "NYXGPT_HOME", nyxgpt_home)
+    monkeypatch.setattr(ops, "OPS_COMPOSE_FILE", nyxgpt_home / "docker-compose.yml")
+    monkeypatch.setattr(ops, "OPS_DOCKER_DIR", nyxgpt_home / "docker")
+    monkeypatch.setattr(ops, "OPS_SCRIPTS_SRC_DIR", nyxgpt_home / "scripts")
+    monkeypatch.setattr(ops, "COMPOSE_CONFIG_FILE", nyxgpt_home / "docker" / "config.docker.ini")
+
+    cfg_path = tmp_path / "config.ini"
+    _write_config(cfg_path, api_key="fresh-api-key")
+
+    args = MagicMock()
+    args.config = str(cfg_path)
+    args.env_file = None
+
+    assert not nyxgpt_home.exists()
+    rc = ops.env_sync(args)
+    assert rc == 0
+
+    env_path = nyxgpt_home / ".env"
+    assert env_path.exists()
+    content = env_path.read_text(encoding="utf-8")
+    assert "NYXGPT_AUTH_API_KEY=fresh-api-key" in content
+    # The non-secret default from the packaged .env.example must survive --
+    # this is the line that silently vanished before env_sync() synced the
+    # packaged resources first.
+    assert "NYXGPT_API_PORT=8000" in content
 
 
 @pytest.mark.unit
@@ -1555,7 +1621,9 @@ def test_run_invokes_subprocess_with_expected_kwargs():
             args=["echo", "hi"], returncode=0, stdout="hi\n", stderr=""
         )
         cp = ops._run(["echo", "hi"])
-        run.assert_called_once_with(["echo", "hi"], check=True, text=True, capture_output=True)
+        run.assert_called_once_with(
+            ["echo", "hi"], check=True, text=True, capture_output=True, input=None, env=None
+        )
         assert cp.stdout == "hi\n"
 
 
@@ -1629,6 +1697,57 @@ def test_run_expected_true_logs_debug_not_warning_on_nonzero_exit_check_true(cap
     assert records, "Expected _run to log the non-zero exit at DEBUG before raising"
     assert records[0].levelno == logging.DEBUG
     assert not any(r.levelno == logging.WARNING for r in caplog.records)
+
+
+@pytest.mark.unit
+def test_redact_cmd_masks_secret_flag_values():
+    # A secret passed as the value after a secret-named flag is masked.
+    assert ops._redact_cmd(["kubectl", "--api-key", "s3cr3t", "get"]) == [
+        "kubectl",
+        "--api-key",
+        "***",
+        "get",
+    ]
+    # Inline --flag=value form is masked too.
+    assert ops._redact_cmd(["nyxgpt", "--glitchtip-dsn=https://abc@host/1"]) == [
+        "nyxgpt",
+        "--glitchtip-dsn=***",
+    ]
+    # Env-style NAME=value with a secret-looking name (docker `-e` forwarding)
+    # is masked even without a leading dash (CodeQL #105/#106 regression).
+    assert ops._redact_cmd(["docker", "exec", "-e", "DJANGO_SUPERUSER_PASSWORD=pw"]) == [
+        "docker",
+        "exec",
+        "-e",
+        "DJANGO_SUPERUSER_PASSWORD=***",
+    ]
+    # Non-secret arguments pass through untouched.
+    assert ops._redact_cmd(["docker", "compose", "up", "-d"]) == [
+        "docker",
+        "compose",
+        "up",
+        "-d",
+    ]
+
+
+@pytest.mark.unit
+def test_run_redacts_secret_cmd_values_on_nonzero_exit(caplog):
+    # CodeQL py/clear-text-logging-sensitive-data: an api-key/password/DSN on
+    # the argv must never reach the log message or the structured `cmd` field.
+    with patch.object(ops.subprocess, "run") as run:
+        run.return_value = subprocess.CompletedProcess(
+            args=["tool", "--password", "hunter2"], returncode=1, stdout="", stderr="boom\n"
+        )
+        with caplog.at_level("DEBUG", logger="nyxgpt.ops"):
+            ops._run(["tool", "--password", "hunter2"], check=False)
+
+    records = [r for r in caplog.records if "Subprocess exited non-zero" in r.getMessage()]
+    assert records, "Expected _run to log the non-zero exit"
+    record = records[0]
+    assert "hunter2" not in record.getMessage()
+    assert "***" in record.getMessage()
+    assert "hunter2" not in record.cmd
+    assert record.cmd == ["tool", "--password", "***"]
 
 
 @pytest.mark.unit
@@ -2152,29 +2271,31 @@ def test_restart_launchagent_exception(monkeypatch):
 
 
 @pytest.mark.unit
-def test_find_launchagent_template_returns_first_existing_candidate(monkeypatch, tmp_path):
-    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
-    target = tmp_path / "ops" / "launchagents" / "com.nyxgpt.cassandra-logs.plist"
+def test_find_launchagent_template_returns_the_synced_candidate(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops, "OPS_LAUNCHAGENTS_DIR", home / ".nyxGPT" / "ops" / "launchagents")
+    target = ops.OPS_LAUNCHAGENTS_DIR / "com.nyxgpt.cassandra-logs.plist"
     target.parent.mkdir(parents=True)
     target.write_text("<plist/>", encoding="utf-8")
 
     tpl, candidates = ops._find_launchagent_template()
     assert tpl == target
-    assert len(candidates) == 4
+    assert candidates == [target]
 
 
 @pytest.mark.unit
 def test_find_launchagent_template_returns_none_when_missing(monkeypatch, tmp_path):
-    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops, "OPS_LAUNCHAGENTS_DIR", tmp_path / "nowhere")
     tpl, candidates = ops._find_launchagent_template()
     assert tpl is None
-    assert len(candidates) == 4
+    assert len(candidates) == 1
 
 
 @pytest.mark.unit
 def test_find_launchagent_template_skips_candidate_that_errors(monkeypatch, tmp_path):
-    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
-    bad_path = tmp_path / "ops" / "launchagents" / "com.nyxgpt.cassandra-logs.plist"
+    launchagents_dir = tmp_path / ".nyxGPT" / "ops" / "launchagents"
+    monkeypatch.setattr(ops, "OPS_LAUNCHAGENTS_DIR", launchagents_dir)
+    bad_path = launchagents_dir / "com.nyxgpt.cassandra-logs.plist"
     real_exists = Path.exists
 
     def flaky_exists(self):
@@ -2185,56 +2306,91 @@ def test_find_launchagent_template_skips_candidate_that_errors(monkeypatch, tmp_
     monkeypatch.setattr(Path, "exists", flaky_exists)
     tpl, candidates = ops._find_launchagent_template()
     assert tpl is None
-    assert len(candidates) == 4
+    assert len(candidates) == 1
 
 
 @pytest.mark.unit
 def test_find_launchagent_template_accepts_a_different_plist_name(monkeypatch, tmp_path):
-    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
-    target = tmp_path / "ops" / "launchagents" / "com.nyxgpt.ollama-logs.plist"
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops, "OPS_LAUNCHAGENTS_DIR", home / ".nyxGPT" / "ops" / "launchagents")
+    target = ops.OPS_LAUNCHAGENTS_DIR / "com.nyxgpt.ollama-logs.plist"
     target.parent.mkdir(parents=True)
     target.write_text("<plist/>", encoding="utf-8")
 
     tpl, candidates = ops._find_launchagent_template("com.nyxgpt.ollama-logs.plist")
     assert tpl == target
-    assert len(candidates) == 4
-    assert all(c.name == "com.nyxgpt.ollama-logs.plist" for c in candidates)
+    assert candidates == [target]
 
 
-# --- _install_scripts ---
-
-
-@pytest.mark.unit
-def test_install_scripts_installs_present_scripts(monkeypatch, tmp_path):
-    repo_root = tmp_path / "repo"
-    home = tmp_path / "home"
-    (repo_root / "scripts").mkdir(parents=True)
-    (repo_root / "scripts" / "run-web.sh").write_text("#!/bin/sh\n", encoding="utf-8")
-    (repo_root / "scripts" / "follow-cassandra-logs.sh").write_text("#!/bin/sh\n", encoding="utf-8")
-    (repo_root / "scripts" / "follow-ollama-logs.sh").write_text("#!/bin/sh\n", encoding="utf-8")
-
-    monkeypatch.setattr(ops, "REPO_ROOT", repo_root)
-    monkeypatch.setattr(ops.Path, "home", lambda: home)
-
-    results = ops._install_scripts()
-    assert all(r.ok for r in results)
-    assert (home / ".nyxGPT" / "scripts" / "run-web.sh").exists()
-    assert (home / ".nyxGPT" / "scripts" / "follow-cassandra-logs.sh").exists()
-    assert (home / ".nyxGPT" / "scripts" / "follow-ollama-logs.sh").exists()
+# --- _sync_packaged_resources ---
 
 
 @pytest.mark.unit
-def test_install_scripts_skips_missing_scripts(monkeypatch, tmp_path):
-    repo_root = tmp_path / "repo"
+def test_sync_packaged_resources_copies_compose_env_docker_ops_scripts(monkeypatch, tmp_path):
+    src_root = tmp_path / "packaged"
+    (src_root / "docker" / "grafana").mkdir(parents=True)
+    (src_root / "docker" / "grafana" / "x.yml").write_text("x", encoding="utf-8")
+    (src_root / "ops" / "launchagents").mkdir(parents=True)
+    (src_root / "ops" / "launchagents" / "com.nyxgpt.cassandra-logs.plist").write_text(
+        "<plist/>", encoding="utf-8"
+    )
+    (src_root / "scripts").mkdir(parents=True)
+    (src_root / "scripts" / "run-web.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    (src_root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    (src_root / ".env.example").write_text("FOO=bar\n", encoding="utf-8")
+
     home = tmp_path / "home"
-    repo_root.mkdir()
+    monkeypatch.setattr(ops, "_packaged_resources_root", lambda: src_root)
+    monkeypatch.setattr(ops, "NYXGPT_HOME", home / ".nyxGPT")
+    monkeypatch.setattr(ops, "OPS_COMPOSE_FILE", home / ".nyxGPT" / "docker-compose.yml")
+    monkeypatch.setattr(ops, "OPS_SCRIPTS_SRC_DIR", home / ".nyxGPT" / "scripts")
 
-    monkeypatch.setattr(ops, "REPO_ROOT", repo_root)
-    monkeypatch.setattr(ops.Path, "home", lambda: home)
-
-    results = ops._install_scripts()
+    results = ops._sync_packaged_resources()
     assert all(r.ok for r in results)
-    assert all("skipped" in r.message for r in results)
+    assert (home / ".nyxGPT" / "docker-compose.yml").read_text(encoding="utf-8") == "services: {}\n"
+    assert (home / ".nyxGPT" / ".env.example").read_text(encoding="utf-8") == "FOO=bar\n"
+    assert (home / ".nyxGPT" / "docker" / "grafana" / "x.yml").exists()
+    assert (home / ".nyxGPT" / "ops" / "launchagents" / "com.nyxgpt.cassandra-logs.plist").exists()
+    script = home / ".nyxGPT" / "scripts" / "run-web.sh"
+    assert script.exists()
+    assert script.stat().st_mode & 0o777 == 0o755
+
+
+@pytest.mark.unit
+def test_sync_packaged_resources_is_idempotent_and_additive(monkeypatch, tmp_path):
+    # Re-running (e.g. a second `nyxgpt ops install`) must overwrite the
+    # synced copies with the current packaged content, without touching
+    # unrelated files an operator already has under NYXGPT_HOME (notably the
+    # separately generated docker/config.docker.ini -- #3621).
+    src_root = tmp_path / "packaged"
+    (src_root / "docker").mkdir(parents=True)
+    (src_root / "docker" / "prometheus.yml").write_text("v1", encoding="utf-8")
+    (src_root / "ops").mkdir(parents=True)
+    (src_root / "scripts").mkdir(parents=True)
+    (src_root / "docker-compose.yml").write_text("v1", encoding="utf-8")
+    (src_root / ".env.example").write_text("v1", encoding="utf-8")
+
+    home = tmp_path / "home"
+    nyxgpt_home = home / ".nyxGPT"
+    (nyxgpt_home / "docker").mkdir(parents=True)
+    generated_config = nyxgpt_home / "docker" / "config.docker.ini"
+    generated_config.write_text("operator's generated config", encoding="utf-8")
+
+    monkeypatch.setattr(ops, "_packaged_resources_root", lambda: src_root)
+    monkeypatch.setattr(ops, "NYXGPT_HOME", nyxgpt_home)
+    monkeypatch.setattr(ops, "OPS_COMPOSE_FILE", nyxgpt_home / "docker-compose.yml")
+    monkeypatch.setattr(ops, "OPS_SCRIPTS_SRC_DIR", nyxgpt_home / "scripts")
+
+    assert all(r.ok for r in ops._sync_packaged_resources())
+
+    (src_root / "docker" / "prometheus.yml").write_text("v2", encoding="utf-8")
+    (src_root / "docker-compose.yml").write_text("v2", encoding="utf-8")
+
+    results = ops._sync_packaged_resources()
+    assert all(r.ok for r in results)
+    assert (nyxgpt_home / "docker" / "prometheus.yml").read_text(encoding="utf-8") == "v2"
+    assert (nyxgpt_home / "docker-compose.yml").read_text(encoding="utf-8") == "v2"
+    assert generated_config.read_text(encoding="utf-8") == "operator's generated config"
 
 
 # --- _install_cassandra_launchagent ---
@@ -2413,57 +2569,6 @@ def test_install_launchagent_from_template_uses_installing_users_home(monkeypatc
     installed = dst.read_text(encoding="utf-8")
     assert "__NYXGPT_HOME__" not in installed
     assert installed == f"<plist>{home}/.nyxGPT/scripts/follow-ollama-logs.sh</plist>"
-
-
-# --- _persist_compose_file_path ---
-
-
-@pytest.mark.unit
-def test_persist_compose_file_path_records_path(monkeypatch, tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
-    monkeypatch.setattr(ops, "REPO_ROOT", repo)
-
-    home = tmp_path / "home"
-    (home / ".nyxGPT").mkdir(parents=True)
-    cfg_path = home / ".nyxGPT" / "config.ini"
-    cfg_path.write_text("[nyxgpt]\n", encoding="utf-8")
-    monkeypatch.setattr(ops.Path, "home", lambda: home)
-
-    results = ops._persist_compose_file_path()
-    assert results[0].ok is True
-    assert "Recorded compose-file path" in results[0].message
-
-    parser = ConfigParser()
-    parser.read(cfg_path)
-    assert parser.get("paths", "compose_file") == str(repo / "docker-compose.yml")
-
-    # Idempotent: second run reports already-recorded, file unchanged.
-    again = ops._persist_compose_file_path()
-    assert again[0].ok is True
-    assert "already recorded" in again[0].message
-
-
-@pytest.mark.unit
-def test_persist_compose_file_path_skips_outside_repo_checkout(monkeypatch, tmp_path):
-    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path / "cellar")
-    results = ops._persist_compose_file_path()
-    assert results[0].ok is True
-    assert "not running from a repo checkout" in results[0].message
-
-
-@pytest.mark.unit
-def test_persist_compose_file_path_skips_without_config(monkeypatch, tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
-    monkeypatch.setattr(ops, "REPO_ROOT", repo)
-    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path / "empty-home")
-
-    results = ops._persist_compose_file_path()
-    assert results[0].ok is True
-    assert "no config.ini yet" in results[0].message
 
 
 # --- _ensure_ollama_service ---
@@ -4615,7 +4720,7 @@ def test_ops_install_catches_exception_from_a_step(capsys):
     with (
         patch.object(ops, "migrate_legacy_volumes", return_value=ok_results),
         patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok_results),
-        patch.object(ops, "_install_scripts", return_value=ok_results),
+        patch.object(ops, "_sync_packaged_resources", return_value=ok_results),
         patch.object(ops, "_ensure_web_deps", side_effect=RuntimeError("kaboom")),
         patch.object(ops, "_ensure_mcp_deps", return_value=ok_results),
         patch.object(ops, "_ensure_cassandra_container", return_value=ok_results),
@@ -4879,6 +4984,7 @@ def test_env_sync_cli_wrapper_prints_details_on_failure(tmp_path, capsys, monkey
     compose_cfg = tmp_path / "config.docker.ini"
     compose_cfg.write_text("[error_tracking]\nenabled = false\ndsn =\n", encoding="utf-8")
     monkeypatch.setattr(ops, "COMPOSE_CONFIG_FILE", compose_cfg)
+    monkeypatch.setattr(ops, "_sync_packaged_resources", lambda: [ops.OpsResult(True, "synced")])
 
     args = MagicMock()
     args.config = str(cfg_path)
@@ -4926,7 +5032,7 @@ def test_ops_install_logs_start_and_summary(caplog):
     with (
         patch.object(ops, "migrate_legacy_volumes", return_value=ok_results),
         patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok_results),
-        patch.object(ops, "_install_scripts", return_value=ok_results),
+        patch.object(ops, "_sync_packaged_resources", return_value=ok_results),
         patch.object(ops, "_ensure_web_deps", return_value=ok_results),
         patch.object(ops, "_ensure_mcp_deps", return_value=ok_results),
         patch.object(ops, "_ensure_cassandra_container", return_value=ok_results),
@@ -4950,9 +5056,9 @@ def test_ops_install_logs_start_and_summary(caplog):
 @pytest.mark.unit
 def test_ops_install_logs_error_when_step_raises(caplog):
     with (
+        patch.object(ops, "_sync_packaged_resources", side_effect=RuntimeError("boom")),
         patch.object(ops, "migrate_legacy_volumes", return_value=[]),
         patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=[]),
-        patch.object(ops, "_install_scripts", side_effect=RuntimeError("boom")),
         patch.object(ops, "_ensure_web_deps", return_value=[]),
         patch.object(ops, "_ensure_mcp_deps", return_value=[]),
         patch.object(ops, "_ensure_cassandra_container", return_value=[]),
@@ -4969,7 +5075,7 @@ def test_ops_install_logs_error_when_step_raises(caplog):
     assert rc == 2
     error_records = [r for r in caplog.records if r.levelname == "ERROR"]
     assert len(error_records) == 1
-    assert "scripts" in error_records[0].getMessage()
+    assert "sync packaged ops resources" in error_records[0].getMessage()
     assert error_records[0].exc_info is not None
 
 
@@ -4997,6 +5103,12 @@ def test_ops_restart_logs_target_and_summary(caplog):
 def test_ops_doctor_logs_issues_at_warning(caplog, monkeypatch, tmp_path):
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(ops, "_which", lambda _: None)
+    # self_heal has its own `_which`, independent of ops's -- without this,
+    # list_component_status()'s compose probe still finds the real `docker`
+    # on PATH and tries `docker compose ps` against the (now ops-managed,
+    # not-yet-synced -- #3621) default COMPOSE_FILE, which doesn't exist
+    # here and logs an extra, unrelated self_heal warning.
+    monkeypatch.setattr(ops.self_heal, "_which", lambda _: None)
 
     with caplog.at_level("INFO", logger="nyxgpt.ops"):
         rc = ops.doctor(MagicMock())
@@ -5349,7 +5461,11 @@ def _write_grafana_fixture(tmp_path, monkeypatch, *, datasource_yml: str, compos
     compose_path = tmp_path / "docker-compose.yml"
     compose_path.write_text(compose_yml, encoding="utf-8")
 
-    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    # OPS_DOCKER_DIR/NYXGPT_HOME are module-level constants computed once
+    # from Path.home() at import time (#3621), so patching Path.home() here
+    # (as before REPO_ROOT retirement) wouldn't retroactively change them --
+    # patch the already-resolved constants directly instead.
+    monkeypatch.setattr(ops, "OPS_DOCKER_DIR", tmp_path / "docker")
     monkeypatch.setattr(ops.self_heal, "COMPOSE_FILE", compose_path)
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
     return datasource_path, compose_path
@@ -5416,7 +5532,7 @@ def test_grafana_provisioning_fingerprint_changes_when_glitchtip_yml_changes(tmp
 
 @pytest.mark.unit
 def test_grafana_provisioned_datasource_uids_empty_when_file_missing(tmp_path, monkeypatch):
-    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops, "OPS_DOCKER_DIR", tmp_path / "docker")
     assert ops._grafana_provisioned_datasource_uids() == []
 
 
@@ -6301,9 +6417,11 @@ def test_reset_grafana_admin_password_runs_grafana_cli_via_compose_exec(tmp_path
     monkeypatch.setattr(ops, "_compose_available", lambda: True)
 
     captured_cmd = []
+    captured_input = []
 
-    def _fake_run(cmd, check=False):
+    def _fake_run(cmd, check=False, input=None):
         captured_cmd.extend(cmd)
+        captured_input.append(input)
         return subprocess.CompletedProcess(cmd, 0, stdout="Admin password changed", stderr="")
 
     monkeypatch.setattr(ops, "_run", _fake_run)
@@ -6319,12 +6437,15 @@ def test_reset_grafana_admin_password_runs_grafana_cli_via_compose_exec(tmp_path
         "exec",
         "-T",
         "grafana",
-        "grafana",
-        "cli",
-        "admin",
-        "reset-admin-password",
-        "new-secret",
+        "sh",
+        "-c",
+        'grafana cli admin reset-admin-password "$(cat)"',
     ]
+    # The password must travel over stdin, never as an argv element -- argv
+    # is visible to `ps`, shell history, and `_run`'s non-zero-exit logging
+    # (#3644, CodeQL py/clear-text-logging-sensitive-data #105/#106).
+    assert "new-secret" not in captured_cmd
+    assert captured_input == ["new-secret"]
 
 
 @pytest.mark.unit
@@ -6346,7 +6467,7 @@ def test_reset_grafana_admin_password_fails_on_nonzero_exit(tmp_path, monkeypatc
     monkeypatch.setattr(
         ops,
         "_run",
-        lambda cmd, check=False: subprocess.CompletedProcess(
+        lambda cmd, check=False, input=None: subprocess.CompletedProcess(
             cmd, 1, stdout="", stderr="grafana: no such service"
         ),
     )
@@ -6553,8 +6674,11 @@ def test_reconcile_grafana_provisioning_skips_verification_when_start_fails(tmp_
 
 @pytest.mark.unit
 def test_observability_cli_entrypoint_returns_zero_on_success(capsys):
-    with patch.object(
-        ops, "_reconcile_grafana_provisioning", return_value=[ops.OpsResult(True, "up")]
+    with (
+        patch.object(ops, "_sync_packaged_resources", return_value=[ops.OpsResult(True, "synced")]),
+        patch.object(
+            ops, "_reconcile_grafana_provisioning", return_value=[ops.OpsResult(True, "up")]
+        ),
     ):
         rc = ops.observability(MagicMock())
         assert rc == 0
@@ -6563,13 +6687,30 @@ def test_observability_cli_entrypoint_returns_zero_on_success(capsys):
 
 @pytest.mark.unit
 def test_observability_cli_entrypoint_returns_nonzero_on_failure(capsys):
-    with patch.object(
-        ops,
-        "_reconcile_grafana_provisioning",
-        return_value=[ops.OpsResult(False, "down", "boom")],
+    with (
+        patch.object(ops, "_sync_packaged_resources", return_value=[ops.OpsResult(True, "synced")]),
+        patch.object(
+            ops,
+            "_reconcile_grafana_provisioning",
+            return_value=[ops.OpsResult(False, "down", "boom")],
+        ),
     ):
         rc = ops.observability(MagicMock())
         assert rc == 2
+        assert "[FAIL]" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_observability_cli_entrypoint_skips_reconcile_when_sync_fails(capsys):
+    with (
+        patch.object(
+            ops, "_sync_packaged_resources", return_value=[ops.OpsResult(False, "sync failed")]
+        ),
+        patch.object(ops, "_reconcile_grafana_provisioning") as reconcile,
+    ):
+        rc = ops.observability(MagicMock())
+        assert rc == 2
+        reconcile.assert_not_called()
         assert "[FAIL]" in capsys.readouterr().out
 
 
@@ -7576,6 +7717,21 @@ def test_glitchtip_container_healthy_false_when_absent(monkeypatch):
 
 
 @pytest.mark.unit
+def test_glitchtip_container_healthy_false_when_still_starting(monkeypatch):
+    """Regression (#3588 review round 2): mirrors `_grafana_container_healthy`'s
+    fix -- a freshly (re)started container reports `state=running,
+    health=starting` throughout its healthcheck `start_period`, which
+    `ComponentStatus.healthy` treats as healthy (intentionally, for the
+    self-heal watchdog) but this caller must not.
+    """
+    status = self_heal.ComponentStatus(
+        service="glitchtip", container="c", state="running", health="starting", healthy=True
+    )
+    monkeypatch.setattr(ops.self_heal, "list_component_status", lambda: [status])
+    assert ops._glitchtip_container_healthy() is False
+
+
+@pytest.mark.unit
 def test_wait_for_glitchtip_healthy_absent_returns_false_without_sleeping(monkeypatch):
     monkeypatch.setattr(ops.self_heal, "list_component_status", lambda: [])
     sleeps = []
@@ -7596,6 +7752,33 @@ def test_wait_for_glitchtip_healthy_already_healthy_returns_true_immediately(mon
 
     assert ops._wait_for_glitchtip_healthy(timeout=5, poll_interval=0.01) is True
     assert sleeps == []
+
+
+@pytest.mark.unit
+def test_wait_for_glitchtip_healthy_polls_through_start_period(monkeypatch):
+    """Regression (#3588 review round 2), mirrors the grafana version of this
+    test: the initial check must not trust a `state=running, health=starting`
+    snapshot as done -- keep polling until the healthcheck actually passes.
+    """
+    starting = self_heal.ComponentStatus(
+        service="glitchtip", container="c", state="running", health="starting", healthy=True
+    )
+    healthy = self_heal.ComponentStatus(
+        service="glitchtip", container="c", state="running", health="healthy", healthy=True
+    )
+    calls = {"n": 0}
+
+    def fake_status():
+        calls["n"] += 1
+        return [healthy] if calls["n"] >= 3 else [starting]
+
+    monkeypatch.setattr(ops.self_heal, "list_component_status", fake_status)
+    sleeps = []
+    monkeypatch.setattr(ops.time, "sleep", lambda s: sleeps.append(s))
+
+    assert ops._wait_for_glitchtip_healthy(timeout=5, poll_interval=0.01) is True
+    assert calls["n"] >= 3
+    assert sleeps, "must poll at least once instead of trusting the starting-state snapshot"
 
 
 @pytest.mark.unit
@@ -7692,6 +7875,24 @@ def test_grafana_container_healthy_false_when_absent(monkeypatch):
 
 
 @pytest.mark.unit
+def test_grafana_container_healthy_false_when_still_starting(monkeypatch):
+    """Regression (#3588 review round 2): a container freshly (re)started by
+    `docker compose restart` immediately reports `state=running,
+    health=starting` for its whole healthcheck `start_period` -- the exact
+    shape `ComponentStatus.healthy` treats as healthy (by design, for the
+    self-heal watchdog). `_grafana_container_healthy` must not: this was the
+    root cause of `terraform-local-smoke`'s "grafana health -> 000000" CI
+    failure -- `_wait_for_grafana_healthy` returned True instantly after the
+    restart, before Grafana was actually reachable.
+    """
+    status = self_heal.ComponentStatus(
+        service="grafana", container="c", state="running", health="starting", healthy=True
+    )
+    monkeypatch.setattr(ops.self_heal, "list_component_status", lambda: [status])
+    assert ops._grafana_container_healthy() is False
+
+
+@pytest.mark.unit
 def test_wait_for_grafana_healthy_absent_returns_false_without_sleeping(monkeypatch):
     monkeypatch.setattr(ops.self_heal, "list_component_status", lambda: [])
     sleeps = []
@@ -7712,6 +7913,36 @@ def test_wait_for_grafana_healthy_already_healthy_returns_true_immediately(monke
 
     assert ops._wait_for_grafana_healthy(timeout=5, poll_interval=0.01) is True
     assert sleeps == []
+
+
+@pytest.mark.unit
+def test_wait_for_grafana_healthy_polls_through_start_period(monkeypatch):
+    """Regression (#3588 review round 2): the initial check right after a
+    `docker compose restart grafana` sees `state=running, health=starting`
+    (the container's whole healthcheck `start_period`) -- must keep polling
+    instead of returning True on that first look, or the caller reports the
+    restart done while Grafana is still unreachable (the exact
+    `terraform-local-smoke` "grafana health -> 000000" CI failure).
+    """
+    starting = self_heal.ComponentStatus(
+        service="grafana", container="c", state="running", health="starting", healthy=True
+    )
+    healthy = self_heal.ComponentStatus(
+        service="grafana", container="c", state="running", health="healthy", healthy=True
+    )
+    calls = {"n": 0}
+
+    def fake_status():
+        calls["n"] += 1
+        return [healthy] if calls["n"] >= 3 else [starting]
+
+    monkeypatch.setattr(ops.self_heal, "list_component_status", fake_status)
+    sleeps = []
+    monkeypatch.setattr(ops.time, "sleep", lambda s: sleeps.append(s))
+
+    assert ops._wait_for_grafana_healthy(timeout=5, poll_interval=0.01) is True
+    assert calls["n"] >= 3
+    assert sleeps, "must poll at least once instead of trusting the starting-state snapshot"
 
 
 @pytest.mark.unit
@@ -7832,18 +8063,47 @@ def test_glitchtip_ensure_superuser_command_shape(monkeypatch):
 
     def fake_run(cmd, **k):
         captured["cmd"] = cmd
+        captured["env"] = k.get("env")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(ops, "_run", fake_run)
-    ops._glitchtip_ensure_superuser("admin@nyxgpt.local", "pw")
+    ops._glitchtip_ensure_superuser("admin@nyxgpt.local", "s3cr3t-pw")
 
     cmd = captured["cmd"]
     assert cmd[:4] == ["docker", "compose", "-f", str(ops.self_heal.COMPOSE_FILE)]
     assert "glitchtip" in cmd
     assert "createsuperuser" in cmd
     assert "--noinput" in cmd
-    assert "DJANGO_SUPERUSER_EMAIL=admin@nyxgpt.local" in cmd
-    assert "DJANGO_SUPERUSER_PASSWORD=pw" in cmd
+    # The credentials are forwarded via bare `-e VAR` + the process
+    # environment (CodeQL #105/#106): argv carries only the variable NAMES,
+    # never the password value.
+    assert "DJANGO_SUPERUSER_EMAIL" in cmd
+    assert "DJANGO_SUPERUSER_PASSWORD" in cmd
+    assert not any("s3cr3t-pw" in arg for arg in cmd)
+    env = captured["env"]
+    assert env["DJANGO_SUPERUSER_EMAIL"] == "admin@nyxgpt.local"
+    assert env["DJANGO_SUPERUSER_PASSWORD"] == "s3cr3t-pw"
+    assert env["DJANGO_SUPERUSER_USERNAME"] == "admin@nyxgpt.local"
+
+
+def test_glitchtip_ensure_superuser_password_never_logged(caplog):
+    # CodeQL #105/#106 regression: the idempotent rc=1 re-run logs at INFO
+    # with the command in `extra` -- the password must not appear anywhere
+    # in the log records (message or attributes) in any form.
+    with patch.object(ops.subprocess, "run") as run:
+        run.return_value = subprocess.CompletedProcess(
+            args=["docker"],
+            returncode=1,
+            stdout="",
+            stderr="Error: That email address is already taken.",
+        )
+        with caplog.at_level("DEBUG", logger="nyxgpt.ops"):
+            result = ops._glitchtip_ensure_superuser("admin@nyxgpt.local", "s3cr3t-pw")
+
+    assert result.ok
+    for record in caplog.records:
+        assert "s3cr3t-pw" not in record.getMessage()
+        assert "s3cr3t-pw" not in repr(vars(record))
 
 
 @pytest.mark.unit
@@ -8321,8 +8581,11 @@ def test_write_grafana_glitchtip_token_writes_and_chmods(tmp_path, monkeypatch):
     assert result.ok
     token_path = tmp_path / ".nyxGPT" / "secrets" / "glitchtip-grafana-token"
     assert token_path.read_text(encoding="utf-8") == "tok-123"
-    assert oct(token_path.stat().st_mode)[-3:] == "600"
-    assert oct(token_path.parent.stat().st_mode)[-3:] == "700"
+    # 644/755, not 600/700 (#3588): Grafana's container runs as non-root uid
+    # 472, and a native Linux bind mount needs the file/dir world-readable
+    # for that uid to stat/read it -- see _write_grafana_glitchtip_token.
+    assert oct(token_path.stat().st_mode)[-3:] == "644"
+    assert oct(token_path.parent.stat().st_mode)[-3:] == "755"
 
 
 @pytest.mark.unit
@@ -8362,7 +8625,9 @@ def test_write_grafana_slack_webhook_secret_writes_and_chmods(tmp_path, monkeypa
     assert result.ok
     secret_path = tmp_path / ".nyxGPT" / "secrets" / "slack-webhook-url"
     assert secret_path.read_text(encoding="utf-8") == "https://hooks.slack.com/x"
-    assert oct(secret_path.stat().st_mode)[-3:] == "600"
+    # 644, not 600 (#3588): same cross-uid-readability reasoning as the
+    # GlitchTip token -- see _write_grafana_glitchtip_token.
+    assert oct(secret_path.stat().st_mode)[-3:] == "644"
 
 
 @pytest.mark.unit
@@ -8731,7 +8996,10 @@ def test_ensure_glitchtip_secrets_dir_creates_when_missing(tmp_path, monkeypatch
     assert results[0].ok is True
     assert "Created" in results[0].message
     assert secrets_dir.is_dir()
-    assert oct(secrets_dir.stat().st_mode)[-3:] == "700"
+    # 755, not 700 (#3588): Grafana's non-root container uid needs to
+    # traverse into this dir across a native Linux bind mount -- see
+    # _ensure_glitchtip_secrets_dir.
+    assert oct(secrets_dir.stat().st_mode)[-3:] == "755"
 
 
 @pytest.mark.unit
@@ -8745,6 +9013,42 @@ def test_ensure_glitchtip_secrets_dir_ok_when_already_writable(tmp_path, monkeyp
     assert len(results) == 1
     assert results[0].ok is True
     assert "writable" in results[0].message
+
+
+@pytest.mark.unit
+def test_ensure_glitchtip_secrets_dir_seeds_grafana_placeholders(tmp_path, monkeypatch):
+    # #3538: Grafana 13.x crash-loops on a missing/empty $__file{} secret. The
+    # preflight must seed valid, non-empty placeholders for both the GlitchTip
+    # token and the Slack webhook so the observability bring-up doesn't take
+    # Grafana down before the real values are written.
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+
+    ops._ensure_glitchtip_secrets_dir()
+
+    token_path = tmp_path / ".nyxGPT" / "secrets" / "glitchtip-grafana-token"
+    slack_path = tmp_path / ".nyxGPT" / "secrets" / "slack-webhook-url"
+    assert token_path.exists()
+    assert slack_path.exists()
+    # Non-empty: an empty file also crashes Grafana (#3538).
+    assert token_path.read_text(encoding="utf-8").strip()
+    assert slack_path.read_text(encoding="utf-8").strip()
+
+
+@pytest.mark.unit
+def test_ensure_glitchtip_secrets_dir_does_not_clobber_existing_secrets(tmp_path, monkeypatch):
+    # A real token/URL already on disk must survive the placeholder seeding.
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    secrets_dir = tmp_path / ".nyxGPT" / "secrets"
+    secrets_dir.mkdir(parents=True, mode=0o700)
+    (secrets_dir / "glitchtip-grafana-token").write_text("real-token", encoding="utf-8")
+    (secrets_dir / "slack-webhook-url").write_text(
+        "https://hooks.slack.com/services/REAL/REAL/REAL", encoding="utf-8"
+    )
+
+    ops._ensure_glitchtip_secrets_dir()
+
+    assert (secrets_dir / "glitchtip-grafana-token").read_text(encoding="utf-8") == "real-token"
+    assert "REAL" in (secrets_dir / "slack-webhook-url").read_text(encoding="utf-8")
 
 
 @pytest.mark.unit
@@ -8943,12 +9247,33 @@ def test_restart_grafana_if_running_skips_without_docker(monkeypatch):
 
 
 @pytest.mark.unit
-def test_restart_grafana_if_running_skips_when_not_running(monkeypatch):
+def test_restart_grafana_if_running_skips_when_absent(monkeypatch):
     monkeypatch.setattr(ops, "_compose_available", lambda: True)
-    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "exited"})
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
     result = ops._restart_grafana_if_running()
     assert result.ok
     assert "not running" in result.message
+
+
+@pytest.mark.unit
+def test_restart_grafana_if_running_restarts_when_exited(monkeypatch):
+    """Regression test (#3588): a crashed/exited Grafana container must still
+    be restarted, not skipped -- `docker compose restart` handles a stopped
+    container fine, and skipping here left Grafana dead after a from-scratch
+    install crash-looped it before the GlitchTip token existed."""
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "exited"})
+    monkeypatch.setattr(ops, "_wait_for_grafana_healthy", lambda: True)
+    captured_cmd = {}
+
+    def fake_run(cmd, check=False):
+        captured_cmd["cmd"] = cmd
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    result = ops._restart_grafana_if_running()
+    assert result.ok
+    assert captured_cmd["cmd"][-2:] == ["restart", "grafana"]
 
 
 @pytest.mark.unit
@@ -9311,7 +9636,8 @@ def test_provision_glitchtip_full_happy_path(monkeypatch, tmp_path):
     # (#3411), never hand-pasted.
     token_path = tmp_path / ".nyxGPT" / "secrets" / "glitchtip-grafana-token"
     assert token_path.read_text(encoding="utf-8") == "tok"
-    assert oct(token_path.stat().st_mode)[-3:] == "600"
+    # 644, not 600 (#3588): see _write_grafana_glitchtip_token.
+    assert oct(token_path.stat().st_mode)[-3:] == "644"
 
     # The native `nyxgpt-api` brew service reads config.ini's DSN once, at
     # process startup (#3470 acceptance failure) -- the DSN here changed
@@ -9754,6 +10080,7 @@ def test_install_terraform_success_runs_all_steps(monkeypatch, capsys):
     monkeypatch.setattr(ops, "_refuse_port_collision", lambda components: None)
     ok = [ops.OpsResult(True, "ok")]
     with (
+        patch.object(ops, "_sync_packaged_resources", return_value=ok),
         patch.object(ops, "migrate_legacy_volumes", return_value=ok),
         patch.object(ops, "_ensure_terraform_binary", return_value=ok) as b,
         patch.object(ops, "_ensure_terraform_tfvars", return_value=ok) as t,
@@ -9761,6 +10088,7 @@ def test_install_terraform_success_runs_all_steps(monkeypatch, capsys):
         patch.object(ops, "_build_terraform_docker_images", return_value=ok),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok) as a,
         patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
+        patch.object(ops, "_sync_grafana_slack_webhook_secret", return_value=ok) as s,
         patch.object(ops, "_start_observability_stack_terraform", return_value=ok) as o,
         patch.object(ops, "_provision_glitchtip", return_value=ok) as g,
         patch.object(ops, "_terraform_stack_health", return_value=ok) as h,
@@ -9773,6 +10101,10 @@ def test_install_terraform_success_runs_all_steps(monkeypatch, capsys):
     # main.tf bind-mounts it, same as docker-compose.yml (regression: #3398).
     c.assert_called_once()
     a.assert_called_once()
+    # ...and provision Grafana's Slack webhook secret before observability
+    # starts, same as the native install() path (regression: #3588 round 4 --
+    # Grafana's alerting provisioning crash-loops without this file present).
+    s.assert_called_once()
     # ...and bring observability up on the terraform network + provision GlitchTip.
     o.assert_called_once()
     g.assert_called_once()
@@ -9781,10 +10113,53 @@ def test_install_terraform_success_runs_all_steps(monkeypatch, capsys):
 
 
 @pytest.mark.unit
+def test_install_terraform_syncs_slack_webhook_before_observability_starts(monkeypatch):
+    """Regression (#3588 round 4): Grafana's alerting provisioning
+    (docker/grafana/provisioning/alerting/contact-points.yml) unconditionally
+    reads $__file{/etc/nyxgpt-secrets/slack-webhook-url} and refuses to boot
+    if it's missing. The native install() path writes that secret via
+    `_sync_grafana_slack_webhook_secret` before starting its observability
+    stack; the terraform path must run the same step in the same order, or
+    Grafana crash-loops on every from-scratch `nyxgpt ops install --terraform
+    --local` (this is what turned the required `terraform-local-smoke` CI
+    check red after the prior round's Grafana-restart fix unblocked it)."""
+    args = SimpleNamespace(local=True, cloud=False, api_key="k")
+    monkeypatch.setattr(ops, "_refuse_port_collision", lambda components: None)
+    ok = [ops.OpsResult(True, "ok")]
+    call_order: list[str] = []
+    with (
+        patch.object(ops, "_sync_packaged_resources", return_value=ok),
+        patch.object(ops, "migrate_legacy_volumes", return_value=ok),
+        patch.object(ops, "_ensure_terraform_binary", return_value=ok),
+        patch.object(ops, "_ensure_terraform_tfvars", return_value=ok),
+        patch.object(ops, "_generate_compose_config", return_value=ok),
+        patch.object(ops, "_build_terraform_docker_images", return_value=ok),
+        patch.object(ops, "_terraform_init_plan_apply", return_value=ok),
+        patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
+        patch.object(
+            ops,
+            "_sync_grafana_slack_webhook_secret",
+            side_effect=lambda: call_order.append("slack webhook secret") or ok,
+        ),
+        patch.object(
+            ops,
+            "_start_observability_stack_terraform",
+            side_effect=lambda: call_order.append("observability stack") or ok,
+        ),
+        patch.object(ops, "_provision_glitchtip", return_value=ok),
+        patch.object(ops, "_terraform_stack_health", return_value=ok),
+    ):
+        rc = ops._install_terraform(args)
+    assert rc == 0
+    assert call_order == ["slack webhook secret", "observability stack"]
+
+
+@pytest.mark.unit
 def test_install_terraform_stops_pipeline_on_step_failure(monkeypatch):
     args = SimpleNamespace(local=True, cloud=False, api_key=None)
     monkeypatch.setattr(ops, "_refuse_port_collision", lambda components: None)
     with (
+        patch.object(ops, "_sync_packaged_resources", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "migrate_legacy_volumes", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(
             ops, "_ensure_terraform_binary", return_value=[ops.OpsResult(False, "no terraform")]
@@ -9809,6 +10184,7 @@ def test_install_terraform_clears_intentional_stop_markers(monkeypatch, capsys):
     monkeypatch.setattr(ops, "_refuse_port_collision", lambda components: None)
     ok = [ops.OpsResult(True, "ok")]
     with (
+        patch.object(ops, "_sync_packaged_resources", return_value=ok),
         patch.object(ops, "migrate_legacy_volumes", return_value=ok),
         patch.object(ops, "_ensure_terraform_binary", return_value=ok),
         patch.object(ops, "_ensure_terraform_tfvars", return_value=ok),
@@ -9816,6 +10192,7 @@ def test_install_terraform_clears_intentional_stop_markers(monkeypatch, capsys):
         patch.object(ops, "_build_terraform_docker_images", return_value=ok),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok),
         patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
+        patch.object(ops, "_sync_grafana_slack_webhook_secret", return_value=ok),
         patch.object(ops, "_start_observability_stack_terraform", return_value=ok),
         patch.object(ops, "_provision_glitchtip", return_value=ok),
         patch.object(ops, "_terraform_stack_health", return_value=ok),
@@ -9895,7 +10272,7 @@ def test_down_terraform_cache_prune_failure_is_non_fatal(monkeypatch):
     assert rc == 0
 
 
-# --- Kubernetes: _ensure_kubectl_and_cluster ---
+# --- Kubernetes: _ensure_kubectl_and_cluster (#3596: kind provisioning fallback) ---
 
 
 @pytest.mark.unit
@@ -9907,22 +10284,130 @@ def test_ensure_kubectl_and_cluster_missing_kubectl(monkeypatch):
 
 
 @pytest.mark.unit
-def test_ensure_kubectl_and_cluster_unreachable(monkeypatch):
-    monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/kubectl")
+def test_ensure_kubectl_and_cluster_reachable(monkeypatch):
+    monkeypatch.setattr(
+        ops, "_which", lambda prog: "/usr/local/bin/kubectl" if prog == "kubectl" else None
+    )
+    monkeypatch.setattr(ops, "_run", lambda cmd, check=True, **_k: CP(returncode=0))
+    results = ops._ensure_kubectl_and_cluster()
+    assert results[0].ok is True
+    assert "Kubernetes cluster reachable" in results[0].message
+
+
+@pytest.mark.unit
+def test_ensure_kubectl_and_cluster_unreachable_no_kind(monkeypatch):
+    """No cluster reachable and kind isn't installed -- actionable error, no raw-tool
+    instructions (CLAUDE.md's Operational Command Wrapping rule)."""
+    monkeypatch.setattr(
+        ops, "_which", lambda prog: "/usr/local/bin/kubectl" if prog == "kubectl" else None
+    )
     monkeypatch.setattr(
         ops, "_run", lambda cmd, check=True, **_k: CP(returncode=1, stderr="refused")
     )
     results = ops._ensure_kubectl_and_cluster()
     assert results[0].ok is False
-    assert "No reachable" in results[0].message
+    assert "kind is not installed" in results[0].message
+    assert "Install kind" in results[0].details
 
 
 @pytest.mark.unit
-def test_ensure_kubectl_and_cluster_reachable(monkeypatch):
-    monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/kubectl")
-    monkeypatch.setattr(ops, "_run", lambda cmd, check=True, **_k: CP(returncode=0))
+def test_ensure_kubectl_and_cluster_unreachable_no_docker(monkeypatch):
+    """kind is installed but Docker (which kind needs to create a cluster) is not."""
+    monkeypatch.setattr(
+        ops,
+        "_which",
+        lambda prog: "/usr/local/bin/" + prog if prog in ("kubectl", "kind") else None,
+    )
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, check=True, **_k: CP(returncode=1, stderr="refused")
+    )
     results = ops._ensure_kubectl_and_cluster()
-    assert results[0].ok is True
+    assert results[0].ok is False
+    assert "kind needs Docker" in results[0].message
+
+
+@pytest.mark.unit
+def test_ensure_kubectl_and_cluster_provisions_kind_when_absent(monkeypatch):
+    """No reachable cluster, kind+docker present, no existing nyxgpt-local cluster --
+    provisions one from scratch (#3596, owner decision 2026-08-03)."""
+    monkeypatch.setattr(
+        ops,
+        "_which",
+        lambda prog: "/usr/local/bin/" + prog if prog in ("kubectl", "kind", "docker") else None,
+    )
+    calls = []
+
+    def fake_run(cmd, check=True, **_k):
+        calls.append(cmd)
+        if cmd[:2] == ["kubectl", "cluster-info"]:
+            # First call (before provisioning): unreachable. Second call (after
+            # kind create): reachable.
+            return CP(returncode=1 if calls.count(cmd) == 1 else 0, stderr="refused")
+        if cmd[:3] == ["kind", "get", "clusters"]:
+            return CP(returncode=0, stdout="")
+        if cmd[:3] == ["kind", "create", "cluster"]:
+            return CP(returncode=0, stdout="created")
+        if cmd[:3] == ["kubectl", "config", "current-context"]:
+            return CP(returncode=0, stdout=ops.KIND_CONTEXT)
+        raise AssertionError(f"unexpected: {cmd}")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    results = ops._ensure_kubectl_and_cluster()
+    assert all(r.ok for r in results)
+    assert any("Created local kind cluster: nyxgpt-local" in r.message for r in results)
+    assert ["kind", "create", "cluster", "--name", "nyxgpt-local", "--wait", "60s"] in calls
+
+
+@pytest.mark.unit
+def test_ensure_kubectl_and_cluster_reuses_existing_kind_cluster(monkeypatch):
+    """A `nyxgpt-local` kind cluster from a previous run is reused, not recreated."""
+    monkeypatch.setattr(
+        ops,
+        "_which",
+        lambda prog: "/usr/local/bin/" + prog if prog in ("kubectl", "kind", "docker") else None,
+    )
+    calls = []
+
+    def fake_run(cmd, check=True, **_k):
+        calls.append(cmd)
+        if cmd[:2] == ["kubectl", "cluster-info"]:
+            return CP(returncode=1 if calls.count(cmd) == 1 else 0, stderr="refused")
+        if cmd[:3] == ["kind", "get", "clusters"]:
+            return CP(returncode=0, stdout="nyxgpt-local\n")
+        if cmd[:3] == ["kubectl", "config", "use-context"]:
+            return CP(returncode=0)
+        if cmd[:3] == ["kubectl", "config", "current-context"]:
+            return CP(returncode=0, stdout=ops.KIND_CONTEXT)
+        raise AssertionError(f"unexpected: {cmd}")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    results = ops._ensure_kubectl_and_cluster()
+    assert all(r.ok for r in results)
+    assert any("Reusing existing kind cluster" in r.message for r in results)
+    assert not any(cmd[:3] == ["kind", "create", "cluster"] for cmd in calls)
+
+
+@pytest.mark.unit
+def test_ensure_kubectl_and_cluster_provision_failure_reported(monkeypatch):
+    monkeypatch.setattr(
+        ops,
+        "_which",
+        lambda prog: "/usr/local/bin/" + prog if prog in ("kubectl", "kind", "docker") else None,
+    )
+
+    def fake_run(cmd, check=True, **_k):
+        if cmd[:2] == ["kubectl", "cluster-info"]:
+            return CP(returncode=1, stderr="refused")
+        if cmd[:3] == ["kind", "get", "clusters"]:
+            return CP(returncode=0, stdout="")
+        if cmd[:3] == ["kind", "create", "cluster"]:
+            return CP(returncode=1, stderr="docker daemon not running")
+        raise AssertionError(f"unexpected: {cmd}")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    results = ops._ensure_kubectl_and_cluster()
+    assert results[-1].ok is False
+    assert "kind create cluster" in results[-1].message
 
 
 # --- Kubernetes: _build_and_load_k8s_image ---
@@ -10326,6 +10811,99 @@ def test_down_kubernetes_delete_failure(monkeypatch):
     assert rc == 2
 
 
+# --- Kubernetes: kind cluster provision/teardown helpers (#3596) ---
+
+
+@pytest.mark.unit
+def test_kind_cluster_exists_true(monkeypatch):
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, check=True, **_k: CP(returncode=0, stdout="nyxgpt-local\nother\n")
+    )
+    assert ops._kind_cluster_exists() is True
+
+
+@pytest.mark.unit
+def test_kind_cluster_exists_false(monkeypatch):
+    monkeypatch.setattr(ops, "_run", lambda cmd, check=True, **_k: CP(returncode=0, stdout=""))
+    assert ops._kind_cluster_exists() is False
+
+
+@pytest.mark.unit
+def test_delete_kind_cluster_absent_is_a_noop_success(monkeypatch):
+    monkeypatch.setattr(ops, "_run", lambda cmd, check=True, **_k: CP(returncode=0, stdout=""))
+    results = ops._delete_kind_cluster()
+    assert results[0].ok is True
+    assert "already absent" in results[0].message
+
+
+@pytest.mark.unit
+def test_delete_kind_cluster_success(monkeypatch):
+    def fake_run(cmd, check=True, **_k):
+        if cmd[:3] == ["kind", "get", "clusters"]:
+            return CP(returncode=0, stdout="nyxgpt-local\n")
+        if cmd[:3] == ["kind", "delete", "cluster"]:
+            return CP(returncode=0, stdout="deleted")
+        raise AssertionError(f"unexpected: {cmd}")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    results = ops._delete_kind_cluster()
+    assert results[0].ok is True
+    assert "Deleted local kind cluster" in results[0].message
+
+
+@pytest.mark.unit
+def test_down_kubernetes_deletes_provisioned_kind_cluster(monkeypatch):
+    """#3596: tearing down a deployment on the nyxgpt-provisioned kind cluster also
+    deletes that cluster."""
+    calls = []
+
+    def fake_which(prog):
+        return "/usr/local/bin/" + prog if prog in ("kubectl", "kind") else None
+
+    def fake_run(cmd, check=True, **_k):
+        calls.append(cmd)
+        if cmd[:3] == ["kubectl", "delete", "-k"]:
+            return CP(returncode=0, stdout="deleted")
+        if cmd[:2] == ["kubectl", "config"]:
+            return CP(returncode=0, stdout=ops.KIND_CONTEXT)
+        if cmd[:3] == ["kind", "get", "clusters"]:
+            return CP(returncode=0, stdout="nyxgpt-local\n")
+        if cmd[:3] == ["kind", "delete", "cluster"]:
+            return CP(returncode=0, stdout="deleted")
+        raise AssertionError(f"unexpected: {cmd}")
+
+    monkeypatch.setattr(ops, "_which", fake_which)
+    monkeypatch.setattr(ops, "_run", fake_run)
+    results = ops.down_kubernetes()
+    assert all(r.ok for r in results)
+    assert any("Deleted local kind cluster" in r.message for r in results)
+    assert ["kind", "delete", "cluster", "--name", "nyxgpt-local"] in calls
+
+
+@pytest.mark.unit
+def test_down_kubernetes_never_deletes_bring_your_own_cluster(monkeypatch):
+    """A non-nyxgpt context (minikube, Docker Desktop, an operator's own kind cluster
+    under a different name) must never be deleted by `nyxgpt ops down --kubernetes`."""
+    calls = []
+
+    def fake_which(prog):
+        return "/usr/local/bin/" + prog if prog in ("kubectl", "kind") else None
+
+    def fake_run(cmd, check=True, **_k):
+        calls.append(cmd)
+        if cmd[:3] == ["kubectl", "delete", "-k"]:
+            return CP(returncode=0, stdout="deleted")
+        if cmd[:2] == ["kubectl", "config"]:
+            return CP(returncode=0, stdout="minikube")
+        raise AssertionError(f"unexpected: {cmd}")
+
+    monkeypatch.setattr(ops, "_which", fake_which)
+    monkeypatch.setattr(ops, "_run", fake_run)
+    results = ops.down_kubernetes()
+    assert all(r.ok for r in results)
+    assert not any(cmd[:3] == ["kind", "delete", "cluster"] for cmd in calls)
+
+
 # --- Structured (non-printing) Terraform/Kubernetes functions for the SRE/admin dashboard API ---
 
 
@@ -10334,6 +10912,7 @@ def test_install_terraform_local_runs_steps_and_returns_results(monkeypatch):
     monkeypatch.setattr(ops, "_refuse_port_collision", lambda components: None)
     ok = [ops.OpsResult(True, "ok")]
     with (
+        patch.object(ops, "_sync_packaged_resources", return_value=ok),
         patch.object(ops, "migrate_legacy_volumes", return_value=ok),
         patch.object(ops, "_ensure_terraform_binary", return_value=ok),
         patch.object(ops, "_ensure_terraform_tfvars", return_value=ok) as t,
@@ -10341,6 +10920,7 @@ def test_install_terraform_local_runs_steps_and_returns_results(monkeypatch):
         patch.object(ops, "_build_terraform_docker_images", return_value=ok),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok),
         patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
+        patch.object(ops, "_sync_grafana_slack_webhook_secret", return_value=ok),
         patch.object(ops, "_start_observability_stack_terraform", return_value=ok),
         patch.object(ops, "_provision_glitchtip", return_value=ok),
         patch.object(ops, "_terraform_stack_health", return_value=ok),
@@ -10435,6 +11015,42 @@ def test_down_kubernetes_returns_results_without_printing(monkeypatch, capsys):
 
 
 @pytest.mark.unit
+def test_infra_status_compose_probe_available_true_when_probe_can_run(monkeypatch):
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "absent"})
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: ops.DeploymentMode(native={}, compose={}, conflicts=[]),
+    )
+    monkeypatch.setattr(ops, "_which", lambda prog: None)
+    monkeypatch.setattr(ops.self_heal, "compose_probe_available", lambda: True)
+
+    assert ops.infra_status()["compose_probe_available"] is True
+
+
+@pytest.mark.unit
+def test_infra_status_compose_probe_available_false_when_compose_file_unreachable(monkeypatch):
+    # #3588: this is exactly what a Terraform-managed api container hit
+    # before the docker-compose.yml bind mount was added -- the observability
+    # tier's absence must be reported as "can't check", not "not running".
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "running"})
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: ops.DeploymentMode(native={}, compose={}, conflicts=[]),
+    )
+    monkeypatch.setattr(
+        ops, "_which", lambda prog: "/usr/local/bin/docker" if prog == "docker" else None
+    )
+    monkeypatch.setattr(ops.self_heal, "compose_probe_available", lambda: False)
+
+    result = ops.infra_status()
+    assert result["mode"] == "terraform"
+    assert result["compose"] == {}
+    assert result["compose_probe_available"] is False
+
+
+@pytest.mark.unit
 def test_infra_status_reports_terraform_and_kubernetes(monkeypatch):
     monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "running", "web": "absent"})
     monkeypatch.setattr(
@@ -10463,6 +11079,60 @@ def test_infra_status_reports_terraform_and_kubernetes(monkeypatch):
     assert result["kubernetes"]["deployed"] is True
     assert result["kubernetes"]["namespace"] == "nyxgpt"
     assert result["kubernetes"]["pods"] == ["nyxgpt-api-abc   1/1   Running"]
+
+
+@pytest.mark.unit
+def test_infra_status_reports_provisioned_kind_cluster(monkeypatch):
+    """#3596: the Infrastructure page (and self-heal) must be able to tell a
+    nyxgpt-provisioned kind cluster apart from a bring-your-own one."""
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "absent"})
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: ops.DeploymentMode(native={}, compose={}, conflicts=[]),
+    )
+    monkeypatch.setattr(
+        ops, "_which", lambda prog: "/usr/local/bin/kubectl" if prog == "kubectl" else None
+    )
+
+    def fake_run(cmd, check=True, **_k):
+        if cmd[:2] == ["kubectl", "config"]:
+            return CP(returncode=0, stdout=f"{ops.KIND_CONTEXT}\n")
+        if cmd[:4] == ["kubectl", "-n", "nyxgpt", "get"]:
+            return CP(returncode=0, stdout="nyxgpt-api-abc   1/1   Running\n")
+        raise AssertionError(f"unexpected kubectl command: {cmd}")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+
+    result = ops.infra_status()
+    assert result["kubernetes"]["context"] == ops.KIND_CONTEXT
+    assert result["kubernetes"]["provisioned"] is True
+
+
+@pytest.mark.unit
+def test_infra_status_reports_bring_your_own_cluster_not_provisioned(monkeypatch):
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "absent"})
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: ops.DeploymentMode(native={}, compose={}, conflicts=[]),
+    )
+    monkeypatch.setattr(
+        ops, "_which", lambda prog: "/usr/local/bin/kubectl" if prog == "kubectl" else None
+    )
+
+    def fake_run(cmd, check=True, **_k):
+        if cmd[:2] == ["kubectl", "config"]:
+            return CP(returncode=0, stdout="docker-desktop\n")
+        if cmd[:4] == ["kubectl", "-n", "nyxgpt", "get"]:
+            return CP(returncode=0, stdout="")
+        raise AssertionError(f"unexpected kubectl command: {cmd}")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+
+    result = ops.infra_status()
+    assert result["kubernetes"]["context"] == "docker-desktop"
+    assert result["kubernetes"]["provisioned"] is False
 
 
 @pytest.mark.unit
@@ -11019,6 +11689,11 @@ def test_generate_compose_config_derives_from_native(tmp_path, monkeypatch):
     results = ops._generate_compose_config()
     assert all(r.ok for r in results)
 
+    # Secrets ([auth] api_key, [monitoring] grafana_admin_password, ...) are
+    # copied verbatim from the native config -- must land 0600, same as the
+    # native file (#3500).
+    assert oct(out.stat().st_mode & 0o777) == "0o600"
+
     text = out.read_text(encoding="utf-8")
     # service endpoints rewritten for the container network
     assert "base_url = http://ollama:11434" in text
@@ -11180,3 +11855,424 @@ def test_env_sync_generates_compose_config(tmp_path, monkeypatch):
     assert rc == 0
     assert out.exists()
     assert "host = 0.0.0.0" in out.read_text(encoding="utf-8")
+
+
+# --- Live step progress (#3558) ---
+
+
+@pytest.mark.unit
+def test_run_steps_announces_each_step_before_running_it(capsys):
+    """Each step's "[n/m] name..." announcement must print before that step's
+    function runs and before its outcome is printed -- the whole point of
+    #3558 is that progress streams live instead of buffering to the end."""
+    call_order = []
+
+    def step_one():
+        call_order.append("ran:one")
+        return [ops.OpsResult(True, "one done")]
+
+    def step_two():
+        call_order.append("ran:two")
+        return [ops.OpsResult(True, "two done")]
+
+    steps = [("one", step_one), ("two", step_two)]
+    results, slow_steps = ops._run_steps("test", steps, quiet=False)
+
+    assert [r.message for r in results] == ["one done", "two done"]
+    assert slow_steps == []
+    assert call_order == ["ran:one", "ran:two"]
+
+    lines = capsys.readouterr().out.splitlines()
+    assert lines.index("[1/2] one...") < lines.index("[OK] one done")
+    assert lines.index("[2/2] two...") < lines.index("[OK] two done")
+    assert lines.index("[OK] one done") < lines.index("[2/2] two...")
+
+
+@pytest.mark.unit
+def test_run_steps_counter_reflects_total_step_count(capsys):
+    steps = [(f"step{i}", lambda: [ops.OpsResult(True, "ok")]) for i in range(1, 4)]
+    ops._run_steps("test", steps, quiet=False)
+    out = capsys.readouterr().out
+    assert "[1/3] step1..." in out
+    assert "[2/3] step2..." in out
+    assert "[3/3] step3..." in out
+
+
+@pytest.mark.unit
+def test_run_steps_quiet_suppresses_announcements_but_keeps_ok_fail(capsys):
+    steps = [("one", lambda: [ops.OpsResult(True, "one done")])]
+    ops._run_steps("test", steps, quiet=True)
+    out = capsys.readouterr().out
+    assert "[1/1]" not in out
+    assert "[OK] one done" in out
+
+
+@pytest.mark.unit
+def test_run_steps_step_exception_names_step_shows_error_and_hint(capsys):
+    def bad_step():
+        raise RuntimeError("kaboom")
+
+    steps = [("risky step", bad_step)]
+    results, _slow_steps = ops._run_steps("test", steps, quiet=False)
+
+    assert len(results) == 1
+    assert results[0].ok is False
+    assert "risky step" in results[0].message
+    assert "RuntimeError: kaboom" in results[0].details
+    assert "nyxgpt ops doctor" in results[0].details
+
+    out = capsys.readouterr().out
+    assert "[FAIL]" in out
+    assert "risky step" in out
+
+
+@pytest.mark.unit
+def test_run_steps_one_bad_step_does_not_abort_the_rest():
+    steps = [
+        ("first", lambda: (_ for _ in ()).throw(RuntimeError("boom"))),
+        ("second", lambda: [ops.OpsResult(True, "second ran")]),
+    ]
+    results, _ = ops._run_steps("test", steps, quiet=True)
+    assert [r.ok for r in results] == [False, True]
+    assert results[1].message == "second ran"
+
+
+@pytest.mark.unit
+def test_run_steps_flags_slow_step_for_summary(monkeypatch):
+    # Fake a 10s-elapsed step without actually sleeping: two time.monotonic()
+    # calls per step (start, then elapsed) -- quiet=True so no heartbeat
+    # thread makes extra calls of its own.
+    timestamps = iter([0.0, 10.0])
+    monkeypatch.setattr(ops.time, "monotonic", lambda: next(timestamps))
+
+    steps = [("slow step", lambda: [ops.OpsResult(True, "done")])]
+    _results, slow_steps = ops._run_steps("test", steps, quiet=True)
+
+    assert slow_steps == [("slow step", 10.0)]
+
+
+@pytest.mark.unit
+def test_run_steps_fast_step_is_not_flagged_as_slow(monkeypatch):
+    timestamps = iter([0.0, 0.1])
+    monkeypatch.setattr(ops.time, "monotonic", lambda: next(timestamps))
+
+    steps = [("fast step", lambda: [ops.OpsResult(True, "done")])]
+    _results, slow_steps = ops._run_steps("test", steps, quiet=True)
+
+    assert slow_steps == []
+
+
+@pytest.mark.unit
+def test_print_slow_steps_summary_lists_step_and_duration(capsys):
+    ops._print_slow_steps_summary([("slow step", 12.34)])
+    out = capsys.readouterr().out
+    assert "Slow steps" in out
+    assert "slow step: 12.3s" in out
+
+
+@pytest.mark.unit
+def test_print_slow_steps_summary_prints_nothing_when_empty(capsys):
+    ops._print_slow_steps_summary([])
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.unit
+def test_result_status_label_ok_for_plain_success():
+    assert ops._result_status_label(ops.OpsResult(True, "Started foo")) == "OK"
+
+
+@pytest.mark.unit
+def test_result_status_label_fail_for_failure():
+    assert ops._result_status_label(ops.OpsResult(False, "bad")) == "FAIL"
+
+
+@pytest.mark.unit
+def test_result_status_label_skip_for_skipped_message():
+    r = ops.OpsResult(True, "Skipped Compose teardown (Docker not found)")
+    assert ops._result_status_label(r) == "SKIP"
+
+
+@pytest.mark.unit
+def test_emit_results_prints_skip_label_for_skipped_result(capsys):
+    ops._emit_results("test", [ops.OpsResult(True, "Skipped thing (no docker)")])
+    out = capsys.readouterr().out
+    assert "[SKIP] Skipped thing (no docker)" in out
+
+
+@pytest.mark.unit
+def test_step_heartbeat_prints_still_running_line_while_step_is_in_flight(monkeypatch):
+    # Speed the heartbeat up so the test doesn't wait the real 5s interval.
+    monkeypatch.setattr(ops, "_STEP_HEARTBEAT_INTERVAL_S", 0.01)
+    hb = ops._StepHeartbeat("slow thing")
+    hb.start()
+    time.sleep(0.05)
+    hb.stop()
+    # No assertion on stdout content here (it's a background thread racing
+    # capsys) -- this just proves start()/stop() don't hang or raise.
+    assert True
+
+
+@pytest.mark.unit
+def test_ops_install_quiet_flag_suppresses_step_announcements(capsys):
+    ok_results = [ops.OpsResult(True, "ok")]
+    with (
+        patch.object(ops, "_sync_packaged_resources", return_value=ok_results),
+        patch.object(ops, "_install_config", return_value=ok_results),
+        patch.object(ops, "migrate_legacy_volumes", return_value=ok_results),
+        patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok_results),
+        patch.object(ops, "_ensure_web_deps", return_value=ok_results),
+        patch.object(ops, "_ensure_mcp_deps", return_value=ok_results),
+        patch.object(ops, "_ensure_cassandra_container", return_value=ok_results),
+        patch.object(ops, "_install_cassandra_launchagent", return_value=ok_results),
+        patch.object(ops, "_install_ollama_launchagent", return_value=ok_results),
+        patch.object(ops, "_install_ollama_env_launchagent", return_value=ok_results),
+        patch.object(ops, "_install_homebrew_api", return_value=ok_results),
+        patch.object(ops, "_install_homebrew_web", return_value=ok_results),
+        patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
+        patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok_results),
+        patch.object(ops, "sync_env_from_config", return_value=ok_results),
+    ):
+        rc = ops.install(
+            SimpleNamespace(skip_observability=True, terraform=False, kubernetes=False, quiet=True)
+        )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "[OK]" in out
+    assert "/17]" not in out  # no "[n/17] step..." announcements in quiet mode
+
+
+@pytest.mark.unit
+def test_ops_install_default_verbose_prints_step_announcements(capsys):
+    ok_results = [ops.OpsResult(True, "ok")]
+    with (
+        patch.object(ops, "_sync_packaged_resources", return_value=ok_results),
+        patch.object(ops, "_install_config", return_value=ok_results),
+        patch.object(ops, "migrate_legacy_volumes", return_value=ok_results),
+        patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok_results),
+        patch.object(ops, "_ensure_web_deps", return_value=ok_results),
+        patch.object(ops, "_ensure_mcp_deps", return_value=ok_results),
+        patch.object(ops, "_ensure_cassandra_container", return_value=ok_results),
+        patch.object(ops, "_install_cassandra_launchagent", return_value=ok_results),
+        patch.object(ops, "_install_ollama_launchagent", return_value=ok_results),
+        patch.object(ops, "_install_ollama_env_launchagent", return_value=ok_results),
+        patch.object(ops, "_install_homebrew_api", return_value=ok_results),
+        patch.object(ops, "_install_homebrew_web", return_value=ok_results),
+        patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
+        patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok_results),
+        patch.object(ops, "sync_env_from_config", return_value=ok_results),
+    ):
+        rc = ops.install(
+            SimpleNamespace(skip_observability=True, terraform=False, kubernetes=False, quiet=False)
+        )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "[1/17] sync packaged ops resources..." in out
+
+
+@pytest.mark.unit
+def test_ops_env_sync_quiet_flag_suppresses_step_announcements(tmp_path, capsys):
+    cfg_path = tmp_path / "config.ini"
+    _write_config(cfg_path, api_key="cli-api-key")
+    env_path = tmp_path / ".env"
+
+    args = SimpleNamespace(config=str(cfg_path), env_file=str(env_path), quiet=True)
+    rc = ops.env_sync(args)
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "[1/3]" not in out
+    assert "[OK]" in out
+
+
+@pytest.mark.unit
+def test_wait_for_stack_healthy_returns_true_when_all_healthy(monkeypatch):
+    """`_wait_for_stack_healthy` returns True immediately once every desired
+    component reports healthy, without needing to poll or sleep."""
+    statuses = [
+        self_heal.ComponentStatus(
+            service="api", container="nyxgpt-api", state="running", health="healthy", healthy=True
+        ),
+        self_heal.ComponentStatus(
+            service="web", container="nyxgpt-web", state="running", health="healthy", healthy=True
+        ),
+    ]
+    monkeypatch.setattr(self_heal, "list_component_status", lambda: statuses)
+    sleeps = []
+    monkeypatch.setattr(time, "sleep", lambda s: sleeps.append(s))
+
+    assert ops._wait_for_stack_healthy(timeout=5.0, poll_interval=1.0) is True
+    assert sleeps == []
+
+
+@pytest.mark.unit
+def test_wait_for_stack_healthy_ignores_non_desired_components(monkeypatch):
+    """An unhealthy but `desired=False` component (disabled profile, or
+    intentionally stopped -- see `list_component_status`) must not block the
+    wait, matching `heal_now`'s automatic-pass semantics."""
+    statuses = [
+        self_heal.ComponentStatus(
+            service="api", container="nyxgpt-api", state="running", health="healthy", healthy=True
+        ),
+        self_heal.ComponentStatus(
+            service="grafana",
+            container="grafana",
+            state="absent",
+            health="",
+            healthy=False,
+            desired=False,
+        ),
+    ]
+    monkeypatch.setattr(self_heal, "list_component_status", lambda: statuses)
+
+    assert ops._wait_for_stack_healthy(timeout=5.0, poll_interval=1.0) is True
+
+
+@pytest.mark.unit
+def test_wait_for_stack_healthy_returns_false_on_timeout(monkeypatch):
+    """Times out (returns False) rather than polling forever when a desired
+    component never reports healthy."""
+    unhealthy = [
+        self_heal.ComponentStatus(
+            service="ollama", container="ollama", state="running", health="starting", healthy=False
+        )
+    ]
+    monkeypatch.setattr(self_heal, "list_component_status", lambda: unhealthy)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+
+    assert ops._wait_for_stack_healthy(timeout=0.0, poll_interval=0.0) is False
+
+
+@pytest.mark.unit
+def test_ops_up_returns_install_failure_without_waiting(monkeypatch):
+    """`up` propagates a failing `install()` without ever calling the health-wait."""
+    monkeypatch.setattr(ops, "install", lambda args: 2)
+    waited = []
+    monkeypatch.setattr(ops, "_wait_for_stack_healthy", lambda **kw: waited.append(kw) or True)
+
+    rc = ops.up(MagicMock(no_wait=False, timeout=180.0, kubernetes=False))
+
+    assert rc == 2
+    assert waited == []
+
+
+@pytest.mark.unit
+def test_ops_up_no_wait_skips_health_wait_and_url(monkeypatch, capsys):
+    """`--no-wait` returns `install()`'s result as soon as it finishes."""
+    monkeypatch.setattr(ops, "install", lambda args: 0)
+    waited = []
+    monkeypatch.setattr(ops, "_wait_for_stack_healthy", lambda **kw: waited.append(kw) or True)
+
+    rc = ops.up(MagicMock(no_wait=True, timeout=180.0, kubernetes=False))
+
+    assert rc == 0
+    assert waited == []
+    assert ops.WEB_URL not in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_ops_up_waits_then_prints_web_url(monkeypatch, capsys):
+    """Once `install()` and the health-wait both succeed, `up` prints the web URL."""
+    monkeypatch.setattr(ops, "install", lambda args: 0)
+    calls = []
+    monkeypatch.setattr(ops, "_wait_for_stack_healthy", lambda **kw: calls.append(kw) or True)
+
+    rc = ops.up(MagicMock(no_wait=False, timeout=42.0, kubernetes=False))
+
+    assert rc == 0
+    assert calls == [{"timeout": 42.0}]
+    assert ops.WEB_URL in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_ops_up_times_out_returns_nonzero(monkeypatch, capsys):
+    """A health-wait timeout is reported and fails the command, even though
+    `install()` itself succeeded."""
+    monkeypatch.setattr(ops, "install", lambda args: 0)
+    monkeypatch.setattr(ops, "_wait_for_stack_healthy", lambda **kw: False)
+
+    rc = ops.up(MagicMock(no_wait=False, timeout=180.0, kubernetes=False))
+
+    assert rc == 2
+    captured = capsys.readouterr()
+    assert ops.WEB_URL not in captured.out
+    assert "not every component reported healthy" in captured.err
+
+
+@pytest.mark.unit
+def test_ops_up_kubernetes_mode_prints_port_forward_instructions(monkeypatch, capsys):
+    """Kubernetes Services are ClusterIP-only, so `up --kubernetes` must not
+    claim the web URL is directly reachable -- it needs a manual
+    `kubectl port-forward` first (see docs/kubernetes.md#4-verify)."""
+    monkeypatch.setattr(ops, "install", lambda args: 0)
+    monkeypatch.setattr(ops, "_wait_for_stack_healthy", lambda **kw: True)
+
+    rc = ops.up(MagicMock(no_wait=False, timeout=180.0, kubernetes=True))
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "port-forward" in out
+    assert "kubectl -n nyxgpt port-forward" not in out
+    assert ops.WEB_URL in out
+
+
+@pytest.mark.unit
+def test_ops_up_kubernetes_mode_wraps_kubectl_not_raw(monkeypatch, capsys):
+    """The Operational Command Wrapping policy (CLAUDE.md) forbids instructing
+    users to run a raw `kubectl` command -- `up --kubernetes` must point at
+    the `nyxgpt ops port-forward` wrapper instead."""
+    monkeypatch.setattr(ops, "install", lambda args: 0)
+    monkeypatch.setattr(ops, "_wait_for_stack_healthy", lambda **kw: True)
+
+    ops.up(MagicMock(no_wait=False, timeout=180.0, kubernetes=True))
+
+    out = capsys.readouterr().out
+    assert "nyxgpt ops port-forward" in out
+
+
+@pytest.mark.unit
+def test_ops_port_forward_missing_kubectl(monkeypatch, capsys):
+    """`nyxgpt ops port-forward` fails fast with a clear message if kubectl isn't installed."""
+    monkeypatch.setattr(ops, "_which", lambda _: None)
+
+    rc = ops.port_forward(MagicMock(port=3000))
+
+    assert rc == 2
+    assert "kubectl not found on PATH" in capsys.readouterr().err
+
+
+@pytest.mark.unit
+def test_ops_port_forward_invokes_kubectl(monkeypatch, capsys):
+    """`nyxgpt ops port-forward` shells out to `kubectl port-forward` for the
+    web Service, using the requested local port, and returns its exit code."""
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/kubectl")
+    calls = []
+
+    def fake_run(cmd):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, returncode=0)
+
+    monkeypatch.setattr(ops.subprocess, "run", fake_run)
+
+    rc = ops.port_forward(MagicMock(port=3001))
+
+    assert rc == 0
+    assert calls == [
+        ["kubectl", "-n", ops.K8S_NAMESPACE, "port-forward", "svc/nyxgpt-web", "3001:3000"]
+    ]
+    assert "3001" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_ops_port_forward_keyboard_interrupt_is_clean_exit(monkeypatch):
+    """Stopping `port-forward` with Ctrl-C (the normal way to end it) is a
+    clean exit, not a crash."""
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/kubectl")
+
+    def raise_interrupt(cmd):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(ops.subprocess, "run", raise_interrupt)
+
+    rc = ops.port_forward(MagicMock(port=3000))
+
+    assert rc == 0

@@ -35,10 +35,23 @@ nyxgpt ops install --kubernetes --local
 
 Per the project's [Operational Command Wrapping](../CLAUDE.md) rule, this is
 the supported way to bring this deployment up — no raw `docker build`/
-`kubectl` commands required. It wraps the whole documented flow below into
-one step: checks prerequisites (a reachable cluster, `kubectl` on PATH),
-builds `nyxgpt-api:local` and `nyxgpt-web:local` and loads each into the
-cluster's image cache (kind/minikube get an explicit load step; Docker
+`kubectl`/`kind` commands required, and **no pre-existing cluster is
+required either** (#3596). It wraps the whole documented flow below into one
+step: checks `kubectl` is on PATH, then checks whether kubectl's current
+context already reaches a cluster --
+
+- **A cluster is already reachable** (minikube, Docker Desktop, an existing
+  kind cluster, a remote context, ...): that cluster is used as-is, exactly
+  like before -- bring-your-own remains fully supported.
+- **No cluster is reachable**: provisions a local [kind](https://kind.sigs.k8s.io/)
+  cluster named `nyxgpt-local` (owner decision 2026-08-03) -- reusing it on
+  later runs instead of recreating it. `kind` and Docker are the two real
+  prerequisites this can't install for you; if either is missing, the command
+  fails with an actionable error pointing at where to install it, rather than
+  a raw command to run yourself.
+
+It then builds `nyxgpt-api:local` and `nyxgpt-web:local` and loads each into
+the cluster's image cache (kind/minikube get an explicit load step; Docker
 Desktop's built-in cluster shares the host cache already), bootstraps
 `k8s/secret.yaml` from the example (prompting for the API key interactively,
 or pass `--api-key` — the value is never committed), applies the
@@ -71,7 +84,9 @@ line (stable/canary state and version) once pods are present -- see the
 Canary Operations page (`/admin/canary`) for the equivalent web view and
 traffic control.
 
-Tear down (removes the `nyxgpt` namespace and everything in it) with:
+Tear down (removes the `nyxgpt` namespace and everything in it, and --
+only when it's the `nyxgpt-local` kind cluster nyxgpt provisioned above,
+never a bring-your-own cluster -- the cluster itself too) with:
 
 ```bash
 nyxgpt ops down --kubernetes
@@ -85,12 +100,31 @@ expected to type by hand.
 
 ## Prerequisites
 
-- A local cluster: [kind](https://kind.sigs.k8s.io/), [minikube](https://minikube.sigs.k8s.io/), or similar
 - `kubectl` (with `kustomize` support, built in since 1.14)
-- Docker (to build the image)
+- Docker (to build the image, and to run `kind`'s cluster nodes as containers)
+- [kind](https://kind.sigs.k8s.io/#installation) -- only needed if you want
+  `nyxgpt ops install --kubernetes --local` to provision a cluster for you.
+  If you already have a reachable cluster (minikube, Docker Desktop's
+  built-in cluster, an existing kind cluster, or anything else `kubectl`'s
+  current context points at), that's used as-is and `kind` is never invoked.
 - The [metrics-server](https://github.com/kubernetes-sigs/metrics-server) addon, required for the HorizontalPodAutoscaler to read CPU usage
   - minikube: `minikube addons enable metrics-server`
   - kind: `kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml` (add `--kubelet-insecure-tls` to the container args for local clusters without valid kubelet certs)
+
+## 0. Create a cluster (if you don't have one)
+
+`nyxgpt ops install --kubernetes --local` does this step for you automatically
+(see [One-command bring-up](#one-command-bring-up-nyxgpt-ops) above) --
+provisioning a `kind` cluster named `nyxgpt-local` when kubectl's current
+context has no reachable cluster. This section documents what that step does
+manually, for reference:
+
+```bash
+kind create cluster --name nyxgpt-local
+```
+
+If you'd rather bring your own cluster (minikube, Docker Desktop, a remote
+context, ...), create/select it yourself and the wrapper will use it as-is.
 
 ## 1. Build the image
 
@@ -164,15 +198,16 @@ kubectl -n nyxgpt port-forward svc/nyxgpt-api 8000:8000
 curl -H "X-API-Key: <your api-key>" http://127.0.0.1:8000/health
 ```
 
-To reach the web UI too, port-forward its Service on a second terminal (the
-default `nyxgpt-web:local` build expects the api at `127.0.0.1:8000`, so
-forward both at once):
+To reach the web UI too, forward its Service on a second terminal via
+`nyxgpt ops port-forward` (the default `nyxgpt-web:local` build expects the
+api at `127.0.0.1:8000`, so forward both at once):
 
 ```bash
-kubectl -n nyxgpt port-forward svc/nyxgpt-web 3000:3000
+nyxgpt ops port-forward
 ```
 
-Then open `http://127.0.0.1:3000`.
+Then open `http://127.0.0.1:3000`. `nyxgpt up --kubernetes` prints this same
+instruction once the stack reports healthy.
 
 The `nyxgpt-api` Pods deployed here are also watched by the same
 [self-heal watchdog](self-healing.md) as every other deployment path -- see
@@ -223,6 +258,19 @@ This mirrors, but is distinct from, the canary status honesty states
 described in [Honest status, mode-aware (#3409)](#honest-status-mode-aware-3409)
 below -- that section covers per-track rollout health once something is
 deployed, while this one covers whether a cluster is deployed at all.
+
+Once a context is configured, both the card and `nyxgpt ops status`/`doctor`
+(#3596) additionally report the current context name and whether it's the
+`nyxgpt-local` kind cluster nyxgpt provisioned (`kubernetes.provisioned` in
+the JSON) or a bring-your-own cluster -- this is what tells the operator
+whether `nyxgpt ops down --kubernetes` will also delete the cluster itself,
+not just the deployment inside it (see [Tear
+down](#one-command-bring-up-nyxgpt-ops) above and `_down_kubernetes_steps` in
+`src/nyxgpt/ops.py`). Self-heal's per-Pod health checks (`kubectl get
+pods`/`kubectl delete pod`, see
+[self-healing.md#kubernetes-mode](self-healing.md#kubernetes-mode)) work
+identically regardless of which cluster backs the current context -- they
+operate on whatever `kubectl` is pointed at, kind-provisioned or not.
 
 ## Canary Deployment
 

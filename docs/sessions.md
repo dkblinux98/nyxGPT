@@ -17,7 +17,11 @@ Sessions are stored on disk as JSON files and are automatically created on first
 
 ## Session storage
 
-By default, sessions are stored under:
+Sessions are stored in one of two backends, selected by
+`[nyxgpt] session_backend` — see [session-storage.md](session-storage.md)
+for the full comparison, schema, and migration story.
+
+**`file` (default):** one JSON file pair per session under:
 
 ```
 ~/.nyxGPT/sessions
@@ -37,12 +41,26 @@ research.json
 research.meta.json
 ```
 
-The location can be changed via configuration:
+The location can be changed via configuration (deprecated for anything
+beyond the single-host native mode — see below):
 
 ```ini
 [nyxgpt]
 sessions_dir = ~/.nyxGPT/sessions
 ```
+
+**`cassandra`:** sessions live in the stack's Cassandra (the same instance
+the RAG store uses), so every deployment mode — native, Compose, Terraform,
+Kubernetes — pointed at the same Cassandra sees the same session list, and
+concurrent access from multiple API instances is safe:
+
+```ini
+[nyxgpt]
+session_backend = cassandra
+```
+
+On first API start with this backend, existing `sessions_dir` JSON files are
+imported once (idempotently); the files are kept as a read-only archive.
 
 ---
 

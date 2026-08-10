@@ -11,10 +11,12 @@ Four deployment modes are covered:
 - **Docker Compose**: containers listed via `docker compose ps`, healed via
   `docker compose restart <service>`.
 - **Native/local-first** (the default local deployment -- see
-  `nyxgpt ops install`): `api`/`web`/`ollama` run as Homebrew services and
-  `cassandra` runs as the plain (non-Compose) `nyxgpt-cassandra` Docker
-  container. Healed via `brew services restart <name>`/`docker restart
-  <container>` -- the same mechanisms `nyxgpt ops restart` uses.
+  `nyxgpt ops install`): `api`/`web`/`ollama` run as Homebrew services on
+  macOS or systemd --user units on Linux (#3508), and `cassandra` runs as
+  the plain (non-Compose) `nyxgpt-cassandra` Docker container. Healed via
+  `brew services restart <name>` / `systemctl --user restart <unit>` /
+  `docker restart <container>` -- the same mechanisms `nyxgpt ops restart`
+  uses.
 - **Terraform** (`nyxgpt ops install --terraform --local`): `ollama`/
   `cassandra`/`api`/`web` run as the plain (non-Compose) `nyxgpt-tf-*`
   Docker containers defined in `terraform/main.tf`. Checked/healed directly
@@ -76,11 +78,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import platform
+import re
 import shutil
 import subprocess
 import threading
 import time
-from configparser import ConfigParser
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -97,43 +100,30 @@ from nyxgpt.logging import get_correlation_id, get_log_dir, mint_correlation_id
 
 logger = logging.getLogger(__name__)
 
-# Repo root: .../nyxGPT/src/nyxgpt/self_heal.py -> parents[2] is repo root
-REPO_ROOT = Path(__file__).resolve().parents[2]
-
 
 def _resolve_compose_file() -> Path:
     """Resolve the docker-compose.yml the watchdog targets.
 
-    Three layouts, three answers:
+    Two layouts, two answers (#3621 -- previously three, with a REPO_ROOT
+    module-path check and a config.ini `[paths] compose_file` fallback for
+    the brew-installed-native-service case; both are gone now that the
+    Compose file lives at a single fixed, ops-managed location regardless of
+    how nyxGPT itself is installed):
     - api container: `self_heal.py` lives under site-packages with no repo
       checkout; the compose file is bind-mounted in and its in-container path
       passed via NYXGPT_COMPOSE_FILE (see the `api` service in
       docker-compose.yml and docs/self-healing.md).
-    - bare checkout (dev machine, `nyxgpt` running from the repo/venv): the
-      repo root computed above is correct.
-    - brew-installed native service: the module lives in the Homebrew Cellar,
-      so neither of the above applies; `nyxgpt ops install` records the repo's
-      compose path in config.ini `[paths] compose_file`, read here.
+    - every other layout (dev checkout, brew-installed native service,
+      installed non-editable package): `nyxgpt ops install` syncs the
+      packaged `nyxgpt.resources` docker-compose.yml to this fixed location
+      (see `nyxgpt.ops._sync_packaged_resources`), so it's always here once
+      install has run at least once.
     """
     override = os.environ.get("NYXGPT_COMPOSE_FILE", "").strip()
     if override:
         return Path(override)
 
-    repo_compose = REPO_ROOT / "docker-compose.yml"
-    if repo_compose.exists():
-        return repo_compose
-
-    cfg_path = Path.home() / ".nyxGPT" / "config.ini"
-    if cfg_path.exists():
-        parser = ConfigParser()
-        parser.read(cfg_path)
-        configured = parser.get("paths", "compose_file", fallback="").strip()
-        if configured:
-            configured_path = Path(configured).expanduser()
-            if configured_path.exists():
-                return configured_path
-
-    return repo_compose
+    return Path.home() / ".nyxGPT" / "docker-compose.yml"
 
 
 COMPOSE_FILE = _resolve_compose_file()
@@ -147,6 +137,16 @@ DEFAULT_BACKOFF_SECONDS = 30.0
 # "down" in the self-heal sense -- they're expected to exit 0 and stay exited.
 ONE_SHOT_SERVICES = {"glitchtip-migrate"}
 
+# Component/service/pod names that flow into a subprocess argv
+# (`docker compose restart <svc>`, `kubectl delete pod <name>`) are guarded
+# at every call site with a DIRECT `re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", x)`
+# call: names must start alphanumeric so a crafted value can't be read as a
+# CLI flag, and shell metacharacters/whitespace/path separators are excluded
+# entirely (CodeQL alert #4, py/command-line-injection). The pattern is
+# deliberately inlined at each guard rather than precompiled -- CodeQL's
+# barrier-guard analysis recognizes the `re.fullmatch(...)` call form but
+# NOT the `.fullmatch` method of a precompiled `re.Pattern`.
+
 # Maps a core native component to its Homebrew service name, for native/
 # local-first mode health-checks/heals. Mirrors ops.NATIVE_BREW_SERVICES --
 # kept as a separate copy here (rather than importing ops.py) since ops.py
@@ -158,9 +158,27 @@ NATIVE_BREW_SERVICES: dict[str, str] = {
     "web": "nyxgpt-web",
     "ollama": "ollama",
 }
+# Linux twin of NATIVE_BREW_SERVICES -- mirrors ops.NATIVE_SYSTEMD_SERVICES
+# for the same reason NATIVE_BREW_SERVICES is a separate copy here (#3508).
+NATIVE_SYSTEMD_SERVICES: dict[str, str] = {
+    "api": "nyxgpt-api",
+    "web": "nyxgpt-web",
+    "ollama": "nyxgpt-ollama",
+}
 # Mirrors ops.CASSANDRA_CONTAINER_NAME -- the one Docker-managed piece of a
 # native/local-first install.
 NATIVE_CASSANDRA_CONTAINER = "nyxgpt-cassandra"
+
+
+def _is_macos() -> bool:
+    """True if running on macOS -- the Homebrew services native path."""
+    return platform.system() == "Darwin"
+
+
+def _is_linux() -> bool:
+    """True if running on Linux -- the systemd --user native path (#3508)."""
+    return platform.system() == "Linux"
+
 
 # Maps a core component to its Terraform-managed container name (see
 # terraform/main.tf). Mirrors ops.TERRAFORM_CONTAINERS -- kept as a separate
@@ -492,8 +510,64 @@ def _brew_services_snapshot() -> dict[str, str]:
     return snapshot
 
 
+def _systemd_user_dir() -> Path:
+    """Return `~/.config/systemd/user`, the systemd --user unit search path.
+
+    Mirrors `ops._systemd_user_dir()` -- kept as a separate copy here for
+    the same reason `NATIVE_SYSTEMD_SERVICES` is (see its comment).
+    """
+    return Path.home() / ".config" / "systemd" / "user"
+
+
+def _systemd_services_snapshot() -> dict[str, str]:
+    """Return {unit_name: state} for nyxGPT-managed systemd --user units (Linux, #3508).
+
+    Mirrors `_brew_services_snapshot()`'s vocabulary ("started" for a live
+    unit) *and* its "not in this dict" == "not installed" contract: a unit
+    is only included if its file actually exists in
+    `~/.config/systemd/user/` -- `systemctl --user is-active` on a
+    never-installed unit name reports "inactive"/"unknown" the same way it
+    would for an installed-but-stopped one, so checking activity alone would
+    misreport a fresh machine that's never run `nyxgpt ops install` as
+    having every native component "down" instead of simply absent. Empty on
+    any failure (systemctl not on PATH, no session bus reachable, non-zero
+    exit).
+    """
+    if _which("systemctl") is None:
+        return {}
+    unit_dir = _systemd_user_dir()
+    snapshot: dict[str, str] = {}
+    for unit in NATIVE_SYSTEMD_SERVICES.values():
+        if not (unit_dir / f"{unit}.service").exists():
+            continue
+        try:
+            cp = _run(["systemctl", "--user", "is-active", f"{unit}.service"], expected=True)
+        except Exception as e:
+            logger.warning("self-heal: failed to query systemctl --user is-active %s: %s", unit, e)
+            continue
+        state = (cp.stdout or "").strip()
+        snapshot[unit] = "started" if state == "active" else "none"
+    return snapshot
+
+
+def _system_ollama_service_active() -> bool:
+    """True if a distro-managed system-wide `ollama.service` is currently active.
+
+    Mirrors `ops._system_ollama_service_active()` -- kept as a separate copy
+    here for the same reason `NATIVE_SYSTEMD_SERVICES` is (see its comment).
+    Checked with plain `systemctl is-active` (system scope, no `--user`).
+    False (never raises) if systemctl is missing or the query fails.
+    """
+    if _which("systemctl") is None:
+        return False
+    cp = _run(["systemctl", "is-active", "ollama.service"], expected=True)
+    return (cp.stdout or "").strip() == "active"
+
+
 def _native_container_state(name: str) -> str:
     """Return the docker state ('running', 'exited', ...) for container `name`, or 'absent'."""
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name):  # inline barrier, CodeQL #4
+        return "absent"
     if _which("docker") is None:
         return "absent"
     try:
@@ -512,6 +586,8 @@ def _native_container_state(name: str) -> str:
 
 def _native_container_health(name: str) -> str:
     """Return the Docker `HEALTHCHECK` status for container `name` (``''`` if none/unavailable)."""
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name):  # inline barrier, CodeQL #4
+        return ""
     if _which("docker") is None:
         return ""
     try:
@@ -667,22 +743,48 @@ def _list_native_component_status() -> list[ComponentStatus]:
     rather than this function silently hiding it and losing the comparison
     entirely.
 
-    Only reports a component that's actually installed/created -- a brew
+    Only reports a component that's actually installed/created -- a native
     service never set up via `nyxgpt ops install`, or a not-yet-created
     Cassandra container, isn't "down", it's simply out of scope until
-    installed.
+    installed. Reads Homebrew services on macOS or systemd --user units on
+    Linux (#3508), whichever `platform.system()` reports.
     """
     statuses: list[ComponentStatus] = []
 
-    brew_snapshot = _brew_services_snapshot()
-    for component, brew_name in NATIVE_BREW_SERVICES.items():
-        state = brew_snapshot.get(brew_name)
+    if _is_linux():
+        native_snapshot = _systemd_services_snapshot()
+        native_names = NATIVE_SYSTEMD_SERVICES
+    else:
+        native_snapshot = _brew_services_snapshot()
+        native_names = NATIVE_BREW_SERVICES
+    for component, native_name in native_names.items():
+        if component == "ollama" and _is_linux() and _system_ollama_service_active():
+            # Adopted system ollama.service (#3632, see
+            # ops._reconcile_system_ollama_service): install deliberately
+            # skips/disables nyxgpt-ollama.service against it, so report
+            # health via the system unit instead of either flagging a
+            # doomed nyxgpt unit as down or silently omitting "ollama"
+            # (this component's out-of-scope-until-installed treatment
+            # below is for a component nobody's serving at all, not this
+            # one -- it IS being served, just not by our own unit).
+            statuses.append(
+                ComponentStatus(
+                    service="ollama",
+                    container="ollama.service",
+                    state="active",
+                    health="",
+                    healthy=True,
+                    source="native",
+                )
+            )
+            continue
+        state = native_snapshot.get(native_name)
         if state is None:
             continue
         statuses.append(
             ComponentStatus(
                 service=component,
-                container=brew_name,
+                container=native_name,
                 state=state,
                 health="",
                 healthy=state == "started",
@@ -952,6 +1054,26 @@ def list_component_status() -> list[ComponentStatus]:
     return all_statuses
 
 
+def compose_probe_available() -> bool:
+    """Whether the Compose observability survey can actually run from this process.
+
+    `False` means `_list_compose_component_status()` finding nothing can't be
+    trusted as "genuinely not running" -- e.g. no `docker` binary on PATH, or
+    `COMPOSE_FILE` doesn't exist from this process's vantage point. The latter
+    is exactly what happened to a Terraform-managed `nyxgpt-tf-api` container
+    before it got the same `docker-compose.yml` bind mount + `NYXGPT_COMPOSE_
+    FILE` env var docker-compose.yml's own `api` service already sets (#3588):
+    `_resolve_compose_file()`'s module-path and config.ini fallbacks both fail
+    inside that container, so `COMPOSE_FILE` resolves to a path that was never
+    mounted, and `docker compose ps` against it fails every pass -- silently
+    reporting zero observability containers indistinguishable from "nothing is
+    running". `status()`/`ops.infra_status()` surface this so the Self-Heal
+    and Infrastructure Status pages can say "can't check from here" instead of
+    a false "nothing running".
+    """
+    return _which("docker") is not None and COMPOSE_FILE.exists()
+
+
 def _list_compose_component_status() -> list[ComponentStatus]:
     """Query `docker compose ps -a` for every container the project has created.
 
@@ -978,6 +1100,12 @@ def _list_compose_component_status() -> list[ComponentStatus]:
         logger.warning("self-heal: failed to query docker compose ps: %s", e)
         return []
     if cp.returncode != 0:
+        logger.warning(
+            "self-heal: docker compose ps exited %s querying %s -- observability survey "
+            "unavailable this pass (see compose_probe_available)",
+            cp.returncode,
+            COMPOSE_FILE,
+        )
         return []
 
     statuses: list[ComponentStatus] = []
@@ -1072,6 +1200,13 @@ def _record_health_check(statuses: list[ComponentStatus]) -> int:
 
 def restart_component(service: str) -> HealResult:
     """Restart a single Compose service: `docker compose restart <service>`."""
+    # Inline barrier (CodeQL #4, py/command-line-injection): an externally-
+    # influenced service name must be validated *in this function* so the
+    # taint tracker recognizes the guard on the value that reaches the argv.
+    # A prior helper-based check sanitized the same way but through one level
+    # of indirection CodeQL doesn't trace, so the alert stayed open.
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", service):
+        return HealResult(False, f"Refused to act on invalid service name: {service!r}")
     if _which("docker") is None:
         return HealResult(False, "docker not found; cannot restart component")
     try:
@@ -1097,6 +1232,8 @@ def _bring_up_compose_service(service: str) -> HealResult:
     `ops._start_observability_stack`), since Compose requires a service's
     profile to be active for it to resolve even when named explicitly.
     """
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", service):  # inline barrier, CodeQL #4
+        return HealResult(False, f"Refused to act on invalid service name: {service!r}")
     if _which("docker") is None:
         return HealResult(False, f"docker not found; cannot start {service}")
     cmd = ["docker", "compose", "-f", str(COMPOSE_FILE)]
@@ -1117,6 +1254,8 @@ def _bring_up_compose_service(service: str) -> HealResult:
 
 def _restart_brew_service(name: str) -> HealResult:
     """Restart Homebrew service `name` via `brew services restart` (native mode)."""
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name):  # inline barrier, CodeQL #4
+        return HealResult(False, f"Refused to act on invalid service name: {name!r}")
     if _which("brew") is None:
         return HealResult(False, f"brew not found; cannot restart {name}")
     try:
@@ -1131,8 +1270,26 @@ def _restart_brew_service(name: str) -> HealResult:
     return HealResult(True, f"Restarted brew service: {name}")
 
 
+def _restart_systemd_service(unit: str) -> HealResult:
+    """Restart systemd --user unit `unit` via `systemctl --user restart` (native mode, Linux)."""
+    if _which("systemctl") is None:
+        return HealResult(False, f"systemctl not found; cannot restart {unit}")
+    try:
+        cp = _run(["systemctl", "--user", "restart", f"{unit}.service"], timeout=60.0)
+    except Exception as e:
+        return HealResult(False, f"Failed to restart {unit}", f"{type(e).__name__}: {e}")
+    if cp.returncode != 0:
+        details = (cp.stdout or "").strip() + (
+            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+        )
+        return HealResult(False, f"Failed to restart systemd unit: {unit}", details.strip())
+    return HealResult(True, f"Restarted systemd unit: {unit}")
+
+
 def _restart_native_container(name: str) -> HealResult:
     """Restart Docker container `name` via `docker restart` (native mode's Cassandra)."""
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name):  # inline barrier, CodeQL #4
+        return HealResult(False, f"Refused to act on invalid container name: {name!r}")
     if _which("docker") is None:
         return HealResult(False, f"docker not found; cannot restart {name}")
     try:
@@ -1175,10 +1332,12 @@ def _cassandra_active_elsewhere() -> str | None:
 def restart_native_component(component: str) -> HealResult:
     """Restart a native/local-first core component.
 
-    `api`/`web`/`ollama` restart via `brew services restart <name>`;
+    `api`/`web`/`ollama` restart via `brew services restart <name>` on
+    macOS or `systemctl --user restart <unit>` on Linux (#3508);
     `cassandra` (the one Docker-managed piece of a native install) restarts
     via `docker restart <container>` -- the same mechanisms `nyxgpt ops
-    restart` uses, so the user never needs a raw `brew`/`docker` command.
+    restart` uses, so the user never needs a raw `brew`/`systemctl`/`docker`
+    command.
 
     Refuses (rather than silently skipping) to touch the native Cassandra
     container if `_cassandra_active_elsewhere` finds Terraform or Compose
@@ -1197,6 +1356,11 @@ def restart_native_component(component: str) -> HealResult:
                 "to native mode.",
             )
         return _restart_native_container(NATIVE_CASSANDRA_CONTAINER)
+    if _is_linux():
+        unit = NATIVE_SYSTEMD_SERVICES.get(component)
+        if unit is None:
+            return HealResult(False, f"Unknown native component: {component}")
+        return _restart_systemd_service(unit)
     brew_name = NATIVE_BREW_SERVICES.get(component)
     if brew_name is None:
         return HealResult(False, f"Unknown native component: {component}")
@@ -1223,6 +1387,8 @@ def heal_kubernetes_pod(pod_name: str) -> HealResult:
     on a failed liveness probe, useful for a Pod that's stuck rather than
     cleanly crash-looping.
     """
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", pod_name):  # inline barrier, CodeQL #4
+        return HealResult(False, f"Refused to act on invalid pod name: {pod_name!r}")
     if _which("kubectl") is None:
         return HealResult(False, f"kubectl not found; cannot heal pod {pod_name}")
     try:
@@ -1237,6 +1403,34 @@ def heal_kubernetes_pod(pod_name: str) -> HealResult:
     return HealResult(True, f"Deleted pod {pod_name} for recreation")
 
 
+def _compose_file_services() -> set[str]:
+    """Service names declared in COMPOSE_FILE's top-level `services:` block.
+
+    Parsed with a line scanner rather than a YAML library (PyYAML is not a
+    runtime dependency): top-level keys start in column 0, and service names
+    are the 2-space-indented keys directly inside `services:`. Returns an
+    empty set when the compose file is missing/unreadable -- the same
+    "can't tell, so don't act" fallback the rest of this module uses.
+    """
+    try:
+        text = COMPOSE_FILE.read_text(encoding="utf-8")
+    except OSError:
+        return set()
+    services: set[str] = set()
+    in_services = False
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if not line[0].isspace():
+            in_services = line.startswith("services:")
+            continue
+        if in_services:
+            m = re.match(r"^  ([A-Za-z0-9][A-Za-z0-9._-]*):\s*(#.*)?$", line)
+            if m:
+                services.add(m.group(1))
+    return services
+
+
 def _compose_component_logs(service: str, *, tail: int = 200) -> HealResult:
     """Fetch recent logs for a Compose service: `docker compose logs <service>`.
 
@@ -1246,8 +1440,26 @@ def _compose_component_logs(service: str, *, tail: int = 200) -> HealResult:
     container's output without the user needing to run a raw `docker`/
     `docker compose` command themselves.
     """
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", service):  # inline barrier, CodeQL #4
+        return HealResult(False, f"Refused to act on invalid service name: {service!r}")
     if _which("docker") is None:
         return HealResult(False, "docker not found; cannot fetch logs")
+    # Resolve the (client-influenced) name against the compose file's own
+    # service list and pass the DECLARED string to the argv, never the
+    # client's (CodeQL #4, py/command-line-injection): regex validation is
+    # not in this query's barrier set in any form, but equality-selection
+    # from a trusted local collection removes the tainted value from the
+    # flow entirely -- the same idiom heal_now uses with probe statuses.
+    for declared in sorted(_compose_file_services()):
+        if declared == service:
+            service = declared
+            break
+    else:
+        return HealResult(
+            False,
+            f"Unknown compose service: {service!r}",
+            f"not declared in {COMPOSE_FILE.name}; no logs to fetch",
+        )
     try:
         cp = _run(
             [
@@ -1316,6 +1528,8 @@ def _docker_container_logs(container: str, *, tail: int) -> HealResult:
     containers rather than Compose services, so `docker compose logs` can't
     see them at all.
     """
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", container):  # inline barrier, CodeQL #4
+        return HealResult(False, f"Refused to act on invalid container name: {container!r}")
     if _which("docker") is None:
         return HealResult(False, "docker not found; cannot fetch logs")
     try:
@@ -1337,6 +1551,8 @@ def _docker_container_logs(container: str, *, tail: int) -> HealResult:
 
 def _kubernetes_pod_logs(pod_name: str, *, tail: int) -> HealResult:
     """Fetch recent logs for a Kubernetes-managed Pod: `kubectl logs <pod>`."""
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", pod_name):  # inline barrier, CodeQL #4
+        return HealResult(False, f"Refused to act on invalid pod name: {pod_name!r}")
     if _which("kubectl") is None:
         return HealResult(False, f"kubectl not found; cannot fetch logs for {pod_name}")
     try:
@@ -1360,19 +1576,41 @@ def _native_component_logs(service: str, *, tail: int) -> HealResult:
     """Fetch recent logs for a native/local-first core component from its real source.
 
     `cassandra` is the plain `nyxgpt-cassandra` Docker container, read via
-    `_docker_container_logs` just like a Terraform component. `api`'s own
-    structured logs and `ollama`'s aggregated logs (written regardless of
-    mode by the `com.nyxgpt.ollama-logs` LaunchAgent -- see
-    docs/api.md#ollama-logs) are both plain files under `~/.nyxGPT/logs`
-    (`api.log`/`ollama.log`). `web` has no structured logging of its own yet
-    (#3430), so it's read from Homebrew's own launchd stdout/stderr
-    (`nyxgpt-web.log`/`.err.log` -- see docs/homebrew.md#web-ui-logs).
+    `_docker_container_logs` just like a Terraform component.
+
+    `api` combines its own structured logs (`~/.nyxGPT/logs/api.log`) with
+    its native service's raw stdout/stderr, as labeled sections -- same
+    pattern as `web` below (#3629). This matters because a startup failure
+    that happens *before* `configure_logging` runs (e.g. the P6-1 bind-
+    address refusal in `app.py`'s lifespan, see #3500) is printed straight to
+    the process's stderr and never reaches `api.log` at all -- without the
+    stderr section, `nyxgpt ops logs api` would report a hollow "no logs"
+    while the actual reason the API is down sits in a native log path the
+    operator has to hunt for by hand, exactly what this function exists to
+    avoid. Read from Homebrew's launchd log path on macOS (`nyxgpt-api.log`/
+    `.err.log` -- see docs/homebrew.md#api-logs), or the same names under
+    `~/.nyxGPT/logs` on Linux, where `nyxgpt-api.service`'s
+    `StandardOutput`/`StandardError` already point there directly (#3508).
+
+    `ollama` reads only its aggregated `~/.nyxGPT/logs/ollama.log` -- no
+    separate stderr section, unlike `api`/`web`: the log-follower agent that
+    maintains it (`scripts/follow-ollama-logs.sh`, see docs/api.md#ollama-
+    logs) already tails its native source with `2>&1`, so stdout and stderr
+    are combined into that one file by construction rather than split across
+    two native files the way `api`/`web`'s launchd/systemd logs are.
+
+    `web` has no structured logging of its own yet (#3430), so it's read
+    from its native service's own stdout/stderr: Homebrew's launchd log
+    path on macOS (`nyxgpt-web.log`/`.err.log` -- see
+    docs/homebrew.md#web-ui-logs), or the same names under `~/.nyxGPT/logs`
+    on Linux, where `nyxgpt-web.service`'s `StandardOutput`/`StandardError`
+    already point there directly (#3508).
     """
     if service == "cassandra":
         return _docker_container_logs(NATIVE_CASSANDRA_CONTAINER, tail=tail)
 
-    if service in ("api", "ollama"):
-        log_file = get_log_dir() / f"{service}.log"
+    if service == "ollama":
+        log_file = get_log_dir() / "ollama.log"
         if not log_file.exists():
             return HealResult(False, f"No log file found for {service}: {log_file}")
         return HealResult(
@@ -1381,12 +1619,40 @@ def _native_component_logs(service: str, *, tail: int) -> HealResult:
             _tail_text_file(log_file, tail),
         )
 
+    if service == "api":
+        structured_log = get_log_dir() / "api.log"
+        if _is_linux():
+            out_file: Path | None = get_log_dir() / "nyxgpt-api.log"
+            err_file: Path | None = get_log_dir() / "nyxgpt-api.err.log"
+        else:
+            prefix = _brew_prefix()
+            out_file = Path(prefix, "var", "log", "nyxgpt-api.log") if prefix else None
+            err_file = Path(prefix, "var", "log", "nyxgpt-api.err.log") if prefix else None
+
+        sections = []
+        if structured_log.exists():
+            sections.append(
+                f"--- api.log ({structured_log}) ---\n{_tail_text_file(structured_log, tail)}"
+            )
+        if out_file is not None and out_file.exists():
+            sections.append(f"--- stdout ({out_file}) ---\n{_tail_text_file(out_file, tail)}")
+        if err_file is not None and err_file.exists():
+            sections.append(f"--- stderr ({err_file}) ---\n{_tail_text_file(err_file, tail)}")
+
+        if not sections:
+            return HealResult(False, f"No log files found for api: {structured_log}")
+        return HealResult(True, f"Fetched last {tail} log line(s) for api", "\n".join(sections))
+
     if service == "web":
-        prefix = _brew_prefix()
-        if prefix is None:
-            return HealResult(False, "Homebrew not found; cannot locate web service logs")
-        out_file = Path(prefix, "var", "log", "nyxgpt-web.log")
-        err_file = Path(prefix, "var", "log", "nyxgpt-web.err.log")
+        if _is_linux():
+            out_file = get_log_dir() / "nyxgpt-web.log"
+            err_file = get_log_dir() / "nyxgpt-web.err.log"
+        else:
+            prefix = _brew_prefix()
+            if prefix is None:
+                return HealResult(False, "Homebrew not found; cannot locate web service logs")
+            out_file = Path(prefix, "var", "log", "nyxgpt-web.log")
+            err_file = Path(prefix, "var", "log", "nyxgpt-web.err.log")
         if not out_file.exists() and not err_file.exists():
             return HealResult(False, f"No log files found for web: {out_file}, {err_file}")
         sections = []
@@ -1422,6 +1688,15 @@ def component_logs(service: str, *, tail: int = 200) -> HealResult:
     name) falls through to `_compose_component_logs`, which already reports
     a clear failure for a nonexistent service.
     """
+    # Inline barrier (CodeQL #4, py/command-line-injection): the SRE-dashboard
+    # `GET /self-heal/logs` endpoint passes its `service` query parameter
+    # straight through to this function, and the `_compose_component_logs`
+    # fallback below puts it directly on a `docker compose logs` argv. Same
+    # pattern/message as restart_component/_bring_up_compose_service/
+    # heal_kubernetes_pod -- validated here, in this function, so the taint
+    # tracker recognizes the guard on the value that reaches the argv.
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", service):
+        return HealResult(False, f"Refused to act on invalid service name: {service!r}")
     status = next((s for s in list_component_status() if s.service == service), None)
     if status is not None:
         if status.state == "absent":
@@ -1790,6 +2065,7 @@ def status() -> dict[str, Any]:
     return {
         "enabled": is_enabled(),
         "mode": detected_mode(components),
+        "compose_probe_available": compose_probe_available(),
         "components": component_dicts,
         "unhealthy_count": unhealthy_count,
         "events": recent_events(20),
@@ -1811,6 +2087,7 @@ __all__ = [
     "list_intentionally_stopped",
     "recent_events",
     "detected_mode",
+    "compose_probe_available",
     "list_component_status",
     "restart_component",
     "restart_native_component",

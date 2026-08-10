@@ -21,6 +21,7 @@ started, read [Configuration](configuration.md) and the root
 - [Alerting](alerting.md) — Grafana alert rules, the Slack contact point, and `nyxgpt ops alert-test`
 - [Kubernetes](kubernetes.md) — local-cluster manifests, canary deploy/gate/promote
 - [Terraform](terraform.md) — local-first infrastructure-as-code
+- [Cloud (AWS)](cloud.md) — `nyxgpt cloud` (SSH-rule IP refresh, lockout recovery)
 - [Self-healing](self-healing.md) — the watchdog, healthchecks, and `/admin/self-heal`
 - [Deployment checklist](deployment-checklist.md) — pre-deploy security/perf/monitoring
 - [Ops helpers](ops.md) — `nyxgpt ops` service management
@@ -39,5 +40,7 @@ started, read [Configuration](configuration.md) and the root
 
 ## Agent system
 
+- [How this project is run](how-this-project-is-run.md) — agent roles, the project board's status flow, decision records, the Definition of Done, and the retrospective
 - [GitHub tokens](github-tokens.md) — agent identities and required scopes
 - [Agent smoke test](agent-smoke.md) — verifying the scrummaster/developer/review loop
+- [Live verification in CI](live-verification-ci.md) — `nyxgpt ops verify`, and how the review agent runs it before APPROVE/REQUEST_CHANGES

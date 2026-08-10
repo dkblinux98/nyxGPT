@@ -127,6 +127,96 @@ System Health screen and the admin dashboard, #3384, #3413.)
 - **Single-user scope.** The wizard edits one global `config.ini` — there is
   no per-session configuration.
 
+### Option 4: Guided secrets setup
+
+`nyxgpt wizard` generates `[auth] api_key` for you, but three secrets still
+require a human to go fetch them from an external service: `[openai]
+api_key`, `[github] pat`, and (if you want to change the auto-generated
+default) `[auth] api_key` itself. `nyxgpt secrets setup` walks through each
+one with masked (`getpass`) entry, a plain-language description of what it's
+for, exactly where to obtain it, and format validation before it's written:
+
+```bash
+nyxgpt secrets setup              # set anything not already set
+nyxgpt secrets setup --reconfigure  # re-prompt for every secret, even set ones
+```
+
+Idempotent: re-running with no `--reconfigure` skips anything already set
+(showing its masked value), so it's safe to run repeatedly, e.g. after a
+fresh install before any of the three are set. The same guided flow is
+available from the web UI at **`/admin/secrets`** (masked entry, per-key
+help, and a "Generate for me" option for `[auth] api_key`), backed by
+`GET|POST /api/v1/config/secrets`.
+
+See [Canonical secret store & sync to GitHub Actions](#canonical-secret-store--sync-to-github-actions)
+below for what to do with these once they're set.
+
+### Option 5: Guided AWS credentials setup
+
+Any `nyxgpt cloud` command, and `[secrets] provider` above, needs AWS
+credentials available to boto3. `nyxgpt cloud credentials-setup` (and the
+`/admin` **AWS Credentials** wizard) walks through the same masked-entry,
+what-it-is/where-to-get-it treatment as Option 4 -- but the AWS access key
+ID/secret access key are **never written to `config.ini`**, routed instead
+to `~/.aws/credentials`, the OS keychain, or left alone if already available
+some other way (instance role, SSO, environment variables). See
+[`docs/cloud.md`](cloud.md#guided-aws-credentials-setup-p6-13-3512) for full
+details, including the `[cloud]` section this writes.
+
+---
+
+## Canonical secret store & sync to GitHub Actions
+
+Several external tokens are **write-once**: the issuing service (Slack,
+GitHub, OpenAI) shows the value only at creation time and never lets you
+read it back afterward. If you then also paste that same value into GitHub's
+**Settings → Secrets and variables → Actions** UI by hand, you now have two
+copies with no way to verify they still match -- and when one needs to
+rotate, it's easy to update only one of them and not notice until CI starts
+failing with stale credentials.
+
+`~/.nyxGPT/config.ini` is the **single canonical store** for these tokens.
+Set them once via `nyxgpt secrets setup` (or `/admin/secrets`), then push the
+declared subset that CI needs to this repo's GitHub Actions secrets with:
+
+```bash
+nyxgpt ops secrets-sync            # push config.ini's mapped secrets to Actions
+nyxgpt ops secrets-sync --dry-run  # show which secrets *would* be pushed, by name only
+```
+
+This is **one direction only**: config.ini → GitHub Actions. Nothing is ever
+read back from GitHub (the Actions secrets API can't return a value anyway).
+Also available from the web UI at `/admin/secrets` ("Sync to GitHub Actions
+secrets"), backed by `POST /api/v1/config/secrets/sync`.
+
+- **What gets synced is a declared mapping, not "everything."**
+  `nyxgpt.config.SECRETS_SYNC_MANIFEST` is the single place that maps a
+  `config.ini` key to its GitHub Actions secret name. A key not listed there
+  is never pushed, even if it's a secret-looking field. Today's manifest:
+
+  | `config.ini` key | Actions secret |
+  |---|---|
+  | `[github] claude_code_oauth_token` | `CLAUDE_CODE_OAUTH_TOKEN` |
+  | `[github] developer_agent_token` | `DEVELOPER_AGENT_TOKEN` |
+  | `[github] scrummaster_agent_token` | `SCRUMMASTER_AGENT_TOKEN` |
+  | `[github] review_agent_token` | `REVIEW_AGENT_TOKEN` |
+  | `[monitoring] slack_bot_token` | `SLACK_BOT_TOKEN` |
+
+  Adding a new synced secret is a one-line addition to that dict -- see
+  `src/nyxgpt/config.py`.
+- **`[github] pat` authenticates the sync call itself** (via the GitHub REST
+  API's Actions secrets endpoints) and is not, itself, a sync target.
+- **Values never appear in logs, tracebacks, or command output.** Sync
+  results report which secrets were set/updated *by name only*; a failure
+  names the key and how to fix it (e.g. missing `[github] pat`, wrong
+  `repo_owner`/`repo_name`), never the value. This matches the existing
+  `***redacted***` convention `get_effective_config_summary` uses for
+  `[error_tracking] dsn`/`[monitoring] grafana_admin_password` -- see
+  `[openai]`/`[github]`/`[monitoring]` below for which fields this covers.
+- **Encryption.** Values are sealed with the repo's Actions public key
+  (libsodium sealed-box, via PyNaCl) before they're ever sent, per
+  [GitHub's Actions secrets API](https://docs.github.com/en/rest/actions/secrets).
+
 ---
 
 ## Container data layout (`~/.nyxGPT/volumes/`)
@@ -170,6 +260,7 @@ General application behavior.
 ```ini
 [nyxgpt]
 default_model = qwen2.5:0.5b
+session_backend = file
 sessions_dir = ~/.nyxGPT/sessions
 vectorstore_dir = ~/.nyxGPT/vectorstore
 chat_timeout_seconds = 60
@@ -182,8 +273,9 @@ system_prompt_minimize = false
 | Key | Description |
 |---|---|
 | `default_model` | Ollama model name used when none is specified (default: `llama3.1:8b`) |
-| `sessions_dir` | Directory for chat session storage (default: `~/.nyxGPT/sessions`) |
-| `vectorstore_dir` | Directory for vector embeddings and RAG data (default: `~/.nyxGPT/vectorstore`) |
+| `session_backend` | Chat session storage backend: `file` (default) or `cassandra`. `cassandra` stores sessions in the stack's Cassandra (`[rag] cassandra_*`), so every deployment mode pointed at the same Cassandra shares one session list and multi-instance access is safe; existing `sessions_dir` files are imported once (idempotently) on API startup. Can be overridden per-process with the `NYXGPT_SESSION_BACKEND` environment variable. See [session-storage.md](session-storage.md) (#3590). |
+| `sessions_dir` | Directory for chat session storage with the `file` backend (default: `~/.nyxGPT/sessions`). **Deprecated** for multi-instance / containerized deployments: under `session_backend = cassandra` it is only read once as the migration source. Must resolve *strictly inside* your home directory or the system temp directory -- values outside either, or equal to one of those roots exactly (e.g. `sessions_dir = ~`), are rejected at load time (CodeQL py/path-injection hardening, #3639/#3657). |
+| `vectorstore_dir` | Directory for vector embeddings and RAG data (default: `~/.nyxGPT/vectorstore`). Same home-directory/temp-directory restriction as `sessions_dir`. |
 | `chat_timeout_seconds` | Timeout for a single chat request (default: `180`) |
 | `auto_summarize_enabled` | Automatically generate session title/summary/tags |
 | `auto_summarize_after_messages` | Trigger auto-summarization after N messages (0 to disable) |
@@ -227,6 +319,11 @@ port = 8000
 |---|---|
 | `host` | Bind address for the API server (default: `127.0.0.1`) |
 | `port` | Port for the API server (default: `8000`) |
+
+**Non-loopback binds require auth:** setting `host` to anything other than a
+loopback address (`127.0.0.1`, `localhost`, `::1`) requires `[auth] enabled
+= true`, or the API refuses to start — see [`[auth]`](#auth-section) above
+and [`docs/security.md`](security.md#network-security).
 
 ---
 
@@ -310,6 +407,11 @@ header = X-API-Key
 - Rotate keys regularly and immediately if compromise is suspected
 
 **Note:** Authentication configuration is **hot-reloadable** and takes effect immediately without restart.
+
+**Enforced at startup:** if `[api] host` (below) is bound non-loopback while
+`enabled` isn't `true`, the native API refuses to start rather than serving
+unauthenticated — see
+[`docs/security.md#network-security`](security.md#network-security).
 
 **Docker Compose:** the `web` and `api` containers need this same key as the
 `NYXGPT_AUTH_API_KEY` environment variable (see `docker-compose.yml`).
@@ -525,6 +627,12 @@ api_key =
 - Visit: https://platform.openai.com/api-keys
 - Create a new API key
 - Store it securely in your config file
+- Or run `nyxgpt secrets setup` (or `/admin/secrets`) for guided, masked
+  entry instead of hand-editing this field -- see [Guided secrets
+  setup](#option-4-guided-secrets-setup). This key is write-once (OpenAI
+  won't show it again), so config.ini is its canonical copy -- see
+  [Canonical secret store & sync to GitHub
+  Actions](#canonical-secret-store--sync-to-github-actions).
 
 **Security best practices:**
 - Keep your API key confidential - never commit it to version control
@@ -594,7 +702,15 @@ claude_code_oauth_token =
 1. **Create a Personal Access Token (PAT):**
    - Visit: https://github.com/settings/tokens
    - Generate a new token with `repo` and `project` permissions
-   - Store it in the `pat` field
+   - Store it in the `pat` field -- or run `nyxgpt secrets setup` (or
+     `/admin/secrets`) for guided, masked entry, and format validation. This
+     token is write-once (GitHub won't show it again), so config.ini is its
+     canonical copy: see [Guided secrets
+     setup](#option-4-guided-secrets-setup) and [Canonical secret store &
+     sync to GitHub
+     Actions](#canonical-secret-store--sync-to-github-actions). `pat`
+     authenticates `nyxgpt ops secrets-sync`'s calls to the Actions secrets
+     API but is not itself pushed there.
 
 2. **Create agent accounts (optional):**
    - Create separate GitHub accounts for each agent
@@ -619,6 +735,65 @@ claude_code_oauth_token =
 - See [`docs/github-tokens.md`](github-tokens.md) for detailed token setup
 
 **Note:** Agent tokens fall back to the main `pat` if not explicitly set.
+
+**Note:** `scrummaster_agent_token`, `developer_agent_token`,
+`review_agent_token`, and `claude_code_oauth_token` are synced to this
+repo's GitHub Actions secrets by `nyxgpt ops secrets-sync` -- see
+[Canonical secret store & sync to GitHub
+Actions](#canonical-secret-store--sync-to-github-actions).
+
+---
+
+## `[secrets]` section
+
+Cloud secrets provider for `[auth] api_key`, `[openai] api_key`, and
+`[github] pat` (P6-10, #3507) -- AWS-only, and only relevant on a cloud
+deploy. Local deploys leave this section unset and are unaffected.
+
+```ini
+[secrets]
+provider =
+region =
+ssm_prefix = /nyxgpt
+secretsmanager_id = nyxgpt
+```
+
+| Key | Description |
+|---|---|
+| `provider` | `""` (default, local deploy) reads the three credentials from `config.ini` as usual. `ssm` or `secretsmanager` resolves them from AWS instead -- see [`docs/cloud.md`](cloud.md#cloud-secrets-ssm--secrets-manager) for full setup, layout, and rotation. |
+| `region` | AWS region to resolve secrets from. Blank falls back to boto3's normal region resolution. |
+| `ssm_prefix` | SSM Parameter Store path prefix (`provider = ssm`). Each credential is one parameter at `f"{ssm_prefix}/{key}"`. |
+| `secretsmanager_id` | Secrets Manager secret id/ARN (`provider = secretsmanager`). Holds one JSON object with all three credentials. |
+
+See [`docs/cloud.md`](cloud.md#cloud-secrets-ssm--secrets-manager) for setup, the AWS-side layout, IAM permissions, and rotation.
+
+---
+
+## `[cloud]` section
+
+The AWS identity *reference* nyxGPT uses for its own AWS API calls (`nyxgpt
+cloud allow-ip`, cloud deploy, `[secrets]` resolution above) -- P6-13,
+#3512. Excluded from the general Configuration Wizard: it has its own
+guided flow instead (`nyxgpt cloud credentials-setup` / the `/admin` AWS
+Credentials wizard), since the actual AWS access key pair must never be
+hand-edited into this file.
+
+```ini
+[cloud]
+profile = nyxgpt
+region =
+credentials_source =
+```
+
+| Key | Description |
+|---|---|
+| `profile` | AWS CLI profile name nyxGPT uses when calling boto3. |
+| `region` | Default AWS region for nyxGPT's own AWS API calls. |
+| `credentials_source` | Where the access key pair for `profile` was routed by the guided setup: `profile` (`~/.aws/credentials`), `keychain` (OS keychain), or `ambient` (already available some other way). Set by the guided flow -- not meant to be hand-edited. |
+
+This section **never holds an AWS access key or secret access key** -- see
+[`docs/cloud.md`](cloud.md#guided-aws-credentials-setup-p6-13-3512) for
+where those actually go.
 
 ---
 
@@ -732,6 +907,7 @@ grafana_ui_url = http://localhost:3001
 prometheus_ui_url = http://localhost:9090
 grafana_admin_password =
 slack_webhook_url =
+slack_bot_token =
 ```
 
 | Key | Description |
@@ -741,6 +917,7 @@ slack_webhook_url =
 | `prometheus_ui_url` | URL of the local Prometheus UI -- a debug tool now (#3411); metrics are browsed inside Grafana instead |
 | `grafana_admin_password` | Grafana's admin password, auto-generated by `nyxgpt wizard`, never returned by `GET /api/v1/monitoring`. Optional: if left unset, `nyxgpt ops install` manages its own generated secret at `~/.nyxGPT/secrets/grafana-admin-password` instead. Either way, `nyxgpt ops install` deterministically resets the running Grafana container's actual admin password to match via `grafana cli admin reset-admin-password` -- this works on both a fresh and a long-lived Grafana volume, unlike `GF_SECURITY_ADMIN_PASSWORD`, which only applies on first boot. See [security.md](security.md#api-key-management). |
 | `slack_webhook_url` | Slack incoming webhook URL for Grafana's `nyxgpt-slack` alerting contact point. Optional: alert rules fire and stay visible in Grafana's Alerting UI either way -- this only controls whether firing alerts also post to Slack. Set from the config wizard's Additional Settings (masked as a secret) or directly in config.ini, then run `nyxgpt ops env-sync` (or `nyxgpt ops install`) to provision it. See [alerting.md](alerting.md#slack-contact-point). |
+| `slack_bot_token` | Slack bot token the `notify-merge-conflicts` CI workflow uses to post notifications. Write-once (Slack shows it only at creation) -- config.ini is its canonical copy; run `nyxgpt ops secrets-sync` to push it to this repo's `SLACK_BOT_TOKEN` Actions secret instead of pasting it into GitHub's Secrets UI by hand. See [Canonical secret store & sync to GitHub Actions](#canonical-secret-store--sync-to-github-actions). |
 
 Requires the `monitoring` Compose profile (local Prometheus + Grafana),
 started automatically by `nyxgpt ops install` (or standalone via `nyxgpt

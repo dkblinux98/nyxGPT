@@ -400,7 +400,7 @@ export default function AdminDashboardPage() {
                   </div>
                   {ov.resource_metrics && (
                     <div style={{ fontSize: 14, color: 'var(--muted-foreground)' }}>
-                      Memory: <strong>{ov.resource_metrics.memory.rss_mb.toFixed(0)} MB</strong> ({ov.resource_metrics.memory.percent.toFixed(1)}%) · CPU:{' '}
+                      Memory: <strong>{ov.resource_metrics.memory.rss_mb.toFixed(0)} MB</strong> ({ov.resource_metrics.memory.percent.toFixed(1)}%) · CPU (process):{' '}
                       <strong>{ov.resource_metrics.cpu.process_percent.toFixed(1)}%</strong> · Queue depth:{' '}
                       <strong>{ov.resource_metrics.queue.depth}</strong>
                     </div>

@@ -4,6 +4,14 @@ set -eu
 CONFIG_DIR="${HOME:-/root}/.nyxGPT"
 mkdir -p "$CONFIG_DIR"
 
+# Tells nyxgpt.app's startup bind-security check (P6-1) that the `--host
+# 0.0.0.0` below is this container's own network namespace, not the host's --
+# real exposure is gated by Docker's port-publish (NYXGPT_BIND_ADDR) or the
+# Kubernetes Service type, neither of which is visible from inside the
+# process. Set unconditionally: both Compose and Kubernetes run this same
+# entrypoint/image.
+export NYXGPT_CONTAINER_RUNTIME=1
+
 if [ -f /etc/nyxgpt/config/config.ini ]; then
     cp /etc/nyxgpt/config/config.ini "$CONFIG_DIR/config.ini"
 fi

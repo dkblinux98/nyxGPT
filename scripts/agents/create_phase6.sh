@@ -78,10 +78,13 @@ for s in "$SPRINT_EARLY" "$SPRINT_LATE"; do
 done
 echo "[phase6] Sprint split: early='$SPRINT_EARLY' late='$SPRINT_LATE'"
 
-# --- Duplicate guard ---
+# --- Duplicate guard --- (REST Search API -- its own rate pool, separate
+# from both core REST and GraphQL)
 P61_TITLE="feat: refuse non-loopback API bind without auth enabled"
-dupe="$(gh issue list --repo "${REPO_OWNER}/${REPO_NAME}" --state open \
-  --search "\"$P61_TITLE\" in:title" --json number --jq '.[0].number // empty')"
+dupe="$(gh api search/issues \
+  --method GET \
+  -f q="\"$P61_TITLE\" in:title state:open type:issue repo:${REPO_OWNER}/${REPO_NAME}" \
+  --jq '.items[0].number // empty')"
 if [[ -n "$dupe" ]]; then
   _die "Open issue #$dupe already carries the P6-1 title — Phase 6 appears already filed. Aborting (re-running duplicates)."
 fi

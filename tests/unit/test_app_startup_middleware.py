@@ -144,6 +144,63 @@ def test_log_with_context_uses_extra_only_when_request_id_falsy():
 
 
 # ----------------------------
+# lifespan: bind-security refusal gate (P6-1, #3500)
+#
+# These patch `validate_bind_security` itself rather than `load_config` --
+# the host x auth matrix that decides its return value is covered directly
+# in test_config.py, so here we only need to verify lifespan reacts to that
+# return value correctly. Replacing `load_config` wholesale would drop the
+# session-wide test config's `[tracing] enabled = false` (see
+# tests/conftest.py), letting the real OTel SDK activate a process-global
+# TracerProvider and poison later tests (test_tracing.py, test_request_id.py)
+# that depend on tracing staying off.
+# ----------------------------
+
+
+def test_lifespan_refuses_non_loopback_host_without_auth():
+    with (
+        patch(
+            "nyxgpt.app.validate_bind_security",
+            return_value="Refusing to start: [api] host = 0.0.0.0 is not loopback-only, ...",
+        ),
+        pytest.raises(RuntimeError, match="Refusing to start"),
+        TestClient(app),
+    ):
+        pass
+
+
+def test_lifespan_allows_when_bind_security_check_passes():
+    with (
+        patch("nyxgpt.app.validate_bind_security", return_value=None),
+        TestClient(app) as client,
+    ):
+        resp = client.get("/health")
+    assert resp.status_code == 200
+
+
+def test_lifespan_allows_loopback_host_without_auth():
+    """The default test config is loopback with auth off -- unaffected, no patching needed."""
+    with TestClient(app) as client:
+        resp = client.get("/health")
+    assert resp.status_code == 200
+
+
+def test_lifespan_container_runtime_skips_bind_security_check(monkeypatch):
+    """NYXGPT_CONTAINER_RUNTIME (set by docker/entrypoint.sh) bypasses the
+    refusal: Compose/Kubernetes always bind 0.0.0.0 for the container's own
+    network namespace, unrelated to real host/cluster exposure. Startup must
+    succeed even though validate_bind_security would refuse.
+    """
+    monkeypatch.setenv("NYXGPT_CONTAINER_RUNTIME", "1")
+    with (
+        patch("nyxgpt.app.validate_bind_security", return_value="Refusing to start: ..."),
+        TestClient(app) as client,
+    ):
+        resp = client.get("/health")
+    assert resp.status_code == 200
+
+
+# ----------------------------
 # lifespan: logging / tracing / error-tracking init failures
 # ----------------------------
 
@@ -505,6 +562,43 @@ def test_apply_auth_config_updates_reads_existing_file(tmp_path):
     # call's parser.read() + rewrite.
     assert parsed.getboolean("auth", "enabled") is True
     assert parsed.get("auth", "header") == "X-Second-Key"
+
+
+# ----------------------------
+# perms sweep: _apply_hot_config_updates / _apply_auth_config_updates must
+# leave config.ini at 0600, since both can (re)create it from scratch on a
+# fresh install and _apply_auth_config_updates writes [auth] api_key -- a
+# secret -- directly to disk (#3500).
+# ----------------------------
+
+
+def test_apply_hot_config_updates_lands_0600(tmp_path):
+    cfg_path = tmp_path / "config.ini"
+    with patch("nyxgpt.app._config_file_path", return_value=cfg_path):
+        _apply_hot_config_updates({"default_model": "m2"})
+    assert oct(cfg_path.stat().st_mode & 0o777) == "0o600"
+
+
+def test_apply_auth_config_updates_lands_0600(tmp_path):
+    cfg_path = tmp_path / "config.ini"
+    with patch("nyxgpt.app._config_file_path", return_value=cfg_path):
+        _apply_auth_config_updates({"api_key": "supersecret"})
+    assert oct(cfg_path.stat().st_mode & 0o777) == "0o600"
+
+
+def test_apply_auth_config_updates_rechmods_a_pre_existing_permissive_file(tmp_path):
+    """A config.ini created some other way (e.g. by an admin manually) with
+    looser perms must be tightened back to 0600 on the next hot update, not
+    left as-is.
+    """
+    cfg_path = tmp_path / "config.ini"
+    cfg_path.write_text("[auth]\nenabled = false\n", encoding="utf-8")
+    cfg_path.chmod(0o644)
+
+    with patch("nyxgpt.app._config_file_path", return_value=cfg_path):
+        _apply_auth_config_updates({"enabled": True})
+
+    assert oct(cfg_path.stat().st_mode & 0o777) == "0o600"
 
 
 # ----------------------------

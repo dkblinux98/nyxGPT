@@ -20,6 +20,7 @@ silently -- `apply_updates` itself never deletes anything.
 
 from __future__ import annotations
 
+import importlib.resources
 import os
 import re
 from collections.abc import Callable
@@ -51,7 +52,15 @@ def _resolve_example_config_path() -> Path:
          this module. Found here, the app imports with no env var -- which the
          formula's ``test`` block and the always-on self-heal watchdog both
          rely on.
-      3. ``<repo root>/example.config.ini`` -- the source-checkout / local-first
+      3. ``<nyxgpt.resources>/example.config.ini`` -- packaged resource data
+         (#3622). A bare `pip install nyxgpt` from PyPI (no Homebrew/systemd
+         installer step to copy the package-adjacent case-2 file, no repo
+         checkout for case 4 below) still needs `import nyxgpt.app` to work --
+         example.config.ini is symlinked into `src/nyxgpt/resources/` the same
+         way `.env.example` is (see `nyxgpt.resources` and #3621's
+         importlib.resources treatment), so setuptools bundles a real copy
+         into the wheel and this resolves with no repo checkout present.
+      4. ``<repo root>/example.config.ini`` -- the source-checkout / local-first
          layout, where this module is at ``src/nyxgpt/config_wizard.py`` so
          ``parents[2]`` is the repo root.
     """
@@ -61,6 +70,9 @@ def _resolve_example_config_path() -> Path:
     packaged = Path(__file__).resolve().parent / "example.config.ini"
     if packaged.exists():
         return packaged
+    resource = importlib.resources.files("nyxgpt.resources").joinpath("example.config.ini")
+    if resource.is_file():
+        return Path(str(resource))
     return Path(__file__).resolve().parents[2] / "example.config.ini"
 
 
@@ -70,9 +82,15 @@ _EXAMPLE_CONFIG_PATH = _resolve_example_config_path()
 # these are becoming *agent-level* concerns rather than nyxGPT options, not
 # things a nyxGPT user configures. `openai` will resurface once external
 # commercial LLM support is added -- excluded cleanly here rather than its
-# support being deleted. Every other section is in scope: when in doubt the
-# wizard covers a section rather than excluding it (owner decision, #3388).
-EXCLUDED_SECTIONS = frozenset({"paths", "openai", "github"})
+# support being deleted. `cloud` is excluded because it has its own guided
+# flow instead (`aws_credentials_setup.py`, #3512): the actual AWS access
+# key pair is never stored in this section (routed to ~/.aws/credentials or
+# the OS keychain instead) and always travels together with that flow's
+# destination choice, so editing `[cloud] profile`/`region` here without
+# going through it could silently desync from where the key pair actually
+# lives. Every other section is in scope: when in doubt the wizard covers a
+# section rather than excluding it (owner decision, #3388).
+EXCLUDED_SECTIONS = frozenset({"paths", "openai", "github", "cloud"})
 
 
 class WizardValidationError(ValueError):
@@ -856,11 +874,17 @@ def apply_updates(
     and anything hand-added) survive a save byte-for-byte (#3388). Never
     deletes a key -- that's `remove_keys`'s job, only invoked once a user
     confirms a key `find_stale_keys` reported. Returns the values written.
+
+    Chmods to 0600 after every write (not just on creation): this is the
+    general wizard-save endpoint (`POST /config/sections`) and `validated`
+    can include `[auth] api_key`, so a config.ini created here must never be
+    left at the default umask (typically world-readable).
     """
-    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     original_text = cfg_path.read_text(encoding="utf-8") if cfg_path.exists() else ""
     new_text, _removed = _merge_ini_text(original_text, validated, None)
     cfg_path.write_text(new_text, encoding="utf-8")
+    cfg_path.chmod(0o600)
 
     return {section: dict(fields) for section, fields in validated.items()}
 

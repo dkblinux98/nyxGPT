@@ -12,6 +12,34 @@ This is the procedural “how” for implementing issues. Authority is defined i
 - Ensure issue is assigned to developer-agent and status is In Progress.
 - Confirm Phase/Sprint fields are set.
 
+## 1a) Acceptance-criteria capability guardrail (#3647)
+
+Applies whenever developer-agent authors or edits an issue's acceptance
+criteria — filing a follow-up issue, splitting scope, or proposing an AC
+during implementation. Every checkbox must be something the dev sandbox can
+actually execute and verify itself; otherwise the loop stalls on a step no
+one but a human/EA can perform, with no signal that it's stuck.
+
+- **Known sandbox gaps** (non-exhaustive — verify capability, don't assume):
+  live `workflow_dispatch`/Actions-API dispatch or run inspection, repo
+  **Settings** changes (branch protection, secrets, variables, webhooks),
+  anything requiring a `gh` CLI invocation (prohibited by this runbook's own
+  implementation instructions — see the "CRITICAL PROHIBITIONS" block in
+  the developer-implement prompt), and any step needing credentials/tokens
+  the sandbox isn't issued.
+- **If an AC needs one of these anyway**, don't file it as a plain
+  checkbox. Either drop it from the AC list (implementation + tests are
+  enough to close the issue) and file a **separate** owner/EA-assisted
+  follow-up, or keep it in this issue but mark it explicitly, e.g.:
+  `- [ ] (owner/EA-assisted) Dispatch a live workflow_dispatch run and
+  attach the run link as evidence.` The marker tells the review agent not
+  to block acceptance on a step the dev sandbox structurally cannot do.
+- **Context:** #3614/PR #3645 required live `workflow_dispatch` dry-run
+  evidence as an unmarked AC; the dev agent's sandbox had no Actions
+  dispatch capability (documented in its own commit `ae4160f5`), so the
+  executive assistant had to run it manually with no guardrail flagging the
+  gap ahead of time.
+
 ## 2) Branching
 - Create a short-lived branch named with issue reference, e.g.:
   - `feat/<issue-id>-<slug>` or `fix/<issue-id>-<slug>`
@@ -124,18 +152,18 @@ these triggers is added or edited — the review-runbook checklist entry for
 | `notify_scrum_ready.yml` | `issue_comment` | `SCRUMMASTER_AGENT_TOKEN`, dispatches the scrummaster select-and-start loop | commenter ∈ `{HUMAN_OWNER, SCRUM_AGENT, DEV_AGENT, REVIEW_AGENT}` | Fixed by #3600 |
 | `claude-code-review.yml` | `pull_request`(review_requested,synchronize), `issue_comment`, `workflow_dispatch` | Bash/Write/Edit + `CLAUDE_CODE_OAUTH_TOKEN` | `@review` path: commenter ∈ `{HUMAN_OWNER, REVIEW_AGENT, DEV_AGENT}` + fork-PR guard; other triggers already gated on `requested_reviewer`/`assignee==REVIEW_AGENT` | Fixed by #3600 |
 | `handle_acceptance_failure.yml` | `issue_comment` | issues/PR write, `DEV_AGENT_TOKEN` | `comment.user == HUMAN_OWNER` | Reference pattern, unchanged |
-| `developer_auto_implement.yml` | `issues`(assigned), `issue_comment` | `contents`/`issues`/PR write, `DEV_AGENT_TOKEN` | assignee==DEV_AGENT (issues) / `author_association==OWNER` or `user.login==DEV_AGENT` (`RETRY_IMPLEMENTATION`) | Reference pattern, unchanged |
+| `developer_auto_implement.yml` | `issues`(assigned), `issue_comment` | `contents`/`issues`/PR write, `DEV_AGENT_TOKEN` | assignee==DEV_AGENT (issues) / `author_association==OWNER` or `user.login` ∈ `{DEV_AGENT, REVIEW_AGENT}` (`RETRY_IMPLEMENTATION`) | #3647: extended to `REVIEW_AGENT` so `assign_and_trigger_developer`'s redispatch-fallback comment (posted whenever it has to unassign-then-reassign an already-assigned dev agent) actually starts a run |
 | `scrummaster_sprint_reorg_apply.yml` | `issue_comment` | project field writes | `author_association==OWNER` + release-issue check | Unchanged |
 | `acceptance_plan.yml` | `issues`(edited) | issues write | `github.actor==HUMAN_OWNER` + plan marker in body | Unchanged |
 | `add-to-release-issue-on-milestone.yml` | `issues`(milestoned) | issues write (`GITHUB_TOKEN`) | none, but `milestoned` can only be produced by a user with write access — no public-actor path exists | Unchanged, no gate needed |
 | `assign_backlog.yml` | `issues`(opened,reopened) | issues write (`SCRUMMASTER_AGENT_TOKEN`), adds an assignee | none besides `AGENTS_ENABLED` | Unchanged — write is scoped to adding scrummaster-agent as assignee on the triggering issue itself; no cross-resource write, no code exec, no merge |
-| `ensure_project_hygiene.yml` | `issues`(opened,reopened), `pull_request`(opened,reopened) | issues/PR write (`SCRUMMASTER_AGENT_TOKEN`) | none besides `event_name` checks | Unchanged — writes only project fields/labels/milestone on the same issue/PR that triggered it; no cross-resource write |
+| `ensure_project_hygiene.yml` | `issues`(opened), `pull_request`(opened,reopened) | issues/PR write (`SCRUMMASTER_AGENT_TOKEN`) | none besides `event_name` checks | Unchanged — writes only project fields/labels/milestone on the same issue/PR that triggered it; no cross-resource write |
 | `auto-check-tasklist.yml` | `issues`(closed), `repository_dispatch` | issues write | none besides `AGENTS_ENABLED` | Unchanged — only checks a box on a tracking issue that already contains an unchecked `- [ ] #<closed-issue-number>` line placed there by scrummaster automation beforehand; an attacker can close only issues they already have permission to close, and gains no reference in a tracking issue they don't already appear in |
 | `link_revert_pr_to_issue.yml` | `pull_request`(opened) | pull-requests write (`github.token`) | gated on `body` `startsWith('Reverts')` (attacker-controlled string) | Unchanged — re-verified during this audit: every write (`gh pr edit`, the informational comment) targets `github.event.pull_request.number`, i.e. the PR the attacker themselves just opened. Crafting a "Reverts owner/repo#N" body lets an attacker rewrite the body of *their own* PR to include a `Closes #ISSUE` line (extracted read-only from a real PR's linked issue) — this writes no resource the attacker doesn't already control, and any downstream merge/close of that PR is independently gated elsewhere. No actor gate added. |
 | `notify-merge-conflicts.yml` | `pull_request`(opened,synchronize,reopened) | issues write (comment only) | none | Unchanged — notification only, no merge/code-exec |
 | `delete_branch_on_pr_close.yml` | `pull_request`(closed) | contents write (branch delete) | none, but explicitly skips fork-head PRs + branch allow-pattern + deny-list | Unchanged — already scoped safely by construction |
 | `claude.yml` | `issue_comment`, `pull_request_review_comment`, `issues`(opened,assigned), `pull_request_review` | Bash/Read/Write/Edit, `CLAUDE_CODE_OAUTH_TOKEN`; job-level `GITHUB_TOKEN` is read-only | **none** — any `@claude` mention triggers a full agentic session | **Known gap, out of #3600's scope.** The read-only job token can't push/merge directly, but on a public repo any user can trigger a costly agent session that posts comments under the bot's identity. Flagged for an owner decision (gate to `HUMAN_OWNER`/agent identities, or accept the risk for public Q&A). No fast-follow issue has been filed for this yet — file one before relying on this row as a tracked follow-up. |
-| `admin_label_rename.yml`, `bulk_set_issue_status.yml`, `promote_accepted_features.yml`, `reconcile_closed_backlog_status.yml`, `scrummaster_sprint_report.yml`, `usage_limit_retry.yml`, `terraform-local-smoke.yml`, `validate-web-routes.yml` | `workflow_dispatch`/`schedule`/path-filtered CI | varies | N/A | No comment/issue-content-driven public-actor path |
+| `admin_label_rename.yml`, `bulk_set_issue_status.yml`, `promote_accepted_features.yml`, `reconcile_closed_backlog_status.yml`, `scrummaster_sprint_report.yml`, `usage_limit_retry.yml`, `terraform-local-smoke.yml`, `validate-web-routes.yml`, `security-scan.yml` | `workflow_dispatch`/`schedule`/path-filtered CI | varies | N/A | No comment/issue-content-driven public-actor path. `security-scan.yml` (#3501, pending owner hand-carry per `docs/security-scanning-ci.md`) has no write permissions block and calls no `gh`/write APIs -- `pull_request`/`push` triggered but out of scope for this table's actor-gate requirement per §3b's "read-only automation is exempt." |
 
 **Verification.** Each new `if:` condition was hand-traced against
 representative actors:
@@ -173,6 +201,179 @@ next `@approve-merge`, `READY_FOR_NEXT_ISSUE`, and `@review` invocations in
 normal agent-loop operation after merge exercise the new gates for real, for
 an allowed actor.
 
+## 3d) Security scanning (#3501)
+
+CI runs three scanners on every push/PR (proposed workflow staged at
+`docs/security-scanning-ci.md` pending owner hand-carry into
+`.github/workflows/` -- see §3b, agents can't write that path directly):
+bandit (Python SAST), pip-audit (Python dependency vulnerabilities), and
+`npm audit` via `audit-ci` (web dependency vulnerabilities). Full scanner
+docs, gate thresholds, and the suppression-file format live in
+[`security/README.md`](../../security/README.md) -- this section covers
+when a developer needs to touch them.
+
+- **Run locally before pushing** if your change touches `src/` (bandit +
+  pip-audit) or `web/package.json`/`web/package-lock.json` (audit-ci):
+  ```bash
+  bandit -c pyproject.toml -r src/ --severity-level high --confidence-level high
+  pip-audit
+  cd web && npm run audit:ci
+  ```
+- **A new HIGH-severity/HIGH-confidence bandit finding, an unignored
+  pip-audit vulnerability, or a new high/critical npm advisory not already
+  in the allowlist will fail CI.** Fix the underlying issue (upgrade the
+  dependency, change the code pattern) rather than reaching for a
+  suppression by default.
+- **Only suppress after triage**, and only with a justification comment and
+  today's date, per the format in `security/README.md`:
+  - bandit: inline `# nosec <RULE_ID> -- <reason>` at the flagged line
+    (bandit's own mechanism -- no separate baseline file).
+  - pip-audit: add the vuln ID to `security/pip-audit-ignore.txt`.
+  - npm/audit-ci: add the module name (or the more specific advisory-ID /
+    dependency-path form) to the `allowlist` array in `web/audit-ci.jsonc`.
+  Call out any new suppression explicitly in the PR description so review
+  evaluates the justification, not just the diff.
+- A dependency bump that resolves an existing allowlisted/ignored finding
+  should remove that entry in the same PR -- don't let suppressions outlive
+  the vulnerability they were accepting.
+
+## 3e) Self-heal retry budget, same-signature disproof, and reachability-aware FIXED (#3689)
+
+`developer_auto_implement.yml`'s Phase 0-3 self-heal chain (usage-limit
+detection, deterministic classification, scripted fix attempts, then Claude
+reasoning) auto-retries a failed run when it judges the error transient.
+The 2026-08-09 #3687 incident showed the original design could loop
+indefinitely: the retry cap was keyed to a label each Phase 3 diagnosis
+invented fresh, and its "manual intervention resets the count" check
+matched this workflow's *own* comments (posted via `DEVELOPER_AGENT_TOKEN`
+under the real login `myGPT-developer-agent`, not `github-actions[bot]`),
+so the cap never actually bound anything. Three fixes:
+
+- **Unforgeable retry cap, keyed to (issue, failed step).** Every
+  auto-retry comment carries a machine-readable marker:
+  `<!-- nyxgpt-retry: step=<slug> sig=<hash> n=<N> -->`. The "Compute retry
+  budget" step (`scripts/agents/lib/retry_budget.py`, called from
+  `developer_auto_implement.yml`) counts markers for the current failed
+  step since the last comment from `author_association == "OWNER"` --
+  the same signal the workflow's own `RETRY_IMPLEMENTATION` trigger gate
+  already uses for "human intervention" (§3b). Nothing else resets the
+  count: not a fresh Phase-3-invented error-type label, not a `STATUS`
+  change, not this workflow's own bot comments. The cap is 3, hard-coded in
+  `retry_budget.MAX_RETRIES`. Pure logic lives in `retry_budget.py`
+  (unit-tested in `tests/unit/test_retry_budget.py`); the workflow only
+  does the `gh api`/marker-rendering glue, mirroring the `sprint_calc.py`
+  pattern (#3480).
+- **Same-signature disproof.** The signature is a hash of (failed step,
+  normalized error excerpt). If the immediately preceding auto-retry's
+  marker carries the same signature as the current failure, that
+  empirically disproves "transient" -- a retry already happened and
+  reproduced the identical failure. The Phase 3 prompt is told this
+  up front (its "Step 0") and instructed not to write `STATUS=TRANSIENT`
+  again; the "Auto-retry on failure" step also enforces it as a hard
+  backstop for Phase 3 verdicts and for `retriable:test_failure` (flaky-or-
+  deterministic test failures deserve a human look on the 2nd identical
+  failure, not a 3rd blind retry). Deterministic rate-limit/network/
+  stale-ref backoffs are intentionally excluded -- their signature is
+  expected to legitimately repeat across successive waits.
+- **Reachability-aware `FIXED` vs `FIXED_REQUIRES_MERGE`.** Phase 3 must
+  reason about *where its fix landed* vs. *where the failing step executes
+  from*, not just whether the fix is correct. `issue_comment`-triggered
+  runs of this workflow always execute the workflow definition and any
+  scripts it shells out to from the repository's **default branch** (§3c)
+  -- never from whatever work branch a fix commit landed on. Before writing
+  `STATUS=FIXED` for a code/script/workflow-file fix, Phase 3 checks
+  `git merge-base --is-ancestor <FIX_SHA> origin/<RELEASE_BRANCH>`. If the
+  fix isn't reachable, it writes the new terminal status
+  `STATUS=FIXED_REQUIRES_MERGE` with `COMMIT_SHA` and `RECOMMENDATION`
+  instead -- this never auto-retries; a dedicated step escalates
+  immediately to the owner with the commit SHA and a cherry-pick/merge
+  recommendation.
+
+All three exhaustion paths (retry cap exceeded, same-signature forced
+escalation, `FIXED_REQUIRES_MERGE`, and the pre-existing `FATAL`
+classification) route through the standard escalation comment and now also
+call `sprint_autopilot_kick` (`scripts/agents/lib/gh_project.sh`, #3480) --
+previously only the review-agent's escalation path did this, so a
+developer-side escalation could silently park the sprint-autopilot queue
+instead of freeing it to move to the next issue.
+
+**Human-channel (Slack) notification (#3695).** The 2026-08-09 #3513
+incident showed a correct `FATAL`/`FIXED_REQUIRES_MERGE` diagnosis can sit
+unread in the issue thread for hours if the owner is not actively watching
+GitHub -- the "Sprint autopilot kick (developer-side escalation)" step that
+follows all three exhaustion paths above also calls
+`notify_human_escalation` (`scripts/agents/lib/gh_project.sh`) with the
+firing step's one-line diagnosis and recommended action (e.g. "merge
+`<sha>` to v3.0.0" for `FIXED_REQUIRES_MERGE`). This sends a Slack DM to
+the owner via the existing `SLACK_BOT_TOKEN` + `SLACK_USER_ID` Actions
+secrets (already configured for `notify-merge-conflicts.yml` -- no new
+secrets). Missing secrets or a failed Slack call degrade silently to the
+comment-only behavior that already existed; the GitHub escalation comment
+is always posted regardless. Repeated firings for the same (issue, state)
+within a 60-minute window are suppressed via a dedup marker comment
+(`_slack_notify_recent`) so a retry loop cannot spam the channel.
+
+Separately, the "Verify issue is In Progress" and "Verify issue is assigned
+to developer-agent" gates are policy stops, not infra failures: they now
+set a `gate_stopped` step output that the self-heal entry points
+(`usage_limit`, `classify_error`, `retry_budget`) and the generic
+"Post verification failure comment" step check before running, so a manual
+circuit-breaker (moving an issue out of In Progress) reliably stops the
+run without triggering a spurious Phase 1-3 diagnosis or a misleading
+"Failed after 3 attempts" comment.
+
+## 3f) Cross-issue infrastructure-anomaly collapse (#3694)
+
+The 2026-08-09 postmortem (`product_management/AGENTIC_SDLC_DESIGN.md` §9;
+issue #3694's "Problem / Motivation" carries the same account): a
+runner-image change made `gh api search/issues` fail deterministically in
+the "Check if PR already exists" step. Five issues were in flight, so the
+self-heal chain ran five independent Phase 1-3 diagnoses against the same
+infrastructure fault -- ~45-50 Claude invocations to re-derive the same
+one-line diagnosis five times. A fixed global spend cap was explicitly
+rejected as the fix (owner direction); the same step failing on *different*
+issues within a short window is one infrastructure event, not N coding
+problems, and the pipeline needed a way to see across issues.
+
+- **Detection.** A new "Check cross-issue infra anomaly" step runs right
+  after "Compute retry budget" (same gate: any genuine failure Phase 1
+  classified), before Phase 2/3 spend anything. It calls
+  `cross_issue_anomaly_decision` (`scripts/agents/lib/gh_project.sh`),
+  which asks `scripts/agents/lib/cross_issue_anomaly.py decide` whether
+  another issue already opened a matching, unresolved tracking-record
+  marker for this exact failed step within the last
+  `CROSS_ISSUE_ANOMALY_WINDOW_MINUTES` (default 60) on the release tracking
+  issue.
+- **One diagnosis, not N.** If no matching record exists, this issue
+  becomes the origin: `open_cross_issue_anomaly` posts the tracking-record
+  marker (`<!-- nyxgpt-anomaly: step=<slug> issue=<origin> opened=<epoch>
+  -->`) on the release issue immediately -- before Phase 2/3 run, so a
+  near-simultaneous failure on another issue can see it -- and Phase 2/3
+  proceed normally for this (origin) issue. If a match already exists from
+  a *different* issue, Phase 2, Phase 3, the auto-retry step, and the
+  fatal-escalation step are all skipped (each step's `if:` also checks
+  `steps.cross_issue_anomaly.outputs.matched != 'true'`); a short comment
+  links this issue to the origin and its retry loop stops until the
+  anomaly resolves.
+- **No hidden state.** The tracking record is a comment marker on
+  `RELEASE_ISSUE_NUMBER`, re-derived fresh from the live comment thread on
+  every check -- the same level-triggered shape as `escalation_pause_gate`
+  (#3687, above). Detection deliberately does NOT use
+  `gh api search/issues` (the endpoint that caused the incident) -- it uses
+  plain issue-comment REST calls, so detection itself can't be taken out by
+  the same class of fault. It self-expires after the window elapses, or
+  closes early on an OWNER-authored `RESOLVE_ANOMALY` comment.
+- **Dispatch pause.** `cross_issue_anomaly_pause_gate`
+  (`scripts/agents/lib/gh_project.sh`) composes with the #3687
+  `escalation_pause_gate` in `scrummaster_dispatch_next.sh`: new dispatch
+  pauses while any step has an open tracking record, with its own loud
+  report on the release tracking issue, and resumes automatically once the
+  anomaly resolves or expires. See `agents/runbooks/scrummaster-runbook.md`
+  for the dispatch-side detail.
+- **Replay criterion.** The 2026-08-09 scenario (5 issues x the same failed
+  step within the window) now yields one diagnosis (the origin issue's
+  Phase 1-3) and a dispatch pause, not five independent loops.
+
 ## 4) Verification loop (MANDATORY - ALL must pass before commit)
 Run ALL of the following checks and fix issues until they pass:
 - `black --check .` - If fails, run `black .` to auto-format, then re-check
@@ -180,6 +381,9 @@ Run ALL of the following checks and fix issues until they pass:
 - `mypy src/` - Fix ALL type errors (0 errors required)
 - `pytest -v` - ALL tests MUST pass (0 failures, 0 errors)
 - `./scripts/agents/validate-web-routes.sh` - If you modified web routes or API endpoints
+- `bandit -c pyproject.toml -r src/ --severity-level high --confidence-level high` - If you modified `src/` (#3501)
+- `pip-audit` - If you modified Python dependencies (#3501)
+- `cd web && npm run audit:ci` - If you modified `web/package.json`/`web/package-lock.json` (#3501)
 
 Run this loop locally exactly as described — do not rely on `claude-code-review.yml`'s
 in-review checks alone, since that job only runs `pytest tests/unit/` (non-blocking
@@ -225,3 +429,38 @@ If flaky tests appear, isolate and fix; escalate if persistent.
   - Run ALL validation checks again (full suite from step 4)
   - Commit and push fixes (triggers automatic re-review)
   - Repeat until APPROVE or 3rd REQUEST_CHANGES (escalates to human)
+
+## 8b) Review huddle protocol (owner-ratified 2026-08-09, #3687)
+
+Not every REQUEST_CHANGES round is a "fix and resubmit": the review agent
+classifies each round as (a) verifiable defect, (b) judgment call, or (c)
+spec ambiguity (see `agents/runbooks/review-runbook.md` §6b for the full
+taxonomy). Type (c) escalates immediately — nothing for you to do. Type (b),
+or type (a) on its 2nd unresolved cycle, triggers a **huddle** instead of
+another fix cycle:
+
+1. `review_agent_auto_review.yml` posts a `HUDDLE_TRIGGERED` comment on the
+   PR instead of reassigning the issue for another fix.
+2. `developer_huddle_position.yml` runs you with a narrow job: read the PR
+   thread and the linked issue, then post **one** `## Developer Position`
+   comment covering what you believe the problem is, what was tried, and
+   what you propose (proceed / a specific different approach / a specific
+   descope / escalate). **Do not attempt a fix in this run** — post the
+   position, then post a second comment containing exactly
+   `HUDDLE_MEDIATION_REQUESTED`.
+3. A fresh scrummaster invocation (`scrummaster_huddle_mediation.yml`) reads
+   your position and the review's position (its review comment) and posts a
+   `## Huddle Decision` comment: `HUDDLE_DECISION: proceed|change-approach|
+   descope|escalate`.
+4. When the next fix cycle runs (`developer_auto_implement.yml`'s "Run
+   Claude Code to fix review issues" step), check for a `HUDDLE_DECISION:`
+   comment on the PR first (Step 1.5 in that prompt) and **execute the
+   agreed plan** — proceed with the original fix, follow the stated
+   different approach, or perform the stated descope (e.g. delete a named
+   flaky test, split off a follow-up issue) — rather than deciding
+   independently. If the decision was `escalate`, this cycle should not
+   normally run at all; if you see it anyway, do not push a speculative fix.
+
+The existing 3-cycle outer breaker (§8, review-runbook §6) is unchanged —
+the huddle changes what happens *between* cycles 2 and 3, not the limit
+itself.

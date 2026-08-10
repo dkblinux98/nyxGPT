@@ -1,0 +1,1 @@
+../../../../scripts/follow-cassandra-logs.sh

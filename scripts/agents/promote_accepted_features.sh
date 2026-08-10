@@ -27,32 +27,12 @@ ACCEPTANCE_STATUS="${STATUS_ACCEPTANCE_TESTING:-Acceptance Testing}"
 
 log() { echo "[promote] $*" >&2; }
 
-# Project Status of an issue (first project item), empty if none.
-issue_status() {
-  local num="$1"
-  graphql "query(\$owner:String!, \$name:String!, \$num:Int!) {
-    repository(owner:\$owner, name:\$name) {
-      issue(number:\$num) {
-        projectItems(first:5) {
-          nodes {
-            fieldValues(first:20) {
-              nodes {
-                ... on ProjectV2ItemFieldSingleSelectValue { field { ... on ProjectV2SingleSelectField { name } } name }
-              }
-            }
-          }
-        }
-      }
-    }
-  }" -F owner="$REPO_OWNER" -F name="$REPO_NAME" -F num="$num" \
-    | jq -r '.data.repository.issue.projectItems.nodes[0].fieldValues.nodes[]? | select(.field.name=="Status") | .name' \
-    | head -1
-}
+# issue_status() (project Status of an issue) is shared from lib/gh_project.sh
+# -- also used by the parked-blocked-issue sweep (#3631).
 
 # feature<TAB>af rows from every Acceptance Failure issue carrying a marker.
-rows="$(gh issue list --repo "${REPO_OWNER}/${REPO_NAME}" \
-  --label "Acceptance Failure" --state all --limit 500 --json number,body \
-  -q '.[] | . as $i | ($i.body | capture("(Parent|Related) feature: #(?<f>[0-9]+)")? | .f // empty) as $f
+rows="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues?labels=Acceptance%20Failure&state=all&per_page=100" --paginate \
+  --jq '.[] | select(has("pull_request") | not) | . as $i | ($i.body | capture("(Parent|Related) feature: #(?<f>[0-9]+)")? | .f // empty) as $f
       | select($f != "") | "\($f)\t\($i.number)"')"
 
 if [[ -z "$rows" ]]; then

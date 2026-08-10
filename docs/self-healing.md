@@ -247,6 +247,17 @@ inspect` and heals via `docker restart nyxgpt-tf-<component>`:
   `healthy`/empty/`starting` (mirroring the Compose case's health handling).
 - `web` has no healthcheck — **healthy** when simply `running`.
 
+**Observability tier**: Terraform manages only those four core containers --
+Grafana/Loki/promtail/otel-collector/Jaeger/GlitchTip (+worker/redis/postgres)
+stay on Docker Compose regardless of deployment mode (`nyxgpt ops
+observability`, attached to the `nyxgpt-terraform` network -- see
+[terraform.md](terraform.md)), and are surveyed/healed the exact same way as
+in native/Compose mode: `docker compose ps`/`restart` via `COMPOSE_FILE`,
+`source: "compose"` in the status list. This requires `nyxgpt-tf-api` to be
+able to resolve a real `docker-compose.yml` -- see [Docker access from inside
+the `api` container](#docker-access-from-inside-the-api-container) below for
+how that's wired up (and the #3588 bug where it wasn't).
+
 **Docker access**: the watchdog runs inside the `nyxgpt-tf-api` container --
 the same image (and baked-in Docker CLI) as the Compose `api` service, built
 from the repo's root `Dockerfile` — so it needs the same `/var/run/docker.sock`
@@ -436,6 +447,16 @@ the automatic loop has stopped retrying) -- so a component self-heal is still
 actively working on looks different from one it's given up on and is
 waiting on an operator to fix.
 
+It also reports a top-level `compose_probe_available` boolean (#3588):
+`false` means `docker compose ps` couldn't be queried at all from this
+process's vantage point (no `docker` on PATH, or `COMPOSE_FILE` doesn't exist
+here -- see [Docker access from inside the `api`
+container](#docker-access-from-inside-the-api-container)), so a missing
+observability row must read as "can't check", not "not running". The
+`/admin/self-heal` and `/admin/infrastructure` (`GET /api/v1/infra/status`'s
+`compose_probe_available`) dashboards both show an explicit note instead of
+silently omitting the tier when this is `false`.
+
 **Loki query** for self-heal events (heal attempts/outcomes) plus operator
 `nyxgpt ops` lifecycle events (see below), used by that timeline panel:
 
@@ -527,11 +548,27 @@ to fix that:
    way to know from inside a container).
 
 The Terraform deployment's `nyxgpt-tf-api` container is built from the same
-`Dockerfile` (so it already has the Docker CLI) and needs only #2, the
-socket mount (`terraform/main.tf`'s `docker_container.api` resource) -- it
-has no compose file to resolve since Terraform doesn't use Compose at all;
-see [Terraform mode](#terraform-mode) above. The security tradeoffs below
-apply identically to that container.
+`Dockerfile` (so it already has the Docker CLI) and needs all three of the
+above, same as the Compose `api` service: Terraform manages the core four
+containers directly (`docker ps`/`docker restart`, no compose file needed for
+*those*), but the observability tier (Grafana/Loki/Jaeger/GlitchTip) still
+runs under Compose regardless of deployment mode, so `nyxgpt-tf-api` needs its
+own `docker-compose.yml` bind mount + `NYXGPT_COMPOSE_FILE` to survey and heal
+it -- `terraform/main.tf`'s `docker_container.api` resource sets both,
+mirroring `docker-compose.yml`'s own `api` service. Before #3588, this
+container had only the socket mount: `_resolve_compose_file()`'s module-path
+and config.ini fallbacks both failed inside it, `COMPOSE_FILE` resolved to a
+path that was never mounted, and every `docker compose ps` call failed --
+silently, since a failed probe and a genuinely-empty observability tier both
+rendered as zero rows. The observability tier was invisible to both the
+Self-Heal and Infrastructure Status pages in Terraform mode as a result, even
+though it was running the whole time. `self_heal.compose_probe_available()`
+(surfaced as `compose_probe_available` on both `GET /api/v1/self-heal/status`
+and `GET /api/v1/infra/status`) now distinguishes "the probe couldn't run
+from here" from "the probe ran and found nothing", so a future instance of
+this class of bug reads as "can't check" on the dashboard instead of a false
+"nothing running". See [Terraform mode](#terraform-mode) above. The security
+tradeoffs below apply identically to this container.
 
 ### Security tradeoffs of mounting the Docker socket
 

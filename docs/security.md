@@ -40,6 +40,16 @@ run `nyxgpt ops env-sync` instead, which copies them out of config.ini. This
 keeps config.ini as the one place you ever look for or rotate a secret,
 regardless of whether you're running nyxGPT natively or via Compose.
 
+**Exception for cloud (AWS) deploys:** `[auth] api_key`, `[openai]
+api_key`, and `[github] pat` must never be baked into an AMI, user-data
+script, tfvars file, or `config.ini` on a cloud instance. Setting
+`[secrets] provider` (`ssm` or `secretsmanager`) resolves those three from
+AWS SSM Parameter Store / Secrets Manager at read time instead -- see
+[`docs/cloud.md#cloud-secrets-ssm--secrets-manager`](cloud.md#cloud-secrets-ssm--secrets-manager)
+for setup and rotation. Every other secret in the table above, and every
+local deploy, keeps `config.ini` as its source of truth exactly as
+described here.
+
 If `monitoring.grafana_admin_password` is left unset, `nyxgpt ops install`
 falls back to an ops-managed secret it generates and stores at
 `~/.nyxGPT/secrets/grafana-admin-password`, and always deterministically
@@ -92,6 +102,17 @@ host = 127.0.0.1
 port = 3000
 ```
 
+**The native API enforces this, not just recommends it:** startup refuses to
+proceed if `[api] host` is bound non-loopback while
+[`[auth] enabled`](#authentication-configuration) isn't `true`, exiting with
+an actionable error instead of serving an unauthenticated API to the network.
+Loopback binds are never affected. (This check only applies to the native
+process, whose `[api] host` directly controls the real listen address —
+Docker Compose and Kubernetes always bind `0.0.0.0` *inside the container*
+regardless of this setting, since that's required for container networking;
+their actual host/cluster exposure is controlled by `NYXGPT_BIND_ADDR` and
+the Kubernetes Service type respectively, covered below.)
+
 If you need to reach nyxGPT from another machine, prefer one of these over
 binding directly to `0.0.0.0`:
 
@@ -137,6 +158,14 @@ container at all. `k8s/service.yaml` and `k8s/service-canary.yaml` are both
 `type: ClusterIP` with no `NodePort`/`LoadBalancer`/`Ingress`, so nothing
 routes this outside the cluster by default — see
 [`docs/kubernetes.md`](kubernetes.md).
+
+**AWS deployments** use the SSH-tunnel model above exclusively — no app or
+observability port is ever opened in the security group, only port 22,
+scoped to the owner's current public IP. That IP can change (ISP renewal,
+travel, tethering), which locks the owner out, including SSH — refresh the
+rule with `nyxgpt cloud allow-ip`, which talks only to the AWS API, so it
+works even while locked out. See [`docs/cloud.md`](cloud.md#lockout-recovery)
+for the full lockout-recovery path.
 
 ---
 

@@ -165,6 +165,32 @@ describe('ChatPane send() SSE streaming', () => {
     await waitFor(() => expect(onSessionUpdated).toHaveBeenCalled());
   });
 
+  it('shows an explicit "no sources retrieved" indicator when a live rag_metadata event carries zero chunks (#3585)', async () => {
+    const raw = [
+      'event: rag_metadata',
+      'data: {"type":"rag_metadata","chunks":[]}',
+      '',
+      'event: text',
+      'data: {"content":"No matches found."}',
+      '',
+      'event: done',
+      'data: {}',
+      '',
+      '',
+    ].join('\n');
+
+    global.fetch = makeFetchMock(() => sseResponse(raw)) as unknown as typeof fetch;
+
+    render(<ChatPane sessionName="s-zero-rag" />);
+    const user = userEvent.setup();
+    const input = await screen.findByPlaceholderText('Type your message…');
+    await user.type(input, 'anything');
+    await user.click(screen.getByTitle('Send message'));
+
+    await waitFor(() => expect(screen.getByText('No matches found.')).toBeInTheDocument());
+    expect(screen.getByText('No RAG sources retrieved for this reply')).toBeInTheDocument();
+  });
+
   it('always sends the active session name in the /api/chat/stream request body (#3459)', async () => {
     // Regression coverage for #3459: the send path must forward the
     // component's active `sessionName` on every request (including

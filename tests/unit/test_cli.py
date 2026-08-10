@@ -1548,6 +1548,11 @@ def test_ops_observability_dispatches_to_ops_module(
 
     monkeypatch.setattr(
         cli_mod.ops_mod,
+        "_sync_packaged_resources",
+        lambda: [OpsResult(True, "Synced packaged ops resources")],
+    )
+    monkeypatch.setattr(
+        cli_mod.ops_mod,
         "_reconcile_grafana_provisioning",
         lambda: [OpsResult(True, "Observability stack up")],
     )
@@ -1577,6 +1582,34 @@ def test_ops_migrate_volumes_dispatches_to_ops_module(
     assert "[OK] Migrated cassandra data" in capsys.readouterr().out
 
 
+def test_ops_port_forward_dispatches_to_ops_module(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`nyxgpt ops port-forward` parses and dispatches, with --port passed through."""
+    import nyxgpt.cli as cli_mod
+
+    calls = []
+    monkeypatch.setattr(cli_mod.ops_mod, "port_forward", lambda args: calls.append(args.port) or 0)
+
+    exit_code = cli(["ops", "port-forward", "--port", "3001"])
+
+    assert exit_code == 0
+    assert calls == [3001]
+
+
+def test_ops_port_forward_default_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`nyxgpt ops port-forward` defaults to port 3000 when --port is omitted."""
+    import nyxgpt.cli as cli_mod
+
+    calls = []
+    monkeypatch.setattr(cli_mod.ops_mod, "port_forward", lambda args: calls.append(args.port) or 0)
+
+    exit_code = cli(["ops", "port-forward"])
+
+    assert exit_code == 0
+    assert calls == [3000]
+
+
 def test_ops_install_skip_observability_flag_parses(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1584,11 +1617,17 @@ def test_ops_install_skip_observability_flag_parses(
     import nyxgpt.cli as cli_mod
     from nyxgpt.ops import OpsResult
 
+    # Pin to the macOS (Homebrew/launchd) native dispatch branch so the
+    # low-level function names patched below are the ones `install()`'s
+    # steps actually call -- see test_ops.py's `_force_macos_native_path`
+    # fixture for the same reasoning (#3508).
+    monkeypatch.setattr(cli_mod.ops_mod.platform, "system", lambda: "Darwin")
+
     ok = [OpsResult(True, "ok")]
     for step in (
+        "_sync_packaged_resources",
         "migrate_legacy_volumes",
         "_reconcile_phantom_compose_app_containers",
-        "_install_scripts",
         "_ensure_web_deps",
         "_ensure_mcp_deps",
         "_ensure_cassandra_container",
@@ -1612,6 +1651,166 @@ def test_ops_install_skip_observability_flag_parses(
 
     assert exit_code == 0
     assert called == []
+
+
+def test_ops_observability_quiet_flag_suppresses_step_announcement(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`nyxgpt ops observability --quiet` parses and drops the live "[n/m]
+    step..." progress announcement, keeping only the terse OK/FAIL line
+    (#3558)."""
+    import nyxgpt.cli as cli_mod
+    from nyxgpt.ops import OpsResult
+
+    monkeypatch.setattr(
+        cli_mod.ops_mod, "_sync_packaged_resources", lambda: [OpsResult(True, "synced")]
+    )
+    monkeypatch.setattr(
+        cli_mod.ops_mod,
+        "_reconcile_grafana_provisioning",
+        lambda: [OpsResult(True, "Observability stack up")],
+    )
+
+    exit_code = cli(["ops", "observability", "--quiet"])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "[OK] Observability stack up" in out
+    assert "[2/2]" not in out
+
+
+def test_ops_observability_default_verbose_shows_step_announcement(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`nyxgpt ops observability` (no `--quiet`) shows the live "[n/m]
+    step..." progress announcement by default (#3558)."""
+    import nyxgpt.cli as cli_mod
+    from nyxgpt.ops import OpsResult
+
+    monkeypatch.setattr(
+        cli_mod.ops_mod, "_sync_packaged_resources", lambda: [OpsResult(True, "synced")]
+    )
+    monkeypatch.setattr(
+        cli_mod.ops_mod,
+        "_reconcile_grafana_provisioning",
+        lambda: [OpsResult(True, "Observability stack up")],
+    )
+
+    exit_code = cli(["ops", "observability"])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "[1/2] sync packaged resources..." in out
+    assert "[2/2] reconcile observability stack..." in out
+    assert "[OK] Observability stack up" in out
+
+
+def test_up_dispatches_to_ops_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`nyxgpt up` (#3504) dispatches to `ops_mod.up`, not a reimplementation."""
+    import nyxgpt.cli as cli_mod
+
+    calls: list[object] = []
+    monkeypatch.setattr(cli_mod.ops_mod, "up", lambda args: (calls.append(args), 0)[1])
+
+    exit_code = cli(["up"])
+
+    assert exit_code == 0
+    assert len(calls) == 1
+
+
+def test_up_passes_through_install_mode_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`up`'s mode flags (--skip-observability etc.) must reach `ops_mod.up` unchanged --
+    it's a thin alias for `ops install`, not a fork with its own flag set."""
+    import nyxgpt.cli as cli_mod
+
+    calls: list[object] = []
+    monkeypatch.setattr(cli_mod.ops_mod, "up", lambda args: (calls.append(args), 0)[1])
+
+    exit_code = cli(["up", "--skip-observability", "--local", "--timeout", "5", "--no-wait"])
+
+    assert exit_code == 0
+    args = calls[0]
+    assert args.skip_observability is True
+    assert args.local is True
+    assert args.timeout == 5.0
+    assert args.no_wait is True
+
+
+def test_up_returns_nonzero_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    import nyxgpt.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod.ops_mod, "up", lambda args: 2)
+
+    exit_code = cli(["up"])
+
+    assert exit_code == 2
+
+
+def test_down_dispatches_to_ops_down(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`nyxgpt down` (#3504) dispatches to the exact same `ops_mod.down` that
+    `nyxgpt ops down` uses -- a thin alias, not a forked implementation."""
+    import nyxgpt.cli as cli_mod
+
+    calls: list[object] = []
+    monkeypatch.setattr(cli_mod.ops_mod, "down", lambda args: (calls.append(args), 0)[1])
+
+    exit_code = cli(["down"])
+
+    assert exit_code == 0
+    assert len(calls) == 1
+
+
+def test_down_passes_through_scope_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    import nyxgpt.cli as cli_mod
+
+    calls: list[object] = []
+    monkeypatch.setattr(cli_mod.ops_mod, "down", lambda args: (calls.append(args), 0)[1])
+
+    exit_code = cli(["down", "--app-only"])
+
+    assert exit_code == 0
+    assert calls[0].app_only is True
+
+
+def test_down_returns_nonzero_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    import nyxgpt.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod.ops_mod, "down", lambda args: 2)
+
+    exit_code = cli(["down"])
+
+    assert exit_code == 2
+
+
+@pytest.mark.parametrize(
+    ("ops_cmd", "argv"),
+    [
+        ("install", ["ops", "install", "--quiet"]),
+        ("down", ["ops", "down", "--quiet"]),
+        ("restart", ["ops", "restart", "--quiet"]),
+        ("stop", ["ops", "stop", "--quiet"]),
+        ("observability", ["ops", "observability", "--quiet"]),
+        ("env_sync", ["ops", "env-sync", "--quiet"]),
+        ("glitchtip_init", ["ops", "glitchtip-init", "--quiet"]),
+    ],
+)
+def test_ops_quiet_flag_parses_and_reaches_args_for_every_long_running_command(
+    monkeypatch: pytest.MonkeyPatch, ops_cmd: str, argv: list[str]
+) -> None:
+    """`--quiet` must parse for every long-running `ops` command #3558 lists
+    (install/down/restart/stop/observability/env-sync/glitchtip-init) and
+    reach that command's `args.quiet` -- a parser without the flag would
+    raise `SystemExit` before the stub below is ever called."""
+    import nyxgpt.cli as cli_mod
+
+    seen_args = []
+    monkeypatch.setattr(cli_mod.ops_mod, ops_cmd, lambda args: seen_args.append(args) or 0)
+
+    exit_code = cli(argv)
+
+    assert exit_code == 0
+    assert len(seen_args) == 1
+    assert seen_args[0].quiet is True
 
 
 # --- Interactive chat mode tests ---
@@ -2611,6 +2810,44 @@ def test_cli_wizard_dispatch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
     assert calls == [output]
 
 
+# --- secrets setup dispatch ---
+
+
+def test_cli_secrets_setup_dispatch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import nyxgpt.cli as cli_mod
+
+    calls: list[tuple[Path | None, bool]] = []
+
+    def fake_run_secrets_setup(cfg_path=None, reconfigure=False):
+        calls.append((cfg_path, reconfigure))
+        return 0
+
+    monkeypatch.setattr(cli_mod, "run_secrets_setup", fake_run_secrets_setup)
+
+    output = tmp_path / "config.ini"
+    exit_code = cli(["secrets", "setup", "--config", str(output), "--reconfigure"])
+
+    assert exit_code == 0
+    assert calls == [(output, True)]
+
+
+def test_cli_secrets_setup_dispatch_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    import nyxgpt.cli as cli_mod
+
+    calls: list[tuple[Path | None, bool]] = []
+
+    def fake_run_secrets_setup(cfg_path=None, reconfigure=False):
+        calls.append((cfg_path, reconfigure))
+        return 0
+
+    monkeypatch.setattr(cli_mod, "run_secrets_setup", fake_run_secrets_setup)
+
+    exit_code = cli(["secrets", "setup"])
+
+    assert exit_code == 0
+    assert calls == [(None, False)]
+
+
 # --- ops command dispatch (status/doctor/restart/env-sync/logs) ---
 
 
@@ -2675,6 +2912,19 @@ def test_ops_env_sync_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(calls) == 1
 
 
+def test_ops_secrets_sync_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    import nyxgpt.cli as cli_mod
+
+    calls: list[object] = []
+    monkeypatch.setattr(cli_mod.ops_mod, "secrets_sync", lambda args: (calls.append(args), 0)[1])
+
+    exit_code = cli(["ops", "secrets-sync", "--dry-run"])
+
+    assert exit_code == 0
+    assert len(calls) == 1
+    assert calls[0].dry_run is True
+
+
 def test_ops_logs_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     import nyxgpt.cli as cli_mod
 
@@ -2709,6 +2959,84 @@ def test_ops_alert_test_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert exit_code == 0
     assert len(calls) == 1
+
+
+# --- cloud command dispatch ---
+
+
+def test_cloud_allow_ip_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    import nyxgpt.cli as cli_mod
+
+    calls: list[object] = []
+    monkeypatch.setattr(cli_mod.cloud_mod, "allow_ip", lambda args: (calls.append(args), 0)[1])
+
+    exit_code = cli(["cloud", "allow-ip"])
+
+    assert exit_code == 0
+    assert len(calls) == 1
+    assert calls[0].ip is None
+    assert calls[0].security_group_id is None
+    assert calls[0].region is None
+
+
+def test_cloud_allow_ip_dispatch_with_options(monkeypatch: pytest.MonkeyPatch) -> None:
+    import nyxgpt.cli as cli_mod
+
+    calls: list[object] = []
+    monkeypatch.setattr(cli_mod.cloud_mod, "allow_ip", lambda args: (calls.append(args), 0)[1])
+
+    exit_code = cli(
+        [
+            "cloud",
+            "allow-ip",
+            "--ip",
+            "203.0.113.5",
+            "--security-group-id",
+            "sg-abc123",
+            "--region",
+            "us-east-1",
+        ]
+    )
+
+    assert exit_code == 0
+    assert calls[0].ip == "203.0.113.5"
+    assert calls[0].security_group_id == "sg-abc123"
+    assert calls[0].region == "us-east-1"
+
+
+def test_cloud_credentials_setup_dispatch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import nyxgpt.cli as cli_mod
+
+    calls: list[Path | None] = []
+
+    def fake_run_aws_credentials_setup(cfg_path=None):
+        calls.append(cfg_path)
+        return 0
+
+    monkeypatch.setattr(cli_mod, "run_aws_credentials_setup", fake_run_aws_credentials_setup)
+
+    output = tmp_path / "config.ini"
+    exit_code = cli(["cloud", "credentials-setup", "--config", str(output)])
+
+    assert exit_code == 0
+    assert calls == [output]
+
+
+def test_cloud_credentials_setup_dispatch_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    import nyxgpt.cli as cli_mod
+
+    calls: list[Path | None] = []
+
+    def fake_run_aws_credentials_setup(cfg_path=None):
+        calls.append(cfg_path)
+        return 0
+
+    monkeypatch.setattr(cli_mod, "run_aws_credentials_setup", fake_run_aws_credentials_setup)
+
+    exit_code = cli(["cloud", "credentials-setup"])
+
+    assert exit_code == 0
+    assert calls == [None]
 
 
 # --- canary command dispatch ---

@@ -44,6 +44,18 @@ export const ADMIN_NAV: AdminNavDest[] = [
     group: 'observation',
   },
   { href: '/admin/infrastructure', label: 'Infrastructure Status', description: 'Detected deployment mode and per-component status', group: 'observation' },
+  {
+    href: '/admin/secrets',
+    label: 'Guided Secrets Setup',
+    description: 'Set write-once external tokens with masked entry and per-key help, and sync them to GitHub Actions',
+    group: 'operation',
+  },
+  {
+    href: '/admin/aws-credentials',
+    label: 'AWS Credentials Setup',
+    description: 'Guided AWS identity setup for cloud deploy -- routed to ~/.aws/credentials, the OS keychain, or an existing source, never config.ini',
+    group: 'operation',
+  },
   { href: '/admin/canary', label: 'Canary Operations', description: 'Deploy, gradual rollout, and promotion with automatic rollback', group: 'operation' },
   { href: '/admin/self-heal', label: 'Self-heal Operations', description: 'Watchdog that restarts unhealthy services', group: 'operation' },
   {

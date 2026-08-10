@@ -19,9 +19,11 @@ from typing import Any, cast
 # Canary and ops implementations live in separate modules for testability.
 # (blue/green lived in nyxgpt.deploy; retired in favor of canary -- see #3409.)
 from nyxgpt import canary as canary_mod
+from nyxgpt import cloud as cloud_mod
 from nyxgpt import models, sessions
 from nyxgpt import ops as ops_mod
 from nyxgpt import self_heal as self_heal_mod
+from nyxgpt.aws_credentials_setup import run_aws_credentials_setup
 from nyxgpt.chat import chat, chat_stream
 from nyxgpt.config import (
     get_canary_error_rate_threshold,
@@ -32,12 +34,14 @@ from nyxgpt.config import (
     get_canary_total_replicas,
     get_default_model,
     get_ollama_base_url,
+    get_session_backend,
     get_sessions_dir,
     load_config,
 )
 from nyxgpt.logging import configure_logging, mint_correlation_id
 from nyxgpt.rag.rag import ingest_document, retrieve_context
 from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
+from nyxgpt.secrets_setup import run_secrets_setup
 from nyxgpt.wizard import run_wizard
 
 
@@ -52,6 +56,14 @@ def _list_sessions_in_dir(sessions_dir: Path) -> list[dict[str, object]]:
         session, or an empty list if the directory doesn't exist. Files that
         are metadata sidecars (`*.meta.json`) or fail to parse are skipped.
     """
+    # Under the Cassandra backend the directory is not the store -- delegate
+    # to the backend-aware listing, which returns the same row shape (#3590).
+    try:
+        if get_session_backend(load_config(None)) == "cassandra":
+            return cast(list[dict[str, object]], sessions.list_sessions(None))
+    except Exception:
+        pass
+
     sessions_dir = Path(sessions_dir).expanduser()
     if not sessions_dir.exists():
         return []
@@ -758,7 +770,7 @@ def cmd_sessions(
         doc_id = new_name
         sf = sessions.session_file_for(name, effective_dir)
         mf = sessions.meta_file_for(sf)
-        if not sf.exists():
+        if not sessions.session_file_exists(sf):
             sessions.save_session_messages(sf, [])
         meta = sessions.load_session_meta(mf)
         meta = sessions.ensure_meta_defaults(meta)
@@ -1550,11 +1562,110 @@ def cmd_self_heal_heal(service: str | None) -> int:
     return 0 if ok else 2
 
 
+def _add_install_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add `ops install`'s arguments to `parser`.
+
+    Shared with the top-level `up` alias (#3504) so the two can never drift:
+    `up` is meant to accept exactly the same mode flags `ops install` does
+    and pass them straight through.
+    """
+    parser.add_argument("--repo-dir", help="Path to nyxGPT repo root")
+    parser.add_argument("--force", action="store_true", help="Overwrite existing files")
+    parser.add_argument(
+        "--skip-observability",
+        action="store_true",
+        help="Don't start the Grafana/Loki/Jaeger/GlitchTip Compose profiles",
+    )
+    parser.add_argument(
+        "--terraform",
+        action="store_true",
+        help=(
+            "Deploy the core stack via Terraform (init/plan/apply) instead of native/Homebrew "
+            "reconciliation -- requires --local"
+        ),
+    )
+    parser.add_argument(
+        "--kubernetes",
+        action="store_true",
+        help=(
+            "Deploy nyxgpt-api to a local Kubernetes cluster instead of native/Homebrew "
+            "reconciliation -- requires --local. Uses an existing reachable cluster if "
+            "kubectl is already configured, otherwise provisions a local kind cluster"
+        ),
+    )
+    locality = parser.add_mutually_exclusive_group()
+    locality.add_argument(
+        "--local",
+        action="store_true",
+        help=(
+            "Target the local machine (required with --terraform/--kubernetes; the only "
+            "locality implemented today)"
+        ),
+    )
+    locality.add_argument(
+        "--cloud",
+        action="store_true",
+        help="Target a cloud deployment (not yet implemented -- --local is the precursor)",
+    )
+    parser.add_argument(
+        "--api-key",
+        help=(
+            "API key for the Terraform/Kubernetes deploy's auth secret "
+            "(skips the interactive prompt/auto-generation)"
+        ),
+    )
+
+
+def _add_down_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add `ops down`'s arguments to `parser`.
+
+    Shared with the top-level `down` alias (#3504) so the two can never drift.
+    """
+    scope = parser.add_mutually_exclusive_group()
+    scope.add_argument(
+        "--app-only",
+        action="store_true",
+        dest="app_only",
+        help="Only tear down the core app tier (api/web/ollama/cassandra), leave observability up",
+    )
+    scope.add_argument(
+        "--observability-only",
+        action="store_true",
+        dest="observability_only",
+        help="Only tear down the observability Compose profiles, leave the app tier up",
+    )
+    scope.add_argument(
+        "--terraform",
+        action="store_true",
+        help="Tear down the Terraform-managed stack (terraform destroy) instead of native/Compose",
+    )
+    scope.add_argument(
+        "--kubernetes",
+        action="store_true",
+        help=(
+            "Remove the nyxgpt namespace's Kubernetes resources instead of native/Compose "
+            "-- also deletes the local kind cluster if nyxgpt provisioned it, never a "
+            "bring-your-own cluster"
+        ),
+    )
+    parser.add_argument(
+        "--volumes",
+        action="store_true",
+        help="Also remove Compose data volumes (Cassandra/Postgres/Grafana/etc.) -- destructive",
+    )
+    parser.add_argument(
+        "--yes-really",
+        action="store_true",
+        dest="yes_really",
+        help="Required together with --volumes to confirm destructive volume removal",
+    )
+
+
 def cli(argv: list[str] | None = None) -> int:
     """Entry point for the `nyxgpt` command-line tool.
 
     Builds the full argparse parser (chat, sessions, rag, models, mcp,
-    wizard, ops, deploy, canary, self-heal subcommands), parses `argv`,
+    wizard, ops, cloud, canary, self-heal subcommands), parses `argv`,
     initializes logging, and dispatches to the matching `cmd_*` handler. If
     no subcommand is given, defaults to `info`. Prints help and returns 2 if
     the resolved command/subcommand combination isn't recognized.
@@ -1816,55 +1927,73 @@ def cli(argv: list[str] | None = None) -> int:
         help="Output path for config.ini (default: ~/.nyxGPT/config.ini)",
     )
 
+    # Add up/down aliases (#3504): thin, single-code-path wrappers around
+    # `ops install`/`ops down` that most operators reach for by muscle memory
+    # before discovering `nyxgpt ops`.
+    up_p = sub.add_parser(
+        "up",
+        help="Bring up the full local stack (alias for `ops install`; waits for health, prints the web URL)",
+    )
+    _add_install_arguments(up_p)
+    up_p.add_argument(
+        "--timeout",
+        type=float,
+        default=180.0,
+        help="Seconds to wait for components to report healthy before giving up (default: 180)",
+    )
+    up_p.add_argument(
+        "--no-wait",
+        action="store_true",
+        dest="no_wait",
+        help="Return as soon as install finishes, without waiting for component health",
+    )
+
+    down_p = sub.add_parser("down", help="Tear down the full stack (alias for `ops down`)")
+    _add_down_arguments(down_p)
+
+    # Add secrets command
+    secrets_p = sub.add_parser("secrets", help="Guided setup for human-provided secrets")
+    secrets_sub = secrets_p.add_subparsers(dest="secrets_cmd", required=True)
+
+    secrets_setup_p = secrets_sub.add_parser(
+        "setup",
+        help=(
+            "Interactively set [auth] api_key, [openai] api_key, and [github] pat with "
+            "masked input, per-key help, and format validation"
+        ),
+    )
+    secrets_setup_p.add_argument(
+        "--config",
+        type=Path,
+        help="Path to config.ini (default: ~/.nyxGPT/config.ini)",
+    )
+    secrets_setup_p.add_argument(
+        "--reconfigure",
+        action="store_true",
+        help="Prompt for every secret again, even ones already set",
+    )
+
     # Add ops command
     ops_p = sub.add_parser("ops", help="Operational helpers")
     ops_sub = ops_p.add_subparsers(dest="ops_cmd", required=True)
 
+    def _add_quiet_flag(parser: argparse.ArgumentParser) -> None:
+        """Add the shared `--quiet` flag to a long-running `ops` subcommand's parser.
+
+        Default is live per-step progress (`[n/m] step...` announcements, a
+        heartbeat for slow steps, and a final slow-step summary); `--quiet`
+        drops back to the old terse OK/FAIL-only-per-result output, for
+        scripting (#3558).
+        """
+        parser.add_argument(
+            "--quiet",
+            action="store_true",
+            help="Terse output for scripting: OK/FAIL/SKIP per step, no live progress",
+        )
+
     ops_install = ops_sub.add_parser("install", help="Install operational helpers")
-    ops_install.add_argument("--repo-dir", help="Path to nyxGPT repo root")
-    ops_install.add_argument("--force", action="store_true", help="Overwrite existing files")
-    ops_install.add_argument(
-        "--skip-observability",
-        action="store_true",
-        help="Don't start the Grafana/Loki/Jaeger/GlitchTip Compose profiles",
-    )
-    ops_install.add_argument(
-        "--terraform",
-        action="store_true",
-        help=(
-            "Deploy the core stack via Terraform (init/plan/apply) instead of native/Homebrew "
-            "reconciliation -- requires --local"
-        ),
-    )
-    ops_install.add_argument(
-        "--kubernetes",
-        action="store_true",
-        help=(
-            "Deploy nyxgpt-api to a local Kubernetes cluster instead of native/Homebrew "
-            "reconciliation -- requires --local"
-        ),
-    )
-    ops_install_locality = ops_install.add_mutually_exclusive_group()
-    ops_install_locality.add_argument(
-        "--local",
-        action="store_true",
-        help=(
-            "Target the local machine (required with --terraform/--kubernetes; the only "
-            "locality implemented today)"
-        ),
-    )
-    ops_install_locality.add_argument(
-        "--cloud",
-        action="store_true",
-        help="Target a cloud deployment (not yet implemented -- --local is the precursor)",
-    )
-    ops_install.add_argument(
-        "--api-key",
-        help=(
-            "API key for the Terraform/Kubernetes deploy's auth secret "
-            "(skips the interactive prompt/auto-generation)"
-        ),
-    )
+    _add_install_arguments(ops_install)
+    _add_quiet_flag(ops_install)
 
     ops_status = ops_sub.add_parser(
         "status", help="Show status of local services (docker/cassandra/agent/api)"
@@ -1903,6 +2032,7 @@ def cli(argv: list[str] | None = None) -> int:
             "observability Compose service (monitoring/logging/tracing/errors)"
         ),
     )
+    _add_quiet_flag(ops_restart)
 
     ops_stop = ops_sub.add_parser("stop", help="Stop local services (native and/or Docker Compose)")
     ops_stop.add_argument(
@@ -1920,44 +2050,13 @@ def cli(argv: list[str] | None = None) -> int:
         ],
         help="Service to stop",
     )
+    _add_quiet_flag(ops_stop)
 
     ops_down = ops_sub.add_parser(
         "down", help="Tear down the full stack (native services + Docker Compose)"
     )
-    ops_down_scope = ops_down.add_mutually_exclusive_group()
-    ops_down_scope.add_argument(
-        "--app-only",
-        action="store_true",
-        dest="app_only",
-        help="Only tear down the core app tier (api/web/ollama/cassandra), leave observability up",
-    )
-    ops_down_scope.add_argument(
-        "--observability-only",
-        action="store_true",
-        dest="observability_only",
-        help="Only tear down the observability Compose profiles, leave the app tier up",
-    )
-    ops_down_scope.add_argument(
-        "--terraform",
-        action="store_true",
-        help="Tear down the Terraform-managed stack (terraform destroy) instead of native/Compose",
-    )
-    ops_down_scope.add_argument(
-        "--kubernetes",
-        action="store_true",
-        help="Remove the nyxgpt namespace's Kubernetes resources instead of native/Compose",
-    )
-    ops_down.add_argument(
-        "--volumes",
-        action="store_true",
-        help="Also remove Compose data volumes (Cassandra/Postgres/Grafana/etc.) -- destructive",
-    )
-    ops_down.add_argument(
-        "--yes-really",
-        action="store_true",
-        dest="yes_really",
-        help="Required together with --volumes to confirm destructive volume removal",
-    )
+    _add_down_arguments(ops_down)
+    _add_quiet_flag(ops_down)
 
     ops_env_sync = ops_sub.add_parser(
         "env-sync",
@@ -1966,6 +2065,23 @@ def cli(argv: list[str] | None = None) -> int:
     ops_env_sync.add_argument("--config", help="Path to config.ini (default: ~/.nyxGPT/config.ini)")
     ops_env_sync.add_argument(
         "--env-file", help="Path to the .env file to update (default: <repo>/.env)"
+    )
+    _add_quiet_flag(ops_env_sync)
+
+    ops_secrets_sync = ops_sub.add_parser(
+        "secrets-sync",
+        help=(
+            "Push config.ini's write-once secrets (Slack bot token, agent PATs, ...) to this "
+            "repo's GitHub Actions secrets, one direction only (config.ini -> Actions)"
+        ),
+    )
+    ops_secrets_sync.add_argument(
+        "--config", help="Path to config.ini (default: ~/.nyxGPT/config.ini)"
+    )
+    ops_secrets_sync.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show which secrets would be pushed without contacting the GitHub API",
     )
 
     ops_logs = ops_sub.add_parser(
@@ -1979,13 +2095,14 @@ def cli(argv: list[str] | None = None) -> int:
         "--tail", type=int, default=200, help="Number of trailing log lines to show (default: 200)"
     )
 
-    ops_sub.add_parser(
+    ops_glitchtip_init = ops_sub.add_parser(
         "glitchtip-init",
         help=(
             "Auto-provision a GlitchTip admin user, org, project, and DSN "
             "(zero-touch error tracking); no-ops if glitchtip isn't up/healthy"
         ),
     )
+    _add_quiet_flag(ops_glitchtip_init)
 
     ops_sub.add_parser(
         "alert-test",
@@ -1995,13 +2112,14 @@ def cli(argv: list[str] | None = None) -> int:
         ),
     )
 
-    ops_sub.add_parser(
+    ops_observability = ops_sub.add_parser(
         "observability",
         help=(
             "Start the Grafana/Loki/Jaeger/GlitchTip Compose profiles "
             "(monitoring/logging/tracing/errors) without a raw docker compose command"
         ),
     )
+    _add_quiet_flag(ops_observability)
 
     ops_sub.add_parser(
         "migrate-volumes",
@@ -2009,6 +2127,117 @@ def cli(argv: list[str] | None = None) -> int:
             "Migrate container data from pre-#3346 named Docker volumes into "
             "~/.nyxGPT/volumes/ (also run automatically by `nyxgpt ops install`)"
         ),
+    )
+
+    ops_port_forward = ops_sub.add_parser(
+        "port-forward",
+        help=(
+            "Forward the Kubernetes web Service to localhost "
+            "(wraps `kubectl port-forward` -- see `--kubernetes` in docs/kubernetes.md#4-verify)"
+        ),
+    )
+    ops_port_forward.add_argument(
+        "--port", type=int, default=3000, help="Local port to forward to (default: 3000)"
+    )
+
+    ops_verify = ops_sub.add_parser(
+        "verify",
+        help=(
+            "Live smoke harness: boot the stack, generate known chat/RAG traffic, assert it "
+            "via Prometheus/Grafana, and screenshot the touched dashboards (#3555)"
+        ),
+    )
+    ops_verify.add_argument(
+        "--skip-boot",
+        action="store_true",
+        help="Assume the stack (native or Compose) is already up instead of booting it",
+    )
+    ops_verify.add_argument(
+        "--keep-up",
+        action="store_true",
+        help="Leave the stack running afterwards instead of tearing it down (ignored with --skip-boot)",
+    )
+    ops_verify.add_argument(
+        "--skip-screenshots",
+        action="store_true",
+        help="Skip Playwright dashboard screenshots (e.g. on a host with no browsers installed)",
+    )
+    ops_verify.add_argument(
+        "--screenshot-dir",
+        help="Where to write dashboard screenshots (default: ~/.nyxGPT/verify-artifacts)",
+    )
+    ops_verify.add_argument(
+        "--dashboards",
+        nargs="*",
+        help=(
+            "Dashboard filenames under docker/grafana/dashboards/ to assert/screenshot "
+            "(default: rag-performance, api-metrics -- the ones this harness's traffic touches)"
+        ),
+    )
+    ops_verify.add_argument(
+        "--api-url", help="Override API base URL (default: from config, http://127.0.0.1:<port>)"
+    )
+    ops_verify.add_argument(
+        "--timeout",
+        type=float,
+        default=300.0,
+        help="Seconds to wait for the booted stack to become healthy (default: 300)",
+    )
+
+    # Add cloud command (AWS deployment lifecycle -- P6-11-class scope). Today
+    # covers `allow-ip`, the lockout-recovery path for the owner-IP-scoped
+    # SSH security group described in
+    # product_management/DECISION_PRIVATE_ACCESS_MECHANISM.md, and
+    # `credentials-setup`, the guided AWS identity flow (P6-13, #3512) --
+    # see nyxgpt.aws_credentials_setup's module docstring. `nyxgpt cloud
+    # deploy`/`destroy` (#3513) come later and are expected to write
+    # ~/.nyxGPT/cloud/state.json so allow-ip can auto-discover the security
+    # group without --security-group-id -- see nyxgpt.cloud's module docstring.
+    cloud_p = sub.add_parser("cloud", help="AWS cloud deployment lifecycle helpers")
+    cloud_sub = cloud_p.add_subparsers(dest="cloud_cmd", required=True)
+
+    cloud_allow_ip = cloud_sub.add_parser(
+        "allow-ip",
+        help=(
+            "Refresh the SSH (port 22) security-group ingress rule to the caller's "
+            "current public IP -- talks only to the AWS API, so it works even while "
+            "locked out of the instance"
+        ),
+    )
+    cloud_allow_ip.add_argument(
+        "--ip",
+        help=(
+            "Explicit IP or CIDR to allow instead of auto-detecting the caller's "
+            "current public IP (bare addresses are scoped to /32; 0.0.0.0/0 is refused)"
+        ),
+    )
+    cloud_allow_ip.add_argument(
+        "--security-group-id",
+        help=(
+            "Security group id to update (default: read from "
+            "~/.nyxGPT/cloud/state.json, written by `nyxgpt cloud deploy`)"
+        ),
+    )
+    cloud_allow_ip.add_argument(
+        "--region",
+        help=(
+            "AWS region (default: read from ~/.nyxGPT/cloud/state.json, then "
+            "boto3's normal region resolution)"
+        ),
+    )
+
+    cloud_credentials_setup = cloud_sub.add_parser(
+        "credentials-setup",
+        help=(
+            "Guided setup for the AWS identity nyxGPT uses for its own AWS API calls "
+            "(P6-13, #3512) -- masked entry, routed to ~/.aws/credentials, the OS "
+            "keychain, or left to an already-configured source; never config.ini"
+        ),
+    )
+    cloud_credentials_setup.add_argument(
+        "--config",
+        type=Path,
+        help="Path to config.ini (default: ~/.nyxGPT/config.ini)",
     )
 
     # Add canary command (local weighted-traffic canary rollout on a local k8s cluster --
@@ -2212,6 +2441,19 @@ def cli(argv: list[str] | None = None) -> int:
     if cmd == "wizard":
         return run_wizard(output_path=args.output)
 
+    if cmd == "up":
+        # Same correlation-id minting as `ops`/`canary`/`self-heal` below --
+        # `up` calls straight into ops_mod.install()/the health-wait, which
+        # both shell out and record actions the same way `ops install` does.
+        os.environ.setdefault("NYXGPT_CORRELATION_ID", mint_correlation_id())
+        return ops_mod.up(args)
+
+    if cmd == "down":
+        os.environ.setdefault("NYXGPT_CORRELATION_ID", mint_correlation_id())
+        return ops_mod.down(args)
+    if cmd == "secrets" and args.secrets_cmd == "setup":
+        return run_secrets_setup(cfg_path=args.config, reconfigure=args.reconfigure)
+
     if cmd == "ops":
         # Mint a correlation id once per CLI invocation (#3430): every
         # subprocess.run() call made while handling this command inherits it
@@ -2234,6 +2476,8 @@ def cli(argv: list[str] | None = None) -> int:
             return ops_mod.down(args)
         if args.ops_cmd == "env-sync":
             return ops_mod.env_sync(args)
+        if args.ops_cmd == "secrets-sync":
+            return ops_mod.secrets_sync(args)
         if args.ops_cmd == "logs":
             return ops_mod.logs(args)
         if args.ops_cmd == "glitchtip-init":
@@ -2244,6 +2488,16 @@ def cli(argv: list[str] | None = None) -> int:
             return ops_mod.observability(args)
         if args.ops_cmd == "migrate-volumes":
             return ops_mod.migrate_volumes_cmd(args)
+        if args.ops_cmd == "port-forward":
+            return ops_mod.port_forward(args)
+        if args.ops_cmd == "verify":
+            return ops_mod.verify(args)
+
+    if cmd == "cloud" and args.cloud_cmd == "allow-ip":
+        return cloud_mod.allow_ip(args)
+
+    if cmd == "cloud" and args.cloud_cmd == "credentials-setup":
+        return run_aws_credentials_setup(cfg_path=args.config)
 
     if cmd == "canary":
         # Same per-invocation correlation id as the `ops` dispatch above --

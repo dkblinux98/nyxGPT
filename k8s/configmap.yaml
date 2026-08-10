@@ -8,6 +8,14 @@ data:
     [nyxgpt]
     default_model = qwen2.5:0.5b
     chat_timeout_seconds = 180
+    # Chat session storage backend. "file" keeps sessions on each pod's own
+    # filesystem, which forks the session list per pod/replica; set this to
+    # "cassandra" (and point [rag] cassandra_hosts at a reachable Cassandra)
+    # so every replica -- and every other deployment mode -- shares one
+    # session list. Required for stable+canary or multi-replica deployments
+    # to show consistent sessions. See docs/session-storage.md. Can also be
+    # set per-pod via the NYXGPT_SESSION_BACKEND env var.
+    session_backend = file
     sessions_dir = /root/.nyxGPT/sessions
     vectorstore_dir = /root/.nyxGPT/vectorstore
 

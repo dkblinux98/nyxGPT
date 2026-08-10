@@ -18,9 +18,28 @@ jobs:
        github.event.comment.user.login == vars.DEV_AGENT ||
        github.event.comment.user.login == vars.REVIEW_AGENT)
     runs-on: ubuntu-latest
+    # Serialize dispatches: a burst of READY_FOR_NEXT_ISSUE triggers landing
+    # within seconds of each other (post-merge autopilot kick + a manual
+    # kick + a stray retry, observed on #3647) each ran select-and-start
+    # independently, so more than one picked the same Backlog issue before
+    # the earlier run's status/assignment write had propagated -- producing
+    # duplicate developer runs. A single, non-cancelling concurrency group
+    # makes every dispatch see the prior run's committed state before it
+    # selects, on top of the per-issue idempotency guard in
+    # scrummaster_start_issue.sh (classify_backlog_claim_state).
+    concurrency:
+      group: scrummaster-dispatch
+      cancel-in-progress: false
 
     env:
       GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+      # #3695 human-channel (Slack DM) escalation notifications, sent by
+      # scrummaster_dispatch_next.sh on the dispatch-paused/queue-blocked
+      # terminal outcomes below. Absent/failing degrades gracefully to the
+      # existing comment-only behavior (see notify_human_escalation,
+      # scripts/agents/lib/gh_project.sh).
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_USER_ID: ${{ secrets.SLACK_USER_ID }}
 
     steps:
       - name: Checkout
@@ -92,13 +111,11 @@ jobs:
               )
             });
 
-      - name: Select next issue
-        id: select
+      - name: Select and start next issue (fall through on unclaimable candidates)
+        id: start
         shell: bash
         run: |
           set -euo pipefail
-          echo "::group::Selecting next issue from Backlog"
-          # Use --select-only since workflow handles starting separately.
           # Sprint-scope selection while autopilot is on (#3480) -- the
           # script itself falls back to unscoped selection if no Sprint is
           # currently active, so this is safe to pass unconditionally.
@@ -106,20 +123,47 @@ jobs:
           if [[ "${{ vars.SPRINT_AUTOPILOT }}" == "true" ]]; then
             SPRINT_ARGS="--sprint-scoped"
           fi
-          NEXT_ISSUE=$(bash -lc "./scripts/agents/scrummaster_next_issue.sh --select-only $SPRINT_ARGS" || echo "")
 
-          if [[ -z "$NEXT_ISSUE" ]]; then
-            echo "::warning::No eligible issues found in Backlog"
-            echo "next_issue=" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          # scrummaster_dispatch_next.sh (#3665) runs the fall-through
+          # loop: the #3647-era guard treated ANY existing assignee
+          # (including assign_backlog.yml's normal scrummaster stamp) as
+          # "already claimed" and halted the whole dispatch on the
+          # lowest-numbered candidate, silently blocking the entire queue
+          # behind a single bad-state issue (#3593, ~5 days). The dispatch
+          # script now classifies *who* holds the claim per-candidate and
+          # excludes/retries on any skip, bounded so a systemic problem
+          # fails loudly instead of looping forever. Its stdout is exactly
+          # `next_issue=...` and a `tried<<NYXGPT_TRIED_EOF ... EOF` block --
+          # both already in $GITHUB_OUTPUT format.
+          bash -lc "./scripts/agents/scrummaster_dispatch_next.sh $SPRINT_ARGS" >> "$GITHUB_OUTPUT"
 
-          echo "::notice::Selected issue #$NEXT_ISSUE (lowest Phase, lowest issue number)"
-          echo "next_issue=$NEXT_ISSUE" >> "$GITHUB_OUTPUT"
-          echo "::endgroup::"
+      - name: Post escalation-pause comment
+        if: steps.start.outputs.paused == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+          script: |
+            const issue_number = context.payload.issue.number;
+            const reason = '${{ steps.start.outputs.pause_reason }}';
+            const body = reason === 'cross_issue_anomaly'
+              ? '⏸️ **Scrummaster Agent**: Dispatch paused -- an unresolved cross-issue ' +
+                'infrastructure anomaly is open. See the loud report on the release ' +
+                'tracking issue (#3694 cross-issue infrastructure-anomaly pause backstop). ' +
+                'Dispatch resumes once the anomaly is resolved (an owner `RESOLVE_ANOMALY` ' +
+                'comment) or its detection window elapses.'
+              : '⏸️ **Scrummaster Agent**: Dispatch paused -- 2 or more unresolved ' +
+                'escalations (open issues assigned to the owner). See the loud report on ' +
+                'the release tracking issue (#3687 unresolved-escalation pause backstop). ' +
+                'Dispatch resumes automatically once the count drops below 2.';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              body
+            });
 
       - name: Post no issues comment
-        if: steps.select.outputs.next_issue == ''
+        if: steps.start.outputs.paused != 'true' && steps.start.outputs.next_issue == '' && steps.start.outputs.tried == ''
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
@@ -135,41 +179,47 @@ jobs:
               )
             });
 
-      - name: Post selection comment
-        if: steps.select.outputs.next_issue != ''
+      - name: Post queue-blocked comment
+        if: steps.start.outputs.paused != 'true' && steps.start.outputs.next_issue == '' && steps.start.outputs.tried != ''
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
           script: |
             const issue_number = context.payload.issue.number;
-            const next_issue = '${{ steps.select.outputs.next_issue }}';
+            const tried = `${{ steps.start.outputs.tried }}`.trim();
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number,
-              body: `✅ **Scrummaster Agent**: Selected issue #${next_issue}\n\nStarting issue now...`
+              body: (
+                `🛑 **Scrummaster Agent**: Started nothing this dispatch -- every eligible ` +
+                `Backlog candidate was unclaimable:\n\n` +
+                '```\n' + tried + '\n```\n\n' +
+                'This is a head-of-line block on the whole queue. Please inspect the listed ' +
+                'issue(s) and resolve manually (see #3665 for the decision matrix).'
+              )
             });
 
-      - name: Start next issue
-        if: steps.select.outputs.next_issue != ''
+      - name: Fail run on queue block
+        if: steps.start.outputs.next_issue == '' && steps.start.outputs.tried != ''
         shell: bash
         run: |
-          set -euo pipefail
-          ISSUE="${{ steps.select.outputs.next_issue }}"
-          echo "::group::Starting issue #$ISSUE"
-          bash -lc "./scripts/agents/scrummaster_start_issue.sh $ISSUE"
-          echo "::notice::Started issue #$ISSUE -> In Progress, assigned to @${{ vars.DEV_AGENT }}"
-          echo "::endgroup::"
+          echo "::error::Dispatch started nothing -- every eligible Backlog candidate was unclaimable. See the queue-blocked comment on this issue for details."
+          exit 1
 
       - name: Post completion comment
-        if: steps.select.outputs.next_issue != ''
+        if: steps.start.outputs.next_issue != ''
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
           script: |
             const issue_number = context.payload.issue.number;
-            const next_issue = '${{ steps.select.outputs.next_issue }}';
+            const next_issue = '${{ steps.start.outputs.next_issue }}';
             const dev_agent = '${{ vars.DEV_AGENT }}';
+            const tried = `${{ steps.start.outputs.tried }}`.trim();
+            const skippedNote = tried
+              ? `\n\nSkipped ${tried.split('\n').length} unclaimable candidate(s) before this one:\n\`\`\`\n${tried}\n\`\`\``
+              : '';
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -178,6 +228,7 @@ jobs:
                 `🚀 **Scrummaster Agent**: Issue #${next_issue} has been moved to ` +
                 `**In Progress** and assigned to @${dev_agent}\n\n` +
                 `Developer auto-implementation workflow will begin momentarily.\n\n` +
-                `[View issue](https://github.com/${context.repo.owner}/${context.repo.repo}/issues/${next_issue})`
+                `[View issue](https://github.com/${context.repo.owner}/${context.repo.repo}/issues/${next_issue})` +
+                skippedNote
               )
             });

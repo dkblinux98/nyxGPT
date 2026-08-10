@@ -1,0 +1,15 @@
+{
+  // CI gate config for `audit-ci` (wraps `npm audit`, adds an allowlist with
+  // per-entry justification comments -- JSONC, unlike npm's own audit
+  // output, supports comments). See ../security/README.md for the
+  // cross-tool security-scanning overview (#3501).
+  //
+  // "high": true means audit-ci fails the build on high OR critical
+  // severity findings; moderate/low are reported but non-blocking.
+  "high": true,
+  // The next/postcss/sharp/serialize-javascript allowlist entries accepted
+  // 2026-08-03 (#3501) as "needs its own upgrade issue" were resolved by
+  // the next@16.3.0 bump and serialize-javascript override in #3644 --
+  // `npm audit` now reports 0 vulnerabilities, so no allowlist is needed.
+  "allowlist": []
+}

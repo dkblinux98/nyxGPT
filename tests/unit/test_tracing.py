@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import sys
 from configparser import ConfigParser
 from contextlib import contextmanager
 from pathlib import Path
@@ -240,6 +242,141 @@ def test_instrument_fastapi_app_calls_the_otel_instrumentor(
     tracing.instrument_fastapi_app(fake_app)  # type: ignore[arg-type]
 
     assert instrumented_apps == [fake_app]
+
+
+def _otel_context_detach_race_record() -> logging.LogRecord:
+    """A log record shaped like `opentelemetry.context.detach`'s real one
+    (#3593): logger name "opentelemetry.context", message "Failed to detach
+    context", exc_info holding the exact ValueError contextvars raises when
+    a Token is detached in a different Context than it was attached in."""
+    try:
+        raise ValueError(
+            "<Token var=<ContextVar name='current_context' default={} at 0x111> "
+            "at 0x222> was created in a different Context"
+        )
+    except ValueError:
+        return logging.LogRecord(
+            name="opentelemetry.context",
+            level=logging.ERROR,
+            pathname=__file__,
+            lineno=1,
+            msg="Failed to detach context",
+            args=(),
+            exc_info=sys.exc_info(),
+        )
+
+
+def test_suppress_context_detach_race_filter_drops_the_known_race() -> None:
+    """The exact log shape #3593 floods GlitchTip with must be dropped."""
+    filt = tracing._SuppressContextDetachRaceFilter()
+
+    assert filt.filter(_otel_context_detach_race_record()) is False
+
+
+def test_suppress_context_detach_race_filter_passes_through_other_records() -> None:
+    """Only the specific known-benign detach race is suppressed -- any other
+    log from the same logger, or the same message from a different one, or
+    an unrelated exception type, must pass through untouched so a genuinely
+    new problem doesn't go silently missing."""
+    filt = tracing._SuppressContextDetachRaceFilter()
+
+    other_logger_record = logging.LogRecord(
+        name="opentelemetry.context",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="some other message",
+        args=(),
+        exc_info=None,
+    )
+    assert filt.filter(other_logger_record) is True
+
+    wrong_logger_record = _otel_context_detach_race_record()
+    wrong_logger_record.name = "some.other.logger"
+    assert filt.filter(wrong_logger_record) is True
+
+    try:
+        raise RuntimeError("Failed to detach context but for an unrelated reason")
+    except RuntimeError:
+        different_exc_record = logging.LogRecord(
+            name="opentelemetry.context",
+            level=logging.ERROR,
+            pathname=__file__,
+            lineno=1,
+            msg="Failed to detach context",
+            args=(),
+            exc_info=sys.exc_info(),
+        )
+    assert filt.filter(different_exc_record) is True
+
+
+def test_instrument_fastapi_app_installs_context_detach_race_filter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """instrument_fastapi_app must guard the OTel context logger against the
+    #3593 flood every time it wires up the ASGI instrumentation."""
+    otel_logger = logging.getLogger("opentelemetry.context")
+    for f in list(otel_logger.filters):
+        if isinstance(f, tracing._SuppressContextDetachRaceFilter):
+            otel_logger.removeFilter(f)
+
+    class FakeInstrumentor:
+        @staticmethod
+        def instrument_app(app: Any) -> None:
+            pass
+
+    monkeypatch.setattr(tracing, "FastAPIInstrumentor", FakeInstrumentor)
+
+    tracing.instrument_fastapi_app(object())  # type: ignore[arg-type]
+
+    assert any(isinstance(f, tracing._SuppressContextDetachRaceFilter) for f in otel_logger.filters)
+
+
+def test_instrument_fastapi_app_does_not_stack_duplicate_filters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Calling instrument_fastapi_app repeatedly (as tests in this module
+    do) must not accumulate duplicate filters on the shared logger."""
+    otel_logger = logging.getLogger("opentelemetry.context")
+
+    class FakeInstrumentor:
+        @staticmethod
+        def instrument_app(app: Any) -> None:
+            pass
+
+    monkeypatch.setattr(tracing, "FastAPIInstrumentor", FakeInstrumentor)
+
+    tracing.instrument_fastapi_app(object())  # type: ignore[arg-type]
+    tracing.instrument_fastapi_app(object())  # type: ignore[arg-type]
+
+    race_filters = [
+        f for f in otel_logger.filters if isinstance(f, tracing._SuppressContextDetachRaceFilter)
+    ]
+    assert len(race_filters) == 1
+
+
+def test_context_detach_race_is_suppressed_end_to_end(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Full-stack regression guard for #3593: a real ContextVar Token
+    detached in a different asyncio Context than it was attached in must
+    not surface as a captured ERROR-level log once `instrument_fastapi_app`
+    (called at import time by `nyxgpt.app`) has run."""
+    import asyncio
+
+    from opentelemetry import context as otel_context
+
+    async def _detach_in_other_task(token: Any) -> None:
+        otel_context.detach(token)
+
+    async def _trigger_race() -> None:
+        token = otel_context.attach(otel_context.set_value("nyxgpt-test-key", "value"))
+        await asyncio.create_task(_detach_in_other_task(token))
+
+    with caplog.at_level("DEBUG", logger="opentelemetry.context"):
+        asyncio.run(_trigger_race())
+
+    assert caplog.records == []
 
 
 def test_fastapi_app_is_instrumented_before_lifespan_runs() -> None:

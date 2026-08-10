@@ -62,8 +62,12 @@ def test_admin_overview_degrades_gracefully_when_canary_status_fails():
 
     assert response.status_code == 200
     body = response.json()
+    # The sub-section degrades to a generic error payload; the raw exception
+    # detail ("kubectl not found") is logged server-side but never returned to
+    # the client (CodeQL py/stack-trace-exposure).
     assert "error" in body["canary"]
-    assert "kubectl not found" in body["canary"]["error"]
+    assert "kubectl not found" not in body["canary"]["error"]
+    assert body["canary"]["error"] == "unavailable"
 
 
 # --- GET /admin/activity ---
@@ -183,6 +187,34 @@ def test_admin_access_update_rotate_returns_new_key_once():
     # ...and the same generated value is what got persisted to config.
     (call_updates,), _ = mock_apply.call_args
     assert call_updates["api_key"] == body["api_key"]
+
+
+def test_admin_access_update_rotate_rejected_when_cloud_provider_configured():
+    """When `[secrets] provider` is set, `get_auth_api_key` always prefers
+    the AWS-resolved value over config.ini, so a rotation written here
+    would be inert (the middleware keeps enforcing the old cloud-stored
+    key while this endpoint reports the new one as active). It must be
+    rejected rather than silently no-op'd. See #3507."""
+    with (
+        patch(
+            "nyxgpt.app._auth_cfg",
+            return_value=_auth_cfg(enabled=True, api_key="existing-key"),
+        ),
+        patch("nyxgpt.app.get_secrets_provider", return_value="ssm"),
+        patch("nyxgpt.app._apply_auth_config_updates") as mock_apply,
+        patch("nyxgpt.app.admin_activity_module.record") as mock_record,
+    ):
+        client = TestClient(app)
+        response = client.post(
+            "/api/v1/admin/access",
+            json={"rotate": True},
+            headers={"X-API-Key": "existing-key"},
+        )
+
+    assert response.status_code == 400
+    assert "cloud" in response.json()["error"]["message"].lower()
+    mock_apply.assert_not_called()
+    mock_record.assert_not_called()
 
 
 def test_admin_access_update_records_activity_event():

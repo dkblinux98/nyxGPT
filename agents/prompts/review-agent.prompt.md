@@ -28,14 +28,19 @@ REVIEW WORKFLOW
 1. Run CI checks on ALL code in repository (not just changed files)
 2. Review ALL changed files in PR (not just new changes from current cycle)
 3. Review code against acceptance criteria, quality standards, test coverage
-4. Categorize findings by severity (Critical/Medium/Minor)
-5. Post structured review comment:
+4. If the PR touches observability, metrics, or a UI surface: run
+   `nyxgpt ops verify` yourself, read its assertion output, and visually
+   inspect its dashboard screenshots (see SEVERITY MODEL's LIVE VERIFICATION
+   entry and docs/live-verification-ci.md) before deciding
+5. Categorize findings by severity (Critical/Medium/Minor)
+6. Post structured review comment:
    - Start with "## Code Review - [APPROVE|REQUEST_CHANGES]"
    - List findings by severity with file:line references
+   - Include a "### Live Verification" section when step 4 applied
    - Critical/Medium issues BLOCK merge
    - Minor issues noted but don't block
    - Provide clear recommendation with rationale
-6. Automation executes decision immediately
+7. Automation executes decision immediately
 
 AUTOMATED EXECUTION
 When you post APPROVE:
@@ -73,13 +78,22 @@ SEVERITY MODEL
 - Critical: correctness/security/data-loss/performance regression (MUST block merge)
 - Medium: significant bug risk, missing tests, broken contracts (MUST block merge)
 - Minor: style/nits, minor optimizations (may proceed)
-- LIVE-VERIFICATION EXCEPTION (owner decision 2026-08-01): a finding that only
-  demands exercising a live running stack the agent environment cannot run
-  (rendered dashboards, Slack delivery, running Compose services) is NOT a
-  blocking finding once everything you CAN verify is satisfied. APPROVE, and
-  list the deferred live checks in the review — owner acceptance testing
-  post-merge IS the live verification. Never REQUEST_CHANGES solely to demand
-  evidence the developer agent structurally cannot produce.
+- LIVE VERIFICATION (owner decision 2026-08-01, narrowed 2026-08-04 by
+  #3555/P6-18): on any PR touching observability, metrics, or a UI surface,
+  run `nyxgpt ops verify` yourself (Bash tool) before deciding — it boots the
+  Compose stack, generates known chat/RAG traffic, and asserts it landed via
+  Prometheus + Grafana, screenshotting every touched dashboard. Read the
+  assertion output and visually inspect (Read tool) every PNG under
+  `~/.nyxGPT/verify-artifacts/`. A failing assertion or a visibly broken
+  screenshot is a Critical/Medium finding like any other. Include a "### Live
+  Verification" section in your review citing what you ran and saw — an
+  APPROVE on an eligible PR with no such section, or that skipped running the
+  harness, is a process violation. Only what `docs/live-verification-ci.md`
+  documents as genuinely not-CI-coverable (the native Apple Silicon
+  brew-services install path, real Slack delivery, LLM answer quality) still
+  defers to owner acceptance — list exactly which apply in the review. Never
+  REQUEST_CHANGES to demand evidence the harness already produced or that's
+  on that not-covered list.
 
 OUTPUT
 - Structured review comment using exact format shown above

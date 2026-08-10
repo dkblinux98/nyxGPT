@@ -55,15 +55,45 @@ def test_resolve_example_config_prefers_package_adjacent(monkeypatch, tmp_path):
     assert config_wizard._resolve_example_config_path() == packaged.resolve()
 
 
+def test_resolve_example_config_prefers_packaged_resource(monkeypatch, tmp_path):
+    """A bare `pip install nyxgpt` (no Homebrew/systemd installer step to
+    place the package-adjacent copy, no repo checkout) still finds
+    example.config.ini via the `nyxgpt.resources` package data (#3622) --
+    it's symlinked in there the same way `.env.example` is."""
+    monkeypatch.delenv("NYXGPT_EXAMPLE_CONFIG", raising=False)
+    module = tmp_path / "site-packages" / "nyxgpt" / "config_wizard.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("", encoding="utf-8")
+    # deliberately no package-adjacent example.config.ini
+    monkeypatch.setattr(config_wizard, "__file__", str(module))
+    resolved = config_wizard._resolve_example_config_path()
+    assert resolved.name == "example.config.ini"
+    assert resolved.is_file()
+    assert resolved != module.parent / "example.config.ini"
+
+
 def test_resolve_example_config_falls_back_to_repo_root(monkeypatch, tmp_path):
-    """Source checkout: no env and no package-adjacent copy -> the repo-root
-    file (module at src/nyxgpt/config_wizard.py, so parents[2] is the root)."""
+    """Source checkout with no packaged resource available either -> the
+    repo-root file (module at src/nyxgpt/config_wizard.py, so parents[2] is
+    the root)."""
     monkeypatch.delenv("NYXGPT_EXAMPLE_CONFIG", raising=False)
     module = tmp_path / "repo" / "src" / "nyxgpt" / "config_wizard.py"
     module.parent.mkdir(parents=True)
     module.write_text("", encoding="utf-8")
     # deliberately no example.config.ini next to the module
+
+    class _MissingResource:
+        def is_file(self) -> bool:
+            return False
+
+    class _MissingResourcesRoot:
+        def joinpath(self, _name: str) -> _MissingResource:
+            return _MissingResource()
+
     monkeypatch.setattr(config_wizard, "__file__", str(module))
+    monkeypatch.setattr(
+        config_wizard.importlib.resources, "files", lambda _pkg: _MissingResourcesRoot()
+    )
     assert (
         config_wizard._resolve_example_config_path()
         == module.resolve().parents[2] / "example.config.ini"
@@ -313,6 +343,29 @@ def test_apply_updates_creates_file_when_missing(tmp_path):
     assert cfg_path.exists()
 
 
+def test_apply_updates_lands_0600_on_a_freshly_created_file(tmp_path):
+    """The general wizard-save endpoint (`POST /config/sections`) can write
+    `[auth] api_key` and can create config.ini from scratch -- it must never
+    leave that secret at default umask permissions.
+    """
+    cfg_path = tmp_path / "nested" / "config.ini"
+    config_wizard.apply_updates(cfg_path, {"auth": {"api_key": "supersecret"}})
+    assert oct(cfg_path.stat().st_mode & 0o777) == "0o600"
+
+
+def test_apply_updates_rechmods_a_pre_existing_permissive_file(tmp_path):
+    """A config.ini created some other way (e.g. by an admin manually) with
+    looser perms must be tightened back to 0600 on the next wizard save.
+    """
+    cfg_path = tmp_path / "config.ini"
+    cfg_path.write_text("[auth]\nenabled = false\n", encoding="utf-8")
+    cfg_path.chmod(0o644)
+
+    config_wizard.apply_updates(cfg_path, {"auth": {"enabled": True}})
+
+    assert oct(cfg_path.stat().st_mode & 0o777) == "0o600"
+
+
 def test_schema_summary_covers_every_non_excluded_section():
     """Guards against #3388's original bug: the wizard silently only covering a subset."""
     parser = ConfigParser()
@@ -361,8 +414,8 @@ def test_wizard_schema_covers_every_active_key_in_example_config():
         assert known_keys == set(parser.options(section)), section
 
 
-def test_excluded_sections_are_the_documented_three():
-    assert frozenset({"paths", "openai", "github"}) == config_wizard.EXCLUDED_SECTIONS
+def test_excluded_sections_are_the_documented_four():
+    assert frozenset({"paths", "openai", "github", "cloud"}) == config_wizard.EXCLUDED_SECTIONS
 
 
 def test_rag_gains_full_tuning_surface_not_just_original_six_fields():

@@ -1,0 +1,229 @@
+name: Release Artifacts
+
+# Publishes the artifacts a repo-less, credential-holding machine needs to
+# install nyxGPT (#3622, split B of the repo-less portability requirement --
+# CLAUDE.md 2026-08-01): container images to GHCR and a remote Homebrew tap.
+#
+# PyPI itself is deliberately NOT published here -- that stays owner-run via
+# scripts/release_ceremony.sh Phase 2, which needs a stored PyPI token and
+# runs from the owner's machine (ceremony predates this workflow; see that
+# script's header). This workflow picks up right after Phase 1 of that
+# ceremony publishes the GitHub Release, which is what triggers it below.
+#
+# The Homebrew tap job additionally needs a remote tap repository (e.g.
+# dkblinux98/homebrew-nyxgpt) and a push token the owner provisions once --
+# see docs/homebrew.md#remote-tap-repo-less-install. Until `vars.
+# HOMEBREW_TAP_REPO` is set, that job's push step logs a skip and still
+# succeeds; the stamped formulas are uploaded as a workflow artifact either
+# way, and the tarballs are always attached to the GitHub Release (that part
+# needs no owner secret -- the default GITHUB_TOKEN can write release
+# assets on this repo).
+#
+# GHCR image publishing also needs no owner secret: GITHUB_TOKEN with
+# `packages: write` is sufficient to push to ghcr.io/<owner>/...  (the owner
+# may still want to flip the resulting package's visibility to public in
+# GitHub package settings after the first publish).
+
+on:
+  release:
+    types: [released]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release tag to (re-)publish artifacts for, e.g. 2.1.0 (must already exist as a tag)'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  container-images:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ github.event.release.tag_name || inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.VERSION }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push nyxgpt-api
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/nyxgpt-api:${{ env.VERSION }}
+            ghcr.io/${{ github.repository_owner }}/nyxgpt-api:latest
+
+      - name: Build and push nyxgpt-web
+        uses: docker/build-push-action@v6
+        with:
+          context: ./web
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/nyxgpt-web:${{ env.VERSION }}
+            ghcr.io/${{ github.repository_owner }}/nyxgpt-web:latest
+
+  homebrew-tap:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # gh release upload (assets on this repo's own release)
+    env:
+      VERSION: ${{ github.event.release.tag_name || inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.VERSION }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build tarballs and stamp formulas
+        run: |
+          python scripts/build_homebrew_artifacts.py "$VERSION" dist/homebrew \
+            "https://github.com/${{ github.repository }}/releases/download/${VERSION}"
+
+      - name: Attach tarballs to the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "$VERSION" \
+            dist/homebrew/dist/nyxgpt-api-"$VERSION".tar.gz \
+            dist/homebrew/dist/nyxgpt-web-"$VERSION".tar.gz \
+            --clobber -R "${{ github.repository }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: homebrew-tap-formulas-${{ env.VERSION }}
+          path: dist/homebrew/*.rb
+
+      - name: Push stamped formulas to the remote tap
+        if: ${{ vars.HOMEBREW_TAP_REPO != '' }}
+        env:
+          TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO }}
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "${TAP_TOKEN:-}" ]; then
+            echo "::warning::HOMEBREW_TAP_REPO is set but HOMEBREW_TAP_TOKEN is missing -- skipping tap push."
+            echo "::warning::Formulas are still attached as a workflow artifact and on the release."
+            exit 0
+          fi
+          TAP_DIR="$(mktemp -d)"
+          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/${TAP_REPO}.git" "$TAP_DIR"
+          mkdir -p "$TAP_DIR/Formula"
+          cp dist/homebrew/nyxgpt-api.rb "$TAP_DIR/Formula/nyxgpt-api.rb"
+          cp dist/homebrew/nyxgpt-web.rb "$TAP_DIR/Formula/nyxgpt-web.rb"
+          cd "$TAP_DIR"
+          git config user.name "nyxgpt-release-bot"
+          git config user.email "actions@github.com"
+          git add Formula/nyxgpt-api.rb Formula/nyxgpt-web.rb
+          if git diff --cached --quiet; then
+            echo "Tap formulas unchanged for ${VERSION} -- nothing to push"
+          else
+            git commit -m "nyxgpt ${VERSION}"
+            git push origin HEAD
+          fi
+
+      - name: Remote tap not configured
+        if: ${{ vars.HOMEBREW_TAP_REPO == '' }}
+        run: |
+          echo "::notice::HOMEBREW_TAP_REPO is not set -- the owner needs to create a remote tap repo"
+          echo "::notice::(e.g. dkblinux98/homebrew-nyxgpt), set this repo variable, and add a"
+          echo "::notice::HOMEBREW_TAP_TOKEN secret with push access. See docs/homebrew.md#remote-tap."
+          echo "::notice::Stamped formulas for this release are attached as a workflow artifact meanwhile."
+
+  artifact-install-smoke:
+    # Closes #3622's CI acceptance criterion (carried from #3508): installs
+    # nyxgpt purely from the just-published PyPI artifact, with NO repo
+    # checkout anywhere in this job, then runs the same
+    # install -> verify -> down cycle as scripts/systemd-native-smoke.sh
+    # (that script itself lives in the repo, so it can't be invoked here
+    # without a checkout -- the cycle is inlined instead).
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ github.event.release.tag_name || inputs.version }}
+    steps:
+      - name: Wait for PyPI to serve this version
+        run: |
+          code=000
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/nyxgpt/${VERSION}/json")
+            [ "$code" = "200" ] && break
+            echo "pypi.org does not serve nyxgpt==${VERSION} yet (attempt $i/30, http $code) -- retrying in 20s"
+            sleep 20
+          done
+          if [ "$code" != "200" ]; then
+            echo "::error::pypi.org never served nyxgpt==${VERSION} -- is release_ceremony.sh Phase 2 done?"
+            exit 1
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install nyxgpt from PyPI (no repo checkout)
+        run: pip install "nyxgpt==${VERSION}"
+
+      - name: Install Ollama
+        run: curl -fsSL https://ollama.com/install.sh | sh
+
+      - name: Ensure a systemd --user session is reachable
+        run: |
+          if ! systemctl --user status >/dev/null 2>&1; then
+            echo "No systemd --user session detected; enabling lingering for $(whoami)"
+            sudo loginctl enable-linger "$(whoami)" || true
+            RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+            echo "XDG_RUNTIME_DIR=${RUNTIME_DIR}" >> "$GITHUB_ENV"
+            echo "DBUS_SESSION_BUS_ADDRESS=unix:path=${RUNTIME_DIR}/bus" >> "$GITHUB_ENV"
+          fi
+
+      - name: Seed ~/.nyxGPT/config.ini from the installed package
+        run: |
+          EXAMPLE_CONFIG=$(python -c "from nyxgpt import config_wizard; print(config_wizard._EXAMPLE_CONFIG_PATH)")
+          mkdir -p "$HOME/.nyxGPT"
+          cp "$EXAMPLE_CONFIG" "$HOME/.nyxGPT/config.ini"
+
+      - name: nyxgpt ops install
+        run: nyxgpt ops install --skip-observability
+
+      - name: Verify systemd --user units and endpoints are up
+        run: |
+          fail=0
+          for unit in nyxgpt-api nyxgpt-web nyxgpt-ollama nyxgpt-cassandra-logs nyxgpt-ollama-logs; do
+            state=$(systemctl --user is-active "$unit.service" 2>/dev/null || echo inactive)
+            echo "  $unit -> $state"
+            [ "$state" = "active" ] || { echo "::error::$unit is not active"; fail=1; }
+          done
+          check() {
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$2")
+            echo "  $1 -> $code (expect $3)"
+            [ "$code" = "$3" ] || { echo "::error::$1 expected $3, got $code"; fail=1; }
+          }
+          check "api  /health" http://127.0.0.1:8000/health 200
+          check "web  /"       http://127.0.0.1:3000/ 200
+          exit "$fail"
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          systemctl --user status nyxgpt-api nyxgpt-web nyxgpt-ollama --no-pager -l || true
+          tail -n 80 "$HOME/.nyxGPT/logs/nyxgpt-api.err.log" 2>/dev/null || true
+          tail -n 80 "$HOME/.nyxGPT/logs/nyxgpt-web.err.log" 2>/dev/null || true
+
+      - name: nyxgpt ops down
+        if: always()
+        run: nyxgpt ops down || true

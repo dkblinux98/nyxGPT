@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import logging
+import tempfile
 from pathlib import Path
 
 import pytest
 
+from nyxgpt import cloud_secrets
 from nyxgpt.config import (
+    SECRETS_SYNC_MANIFEST,
+    _expand_path,
     get_ann_oversample_factor,
     get_api_host,
     get_api_port,
+    get_auth_api_key,
+    get_auth_enabled,
     get_batch_enabled,
     get_batch_size,
     get_batch_wait_time_ms,
@@ -29,12 +35,17 @@ from nyxgpt.config import (
     get_effective_config_summary,
     get_error_tracking_config,
     get_error_tracking_enabled,
+    get_github_pat,
+    get_github_repo_name,
+    get_github_repo_owner,
     get_log_aggregation_config,
     get_log_aggregation_enabled,
     get_monitoring_config,
     get_monitoring_enabled,
     get_monitoring_grafana_admin_password,
+    get_monitoring_slack_bot_token,
     get_monitoring_slack_webhook_url,
+    get_openai_api_key,
     get_prompt_mode_enabled,
     get_prompt_mode_long_threshold,
     get_prompt_mode_short_threshold,
@@ -53,6 +64,10 @@ from nyxgpt.config import (
     get_rag_min_score,
     get_rate_limit_config,
     get_rate_limit_enabled,
+    get_secrets_provider,
+    get_secrets_region,
+    get_secrets_secretsmanager_id,
+    get_secrets_ssm_prefix,
     get_self_heal_backoff_seconds,
     get_self_heal_check_interval_seconds,
     get_self_heal_default_enabled,
@@ -62,9 +77,11 @@ from nyxgpt.config import (
     get_tracing_enabled,
     get_vector_similarity_function,
     get_vectorstore_dir,
+    is_loopback_host,
     load_config,
     log_effective_config,
     reset_fallback_warnings,
+    validate_bind_security,
     validate_config,
 )
 
@@ -1378,6 +1395,25 @@ chat_timeout_seconds = not_a_number
 # ---------------------------------------------------------------------------
 
 
+def test_expand_path_refuses_exact_allowed_roots() -> None:
+    """A configured path resolving EXACTLY to $HOME or the temp root -- rather
+    than strictly inside one -- is refused: the barrier accepts descendants
+    only (`startswith(root + os.sep)`). Pins the intentional behavior change
+    from the single-condition guard restructure (PR #3657)."""
+    with pytest.raises(ValueError, match="allowed data area"):
+        _expand_path(str(Path.home()))
+    with pytest.raises(ValueError, match="allowed data area"):
+        _expand_path(tempfile.gettempdir())
+
+
+def test_expand_path_accepts_descendants_of_allowed_roots(tmp_path: Path) -> None:
+    """Sanity companion to the exact-root refusal: strict descendants of both
+    allowed roots still resolve."""
+    assert _expand_path(str(tmp_path / "data")) == (tmp_path / "data").resolve()
+    home_child = Path.home() / ".nyxGPT" / "sessions"
+    assert _expand_path(str(home_child)) == home_child.resolve()
+
+
 def test_get_vectorstore_dir_default(tmp_path: Path) -> None:
     ini = tmp_path / "config.ini"
     _write(ini, "[nyxgpt]\ndefault_model = llama3.1:8b\n")
@@ -1421,6 +1457,96 @@ host = 0.0.0.0
 
     cfg = load_config(str(ini))
     assert get_api_host(cfg) == "0.0.0.0"
+
+
+# ---------------------------------------------------------------------------
+# is_loopback_host / get_auth_enabled / validate_bind_security
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "host,expected",
+    [
+        ("127.0.0.1", True),
+        ("localhost", True),
+        ("LOCALHOST", True),
+        ("  localhost  ", True),
+        ("::1", True),
+        ("127.5.6.7", True),
+        ("0.0.0.0", False),
+        ("10.0.0.5", False),
+        ("192.168.1.1", False),
+        ("::", False),
+        ("example.com", False),
+        ("", False),
+    ],
+)
+def test_is_loopback_host(host: str, expected: bool) -> None:
+    assert is_loopback_host(host) is expected
+
+
+def test_get_auth_enabled_default_false(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[nyxgpt]\ndefault_model = llama3.1:8b\n")
+
+    cfg = load_config(str(ini))
+    assert get_auth_enabled(cfg) is False
+
+
+def test_get_auth_enabled_true(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[auth]\nenabled = true\n")
+
+    cfg = load_config(str(ini))
+    assert get_auth_enabled(cfg) is True
+
+
+def test_get_auth_enabled_invalid_falls_back_to_false(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[auth]\nenabled = not_a_boolean\n")
+
+    cfg = load_config(str(ini))
+    caplog.set_level(logging.WARNING, logger="nyxgpt.config")
+    assert get_auth_enabled(cfg) is False
+    assert "Invalid auth.enabled" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "host,auth_enabled,should_refuse",
+    [
+        ("127.0.0.1", False, False),
+        ("127.0.0.1", True, False),
+        ("localhost", False, False),
+        ("localhost", True, False),
+        ("::1", False, False),
+        ("0.0.0.0", False, True),
+        ("0.0.0.0", True, False),
+        ("10.0.0.5", False, True),
+        ("10.0.0.5", True, False),
+        ("192.168.1.100", False, True),
+        ("192.168.1.100", True, False),
+    ],
+)
+def test_validate_bind_security_refusal_matrix(
+    tmp_path: Path, host: str, auth_enabled: bool, should_refuse: bool
+) -> None:
+    """The host x auth refusal matrix: non-loopback + auth-off is the only refused cell."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        f"[api]\nhost = {host}\n[auth]\nenabled = {'true' if auth_enabled else 'false'}\n",
+    )
+
+    cfg = load_config(str(ini))
+    error = validate_bind_security(cfg)
+    if should_refuse:
+        assert error is not None
+        assert host in error
+        assert "nyxgpt wizard" in error
+    else:
+        assert error is None
 
 
 # ---------------------------------------------------------------------------
@@ -2065,6 +2191,275 @@ def test_get_effective_config_summary_empty_secrets_stay_empty(tmp_path: Path) -
     assert summary["error_tracking.dsn"] == ""
     assert summary["monitoring.grafana_admin_password"] == ""
     assert summary["monitoring.slack_webhook_url"] == ""
+
+
+# --- Guided secrets getters (#3505) ---
+
+
+def test_get_monitoring_slack_bot_token_reads_value(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[monitoring]\nslack_bot_token = xoxb-1234-5678\n")
+    cfg = load_config(str(ini))
+    assert get_monitoring_slack_bot_token(cfg) == "xoxb-1234-5678"
+
+
+def test_get_monitoring_slack_bot_token_defaults_to_empty(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[nyxgpt]\ndefault_model = llama3.1:8b\n")
+    cfg = load_config(str(ini))
+    assert get_monitoring_slack_bot_token(cfg) == ""
+
+
+def test_get_openai_api_key_reads_value(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[openai]\napi_key = sk-abc123\n")
+    cfg = load_config(str(ini))
+    assert get_openai_api_key(cfg) == "sk-abc123"
+
+
+def test_get_github_pat_reads_value(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[github]\npat = ghp_abc123\n")
+    cfg = load_config(str(ini))
+    assert get_github_pat(cfg) == "ghp_abc123"
+
+
+# --- Cloud secrets (SSM / Secrets Manager, P6-10, #3507) ---
+
+
+@pytest.fixture(autouse=True)
+def _clear_cloud_secrets_cache():
+    cloud_secrets.clear_cache()
+    yield
+    cloud_secrets.clear_cache()
+
+
+def test_get_secrets_provider_defaults_to_empty(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[nyxgpt]\ndefault_model = llama3.1:8b\n")
+    cfg = load_config(str(ini))
+    assert get_secrets_provider(cfg) == ""
+
+
+def test_get_secrets_provider_reads_and_normalizes_value(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[secrets]\nprovider = SSM\n")
+    cfg = load_config(str(ini))
+    assert get_secrets_provider(cfg) == "ssm"
+
+
+def test_get_secrets_region_returns_none_when_unset(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[nyxgpt]\ndefault_model = llama3.1:8b\n")
+    cfg = load_config(str(ini))
+    assert get_secrets_region(cfg) is None
+
+
+def test_get_secrets_region_reads_value(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[secrets]\nregion = us-west-2\n")
+    cfg = load_config(str(ini))
+    assert get_secrets_region(cfg) == "us-west-2"
+
+
+def test_get_secrets_ssm_prefix_defaults(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[nyxgpt]\ndefault_model = llama3.1:8b\n")
+    cfg = load_config(str(ini))
+    assert get_secrets_ssm_prefix(cfg) == "/nyxgpt"
+
+
+def test_get_secrets_secretsmanager_id_defaults(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[nyxgpt]\ndefault_model = llama3.1:8b\n")
+    cfg = load_config(str(ini))
+    assert get_secrets_secretsmanager_id(cfg) == "nyxgpt"
+
+
+def test_get_auth_api_key_reads_local_value_when_provider_unset(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[auth]\napi_key = local-secret\n")
+    cfg = load_config(str(ini))
+    assert get_auth_api_key(cfg) == "local-secret"
+
+
+def test_get_auth_api_key_resolves_from_ssm_when_provider_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[secrets]\nprovider = ssm\n[auth]\napi_key = should-not-be-used\n")
+    cfg = load_config(str(ini))
+
+    monkeypatch.setattr(
+        cloud_secrets,
+        "resolve_secret",
+        lambda provider, key, **kwargs: f"cloud-{provider}-{key}",
+    )
+
+    assert get_auth_api_key(cfg) == "cloud-ssm-auth_api_key"
+
+
+def test_get_openai_api_key_resolves_from_secretsmanager_when_provider_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[secrets]\nprovider = secretsmanager\n[openai]\napi_key = should-not-be-used\n")
+    cfg = load_config(str(ini))
+
+    monkeypatch.setattr(
+        cloud_secrets,
+        "resolve_secret",
+        lambda provider, key, **kwargs: f"cloud-{provider}-{key}",
+    )
+
+    assert get_openai_api_key(cfg) == "cloud-secretsmanager-openai_api_key"
+
+
+def test_get_github_pat_resolves_from_cloud_when_provider_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[secrets]\nprovider = ssm\n[github]\npat = should-not-be-used\n")
+    cfg = load_config(str(ini))
+
+    monkeypatch.setattr(
+        cloud_secrets,
+        "resolve_secret",
+        lambda provider, key, **kwargs: f"cloud-{provider}-{key}",
+    )
+
+    assert get_github_pat(cfg) == "cloud-ssm-github_pat"
+
+
+def test_get_auth_api_key_returns_empty_not_local_value_when_cloud_fetch_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A configured provider that fails to resolve must not silently fall
+    back to a config.ini value -- cloud deploys never populate that value,
+    so the failure should surface as empty (and thus a locked-down/failing
+    integration) rather than be masked."""
+    ini = tmp_path / "config.ini"
+    _write(ini, "[secrets]\nprovider = ssm\n[auth]\napi_key = should-not-be-used\n")
+    cfg = load_config(str(ini))
+
+    def _raise(provider, key, **kwargs):
+        raise cloud_secrets.CloudSecretsError("boom")
+
+    monkeypatch.setattr(cloud_secrets, "resolve_secret", _raise)
+
+    assert get_auth_api_key(cfg) == ""
+
+
+def test_get_secrets_functions_pass_configured_region_and_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        "[secrets]\nprovider = ssm\nregion = eu-west-1\nssm_prefix = /custom\n"
+        "[auth]\napi_key = should-not-be-used\n",
+    )
+    cfg = load_config(str(ini))
+
+    calls = []
+
+    def _fake_resolve(provider, key, **kwargs):
+        calls.append((provider, key, kwargs))
+        return "cloud-value"
+
+    monkeypatch.setattr(cloud_secrets, "resolve_secret", _fake_resolve)
+
+    get_auth_api_key(cfg)
+
+    assert calls == [
+        (
+            "ssm",
+            "auth_api_key",
+            {"region": "eu-west-1", "ssm_prefix": "/custom", "secretsmanager_id": "nyxgpt"},
+        )
+    ]
+
+
+def test_validate_config_rejects_unknown_secrets_provider(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[secrets]\nprovider = vault\n")
+    cfg = load_config(str(ini))
+    errors = validate_config(cfg)
+    assert any("secrets.provider" in e for e in errors)
+
+
+def test_validate_config_accepts_known_secrets_providers(tmp_path: Path) -> None:
+    for provider in ("", "ssm", "secretsmanager"):
+        ini = tmp_path / f"config-{provider or 'empty'}.ini"
+        _write(ini, f"[secrets]\nprovider = {provider}\n")
+        cfg = load_config(str(ini))
+        errors = validate_config(cfg)
+        assert not any("secrets.provider" in e for e in errors)
+
+
+def test_get_github_repo_owner_and_name_read_values(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[github]\nrepo_owner = dkblinux98\nrepo_name = nyxGPT\n")
+    cfg = load_config(str(ini))
+    assert get_github_repo_owner(cfg) == "dkblinux98"
+    assert get_github_repo_name(cfg) == "nyxGPT"
+
+
+def test_get_effective_config_summary_redacts_guided_secrets(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        "[openai]\napi_key = sk-abc123\n"
+        "[github]\npat = ghp_abc123\n"
+        "[monitoring]\nslack_bot_token = xoxb-abc123\n",
+    )
+    cfg = load_config(str(ini))
+
+    summary = get_effective_config_summary(cfg)
+
+    assert summary["openai.api_key"] == "***redacted***"
+    assert summary["github.pat"] == "***redacted***"
+    assert summary["monitoring.slack_bot_token"] == "***redacted***"
+    assert "sk-abc123" not in str(summary)
+    assert "ghp_abc123" not in str(summary)
+    assert "xoxb-abc123" not in str(summary)
+
+
+def test_get_effective_config_summary_guided_secrets_empty_stay_empty(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[nyxgpt]\ndefault_model = llama3.1:8b\n")
+    cfg = load_config(str(ini))
+
+    summary = get_effective_config_summary(cfg)
+
+    assert summary["openai.api_key"] == ""
+    assert summary["github.pat"] == ""
+    assert summary["monitoring.slack_bot_token"] == ""
+
+
+# --- SECRETS_SYNC_MANIFEST (#3505) ---
+
+
+def test_secrets_sync_manifest_keys_are_section_dot_key() -> None:
+    for full_key in SECRETS_SYNC_MANIFEST:
+        section, _, key = full_key.partition(".")
+        assert section and key, f"malformed manifest key: {full_key!r}"
+
+
+def test_secrets_sync_manifest_values_are_unique_actions_secret_names() -> None:
+    names = list(SECRETS_SYNC_MANIFEST.values())
+    assert len(names) == len(set(names))
+
+
+def test_secrets_sync_manifest_names_are_upper_snake_case() -> None:
+    for name in SECRETS_SYNC_MANIFEST.values():
+        assert name == name.upper()
+        assert " " not in name
+
+
+def test_secrets_sync_manifest_does_not_include_the_pat_itself() -> None:
+    # [github] pat authenticates the sync call -- it is never a sync *target*.
+    assert "github.pat" not in SECRETS_SYNC_MANIFEST
 
 
 def test_log_effective_config_logs_at_info(

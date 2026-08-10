@@ -1,0 +1,1 @@
+../../../../scripts/set-ollama-models-env.sh

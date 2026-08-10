@@ -16,6 +16,15 @@ reachable by more than just you.
 
 See [`docs/security.md`](security.md) for full details on each item.
 
+**Auth-on is the deploy default, and it's enforced, not just documented:**
+the native API refuses to start if `[api] host` is bound non-loopback (e.g.
+`0.0.0.0`, a LAN IP) while `[auth] enabled` isn't `true` — it exits with an
+actionable error pointing at `nyxgpt wizard` instead of silently serving an
+unauthenticated API to the network. Loopback binds (the default,
+`127.0.0.1`) are never affected. So the first checklist item below isn't
+optional busywork before a non-loopback deploy — the API won't come up
+without it.
+
 - [ ] `[auth] enabled = true` in `~/.nyxGPT/config.ini`, with a freshly
       generated `api_key` (`python3 -c "import secrets; print(secrets.token_urlsafe(32))"`,
       or re-run `nyxgpt wizard`)

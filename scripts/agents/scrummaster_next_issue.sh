@@ -26,6 +26,13 @@ Options:
                     this flag, behavior is unchanged from before #3480
                     (Sprint is not considered at all).
   -h, --help       Show this help
+
+Environment:
+  EXCLUDE_ISSUES   Comma-separated issue numbers to skip as candidates
+                    (#3665). Lets a caller retry selection within one run to
+                    fall through to the next eligible issue after an
+                    earlier candidate turned out to be unclaimable, without
+                    re-selecting the same blocked issue forever.
 EOF
 }
 
@@ -126,6 +133,7 @@ summarize_page_file() {
     ACTIVE_SPRINT_TITLE="$ACTIVE_SPRINT_TITLE" \
     RELEASE_VERSION="$RELEASE_VERSION" \
     RELEASE_ISSUE="${RELEASE_ISSUE_NUMBER:-}" \
+    EXCLUDE_ISSUES="${EXCLUDE_ISSUES:-}" \
     python3 "$DIR/lib/summarize_backlog_page.py" "$json_file"
 }
 

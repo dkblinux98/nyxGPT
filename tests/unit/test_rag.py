@@ -676,8 +676,10 @@ def test_cassandra_vectorstore_ensure_schema(monkeypatch: pytest.MonkeyPatch) ->
     store = CassandraVectorStore()
     store.ensure_schema(embedding_dim=768)
 
-    # Should execute 6 statements: CREATE KEYSPACE, USE, CREATE TABLE, CREATE INDEX (vector), CREATE INDEX (embedding_model), CREATE TABLE (collection_settings)
-    assert mock_session.execute.call_count == 6
+    # Should execute 7 statements: CREATE KEYSPACE, USE, CREATE TABLE, CREATE INDEX (vector),
+    # CREATE INDEX (embedding_model), CREATE KEYSPACE (settings table bootstrap, idempotent),
+    # CREATE TABLE (collection_settings)
+    assert mock_session.execute.call_count == 7
     assert store._keyspace_ready
 
 
@@ -1763,6 +1765,32 @@ def test_split_sentences_abbreviations(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(sentences) == 2
     assert "Dr. Smith works at Mt. Everest" in sentences[0]
     assert "He is a professor" in sentences[1]
+
+
+@pytest.mark.unit
+def test_split_sentences_adversarial_performance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_split_sentences must stay linear-time on adversarial punctuation runs.
+
+    Regression test for CodeQL #29 (py/polynomial-redos): a regex of the
+    form ``[.!?]+\\s+(?=[A-Z])`` matched with ``finditer`` is quadratic on
+    input like this, since every position within a long punctuation run is
+    retried as an independent (failing) match attempt.
+    """
+    import time
+
+    from nyxgpt.rag.rag import _split_sentences
+
+    text = "!!!! . . . " * 100_000
+
+    start = time.perf_counter()
+    _split_sentences(text)
+    elapsed = time.perf_counter() - start
+
+    # A linear-time scanner handles this in well under a second; a
+    # polynomially-backtracking regex would take minutes on input this size.
+    assert elapsed < 5.0
 
 
 @pytest.mark.unit

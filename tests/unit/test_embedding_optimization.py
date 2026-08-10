@@ -33,11 +33,25 @@ class TestGPUDetection(unittest.TestCase):
     """Test GPU detection functionality."""
 
     def setUp(self):
-        """Reset GPU info cache before each test."""
+        """Reset GPU info cache before each test.
+
+        Resets are taken under `_gpu_info_lock` (the same lock `_detect_gpu`
+        holds across its check-then-act sequence) so a reset can't interleave
+        with an in-flight detection from another thread.
+        """
         import nyxgpt.rag.embeddings as emb_module
 
-        emb_module._gpu_info = None
-        emb_module._gpu_info_updated = 0.0
+        with emb_module._gpu_info_lock:
+            emb_module._gpu_info = None
+            emb_module._gpu_info_updated = 0.0
+
+    def tearDown(self):
+        """Leave no cached GPU info behind for later tests."""
+        import nyxgpt.rag.embeddings as emb_module
+
+        with emb_module._gpu_info_lock:
+            emb_module._gpu_info = None
+            emb_module._gpu_info_updated = 0.0
 
     @patch("subprocess.run")
     def test_gpu_detected_successfully(self, mock_run):
@@ -449,19 +463,22 @@ class TestGPUCachedInfo(unittest.TestCase):
     """Test that _detect_gpu returns cached info within the TTL window."""
 
     def setUp(self):
-        embeddings_module._gpu_info = None
-        embeddings_module._gpu_info_updated = 0.0
+        with embeddings_module._gpu_info_lock:
+            embeddings_module._gpu_info = None
+            embeddings_module._gpu_info_updated = 0.0
 
     def tearDown(self):
-        embeddings_module._gpu_info = None
-        embeddings_module._gpu_info_updated = 0.0
+        with embeddings_module._gpu_info_lock:
+            embeddings_module._gpu_info = None
+            embeddings_module._gpu_info_updated = 0.0
 
     def test_returns_cached_gpu_info_within_ttl(self):
         cached = GPUInfo(
             available=True, device_count=1, memory_total=100, memory_used=10, utilization=5.0
         )
-        embeddings_module._gpu_info = cached
-        embeddings_module._gpu_info_updated = time.time()
+        with embeddings_module._gpu_info_lock:
+            embeddings_module._gpu_info = cached
+            embeddings_module._gpu_info_updated = time.time()
 
         result = _detect_gpu()
         self.assertIs(result, cached)

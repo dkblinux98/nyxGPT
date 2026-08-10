@@ -174,3 +174,48 @@ class TestBuildSprintReport:
             self._payload(counts={"backlog": 0, "in_progress": 0, "in_review": 0, "done": 5})
         )
         assert "Blockers:** none detected" in result["markdown"]
+
+
+class TestHuddleRoutingDecision:
+    """#3687 review huddle protocol: routing from (disagreement_type,
+    REQUEST_CHANGES count) to what review_agent_auto_review.yml does next.
+    """
+
+    def test_type_c_escalates_immediately_regardless_of_count(self):
+        assert sprint_calc.huddle_routing_decision("c", 1) == "escalate_spec_ambiguity"
+        # Cycle zero: even a first-ever REQUEST_CHANGES of type (c) escalates,
+        # no agent conversation can resolve what only the PM knows.
+        assert sprint_calc.huddle_routing_decision("c", 3) == "escalate_spec_ambiguity"
+
+    def test_type_b_huddles_immediately_regardless_of_count(self):
+        assert sprint_calc.huddle_routing_decision("b", 1) == "huddle"
+        assert sprint_calc.huddle_routing_decision("b", 2) == "huddle"
+
+    def test_type_a_first_cycle_is_normal(self):
+        assert sprint_calc.huddle_routing_decision("a", 1) == "normal"
+
+    def test_type_a_second_cycle_huddles_instead_of_a_blind_third_retry(self):
+        assert sprint_calc.huddle_routing_decision("a", 2) == "huddle"
+
+    def test_type_a_third_cycle_hits_the_unchanged_outer_breaker(self):
+        assert sprint_calc.huddle_routing_decision("a", 3) == "escalate_cycle_limit"
+        assert sprint_calc.huddle_routing_decision("a", 4) == "escalate_cycle_limit"
+
+    def test_unrecognized_type_degrades_to_type_a_behavior(self):
+        # A missing/malformed classification must never block the existing
+        # loop -- it degrades to the pre-#3687 default instead of failing
+        # closed (stuck) or open (skipping straight to escalation).
+        assert sprint_calc.huddle_routing_decision("", 1) == "normal"
+        assert sprint_calc.huddle_routing_decision("unknown", 2) == "huddle"
+        assert sprint_calc.huddle_routing_decision("unknown", 3) == "escalate_cycle_limit"
+
+    def test_cli_huddle_routing(self):
+        import subprocess
+
+        result = subprocess.run(
+            [sys.executable, str(_MODULE_PATH), "huddle-routing", "b", "1"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert result.stdout.strip() == "huddle"

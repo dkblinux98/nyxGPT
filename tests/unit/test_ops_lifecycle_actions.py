@@ -21,6 +21,16 @@ from nyxgpt import ops
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def _force_macos_native_path(monkeypatch):
+    """Pin `platform.system()` to "Darwin" -- see test_ops.py's fixture of the
+    same name. This file's install/restart/stop call sites assume the
+    macOS-only (Homebrew/launchd) native path; the Linux/systemd path
+    (#3508) has its own tests in test_ops_systemd.py.
+    """
+    monkeypatch.setattr(ops.platform, "system", lambda: "Darwin")
+
+
 class CP:
     """Minimal stand-in for subprocess.CompletedProcess."""
 
@@ -175,9 +185,9 @@ def test_install_records_success_action():
     ok = [ops.OpsResult(True, "ok")]
     before = _ops_actions_total("install", "all", "success")
     with (
+        patch.object(ops, "_sync_packaged_resources", return_value=ok),
         patch.object(ops, "migrate_legacy_volumes", return_value=ok),
         patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok),
-        patch.object(ops, "_install_scripts", return_value=ok),
         patch.object(ops, "_ensure_web_deps", return_value=ok),
         patch.object(ops, "_ensure_mcp_deps", return_value=ok),
         patch.object(ops, "_ensure_cassandra_container", return_value=ok),
@@ -189,7 +199,6 @@ def test_install_records_success_action():
         patch.object(ops, "_ensure_ollama_service", return_value=ok),
         patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok),
         patch.object(ops, "sync_env_from_config", return_value=ok),
-        patch.object(ops, "_persist_compose_file_path", return_value=ok),
         patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
         patch.object(ops, "_reconcile_grafana_provisioning", return_value=ok),
         patch.object(ops, "_provision_glitchtip", return_value=ok),
@@ -205,9 +214,9 @@ def test_install_records_failure_action():
     bad = [ops.OpsResult(False, "bad", "details")]
     before = _ops_actions_total("install", "all", "failure")
     with (
+        patch.object(ops, "_sync_packaged_resources", return_value=bad),
         patch.object(ops, "migrate_legacy_volumes", return_value=ok),
         patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok),
-        patch.object(ops, "_install_scripts", return_value=bad),
         patch.object(ops, "_ensure_web_deps", return_value=ok),
         patch.object(ops, "_ensure_mcp_deps", return_value=ok),
         patch.object(ops, "_ensure_cassandra_container", return_value=ok),
@@ -219,7 +228,6 @@ def test_install_records_failure_action():
         patch.object(ops, "_ensure_ollama_service", return_value=ok),
         patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok),
         patch.object(ops, "sync_env_from_config", return_value=ok),
-        patch.object(ops, "_persist_compose_file_path", return_value=ok),
         patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
         patch.object(ops, "_reconcile_grafana_provisioning", return_value=ok),
         patch.object(ops, "_provision_glitchtip", return_value=ok),
@@ -334,6 +342,7 @@ def test_install_terraform_steps_records_success():
     before = _ops_actions_total("install", "terraform", "success")
     with (
         patch.object(ops, "_refuse_port_collision", return_value=None),
+        patch.object(ops, "_sync_packaged_resources", return_value=ok),
         patch.object(ops, "migrate_legacy_volumes", return_value=ok),
         patch.object(ops, "_ensure_terraform_binary", return_value=ok),
         patch.object(ops, "_ensure_terraform_tfvars", return_value=ok),
@@ -430,8 +439,11 @@ def test_down_kubernetes_steps_records_success():
 
 def test_observability_cli_records_success_action():
     before = _ops_actions_total("observability", "observability", "success")
-    with patch.object(
-        ops, "_reconcile_grafana_provisioning", return_value=[ops.OpsResult(True, "up")]
+    with (
+        patch.object(ops, "_sync_packaged_resources", return_value=[ops.OpsResult(True, "synced")]),
+        patch.object(
+            ops, "_reconcile_grafana_provisioning", return_value=[ops.OpsResult(True, "up")]
+        ),
     ):
         rc = ops.observability(MagicMock())
     assert rc == 0
