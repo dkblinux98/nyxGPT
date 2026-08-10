@@ -322,6 +322,58 @@ circuit-breaker (moving an issue out of In Progress) reliably stops the
 run without triggering a spurious Phase 1-3 diagnosis or a misleading
 "Failed after 3 attempts" comment.
 
+## 3f) Cross-issue infrastructure-anomaly collapse (#3694)
+
+The 2026-08-09 postmortem (`product_management/AGENTIC_SDLC_DESIGN.md` §9;
+issue #3694's "Problem / Motivation" carries the same account): a
+runner-image change made `gh api search/issues` fail deterministically in
+the "Check if PR already exists" step. Five issues were in flight, so the
+self-heal chain ran five independent Phase 1-3 diagnoses against the same
+infrastructure fault -- ~45-50 Claude invocations to re-derive the same
+one-line diagnosis five times. A fixed global spend cap was explicitly
+rejected as the fix (owner direction); the same step failing on *different*
+issues within a short window is one infrastructure event, not N coding
+problems, and the pipeline needed a way to see across issues.
+
+- **Detection.** A new "Check cross-issue infra anomaly" step runs right
+  after "Compute retry budget" (same gate: any genuine failure Phase 1
+  classified), before Phase 2/3 spend anything. It calls
+  `cross_issue_anomaly_decision` (`scripts/agents/lib/gh_project.sh`),
+  which asks `scripts/agents/lib/cross_issue_anomaly.py decide` whether
+  another issue already opened a matching, unresolved tracking-record
+  marker for this exact failed step within the last
+  `CROSS_ISSUE_ANOMALY_WINDOW_MINUTES` (default 60) on the release tracking
+  issue.
+- **One diagnosis, not N.** If no matching record exists, this issue
+  becomes the origin: `open_cross_issue_anomaly` posts the tracking-record
+  marker (`<!-- nyxgpt-anomaly: step=<slug> issue=<origin> opened=<epoch>
+  -->`) on the release issue immediately -- before Phase 2/3 run, so a
+  near-simultaneous failure on another issue can see it -- and Phase 2/3
+  proceed normally for this (origin) issue. If a match already exists from
+  a *different* issue, Phase 2, Phase 3, the auto-retry step, and the
+  fatal-escalation step are all skipped (each step's `if:` also checks
+  `steps.cross_issue_anomaly.outputs.matched != 'true'`); a short comment
+  links this issue to the origin and its retry loop stops until the
+  anomaly resolves.
+- **No hidden state.** The tracking record is a comment marker on
+  `RELEASE_ISSUE_NUMBER`, re-derived fresh from the live comment thread on
+  every check -- the same level-triggered shape as `escalation_pause_gate`
+  (#3687, above). Detection deliberately does NOT use
+  `gh api search/issues` (the endpoint that caused the incident) -- it uses
+  plain issue-comment REST calls, so detection itself can't be taken out by
+  the same class of fault. It self-expires after the window elapses, or
+  closes early on an OWNER-authored `RESOLVE_ANOMALY` comment.
+- **Dispatch pause.** `cross_issue_anomaly_pause_gate`
+  (`scripts/agents/lib/gh_project.sh`) composes with the #3687
+  `escalation_pause_gate` in `scrummaster_dispatch_next.sh`: new dispatch
+  pauses while any step has an open tracking record, with its own loud
+  report on the release tracking issue, and resumes automatically once the
+  anomaly resolves or expires. See `agents/runbooks/scrummaster-runbook.md`
+  for the dispatch-side detail.
+- **Replay criterion.** The 2026-08-09 scenario (5 issues x the same failed
+  step within the window) now yields one diagnosis (the origin issue's
+  Phase 1-3) and a dispatch pause, not five independent loops.
+
 ## 4) Verification loop (MANDATORY - ALL must pass before commit)
 Run ALL of the following checks and fix issues until they pass:
 - `black --check .` - If fails, run `black .` to auto-format, then re-check
