@@ -79,8 +79,74 @@ Security group sg-0123456789abcdef0: SSH already allowed from 203.0.113.42/32 --
 
 `allow-ip` uses boto3's normal credential resolution (environment variables,
 `~/.aws/credentials`, an instance/SSO profile, ...) -- it does not collect or
-store AWS credentials itself. Guided credential collection is separate scope
-(P6-13).
+store AWS credentials itself. See "Guided AWS credentials setup" below for
+how to get a profile in place.
+
+---
+
+## Guided AWS credentials setup (P6-13, #3512)
+
+Every `nyxgpt cloud` command (and `[secrets] provider = ssm`/`secretsmanager`
+above) ultimately calls boto3, which needs AWS credentials available
+somewhere. `nyxgpt cloud credentials-setup` (CLI) and the `/admin` **AWS
+Credentials** wizard (web) walk through getting a profile in place, with the
+same masked-entry, what-it-is/where-to-get-it treatment as the guided
+secrets flow (#3505) -- but the AWS access key ID/secret access key
+collected here are **never written to `config.ini`**. They're routed
+instead to one of:
+
+| Destination | Where the key pair goes |
+| --- | --- |
+| `profile` (default) | `~/.aws/credentials`, under the chosen profile name -- exactly what `aws configure --profile <name>` would produce |
+| `keychain` | The OS keychain, via the optional `keyring` package (`pip install nyxgpt[cloud]`) |
+| `ambient` | Nowhere -- credentials are already available some other way (an existing profile, an EC2 instance role, an SSO session, environment variables) and nothing is written |
+
+Only the non-secret *reference* -- profile name, region, and which
+destination was chosen -- is written to `config.ini`'s `[cloud]` section, so
+`cloud.py`/`cloud_secrets.py` can find it again:
+
+```ini
+[cloud]
+profile = nyxgpt
+region = us-east-1
+credentials_source = profile
+```
+
+```bash
+$ nyxgpt cloud credentials-setup
+============================================================
+nyxGPT Guided AWS Credentials Setup
+============================================================
+AWS profile name [nyxgpt]:
+AWS region [us-east-1]:
+
+How should nyxGPT get AWS credentials?
+  1) Enter an access key pair -- written to ~/.aws/credentials
+  2) Enter an access key pair -- stored in the OS keychain instead of a file
+  3) Already configured elsewhere (existing profile, instance role, SSO, env vars)
+Choice [1]: 1
+AWS access key ID:
+AWS secret access key:
+
+Saved -- profile='nyxgpt' region='us-east-1' destination='profile'.
+Access key written to /home/you/.aws/credentials under [nyxgpt].
+```
+
+The same flow optionally walks through the `[secrets]` provider reference
+above (provider/region/ssm_prefix/secretsmanager_id) in one pass, so a
+cloud-deploy setup doesn't need a separate detour through the general
+Configuration Wizard -- those fields aren't secret values themselves (the
+actual application secrets stay in SSM/Secrets Manager), just which store to
+use.
+
+The `/admin` **AWS Credentials** wizard (`web/src/app/admin/aws-credentials`)
+is the same flow's web surface: `GET /api/v1/config/aws-credentials` reports
+current status (masked, never cleartext), `POST /api/v1/config/aws-credentials`
+saves a key pair to the chosen destination, and
+`POST /api/v1/config/aws-credentials/secret-store` saves the `[secrets]`
+reference. It seeds the same defaults the CLI offers (`nyxgpt` profile,
+`us-east-1` region, "AWS CLI profile file" destination) when nothing has been
+saved yet, so both surfaces produce identical results on a fresh install.
 
 ---
 

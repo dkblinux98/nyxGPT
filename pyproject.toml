@@ -88,8 +88,13 @@ verify = [
 # lifecycle commands (allow-ip today; deploy/destroy later, #3513). Kept out
 # of the base dependency set -- only AWS deployments need it, not the local
 # stack every other command drives.
+#
+# `keyring` backs `nyxgpt cloud credentials-setup`'s optional OS-keychain
+# destination for AWS access keys (#3512) -- also cloud-only, so it lives
+# in this extra rather than the base install.
 cloud = [
   "boto3>=1.34",
+  "keyring>=24",
 ]
 
 [project.scripts]

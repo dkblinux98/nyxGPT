@@ -151,6 +151,18 @@ help, and a "Generate for me" option for `[auth] api_key`), backed by
 See [Canonical secret store & sync to GitHub Actions](#canonical-secret-store--sync-to-github-actions)
 below for what to do with these once they're set.
 
+### Option 5: Guided AWS credentials setup
+
+Any `nyxgpt cloud` command, and `[secrets] provider` above, needs AWS
+credentials available to boto3. `nyxgpt cloud credentials-setup` (and the
+`/admin` **AWS Credentials** wizard) walks through the same masked-entry,
+what-it-is/where-to-get-it treatment as Option 4 -- but the AWS access key
+ID/secret access key are **never written to `config.ini`**, routed instead
+to `~/.aws/credentials`, the OS keychain, or left alone if already available
+some other way (instance role, SSO, environment variables). See
+[`docs/cloud.md`](cloud.md#guided-aws-credentials-setup-p6-13-3512) for full
+details, including the `[cloud]` section this writes.
+
 ---
 
 ## Canonical secret store & sync to GitHub Actions
@@ -754,6 +766,34 @@ secretsmanager_id = nyxgpt
 | `secretsmanager_id` | Secrets Manager secret id/ARN (`provider = secretsmanager`). Holds one JSON object with all three credentials. |
 
 See [`docs/cloud.md`](cloud.md#cloud-secrets-ssm--secrets-manager) for setup, the AWS-side layout, IAM permissions, and rotation.
+
+---
+
+## `[cloud]` section
+
+The AWS identity *reference* nyxGPT uses for its own AWS API calls (`nyxgpt
+cloud allow-ip`, cloud deploy, `[secrets]` resolution above) -- P6-13,
+#3512. Excluded from the general Configuration Wizard: it has its own
+guided flow instead (`nyxgpt cloud credentials-setup` / the `/admin` AWS
+Credentials wizard), since the actual AWS access key pair must never be
+hand-edited into this file.
+
+```ini
+[cloud]
+profile = nyxgpt
+region =
+credentials_source =
+```
+
+| Key | Description |
+|---|---|
+| `profile` | AWS CLI profile name nyxGPT uses when calling boto3. |
+| `region` | Default AWS region for nyxGPT's own AWS API calls. |
+| `credentials_source` | Where the access key pair for `profile` was routed by the guided setup: `profile` (`~/.aws/credentials`), `keychain` (OS keychain), or `ambient` (already available some other way). Set by the guided flow -- not meant to be hand-edited. |
+
+This section **never holds an AWS access key or secret access key** -- see
+[`docs/cloud.md`](cloud.md#guided-aws-credentials-setup-p6-13-3512) for
+where those actually go.
 
 ---
 
