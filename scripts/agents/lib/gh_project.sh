@@ -626,9 +626,10 @@ BACKLOG_PAGE_QUERY='query($project:ID!, $after:String){
 }'
 
 # Counts OPEN issues with Status=Backlog whose Sprint iteration field equals
-# `sprint_title`. This is the sprint-autopilot stop condition:
+# `sprint_title`. This is the sprint-autopilot stop condition (owner policy
+# 2026-08-10, #3706 -- the auto loop is bound by the current sprint):
 # review_accept_and_merge.sh posts READY_FOR_NEXT_ISSUE while this is > 0,
-# and posts a "sprint complete" note (no kick) once it hits 0.
+# and posts a "sprint complete" park note (no kick) once it hits 0.
 count_sprint_backlog_open() {
   local sprint_field="$1" sprint_title="$2"
   require_cmd jq
@@ -662,15 +663,24 @@ count_sprint_backlog_open() {
   echo "$total"
 }
 
-# Release wall helpers (owner decision 2026-07-31). The release tracking
-# issue's title carries the release version ("Release v2.0.0"), and the
-# owner's milestone naming carries it too ("Phase 5.5: ... (v2.0.0)",
-# "Phase 6 — ... (v3.0.0)"). Matching the two is the version boundary the
-# autopilot must never cross on its own: sprint dates drift and sprints can
-# straddle a release, but milestone membership only changes when the owner
-# changes it. The gate opens via the release ceremony -- pointing
-# RELEASE_ISSUE_NUMBER (and RELEASE_BRANCH) at the next release -- with no
-# separate on/off switch to remember.
+# Release wall helpers. The release tracking issue's title carries the
+# release version ("Release v2.0.0"), and the owner's milestone naming
+# carries it too ("Phase 5.5: ... (v2.0.0)", "Phase 6 — ... (v3.0.0)").
+# Matching the two is the OUTER boundary the loop must never cross: agents
+# merge to RELEASE_BRANCH, so next-release work would land on the wrong
+# branch. It opens via the release ceremony -- pointing RELEASE_ISSUE_NUMBER
+# (and RELEASE_BRANCH) at the next release -- with no separate on/off switch.
+#
+# History note (#3706, 2026-08-10): earlier comments here described the
+# release as the boundary that bounds AUTOMATIC WORK, citing an "owner
+# decision 2026-07-31". The owner has stated that attribution was wrong --
+# release-gating across sprint boundaries was never their intention, and the
+# rationale was agent-authored. The standing owner policy (2026-08-10) is
+# that the automatic loop is bound by the CURRENT SPRINT; the release wall
+# survives only as the outer branch-safety boundary. Process rule from the
+# same decision: a code comment claiming "owner decision" must cite a
+# traceable source (issue number or owner comment link); an uncited claim is
+# agent rationale, not policy.
 
 # Prints the vX.Y.Z version parsed from the release tracking issue's title,
 # or nothing if the issue/title has no version.
@@ -680,18 +690,24 @@ release_version_from_issue() {
     --jq '.title' 2>/dev/null | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1
 }
 
-# Counts open Backlog issues whose milestone title contains the given
-# release version -- the autopilot's continue/park decision input. Same
-# paging as count_sprint_backlog_open, release-filtered instead of
-# sprint-filtered (an in-release issue in ANY sprint keeps the loop alive).
-count_release_backlog_open() {
-  local release_version="$1"
+# Buckets the release's open Backlog issues by Sprint iteration title and
+# prints them as a JSON object, e.g. {"Sprint 8":0,"Sprint 9":11,"":2} (the
+# "" key means "no Sprint set"). Same paging as count_sprint_backlog_open,
+# release-filtered instead of sprint-filtered.
+#
+# This is NOT the continue/park decision input -- that is the active
+# sprint's count (#3706). It exists so the park note can say what the loop
+# is parked in front of: how much release work is queued behind the sprint
+# boundary and in which sprint it sits.
+release_backlog_by_sprint() {
+  local release_version="$1" sprint_field="${2:-${SPRINT_FIELD:-Sprint}}"
   require_cmd jq
   require_cmd python3
 
-  local project_id cursor="" total=0 tmp has_next next_cursor page_count
+  local project_id cursor="" tmp acc has_next next_cursor
   project_id="$(get_project_id)"
   tmp="$(mktemp)"
+  acc="$(mktemp)"
 
   local max_pages="${MAX_PAGES:-200}"
   local page
@@ -702,11 +718,10 @@ count_release_backlog_open() {
       graphql "$BACKLOG_PAGE_QUERY" -F project="$project_id" >"$tmp"
     fi
 
-    page_count="$(STATUS_FIELD="$STATUS_FIELD" STATUS_BACKLOG="$STATUS_BACKLOG" \
-      RELEASE_VERSION="$release_version" SPRINT_SCOPED=0 \
+    STATUS_FIELD="$STATUS_FIELD" STATUS_BACKLOG="$STATUS_BACKLOG" \
+      SPRINT_FIELD="$sprint_field" RELEASE_VERSION="$release_version" SPRINT_SCOPED=0 \
       RELEASE_ISSUE="${RELEASE_ISSUE_NUMBER:-}" \
-      python3 "${_LIB_DIR}/summarize_backlog_page.py" "$tmp" | jq -r '.backlog_open')"
-    total=$((total + page_count))
+      python3 "${_LIB_DIR}/summarize_backlog_page.py" "$tmp" | jq -c '.sprint_counts' >>"$acc"
 
     has_next="$(jq -r '.data.node.items.pageInfo.hasNextPage' "$tmp")"
     next_cursor="$(jq -r '.data.node.items.pageInfo.endCursor // empty' "$tmp")"
@@ -714,8 +729,11 @@ count_release_backlog_open() {
     cursor="$next_cursor"
   done
 
-  rm -f "$tmp"
-  echo "$total"
+  # Sum the per-page objects into one (pages carry disjoint items, so a
+  # plain key-wise add is the whole merge).
+  jq -s -c 'reduce .[] as $p ({}; reduce ($p | to_entries[]) as $e (.; .[$e.key] = ((.[$e.key] // 0) + $e.value)))' "$acc"
+
+  rm -f "$tmp" "$acc"
 }
 
 # True if the most recent PAUSE_SPRINT/RESUME_SPRINT control comment on
@@ -742,7 +760,7 @@ sprint_autopilot_paused() {
 # next issue, so both post the same gated READY_FOR_NEXT_ISSUE kick on the
 # release tracking issue. `verb` is "merged", "escalated", or "anomaly" and
 # only changes the comment wording; every gate (SPRINT_AUTOPILOT,
-# RELEASE_ISSUE_NUMBER, PAUSE_SPRINT, release version parse, release-drained
+# RELEASE_ISSUE_NUMBER, PAUSE_SPRINT, release version parse, sprint-drained
 # park) is identical. Best-effort by design: always returns 0 so a kick
 # failure never fails the merge, escalation, or anomaly detection that
 # invoked it.
@@ -777,35 +795,73 @@ sprint_autopilot_kick() {
     issue_comment "$RELEASE_ISSUE_NUMBER" "⏸️ **Sprint Autopilot**: ${event_phrase}, but autopilot is paused (\`PAUSE_SPRINT\`) -- no automatic kick posted. Comment \`RESUME_SPRINT\` to continue, or \`READY_FOR_NEXT_ISSUE\` to kick manually." \
       || _warn "Failed to post autopilot-paused notice."
   else
-    # The continue/park decision is RELEASE-gated, not sprint-gated (owner
-    # decision 2026-07-31): sprint dates drift and future sprints exist on the
-    # board before their release starts, so the boundary is the release
-    # version carried by the tracking issue's title and the milestone titles.
-    # The autopilot continues while the CURRENT release has open Backlog work
-    # (any sprint) and parks when it drains; it never crosses into the next
-    # release -- the gate reopens when the owner points RELEASE_ISSUE_NUMBER /
-    # RELEASE_BRANCH at the next release as part of the release ceremony.
-    local release_version remaining decision
+    # The continue/park decision is SPRINT-gated (owner policy 2026-08-10,
+    # #3706): the auto loop is bound by the current sprint, so sprint
+    # membership is a real work boundary and not bookkeeping. The autopilot
+    # continues while the ACTIVE sprint iteration (the one whose date window
+    # contains today per SPRINT_TIMEZONE) still has open Backlog work, and
+    # parks with a loud note when that pool drains -- even if the release
+    # has plenty queued in later sprints. Crossing into the next sprint
+    # needs a planning event or a human READY_FOR_NEXT_ISSUE kick.
+    #
+    # The release version is still resolved, but only as the OUTER
+    # branch-safety wall and to describe what is waiting behind the sprint
+    # boundary in the park note. It is no longer the decision input; the
+    # earlier "release-gated (owner decision 2026-07-31)" rationale here was
+    # agent-authored and misattributed (see the release wall helpers above).
+    #
+    # Drift caveat: because the sprint boundary is now load-bearing, sprint
+    # iteration date windows must be kept current on the project board. A
+    # stale window means "no active sprint", which parks the loop.
+    local sprint_field active_sprint release_version remaining decision
+    sprint_field="${SPRINT_FIELD:-Sprint}"
+    active_sprint="$(iteration_active_title "$sprint_field" 2>/dev/null || echo "")"
+    [[ "$active_sprint" != "null" ]] || active_sprint=""
     release_version="$(release_version_from_issue "$RELEASE_ISSUE_NUMBER" 2>/dev/null || echo "")"
+
     if [[ -z "$release_version" ]]; then
       _warn "Autopilot: could not parse a vX.Y.Z version from release issue #${RELEASE_ISSUE_NUMBER}'s title -- no auto-kick (conservative stop)."
+    elif [[ -z "$active_sprint" ]]; then
+      # No iteration's window contains today: there is no sprint to work,
+      # so park rather than falling back to release-wide selection.
+      _warn "Autopilot: no active sprint iteration on field '${sprint_field}' -- parking (conservative stop)."
+      _autopilot_park_note "$event_phrase" "" "$release_version"
     else
-      remaining="$(count_release_backlog_open "$release_version" 2>/dev/null || echo "")"
+      remaining="$(count_sprint_backlog_open "$sprint_field" "$active_sprint" 2>/dev/null || echo "")"
       decision="$(python3 "${_LIB_DIR}/sprint_calc.py" autopilot-decision "${remaining:-0}")"
       if [[ "$decision" == "continue" ]]; then
-        issue_comment "$RELEASE_ISSUE_NUMBER" "🔁 **Sprint Autopilot**: ${event_phrase}. Release ${release_version} still has ${remaining} open Backlog issue(s) -- ${continue_phrase}.
+        issue_comment "$RELEASE_ISSUE_NUMBER" "🔁 **Sprint Autopilot**: ${event_phrase}. Sprint \"${active_sprint}\" still has ${remaining} open Backlog issue(s) -- ${continue_phrase}.
 
 READY_FOR_NEXT_ISSUE" \
-          && echo "[review] Autopilot: posted READY_FOR_NEXT_ISSUE (release ${release_version} has ${remaining} remaining)." >&2 \
+          && echo "[review] Autopilot: posted READY_FOR_NEXT_ISSUE (sprint ${active_sprint} has ${remaining} remaining)." >&2 \
           || _warn "Autopilot: failed to post READY_FOR_NEXT_ISSUE kick."
       else
-        issue_comment "$RELEASE_ISSUE_NUMBER" "🏁 **Sprint Autopilot**: ${event_phrase}. Release ${release_version} has no open Backlog issues remaining -- the release backlog is drained and autopilot is parked. Merged work is in **Acceptance Testing** for stakeholder sign-off. Autopilot resumes automatically when \`RELEASE_ISSUE_NUMBER\` and \`RELEASE_BRANCH\` point at the next release; it never crosses a release boundary on its own." \
-          && echo "[review] Autopilot: release ${release_version} drained -- parked, no kick." >&2 \
-          || _warn "Autopilot: failed to post release-drained note."
+        echo "[review] Autopilot: sprint ${active_sprint} drained -- parked, no kick." >&2
+        _autopilot_park_note "$event_phrase" "$active_sprint" "$release_version"
       fi
     fi
   fi
   return 0
+}
+
+# Posts the sprint-boundary park note (#3706) on the release tracking issue:
+# what completed, that the loop is parked at the sprint boundary, what is
+# still queued in the release per future sprint, and how work resumes.
+# Best effort like its caller -- a failure to gather the breakdown degrades
+# to a note without one rather than skipping the note entirely.
+_autopilot_park_note() {
+  local event_phrase="$1" active_sprint="$2" release_version="$3"
+  local by_sprint body
+  by_sprint="$(release_backlog_by_sprint "$release_version" "${SPRINT_FIELD:-Sprint}" 2>/dev/null || echo "")"
+  [[ -n "$by_sprint" ]] || by_sprint="{}"
+
+  body="$(jq -n --arg e "$event_phrase" --arg s "$active_sprint" --arg v "$release_version" \
+    --argjson b "$by_sprint" \
+    '{event_phrase:$e, sprint_title:$s, release_version:$v, by_sprint:$b}' \
+    | python3 "${_LIB_DIR}/sprint_calc.py" park-note)"
+
+  issue_comment "$RELEASE_ISSUE_NUMBER" "$body" \
+    || _warn "Autopilot: failed to post sprint-complete park note."
 }
 
 # -------------------------

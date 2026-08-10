@@ -114,14 +114,27 @@ jobs:
       - name: Select and start next issue (fall through on unclaimable candidates)
         id: start
         shell: bash
+        env:
+          SPRINT_AUTOPILOT: ${{ vars.SPRINT_AUTOPILOT }}
+          KICK_ACTOR: ${{ github.event.comment.user.login }}
+          KICK_OWNER: ${{ vars.HUMAN_OWNER }}
         run: |
           set -euo pipefail
-          # Sprint-scope selection while autopilot is on (#3480) -- the
-          # script itself falls back to unscoped selection if no Sprint is
-          # currently active, so this is safe to pass unconditionally.
+          # Sprint-scope selection for AGENT-posted kicks while autopilot is
+          # on (#3480, tightened by #3706): the automatic loop is bound by
+          # the current sprint, so an agent kick may only claim work in the
+          # active iteration. The script falls back to unscoped selection if
+          # no Sprint is currently active, so this is safe to pass.
+          #
+          # A kick posted by the human owner stays UNSCOPED -- the owner
+          # override in #3706: a deliberate manual READY_FOR_NEXT_ISSUE may
+          # pull work forward across the sprint boundary. The release wall
+          # applies to both paths regardless.
           SPRINT_ARGS=""
-          if [[ "${{ vars.SPRINT_AUTOPILOT }}" == "true" ]]; then
+          if [[ "$SPRINT_AUTOPILOT" == "true" && "$KICK_ACTOR" != "$KICK_OWNER" ]]; then
             SPRINT_ARGS="--sprint-scoped"
+          else
+            echo "Unscoped selection (autopilot=${SPRINT_AUTOPILOT}, kick by ${KICK_ACTOR})."
           fi
 
           # scrummaster_dispatch_next.sh (#3665) runs the fall-through

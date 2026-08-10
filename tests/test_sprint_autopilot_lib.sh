@@ -205,6 +205,92 @@ case "$CAPTURED_ARGS" in
     ;;
 esac
 
+# --- Test 6: release_backlog_by_sprint buckets the release's open Backlog ---
+# --- issues by sprint title, summed across pages (#3706 park-note input) ---
+_assert_contains() {
+  local desc="$1" haystack="$2" needle="$3"
+  if [[ "$haystack" == *"$needle"* ]]; then
+    echo "[ok] $desc"
+  else
+    echo "[FAIL] $desc: expected to find '$needle' in:" >&2
+    echo "$haystack" >&2
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+_assert_not_contains() {
+  local desc="$1" haystack="$2" needle="$3"
+  if [[ "$haystack" != *"$needle"* ]]; then
+    echo "[ok] $desc"
+  else
+    echo "[FAIL] $desc: did not expect '$needle' in:" >&2
+    echo "$haystack" >&2
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+echo 0 > "$GRAPHQL_CALLS_FILE"
+graphql() {
+  _bump_graphql_calls
+  if [[ "$(_graphql_calls)" -eq 1 ]]; then
+    _page_response "true" "cursor-1" \
+      "$(_issue_page 30 Backlog "Sprint 8")" \
+      "$(_issue_page 31 Backlog "Sprint 9")" \
+      "$(_issue_page 32 "In Progress" "Sprint 9")"
+  else
+    _page_response "false" "" \
+      "$(_issue_page 33 Backlog "Sprint 9")" \
+      "$(_issue_page 34 Backlog "")"
+  fi
+}
+result="$(release_backlog_by_sprint "" "Sprint")"
+_assert_eq "release_backlog_by_sprint sums buckets across pages" \
+  '{"Sprint 8":1,"Sprint 9":2,"":1}' "$result"
+
+# --- Tests 7-9: sprint_autopilot_kick is SPRINT-gated, not release-gated ---
+# --- (#3706). The release still has Sprint 9 work in every case below; ---
+# --- only the ACTIVE sprint's pool decides continue vs park. ---
+SPRINT_AUTOPILOT="true"
+RELEASE_ISSUE_NUMBER="2759"
+SPRINT_FIELD="Sprint"
+sprint_autopilot_paused() { return 1; }
+release_version_from_issue() { echo "v3.0.0"; }
+release_backlog_by_sprint() { echo '{"Sprint 8":0,"Sprint 9":11,"":2}'; }
+
+COMMENT_FILE="$(mktemp)"
+trap 'rm -f "$GRAPHQL_CALLS_FILE" "$COMMENT_FILE"' EXIT
+issue_comment() { printf '%s' "$2" > "$COMMENT_FILE"; }
+
+# Test 7: active sprint still has Backlog work -> kick.
+iteration_active_title() { echo "Sprint 8"; }
+count_sprint_backlog_open() { echo "4"; }
+sprint_autopilot_kick 123 merged 2>/dev/null
+body="$(cat "$COMMENT_FILE")"
+_assert_contains "kicks while the active sprint has open Backlog work" "$body" "READY_FOR_NEXT_ISSUE"
+_assert_contains "kick names the active sprint, not the release, as the pool" "$body" 'Sprint "Sprint 8" still has 4 open Backlog issue(s)'
+
+# Test 8: active sprint drained, release NOT drained -> park (the #3706
+# behavior change: the old release-gated decision kicked here).
+count_sprint_backlog_open() { echo "0"; }
+sprint_autopilot_kick 123 merged 2>/dev/null
+body="$(cat "$COMMENT_FILE")"
+_assert_not_contains "parks at the sprint boundary even though the release has work left" "$body" "READY_FOR_NEXT_ISSUE
+"
+_assert_contains "park note says the sprint is complete" "$body" "Sprint Autopilot — sprint complete"
+_assert_contains "park note reports what waits in a future sprint" "$body" "- Sprint 9: 11 open Backlog issue(s)"
+_assert_contains "park note reports the no-sprint bucket" "$body" "- _No sprint set_: 2 open Backlog issue(s)"
+_assert_contains "park note totals the work waiting outside the sprint" "$body" "**13**"
+_assert_contains "park note explains the manual-kick override" "$body" '`READY_FOR_NEXT_ISSUE`'
+
+# Test 9: no active iteration at all -> conservative park, no kick.
+iteration_active_title() { echo ""; }
+count_sprint_backlog_open() { echo "7"; }  # must be ignored: nothing is active
+sprint_autopilot_kick 123 merged 2>/dev/null
+body="$(cat "$COMMENT_FILE")"
+_assert_contains "parks when no sprint iteration is active" "$body" "No sprint iteration is currently active"
+_assert_not_contains "posts no kick when no sprint iteration is active" "$body" "READY_FOR_NEXT_ISSUE
+"
+
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "All tests passed."
   exit 0

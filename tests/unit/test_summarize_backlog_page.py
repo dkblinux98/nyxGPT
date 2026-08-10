@@ -334,3 +334,53 @@ class TestReleaseIssueGuard:
         out = summarize_backlog_page.summarize(_page(items))
         assert out["backlog_open"] == 1
         assert out["best_issue"] == 2759
+
+
+class TestSprintCountsBreakdown:
+    """#3706: the summarizer reports open Backlog issues bucketed by Sprint
+    so a sprint-bounded caller can say what it is NOT dispatching."""
+
+    def test_buckets_eligible_backlog_by_sprint(self, monkeypatch):
+        monkeypatch.setenv("STATUS_FIELD", "Status")
+        monkeypatch.setenv("STATUS_BACKLOG", "Backlog")
+        monkeypatch.setenv("SPRINT_FIELD", "Sprint")
+        monkeypatch.setenv("SPRINT_SCOPED", "1")
+        monkeypatch.setenv("ACTIVE_SPRINT_TITLE", "Sprint 8")
+        items = [
+            _item(1, status="Backlog", sprint="Sprint 8"),
+            _item(2, status="Backlog", sprint="Sprint 9"),
+            _item(3, status="Backlog", sprint="Sprint 9"),
+            _item(4, status="Backlog", sprint=None),
+            _item(5, status="In Progress", sprint="Sprint 9"),
+            _item(6, state="CLOSED", status="Backlog", sprint="Sprint 9"),
+        ]
+        out = summarize_backlog_page.summarize(_page(items))
+        # Only the active sprint's issue is selectable...
+        assert out["backlog_open"] == 1
+        assert out["best_issue"] == 1
+        # ...but the breakdown still reports what was skipped, with the
+        # no-sprint bucket keyed by the empty string.
+        assert out["sprint_counts"] == {"Sprint 8": 1, "Sprint 9": 2, "": 1}
+
+    def test_breakdown_respects_release_wall_and_exclusions(self, monkeypatch):
+        monkeypatch.setenv("STATUS_FIELD", "Status")
+        monkeypatch.setenv("STATUS_BACKLOG", "Backlog")
+        monkeypatch.setenv("RELEASE_VERSION", "v3.0.0")
+        monkeypatch.setenv("RELEASE_ISSUE", "3521")
+        monkeypatch.setenv("EXCLUDE_ISSUES", "77")
+        items = [
+            _item(11, status="Backlog", sprint="Sprint 9", milestone="Phase 6 (v3.0.0)"),
+            _item(77, status="Backlog", sprint="Sprint 9", milestone="Phase 6 (v3.0.0)"),
+            _item(3521, status="Backlog", sprint="Sprint 9", milestone="Phase 6 (v3.0.0)"),
+            _item(12, status="Backlog", sprint="Sprint 9", milestone="Phase 7 (v4.0.0)"),
+        ]
+        out = summarize_backlog_page.summarize(_page(items))
+        # Excluded candidate, the release tracking issue, and out-of-release
+        # work are all absent from the breakdown too.
+        assert out["sprint_counts"] == {"Sprint 9": 1}
+
+    def test_empty_page_has_empty_breakdown(self, monkeypatch):
+        monkeypatch.setenv("STATUS_FIELD", "Status")
+        monkeypatch.setenv("STATUS_BACKLOG", "Backlog")
+        out = summarize_backlog_page.summarize(_page([]))
+        assert out["sprint_counts"] == {}

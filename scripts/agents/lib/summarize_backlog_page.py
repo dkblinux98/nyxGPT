@@ -16,17 +16,20 @@ Env vars:
                                        ACTIVE_SPRINT_TITLE are eligible --
                                        everything else behaves exactly as
                                        before (no Sprint awareness at all).
+                                       Sprint membership is the automatic
+                                       loop's hard work boundary (owner
+                                       policy 2026-08-10, #3706).
   RELEASE_VERSION                     When set (e.g. "v2.0.0"), only issues
                                        whose milestone title contains this
                                        version string are eligible. This is
-                                       the release wall (owner decision
-                                       2026-07-31): the autopilot and the
-                                       selector must never cross into the
-                                       next release's work -- sprint dates
-                                       drift, so the gate is the release
-                                       version carried in milestone titles,
-                                       not the calendar. Empty/unset means
-                                       no release filtering (pre-wall
+                                       the release wall: neither the
+                                       autopilot nor the selector may cross
+                                       into the next release's work, because
+                                       agents merge to RELEASE_BRANCH. It is
+                                       an OUTER boundary only -- inside it,
+                                       the active sprint is what bounds
+                                       automatic work (#3706). Empty/unset
+                                       means no release filtering (pre-wall
                                        behavior).
   EXCLUDE_ISSUES                      Comma-separated issue numbers to skip
                                        as candidates (#3665: lets the
@@ -69,6 +72,13 @@ def summarize(page: dict) -> dict:
     open_issues = 0
     backlog_open = 0
     best: tuple[int, int] | None = None
+    # Open Backlog issues that clear every filter EXCEPT the sprint filter,
+    # bucketed by their Sprint iteration title ("" = no Sprint set). This is
+    # what the caller needs to explain a sprint-boundary stop (#3706): the
+    # autopilot's park note reports what is left in the release per future
+    # sprint, and the selector logs what it skipped instead of silently
+    # pulling it forward.
+    sprint_counts: dict[str, int] = {}
 
     for it in items:
         c = it.get("content") or {}
@@ -112,6 +122,9 @@ def summarize(page: dict) -> dict:
         if release_issue and str(c.get("number")) == release_issue:
             continue
 
+        bucket = sprint_title or ""
+        sprint_counts[bucket] = sprint_counts.get(bucket, 0) + 1
+
         if sprint_scoped and sprint_title != active_sprint_title:
             continue
 
@@ -126,6 +139,7 @@ def summarize(page: dict) -> dict:
         "open_issues": open_issues,
         "backlog_open": backlog_open,
         "best_issue": (best[1] if best else None),
+        "sprint_counts": sprint_counts,
     }
 
 

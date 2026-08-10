@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import sys
 from datetime import date
 from typing import Any
@@ -88,8 +89,104 @@ def select_reorg_candidates(issues: list[dict[str, Any]], count: int) -> list[di
 
 def autopilot_decision(remaining_open_backlog: int) -> str:
     """ "continue" while eligible backlog work remains in the active sprint,
-    "complete" once it hits zero -- the sprint autopilot's stop condition."""
+    "complete" once it hits zero -- the sprint autopilot's stop condition.
+
+    The count handed in is the ACTIVE SPRINT's open Backlog count, not the
+    release's (owner policy 2026-08-10, #3706): the automatic loop is bound
+    by the current sprint, so a release that still has work queued in a
+    future sprint parks here rather than pulling it forward.
+    """
     return "continue" if remaining_open_backlog > 0 else "complete"
+
+
+def _sprint_sort_key(title: str) -> tuple[int, int | str, str]:
+    """Orders sprint buckets for the park note: numbered sprints in numeric
+    order ("Sprint 9" before "Sprint 10", which a plain string sort gets
+    backwards), then any non-numbered titles, then the no-sprint bucket."""
+    if not title:
+        return (2, 0, "")
+    m = re.search(r"(\d+)", title)
+    if m:
+        return (0, int(m.group(1)), title)
+    return (1, title, title)
+
+
+def build_sprint_park_note(payload: dict[str, Any]) -> str:
+    """Renders the loud park note posted on the release tracking issue when
+    the active sprint's Backlog pool drains (#3706).
+
+    Payload keys:
+      event_phrase     what just happened (e.g. "Issue #123 merged")
+      sprint_title     the active sprint that just completed ("" if there is
+                       no active iteration at all -- the conservative-stop
+                       case)
+      release_version  e.g. "v3.0.0" (may be empty)
+      by_sprint        {sprint title or "": open Backlog count} for the rest
+                       of the release, active sprint included (it is zero by
+                       definition when this note is rendered)
+    """
+    event_phrase = payload.get("event_phrase", "Work completed")
+    sprint_title = payload.get("sprint_title") or ""
+    release_version = payload.get("release_version") or ""
+    by_sprint: dict[str, int] = {
+        str(k): int(v) for k, v in (payload.get("by_sprint") or {}).items() if int(v) > 0
+    }
+    remaining_elsewhere = {k: v for k, v in by_sprint.items() if k != sprint_title}
+    total_elsewhere = sum(remaining_elsewhere.values())
+
+    release_label = f"release {release_version}" if release_version else "this release"
+
+    lines: list[str] = []
+    if sprint_title:
+        lines.append(
+            f"🏁 **Sprint Autopilot — sprint complete**: {event_phrase}. "
+            f'**"{sprint_title}" has no open Backlog issues left**, so autopilot is '
+            f"parked at the sprint boundary."
+        )
+    else:
+        lines.append(
+            f"🏁 **Sprint Autopilot — parked**: {event_phrase}. No sprint iteration is "
+            f"currently active (no iteration's date window contains today), so there is "
+            f"no sprint pool to draw from and autopilot is parked."
+        )
+    lines.append("")
+
+    if total_elsewhere:
+        lines.append(f"**Still open in {release_label}, outside the active sprint:**")
+        lines.append("")
+        for title in sorted(remaining_elsewhere, key=_sprint_sort_key):
+            label = title if title else "_No sprint set_"
+            count = remaining_elsewhere[title]
+            lines.append(f"- {label}: {count} open Backlog issue(s)")
+        lines.append("")
+        lines.append(f"Total waiting outside the active sprint: **{total_elsewhere}**.")
+    else:
+        lines.append(
+            f"**Nothing is left in {release_label}'s Backlog either** — the release "
+            f"backlog is drained. Merged work is in **Acceptance Testing** for "
+            f"stakeholder sign-off. Autopilot resumes when `RELEASE_ISSUE_NUMBER` and "
+            f"`RELEASE_BRANCH` point at the next release; it never crosses a release "
+            f"boundary on its own."
+        )
+
+    lines.append("")
+    lines.append(
+        "The automatic loop is bound by the **current sprint**, not the release "
+        "(owner policy 2026-08-10, #3706): queued work in a future sprint is not "
+        "pulled forward without a planning event."
+    )
+    lines.append("")
+    lines.append("**Work resumes when either:**")
+    lines.append("")
+    lines.append(
+        "- the next sprint's date window opens (iteration boundaries are evaluated in "
+        "`SPRINT_TIMEZONE`, default `America/New_York`) and a kick is posted, or"
+    )
+    lines.append(
+        "- the owner comments `READY_FOR_NEXT_ISSUE` here to pull work forward "
+        "deliberately — a human kick still overrides the sprint boundary."
+    )
+    return "\n".join(lines)
 
 
 _HUDDLE_DECISION_TYPES = frozenset({"a", "b", "c"})
@@ -241,7 +338,10 @@ def build_sprint_report(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _main(argv: list[str]) -> int:
     if not argv:
-        print("usage: sprint_calc.py <report|autopilot-decision|huddle-routing>", file=sys.stderr)
+        print(
+            "usage: sprint_calc.py <report|autopilot-decision|park-note|huddle-routing>",
+            file=sys.stderr,
+        )
         return 2
 
     cmd = argv[0]
@@ -252,6 +352,10 @@ def _main(argv: list[str]) -> int:
     if cmd == "autopilot-decision":
         remaining = int(argv[1])
         print(autopilot_decision(remaining))
+        return 0
+    if cmd == "park-note":
+        payload = json.loads(sys.stdin.read())
+        print(build_sprint_park_note(payload))
         return 0
     if cmd == "huddle-routing":
         disagreement_type, request_changes_count = argv[1], int(argv[2])

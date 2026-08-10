@@ -256,9 +256,11 @@ echo "[review] ✓ Critical path complete" >&2
 # ---- OPTIONAL: Sprint autopilot kick (#3480) ----
 # Self-continuing loop: while the active Sprint still has open Backlog work,
 # post READY_FOR_NEXT_ISSUE ourselves instead of waiting for a human to do
-# it. The sprint boundary is the stop condition -- once the sprint has no
-# open Backlog issues left, post a completion note instead of a kick; a
-# human kick is still required to start work outside the sprint. Off by
+# it. The sprint boundary is the stop condition (owner policy 2026-08-10,
+# #3706) -- once the ACTIVE sprint has no open Backlog issues left, post a
+# loud park note instead of a kick, even if the release still has work
+# queued in later sprints; a human kick is still required to start work
+# outside the sprint (and deliberately may, the owner override). Off by
 # default (SPRINT_AUTOPILOT unset/false): behavior is then exactly the
 # pre-#3480 manual-kick flow. Best-effort: never fails the merge itself.
 # The gated kick itself lives in sprint_autopilot_kick (lib/gh_project.sh),
