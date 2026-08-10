@@ -1,0 +1,22 @@
+# `nyxgpt cloud infra` generates this file for you at
+# ~/.nyxGPT/cloud/terraform.tfvars (mode 0600) -- copy this example by hand
+# only if you want to pin values before the first run:
+#   nyxgpt cloud infra plan --region us-east-1 --ssh-public-key ~/.ssh/id_ed25519.pub
+#
+# Detected automatically when omitted from the CLI: owner_ip_cidr (the
+# workstation's current public IP, /32).
+
+aws_region = "us-east-1"
+
+# The ONLY source allowed to reach the instance, and only on port 22.
+# Never 0.0.0.0/0 -- the configuration refuses it at plan time.
+owner_ip_cidr = "198.51.100.7/32"
+
+# Exactly one of these two:
+#   ssh_key_name   -- an EC2 key pair that already exists in the region
+#   ssh_public_key -- public key material to register as "nyxgpt-tf-key"
+# ssh_key_name   = "my-existing-pair"
+ssh_public_key = "ssh-ed25519 AAAA... you@workstation"
+
+instance_type    = "m5.large"
+root_volume_size = 100
