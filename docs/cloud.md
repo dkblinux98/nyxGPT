@@ -1,8 +1,9 @@
 # nyxGPT Cloud (AWS)
 
 `nyxgpt cloud` is the CLI surface for AWS-deployed nyxGPT stacks (P6-11-class
-scope). It currently covers `allow-ip` (#3630); provisioning and teardown
-(`nyxgpt cloud deploy`/`destroy`, #3513) land separately.
+scope). It covers `infra` -- provisioning the AWS substrate itself (#3509) --
+and `allow-ip` (#3630). Deploying the nyxGPT stack *onto* a provisioned
+instance (`nyxgpt cloud deploy`/`destroy`, #3513) lands separately.
 
 Install the AWS SDK dependency with:
 
@@ -31,6 +32,95 @@ tethering), that rule goes stale and the instance becomes unreachable,
 **including over SSH** -- there is no other way in. `nyxgpt cloud allow-ip`
 exists to fix exactly this, and does so by talking only to the AWS EC2 API,
 never the instance, so it works from the new IP while still locked out.
+
+---
+
+## `nyxgpt cloud infra` — provisioning the AWS substrate (P6-8, #3509)
+
+`nyxgpt cloud infra` provisions the infrastructure an AWS deployment runs on,
+and nothing else — installing the nyxGPT stack onto the instance is a
+separate step (#3513). It is the only supported way to drive
+`terraform/aws/`: per CLAUDE.md no user flow runs raw `terraform`, so the
+command owns Terraform's whole lifecycle (installing the binary, generating
+tfvars, pinning state, recording outputs).
+
+### What it creates
+
+Shape fixed by two approved decision records, not by configuration:
+
+| Resource | Detail |
+| --- | --- |
+| VPC | `10.42.0.0/16` by default, DNS support + hostnames on |
+| Public subnet(s) | one `10.42.1.0/24` subnet by default, plus an internet gateway and default route — the instance needs a routable address for SSH |
+| Security group | **exactly one inbound rule: TCP 22 from your IP.** Egress is open outbound (package/artifact/image/model downloads) |
+| EC2 instance | one `m5.large` (per [`DECISION_AWS_COMPUTE_SUBSTRATE.md`](../product_management/DECISION_AWS_COMPUTE_SUBSTRATE.md)), IMDSv2 required, encrypted gp3 root volume, Elastic IP so the address survives stop/start |
+
+There is no EKS cluster, node group, load balancer, or NAT gateway: a single
+owner reaching a single private deployment needs none of them, and an ALB
+would contradict the access model outright.
+
+Resources are named with the same `nyxgpt-tf-*` convention as the local
+Docker stack (`nyxgpt-tf-vpc`, `nyxgpt-tf-instance-sg`, `nyxgpt-tf-instance`,
+…), overridable via `name_prefix`.
+
+### Commands
+
+```bash
+# See what would be created; creates nothing.
+nyxgpt cloud infra plan --region us-east-1 --ssh-public-key ~/.ssh/id_ed25519.pub
+
+# Provision it (idempotent -- a re-run reconciles rather than duplicates).
+nyxgpt cloud infra apply
+
+# What's provisioned, and how it's reachable.
+nyxgpt cloud infra status
+
+# The access-model checks CI runs, offline: no AWS account, creates nothing.
+nyxgpt cloud infra test
+
+# Tear it down (deletes the instance and its root volume).
+nyxgpt cloud infra destroy --yes
+```
+
+Every flag is remembered in `~/.nyxGPT/cloud/infra.json`, so later runs only
+need the ones that change. Exactly one of `--ssh-public-key` (a `.pub` file
+to register as a new key pair) or `--ssh-key-name` (an EC2 key pair that
+already exists in the region) is required — SSH is the only way in, so an
+instance with no key is refused before anything is created.
+
+The same operations are on the SRE/admin dashboard under **AWS Cloud
+Infrastructure** (`/admin/cloud-infrastructure`), which drives the same code
+path; teardown there requires typing `DESTROY`.
+
+### The SSH source CIDR
+
+`--owner-ip` sets the one CIDR allowed to reach port 22. Omitted, it is
+auto-detected as this machine's current public IP, scoped to `/32`.
+`0.0.0.0/0` is refused three times over — by the CLI, by the root module's
+variable validation, and by the security module's precondition — and
+anything broader than a `/16` is refused as a fat-fingered CIDR.
+
+Once the group exists, use [`nyxgpt cloud allow-ip`](#nyxgpt-cloud-allow-ip)
+to move that rule; see "How `allow-ip` and the Terraform module coexist"
+below for why a re-apply is not the way to change it.
+
+### Where state and configuration live
+
+| Path | What |
+| --- | --- |
+| `~/.nyxGPT/cloud/terraform/` | the Terraform configuration, materialized from the installed package (works with no repo checkout) |
+| `~/.nyxGPT/cloud/terraform.tfstate` | Terraform state, deliberately outside the config directory an upgrade re-syncs. An S3 backend with DynamoDB locking replaces this in #3510 |
+| `~/.nyxGPT/cloud/terraform.tfvars` | generated from your flags, mode 0600 |
+| `~/.nyxGPT/cloud/infra.json` | remembered settings, mode 0600 |
+| `~/.nyxGPT/cloud/state.json` | the ids `allow-ip` (and later `cloud deploy`) read |
+
+### Credentials and cost
+
+Provisioning uses boto3-style credential resolution via Terraform's AWS
+provider — the profile from `nyxgpt cloud credentials-setup` (below), or
+`--profile`/`AWS_PROFILE`. **This command creates billable resources**: an
+`m5.large` on-demand is roughly $70/month plus EBS and the Elastic IP;
+`nyxgpt cloud infra destroy --yes` removes all of it.
 
 ---
 
@@ -263,17 +353,23 @@ providers against a mocked boto3 client (no live AWS dependency); see
 
 ---
 
-## Note for the AWS Terraform module (P6-8)
+## How `allow-ip` and the Terraform module coexist
 
-`allow-ip` mutates the security group's port-22 ingress rule directly via
-the AWS API, outside of Terraform. When the AWS Terraform module lands, its
-security-group resource must not fight that: give the ingress rule a
-`lifecycle { ignore_changes = [ingress] }` (or manage it as a separate
-`aws_security_group_rule` excluded from the plan) so a routine
-`terraform apply` doesn't revert an `allow-ip` refresh back to a stale IP.
-The module should also write `security_group_id` and `region` to
-`~/.nyxGPT/cloud/state.json` on apply, so `allow-ip` can auto-discover its
-target without `--security-group-id`/`--region`.
+`allow-ip` mutates the security group's port-22 ingress rule directly via the
+AWS API, outside of Terraform -- it has to, because it is the lockout-recovery
+path and the owner cannot reach the instance to do anything else. The
+substrate module (below) is built so a routine apply doesn't fight it:
+
+- The security group's `ingress` is declared inline with
+  `lifecycle { ignore_changes = [ingress] }`
+  (`terraform/aws/modules/security/main.tf`), so a later
+  `nyxgpt cloud infra apply` leaves an `allow-ip` refresh in place instead of
+  reverting it to whatever CIDR was in tfvars. **After the group exists,
+  `nyxgpt cloud allow-ip` -- not a re-apply -- is how the SSH source
+  changes.** Egress remains Terraform-managed and is reconciled normally.
+- `nyxgpt cloud infra apply` writes `security_group_id` and `region` (plus the
+  instance/VPC ids) to `~/.nyxGPT/cloud/state.json`, so `allow-ip`
+  auto-discovers its target with no `--security-group-id`/`--region`.
 
 ## Lockout recovery
 

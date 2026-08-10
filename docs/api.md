@@ -47,6 +47,10 @@ Quick reference of all 77 available endpoints:
 | `/api/v1/self-heal/toggle` | POST | Enable/disable automatic self-healing |
 | `/api/v1/self-heal/heal` | POST | Manually restart one or every unhealthy component |
 | `/api/v1/self-heal/logs` | GET | Recent logs for one component, mode-dispatched (e.g. GlitchTip's registration link) |
+| `/api/v1/cloud/infra` | GET | AWS substrate status: what's provisioned and how it's reachable (no AWS call) |
+| `/api/v1/cloud/infra/plan` | POST | Plan the AWS substrate; creates nothing |
+| `/api/v1/cloud/infra/apply` | POST | Provision/reconcile the AWS substrate and record its ids |
+| `/api/v1/cloud/infra/destroy` | POST | Tear the AWS substrate down (requires `{"confirm": true}`) |
 | `/api/v1/models` | GET | List Ollama models |
 | `/api/v1/models/pull` | POST | Pull model from Ollama |
 | `/api/v1/models/{model_name}` | DELETE | Delete model |
@@ -1349,6 +1353,80 @@ link, printed there by its console email backend) without a raw
 ```
 
 Returns `502` if the service is unknown or the logs can't be fetched.
+
+---
+
+## Cloud substrate (AWS)
+
+The dashboard counterpart of `nyxgpt cloud infra` (P6-8, #3509), backing
+`/admin/cloud-infrastructure`. These endpoints provision the AWS
+infrastructure a cloud deployment runs on — a VPC, a public subnet, one
+SSH-only security group scoped to the owner's IP, and a single EC2 instance —
+by driving the Terraform configuration in `terraform/aws/`. They call the
+same `nyxgpt.cloud_infra` functions the CLI does, so the access model is
+identical on both surfaces. See [cloud.md](cloud.md#nyxgpt-cloud-infra--provisioning-the-aws-substrate-p6-8-3509)
+for what gets created, and the two decision records it implements.
+
+`plan`/`apply`/`destroy` shell out to Terraform and can take minutes; they
+are synchronous. Every mutation is recorded in the admin activity log
+(`cloud_infra.plan`/`.apply`/`.destroy`).
+
+### `GET /api/v1/cloud/infra`
+
+Report what is provisioned. Reads recorded state only — no AWS or Terraform
+call — so it is cheap to poll.
+
+```json
+{
+  "provisioned": true,
+  "region": "us-east-1",
+  "instance_id": "i-0abc123",
+  "instance_type": "m5.large",
+  "public_ip": "198.51.100.200",
+  "vpc_id": "vpc-0abc",
+  "security_group_id": "sg-0abc",
+  "ssh_key_name": "owner-pair",
+  "owner_ip_cidr": "198.51.100.7/32",
+  "access_model": {
+    "open_ports": [22],
+    "ssh_only": true,
+    "world_open_ingress": false,
+    "reachability": "SSH tunnel to loopback-bound services"
+  }
+}
+```
+
+### `POST /api/v1/cloud/infra/plan`
+
+Plan the substrate; creates nothing. Body fields are all optional and mirror
+the CLI flags — `region`, `profile`, `owner_ip`, `ssh_key_name`,
+`ssh_public_key`, `instance_type`, `root_volume_size`. Anything omitted falls
+back to the settings saved by the previous run; `owner_ip` defaults to the
+API host's detected public IP.
+
+### `POST /api/v1/cloud/infra/apply`
+
+Provision or reconcile the substrate. Same body as `plan`. Returns the
+Terraform outputs and the recorded state:
+
+```json
+{
+  "action": "apply",
+  "settings": { "aws_region": "us-east-1", "owner_ip_cidr": "198.51.100.7/32" },
+  "outputs": { "instance_id": "i-0abc123", "security_group_id": "sg-0abc" },
+  "state": { "instance_id": "i-0abc123", "security_group_id": "sg-0abc" }
+}
+```
+
+### `POST /api/v1/cloud/infra/destroy`
+
+Tear the substrate down, including the instance and its root volume.
+Requires `{"confirm": true}` — without it the request is refused with `400`
+rather than acted on.
+
+All three return `409` with the underlying message when Terraform or input
+validation fails (no SSH key configured, a refused `0.0.0.0/0` source, a
+Terraform error, ...).
 
 ---
 
