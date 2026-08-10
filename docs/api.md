@@ -1354,7 +1354,15 @@ Returns `502` if the service is unknown or the logs can't be fetched.
 
 ## Sessions endpoints
 
-Sessions store conversation history and metadata and are persisted automatically on disk.
+Sessions store conversation history and metadata and are persisted
+automatically — either as JSON files on disk (the default `file` backend) or
+in the stack's Cassandra (`[nyxgpt] session_backend = cassandra`), which
+gives every deployment mode pointed at the same Cassandra an identical
+session list (see [session-storage.md](session-storage.md), #3590). The
+endpoints behave identically under both backends; the optional
+`sessions_dir` query-parameter override accepted by several of them applies
+only to the `file` backend and is ignored under `cassandra` (there is
+exactly one shared store).
 
 ### `GET /api/v1/sessions`
 
