@@ -184,6 +184,14 @@ for both verdicts:
   it takes writes one of the handoff markers the footprint check looks for, so
   a re-run (or a late-firing event chain) is a no-op.
 
+  The footprint check ignores the `nyxgpt-structured-review` comment itself.
+  That comment is the event chain's *trigger*, never its footprint, and it
+  embeds the review's free text — a summary that happens to say "review loop"
+  or "spec ambiguity" (ordinary words when the PR under review is about the
+  review machinery) would otherwise look like a handoff that never happened.
+  The primary path excludes it the same way, by scanning only comments newer
+  than it.
+
   Backstop-posted comments carry a "_Posted by the dispatch-mode review
   handoff backstop_" footer. **Seeing that footer means the event chain
   dropped a handoff** — worth a look at the review run's logs, even though

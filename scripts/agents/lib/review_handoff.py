@@ -52,6 +52,15 @@ HANDOFF_MARKERS = (
     "spec ambiguity",  # type-(c) cycle-zero escalation
 )
 
+#: Marker of the machine-readable review payload `claude-code-review.yml`
+#: persists after every review ("Persist structured review output"). It is
+#: the event chain's *trigger*, never its footprint -- and it embeds the
+#: review's free text, so its body can contain HANDOFF_MARKERS substrings by
+#: coincidence. `handoff_recorded` must therefore skip it; the primary path
+#: excludes it the same way (`review_agent_auto_review.yml` scans only
+#: comments newer than the structured comment).
+STRUCTURED_REVIEW_MARKER = "nyxgpt-structured-review"
+
 #: Review states that count as a verdict. COMMENTED/DISMISSED reviews are
 #: chatter -- they neither approve nor request changes, so they must not
 #: shadow the real verdict when picking "the latest one".
@@ -63,6 +72,11 @@ _VERDICT_STATES = ("APPROVED", "CHANGES_REQUESTED")
 # (e.g. a dispatched run executing an older workflow definition whose
 # --json-schema predates #3687).
 _DTYPE_BODY_RE = re.compile(r"^\s*\*\*\[?([abc])\]?\*\*\s*:", re.MULTILINE)
+
+# The "### Disagreement Type" heading the review template emits. When it is
+# present the classification is read from *below* it, so an unrelated bold
+# `**a**:`-shaped line earlier in the body cannot outrank the real one.
+_DTYPE_HEADING_RE = re.compile(r"^#{1,6}\s*Disagreement\s+Type\b.*$", re.MULTILINE | re.IGNORECASE)
 
 _DTYPE_STRUCTURED_RE = re.compile(r'"disagreement_type"\s*:\s*"([abc])"')
 
@@ -111,15 +125,35 @@ def handoff_recorded(comments: list[dict[str, Any]], since: str) -> bool:
 
     `since` is the verdict's `submitted_at`; comments at or before it belong
     to an earlier review cycle and must not suppress this one's handoff.
+
+    The run's own `nyxgpt-structured-review` comment is skipped: it lands
+    seconds after the verdict (so it is always in scan scope) and embeds the
+    review's free text, where a phrase like "review loop" or "spec
+    ambiguity" -- both ordinary words in this repo's review prose -- would
+    otherwise be mistaken for a handoff footprint and stand the backstop
+    down while nothing had happened. It is the trigger of the event chain,
+    never its footprint.
     """
     for comment in comments:
         created = str(comment.get("created_at") or "")
         if not created or created <= since:
             continue
         body = str(comment.get("body") or "")
+        if STRUCTURED_REVIEW_MARKER in body:
+            continue
         if any(marker in body for marker in HANDOFF_MARKERS):
             return True
     return False
+
+
+def _disagreement_section(review_body: str) -> str:
+    """The review body from its "Disagreement Type" heading onwards.
+
+    Returns the whole body when the heading is absent, so a review that
+    states the classification without the template's heading still parses.
+    """
+    match = _DTYPE_HEADING_RE.search(review_body)
+    return review_body[match.end() :] if match else review_body
 
 
 def disagreement_type(
@@ -133,18 +167,21 @@ def disagreement_type(
     `review_agent_auto_review.yml` reads), then falls back to parsing the
     review body's "Disagreement Type" line, then to "a" -- the pre-#3687
     default, which loops as before rather than over-escalating.
+
+    Only the newest structured comment is consulted: it belongs to the
+    round being planned, so when it carries no classification the current
+    review body must win rather than an earlier cycle's stale value.
     """
-    structured = [
-        str(c.get("body") or "")
-        for c in comments
-        if "nyxgpt-structured-review" in str(c.get("body") or "")
-    ]
-    for body in reversed(structured):
-        match = _DTYPE_STRUCTURED_RE.search(body)
+    structured = sorted(
+        (c for c in comments if STRUCTURED_REVIEW_MARKER in str(c.get("body") or "")),
+        key=lambda c: str(c.get("created_at") or ""),
+    )
+    if structured:
+        match = _DTYPE_STRUCTURED_RE.search(str(structured[-1].get("body") or ""))
         if match:
             return match.group(1)
 
-    match = _DTYPE_BODY_RE.search(review_body or "")
+    match = _DTYPE_BODY_RE.search(_disagreement_section(review_body or ""))
     if match:
         return match.group(1)
 

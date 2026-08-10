@@ -101,6 +101,32 @@ class TestHandoffRecorded:
         comments = [_comment("2026-08-09T19:45:00Z", "Looks good to me, shipping later")]
         assert review_handoff.handoff_recorded(comments, "2026-08-09T19:39:00Z") is False
 
+    @pytest.mark.parametrize(
+        "summary",
+        [
+            "The change to the review loop counter is off by one.",
+            "The acceptance criteria carry a spec ambiguity the PR cannot resolve.",
+        ],
+    )
+    def test_structured_review_comment_is_never_a_footprint(self, summary):
+        # The review run persists this comment seconds after its own verdict,
+        # so it is always in scan scope -- and its free text routinely
+        # discusses the review machinery itself. Counting it would stand the
+        # backstop down while no handoff had happened at all.
+        payload = json.dumps({"decision": "REQUEST_CHANGES", "summary": summary})
+        comments = [
+            _comment("2026-08-09T19:39:30Z", f"<!-- nyxgpt-structured-review: {payload} -->")
+        ]
+        assert review_handoff.handoff_recorded(comments, "2026-08-09T19:39:00Z") is False
+
+    def test_real_handoff_still_counts_alongside_the_structured_comment(self):
+        payload = json.dumps({"decision": "REQUEST_CHANGES", "summary": "unrelated prose"})
+        comments = [
+            _comment("2026-08-09T19:39:30Z", f"<!-- nyxgpt-structured-review: {payload} -->"),
+            _comment("2026-08-09T19:41:00Z", "🔄 Changes requested (review loop 2/3)"),
+        ]
+        assert review_handoff.handoff_recorded(comments, "2026-08-09T19:39:00Z") is True
+
 
 class TestDisagreementType:
     def test_prefers_latest_structured_comment(self):
@@ -136,6 +162,46 @@ class TestDisagreementType:
 
     def test_defaults_to_a_when_unclassified(self):
         assert review_handoff.disagreement_type([], "no classification here") == "a"
+
+    def test_newest_structured_comment_without_a_type_does_not_inherit_the_previous(self):
+        # An earlier cycle classified the round; the current one carries no
+        # disagreement_type, so the current review body must win.
+        comments = [
+            _comment(
+                "2026-08-09T05:34:00Z",
+                '<!-- nyxgpt-structured-review: {"disagreement_type":"a"} -->',
+            ),
+            _comment(
+                "2026-08-09T19:40:00Z",
+                '<!-- nyxgpt-structured-review: {"decision":"REQUEST_CHANGES"} -->',
+            ),
+        ]
+        body = "### Disagreement Type\n\n**b**: the approach itself is the disagreement\n"
+        assert review_handoff.disagreement_type(comments, body) == "b"
+
+    def test_structured_comments_are_ordered_by_created_at_not_api_order(self):
+        comments = [
+            _comment(
+                "2026-08-09T19:40:00Z",
+                '<!-- nyxgpt-structured-review: {"disagreement_type":"b"} -->',
+            ),
+            _comment(
+                "2026-08-09T05:34:00Z",
+                '<!-- nyxgpt-structured-review: {"disagreement_type":"a"} -->',
+            ),
+        ]
+        assert review_handoff.disagreement_type(comments) == "b"
+
+    def test_body_classification_is_read_below_the_heading(self):
+        # A bold `**a**:`-shaped line elsewhere in the review must not
+        # outrank the real classification under the template's heading.
+        body = (
+            "### Medium Issues\n\n"
+            "**a**: this looks like a classification but is a findings label\n\n"
+            "### Disagreement Type\n\n"
+            "**c**: the acceptance criteria are unresolvable as written\n"
+        )
+        assert review_handoff.disagreement_type([], body) == "c"
 
 
 class TestPlanHandoff:
