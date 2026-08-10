@@ -109,9 +109,10 @@ below for why a re-apply is not the way to change it.
 | Path | What |
 | --- | --- |
 | `~/.nyxGPT/cloud/terraform/` | the Terraform configuration, materialized from the installed package (works with no repo checkout) |
-| `~/.nyxGPT/cloud/terraform.tfstate` | Terraform state, deliberately outside the config directory an upgrade re-syncs. An S3 backend with DynamoDB locking replaces this in #3510 |
+| `~/.nyxGPT/cloud/terraform.tfstate` | Terraform state *before* you migrate it, deliberately outside the config directory an upgrade re-syncs. See [Remote state](#remote-state-s3--dynamodb-locking-p6-9-3510) |
 | `~/.nyxGPT/cloud/terraform.tfvars` | generated from your flags, mode 0600 |
 | `~/.nyxGPT/cloud/infra.json` | remembered settings, mode 0600 |
+| `~/.nyxGPT/cloud/backend.json` | where remote state lives, once migrated, mode 0600 |
 | `~/.nyxGPT/cloud/state.json` | the ids `allow-ip` (and later `cloud deploy`) read |
 
 ### Credentials and cost
@@ -121,6 +122,133 @@ provider — the profile from `nyxgpt cloud credentials-setup` (below), or
 `--profile`/`AWS_PROFILE`. **This command creates billable resources**: an
 `m5.large` on-demand is roughly $70/month plus EBS and the Elastic IP;
 `nyxgpt cloud infra destroy --yes` removes all of it.
+
+---
+
+## Remote state (S3 + DynamoDB locking, P6-9, #3510)
+
+A fresh install keeps the substrate's Terraform state in one local file,
+`~/.nyxGPT/cloud/terraform.tfstate`. That is correct for one operator on one
+machine and wrong for everything else:
+
+- A second operator, or a CI runner, has no way to see the first one's state.
+  Terraform would believe nothing exists and try to create a second VPC,
+  security group, and instance.
+- Two concurrent applies can interleave writes and leave a state file that
+  describes neither run's result — with no warning at the time.
+
+`nyxgpt cloud state` moves that state into an S3 bucket with a DynamoDB lock
+table: shared, versioned, encrypted, and mutually exclusive.
+
+### Migrating
+
+```bash
+# Where state lives right now, and how (or whether) it is locked.
+nyxgpt cloud state status
+
+# Create the bucket + lock table and move existing state into them.
+nyxgpt cloud state migrate
+```
+
+`migrate` is safe to re-run and needs no flags in the common case. It:
+
+1. Creates the state bucket (default `nyxgpt-tfstate-<account-id>-<region>` —
+   S3 bucket names are globally unique, hence the account id) with
+   **versioning**, **default AES256 encryption**, and **all public access
+   blocked**. An existing bucket is adopted, and those three settings are
+   re-applied to it rather than assumed.
+2. Creates the DynamoDB lock table (default `nyxgpt-tfstate-locks`,
+   on-demand billing) and waits for it to go active.
+3. Rewrites the backend and re-initializes with `-migrate-state
+   -force-copy`, which copies the existing local state up to S3.
+
+Override any of it with `--bucket`, `--table`, `--key`, `--region`,
+`--profile`; the values are remembered in `~/.nyxGPT/cloud/backend.json`.
+Use `nyxgpt cloud state bootstrap` to create the AWS resources *without*
+switching the backend — useful when the person with permission to create
+buckets isn't the person who runs the migration.
+
+After migrating, `nyxgpt cloud infra plan/apply/destroy` work exactly as
+before. The difference is that a second concurrent apply now blocks on the
+lock instead of racing.
+
+The same operations are on the SRE/admin dashboard at **Admin → Cloud
+Infrastructure → Terraform state**.
+
+### Recovery
+
+Four things go wrong with remote state. Each has a wrapped command.
+
+**A run was killed mid-apply and left the lock held.** Every later run fails
+with the lock's id. Release exactly that lock:
+
+```bash
+nyxgpt cloud state unlock --lock-id <id-from-the-error>
+```
+
+Only do this when no apply is actually running. Breaking a lock a live run
+still owns is how two runs end up writing the same state — which is the
+problem locking exists to prevent. The lock id is required for that reason:
+there is no "release whatever is held".
+
+**State was written wrong and has to be rolled back.** Bucket versioning is
+enabled at creation precisely for this: every write keeps its predecessor,
+and each version is a complete state file as it stood after one apply.
+
+```bash
+# Inventory, newest first.
+nyxgpt cloud state versions
+
+# Make one of them current.
+nyxgpt cloud state restore --version-id <id>
+nyxgpt cloud infra plan   # what Terraform now believes differs from AWS
+```
+
+`restore` downloads the version and pushes it back *through Terraform*
+rather than copying it over the object in S3. The backend keeps a checksum
+of the state in DynamoDB; an out-of-band overwrite leaves that checksum
+describing the version it replaced, and every later command then fails an
+integrity check. The restore is itself reversible — the version it replaces
+stays in the bucket as its own version.
+
+**You want a copy before doing something risky.**
+
+```bash
+nyxgpt cloud state backup                       # ~/.nyxGPT/cloud/terraform.tfstate.backup
+nyxgpt cloud state backup --output ./before.tfstate
+```
+
+This reads through Terraform, so it works identically before and after
+migration. The file is written mode 0600 — state carries every resource id
+and the values of any variables passed in.
+
+**The backend itself is the problem** — the account is locked out, a bucket
+policy was changed, the region is down. Move state back to the local file
+and keep operating:
+
+```bash
+nyxgpt cloud state local
+```
+
+The bucket and lock table are deliberately left in place; this changes where
+Terraform reads state, not what exists in AWS. Re-run `nyxgpt cloud state
+migrate` to go back.
+
+If a migration fails part-way, `backend.json` is rolled back so it keeps
+describing where the state actually is, and the next command re-initializes
+against that backend. You should not have to repair anything by hand — but
+`nyxgpt cloud state status --verify` will confirm the bucket, the lock
+table, and that versioning is genuinely on.
+
+### Permissions
+
+Beyond what provisioning already needs, migrating requires
+`sts:GetCallerIdentity` (to derive the default bucket name),
+`s3:CreateBucket`/`PutBucketVersioning`/`PutEncryptionConfiguration`/
+`PutBucketPublicAccessBlock` once at bootstrap, `s3:GetObject`/`PutObject`/
+`ListBucket`/`ListBucketVersions` on the state object thereafter, and
+`dynamodb:CreateTable`/`DescribeTable` plus `GetItem`/`PutItem`/`DeleteItem`
+on the lock table.
 
 ---
 

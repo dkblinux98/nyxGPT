@@ -183,8 +183,10 @@ each is driven through `nyxgpt`-wrapped commands, never a raw
 `docker`/`docker compose`/`kubectl`/`terraform` invocation. AWS deployments
 are `nyxgpt cloud`-wrapped too — see [Cloud (AWS)](docs/cloud.md), covering
 `nyxgpt cloud infra` (provisions the AWS substrate: a VPC, subnet, an
-SSH-only security group scoped to your own IP, and one EC2 instance) and
-`nyxgpt cloud allow-ip` (SSH security-group lockout recovery).
+SSH-only security group scoped to your own IP, and one EC2 instance),
+`nyxgpt cloud state` (moves that substrate's Terraform state to a shared,
+versioned S3 backend with DynamoDB locking, and recovers it when a run
+fails), and `nyxgpt cloud allow-ip` (SSH security-group lockout recovery).
 
 ---
 

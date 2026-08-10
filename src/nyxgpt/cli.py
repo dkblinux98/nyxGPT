@@ -21,6 +21,7 @@ from typing import Any, cast
 from nyxgpt import canary as canary_mod
 from nyxgpt import cloud as cloud_mod
 from nyxgpt import cloud_infra as cloud_infra_mod
+from nyxgpt import cloud_state as cloud_state_mod
 from nyxgpt import models, sessions
 from nyxgpt import ops as ops_mod
 from nyxgpt import self_heal as self_heal_mod
@@ -2336,6 +2337,132 @@ def cli(argv: list[str] | None = None) -> int:
         ),
     )
 
+    # `cloud state` -- Terraform remote state for the substrate above (P6-9,
+    # #3510). A fresh install keeps state in one local file, which breaks down
+    # the moment a second operator or a CI runner applies the same substrate;
+    # these commands move it to a versioned S3 bucket with a DynamoDB lock
+    # table, and are also the recovery path when a run dies holding the lock or
+    # writes state that has to be rolled back. No raw `terraform` anywhere
+    # (CLAUDE.md's wrapper requirement).
+    cloud_state_p = cloud_sub.add_parser(
+        "state",
+        help=(
+            "Manage the substrate's Terraform state: migrate it to a shared S3 backend "
+            "with DynamoDB locking, and recover it when a run fails"
+        ),
+    )
+    cloud_state_sub = cloud_state_p.add_subparsers(dest="state_cmd", required=True)
+
+    def _add_state_backend_flags(parser: argparse.ArgumentParser) -> None:
+        """Attach the backend inputs shared by `state bootstrap`/`migrate`.
+
+        Every one is remembered in ~/.nyxGPT/cloud/backend.json, so later runs
+        need only what changes -- and the defaults are derived (bucket from the
+        AWS account id, region from what `cloud infra` provisions into) so the
+        common case needs no flags at all.
+        """
+        parser.add_argument(
+            "--bucket",
+            help=(
+                "S3 bucket for the state file (default: saved value, then "
+                "nyxgpt-tfstate-<account-id>-<region>). Bucket names are globally unique"
+            ),
+        )
+        parser.add_argument(
+            "--table",
+            help="DynamoDB table used for state locking (default: saved value, then nyxgpt-tfstate-locks)",
+        )
+        parser.add_argument(
+            "--key",
+            help="Object key for the state file inside the bucket (default: nyxgpt/aws/terraform.tfstate)",
+        )
+        parser.add_argument(
+            "--region",
+            help="AWS region holding the bucket and lock table (default: the region `cloud infra` provisions into)",
+        )
+        parser.add_argument(
+            "--profile",
+            help="AWS profile to authenticate with (default: saved value, then config.ini [cloud] profile, then AWS_PROFILE)",
+        )
+
+    cloud_state_status = cloud_state_sub.add_parser(
+        "status", help="Report where the substrate's state lives and how it is locked"
+    )
+    cloud_state_status.add_argument(
+        "--verify",
+        action="store_true",
+        help=(
+            "Also confirm against AWS that the bucket and lock table exist and that "
+            "versioning (the recovery story) is on"
+        ),
+    )
+
+    cloud_state_bootstrap = cloud_state_sub.add_parser(
+        "bootstrap",
+        help=(
+            "Create the versioned, encrypted state bucket and the DynamoDB lock table, "
+            "without moving any state yet"
+        ),
+    )
+    _add_state_backend_flags(cloud_state_bootstrap)
+
+    cloud_state_migrate = cloud_state_sub.add_parser(
+        "migrate",
+        help=(
+            "Create the backend if needed and move the substrate's existing local state "
+            "into it (safe to re-run)"
+        ),
+    )
+    _add_state_backend_flags(cloud_state_migrate)
+
+    cloud_state_sub.add_parser(
+        "local",
+        help=(
+            "Move state back out of S3 into the local file -- the escape hatch when the "
+            "backend itself is unreachable. The bucket and table are left in place"
+        ),
+    )
+
+    cloud_state_unlock = cloud_state_sub.add_parser(
+        "unlock",
+        help="Release a state lock left held by a run that was killed mid-apply",
+    )
+    cloud_state_unlock.add_argument(
+        "--lock-id",
+        required=True,
+        help="The lock id Terraform reports in the error that refused to run (`Lock Info: ID: ...`)",
+    )
+
+    cloud_state_backup = cloud_state_sub.add_parser(
+        "backup",
+        help="Write the current state to a local file, whichever backend holds it",
+    )
+    cloud_state_backup.add_argument(
+        "--output",
+        help="Where to write the backup (default: ~/.nyxGPT/cloud/terraform.tfstate.backup)",
+    )
+
+    cloud_state_versions = cloud_state_sub.add_parser(
+        "versions",
+        help="List the stored versions of the remote state file, newest first",
+    )
+    cloud_state_versions.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="How many versions to show (default: 20)",
+    )
+
+    cloud_state_restore = cloud_state_sub.add_parser(
+        "restore",
+        help="Make a previous version of the remote state the current one",
+    )
+    cloud_state_restore.add_argument(
+        "--version-id",
+        required=True,
+        help="The S3 version id to restore -- see `nyxgpt cloud state versions`",
+    )
+
     # Add canary command (local weighted-traffic canary rollout on a local k8s cluster --
     # the sole deployment model since #3409 retired blue/green in favor of it)
     canary_p = sub.add_parser("canary", help="Local canary deployment (kind/minikube/k3s cluster)")
@@ -2597,6 +2724,9 @@ def cli(argv: list[str] | None = None) -> int:
 
     if cmd == "cloud" and args.cloud_cmd == "infra":
         return cloud_infra_mod.infra_command(args)
+
+    if cmd == "cloud" and args.cloud_cmd == "state":
+        return cloud_state_mod.state_command(args)
 
     if cmd == "canary":
         # Same per-invocation correlation id as the `ops` dispatch above --

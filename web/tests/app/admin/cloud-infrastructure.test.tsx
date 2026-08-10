@@ -48,12 +48,55 @@ const provisioned = {
   access_model: { ...notProvisioned.access_model, open_ports: [22] },
 };
 
+// Terraform remote state (#3510). The panel is a second, independent
+// subsystem on the same page: its own status fetch, its own failures.
+const localBackend = {
+  backend: 'local',
+  remote_enabled: false,
+  bootstrapped: false,
+  bucket: '',
+  table: '',
+  key: '',
+  region: '',
+  locking: 'none (local file)',
+  local_state_file: '/home/owner/.nyxGPT/cloud/terraform.tfstate',
+  local_state_exists: true,
+};
+
+const remoteBackend = {
+  ...localBackend,
+  backend: 's3',
+  remote_enabled: true,
+  bootstrapped: true,
+  bucket: 'nyxgpt-tfstate-0abc',
+  table: 'nyxgpt-tfstate-locks',
+  key: 'aws/terraform.tfstate',
+  region: 'us-east-1',
+  locking: 'DynamoDB',
+  local_state_exists: false,
+};
+
+const twoVersions = {
+  versions: [
+    { version_id: 'ver-newest', last_modified: '2026-08-10T05:00:00Z', size: 4096, latest: true },
+    { version_id: 'ver-older', last_modified: '2026-08-09T05:00:00Z', size: 4000, latest: false },
+  ],
+};
+
 function mockStatus(payload: unknown) {
   server.use(http.get('/api/v1/cloud/infra', () => HttpResponse.json(payload)));
 }
 
+function mockStateStatus(payload: unknown, status = 200) {
+  server.use(http.get('/api/v1/cloud/state', () => HttpResponse.json(payload, { status })));
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  // The page loads the state backend on mount, so every test needs this
+  // answered -- MSW is set to error on unhandled requests. Individual tests
+  // override it with a later `server.use`.
+  mockStateStatus(localBackend);
 });
 
 describe('CloudInfrastructurePage', () => {
@@ -263,5 +306,344 @@ describe('CloudInfrastructurePage', () => {
 
     await waitFor(() => expect(screen.getByText('Substrate destroyed.')).toBeInTheDocument());
     expect(body).toEqual({ confirm: true });
+  });
+});
+
+// The Terraform remote-state panel (#3510). Local state is invisible to a
+// second operator and unlocked; these tests cover getting off it, and the
+// recovery paths that exist because remote state can go wrong in ways a local
+// file cannot -- a lock nobody released, a state written wrong.
+describe('CloudInfrastructurePage — Terraform state', () => {
+  it('reports local state and offers the migration', async () => {
+    mockStatus(provisioned);
+    render(<CloudInfrastructurePage />);
+
+    expect(await screen.findByText('local file')).toBeInTheDocument();
+    expect(
+      screen.getByText('/home/owner/.nyxGPT/cloud/terraform.tfstate')
+    ).toBeInTheDocument();
+    expect(screen.getByText(/State is a single local file on this machine/)).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Migrate to S3 + DynamoDB' })
+    ).toBeInTheDocument();
+    // Recovery only applies to remote state -- nothing to list or unlock yet.
+    expect(screen.queryByRole('button', { name: 'List versions' })).not.toBeInTheDocument();
+  });
+
+  it('migrates to the remote backend and names where state now lives', async () => {
+    mockStatus(provisioned);
+    let body: Record<string, unknown> | null = null;
+    server.use(
+      http.post('/api/v1/cloud/state/migrate', async ({ request }) => {
+        body = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({
+          backend: {
+            bucket: 'nyxgpt-tfstate-0abc',
+            key: 'aws/terraform.tfstate',
+            table: 'nyxgpt-tfstate-locks',
+          },
+        });
+      })
+    );
+
+    render(<CloudInfrastructurePage />);
+    await screen.findByText('local file');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Migrate to S3 + DynamoDB' }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/s3:\/\/nyxgpt-tfstate-0abc\/aws\/terraform.tfstate/)
+      ).toBeInTheDocument()
+    );
+    expect(body).toEqual({});
+  });
+
+  it('does not fabricate backend details when migrate returns none', async () => {
+    mockStatus(provisioned);
+    server.use(http.post('/api/v1/cloud/state/migrate', () => HttpResponse.json({})));
+
+    render(<CloudInfrastructurePage />);
+    await screen.findByText('local file');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Migrate to S3 + DynamoDB' }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/Remote state active: s3:\/\/undefined/)).toBeInTheDocument()
+    );
+  });
+
+  it('shows the remote backend and its lock table once migrated', async () => {
+    mockStatus(provisioned);
+    mockStateStatus(remoteBackend);
+    render(<CloudInfrastructurePage />);
+
+    expect(await screen.findByText('S3 + DynamoDB lock')).toBeInTheDocument();
+    expect(screen.getByText('nyxgpt-tfstate-0abc')).toBeInTheDocument();
+    expect(screen.getByText('aws/terraform.tfstate')).toBeInTheDocument();
+    expect(screen.getByText('nyxgpt-tfstate-locks')).toBeInTheDocument();
+    expect(screen.getByText('DynamoDB')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Migrate to S3 + DynamoDB' })
+    ).not.toBeInTheDocument();
+  });
+
+  it('renders empty backend fields rather than "undefined" when the payload omits them', async () => {
+    mockStatus(provisioned);
+    mockStateStatus({ remote_enabled: true });
+    render(<CloudInfrastructurePage />);
+
+    expect(await screen.findByText('S3 + DynamoDB lock')).toBeInTheDocument();
+    // Backend, Locking, Bucket, Object key, Lock table, Region -- all blank.
+    expect(screen.getAllByText('—')).toHaveLength(6);
+  });
+
+  it('lists stored versions, newest first and marked as current', async () => {
+    mockStatus(provisioned);
+    mockStateStatus(remoteBackend);
+    server.use(http.get('/api/v1/cloud/state/versions', () => HttpResponse.json(twoVersions)));
+
+    render(<CloudInfrastructurePage />);
+    await screen.findByText('S3 + DynamoDB lock');
+
+    await userEvent.click(screen.getByRole('button', { name: 'List versions' }));
+
+    expect(await screen.findByText('ver-newest')).toBeInTheDocument();
+    expect(screen.getByText(/4096 bytes · current/)).toBeInTheDocument();
+    expect(screen.getByText('ver-older')).toBeInTheDocument();
+
+    // Restoring the version that is already current is a no-op, so it is not
+    // offered; the older one is.
+    const restoreButtons = screen.getAllByRole('button', { name: 'Restore' });
+    expect(restoreButtons).toHaveLength(2);
+    expect(restoreButtons[0]).toBeDisabled();
+    expect(restoreButtons[1]).toBeEnabled();
+  });
+
+  it('says so when the bucket holds no versions yet', async () => {
+    mockStatus(provisioned);
+    mockStateStatus(remoteBackend);
+    server.use(http.get('/api/v1/cloud/state/versions', () => HttpResponse.json({})));
+
+    render(<CloudInfrastructurePage />);
+    await screen.findByText('S3 + DynamoDB lock');
+
+    await userEvent.click(screen.getByRole('button', { name: 'List versions' }));
+
+    expect(await screen.findByText(/No stored versions yet/)).toBeInTheDocument();
+  });
+
+  it('reports a failed version listing instead of an empty history', async () => {
+    mockStatus(provisioned);
+    mockStateStatus(remoteBackend);
+    server.use(
+      http.get('/api/v1/cloud/state/versions', () =>
+        HttpResponse.json({ detail: 'bucket versioning is disabled' }, { status: 409 })
+      )
+    );
+
+    render(<CloudInfrastructurePage />);
+    await screen.findByText('S3 + DynamoDB lock');
+
+    await userEvent.click(screen.getByRole('button', { name: 'List versions' }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/bucket versioning is disabled/)).toBeInTheDocument()
+    );
+    // "No stored versions yet" would read as "nothing to recover" -- which is
+    // the opposite of what a failed listing means.
+    expect(screen.queryByText(/No stored versions yet/)).not.toBeInTheDocument();
+  });
+
+  it('never restores on a single click -- the confirmation is a separate button', async () => {
+    mockStatus(provisioned);
+    mockStateStatus(remoteBackend);
+    let restoreCalls = 0;
+    server.use(
+      http.get('/api/v1/cloud/state/versions', () => HttpResponse.json(twoVersions)),
+      http.post('/api/v1/cloud/state/restore', () => {
+        restoreCalls += 1;
+        return HttpResponse.json({});
+      })
+    );
+
+    render(<CloudInfrastructurePage />);
+    await screen.findByText('S3 + DynamoDB lock');
+    await userEvent.click(screen.getByRole('button', { name: 'List versions' }));
+    await screen.findByText('ver-older');
+
+    await userEvent.click(screen.getAllByRole('button', { name: 'Restore' })[1]);
+
+    // Selecting a version must not send anything: the API's `confirm` guard
+    // exists because a later apply against the wrong state destroys resources.
+    expect(restoreCalls).toBe(0);
+    expect(screen.getByRole('button', { name: 'Confirm restore' })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(restoreCalls).toBe(0);
+    expect(screen.queryByRole('button', { name: 'Confirm restore' })).not.toBeInTheDocument();
+  });
+
+  it('sends the confirmation only on the second, explicit click', async () => {
+    mockStatus(provisioned);
+    mockStateStatus(remoteBackend);
+    let body: Record<string, unknown> | null = null;
+    server.use(
+      http.get('/api/v1/cloud/state/versions', () => HttpResponse.json(twoVersions)),
+      http.post('/api/v1/cloud/state/restore', async ({ request }) => {
+        body = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({ version_id: 'ver-older' });
+      })
+    );
+
+    render(<CloudInfrastructurePage />);
+    await screen.findByText('S3 + DynamoDB lock');
+    await userEvent.click(screen.getByRole('button', { name: 'List versions' }));
+    await screen.findByText('ver-older');
+
+    await userEvent.click(screen.getAllByRole('button', { name: 'Restore' })[1]);
+    await userEvent.click(screen.getByRole('button', { name: 'Confirm restore' }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/Restored version ver-older as the current state/)).toBeInTheDocument()
+    );
+    expect(body).toEqual({ version_id: 'ver-older', confirm: true });
+    // The list is stale after a restore -- it is cleared rather than left
+    // showing which version "was" current.
+    expect(screen.queryByText('ver-older')).not.toBeInTheDocument();
+  });
+
+  it('drops an armed restore when the version list is reloaded', async () => {
+    mockStatus(provisioned);
+    mockStateStatus(remoteBackend);
+    server.use(http.get('/api/v1/cloud/state/versions', () => HttpResponse.json(twoVersions)));
+
+    render(<CloudInfrastructurePage />);
+    await screen.findByText('S3 + DynamoDB lock');
+    await userEvent.click(screen.getByRole('button', { name: 'List versions' }));
+    await screen.findByText('ver-older');
+
+    await userEvent.click(screen.getAllByRole('button', { name: 'Restore' })[1]);
+    expect(screen.getByRole('button', { name: 'Confirm restore' })).toBeInTheDocument();
+
+    // A refreshed list can put a different version in that row.
+    await userEvent.click(screen.getByRole('button', { name: 'List versions' }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Confirm restore' })).not.toBeInTheDocument()
+    );
+  });
+
+  it('keeps force-unlock disabled until a lock id is supplied', async () => {
+    mockStatus(provisioned);
+    mockStateStatus(remoteBackend);
+    render(<CloudInfrastructurePage />);
+    await screen.findByText('S3 + DynamoDB lock');
+
+    expect(screen.getByRole('button', { name: 'Force unlock' })).toBeDisabled();
+
+    await userEvent.type(screen.getByLabelText('Lock ID'), '   ');
+    expect(screen.getByRole('button', { name: 'Force unlock' })).toBeDisabled();
+
+    await userEvent.type(screen.getByLabelText('Lock ID'), 'abc-123');
+    expect(screen.getByRole('button', { name: 'Force unlock' })).toBeEnabled();
+  });
+
+  it('releases the named lock and clears the field', async () => {
+    mockStatus(provisioned);
+    mockStateStatus(remoteBackend);
+    let body: Record<string, unknown> | null = null;
+    server.use(
+      http.post('/api/v1/cloud/state/unlock', async ({ request }) => {
+        body = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({ unlocked: true });
+      })
+    );
+
+    render(<CloudInfrastructurePage />);
+    await screen.findByText('S3 + DynamoDB lock');
+
+    await userEvent.type(screen.getByLabelText('Lock ID'), '  abc-123  ');
+    await userEvent.click(screen.getByRole('button', { name: 'Force unlock' }));
+
+    await waitFor(() =>
+      expect(screen.getByText('Released lock abc-123.')).toBeInTheDocument()
+    );
+    expect(body).toEqual({ lock_id: 'abc-123' });
+    expect(screen.getByLabelText('Lock ID')).toHaveValue('');
+  });
+
+  it('keeps a state failure out of the substrate panel, and vice versa', async () => {
+    server.use(
+      http.get('/api/v1/cloud/infra', () =>
+        HttpResponse.json({ error: 'terraform not installed' }, { status: 503 })
+      )
+    );
+    mockStateStatus({ detail: 'no AWS credentials found' }, 409);
+
+    render(<CloudInfrastructurePage />);
+
+    // Both failures survive: whichever request finished last used to overwrite
+    // the other panel's error, hiding it.
+    expect(await screen.findByText(/terraform not installed/)).toBeInTheDocument();
+    expect(await screen.findByText(/no AWS credentials found/)).toBeInTheDocument();
+  });
+
+  it('falls back to the HTTP status when a failed state load carries no message', async () => {
+    mockStatus(provisioned);
+    mockStateStatus(null, 500);
+
+    render(<CloudInfrastructurePage />);
+
+    expect(await screen.findByText(/HTTP 500/)).toBeInTheDocument();
+    // The substrate panel still rendered its own data.
+    expect(screen.getByText('i-0abc123')).toBeInTheDocument();
+  });
+
+  it('surfaces a failed state action without claiming success', async () => {
+    mockStatus(provisioned);
+    server.use(
+      http.post('/api/v1/cloud/state/migrate', () =>
+        HttpResponse.json({ error: { message: 'bucket name already taken' } }, { status: 409 })
+      )
+    );
+
+    render(<CloudInfrastructurePage />);
+    await screen.findByText('local file');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Migrate to S3 + DynamoDB' }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/bucket name already taken/)).toBeInTheDocument()
+    );
+    expect(screen.queryByText(/Remote state active/)).not.toBeInTheDocument();
+  });
+
+  it('surfaces a non-Error rejection from a state action', async () => {
+    mockStatus(provisioned);
+
+    render(<CloudInfrastructurePage />);
+    await screen.findByText('local file');
+
+    const spy = vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce('migrate exploded');
+    await userEvent.click(screen.getByRole('button', { name: 'Migrate to S3 + DynamoDB' }));
+
+    await waitFor(() => expect(screen.getByText(/migrate exploded/)).toBeInTheDocument());
+    spy.mockRestore();
+  });
+
+  it('surfaces a non-Error rejection from the state status load', async () => {
+    mockStatus(provisioned);
+    const realFetch = globalThis.fetch;
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+      const url = typeof input === 'string' ? input : String(input);
+      if (url === '/api/v1/cloud/state') return Promise.reject('state fetch exploded');
+      return realFetch(input, init);
+    });
+
+    render(<CloudInfrastructurePage />);
+
+    expect(await screen.findByText(/state fetch exploded/)).toBeInTheDocument();
+    spy.mockRestore();
   });
 });

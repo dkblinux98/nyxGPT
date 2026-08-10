@@ -45,6 +45,29 @@ type ProvisionInputs = {
   owner_ip: string;
 };
 
+// Terraform remote state (P6-9, #3510). A fresh install keeps state in one
+// local file on whoever's machine ran the last apply; migrating it to S3 with
+// a DynamoDB lock is what makes a second operator (or CI) safe to run.
+type CloudStateStatus = {
+  backend: string;
+  remote_enabled: boolean;
+  bootstrapped: boolean;
+  bucket: string;
+  table: string;
+  key: string;
+  region: string;
+  locking: string;
+  local_state_file: string;
+  local_state_exists: boolean;
+};
+
+type StateVersion = {
+  version_id: string;
+  last_modified: string;
+  size: number;
+  latest: boolean;
+};
+
 const boxStyle: React.CSSProperties = {
   padding: '1.5rem',
   backgroundColor: 'var(--background-secondary)',
@@ -112,6 +135,7 @@ export default function CloudInfrastructurePage() {
   const [busy, setBusy] = useState<'' | 'plan' | 'apply' | 'destroy'>('');
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [stateMessage, setStateMessage] = useState<string | null>(null);
   const [confirmText, setConfirmText] = useState('');
   const [inputs, setInputs] = useState<ProvisionInputs>({
     region: '',
@@ -120,6 +144,17 @@ export default function CloudInfrastructurePage() {
     instance_type: '',
     owner_ip: '',
   });
+
+  const [stateStatus, setStateStatus] = useState<CloudStateStatus | null>(null);
+  const [stateBusy, setStateBusy] = useState<'' | 'migrate' | 'unlock' | 'versions' | 'restore'>(
+    ''
+  );
+  const [stateError, setStateError] = useState<string | null>(null);
+  const [versions, setVersions] = useState<StateVersion[] | null>(null);
+  const [lockId, setLockId] = useState('');
+  // Restore is armed per version rather than fired on the click that selects
+  // it -- see the confirmation note where it is rendered.
+  const [pendingRestore, setPendingRestore] = useState<string | null>(null);
 
   const loadStatus = useCallback(async () => {
     setError(null);
@@ -135,9 +170,24 @@ export default function CloudInfrastructurePage() {
     }
   }, []);
 
+  // Kept separate from loadStatus, down to its own error slot: the two are
+  // independent subsystems, and a shared `error` would let whichever request
+  // finished last overwrite the other panel's failure with its own.
+  const loadStateStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/v1/cloud/state', { cache: 'no-store' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(errorText(data, `HTTP ${res.status}`));
+      setStateStatus(data as CloudStateStatus);
+    } catch (e: unknown) {
+      setStateError(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
   useEffect(() => {
     void loadStatus();
-  }, [loadStatus]);
+    void loadStateStatus();
+  }, [loadStatus, loadStateStatus]);
 
   const runAction = useCallback(
     async (action: 'plan' | 'apply' | 'destroy') => {
@@ -185,6 +235,68 @@ export default function CloudInfrastructurePage() {
     [inputs, loadStatus]
   );
 
+  const runStateAction = useCallback(
+    async (action: 'migrate' | 'unlock' | 'versions' | 'restore', versionId?: string) => {
+      setStateBusy(action);
+      setStateError(null);
+      setStateMessage(null);
+      try {
+        if (action === 'versions') {
+          const res = await fetch('/api/v1/cloud/state/versions', { cache: 'no-store' });
+          const data = await res.json();
+          if (!res.ok) throw new Error(errorText(data, `HTTP ${res.status}`));
+          setVersions((data.versions ?? []) as StateVersion[]);
+          // A refreshed list is a different list -- never carry an armed
+          // selection over onto whatever now sits in that row.
+          setPendingRestore(null);
+          return;
+        }
+
+        const body: Record<string, unknown> = {};
+        if (action === 'unlock') body.lock_id = lockId.trim();
+        if (action === 'restore') {
+          body.version_id = versionId;
+          // The API refuses a restore without this, deliberately. It is only
+          // ever set here, on the second click of the arm-then-confirm pair --
+          // sending it from the button that merely picks a version would turn
+          // the backend's guard into a formality.
+          body.confirm = true;
+        }
+
+        const res = await fetch(`/api/v1/cloud/state/${action}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          cache: 'no-store',
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(errorText(data, `HTTP ${res.status}`));
+
+        if (action === 'migrate') {
+          const backend = (data.backend ?? {}) as Record<string, string>;
+          setStateMessage(
+            `Remote state active: s3://${backend.bucket}/${backend.key}, locked by DynamoDB table ${backend.table}. Concurrent applies now block instead of racing.`
+          );
+        } else if (action === 'unlock') {
+          setStateMessage(`Released lock ${lockId.trim()}.`);
+          setLockId('');
+        } else {
+          setStateMessage(
+            `Restored version ${versionId} as the current state. Run a Plan to see what Terraform now believes differs from AWS.`
+          );
+          setVersions(null);
+          setPendingRestore(null);
+        }
+        await loadStateStatus();
+      } catch (e: unknown) {
+        setStateError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setStateBusy('');
+      }
+    },
+    [lockId, loadStateStatus]
+  );
+
   if (loading) {
     return (
       <div style={{ padding: '2rem', textAlign: 'center' }}>
@@ -195,6 +307,8 @@ export default function CloudInfrastructurePage() {
   }
 
   const anyBusy = busy !== '';
+  const stateAnyBusy = stateBusy !== '';
+  const remoteState = stateStatus?.remote_enabled === true;
 
   return (
     <div style={{ padding: '2rem', maxWidth: '900px', margin: '0 auto' }}>
@@ -391,6 +505,238 @@ export default function CloudInfrastructurePage() {
               {busy === 'apply' ? 'Applying…' : 'Apply'}
             </button>
           </div>
+        </div>
+
+        <div style={boxStyle}>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              marginBottom: '0.75rem',
+            }}
+          >
+            <h2 style={{ fontSize: '1.1rem', fontWeight: 'bold' }}>Terraform state</h2>
+            <span
+              style={{
+                fontSize: '0.75rem',
+                fontWeight: 600,
+                padding: '2px 8px',
+                borderRadius: 999,
+                background: remoteState ? '#22c55e' : 'var(--background)',
+                color: remoteState ? 'white' : 'var(--foreground-muted)',
+                border: remoteState ? 'none' : '1px solid var(--border-color)',
+              }}
+            >
+              {remoteState ? 'S3 + DynamoDB lock' : 'local file'}
+            </span>
+          </div>
+
+          {stateError && (
+            <div style={{ marginBottom: '1rem' }}>
+              <ErrorMessage message={stateError} onRetry={loadStateStatus} />
+            </div>
+          )}
+
+          {stateMessage && (
+            <div
+              style={{
+                marginBottom: '1rem',
+                padding: '0.75rem 1rem',
+                borderRadius: '0.375rem',
+                background: 'var(--background)',
+                border: '1px solid #22c55e',
+                fontSize: '0.875rem',
+              }}
+            >
+              {stateMessage}
+            </div>
+          )}
+
+          <p
+            style={{
+              fontSize: '0.8rem',
+              color: 'var(--foreground-muted)',
+              marginBottom: '1rem',
+            }}
+          >
+            {remoteState
+              ? 'State is shared and locked: concurrent applies block instead of racing, and every write keeps its predecessor in the bucket for recovery.'
+              : 'State is a single local file on this machine. A second operator or a CI runner applying the same substrate cannot see it, and two concurrent applies can corrupt it. Migrating creates a versioned, encrypted bucket and a DynamoDB lock table, then copies the existing state up.'}
+          </p>
+
+          <ul
+            style={{
+              listStyle: 'none',
+              padding: 0,
+              margin: '0 0 1rem',
+              fontSize: '0.875rem',
+            }}
+          >
+            <Row label="Backend" value={stateStatus?.backend ?? ''} />
+            <Row label="Locking" value={stateStatus?.locking ?? ''} />
+            {remoteState ? (
+              <>
+                <Row label="Bucket" value={stateStatus?.bucket ?? ''} />
+                <Row label="Object key" value={stateStatus?.key ?? ''} />
+                <Row label="Lock table" value={stateStatus?.table ?? ''} />
+                <Row label="Region" value={stateStatus?.region ?? ''} />
+              </>
+            ) : (
+              <Row label="State file" value={stateStatus?.local_state_file ?? ''} />
+            )}
+          </ul>
+
+          {!remoteState && (
+            <button
+              onClick={() => void runStateAction('migrate')}
+              disabled={stateAnyBusy}
+              style={buttonStyle(stateAnyBusy)}
+              title="Create the state bucket and lock table, then move existing state into them"
+            >
+              {stateBusy === 'migrate' ? 'Migrating…' : 'Migrate to S3 + DynamoDB'}
+            </button>
+          )}
+
+          {remoteState && (
+            <div style={{ display: 'grid', gap: '1rem' }}>
+              <div>
+                <h3 style={{ fontSize: '0.95rem', fontWeight: 600, marginBottom: '0.35rem' }}>
+                  Recover a previous state
+                </h3>
+                <p
+                  style={{
+                    fontSize: '0.8rem',
+                    color: 'var(--foreground-muted)',
+                    marginBottom: '0.5rem',
+                  }}
+                >
+                  Each version is the complete state as it stood after one apply. Restoring
+                  replaces what Terraform believes exists in AWS — the version it replaces stays
+                  in the bucket, so the restore itself is reversible. Because a later apply
+                  against the wrong version can destroy live resources, Restore only selects a
+                  version; a second, explicit confirmation sends it.
+                </p>
+                <button
+                  onClick={() => void runStateAction('versions')}
+                  disabled={stateAnyBusy}
+                  style={buttonStyle(stateAnyBusy)}
+                >
+                  {stateBusy === 'versions' ? 'Loading…' : 'List versions'}
+                </button>
+
+                {versions !== null && versions.length === 0 && (
+                  <p style={{ fontSize: '0.8rem', marginTop: '0.75rem' }}>
+                    No stored versions yet — the first apply against this backend creates one.
+                  </p>
+                )}
+
+                {versions !== null && versions.length > 0 && (
+                  <ul
+                    style={{
+                      listStyle: 'none',
+                      padding: 0,
+                      margin: '0.75rem 0 0',
+                      fontSize: '0.8rem',
+                      display: 'grid',
+                      gap: '0.35rem',
+                    }}
+                  >
+                    {versions.map((version) => (
+                      <li
+                        key={version.version_id}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: '0.75rem',
+                        }}
+                      >
+                        <span>
+                          <code>{version.version_id}</code>{' '}
+                          <span style={{ color: 'var(--foreground-muted)' }}>
+                            {version.last_modified} · {version.size} bytes
+                            {version.latest ? ' · current' : ''}
+                          </span>
+                        </span>
+                        {pendingRestore === version.version_id ? (
+                          <span style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                            <button
+                              onClick={() => void runStateAction('restore', version.version_id)}
+                              disabled={stateAnyBusy}
+                              style={buttonStyle(stateAnyBusy, true)}
+                              title="Replace the current state with this version"
+                            >
+                              {stateBusy === 'restore' ? 'Restoring…' : 'Confirm restore'}
+                            </button>
+                            <button
+                              onClick={() => setPendingRestore(null)}
+                              disabled={stateAnyBusy}
+                              style={buttonStyle(stateAnyBusy)}
+                            >
+                              Cancel
+                            </button>
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => setPendingRestore(version.version_id)}
+                            disabled={stateAnyBusy || version.latest}
+                            style={buttonStyle(stateAnyBusy || version.latest)}
+                            title={
+                              version.latest
+                                ? 'Already the current state'
+                                : 'Select this version, then confirm to make it the current state'
+                            }
+                          >
+                            Restore
+                          </button>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              <div>
+                <h3 style={{ fontSize: '0.95rem', fontWeight: 600, marginBottom: '0.35rem' }}>
+                  Release a stuck lock
+                </h3>
+                <p
+                  style={{
+                    fontSize: '0.8rem',
+                    color: 'var(--foreground-muted)',
+                    marginBottom: '0.5rem',
+                  }}
+                >
+                  A run killed mid-apply never releases its lock, and every later run then fails
+                  with its id. Paste that id here. Only do this when no apply is actually
+                  running — breaking a live lock is how two runs end up writing the same state.
+                </p>
+                <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+                  <input
+                    aria-label="Lock ID"
+                    style={{ ...fieldStyle, maxWidth: 320 }}
+                    placeholder="Lock ID from the Terraform error"
+                    value={lockId}
+                    onChange={(e) => setLockId(e.target.value)}
+                  />
+                  <button
+                    onClick={() => void runStateAction('unlock')}
+                    disabled={stateAnyBusy || !lockId.trim()}
+                    style={buttonStyle(stateAnyBusy || !lockId.trim())}
+                  >
+                    {stateBusy === 'unlock' ? 'Unlocking…' : 'Force unlock'}
+                  </button>
+                </div>
+              </div>
+
+              <p style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)' }}>
+                To back state up, or to move it back to a local file when the backend itself is
+                unreachable, use <code>nyxgpt cloud state backup</code> and{' '}
+                <code>nyxgpt cloud state local</code>.
+              </p>
+            </div>
+          )}
         </div>
 
         <div style={{ ...boxStyle, borderColor: '#ef4444' }}>

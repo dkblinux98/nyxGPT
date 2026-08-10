@@ -14,8 +14,9 @@ consistent with the project's local-first
 - No cloud provider modules (no AWS/GCP/Azure providers) in *this* module.
 - No cloud networking or security groups — the stack runs on a single Docker
   bridge network on your workstation, same as Compose.
-- No remote state backend — state is a local file (see
-  [State Management](#state-management) below).
+- No remote state backend in *this* module — state is a local file (see
+  [State Management](#state-management) below). The AWS module has one; see
+  the note below.
 
 > **The AWS substrate is a separate root module.** `terraform/aws/` (P6-8,
 > #3509) provisions a VPC, public subnet, an SSH-only owner-IP-scoped
@@ -23,7 +24,12 @@ consistent with the project's local-first
 > by `nyxgpt cloud infra`, never by the `nyxgpt ops --terraform` commands on
 > this page, and is documented in
 > [Cloud (AWS)](cloud.md#nyxgpt-cloud-infra--provisioning-the-aws-substrate-p6-8-3509).
-> Everything below is about the local Docker stack.
+> That module *does* have a remote state option — an S3 backend with
+> DynamoDB locking, set up by `nyxgpt cloud state migrate` (P6-9, #3510) and
+> documented under
+> [Remote state](cloud.md#remote-state-s3--dynamodb-locking-p6-9-3510).
+> Everything below is about the local Docker stack, which stays on local
+> state.
 
 > **Scope note:** issue #2690 originally asked for cloud provider modules,
 > cloud networking/security groups, and remote state management. The owner

@@ -66,9 +66,11 @@ TERRAFORM_DIR = CLOUD_DIR / "terraform"
 # potentially, an SSH public key.
 TFVARS_FILE = CLOUD_DIR / "terraform.tfvars"
 
-# State lives outside the (re-synced, disposable) configuration directory so
-# an upgrade that re-materializes terraform/aws can never clobber it. P6-9
-# (#3510) migrates this to an S3 backend with DynamoDB locking.
+# Local state lives outside the (re-synced, disposable) configuration
+# directory so an upgrade that re-materializes terraform/aws can never clobber
+# it. This is the default and remains the fallback; `nyxgpt cloud state
+# migrate` (P6-9, #3510) moves state to an S3 backend with DynamoDB locking,
+# after which this file is only the pre-migration copy.
 TFSTATE_FILE = CLOUD_DIR / "terraform.tfstate"
 
 # Persisted answers (region, key pair, instance type, ...) so a later
@@ -184,7 +186,12 @@ def sync_terraform_config() -> Path:
     Idempotent: overwrites the `.tf` sources (so an upgraded nyxGPT always
     provisions with its own configuration) while leaving the working
     directory's `.terraform/` plugin cache in place, and leaving state alone
-    entirely -- state lives one directory up, outside this tree.
+    entirely -- local state lives one directory up, outside this tree.
+
+    The copy includes the packaged `backend.tf`, which selects *local* state,
+    so the last step re-applies whichever backend is actually configured
+    (P6-9, #3510). Without it, every sync would silently demote a migrated
+    installation back to local state on its next init.
     """
     source = packaged_terraform_dir()
     if not source.is_dir():
@@ -204,6 +211,13 @@ def sync_terraform_config() -> Path:
         raise CloudCommandError(
             f"Failed to materialize the Terraform configuration in {TERRAFORM_DIR}: {exc}"
         ) from exc
+
+    # Imported here rather than at module scope: `nyxgpt.cloud_state` imports
+    # this module for the shared paths and the Terraform runner, so a
+    # top-level import either way would be circular.
+    from nyxgpt import cloud_state
+
+    cloud_state.apply_configured_backend()
     return TERRAFORM_DIR
 
 
@@ -429,6 +443,23 @@ def _run_terraform(
     return completed
 
 
+def run_terraform(
+    arguments: list[str],
+    *,
+    capture: bool = False,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Public entry point to `_run_terraform` for `nyxgpt.cloud_state`.
+
+    That module drives Terraform's state subcommands (`state pull`, `state
+    push`, `force-unlock`) against this same synced configuration and must go
+    through the same runner, so failures carry Terraform's own diagnostic. A
+    delegating function rather than an alias: an alias would bind at import
+    and quietly bypass anything that replaces `_run_terraform` later.
+    """
+    return _run_terraform(arguments, capture=capture, extra_env=extra_env)
+
+
 def _synced_config_fingerprint() -> str:
     """SHA-256 over the synced Terraform sources, used to detect config changes."""
     digest = hashlib.sha256()
@@ -439,37 +470,73 @@ def _synced_config_fingerprint() -> str:
     return digest.hexdigest()
 
 
-def terraform_init() -> None:
-    """Initialize the synced configuration against the ops-managed state file.
+def _active_backend_mode() -> str:
+    """`"s3"` when remote state is configured and migrated, else `"local"`."""
+    from nyxgpt import cloud_state
+
+    return "s3" if cloud_state.remote_state_enabled() else "local"
+
+
+def terraform_init(*, migrate_state: bool = False) -> None:
+    """Initialize the synced configuration against its currently configured backend.
 
     Providers are only re-resolved (`-upgrade`) when the synced configuration
     actually changed -- an nyxGPT upgrade, or a first run. Passing it on every
     init made each plan/apply re-check the registry for nothing.
+
+    Three backend cases, and Terraform needs a different flag for each:
+
+    * **Unchanged.** A plain init. Local state additionally needs
+      `-backend-config=path=`, since the packaged `backend.tf` cannot spell
+      `~/.nyxGPT` (no `~` expansion inside a backend block); the S3 backend
+      is fully specified by the generated file and takes no extra config.
+    * **Changing on purpose** (`migrate_state=True`, i.e. `nyxgpt cloud state
+      migrate`/`local`): `-migrate-state -force-copy` copies the existing
+      state across. `-force-copy` matters because the bare flag stops to ask
+      for confirmation, and a wrapped command has no one to ask.
+    * **Changed behind our back**: the recorded mode disagrees with the
+      configured one outside a migration, which is what a migration that
+      failed part-way leaves. `-reconfigure` adopts the current backend
+      without copying -- the right move here, because the state that matters
+      is whatever the backend we are dropping back to already holds.
     """
     fingerprint = _synced_config_fingerprint()
-    # Lives under `.terraform/`, which init creates and `sync_terraform_config`
-    # deliberately leaves alone, so it tracks the plugin cache's own lifetime:
-    # delete that directory and the next init upgrades again, as it must.
+    mode = _active_backend_mode()
+    # Both stamps live under `.terraform/`, which init creates and
+    # `sync_terraform_config` deliberately leaves alone, so they track the
+    # plugin cache's own lifetime: delete that directory and the next init
+    # upgrades and reconfigures again, as it must.
     stamp = TERRAFORM_DIR / ".terraform" / "nyxgpt-config.sha256"
+    mode_stamp = TERRAFORM_DIR / ".terraform" / "nyxgpt-backend.mode"
     try:
         upgrade = stamp.read_text(encoding="utf-8").strip() != fingerprint
     except OSError:
         upgrade = True
+    try:
+        previous_mode = mode_stamp.read_text(encoding="utf-8").strip()
+    except OSError:
+        previous_mode = ""
 
     arguments = ["init", "-input=false"]
     if upgrade:
         arguments.append("-upgrade")
-    arguments.append(f"-backend-config=path={TFSTATE_FILE}")
+    if migrate_state:
+        arguments.extend(["-migrate-state", "-force-copy"])
+    elif previous_mode and previous_mode != mode:
+        arguments.append("-reconfigure")
+    if mode == "local":
+        arguments.append(f"-backend-config=path={TFSTATE_FILE}")
     _run_terraform(arguments, capture=True)
 
-    # Recorded only after a successful init, so a failed one upgrades again.
-    try:
-        stamp.parent.mkdir(parents=True, exist_ok=True)
-        stamp.write_text(fingerprint + "\n", encoding="utf-8")
-    except OSError:
-        # The stamp is a cache, not state -- losing it costs one extra
-        # `-upgrade`, never correctness.
-        pass
+    # Recorded only after a successful init, so a failed one repeats the work.
+    for path, value in ((stamp, fingerprint), (mode_stamp, mode)):
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(value + "\n", encoding="utf-8")
+        except OSError:
+            # These are caches, not state -- losing one costs an extra
+            # `-upgrade`/`-reconfigure`, never correctness.
+            pass
 
 
 def terraform_outputs() -> dict[str, Any]:

@@ -18,15 +18,10 @@ terraform {
     }
   }
 
-  # Local state, same as the local Docker stack (../versions.tf). `nyxgpt
-  # cloud infra` points this at a fixed, ops-managed location outside the
-  # config directory (`~/.nyxGPT/cloud/terraform.tfstate`) via
-  # `terraform init -backend-config=path=...`, since `~` does not expand
-  # inside a backend block. An S3 backend with DynamoDB locking replaces this
-  # in P6-9 (#3510).
-  backend "local" {
-    path = "terraform.tfstate"
-  }
+  # The backend deliberately lives in its own file, backend.tf. `nyxgpt cloud
+  # state migrate` (P6-9, #3510) rewrites that file in the ops-managed synced
+  # copy to switch between local and S3 state; keeping it out of here means
+  # that rewrite never has to touch the provider/version pins.
 }
 
 provider "aws" {
