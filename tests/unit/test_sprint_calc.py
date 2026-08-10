@@ -286,16 +286,13 @@ class TestSprintParkNote:
             # so the note stays undispatchable even if the prose drifts.
             assert sprint_calc.AUTOPILOT_INFO_MARKER in note
 
-    def test_sprint_complete_variant_names_acceptance_testing_as_next_step(self):
-        # Owner context 2026-08-10: the sprint boundary is an acceptance
-        # gate, so the note must say acceptance testing comes next rather
-        # than reading as a neutral pause.
+    def test_note_without_a_park_state_claims_no_completion(self):
+        # #3709: a note rendered without population data must not announce
+        # any completion state -- the pre-#3709 note said "sprint complete"
+        # off a Backlog-only count, which was the defect.
         note = self._note()
-        assert "Next step: acceptance testing of this sprint" in note
-        assert "Acceptance Testing" in note
-        # ...and only for a completed sprint -- there is nothing to accept
-        # when no iteration was active in the first place.
-        assert "Next step: acceptance testing" not in self._note(sprint_title="")
+        assert "sprint complete" not in note.lower()
+        assert "parked at the sprint boundary" in note
 
     def test_release_drained_variant_when_nothing_is_waiting(self):
         note = self._note(by_sprint={"Sprint 8": 0})
@@ -317,3 +314,161 @@ class TestSprintParkNote:
         note = self._note(release_version="", by_sprint={"Sprint 9": 2})
         assert "this release" in note
         assert "- Sprint 9: 2 open Backlog issue(s)" in note
+
+
+class TestSprintParkState:
+    """#3709: the park decision counts the sprint's WHOLE open population,
+    and completion is two states -- agentic work complete (awaiting the
+    owner's acceptance) and sprint complete (everything in For Release)."""
+
+    def _state(self, open_by_status=None, closed_by_status=None):
+        return sprint_calc.sprint_park_state(
+            {
+                "open": open_by_status or {},
+                "closed": closed_by_status or {},
+                "status_backlog": "Backlog",
+                "status_for_release": "For Release",
+            }
+        )
+
+    def test_open_backlog_work_continues(self):
+        result = self._state({"Backlog": [10, 11], "In Progress": [12]})
+        assert result["state"] == sprint_calc.PARK_CONTINUE
+        assert result["backlog_open"] == 2
+
+    def test_empty_backlog_with_in_flight_work_is_not_complete(self):
+        # The reported defect: Backlog empty but In Progress / In Review
+        # work still live got a "sprint complete -- acceptance next" note.
+        result = self._state({"In Progress": [3513], "In Review": [3514]})
+        assert result["state"] == sprint_calc.PARK_WORK_IN_FLIGHT
+        assert result["open_total"] == 2
+        assert result["open_by_status"] == {"In Progress": 1, "In Review": 1}
+
+    def test_issue_with_no_status_still_counts_as_open_work(self):
+        result = self._state({"": [4242]})
+        assert result["state"] == sprint_calc.PARK_WORK_IN_FLIGHT
+        assert result["open_total"] == 1
+
+    def test_all_closed_but_not_accepted_is_awaiting_acceptance(self):
+        result = self._state(
+            closed_by_status={"Acceptance Testing": [3510, 3509], "For Release": [3508]}
+        )
+        assert result["state"] == sprint_calc.PARK_AWAITING_ACCEPTANCE
+        assert result["awaiting_acceptance"] == [3509, 3510]
+        assert result["accepted"] == [3508]
+
+    def test_sprint_complete_only_when_every_item_is_for_release(self):
+        # Owner definition (2026-08-10): "The sprint isn't done until all
+        # agentic work is complete AND in For Release status."
+        result = self._state(closed_by_status={"For Release": [3508, 3509]})
+        assert result["state"] == sprint_calc.PARK_SPRINT_COMPLETE
+        assert result["accepted"] == [3508, 3509]
+
+    def test_open_work_outranks_accepted_items(self):
+        result = self._state({"In Progress": [3513]}, {"For Release": [3508]})
+        assert result["state"] == sprint_calc.PARK_WORK_IN_FLIGHT
+
+    def test_sprint_with_no_items_at_all(self):
+        assert self._state()["state"] == sprint_calc.PARK_EMPTY
+
+    def test_custom_status_names_are_honored(self):
+        result = sprint_calc.sprint_park_state(
+            {
+                "open": {},
+                "closed": {"Shipped": [1]},
+                "status_backlog": "Backlog",
+                "status_for_release": "Shipped",
+            }
+        )
+        assert result["state"] == sprint_calc.PARK_SPRINT_COMPLETE
+
+
+class TestParkNoteStates:
+    """The rendered park note per #3709 state, including the parked-issue
+    scan lines that keep gate-stuck work visible."""
+
+    def _note(self, park_state, resume_scan=None, sprint_title="Sprint 8"):
+        return sprint_calc.build_sprint_park_note(
+            {
+                "event_phrase": "Issue #3510 merged",
+                "sprint_title": sprint_title,
+                "release_version": "v3.0.0",
+                "by_sprint": {"Sprint 8": 0},
+                "park_state": park_state,
+                "resume_scan": resume_scan or {},
+            }
+        )
+
+    def test_work_in_flight_note_denies_completion(self):
+        note = self._note(
+            {
+                "state": sprint_calc.PARK_WORK_IN_FLIGHT,
+                "open_total": 3,
+                "open_by_status": {"In Progress": 2, "In Review": 1},
+            }
+        )
+        assert "work still in flight" in note
+        assert "3 issue(s) are still open" in note
+        assert "In Progress: 2" in note and "In Review: 1" in note
+        assert "not** sprint completion" in note
+        assert "READY_FOR_NEXT_ISSUE" not in note
+
+    def test_awaiting_acceptance_note_is_not_sprint_complete(self):
+        note = self._note(
+            {
+                "state": sprint_calc.PARK_AWAITING_ACCEPTANCE,
+                "awaiting_acceptance": [3509, 3510],
+                "accepted": [],
+            }
+        )
+        assert "agentic work complete; awaiting owner acceptance" in note
+        assert '**This is not "sprint complete."**' in note
+        assert "#3509, #3510" in note
+        assert "For Release" in note
+        assert "agents never self-promote" in note
+
+    def test_sprint_complete_note_requires_for_release(self):
+        note = self._note(
+            {
+                "state": sprint_calc.PARK_SPRINT_COMPLETE,
+                "accepted": [3509, 3510],
+                "awaiting_acceptance": [],
+            }
+        )
+        assert "sprint complete" in note
+        assert "accepted by the owner" in note
+        assert "#3509, #3510" in note
+
+    def test_empty_sprint_note(self):
+        note = self._note({"state": sprint_calc.PARK_EMPTY})
+        assert "no items at all" in note
+
+    def test_gate_scan_lines_are_included(self):
+        note = self._note(
+            {
+                "state": sprint_calc.PARK_WORK_IN_FLIGHT,
+                "open_total": 2,
+                "open_by_status": {"In Progress": 2},
+            },
+            resume_scan={
+                "resumable": [],
+                "waiting": [{"issue": 3516, "open_blockers": [3514]}],
+                "exhausted": [],
+                "active": [],
+                "selected": 3513,
+            },
+        )
+        assert "Parked-issue scan" in note
+        assert "Auto-resumed:** #3513" in note
+        assert "#3516 (waiting on #3514)" in note
+
+    def test_every_state_stays_undispatchable(self):
+        for state in (
+            sprint_calc.PARK_WORK_IN_FLIGHT,
+            sprint_calc.PARK_AWAITING_ACCEPTANCE,
+            sprint_calc.PARK_SPRINT_COMPLETE,
+            sprint_calc.PARK_EMPTY,
+        ):
+            note = self._note({"state": state, "open_by_status": {}, "open_total": 0})
+            assert "READY_FOR_NEXT_ISSUE" not in note
+            assert sprint_calc.AUTOPILOT_INFO_MARKER in note

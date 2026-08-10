@@ -384,3 +384,81 @@ class TestSprintCountsBreakdown:
         monkeypatch.setenv("STATUS_BACKLOG", "Backlog")
         out = summarize_backlog_page.summarize(_page([]))
         assert out["sprint_counts"] == {}
+
+
+class TestSprintPopulation:
+    """#3709: alongside the Backlog count the summary carries the active
+    sprint's WHOLE issue population by Status, so the autopilot's park
+    decision can see In Progress / In Review work and closed-but-unaccepted
+    items instead of only eligible Backlog candidates."""
+
+    def _summarize(self, monkeypatch, items, sprint="Sprint 8", release_issue=None):
+        monkeypatch.setenv("STATUS_FIELD", "Status")
+        monkeypatch.setenv("STATUS_BACKLOG", "Backlog")
+        monkeypatch.setenv("SPRINT_FIELD", "Sprint")
+        monkeypatch.setenv("SPRINT_SCOPED", "1")
+        monkeypatch.setenv("ACTIVE_SPRINT_TITLE", sprint)
+        if release_issue is not None:
+            monkeypatch.setenv("RELEASE_ISSUE", release_issue)
+        return summarize_backlog_page.summarize(_page(items))
+
+    def test_buckets_open_and_closed_sprint_issues_by_status(self, monkeypatch):
+        items = [
+            _item(1, status="Backlog", sprint="Sprint 8"),
+            _item(2, status="In Progress", sprint="Sprint 8"),
+            _item(3, status="In Review", sprint="Sprint 8"),
+            _item(4, state="CLOSED", status="Acceptance Testing", sprint="Sprint 8"),
+            _item(5, state="CLOSED", status="For Release", sprint="Sprint 8"),
+        ]
+        result = self._summarize(monkeypatch, items)
+        assert result["sprint_open_issues_by_status"] == {
+            "Backlog": [1],
+            "In Progress": [2],
+            "In Review": [3],
+        }
+        assert result["sprint_closed_issues_by_status"] == {
+            "Acceptance Testing": [4],
+            "For Release": [5],
+        }
+        # The Backlog-only dispatch count is unchanged.
+        assert result["backlog_open"] == 1
+
+    def test_ignores_issues_in_other_sprints(self, monkeypatch):
+        items = [
+            _item(1, status="In Progress", sprint="Sprint 8"),
+            _item(2, status="In Progress", sprint="Sprint 9"),
+            _item(3, status="In Progress"),
+        ]
+        result = self._summarize(monkeypatch, items)
+        assert result["sprint_open_issues_by_status"] == {"In Progress": [1]}
+
+    def test_issue_with_no_status_lands_in_the_empty_bucket(self, monkeypatch):
+        result = self._summarize(monkeypatch, [_item(7, sprint="Sprint 8")])
+        assert result["sprint_open_issues_by_status"] == {"": [7]}
+
+    def test_release_tracking_issue_is_never_sprint_work(self, monkeypatch):
+        items = [
+            _item(3521, status="Backlog", sprint="Sprint 8"),
+            _item(1, status="In Progress", sprint="Sprint 8"),
+        ]
+        result = self._summarize(monkeypatch, items, release_issue="3521")
+        assert result["sprint_open_issues_by_status"] == {"In Progress": [1]}
+
+    def test_population_is_empty_without_an_active_sprint_title(self, monkeypatch):
+        items = [_item(1, status="In Progress", sprint="Sprint 8")]
+        result = self._summarize(monkeypatch, items, sprint="")
+        assert result["sprint_open_issues_by_status"] == {}
+        assert result["sprint_closed_issues_by_status"] == {}
+
+    def test_population_is_not_filtered_by_the_release_wall(self, monkeypatch):
+        # Sprint membership is the only filter here: an item parked in the
+        # sprint with no/other milestone is still unfinished sprint work,
+        # and hiding it would re-create the false "complete" signal.
+        monkeypatch.setenv("RELEASE_VERSION", "v3.0.0")
+        items = [
+            _item(1, status="In Progress", sprint="Sprint 8", milestone="Phase 5 (v2.0.0)"),
+            _item(2, status="Backlog", sprint="Sprint 8", milestone="Phase 6 (v3.0.0)"),
+        ]
+        result = self._summarize(monkeypatch, items)
+        assert result["sprint_open_issues_by_status"] == {"In Progress": [1], "Backlog": [2]}
+        assert result["backlog_open"] == 1
