@@ -344,10 +344,32 @@ def checkout_root() -> Path | None:
     return root if (root / "pyproject.toml").is_file() and (root / "docs").is_dir() else None
 
 
+# Tokens that stand in front of the executable without being it. A raw
+# orchestrator call is still a raw orchestrator call when it hides behind
+# `sudo` or an inline environment assignment, and those are exactly the forms
+# someone reaches for when a wrapped command "doesn't work" -- so the checker
+# has to see through them rather than read `sudo` as the executable.
+_COMMAND_PREFIXES = frozenset({"sudo", "env", "command", "exec"})
+_ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
 def _first_word(command: str) -> str:
-    """The executable a command line invokes (`docker compose up` -> `docker`)."""
-    parts = command.split()
-    return parts[0] if parts else ""
+    """The executable a command line invokes (`docker compose up` -> `docker`).
+
+    Prefixes are skipped, so `sudo docker compose up` and
+    `DOCKER_HOST=... docker compose up` both resolve to `docker`. Flags are
+    only skipped after a prefix (`sudo -E docker` -> `docker`), because a
+    leading flag anywhere else is not a command at all.
+    """
+    seen_prefix = False
+    for part in command.split():
+        if part in _COMMAND_PREFIXES or _ENV_ASSIGNMENT.match(part):
+            seen_prefix = True
+            continue
+        if seen_prefix and part.startswith("-"):
+            continue
+        return part
+    return ""
 
 
 def _source_fetch_findings(commands: tuple[str, ...]) -> list[str]:

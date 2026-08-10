@@ -108,6 +108,31 @@ def test_wrapped_check_rejects_raw_orchestrators(command):
     assert command in check["detail"]
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "sudo docker compose up -d",
+        "sudo -E kubectl apply -k k8s/",
+        "DOCKER_HOST=ssh://host docker compose up -d",
+        "env TF_IN_AUTOMATION=1 terraform apply",
+    ],
+)
+def test_wrapped_check_sees_through_sudo_and_env_prefixes(command):
+    """`sudo docker …` is still a raw `docker` the operator shouldn't type."""
+    check = _check(_target(operate=(command,)), "wrapped")
+
+    assert not check["passed"]
+    assert command in check["detail"]
+
+
+def test_wrapped_check_still_accepts_a_prefixed_wrapper_command():
+    assert _check(_target(operate=("sudo nyxgpt ops install",)), "wrapped")["passed"]
+
+
+def test_first_word_of_an_empty_command_is_empty():
+    assert portability._first_word("   ") == ""
+
+
 def test_wrapped_check_rejects_unwrapped_teardown():
     check = _check(_target(teardown="launchctl unload nyxgpt-api"), "wrapped")
 

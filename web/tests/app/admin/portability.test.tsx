@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { server } from '../../mocks/server';
 import PortabilityPage from '../../../src/app/admin/portability/page';
@@ -93,6 +93,31 @@ const allGreen = {
   targets: [mockReport.targets[0]],
   summary: { ...mockReport.summary, total: 1, acceptance_ready: 1, open_gaps: 0 },
   acceptance_ready: true,
+};
+
+// A row whose invariants actually failed. Rendering a red FAIL and counting
+// the failure in the summary is a large part of what this page is for, and no
+// happy-path mock above exercises either. `operate: []` covers the same row's
+// other realistic edge: a target that has no operate step yet renders no
+// empty "Operate" heading.
+const failingReport = {
+  ...mockReport,
+  targets: [
+    {
+      ...mockReport.targets[1],
+      operate: [],
+      checks: [
+        {
+          check: 'repo_less',
+          passed: false,
+          skipped: false,
+          detail: "'git clone …' fetches source instead of installing a published artifact",
+        },
+      ],
+      invariants_passed: false,
+    },
+  ],
+  summary: { ...mockReport.summary, total: 1, acceptance_ready: 0, invariants_failed: 1 },
 };
 
 function serveReport(payload: unknown) {
@@ -202,6 +227,97 @@ describe('PortabilityPage', () => {
     await waitFor(() => {
       expect(screen.getByText(/backend unreachable/)).toBeInTheDocument();
     });
+  });
+
+  it('renders a failed invariant as FAIL and counts it in the summary', async () => {
+    serveReport(failingReport);
+    render(<PortabilityPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('FAIL')).toBeInTheDocument();
+    });
+    expect(screen.getByText(/1 invariant failure\(s\)/)).toBeInTheDocument();
+    expect(screen.getByText(/fetches source instead of installing/)).toBeInTheDocument();
+  });
+
+  it('omits the Operate heading for a target with no operate commands', async () => {
+    serveReport(failingReport);
+    render(<PortabilityPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Tear down')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('Operate')).not.toBeInTheDocument();
+  });
+
+  it('falls back to the backend detail when the error body has no error field', async () => {
+    server.use(
+      http.get('/api/v1/ops/portability', () =>
+        HttpResponse.json({ detail: 'matrix module failed to import' }, { status: 500 })
+      )
+    );
+    render(<PortabilityPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/matrix module failed to import/)).toBeInTheDocument();
+    });
+  });
+
+  it('falls back to the bare status when the error body explains nothing', async () => {
+    server.use(
+      http.get('/api/v1/ops/portability', () => HttpResponse.json({}, { status: 503 }))
+    );
+    render(<PortabilityPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/HTTP 503/)).toBeInTheDocument();
+    });
+  });
+
+  it('surfaces a rejection that is not an Error', async () => {
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn().mockRejectedValue('connection reset') as unknown as typeof fetch;
+    try {
+      render(<PortabilityPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText(/connection reset/)).toBeInTheDocument();
+      });
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it('disables the refresh control while the matrix is being re-read', async () => {
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    server.use(
+      http.get('/api/v1/ops/portability', async () => {
+        calls += 1;
+        // Only the refresh is gated; the initial load resolves immediately so
+        // the button exists to click.
+        if (calls > 1) {
+          await gate;
+        }
+        return HttpResponse.json(mockReport);
+      })
+    );
+    render(<PortabilityPage />);
+
+    const button = await screen.findByRole('button', { name: 'Refresh' });
+    fireEvent.click(button);
+
+    const refreshing = await screen.findByRole('button', { name: 'Refreshing…' });
+    expect(refreshing).toBeDisabled();
+
+    release();
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled();
+    });
+    expect(calls).toBe(2);
   });
 
   it('links back to the admin dashboard', async () => {

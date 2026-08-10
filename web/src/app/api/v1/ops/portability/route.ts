@@ -13,7 +13,7 @@ import { withRequestLog } from "@/lib/withRequestLog";
 
 export const GET = withRequestLog(async function GET() {
   try {
-    const res = await apiFetch(`/api/v1/ops/portability`, {
+    const res = await apiFetch("/api/v1/ops/portability", {
       method: "GET",
       headers: { "Content-Type": "application/json" },
       cache: "no-store",
