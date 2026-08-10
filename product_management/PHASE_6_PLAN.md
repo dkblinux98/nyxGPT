@@ -226,6 +226,18 @@ the core repo-less packaging work)*
   settles whether cloud gets controls or status-plus-CLI-pointers; whatever is decided is
   fully implemented and tested.
 
+- **Owner decision, 2026-08-09 (settles the open question above): status-plus-CLI-pointers.**
+  The `/admin` cloud page shows deploy state, health and history read-only and points at
+  `nyxgpt cloud deploy` / `nyxgpt cloud destroy` for lifecycle actions — no deploy,
+  teardown or rollback controls in the dashboard. Rationale: cloud lifecycle actions are
+  rare, consequential operations for which a deliberate CLI invocation is the safer
+  surface, consistent with the #3410 judgment for the local page. This is the standing
+  exception to CLAUDE.md's "ops features must be operable from the dashboard" rule for the
+  cloud lifecycle specifically, and it is what P6-16 means by "operable per the P6-15
+  decision". In implementation this *removed* the Apply/Deploy/Destroy controls P6-8/P6-11
+  had shipped on `/admin/cloud-infrastructure`; Plan and the access tunnel stayed, being
+  neither consequential nor irreversible.
+
 ### P6-16 · feat: Phase 6 capstone - clean machine to monitored AWS deploy in one command
 **Label:** Feature · **Module:** cli · **Effort:** XL · **Sequencing: selected LAST**
 

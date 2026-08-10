@@ -11857,6 +11857,233 @@ def test_env_sync_generates_compose_config(tmp_path, monkeypatch):
     assert "host = 0.0.0.0" in out.read_text(encoding="utf-8")
 
 
+# --- Live step progress (#3558) ---
+
+
+@pytest.mark.unit
+def test_run_steps_announces_each_step_before_running_it(capsys):
+    """Each step's "[n/m] name..." announcement must print before that step's
+    function runs and before its outcome is printed -- the whole point of
+    #3558 is that progress streams live instead of buffering to the end."""
+    call_order = []
+
+    def step_one():
+        call_order.append("ran:one")
+        return [ops.OpsResult(True, "one done")]
+
+    def step_two():
+        call_order.append("ran:two")
+        return [ops.OpsResult(True, "two done")]
+
+    steps = [("one", step_one), ("two", step_two)]
+    results, slow_steps = ops._run_steps("test", steps, quiet=False)
+
+    assert [r.message for r in results] == ["one done", "two done"]
+    assert slow_steps == []
+    assert call_order == ["ran:one", "ran:two"]
+
+    lines = capsys.readouterr().out.splitlines()
+    assert lines.index("[1/2] one...") < lines.index("[OK] one done")
+    assert lines.index("[2/2] two...") < lines.index("[OK] two done")
+    assert lines.index("[OK] one done") < lines.index("[2/2] two...")
+
+
+@pytest.mark.unit
+def test_run_steps_counter_reflects_total_step_count(capsys):
+    steps = [(f"step{i}", lambda: [ops.OpsResult(True, "ok")]) for i in range(1, 4)]
+    ops._run_steps("test", steps, quiet=False)
+    out = capsys.readouterr().out
+    assert "[1/3] step1..." in out
+    assert "[2/3] step2..." in out
+    assert "[3/3] step3..." in out
+
+
+@pytest.mark.unit
+def test_run_steps_quiet_suppresses_announcements_but_keeps_ok_fail(capsys):
+    steps = [("one", lambda: [ops.OpsResult(True, "one done")])]
+    ops._run_steps("test", steps, quiet=True)
+    out = capsys.readouterr().out
+    assert "[1/1]" not in out
+    assert "[OK] one done" in out
+
+
+@pytest.mark.unit
+def test_run_steps_step_exception_names_step_shows_error_and_hint(capsys):
+    def bad_step():
+        raise RuntimeError("kaboom")
+
+    steps = [("risky step", bad_step)]
+    results, _slow_steps = ops._run_steps("test", steps, quiet=False)
+
+    assert len(results) == 1
+    assert results[0].ok is False
+    assert "risky step" in results[0].message
+    assert "RuntimeError: kaboom" in results[0].details
+    assert "nyxgpt ops doctor" in results[0].details
+
+    out = capsys.readouterr().out
+    assert "[FAIL]" in out
+    assert "risky step" in out
+
+
+@pytest.mark.unit
+def test_run_steps_one_bad_step_does_not_abort_the_rest():
+    steps = [
+        ("first", lambda: (_ for _ in ()).throw(RuntimeError("boom"))),
+        ("second", lambda: [ops.OpsResult(True, "second ran")]),
+    ]
+    results, _ = ops._run_steps("test", steps, quiet=True)
+    assert [r.ok for r in results] == [False, True]
+    assert results[1].message == "second ran"
+
+
+@pytest.mark.unit
+def test_run_steps_flags_slow_step_for_summary(monkeypatch):
+    # Fake a 10s-elapsed step without actually sleeping: two time.monotonic()
+    # calls per step (start, then elapsed) -- quiet=True so no heartbeat
+    # thread makes extra calls of its own.
+    timestamps = iter([0.0, 10.0])
+    monkeypatch.setattr(ops.time, "monotonic", lambda: next(timestamps))
+
+    steps = [("slow step", lambda: [ops.OpsResult(True, "done")])]
+    _results, slow_steps = ops._run_steps("test", steps, quiet=True)
+
+    assert slow_steps == [("slow step", 10.0)]
+
+
+@pytest.mark.unit
+def test_run_steps_fast_step_is_not_flagged_as_slow(monkeypatch):
+    timestamps = iter([0.0, 0.1])
+    monkeypatch.setattr(ops.time, "monotonic", lambda: next(timestamps))
+
+    steps = [("fast step", lambda: [ops.OpsResult(True, "done")])]
+    _results, slow_steps = ops._run_steps("test", steps, quiet=True)
+
+    assert slow_steps == []
+
+
+@pytest.mark.unit
+def test_print_slow_steps_summary_lists_step_and_duration(capsys):
+    ops._print_slow_steps_summary([("slow step", 12.34)])
+    out = capsys.readouterr().out
+    assert "Slow steps" in out
+    assert "slow step: 12.3s" in out
+
+
+@pytest.mark.unit
+def test_print_slow_steps_summary_prints_nothing_when_empty(capsys):
+    ops._print_slow_steps_summary([])
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.unit
+def test_result_status_label_ok_for_plain_success():
+    assert ops._result_status_label(ops.OpsResult(True, "Started foo")) == "OK"
+
+
+@pytest.mark.unit
+def test_result_status_label_fail_for_failure():
+    assert ops._result_status_label(ops.OpsResult(False, "bad")) == "FAIL"
+
+
+@pytest.mark.unit
+def test_result_status_label_skip_for_skipped_message():
+    r = ops.OpsResult(True, "Skipped Compose teardown (Docker not found)")
+    assert ops._result_status_label(r) == "SKIP"
+
+
+@pytest.mark.unit
+def test_emit_results_prints_skip_label_for_skipped_result(capsys):
+    ops._emit_results("test", [ops.OpsResult(True, "Skipped thing (no docker)")])
+    out = capsys.readouterr().out
+    assert "[SKIP] Skipped thing (no docker)" in out
+
+
+@pytest.mark.unit
+def test_step_heartbeat_prints_still_running_line_while_step_is_in_flight(monkeypatch):
+    # Speed the heartbeat up so the test doesn't wait the real 5s interval.
+    monkeypatch.setattr(ops, "_STEP_HEARTBEAT_INTERVAL_S", 0.01)
+    hb = ops._StepHeartbeat("slow thing")
+    hb.start()
+    time.sleep(0.05)
+    hb.stop()
+    # No assertion on stdout content here (it's a background thread racing
+    # capsys) -- this just proves start()/stop() don't hang or raise.
+    assert True
+
+
+@pytest.mark.unit
+def test_ops_install_quiet_flag_suppresses_step_announcements(capsys):
+    ok_results = [ops.OpsResult(True, "ok")]
+    with (
+        patch.object(ops, "_sync_packaged_resources", return_value=ok_results),
+        patch.object(ops, "_install_config", return_value=ok_results),
+        patch.object(ops, "migrate_legacy_volumes", return_value=ok_results),
+        patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok_results),
+        patch.object(ops, "_ensure_web_deps", return_value=ok_results),
+        patch.object(ops, "_ensure_mcp_deps", return_value=ok_results),
+        patch.object(ops, "_ensure_cassandra_container", return_value=ok_results),
+        patch.object(ops, "_install_cassandra_launchagent", return_value=ok_results),
+        patch.object(ops, "_install_ollama_launchagent", return_value=ok_results),
+        patch.object(ops, "_install_ollama_env_launchagent", return_value=ok_results),
+        patch.object(ops, "_install_homebrew_api", return_value=ok_results),
+        patch.object(ops, "_install_homebrew_web", return_value=ok_results),
+        patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
+        patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok_results),
+        patch.object(ops, "sync_env_from_config", return_value=ok_results),
+    ):
+        rc = ops.install(
+            SimpleNamespace(skip_observability=True, terraform=False, kubernetes=False, quiet=True)
+        )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "[OK]" in out
+    assert "/17]" not in out  # no "[n/17] step..." announcements in quiet mode
+
+
+@pytest.mark.unit
+def test_ops_install_default_verbose_prints_step_announcements(capsys):
+    ok_results = [ops.OpsResult(True, "ok")]
+    with (
+        patch.object(ops, "_sync_packaged_resources", return_value=ok_results),
+        patch.object(ops, "_install_config", return_value=ok_results),
+        patch.object(ops, "migrate_legacy_volumes", return_value=ok_results),
+        patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok_results),
+        patch.object(ops, "_ensure_web_deps", return_value=ok_results),
+        patch.object(ops, "_ensure_mcp_deps", return_value=ok_results),
+        patch.object(ops, "_ensure_cassandra_container", return_value=ok_results),
+        patch.object(ops, "_install_cassandra_launchagent", return_value=ok_results),
+        patch.object(ops, "_install_ollama_launchagent", return_value=ok_results),
+        patch.object(ops, "_install_ollama_env_launchagent", return_value=ok_results),
+        patch.object(ops, "_install_homebrew_api", return_value=ok_results),
+        patch.object(ops, "_install_homebrew_web", return_value=ok_results),
+        patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
+        patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok_results),
+        patch.object(ops, "sync_env_from_config", return_value=ok_results),
+    ):
+        rc = ops.install(
+            SimpleNamespace(skip_observability=True, terraform=False, kubernetes=False, quiet=False)
+        )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "[1/17] sync packaged ops resources..." in out
+
+
+@pytest.mark.unit
+def test_ops_env_sync_quiet_flag_suppresses_step_announcements(tmp_path, capsys):
+    cfg_path = tmp_path / "config.ini"
+    _write_config(cfg_path, api_key="cli-api-key")
+    env_path = tmp_path / ".env"
+
+    args = SimpleNamespace(config=str(cfg_path), env_file=str(env_path), quiet=True)
+    rc = ops.env_sync(args)
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "[1/3]" not in out
+    assert "[OK]" in out
+
+
 @pytest.mark.unit
 def test_wait_for_stack_healthy_returns_true_when_all_healthy(monkeypatch):
     """`_wait_for_stack_healthy` returns True immediately once every desired

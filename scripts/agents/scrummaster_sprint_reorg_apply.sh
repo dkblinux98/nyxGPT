@@ -48,7 +48,11 @@ RELEASE_ISSUE="${RELEASE_ISSUE_NUMBER:-}"
 # not re-apply it.
 APPLIED_MARKER="SPRINT_REORG_APPLIED_FOR_COMMENT:"
 
-comments_json="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${RELEASE_ISSUE}/comments" --paginate)"
+# --paginate (without --jq) emits one JSON array per page, not a single
+# merged array -- slurp (-s) and flatten one level (`.[][]`) into a single
+# array before filtering, so `sort_by`/`last` see every page (see AGENTS.md).
+comments_json="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${RELEASE_ISSUE}/comments" --paginate \
+  | jq -s -c '[.[][]]')"
 
 proposal_comment="$(echo "$comments_json" | jq -c '
   [.[] | select(.body | contains("SPRINT_REORG_PROPOSAL"))] | sort_by(.created_at) | last // empty')"

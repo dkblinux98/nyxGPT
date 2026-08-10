@@ -50,6 +50,24 @@ export const ADMIN_NAV: AdminNavDest[] = [
     description: 'Set write-once external tokens with masked entry and per-key help, and sync them to GitHub Actions',
     group: 'operation',
   },
+  {
+    href: '/admin/aws-credentials',
+    label: 'AWS Credentials Setup',
+    description: 'Guided AWS identity setup for cloud deploy -- routed to ~/.aws/credentials, the OS keychain, or an existing source, never config.ini',
+    group: 'operation',
+  },
+  {
+    href: '/admin/cloud-infrastructure',
+    // No parentheses in the label: dashboard.test.tsx builds a RegExp from it
+    // verbatim, so punctuation with regex meaning would never match its tile.
+    label: 'AWS Cloud Infrastructure',
+    description:
+      'State of the AWS substrate and the release deployed onto it -- version, access tunnel, health, and deploy history. Deploying and tearing down are CLI operations (#3514)',
+    // Observation, not operation, since the owner's #3514 decision made the
+    // cloud surface status-plus-CLI-pointers: nothing on this page creates or
+    // destroys cloud resources.
+    group: 'observation',
+  },
   { href: '/admin/canary', label: 'Canary Operations', description: 'Deploy, gradual rollout, and promotion with automatic rollback', group: 'operation' },
   { href: '/admin/self-heal', label: 'Self-heal Operations', description: 'Watchdog that restarts unhealthy services', group: 'operation' },
   {

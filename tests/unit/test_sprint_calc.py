@@ -174,3 +174,315 @@ class TestBuildSprintReport:
             self._payload(counts={"backlog": 0, "in_progress": 0, "in_review": 0, "done": 5})
         )
         assert "Blockers:** none detected" in result["markdown"]
+
+
+class TestHuddleRoutingDecision:
+    """#3687 review huddle protocol: routing from (disagreement_type,
+    REQUEST_CHANGES count) to what review_agent_auto_review.yml does next.
+    """
+
+    def test_type_c_escalates_immediately_regardless_of_count(self):
+        assert sprint_calc.huddle_routing_decision("c", 1) == "escalate_spec_ambiguity"
+        # Cycle zero: even a first-ever REQUEST_CHANGES of type (c) escalates,
+        # no agent conversation can resolve what only the PM knows.
+        assert sprint_calc.huddle_routing_decision("c", 3) == "escalate_spec_ambiguity"
+
+    def test_type_b_huddles_immediately_regardless_of_count(self):
+        assert sprint_calc.huddle_routing_decision("b", 1) == "huddle"
+        assert sprint_calc.huddle_routing_decision("b", 2) == "huddle"
+
+    def test_type_a_first_cycle_is_normal(self):
+        assert sprint_calc.huddle_routing_decision("a", 1) == "normal"
+
+    def test_type_a_second_cycle_huddles_instead_of_a_blind_third_retry(self):
+        assert sprint_calc.huddle_routing_decision("a", 2) == "huddle"
+
+    def test_type_a_third_cycle_hits_the_unchanged_outer_breaker(self):
+        assert sprint_calc.huddle_routing_decision("a", 3) == "escalate_cycle_limit"
+        assert sprint_calc.huddle_routing_decision("a", 4) == "escalate_cycle_limit"
+
+    def test_unrecognized_type_degrades_to_type_a_behavior(self):
+        # A missing/malformed classification must never block the existing
+        # loop -- it degrades to the pre-#3687 default instead of failing
+        # closed (stuck) or open (skipping straight to escalation).
+        assert sprint_calc.huddle_routing_decision("", 1) == "normal"
+        assert sprint_calc.huddle_routing_decision("unknown", 2) == "huddle"
+        assert sprint_calc.huddle_routing_decision("unknown", 3) == "escalate_cycle_limit"
+
+    def test_cli_huddle_routing(self):
+        import subprocess
+
+        result = subprocess.run(
+            [sys.executable, str(_MODULE_PATH), "huddle-routing", "b", "1"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert result.stdout.strip() == "huddle"
+
+
+class TestSprintParkNote:
+    """#3706: when the active sprint's pool drains the autopilot parks with a
+    loud note -- sprint complete, what remains per future sprint, and how
+    work resumes."""
+
+    def _note(self, **overrides):
+        payload = {
+            "event_phrase": "Issue #3706 merged",
+            "sprint_title": "Sprint 8",
+            "release_version": "v3.0.0",
+            "by_sprint": {"Sprint 8": 0, "Sprint 9": 11, "Sprint 10": 2, "": 3},
+        }
+        payload.update(overrides)
+        return sprint_calc.build_sprint_park_note(payload)
+
+    def test_states_the_sprint_is_complete_and_the_event(self):
+        note = self._note()
+        assert "Issue #3706 merged" in note
+        assert "Sprint 8" in note
+        assert "no open Backlog issues left" in note
+        assert "parked at the sprint boundary" in note
+
+    def test_lists_remaining_release_work_per_future_sprint(self):
+        note = self._note()
+        assert "- Sprint 9: 11 open Backlog issue(s)" in note
+        assert "- Sprint 10: 2 open Backlog issue(s)" in note
+        assert "- _No sprint set_: 3 open Backlog issue(s)" in note
+        assert "**16**" in note  # 11 + 2 + 3
+        # Numeric sprint ordering: "Sprint 9" precedes "Sprint 10".
+        assert note.index("Sprint 9:") < note.index("Sprint 10:")
+        # The no-sprint bucket sorts last.
+        assert note.index("Sprint 10:") < note.index("_No sprint set_")
+
+    def test_active_sprint_is_not_listed_as_waiting_work(self):
+        note = self._note(by_sprint={"Sprint 8": 4, "Sprint 9": 1})
+        # A nonzero active-sprint bucket is a data race at worst; it must
+        # never be reported as work waiting behind the boundary.
+        assert "Sprint 8: 4" not in note
+        assert "- Sprint 9: 1 open Backlog issue(s)" in note
+        assert "**1**" in note
+
+    def test_explains_how_work_resumes_and_the_owner_override(self):
+        note = self._note()
+        assert "SPRINT_TIMEZONE" in note
+        assert "documented in `docs/sprint-autopilot.md`" in note
+        assert "#3706" in note
+
+    def test_never_contains_the_dispatch_kick_token(self):
+        # notify_scrum_ready.yml dispatches on a bare substring test of the
+        # comment body, with the agent accounts on its actor allowlist. A
+        # park note that names the kick token anywhere -- prose included --
+        # therefore starts the next issue, so "park" became "kick" (#3706
+        # review). Cover every rendered variant.
+        variants = [
+            self._note(),
+            self._note(sprint_title=""),
+            self._note(by_sprint={"Sprint 8": 0}),
+            self._note(release_version="", by_sprint={"Sprint 9": 2}),
+        ]
+        for note in variants:
+            assert "READY_FOR_NEXT_ISSUE" not in note
+            # Structural backstop: the marker notify_scrum_ready.yml negates,
+            # so the note stays undispatchable even if the prose drifts.
+            assert sprint_calc.AUTOPILOT_INFO_MARKER in note
+
+    def test_note_without_a_park_state_claims_no_completion(self):
+        # #3709: a note rendered without population data must not announce
+        # any completion state -- the pre-#3709 note said "sprint complete"
+        # off a Backlog-only count, which was the defect.
+        note = self._note()
+        assert "sprint complete" not in note.lower()
+        assert "parked at the sprint boundary" in note
+
+    def test_release_drained_variant_when_nothing_is_waiting(self):
+        note = self._note(by_sprint={"Sprint 8": 0})
+        assert "release backlog is drained" in note
+        assert "RELEASE_ISSUE_NUMBER" in note
+        assert "open Backlog issue(s)" not in note
+
+    def test_no_active_sprint_variant(self):
+        note = self._note(sprint_title="")
+        assert "No sprint iteration is currently active" in note
+        assert "- Sprint 9: 11 open Backlog issue(s)" in note
+        # With no active sprint the "" key is the *no sprint set* bucket,
+        # not the active sprint. Excluding it here hid 3 waiting issues and
+        # reported a total of 13 instead of 16 (#3706 review).
+        assert "- _No sprint set_: 3 open Backlog issue(s)" in note
+        assert "**16**" in note  # 11 + 2 + 3
+
+    def test_missing_release_version_degrades_gracefully(self):
+        note = self._note(release_version="", by_sprint={"Sprint 9": 2})
+        assert "this release" in note
+        assert "- Sprint 9: 2 open Backlog issue(s)" in note
+
+
+class TestSprintParkState:
+    """#3709: the park decision counts the sprint's WHOLE open population,
+    and completion is two states -- agentic work complete (awaiting the
+    owner's acceptance) and sprint complete (everything in For Release)."""
+
+    def _state(self, open_by_status=None, closed_by_status=None):
+        return sprint_calc.sprint_park_state(
+            {
+                "open": open_by_status or {},
+                "closed": closed_by_status or {},
+                "status_backlog": "Backlog",
+                "status_for_release": "For Release",
+            }
+        )
+
+    def test_open_backlog_work_continues(self):
+        result = self._state({"Backlog": [10, 11], "In Progress": [12]})
+        assert result["state"] == sprint_calc.PARK_CONTINUE
+        assert result["backlog_open"] == 2
+
+    def test_empty_backlog_with_in_flight_work_is_not_complete(self):
+        # The reported defect: Backlog empty but In Progress / In Review
+        # work still live got a "sprint complete -- acceptance next" note.
+        result = self._state({"In Progress": [3513], "In Review": [3514]})
+        assert result["state"] == sprint_calc.PARK_WORK_IN_FLIGHT
+        assert result["open_total"] == 2
+        assert result["open_by_status"] == {"In Progress": 1, "In Review": 1}
+
+    def test_issue_with_no_status_still_counts_as_open_work(self):
+        result = self._state({"": [4242]})
+        assert result["state"] == sprint_calc.PARK_WORK_IN_FLIGHT
+        assert result["open_total"] == 1
+
+    def test_all_closed_but_not_accepted_is_awaiting_acceptance(self):
+        result = self._state(
+            closed_by_status={"Acceptance Testing": [3510, 3509], "For Release": [3508]}
+        )
+        assert result["state"] == sprint_calc.PARK_AWAITING_ACCEPTANCE
+        assert result["awaiting_acceptance"] == [3509, 3510]
+        assert result["accepted"] == [3508]
+
+    def test_sprint_complete_only_when_every_item_is_for_release(self):
+        # Owner definition (2026-08-10): "The sprint isn't done until all
+        # agentic work is complete AND in For Release status."
+        result = self._state(closed_by_status={"For Release": [3508, 3509]})
+        assert result["state"] == sprint_calc.PARK_SPRINT_COMPLETE
+        assert result["accepted"] == [3508, 3509]
+
+    def test_open_work_outranks_accepted_items(self):
+        result = self._state({"In Progress": [3513]}, {"For Release": [3508]})
+        assert result["state"] == sprint_calc.PARK_WORK_IN_FLIGHT
+
+    def test_sprint_with_no_items_at_all(self):
+        assert self._state()["state"] == sprint_calc.PARK_EMPTY
+
+    def test_custom_status_names_are_honored(self):
+        result = sprint_calc.sprint_park_state(
+            {
+                "open": {},
+                "closed": {"Shipped": [1]},
+                "status_backlog": "Backlog",
+                "status_for_release": "Shipped",
+            }
+        )
+        assert result["state"] == sprint_calc.PARK_SPRINT_COMPLETE
+
+
+class TestParkNoteStates:
+    """The rendered park note per #3709 state, including the parked-issue
+    scan lines that keep gate-stuck work visible."""
+
+    def _note(self, park_state, resume_scan=None, sprint_title="Sprint 8"):
+        return sprint_calc.build_sprint_park_note(
+            {
+                "event_phrase": "Issue #3510 merged",
+                "sprint_title": sprint_title,
+                "release_version": "v3.0.0",
+                "by_sprint": {"Sprint 8": 0},
+                "park_state": park_state,
+                "resume_scan": resume_scan or {},
+            }
+        )
+
+    def test_work_in_flight_note_denies_completion(self):
+        note = self._note(
+            {
+                "state": sprint_calc.PARK_WORK_IN_FLIGHT,
+                "open_total": 3,
+                "open_by_status": {"In Progress": 2, "In Review": 1},
+            }
+        )
+        assert "work still in flight" in note
+        assert "3 issue(s) are still open" in note
+        assert "In Progress: 2" in note and "In Review: 1" in note
+        assert "not** sprint completion" in note
+        assert "READY_FOR_NEXT_ISSUE" not in note
+
+    def test_awaiting_acceptance_note_is_not_sprint_complete(self):
+        note = self._note(
+            {
+                "state": sprint_calc.PARK_AWAITING_ACCEPTANCE,
+                "awaiting_acceptance": [3509, 3510],
+                "accepted": [],
+            }
+        )
+        assert "agentic work complete; awaiting owner acceptance" in note
+        assert '**This is not "sprint complete."**' in note
+        assert "#3509, #3510" in note
+        assert "For Release" in note
+        assert "agents never self-promote" in note
+
+    def test_sprint_complete_note_requires_for_release(self):
+        note = self._note(
+            {
+                "state": sprint_calc.PARK_SPRINT_COMPLETE,
+                "accepted": [3509, 3510],
+                "awaiting_acceptance": [],
+            }
+        )
+        assert "sprint complete" in note
+        assert "accepted by the owner" in note
+        assert "#3509, #3510" in note
+
+    def test_empty_sprint_note(self):
+        note = self._note({"state": sprint_calc.PARK_EMPTY})
+        assert "no items at all" in note
+
+    def test_gate_scan_lines_are_included(self):
+        note = self._note(
+            {
+                "state": sprint_calc.PARK_WORK_IN_FLIGHT,
+                "open_total": 2,
+                "open_by_status": {"In Progress": 2},
+            },
+            resume_scan={
+                "resumable": [],
+                "waiting": [{"issue": 3516, "open_blockers": [3514]}],
+                "exhausted": [],
+                "active": [],
+                "selected": 3513,
+            },
+        )
+        assert "Parked-issue scan" in note
+        assert "Auto-resumed:** #3513" in note
+        assert "#3516 (waiting on #3514)" in note
+
+    def test_every_state_stays_undispatchable(self):
+        for state in (
+            sprint_calc.PARK_WORK_IN_FLIGHT,
+            sprint_calc.PARK_AWAITING_ACCEPTANCE,
+            sprint_calc.PARK_SPRINT_COMPLETE,
+            sprint_calc.PARK_EMPTY,
+        ):
+            note = self._note({"state": state, "open_by_status": {}, "open_total": 0})
+            assert "READY_FOR_NEXT_ISSUE" not in note
+            assert sprint_calc.AUTOPILOT_INFO_MARKER in note
+
+    def test_in_flight_note_explains_the_loop_drives_itself(self):
+        note = self._note(
+            {
+                "state": sprint_calc.PARK_WORK_IN_FLIGHT,
+                "open_total": 1,
+                "open_by_status": {"In Progress": 1},
+            }
+        )
+        assert "the in-flight issues above finish" in note
+        # Boundary states do not claim that -- there is nothing in flight.
+        assert "the in-flight issues above finish" not in self._note(
+            {"state": sprint_calc.PARK_SPRINT_COMPLETE, "accepted": [1]}
+        )

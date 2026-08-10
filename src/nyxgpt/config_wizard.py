@@ -82,9 +82,15 @@ _EXAMPLE_CONFIG_PATH = _resolve_example_config_path()
 # these are becoming *agent-level* concerns rather than nyxGPT options, not
 # things a nyxGPT user configures. `openai` will resurface once external
 # commercial LLM support is added -- excluded cleanly here rather than its
-# support being deleted. Every other section is in scope: when in doubt the
-# wizard covers a section rather than excluding it (owner decision, #3388).
-EXCLUDED_SECTIONS = frozenset({"paths", "openai", "github"})
+# support being deleted. `cloud` is excluded because it has its own guided
+# flow instead (`aws_credentials_setup.py`, #3512): the actual AWS access
+# key pair is never stored in this section (routed to ~/.aws/credentials or
+# the OS keychain instead) and always travels together with that flow's
+# destination choice, so editing `[cloud] profile`/`region` here without
+# going through it could silently desync from where the key pair actually
+# lives. Every other section is in scope: when in doubt the wizard covers a
+# section rather than excluding it (owner decision, #3388).
+EXCLUDED_SECTIONS = frozenset({"paths", "openai", "github", "cloud"})
 
 
 class WizardValidationError(ValueError):

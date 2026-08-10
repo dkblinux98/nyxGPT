@@ -18,7 +18,8 @@ The review workflow is triggered when review-agent is assigned as reviewer:
 - **Manual re-trigger options**:
   - Push new commit to PR branch (triggers on synchronize)
   - Comment `@review` on the PR
-  - Run via GitHub Actions UI: `gh workflow run claude-code-review.yml -f pr_number=<N>`
+  - Dispatch-mode recovery: `scripts/agents/manually_trigger_pr_review.sh <N>`
+    (see §5a — always use the script, not a bare `gh workflow run`)
 
 The review-agent OWNS the review process:
 - Review workflow uses `REVIEW_AGENT_TOKEN` for all GitHub operations
@@ -141,6 +142,65 @@ Manual override (optional):
 - `@approve-merge` - Human can manually trigger merge
 - `@request-changes` - Human can manually trigger changes workflow (legacy)
 
+## 5a) Dispatch-mode recovery (`workflow_dispatch`, #3704)
+
+**When to use it.** A PR is orphaned: it is open, the review agent is the
+requested reviewer, and no review workflow run exists for it (the automatic
+`review_requested`/`synchronize` trigger never fired, or its run died before
+posting a verdict). This is the *only* supported way to start a review from
+outside the PR event stream.
+
+```bash
+scripts/agents/manually_trigger_pr_review.sh <PR_NUMBER>
+```
+
+**Always use the script, never a bare `gh workflow run claude-code-review.yml`.**
+Without `--ref`, `gh workflow run` dispatches the copy of the workflow on the
+repo **default branch** (`master`), which under this project's branch rules
+only moves on releases and is therefore arbitrarily far behind the active
+release branch. Dispatched reviews were consequently executing a stale
+workflow definition — including one whose `--json-schema` predated the #3687
+`disagreement_type` field, so every dispatched REQUEST_CHANGES silently fell
+back to type (a) and, on its second cycle, routed to a huddle instead of the
+fix cycle the reviewer had actually called for. The script now pins
+`--ref "$RELEASE_BRANCH"`.
+
+**What dispatch mode guarantees.** Same outcome as an event-triggered review,
+for both verdicts:
+
+- **APPROVE** — merged by `review_agent_auto_review.yml` exactly as before.
+- **REQUEST_CHANGES** — the handoff is guaranteed, not merely attempted.
+  The primary path is still the event chain (`pull_request_review`, with the
+  `nyxgpt-structured-review` comment as the `issue_comment` fallback). On top
+  of that, the review run's own final step
+  (`scripts/agents/review_ensure_handoff.sh`) waits ~4 minutes for that chain
+  to leave a footprint on the PR and, if none appears, executes the same
+  routing decision itself: resolve the linked issue from the PR body's
+  `Closes #N`, then loop / huddle / escalate per §6b.
+
+  Routing is not duplicated — the backstop calls the same
+  `huddle_routing_decision` in `scripts/agents/lib/sprint_calc.py` the primary
+  workflow does, so the two can never disagree. It is idempotent: every action
+  it takes writes one of the handoff markers the footprint check looks for, so
+  a re-run (or a late-firing event chain) is a no-op.
+
+  The footprint check ignores the `nyxgpt-structured-review` comment itself.
+  That comment is the event chain's *trigger*, never its footprint, and it
+  embeds the review's free text — a summary that happens to say "review loop"
+  or "spec ambiguity" (ordinary words when the PR under review is about the
+  review machinery) would otherwise look like a handoff that never happened.
+  The primary path excludes it the same way, by scanning only comments newer
+  than it.
+
+  Backstop-posted comments carry a "_Posted by the dispatch-mode review
+  handoff backstop_" footer. **Seeing that footer means the event chain
+  dropped a handoff** — worth a look at the review run's logs, even though
+  the cycle itself recovered.
+
+This closes the failure observed 2026-08-09/10, where dispatched
+REQUEST_CHANGES verdicts on PRs #3684, #3683 and #3606 produced zero fix
+activity for 9+ hours until a human posted `RETRY_IMPLEMENTATION` by hand.
+
 ## 6) Review cycle escalation
 The review workflow tracks cumulative review cycles:
 - Each REQUEST_CHANGES increments the cycle counter
@@ -149,10 +209,85 @@ The review workflow tracks cumulative review cycles:
 - After 3rd REQUEST_CHANGES review:
   - Issue remains Status -> In Review
   - Issue reassigned to HUMAN_OWNER
-  - Slack DM sent to human
+  - Slack DM sent to human (`notify_human_escalation`,
+    `scripts/agents/lib/gh_project.sh`, #3695 -- reuses the existing
+    `SLACK_BOT_TOKEN` + `SLACK_USER_ID` secrets already configured for
+    `notify-merge-conflicts.yml`; missing secrets or a failed Slack call
+    degrade gracefully to the GitHub comment alone, which is always posted
+    first and unconditionally; repeat escalations on the same PR within a
+    60-minute window are deduped)
   - Human intervenes to resolve
 
 All fixes happen on the PR branch (no separate issues created).
+
+## 6b) Disagreement taxonomy & huddle protocol (owner-ratified 2026-08-09, #3687)
+
+The 3-cycle gate above is a circuit breaker, not a decision-maker: it counts
+failed cycles without ever changing the question. Every REQUEST_CHANGES
+round must be classified as one of three disagreement types, posted in a
+`### Disagreement Type` section of the structured review comment
+(`.github/workflows/claude-code-review.yml`) as `**[a|b|c]**: [reason]`:
+
+- **(a) verifiable defect** — a failing test/CI or a reproducible bug. Loops
+  as in §5/§6, but **each round must state a *new* diagnosis**, not retry
+  the old one. If your diagnosis hasn't changed since the last round even
+  though the fix attempt did, that is itself a signal to reclassify as (b):
+  the approach, not the diagnosis, is what's wrong.
+- **(b) judgment call** — a design/approach disagreement, not a bug. This
+  type **never loops** — it goes straight to a huddle instead of another fix
+  cycle, regardless of what cycle count it's on.
+- **(c) spec ambiguity** — the issue itself is unclear, or resolving it
+  needs owner authority no agent conversation can supply. This **escalates
+  to the owner immediately, cycle zero** — no agent conversation can resolve
+  what only the PM knows.
+
+Routing (`scripts/agents/lib/sprint_calc.py huddle-routing`, the
+`huddle_routing_decision` function, called by
+`review_agent_auto_review.yml`'s "Count review iterations and classify
+disagreement" step): type (c) always escalates immediately; type
+(b) always huddles immediately; type (a) follows the existing loop and
+huddles on its **2nd** failed cycle instead of attempting a 3rd blind
+retry, still hitting the unchanged 3-cycle outer breaker (§6) if the huddle
+doesn't resolve it. A missing/malformed classification defaults to (a) —
+degrades to pre-#3687 behavior rather than blocking the loop or
+over-escalating.
+
+**The huddle**, once triggered (`review_agent_auto_review.yml`'s "Trigger
+huddle" step posts the `HUDDLE_TRIGGERED` marker):
+1. The review agent's position is the code review comment already posted —
+   nothing further to do here.
+2. `developer_huddle_position.yml` runs the developer agent to post a
+   written position (what it believes the problem is, what was tried, what
+   it proposes) instead of attempting another fix, then posts
+   `HUDDLE_MEDIATION_REQUESTED`.
+3. `scrummaster_huddle_mediation.yml` runs a **fresh** scrummaster
+   invocation — fresh context is structural, every invocation starts
+   memoryless — that reads only the PR thread and posts a
+   `## Huddle Decision` comment choosing one of: **proceed** / **change
+   approach** (stated) / **descope** (e.g. drop a named test, split the
+   issue) / **escalate to owner** (runs the same `assign_issue_verified` +
+   `sprint_autopilot_kick` escalation primitives §6 uses).
+4. The next fix cycle (`developer_auto_implement.yml`'s "Run Claude Code to
+   fix review issues" step) reads any `HUDDLE_DECISION:` comment on the PR
+   and executes the agreed plan rather than deciding independently.
+
+## 6c) Unresolved-escalation dispatch pause backstop (#3687)
+
+Escalations (§6's 3-cycle limit, or §6b's type-(c)/type-(b)-deadlock
+escalate) must not silently accumulate: one escalated item is normal
+traffic, but two or more open at once usually signals something systemic
+(bad base commit, poisoned suite, review-prompt regression). "Unresolved
+escalation" = an open issue currently assigned to `HUMAN_OWNER`
+(`count_unresolved_escalations`/`escalation_pause_gate`,
+`scripts/agents/lib/gh_project.sh`) — purely derived from live issue state,
+no hidden counter. `scrummaster_dispatch_next.sh` checks this gate before
+selecting a Backlog candidate: with 0 or 1 unresolved, dispatch proceeds
+unconditionally; with 2+, new dispatch pauses and a loud report (listing
+the escalated issues) is posted/updated on the release tracking issue.
+Dispatch resumes automatically the next time it's checked once the count
+drops below 2 — clearing the escalations is the only action needed, there
+is no separate "resume" step. See `agents/runbooks/scrummaster-runbook.md`
+for the dispatch-side detail.
 
 ## 7) Merge criteria
 - All tests and linters passing

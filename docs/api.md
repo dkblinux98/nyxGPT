@@ -12,7 +12,7 @@ The API is designed to run **locally only** by default.
 
 ## API Endpoint Reference
 
-Quick reference of all 77 available endpoints:
+Quick reference of all 81 available endpoints:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -47,6 +47,19 @@ Quick reference of all 77 available endpoints:
 | `/api/v1/self-heal/toggle` | POST | Enable/disable automatic self-healing |
 | `/api/v1/self-heal/heal` | POST | Manually restart one or every unhealthy component |
 | `/api/v1/self-heal/logs` | GET | Recent logs for one component, mode-dispatched (e.g. GlitchTip's registration link) |
+| `/api/v1/cloud/infra` | GET | AWS substrate status: what's provisioned and how it's reachable (no AWS call) |
+| `/api/v1/cloud/infra/plan` | POST | Plan the AWS substrate; creates nothing |
+| `/api/v1/cloud/infra/apply` | POST | Provision/reconcile the AWS substrate and record its ids |
+| `/api/v1/cloud/infra/destroy` | POST | Tear the AWS substrate down (requires `{"confirm": true}`) |
+| `/api/v1/cloud/state` | GET | Terraform state backend: local file, or S3 with DynamoDB locking |
+| `/api/v1/cloud/state/migrate` | POST | Create the S3 bucket + lock table and move existing state into them |
+| `/api/v1/cloud/state/versions` | GET | Stored versions of the remote state object, newest first |
+| `/api/v1/cloud/state/restore` | POST | Roll state back to a version (requires `version_id` + `{"confirm": true}`) |
+| `/api/v1/cloud/state/unlock` | POST | Release a lock left by a killed apply (requires `lock_id`) |
+| `/api/v1/cloud/deploy` | GET | Cloud deployment status: installed version, instance, tunnel, health, deploy history, localhost URLs (no AWS call unless `?probe_health=true`) |
+| `/api/v1/cloud/deploy` | POST | Provision AWS and deploy the full stack onto it (idempotent) |
+| `/api/v1/cloud/deploy/destroy` | POST | Close the tunnel and tear the deployment down (requires `{"confirm": true}`) |
+| `/api/v1/cloud/deploy/tunnel` | POST | Open or close (`{"action": "stop"}`) the SSH access tunnel |
 | `/api/v1/models` | GET | List Ollama models |
 | `/api/v1/models/pull` | POST | Pull model from Ollama |
 | `/api/v1/models/{model_name}` | DELETE | Delete model |
@@ -1352,9 +1365,266 @@ Returns `502` if the service is unknown or the logs can't be fetched.
 
 ---
 
+## Cloud substrate (AWS)
+
+The dashboard counterpart of `nyxgpt cloud infra` (P6-8, #3509), backing
+`/admin/cloud-infrastructure`. These endpoints provision the AWS
+infrastructure a cloud deployment runs on — a VPC, a public subnet, one
+SSH-only security group scoped to the owner's IP, and a single EC2 instance —
+by driving the Terraform configuration in `terraform/aws/`. They call the
+same `nyxgpt.cloud_infra` functions the CLI does, so the access model is
+identical on both surfaces. See [cloud.md](cloud.md#nyxgpt-cloud-infra--provisioning-the-aws-substrate-p6-8-3509)
+for what gets created, and the two decision records it implements.
+
+Note that the *dashboard* no longer calls the mutating ones. Per the owner's
+2026-08-09 decision on #3514 the `/admin` cloud page is
+status-plus-CLI-pointers, and its Next.js proxy layer exposes only the reads —
+so `POST /api/v1/cloud/infra/apply`, `POST /api/v1/cloud/infra/destroy`,
+`POST /api/v1/cloud/deploy` and `POST /api/v1/cloud/deploy/destroy` are
+reachable from the CLI and other API clients, but not from a browser.
+
+`plan`/`apply`/`destroy` shell out to Terraform and can take minutes; they
+are synchronous. Every mutation is recorded in the admin activity log
+(`cloud_infra.plan`/`.apply`/`.destroy`).
+
+### `GET /api/v1/cloud/infra`
+
+Report what is provisioned. Reads recorded state only — no AWS or Terraform
+call — so it is cheap to poll.
+
+```json
+{
+  "provisioned": true,
+  "region": "us-east-1",
+  "instance_id": "i-0abc123",
+  "instance_type": "m5.large",
+  "public_ip": "198.51.100.200",
+  "vpc_id": "vpc-0abc",
+  "security_group_id": "sg-0abc",
+  "ssh_key_name": "owner-pair",
+  "owner_ip_cidr": "198.51.100.7/32",
+  "access_model": {
+    "open_ports": [22],
+    "ssh_only": true,
+    "world_open_ingress": false,
+    "reachability": "SSH tunnel to loopback-bound services"
+  }
+}
+```
+
+### `POST /api/v1/cloud/infra/plan`
+
+Plan the substrate; creates nothing. Body fields are all optional and mirror
+the CLI flags — `region`, `profile`, `owner_ip`, `ssh_key_name`,
+`ssh_public_key`, `instance_type`, `root_volume_size`. Anything omitted falls
+back to the settings saved by the previous run; `owner_ip` defaults to the
+API host's detected public IP.
+
+### `POST /api/v1/cloud/infra/apply`
+
+Provision or reconcile the substrate. Same body as `plan`. Returns the
+Terraform outputs and the recorded state:
+
+```json
+{
+  "action": "apply",
+  "settings": { "aws_region": "us-east-1", "owner_ip_cidr": "198.51.100.7/32" },
+  "outputs": { "instance_id": "i-0abc123", "security_group_id": "sg-0abc" },
+  "state": { "instance_id": "i-0abc123", "security_group_id": "sg-0abc" }
+}
+```
+
+### `POST /api/v1/cloud/infra/destroy`
+
+Tear the substrate down, including the instance and its root volume.
+Requires `{"confirm": true}` — without it the request is refused with `400`
+rather than acted on.
+
+All three return `409` with the underlying message when Terraform or input
+validation fails (no SSH key configured, a refused `0.0.0.0/0` source, a
+Terraform error, ...).
+
+### `GET /api/v1/cloud/state`
+
+Where the substrate's Terraform state lives and how it is locked. Offline by
+default (recorded configuration only), so it is cheap to poll. Pass
+`?verify=true` to additionally confirm against AWS that the bucket and lock
+table exist and that versioning — the whole recovery story — is on.
+
+```json
+{
+  "backend": "s3",
+  "remote_enabled": true,
+  "bootstrapped": true,
+  "bucket": "nyxgpt-tfstate-123456789012-us-west-2",
+  "table": "nyxgpt-tfstate-locks",
+  "key": "nyxgpt/aws/terraform.tfstate",
+  "region": "us-west-2",
+  "locking": "dynamodb",
+  "local_state_file": "/home/you/.nyxGPT/cloud/terraform.tfstate",
+  "local_state_exists": true,
+  "verified": false
+}
+```
+
+### `POST /api/v1/cloud/state/migrate`
+
+Create the S3 bucket (versioned, AES256-encrypted, public access blocked) and
+the DynamoDB lock table, then move existing state into them. Body fields are
+all optional — `bucket`, `table`, `key`, `region`, `profile` — and fall back
+to saved settings, then to derived defaults. Safe to re-run.
+
+### `GET /api/v1/cloud/state/versions`
+
+List stored versions of the remote state object, newest first (`?limit=`,
+default 20). Each is a complete state file as it stood after one apply.
+
+### `POST /api/v1/cloud/state/restore`
+
+Make a previous version the current state. Requires both `version_id` and
+`{"confirm": true}` — a later apply against a wrong restore can destroy live
+resources. Reversible: the version being replaced stays in the bucket.
+
+### `POST /api/v1/cloud/state/unlock`
+
+Release a state lock left held by a run that was killed mid-apply. Requires
+`lock_id` (the id Terraform prints in the error that refused to run); there
+is deliberately no "release whatever is held", since breaking a live run's
+lock is what locking exists to prevent.
+
+These return `409` when remote state isn't configured yet or Terraform/AWS
+fails, and `400` when a required confirmation or id is missing. Moving state
+back to a local file is CLI-only (`nyxgpt cloud state local`) — it is the
+escape hatch for a backend the API host may itself be unable to reach.
+
+## Cloud deploy endpoints
+
+The dashboard half of `nyxgpt cloud deploy`/`destroy`/`tunnel` (P6-11,
+#3513): provision AWS, install a published nyxGPT release onto the instance,
+and open the SSH tunnel that is the only way to reach it. They call the same
+`nyxgpt.cloud_deploy` functions the CLI does, so there is one deploy
+implementation regardless of surface. See
+[cloud.md](cloud.md#nyxgpt-cloud-deploy--the-one-command-path-p6-11-3513).
+
+`deploy`/`destroy` run Terraform *and* a remote install and can take many
+minutes; they are synchronous. Mutations are recorded in the admin activity
+log (`cloud_deploy.deploy`/`.destroy`/`.tunnel`).
+
+### `GET /api/v1/cloud/deploy`
+
+Report what is deployed, whether the access tunnel is open, and what has
+happened to this deployment. Reads recorded state only — no AWS call and no
+connection to the instance — so it is cheap to poll.
+
+**Query parameters**
+
+| Name | Default | Meaning |
+| --- | --- | --- |
+| `probe_health` | `false` | Also make one short request to the tunneled API health endpoint. Opt-in so the polled default stays free of network calls; skipped with a reason when no tunnel is open, since a probe would only time out. |
+
+```json
+{
+  "deployed": true,
+  "version": "3.0.0",
+  "host": "198.51.100.200",
+  "instance_id": "i-0abc123",
+  "region": "us-east-1",
+  "profiles": ["monitoring", "logging", "tracing", "errors"],
+  "tunnel": { "running": true, "pid": 4242, "host": "198.51.100.200" },
+  "health": {
+    "checked": true,
+    "healthy": true,
+    "status": 200,
+    "url": "http://localhost:8000/health",
+    "reason": ""
+  },
+  "history": [
+    {
+      "ts": 1754800000.0,
+      "action": "deploy",
+      "outcome": "succeeded",
+      "version": "3.0.0",
+      "host": "198.51.100.200",
+      "instance_id": "i-0abc123",
+      "region": "us-east-1",
+      "profiles": ["monitoring"],
+      "detail": "healthy over the access tunnel"
+    }
+  ],
+  "urls": {
+    "api": "http://localhost:8000",
+    "web": "http://localhost:3000",
+    "grafana": "http://localhost:3001"
+  },
+  "access_command": "nyxgpt cloud tunnel",
+  "commands": {
+    "deploy": "nyxgpt cloud deploy",
+    "destroy": "nyxgpt cloud destroy --yes",
+    "tunnel": "nyxgpt cloud tunnel",
+    "status": "nyxgpt cloud deploy --status",
+    "allow_ip": "nyxgpt cloud allow-ip"
+  }
+}
+```
+
+`health.checked` is `false` both when no probe was requested and when there
+was no tunnel to probe through; `reason` says which. That is deliberately not
+the same as `healthy: false`, which means the stack was reached and did not
+answer `200`.
+
+`history` is the last 20 deploys and teardowns, newest first, appended by
+`nyxgpt.cloud_deploy` itself — so a deploy run from the CLI appears here too.
+A deploy that installed the stack but never went healthy is recorded with
+`"outcome": "failed"`.
+
+`commands` is the set of wrapped `nyxgpt` commands that own each lifecycle
+action. The admin dashboard renders these rather than hard-coding its own
+copy: per the owner's 2026-08-09 decision on #3514, the cloud page is
+status-plus-CLI-pointers and has no deploy or teardown controls of its own
+(see [cloud.md](cloud.md#from-the-dashboard-status-not-controls-p6-15-3514)).
+
+Every URL is a `localhost` one and resolves only while the tunnel is open —
+there is no instance-facing URL, by design.
+
+### `POST /api/v1/cloud/deploy`
+
+Provision AWS and deploy the full stack onto it. Idempotent: a re-run
+reconciles rather than creating a second deployment. Accepts every
+provisioning input `POST /api/v1/cloud/infra/apply` does, plus `version`,
+`skip_observability`, `no_tunnel`, `ssh_user`, `identity_file`, `host`,
+`health_timeout`, and `ssh_timeout`. Omitted fields fall back to the settings
+the last run saved.
+
+Returns the resolved `plan` and `target`, a step-by-step `steps` record, the
+`tunnel` and `health` results, and the `urls`.
+
+### `POST /api/v1/cloud/deploy/destroy`
+
+Close the tunnel, then tear the deployment down. Requires
+`{"confirm": true}` — the instance and its root volume go with it.
+
+### `POST /api/v1/cloud/deploy/tunnel`
+
+Open the SSH access tunnel, or close it with `{"action": "stop"}`. Opening
+is idempotent and always backgrounded (an HTTP request cannot hold a
+foreground tunnel); an already-running tunnel is reported, not duplicated.
+
+These return `409` when the deploy fails or nothing is provisioned yet, and
+`400` when the teardown confirmation is missing.
+
+---
+
 ## Sessions endpoints
 
-Sessions store conversation history and metadata and are persisted automatically on disk.
+Sessions store conversation history and metadata and are persisted
+automatically — either as JSON files on disk (the default `file` backend) or
+in the stack's Cassandra (`[nyxgpt] session_backend = cassandra`), which
+gives every deployment mode pointed at the same Cassandra an identical
+session list (see [session-storage.md](session-storage.md), #3590). The
+endpoints behave identically under both backends; the optional
+`sessions_dir` query-parameter override accepted by several of them applies
+only to the `file` backend and is ignored under `cassandra` (there is
+exactly one shared store).
 
 ### `GET /api/v1/sessions`
 

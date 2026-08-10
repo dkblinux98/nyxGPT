@@ -85,6 +85,20 @@ def cfg() -> Any:
     return load_config(path)
 
 
+def _resolve_api_base_url() -> str:
+    """Plain (non-skipping) lookup of the configured API base URL.
+
+    Kept separate from the `api_base_url` fixture so session-scoped cleanup
+    fixtures can read the URL without inheriting `api_base_url`'s
+    `pytest.skip()` -- a skip raised by a session-scoped fixture is cached by
+    pytest and re-raised for every other fixture/test in the session that
+    depends on it, which would otherwise cascade the skip to the entire
+    `tests/integration/` package regardless of whether a given test actually
+    needs a live server.
+    """
+    return os.environ.get("NYXGPT_TEST_API_BASE", "http://127.0.0.1:8000").rstrip("/")
+
+
 @pytest.fixture(scope="session")
 def api_base_url() -> str:
     """Base URL of a live nyxgpt API server for integration tests that talk to it
@@ -97,7 +111,7 @@ def api_base_url() -> str:
     environment (e.g. a lightweight CI runner) that doesn't have the full stack
     running, instead of skipping like the rest of the integration suite.
     """
-    base_url = os.environ.get("NYXGPT_TEST_API_BASE", "http://127.0.0.1:8000").rstrip("/")
+    base_url = _resolve_api_base_url()
     u = urlparse(base_url)
     host = u.hostname or "127.0.0.1"
     port = u.port or (443 if u.scheme == "https" else 80)
@@ -157,12 +171,17 @@ def tmp_sessions_dir(tmp_path):
 
 
 @pytest.fixture(scope="session", autouse=True)
-def cleanup_test_rag_documents(api_base_url):
+def cleanup_test_rag_documents():
     """Clean up test RAG documents after all integration tests complete.
 
     This fixture runs at the end of the test session and deletes any RAG documents
     that were created during the test run (identified by test prefixes or not existing
     before tests started).
+
+    Does not depend on the `api_base_url` fixture (talks to Cassandra directly, and
+    already tolerates an unreachable store via try/except below) so that an
+    unreachable API server doesn't cascade a skip to this fixture too -- see
+    `_resolve_api_base_url`.
     """
     # Test document prefixes that should always be cleaned up
     TEST_DOC_PREFIXES = (
@@ -245,11 +264,16 @@ def cleanup_test_rag_documents(api_base_url):
 
 
 @pytest.fixture(scope="session", autouse=True)
-def cleanup_test_collections(api_base_url):
+def cleanup_test_collections():
     """Clean up test RAG collections after all integration tests complete.
 
     This fixture runs at the end of the test session and deletes any RAG collections
     that were created during the test run (identified by test prefixes).
+
+    Does not depend on the `api_base_url` fixture (talks to Cassandra directly, and
+    already tolerates an unreachable store via try/except below) so that an
+    unreachable API server doesn't cascade a skip to this fixture too -- see
+    `_resolve_api_base_url`.
     """
     # Test collection prefixes that should always be cleaned up
     TEST_COLLECTION_PREFIXES = (
@@ -324,13 +348,19 @@ def cleanup_test_collections(api_base_url):
 
 
 @pytest.fixture(scope="session", autouse=True)
-def cleanup_test_sessions(api_base_url):
+def cleanup_test_sessions():
     """Clean up test sessions after all integration tests complete.
 
     This fixture runs at the end of the test session and deletes any sessions
     that were created during the test run (not existing before tests started).
+
+    Uses `_resolve_api_base_url()` rather than the `api_base_url` fixture so an
+    unreachable API server doesn't cascade a skip to this fixture too -- the
+    try/except blocks below already tolerate an unreachable server on their own.
     """
     import requests
+
+    api_base_url = _resolve_api_base_url()
 
     # Record sessions that exist before tests run
     try:

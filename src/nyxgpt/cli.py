@@ -20,10 +20,15 @@ from typing import Any, cast
 # (blue/green lived in nyxgpt.deploy; retired in favor of canary -- see #3409.)
 from nyxgpt import canary as canary_mod
 from nyxgpt import cloud as cloud_mod
+from nyxgpt import cloud_deploy as cloud_deploy_mod
+from nyxgpt import cloud_infra as cloud_infra_mod
 from nyxgpt import cloud_provision as cloud_provision_mod
+from nyxgpt import cloud_smoke as cloud_smoke_mod
+from nyxgpt import cloud_state as cloud_state_mod
 from nyxgpt import models, sessions
 from nyxgpt import ops as ops_mod
 from nyxgpt import self_heal as self_heal_mod
+from nyxgpt.aws_credentials_setup import run_aws_credentials_setup
 from nyxgpt.chat import chat, chat_stream
 from nyxgpt.config import (
     get_canary_error_rate_threshold,
@@ -34,6 +39,7 @@ from nyxgpt.config import (
     get_canary_total_replicas,
     get_default_model,
     get_ollama_base_url,
+    get_session_backend,
     get_sessions_dir,
     load_config,
 )
@@ -55,6 +61,14 @@ def _list_sessions_in_dir(sessions_dir: Path) -> list[dict[str, object]]:
         session, or an empty list if the directory doesn't exist. Files that
         are metadata sidecars (`*.meta.json`) or fail to parse are skipped.
     """
+    # Under the Cassandra backend the directory is not the store -- delegate
+    # to the backend-aware listing, which returns the same row shape (#3590).
+    try:
+        if get_session_backend(load_config(None)) == "cassandra":
+            return cast(list[dict[str, object]], sessions.list_sessions(None))
+    except Exception:
+        pass
+
     sessions_dir = Path(sessions_dir).expanduser()
     if not sessions_dir.exists():
         return []
@@ -761,7 +775,7 @@ def cmd_sessions(
         doc_id = new_name
         sf = sessions.session_file_for(name, effective_dir)
         mf = sessions.meta_file_for(sf)
-        if not sf.exists():
+        if not sessions.session_file_exists(sf):
             sessions.save_session_messages(sf, [])
         meta = sessions.load_session_meta(mf)
         meta = sessions.ensure_meta_defaults(meta)
@@ -1968,8 +1982,23 @@ def cli(argv: list[str] | None = None) -> int:
     ops_p = sub.add_parser("ops", help="Operational helpers")
     ops_sub = ops_p.add_subparsers(dest="ops_cmd", required=True)
 
+    def _add_quiet_flag(parser: argparse.ArgumentParser) -> None:
+        """Add the shared `--quiet` flag to a long-running `ops` subcommand's parser.
+
+        Default is live per-step progress (`[n/m] step...` announcements, a
+        heartbeat for slow steps, and a final slow-step summary); `--quiet`
+        drops back to the old terse OK/FAIL-only-per-result output, for
+        scripting (#3558).
+        """
+        parser.add_argument(
+            "--quiet",
+            action="store_true",
+            help="Terse output for scripting: OK/FAIL/SKIP per step, no live progress",
+        )
+
     ops_install = ops_sub.add_parser("install", help="Install operational helpers")
     _add_install_arguments(ops_install)
+    _add_quiet_flag(ops_install)
 
     ops_status = ops_sub.add_parser(
         "status", help="Show status of local services (docker/cassandra/agent/api)"
@@ -2008,6 +2037,7 @@ def cli(argv: list[str] | None = None) -> int:
             "observability Compose service (monitoring/logging/tracing/errors)"
         ),
     )
+    _add_quiet_flag(ops_restart)
 
     ops_stop = ops_sub.add_parser("stop", help="Stop local services (native and/or Docker Compose)")
     ops_stop.add_argument(
@@ -2025,11 +2055,13 @@ def cli(argv: list[str] | None = None) -> int:
         ],
         help="Service to stop",
     )
+    _add_quiet_flag(ops_stop)
 
     ops_down = ops_sub.add_parser(
         "down", help="Tear down the full stack (native services + Docker Compose)"
     )
     _add_down_arguments(ops_down)
+    _add_quiet_flag(ops_down)
 
     ops_env_sync = ops_sub.add_parser(
         "env-sync",
@@ -2039,6 +2071,7 @@ def cli(argv: list[str] | None = None) -> int:
     ops_env_sync.add_argument(
         "--env-file", help="Path to the .env file to update (default: <repo>/.env)"
     )
+    _add_quiet_flag(ops_env_sync)
 
     ops_secrets_sync = ops_sub.add_parser(
         "secrets-sync",
@@ -2067,13 +2100,14 @@ def cli(argv: list[str] | None = None) -> int:
         "--tail", type=int, default=200, help="Number of trailing log lines to show (default: 200)"
     )
 
-    ops_sub.add_parser(
+    ops_glitchtip_init = ops_sub.add_parser(
         "glitchtip-init",
         help=(
             "Auto-provision a GlitchTip admin user, org, project, and DSN "
             "(zero-touch error tracking); no-ops if glitchtip isn't up/healthy"
         ),
     )
+    _add_quiet_flag(ops_glitchtip_init)
 
     ops_sub.add_parser(
         "alert-test",
@@ -2083,13 +2117,14 @@ def cli(argv: list[str] | None = None) -> int:
         ),
     )
 
-    ops_sub.add_parser(
+    ops_observability = ops_sub.add_parser(
         "observability",
         help=(
             "Start the Grafana/Loki/Jaeger/GlitchTip Compose profiles "
             "(monitoring/logging/tracing/errors) without a raw docker compose command"
         ),
     )
+    _add_quiet_flag(ops_observability)
 
     ops_sub.add_parser(
         "migrate-volumes",
@@ -2154,15 +2189,17 @@ def cli(argv: list[str] | None = None) -> int:
         help="Seconds to wait for the booted stack to become healthy (default: 300)",
     )
 
-    # Add cloud command (AWS deployment lifecycle -- P6-11-class scope; today
-    # covers `allow-ip` (the lockout-recovery path for the owner-IP-scoped SSH
-    # security group described in
-    # product_management/DECISION_PRIVATE_ACCESS_MECHANISM.md) and
-    # `user-data` (P6-12/#3511's target-OS provisioning bootstrap-script
-    # renderer). `nyxgpt cloud deploy`/`destroy` (#3513) come later and are
-    # expected to write ~/.nyxGPT/cloud/state.json so allow-ip can
-    # auto-discover the security group without --security-group-id -- see
-    # nyxgpt.cloud's module docstring.
+    # Add cloud command (AWS deployment lifecycle -- P6-11-class scope). Today
+    # covers `allow-ip`, the lockout-recovery path for the owner-IP-scoped
+    # SSH security group described in
+    # product_management/DECISION_PRIVATE_ACCESS_MECHANISM.md;
+    # `credentials-setup`, the guided AWS identity flow (P6-13, #3512) -- see
+    # nyxgpt.aws_credentials_setup's module docstring; `user-data`
+    # (P6-12/#3511's target-OS provisioning bootstrap-script renderer); and
+    # `infra`/`state`/`deploy`/`destroy`/`tunnel`/`smoke`. `deploy` is what
+    # writes ~/.nyxGPT/cloud/state.json so allow-ip can auto-discover the
+    # security group without --security-group-id -- see nyxgpt.cloud's module
+    # docstring.
     cloud_p = sub.add_parser("cloud", help="AWS cloud deployment lifecycle helpers")
     cloud_sub = cloud_p.add_subparsers(dest="cloud_cmd", required=True)
 
@@ -2226,6 +2263,442 @@ def cli(argv: list[str] | None = None) -> int:
     cloud_user_data.add_argument(
         "--output",
         help="Write the rendered script to this path instead of stdout",
+    )
+
+    cloud_credentials_setup = cloud_sub.add_parser(
+        "credentials-setup",
+        help=(
+            "Guided setup for the AWS identity nyxGPT uses for its own AWS API calls "
+            "(P6-13, #3512) -- masked entry, routed to ~/.aws/credentials, the OS "
+            "keychain, or left to an already-configured source; never config.ini"
+        ),
+    )
+    cloud_credentials_setup.add_argument(
+        "--config",
+        type=Path,
+        help="Path to config.ini (default: ~/.nyxGPT/config.ini)",
+    )
+
+    # `cloud infra` -- the wrapped lifecycle of the AWS substrate itself
+    # (P6-8, #3509): VPC, public subnet(s), the SSH-only owner-IP-scoped
+    # security group, and the single EC2 instance from
+    # product_management/DECISION_AWS_COMPUTE_SUBSTRATE.md. This is the only
+    # supported way to drive terraform/aws (CLAUDE.md: no raw `terraform` in
+    # any user flow), and `apply` is what writes ~/.nyxGPT/cloud/state.json so
+    # `allow-ip` above works with no arguments afterwards. Deploying the stack
+    # onto the instance is separate (#3513).
+    cloud_infra_p = cloud_sub.add_parser(
+        "infra",
+        help=(
+            "Provision and tear down the AWS substrate (VPC, subnets, SSH-only "
+            "security group, EC2 instance)"
+        ),
+    )
+    cloud_infra_sub = cloud_infra_p.add_subparsers(dest="infra_cmd", required=True)
+
+    def _add_infra_provision_flags(parser: argparse.ArgumentParser) -> None:
+        """Attach the inputs shared by `infra plan`/`apply`/`destroy`.
+
+        Every one of them is remembered in ~/.nyxGPT/cloud/infra.json after a
+        run, so a later invocation needs only the flags that change.
+        """
+        parser.add_argument(
+            "--region",
+            help="AWS region (default: saved value, then config.ini [cloud] region, then AWS_REGION, then us-east-1)",
+        )
+        parser.add_argument(
+            "--profile",
+            help="AWS profile to authenticate with (default: saved value, then config.ini [cloud] profile, then AWS_PROFILE)",
+        )
+        parser.add_argument(
+            "--owner-ip",
+            help=(
+                "IP or CIDR allowed to SSH to the instance (default: auto-detect this "
+                "machine's current public IP; bare addresses are scoped to /32; "
+                "0.0.0.0/0 is refused)"
+            ),
+        )
+        parser.add_argument(
+            "--ssh-public-key",
+            help=(
+                "Path to an OpenSSH public key (e.g. ~/.ssh/id_ed25519.pub) to register "
+                "as a new EC2 key pair. Mutually exclusive with --ssh-key-name"
+            ),
+        )
+        parser.add_argument(
+            "--ssh-key-name",
+            help="Name of an EC2 key pair that already exists in the region. Mutually exclusive with --ssh-public-key",
+        )
+        parser.add_argument(
+            "--instance-type",
+            help="EC2 instance type (default: saved value, then m5.large)",
+        )
+        parser.add_argument(
+            "--root-volume-size",
+            type=int,
+            help="Root EBS volume size in GiB (default: saved value, then 100)",
+        )
+
+    cloud_infra_plan = cloud_infra_sub.add_parser(
+        "plan", help="Show what would be provisioned or changed, creating nothing"
+    )
+    _add_infra_provision_flags(cloud_infra_plan)
+
+    cloud_infra_apply = cloud_infra_sub.add_parser(
+        "apply",
+        help=(
+            "Provision (or reconcile) the substrate and record its ids for the other "
+            "`nyxgpt cloud` commands"
+        ),
+    )
+    _add_infra_provision_flags(cloud_infra_apply)
+
+    cloud_infra_destroy = cloud_infra_sub.add_parser(
+        "destroy", help="Tear the substrate down, including the instance and its root volume"
+    )
+    _add_infra_provision_flags(cloud_infra_destroy)
+    cloud_infra_destroy.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirm the teardown (required -- data that exists only on the instance is lost)",
+    )
+
+    cloud_infra_sub.add_parser(
+        "status", help="Report what is currently provisioned and how it is reachable"
+    )
+    cloud_infra_sub.add_parser(
+        "test",
+        help=(
+            "Run the substrate's plan-level tests offline (the same access-model checks "
+            "CI runs) -- creates nothing and needs no AWS account"
+        ),
+    )
+
+    # `cloud state` -- Terraform remote state for the substrate above (P6-9,
+    # #3510). A fresh install keeps state in one local file, which breaks down
+    # the moment a second operator or a CI runner applies the same substrate;
+    # these commands move it to a versioned S3 bucket with a DynamoDB lock
+    # table, and are also the recovery path when a run dies holding the lock or
+    # writes state that has to be rolled back. No raw `terraform` anywhere
+    # (CLAUDE.md's wrapper requirement).
+    cloud_state_p = cloud_sub.add_parser(
+        "state",
+        help=(
+            "Manage the substrate's Terraform state: migrate it to a shared S3 backend "
+            "with DynamoDB locking, and recover it when a run fails"
+        ),
+    )
+    cloud_state_sub = cloud_state_p.add_subparsers(dest="state_cmd", required=True)
+
+    def _add_state_backend_flags(parser: argparse.ArgumentParser) -> None:
+        """Attach the backend inputs shared by `state bootstrap`/`migrate`.
+
+        Every one is remembered in ~/.nyxGPT/cloud/backend.json, so later runs
+        need only what changes -- and the defaults are derived (bucket from the
+        AWS account id, region from what `cloud infra` provisions into) so the
+        common case needs no flags at all.
+        """
+        parser.add_argument(
+            "--bucket",
+            help=(
+                "S3 bucket for the state file (default: saved value, then "
+                "nyxgpt-tfstate-<account-id>-<region>). Bucket names are globally unique"
+            ),
+        )
+        parser.add_argument(
+            "--table",
+            help="DynamoDB table used for state locking (default: saved value, then nyxgpt-tfstate-locks)",
+        )
+        parser.add_argument(
+            "--key",
+            help="Object key for the state file inside the bucket (default: nyxgpt/aws/terraform.tfstate)",
+        )
+        parser.add_argument(
+            "--region",
+            help="AWS region holding the bucket and lock table (default: the region `cloud infra` provisions into)",
+        )
+        parser.add_argument(
+            "--profile",
+            help="AWS profile to authenticate with (default: saved value, then config.ini [cloud] profile, then AWS_PROFILE)",
+        )
+
+    cloud_state_status = cloud_state_sub.add_parser(
+        "status", help="Report where the substrate's state lives and how it is locked"
+    )
+    cloud_state_status.add_argument(
+        "--verify",
+        action="store_true",
+        help=(
+            "Also confirm against AWS that the bucket and lock table exist and that "
+            "versioning (the recovery story) is on"
+        ),
+    )
+
+    cloud_state_bootstrap = cloud_state_sub.add_parser(
+        "bootstrap",
+        help=(
+            "Create the versioned, encrypted state bucket and the DynamoDB lock table, "
+            "without moving any state yet"
+        ),
+    )
+    _add_state_backend_flags(cloud_state_bootstrap)
+
+    cloud_state_migrate = cloud_state_sub.add_parser(
+        "migrate",
+        help=(
+            "Create the backend if needed and move the substrate's existing local state "
+            "into it (safe to re-run)"
+        ),
+    )
+    _add_state_backend_flags(cloud_state_migrate)
+
+    cloud_state_sub.add_parser(
+        "local",
+        help=(
+            "Move state back out of S3 into the local file -- the escape hatch when the "
+            "backend itself is unreachable. The bucket and table are left in place"
+        ),
+    )
+
+    cloud_state_unlock = cloud_state_sub.add_parser(
+        "unlock",
+        help="Release a state lock left held by a run that was killed mid-apply",
+    )
+    cloud_state_unlock.add_argument(
+        "--lock-id",
+        required=True,
+        help="The lock id Terraform reports in the error that refused to run (`Lock Info: ID: ...`)",
+    )
+
+    cloud_state_backup = cloud_state_sub.add_parser(
+        "backup",
+        help="Write the current state to a local file, whichever backend holds it",
+    )
+    cloud_state_backup.add_argument(
+        "--output",
+        help="Where to write the backup (default: ~/.nyxGPT/cloud/terraform.tfstate.backup)",
+    )
+
+    cloud_state_versions = cloud_state_sub.add_parser(
+        "versions",
+        help="List the stored versions of the remote state file, newest first",
+    )
+    cloud_state_versions.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="How many versions to show (default: 20)",
+    )
+
+    cloud_state_restore = cloud_state_sub.add_parser(
+        "restore",
+        help="Make a previous version of the remote state the current one",
+    )
+    cloud_state_restore.add_argument(
+        "--version-id",
+        required=True,
+        help="The S3 version id to restore -- see `nyxgpt cloud state versions`",
+    )
+
+    # `cloud deploy` / `destroy` / `tunnel` -- the one-command story (P6-11,
+    # #3513). `deploy` applies the substrate above, installs a *published*
+    # nyxGPT release onto the instance (never a clone -- CLAUDE.md's
+    # repo-less requirement), opens the SSH tunnel that is the only access
+    # path (product_management/DECISION_PRIVATE_ACCESS_MECHANISM.md), waits
+    # for health through it, and prints the localhost URLs.
+    cloud_deploy_p = cloud_sub.add_parser(
+        "deploy",
+        help=(
+            "Provision AWS and deploy the full stack onto it, then open the access "
+            "tunnel and print the URLs (idempotent -- re-runs reconcile)"
+        ),
+    )
+    _add_infra_provision_flags(cloud_deploy_p)
+
+    def _add_ssh_access_flags(parser: argparse.ArgumentParser) -> None:
+        """Attach the flags describing how to SSH to the instance."""
+        parser.add_argument(
+            "--ssh-user",
+            help="Login user on the instance (default: ec2-user, the Amazon Linux 2023 default)",
+        )
+        parser.add_argument(
+            "--identity-file",
+            help=(
+                "Private key to authenticate with (default: let ssh use its own "
+                "~/.ssh defaults and agent)"
+            ),
+        )
+        parser.add_argument(
+            "--host",
+            help=(
+                "Target host instead of the provisioned instance recorded in "
+                "~/.nyxGPT/cloud/state.json"
+            ),
+        )
+
+    _add_ssh_access_flags(cloud_deploy_p)
+    cloud_deploy_p.add_argument(
+        "--version",
+        dest="version",
+        help=(
+            "Published nyxGPT release to install on the instance (default: the version "
+            "of this CLI, then whatever the last deploy used)"
+        ),
+    )
+    cloud_deploy_p.add_argument(
+        "--skip-observability",
+        action="store_true",
+        help="Deploy the core app only, without the monitoring/logging/tracing/errors stack",
+    )
+    cloud_deploy_p.add_argument(
+        "--no-tunnel",
+        action="store_true",
+        help=(
+            "Do not open the access tunnel (and therefore do not health-check through it) "
+            "-- prints the `nyxgpt cloud tunnel` command to run instead"
+        ),
+    )
+    cloud_deploy_p.add_argument(
+        "--health-timeout",
+        type=float,
+        help="Seconds to wait for the deployed stack to answer /health (default: 900)",
+    )
+    cloud_deploy_p.add_argument(
+        "--ssh-timeout",
+        type=float,
+        help="Seconds to wait for the instance to accept SSH after apply (default: 300)",
+    )
+    cloud_deploy_p.add_argument(
+        "--status",
+        action="store_true",
+        help="Report the deployment's state as JSON instead of deploying (touches nothing)",
+    )
+
+    cloud_destroy_p = cloud_sub.add_parser(
+        "destroy",
+        help="Close the access tunnel and tear the whole cloud deployment down",
+    )
+    _add_infra_provision_flags(cloud_destroy_p)
+    cloud_destroy_p.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirm the teardown (required -- data that exists only on the instance is lost)",
+    )
+
+    cloud_tunnel_p = cloud_sub.add_parser(
+        "tunnel",
+        help=(
+            "Open the SSH tunnel to the deployment and print the localhost URLs for the "
+            "app, web UI, and every enabled observability UI"
+        ),
+    )
+    _add_ssh_access_flags(cloud_tunnel_p)
+    cloud_tunnel_p.add_argument(
+        "--background",
+        action="store_true",
+        help="Return immediately, leaving the tunnel running (default: hold it in the foreground)",
+    )
+    cloud_tunnel_p.add_argument(
+        "--stop",
+        action="store_true",
+        help="Close a tunnel previously opened with --background",
+    )
+    cloud_tunnel_p.add_argument(
+        "--status",
+        action="store_true",
+        help="Report whether a background tunnel is open, and what it forwards",
+    )
+
+    # `cloud smoke` -- the cloud counterpart of scripts/smoke-test.sh (P6-17,
+    # #3515). Deploys, verifies chat/RAG/observability over the access tunnel,
+    # and always tears the deployment down again -- on failure as well as on
+    # success, so a run can never leave billed AWS resources behind. A wrapped
+    # command rather than a repo script because P6-16 accepts the cloud path
+    # from a machine with no checkout (CLAUDE.md, repo-less portability).
+    cloud_smoke_p = cloud_sub.add_parser(
+        "smoke",
+        help=(
+            "End-to-end cloud test: deploy, verify chat/RAG/observability over the "
+            "access tunnel, then tear the deployment down (always, even on failure)"
+        ),
+    )
+    _add_infra_provision_flags(cloud_smoke_p)
+    _add_ssh_access_flags(cloud_smoke_p)
+    cloud_smoke_p.add_argument(
+        "--version",
+        dest="version",
+        help="Published nyxGPT release to deploy and test (default: the version of this CLI)",
+    )
+    cloud_smoke_p.add_argument(
+        "--skip-observability",
+        action="store_true",
+        help=(
+            "Deploy and verify the core app only, skipping the "
+            "monitoring/logging/tracing/errors stack and its reachability check"
+        ),
+    )
+    cloud_smoke_p.add_argument(
+        "--skip-deploy",
+        action="store_true",
+        help=(
+            "Verify the deployment that already exists instead of deploying one "
+            "(still torn down afterwards -- requires --yes, or --keep to leave it up)"
+        ),
+    )
+    cloud_smoke_p.add_argument(
+        "--keep",
+        action="store_true",
+        help=(
+            "Leave the deployment running after the test instead of destroying it. "
+            "It keeps billing until you run `nyxgpt cloud destroy --yes`"
+        ),
+    )
+    cloud_smoke_p.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirm destroying a deployment this run did not create (with --skip-deploy)",
+    )
+    cloud_smoke_p.add_argument(
+        "--api-key",
+        help=(
+            "API key for the deployed stack (default: $NYXGPT_AUTH_API_KEY, then the "
+            "key the instance itself is configured with)"
+        ),
+    )
+    cloud_smoke_p.add_argument(
+        "--health-timeout",
+        type=float,
+        help="Seconds to wait for the deployed stack to answer /health (default: 900)",
+    )
+    cloud_smoke_p.add_argument(
+        "--ssh-timeout",
+        type=float,
+        help="Seconds to wait for the instance to accept SSH after apply (default: 300)",
+    )
+    cloud_smoke_p.add_argument(
+        "--model-timeout",
+        type=float,
+        help="Seconds to allow for pulling the default model on the instance (default: 1800)",
+    )
+    cloud_smoke_p.add_argument(
+        "--chat-timeout",
+        type=float,
+        help="Seconds to allow for the chat round-trip (default: 300)",
+    )
+    cloud_smoke_p.add_argument(
+        "--rag-timeout",
+        type=float,
+        help="Seconds to allow for each RAG ingest/query call (default: 120)",
+    )
+    cloud_smoke_p.add_argument(
+        "--observability-timeout",
+        type=float,
+        help="Seconds to wait for every observability UI to answer (default: 300)",
+    )
+    cloud_smoke_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the full machine-readable record of the run instead of a summary",
     )
 
     # Add canary command (local weighted-traffic canary rollout on a local k8s cluster --
@@ -2486,6 +2959,21 @@ def cli(argv: list[str] | None = None) -> int:
 
     if cmd == "cloud" and args.cloud_cmd == "user-data":
         return cloud_provision_mod.user_data(args)
+
+    if cmd == "cloud" and args.cloud_cmd == "credentials-setup":
+        return run_aws_credentials_setup(cfg_path=args.config)
+
+    if cmd == "cloud" and args.cloud_cmd == "infra":
+        return cloud_infra_mod.infra_command(args)
+
+    if cmd == "cloud" and args.cloud_cmd == "state":
+        return cloud_state_mod.state_command(args)
+
+    if cmd == "cloud" and args.cloud_cmd in ("deploy", "destroy", "tunnel"):
+        return cloud_deploy_mod.deploy_command(args)
+
+    if cmd == "cloud" and args.cloud_cmd == "smoke":
+        return cloud_smoke_mod.smoke_command(args)
 
     if cmd == "canary":
         # Same per-invocation correlation id as the `ops` dispatch above --

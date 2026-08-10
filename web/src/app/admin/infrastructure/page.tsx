@@ -161,9 +161,11 @@ export default function InfrastructurePage() {
         and <code>docs/kubernetes.md</code>. Neither requires a pre-existing cluster: the
         Kubernetes path provisions a local <code>kind</code> cluster automatically when none is
         reachable, and uses an existing cluster (minikube, Docker Desktop, ...) as-is when one
-        is. Cloud targets are future work, not yet implemented. This page only reports status;
-        installing and destroying infrastructure is a <code>nyxgpt ops</code> CLI operation, not
-        a web one.
+        is. The AWS substrate is provisioned separately — see{' '}
+        <a href="/admin/cloud-infrastructure">AWS Cloud Infrastructure</a> or{' '}
+        <code>nyxgpt cloud infra</code>. This page only reports the status of local deployments;
+        installing and destroying local infrastructure is a <code>nyxgpt ops</code> CLI
+        operation, not a web one.
       </div>
 
       {error && (

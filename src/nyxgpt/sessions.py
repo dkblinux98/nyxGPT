@@ -8,6 +8,7 @@ searching, merging, exporting, and batch-updating sessions.
 
 from __future__ import annotations
 
+import contextlib
 import html
 import json
 import logging
@@ -17,7 +18,8 @@ import sys
 import tempfile
 import time
 import uuid
-from contextlib import contextmanager
+from collections.abc import Callable
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -27,6 +29,7 @@ from nyxgpt.config import (
     get_default_model,
     get_ollama_base_url,
     get_rag_enabled,
+    get_session_backend,
     get_sessions_dir,
     load_config,
 )
@@ -344,6 +347,82 @@ def meta_file_for(session_file: Path) -> Path:
     raise ValueError(f"Metadata file resolves outside the allowed data area: {candidate!r}")
 
 
+# --- Storage backend dispatch (#3590) ---
+#
+# Sessions are stored either as JSON files under `sessions_dir` (the legacy
+# "file" backend) or in the stack's Cassandra (`[nyxgpt] session_backend =
+# cassandra`, see nyxgpt.session_db). Every operation in this module funnels
+# through the primitives below (load/save messages+meta, exists, list,
+# delete, rename), so dispatching here covers all callers (API, CLI, chat,
+# MCP). Under the DB backend the Path values produced by session_file_for()
+# still act as validated name/directory tokens -- they are just never touched
+# on disk.
+
+
+def _use_db_backend() -> bool:
+    """Return whether the Cassandra session backend is active."""
+    try:
+        cfg = load_config(None)
+        return get_session_backend(cfg) == "cassandra"
+    except Exception:
+        return False
+
+
+def _db_store() -> Any:
+    """Return the Cassandra session store singleton (imported lazily)."""
+    from nyxgpt import session_db
+
+    return session_db.get_session_store()
+
+
+def _db_name_for(path: Path) -> str:
+    """Derive the session name from a session or metadata file path."""
+    n = path.name
+    if n.endswith(".meta.json"):
+        return n[: -len(".meta.json")]
+    return path.stem
+
+
+def session_file_exists(session_file: Path) -> bool:
+    """Backend-aware existence check for a `session_file_for()` path."""
+    if _use_db_backend():
+        return bool(_db_store().exists(_db_name_for(session_file)))
+    return session_file.exists()
+
+
+def session_exists(name: str, sessions_dir: Path | None = None) -> bool:
+    """Return whether a session named `name` exists in the active backend.
+
+    Raises:
+        ValueError: If `name` is not a valid session name.
+    """
+    sessions_dir = sessions_dir or default_sessions_dir()
+    return session_file_exists(session_file_for(name, sessions_dir))
+
+
+def session_lock(file_path: Path, timeout: float = 5.0) -> AbstractContextManager[int]:
+    """Advisory lock for a session file under the file backend.
+
+    Under the DB backend this is a no-op: Cassandra row writes are atomic per
+    partition, and a host-local file lock cannot coordinate multiple API
+    instances anyway (which is the point of the DB backend).
+    """
+    if _use_db_backend():
+        return nullcontext(-1)
+    return file_lock(file_path, timeout=timeout)
+
+
+def _delete_session_storage(session_file: Path, meta_file: Path) -> None:
+    """Delete a session's stored data in the active backend (best effort)."""
+    if _use_db_backend():
+        _db_store().delete(_db_name_for(session_file))
+        return
+    if session_file.exists():
+        session_file.unlink()
+    if meta_file.exists():
+        meta_file.unlink()
+
+
 def iso_now() -> str:
     """Return the current local time as an ISO 8601 string (second precision)."""
     return datetime.now().isoformat(timespec="seconds")
@@ -370,6 +449,8 @@ def load_session_messages(session_file: Path) -> list[dict[str, str]]:
         List of valid message dicts (each with string "role" and "content").
         Returns an empty list if the file is missing, unreadable, or invalid.
     """
+    if _use_db_backend():
+        return cast(list[dict[str, str]], _db_store().load_messages(_db_name_for(session_file)))
     # Inline sink-side barrier (CodeQL py/path-injection): CodeQL does not
     # credit caller-side sanitization (session_file_for/_resolve_sessions_dir)
     # across the function boundary, so every function containing filesystem
@@ -433,6 +514,10 @@ def load_session_messages_paginated(
         tuple of (messages, total_count) where messages is the paginated slice
         and total_count is the total number of valid messages in the file
     """
+    if _use_db_backend():
+        msgs = _db_store().load_messages(_db_name_for(session_file))
+        end = offset + limit if limit is not None else len(msgs)
+        return (msgs[offset:end], len(msgs))
     # Inline sink-side barrier (CodeQL py/path-injection) -- see
     # load_session_messages for rationale.
     real = os.path.realpath(str(session_file))
@@ -491,6 +576,9 @@ def save_session_messages(session_file: Path, messages: list[dict[str, str]]) ->
         ValueError: If `session_file` resolves outside the allowed data area
             (a write is refused loudly rather than silently dropped).
     """
+    if _use_db_backend():
+        _db_store().save_messages(_db_name_for(session_file), messages)
+        return
     # Inline sink-side barrier (CodeQL py/path-injection) -- see
     # load_session_messages for rationale.
     real = os.path.realpath(str(session_file))
@@ -513,6 +601,8 @@ def save_session_messages(session_file: Path, messages: list[dict[str, str]]) ->
 
 def load_session_meta(meta_file: Path) -> SessionMetaDict:
     """Load session metadata from `meta_file`, returning `{}` if absent/invalid."""
+    if _use_db_backend():
+        return cast(SessionMetaDict, _db_store().load_meta(_db_name_for(meta_file)))
     # Inline sink-side barrier (CodeQL py/path-injection) -- see
     # load_session_messages for rationale.
     real = os.path.realpath(str(meta_file))
@@ -550,6 +640,9 @@ def save_session_meta(meta_file: Path, meta: SessionMetaDict) -> None:
     Raises:
         ValueError: If `meta_file` resolves outside the allowed data area.
     """
+    if _use_db_backend():
+        _db_store().save_meta(_db_name_for(meta_file), meta)
+        return
     # Inline sink-side barrier (CodeQL py/path-injection) -- see
     # load_session_messages for rationale.
     real = os.path.realpath(str(meta_file))
@@ -663,10 +756,8 @@ def init_session(
     session_file = session_file_for(session_name, sessions_dir)
     meta_file = meta_file_for(session_file)
 
-    if new_session and session_file.exists():
-        session_file.unlink()
-        if meta_file.exists():
-            meta_file.unlink()
+    if new_session and session_file_exists(session_file):
+        _delete_session_storage(session_file, meta_file)
 
     messages = load_session_messages(session_file)
     messages = apply_system_prompt(messages, system)
@@ -840,6 +931,8 @@ def list_sessions(cfg: Any | None) -> list[dict[str, Any]]:
         List of dicts with keys "name", "file", "messages" (count),
         "modified" (timestamp string), and "meta" (session metadata)
     """
+    if _use_db_backend():
+        return cast(list[dict[str, Any]], _db_store().list_sessions())
     # Accept either a config object or a Path
     if isinstance(cfg, Path):
         sessions_dir = cfg
@@ -892,8 +985,10 @@ def delete_session(name: str, sessions_dir: Path | None) -> bool:
     """
     sessions_dir = sessions_dir or default_sessions_dir()
     sf = session_file_for(name, sessions_dir)
+    if _use_db_backend():
+        return bool(_db_store().delete(name))
     mf = meta_file_for(sf)
-    if not sf.exists():
+    if not session_file_exists(sf):
         return False
     sf.unlink()
     if mf.exists():
@@ -910,6 +1005,10 @@ def rename_session(old: str, new: str, sessions_dir: Path | None) -> tuple[bool,
     sessions_dir = sessions_dir or default_sessions_dir()
     old_file = session_file_for(old, sessions_dir)
     new_file = session_file_for(new, sessions_dir)
+
+    if _use_db_backend():
+        ok, msg = _db_store().rename(old, new)
+        return bool(ok), str(msg)
 
     if not old_file.exists():
         return False, "No such session"
@@ -936,7 +1035,7 @@ def set_pinned(name: str, pinned: bool, sessions_dir: Path | None) -> tuple[bool
     sessions_dir = sessions_dir or default_sessions_dir()
     sf = session_file_for(name, sessions_dir)
     mf = meta_file_for(sf)
-    if not sf.exists():
+    if not session_file_exists(sf):
         return False, "No such session"
     meta = load_session_meta(mf)
     meta = ensure_meta_defaults(meta)
@@ -954,7 +1053,7 @@ def add_tags(name: str, tags: list[str], sessions_dir: Path | None) -> tuple[boo
     sessions_dir = sessions_dir or default_sessions_dir()
     sf = session_file_for(name, sessions_dir)
     mf = meta_file_for(sf)
-    if not sf.exists():
+    if not session_file_exists(sf):
         return False, "No such session"
     meta = load_session_meta(mf)
     meta = ensure_meta_defaults(meta)
@@ -976,7 +1075,7 @@ def remove_tags(name: str, tags: list[str], sessions_dir: Path | None) -> tuple[
     sessions_dir = sessions_dir or default_sessions_dir()
     sf = session_file_for(name, sessions_dir)
     mf = meta_file_for(sf)
-    if not sf.exists():
+    if not session_file_exists(sf):
         return False, "No such session"
     meta = load_session_meta(mf)
     meta = ensure_meta_defaults(meta)
@@ -999,7 +1098,7 @@ def set_title(name: str, title: str, sessions_dir: Path | None) -> tuple[bool, s
     sessions_dir = sessions_dir or default_sessions_dir()
     sf = session_file_for(name, sessions_dir)
     mf = meta_file_for(sf)
-    if not sf.exists():
+    if not session_file_exists(sf):
         return False, "No such session"
     meta = load_session_meta(mf)
     meta = ensure_meta_defaults(meta)
@@ -1036,7 +1135,7 @@ def summarize_session(name: str, sessions_dir: Path | None) -> tuple[bool, str]:
         return False, "No such session"
     mf = meta_file_for(sf)
 
-    if not sf.exists():
+    if not session_file_exists(sf):
         return False, "No such session"
 
     msgs = load_session_messages(sf)
@@ -1123,7 +1222,7 @@ def export_session_markdown(name: str, sessions_dir: Path | None) -> tuple[bool,
         return False, "No such session"
     mf = meta_file_for(sf)
 
-    if not sf.exists():
+    if not session_file_exists(sf):
         return False, "No such session"
 
     msgs = load_session_messages(sf)
@@ -1212,7 +1311,7 @@ def export_session_json(name: str, sessions_dir: Path | None) -> tuple[bool, str
         return False, "No such session"
     mf = meta_file_for(sf)
 
-    if not sf.exists():
+    if not session_file_exists(sf):
         return False, "No such session"
 
     msgs = load_session_messages(sf)
@@ -1247,7 +1346,7 @@ def export_session_html(name: str, sessions_dir: Path | None) -> tuple[bool, str
         return False, "No such session"
     mf = meta_file_for(sf)
 
-    if not sf.exists():
+    if not session_file_exists(sf):
         return False, "No such session"
 
     msgs = load_session_messages(sf)
@@ -1495,7 +1594,7 @@ def sync_filename_with_title(
     sf = session_file_for(current_name, sessions_dir)
     mf = meta_file_for(sf)
 
-    if not sf.exists():
+    if not session_file_exists(sf):
         return False, "Session not found", current_name
 
     # Check if auto-sync is enabled
@@ -1527,13 +1626,13 @@ def sync_filename_with_title(
     new_sf = session_file_for(new_name, sessions_dir)
     new_mf = meta_file_for(new_sf)
 
-    if new_sf.exists():
+    if session_file_exists(new_sf):
         # Target exists - append counter to make unique
         counter = 1
         while True:
             candidate = f"{new_name}-{counter}"
             candidate_sf = session_file_for(candidate, sessions_dir)
-            if not candidate_sf.exists():
+            if not session_file_exists(candidate_sf):
                 new_name = candidate
                 new_sf = candidate_sf
                 new_mf = meta_file_for(new_sf)
@@ -1541,6 +1640,15 @@ def sync_filename_with_title(
             counter += 1
             if counter > 100:
                 return False, "Could not find unique filename", current_name
+
+    # DB backend: a rename is a row-atomic copy+delete in the store; no
+    # files or file locks are involved.
+    if _use_db_backend():
+        ok, msg = _db_store().rename(current_name, new_name)
+        if not ok:
+            return False, str(msg), current_name
+        log.info(f"Renamed session '{current_name}' -> '{new_name}'")
+        return True, "renamed", new_name
 
     # Atomic rename using copy-then-delete pattern with file locking
     try:
@@ -1632,10 +1740,10 @@ def edit_message(
     sf = session_file_for(session_name, sessions_dir)
     mf = meta_file_for(sf)
 
-    if not sf.exists():
+    if not session_file_exists(sf):
         return False, "No such session"
 
-    with file_lock(sf, timeout=5.0), file_lock(mf, timeout=5.0):
+    with session_lock(sf, timeout=5.0), session_lock(mf, timeout=5.0):
         messages = load_session_messages(sf)
 
         if message_index < 0 or message_index >= len(messages):
@@ -1686,10 +1794,10 @@ def truncate_after_message(
     sf = session_file_for(session_name, sessions_dir)
     mf = meta_file_for(sf)
 
-    if not sf.exists():
+    if not session_file_exists(sf):
         return False, "No such session"
 
-    with file_lock(sf, timeout=5.0), file_lock(mf, timeout=5.0):
+    with session_lock(sf, timeout=5.0), session_lock(mf, timeout=5.0):
         messages = load_session_messages(sf)
 
         if message_index < 0 or message_index >= len(messages):
@@ -1752,9 +1860,6 @@ def search_messages(
             }
         ]
     """
-    sessions_dir = _resolve_sessions_dir(sessions_dir or default_sessions_dir())
-    sessions_dir.mkdir(parents=True, exist_ok=True)
-
     if not query:
         return []
 
@@ -1767,8 +1872,44 @@ def search_messages(
 
     # Prepare search query
     search_query = query if case_sensitive else query.lower()
-
     results: list[dict[str, Any]] = []
+
+    if _use_db_backend():
+        store = _db_store()
+        rows = store.list_sessions()
+        if session_filter:
+            rows = [r for r in rows if r.get("name") == session_filter]
+        # Newest first, mirroring the file backend's mtime sort
+        rows.sort(key=lambda r: str(r.get("modified") or ""), reverse=True)
+        for row in rows:
+            session_name = str(row["name"])
+            meta = row.get("meta") or {}
+
+            def _title_from_row(m: dict[str, Any] = meta) -> Any:
+                return m.get("title")
+
+            try:
+                messages = store.load_messages(session_name)
+                if _collect_session_matches(
+                    session_name,
+                    messages,
+                    _title_from_row,
+                    query=query,
+                    search_query=search_query,
+                    case_sensitive=case_sensitive,
+                    role_filter=role_filter,
+                    results=results,
+                    limit=limit,
+                ):
+                    return results
+            except Exception as e:
+                log.warning(f"Error searching session {session_name}: {e}")
+                continue
+        return results
+
+    sessions_dir = _resolve_sessions_dir(sessions_dir or default_sessions_dir())
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
     session_files = [p for p in sessions_dir.glob("*.json") if not p.name.endswith(".meta.json")]
 
     # Filter to specific session if requested
@@ -1782,64 +1923,87 @@ def search_messages(
     for session_file in session_files:
         session_name = session_file.stem
 
+        # Lazy title load: metadata is only read once a match is found
+        def _title_from_file(sf: Path = session_file) -> Any:
+            return load_session_meta(meta_file_for(sf)).get("title")
+
         try:
-            # Load session messages
             messages = load_session_messages(session_file)
-
-            # Lazy load metadata - only load if we find matches
-            # This avoids loading metadata for sessions with no matches
-            session_title: str | None = None
-            meta_loaded = False
-
-            # Search through messages
-            for idx, msg in enumerate(messages):
-                role = msg.get("role", "")
-                content = msg.get("content", "")
-                timestamp = msg.get("timestamp")
-
-                # Apply role filter
-                if role_filter and role != role_filter:
-                    continue
-
-                # Perform search
-                search_content = content if case_sensitive else content.lower()
-                if search_query not in search_content:
-                    continue
-
-                # Found a match - load metadata if not already loaded
-                if not meta_loaded:
-                    meta = load_session_meta(meta_file_for(session_file))
-                    session_title = meta.get("title")
-                    meta_loaded = True
-
-                # Count matches
-                match_count = search_content.count(search_query)
-
-                # Generate content preview with match context
-                preview = _generate_preview(content, query, case_sensitive)
-
-                results.append(
-                    {
-                        "session_name": session_name,
-                        "session_title": session_title,
-                        "message_index": idx,
-                        "role": role,
-                        "content": content,
-                        "content_preview": preview,
-                        "timestamp": timestamp,
-                        "matches": match_count,
-                    }
-                )
-
-                # Check limit
-                if len(results) >= limit:
-                    return results
-
+            if _collect_session_matches(
+                session_name,
+                messages,
+                _title_from_file,
+                query=query,
+                search_query=search_query,
+                case_sensitive=case_sensitive,
+                role_filter=role_filter,
+                results=results,
+                limit=limit,
+            ):
+                return results
         except Exception as e:
             log.warning(f"Error searching session {session_name}: {e}")
             continue
 
     return results
+
+
+def _collect_session_matches(
+    session_name: str,
+    messages: list[dict[str, Any]],
+    get_title: Callable[[], Any],
+    *,
+    query: str,
+    search_query: str,
+    case_sensitive: bool,
+    role_filter: str | None,
+    results: list[dict[str, Any]],
+    limit: int,
+) -> bool:
+    """Append one session's matches to `results`; True once `limit` is reached.
+
+    `get_title` is called lazily, only after the first match in the session,
+    so sessions with no matches never load their metadata.
+    """
+    session_title: str | None = None
+    title_loaded = False
+
+    for idx, msg in enumerate(messages):
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        timestamp = msg.get("timestamp")
+
+        # Apply role filter
+        if role_filter and role != role_filter:
+            continue
+
+        # Perform search
+        search_content = content if case_sensitive else content.lower()
+        if search_query not in search_content:
+            continue
+
+        if not title_loaded:
+            title = get_title()
+            session_title = title if isinstance(title, str) else None
+            title_loaded = True
+
+        results.append(
+            {
+                "session_name": session_name,
+                "session_title": session_title,
+                "message_index": idx,
+                "role": role,
+                "content": content,
+                "content_preview": _generate_preview(content, query, case_sensitive),
+                "timestamp": timestamp,
+                "matches": search_content.count(search_query),
+            }
+        )
+
+        if len(results) >= limit:
+            return True
+
+    return False
 
 
 def _generate_preview(
@@ -1951,7 +2115,7 @@ def merge_sessions(
 
     # Check if output session already exists
     output_file = session_file_for(output_name, sessions_dir)
-    if output_file.exists():
+    if session_file_exists(output_file):
         return False, f"Output session '{output_name}' already exists"
 
     # Check if all input sessions exist
@@ -1962,7 +2126,7 @@ def merge_sessions(
             return False, f"Invalid session name '{name}': {e}"
 
         sf = session_file_for(name, sessions_dir)
-        if not sf.exists():
+        if not session_file_exists(sf):
             return False, f"Session '{name}' not found"
 
     # Collect all messages and metadata from input sessions
@@ -2040,13 +2204,8 @@ def merge_sessions(
         save_session_meta(output_meta_file, merged_meta)
     except Exception as e:
         # Clean up on failure
-        try:
-            if output_file.exists():
-                output_file.unlink()
-            if output_meta_file.exists():
-                output_meta_file.unlink()
-        except Exception:
-            pass
+        with contextlib.suppress(Exception):
+            _delete_session_storage(output_file, output_meta_file)
         return False, f"Failed to save merged session: {e}"
 
     message_count = len(all_messages)
@@ -2219,7 +2378,7 @@ def batch_update_metadata(
             sf = session_file_for(name, sessions_dir)
             mf = meta_file_for(sf)
 
-            if not sf.exists():
+            if not session_file_exists(sf):
                 failed_names.append(name)
                 continue
 
@@ -2247,6 +2406,9 @@ def batch_update_metadata(
 __all__ = [
     "default_sessions_dir",
     "session_file_for",
+    "session_file_exists",
+    "session_exists",
+    "session_lock",
     "meta_file_for",
     "iso_now",
     "token_estimate_from_messages",

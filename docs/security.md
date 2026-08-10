@@ -40,6 +40,16 @@ run `nyxgpt ops env-sync` instead, which copies them out of config.ini. This
 keeps config.ini as the one place you ever look for or rotate a secret,
 regardless of whether you're running nyxGPT natively or via Compose.
 
+**Exception for cloud (AWS) deploys:** `[auth] api_key`, `[openai]
+api_key`, and `[github] pat` must never be baked into an AMI, user-data
+script, tfvars file, or `config.ini` on a cloud instance. Setting
+`[secrets] provider` (`ssm` or `secretsmanager`) resolves those three from
+AWS SSM Parameter Store / Secrets Manager at read time instead -- see
+[`docs/cloud.md#cloud-secrets-ssm--secrets-manager`](cloud.md#cloud-secrets-ssm--secrets-manager)
+for setup and rotation. Every other secret in the table above, and every
+local deploy, keeps `config.ini` as its source of truth exactly as
+described here.
+
 If `monitoring.grafana_admin_password` is left unset, `nyxgpt ops install`
 falls back to an ops-managed secret it generates and stores at
 `~/.nyxGPT/secrets/grafana-admin-password`, and always deterministically
@@ -151,7 +161,10 @@ routes this outside the cluster by default — see
 
 **AWS deployments** use the SSH-tunnel model above exclusively — no app or
 observability port is ever opened in the security group, only port 22,
-scoped to the owner's current public IP. That IP can change (ISP renewal,
+scoped to the owner's current public IP. `nyxgpt cloud tunnel` is the wrapped
+form of that tunnel (`nyxgpt cloud deploy` opens it for you and prints the
+resulting `localhost` URLs); there is no URL that reaches the instance
+without it. That IP can change (ISP renewal,
 travel, tethering), which locks the owner out, including SSH — refresh the
 rule with `nyxgpt cloud allow-ip`, which talks only to the AWS API, so it
 works even while locked out. See [`docs/cloud.md`](cloud.md#lockout-recovery)

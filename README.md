@@ -181,8 +181,19 @@ are documented in [Docker Compose](docs/docker-compose.md),
 [Kubernetes](docs/kubernetes.md), and [Terraform](docs/terraform.md) —
 each is driven through `nyxgpt`-wrapped commands, never a raw
 `docker`/`docker compose`/`kubectl`/`terraform` invocation. AWS deployments
-are `nyxgpt cloud`-wrapped too — see [Cloud (AWS)](docs/cloud.md), currently
-covering `nyxgpt cloud allow-ip` (SSH security-group lockout recovery).
+are `nyxgpt cloud`-wrapped too — see [Cloud (AWS)](docs/cloud.md), covering
+`nyxgpt cloud deploy` (one command: provisions AWS, installs a published
+nyxGPT release onto the instance, opens the SSH tunnel that is the only way
+in, waits for health, and prints the `localhost` URLs), its
+`nyxgpt cloud destroy` and `nyxgpt cloud tunnel` counterparts,
+`nyxgpt cloud smoke` (the end-to-end cloud test: deploys, verifies a chat
+round-trip, RAG ingest+query and every observability UI over the tunnel,
+then always tears the deployment down so nothing is left billing),
+`nyxgpt cloud infra` (the AWS substrate underneath it: a VPC, subnet, an
+SSH-only security group scoped to your own IP, and one EC2 instance),
+`nyxgpt cloud state` (moves that substrate's Terraform state to a shared,
+versioned S3 backend with DynamoDB locking, and recovers it when a run
+fails), and `nyxgpt cloud allow-ip` (SSH security-group lockout recovery).
 
 ---
 

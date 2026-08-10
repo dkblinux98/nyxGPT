@@ -136,6 +136,7 @@ jobs:
           STATUS_FOR_RELEASE=${{ vars.STATUS_FOR_RELEASE }}
 
           RELEASE_BRANCH=${{ vars.RELEASE_BRANCH }}
+          RELEASE_ISSUE_NUMBER=${{ vars.RELEASE_ISSUE_NUMBER }}
           EOF
 
           echo "NYXGPT_CONFIG_FILE=$CFG" >> "$GITHUB_ENV"
@@ -156,6 +157,7 @@ jobs:
 
       - name: Verify issue is assigned to developer-agent (comment trigger only)
         if: github.event_name == 'issue_comment'
+        id: verify_assignment
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
@@ -167,6 +169,14 @@ jobs:
             });
             const devAgent = '${{ vars.DEV_AGENT }}';
             const isAssigned = issue.data.assignees.some(a => a.login === devAgent);
+            // #3689: this is a policy gate, not an infra/implementation
+            // failure -- gate_stopped lets the Phase 0 self-heal entry
+            // point (and the post-verification-failure comment) tell the
+            // difference and skip themselves instead of misfiring (observed
+            // on this very issue: run 31320486307 posted a misleading
+            // "Failed after 3 attempts" comment and then ran a full Phase 3
+            // Claude diagnosis for a plain "not assigned yet" gate).
+            core.setOutput('gate_stopped', isAssigned ? 'false' : 'true');
             if (!isAssigned) {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
@@ -199,80 +209,76 @@ jobs:
             });
 
       - name: Verify issue is In Progress in ProjectV2 (otherwise exit)
+        id: verify_status
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: |
-          set -euo pipefail
-
+          # #3689: the previous version of this check ran inside a nested
+          # `bash -lc '...'` subshell and called `exit 0` from there to stop
+          # the workflow when the issue wasn't In Progress. That `exit 0`
+          # only ended the nested subshell -- it never propagated to this
+          # (outer) script, which fell through to `echo "::endgroup::"` and
+          # reported success, so every later step still ran regardless of
+          # status. Root cause of the incident this issue tracks: flipping
+          # #3687 out of In Progress at 14:39:55 did NOT stop
+          # RETRY_IMPLEMENTATION-triggered runs from proceeding to "Check if
+          # PR already exists" at 14:39:30->14:41, ~14:42, and 14:44:48.
+          #
+          # Fix: read the status inside a real command-substitution subshell
+          # (whose exit code IS visible via $? to this script) and actually
+          # fail the step when the gate should stop the run. Also uses the
+          # `issue_status` helper (gh_project.sh) instead of re-implementing
+          # a full paginated project-items scan inline -- issue->projectItems
+          # is O(1) vs O(project size).
           echo "::group::Verifying issue #$ISSUE_NUMBER status"
-          bash -lc '
+          set +e
+          STATUS_OUTPUT="$(
             set -euo pipefail
             source scripts/agents/lib/gh_project.sh
             load_config
             require_gh_auth
-
-            issue="$ISSUE_NUMBER"
-            project_id="$(get_project_id)"
-
-            q='\''query($project:ID!, $after:String){
-              node(id:$project){
-                ... on ProjectV2{
-                  items(first:100, after:$after){
-                    pageInfo{ hasNextPage endCursor }
-                    nodes{
-                      content{ __typename ... on Issue { number } }
-                      fieldValues(first:50){
-                        nodes{
-                          __typename
-                          ... on ProjectV2ItemFieldSingleSelectValue {
-                            field{ ... on ProjectV2SingleSelectField { name } }
-                            name
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }'\''
-
-            after=""
-            found=0
-            while :; do
-              resp="$(graphql "$q" -F project="$project_id" -F after="$after")"
-
-              status="$(echo "$resp" | jq -r --argjson n "$issue" --arg f "$STATUS_FIELD" '\''
-                .data.node.items.nodes[]
-                | select(.content.__typename=="Issue" and .content.number==$n)
-                | (.fieldValues.nodes[]
-                    | select(.__typename=="ProjectV2ItemFieldSingleSelectValue" and .field.name==$f)
-                    | .name) // empty
-              '\'' | head -n 1)"
-
-              if [[ -n "$status" ]]; then
-                echo "::notice::Issue #$issue status=$status"
-                if [[ "$status" != "$STATUS_IN_PROGRESS" ]]; then
-                  echo "::warning::Not In Progress; exiting workflow."
-                  exit 0
-                fi
-                found=1
-                break
-              fi
-
-              has_next="$(echo "$resp" | jq -r ".data.node.items.pageInfo.hasNextPage")"
-              cursor="$(echo "$resp" | jq -r ".data.node.items.pageInfo.endCursor // empty")"
-              [[ "$has_next" == "true" && -n "$cursor" ]] || break
-              after="$cursor"
-            done
-
-            if [[ "$found" != "1" ]]; then
-              echo "::warning::Issue not found in project; exiting workflow."
-              exit 0
+            status="$(issue_status "$ISSUE_NUMBER")"
+            if [[ -z "$status" ]]; then
+              echo "::warning::Issue not found in project." >&2
+              exit 3
             fi
-          '
+            echo "::notice::Issue #$ISSUE_NUMBER status=$status" >&2
+            if [[ "$status" != "$STATUS_IN_PROGRESS" ]]; then
+              echo "::warning::Not In Progress (status=$status)." >&2
+              exit 3
+            fi
+            echo "$status"
+          )"
+          RC=$?
+          set -e
           echo "::endgroup::"
+
+          if [[ $RC -eq 0 ]]; then
+            echo "gate_stopped=false" >> "$GITHUB_OUTPUT"
+          elif [[ $RC -eq 3 ]]; then
+            echo "gate_stopped=true" >> "$GITHUB_OUTPUT"
+            echo "::error::Issue #$ISSUE_NUMBER is not In Progress; stopping the workflow (manual circuit breaker engaged -- this is an intentional stop, not a failure requiring self-heal)."
+            gh issue comment "$ISSUE_NUMBER" --body "⏹️ **Developer Agent**: Stopping -- issue is no longer In Progress in the project (or is not in the project). This run will not proceed past this check. If this was a manual circuit breaker, no action is needed; move the issue back to In Progress and comment \`RETRY_IMPLEMENTATION\` to resume." 2>/dev/null || true
+            exit 1
+          else
+            # #3689 review: RC here is neither 0 (verified In Progress) nor
+            # 3 (this check's own explicit "not in progress" signal) -- it's
+            # a genuine check failure (e.g. require_gh_auth's auth error, or
+            # issue_status's underlying GraphQL call erroring on a transient
+            # API hiccup). Do NOT set gate_stopped=true: that would make the
+            # downstream `failure() && gate_stopped != 'true'` self-heal
+            # conditions treat this run as an intentional policy-gate stop
+            # and skip themselves, silently letting the run proceed past
+            # this step as if the In-Progress status had been verified when
+            # it wasn't -- the exact fail-open bug this rewrite was meant to
+            # close, just via a different trigger. Leave gate_stopped unset
+            # and fail with the original exit code so the run is routed
+            # into the normal self-heal chain (Phase 0-3) instead.
+            echo "::error::Failed to verify issue #$ISSUE_NUMBER status (exit $RC) -- not a policy-gate stop; routing to self-heal."
+            exit "$RC"
+          fi
 
       - name: Check if PR already exists
         id: check_pr
@@ -283,16 +289,32 @@ jobs:
           set -euo pipefail
           ISSUE="${{ github.event.issue.number }}"
 
-          # Check for existing PRs linked to this issue (including merged/closed ones)
-          # Look for PRs that have "Closes #ISSUE" in the body
-          PR_DATA=$(gh pr list --state all --json number,body,state,headRefName \
-            --jq ".[] | select(.body | contains(\"Closes #${ISSUE}\")) | {number, state, headRefName}" \
-            | head -1 || echo "")
+          # Check for existing PRs linked to this issue (including merged/closed
+          # ones). Look for a PR with "Closes #ISSUE" in the body via the REST
+          # Search API (its own rate pool, separate from GraphQL and core
+          # REST) instead of paging every PR in the repo via gh pr list.
+          FOUND_PR=$(gh api search/issues \
+            --method GET \
+            -f q="\"Closes #${ISSUE}\" in:body type:pr repo:${{ github.repository }}" \
+            --jq '.items[0].number // empty')
 
-          if [[ -n "$PR_DATA" ]]; then
-            EXISTING_PR=$(echo "$PR_DATA" | jq -r '.number')
-            PR_STATE=$(echo "$PR_DATA" | jq -r '.state')
-            PR_BRANCH=$(echo "$PR_DATA" | jq -r '.headRefName')
+          # The Search API index is not guaranteed to be immediately
+          # consistent with a just-created/just-updated PR. Fall back to a
+          # direct (authoritative, if heavier) REST list scan when the
+          # search turns up nothing, so a lagging index can't cause a
+          # duplicate PR to be created for this issue.
+          if [[ -z "$FOUND_PR" ]]; then
+            echo "::notice::Search API found no PR for issue #$ISSUE; falling back to a direct PR list scan"
+            FOUND_PR=$(gh api "repos/${{ github.repository }}/pulls?state=all&per_page=100" --paginate \
+              --jq ".[] | select(.body // \"\" | contains(\"Closes #${ISSUE}\")) | .number" \
+              | head -1)
+          fi
+
+          if [[ -n "$FOUND_PR" ]]; then
+            PR_JSON=$(gh api "repos/${{ github.repository }}/pulls/${FOUND_PR}")
+            EXISTING_PR="$FOUND_PR"
+            PR_STATE=$(echo "$PR_JSON" | jq -r 'if .merged then "MERGED" elif .state == "closed" then "CLOSED" else "OPEN" end')
+            PR_BRANCH=$(echo "$PR_JSON" | jq -r '.head.ref')
 
             echo "pr_exists=true" >> "$GITHUB_OUTPUT"
             echo "existing_pr=$EXISTING_PR" >> "$GITHUB_OUTPUT"
@@ -317,12 +339,14 @@ jobs:
           PR="${{ steps.check_pr.outputs.existing_pr }}"
 
           # Check if there are CHANGES_REQUESTED reviews (not comments!)
-          # Review agent posts actual GitHub PR Reviews with state CHANGES_REQUESTED
-          REVIEW_COMMENT=$(gh pr view "$PR" --json reviews --jq '
-            [.reviews[] |
-             select(.state == "CHANGES_REQUESTED")] |
-            last |
-            .body // ""
+          # Review agent posts actual GitHub PR Reviews with state CHANGES_REQUESTED.
+          # --jq runs once per fetched page, not once over the combined
+          # result set -- stream matching reviews across all pages first,
+          # then slurp+last in a second jq pass (see AGENTS.md).
+          REVIEW_COMMENT=$(gh api "repos/${{ github.repository }}/pulls/$PR/reviews" --paginate --jq '
+            .[] | select(.state == "CHANGES_REQUESTED")
+          ' | jq -s -r '
+            last | .body // ""
           ')
 
           # A PR that conflicts with its base also routes through the fix
@@ -331,7 +355,10 @@ jobs:
           # because the base moved (previously this escalated straight to a
           # human). Without this clause, an approved-but-conflicted PR with
           # no CHANGES_REQUESTED history would fall into the implement path.
-          MERGEABLE=$(gh pr view "$PR" --json mergeable --jq '.mergeable // ""')
+          # REST splits GraphQL's single MERGEABLE/CONFLICTING/UNKNOWN enum
+          # into mergeable (bool/null) + mergeable_state -- re-derive it.
+          MERGEABLE=$(gh api "repos/${{ github.repository }}/pulls/$PR" --jq \
+            'if .mergeable == null then "UNKNOWN" elif .mergeable_state == "dirty" then "CONFLICTING" else "MERGEABLE" end')
 
           if [[ -n "$REVIEW_COMMENT" || "$MERGEABLE" == "CONFLICTING" ]]; then
             echo "has_review_issues=true" >> "$GITHUB_OUTPUT"
@@ -386,6 +413,7 @@ jobs:
           track_progress: true
           show_full_output: true
           claude_args: >-
+            --model claude-opus-5
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
@@ -447,15 +475,20 @@ jobs:
           GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
         run: |
           PR="${{ steps.check_pr.outputs.existing_pr }}"
-          # Get the latest CHANGES_REQUESTED review (not comment)
-          gh pr view "$PR" --json reviews \
-            --jq '[.reviews[] | select(.state == "CHANGES_REQUESTED")] | last | .body' \
+          # Get the latest CHANGES_REQUESTED review (not comment).
+          # --jq runs once per fetched page -- stream matching reviews
+          # across all pages first, then slurp+last (see AGENTS.md).
+          gh api "repos/${{ github.repository }}/pulls/$PR/reviews" --paginate \
+            --jq '.[] | select(.state == "CHANGES_REQUESTED")' \
+            | jq -s -r 'last | .body' \
             > /tmp/review-comments.txt
           echo "Saved review feedback to /tmp/review-comments.txt"
 
-          # Extract structured critical_issues from hidden review comment if available
-          STRUCTURED_COMMENT=$(gh pr view "$PR" --json comments \
-            --jq '[.comments[] | select(.body | startswith("<!-- nyxgpt-structured-review:"))] | last | .body // ""')
+          # Extract structured critical_issues from hidden review comment if available.
+          # Same per-page --jq pitfall as above -- stream, then slurp+last.
+          STRUCTURED_COMMENT=$(gh api "repos/${{ github.repository }}/issues/$PR/comments" --paginate \
+            --jq '.[] | select(.body | startswith("<!-- nyxgpt-structured-review:"))' \
+            | jq -s -r 'last | .body // ""')
           if [[ -n "$STRUCTURED_COMMENT" ]]; then
             CRITICAL_ISSUES=$(echo "$STRUCTURED_COMMENT" \
               | sed 's/<!-- nyxgpt-structured-review: //' \
@@ -520,6 +553,7 @@ jobs:
           track_progress: true
           show_full_output: true
           claude_args: >-
+            --model claude-opus-5
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
@@ -541,13 +575,32 @@ jobs:
             ### Step 1: Ensure you're on the correct branch
             First, determine which branch this PR is from:
             ```bash
-            gh pr view ${{ steps.check_pr.outputs.existing_pr }} --json headRefName -q .headRefName
+            gh api repos/${{ github.repository }}/pulls/${{ steps.check_pr.outputs.existing_pr }} --jq .head.ref
             ```
 
             Then check it out. If checkout fails (branch doesn't exist locally, ref issues, etc.):
             - Diagnose the problem (read error message)
             - Fix it yourself (fetch, clean stale refs, recreate if needed)
             - Do NOT wait for human intervention
+
+            ### Step 1.5: Check for a huddle decision (#3687)
+            Check whether a comment containing `HUDDLE_DECISION:` exists on this PR
+            (`gh pr view ${{ steps.check_pr.outputs.existing_pr }} --comments`). If one
+            does, this fix cycle is executing the *agreed* plan from a review huddle,
+            not an independent decision:
+            - `HUDDLE_DECISION: proceed` -- fix per the review's stated issues as usual.
+            - `HUDDLE_DECISION: change-approach` -- follow the specific different
+              approach stated in that comment's "What happens next" section, not the
+              original approach.
+            - `HUDDLE_DECISION: descope` -- perform the specific descope stated in
+              that comment (e.g. delete a named flaky test, split off a follow-up
+              issue) rather than continuing to chase the original ask as-is.
+            - `HUDDLE_DECISION: escalate` -- do not attempt a fix; this cycle should
+              not normally run at all when escalate was chosen (the issue goes to the
+              owner instead), so if you see this, stop and note it in your summary
+              rather than pushing a speculative fix.
+            If no `HUDDLE_DECISION:` comment exists, this is an ordinary review-fix
+            cycle -- proceed as below.
 
             ### Step 2: Fix review issues
             1. Read the issues to fix:
@@ -560,7 +613,7 @@ jobs:
             3. Implement fixes for each issue
 
             ### Step 2.5: Resolve merge conflicts with the release branch (if any)
-            Check mergeability: `gh pr view ${{ steps.check_pr.outputs.existing_pr }} --json mergeable -q .mergeable`
+            Check mergeability: `gh api repos/${{ github.repository }}/pulls/${{ steps.check_pr.outputs.existing_pr }} --jq 'if .mergeable == null then "UNKNOWN" elif .mergeable_state == "dirty" then "CONFLICTING" else "MERGEABLE" end'`
             If it reports CONFLICTING (or a conflict-resolution comment on the
             PR/issue requests it):
             - `git fetch origin` and merge `origin/${{ vars.RELEASE_BRANCH }}` into the PR branch
@@ -665,6 +718,7 @@ jobs:
           track_progress: true
           show_full_output: true
           claude_args: >-
+            --model claude-opus-5
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
@@ -795,9 +849,12 @@ jobs:
           GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
         run: |
           ISSUE="${{ github.event.issue.number }}"
-          # Find the most recent progress comment posted by track_progress
-          PROGRESS_BODY=$(gh issue view "$ISSUE" --json comments \
-            --jq '[.comments[] | select(.body | test("- \\[[ x]\\]"))] | last | .body // ""')
+          # Find the most recent progress comment posted by track_progress.
+          # --jq runs once per fetched page -- stream matching comments
+          # across all pages first, then slurp+last (see AGENTS.md).
+          PROGRESS_BODY=$(gh api "repos/${{ github.repository }}/issues/$ISSUE/comments" --paginate \
+            --jq '.[] | select(.body | test("- \\[[ x]\\]"))' \
+            | jq -s -r 'last | .body // ""')
           if [[ -n "$PROGRESS_BODY" ]]; then
             TOTAL=$(echo "$PROGRESS_BODY" | grep -cE -- "- \[[ x]\]" || true)
             DONE=$(echo "$PROGRESS_BODY" | grep -cE -- "- \[x\]" || true)
@@ -984,6 +1041,7 @@ jobs:
           track_progress: true
           show_full_output: true
           claude_args: >-
+            --model claude-opus-5
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
@@ -1093,6 +1151,7 @@ jobs:
           track_progress: true
           show_full_output: true
           claude_args: >-
+            --model claude-opus-5
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
@@ -1174,7 +1233,14 @@ jobs:
           echo "✅ All verification checks passed on final attempt!"
 
       - name: Post verification failure comment
-        if: failure()
+        # #3689: skip when the job failed at a policy gate (not In Progress
+        # / not assigned) -- those already posted their own accurate
+        # comment; this generic "Failed after 3 attempts" message would be
+        # misleading (and never even reached the verification steps).
+        if: |
+          failure() &&
+          steps.verify_assignment.outputs.gate_stopped != 'true' &&
+          steps.verify_status.outputs.gate_stopped != 'true'
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
@@ -1329,8 +1395,11 @@ jobs:
               [ -z "$FAST_CLAUDE_STEPS" ] && FAST_CLAUDE_STEPS=0
             fi
 
-            EC_ATTEMPTS=$(gh issue view "$ISSUE" --json comments \
-              --jq '[.comments[].body | select(test("<!-- early-cutoff-retry:"))] | length' 2>/dev/null || echo 0)
+            # --jq runs once per fetched page -- stream matching comments
+            # across all pages first, then slurp+count (see AGENTS.md).
+            EC_ATTEMPTS=$(gh api "repos/${{ github.repository }}/issues/$ISSUE/comments" --paginate \
+              --jq '.[].body | select(test("<!-- early-cutoff-retry:"))' 2>/dev/null \
+              | jq -s 'length' || echo 0)
             EC_ATTEMPTS=${EC_ATTEMPTS:-0}
 
             if [ "$FAST_CLAUDE_STEPS" -ge 1 ] && [ "$EC_ATTEMPTS" -lt 3 ]; then
@@ -1411,7 +1480,16 @@ jobs:
           gh issue edit "${{ github.event.issue.number }}" --remove-label "usage-limit-retry" 2>/dev/null || true
 
       - name: Detect usage-limit signature (Phase 0 - self-heal)
-        if: failure()
+        # #3689: never enter the self-heal chain for a policy-gate stop
+        # (not In Progress / not assigned) -- those are intentional exits,
+        # not infra failures, and previously fell through into a full
+        # Phase 1-3 diagnosis for no reason (observed on this issue: run
+        # 31320486307 ran Phase 3 Claude reasoning over a plain "not
+        # assigned yet" gate failure).
+        if: |
+          failure() &&
+          steps.verify_assignment.outputs.gate_stopped != 'true' &&
+          steps.verify_status.outputs.gate_stopped != 'true'
         id: usage_limit
         shell: bash
         env:
@@ -1448,8 +1526,11 @@ jobs:
           echo "::warning::Usage-limit signature detected: $FAST_CLAUDE_STEPS Claude step(s) finished in <90s"
 
           # Count prior scheduled retries for this issue; give up after 8.
-          ATTEMPTS=$(gh issue view "$ISSUE" --json comments \
-            --jq '[.comments[].body | select(test("<!-- usage-limit-retry-after:"))] | length' 2>/dev/null || echo 0)
+          # --jq runs once per fetched page -- stream matching comments
+          # across all pages first, then slurp+count (see AGENTS.md).
+          ATTEMPTS=$(gh api "repos/${{ github.repository }}/issues/$ISSUE/comments" --paginate \
+            --jq '.[].body | select(test("<!-- usage-limit-retry-after:"))' 2>/dev/null \
+            | jq -s 'length' || echo 0)
           if [ "${ATTEMPTS:-0}" -ge 8 ]; then
             gh issue comment "$ISSUE" --body "🛑 **Developer Agent**: Usage-limit auto-retry gave up after $ATTEMPTS attempts. The Claude usage window does not appear to be recovering — manual investigation needed (check the CLAUDE_CODE_OAUTH_TOKEN account's limits). Re-assign @${{ vars.DEV_AGENT }} to try again."
             gh issue edit "$ISSUE" --remove-label "usage-limit-retry" 2>/dev/null || true
@@ -1473,7 +1554,15 @@ jobs:
           exit 0
 
       - name: Classify error (Phase 1)
-        if: failure() && steps.usage_limit.outputs.handled != 'true'
+        # #3689: usage_limit itself is skipped (not run-with-handled=false)
+        # for a policy-gate stop, so its `handled` output alone can't be
+        # relied on here -- check gate_stopped directly too, or this step
+        # (and everything chained off it: retry_budget, Phase 2/3) would
+        # still run for a plain "not assigned"/"not In Progress" gate.
+        if: |
+          failure() && steps.usage_limit.outputs.handled != 'true' &&
+          steps.verify_assignment.outputs.gate_stopped != 'true' &&
+          steps.verify_status.outputs.gate_stopped != 'true'
         id: classify_error
         shell: bash
         env:
@@ -1548,6 +1637,19 @@ jobs:
           echo "::notice::Error classification: $ERROR_CLASS"
           echo "error_class=$ERROR_CLASS" >> "$GITHUB_OUTPUT"
 
+          # #3689: the (issue, failed step) pair and a deterministic
+          # signature of (failed step, error text) are the keys the
+          # unforgeable retry budget and same-signature-disproof checks are
+          # built on -- computed once here so every downstream step
+          # (retry-budget lookup, Phase 3 prompt, auto-retry marker) uses
+          # the exact same values.
+          FAILED_STEP_NAME="$(echo "$FAILED_STEPS" | head -1)"
+          [[ -z "$FAILED_STEP_NAME" ]] && FAILED_STEP_NAME="unknown"
+          SIGNATURE="$(printf '%s' "$ERROR_LOG" | python3 "$GITHUB_WORKSPACE/scripts/agents/lib/retry_budget.py" signature "$FAILED_STEP_NAME")"
+          echo "failed_step=$FAILED_STEP_NAME" >> "$GITHUB_OUTPUT"
+          echo "signature=$SIGNATURE" >> "$GITHUB_OUTPUT"
+          echo "::notice::Failure signature for step '$FAILED_STEP_NAME': $SIGNATURE"
+
           # Determine if retriable
           if is_retriable_error "$ERROR_CLASS"; then
             echo "retriable=true" >> "$GITHUB_OUTPUT"
@@ -1561,8 +1663,99 @@ jobs:
             echo "::warning::Error type unknown - defaulting to no retry"
           fi
 
+      - name: Compute retry budget (unforgeable cap)
+        # Runs on every genuine failure (not just retriable ones) so the
+        # budget/signature figures are available to the Phase 3 prompt even
+        # when Phase 1 classified the error as unknown. Gated on
+        # classify_error's own conclusion (rather than re-deriving the
+        # gate_stopped/usage_limit checks again) so it never runs when
+        # classify_error itself was skipped -- see the comment there (#3689).
+        if: failure() && steps.classify_error.conclusion == 'success'
+        id: retry_budget
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+        run: |
+          set -euo pipefail
+          ISSUE="${{ github.event.issue.number }}"
+          FAILED_STEP="${{ steps.classify_error.outputs.failed_step }}"
+          SIGNATURE="${{ steps.classify_error.outputs.signature }}"
+
+          # Full comment thread, chronological, with only the fields
+          # retry_budget.py needs. author_association is the same signal
+          # this workflow's own RETRY_IMPLEMENTATION trigger gate already
+          # uses for "human intervention" (see the `on:` block's `if:`) --
+          # unlike `user.login != 'github-actions[bot]'` (the old check),
+          # it is not spuriously true for this workflow's own PAT-driven
+          # comments (posted as myGPT-developer-agent, not
+          # github-actions[bot]).
+          #
+          # --jq runs once per fetched page -- stream each page's array
+          # literal, then combine with a second jq pass (see AGENTS.md).
+          COMMENTS_JSON=$(gh api "repos/${{ github.repository }}/issues/$ISSUE/comments" --paginate \
+            --jq '[.[] | {body: .body, author_association: .author_association}]' \
+            | jq -s 'add // []')
+
+          DECISION=$(echo "$COMMENTS_JSON" \
+            | python3 "$GITHUB_WORKSPACE/scripts/agents/lib/retry_budget.py" decide "$FAILED_STEP" "$SIGNATURE")
+
+          echo "$DECISION" | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> "$GITHUB_OUTPUT"
+          echo "::notice::Retry budget for step '$FAILED_STEP': $DECISION"
+
+      - name: Check cross-issue infra anomaly (#3694)
+        # The 2026-08-09 postmortem: 5 in-flight issues hit the identical
+        # `gh api search/issues` infra fault in the same step and each ran
+        # its own full Phase 1-3 diagnosis independently (~45-50 Claude
+        # invocations for one fault). Before Phase 2/3 spend anything on
+        # this failure, check whether another issue already opened a
+        # matching, unresolved, in-window tracking record for this exact
+        # failed step -- if so, this is the same infrastructure event, not
+        # a new coding problem, and diagnosis is skipped entirely in favor
+        # of a link to the shared incident. Runs on the same gate as
+        # "Compute retry budget" so it's available even when Phase 1
+        # classified the error as unknown.
+        if: failure() && steps.classify_error.conclusion == 'success'
+        id: cross_issue_anomaly
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+        run: |
+          set -euo pipefail
+          source scripts/agents/lib/gh_project.sh
+          load_config
+
+          ISSUE="${{ github.event.issue.number }}"
+          FAILED_STEP="${{ steps.classify_error.outputs.failed_step }}"
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          NOW_EPOCH="$(date +%s)"
+
+          DECISION="$(cross_issue_anomaly_decision "${RELEASE_ISSUE_NUMBER:-}" "$ISSUE" "$FAILED_STEP" "$NOW_EPOCH")"
+          echo "::notice::Cross-issue anomaly decision for step '$FAILED_STEP': $DECISION"
+          ACTION="$(echo "$DECISION" | jq -r '.action')"
+
+          if [[ "$ACTION" == "skip" ]]; then
+            ORIGIN_ISSUE="$(echo "$DECISION" | jq -r '.origin_issue')"
+            echo "matched=true" >> "$GITHUB_OUTPUT"
+            echo "origin_issue=$ORIGIN_ISSUE" >> "$GITHUB_OUTPUT"
+            # A heredoc here would break YAML's block-scalar indentation (an
+            # unindented body line starting with e.g. `**` reads as new YAML,
+            # not scalar content) -- build the body with printf instead, same
+            # as the auto-retry/escalation comments below (#3689).
+            BODY="$(printf '⏭️ **Developer Agent**: Skipping redundant diagnosis -- step `%s` failing here matches an already-open cross-issue infrastructure anomaly tracked on #%s (#3694).\n\nThis is being treated as one infrastructure event affecting multiple issues, not a problem specific to this one. This issue'"'"'s retry loop is stopped until the anomaly resolves.\n\n**What to do:** once #%s'"'"'s tracking comment shows the anomaly resolved, comment `RETRY_IMPLEMENTATION` here to resume.\n' \
+              "$FAILED_STEP" "$ORIGIN_ISSUE" "$ORIGIN_ISSUE")"
+            gh issue comment "$ISSUE" --body "$BODY"
+            exit 0
+          fi
+
+          echo "matched=false" >> "$GITHUB_OUTPUT"
+          if [[ "$ACTION" == "open" ]]; then
+            open_cross_issue_anomaly "${RELEASE_ISSUE_NUMBER:-}" "$ISSUE" "$FAILED_STEP" "$NOW_EPOCH" "$RUN_URL"
+          fi
+
       - name: Attempt intelligent fix (Phase 2)
-        if: failure() && steps.classify_error.outputs.retriable == 'true'
+        if: |
+          failure() && steps.classify_error.outputs.retriable == 'true' &&
+          steps.cross_issue_anomaly.outputs.matched != 'true'
         id: intelligent_fix
         shell: bash
         env:
@@ -1619,7 +1812,7 @@ jobs:
 
       - name: Deep analysis with Claude (Phase 3 - complex reasoning)
         if: |
-          failure() && (
+          failure() && steps.cross_issue_anomaly.outputs.matched != 'true' && (
             steps.intelligent_fix.outputs.fix_status == 'UNKNOWN' ||
             steps.classify_error.outputs.error_class == 'unknown'
           )
@@ -1631,6 +1824,7 @@ jobs:
           track_progress: true
           show_full_output: false
           claude_args: >-
+            --model claude-fable-5
             --allowed-tools "Bash,Read,Grep"
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
@@ -1650,6 +1844,22 @@ jobs:
             - **AUTO-FIXABLE:** Can be fixed now (reopen issue, fix git state, etc.)
             - **TRANSIENT:** Should retry (rate limits, network issues)
             - **FATAL:** Needs human intervention (auth failures, intentional closures)
+
+            ## Step 0: Retry-budget and same-signature context (#3689 -- read this first)
+
+            - Failed step: `${{ steps.classify_error.outputs.failed_step }}`
+            - Retries already used for this (issue, step) since the last owner
+              comment: `${{ steps.retry_budget.outputs.retry_count }}`/3
+            - Same failure signature (step + error text) as the immediately
+              preceding failed run: `${{ steps.retry_budget.outputs.same_signature_as_last }}`
+
+            **If the same-signature flag above is `true`:** the immediately
+            preceding run failed with this exact step + error, and if that
+            prior cycle retried it as TRANSIENT, the retry did not fix
+            anything. This empirically disproves "transient" -- **you MUST
+            NOT write `STATUS=TRANSIENT` again for this failure.** Reclassify
+            as AUTO-FIXABLE (with the reachability check in Step 4 below) or
+            FATAL instead.
 
             ## Step 1: Get Failure Details
 
@@ -1674,14 +1884,17 @@ jobs:
 
             **For issue-related errors:**
             ```bash
-            gh issue view ${{ github.event.issue.number }} \
-              --json state,closedAt,assignees,createdAt,updatedAt
+            gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }} \
+              --jq '{state, closed_at, assignees, created_at, updated_at}'
             ```
 
-            **For PR-related errors:**
+            **For PR-related errors:** (REST Search API -- its own rate pool,
+            separate from both core REST and GraphQL)
             ```bash
-            gh pr list --search "${{ github.event.issue.number }}" --state all \
-              --json number,state,mergedAt,closedAt
+            gh api search/issues \
+              --method GET \
+              -f q="${{ github.event.issue.number }} in:body type:pr repo:${{ github.repository }}" \
+              --jq '.items[] | {number, state, closed_at, merged_at: .pull_request.merged_at}'
             ```
 
             **For rate limits:**
@@ -1716,13 +1929,51 @@ jobs:
             ## Step 4: Take Action or Recommend
 
             **If AUTO-FIXABLE:**
-            1. Fix the problem (reopen issue, etc.)
-            2. Write to /tmp/analysis_result.txt:
+            1. Fix the problem (reopen issue, fix git state, etc.) -- OR, if
+               the fix is a code change, it may already exist as a commit on
+               some branch (e.g. from an earlier implementation cycle).
+               Determine the fix commit's SHA if so (`git log`, `git log
+               --all --oneline`, etc.).
+            2. **Reachability check (#3689) -- required whenever the fix is a
+               code/script/workflow-file change, not just an issue-state
+               action:** determine whether the failing step can actually see
+               that fix on its NEXT run, not just whether the fix is
+               correct. `issue_comment`-triggered runs of THIS workflow (the
+               retry path) always execute the workflow definition, and any
+               scripts it shells out to (e.g.
+               scripts/agents/developer_analyze_failure.sh), from the
+               repository's **default branch** -- never from whatever
+               feature/fix branch the commit landed on (see
+               agents/runbooks/developer-runbook.md §3c). Check:
+               ```bash
+               git fetch origin ${{ vars.RELEASE_BRANCH }} --quiet
+               git merge-base --is-ancestor <FIX_SHA> origin/${{ vars.RELEASE_BRANCH }} && echo REACHABLE || echo NOT_REACHABLE
                ```
-               STATUS=FIXED
-               ERROR_TYPE=<type>
-               ACTION=<what you did>
-               ```
+               - If the failing step doesn't execute code from the default
+                 branch at all (e.g. a one-off `gh` API call with no
+                 workflow/script dependency), the fix is inherently reachable
+                 on retry -- treat it as REACHABLE.
+               - **REACHABLE** (fix is an ancestor of
+                 `origin/${{ vars.RELEASE_BRANCH }}`, or no branch dependency
+                 exists): write
+                 ```
+                 STATUS=FIXED
+                 ERROR_TYPE=<type>
+                 ACTION=<what you did>
+                 ```
+               - **NOT_REACHABLE** (the failing step executes from the
+                 default branch and the fix is stranded on a work branch):
+                 do NOT claim FIXED -- the next run will fail identically.
+                 Write:
+                 ```
+                 STATUS=FIXED_REQUIRES_MERGE
+                 ERROR_TYPE=<type>
+                 COMMIT_SHA=<the fix commit SHA>
+                 RECOMMENDATION=<cherry-pick or merge instructions for a human/EA to land the fix on the default branch>
+                 ```
+                 This status is terminal -- it does NOT auto-retry. The
+                 workflow escalates it to the owner with the commit SHA
+                 attached.
 
             **If TRANSIENT:**
             Write to /tmp/analysis_result.txt:
@@ -1769,11 +2020,61 @@ jobs:
             echo "action=${ACTION:-none}" >> "$GITHUB_OUTPUT"
             echo "diagnosis=${DIAGNOSIS:-}" >> "$GITHUB_OUTPUT"
             echo "wait_seconds=${WAIT_SECONDS:-0}" >> "$GITHUB_OUTPUT"
+            # #3689: only present for STATUS=FIXED_REQUIRES_MERGE (a fix
+            # exists but isn't reachable from the default branch yet).
+            echo "commit_sha=${COMMIT_SHA:-}" >> "$GITHUB_OUTPUT"
+            echo "recommendation=${RECOMMENDATION:-}" >> "$GITHUB_OUTPUT"
             echo "Claude analysis: $STATUS - $ERROR_TYPE"
           else
             echo "status=UNKNOWN" >> "$GITHUB_OUTPUT"
             echo "error_type=unknown" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Escalate FIXED_REQUIRES_MERGE (Phase 3 - fix stranded off default branch)
+        if: failure() && steps.claude_result.outputs.status == 'FIXED_REQUIRES_MERGE'
+        id: escalate_requires_merge
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          script: |
+            const issue_number = context.payload.issue.number;
+            const repo = context.repo.owner + '/' + context.repo.repo;
+            const runId = context.runId;
+            const commitSha = '${{ steps.claude_result.outputs.commit_sha }}';
+            const recommendation = '${{ steps.claude_result.outputs.recommendation }}';
+            const humanOwner = '${{ vars.HUMAN_OWNER }}';
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              body: `🛑 **Developer Agent**: Fix found but not reachable -- escalating.\n\n` +
+                    `Phase 3 diagnosis determined the correct fix for this failure exists as commit ` +
+                    `\`${commitSha || 'unknown'}\`, but that commit is not on the default branch the ` +
+                    `failing step executes from -- retrying would just reproduce the same failure.\n\n` +
+                    `**Recommendation:** ${recommendation || 'Cherry-pick or merge the fix commit onto the release branch.'}\n\n` +
+                    `[Workflow run](https://github.com/${repo}/actions/runs/${runId})\n\n` +
+                    (humanOwner ? `@${humanOwner} -- ` : '') +
+                    `this needs the fix landed on the default branch before a retry can succeed. ` +
+                    `Commenting \`RETRY_IMPLEMENTATION\` before then will just reproduce this escalation.`
+            });
+
+            if (humanOwner) {
+              await github.rest.issues.addAssignees({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number,
+                assignees: [humanOwner]
+              });
+            }
+
+            core.setOutput('developer_escalated', 'true');
+            // #3695: one-line diagnosis + recommended action for the human-
+            // channel (Slack) notification the "Sprint autopilot kick"
+            // step sends after this one.
+            core.setOutput('diagnosis', `Fix commit ${commitSha || 'unknown'} exists but is not reachable from the default branch -- retrying would just reproduce the same failure.`);
+            core.setOutput('action', recommendation || `Cherry-pick or merge commit ${commitSha || 'unknown'} onto the release branch.`);
+            core.setFailed('Fix found but not reachable from the default branch (FIXED_REQUIRES_MERGE) -- escalated to owner');
 
       - name: Post fix success comment (Phase 2+3)
         if: |
@@ -1806,124 +2107,120 @@ jobs:
 
       - name: Auto-retry on failure (Phase 2+3 - transient errors only)
         if: |
-          failure() && (
+          failure() && steps.cross_issue_anomaly.outputs.matched != 'true' && (
             steps.intelligent_fix.outputs.fix_status == 'TRANSIENT' ||
             steps.claude_result.outputs.status == 'TRANSIENT'
           )
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
-          script: |
-            const issue_number = context.payload.issue.number;
-            const repo = context.repo.owner + '/' + context.repo.repo;
-            const runId = context.runId;
-            const errorClass = '${{ steps.classify_error.outputs.error_class }}';
-            const phase3Status = '${{ steps.claude_result.outputs.status }}';
-            const analysisPhase = phase3Status === 'TRANSIENT' ? 'Phase 3 (Claude)' : 'Phase 2 (Script)';
+        id: auto_retry
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+        run: |
+          set -euo pipefail
+          ISSUE="${{ github.event.issue.number }}"
+          REPO="${{ github.repository }}"
+          RUN_ID="${{ github.run_id }}"
+          FAILED_STEP="${{ steps.classify_error.outputs.failed_step }}"
+          ERROR_CLASS="${{ steps.classify_error.outputs.error_class }}"
+          SIGNATURE="${{ steps.classify_error.outputs.signature }}"
 
-            // Intelligent retry counting - context-aware, error-type specific
-            const comments = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: issue_number
-            });
+          PHASE3_STATUS="${{ steps.claude_result.outputs.status }}"
+          ANALYSIS_PHASE="Phase 2 (Script)"
+          [[ "$PHASE3_STATUS" == "TRANSIENT" ]] && ANALYSIS_PHASE="Phase 3 (Claude)"
 
-            const MAX_RETRIES = 3;
-            const waitSecondsPhase2 = parseInt('${{ steps.intelligent_fix.outputs.wait_seconds }}') || 0;
-            const waitSecondsPhase3 = parseInt('${{ steps.claude_result.outputs.wait_seconds }}') || 0;
-            const waitSeconds = waitSecondsPhase3 || waitSecondsPhase2;
+          # #3689: budget/signature are computed once by the "Compute retry
+          # budget" step from an unforgeable marker embedded in every prior
+          # auto-retry comment for this (issue, step) pair -- independent of
+          # whatever error-type label or STATUS this cycle's diagnosis
+          # produced (the old counter was keyed to that label, and its
+          # "manual intervention resets it" check matched this workflow's
+          # own bot comments too, so it never actually bound anything).
+          RETRY_COUNT="${{ steps.retry_budget.outputs.retry_count }}"
+          CAP_EXCEEDED="${{ steps.retry_budget.outputs.cap_exceeded }}"
+          SAME_SIG="${{ steps.retry_budget.outputs.same_signature_as_last }}"
+          NEXT_N="${{ steps.retry_budget.outputs.next_retry_number }}"
+          # Defensive defaults: if the "Compute retry budget" step itself
+          # failed (e.g. a transient `gh api` error fetching the comment
+          # thread), don't let an empty CAP_EXCEEDED/SAME_SIG silently block
+          # or crash this step -- fail open on the cap/disproof checks
+          # (worst case a comment-fetch flake costs one extra retry, not a
+          # stuck run) while still marking the retry as attempt 1 rather
+          # than crashing on an empty retry-number argument.
+          RETRY_COUNT="${RETRY_COUNT:-0}"
+          CAP_EXCEEDED="${CAP_EXCEEDED:-false}"
+          SAME_SIG="${SAME_SIG:-false}"
+          NEXT_N="${NEXT_N:-1}"
 
-            // Parse retry history with context
-            const retryHistory = comments.data
-              .filter(c => c.body.includes('RETRY_IMPLEMENTATION'))
-              .map(c => ({
-                timestamp: c.created_at,
-                isManual: c.user.login !== 'github-actions[bot]',
-                errorType: c.body.match(/\*\*Error type:\*\* ([\w:]+)/)?.[1] || 'unknown'
-              }));
+          WAIT_SECONDS="${{ steps.claude_result.outputs.wait_seconds }}"
+          WAIT_SECONDS="${WAIT_SECONDS:-0}"
+          if [[ "$WAIT_SECONDS" -eq 0 ]]; then
+            WAIT_SECONDS="${{ steps.intelligent_fix.outputs.wait_seconds }}"
+            WAIT_SECONDS="${WAIT_SECONDS:-0}"
+          fi
 
-            // Find last manual intervention (resets the count)
-            const lastManualIndex = retryHistory.findIndex(r => r.isManual);
+          # Same-signature disproof (#3689): a second consecutive TRANSIENT
+          # verdict for the *identical* step+error signature empirically
+          # disproves "transient" -- force escalation instead of another
+          # blind retry. Scoped to the reclassification-prone paths (Phase 3
+          # LLM reasoning, and test failures which are either flaky or
+          # deterministic -- either way a second identical failure needs a
+          # human look, not a third blind retry); deterministic rate-limit/
+          # network/stale-ref backoffs are excluded since their signature is
+          # expected to legitimately repeat across successive waits.
+          FORCE_DISPROOF=false
+          if [[ "$SAME_SIG" == "true" ]] && \
+             { [[ "$ANALYSIS_PHASE" == "Phase 3 (Claude)" ]] || [[ "$ERROR_CLASS" == "retriable:test_failure" ]]; }; then
+            FORCE_DISPROOF=true
+          fi
 
-            // Only count retries AFTER last manual intervention
-            const relevantRetries = lastManualIndex >= 0
-              ? retryHistory.slice(0, lastManualIndex)
-              : retryHistory;
+          if [[ "$CAP_EXCEEDED" == "true" || "$FORCE_DISPROOF" == "true" ]]; then
+            if [[ "$FORCE_DISPROOF" == "true" ]]; then
+              REASON="The identical failure signature repeated on the immediately preceding retry, disproving \"transient\" -- this is a deterministic failure, not a transient one."
+            else
+              REASON="Same failure signature persisted through the retry cap (${RETRY_COUNT}/3 attempts for this step)."
+            fi
 
-            // Count retries for THIS specific error type
-            const retriesForCurrentError = relevantRetries.filter(r =>
-              r.errorType === errorClass
-            ).length;
+            # A heredoc here would break YAML's block-scalar indentation
+            # (an unindented body line starting with e.g. `**` or `-` reads
+            # as new YAML, not scalar content) -- build the body with printf
+            # instead, keeping every source line normally indented.
+            BODY="$(printf '%s\n\n**Failed step:** %s\n**Retry count:** %s/3 for this step (since last owner comment)\n**Same signature as immediately preceding run:** %s\n**Analysis:** %s\n\n%s\n\n**What to do:**\n1. Review the [failed workflow logs](https://github.com/%s/actions/runs/%s)\n2. Fix the underlying problem manually\n3. Comment on this issue (as the repo owner) to reset the budget, then comment `RETRY_IMPLEMENTATION` to try again\n\n**Note:** Only a comment from the repo owner resets this budget -- relabeling the error or a bot comment does not (#3689).\n' \
+              "❌ **Developer Agent**: Auto-retry stopped -- unforgeable budget exhausted or signature disproof triggered." \
+              "$FAILED_STEP" "$RETRY_COUNT" "$SAME_SIG" "$ANALYSIS_PHASE" "$REASON" "$REPO" "$RUN_ID")"
+            gh issue comment "$ISSUE" --body "$BODY"
+            echo "escalated=true" >> "$GITHUB_OUTPUT"
+            # #3695: one-line diagnosis + recommended action for the human-
+            # channel (Slack) notification the "Sprint autopilot kick" step
+            # sends after this one. GITHUB_OUTPUT writes persist even though
+            # this step exits 1 below.
+            {
+              echo "diagnosis=${REASON} (failed step: ${FAILED_STEP})"
+              echo "action=Review the failed workflow logs, fix the underlying problem manually, then comment on the issue (as the repo owner) to reset the budget and RETRY_IMPLEMENTATION."
+            } >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
 
-            // Total retries (for context)
-            const totalRetries = relevantRetries.length;
+          if [[ "$WAIT_SECONDS" -gt 0 ]]; then
+            echo "::notice::Waiting ${WAIT_SECONDS}s before retry (rate limit/backoff)..."
+            sleep "$WAIT_SECONDS"
+          fi
 
-            core.notice(
-              `Retry analysis: ${retriesForCurrentError} for error ${errorClass}, ` +
-              `${totalRetries} total since last manual intervention`
-            );
+          MARKER="$(python3 "$GITHUB_WORKSPACE/scripts/agents/lib/retry_budget.py" marker "$FAILED_STEP" "$SIGNATURE" "$NEXT_N")"
 
-            // Only escalate if SAME error persists 3+ times
-            if (retriesForCurrentError >= MAX_RETRIES) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number,
-                body: `❌ **Developer Agent**: Same error persisted through ${MAX_RETRIES} retry attempts.\n\n` +
-                      `**Error type:** ${errorClass}\n` +
-                      `**Retry count:** ${retriesForCurrentError} attempts for this specific error\n` +
-                      `**Total retries:** ${totalRetries} (since last manual intervention)\n\n` +
-                      `The same error has failed ${MAX_RETRIES} times, indicating a persistent issue ` +
-                      `that cannot be resolved by automatic retries. Human intervention is required.\n\n` +
-                      `**What to do:**\n` +
-                      `1. Review the [failed workflow logs](https://github.com/${repo}/actions/runs/${runId})\n` +
-                      `2. Identify why **${errorClass}** keeps failing\n` +
-                      `3. Fix the underlying problem manually\n` +
-                      `4. Comment \`RETRY_IMPLEMENTATION\` to try again once fixed\n\n` +
-                      `**Note:** Manual intervention resets the retry counter.`
-              });
-              core.setFailed('Maximum retry limit reached');
-              return;
-            }
-
-            // Wait if recommended (e.g., rate limits)
-            if (waitSeconds > 0) {
-              core.notice(`Waiting ${waitSeconds} seconds before retry (rate limit/backoff)...`);
-              await new Promise(resolve => setTimeout(resolve, waitSeconds * 1000));
-            }
-
-            // Auto-retry: Post RETRY_IMPLEMENTATION comment
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number,
-              body: `⚠️ **Developer Agent**: Workflow failed - auto-retry triggered.\n\n` +
-                    `**Error type:** ${errorClass} (transient)\n` +
-                    `**Analysis:** ${analysisPhase}\n` +
-                    `**Retry count:** ${retriesForCurrentError + 1}/${MAX_RETRIES} attempts for this specific error\n` +
-                    `**Total retries:** ${totalRetries} (since last manual intervention)\n` +
-                    `**Action:** Analysis determined this error may resolve with retry.\n` +
-                    (waitSeconds > 0 ? `**Wait time:** Waited ${waitSeconds} seconds before retry\n\n` : '\n') +
-                    `The agent will attempt to:\n` +
-                    `1. Diagnose and fix any infrastructure issues\n` +
-                    `2. Handle branch creation/checkout problems\n` +
-                    `3. Retry the implementation\n\n` +
-                    `[Previous failed run](https://github.com/${repo}/actions/runs/${runId})\n\n` +
-                    `RETRY_IMPLEMENTATION`
-            });
-
-            core.notice(
-              `Auto-retry triggered (${retriesForCurrentError + 1}/${MAX_RETRIES}) ` +
-              `for ${errorClass} (${totalRetries} total retries since last manual intervention)`
-            );
+          BODY="$(printf '%s\n\n**Failed step:** %s\n**Analysis:** %s\n**Retry count:** %s/3 for this step (since last owner comment)\n\nThe agent will attempt to:\n1. Diagnose and fix any infrastructure issues\n2. Handle branch creation/checkout problems\n3. Retry the implementation\n\n[Previous failed run](https://github.com/%s/actions/runs/%s)\n\nRETRY_IMPLEMENTATION\n%s\n' \
+            "⚠️ **Developer Agent**: Workflow failed - auto-retry triggered." \
+            "$FAILED_STEP" "$ANALYSIS_PHASE" "$NEXT_N" "$REPO" "$RUN_ID" "$MARKER")"
+          gh issue comment "$ISSUE" --body "$BODY"
+          echo "::notice::Auto-retry triggered (${NEXT_N}/3) for step '${FAILED_STEP}'"
 
       - name: Escalate fatal error (Phase 1+2+3 - no retry)
         if: |
-          failure() && (
+          failure() && steps.cross_issue_anomaly.outputs.matched != 'true' && (
             steps.classify_error.outputs.retriable == 'false' ||
             steps.intelligent_fix.outputs.fix_status == 'FATAL' ||
             steps.claude_result.outputs.status == 'FATAL'
           )
+        id: escalate_fatal
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
@@ -1995,4 +2292,85 @@ jobs:
                     `**Note:** Phase 2 intelligent analysis will auto-fix many of these errors.`
             });
 
+            core.setOutput('developer_escalated', 'true');
+            // #3695: one-line diagnosis + recommended action for the human-
+            // channel (Slack) notification the "Sprint autopilot kick"
+            // step sends after this one.
+            core.setOutput('diagnosis', explanation);
+            core.setOutput('action', 'Review the failed workflow logs, address the root cause, then comment RETRY_IMPLEMENTATION.');
             core.setFailed(`Fatal error (${errorClass}) - no auto-retry`);
+
+      - name: Sprint autopilot kick (developer-side escalation)
+        # Mirrors review_accept_and_merge.sh / review_agent_auto_review.yml
+        # (sprint_autopilot_kick, #3480): a developer-side escalation frees
+        # the issue from further automatic dev-agent work just as surely as
+        # a review-cycle escalation does, so it must post the same
+        # READY_FOR_NEXT_ISSUE continuation kick -- otherwise a stuck issue
+        # silently parks the sprint-autopilot queue instead of moving on.
+        # Also sends the #3695 human-channel (Slack DM) notification for
+        # this terminal outcome -- whichever of the three escalation steps
+        # above actually ran is the one with non-empty outputs (a skipped
+        # step's outputs are always empty, never an error).
+        if: |
+          failure() && (
+            steps.auto_retry.outputs.escalated == 'true' ||
+            steps.escalate_requires_merge.outputs.developer_escalated == 'true' ||
+            steps.escalate_fatal.outputs.developer_escalated == 'true' ||
+            steps.cross_issue_anomaly.outputs.matched == 'true'
+          )
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_USER_ID: ${{ secrets.SLACK_USER_ID }}
+          STATE_FATAL: ${{ steps.escalate_fatal.outputs.developer_escalated }}
+          STATE_REQUIRES_MERGE: ${{ steps.escalate_requires_merge.outputs.developer_escalated }}
+          STATE_RETRY_EXHAUSTED: ${{ steps.auto_retry.outputs.escalated }}
+          DIAG_FATAL: ${{ steps.escalate_fatal.outputs.diagnosis }}
+          DIAG_REQUIRES_MERGE: ${{ steps.escalate_requires_merge.outputs.diagnosis }}
+          DIAG_RETRY_EXHAUSTED: ${{ steps.auto_retry.outputs.diagnosis }}
+          ACTION_FATAL: ${{ steps.escalate_fatal.outputs.action }}
+          ACTION_REQUIRES_MERGE: ${{ steps.escalate_requires_merge.outputs.action }}
+          ACTION_RETRY_EXHAUSTED: ${{ steps.auto_retry.outputs.action }}
+          STATE_ANOMALY: ${{ steps.cross_issue_anomaly.outputs.matched }}
+          ANOMALY_ORIGIN: ${{ steps.cross_issue_anomaly.outputs.origin_issue }}
+          ANOMALY_STEP: ${{ steps.classify_error.outputs.failed_step }}
+        run: |
+          set -euo pipefail
+          source scripts/agents/lib/gh_project.sh
+          load_config
+          require_gh_auth
+          ISSUE="${{ github.event.issue.number }}"
+
+          if [[ "$STATE_ANOMALY" == "true" ]]; then
+            # #3694: distinct verb -- this issue was not escalated to the
+            # owner and no review cycles occurred; it hit a cross-issue
+            # infrastructure anomaly another issue already diagnosed.
+            sprint_autopilot_kick "$ISSUE" anomaly
+            STATE="cross-issue-anomaly"
+            DIAGNOSIS="Step '${ANOMALY_STEP}' failing here matches the unresolved cross-issue infrastructure anomaly tracked on #${ANOMALY_ORIGIN} (#3694) -- redundant diagnosis skipped."
+            ACTION="Resolve the shared anomaly tracked on #${ANOMALY_ORIGIN}; each affected issue resumes via RETRY_IMPLEMENTATION once it clears."
+            # Dedup on the ORIGIN issue, not this one: one infrastructure
+            # event should produce one Slack DM total, not one per affected
+            # issue (the same collapse #3694 applies to diagnosis).
+            DEDUP_KEY="${ANOMALY_ORIGIN}:developer:${STATE}"
+          else
+            sprint_autopilot_kick "$ISSUE" escalated
+            if [[ "$STATE_FATAL" == "true" ]]; then
+              STATE="FATAL"
+              DIAGNOSIS="$DIAG_FATAL"
+              ACTION="$ACTION_FATAL"
+            elif [[ "$STATE_REQUIRES_MERGE" == "true" ]]; then
+              STATE="FIXED_REQUIRES_MERGE"
+              DIAGNOSIS="$DIAG_REQUIRES_MERGE"
+              ACTION="$ACTION_REQUIRES_MERGE"
+            else
+              STATE="retry-budget-exhausted"
+              DIAGNOSIS="$DIAG_RETRY_EXHAUSTED"
+              ACTION="$ACTION_RETRY_EXHAUSTED"
+            fi
+            DEDUP_KEY="${ISSUE}:developer:${STATE}"
+          fi
+
+          notify_human_escalation "$ISSUE" "$STATE" "$DIAGNOSIS" "$ACTION" "$DEDUP_KEY" \
+            || echo "::warning::Human-channel notification failed for issue #${ISSUE} — escalation itself is unaffected."

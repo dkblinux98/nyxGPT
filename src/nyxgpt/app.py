@@ -12,6 +12,7 @@ context manager below.
 
 from __future__ import annotations
 
+import argparse
 import inspect
 import io
 import logging
@@ -44,13 +45,17 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 from starlette.status import HTTP_401_UNAUTHORIZED
 
 import nyxgpt.config
 from nyxgpt import admin_activity as admin_activity_module
-from nyxgpt import api_models, config_wizard, models, secrets_setup, sessions
+from nyxgpt import api_models, aws_credentials_setup, config_wizard, models, secrets_setup, sessions
 from nyxgpt import canary as canary_module
 from nyxgpt import chat as chat_module
+from nyxgpt import cloud_deploy as cloud_deploy_module
+from nyxgpt import cloud_infra as cloud_infra_module
+from nyxgpt import cloud_state as cloud_state_module
 from nyxgpt import error_tracking as error_tracking_module
 from nyxgpt import health as health_module
 from nyxgpt import metrics as prom_metrics
@@ -98,7 +103,9 @@ from nyxgpt.api_models import (
 from nyxgpt.batch_processor import BatchProcessor, RequestPriority
 from nyxgpt.chat import chat as run_chat
 from nyxgpt.chat import chat_stream
+from nyxgpt.cloud import CloudCommandError
 from nyxgpt.config import (
+    get_auth_api_key,
     get_canary_error_rate_threshold,
     get_canary_latency_p95_threshold_ms,
     get_canary_min_requests,
@@ -117,10 +124,12 @@ from nyxgpt.config import (
     get_rag_min_score,
     get_rate_limit_config,
     get_rate_limit_enabled,
+    get_secrets_provider,
     get_self_heal_backoff_seconds,
     get_self_heal_check_interval_seconds,
     get_self_heal_default_enabled,
     get_self_heal_max_consecutive_restarts,
+    get_session_backend,
     get_sessions_dir,
     get_tracing_config,
     load_config,
@@ -303,6 +312,29 @@ async def lifespan(_app: FastAPI):
         )
     except Exception as e:
         log.error("Failed to prepare sessions directory %s: %s", sessions_dir, e)
+
+    # One-time (idempotent) import of legacy JSON session files into the DB
+    # when the Cassandra session backend is active (#3590). Sessions already
+    # present in the DB are never overwritten; the legacy files stay on disk
+    # as a read-only archive (see docs/session-storage.md).
+    try:
+        if get_session_backend(cfg) == "cassandra":
+            from nyxgpt import session_db
+
+            report = session_db.migrate_sessions_dir(sessions_dir)
+            log.info(
+                "Session backend: cassandra (migrated %d legacy file session(s), "
+                "%d already in DB, %d invalid, %d errors)",
+                len(report["migrated"]),
+                len(report["skipped_existing"]),
+                len(report["skipped_invalid"]),
+                len(report["errors"]),
+                extra={"component": "startup"},
+            )
+    except Exception as e:
+        # Never prevent API startup; session endpoints will surface store
+        # errors per-request if Cassandra stays unreachable.
+        log.error("Legacy session migration failed: %s", e, extra={"component": "startup"})
 
     # Pre-touch known RAG metric label combinations so legitimate zero
     # states render as 0 on the SPOG panels instead of "No data"
@@ -694,16 +726,22 @@ async def api_key_auth(request: Request, call_next):
         return await call_next(request)
 
     cfg = getattr(request.state, "cfg", None)
-    auth = _auth_cfg(cfg)
+    cfg = cfg or load_config(None)
     req_id = getattr(request.state, "request_id", None)
-    log.debug(
-        "auth check (request_id=%s) enabled=%s",
-        req_id,
-        bool(auth.get("enabled")),
-    )
-    if not auth.get("enabled"):
+
+    # Check `enabled` on its own first -- it's a plain config.ini read, no
+    # AWS call. Only resolve the (possibly cloud-sourced) api_key when auth
+    # is actually enabled, and do that resolution in a thread pool: this
+    # middleware is `async def`, so Starlette runs it directly on the event
+    # loop rather than dispatching it to a worker thread the way a plain
+    # `def` route handler would -- a synchronous boto3 call here would
+    # otherwise block the event loop for every concurrent request.
+    enabled = cfg.getboolean("auth", "enabled", fallback=False)
+    log.debug("auth check (request_id=%s) enabled=%s", req_id, enabled)
+    if not enabled:
         return await call_next(request)
 
+    auth = await run_in_threadpool(_auth_cfg, cfg)
     header = auth.get("header", "X-API-Key")
     expected = auth.get("api_key")
     provided = request.headers.get(header)
@@ -848,7 +886,7 @@ def _auth_cfg(cfg: ConfigParser | None = None) -> dict[str, Any]:
     """
     cfg = cfg or load_config(None)
     enabled = cfg.getboolean("auth", "enabled", fallback=False)
-    api_key = cfg.get("auth", "api_key", fallback="").strip()
+    api_key = get_auth_api_key(cfg)
     header = cfg.get("auth", "header", fallback="X-API-Key").strip() or "X-API-Key"
     return {
         "enabled": enabled,
@@ -1709,6 +1747,110 @@ def config_secrets_sync(payload: dict[str, Any] = Body(default={})) -> dict[str,
     }
 
 
+# --- Guided AWS credentials setup endpoints (P6-13, #3512) ---
+#
+# Deliberately separate from `/config/sections` and `/config/secrets`
+# above: the access key pair collected here is never written to
+# config.ini -- it's routed to ~/.aws/credentials or the OS keychain by
+# `aws_credentials_setup.save_aws_credentials`. Only the non-secret
+# `[cloud]` reference (profile/region/destination) goes through
+# `config_wizard.apply_updates`, and `[cloud]` is excluded from the
+# general wizard's schema for exactly this reason.
+
+
+@api.get("/config/aws-credentials")
+def config_aws_credentials_get(request: Request) -> dict[str, Any]:
+    """Return the guided AWS credentials flow's status: fields, `[cloud]` reference, and
+    where the access key pair is currently stored (masked). Never returns cleartext.
+    """
+    cfg = _req_cfg(request)
+    return aws_credentials_setup.aws_credentials_status(cfg)
+
+
+@api.post("/config/aws-credentials")
+def config_aws_credentials_update(
+    request: Request, payload: dict[str, Any] = Body(...)
+) -> dict[str, Any]:
+    """Validate and save AWS credentials via the guided flow (#3512).
+
+    Payload: `{"destination": "profile"|"keychain"|"ambient", "profile": ...,
+    "region": ..., "access_key_id"?: ..., "secret_access_key"?: ...}`. The
+    key pair (required for `profile`/`keychain`) is routed to
+    `~/.aws/credentials` or the OS keychain -- never config.ini. Only
+    profile/region/destination are written to config.ini's `[cloud]`
+    section.
+    """
+    destination = payload.get("destination")
+    profile = payload.get("profile")
+    region = payload.get("region")
+    if (
+        not isinstance(destination, str)
+        or not isinstance(profile, str)
+        or not isinstance(region, str)
+    ):
+        raise HTTPException(
+            status_code=400, detail="'destination', 'profile', and 'region' are required"
+        )
+
+    access_key_id = payload.get("access_key_id")
+    secret_access_key = payload.get("secret_access_key")
+    if access_key_id is not None and not isinstance(access_key_id, str):
+        raise HTTPException(status_code=400, detail="'access_key_id' must be a string")
+    if secret_access_key is not None and not isinstance(secret_access_key, str):
+        raise HTTPException(status_code=400, detail="'secret_access_key' must be a string")
+
+    try:
+        aws_credentials_setup.save_aws_credentials(
+            _config_file_path(), destination, profile, region, access_key_id, secret_access_key
+        )
+    except aws_credentials_setup.SecretValidationError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    except aws_credentials_setup.AwsCredentialsError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    nyxgpt.config._CACHED_CFG = None
+    nyxgpt.config._CACHED_PATH = None
+    nyxgpt.config._CACHED_MTIME_NS = None
+    request.state.cfg = load_config(None)
+    cfg = _req_cfg(request)
+
+    admin_activity_module.record(
+        "config.aws_credentials_set", f"profile={profile} destination={destination}"
+    )
+
+    return aws_credentials_setup.aws_credentials_status(cfg)
+
+
+@api.post("/config/aws-credentials/secret-store")
+def config_aws_secret_store_update(
+    request: Request, payload: dict[str, Any] = Body(...)
+) -> dict[str, Any]:
+    """Validate and save #3507's `[secrets]` provider reference (#3512's guided-flow parity).
+
+    Payload: `{"provider"?: ..., "region"?: ..., "ssm_prefix"?: ...,
+    "secretsmanager_id"?: ...}`. These aren't secret values themselves --
+    the actual application secrets stay in SSM/Secrets Manager -- so
+    they're written to config.ini like every other setting.
+    """
+    values = {
+        f.key: payload.get(f.key, "") for f in aws_credentials_setup.SECRET_STORE_REFERENCE_FIELDS
+    }
+    try:
+        aws_credentials_setup.save_secret_store_reference(_config_file_path(), values)
+    except aws_credentials_setup.SecretValidationError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+
+    nyxgpt.config._CACHED_CFG = None
+    nyxgpt.config._CACHED_PATH = None
+    nyxgpt.config._CACHED_MTIME_NS = None
+    request.state.cfg = load_config(None)
+    cfg = _req_cfg(request)
+
+    admin_activity_module.record("config.secret_store_reference_set", "secrets section updated")
+
+    return aws_credentials_setup.aws_credentials_status(cfg)
+
+
 _RESTART_TARGETS = {"api", "web", "ollama", "cassandra", "observability", "all"}
 
 
@@ -1942,6 +2084,22 @@ def admin_access_update(
     rotate = bool(payload.get("rotate"))
     new_key: str | None = None
     if rotate:
+        # When a cloud secrets provider is configured, `get_auth_api_key`
+        # always prefers the AWS-resolved value over config.ini (see
+        # `_resolve_cloud_secret`), so writing a new key to config.ini here
+        # would be inert: the middleware would keep enforcing the old
+        # cloud-stored key while this endpoint reported the new one as
+        # active. Reject explicitly instead of silently no-op'ing.
+        if get_secrets_provider(cfg):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "API key rotation via this dashboard is disabled because a cloud "
+                    "secrets provider ([secrets] provider) is configured. Rotate the "
+                    "value in AWS SSM Parameter Store or Secrets Manager instead -- "
+                    "see docs/cloud.md for the rotation procedure."
+                ),
+            )
         new_key = secrets.token_urlsafe(32)
         updates["api_key"] = new_key
 
@@ -2213,6 +2371,313 @@ def infra_status(_request: Request) -> dict[str, Any]:
     return ops_module.infra_status()
 
 
+# --- Cloud substrate endpoints (AWS, P6-8/#3509) ---
+#
+# The SRE/admin dashboard's counterpart to `nyxgpt cloud infra` (CLAUDE.md's
+# Definition of Done: ops features are operable from the dashboard, not just
+# the CLI). Both surfaces call the same `nyxgpt.cloud_infra` functions, so the
+# access model -- port 22 only, scoped to the owner's IP -- is enforced in one
+# place regardless of who triggers provisioning.
+#
+# `plan`/`apply`/`destroy` shell out to Terraform and can take minutes; they
+# are deliberately synchronous (same shape as the canary deploy endpoints
+# above) and the dashboard shows a pending state while they run.
+
+
+def _cloud_infra_args(payload: dict[str, Any]) -> argparse.Namespace:
+    """Build the argparse-shaped namespace `nyxgpt.cloud_infra` expects from a JSON body.
+
+    The dashboard posts the same inputs the CLI flags carry; anything omitted
+    falls back to the settings a previous run saved, exactly as on the CLI.
+    """
+    return argparse.Namespace(
+        region=payload.get("region") or None,
+        profile=payload.get("profile") or None,
+        owner_ip=payload.get("owner_ip") or None,
+        ssh_public_key=payload.get("ssh_public_key") or None,
+        ssh_key_name=payload.get("ssh_key_name") or None,
+        instance_type=payload.get("instance_type") or None,
+        root_volume_size=payload.get("root_volume_size") or None,
+    )
+
+
+@api.get("/cloud/infra")
+def cloud_infra_status(_request: Request) -> dict[str, Any]:
+    """What AWS substrate is provisioned, and how it is reachable.
+
+    Cheap and side-effect free -- reads the recorded state rather than
+    calling AWS -- so the dashboard can poll it.
+    """
+    return cloud_infra_module.infra_status()
+
+
+@api.post("/cloud/infra/plan")
+def cloud_infra_plan(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Plan the AWS substrate. Creates nothing; returns the resolved settings."""
+    try:
+        result = cloud_infra_module.plan_infra(_cloud_infra_args(payload))
+    except CloudCommandError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    admin_activity_module.record("cloud_infra.plan", result["settings"]["aws_region"])
+    return result
+
+
+@api.post("/cloud/infra/apply")
+def cloud_infra_apply(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Provision (or reconcile) the AWS substrate and record its ids."""
+    try:
+        result = cloud_infra_module.apply_infra(_cloud_infra_args(payload))
+    except CloudCommandError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    outputs = result.get("outputs") or {}
+    admin_activity_module.record(
+        "cloud_infra.apply",
+        f"instance={outputs.get('instance_id', 'unknown')} region={result['settings']['aws_region']}",
+    )
+    return result
+
+
+@api.post("/cloud/infra/destroy")
+def cloud_infra_destroy(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Tear the AWS substrate down.
+
+    Requires `{"confirm": true}`: this deletes the instance and its root
+    volume, and anything living only on that box goes with it.
+    """
+    if not payload.get("confirm"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Destroying the AWS substrate deletes the instance and its root volume. "
+                'Re-send with {"confirm": true} to proceed.'
+            ),
+        )
+    try:
+        result = cloud_infra_module.destroy_infra(_cloud_infra_args(payload))
+    except CloudCommandError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    admin_activity_module.record("cloud_infra.destroy", result["settings"]["aws_region"])
+    return result
+
+
+# --- Terraform remote state endpoints (P6-9, #3510) ---
+#
+# The substrate's state starts as one local file, which stops being correct as
+# soon as a second operator or a CI runner applies the same substrate. These
+# endpoints are the dashboard half of `nyxgpt cloud state`: migrate that state
+# into a versioned S3 bucket with a DynamoDB lock table, and recover it when a
+# run dies holding the lock or writes state that has to be rolled back.
+#
+# `migrate`/`local`/`restore` shell out to Terraform and can take a minute;
+# like the provisioning endpoints above they are deliberately synchronous.
+
+
+@api.get("/cloud/state")
+def cloud_state_status(_request: Request, verify: bool = False) -> dict[str, Any]:
+    """Where the substrate's Terraform state lives, and how it is locked.
+
+    Offline by default so the dashboard can poll it. `?verify=true`
+    additionally confirms against AWS that the bucket and lock table exist and
+    that versioning -- the whole recovery story -- is actually on.
+    """
+    try:
+        return cloud_state_module.state_status(verify=verify)
+    except CloudCommandError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+
+
+@api.post("/cloud/state/migrate")
+def cloud_state_migrate(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Create the S3 bucket + DynamoDB lock table and move existing state into them."""
+    args = argparse.Namespace(
+        bucket=payload.get("bucket") or None,
+        table=payload.get("table") or None,
+        key=payload.get("key") or None,
+        region=payload.get("region") or None,
+        profile=payload.get("profile") or None,
+    )
+    try:
+        result = cloud_state_module.migrate_to_remote(args)
+    except CloudCommandError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    backend = result["backend"]
+    admin_activity_module.record(
+        "cloud_state.migrate", f"s3://{backend['bucket']}/{backend['key']} lock={backend['table']}"
+    )
+    return result
+
+
+@api.post("/cloud/state/unlock")
+def cloud_state_unlock(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Release a state lock left held by a run that was killed mid-apply.
+
+    The lock id is required rather than "release whatever is held": breaking a
+    lock that a *live* apply still owns is how two runs end up writing the same
+    state, so the operator has to name the one they mean.
+    """
+    lock_id = str(payload.get("lock_id") or "").strip()
+    if not lock_id:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "A lock_id is required. Terraform prints it in the error that refused to "
+                "run (`Lock Info: ID: ...`)."
+            ),
+        )
+    try:
+        result = cloud_state_module.unlock_state(lock_id)
+    except CloudCommandError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    admin_activity_module.record("cloud_state.unlock", lock_id)
+    return result
+
+
+@api.get("/cloud/state/versions")
+def cloud_state_versions(_request: Request, limit: int = 20) -> dict[str, Any]:
+    """List stored versions of the remote state object, newest first."""
+    try:
+        return cloud_state_module.list_state_versions(limit=limit)
+    except CloudCommandError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+
+
+@api.post("/cloud/state/restore")
+def cloud_state_restore(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Make a previous version of the remote state the current one.
+
+    Requires `{"confirm": true}` alongside the version id: this replaces what
+    Terraform believes exists in AWS, and applying against a wrong restore can
+    destroy live resources. The version being replaced stays in the bucket's
+    history, so the operation is itself reversible.
+    """
+    version_id = str(payload.get("version_id") or "").strip()
+    if not version_id:
+        raise HTTPException(
+            status_code=400,
+            detail="A version_id is required -- list them at GET /api/v1/cloud/state/versions.",
+        )
+    if not payload.get("confirm"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Restoring replaces what Terraform believes exists in AWS; a later apply "
+                'against a wrong restore can destroy live resources. Re-send with {"confirm": '
+                "true} to proceed."
+            ),
+        )
+    try:
+        result = cloud_state_module.restore_state_version(version_id)
+    except CloudCommandError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    admin_activity_module.record("cloud_state.restore", version_id)
+    return result
+
+
+# --- Cloud deploy endpoints (P6-11, #3513) ---
+#
+# The dashboard half of `nyxgpt cloud deploy`/`destroy`/`tunnel`: provision
+# AWS, install a published nyxGPT release onto the instance, open the SSH
+# tunnel that is the only access path, and hand back the localhost URLs.
+# CLAUDE.md's Definition of Done requires ops features to be operable from the
+# SRE dashboard, and both surfaces call the same `nyxgpt.cloud_deploy`
+# functions so there is one deploy implementation, not two.
+#
+# `deploy`/`destroy` run Terraform and a remote install and take minutes; like
+# the provisioning endpoints above they are deliberately synchronous and the
+# dashboard shows a pending state while they run.
+
+
+def _cloud_deploy_args(payload: dict[str, Any]) -> argparse.Namespace:
+    """Build the namespace `nyxgpt.cloud_deploy` expects from a JSON body.
+
+    A superset of `_cloud_infra_args` -- `deploy` applies the substrate first,
+    so it takes every provisioning input as well as the deploy-specific ones.
+    """
+    namespace = _cloud_infra_args(payload)
+    namespace.host = payload.get("host") or None
+    namespace.ssh_user = payload.get("ssh_user") or None
+    namespace.identity_file = payload.get("identity_file") or None
+    namespace.version = payload.get("version") or None
+    namespace.skip_observability = bool(payload.get("skip_observability"))
+    namespace.no_tunnel = bool(payload.get("no_tunnel"))
+    namespace.health_timeout = payload.get("health_timeout") or None
+    namespace.ssh_timeout = payload.get("ssh_timeout") or None
+    return namespace
+
+
+@api.get("/cloud/deploy")
+def cloud_deploy_status(_request: Request, probe_health: bool = False) -> dict[str, Any]:
+    """What is deployed, at what version, whether the tunnel is open, and its history.
+
+    Side-effect free by default -- reads the recorded deploy/tunnel state and
+    the lifecycle history rather than calling AWS or the instance -- so the
+    dashboard can poll it. `probe_health=true` adds one short request to the
+    tunneled API health endpoint, which is what the Cloud Deployment page asks
+    for on an explicit load or refresh.
+    """
+    return cloud_deploy_module.deploy_status(probe_health=probe_health)
+
+
+@api.post("/cloud/deploy")
+def cloud_deploy_run(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Provision AWS and deploy the full stack onto it. Idempotent."""
+    try:
+        result = cloud_deploy_module.deploy(_cloud_deploy_args(payload))
+    except CloudCommandError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    admin_activity_module.record(
+        "cloud_deploy.deploy",
+        f"version={result['plan']['version']} instance={result['target']['instance_id'] or 'unknown'}",
+    )
+    return result
+
+
+@api.post("/cloud/deploy/destroy")
+def cloud_deploy_destroy(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Close the tunnel and tear the whole cloud deployment down.
+
+    Requires `{"confirm": true}` for the same reason the substrate teardown
+    does: the instance and its root volume go with it.
+    """
+    if not payload.get("confirm"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Destroying the cloud deployment deletes the instance and its root volume. "
+                'Re-send with {"confirm": true} to proceed.'
+            ),
+        )
+    try:
+        result = cloud_deploy_module.destroy(_cloud_deploy_args(payload))
+    except CloudCommandError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    admin_activity_module.record("cloud_deploy.destroy", result["settings"].get("aws_region", ""))
+    return result
+
+
+@api.post("/cloud/deploy/tunnel")
+def cloud_deploy_tunnel(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Open or close the SSH access tunnel.
+
+    `{"action": "stop"}` closes it; anything else opens it in the background
+    (a dashboard request cannot hold a foreground tunnel). Opening is
+    idempotent -- an already-running tunnel is reported, not duplicated.
+    """
+    if str(payload.get("action") or "start") == "stop":
+        try:
+            return cloud_deploy_module.stop_tunnel()
+        except CloudCommandError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
+    try:
+        target = cloud_deploy_module.resolve_target(_cloud_deploy_args(payload))
+        profiles = [str(p) for p in (cloud_deploy_module.load_deploy_state().get("profiles") or [])]
+        result = cloud_deploy_module.start_tunnel(target, profiles)
+    except CloudCommandError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    admin_activity_module.record("cloud_deploy.tunnel", target.host)
+    return result
+
+
 # --- Model management endpoints ---
 @api.get("/models")
 def models_list(request: Request) -> dict[str, Any]:
@@ -2456,7 +2921,7 @@ def sessions_show(
     sd = _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None))
     sf = sessions.session_file_for(name, sd or sessions.default_sessions_dir())
     mf = sessions.meta_file_for(sf)
-    if not sf.exists():
+    if not sessions.session_file_exists(sf):
         raise HTTPException(status_code=404, detail="No such session")
 
     # Validate pagination parameters (Medium Issue 4)
@@ -2522,7 +2987,7 @@ def sessions_init(req: dict[str, Any] = Body(...)) -> dict[str, Any]:
         log.error("Failed to get session file path: %s", e)
         raise HTTPException(status_code=500, detail="Internal server error") from e
 
-    if sf.exists():
+    if sessions.session_file_exists(sf):
         return {"ok": True, "name": name, "existed": True}
 
     system = req.get("system")
@@ -2670,7 +3135,7 @@ def sessions_rename(
 
     # Check if current session exists
     sf = sessions.session_file_for(name, _sessions_dir)
-    if not sf.exists():
+    if not sessions.session_file_exists(sf):
         raise HTTPException(status_code=404, detail=f"Session '{name}' not found")
 
     if req.sync_filename:
@@ -2729,7 +3194,7 @@ def sessions_sync_filename(name: str, sessions_dir: str | None = None) -> dict[s
 
     # Check if session exists
     sf = sessions.session_file_for(name, _sessions_dir)
-    if not sf.exists():
+    if not sessions.session_file_exists(sf):
         raise HTTPException(status_code=404, detail=f"Session '{name}' not found")
 
     # Force filename sync
@@ -2792,7 +3257,7 @@ def get_message_rag_chunks(
 
     # Load session messages
     sf = sessions.session_file_for(name, _sessions_dir)
-    if not sf.exists():
+    if not sessions.session_file_exists(sf):
         raise HTTPException(status_code=404, detail=f"Session '{name}' not found")
 
     msgs = sessions.load_session_messages(sf)
@@ -2880,11 +3345,11 @@ def export_session_citations(
 
     # Load session messages
     sf = sessions.session_file_for(name, _sessions_dir)
-    if not sf.exists():
+    if not sessions.session_file_exists(sf):
         raise HTTPException(status_code=404, detail=f"Session '{name}' not found")
 
     # Use file locking to prevent race conditions during read
-    with sessions.file_lock(sf, timeout=5.0):
+    with sessions.session_lock(sf, timeout=5.0):
         msgs = sessions.load_session_messages(sf)
 
     # Extract all citations from assistant messages
@@ -2967,7 +3432,7 @@ def regenerate_response(
 
     # Load session to validate message index
     sf = sessions.session_file_for(name, _sessions_dir)
-    if not sf.exists():
+    if not sessions.session_file_exists(sf):
         raise HTTPException(status_code=404, detail="No such session")
 
     msgs = sessions.load_session_messages(sf)
@@ -4649,7 +5114,7 @@ def get_session_metadata(name: str) -> dict[str, Any]:
     mf = sessions.meta_file_for(sf)
 
     # Create session files if they don't exist
-    if not sf.exists():
+    if not sessions.session_file_exists(sf):
         sessions.save_session_messages(sf, [])
 
     meta = sessions.load_session_meta(mf)
@@ -4673,7 +5138,7 @@ def enable_session_rag(name: str) -> dict[str, Any]:
     mf = sessions.meta_file_for(sf)
 
     # Create session files if they don't exist
-    if not sf.exists():
+    if not sessions.session_file_exists(sf):
         sessions.save_session_messages(sf, [])
 
     meta = sessions.load_session_meta(mf)
@@ -4698,7 +5163,7 @@ def disable_session_rag(name: str) -> dict[str, Any]:
     mf = sessions.meta_file_for(sf)
 
     # Create session files if they don't exist
-    if not sf.exists():
+    if not sessions.session_file_exists(sf):
         sessions.save_session_messages(sf, [])
 
     meta = sessions.load_session_meta(mf)
@@ -4741,7 +5206,7 @@ def attach_document_to_session(name: str, req: AttachDocumentRequest) -> Session
     sf = sessions.session_file_for(name, sessions_dir)
     mf = sessions.meta_file_for(sf)
 
-    if not sf.exists():
+    if not sessions.session_file_exists(sf):
         sessions.save_session_messages(sf, [])
 
     meta = sessions.load_session_meta(mf)

@@ -23,6 +23,16 @@ _assert_eq() {
   fi
 }
 
+_assert_contains() {
+  local desc="$1" haystack="$2" needle="$3"
+  if [[ "$haystack" == *"$needle"* ]]; then
+    echo "[ok] $desc"
+  else
+    echo "[FAIL] $desc: expected output to contain '$needle', got: $haystack" >&2
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
 # Load the library. It only defines functions at source time, so this is safe.
 # shellcheck source=/dev/null
 source "$ROOT_DIR/scripts/agents/lib/gh_project.sh"
@@ -239,16 +249,18 @@ GH_CALLS=()
 gh() {
   GH_CALLS+=("$*")
   case "$1 $2" in
-    "issue view") echo "" ;; # no assignees yet
     "issue edit") : ;;
     *) echo "[test] unexpected gh invocation: $*" >&2; return 1 ;;
   esac
 }
+_issue_assignee_logins() { echo ""; } # no assignees yet (REST-backed read, stubbed directly)
 ASSIGN_ONLY_CALLS=()
 issue_assign_only() { ASSIGN_ONLY_CALLS+=("$1 $2"); }
 COMMENT_CALLS=()
 issue_comment() { COMMENT_CALLS+=("$1 $2"); }
 
+# shellcheck disable=SC2218 # exercises the real gh_project.sh function
+# sourced above; Test 12 below shadows it with a mock for a different unit.
 assign_and_trigger_developer "77"
 _assert_eq "fresh assignment calls issue_assign_only once" "1" "${#ASSIGN_ONLY_CALLS[@]}"
 _assert_eq "fresh assignment targets the dev agent" "77 myGPT-developer-agent" "${ASSIGN_ONLY_CALLS[0]}"
@@ -264,15 +276,17 @@ GH_CALLS=()
 gh() {
   GH_CALLS+=("$*")
   case "$1 $2" in
-    "issue view") echo "$DEV_AGENT" ;; # already assigned
     "issue edit") : ;;
     *) echo "[test] unexpected gh invocation: $*" >&2; return 1 ;;
   esac
 }
+_issue_assignee_logins() { echo "$DEV_AGENT"; } # already assigned (REST-backed read, stubbed directly)
 ASSIGN_ONLY_CALLS=()
 COMMENT_CALLS=()
 sleep() { :; } # no real backoff in tests
 
+# shellcheck disable=SC2218 # exercises the real gh_project.sh function
+# sourced above; Test 12 below shadows it with a mock for a different unit.
 assign_and_trigger_developer "78"
 _assert_eq "redispatch calls issue_assign_only once (the reassignment)" "1" "${#ASSIGN_ONLY_CALLS[@]}"
 _assert_eq "redispatch targets the dev agent" "78 myGPT-developer-agent" "${ASSIGN_ONLY_CALLS[0]}"
@@ -288,8 +302,8 @@ _assert_eq "redispatch unassigns before reassigning" "1" "$UNASSIGN_SEEN"
 # --- routine SCRUM_AGENT stamp on every fresh Backlog issue was itself ---
 # --- treated as "already claimed", permanently blocking the queue) ---
 gh() {
-  case "$1 $2" in
-    "issue view") echo "${ISSUE_STATE_STUB:-OPEN}" ;;
+  case "$1" in
+    api) echo "${ISSUE_STATE_STUB:-OPEN}" ;; # REST issue read + ascii_upcase, stubbed at the gh layer
     *) echo "[test] unexpected gh invocation: $*" >&2; return 1 ;;
   esac
 }
@@ -595,6 +609,396 @@ _assert_eq "project_field_value reads a text field's value" \
   "some free text" "$(project_field_value "item-x" "Notes")"
 _assert_eq "project_field_value returns empty for a field the item has no value for" \
   "" "$(project_field_value "item-x" "Priority")"
+
+# --- Test 13: unresolved_escalation_issues (#3687) -- filters the raw open- ---
+# --- issues-assigned-to-owner fetch down to issues only (excludes PRs, ---
+# --- which the same REST endpoint also returns for an assignee) ---
+REPO_OWNER="test-owner"
+REPO_NAME="test-repo"
+HUMAN_OWNER="dkblinux98"
+
+_open_issues_assigned_to() {
+  [[ "$1" == "dkblinux98" ]] || { echo "[test] unexpected owner: $1" >&2; return 1; }
+  cat <<'JSON'
+[
+  {"number": 201, "title": "spec ambiguity on auth flow", "pull_request": null},
+  {"number": 202, "title": "some PR also assigned to owner", "pull_request": {"url": "x"}},
+  {"number": 203, "title": "flaky suite escalation", "pull_request": null}
+]
+JSON
+}
+
+ISSUES_OUT="$(unresolved_escalation_issues)"
+_assert_eq "unresolved_escalation_issues excludes PRs and lists both open issues" \
+  "#201 spec ambiguity on auth flow
+#203 flaky suite escalation" "$ISSUES_OUT"
+
+_open_issues_assigned_to() { echo "[]"; }
+_assert_eq "unresolved_escalation_issues is empty when nothing is assigned to the owner" \
+  "" "$(unresolved_escalation_issues)"
+
+# --- Test 14: count_unresolved_escalations (#3687) -- always echoes a ---
+# --- number, including zero (grep -c's exit-1-on-no-match must not leak) ---
+unresolved_escalation_issues() { echo ""; }
+_assert_eq "count_unresolved_escalations is 0 when nothing is unresolved" \
+  "0" "$(count_unresolved_escalations)"
+
+unresolved_escalation_issues() { printf '#201 a\n#203 b\n'; }
+_assert_eq "count_unresolved_escalations counts each listed issue" \
+  "2" "$(count_unresolved_escalations)"
+
+# --- Test 14b: _escalation_pause_comment_id (#3687) -- exercises the REAL ---
+# --- gh api + jq pipeline (only `gh` is stubbed, unlike the escalation_pause_gate ---
+# --- tests below which stub this function out entirely) so a regression in ---
+# --- the gh/jq invocation itself -- e.g. the Critical `gh api --jq --arg` ---
+# --- bug this fixes -- is caught. Two pages are returned to also cover the ---
+# --- --paginate-without-slurp pitfall (AGENTS.md): the matching comments ---
+# --- are split across pages with a later, non-matching comment on page 1, ---
+# --- so a per-page (unslurped) sort_by/last would pick the wrong id. ---
+gh() {
+  if [[ "$1" == "api" && "$2" == "repos/test-owner/test-repo/issues/3521/comments" && "$3" == "--paginate" ]]; then
+    cat <<JSON
+[{"id": 111, "created_at": "2026-08-03T00:00:00Z", "body": "unrelated, newer than the page-2 comments"}]
+[{"id": 222, "created_at": "2026-08-01T00:00:00Z", "body": "old pause report $_ESCALATION_PAUSE_MARKER"}, {"id": 333, "created_at": "2026-08-02T00:00:00Z", "body": "newest pause report $_ESCALATION_PAUSE_MARKER"}]
+JSON
+    return 0
+  fi
+  echo "[test] unexpected gh invocation: $*" >&2
+  return 1
+}
+_assert_eq "_escalation_pause_comment_id picks the latest matching comment across pages" \
+  "333" "$(_escalation_pause_comment_id 3521)"
+
+gh() { echo "[]"; }
+_assert_eq "_escalation_pause_comment_id is empty when no comment matches the marker" \
+  "" "$(_escalation_pause_comment_id 3521)"
+
+# --- Test 15: escalation_pause_gate (#3687) -- the dispatch-pause decision ---
+# --- itself: 0 or 1 unresolved escalations never pauses (even without a ---
+# --- release issue configured); >=2 pauses and posts/updates a loud report ---
+# --- on RELEASE_ISSUE_NUMBER; dropping back below 2 clears/updates it ---
+RELEASE_ISSUE_NUMBER=""
+unresolved_escalation_issues() { echo ""; }
+if escalation_pause_gate; then
+  echo "[ok] zero unresolved escalations: gate stays open"
+else
+  echo "[FAIL] zero unresolved escalations: gate should stay open" >&2
+  FAILURES=$((FAILURES + 1))
+fi
+
+unresolved_escalation_issues() { echo "#201 only one"; }
+if escalation_pause_gate; then
+  echo "[ok] exactly one unresolved escalation: gate stays open (normal traffic)"
+else
+  echo "[FAIL] exactly one unresolved escalation: gate should stay open" >&2
+  FAILURES=$((FAILURES + 1))
+fi
+
+RELEASE_ISSUE_NUMBER="3521"
+unresolved_escalation_issues() { printf '#201 first\n#203 second\n'; }
+_escalation_pause_comment_id() { echo ""; }
+POSTED_ISSUES=()
+POSTED_BODIES=()
+issue_comment() { POSTED_ISSUES+=("$1"); POSTED_BODIES+=("$2"); }
+PATCH_CALLS=()
+gh() {
+  if [[ "$1" == "api" && "$2" == "-X" && "$3" == "PATCH" ]]; then
+    PATCH_CALLS+=("$*")
+    return 0
+  fi
+  echo "[test] unexpected gh invocation: $*" >&2
+  return 1
+}
+
+if escalation_pause_gate; then
+  echo "[FAIL] two unresolved escalations: gate should pause" >&2
+  FAILURES=$((FAILURES + 1))
+else
+  echo "[ok] two unresolved escalations: gate pauses"
+fi
+_assert_eq "pausing posts exactly one report (no prior comment to update)" "1" "${#POSTED_ISSUES[@]}"
+_assert_eq "the report is posted on the release tracking issue" "3521" "${POSTED_ISSUES[0]}"
+_assert_contains "the report lists both escalated issues" "${POSTED_BODIES[0]}" "#201 first"
+_assert_contains "the report lists both escalated issues" "${POSTED_BODIES[0]}" "#203 second"
+_assert_eq "pausing does not PATCH (no existing comment)" "0" "${#PATCH_CALLS[@]}"
+
+# Already paused with an existing report comment -- update in place, don't
+# post a second comment.
+_escalation_pause_comment_id() { echo "999"; }
+POSTED_ISSUES=()
+POSTED_BODIES=()
+PATCH_CALLS=()
+if escalation_pause_gate; then
+  echo "[FAIL] still >=2 unresolved with an existing report: gate should stay paused" >&2
+  FAILURES=$((FAILURES + 1))
+else
+  echo "[ok] still >=2 unresolved with an existing report: gate stays paused"
+fi
+_assert_eq "an existing report is updated, not duplicated" "0" "${#POSTED_ISSUES[@]}"
+_assert_eq "updating the existing report PATCHes it once" "1" "${#PATCH_CALLS[@]}"
+_assert_contains "the PATCH targets the existing comment id" "${PATCH_CALLS[0]}" "issues/comments/999"
+
+# Count drops back below 2 with a stale report comment present -- the gate
+# reopens and the stale report is updated to say so (not left dangling).
+unresolved_escalation_issues() { echo "#201 first"; }
+PATCH_CALLS=()
+if escalation_pause_gate; then
+  echo "[ok] dropping below 2 with a stale report: gate reopens"
+else
+  echo "[FAIL] dropping below 2 with a stale report: gate should reopen" >&2
+  FAILURES=$((FAILURES + 1))
+fi
+_assert_eq "reopening updates the stale report exactly once" "1" "${#PATCH_CALLS[@]}"
+_assert_contains "the reopen PATCH targets the existing comment id" "${PATCH_CALLS[0]}" "issues/comments/999"
+
+# --- Test 16: _slack_notify_recent (#3695) -- exercises the REAL gh api + ---
+# --- jq + python3 cutoff pipeline (only `gh` is stubbed) so a regression ---
+# --- in that pipeline itself is caught, not just the higher-level mock ---
+# --- tests below. A large window makes a comment from 2020 count as ---
+# --- "recent"; a 1-minute window does not (2020 is never within 1 minute ---
+# --- of "now", whenever this test runs). ---
+REPO_OWNER="test-owner"
+REPO_NAME="test-repo"
+gh() {
+  if [[ "$1" == "api" && "$2" == "repos/test-owner/test-repo/issues/42/comments" && "$3" == "--paginate" ]]; then
+    cat <<'JSON'
+[{"id": 1, "created_at": "2020-01-01T00:00:00Z", "body": "notified <!-- slack-notify:42:FATAL -->"}]
+JSON
+    return 0
+  fi
+  echo "[test] unexpected gh invocation: $*" >&2
+  return 1
+}
+if _slack_notify_recent "42" "42:FATAL" 999999999; then
+  echo "[ok] _slack_notify_recent: a huge window counts an old marker as recent"
+else
+  echo "[FAIL] _slack_notify_recent: a huge window should count an old marker as recent" >&2
+  FAILURES=$((FAILURES + 1))
+fi
+if _slack_notify_recent "42" "42:FATAL" 1; then
+  echo "[FAIL] _slack_notify_recent: a 1-minute window should not count a 2020 marker as recent" >&2
+  FAILURES=$((FAILURES + 1))
+else
+  echo "[ok] _slack_notify_recent: a 1-minute window does not count a 2020 marker as recent"
+fi
+if _slack_notify_recent "42" "42:OTHER_KEY" 999999999; then
+  echo "[FAIL] _slack_notify_recent: a non-matching dedup key should never count as recent" >&2
+  FAILURES=$((FAILURES + 1))
+else
+  echo "[ok] _slack_notify_recent: a non-matching dedup key never counts as recent"
+fi
+
+# --- Test 17: notify_human_escalation (#3695) -- graceful degradation, ---
+# --- dedup skip, success path (Slack call + marker comment), and Slack- ---
+# --- failure fallback. curl/issue_comment/_slack_notify_recent are all ---
+# --- stubbed here; the real gh/jq/python3 pipeline is covered by Test 16 ---
+# --- above. ---
+SLACK_BOT_TOKEN=""
+SLACK_USER_ID=""
+CURL_CALLS=0
+curl() { CURL_CALLS=$((CURL_CALLS + 1)); echo '{"ok":true}'; }
+COMMENT_CALLS=()
+issue_comment() { COMMENT_CALLS+=("$1|$2"); }
+
+notify_human_escalation "42" "FATAL" "diag" "action"
+_assert_eq "missing SLACK_BOT_TOKEN/SLACK_USER_ID: no curl call attempted" "0" "$CURL_CALLS"
+_assert_eq "missing SLACK_BOT_TOKEN/SLACK_USER_ID: no marker comment posted" "0" "${#COMMENT_CALLS[@]}"
+
+SLACK_BOT_TOKEN="xoxb-test"
+SLACK_USER_ID="U12345"
+CURL_CALLS=0
+COMMENT_CALLS=()
+_slack_notify_recent() { return 0; } # dedup: already notified recently
+notify_human_escalation "42" "FATAL" "diag" "action"
+_assert_eq "recent duplicate: no curl call attempted" "0" "$CURL_CALLS"
+_assert_eq "recent duplicate: no marker comment posted" "0" "${#COMMENT_CALLS[@]}"
+
+# curl runs inside `response="$(curl ...)"` (command substitution), which is
+# a subshell -- a plain CURL_CALLS=$((CURL_CALLS+1)) inside the stub would
+# not be visible back here, so count calls via a file instead (file writes
+# from a subshell persist; variable assignments do not).
+CURL_CALL_LOG="$(mktemp)"
+COMMENT_CALLS=()
+_slack_notify_recent() { return 1; } # not a duplicate
+curl() { echo called >>"$CURL_CALL_LOG"; echo '{"ok":true}'; }
+notify_human_escalation "42" "FATAL" "one-line diagnosis" "merge abc123 to v3.0.0" "42:FATAL"
+_assert_eq "success path: exactly one Slack API call" "1" "$(wc -l <"$CURL_CALL_LOG")"
+_assert_eq "success path: exactly one marker comment posted" "1" "${#COMMENT_CALLS[@]}"
+_assert_eq "success path: marker comment targets the right issue" "42" "${COMMENT_CALLS[0]%%|*}"
+_assert_contains "success path: marker comment carries the dedup marker" \
+  "${COMMENT_CALLS[0]}" "<!-- slack-notify:42:FATAL -->"
+
+: >"$CURL_CALL_LOG"
+COMMENT_CALLS=()
+curl() { echo called >>"$CURL_CALL_LOG"; echo '{"ok":false,"error":"channel_not_found"}'; }
+if notify_human_escalation "42" "FATAL" "diag" "action"; then
+  echo "[ok] Slack API failure: notify_human_escalation still returns success (never blocks the caller)"
+else
+  echo "[FAIL] Slack API failure: notify_human_escalation must always return 0" >&2
+  FAILURES=$((FAILURES + 1))
+fi
+_assert_eq "Slack API failure: no marker comment posted (no false record of success)" "0" "${#COMMENT_CALLS[@]}"
+rm -f "$CURL_CALL_LOG"
+
+# --- Test 18: _release_issue_comments_json (#3694) -- exercises the REAL ---
+# --- gh api + jq pipeline (only `gh` is stubbed) across two pages, the ---
+# --- same --paginate-without-slurp pitfall coverage as Test 14b above, ---
+# --- plus the `id` field cross_issue_anomaly_pause_gate needs that ---
+# --- unresolved_escalation_issues' equivalent fetch doesn't carry. ---
+gh() {
+  if [[ "$1" == "api" && "$2" == "repos/test-owner/test-repo/issues/3521/comments" && "$3" == "--paginate" ]]; then
+    cat <<JSON
+[{"id": 1, "body": "page 1 comment", "author_association": "NONE", "created_at": "2026-08-09T00:00:00Z"}]
+[{"id": 2, "body": "page 2 comment", "author_association": "OWNER", "created_at": "2026-08-09T00:01:00Z"}]
+JSON
+    return 0
+  fi
+  echo "[test] unexpected gh invocation: $*" >&2
+  return 1
+}
+COMMENTS_OUT="$(_release_issue_comments_json 3521)"
+_assert_eq "_release_issue_comments_json flattens both pages into one array" \
+  "2" "$(echo "$COMMENTS_OUT" | jq 'length')"
+_assert_eq "_release_issue_comments_json keeps the id field" \
+  "1" "$(echo "$COMMENTS_OUT" | jq '.[0].id')"
+
+# --- Test 19: cross_issue_anomaly_decision (#3694) -- the (issue, ---
+# --- failed_step) decision wrapper: empty release issue fails open ---
+# --- ("open", never blocks a run on missing config); a real comment ---
+# --- thread with a matching marker from a DIFFERENT issue reports "skip" ---
+ANOMALY_MARKER_3667="<!-- nyxgpt-anomaly: step=check_if_pr_already_exists issue=3667 opened=1000 -->"
+
+_assert_eq "cross_issue_anomaly_decision with no release issue configured opens (fails open)" \
+  "open" "$(cross_issue_anomaly_decision "" 3511 "Check if PR already exists" 1500 | jq -r '.action')"
+
+gh() {
+  if [[ "$1" == "api" && "$2" == "repos/test-owner/test-repo/issues/3521/comments" && "$3" == "--paginate" ]]; then
+    printf '[{"id": 9, "body": "%s", "author_association": "NONE", "created_at": "2026-08-09T00:00:00Z"}]\n' "$ANOMALY_MARKER_3667"
+    return 0
+  fi
+  echo "[test] unexpected gh invocation: $*" >&2
+  return 1
+}
+DECISION="$(cross_issue_anomaly_decision 3521 3511 "Check if PR already exists" 1500)"
+_assert_eq "cross_issue_anomaly_decision reports skip for a matching open anomaly from another issue" \
+  "skip" "$(echo "$DECISION" | jq -r '.action')"
+_assert_eq "cross_issue_anomaly_decision reports the originating issue" \
+  "3667" "$(echo "$DECISION" | jq -r '.origin_issue')"
+
+DECISION="$(cross_issue_anomaly_decision 3521 3667 "Check if PR already exists" 1500)"
+_assert_eq "cross_issue_anomaly_decision reports proceed for the origin issue itself" \
+  "proceed" "$(echo "$DECISION" | jq -r '.action')"
+
+# --- Test 20: open_cross_issue_anomaly (#3694) -- posts the tracking-record ---
+# --- marker comment on the release issue for the issue `decide` said should ---
+# --- open one ---
+POSTED_ISSUES=()
+POSTED_BODIES=()
+issue_comment() { POSTED_ISSUES+=("$1"); POSTED_BODIES+=("$2"); }
+open_cross_issue_anomaly 3521 3667 "Check if PR already exists" 1000 "https://github.com/test-owner/test-repo/actions/runs/111"
+_assert_eq "open_cross_issue_anomaly posts exactly one comment" "1" "${#POSTED_ISSUES[@]}"
+_assert_eq "open_cross_issue_anomaly posts on the release tracking issue" "3521" "${POSTED_ISSUES[0]}"
+_assert_contains "the tracking record embeds the anomaly marker" "${POSTED_BODIES[0]}" "$ANOMALY_MARKER_3667"
+_assert_contains "the tracking record links the originating issue" "${POSTED_BODIES[0]}" "#3667"
+
+# --- Test 21: cross_issue_anomaly_pause_gate (#3694) -- the dispatch-pause ---
+# --- decision: no open anomaly never pauses; an open anomaly pauses and ---
+# --- posts/updates a loud report; resolving it (RESOLVE_ANOMALY, or the ---
+# --- window elapsing) reopens the gate. Unlike cross_issue_anomaly_decision ---
+# --- above (which takes now_epoch as an explicit argument), the gate ---
+# --- itself checks against the real clock -- so its marker must carry a ---
+# --- genuinely recent "opened" timestamp, not the synthetic epoch 1000 ---
+# --- used above. ---
+ANOMALY_MARKER_3667="<!-- nyxgpt-anomaly: step=check_if_pr_already_exists issue=3667 opened=$(( $(date +%s) - 300 )) -->"
+RELEASE_ISSUE_NUMBER=""
+gh() { echo "[test] unexpected gh invocation while no release issue is configured: $*" >&2; return 1; }
+if cross_issue_anomaly_pause_gate; then
+  echo "[ok] no release issue configured: gate stays open (fails open)"
+else
+  echo "[FAIL] no release issue configured: gate should stay open" >&2
+  FAILURES=$((FAILURES + 1))
+fi
+
+RELEASE_ISSUE_NUMBER="3521"
+gh() {
+  if [[ "$1" == "api" && "$2" == "repos/test-owner/test-repo/issues/3521/comments" && "$3" == "--paginate" ]]; then
+    printf '[{"id": 9, "body": "%s", "author_association": "NONE", "created_at": "2026-08-09T00:00:00Z"}]\n' "$ANOMALY_MARKER_3667"
+    return 0
+  elif [[ "$1" == "api" && "$2" == "-X" && "$3" == "PATCH" ]]; then
+    PATCH_CALLS+=("$*")
+    return 0
+  fi
+  echo "[test] unexpected gh invocation: $*" >&2
+  return 1
+}
+POSTED_ISSUES=()
+POSTED_BODIES=()
+PATCH_CALLS=()
+if cross_issue_anomaly_pause_gate; then
+  echo "[FAIL] an open anomaly: gate should pause" >&2
+  FAILURES=$((FAILURES + 1))
+else
+  echo "[ok] an open anomaly: gate pauses"
+fi
+_assert_eq "pausing posts exactly one report (no prior comment to update)" "1" "${#POSTED_ISSUES[@]}"
+_assert_eq "the report is posted on the release tracking issue" "3521" "${POSTED_ISSUES[0]}"
+_assert_eq "pausing does not PATCH (no existing report comment)" "0" "${#PATCH_CALLS[@]}"
+
+# Already paused with an existing report comment (the anomaly marker AND a
+# prior pause-report comment are both present) -- update in place, don't
+# post a second comment.
+gh() {
+  if [[ "$1" == "api" && "$2" == "repos/test-owner/test-repo/issues/3521/comments" && "$3" == "--paginate" ]]; then
+    printf '[{"id": 9, "body": "%s", "author_association": "NONE", "created_at": "2026-08-09T00:00:00Z"},
+             {"id": 42, "body": "prior pause report %s", "author_association": "NONE", "created_at": "2026-08-09T00:05:00Z"}]\n' \
+      "$ANOMALY_MARKER_3667" "$_CROSS_ISSUE_ANOMALY_PAUSE_MARKER"
+    return 0
+  elif [[ "$1" == "api" && "$2" == "-X" && "$3" == "PATCH" ]]; then
+    PATCH_CALLS+=("$*")
+    return 0
+  fi
+  echo "[test] unexpected gh invocation: $*" >&2
+  return 1
+}
+POSTED_ISSUES=()
+POSTED_BODIES=()
+PATCH_CALLS=()
+if cross_issue_anomaly_pause_gate; then
+  echo "[FAIL] still open with an existing report: gate should stay paused" >&2
+  FAILURES=$((FAILURES + 1))
+else
+  echo "[ok] still open with an existing report: gate stays paused"
+fi
+_assert_eq "an existing report is updated, not duplicated" "0" "${#POSTED_ISSUES[@]}"
+_assert_eq "updating the existing report PATCHes it once" "1" "${#PATCH_CALLS[@]}"
+_assert_contains "the PATCH targets the existing comment id" "${PATCH_CALLS[0]}" "issues/comments/42"
+
+# The anomaly resolves (RESOLVE_ANOMALY from the owner) with a stale report
+# comment present -- the gate reopens and the stale report is updated to
+# say so (not left dangling).
+gh() {
+  if [[ "$1" == "api" && "$2" == "repos/test-owner/test-repo/issues/3521/comments" && "$3" == "--paginate" ]]; then
+    printf '[{"id": 9, "body": "%s", "author_association": "NONE", "created_at": "2026-08-09T00:00:00Z"},
+             {"id": 42, "body": "prior pause report %s", "author_association": "NONE", "created_at": "2026-08-09T00:05:00Z"},
+             {"id": 43, "body": "RESOLVE_ANOMALY", "author_association": "OWNER", "created_at": "2026-08-09T00:06:00Z"}]\n' \
+      "$ANOMALY_MARKER_3667" "$_CROSS_ISSUE_ANOMALY_PAUSE_MARKER"
+    return 0
+  elif [[ "$1" == "api" && "$2" == "-X" && "$3" == "PATCH" ]]; then
+    PATCH_CALLS+=("$*")
+    return 0
+  fi
+  echo "[test] unexpected gh invocation: $*" >&2
+  return 1
+}
+PATCH_CALLS=()
+if cross_issue_anomaly_pause_gate; then
+  echo "[ok] anomaly resolved with a stale report: gate reopens"
+else
+  echo "[FAIL] anomaly resolved with a stale report: gate should reopen" >&2
+  FAILURES=$((FAILURES + 1))
+fi
+_assert_eq "reopening updates the stale report exactly once" "1" "${#PATCH_CALLS[@]}"
+_assert_contains "the reopen PATCH targets the existing comment id" "${PATCH_CALLS[0]}" "issues/comments/42"
 
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "All tests passed."

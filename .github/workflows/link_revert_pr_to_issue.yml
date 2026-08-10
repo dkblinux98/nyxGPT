@@ -52,8 +52,9 @@ jobs:
 
           ORIGINAL_PR="${{ steps.extract.outputs.original_pr }}"
 
-          # Get original PR body
-          ORIGINAL_BODY=$(gh pr view "$ORIGINAL_PR" --json body -q '.body')
+          # Get original PR body (REST -- plain PR data has no GraphQL-only
+          # dependency, keeps this off the GraphQL/Projects-v2 rate pool)
+          ORIGINAL_BODY=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${ORIGINAL_PR}" --jq '.body')
 
           echo "Original PR #$ORIGINAL_PR body:"
           echo "$ORIGINAL_BODY"

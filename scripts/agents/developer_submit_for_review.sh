@@ -67,7 +67,8 @@ if [[ "$CURRENT_BRANCH" == "master" || "$CURRENT_BRANCH" == "main" || "$CURRENT_
 fi
 
 # ---- Fetch issue data ----
-issue_json="$(gh issue view "$ISSUE" --repo "$REPO" --json title,body,labels,url,milestone,state -q '.')"
+issue_json="$(gh api "repos/${REPO}/issues/${ISSUE}" \
+  --jq '{title, body, labels, url: .html_url, milestone, state: (.state | ascii_upcase)}')"
 issue_title="$(echo "$issue_json" | jq -r '.title')"
 issue_body="$(echo "$issue_json" | jq -r '.body // ""')"
 issue_url="$(echo "$issue_json" | jq -r '.url')"
@@ -144,7 +145,9 @@ if [[ -z "$body_file" ]]; then
   body_file="$tmp_body"
 
   # Check if this is an Acceptance Failure issue that blocks another issue
-  BLOCKED_ISSUE=$(gh issue view "$ISSUE" --repo "$REPO" --json comments --jq '.comments[] | select(.author.login == env.GITHUB_USER or .author.login == "github-actions[bot]" or .author.login == env.DEV_AGENT) | .body' | grep -oP "Blocks #\K\d+" | head -1 || echo "")
+  BLOCKED_ISSUE=$(gh api "repos/${REPO}/issues/${ISSUE}/comments" --paginate \
+    --jq '.[] | select(.user.login == env.GITHUB_USER or .user.login == "github-actions[bot]" or .user.login == env.DEV_AGENT) | .body' \
+    | grep -oP "Blocks #\K\d+" | head -1 || echo "")
 
   {
     # Include Closes for both issues if this is an Acceptance Failure
@@ -204,7 +207,9 @@ fi
 pr_url="$(gh pr create --repo "$REPO" --base "$BASE_BRANCH" --head "$CURRENT_BRANCH" --title "$PR_TITLE" --body-file "$body_file")"
 [[ -n "$pr_url" ]] || _die "Failed to create PR"
 
-pr_number="$(gh pr view "$pr_url" --repo "$REPO" --json number -q .number)"
+# PR number is the trailing path segment of the create URL
+# (https://github.com/OWNER/REPO/pull/NNN) -- avoids a redundant read.
+pr_number="${pr_url##*/}"
 
 # Set PR assignee and reviewer to review-agent
 # PR and issue remain assigned to review-agent until merge completes successfully

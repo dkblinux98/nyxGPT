@@ -81,10 +81,24 @@ jobs:
         run: |
           set -uo pipefail
           fail=0
-          check() { # <label> <url> <expected>
-            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$2" || echo 000)
-            echo "  $1 -> $code (expect $3)"
-            [ "$code" = "$3" ] || { echo "::error::$1 expected $3, got $code"; fail=1; }
+          # `nyxgpt ops install --terraform --local` returns once its own
+          # internal health-waits (Grafana's Compose healthcheck, etc.) are
+          # satisfied, but that doesn't cover every container's own startup
+          # tail (e.g. a container reporting healthy just as its app finishes
+          # binding its port). Poll for up to 60s (20 attempts * 3s) before
+          # giving up, instead of a single-shot check that can race it (#3636).
+          check() { # <label> <url> <expected> [<attempts>] [<delay>]
+            label="$1" url="$2" expected="$3" attempts="${4:-20}" delay="${5:-3}"
+            code=000
+            i=1
+            while [ "$i" -le "$attempts" ]; do
+              code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$url" || echo 000)
+              [ "$code" = "$expected" ] && break
+              sleep "$delay"
+              i=$((i + 1))
+            done
+            echo "  $label -> $code (expect $expected)"
+            [ "$code" = "$expected" ] || { echo "::error::$label expected $expected, got $code"; fail=1; }
           }
           check "api  /api/v1/models" http://localhost:8000/api/v1/models 200
           check "web  /"              http://localhost:3000/ 200

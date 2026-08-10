@@ -8,12 +8,23 @@ Inputs (all under scripts/retrospective/data/ unless overridden):
                          "Retro Dashboard - Dump Project Fields" workflow. When present,
                          the sprint axis uses the Project's actual Sprint iterations;
                          otherwise calendar weeks stand in (labeled provisional).
+  reviews_final.json   - every REQUEST_CHANGES review round, all time, produced by the
+                         "Retro Dashboard - Dump Review Rounds" workflow from the GitHub
+                         PR-review API (owner decision 2026-08-08, #3667 — this used to be
+                         a Gmail notification-email parse; no live API calls happen here,
+                         this script only reads the committed dump).
+  spend.json           - OPTIONAL: per-issue spend telemetry (Claude-invoking workflow
+                         steps, total workflow runs, runner minutes, retry/self-heal
+                         cycle count) produced by the "Retro Dashboard - Dump Spend
+                         Telemetry" workflow (#3696). When present, adds a per-sprint
+                         cost view; omitted entirely from the dashboard otherwise.
 
 Output: retro.html next to this script (publish it as the Artifact).
 
-The review-gate monthly series is seeded below (Jan-Jun are historical constants
-mined from the complete GitHub notification-email archive); refresh July+ counts
-when regenerating.
+The review-gate monthly series is seeded below (older months are historical
+constants mined before the review agent posted rounds as PR reviews); the
+current month's rejected count is instead computed live from
+data/reviews_final.json in gate_series().
 """
 
 import argparse
@@ -63,8 +74,10 @@ CAUSES = ["defect", "spec", "workflow", "pm"]
 AF_CAUSES = ("defect", "spec", "workflow")
 
 # Review-gate monthly series: PRs merged (GitHub API) vs PRs with >=1
-# REQUEST_CHANGES (notification-email archive). Update the current month on refresh.
-# merged/medianHrs are recomputed from data/pr_times.json when present.
+# REQUEST_CHANGES round (GitHub PR-review API, data/reviews_final.json).
+# merged/medianHrs are recomputed from data/pr_times.json when present; the
+# current month's "rejected" is recomputed from reviews_final.json in
+# gate_series() — older months predate that dump and keep their seeded value.
 GATE = [
     {"m": "Jan", "merged": 153, "rejected": 62},
     {"m": "Feb", "merged": 15, "rejected": 26},
@@ -171,19 +184,25 @@ def classify(issue):
     return None
 
 
+def sprint_of_map(project_fields):
+    """issue number -> Sprint field value, from a project_fields.json snapshot."""
+    sprint_of = {}
+    for item in project_fields.get("items", []):
+        if item.get("type") not in (None, "ISSUE", "Issue"):
+            continue
+        for f in item.get("fields", []):
+            if f.get("field") == "Sprint" and f.get("value"):
+                sprint_of[item["number"]] = f["value"]
+    return sprint_of
+
+
 def sprint_buckets(issues, project_fields):
     """Return (buckets, source). Each bucket: {'w': key, 'label': str|None, 'issues': [...]}.
     With a project snapshot, buckets are the Project's real Sprint iterations
     (issues without a sprint go to a trailing '(no sprint)' bucket); otherwise
     calendar Mondays."""
     if project_fields:
-        sprint_of = {}
-        for item in project_fields.get("items", []):
-            if item.get("type") not in (None, "ISSUE", "Issue"):
-                continue
-            for f in item.get("fields", []):
-                if f.get("field") == "Sprint" and f.get("value"):
-                    sprint_of[item["number"]] = f["value"]
+        sprint_of = sprint_of_map(project_fields)
         cal = sorted(project_fields.get("sprints", []), key=lambda s: s["startDate"])
         buckets = [
             {
@@ -223,8 +242,14 @@ def month_of(iso):
     return int(iso[5:7])
 
 
-def gate_series(issues, pr_times):
+def gate_series(issues, pr_times, reviews, now=None):
     gate = [dict(g) for g in GATE]
+    now = now or datetime.now(UTC)
+    current_month = now.month
+    if 1 <= current_month <= len(gate):
+        gate[current_month - 1]["rejected"] = sum(
+            1 for r in reviews if month_of(r["date"]) == current_month
+        )
     for i in issues:
         if i.get("cause") in AF_CAUSES:
             gate[month_of(i["created"]) - 1].setdefault("af", 0)
@@ -292,6 +317,84 @@ def finding_themes(reviews):
 
 def af_sum(cause_dict):
     return sum(v for k, v in cause_dict.items() if k in AF_CAUSES)
+
+
+def spend_by_sprint(spend, project_fields):
+    """Aggregate dump_spend.py's per-issue data/spend.json by sprint: totals
+    plus the per-issue distribution, so retrospectives can surface cost
+    regressions and outliers (#3696). Issues without a Sprint field value
+    (or with no project_fields.json snapshot at all) land in '(no sprint)'."""
+    if not spend:
+        return None
+    sprint_of = sprint_of_map(project_fields) if project_fields else {}
+    per_issue = []
+    for n_str, b in spend["issues"].items():
+        n = int(n_str)
+        per_issue.append(
+            {
+                "issue": n,
+                "sprint": sprint_of.get(n) or "(no sprint)",
+                "claude_steps": b["claude_steps"],
+                "runs": b["runs"],
+                "runner_minutes": b["runner_minutes"],
+                "retry_cycles": b["retry_cycles"],
+            }
+        )
+
+    sprints = defaultdict(
+        lambda: {
+            "issues": 0,
+            "claude_steps": 0,
+            "runs": 0,
+            "runner_minutes": 0.0,
+            "retry_cycles": 0,
+            "perIssue": [],
+        }
+    )
+    for row in per_issue:
+        s = sprints[row["sprint"]]
+        s["issues"] += 1
+        s["claude_steps"] += row["claude_steps"]
+        s["runs"] += row["runs"]
+        s["runner_minutes"] += row["runner_minutes"]
+        s["retry_cycles"] += row["retry_cycles"]
+        s["perIssue"].append(row)
+
+    by_sprint = []
+    for name, agg in sprints.items():
+        agg["runner_minutes"] = round(agg["runner_minutes"], 2)
+        agg["perIssue"].sort(key=lambda r: r["runner_minutes"], reverse=True)
+        by_sprint.append({"sprint": name, **agg})
+    if project_fields:
+        order = [
+            s["title"]
+            for s in sorted(project_fields.get("sprints", []), key=lambda s: s["startDate"])
+        ]
+        order.append("(no sprint)")
+        rank = {name: i for i, name in enumerate(order)}
+        by_sprint.sort(key=lambda s: rank.get(s["sprint"], len(order)))
+    else:
+        by_sprint.sort(key=lambda s: s["sprint"])
+
+    unattributed = spend["unattributed"]
+    totals = {
+        "issues": len(per_issue),
+        "claude_steps": sum(r["claude_steps"] for r in per_issue) + unattributed["claude_steps"],
+        "runs": sum(r["runs"] for r in per_issue) + unattributed["runs"],
+        "runner_minutes": round(
+            sum(r["runner_minutes"] for r in per_issue) + unattributed["runner_minutes"], 2
+        ),
+        "retry_cycles": sum(r["retry_cycles"] for r in per_issue) + unattributed["retry_cycles"],
+    }
+    outliers = sorted(per_issue, key=lambda r: r["runner_minutes"], reverse=True)[:10]
+
+    return {
+        "bySprint": by_sprint,
+        "totals": totals,
+        "unattributed": unattributed,
+        "outliers": outliers,
+        "generatedAt": spend.get("generated_at"),
+    }
 
 
 def takeaways(issues, dashboard, weeks, open_af):
@@ -445,15 +548,18 @@ def main():
     pr_times = json.loads(pt_path.read_text()) if pt_path.exists() else None
     rv_path = data / "reviews_final.json"
     reviews = json.loads(rv_path.read_text()) if rv_path.exists() else []
+    sp_path = data / "spend.json"
+    spend = json.loads(sp_path.read_text()) if sp_path.exists() else None
 
     qdata = build_qdata(issues, project_fields)
     classified = qdata.pop("issues_classified")
-    qdata["gate"] = gate_series(classified, pr_times)
+    qdata["gate"] = gate_series(classified, pr_times, reviews)
     now = datetime.now(UTC)
     qdata["aging"], qdata["flow"], open_af = aging_flow(classified, now)
     qdata["themes"] = finding_themes(reviews)
     qdata["takeaways"] = takeaways(classified, dashboard, qdata["weeks"], open_af)
     qdata["releases"] = RELEASES
+    qdata["spend"] = spend_by_sprint(spend, project_fields)
     html = Path(args.template).read_text()
     html = re.sub(r"across all \d+ issues", f"across all {qdata['qtotals']['issues']} issues", html)
     html = re.sub(

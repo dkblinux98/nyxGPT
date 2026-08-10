@@ -737,3 +737,11 @@ limitation above, it kills the container, confirms self-heal does *not*
 recover it (which is expected, not a bug), and then brings it back with
 `docker compose up -d api` itself before continuing — this is the one step
 in the whole test that isn't hands-off.
+
+For a **cloud** deployment the counterpart is `nyxgpt cloud smoke` (P6-17,
+#3515), which deploys to AWS, verifies chat, RAG and the observability UIs
+over the SSH access tunnel, and always destroys the deployment again — see
+[cloud.md](cloud.md#nyxgpt-cloud-smoke--the-end-to-end-cloud-test-p6-17-3515).
+It does not include a kill/heal phase: the components on the instance are
+managed by systemd `--user` units and Docker restart policies rather than by
+the watchdog this document describes.
