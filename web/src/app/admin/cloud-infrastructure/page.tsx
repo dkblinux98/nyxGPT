@@ -68,6 +68,30 @@ type StateVersion = {
   latest: boolean;
 };
 
+// The deployment itself (P6-11, #3513): what release is installed on the
+// instance, and whether the SSH tunnel that is the only way to reach it is
+// currently open. Every URL is a localhost one -- nothing on the instance is
+// reachable without the tunnel, by design.
+type TunnelStatus = {
+  running: boolean;
+  pid: number;
+  host: string;
+  profiles: string[];
+  urls: Record<string, string>;
+};
+
+type CloudDeployStatus = {
+  deployed: boolean;
+  version: string;
+  host: string;
+  instance_id: string;
+  region: string;
+  profiles: string[];
+  tunnel: TunnelStatus;
+  urls: Record<string, string>;
+  access_command: string;
+};
+
 const boxStyle: React.CSSProperties = {
   padding: '1.5rem',
   backgroundColor: 'var(--background-secondary)',
@@ -156,6 +180,13 @@ export default function CloudInfrastructurePage() {
   // it -- see the confirmation note where it is rendered.
   const [pendingRestore, setPendingRestore] = useState<string | null>(null);
 
+  const [deployStatus, setDeployStatus] = useState<CloudDeployStatus | null>(null);
+  const [deployBusy, setDeployBusy] = useState<'' | 'deploy' | 'tunnel' | 'tunnel-stop'>('');
+  const [deployError, setDeployError] = useState<string | null>(null);
+  const [deployMessage, setDeployMessage] = useState<string | null>(null);
+  const [deployVersion, setDeployVersion] = useState('');
+  const [skipObservability, setSkipObservability] = useState(false);
+
   const loadStatus = useCallback(async () => {
     setError(null);
     try {
@@ -184,10 +215,23 @@ export default function CloudInfrastructurePage() {
     }
   }, []);
 
+  // Third independent subsystem, third error slot, same reasoning as above.
+  const loadDeployStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/v1/cloud/deploy', { cache: 'no-store' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(errorText(data, `HTTP ${res.status}`));
+      setDeployStatus(data as CloudDeployStatus);
+    } catch (e: unknown) {
+      setDeployError(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
   useEffect(() => {
     void loadStatus();
     void loadStateStatus();
-  }, [loadStatus, loadStateStatus]);
+    void loadDeployStatus();
+  }, [loadStatus, loadStateStatus, loadDeployStatus]);
 
   const runAction = useCallback(
     async (action: 'plan' | 'apply' | 'destroy') => {
@@ -203,7 +247,13 @@ export default function CloudInfrastructurePage() {
         }
         if (action === 'destroy') body.confirm = true;
 
-        const res = await fetch(`/api/v1/cloud/infra/${action}`, {
+        // Teardown goes through the deploy endpoint rather than the substrate
+        // one: it closes the access tunnel first and then performs the exact
+        // same Terraform destroy, so the dashboard never leaves a tunnel
+        // pointing at an instance that no longer exists.
+        const path =
+          action === 'destroy' ? '/api/v1/cloud/deploy/destroy' : `/api/v1/cloud/infra/${action}`;
+        const res = await fetch(path, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
@@ -222,17 +272,18 @@ export default function CloudInfrastructurePage() {
             }. Reach it with an SSH tunnel; if your public IP changes, run \`nyxgpt cloud allow-ip\`.`
           );
         } else {
-          setMessage('Substrate destroyed.');
+          setMessage('Deployment destroyed: tunnel closed, substrate torn down.');
           setConfirmText('');
         }
         await loadStatus();
+        if (action !== 'plan') await loadDeployStatus();
       } catch (e: unknown) {
         setError(e instanceof Error ? e.message : String(e));
       } finally {
         setBusy('');
       }
     },
-    [inputs, loadStatus]
+    [inputs, loadStatus, loadDeployStatus]
   );
 
   const runStateAction = useCallback(
@@ -297,6 +348,70 @@ export default function CloudInfrastructurePage() {
     [lockId, loadStateStatus]
   );
 
+  // Deploy runs Terraform *and* a remote install, so it is the slowest action
+  // on this page by a wide margin; the button stays in its busy state for the
+  // whole synchronous request rather than optimistically returning.
+  const runDeploy = useCallback(async () => {
+    setDeployBusy('deploy');
+    setDeployError(null);
+    setDeployMessage(null);
+    try {
+      const body: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(inputs)) {
+        if (value.trim()) body[key] = value.trim();
+      }
+      if (deployVersion.trim()) body.version = deployVersion.trim();
+      if (skipObservability) body.skip_observability = true;
+
+      const res = await fetch('/api/v1/cloud/deploy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        cache: 'no-store',
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(errorText(data, `HTTP ${res.status}`));
+      const plan = (data.plan ?? {}) as Record<string, string>;
+      setDeployMessage(
+        `nyxGPT ${plan.version ?? ''} deployed and healthy. The access tunnel is open — the URLs below are live.`
+      );
+      await Promise.all([loadDeployStatus(), loadStatus()]);
+    } catch (e: unknown) {
+      setDeployError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDeployBusy('');
+    }
+  }, [inputs, deployVersion, skipObservability, loadDeployStatus, loadStatus]);
+
+  const runTunnel = useCallback(
+    async (action: 'start' | 'stop') => {
+      setDeployBusy(action === 'stop' ? 'tunnel-stop' : 'tunnel');
+      setDeployError(null);
+      setDeployMessage(null);
+      try {
+        const res = await fetch('/api/v1/cloud/deploy/tunnel', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action }),
+          cache: 'no-store',
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(errorText(data, `HTTP ${res.status}`));
+        setDeployMessage(
+          action === 'stop'
+            ? 'Access tunnel closed. Nothing on the instance is reachable until it is reopened.'
+            : 'Access tunnel open. The URLs below now resolve to the instance.'
+        );
+        await loadDeployStatus();
+      } catch (e: unknown) {
+        setDeployError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setDeployBusy('');
+      }
+    },
+    [loadDeployStatus]
+  );
+
   if (loading) {
     return (
       <div style={{ padding: '2rem', textAlign: 'center' }}>
@@ -317,8 +432,9 @@ export default function CloudInfrastructurePage() {
           AWS Cloud Infrastructure
         </h1>
         <p style={{ color: 'var(--foreground-muted)', marginBottom: 8 }}>
-          Provision and tear down the AWS substrate: a VPC, a public subnet, one SSH-only
-          security group, and a single EC2 instance.
+          Provision the AWS substrate — a VPC, a public subnet, one SSH-only security group,
+          and a single EC2 instance — deploy the full nyxGPT stack onto it, and tear it all
+          back down.
         </p>
         <a href="/admin/dashboard" style={{ color: '#0066cc', textDecoration: 'none' }}>
           ← Back to Admin Dashboard
@@ -338,8 +454,9 @@ export default function CloudInfrastructurePage() {
         The instance opens <strong>port 22 only</strong>, scoped to your public IP — never{' '}
         <code>0.0.0.0/0</code>. The app, web UI, and every observability endpoint bind{' '}
         <code>127.0.0.1</code> on the instance and are reached over an SSH tunnel. This page
-        provisions the substrate; deploying the nyxGPT stack onto it is a separate step. The
-        same operations are available as <code>nyxgpt cloud infra plan|apply|destroy|status</code>.
+        both provisions the substrate and deploys the stack onto it. The same operations are
+        available as <code>nyxgpt cloud infra plan|apply|status</code> and{' '}
+        <code>nyxgpt cloud deploy|destroy|tunnel</code>.
       </div>
 
       {error && (
@@ -739,14 +856,174 @@ export default function CloudInfrastructurePage() {
           )}
         </div>
 
+        <div style={boxStyle}>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              marginBottom: '0.75rem',
+            }}
+          >
+            <h2 style={{ fontSize: '1.1rem', fontWeight: 'bold' }}>Deployment</h2>
+            <span
+              style={{
+                fontSize: '0.75rem',
+                fontWeight: 600,
+                padding: '2px 8px',
+                borderRadius: 999,
+                background: deployStatus?.deployed ? '#22c55e' : 'var(--background)',
+                color: deployStatus?.deployed ? 'white' : 'var(--foreground-muted)',
+                border: deployStatus?.deployed ? 'none' : '1px solid var(--border-color)',
+              }}
+            >
+              {deployStatus?.deployed ? 'deployed' : 'not deployed'}
+            </span>
+          </div>
+
+          <p
+            style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)', marginBottom: '1rem' }}
+          >
+            Applies the substrate above, installs a <strong>published</strong> nyxGPT release
+            onto the instance (never a copy of a repository), opens the SSH tunnel that is the
+            only access path, and waits for the stack to answer <code>/health</code> through it.
+            Re-running reconciles rather than duplicating. Same operation as{' '}
+            <code>nyxgpt cloud deploy</code>.
+          </p>
+
+          {deployError && (
+            <div style={{ marginBottom: '1rem' }}>
+              <ErrorMessage message={deployError} onRetry={loadDeployStatus} />
+            </div>
+          )}
+
+          {deployMessage && (
+            <div
+              style={{
+                marginBottom: '1rem',
+                padding: '0.75rem 1rem',
+                borderRadius: '0.375rem',
+                background: 'var(--background)',
+                border: '1px solid #22c55e',
+                fontSize: '0.875rem',
+              }}
+            >
+              {deployMessage}
+            </div>
+          )}
+
+          <ul
+            style={{ listStyle: 'none', padding: 0, margin: '0 0 1rem 0', fontSize: '0.875rem' }}
+          >
+            <Row label="Installed version" value={deployStatus?.version ?? ''} />
+            <Row label="Instance" value={deployStatus?.instance_id ?? ''} />
+            <Row
+              label="Observability profiles"
+              value={(deployStatus?.profiles ?? []).join(', ')}
+            />
+            <Row
+              label="Access tunnel"
+              value={
+                deployStatus?.tunnel.running ? `open (pid ${deployStatus.tunnel.pid})` : 'closed'
+              }
+            />
+          </ul>
+
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+              gap: '1rem',
+              marginBottom: '1rem',
+            }}
+          >
+            <div>
+              <label style={labelStyle} htmlFor="deploy-version">
+                Release to install
+              </label>
+              <input
+                id="deploy-version"
+                style={fieldStyle}
+                placeholder="default: this dashboard's version"
+                value={deployVersion}
+                onChange={(e) => setDeployVersion(e.target.value)}
+              />
+            </div>
+            <div style={{ display: 'flex', alignItems: 'flex-end' }}>
+              <label style={{ fontSize: '0.8rem', display: 'flex', gap: '0.5rem' }}>
+                <input
+                  type="checkbox"
+                  checked={skipObservability}
+                  onChange={(e) => setSkipObservability(e.target.checked)}
+                />
+                Core app only (skip monitoring, logging, tracing, errors)
+              </label>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+            <button
+              onClick={() => void runDeploy()}
+              disabled={deployBusy !== ''}
+              style={buttonStyle(deployBusy !== '')}
+            >
+              {deployBusy === 'deploy' ? 'Deploying…' : 'Deploy'}
+            </button>
+            {deployStatus?.tunnel.running ? (
+              <button
+                onClick={() => void runTunnel('stop')}
+                disabled={deployBusy !== ''}
+                style={buttonStyle(deployBusy !== '')}
+              >
+                {deployBusy === 'tunnel-stop' ? 'Closing…' : 'Close tunnel'}
+              </button>
+            ) : (
+              <button
+                onClick={() => void runTunnel('start')}
+                disabled={deployBusy !== '' || !deployStatus?.deployed}
+                style={buttonStyle(deployBusy !== '' || !deployStatus?.deployed)}
+              >
+                {deployBusy === 'tunnel' ? 'Opening…' : 'Open tunnel'}
+              </button>
+            )}
+          </div>
+
+          {deployStatus && Object.keys(deployStatus.urls).length > 0 && (
+            <div style={{ marginTop: '1rem' }}>
+              <h3 style={{ fontSize: '0.95rem', fontWeight: 600, marginBottom: '0.35rem' }}>
+                URLs
+              </h3>
+              <p
+                style={{
+                  fontSize: '0.8rem',
+                  color: 'var(--foreground-muted)',
+                  marginBottom: '0.5rem',
+                }}
+              >
+                Every one is a <code>localhost</code> address forwarded over the tunnel — there
+                is no instance-facing URL, by design. They resolve only while the tunnel is
+                open.
+              </p>
+              <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: '0.875rem' }}>
+                {Object.entries(deployStatus.urls).map(([name, url]) => (
+                  <li key={name} style={{ padding: '2px 0' }}>
+                    <span style={{ color: 'var(--foreground-muted)' }}>{name}</span>{' '}
+                    <code>{url}</code>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+
         <div style={{ ...boxStyle, borderColor: '#ef4444' }}>
           <h2 style={{ fontSize: '1.1rem', fontWeight: 'bold', marginBottom: '0.5rem' }}>
-            Destroy the substrate
+            Destroy the deployment
           </h2>
           <p style={{ fontSize: '0.875rem', marginBottom: '0.75rem' }}>
-            Deletes the instance and its root volume. Anything stored only on that box —
-            models, Cassandra data, logs — is lost. Type <code>DESTROY</code> to enable the
-            button.
+            Closes the access tunnel, then deletes the instance and its root volume. Anything
+            stored only on that box — models, Cassandra data, logs — is lost. Type{' '}
+            <code>DESTROY</code> to enable the button.
           </p>
           <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
             <input

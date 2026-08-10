@@ -1,0 +1,881 @@
+"""One-command AWS deploy for `nyxgpt cloud deploy` (P6-11, #3513).
+
+`nyxgpt cloud infra apply` (P6-8, `nyxgpt.cloud_infra`) stops at the
+substrate: a VPC, an owner-IP-scoped SSH-only security group, and one bare
+EC2 instance. This module is the layer above it -- the single command that
+takes an operator from "nothing" to "a running, monitored nyxGPT reachable
+from my workstation":
+
+1. **Apply the infrastructure** (`cloud_infra.apply_infra`) -- idempotent by
+   construction, so a re-run reconciles rather than duplicates.
+2. **Wire the P6-4 access path** -- the apply re-detects the operator's
+   current public IP on every run, so the security group's single port-22
+   rule already points at wherever the deploy is running from; this module
+   records that CIDR as its own step and then waits for SSH to answer on the
+   freshly booted box.
+3. **Provision the instance from published artifacts** -- see
+   `render_provision_script`. The instance `pip install`s a published
+   `nyxgpt` release from PyPI and runs `nyxgpt ops install`; it never clones
+   this repository, and nothing is copied from the operator's checkout
+   (there may not be one). This mirrors, step for step, the
+   `artifact-install-smoke` job in `.github/workflows/release-artifacts.yml`,
+   which proves that exact sequence on a checkout-free Linux runner.
+4. **Open the tunnel and wait for health** -- the app, web UI and every
+   observability UI bind `127.0.0.1` on the instance and are never exposed
+   in the security group
+   (`product_management/DECISION_PRIVATE_ACCESS_MECHANISM.md`), so the only
+   URL that can be printed is a `localhost` one reached through
+   `nyxgpt cloud tunnel`. Deploy opens that tunnel, confirms health through
+   it, and leaves it up so the printed URLs work immediately.
+
+`nyxgpt cloud destroy` is the counterpart: stop the tunnel, then tear the
+substrate down through `cloud_infra.destroy_infra`.
+
+Everything here is wrapped (CLAUDE.md, 2026-07-15): the operator never types
+`ssh`, `terraform`, or `docker`. The same functions back the admin
+dashboard's Cloud Infrastructure page, so the deploy is operable from the
+SRE surface as well as the CLI.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shlex
+import signal
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from nyxgpt import cloud_infra
+from nyxgpt.cloud import CloudCommandError
+
+# The same `~/.nyxGPT/cloud` directory `cloud_infra` owns -- one place for
+# everything about a cloud deployment. `cloud_infra.CLOUD_STATE_FILE` (the
+# substrate's instance/region handoff) is read through the module attribute
+# rather than aliased here, so it stays a single source of truth.
+CLOUD_DIR = cloud_infra.CLOUD_DIR
+
+# What the last successful deploy installed, so `status` can answer without
+# touching AWS or the instance, and a re-run can default to the same version.
+DEPLOY_STATE_FILE = CLOUD_DIR / "deploy.json"
+
+# The background tunnel's pid + forwarded ports, so `--stop`/`status` can find
+# a tunnel started by an earlier process (including one started by the admin
+# dashboard and stopped from the CLI, or the reverse).
+TUNNEL_STATE_FILE = CLOUD_DIR / "tunnel.json"
+
+# Where the detached background tunnel's ssh stderr goes. A long-lived `ssh -N`
+# child outlives the CLI process that started it, so its stderr cannot stay on
+# a pipe nobody will ever read -- a later write (a ServerAlive notice, say)
+# would hit a closed pipe once the parent exits.
+TUNNEL_LOG_FILE = CLOUD_DIR / "tunnel.log"
+
+# A release is spliced into the remote provisioning script; keep it to what a
+# published artifact version can actually look like.
+_VERSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+# Amazon Linux 2023's default login user -- the AMI the compute module
+# resolves by default (terraform/aws/modules/compute/main.tf).
+DEFAULT_SSH_USER = "ec2-user"
+
+# Core services, always tunneled. Ports match docker-compose.yml and the
+# native systemd units; both bind 127.0.0.1 on the instance.
+CORE_TUNNEL_PORTS: tuple[tuple[str, int], ...] = (
+    ("api", 8000),
+    ("web", 3000),
+)
+
+# Observability UIs, tunneled per enabled profile. Keys are
+# `ops.OBSERVABILITY_PROFILES` entries; the deploy records which profiles it
+# enabled so `tunnel` forwards exactly those.
+OBSERVABILITY_TUNNEL_PORTS: dict[str, tuple[tuple[str, int], ...]] = {
+    "monitoring": (("grafana", 3001), ("prometheus", 9090)),
+    "logging": (),  # Loki has no UI of its own -- it is read through Grafana.
+    "tracing": (("jaeger", 16686),),
+    "errors": (("glitchtip", 8080),),
+}
+
+# The endpoint deploy polls through the tunnel to decide the stack is up.
+HEALTH_PATH = "/health"
+
+# SSH options applied to every connection. `StrictHostKeyChecking=accept-new`
+# trusts the key on first contact but still fails loudly if it changes later
+# (a plain `no` would silently accept a swapped host); the instance is brand
+# new on a first deploy, so there is no prior key to compare against and a
+# strict setting would just hang on a prompt no wrapped command can answer.
+SSH_COMMON_OPTIONS: tuple[str, ...] = (
+    "-o",
+    "StrictHostKeyChecking=accept-new",
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "ConnectTimeout=10",
+    "-o",
+    "ServerAliveInterval=30",
+)
+
+
+@dataclass
+class DeployTarget:
+    """Where and how to reach the provisioned instance."""
+
+    host: str
+    user: str = DEFAULT_SSH_USER
+    identity_file: str = ""
+    region: str = ""
+    instance_id: str = ""
+    security_group_id: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serializable form, recorded in `deploy.json` and returned by the API."""
+        return {
+            "host": self.host,
+            "user": self.user,
+            "identity_file": self.identity_file,
+            "region": self.region,
+            "instance_id": self.instance_id,
+            "security_group_id": self.security_group_id,
+        }
+
+
+@dataclass
+class DeployPlan:
+    """Resolved inputs for one `nyxgpt cloud deploy` run."""
+
+    version: str
+    profiles: list[str] = field(default_factory=list)
+    ssh_user: str = DEFAULT_SSH_USER
+    identity_file: str = ""
+    open_tunnel: bool = True
+    health_timeout: float = 900.0
+    ssh_timeout: float = 300.0
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serializable form, recorded in `deploy.json`."""
+        return {
+            "version": self.version,
+            "profiles": list(self.profiles),
+            "ssh_user": self.ssh_user,
+            "identity_file": self.identity_file,
+            "open_tunnel": self.open_tunnel,
+            "health_timeout": self.health_timeout,
+            "ssh_timeout": self.ssh_timeout,
+        }
+
+
+# --- Small state files -------------------------------------------------
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    """Return `path` parsed as a JSON object, or `{}` if missing/unreadable."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    """Write `payload` to `path` as pretty JSON, creating parents as needed."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def load_deploy_state() -> dict[str, Any]:
+    """Return what the last successful deploy recorded (or `{}`)."""
+    return _read_json(DEPLOY_STATE_FILE)
+
+
+def _cloud_state() -> dict[str, Any]:
+    """Return the substrate outputs `cloud_infra.apply_infra` recorded."""
+    return _read_json(cloud_infra.CLOUD_STATE_FILE)
+
+
+# --- Resolution --------------------------------------------------------
+
+
+def installed_version() -> str:
+    """Return the version of `nyxgpt` running on *this* workstation.
+
+    The default the instance is deployed at, so the operator's CLI and the
+    box run the same release without having to name it. Read from installed
+    package metadata (works from a wheel with no checkout, per the repo-less
+    requirement), falling back to the checkout's pyproject when running from
+    a `pip install -e .` dev tree whose metadata is stale.
+    """
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("nyxgpt")
+    except PackageNotFoundError:  # pragma: no cover - source tree, never installed
+        pass
+    try:  # pragma: no cover - only reached without package metadata
+        from nyxgpt import ops
+
+        return ops.project_version()
+    except Exception:
+        return ""
+
+
+def resolve_target(args: argparse.Namespace) -> DeployTarget:
+    """Locate the provisioned instance and how to SSH to it.
+
+    Reads `~/.nyxGPT/cloud/state.json` -- the handoff `cloud infra apply`
+    writes -- so no flag is needed on the happy path.
+    """
+    state = _cloud_state()
+    host = str(getattr(args, "host", None) or state.get("public_ip") or "")
+    if not host:
+        raise CloudCommandError(
+            "No provisioned instance found in "
+            f"{cloud_infra.CLOUD_STATE_FILE} -- run `nyxgpt cloud deploy` (which provisions "
+            "first) or `nyxgpt cloud infra apply`, or pass --host to target an existing box."
+        )
+    saved = cloud_infra.load_settings()
+    # No identity file means "let ssh use its own defaults and agent", which
+    # is the right behaviour both for an `--ssh-key-name` setup and for the
+    # common case where the registered public key's private half is one of
+    # ssh's standard `~/.ssh/id_*` candidates.
+    identity = str(getattr(args, "identity_file", None) or "")
+    if identity:
+        identity = str(Path(identity).expanduser())
+    return DeployTarget(
+        host=host,
+        user=str(getattr(args, "ssh_user", None) or DEFAULT_SSH_USER),
+        identity_file=identity,
+        region=str(state.get("region") or saved.get("aws_region") or ""),
+        instance_id=str(state.get("instance_id") or ""),
+        security_group_id=str(state.get("security_group_id") or ""),
+    )
+
+
+def resolve_plan(args: argparse.Namespace) -> DeployPlan:
+    """Merge flags over the last deploy's recorded choices.
+
+    The choices that carry over are the ones `deploy.json` records: the
+    release, the SSH user and the identity file. Everything else (profiles,
+    timeouts, whether to open a tunnel) is per-run and comes from the flags
+    or their defaults.
+    """
+    previous = load_deploy_state()
+    version = str(
+        getattr(args, "version", None) or previous.get("version") or installed_version() or ""
+    )
+    if not version:
+        raise CloudCommandError(
+            "Could not determine which nyxGPT release to install on the instance. "
+            "Pass --version <release> (e.g. --version 3.0.0) -- the instance installs a "
+            "published artifact, never a copy of your working tree."
+        )
+    # The version is spliced into the remote provisioning script, so a stray
+    # quote or `$` in it would surface as a confusing shell error ten minutes
+    # into a remote run. Fail here instead, where the operator can see why.
+    if not _VERSION_RE.fullmatch(version):
+        raise CloudCommandError(
+            f"{version!r} is not a valid release to install. Pass a published version such as "
+            "--version 3.0.0 (digits, letters, dot, dash and underscore only)."
+        )
+    if getattr(args, "skip_observability", False):
+        profiles: list[str] = []
+    else:
+        from nyxgpt import ops
+
+        profiles = list(ops.OBSERVABILITY_PROFILES)
+    return DeployPlan(
+        version=version,
+        profiles=profiles,
+        ssh_user=str(
+            getattr(args, "ssh_user", None) or previous.get("ssh_user") or DEFAULT_SSH_USER
+        ),
+        identity_file=str(
+            getattr(args, "identity_file", None) or previous.get("identity_file") or ""
+        ),
+        open_tunnel=not getattr(args, "no_tunnel", False),
+        health_timeout=float(getattr(args, "health_timeout", None) or 900.0),
+        ssh_timeout=float(getattr(args, "ssh_timeout", None) or 300.0),
+    )
+
+
+# --- SSH ---------------------------------------------------------------
+
+
+def ssh_argv(target: DeployTarget, *, options: list[str] | None = None) -> list[str]:
+    """Build the `ssh` argv prefix for `target` (no remote command appended)."""
+    argv = ["ssh", *SSH_COMMON_OPTIONS]
+    if target.identity_file:
+        # IdentitiesOnly stops ssh from offering every key in the agent first
+        # and tripping the server's MaxAuthTries before reaching this one.
+        argv += ["-i", target.identity_file, "-o", "IdentitiesOnly=yes"]
+    argv += [*(options or []), f"{target.user}@{target.host}"]
+    return argv
+
+
+def run_remote(
+    target: DeployTarget,
+    command: str,
+    *,
+    stream: bool = False,
+    timeout: float | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run `command` on the instance over SSH and return the completed process.
+
+    Never raises on a non-zero exit -- callers decide what a failure means
+    (a health probe failing is a retry, a provisioning step failing is
+    fatal). stdout is streamed to the terminal when `stream` is set so a
+    long `nyxgpt ops install` isn't a silent ten-minute wait.
+    """
+    argv = [*ssh_argv(target), command]
+    return subprocess.run(
+        argv,
+        stdout=None if stream else subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=timeout,
+    )
+
+
+def wait_for_ssh(target: DeployTarget, timeout: float, *, interval: float = 5.0) -> float:
+    """Block until the instance answers SSH, returning how long it took.
+
+    A freshly applied instance is reachable in the API long before sshd is
+    listening, so every remote step would otherwise fail on the first deploy.
+    """
+    deadline = time.monotonic() + timeout
+    started = time.monotonic()
+    last_error = ""
+    while time.monotonic() < deadline:
+        completed = run_remote(target, "true")
+        if completed.returncode == 0:
+            return time.monotonic() - started
+        last_error = (completed.stderr or "").strip()
+        time.sleep(interval)
+    detail = f" Last error: {last_error}" if last_error else ""
+    raise CloudCommandError(
+        f"{target.user}@{target.host} did not accept SSH within {timeout:.0f}s.{detail}\n"
+        "If your public IP changed since the substrate was applied, run `nyxgpt cloud allow-ip`."
+    )
+
+
+# --- Instance provisioning (repo-less) ---------------------------------
+
+# The provisioning script. Deliberately a literal rather than a file copied
+# from the checkout: `nyxgpt cloud deploy` must work from an
+# artifact-installed CLI on a workstation with no repo, so the only thing
+# that crosses the wire is this text plus the operator's config values.
+#
+# Every install step here matches the `artifact-install-smoke` job in
+# .github/workflows/release-artifacts.yml, which runs the same sequence on a
+# checkout-free runner on every release. `tests/unit/test_cloud_deploy.py`
+# asserts the rendered script contains no `git clone` / `git://` /
+# `github.com/...git` -- the repo-less requirement, enforced rather than
+# documented.
+PROVISION_SCRIPT_TEMPLATE = """set -euo pipefail
+
+NYXGPT_VERSION="__VERSION__"
+NYXGPT_PROFILES="__PROFILES__"
+
+echo "==> nyxGPT ${NYXGPT_VERSION}: provisioning $(hostname) from published artifacts"
+
+# --- OS packages -------------------------------------------------------
+if command -v dnf >/dev/null 2>&1; then
+  sudo dnf install -y python3.11 python3.11-pip docker tar gzip >/dev/null
+elif command -v apt-get >/dev/null 2>&1; then
+  sudo apt-get update -qq
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \\
+    python3 python3-venv python3-pip docker.io tar gzip >/dev/null
+else
+  echo "unsupported package manager: need dnf (Amazon Linux/Fedora) or apt-get (Debian/Ubuntu)" >&2
+  exit 1
+fi
+
+PY=python3.11
+command -v "$PY" >/dev/null 2>&1 || PY=python3
+
+# --- Docker (Cassandra + the observability stack run as containers) ----
+sudo systemctl enable --now docker
+sudo usermod -aG docker "$(id -un)" || true
+
+# --- A systemd --user session that survives logout ---------------------
+# `nyxgpt ops install` installs systemd --user units; without lingering they
+# would stop the moment this SSH session closes.
+sudo loginctl enable-linger "$(id -un)" || true
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+
+# --- Ollama ------------------------------------------------------------
+command -v ollama >/dev/null 2>&1 || curl -fsSL https://ollama.com/install.sh | sh
+
+# --- nyxGPT itself, from the published PyPI artifact -------------------
+# No checkout is created on this machine, by design (CLAUDE.md, repo-less
+# portability 2026-08-01): the instance installs the same published release
+# an operator would install on a laptop.
+"$PY" -m venv "$HOME/.nyxGPT/venv" >/dev/null
+"$HOME/.nyxGPT/venv/bin/pip" install --quiet --upgrade pip
+"$HOME/.nyxGPT/venv/bin/pip" install --quiet "nyxgpt==${NYXGPT_VERSION}"
+NYXGPT="$HOME/.nyxGPT/venv/bin/nyxgpt"
+
+# --- Seed config.ini from the installed package ------------------------
+mkdir -p "$HOME/.nyxGPT"
+if [ ! -f "$HOME/.nyxGPT/config.ini" ]; then
+  EXAMPLE_CONFIG=$("$HOME/.nyxGPT/venv/bin/python" -c \\
+    "from nyxgpt import config_wizard; print(config_wizard._EXAMPLE_CONFIG_PATH)")
+  cp "$EXAMPLE_CONFIG" "$HOME/.nyxGPT/config.ini"
+  chmod 600 "$HOME/.nyxGPT/config.ini"
+fi
+
+# --- Bring the stack up ------------------------------------------------
+# Services bind 127.0.0.1 (P6-1 loopback default); nothing is published to a
+# non-loopback address, which is what makes the SSH tunnel the only path in.
+if [ -n "$NYXGPT_PROFILES" ]; then
+  sg docker -c "$NYXGPT ops install" || "$NYXGPT" ops install
+  sg docker -c "$NYXGPT ops observability" || "$NYXGPT" ops observability
+else
+  sg docker -c "$NYXGPT ops install --skip-observability" \\
+    || "$NYXGPT" ops install --skip-observability
+fi
+
+echo "==> nyxGPT ${NYXGPT_VERSION} provisioned"
+"""
+
+
+def render_provision_script(plan: DeployPlan) -> str:
+    """Render the instance provisioning script for `plan`.
+
+    Kept a pure function so the repo-less guarantee (no clone, no checkout
+    copy) and the artifact version pin are unit-testable without an EC2
+    instance.
+    """
+    return PROVISION_SCRIPT_TEMPLATE.replace("__VERSION__", plan.version).replace(
+        "__PROFILES__", ",".join(plan.profiles)
+    )
+
+
+def provision_instance(target: DeployTarget, plan: DeployPlan) -> dict[str, Any]:
+    """Install and start the nyxGPT stack on the instance.
+
+    Idempotent: the script skips work that is already done (Ollama, the
+    seeded config) and `nyxgpt ops install` is itself a reconcile, so a
+    re-deploy converges rather than duplicating.
+    """
+    script = render_provision_script(plan)
+    # `bash -s` over stdin rather than a quoted argv: the script is long and
+    # multi-line, and piping it keeps quoting out of the picture entirely.
+    argv = [*ssh_argv(target), "bash -s"]
+    completed = subprocess.run(argv, input=script, stderr=subprocess.PIPE, text=True)
+    if completed.returncode != 0:
+        detail = (completed.stderr or "").strip()
+        raise CloudCommandError(
+            "Provisioning the instance failed"
+            + (f": {detail[-2000:]}" if detail else " (no diagnostic returned).")
+        )
+    return {"version": plan.version, "profiles": list(plan.profiles)}
+
+
+# --- The tunnel (the P6-4 access path) ---------------------------------
+
+
+def tunnel_ports(profiles: list[str] | None = None) -> list[tuple[str, int]]:
+    """Return the `(service, port)` pairs to forward for `profiles`.
+
+    Core services always; observability UIs only for profiles the deploy
+    actually enabled, so `--skip-observability` doesn't forward four dead
+    ports.
+    """
+    ports = list(CORE_TUNNEL_PORTS)
+    for profile in profiles or []:
+        ports.extend(OBSERVABILITY_TUNNEL_PORTS.get(profile, ()))
+    return ports
+
+
+def tunnel_urls(profiles: list[str] | None = None) -> dict[str, str]:
+    """Return `{service: http://localhost:<port>}` for the forwarded services."""
+    return {name: f"http://localhost:{port}" for name, port in tunnel_ports(profiles)}
+
+
+def tunnel_argv(target: DeployTarget, profiles: list[str] | None = None) -> list[str]:
+    """Build the full `ssh -N -L ...` argv for the access tunnel."""
+    options = ["-N"]
+    for _name, port in tunnel_ports(profiles):
+        options += ["-L", f"{port}:127.0.0.1:{port}"]
+    return ssh_argv(target, options=options)
+
+
+def tunnel_state() -> dict[str, Any]:
+    """Return the recorded background tunnel (or `{}`)."""
+    return _read_json(TUNNEL_STATE_FILE)
+
+
+def _process_alive(pid: int) -> bool:
+    """True if `pid` names a live process this user can signal."""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:  # pragma: no cover - alive, just not ours
+        return True
+    return True
+
+
+def tunnel_status() -> dict[str, Any]:
+    """Report whether a background tunnel is up, and what it forwards.
+
+    Self-healing: a recorded pid that is no longer alive (reboot, `kill`)
+    clears the state file rather than being reported as running forever.
+    """
+    recorded = tunnel_state()
+    pid = int(recorded.get("pid") or 0)
+    running = _process_alive(pid)
+    if recorded and not running:
+        TUNNEL_STATE_FILE.unlink(missing_ok=True)
+    profiles = [str(p) for p in (recorded.get("profiles") or [])]
+    return {
+        "running": running,
+        "pid": pid if running else 0,
+        "host": str(recorded.get("host") or "") if running else "",
+        "profiles": profiles if running else [],
+        "urls": tunnel_urls(profiles) if running else {},
+    }
+
+
+def start_tunnel(
+    target: DeployTarget, profiles: list[str] | None = None, *, background: bool = True
+) -> dict[str, Any]:
+    """Open the SSH tunnel to the instance.
+
+    In background mode the child is detached into its own process group (so
+    a Ctrl-C aimed at the CLI doesn't take the tunnel with it) and its pid
+    recorded, which is what lets `--stop` and the dashboard find a tunnel
+    another process started. In foreground mode this blocks until the
+    operator interrupts it.
+    """
+    existing = tunnel_status()
+    if existing["running"]:
+        return {"action": "tunnel", "already_running": True, **existing}
+
+    argv = tunnel_argv(target, profiles)
+    if not background:
+        subprocess.run(argv)
+        return {
+            "action": "tunnel",
+            "running": False,
+            "pid": 0,
+            "host": target.host,
+            "profiles": list(profiles or []),
+            "urls": tunnel_urls(profiles),
+        }
+
+    # stderr goes to a log file rather than a pipe: this child is detached and
+    # outlives the process that started it, so a pipe would either be left
+    # unread (under the API server) or closed under the tunnel's feet when the
+    # CLI exits. The file keeps the early-exit diagnostic readable either way.
+    TUNNEL_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(TUNNEL_LOG_FILE, "w", encoding="utf-8") as log:
+        process = subprocess.Popen(
+            argv,
+            stdout=subprocess.DEVNULL,
+            stderr=log,
+            start_new_session=True,
+            text=True,
+        )
+    # ssh exits within a moment when the port bind or the auth fails; a short
+    # settle avoids reporting "tunnel open" for a process that is already gone.
+    time.sleep(1.0)
+    if process.poll() is not None:
+        try:
+            detail = TUNNEL_LOG_FILE.read_text(encoding="utf-8").strip()
+        except OSError:
+            detail = ""
+        raise CloudCommandError(
+            "Could not open the SSH tunnel"
+            + (f": {detail}" if detail else ".")
+            + "\nA local port may already be in use -- `nyxgpt ops status` shows whether a "
+            "local stack is holding 8000/3000."
+        )
+    record = {
+        "pid": process.pid,
+        "host": target.host,
+        "user": target.user,
+        "profiles": list(profiles or []),
+    }
+    _write_json(TUNNEL_STATE_FILE, record)
+    return {
+        "action": "tunnel",
+        "already_running": False,
+        "running": True,
+        "pid": process.pid,
+        "host": target.host,
+        "profiles": list(profiles or []),
+        "urls": tunnel_urls(profiles),
+    }
+
+
+def stop_tunnel() -> dict[str, Any]:
+    """Tear down the background tunnel, if one is running."""
+    status = tunnel_status()
+    if not status["running"]:
+        return {"action": "tunnel-stop", "stopped": False, "reason": "no tunnel running"}
+    pid = int(status["pid"])
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError as exc:  # pragma: no cover - racing an external kill
+        raise CloudCommandError(f"Could not stop the tunnel (pid {pid}): {exc}") from exc
+    TUNNEL_STATE_FILE.unlink(missing_ok=True)
+    return {"action": "tunnel-stop", "stopped": True, "pid": pid}
+
+
+# --- Health ------------------------------------------------------------
+
+
+def _probe(url: str, timeout: float) -> int:
+    """Return the HTTP status for `url`, or 0 when it could not be reached."""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:  # noqa: S310 - localhost
+            return int(response.status)
+    except urllib.error.HTTPError as exc:
+        return int(exc.code)
+    except Exception:
+        return 0
+
+
+def wait_for_health(timeout: float, *, port: int = 8000, interval: float = 5.0) -> dict[str, Any]:
+    """Poll the tunneled API health endpoint until it answers 200.
+
+    Deliberately probed through the tunnel rather than over a second SSH
+    call: this proves the exact path the operator is about to be handed a
+    URL for, which is what
+    `product_management/DECISION_PRIVATE_ACCESS_MECHANISM.md` means by
+    "confirms health over the tunnel it opens for that purpose".
+    """
+    url = f"http://localhost:{port}{HEALTH_PATH}"
+    deadline = time.monotonic() + timeout
+    started = time.monotonic()
+    status = 0
+    while time.monotonic() < deadline:
+        status = _probe(url, timeout=10.0)
+        if status == 200:
+            return {
+                "healthy": True,
+                "url": url,
+                "status": status,
+                "waited": time.monotonic() - started,
+            }
+        time.sleep(interval)
+    return {"healthy": False, "url": url, "status": status, "waited": time.monotonic() - started}
+
+
+# --- Operations (shared by the CLI and the admin dashboard API) --------
+
+
+def deploy(args: argparse.Namespace) -> dict[str, Any]:
+    """Provision AWS and deploy the full stack onto it. Idempotent.
+
+    Returns a step-by-step record of what happened -- the same payload the
+    dashboard renders and the CLI prints a summary of.
+    """
+    plan = resolve_plan(args)
+    steps: list[dict[str, Any]] = []
+
+    infra = cloud_infra.apply_infra(args)
+    steps.append({"step": "infra", "outputs": infra.get("outputs", {})})
+
+    # The P6-4 access path is wired by the apply itself: `resolve_settings`
+    # re-detects the operator's current public IP on every run, so the
+    # security group's single port-22 rule already points at wherever this
+    # deploy is running from. Recorded as its own step because "which CIDR
+    # can reach this box" is the thing an operator most needs to see.
+    applied_settings = infra.get("settings", {})
+    steps.append(
+        {
+            "step": "access",
+            "owner_ip_cidr": applied_settings.get("owner_ip_cidr", ""),
+            "open_ports": [22],
+            "mechanism": "ssh-tunnel-to-loopback",
+        }
+    )
+
+    target = resolve_target(args)
+    if plan.identity_file:
+        target.identity_file = str(Path(plan.identity_file).expanduser())
+    target.user = plan.ssh_user
+
+    waited = wait_for_ssh(target, plan.ssh_timeout)
+    steps.append({"step": "ssh", "host": target.host, "waited_seconds": round(waited, 1)})
+
+    steps.append({"step": "provision", **provision_instance(target, plan)})
+
+    record = {
+        "version": plan.version,
+        "profiles": list(plan.profiles),
+        "ssh_user": plan.ssh_user,
+        # Recorded so a re-run that needed a non-default key doesn't have to
+        # pass --identity-file again, the same way --version and --ssh-user
+        # carry over.
+        "identity_file": plan.identity_file,
+        "host": target.host,
+        "instance_id": target.instance_id,
+        "region": target.region,
+    }
+    _write_json(DEPLOY_STATE_FILE, record)
+
+    health: dict[str, Any] = {"healthy": False, "skipped": True}
+    tunnel: dict[str, Any] = {"running": False, "skipped": True}
+    if plan.open_tunnel:
+        tunnel = start_tunnel(target, plan.profiles)
+        steps.append({"step": "tunnel", "pid": tunnel.get("pid", 0)})
+        health = wait_for_health(plan.health_timeout)
+        steps.append({"step": "health", **health})
+        if not health["healthy"]:
+            raise CloudCommandError(
+                f"The stack was installed but {health['url']} never returned 200 within "
+                f"{plan.health_timeout:.0f}s (last status: {health['status'] or 'unreachable'}).\n"
+                "The tunnel is still open -- `nyxgpt cloud deploy --status` and the instance's "
+                "own `nyxgpt ops doctor` will say more."
+            )
+
+    return {
+        "action": "deploy",
+        "plan": plan.to_dict(),
+        "target": target.to_dict(),
+        "steps": steps,
+        "tunnel": tunnel,
+        "health": health,
+        "urls": tunnel_urls(plan.profiles),
+    }
+
+
+def destroy(args: argparse.Namespace) -> dict[str, Any]:
+    """Tear the whole deployment down: tunnel first, then the substrate."""
+    tunnel = stop_tunnel()
+    result = cloud_infra.destroy_infra(args)
+    DEPLOY_STATE_FILE.unlink(missing_ok=True)
+    return {"action": "destroy", "tunnel": tunnel, "settings": result.get("settings", {})}
+
+
+def deploy_status() -> dict[str, Any]:
+    """Report the deployment's state without touching AWS or the instance.
+
+    Cheap enough for the dashboard to poll, and still answers on a machine
+    whose AWS credentials have expired.
+    """
+    record = load_deploy_state()
+    infra = cloud_infra.infra_status()
+    profiles = [str(p) for p in (record.get("profiles") or [])]
+    return {
+        "deployed": bool(record.get("host")),
+        "version": str(record.get("version") or ""),
+        "host": str(record.get("host") or ""),
+        "instance_id": str(record.get("instance_id") or infra.get("instance_id") or ""),
+        "region": str(record.get("region") or infra.get("region") or ""),
+        "profiles": profiles,
+        "infra": infra,
+        "tunnel": tunnel_status(),
+        "urls": tunnel_urls(profiles),
+        "access_command": "nyxgpt cloud tunnel",
+    }
+
+
+# --- CLI entry points --------------------------------------------------
+
+
+def _print_urls(urls: dict[str, str]) -> None:
+    """Print the localhost URLs the tunnel makes reachable."""
+    for name, url in urls.items():
+        print(f"  {name:<11} {url}")
+
+
+def _print_deploy_summary(result: dict[str, Any]) -> None:
+    """Print the operator-facing result of a deploy."""
+    target = result["target"]
+    plan = result["plan"]
+    print(f"\nnyxGPT {plan['version']} deployed to {target['instance_id'] or target['host']}.")
+    if result["tunnel"].get("running"):
+        print("\nThe access tunnel is open. Reachable now:")
+        _print_urls(result["urls"])
+        print("\nClose it with `nyxgpt cloud tunnel --stop`; reopen it with `nyxgpt cloud tunnel`.")
+    else:
+        print("\nNothing is reachable until you open the access tunnel:\n")
+        print("  nyxgpt cloud tunnel\n")
+        print("which will make these available:")
+        _print_urls(result["urls"])
+    print(
+        "\nNo application port is open in the security group -- the instance's services bind "
+        "127.0.0.1 and are reached only through that tunnel "
+        "(product_management/DECISION_PRIVATE_ACCESS_MECHANISM.md).\n"
+        "If your public IP changes, run `nyxgpt cloud allow-ip`."
+    )
+
+
+def _tunnel_command(args: argparse.Namespace) -> int:
+    """`nyxgpt cloud tunnel` entry point."""
+    if getattr(args, "stop", False):
+        result = stop_tunnel()
+        print("Tunnel stopped." if result["stopped"] else "No tunnel is running.")
+        return 0
+    if getattr(args, "status", False):
+        print(json.dumps(tunnel_status(), indent=2))
+        return 0
+
+    target = resolve_target(args)
+    profiles = [str(p) for p in (load_deploy_state().get("profiles") or [])]
+    background = bool(getattr(args, "background", False))
+    result = start_tunnel(target, profiles, background=background)
+    if background:
+        if result.get("already_running"):
+            print("A tunnel is already open.")
+        else:
+            print(f"Tunnel open in the background (pid {result['pid']}).")
+        _print_urls(result["urls"])
+        print("\nClose it with `nyxgpt cloud tunnel --stop`.")
+    return 0
+
+
+def deploy_command(args: argparse.Namespace) -> int:
+    """`nyxgpt cloud {deploy,destroy,tunnel}` entry point."""
+    subcommand = getattr(args, "cloud_cmd", "")
+    try:
+        if subcommand == "deploy":
+            if getattr(args, "status", False):
+                print(json.dumps(deploy_status(), indent=2))
+                return 0
+            _print_deploy_summary(deploy(args))
+        elif subcommand == "destroy":
+            if not getattr(args, "yes", False):
+                print(
+                    "Refusing to destroy the cloud deployment without --yes. This deletes the "
+                    "instance and its root volume; any data only on that box is lost.",
+                    file=sys.stderr,
+                )
+                return 1
+            destroy(args)
+            print("Cloud deployment destroyed (tunnel closed, substrate torn down).")
+        elif subcommand == "tunnel":
+            return _tunnel_command(args)
+        else:  # pragma: no cover - argparse enforces the choices
+            raise CloudCommandError(f"Unknown `nyxgpt cloud` subcommand {subcommand!r}")
+    except CloudCommandError as exc:
+        print(f"nyxgpt cloud {subcommand}: {exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:  # pragma: no cover - foreground tunnel
+        print("\nTunnel closed.")
+        return 0
+    return 0
+
+
+def tunnel_invocation(target: DeployTarget, profiles: list[str] | None = None) -> str:
+    """Return the raw `ssh` command the tunnel wraps, for docs and diagnostics.
+
+    Never printed as an *instruction* (CLAUDE.md forbids raw commands in user
+    flows) -- `nyxgpt cloud tunnel` is what operators are told to run. This
+    exists so `--status`/support output can show what is actually executing.
+    """
+    return " ".join(shlex.quote(part) for part in tunnel_argv(target, profiles))

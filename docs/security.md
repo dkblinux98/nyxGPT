@@ -161,7 +161,10 @@ routes this outside the cluster by default — see
 
 **AWS deployments** use the SSH-tunnel model above exclusively — no app or
 observability port is ever opened in the security group, only port 22,
-scoped to the owner's current public IP. That IP can change (ISP renewal,
+scoped to the owner's current public IP. `nyxgpt cloud tunnel` is the wrapped
+form of that tunnel (`nyxgpt cloud deploy` opens it for you and prints the
+resulting `localhost` URLs); there is no URL that reaches the instance
+without it. That IP can change (ISP renewal,
 travel, tethering), which locks the owner out, including SSH — refresh the
 rule with `nyxgpt cloud allow-ip`, which talks only to the AWS API, so it
 works even while locked out. See [`docs/cloud.md`](cloud.md#lockout-recovery)

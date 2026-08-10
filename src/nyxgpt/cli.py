@@ -20,6 +20,7 @@ from typing import Any, cast
 # (blue/green lived in nyxgpt.deploy; retired in favor of canary -- see #3409.)
 from nyxgpt import canary as canary_mod
 from nyxgpt import cloud as cloud_mod
+from nyxgpt import cloud_deploy as cloud_deploy_mod
 from nyxgpt import cloud_infra as cloud_infra_mod
 from nyxgpt import cloud_state as cloud_state_mod
 from nyxgpt import models, sessions
@@ -2463,6 +2464,115 @@ def cli(argv: list[str] | None = None) -> int:
         help="The S3 version id to restore -- see `nyxgpt cloud state versions`",
     )
 
+    # `cloud deploy` / `destroy` / `tunnel` -- the one-command story (P6-11,
+    # #3513). `deploy` applies the substrate above, installs a *published*
+    # nyxGPT release onto the instance (never a clone -- CLAUDE.md's
+    # repo-less requirement), opens the SSH tunnel that is the only access
+    # path (product_management/DECISION_PRIVATE_ACCESS_MECHANISM.md), waits
+    # for health through it, and prints the localhost URLs.
+    cloud_deploy_p = cloud_sub.add_parser(
+        "deploy",
+        help=(
+            "Provision AWS and deploy the full stack onto it, then open the access "
+            "tunnel and print the URLs (idempotent -- re-runs reconcile)"
+        ),
+    )
+    _add_infra_provision_flags(cloud_deploy_p)
+
+    def _add_ssh_access_flags(parser: argparse.ArgumentParser) -> None:
+        """Attach the flags describing how to SSH to the instance."""
+        parser.add_argument(
+            "--ssh-user",
+            help="Login user on the instance (default: ec2-user, the Amazon Linux 2023 default)",
+        )
+        parser.add_argument(
+            "--identity-file",
+            help=(
+                "Private key to authenticate with (default: let ssh use its own "
+                "~/.ssh defaults and agent)"
+            ),
+        )
+        parser.add_argument(
+            "--host",
+            help=(
+                "Target host instead of the provisioned instance recorded in "
+                "~/.nyxGPT/cloud/state.json"
+            ),
+        )
+
+    _add_ssh_access_flags(cloud_deploy_p)
+    cloud_deploy_p.add_argument(
+        "--version",
+        dest="version",
+        help=(
+            "Published nyxGPT release to install on the instance (default: the version "
+            "of this CLI, then whatever the last deploy used)"
+        ),
+    )
+    cloud_deploy_p.add_argument(
+        "--skip-observability",
+        action="store_true",
+        help="Deploy the core app only, without the monitoring/logging/tracing/errors stack",
+    )
+    cloud_deploy_p.add_argument(
+        "--no-tunnel",
+        action="store_true",
+        help=(
+            "Do not open the access tunnel (and therefore do not health-check through it) "
+            "-- prints the `nyxgpt cloud tunnel` command to run instead"
+        ),
+    )
+    cloud_deploy_p.add_argument(
+        "--health-timeout",
+        type=float,
+        help="Seconds to wait for the deployed stack to answer /health (default: 900)",
+    )
+    cloud_deploy_p.add_argument(
+        "--ssh-timeout",
+        type=float,
+        help="Seconds to wait for the instance to accept SSH after apply (default: 300)",
+    )
+    cloud_deploy_p.add_argument(
+        "--status",
+        action="store_true",
+        help="Report the deployment's state as JSON instead of deploying (touches nothing)",
+    )
+
+    cloud_destroy_p = cloud_sub.add_parser(
+        "destroy",
+        help="Close the access tunnel and tear the whole cloud deployment down",
+    )
+    _add_infra_provision_flags(cloud_destroy_p)
+    cloud_destroy_p.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirm the teardown (required -- data that exists only on the instance is lost)",
+    )
+
+    cloud_tunnel_p = cloud_sub.add_parser(
+        "tunnel",
+        help=(
+            "Open the SSH tunnel to the deployment and print the localhost URLs for the "
+            "app, web UI, and every enabled observability UI"
+        ),
+    )
+    _add_ssh_access_flags(cloud_tunnel_p)
+    cloud_tunnel_p.add_argument(
+        "--background",
+        action="store_true",
+        help="Return immediately, leaving the tunnel running (default: hold it in the foreground)",
+    )
+    cloud_tunnel_p.add_argument(
+        "--stop",
+        action="store_true",
+        help="Close a tunnel previously opened with --background",
+    )
+    cloud_tunnel_p.add_argument(
+        "--status",
+        action="store_true",
+        help="Report whether a background tunnel is open, and what it forwards",
+    )
+
     # Add canary command (local weighted-traffic canary rollout on a local k8s cluster --
     # the sole deployment model since #3409 retired blue/green in favor of it)
     canary_p = sub.add_parser("canary", help="Local canary deployment (kind/minikube/k3s cluster)")
@@ -2727,6 +2837,9 @@ def cli(argv: list[str] | None = None) -> int:
 
     if cmd == "cloud" and args.cloud_cmd == "state":
         return cloud_state_mod.state_command(args)
+
+    if cmd == "cloud" and args.cloud_cmd in ("deploy", "destroy", "tunnel"):
+        return cloud_deploy_mod.deploy_command(args)
 
     if cmd == "canary":
         # Same per-invocation correlation id as the `ops` dispatch above --

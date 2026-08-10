@@ -1,9 +1,14 @@
 # nyxGPT Cloud (AWS)
 
-`nyxgpt cloud` is the CLI surface for AWS-deployed nyxGPT stacks (P6-11-class
-scope). It covers `infra` -- provisioning the AWS substrate itself (#3509) --
-and `allow-ip` (#3630). Deploying the nyxGPT stack *onto* a provisioned
-instance (`nyxgpt cloud deploy`/`destroy`, #3513) lands separately.
+`nyxgpt cloud` is the CLI surface for AWS-deployed nyxGPT stacks. It covers
+`deploy`/`destroy`/`tunnel` -- the one-command story from nothing to a
+running, monitored stack (#3513) -- `infra`, the substrate underneath it
+(#3509), `state`, that substrate's Terraform state (#3510), and `allow-ip`,
+SSH lockout recovery (#3630).
+
+**In a hurry?** [`nyxgpt cloud deploy`](#nyxgpt-cloud-deploy--the-one-command-path-p6-11-3513)
+is the only command most operators need; everything below it is the
+lower-level machinery it drives.
 
 Install the AWS SDK dependency with:
 
@@ -21,17 +26,142 @@ deployments, not the local stack every other `nyxgpt` command drives.
 Per
 [`product_management/DECISION_PRIVATE_ACCESS_MECHANISM.md`](../product_management/DECISION_PRIVATE_ACCESS_MECHANISM.md),
 an AWS-deployed nyxGPT instance is reached only over an SSH tunnel
-(`nyxgpt cloud tunnel`, forthcoming): the API, web UI, and every
-observability endpoint bind to `127.0.0.1` on the instance and are never
-opened in the security group. The security group allows exactly one inbound
-rule -- TCP port 22, scoped to the owner's current public IP, never
-`0.0.0.0/0`.
+(`nyxgpt cloud tunnel`): the API, web UI, and every observability endpoint
+bind to `127.0.0.1` on the instance and are never opened in the security
+group. The security group allows exactly one inbound rule -- TCP port 22,
+scoped to the owner's current public IP, never `0.0.0.0/0`.
 
 The tradeoff: when the owner's IP changes (ISP renewal, travel, mobile
 tethering), that rule goes stale and the instance becomes unreachable,
 **including over SSH** -- there is no other way in. `nyxgpt cloud allow-ip`
 exists to fix exactly this, and does so by talking only to the AWS EC2 API,
 never the instance, so it works from the new IP while still locked out.
+
+---
+
+## `nyxgpt cloud deploy` — the one-command path (P6-11, #3513)
+
+```bash
+nyxgpt cloud deploy --ssh-public-key ~/.ssh/id_ed25519.pub
+```
+
+One command takes you from nothing to a running, monitored stack you can
+reach from your workstation. It:
+
+1. **Applies the substrate** — the same reconcile `nyxgpt cloud infra apply`
+   performs, so a re-run converges instead of creating a second deployment.
+2. **Wires the access path** — the apply re-detects your current public IP
+   every run, so the security group's single port-22 rule already points at
+   wherever you are; the deploy reports that CIDR and then waits for the
+   freshly booted instance to accept SSH.
+3. **Provisions the instance from published artifacts** — installs the OS
+   packages, Docker, Ollama, and a **published** `nyxgpt` release, then runs
+   `nyxgpt ops install` on the box. See
+   [Repo-less by construction](#repo-less-by-construction) below.
+4. **Opens the tunnel and waits for health** — starts the SSH tunnel in the
+   background, polls `http://localhost:8000/health` through it, and prints
+   the localhost URLs, which are live the moment the command returns.
+
+Every flag `nyxgpt cloud infra apply` accepts (`--region`, `--profile`,
+`--owner-ip`, `--ssh-key-name`, `--instance-type`, `--root-volume-size`)
+works here too and is remembered for later runs, plus:
+
+| Flag | Meaning |
+| --- | --- |
+| `--version` | Published release to install on the instance (default: this CLI's own version, then whatever the last deploy used) |
+| `--skip-observability` | Deploy the core app only, without monitoring/logging/tracing/errors |
+| `--no-tunnel` | Don't open the tunnel (and so don't health-check through it); prints the `nyxgpt cloud tunnel` command to run instead |
+| `--ssh-user` | Login user on the instance (default `ec2-user`, the Amazon Linux 2023 default) |
+| `--identity-file` | Private key to authenticate with (default: whatever the last deploy used, then whatever `ssh` would pick from `~/.ssh` and your agent) |
+| `--host` | Target an existing box instead of the provisioned instance |
+| `--health-timeout` / `--ssh-timeout` | Seconds to wait for `/health` (default 900) and for SSH (default 300) |
+| `--status` | Print the deployment's state as JSON and exit, touching nothing |
+
+### Reaching it: `nyxgpt cloud tunnel`
+
+```bash
+nyxgpt cloud tunnel              # hold the tunnel open in the foreground
+nyxgpt cloud tunnel --background # leave it running and return
+nyxgpt cloud tunnel --status     # is one open, and what does it forward?
+nyxgpt cloud tunnel --stop       # close a backgrounded tunnel
+```
+
+The tunnel forwards the core services plus a UI for each observability
+profile the deploy enabled:
+
+| Service | URL while the tunnel is open |
+| --- | --- |
+| API | `http://localhost:8000` |
+| Web UI | `http://localhost:3000` |
+| Grafana (`monitoring`) | `http://localhost:3001` |
+| Prometheus (`monitoring`) | `http://localhost:9090` |
+| Jaeger (`tracing`) | `http://localhost:16686` |
+| GlitchTip (`errors`) | `http://localhost:8080` |
+
+There is **no instance-facing URL** — by design. Nothing on the box listens
+on a non-loopback address, and no application port is open in the security
+group, so the tunnel is the only path in. If a local port is already taken
+(a local stack on 8000/3000, say), the tunnel refuses to open and says so;
+`nyxgpt ops down` frees them.
+
+### Tearing it down
+
+```bash
+nyxgpt cloud destroy --yes
+```
+
+Closes the tunnel, then destroys the substrate. `--yes` is required: the
+instance and its root volume go, and anything living only on that box —
+models, Cassandra data, logs — goes with them.
+
+### Repo-less by construction
+
+Per CLAUDE.md's repo-less portability requirement (2026-08-01), neither side
+of this flow touches a checkout:
+
+- **Operator side** — everything the CLI needs (the Terraform configuration,
+  the provisioning script) ships inside the installed package, so the whole
+  deploy runs from an artifact-installed `nyxgpt` on a workstation that has
+  never cloned this repository.
+- **Instance side** — the box installs `nyxgpt==<version>` from PyPI into a
+  venv under `~/.nyxGPT`, seeds `config.ini` from the installed package, and
+  runs `nyxgpt ops install`. It never runs `git clone`, and nothing is copied
+  from the operator's machine. This is the same sequence the
+  `artifact-install-smoke` job in `.github/workflows/release-artifacts.yml`
+  proves on a checkout-free runner for every release;
+  `tests/unit/test_cloud_deploy.py` asserts the generated script contains no
+  source-control fetch at all.
+
+The instance therefore runs a *published* release, not your working tree. If
+you want a version other than your CLI's, name it with `--version`.
+
+### From the dashboard
+
+The same operations are on the admin dashboard's **Cloud Infrastructure**
+page (`/admin/cloud-infrastructure`): a Deployment panel with Deploy, the
+tunnel open/close controls, the localhost URL list, and the teardown. Both
+surfaces call the same `nyxgpt.cloud_deploy` functions, so there is one
+deploy implementation regardless of who triggers it.
+
+### Where deploy state lives
+
+| Path | Contents |
+| --- | --- |
+| `~/.nyxGPT/cloud/deploy.json` | What the last successful deploy installed: version, host, instance, region, enabled profiles |
+| `~/.nyxGPT/cloud/tunnel.json` | The backgrounded tunnel's pid and forwarded profiles, so `--stop`/`--status` (and the dashboard) find a tunnel another process started |
+
+Both are read-only inputs to `nyxgpt cloud deploy --status`, which answers
+without calling AWS or touching the instance — safe to poll, and it still
+answers when your AWS credentials have expired.
+
+### Troubleshooting
+
+| Symptom | What it means |
+| --- | --- |
+| `did not accept SSH within 300s` | Usually a stale security-group rule — run `nyxgpt cloud allow-ip` (see [Lockout recovery](#lockout-recovery)). Also possible on a very slow first boot: retry with `--ssh-timeout 600`. |
+| `Provisioning the instance failed` | The remote install's own diagnostic is included. Re-running `nyxgpt cloud deploy` is safe — provisioning is idempotent. |
+| `never returned 200 within 900s` | The stack installed but isn't healthy. The tunnel is left open; `nyxgpt cloud deploy --status` and the instance's own `nyxgpt ops doctor` say more. |
+| `Could not open the SSH tunnel` | A local port is already bound, most often by a local nyxGPT stack. |
 
 ---
 
