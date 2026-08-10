@@ -1,0 +1,46 @@
+name: Project Workflows Dump
+
+# Owner/assistant diagnostic (read-only): list the ProjectV2 built-in
+# automation workflows (name, number, enabled state) for the project board.
+# The GraphQL API exposes only existence and enabled-state — each rule's
+# configuration (which Status value it sets, auto-add filters) is visible
+# only in the project's Workflows UI. Dispatch-only; changes nothing.
+#
+# Motivation (2026-08-10): merged PRs re-appeared in the "In Review" lane
+# with no Actions run responsible; built-in project automations are the
+# remaining suspect class, and agent sessions cannot query them directly
+# (session GraphQL is pinned to PR-review operations only).
+
+on:
+  workflow_dispatch: {}
+
+permissions: {}
+
+concurrency:
+  group: project-workflows-dump
+  cancel-in-progress: false
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: List project built-in workflows
+        env:
+          GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+          PROJECT_OWNER: ${{ vars.PROJECT_OWNER }}
+          PROJECT_NUMBER: ${{ vars.PROJECT_NUMBER }}
+        run: |
+          q='query($owner:String!,$number:Int!){ user(login:$owner){ projectV2(number:$number){ title workflows(first:50){ nodes { name number enabled updatedAt } } } } }'
+          curl -sS -X POST https://api.github.com/graphql \
+            -H "Authorization: bearer $GH_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg q "$q" --arg o "$PROJECT_OWNER" --argjson n "$PROJECT_NUMBER" '{query:$q, variables:{owner:$o, number:$n}}')" \
+            > /tmp/resp.json
+          if jq -e '.errors' /tmp/resp.json >/dev/null; then
+            echo "GraphQL errors:" && jq '.errors' /tmp/resp.json && exit 1
+          fi
+          jq -r '.data.user.projectV2
+            | "PROJECT|\(.title)",
+              (.workflows.nodes[]
+               | "WORKFLOW|\(.number)|\(if .enabled then "ENABLED" else "disabled" end)|\(.name)|updated \(.updatedAt)")' \
+            /tmp/resp.json
