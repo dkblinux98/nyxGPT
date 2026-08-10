@@ -1376,6 +1376,13 @@ same `nyxgpt.cloud_infra` functions the CLI does, so the access model is
 identical on both surfaces. See [cloud.md](cloud.md#nyxgpt-cloud-infra--provisioning-the-aws-substrate-p6-8-3509)
 for what gets created, and the two decision records it implements.
 
+Note that the *dashboard* no longer calls the mutating ones. Per the owner's
+2026-08-09 decision on #3514 the `/admin` cloud page is
+status-plus-CLI-pointers, and its Next.js proxy layer exposes only the reads —
+so `POST /api/v1/cloud/infra/apply`, `POST /api/v1/cloud/deploy` and
+`POST /api/v1/cloud/deploy/destroy` are reachable from the CLI and other API
+clients, but not from a browser.
+
 `plan`/`apply`/`destroy` shell out to Terraform and can take minutes; they
 are synchronous. Every mutation is recorded in the admin activity log
 (`cloud_infra.plan`/`.apply`/`.destroy`).
