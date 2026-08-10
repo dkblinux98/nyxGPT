@@ -59,7 +59,8 @@ This preserves your release-issue checklist signal: unchecked = planned, checked
 - `developer_submit_for_review.sh <ISSUE_NUMBER> "<PR_TITLE>" [PR_BODY_FILE]` — open PR + set issue -> In Review, assign review-agent
 
 ### review-agent
-- `manually_trigger_pr_review.sh <PR_NUMBER>` — manually trigger review workflow (for re-reviews or if auto-trigger failed)
+- `manually_trigger_pr_review.sh <PR_NUMBER>` — manually trigger review workflow (for re-reviews or if auto-trigger failed). Dispatches against `RELEASE_BRANCH`, never the repo default branch — see `agents/runbooks/review-runbook.md` §5a
+- `review_ensure_handoff.sh <PR_NUMBER>` — dispatch-mode backstop (#3704): verifies a REQUEST_CHANGES verdict actually handed off to the developer/huddle/owner, and performs the handoff itself if the event chain dropped it. Run automatically as the last step of a `workflow_dispatch` review; idempotent, so it is safe to re-run by hand
 - `review_accept_and_merge.sh <PR_NUMBER_OR_URL> <ISSUE_NUMBER>` — merge PR to release branch, delete branch, close issue, set status -> In Review, assign human owner for stakeholder acceptance
 
 ### branch hygiene

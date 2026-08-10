@@ -560,6 +560,74 @@ jobs:
           gh pr comment "$PR" --body "$BODY"
           echo "Persisted structured review output to PR #$PR"
 
+      - name: Ensure REQUEST_CHANGES handoff (workflow_dispatch backstop)
+        # The verdict itself is executed by review_agent_auto_review.yml,
+        # which only ever reacts to a downstream event: the
+        # pull_request_review submission, or the structured-review comment
+        # via issue_comment. A dispatched review run cannot observe whether
+        # either link fired, and when one drops a REQUEST_CHANGES verdict
+        # goes nowhere -- APPROVE merged fine on dispatch (PR #3613) while
+        # REQUEST_CHANGES sat for 9+ hours with zero fix activity on PRs
+        # #3684/#3683/#3606 until a human posted RETRY_IMPLEMENTATION by
+        # hand (#3704).
+        #
+        # The script gives the event chain a head start and only acts if no
+        # handoff footprint appears, so this is a no-op whenever the normal
+        # path works. Scoped to workflow_dispatch: that is the recovery
+        # path this issue covers, and event-triggered reviews keep their
+        # existing (working) chain untouched.
+        #
+        # Requiring claude-review to have succeeded keeps this off two paths
+        # it has no business on: a fork PR (the fork guard fails earlier, so
+        # the review step reports 'skipped'), and a usage-limited run whose
+        # review never produced a verdict (that has its own retry handler
+        # below). `always()` is still needed so a failure in the persist
+        # step above doesn't skip the handoff.
+        if: always() && github.event_name == 'workflow_dispatch' && steps.claude-review.conclusion == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.REVIEW_AGENT_TOKEN }}
+          # #3695 escalation DM, best-effort -- absent secrets degrade to
+          # the GitHub comment alone (notify_human_escalation).
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_USER_ID: ${{ secrets.SLACK_USER_ID }}
+        run: |
+          set -euo pipefail
+          PR="${{ steps.pr_number.outputs.pr }}"
+
+          # Earlier steps checked out the PR head so the review ran against
+          # the right code. The handoff scripts must NOT come from there: an
+          # older PR branch predates this backstop entirely. Take
+          # scripts/agents from the release branch instead -- same source
+          # review_agent_auto_review.yml uses (it checks out RELEASE_BRANCH).
+          git fetch --no-tags origin "${{ vars.RELEASE_BRANCH }}"
+          git checkout FETCH_HEAD -- scripts/agents
+
+          CFG="$RUNNER_TEMP/nyxgpt-config.ini"
+          cat > "$CFG" <<EOF
+          REPO_OWNER=${{ vars.REPO_OWNER }}
+          REPO_NAME=${{ vars.REPO_NAME }}
+          PROJECT_OWNER=${{ vars.PROJECT_OWNER }}
+          PROJECT_NUMBER=${{ vars.PROJECT_NUMBER }}
+
+          DEV_AGENT=${{ vars.DEV_AGENT }}
+          REVIEW_AGENT=${{ vars.REVIEW_AGENT }}
+          SCRUM_AGENT=${{ vars.SCRUM_AGENT }}
+          HUMAN_OWNER=${{ vars.HUMAN_OWNER }}
+
+          STATUS_FIELD=${{ vars.STATUS_FIELD }}
+          STATUS_BACKLOG=${{ vars.STATUS_BACKLOG }}
+          STATUS_IN_PROGRESS=${{ vars.STATUS_IN_PROGRESS }}
+          STATUS_IN_REVIEW=${{ vars.STATUS_IN_REVIEW }}
+          STATUS_FOR_RELEASE=${{ vars.STATUS_FOR_RELEASE }}
+
+          RELEASE_BRANCH=${{ vars.RELEASE_BRANCH }}
+          RELEASE_ISSUE_NUMBER=${{ vars.RELEASE_ISSUE_NUMBER }}
+          SPRINT_AUTOPILOT=${{ vars.SPRINT_AUTOPILOT }}
+          SPRINT_FIELD=${{ vars.SPRINT_FIELD }}
+          EOF
+
+          NYXGPT_CONFIG_FILE="$CFG" bash scripts/agents/review_ensure_handoff.sh "$PR"
+
       - name: Check Claude review progress completion
         if: always() && steps.claude-review.conclusion == 'success'
         env:
