@@ -212,8 +212,20 @@ TestClient, not a live server. Two fixes were needed to get there:
    `_resolve_api_base_url()` helper instead of depending on the `api_base_url`
    fixture — they already tolerate an unreachable server via their own
    try/except blocks, so they don't need the skip gate. Covered by
-   `tests/integration/test_conftest_fixtures.py`, which asserts none of the
-   three depend on `api_base_url`.
+   `tests/unit/test_integration_conftest_fixtures.py`, which asserts none of
+   the three depend on `api_base_url`.
+3. That regression test originally lived in `tests/integration/` and was
+   therefore subject to the same package-level `autouse=True` fixtures it
+   guards: with the bug reintroduced and no live server reachable, the skip
+   cascade hit the regression test too, so it reported SKIPPED instead of
+   FAILED and its assertions never ran — useless in exactly the no-live-server
+   environment this CI gate targets. It now lives in `tests/unit/` and loads
+   `tests/integration/conftest.py` by explicit file path via
+   `importlib.util.spec_from_file_location`, so it is never collected as part
+   of the integration package and cannot be skip-cascaded by the fixtures
+   under test. **Any future regression test for integration-fixture wiring
+   must follow the same pattern** — a test that can be skipped by the bug it
+   is testing provides no coverage.
 
 **Known flake, not fixed here:** `test_gpu_detection_shell_false`
 (`tests/unit/test_embedding_optimization.py`) failed once in ~4 full-suite
