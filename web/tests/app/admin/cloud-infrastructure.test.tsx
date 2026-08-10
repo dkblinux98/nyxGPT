@@ -97,6 +97,7 @@ const lifecycleCommands = {
   deploy: 'nyxgpt cloud deploy',
   redeploy: 'nyxgpt cloud deploy',
   destroy: 'nyxgpt cloud destroy --yes',
+  smoke: 'nyxgpt cloud smoke',
   tunnel: 'nyxgpt cloud tunnel',
   tunnel_stop: 'nyxgpt cloud tunnel --stop',
   status: 'nyxgpt cloud deploy --status',
@@ -856,6 +857,10 @@ describe('CloudInfrastructurePage deployment panel', () => {
     expect(screen.getByText('nyxgpt cloud destroy --yes')).toBeInTheDocument();
     expect(screen.getByText('nyxgpt cloud deploy --status')).toBeInTheDocument();
     expect(screen.getByText('nyxgpt cloud allow-ip')).toBeInTheDocument();
+    // The end-to-end cloud test (P6-17, #3515) is a lifecycle action too --
+    // it deploys and destroys real billed infrastructure, so it is a pointer
+    // here rather than a button.
+    expect(screen.getByText('nyxgpt cloud smoke')).toBeInTheDocument();
   });
 
   it('shows the installed release and the localhost-only URLs once deployed', async () => {
