@@ -67,6 +67,7 @@ class SessionStoreError(RuntimeError):
 
 
 def _iso_now() -> str:
+    """Return the current local time as an ISO 8601 string (second precision)."""
     return datetime.now().isoformat(timespec="seconds")
 
 
@@ -141,11 +142,13 @@ class CassandraSessionStore:
             return self._session, self._keyspace
 
     def _table(self, keyspace: str) -> str:
+        """Return the fully-qualified sessions table name."""
         return f"{keyspace}.{SESSIONS_TABLE}"
 
     # -- row helpers ---------------------------------------------------------
 
     def _fetch_row(self, name: str) -> Any | None:
+        """Fetch a session's full row by name, or None when absent."""
         session, ks = self._conn()
         rows = session.execute(
             f"SELECT name, messages, meta, pinned, message_count, updated_at "

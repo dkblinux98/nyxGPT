@@ -33,6 +33,7 @@ from nyxgpt.config import (
     get_canary_total_replicas,
     get_default_model,
     get_ollama_base_url,
+    get_session_backend,
     get_sessions_dir,
     load_config,
 )
@@ -54,6 +55,14 @@ def _list_sessions_in_dir(sessions_dir: Path) -> list[dict[str, object]]:
         session, or an empty list if the directory doesn't exist. Files that
         are metadata sidecars (`*.meta.json`) or fail to parse are skipped.
     """
+    # Under the Cassandra backend the directory is not the store -- delegate
+    # to the backend-aware listing, which returns the same row shape (#3590).
+    try:
+        if get_session_backend(load_config(None)) == "cassandra":
+            return cast(list[dict[str, object]], sessions.list_sessions(None))
+    except Exception:
+        pass
+
     sessions_dir = Path(sessions_dir).expanduser()
     if not sessions_dir.exists():
         return []
@@ -760,7 +769,7 @@ def cmd_sessions(
         doc_id = new_name
         sf = sessions.session_file_for(name, effective_dir)
         mf = sessions.meta_file_for(sf)
-        if not sf.exists():
+        if not sessions.session_file_exists(sf):
             sessions.save_session_messages(sf, [])
         meta = sessions.load_session_meta(mf)
         meta = sessions.ensure_meta_defaults(meta)
