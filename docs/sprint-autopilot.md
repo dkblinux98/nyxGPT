@@ -45,8 +45,39 @@ boundary rather than bookkeeping.
   unscoped, so the owner can deliberately pull work forward across the
   boundary. Agent-posted kicks cannot.
 - **Drift caveat:** the boundary is load-bearing, so iteration date windows
-  must be kept current. With no active iteration, the autopilot parks
-  (conservative stop) instead of working release-wide.
+  must be kept current. With no active iteration, both the autopilot and
+  `scrummaster_next_issue.sh --sprint-scoped` stop (conservative stop) --
+  the selector exits 1 rather than falling back to release-wide selection,
+  so a kick that lands after the window closes cannot dispatch
+  future-sprint work.
+
+### Informational notes must never look like a kick
+
+`notify_scrum_ready.yml` dispatches on a bare
+`contains(github.event.comment.body, 'READY_FOR_NEXT_ISSUE')` with the agent
+accounts on its actor allowlist. Any agent comment that *names* the kick
+token therefore starts the next issue, even one whose whole point is that
+work has stopped. Two rules keep status reports inert:
+
+1. Informational autopilot comments (the park note, the `PAUSE_SPRINT`
+   notice) never spell the token out -- they point here instead.
+2. They carry the marker `<!-- nyxgpt-autopilot-informational -->`
+   (`AUTOPILOT_INFO_MARKER` in `scripts/agents/lib/gh_project.sh` and
+   `scripts/agents/lib/sprint_calc.py`), which the workflow's job `if:`
+   negates. This is the structural guard: it holds even if a note's prose
+   later drifts back into naming the token.
+
+To kick manually, post a comment containing `READY_FOR_NEXT_ISSUE` (and no
+marker) on the release tracking issue.
+
+### The sprint boundary is an acceptance gate
+
+Owner context, 2026-08-10: a sprint completes -> the owner runs acceptance
+testing on it -> the next sprint begins. The park note says so explicitly,
+and nothing resumes the loop on its own -- a new sprint window opening does
+not by itself dispatch work, because only a kick starts selection and agents
+post kicks only after a merge. That is deliberate: auto-resume would consume
+the owner's acceptance window, which is exactly what happened on 2026-08-09.
 
 *Correction of the record:* this file previously documented a
 release-gated decision as an "owner decision, 2026-07-31". The owner has
@@ -165,11 +196,14 @@ needs to sprint-scope selection while autopilot is on:
 > now runs a single "Select and start next issue" step through
 > `scrummaster_dispatch_next.sh`, and its sprint-scoping condition also
 > requires that the kick was *not* posted by the human owner:
-> `[[ "$SPRINT_AUTOPILOT" == "true" && "$KICK_ACTOR" != "$KICK_OWNER" ]]`.
-> That is the owner override -- a manual `READY_FOR_NEXT_ISSUE` selects
-> unscoped and can pull future-sprint work forward on purpose. Agents can
-> write `.github/workflows/*` in this repo (see `CLAUDE.md`), so this
-> section is history, not a pending hand-carry.
+> `[[ "$SPRINT_AUTOPILOT" == "true" && "${KICK_ACTOR,,}" != "${KICK_OWNER,,}" ]]`
+> (case-insensitive, to match the job-level `if:`). That is the owner
+> override -- a manual `READY_FOR_NEXT_ISSUE` selects unscoped and can pull
+> future-sprint work forward on purpose. The "falls back to unscoped
+> selection if no Sprint is active" comment in the snippet above is also
+> history: `--sprint-scoped` with no active iteration now exits 1
+> (conservative stop). Agents can write `.github/workflows/*` in this repo
+> (see `CLAUDE.md`), so this section is history, not a pending hand-carry.
 
 **New file `scrummaster_sprint_report.yml`** (daily standing report):
 

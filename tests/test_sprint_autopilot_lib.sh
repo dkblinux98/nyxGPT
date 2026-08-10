@@ -271,25 +271,47 @@ _assert_contains "kick names the active sprint, not the release, as the pool" "$
 
 # Test 8: active sprint drained, release NOT drained -> park (the #3706
 # behavior change: the old release-gated decision kicked here).
+#
+# The "no kick" assertion is on the BARE token, not a token+newline needle:
+# notify_scrum_ready.yml triggers on a plain substring test, so any
+# occurrence anywhere in the body -- prose included -- dispatches work. The
+# original park note named the token in its override line and therefore
+# kicked every time it "parked" (#3706 review).
 count_sprint_backlog_open() { echo "0"; }
 sprint_autopilot_kick 123 merged 2>/dev/null
 body="$(cat "$COMMENT_FILE")"
-_assert_not_contains "parks at the sprint boundary even though the release has work left" "$body" "READY_FOR_NEXT_ISSUE
-"
+_assert_not_contains "parks at the sprint boundary even though the release has work left" "$body" "READY_FOR_NEXT_ISSUE"
+_assert_contains "park note carries the informational marker that excludes it from dispatch" "$body" "nyxgpt-autopilot-informational"
 _assert_contains "park note says the sprint is complete" "$body" "Sprint Autopilot — sprint complete"
+_assert_contains "park note names acceptance testing as the next step" "$body" "Next step: acceptance testing of this sprint"
 _assert_contains "park note reports what waits in a future sprint" "$body" "- Sprint 9: 11 open Backlog issue(s)"
 _assert_contains "park note reports the no-sprint bucket" "$body" "- _No sprint set_: 2 open Backlog issue(s)"
 _assert_contains "park note totals the work waiting outside the sprint" "$body" "**13**"
-_assert_contains "park note explains the manual-kick override" "$body" '`READY_FOR_NEXT_ISSUE`'
+_assert_contains "park note points at the docs for the manual-kick override" "$body" 'documented in `docs/sprint-autopilot.md`'
 
-# Test 9: no active iteration at all -> conservative park, no kick.
+# Test 9: no active iteration at all -> conservative park, no kick. The
+# no-sprint bucket must still be reported here: with no active sprint the
+# "" key is the *no sprint set* bucket, not the active sprint, so excluding
+# it hid waiting work and undercounted the total (#3706 review).
 iteration_active_title() { echo ""; }
 count_sprint_backlog_open() { echo "7"; }  # must be ignored: nothing is active
 sprint_autopilot_kick 123 merged 2>/dev/null
 body="$(cat "$COMMENT_FILE")"
 _assert_contains "parks when no sprint iteration is active" "$body" "No sprint iteration is currently active"
-_assert_not_contains "posts no kick when no sprint iteration is active" "$body" "READY_FOR_NEXT_ISSUE
-"
+_assert_not_contains "posts no kick when no sprint iteration is active" "$body" "READY_FOR_NEXT_ISSUE"
+_assert_contains "no-active-sprint park note keeps the no-sprint bucket" "$body" "- _No sprint set_: 2 open Backlog issue(s)"
+_assert_contains "no-active-sprint park note totals every waiting bucket" "$body" "**13**"
+
+# Test 10: the PAUSE_SPRINT notice is informational too -- it must not name
+# the kick token (notify_scrum_ready.yml is not gated on PAUSE_SPRINT, so a
+# paused notice that named it dispatched work despite the pause).
+sprint_autopilot_paused() { return 0; }
+sprint_autopilot_kick 123 merged 2>/dev/null
+body="$(cat "$COMMENT_FILE")"
+_assert_contains "paused notice is posted" "$body" 'autopilot is paused'
+_assert_not_contains "paused notice does not name the kick token" "$body" "READY_FOR_NEXT_ISSUE"
+_assert_contains "paused notice carries the informational marker" "$body" "nyxgpt-autopilot-informational"
+sprint_autopilot_paused() { return 1; }
 
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "All tests passed."

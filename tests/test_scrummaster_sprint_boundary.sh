@@ -161,11 +161,39 @@ _write_items "$(_item 100 Backlog "Sprint 9")" "$(_item 199 Backlog "Sprint 8")"
 result="$(_run_select --sprint-scoped)"
 _assert_eq "selects the active sprint's issue over a lower-numbered future-sprint one" "0|199" "$result"
 
-# --- Scenario C: an unscoped run (the human READY_FOR_NEXT_ISSUE override) ---
-# --- still pulls forward across sprints, inside the release wall ---
+# --- Scenario C: an unscoped run (the human manual-kick override) still ---
+# --- pulls forward across sprints, inside the release wall ---
 _write_items "$(_item 100 Backlog "Sprint 9")" "$(_item 101 Backlog "")"
 result="$(_run_select)"
 _assert_eq "unscoped selection still pulls future-sprint work forward" "0|100" "$result"
+
+# --- Scenario D: NO iteration's window contains today + --sprint-scoped ---
+# --- -> conservative stop. This used to fall back to unscoped selection, ---
+# --- which dispatched future-sprint work automatically whenever a kick ---
+# --- landed after the active window closed (the scrummaster-dispatch ---
+# --- concurrency queue makes that delay real) or an old run was re-run. ---
+cat >"$TMP_DIR/fields-no-active.json" <<'EOF'
+{"data":{"node":{"fields":{"nodes":[
+  {"__typename":"ProjectV2SingleSelectField","id":"f-status","name":"Status",
+   "options":[{"id":"opt-backlog","name":"Backlog"},{"id":"opt-wip","name":"In Progress"}]},
+  {"__typename":"ProjectV2IterationField","id":"f-sprint","name":"Sprint",
+   "configuration":{"iterations":[
+     {"id":"it-9","title":"Sprint 9","startDate":"2099-01-01","duration":14},
+     {"id":"it-10","title":"Sprint 10","startDate":"2099-02-01","duration":14}]}}
+]}}}}
+EOF
+FAKE_GH_FIELDS_FILE="$TMP_DIR/fields-no-active.json"
+_write_items "$(_item 100 Backlog "Sprint 9")" "$(_item 101 Backlog "")"
+result="$(_run_select --sprint-scoped)"
+stderr="$(cat "$TMP_DIR/stderr")"
+_assert_eq "sprint-scoped selection stops when no iteration is active" "1|" "$result"
+_assert_contains "logs the conservative stop rather than an unscoped fallback" "$stderr" "stopping (conservative stop, #3706)"
+
+# --- Scenario E: the owner override is unaffected by a missing active ---
+# --- iteration -- an unscoped kick never passes --sprint-scoped ---
+result="$(_run_select)"
+_assert_eq "unscoped selection still works with no active iteration" "0|100" "$result"
+FAKE_GH_FIELDS_FILE="$TMP_DIR/fields.json"
 
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "All tests passed."

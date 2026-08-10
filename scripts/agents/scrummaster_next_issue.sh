@@ -26,7 +26,8 @@ Options:
                     boundary is hard (#3706): issues in a future sprint, or
                     with no sprint set, are skipped with a log line and are
                     never dispatched automatically -- there is no
-                    release-wide fall-through. Without this flag, behavior
+                    release-wide fall-through, and no active iteration means
+                    a conservative stop (exit 1). Without this flag, behavior
                     is unchanged from before #3480 (Sprint is not considered
                     at all), which is what a human `READY_FOR_NEXT_ISSUE`
                     kick uses to pull work forward deliberately.
@@ -82,12 +83,17 @@ ACTIVE_SPRINT_TITLE=""
 if [[ "$SPRINT_SCOPED_FLAG" == "1" ]]; then
   ACTIVE_SPRINT_TITLE="$(iteration_active_title "$SPRINT_FIELD" 2>/dev/null || echo "")"
   if [[ -z "$ACTIVE_SPRINT_TITLE" || "$ACTIVE_SPRINT_TITLE" == "null" ]]; then
-    # No active Sprint: sprint scoping has nothing to scope to. Per #3480,
-    # "no active sprint" falls back to today's unscoped manual-kick
-    # behavior rather than reporting "no eligible work" -- only "autopilot
-    # on AND a sprint is active" restricts selection.
-    log "No active Sprint on field '${SPRINT_FIELD}' -- falling back to unscoped selection."
-    SPRINT_SCOPED_FLAG=0
+    # No active Sprint and sprint scoping was requested: STOP (conservative
+    # stop, #3706). This used to fall back to unscoped selection, which
+    # quietly re-opened the boundary the flag exists to close -- an agent
+    # kick arriving after the iteration's window closed (the
+    # `scrummaster-dispatch` concurrency queue makes that delay real), or a
+    # re-run of an older dispatch run, would select and START future-sprint
+    # or no-sprint work with no planning event and no human in the loop.
+    # Deliberate pull-forward is unaffected: an owner kick never passes
+    # --sprint-scoped, so it still selects unscoped.
+    log "No active Sprint on field '${SPRINT_FIELD}' -- stopping (conservative stop, #3706): sprint-scoped selection has nothing to scope to and never falls back to release-wide work."
+    exit 1
   else
     log "Sprint-scoped selection: active sprint '${ACTIVE_SPRINT_TITLE}'"
   fi

@@ -194,10 +194,22 @@ a real work boundary, not bookkeeping:
   a log line and are never dispatched automatically. There is no
   release-wide fall-through.
 - When the active sprint's pool drains, the autopilot **parks with a loud
-  note** on the release tracking issue: the sprint is complete, what remains
-  in the release per future sprint (and how much has no sprint at all), and
-  that work resumes when the next sprint's window opens or a human posts a
-  kick.
+  note** on the release tracking issue: the sprint is complete, that
+  **acceptance testing is the next step**, what remains in the release per
+  future sprint (and how much has no sprint at all), and that work resumes
+  when the next sprint's window opens or a human posts a kick. The boundary
+  is an **acceptance gate** (owner context 2026-08-10: sprint completes ->
+  owner runs acceptance testing -> next sprint begins), so nothing resumes
+  the loop by itself -- a new window opening does not dispatch work, because
+  only a kick starts selection and agents post kicks only after a merge.
+- **Informational notes are inert by construction.**
+  `notify_scrum_ready.yml` dispatches on a bare substring test for the kick
+  token with the agents on its actor allowlist, so a park or `PAUSE_SPRINT`
+  notice that merely *named* the token dispatched work -- a "park" that was
+  really a kick. Such notes now avoid the token entirely and carry
+  `<!-- nyxgpt-autopilot-informational -->` (`AUTOPILOT_INFO_MARKER`), which
+  the workflow's job `if:` negates. When adding any agent-posted status
+  comment, follow the same rule.
 - **Human override stays.** A `READY_FOR_NEXT_ISSUE` posted by the owner
   runs unscoped (`notify_scrum_ready.yml`), so the owner can deliberately
   pull work forward across the sprint boundary. Agent-posted kicks cannot.
@@ -211,8 +223,10 @@ a real work boundary, not bookkeeping:
 **Drift caveat (load-bearing):** because the boundary now decides whether
 work continues, sprint iteration date windows must be kept current on the
 project board. If no iteration's window contains today, there is no active
-sprint, and the autopilot parks (conservative stop) rather than falling back
-to release-wide work. Check this in the daily sprint report.
+sprint, and both the autopilot and `scrummaster_next_issue.sh
+--sprint-scoped` stop (conservative stop) rather than falling back to
+release-wide work -- the selector exits 1. Check this in the daily sprint
+report; a stale window shows up as a parked loop, not as cross-sprint work.
 
 **History, so the record is accurate:** the autopilot code previously gated
 on the *release* -- work continued while the release had open Backlog issues

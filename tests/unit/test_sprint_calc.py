@@ -265,8 +265,37 @@ class TestSprintParkNote:
     def test_explains_how_work_resumes_and_the_owner_override(self):
         note = self._note()
         assert "SPRINT_TIMEZONE" in note
-        assert "READY_FOR_NEXT_ISSUE" in note
+        assert "documented in `docs/sprint-autopilot.md`" in note
         assert "#3706" in note
+
+    def test_never_contains_the_dispatch_kick_token(self):
+        # notify_scrum_ready.yml dispatches on a bare substring test of the
+        # comment body, with the agent accounts on its actor allowlist. A
+        # park note that names the kick token anywhere -- prose included --
+        # therefore starts the next issue, so "park" became "kick" (#3706
+        # review). Cover every rendered variant.
+        variants = [
+            self._note(),
+            self._note(sprint_title=""),
+            self._note(by_sprint={"Sprint 8": 0}),
+            self._note(release_version="", by_sprint={"Sprint 9": 2}),
+        ]
+        for note in variants:
+            assert "READY_FOR_NEXT_ISSUE" not in note
+            # Structural backstop: the marker notify_scrum_ready.yml negates,
+            # so the note stays undispatchable even if the prose drifts.
+            assert sprint_calc.AUTOPILOT_INFO_MARKER in note
+
+    def test_sprint_complete_variant_names_acceptance_testing_as_next_step(self):
+        # Owner context 2026-08-10: the sprint boundary is an acceptance
+        # gate, so the note must say acceptance testing comes next rather
+        # than reading as a neutral pause.
+        note = self._note()
+        assert "Next step: acceptance testing of this sprint" in note
+        assert "Acceptance Testing" in note
+        # ...and only for a completed sprint -- there is nothing to accept
+        # when no iteration was active in the first place.
+        assert "Next step: acceptance testing" not in self._note(sprint_title="")
 
     def test_release_drained_variant_when_nothing_is_waiting(self):
         note = self._note(by_sprint={"Sprint 8": 0})
@@ -278,6 +307,11 @@ class TestSprintParkNote:
         note = self._note(sprint_title="")
         assert "No sprint iteration is currently active" in note
         assert "- Sprint 9: 11 open Backlog issue(s)" in note
+        # With no active sprint the "" key is the *no sprint set* bucket,
+        # not the active sprint. Excluding it here hid 3 waiting issues and
+        # reported a total of 13 instead of 16 (#3706 review).
+        assert "- _No sprint set_: 3 open Backlog issue(s)" in note
+        assert "**16**" in note  # 11 + 2 + 3
 
     def test_missing_release_version_degrades_gracefully(self):
         note = self._note(release_version="", by_sprint={"Sprint 9": 2})

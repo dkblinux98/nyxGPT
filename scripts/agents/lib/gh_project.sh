@@ -736,6 +736,17 @@ release_backlog_by_sprint() {
   rm -f "$tmp" "$acc"
 }
 
+# Machine marker stamped on every INFORMATIONAL sprint-autopilot comment
+# (park note, paused notice) -- anything that is a status report rather than
+# a dispatch kick. notify_scrum_ready.yml negates this marker in its job
+# `if:`, so an informational note can never trigger a dispatch run even if
+# its prose later drifts into naming the kick token (#3706 review finding:
+# the park note contained the token, and the dispatch trigger is a bare
+# substring test with the agent accounts on its actor allowlist -- so every
+# "park" was in fact a kick). Keep in sync with AUTOPILOT_INFO_MARKER in
+# lib/sprint_calc.py and the `if:` in .github/workflows/notify_scrum_ready.yml.
+AUTOPILOT_INFO_MARKER="<!-- nyxgpt-autopilot-informational -->"
+
 # True if the most recent PAUSE_SPRINT/RESUME_SPRINT control comment on
 # `release_issue` is a PAUSE_SPRINT -- the sprint-autopilot kill switch
 # (#3480). No comment of either kind means "not paused" (default-on once
@@ -792,7 +803,13 @@ sprint_autopilot_kick() {
     _warn "SPRINT_AUTOPILOT is on but RELEASE_ISSUE_NUMBER is not configured -- skipping auto-kick."
   elif sprint_autopilot_paused "$RELEASE_ISSUE_NUMBER"; then
     echo "[review] Sprint autopilot paused (PAUSE_SPRINT) -- no auto-kick." >&2
-    issue_comment "$RELEASE_ISSUE_NUMBER" "⏸️ **Sprint Autopilot**: ${event_phrase}, but autopilot is paused (\`PAUSE_SPRINT\`) -- no automatic kick posted. Comment \`RESUME_SPRINT\` to continue, or \`READY_FOR_NEXT_ISSUE\` to kick manually." \
+    # Informational, NOT a kick: the note must neither spell out the kick
+    # token nor omit the informational marker, or posting it would itself
+    # trigger notify_scrum_ready.yml -- which is not gated on PAUSE_SPRINT,
+    # so a "paused" notice would dispatch work (#3706 review).
+    issue_comment "$RELEASE_ISSUE_NUMBER" "⏸️ **Sprint Autopilot**: ${event_phrase}, but autopilot is paused (\`PAUSE_SPRINT\`) -- no automatic kick posted. Comment \`RESUME_SPRINT\` to continue, or post the manual kick signal documented in \`docs/sprint-autopilot.md\` to kick manually.
+
+${AUTOPILOT_INFO_MARKER}" \
       || _warn "Failed to post autopilot-paused notice."
   else
     # The continue/park decision is SPRINT-gated (owner policy 2026-08-10,

@@ -111,6 +111,25 @@ def _sprint_sort_key(title: str) -> tuple[int, int | str, str]:
     return (1, title, title)
 
 
+# Machine marker for autopilot notes that are INFORMATIONAL (park notes,
+# paused notices) rather than dispatch kicks. `notify_scrum_ready.yml`
+# negates this marker in its job `if:`, so such a note can never trigger a
+# dispatch run even if its prose later drifts back to naming the kick token
+# (#3706 review finding). Belt and braces: informational notes also avoid
+# writing the literal kick token at all -- see `_kick_token_ref()`.
+AUTOPILOT_INFO_MARKER = "<!-- nyxgpt-autopilot-informational -->"
+
+
+# How an informational note refers to the manual kick signal WITHOUT
+# spelling it out. `notify_scrum_ready.yml` triggers on a bare
+# `contains(comment.body, "<kick token>")` substring test with the agent
+# accounts on its actor allowlist, so a note that names the token dispatches
+# work merely by being posted -- which is how a "park" became a kick (#3706
+# review). Never inline the token here, at source or by concatenation: what
+# matters is the RENDERED body.
+KICK_SIGNAL_REF = "the manual kick signal documented in `docs/sprint-autopilot.md`"
+
+
 def build_sprint_park_note(payload: dict[str, Any]) -> str:
     """Renders the loud park note posted on the release tracking issue when
     the active sprint's Backlog pool drains (#3706).
@@ -131,10 +150,18 @@ def build_sprint_park_note(payload: dict[str, Any]) -> str:
     by_sprint: dict[str, int] = {
         str(k): int(v) for k, v in (payload.get("by_sprint") or {}).items() if int(v) > 0
     }
-    remaining_elsewhere = {k: v for k, v in by_sprint.items() if k != sprint_title}
+    # Only exclude the active-sprint bucket when there IS an active sprint.
+    # With sprint_title == "" (the conservative-stop case) the `""` key is
+    # the *no sprint set* bucket, not the active sprint -- dropping it hid
+    # real waiting work from the note and undercounted the total (#3706
+    # review).
+    remaining_elsewhere = {
+        k: v for k, v in by_sprint.items() if not (sprint_title and k == sprint_title)
+    }
     total_elsewhere = sum(remaining_elsewhere.values())
 
     release_label = f"release {release_version}" if release_version else "this release"
+    scope_label = "outside the active sprint" if sprint_title else "in a sprint"
 
     lines: list[str] = []
     if sprint_title:
@@ -142,6 +169,14 @@ def build_sprint_park_note(payload: dict[str, Any]) -> str:
             f"🏁 **Sprint Autopilot — sprint complete**: {event_phrase}. "
             f'**"{sprint_title}" has no open Backlog issues left**, so autopilot is '
             f"parked at the sprint boundary."
+        )
+        lines.append("")
+        lines.append(
+            "**Next step: acceptance testing of this sprint.** The sprint boundary is "
+            "an acceptance gate (owner context, 2026-08-10) — merged work sits in "
+            "**Acceptance Testing** for the owner's pass before the next sprint starts. "
+            "Autopilot does not resume on its own, so the acceptance window is not "
+            "consumed by the next sprint's work."
         )
     else:
         lines.append(
@@ -152,14 +187,14 @@ def build_sprint_park_note(payload: dict[str, Any]) -> str:
     lines.append("")
 
     if total_elsewhere:
-        lines.append(f"**Still open in {release_label}, outside the active sprint:**")
+        lines.append(f"**Still open in {release_label}, {scope_label}:**")
         lines.append("")
         for title in sorted(remaining_elsewhere, key=_sprint_sort_key):
             label = title if title else "_No sprint set_"
             count = remaining_elsewhere[title]
             lines.append(f"- {label}: {count} open Backlog issue(s)")
         lines.append("")
-        lines.append(f"Total waiting outside the active sprint: **{total_elsewhere}**.")
+        lines.append(f"Total waiting {scope_label}: **{total_elsewhere}**.")
     else:
         lines.append(
             f"**Nothing is left in {release_label}'s Backlog either** — the release "
@@ -183,9 +218,11 @@ def build_sprint_park_note(payload: dict[str, Any]) -> str:
         "`SPRINT_TIMEZONE`, default `America/New_York`) and a kick is posted, or"
     )
     lines.append(
-        "- the owner comments `READY_FOR_NEXT_ISSUE` here to pull work forward "
-        "deliberately — a human kick still overrides the sprint boundary."
+        f"- the owner posts {KICK_SIGNAL_REF} here to pull work forward deliberately "
+        f"— a human kick still overrides the sprint boundary."
     )
+    lines.append("")
+    lines.append(AUTOPILOT_INFO_MARKER)
     return "\n".join(lines)
 
 
