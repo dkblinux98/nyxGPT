@@ -93,6 +93,16 @@ function mockStateStatus(payload: unknown, status = 200) {
 
 // The deployment itself (#3513): what release is on the instance, and whether
 // the SSH tunnel that is the only way to reach it is open.
+const lifecycleCommands = {
+  deploy: 'nyxgpt cloud deploy',
+  redeploy: 'nyxgpt cloud deploy',
+  destroy: 'nyxgpt cloud destroy --yes',
+  tunnel: 'nyxgpt cloud tunnel',
+  tunnel_stop: 'nyxgpt cloud tunnel --stop',
+  status: 'nyxgpt cloud deploy --status',
+  allow_ip: 'nyxgpt cloud allow-ip',
+};
+
 const notDeployed = {
   deployed: false,
   version: '',
@@ -101,8 +111,11 @@ const notDeployed = {
   region: '',
   profiles: [],
   tunnel: { running: false, pid: 0, host: '', profiles: [], urls: {} },
+  health: { checked: false, healthy: false, status: 0, reason: '' },
+  history: [],
   urls: { api: 'http://localhost:8000', web: 'http://localhost:3000' },
   access_command: 'nyxgpt cloud tunnel',
+  commands: lifecycleCommands,
 };
 
 const deployedTunnelClosed = {
@@ -129,6 +142,38 @@ const deployedTunnelOpen = {
     profiles: deployedTunnelClosed.profiles,
     urls: deployedTunnelClosed.urls,
   },
+  health: {
+    checked: true,
+    healthy: true,
+    status: 200,
+    url: 'http://localhost:8000/health',
+    reason: '',
+  },
+};
+
+// Two lifecycle events, newest first, as the backend returns them (#3514).
+// The failed one matters most: it is what an operator comes to this panel to
+// reconstruct.
+const withHistory = {
+  ...deployedTunnelOpen,
+  history: [
+    {
+      ts: 1754800000,
+      action: 'deploy',
+      outcome: 'succeeded',
+      version: '3.0.0',
+      instance_id: 'i-0abc123',
+      detail: 'healthy over the access tunnel',
+    },
+    {
+      ts: 1754700000,
+      action: 'deploy',
+      outcome: 'failed',
+      version: '2.9.0',
+      instance_id: 'i-0abc123',
+      detail: 'stack installed but http://localhost:8000/health never returned 200 within 900s',
+    },
+  ],
 };
 
 function mockDeployStatus(payload: unknown) {
@@ -184,16 +229,13 @@ describe('CloudInfrastructurePage', () => {
     expect(body).toEqual({ region: 'eu-west-2' });
   });
 
-  it('applies with every provisioning input and reports the created instance', async () => {
+  it('sends every filled-in provisioning input to the plan', async () => {
     mockStatus(notProvisioned);
     let body: Record<string, unknown> | null = null;
     server.use(
-      http.post('/api/v1/cloud/infra/apply', async ({ request }) => {
+      http.post('/api/v1/cloud/infra/plan', async ({ request }) => {
         body = (await request.json()) as Record<string, unknown>;
-        return HttpResponse.json({
-          action: 'apply',
-          outputs: { instance_id: 'i-0abc123', region: 'us-east-1' },
-        });
+        return HttpResponse.json({ action: 'plan', settings: { aws_region: 'us-east-1' } });
       })
     );
 
@@ -208,13 +250,11 @@ describe('CloudInfrastructurePage', () => {
       '~/.ssh/id_ed25519.pub'
     );
     await userEvent.type(screen.getByLabelText(/SSH source IP\/CIDR/), '198.51.100.7/32');
-    await userEvent.click(screen.getByRole('button', { name: 'Apply' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Plan' }));
 
-    await waitFor(() =>
-      expect(screen.getByText(/Instance i-0abc123 in us-east-1/)).toBeInTheDocument()
-    );
+    await waitFor(() => expect(screen.getByText(/Nothing was created/)).toBeInTheDocument());
     // Every field the operator filled in has to reach the backend -- a dropped
-    // owner_ip would silently provision against the auto-detected IP instead.
+    // owner_ip would silently plan against the auto-detected IP instead.
     expect(body).toEqual({
       region: 'us-east-1',
       instance_type: 'm5.large',
@@ -222,24 +262,6 @@ describe('CloudInfrastructurePage', () => {
       ssh_public_key: '~/.ssh/id_ed25519.pub',
       owner_ip: '198.51.100.7/32',
     });
-  });
-
-  it('does not fabricate instance details when apply returns no outputs', async () => {
-    mockStatus(notProvisioned);
-    server.use(
-      http.post('/api/v1/cloud/infra/apply', () => HttpResponse.json({ action: 'apply' }))
-    );
-
-    render(<CloudInfrastructurePage />);
-    await screen.findByText('not provisioned');
-
-    await userEvent.click(screen.getByRole('button', { name: 'Apply' }));
-
-    await waitFor(() =>
-      expect(
-        screen.getByText(/Instance unknown in the configured region/)
-      ).toBeInTheDocument()
-    );
   });
 
   it('surfaces a failed initial status load instead of rendering an empty substrate', async () => {
@@ -296,67 +318,22 @@ describe('CloudInfrastructurePage', () => {
     spy.mockRestore();
   });
 
-  it('surfaces a failed apply instead of claiming success', async () => {
-    mockStatus(notProvisioned);
-    server.use(
-      http.post('/api/v1/cloud/infra/apply', () =>
-        HttpResponse.json(
-          { error: { message: 'No SSH key configured' } },
-          { status: 409 }
-        )
-      )
-    );
-
-    render(<CloudInfrastructurePage />);
-    await screen.findByText('not provisioned');
-
-    await userEvent.click(screen.getByRole('button', { name: 'Apply' }));
-
-    await waitFor(() =>
-      expect(screen.getByText(/No SSH key configured/)).toBeInTheDocument()
-    );
-  });
-
-  it('keeps destroy disabled until DESTROY is typed', async () => {
+  it('offers no control that creates or destroys cloud resources', async () => {
+    // The owner's 2026-08-09 decision on #3514: the cloud page is
+    // status-plus-CLI-pointers, so a stray click can never provision or
+    // delete billed infrastructure. Asserted as an absence because that is
+    // exactly what the decision buys.
     mockStatus(provisioned);
+    mockDeployStatus(deployedTunnelOpen);
     render(<CloudInfrastructurePage />);
     await screen.findByText('provisioned');
 
-    const destroy = screen.getByRole('button', { name: 'Destroy' });
-    expect(destroy).toBeDisabled();
-
-    await userEvent.type(screen.getByLabelText('Type DESTROY to confirm'), 'destroy');
-    expect(destroy).toBeDisabled();
-
-    await userEvent.clear(screen.getByLabelText('Type DESTROY to confirm'));
-    await userEvent.type(screen.getByLabelText('Type DESTROY to confirm'), 'DESTROY');
-    expect(destroy).toBeEnabled();
-  });
-
-  it('confirms the teardown explicitly to the backend', async () => {
-    mockStatus(provisioned);
-    let body: Record<string, unknown> | null = null;
-    server.use(
-      // Teardown goes through the deploy endpoint so the access tunnel is
-      // closed before the instance it points at disappears (#3513).
-      http.post('/api/v1/cloud/deploy/destroy', async ({ request }) => {
-        body = (await request.json()) as Record<string, unknown>;
-        return HttpResponse.json({ action: 'destroy', tunnel: {}, settings: {} });
-      })
-    );
-
-    render(<CloudInfrastructurePage />);
-    await screen.findByText('provisioned');
-
-    await userEvent.type(screen.getByLabelText('Type DESTROY to confirm'), 'DESTROY');
-    await userEvent.click(screen.getByRole('button', { name: 'Destroy' }));
-
-    await waitFor(() =>
-      expect(
-        screen.getByText('Deployment destroyed: tunnel closed, substrate torn down.')
-      ).toBeInTheDocument()
-    );
-    expect(body).toEqual({ confirm: true });
+    expect(screen.queryByRole('button', { name: 'Apply' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Deploy' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Destroy' })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Type DESTROY to confirm')).not.toBeInTheDocument();
+    // Plan survives: it reports what would change and creates nothing.
+    expect(screen.getByRole('button', { name: 'Plan' })).toBeInTheDocument();
   });
 });
 
@@ -446,10 +423,10 @@ describe('CloudInfrastructurePage — Terraform state', () => {
 
     expect(await screen.findByText('S3 + DynamoDB lock')).toBeInTheDocument();
     // The state panel's Backend, Locking, Bucket, Object key, Lock table and
-    // Region are all blank, as are the deployment panel's version, instance
-    // and profiles on an undeployed substrate -- nine placeholders, and not a
-    // single literal "undefined" anywhere on the page.
-    expect(screen.getAllByText('—')).toHaveLength(9);
+    // Region are all blank, as are the deployment panel's version, instance,
+    // region and profiles on an undeployed substrate -- ten placeholders, and
+    // not a single literal "undefined" anywhere on the page.
+    expect(screen.getAllByText('—')).toHaveLength(10);
     expect(screen.queryByText(/undefined/)).not.toBeInTheDocument();
   });
 
@@ -703,11 +680,11 @@ describe('CloudInfrastructurePage — Terraform state', () => {
   });
 });
 
-// The deployment panel (P6-11, #3513). It is the dashboard half of `nyxgpt
-// cloud deploy`/`tunnel`, and the point of these tests is that the whole
-// one-command story -- deploy, see the localhost URLs, open and close the
-// access tunnel -- is reachable without a terminal (CLAUDE.md's Definition of
-// Done), and that nothing ever advertises an instance-facing URL.
+// The deployment panel (P6-11, #3513; reconciled to status-only by P6-15,
+// #3514). The point of these tests is that an operator can see the whole
+// deployment -- what release is on the box, whether it answers, what has
+// happened to it, and how to change it -- without the page being able to
+// change it, and that nothing ever advertises an instance-facing URL.
 describe('CloudInfrastructurePage deployment panel', () => {
   it('reports nothing deployed on a fresh substrate', async () => {
     mockStatus(notProvisioned);
@@ -718,33 +695,118 @@ describe('CloudInfrastructurePage deployment panel', () => {
     expect(screen.getByRole('button', { name: 'Open tunnel' })).toBeDisabled();
   });
 
-  it('deploys with the provisioning inputs plus the release and profile choice', async () => {
+  it('asks the backend for a real health answer rather than assuming one', async () => {
     mockStatus(provisioned);
-    let body: Record<string, unknown> | null = null;
+    let requestedUrl = '';
     server.use(
-      http.post('/api/v1/cloud/deploy', async ({ request }) => {
-        body = (await request.json()) as Record<string, unknown>;
-        return HttpResponse.json({
-          action: 'deploy',
-          plan: { version: '3.0.0' },
-          target: { instance_id: 'i-0abc123' },
-          urls: deployedTunnelClosed.urls,
-        });
+      http.get('/api/v1/cloud/deploy', ({ request }) => {
+        requestedUrl = request.url;
+        return HttpResponse.json(deployedTunnelOpen);
       })
     );
 
     render(<CloudInfrastructurePage />);
+    await screen.findByText('deployed');
+
+    expect(requestedUrl).toContain('probe_health=true');
+    expect(screen.getByText(/healthy \(HTTP 200 over the tunnel\)/)).toBeInTheDocument();
+  });
+
+  it('distinguishes "not checked" from "unhealthy"', async () => {
+    // A closed tunnel means unreachable from here, which says nothing about
+    // whether the stack is running on the instance. Collapsing the two would
+    // send an operator chasing an outage that isn't happening.
+    mockStatus(provisioned);
+    mockDeployStatus({
+      ...deployedTunnelClosed,
+      health: {
+        checked: false,
+        healthy: false,
+        status: 0,
+        reason: 'no access tunnel is open, so the instance is not reachable from here',
+      },
+    });
+    render(<CloudInfrastructurePage />);
+    await screen.findByText('deployed');
+
+    expect(screen.getByText(/not checked — no access tunnel is open/)).toBeInTheDocument();
+    expect(screen.queryByText(/unhealthy/)).not.toBeInTheDocument();
+  });
+
+  it('reports an unhealthy stack with the status it actually got', async () => {
+    mockStatus(provisioned);
+    mockDeployStatus({
+      ...deployedTunnelOpen,
+      health: {
+        checked: true,
+        healthy: false,
+        status: 503,
+        url: 'http://localhost:8000/health',
+        reason: 'the tunneled API did not answer with 200',
+      },
+    });
+    render(<CloudInfrastructurePage />);
+    await screen.findByText('deployed');
+
+    expect(screen.getByText(/unhealthy — HTTP 503 over the tunnel/)).toBeInTheDocument();
+  });
+
+  it('re-reads the deployment state on an explicit refresh', async () => {
+    mockStatus(provisioned);
+    let calls = 0;
+    server.use(
+      http.get('/api/v1/cloud/deploy', () => {
+        calls += 1;
+        return HttpResponse.json(deployedTunnelOpen);
+      })
+    );
+
+    render(<CloudInfrastructurePage />);
+    await screen.findByText('deployed');
+    expect(calls).toBe(1);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Refresh status' }));
+
+    await waitFor(() => expect(calls).toBe(2));
+  });
+
+  it('shows every deploy and teardown, newest first, including the failures', async () => {
+    mockStatus(provisioned);
+    mockDeployStatus(withHistory);
+    render(<CloudInfrastructurePage />);
+    await screen.findByText('deployed');
+
+    expect(screen.getByText(/deploy 3.0.0 · succeeded/)).toBeInTheDocument();
+    expect(screen.getByText(/deploy 2.9.0 · failed/)).toBeInTheDocument();
+    expect(screen.getByText(/never returned 200 within 900s/)).toBeInTheDocument();
+
+    const outcomes = screen.getAllByText(/^(succeeded|failed)$/).map((el) => el.textContent);
+    expect(outcomes).toEqual(['succeeded', 'failed']);
+  });
+
+  it('says so plainly when nothing has ever been deployed from this machine', async () => {
+    mockStatus(notProvisioned);
+    render(<CloudInfrastructurePage />);
     await screen.findByText('not deployed');
 
-    await userEvent.type(screen.getByLabelText('AWS region'), 'us-east-1');
-    await userEvent.type(screen.getByLabelText('Release to install'), '3.0.0');
-    await userEvent.click(screen.getByLabelText(/Core app only/));
-    await userEvent.click(screen.getByRole('button', { name: 'Deploy' }));
+    expect(
+      screen.getByText('Nothing has been deployed or torn down from this machine yet.')
+    ).toBeInTheDocument();
+  });
 
-    await waitFor(() =>
-      expect(screen.getByText(/nyxGPT 3.0.0 deployed and healthy/)).toBeInTheDocument()
-    );
-    expect(body).toEqual({ region: 'us-east-1', version: '3.0.0', skip_observability: true });
+  it('points at the wrapped CLI commands that own the lifecycle', async () => {
+    // Rendered from the backend's own LIFECYCLE_COMMANDS, so the page cannot
+    // drift from what the CLI accepts -- and every one is a `nyxgpt` command,
+    // never a raw docker/terraform one (CLAUDE.md).
+    mockStatus(provisioned);
+    mockDeployStatus(deployedTunnelOpen);
+    render(<CloudInfrastructurePage />);
+    await screen.findByText('deployed');
+
+    expect(screen.getAllByText('nyxgpt cloud deploy').length).toBeGreaterThan(0);
+    expect(screen.getByText('nyxgpt cloud destroy --yes')).toBeInTheDocument();
+    expect(screen.getByText('nyxgpt cloud deploy --status')).toBeInTheDocument();
+    expect(screen.getByText('nyxgpt cloud allow-ip')).toBeInTheDocument();
   });
 
   it('shows the installed release and the localhost-only URLs once deployed', async () => {
@@ -843,7 +905,7 @@ describe('CloudInfrastructurePage deployment panel', () => {
     const realFetch = globalThis.fetch;
     const spy = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
       const url = typeof input === 'string' ? input : String(input);
-      if (url === '/api/v1/cloud/deploy') return Promise.reject('deploy fetch exploded');
+      if (url.startsWith('/api/v1/cloud/deploy')) return Promise.reject('deploy fetch exploded');
       return realFetch(input, init);
     });
 
@@ -866,47 +928,18 @@ describe('CloudInfrastructurePage deployment panel', () => {
     spy.mockRestore();
   });
 
-  it('falls back to String(e) on a non-Error rejection from the deploy request', async () => {
-    mockStatus(provisioned);
-    render(<CloudInfrastructurePage />);
-    await screen.findByText('not deployed');
-
-    const spy = vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce('deploy exploded');
-    await userEvent.click(screen.getByRole('button', { name: 'Deploy' }));
-
-    await waitFor(() => expect(screen.getByText(/deploy exploded/)).toBeInTheDocument());
-    spy.mockRestore();
-  });
-
-  it('still reports a successful deploy when the backend omits the resolved plan', async () => {
-    mockStatus(provisioned);
-    server.use(http.post('/api/v1/cloud/deploy', () => HttpResponse.json({ action: 'deploy' })));
-
-    render(<CloudInfrastructurePage />);
-    await screen.findByText('not deployed');
-
-    await userEvent.click(screen.getByRole('button', { name: 'Deploy' }));
-
-    await waitFor(() =>
-      expect(screen.getByText(/deployed and healthy/)).toBeInTheDocument()
-    );
-  });
-
-  it('surfaces a failed deploy without disturbing the other panels', async () => {
+  it('keeps a deployment failure out of the substrate panel', async () => {
     mockStatus(provisioned);
     server.use(
-      http.post('/api/v1/cloud/deploy', () =>
-        HttpResponse.json({ detail: 'instance never accepted SSH' }, { status: 409 })
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({ detail: 'deploy state unreadable' }, { status: 409 })
       )
     );
 
     render(<CloudInfrastructurePage />);
-    await screen.findByText('not deployed');
-
-    await userEvent.click(screen.getByRole('button', { name: 'Deploy' }));
 
     await waitFor(() =>
-      expect(screen.getByText(/instance never accepted SSH/)).toBeInTheDocument()
+      expect(screen.getByText(/deploy state unreadable/)).toBeInTheDocument()
     );
     // The substrate panel is a separate subsystem and must be untouched.
     expect(screen.getByText('provisioned')).toBeInTheDocument();
