@@ -124,6 +124,7 @@ from nyxgpt.config import (
     get_self_heal_check_interval_seconds,
     get_self_heal_default_enabled,
     get_self_heal_max_consecutive_restarts,
+    get_session_backend,
     get_sessions_dir,
     get_tracing_config,
     load_config,
@@ -306,6 +307,29 @@ async def lifespan(_app: FastAPI):
         )
     except Exception as e:
         log.error("Failed to prepare sessions directory %s: %s", sessions_dir, e)
+
+    # One-time (idempotent) import of legacy JSON session files into the DB
+    # when the Cassandra session backend is active (#3590). Sessions already
+    # present in the DB are never overwritten; the legacy files stay on disk
+    # as a read-only archive (see docs/session-storage.md).
+    try:
+        if get_session_backend(cfg) == "cassandra":
+            from nyxgpt import session_db
+
+            report = session_db.migrate_sessions_dir(sessions_dir)
+            log.info(
+                "Session backend: cassandra (migrated %d legacy file session(s), "
+                "%d already in DB, %d invalid, %d errors)",
+                len(report["migrated"]),
+                len(report["skipped_existing"]),
+                len(report["skipped_invalid"]),
+                len(report["errors"]),
+                extra={"component": "startup"},
+            )
+    except Exception as e:
+        # Never prevent API startup; session endpoints will surface store
+        # errors per-request if Cassandra stays unreachable.
+        log.error("Legacy session migration failed: %s", e, extra={"component": "startup"})
 
     # Pre-touch known RAG metric label combinations so legitimate zero
     # states render as 0 on the SPOG panels instead of "No data"
@@ -2481,7 +2505,7 @@ def sessions_show(
     sd = _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None))
     sf = sessions.session_file_for(name, sd or sessions.default_sessions_dir())
     mf = sessions.meta_file_for(sf)
-    if not sf.exists():
+    if not sessions.session_file_exists(sf):
         raise HTTPException(status_code=404, detail="No such session")
 
     # Validate pagination parameters (Medium Issue 4)
@@ -2547,7 +2571,7 @@ def sessions_init(req: dict[str, Any] = Body(...)) -> dict[str, Any]:
         log.error("Failed to get session file path: %s", e)
         raise HTTPException(status_code=500, detail="Internal server error") from e
 
-    if sf.exists():
+    if sessions.session_file_exists(sf):
         return {"ok": True, "name": name, "existed": True}
 
     system = req.get("system")
@@ -2695,7 +2719,7 @@ def sessions_rename(
 
     # Check if current session exists
     sf = sessions.session_file_for(name, _sessions_dir)
-    if not sf.exists():
+    if not sessions.session_file_exists(sf):
         raise HTTPException(status_code=404, detail=f"Session '{name}' not found")
 
     if req.sync_filename:
@@ -2754,7 +2778,7 @@ def sessions_sync_filename(name: str, sessions_dir: str | None = None) -> dict[s
 
     # Check if session exists
     sf = sessions.session_file_for(name, _sessions_dir)
-    if not sf.exists():
+    if not sessions.session_file_exists(sf):
         raise HTTPException(status_code=404, detail=f"Session '{name}' not found")
 
     # Force filename sync
@@ -2817,7 +2841,7 @@ def get_message_rag_chunks(
 
     # Load session messages
     sf = sessions.session_file_for(name, _sessions_dir)
-    if not sf.exists():
+    if not sessions.session_file_exists(sf):
         raise HTTPException(status_code=404, detail=f"Session '{name}' not found")
 
     msgs = sessions.load_session_messages(sf)
@@ -2905,11 +2929,11 @@ def export_session_citations(
 
     # Load session messages
     sf = sessions.session_file_for(name, _sessions_dir)
-    if not sf.exists():
+    if not sessions.session_file_exists(sf):
         raise HTTPException(status_code=404, detail=f"Session '{name}' not found")
 
     # Use file locking to prevent race conditions during read
-    with sessions.file_lock(sf, timeout=5.0):
+    with sessions.session_lock(sf, timeout=5.0):
         msgs = sessions.load_session_messages(sf)
 
     # Extract all citations from assistant messages
@@ -2992,7 +3016,7 @@ def regenerate_response(
 
     # Load session to validate message index
     sf = sessions.session_file_for(name, _sessions_dir)
-    if not sf.exists():
+    if not sessions.session_file_exists(sf):
         raise HTTPException(status_code=404, detail="No such session")
 
     msgs = sessions.load_session_messages(sf)
@@ -4674,7 +4698,7 @@ def get_session_metadata(name: str) -> dict[str, Any]:
     mf = sessions.meta_file_for(sf)
 
     # Create session files if they don't exist
-    if not sf.exists():
+    if not sessions.session_file_exists(sf):
         sessions.save_session_messages(sf, [])
 
     meta = sessions.load_session_meta(mf)
@@ -4698,7 +4722,7 @@ def enable_session_rag(name: str) -> dict[str, Any]:
     mf = sessions.meta_file_for(sf)
 
     # Create session files if they don't exist
-    if not sf.exists():
+    if not sessions.session_file_exists(sf):
         sessions.save_session_messages(sf, [])
 
     meta = sessions.load_session_meta(mf)
@@ -4723,7 +4747,7 @@ def disable_session_rag(name: str) -> dict[str, Any]:
     mf = sessions.meta_file_for(sf)
 
     # Create session files if they don't exist
-    if not sf.exists():
+    if not sessions.session_file_exists(sf):
         sessions.save_session_messages(sf, [])
 
     meta = sessions.load_session_meta(mf)
@@ -4766,7 +4790,7 @@ def attach_document_to_session(name: str, req: AttachDocumentRequest) -> Session
     sf = sessions.session_file_for(name, sessions_dir)
     mf = sessions.meta_file_for(sf)
 
-    if not sf.exists():
+    if not sessions.session_file_exists(sf):
         sessions.save_session_messages(sf, [])
 
     meta = sessions.load_session_meta(mf)
