@@ -171,8 +171,10 @@ Sprint still has open Backlog issues:
 ```
 
 Once the sprint has no open Backlog issues left, the merge script posts a
-"sprint complete" note instead of a kick, and autopilot stops -- starting
-work outside the sprint still needs a manual `READY_FOR_NEXT_ISSUE`.
+park note instead of a kick, and autopilot stops dispatching -- starting
+work outside the sprint still needs a manual `READY_FOR_NEXT_ISSUE`. What
+that note *says* depends on the sprint's whole population, not just its
+Backlog: see "Park semantics" below.
 
 **Kill switch:** set the `SPRINT_AUTOPILOT` repo var to `false`/unset it, or
 post `PAUSE_SPRINT` as a comment on the release tracking issue (resume with
@@ -193,15 +195,16 @@ a real work boundary, not bookkeeping:
   Backlog issues in a future sprint, or with no Sprint set, are skipped with
   a log line and are never dispatched automatically. There is no
   release-wide fall-through.
-- When the active sprint's pool drains, the autopilot **parks with a loud
-  note** on the release tracking issue: the sprint is complete, that
-  **acceptance testing is the next step**, what remains in the release per
-  future sprint (and how much has no sprint at all), and that work resumes
-  when the next sprint's window opens or a human posts a kick. The boundary
-  is an **acceptance gate** (owner context 2026-08-10: sprint completes ->
-  owner runs acceptance testing -> next sprint begins), so nothing resumes
-  the loop by itself -- a new window opening does not dispatch work, because
-  only a kick starts selection and agents post kicks only after a merge.
+- When the active sprint's Backlog drains, the autopilot **parks with a
+  loud note** on the release tracking issue: which park state it is in (see
+  "Park semantics"), what remains in the release per future sprint (and how
+  much has no sprint at all), any parked issues waiting on gates, and that
+  work resumes when the next sprint's window opens or a human posts a kick.
+  The boundary is an **acceptance gate** (owner context 2026-08-10: sprint
+  completes -> owner runs acceptance testing -> next sprint begins), so
+  nothing resumes the loop by itself -- a new window opening does not
+  dispatch work, because only a kick starts selection and agents post kicks
+  only after a merge.
 - **Informational notes are inert by construction.**
   `notify_scrum_ready.yml` dispatches on a bare substring test for the kick
   token with the agents on its actor allowlist, so a park or `PAUSE_SPRINT`
@@ -242,6 +245,77 @@ and worked on 2026-08-09/10 with no planning event.
 "owner decision" must cite a traceable source -- an issue number or a link
 to the owner's comment. An uncited decision claim is agent rationale, not
 policy, and may be corrected as such.
+
+## Park semantics and auto-resume (#3709)
+
+Two rules, both enforced on every autopilot kick
+(`sprint_autopilot_kick`, `scripts/agents/lib/gh_project.sh`).
+
+### 1. The park decision counts the sprint's whole open population
+
+`sprint_population_snapshot` reads every issue in the active sprint --
+open and closed -- bucketed by Status, and `sprint_calc.py
+sprint-park-state` classifies it. Only `continue` dispatches; every other
+state parks with a note that says exactly which state it is:
+
+| State | Meaning | What the note says |
+| --- | --- | --- |
+| `continue` | open Backlog work remains | kick, `READY_FOR_NEXT_ISSUE` |
+| `work_in_flight` | Backlog empty, issues still open (In Progress / In Review) | "parked, work still in flight" -- **not** completion |
+| `awaiting_acceptance` | every item closed, not all accepted | "agentic work complete; awaiting owner acceptance", lists the items |
+| `sprint_complete` | every item accepted and in **For Release** | "sprint complete" |
+| `empty` | the sprint has no items | "parked", nothing to work or accept |
+
+**Owner definition (2026-08-10, #3709):** *"The sprint isn't done until all
+agentic work is complete AND in For Release status."* So `sprint_complete`
+is the only state that may call the sprint done, and the next sprint's work
+does not begin before it. Promotion to **For Release** stays owner-only (the
+acceptance sweep / `promote_accepted_features` tooling) -- **agents never
+self-promote items to For Release.**
+
+Before #3709 the decision counted only open *Backlog* issues, so a sprint
+with live In Progress / In Review work announced "sprint complete --
+acceptance next" while work was demonstrably unfinished.
+
+If the snapshot cannot be read (GraphQL/parse failure), the decision falls
+back to the pre-#3709 Backlog-only count and the note claims no completion
+state -- a data hiccup must not park a sprint that still has work, nor
+declare one done.
+
+### 2. Parked issues resume themselves when their blockers merge
+
+An In Progress issue is **parked** when it has (a) no open PR closing it and
+(b) no in-flight developer workflow run. That happens when it refused
+earlier behind a `Blocked by: #N` gate, or when its runs died in an
+incident. On every kick, before any park, the loop scans the active
+sprint's In Progress issues and, for **one** parked issue whose declared
+blockers are all closed, posts the same `RETRY_IMPLEMENTATION` trigger a
+human would. One resume per kick cycle: each merge opens one gate, and the
+next merge kicks again, so a sequenced chain walks itself.
+
+- **Nothing is dropped silently.** Parked issues whose blockers are still
+  open appear in a **"waiting on gates"** line in the loud report (park note
+  *and* continue kick), along with anything out of budget or in flight.
+- **Bounded.** Auto-resumes are counted from `<!-- nyxgpt-autoresume: ... -->`
+  markers in the issue's own comment thread and capped at the #3689 retry
+  cap. Only a comment from the repo owner resets the count. An issue that
+  spends its budget is reported as gate-stuck instead of retried forever.
+- **Observable state only.** Open PRs come from the plain pulls list (never
+  `gh api search/issues` -- the endpoint whose failure caused the 2026-08-09
+  multi-issue incident, #3694); live runs are matched on the runs API's
+  `display_title`, which carries the issue title for issue-triggered runs.
+  Nothing is cached, so there is no counter to drift.
+- **The `Blocked by:` parser is interim.** It reads issue-body references
+  only (`scripts/agents/lib/parked_resume.py`) and is unioned with the
+  native `blocked_by` dependencies. It is superseded by the native
+  Relationships work (W1/W2 in
+  `product_management/AGENTIC_SDLC_DESIGN.md`, deferred to nyxAgent); when
+  that lands, delete the parser and read dependencies natively.
+
+**Why this exists:** the Sprint 8 cloud chain (#3509 -> #3510 -> #3513 ->
+#3514/#3515/#3516) was hand-walked by a human posting
+`RETRY_IMPLEMENTATION` at each gate opening. Owner requirement: **no
+babysitting -- the loop drives its own chain.**
 
 ## Sprint reporting and reorganization (#3480)
 

@@ -31,16 +31,20 @@ The autopilot's continue/park decision is **sprint-gated**: the automatic
 loop is bound by the current sprint, and sprint membership is a real work
 boundary rather than bookkeeping.
 
-- The decision input is the count of open Backlog issues in the **active
-  sprint iteration** -- the iteration whose date window contains today
-  (`iteration_active_title` + `count_sprint_backlog_open`).
+- The **dispatch** input is the count of open Backlog issues in the
+  **active sprint iteration** -- the iteration whose date window contains
+  today (`iteration_active_title` + `count_sprint_backlog_open`).
+- The **park** input is the active sprint's whole issue population, open
+  and closed, bucketed by Status (`sprint_population_snapshot` +
+  `sprint_calc.py sprint-park-state`, #3709) -- see "Park states" below.
 - `--sprint-scoped` selection is hard: future-sprint and no-sprint Backlog
   issues are skipped with a log line and never dispatched automatically.
   There is **no release-wide fall-through**.
 - When the active sprint's Backlog drains, the autopilot posts a loud park
   note on the release tracking issue (rendered by
-  `sprint_calc.build_sprint_park_note`): the sprint is complete, what
-  remains in the release per future sprint, and how work resumes.
+  `sprint_calc.build_sprint_park_note`): which park state it is in, what
+  remains in the release per future sprint, which parked issues are waiting
+  on gates, and how work resumes.
 - **Human override:** a `READY_FOR_NEXT_ISSUE` posted by the owner runs
   unscoped, so the owner can deliberately pull work forward across the
   boundary. Agent-posted kicks cannot.
@@ -50,6 +54,52 @@ boundary rather than bookkeeping.
   the selector exits 1 rather than falling back to release-wide selection,
   so a kick that lands after the window closes cannot dispatch
   future-sprint work.
+
+### Park states (#3709)
+
+An empty Backlog is not completion. `sprint_calc.py sprint-park-state`
+classifies the sprint's whole population into one of five states, and the
+park note says which one:
+
+| State | Meaning |
+| --- | --- |
+| `continue` | open Backlog work remains -- kick, don't park |
+| `work_in_flight` | Backlog empty, but issues are still open (In Progress / In Review) |
+| `awaiting_acceptance` | every item closed, not all accepted: "agentic work complete; awaiting owner acceptance" |
+| `sprint_complete` | every item accepted and in **For Release** |
+| `empty` | the sprint has no items |
+
+**Owner definition (2026-08-10, #3709):** *"The sprint isn't done until all
+agentic work is complete AND in For Release status."* Only `sprint_complete`
+may declare the sprint done. Promotion to For Release is owner-only --
+agents never self-promote. If the population snapshot can't be read, the
+decision degrades to the pre-#3709 Backlog-only count and the note claims no
+completion state.
+
+### Dependency-aware auto-resume (#3709)
+
+On every kick, before any park, the loop scans the active sprint's In
+Progress issues for **parked** ones -- no open PR closing the issue and no
+in-flight developer run -- and auto-posts `RETRY_IMPLEMENTATION` on **one**
+whose declared blockers have all closed. A sequenced chain therefore walks
+itself: each merge opens the next gate and kicks the loop again.
+
+- Parked issues whose blockers are still open are reported in a **"waiting
+  on gates"** line in the park note and the continue kick -- never dropped.
+- Auto-resumes are bounded by the #3689 retry cap, counted from
+  `<!-- nyxgpt-autoresume: ... -->` markers in the issue's own thread and
+  reset only by an owner comment. Out-of-budget issues are reported as
+  gate-stuck instead of retried.
+- Liveness signals are observable state only: open PRs from the plain pulls
+  list (never `gh api search/issues`, #3694) and live runs matched on the
+  runs API's `display_title`.
+- The prose `Blocked by: #N` parser (`scripts/agents/lib/parked_resume.py`)
+  is **interim** -- issue-body references only, unioned with native
+  `blocked_by` deps, and superseded by the native Relationships work
+  (W1/W2, `product_management/AGENTIC_SDLC_DESIGN.md`).
+
+This does not resume the loop across a sprint boundary or consume the
+owner's acceptance window: it only restarts work the sprint already owns.
 
 ### Informational notes must never look like a kick
 

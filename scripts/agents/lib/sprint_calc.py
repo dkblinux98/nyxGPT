@@ -15,7 +15,11 @@ import math
 import re
 import sys
 from datetime import date
+from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from parked_resume import build_gate_lines  # noqa: E402
 
 _PRIORITY_RANK = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 
@@ -51,7 +55,7 @@ def reorg_target_count(remaining: float, velocity: float, days_left: float | Non
     if days_left is None:
         return 0
     if velocity <= 0:
-        return remaining if remaining > 0 else 0
+        return int(remaining) if remaining > 0 else 0
     needed = remaining / velocity
     excess_days = needed - days_left
     if excess_days <= 0:
@@ -99,6 +103,73 @@ def autopilot_decision(remaining_open_backlog: int) -> str:
     return "continue" if remaining_open_backlog > 0 else "complete"
 
 
+# Park states (#3709). The pre-#3709 decision counted only open *Backlog*
+# issues, so a sprint with an empty Backlog but issues still In Progress /
+# In Review announced "sprint complete" while work was demonstrably
+# unfinished. The owner's definition (2026-08-10, #3709): "the sprint isn't
+# done until all agentic work is complete AND in For Release status" -- so
+# completion is two distinct states, and only the second is sprint
+# completion.
+PARK_CONTINUE = "continue"  # eligible Backlog work left -- kick, don't park
+PARK_WORK_IN_FLIGHT = "work_in_flight"  # Backlog empty, but issues still open
+PARK_AWAITING_ACCEPTANCE = "awaiting_acceptance"  # all closed, not all accepted
+PARK_SPRINT_COMPLETE = "sprint_complete"  # every item accepted to For Release
+PARK_EMPTY = "empty"  # no items in the sprint at all
+
+
+def sprint_park_state(payload: dict[str, Any]) -> dict[str, Any]:
+    """Classifies the active sprint's population into a park state.
+
+    Payload keys:
+      open, closed        {status name or "": [issue numbers]} for the
+                          active sprint's OPEN and CLOSED issues
+      status_backlog      the Backlog status value (default "Backlog")
+      status_for_release  the For Release status value (default "For Release")
+
+    Returns the state plus the numbers behind it, so the caller can report
+    what it is parked in front of instead of just announcing a verdict.
+    """
+    open_by_status: dict[str, list[int]] = {
+        str(k): [int(n) for n in v] for k, v in (payload.get("open") or {}).items()
+    }
+    closed_by_status: dict[str, list[int]] = {
+        str(k): [int(n) for n in v] for k, v in (payload.get("closed") or {}).items()
+    }
+    status_backlog = payload.get("status_backlog") or "Backlog"
+    status_for_release = payload.get("status_for_release") or "For Release"
+
+    backlog_open = len(open_by_status.get(status_backlog, []))
+    open_total = sum(len(v) for v in open_by_status.values())
+    accepted = sorted(closed_by_status.get(status_for_release, []))
+    awaiting_acceptance = sorted(
+        n for s, nums in closed_by_status.items() if s != status_for_release for n in nums
+    )
+    closed_total = len(accepted) + len(awaiting_acceptance)
+
+    if autopilot_decision(backlog_open) == "continue":
+        state = PARK_CONTINUE
+    elif open_total > 0:
+        # The #3709 defect: this used to be indistinguishable from "sprint
+        # complete". In Progress / In Review work is real, unfinished work.
+        state = PARK_WORK_IN_FLIGHT
+    elif closed_total == 0:
+        state = PARK_EMPTY
+    elif awaiting_acceptance:
+        state = PARK_AWAITING_ACCEPTANCE
+    else:
+        state = PARK_SPRINT_COMPLETE
+
+    return {
+        "state": state,
+        "backlog_open": backlog_open,
+        "open_total": open_total,
+        "open_by_status": {s: len(v) for s, v in open_by_status.items() if v},
+        "open_issues_by_status": {s: sorted(v) for s, v in open_by_status.items() if v},
+        "awaiting_acceptance": awaiting_acceptance,
+        "accepted": accepted,
+    }
+
+
 def _sprint_sort_key(title: str) -> tuple[int, int | str, str]:
     """Orders sprint buckets for the park note: numbered sprints in numeric
     order ("Sprint 9" before "Sprint 10", which a plain string sort gets
@@ -130,6 +201,94 @@ AUTOPILOT_INFO_MARKER = "<!-- nyxgpt-autopilot-informational -->"
 KICK_SIGNAL_REF = "the manual kick signal documented in `docs/sprint-autopilot.md`"
 
 
+def _issue_list(numbers: list[int]) -> str:
+    return ", ".join(f"#{n}" for n in numbers)
+
+
+def _park_headline(event_phrase: str, sprint_title: str, park_state: dict[str, Any]) -> list[str]:
+    """The state-specific opening of the park note (#3709).
+
+    Owner definition (2026-08-10, #3709): "The sprint isn't done until all
+    agentic work is complete AND in For Release status." Only
+    PARK_SPRINT_COMPLETE may call the sprint done; the agentic-work-complete
+    state says exactly that and names what is awaiting the owner's pass.
+    Promotion to For Release stays owner-only -- agents never self-promote.
+    """
+    state = park_state.get("state") or ""
+    lines: list[str] = []
+
+    if state == PARK_WORK_IN_FLIGHT:
+        by_status = park_state.get("open_by_status") or {}
+        breakdown = ", ".join(f"{s or 'no status'}: {c}" for s, c in sorted(by_status.items()))
+        lines.append(
+            f"⏸️ **Sprint Autopilot — parked, work still in flight**: {event_phrase}. "
+            f'**"{sprint_title}" has no open Backlog issues**, but '
+            f"{park_state.get('open_total', 0)} issue(s) are still open ({breakdown}) — "
+            f"so this is **not** sprint completion."
+        )
+        lines.append("")
+        lines.append(
+            "Autopilot has nothing eligible to dispatch (dispatch draws from Backlog), "
+            "so it parks here. The in-flight issues finish through their own runs; each "
+            "merge kicks this loop again, and the parked-issue scan below resumes any "
+            "issue whose dependency gates have since closed."
+        )
+        return lines
+
+    if state == PARK_AWAITING_ACCEPTANCE:
+        awaiting = [int(n) for n in (park_state.get("awaiting_acceptance") or [])]
+        lines.append(
+            f"🏁 **Sprint Autopilot — agentic work complete; awaiting owner acceptance**: "
+            f'{event_phrase}. Every issue in **"{sprint_title}"** is closed and no '
+            f'in-flight PRs or runs remain. **This is not "sprint complete."**'
+        )
+        lines.append("")
+        lines.append(
+            f"**Awaiting the owner's acceptance pass ({len(awaiting)}):** "
+            f"{_issue_list(awaiting)}"
+        )
+        lines.append("")
+        lines.append(
+            "The sprint is done only once every item has been accepted and moved to "
+            "**For Release** (owner definition, 2026-08-10, #3709). That promotion is "
+            "owner-only (the acceptance sweep / `promote_accepted_features` tooling) — "
+            "agents never self-promote items to For Release, and the next sprint's work "
+            "does not begin before this point."
+        )
+        return lines
+
+    if state == PARK_SPRINT_COMPLETE:
+        accepted = [int(n) for n in (park_state.get("accepted") or [])]
+        lines.append(
+            f"✅ **Sprint Autopilot — sprint complete**: {event_phrase}. Every item in "
+            f'**"{sprint_title}"** has been accepted by the owner and is in **For '
+            f"Release** ({len(accepted)} item(s): {_issue_list(accepted)})."
+        )
+        lines.append("")
+        lines.append(
+            "Autopilot stays parked at the sprint boundary: crossing into the next "
+            "sprint needs a planning event or a human kick."
+        )
+        return lines
+
+    if state == PARK_EMPTY:
+        lines.append(
+            f'⏸️ **Sprint Autopilot — parked**: {event_phrase}. **"{sprint_title}"** has '
+            f"no items at all, so there is nothing to work and nothing to accept."
+        )
+        return lines
+
+    # No park_state supplied (or an unrecognized one): fall back to a
+    # verdict-free parked note rather than claiming a completion state the
+    # data does not support -- the exact #3709 defect.
+    lines.append(
+        f"⏸️ **Sprint Autopilot — parked**: {event_phrase}. "
+        f'**"{sprint_title}" has no open Backlog issues left**, so autopilot is parked '
+        f"at the sprint boundary."
+    )
+    return lines
+
+
 def build_sprint_park_note(payload: dict[str, Any]) -> str:
     """Renders the loud park note posted on the release tracking issue when
     the active sprint's Backlog pool drains (#3706).
@@ -143,10 +302,18 @@ def build_sprint_park_note(payload: dict[str, Any]) -> str:
       by_sprint        {sprint title or "": open Backlog count} for the rest
                        of the release, active sprint included (it is zero by
                        definition when this note is rendered)
+      park_state       the sprint_park_state() result (#3709). Omitted or
+                       empty renders the pre-#3709 wording, which is only
+                       correct for the no-active-sprint conservative stop.
+      resume_scan      the parked-issue scan (#3709) as classify_candidates()
+                       returns it, plus "selected" -- what was auto-resumed
+                       this cycle, and what is still waiting on gates
     """
     event_phrase = payload.get("event_phrase", "Work completed")
     sprint_title = payload.get("sprint_title") or ""
     release_version = payload.get("release_version") or ""
+    park_state: dict[str, Any] = payload.get("park_state") or {}
+    resume_scan: dict[str, Any] = payload.get("resume_scan") or {}
     by_sprint: dict[str, int] = {
         str(k): int(v) for k, v in (payload.get("by_sprint") or {}).items() if int(v) > 0
     }
@@ -165,19 +332,7 @@ def build_sprint_park_note(payload: dict[str, Any]) -> str:
 
     lines: list[str] = []
     if sprint_title:
-        lines.append(
-            f"🏁 **Sprint Autopilot — sprint complete**: {event_phrase}. "
-            f'**"{sprint_title}" has no open Backlog issues left**, so autopilot is '
-            f"parked at the sprint boundary."
-        )
-        lines.append("")
-        lines.append(
-            "**Next step: acceptance testing of this sprint.** The sprint boundary is "
-            "an acceptance gate (owner context, 2026-08-10) — merged work sits in "
-            "**Acceptance Testing** for the owner's pass before the next sprint starts. "
-            "Autopilot does not resume on its own, so the acceptance window is not "
-            "consumed by the next sprint's work."
-        )
+        lines.extend(_park_headline(event_phrase, sprint_title, park_state))
     else:
         lines.append(
             f"🏁 **Sprint Autopilot — parked**: {event_phrase}. No sprint iteration is "
@@ -185,6 +340,13 @@ def build_sprint_park_note(payload: dict[str, Any]) -> str:
             f"no sprint pool to draw from and autopilot is parked."
         )
     lines.append("")
+
+    gate_lines = build_gate_lines(resume_scan, resume_scan.get("selected"))
+    if gate_lines:
+        lines.append("**Parked-issue scan (auto-resume, #3709):**")
+        lines.append("")
+        lines.extend(gate_lines)
+        lines.append("")
 
     if total_elsewhere:
         lines.append(f"**Still open in {release_label}, {scope_label}:**")
@@ -213,6 +375,13 @@ def build_sprint_park_note(payload: dict[str, Any]) -> str:
     lines.append("")
     lines.append("**Work resumes when either:**")
     lines.append("")
+    if park_state.get("state") == PARK_WORK_IN_FLIGHT:
+        # This state is not a boundary stop: the sprint's own open issues
+        # drive the loop from here, so say that first (#3709).
+        lines.append(
+            "- the in-flight issues above finish — every merge kicks this loop again, "
+            "and the parked-issue scan resumes anything whose gates have closed, or"
+        )
     lines.append(
         "- the next sprint's date window opens (iteration boundaries are evaluated in "
         "`SPRINT_TIMEZONE`, default `America/New_York`) and a kick is posted, or"
@@ -376,7 +545,8 @@ def build_sprint_report(payload: dict[str, Any]) -> dict[str, Any]:
 def _main(argv: list[str]) -> int:
     if not argv:
         print(
-            "usage: sprint_calc.py <report|autopilot-decision|park-note|huddle-routing>",
+            "usage: sprint_calc.py "
+            "<report|autopilot-decision|sprint-park-state|park-note|huddle-routing>",
             file=sys.stderr,
         )
         return 2
@@ -389,6 +559,10 @@ def _main(argv: list[str]) -> int:
     if cmd == "autopilot-decision":
         remaining = int(argv[1])
         print(autopilot_decision(remaining))
+        return 0
+    if cmd == "sprint-park-state":
+        payload = json.loads(sys.stdin.read())
+        print(json.dumps(sprint_park_state(payload)))
         return 0
     if cmd == "park-note":
         payload = json.loads(sys.stdin.read())

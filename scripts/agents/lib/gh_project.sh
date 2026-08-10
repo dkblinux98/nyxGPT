@@ -625,11 +625,63 @@ BACKLOG_PAGE_QUERY='query($project:ID!, $after:String){
   }
 }'
 
+# Prints the active sprint's ENTIRE issue population as
+# {"open":{status:[numbers]}, "closed":{status:[numbers]}} -- the input to
+# the autopilot's park decision (#3709).
+#
+# count_sprint_backlog_open() below answers only "is there eligible Backlog
+# work?", which is the right question for *dispatch* but the wrong one for
+# *park*: a sprint with an empty Backlog and three issues still In Progress
+# is not complete. This pages the same project query once and hands the full
+# population to sprint_calc.py sprint-park-state.
+sprint_population_snapshot() {
+  local sprint_field="$1" sprint_title="$2"
+  require_cmd jq
+  require_cmd python3
+
+  local project_id cursor="" tmp acc has_next next_cursor
+  project_id="$(get_project_id)"
+  tmp="$(mktemp)"
+  acc="$(mktemp)"
+
+  local max_pages="${MAX_PAGES:-200}"
+  local page
+  for ((page = 1; page <= max_pages; page++)); do
+    if [[ -n "$cursor" ]]; then
+      graphql "$BACKLOG_PAGE_QUERY" -F project="$project_id" -F after="$cursor" >"$tmp"
+    else
+      graphql "$BACKLOG_PAGE_QUERY" -F project="$project_id" >"$tmp"
+    fi
+
+    STATUS_FIELD="$STATUS_FIELD" STATUS_BACKLOG="$STATUS_BACKLOG" \
+      SPRINT_FIELD="$sprint_field" SPRINT_SCOPED=1 ACTIVE_SPRINT_TITLE="$sprint_title" \
+      RELEASE_ISSUE="${RELEASE_ISSUE_NUMBER:-}" \
+      python3 "${_LIB_DIR}/summarize_backlog_page.py" "$tmp" >>"$acc"
+
+    has_next="$(jq -r '.data.node.items.pageInfo.hasNextPage' "$tmp")"
+    next_cursor="$(jq -r '.data.node.items.pageInfo.endCursor // empty' "$tmp")"
+    [[ "$has_next" == "true" && -n "$next_cursor" ]] || break
+    cursor="$next_cursor"
+  done
+
+  # Pages carry disjoint items, so merging is a key-wise list concat.
+  jq -s -c '
+    reduce .[] as $p ({open:{}, closed:{}};
+        .open = (reduce ($p.sprint_open_issues_by_status // {} | to_entries[]) as $e
+                   (.open; .[$e.key] = ((.[$e.key] // []) + $e.value)))
+      | .closed = (reduce ($p.sprint_closed_issues_by_status // {} | to_entries[]) as $e
+                   (.closed; .[$e.key] = ((.[$e.key] // []) + $e.value))))' "$acc"
+
+  rm -f "$tmp" "$acc"
+}
+
 # Counts OPEN issues with Status=Backlog whose Sprint iteration field equals
-# `sprint_title`. This is the sprint-autopilot stop condition (owner policy
-# 2026-08-10, #3706 -- the auto loop is bound by the current sprint):
-# review_accept_and_merge.sh posts READY_FOR_NEXT_ISSUE while this is > 0,
-# and posts a "sprint complete" park note (no kick) once it hits 0.
+# `sprint_title`. This is the sprint-autopilot DISPATCH condition (owner
+# policy 2026-08-10, #3706 -- the auto loop is bound by the current sprint):
+# review_accept_and_merge.sh posts READY_FOR_NEXT_ISSUE while this is > 0.
+# Once it hits 0 the loop stops dispatching, but whether that is "complete"
+# is decided by sprint_population_snapshot + sprint_calc.py (#3709), not by
+# this count alone.
 count_sprint_backlog_open() {
   local sprint_field="$1" sprint_title="$2"
   require_cmd jq
@@ -765,6 +817,173 @@ sprint_autopilot_paused() {
   [[ "$last_state" == "PAUSE_SPRINT" ]]
 }
 
+# -------------------------
+# Dependency-aware auto-resume of parked In Progress issues (#3709)
+# -------------------------
+# An In Progress issue can end up PARKED: no open PR closing it and no
+# in-flight developer run -- e.g. it refused earlier because a prose
+# "Blocked by: #N" gate was open at the time, or its runs died in an
+# incident. Before #3709 nothing picked those back up when their blockers
+# merged, so a human posted RETRY_IMPLEMENTATION at every gate opening (the
+# Sprint 8 cloud chain #3509 -> #3510 -> #3513 -> #3514/#3515/#3516 was
+# hand-walked that way). Owner requirement: no babysitting -- the loop
+# drives its own chain.
+#
+# Every input below is observable state (open PRs, workflow runs, issue
+# bodies, comment threads) re-derived on each kick -- no hidden counters
+# (house principle). The decision math lives in lib/parked_resume.py.
+DEV_WORKFLOW_FILE="${DEV_WORKFLOW_FILE:-developer_auto_implement.yml}"
+# How far back the run scan looks. The question is only "is a run for this
+# issue live right now?", and live runs are always among the most recent.
+AUTOPILOT_RUN_SCAN_LIMIT="${AUTOPILOT_RUN_SCAN_LIMIT:-50}"
+
+# Numbers of OPEN PRs that close `issue` -- via the plain pulls list, NOT
+# `gh api search/issues` (the endpoint whose deterministic failure caused
+# the 2026-08-09 multi-issue incident, #3694: the loop's own liveness checks
+# must not depend on it). Matches either a closing keyword in the PR body or
+# the developer_create_branch.sh branch convention `<kind>/<issue>-<slug>`.
+_issue_open_pr_numbers() {
+  local issue="$1"
+  require_cmd jq
+  gh api "repos/${REPO_OWNER}/${REPO_NAME}/pulls?state=open&per_page=100" --paginate \
+    --jq '.[] | {number: .number, body: (.body // ""), head: (.head.ref // "")}' 2>/dev/null \
+    | jq -r --arg n "$issue" '
+        select((.body | test("(?i)\\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\\s+#" + $n + "\\b"))
+               or (.head | test("^[A-Za-z]+/" + $n + "-")))
+        | .number' 2>/dev/null
+}
+
+# Ids of developer-agent workflow runs for `issue_title` that have not
+# completed. Issue-triggered runs carry the issue title in `display_title`
+# (verified against the live API, 2026-08-10) -- there is no issue-number
+# field on the runs API, so the title is the attribution key.
+_issue_active_dev_run_ids() {
+  local issue_title="$1"
+  require_cmd jq
+  [[ -n "$issue_title" ]] || return 0
+  gh api "repos/${REPO_OWNER}/${REPO_NAME}/actions/workflows/${DEV_WORKFLOW_FILE}/runs?per_page=${AUTOPILOT_RUN_SCAN_LIMIT}" \
+    --jq '.workflow_runs[] | {id: .id, status: .status, display_title: (.display_title // "")}' 2>/dev/null \
+    | jq -r --arg t "$issue_title" 'select(.display_title == $t and .status != "completed") | .id' 2>/dev/null
+}
+
+# Blocker issue numbers of `issue` that are still OPEN, one per line.
+#
+# Two sources, unioned: the prose `Blocked by: #N` references in the issue
+# body (INTERIM -- see lib/parked_resume.py; superseded by the native
+# Relationships work, W1/W2 in product_management/AGENTIC_SDLC_DESIGN.md,
+# deferred to nyxAgent) and the native blocked_by dependencies the rest of
+# this library already uses. The union is deliberate: resuming an issue that
+# still has a real open gate is the one failure mode worth paying an extra
+# API call to avoid.
+_issue_open_gate_refs() {
+  local issue="$1" body="$2"
+  require_cmd python3
+  local -a refs=()
+  local r state
+  while IFS= read -r r; do
+    [[ -n "$r" ]] && refs+=("$r")
+  done < <(printf '%s' "$body" | python3 "${_LIB_DIR}/parked_resume.py" parse-blocked-by 2>/dev/null)
+  while IFS= read -r r; do
+    [[ -n "$r" ]] && refs+=("$r")
+  done < <(blocked_by_issues "$issue")
+
+  local -A seen=()
+  for r in ${refs[@]+"${refs[@]}"}; do
+    [[ -n "${seen[$r]:-}" ]] && continue
+    seen["$r"]=1
+    state="$(_issue_open_state "$r")"
+    [[ "$state" == "OPEN" ]] && echo "$r"
+  done
+  return 0
+}
+
+# The auto-resume budget for `issue`, as parked_resume.py renders it:
+# {"count":N,"exhausted":bool,"next_resume_number":N,"max_resumes":N}.
+# Re-derived from the live comment thread every time -- the markers in the
+# thread ARE the counter.
+_autopilot_resume_budget() {
+  local issue="$1"
+  require_cmd jq
+  require_cmd python3
+  gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}/comments" --paginate \
+    --jq '[.[] | {body: (.body // ""), author_association: (.author_association // "")}]' 2>/dev/null \
+    | jq -s -c 'add // []' \
+    | python3 "${_LIB_DIR}/parked_resume.py" budget 2>/dev/null \
+    || echo '{"count":0,"exhausted":false,"next_resume_number":1,"max_resumes":3}'
+}
+
+# Scans the active sprint's In Progress issues (from a
+# sprint_population_snapshot JSON) and echoes the parked_resume.py `scan`
+# result: {resumable, waiting, exhausted, active, selected}. Read-only --
+# posting the resume is _autopilot_post_resume's job.
+autopilot_scan_parked() {
+  local snapshot="$1"
+  require_cmd jq
+  require_cmd python3
+
+  local in_progress_status="${STATUS_IN_PROGRESS:-In Progress}"
+  local -a candidates=()
+  local n issue_json title body parked open_blockers exhausted
+
+  while IFS= read -r n; do
+    [[ -n "$n" ]] || continue
+    issue_json="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${n}" \
+      --jq '{title: (.title // ""), body: (.body // "")}' 2>/dev/null || echo '{}')"
+    title="$(jq -r '.title // ""' <<<"$issue_json" 2>/dev/null || echo "")"
+    body="$(jq -r '.body // ""' <<<"$issue_json" 2>/dev/null || echo "")"
+
+    parked=true
+    if [[ -n "$(_issue_open_pr_numbers "$n")" ]]; then
+      parked=false
+    elif [[ -n "$(_issue_active_dev_run_ids "$title")" ]]; then
+      parked=false
+    fi
+
+    open_blockers="[]"
+    exhausted=false
+    if [[ "$parked" == "true" ]]; then
+      open_blockers="$(_issue_open_gate_refs "$n" "$body" \
+        | jq -R -n -c '[inputs | select(length > 0) | tonumber]' 2>/dev/null || echo '[]')"
+      exhausted="$(_autopilot_resume_budget "$n" | jq -r '.exhausted' 2>/dev/null || echo false)"
+      [[ "$exhausted" == "true" || "$exhausted" == "false" ]] || exhausted=false
+    fi
+
+    candidates+=("$(jq -n -c --argjson i "$n" --argjson p "$parked" \
+      --argjson b "$open_blockers" --argjson e "$exhausted" \
+      '{issue: $i, parked: $p, open_blockers: $b, budget_exhausted: $e}')")
+  done < <(jq -r --arg s "$in_progress_status" '.open[$s][]? // empty' <<<"$snapshot" 2>/dev/null)
+
+  if [[ "${#candidates[@]}" -eq 0 ]]; then
+    echo '[]' | python3 "${_LIB_DIR}/parked_resume.py" scan
+    return 0
+  fi
+  printf '%s\n' "${candidates[@]}" | jq -s -c . \
+    | python3 "${_LIB_DIR}/parked_resume.py" scan
+}
+
+# Posts the auto-resume trigger on a parked issue: the same
+# RETRY_IMPLEMENTATION mechanics a human would post by hand, plus the budget
+# marker. developer_auto_implement.yml accepts this comment from the review
+# agent and the developer agent (its issue_comment gate), which are the two
+# identities sprint_autopilot_kick runs under.
+_autopilot_post_resume() {
+  local issue="$1"
+  require_cmd jq
+  require_cmd python3
+  local budget n max marker
+  budget="$(_autopilot_resume_budget "$issue")"
+  n="$(jq -r '.next_resume_number // 1' <<<"$budget" 2>/dev/null || echo 1)"
+  max="$(jq -r '.max_resumes // 3' <<<"$budget" 2>/dev/null || echo 3)"
+  marker="$(python3 "${_LIB_DIR}/parked_resume.py" marker "$issue" "$n")"
+
+  issue_comment "$issue" "🔁 **Sprint Autopilot — auto-resume (${n}/${max})**: this issue is In Progress but parked (no open PR, no running developer job), and every dependency it declares is now closed. Restarting implementation automatically (#3709) -- no human trigger needed.
+
+If this run stops again without progress, the auto-resume budget (${max}) will be spent and the issue is reported as gate-stuck on the release tracking issue instead of being retried forever. A comment from the repo owner resets the budget (#3689).
+
+RETRY_IMPLEMENTATION
+${marker}"
+}
+
 # Sprint-autopilot continuation kick (#3480), shared by the post-merge path
 # (review_accept_and_merge.sh) and the 3-cycle review escalation path
 # (review_agent_auto_review.yml): both outcomes free the reviewer for the
@@ -844,17 +1063,73 @@ ${AUTOPILOT_INFO_MARKER}" \
       _warn "Autopilot: no active sprint iteration on field '${sprint_field}' -- parking (conservative stop)."
       _autopilot_park_note "$event_phrase" "" "$release_version"
     else
-      remaining="$(count_sprint_backlog_open "$sprint_field" "$active_sprint" 2>/dev/null || echo "")"
-      decision="$(python3 "${_LIB_DIR}/sprint_calc.py" autopilot-decision "${remaining:-0}")"
+      # #3709, in two parts:
+      #
+      # 1. Auto-resume first. Every kick rescans the sprint's In Progress
+      #    issues for PARKED ones (no open PR, no live developer run) whose
+      #    declared dependencies have all closed, and restarts one of them.
+      #    This runs before the park decision AND before the continue kick:
+      #    a chain gate that just opened is work the loop already owns.
+      # 2. Then decide on the WHOLE open population, not just Backlog. A
+      #    sprint with an empty Backlog but live In Progress / In Review
+      #    work is not complete, and even an all-closed sprint is only
+      #    "complete" once every item is accepted to For Release (owner
+      #    definition, 2026-08-10, #3709).
+      local snapshot park_state state scan selected gate_lines
+      snapshot="$(sprint_population_snapshot "$sprint_field" "$active_sprint" 2>/dev/null || echo "")"
+      jq -e 'has("open")' <<<"${snapshot:-null}" >/dev/null 2>&1 || snapshot=""
+
+      scan='{}'
+      selected=""
+      gate_lines=""
+      if [[ -n "$snapshot" ]]; then
+        scan="$(autopilot_scan_parked "$snapshot" 2>/dev/null || echo '{}')"
+        selected="$(jq -r '.selected // empty' <<<"$scan" 2>/dev/null || echo "")"
+        if [[ -n "$selected" ]]; then
+          if _autopilot_post_resume "$selected"; then
+            echo "[review] Autopilot: auto-resumed parked issue #${selected} (all gates closed)." >&2
+          else
+            _warn "Autopilot: failed to post auto-resume trigger on #${selected}."
+            selected=""
+          fi
+        fi
+        gate_lines="$(python3 "${_LIB_DIR}/parked_resume.py" gate-lines <<<"$scan" 2>/dev/null || echo "")"
+      fi
+
+      park_state=""
+      if [[ -n "$snapshot" ]]; then
+        park_state="$(jq -n -c --argjson s "$snapshot" --arg b "$STATUS_BACKLOG" \
+          --arg f "${STATUS_FOR_RELEASE:-For Release}" \
+          '$s + {status_backlog: $b, status_for_release: $f}' \
+          | python3 "${_LIB_DIR}/sprint_calc.py" sprint-park-state 2>/dev/null || echo "")"
+      fi
+
+      if [[ -n "$park_state" ]]; then
+        state="$(jq -r '.state // empty' <<<"$park_state" 2>/dev/null || echo "")"
+        remaining="$(jq -r '.backlog_open // 0' <<<"$park_state" 2>/dev/null || echo 0)"
+        decision="$([[ "$state" == "continue" ]] && echo continue || echo complete)"
+      else
+        # Snapshot unavailable (GraphQL/parse failure): fall back to the
+        # pre-#3709 Backlog-only count so a data hiccup degrades to the old
+        # behavior rather than parking a sprint that still has work.
+        _warn "Autopilot: sprint population snapshot unavailable -- falling back to the Backlog-only count."
+        remaining="$(count_sprint_backlog_open "$sprint_field" "$active_sprint" 2>/dev/null || echo "")"
+        decision="$(python3 "${_LIB_DIR}/sprint_calc.py" autopilot-decision "${remaining:-0}")"
+      fi
+
       if [[ "$decision" == "continue" ]]; then
-        issue_comment "$RELEASE_ISSUE_NUMBER" "🔁 **Sprint Autopilot**: ${event_phrase}. Sprint \"${active_sprint}\" still has ${remaining} open Backlog issue(s) -- ${continue_phrase}.
+        issue_comment "$RELEASE_ISSUE_NUMBER" "🔁 **Sprint Autopilot**: ${event_phrase}. Sprint \"${active_sprint}\" still has ${remaining} open Backlog issue(s) -- ${continue_phrase}.${gate_lines:+
+
+**Parked-issue scan (auto-resume, #3709):**
+
+${gate_lines}}
 
 READY_FOR_NEXT_ISSUE" \
           && echo "[review] Autopilot: posted READY_FOR_NEXT_ISSUE (sprint ${active_sprint} has ${remaining} remaining)." >&2 \
           || _warn "Autopilot: failed to post READY_FOR_NEXT_ISSUE kick."
       else
-        echo "[review] Autopilot: sprint ${active_sprint} drained -- parked, no kick." >&2
-        _autopilot_park_note "$event_phrase" "$active_sprint" "$release_version"
+        echo "[review] Autopilot: sprint ${active_sprint} has no dispatchable Backlog work (park state: ${state:-unknown}) -- parked, no kick." >&2
+        _autopilot_park_note "$event_phrase" "$active_sprint" "$release_version" "$park_state" "$scan"
       fi
     fi
   fi
@@ -868,13 +1143,19 @@ READY_FOR_NEXT_ISSUE" \
 # to a note without one rather than skipping the note entirely.
 _autopilot_park_note() {
   local event_phrase="$1" active_sprint="$2" release_version="$3"
+  local park_state="${4:-}" resume_scan="${5:-}"
   local by_sprint body
   by_sprint="$(release_backlog_by_sprint "$release_version" "${SPRINT_FIELD:-Sprint}" 2>/dev/null || echo "")"
   [[ -n "$by_sprint" ]] || by_sprint="{}"
+  # An empty/failed park state renders the neutral "parked" wording rather
+  # than any completion claim (#3709) -- never announce a state the data
+  # doesn't support.
+  jq -e . <<<"${park_state:-null}" >/dev/null 2>&1 || park_state="{}"
+  jq -e . <<<"${resume_scan:-null}" >/dev/null 2>&1 || resume_scan="{}"
 
   body="$(jq -n --arg e "$event_phrase" --arg s "$active_sprint" --arg v "$release_version" \
-    --argjson b "$by_sprint" \
-    '{event_phrase:$e, sprint_title:$s, release_version:$v, by_sprint:$b}' \
+    --argjson b "$by_sprint" --argjson p "$park_state" --argjson r "$resume_scan" \
+    '{event_phrase:$e, sprint_title:$s, release_version:$v, by_sprint:$b, park_state:$p, resume_scan:$r}' \
     | python3 "${_LIB_DIR}/sprint_calc.py" park-note)"
 
   issue_comment "$RELEASE_ISSUE_NUMBER" "$body" \
