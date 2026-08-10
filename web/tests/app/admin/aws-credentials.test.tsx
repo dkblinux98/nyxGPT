@@ -147,9 +147,11 @@ describe('AwsCredentialsSetupPage', () => {
       http.get('/api/v1/config/aws-credentials', () => HttpResponse.json(mockStatus())),
       http.post('/api/v1/config/aws-credentials', async ({ request }) => {
         const body = (await request.json()) as Record<string, unknown>;
-        expect(body).toEqual({ destination: 'ambient', profile: 'nyxgpt', region: '' });
+        expect(body).toEqual({ destination: 'ambient', profile: 'nyxgpt', region: 'us-east-1' });
         return HttpResponse.json(
-          mockStatus({ reference: { profile: 'nyxgpt', region: '', credentials_source: 'ambient' } })
+          mockStatus({
+            reference: { profile: 'nyxgpt', region: 'us-east-1', credentials_source: 'ambient' },
+          })
         );
       })
     );
@@ -226,5 +228,103 @@ describe('AwsCredentialsSetupPage', () => {
     render(<AwsCredentialsSetupPage />);
 
     expect(await screen.findByRole('alert')).toHaveTextContent('config backend unavailable');
+  });
+
+  it('renders a non-Error rejection as text', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (() =>
+      Promise.reject('network stack unavailable')) as unknown as typeof fetch;
+    try {
+      render(<AwsCredentialsSetupPage />);
+      expect(await screen.findByRole('alert')).toHaveTextContent('network stack unavailable');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('seeds the region with the CLI default when the reference is blank', async () => {
+    server.use(http.get('/api/v1/config/aws-credentials', () => HttpResponse.json(mockStatus())));
+    render(<AwsCredentialsSetupPage />);
+
+    await screen.findByText('AWS profile name');
+    expect(screen.getByLabelText('AWS region')).toHaveValue('us-east-1');
+    expect(screen.getByLabelText('AWS profile name')).toHaveValue('nyxgpt');
+  });
+
+  it('preselects the saved profile, region, and destination from the stored reference', async () => {
+    server.use(
+      http.get('/api/v1/config/aws-credentials', () =>
+        HttpResponse.json(
+          mockStatus({
+            reference: { profile: 'acme', region: 'eu-west-1', credentials_source: 'keychain' },
+            keychain_status: { set: true, masked_access_key_id: 'AKIA****WXYZ', available: true },
+          })
+        )
+      )
+    );
+    render(<AwsCredentialsSetupPage />);
+
+    await screen.findByText('AWS profile name');
+    expect(screen.getByLabelText('AWS profile name')).toHaveValue('acme');
+    expect(screen.getByLabelText('AWS region')).toHaveValue('eu-west-1');
+    expect(screen.getByRole('radio', { name: /OS keychain/ })).toBeChecked();
+    expect(screen.getByText('Set (AKIA****WXYZ)')).toBeInTheDocument();
+  });
+
+  it('reports when the OS keychain backend is unavailable', async () => {
+    server.use(
+      http.get('/api/v1/config/aws-credentials', () =>
+        HttpResponse.json(
+          mockStatus({
+            keychain_status: { set: false, masked_access_key_id: null, available: false },
+          })
+        )
+      )
+    );
+    render(<AwsCredentialsSetupPage />);
+
+    await screen.findByText('AWS profile name');
+    expect(screen.getByText('keyring not installed')).toBeInTheDocument();
+  });
+
+  it('shows an inline error when the secret store reference fails to save', async () => {
+    server.use(
+      http.get('/api/v1/config/aws-credentials', () => HttpResponse.json(mockStatus())),
+      http.post('/api/v1/config/aws-credentials/secret-store', () =>
+        HttpResponse.json({}, { status: 500 })
+      )
+    );
+    render(<AwsCredentialsSetupPage />);
+
+    await screen.findByText('Secret store provider');
+    await userEvent.click(screen.getByRole('button', { name: 'Save secret store reference' }));
+
+    expect(await screen.findByText('HTTP 500')).toBeInTheDocument();
+  });
+
+  it('renders secret store fields the server returns that the local drafts do not know about', async () => {
+    server.use(
+      http.get('/api/v1/config/aws-credentials', () => HttpResponse.json(mockStatus())),
+      http.post('/api/v1/config/aws-credentials/secret-store', () =>
+        HttpResponse.json({
+          secret_store: [
+            ...mockSecretStore,
+            {
+              key: 'vault_path',
+              label: 'Vault path',
+              description: 'Added by a newer backend.',
+              value: '/secret/nyxgpt',
+            },
+          ],
+        })
+      )
+    );
+    render(<AwsCredentialsSetupPage />);
+
+    await screen.findByText('Secret store provider');
+    await userEvent.click(screen.getByRole('button', { name: 'Save secret store reference' }));
+
+    await waitFor(() => expect(screen.getByLabelText('Vault path')).toBeInTheDocument());
+    expect(screen.getByLabelText('Vault path')).toHaveValue('/secret/nyxgpt');
   });
 });

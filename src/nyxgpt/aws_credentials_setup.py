@@ -338,7 +338,9 @@ def write_profile_credentials(
     Byte-for-byte equivalent to what ``aws configure --profile <profile>``
     would write -- boto3 and the `aws` CLI both read this file natively, so
     nyxGPT never needs its own credential-loading code path once this runs.
-    Every other profile already in the file is left untouched.
+    Every other profile already in the file keeps its keys and values. The
+    file is rewritten through ``ConfigParser``, so comments and blank-line
+    layout in it are not preserved -- only the profile/key data is.
     """
     if path is None:
         path = AWS_CREDENTIALS_FILE

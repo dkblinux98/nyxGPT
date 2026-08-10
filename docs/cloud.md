@@ -144,7 +144,9 @@ is the same flow's web surface: `GET /api/v1/config/aws-credentials` reports
 current status (masked, never cleartext), `POST /api/v1/config/aws-credentials`
 saves a key pair to the chosen destination, and
 `POST /api/v1/config/aws-credentials/secret-store` saves the `[secrets]`
-reference.
+reference. It seeds the same defaults the CLI offers (`nyxgpt` profile,
+`us-east-1` region, "AWS CLI profile file" destination) when nothing has been
+saved yet, so both surfaces produce identical results on a fresh install.
 
 ---
 

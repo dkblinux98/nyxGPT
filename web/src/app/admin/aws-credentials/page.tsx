@@ -41,6 +41,12 @@ type AwsCredentialsStatus = {
 
 type Destination = 'profile' | 'keychain' | 'ambient';
 
+type ErrorPayload = { error?: string; detail?: string };
+
+const DEFAULT_PROFILE = 'nyxgpt';
+const DEFAULT_REGION = 'us-east-1';
+const DEFAULT_DESTINATION: Destination = 'profile';
+
 const cardStyle: React.CSSProperties = {
   padding: '1rem 1.25rem',
   borderRadius: '0.5rem',
@@ -87,6 +93,16 @@ function fieldByKey(fields: FieldMeta[], key: string): FieldMeta | undefined {
   return fields.find((f) => f.key === key);
 }
 
+/** Pick the most specific message a failed config response offers. */
+function errorText(data: ErrorPayload, status: number): string {
+  return data.error || data.detail || `HTTP ${status}`;
+}
+
+/** Render a thrown value as a display string, whatever it turned out to be. */
+function messageOf(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
 export default function AwsCredentialsSetupPage() {
   const [status, setStatus] = useState<AwsCredentialsStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -94,13 +110,14 @@ export default function AwsCredentialsSetupPage() {
 
   const [profile, setProfile] = useState('');
   const [region, setRegion] = useState('');
-  const [destination, setDestination] = useState<Destination>('profile');
+  const [destination, setDestination] = useState<Destination>(DEFAULT_DESTINATION);
   const [accessKeyId, setAccessKeyId] = useState('');
   const [secretAccessKey, setSecretAccessKey] = useState('');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
 
+  const [secretStore, setSecretStore] = useState<SecretStoreEntry[]>([]);
   const [storeDrafts, setStoreDrafts] = useState<Record<string, string>>({});
   const [storeSaving, setStoreSaving] = useState(false);
   const [storeError, setStoreError] = useState<string | null>(null);
@@ -112,23 +129,17 @@ export default function AwsCredentialsSetupPage() {
       const res = await fetch('/api/v1/config/aws-credentials', { cache: 'no-store' });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || data.detail || `HTTP ${res.status}`);
+        throw new Error(errorText(data, res.status));
       }
       const s = data as AwsCredentialsStatus;
       setStatus(s);
-      setProfile((prev) => prev || s.reference.profile || 'nyxgpt');
-      setRegion((prev) => prev || s.reference.region || '');
-      if (s.reference.credentials_source) {
-        setDestination(s.reference.credentials_source as Destination);
-      }
-      setStoreDrafts((prev) => {
-        if (Object.keys(prev).length > 0) return prev;
-        const next: Record<string, string> = {};
-        for (const entry of s.secret_store) next[entry.key] = entry.value;
-        return next;
-      });
+      setProfile(s.reference.profile || DEFAULT_PROFILE);
+      setRegion(s.reference.region || DEFAULT_REGION);
+      setDestination((s.reference.credentials_source || DEFAULT_DESTINATION) as Destination);
+      setSecretStore(s.secret_store);
+      setStoreDrafts(Object.fromEntries(s.secret_store.map((entry) => [entry.key, entry.value])));
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(messageOf(e));
     } finally {
       setLoading(false);
     }
@@ -155,14 +166,14 @@ export default function AwsCredentialsSetupPage() {
       });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || data.detail || `HTTP ${res.status}`);
+        throw new Error(errorText(data, res.status));
       }
       setStatus(data as AwsCredentialsStatus);
       setAccessKeyId('');
       setSecretAccessKey('');
       setSaveMessage('Saved.');
     } catch (e: unknown) {
-      setSaveError(e instanceof Error ? e.message : String(e));
+      setSaveError(messageOf(e));
     } finally {
       setSaving(false);
     }
@@ -180,12 +191,12 @@ export default function AwsCredentialsSetupPage() {
       });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || data.detail || `HTTP ${res.status}`);
+        throw new Error(errorText(data, res.status));
       }
-      setStatus((prev) => (prev ? { ...prev, secret_store: data.secret_store } : prev));
+      setSecretStore(data.secret_store as SecretStoreEntry[]);
       setStoreMessage('Secret store reference saved.');
     } catch (e: unknown) {
-      setStoreError(e instanceof Error ? e.message : String(e));
+      setStoreError(messageOf(e));
     } finally {
       setStoreSaving(false);
     }
@@ -377,7 +388,7 @@ export default function AwsCredentialsSetupPage() {
             application secrets stay in SSM/Secrets Manager.
           </p>
 
-          {status.secret_store.map((entry) => (
+          {secretStore.map((entry) => (
             <div key={entry.key} style={{ margin: '0.75rem 0' }}>
               <label
                 htmlFor={`secret-store-${entry.key}`}
