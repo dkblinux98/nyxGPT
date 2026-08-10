@@ -443,10 +443,21 @@ def _run_terraform(
     return completed
 
 
-# `nyxgpt.cloud_state` drives Terraform's state subcommands (`state pull`,
-# `state push`, `force-unlock`) against this same synced configuration, and
-# must go through the same runner so failures carry Terraform's diagnostic.
-run_terraform = _run_terraform
+def run_terraform(
+    arguments: list[str],
+    *,
+    capture: bool = False,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Public entry point to `_run_terraform` for `nyxgpt.cloud_state`.
+
+    That module drives Terraform's state subcommands (`state pull`, `state
+    push`, `force-unlock`) against this same synced configuration and must go
+    through the same runner, so failures carry Terraform's own diagnostic. A
+    delegating function rather than an alias: an alias would bind at import
+    and quietly bypass anything that replaces `_run_terraform` later.
+    """
+    return _run_terraform(arguments, capture=capture, extra_env=extra_env)
 
 
 def _synced_config_fingerprint() -> str:
