@@ -1,0 +1,68 @@
+name: GH Query (read-only)
+
+# Owner/assistant escape hatch: run an arbitrary READ-ONLY GitHub API query
+# with the agent PAT, from Actions, where the session-side proxy pinning does
+# not apply. Kills the whole class of "session cannot see X" blockers
+# (project workflows, ProjectV2 state, code-scanning, milestones, ...)
+# instead of one bespoke dump workflow per anomaly (owner direction,
+# 2026-08-10: capabilities, not per-failure-mode scripts).
+#
+# Provide EITHER a GraphQL query (mutations are rejected) OR a REST path.
+# NOTE: this repo is public, so run logs are public — query nyxGPT
+# project/repo data only; never query anything private to the account.
+
+on:
+  workflow_dispatch:
+    inputs:
+      graphql:
+        description: 'GraphQL query (queries only; mutations rejected)'
+        required: false
+      rest_path:
+        description: 'REST path, e.g. repos/dkblinux98/nyxGPT/milestones?state=all'
+        required: false
+      jq_filter:
+        description: 'Optional jq filter applied to the response (default: .)'
+        required: false
+        default: '.'
+
+permissions: {}
+
+concurrency:
+  group: gh-query
+  cancel-in-progress: false
+
+jobs:
+  query:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run query
+        env:
+          GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+          Q_GRAPHQL: ${{ github.event.inputs.graphql }}
+          Q_REST: ${{ github.event.inputs.rest_path }}
+          Q_JQ: ${{ github.event.inputs.jq_filter }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$Q_GRAPHQL" && -z "$Q_REST" ]]; then
+            echo "Provide graphql or rest_path." >&2; exit 1
+          fi
+          if [[ -n "$Q_GRAPHQL" ]]; then
+            # Read-only guard: reject anything that could be a mutation.
+            if grep -qiE '(^|[^A-Za-z])mutation([^A-Za-z]|$)' <<<"$Q_GRAPHQL"; then
+              echo "Mutations are not allowed by this workflow." >&2; exit 1
+            fi
+            curl -sS -X POST https://api.github.com/graphql \
+              -H "Authorization: bearer $GH_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "$(jq -n --arg q "$Q_GRAPHQL" '{query:$q}')" > /tmp/resp.json
+            if jq -e '.errors' /tmp/resp.json >/dev/null; then
+              echo "GraphQL errors:"; jq '.errors' /tmp/resp.json; exit 1
+            fi
+          else
+            curl -sS -H "Authorization: bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/${Q_REST}" > /tmp/resp.json
+          fi
+          echo "=== RESULT ==="
+          jq -r "$Q_JQ" /tmp/resp.json
+          echo "=== END ==="
