@@ -1,3 +1,8 @@
+// Read-only by design. The owner's 2026-08-09 decision on #3514 makes the
+// cloud surface status-plus-CLI-pointers, so this proxy exposes GET and
+// nothing else: with no POST here, the browser has no path to a deploy at
+// all, rather than merely no button pointing at one. The backend's
+// `POST /api/v1/cloud/deploy` still exists for the CLI and other API clients.
 import { apiFetch } from "@/lib/apiProxy";
 import { logger } from "@/lib/logger";
 import { withRequestLog } from "@/lib/withRequestLog";
@@ -32,30 +37,5 @@ export const GET = withRequestLog(async function GET(request: Request) {
         headers: { "Content-Type": "application/json" },
       }
     );
-  }
-});
-
-export const POST = withRequestLog(async function POST(request: Request) {
-  try {
-    const body = await request.json().catch(() => ({}));
-    const res = await apiFetch(`/api/v1/cloud/deploy`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      cache: "no-store",
-    });
-
-    const data = await res.json();
-
-    return new Response(JSON.stringify(data), {
-      status: res.status,
-      headers: { "Content-Type": "application/json" },
-    });
-  } catch (error) {
-    logger.error("Failed to deploy the cloud stack:", error);
-    return new Response(JSON.stringify({ error: "Failed to deploy the cloud stack" }), {
-      status: 502,
-      headers: { "Content-Type": "application/json" },
-    });
   }
 });

@@ -135,13 +135,34 @@ of this flow touches a checkout:
 The instance therefore runs a *published* release, not your working tree. If
 you want a version other than your CLI's, name it with `--version`.
 
-### From the dashboard
+### From the dashboard: status, not controls (P6-15, #3514)
 
-The same operations are on the admin dashboard's **Cloud Infrastructure**
-page (`/admin/cloud-infrastructure`): a Deployment panel with Deploy, the
-tunnel open/close controls, the localhost URL list, and the teardown. Both
-surfaces call the same `nyxgpt.cloud_deploy` functions, so there is one
-deploy implementation regardless of who triggers it.
+The admin dashboard's **AWS Cloud Infrastructure** page
+(`/admin/cloud-infrastructure`) **reports the cloud deployment; it does not
+deploy or tear one down.** It shows the installed release, the instance and
+region, the enabled observability profiles, whether the access tunnel is
+open, a live health answer, the localhost URL list, and the deploy history —
+and it points at the wrapped commands below for anything that changes state:
+
+| To do this | Run |
+| --- | --- |
+| Deploy or redeploy the stack | `nyxgpt cloud deploy` |
+| Tear the whole deployment down | `nyxgpt cloud destroy --yes` |
+| Show the same state from a terminal | `nyxgpt cloud deploy --status` |
+| Re-allow SSH after your public IP changes | `nyxgpt cloud allow-ip` |
+
+This is the owner's decision of 2026-08-09 on #3514, extending the #3410
+status-only precedent for the local Infrastructure Status page to cloud:
+cloud lifecycle actions are rare, consequential and irreversible, so a
+deliberate CLI invocation is the safer surface than a dashboard button. The
+page's remaining interactive controls are deliberately limited to things that
+are none of those — **Plan**, which reports what an apply *would* change and
+creates nothing, and the **access tunnel**, a local SSH forward whose opening
+and closing changes nothing in AWS.
+
+The page and the CLI still call the same `nyxgpt.cloud_deploy` functions, and
+the lifecycle commands it displays come from the backend's own
+`LIFECYCLE_COMMANDS`, so the two can never drift apart.
 
 ### Where deploy state lives
 
@@ -149,10 +170,17 @@ deploy implementation regardless of who triggers it.
 | --- | --- |
 | `~/.nyxGPT/cloud/deploy.json` | What the last successful deploy installed: version, host, instance, region, enabled profiles |
 | `~/.nyxGPT/cloud/tunnel.json` | The backgrounded tunnel's pid and forwarded profiles, so `--stop`/`--status` (and the dashboard) find a tunnel another process started |
+| `~/.nyxGPT/cloud/history.jsonl` | One line per deploy and teardown — timestamp, action, outcome, version, instance, and what went wrong on a failure |
 
-Both are read-only inputs to `nyxgpt cloud deploy --status`, which answers
-without calling AWS or touching the instance — safe to poll, and it still
-answers when your AWS credentials have expired.
+All three are read-only inputs to `nyxgpt cloud deploy --status`, which
+answers without calling AWS or touching the instance — safe to poll, and it
+still answers when your AWS credentials have expired.
+
+The history is appended by `deploy` and `destroy` themselves rather than by
+whichever surface invoked them, so a deploy run from a terminal shows up on
+the dashboard exactly like any other. A deploy that installed the stack but
+never went healthy is recorded as `failed` before the error is raised —
+that is precisely the event the history exists to preserve.
 
 ### Troubleshooting
 

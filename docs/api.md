@@ -56,7 +56,7 @@ Quick reference of all 81 available endpoints:
 | `/api/v1/cloud/state/versions` | GET | Stored versions of the remote state object, newest first |
 | `/api/v1/cloud/state/restore` | POST | Roll state back to a version (requires `version_id` + `{"confirm": true}`) |
 | `/api/v1/cloud/state/unlock` | POST | Release a lock left by a killed apply (requires `lock_id`) |
-| `/api/v1/cloud/deploy` | GET | Cloud deployment status: installed version, instance, tunnel, localhost URLs (no AWS call) |
+| `/api/v1/cloud/deploy` | GET | Cloud deployment status: installed version, instance, tunnel, health, deploy history, localhost URLs (no AWS call unless `?probe_health=true`) |
 | `/api/v1/cloud/deploy` | POST | Provision AWS and deploy the full stack onto it (idempotent) |
 | `/api/v1/cloud/deploy/destroy` | POST | Close the tunnel and tear the deployment down (requires `{"confirm": true}`) |
 | `/api/v1/cloud/deploy/tunnel` | POST | Open or close (`{"action": "stop"}`) the SSH access tunnel |
@@ -1505,9 +1505,15 @@ log (`cloud_deploy.deploy`/`.destroy`/`.tunnel`).
 
 ### `GET /api/v1/cloud/deploy`
 
-Report what is deployed and whether the access tunnel is open. Reads
-recorded state only — no AWS call and no connection to the instance — so it
-is cheap to poll.
+Report what is deployed, whether the access tunnel is open, and what has
+happened to this deployment. Reads recorded state only — no AWS call and no
+connection to the instance — so it is cheap to poll.
+
+**Query parameters**
+
+| Name | Default | Meaning |
+| --- | --- | --- |
+| `probe_health` | `false` | Also make one short request to the tunneled API health endpoint. Opt-in so the polled default stays free of network calls; skipped with a reason when no tunnel is open, since a probe would only time out. |
 
 ```json
 {
@@ -1518,14 +1524,57 @@ is cheap to poll.
   "region": "us-east-1",
   "profiles": ["monitoring", "logging", "tracing", "errors"],
   "tunnel": { "running": true, "pid": 4242, "host": "198.51.100.200" },
+  "health": {
+    "checked": true,
+    "healthy": true,
+    "status": 200,
+    "url": "http://localhost:8000/health",
+    "reason": ""
+  },
+  "history": [
+    {
+      "ts": 1754800000.0,
+      "action": "deploy",
+      "outcome": "succeeded",
+      "version": "3.0.0",
+      "host": "198.51.100.200",
+      "instance_id": "i-0abc123",
+      "region": "us-east-1",
+      "profiles": ["monitoring"],
+      "detail": "healthy over the access tunnel"
+    }
+  ],
   "urls": {
     "api": "http://localhost:8000",
     "web": "http://localhost:3000",
     "grafana": "http://localhost:3001"
   },
-  "access_command": "nyxgpt cloud tunnel"
+  "access_command": "nyxgpt cloud tunnel",
+  "commands": {
+    "deploy": "nyxgpt cloud deploy",
+    "destroy": "nyxgpt cloud destroy --yes",
+    "tunnel": "nyxgpt cloud tunnel",
+    "status": "nyxgpt cloud deploy --status",
+    "allow_ip": "nyxgpt cloud allow-ip"
+  }
 }
 ```
+
+`health.checked` is `false` both when no probe was requested and when there
+was no tunnel to probe through; `reason` says which. That is deliberately not
+the same as `healthy: false`, which means the stack was reached and did not
+answer `200`.
+
+`history` is the last 20 deploys and teardowns, newest first, appended by
+`nyxgpt.cloud_deploy` itself — so a deploy run from the CLI appears here too.
+A deploy that installed the stack but never went healthy is recorded with
+`"outcome": "failed"`.
+
+`commands` is the set of wrapped `nyxgpt` commands that own each lifecycle
+action. The admin dashboard renders these rather than hard-coding its own
+copy: per the owner's 2026-08-09 decision on #3514, the cloud page is
+status-plus-CLI-pointers and has no deploy or teardown controls of its own
+(see [cloud.md](cloud.md#from-the-dashboard-status-not-controls-p6-15-3514)).
 
 Every URL is a `localhost` one and resolves only while the tunnel is open —
 there is no instance-facing URL, by design.
