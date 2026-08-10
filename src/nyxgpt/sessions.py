@@ -8,6 +8,7 @@ searching, merging, exporting, and batch-updating sessions.
 
 from __future__ import annotations
 
+import contextlib
 import html
 import json
 import logging
@@ -17,11 +18,12 @@ import sys
 import tempfile
 import time
 import uuid
-from contextlib import contextmanager, nullcontext
+from collections.abc import Callable
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, ContextManager, NotRequired, TypedDict, cast
+from typing import Any, NotRequired, TypedDict, cast
 
 from nyxgpt.config import (
     get_default_model,
@@ -398,7 +400,7 @@ def session_exists(name: str, sessions_dir: Path | None = None) -> bool:
     return session_file_exists(session_file_for(name, sessions_dir))
 
 
-def session_lock(file_path: Path, timeout: float = 5.0) -> ContextManager[int]:
+def session_lock(file_path: Path, timeout: float = 5.0) -> AbstractContextManager[int]:
     """Advisory lock for a session file under the file backend.
 
     Under the DB backend this is a no-op: Cassandra row writes are atomic per
@@ -448,7 +450,7 @@ def load_session_messages(session_file: Path) -> list[dict[str, str]]:
         Returns an empty list if the file is missing, unreadable, or invalid.
     """
     if _use_db_backend():
-        return _db_store().load_messages(_db_name_for(session_file))
+        return cast(list[dict[str, str]], _db_store().load_messages(_db_name_for(session_file)))
     # Inline sink-side barrier (CodeQL py/path-injection): CodeQL does not
     # credit caller-side sanitization (session_file_for/_resolve_sessions_dir)
     # across the function boundary, so every function containing filesystem
@@ -1882,12 +1884,16 @@ def search_messages(
         for row in rows:
             session_name = str(row["name"])
             meta = row.get("meta") or {}
+
+            def _title_from_row(m: dict[str, Any] = meta) -> Any:
+                return m.get("title")
+
             try:
                 messages = store.load_messages(session_name)
                 if _collect_session_matches(
                     session_name,
                     messages,
-                    lambda m=meta: m.get("title"),
+                    _title_from_row,
                     query=query,
                     search_query=search_query,
                     case_sensitive=case_sensitive,
@@ -1917,13 +1923,16 @@ def search_messages(
     for session_file in session_files:
         session_name = session_file.stem
 
+        # Lazy title load: metadata is only read once a match is found
+        def _title_from_file(sf: Path = session_file) -> Any:
+            return load_session_meta(meta_file_for(sf)).get("title")
+
         try:
             messages = load_session_messages(session_file)
             if _collect_session_matches(
                 session_name,
                 messages,
-                # Lazy title load: metadata is only read once a match is found
-                lambda sf=session_file: load_session_meta(meta_file_for(sf)).get("title"),
+                _title_from_file,
                 query=query,
                 search_query=search_query,
                 case_sensitive=case_sensitive,
@@ -2195,10 +2204,8 @@ def merge_sessions(
         save_session_meta(output_meta_file, merged_meta)
     except Exception as e:
         # Clean up on failure
-        try:
+        with contextlib.suppress(Exception):
             _delete_session_storage(output_file, output_meta_file)
-        except Exception:
-            pass
         return False, f"Failed to save merged session: {e}"
 
     message_count = len(all_messages)

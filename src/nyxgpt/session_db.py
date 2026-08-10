@@ -108,8 +108,7 @@ class CassandraSessionStore:
             driver_session = get_connection_pool(cfg).get_session()
         except Exception as exc:
             raise SessionStoreError(
-                f"Cannot reach Cassandra for the session store "
-                f"({cfg.hosts}:{cfg.port}): {exc}"
+                f"Cannot reach Cassandra for the session store " f"({cfg.hosts}:{cfg.port}): {exc}"
             ) from exc
         return driver_session, self._keyspace_override or cfg.keyspace
 
@@ -270,9 +269,7 @@ class CassandraSessionStore:
             modified = "?"
             if isinstance(row.updated_at, str) and row.updated_at:
                 try:
-                    modified = datetime.fromisoformat(row.updated_at).strftime(
-                        "%Y-%m-%d %H:%M:%S"
-                    )
+                    modified = datetime.fromisoformat(row.updated_at).strftime("%Y-%m-%d %H:%M:%S")
                 except ValueError:
                     modified = row.updated_at
             out.append(
@@ -401,8 +398,7 @@ def migrate_sessions_dir(
     try:
         marker = sessions_dir / MIGRATION_MARKER
         marker.write_text(
-            json.dumps({"at": _iso_now(), "report": report}, ensure_ascii=False, indent=2)
-            + "\n",
+            json.dumps({"at": _iso_now(), "report": report}, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
     except OSError as e:
