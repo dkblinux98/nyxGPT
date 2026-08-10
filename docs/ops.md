@@ -100,6 +100,56 @@ nyxgpt ops verify
 
 ---
 
+## Live progress output
+
+The long-running commands -- `install`, `down`, `restart`, `stop`,
+`observability`, `env-sync`, and `glitchtip-init` -- stream progress as they
+run instead of staying silent until the end (#3558). By default, each one
+announces every step before running it, with a `[n/m]` counter:
+
+```
+[1/18] clear intentional-stop markers...
+[OK] Cleared intentional-stop markers for api, web, ollama, cassandra
+[2/18] config...
+[OK] Config already present at ~/.nyxGPT/config.ini
+...
+```
+
+A step that runs longer than a few seconds (a Homebrew install, an image
+pull, waiting for Cassandra to become ready) prints a periodic "still
+running" heartbeat with elapsed time, so a slow step reads differently from
+a hung one:
+
+```
+[8/18] cassandra container...
+    ... still running (5s): cassandra container
+    ... still running (10s): cassandra container
+[OK] Cassandra container created and healthy
+```
+
+If a step fails -- including one that raises an unexpected exception -- the
+output names the step, shows the underlying error, and gives a remediation
+hint (run `nyxgpt ops doctor` for diagnostics, or `nyxgpt ops logs
+<service>` for recent logs) instead of a bare `[FAIL]` line. A run's summary
+also lists any step that took longer than a few seconds, with its duration,
+so slow steps are easy to spot after the fact:
+
+```
+Slow steps (over 3s):
+  cassandra container: 12.4s
+  ollama service: 4.1s
+```
+
+Pass `--quiet` to any of these commands for the old terse, scripting-friendly
+output -- just the `[OK]`/`[FAIL]`/`[SKIP]` line per step, with no `[n/m]`
+announcements, heartbeat, or slow-step summary:
+
+```bash
+nyxgpt ops install --quiet
+```
+
+---
+
 ## `nyxgpt ops install`
 
 Reconciles the local machine to nyxGPT's intended **local** topology:

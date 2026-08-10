@@ -291,6 +291,45 @@ class TestApiKeyValidation:
         resp = client.get("/api/v1/info", headers={"X-API-Key": "anything"})
         assert resp.status_code == 401
 
+    def test_disabled_auth_never_resolves_api_key(self, client, monkeypatch):
+        """When auth is disabled, the middleware must not resolve the API
+        key at all (it's a plain `enabled` config read and an early
+        return) -- this is what keeps a cloud-secrets provider from being
+        hit on every request when auth isn't even in use. See #3507."""
+        cfg = _auth_enabled_cfg(enabled=False)
+        monkeypatch.setattr(app_module, "load_config", lambda *_a, **_k: cfg)
+
+        def _boom(*_a, **_k):
+            raise AssertionError("get_auth_api_key should not be called when auth is disabled")
+
+        monkeypatch.setattr(app_module, "get_auth_api_key", _boom)
+
+        resp = client.get("/api/v1/info")
+
+        assert resp.status_code != 401
+
+    def test_enabled_auth_resolves_via_threadpool(self, client, monkeypatch):
+        """The api key resolution (which may hit AWS for a cloud secrets
+        provider) is run in a thread pool rather than directly on the
+        event loop -- verify the middleware still enforces auth correctly
+        end-to-end through that path. See #3507."""
+        cfg = _auth_enabled_cfg(api_key="cloud-resolved-key")
+        monkeypatch.setattr(app_module, "load_config", lambda *_a, **_k: cfg)
+
+        calls: list[str] = []
+        original_run_in_threadpool = app_module.run_in_threadpool
+
+        async def _spy(func, *args, **kwargs):
+            calls.append(getattr(func, "__name__", str(func)))
+            return await original_run_in_threadpool(func, *args, **kwargs)
+
+        monkeypatch.setattr(app_module, "run_in_threadpool", _spy)
+
+        resp = client.get("/api/v1/info", headers={"X-API-Key": "cloud-resolved-key"})
+
+        assert resp.status_code != 401
+        assert calls == ["_auth_cfg"]
+
     def test_custom_header_name_is_respected(self, client, monkeypatch):
         cfg = _auth_enabled_cfg(header="X-Custom-Auth")
         monkeypatch.setattr(app_module, "load_config", lambda *_a, **_k: cfg)

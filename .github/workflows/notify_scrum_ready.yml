@@ -33,6 +33,13 @@ jobs:
 
     env:
       GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+      # #3695 human-channel (Slack DM) escalation notifications, sent by
+      # scrummaster_dispatch_next.sh on the dispatch-paused/queue-blocked
+      # terminal outcomes below. Absent/failing degrades gracefully to the
+      # existing comment-only behavior (see notify_human_escalation,
+      # scripts/agents/lib/gh_project.sh).
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_USER_ID: ${{ secrets.SLACK_USER_ID }}
 
     steps:
       - name: Checkout
@@ -130,8 +137,33 @@ jobs:
           # both already in $GITHUB_OUTPUT format.
           bash -lc "./scripts/agents/scrummaster_dispatch_next.sh $SPRINT_ARGS" >> "$GITHUB_OUTPUT"
 
+      - name: Post escalation-pause comment
+        if: steps.start.outputs.paused == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+          script: |
+            const issue_number = context.payload.issue.number;
+            const reason = '${{ steps.start.outputs.pause_reason }}';
+            const body = reason === 'cross_issue_anomaly'
+              ? '⏸️ **Scrummaster Agent**: Dispatch paused -- an unresolved cross-issue ' +
+                'infrastructure anomaly is open. See the loud report on the release ' +
+                'tracking issue (#3694 cross-issue infrastructure-anomaly pause backstop). ' +
+                'Dispatch resumes once the anomaly is resolved (an owner `RESOLVE_ANOMALY` ' +
+                'comment) or its detection window elapses.'
+              : '⏸️ **Scrummaster Agent**: Dispatch paused -- 2 or more unresolved ' +
+                'escalations (open issues assigned to the owner). See the loud report on ' +
+                'the release tracking issue (#3687 unresolved-escalation pause backstop). ' +
+                'Dispatch resumes automatically once the count drops below 2.';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              body
+            });
+
       - name: Post no issues comment
-        if: steps.start.outputs.next_issue == '' && steps.start.outputs.tried == ''
+        if: steps.start.outputs.paused != 'true' && steps.start.outputs.next_issue == '' && steps.start.outputs.tried == ''
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
@@ -148,7 +180,7 @@ jobs:
             });
 
       - name: Post queue-blocked comment
-        if: steps.start.outputs.next_issue == '' && steps.start.outputs.tried != ''
+        if: steps.start.outputs.paused != 'true' && steps.start.outputs.next_issue == '' && steps.start.outputs.tried != ''
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}

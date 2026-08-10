@@ -43,8 +43,17 @@ echo "[review] ===== Starting merge process for PR #${PR}, Issue #${ISSUE} =====
 # ---- Pre-merge validation ----
 echo "[review] Validating PR is mergeable..." >&2
 
-# Get PR details
-pr_data="$(gh pr view "$PR" --repo "${REPO_OWNER}/${REPO_NAME}" --json headRefName,baseRefName,mergeable,mergeStateStatus,state)"
+# Get PR details. REST's mergeable/mergeable_state/state/merged shapes
+# differ from the old GraphQL query -- re-derive the same three-value
+# mergeable enum (MERGEABLE/CONFLICTING/UNKNOWN) and OPEN/CLOSED/MERGED
+# state this script's downstream checks were written against.
+pr_data="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/pulls/${PR}" --jq '{
+  headRefName: .head.ref,
+  baseRefName: .base.ref,
+  mergeable: (if .mergeable == null then "UNKNOWN" elif .mergeable_state == "dirty" then "CONFLICTING" else "MERGEABLE" end),
+  mergeStateStatus: (.mergeable_state | ascii_upcase),
+  state: (if .merged then "MERGED" elif .state == "closed" then "CLOSED" else "OPEN" end)
+}')"
 pr_head_branch="$(echo "$pr_data" | jq -r '.headRefName')"
 pr_base_branch="$(echo "$pr_data" | jq -r '.baseRefName')"
 pr_mergeable="$(echo "$pr_data" | jq -r '.mergeable')"
@@ -74,9 +83,12 @@ if [[ "$pr_mergeable" == "CONFLICTING" ]]; then
   # string below is the loop guard -- if a prior automated round already ran
   # on this PR and it is conflicted again, escalate to the human owner.
   CONFLICT_ROUND_MARKER="Automated conflict-resolution round"
-  prior_rounds=$(gh pr view "$PR" --repo "${REPO_OWNER}/${REPO_NAME}" --json comments \
-    --jq "[.comments[] | select(.body | contains(\"${CONFLICT_ROUND_MARKER}\"))] | length" \
-    2>/dev/null || echo 0)
+  # --jq runs once per fetched page, not once over the combined result set --
+  # stream matching items across all pages first, then slurp+count in a
+  # second jq pass so `length` reflects the true total (see AGENTS.md).
+  prior_rounds=$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${PR}/comments" --paginate \
+    --jq ".[] | select(.body | contains(\"${CONFLICT_ROUND_MARKER}\"))" 2>/dev/null \
+    | jq -s 'length' || echo 0)
   if [[ "${prior_rounds:-0}" -eq 0 ]]; then
     echo "[review] Dispatching automated conflict-resolution round to developer agent..." >&2
     AUTO_MSG="⚠️ **Merge Conflicts Detected** — ${CONFLICT_ROUND_MARKER} dispatched.
@@ -249,44 +261,10 @@ echo "[review] ✓ Critical path complete" >&2
 # human kick is still required to start work outside the sprint. Off by
 # default (SPRINT_AUTOPILOT unset/false): behavior is then exactly the
 # pre-#3480 manual-kick flow. Best-effort: never fails the merge itself.
-echo "[review] ===== Sprint autopilot =====" >&2
-SPRINT_AUTOPILOT_VALUE="${SPRINT_AUTOPILOT:-false}"
-if [[ "$SPRINT_AUTOPILOT_VALUE" != "true" ]]; then
-  echo "[review] Sprint autopilot disabled (SPRINT_AUTOPILOT=${SPRINT_AUTOPILOT_VALUE}) -- no auto-kick." >&2
-elif [[ -z "${RELEASE_ISSUE_NUMBER:-}" ]]; then
-  _warn "SPRINT_AUTOPILOT is on but RELEASE_ISSUE_NUMBER is not configured -- skipping auto-kick."
-elif sprint_autopilot_paused "$RELEASE_ISSUE_NUMBER"; then
-  echo "[review] Sprint autopilot paused (PAUSE_SPRINT) -- no auto-kick." >&2
-  issue_comment "$RELEASE_ISSUE_NUMBER" "⏸️ **Sprint Autopilot**: Issue #${ISSUE} merged, but autopilot is paused (\`PAUSE_SPRINT\`) -- no automatic kick posted. Comment \`RESUME_SPRINT\` to continue, or \`READY_FOR_NEXT_ISSUE\` to kick manually." \
-    || _warn "Failed to post autopilot-paused notice."
-else
-  # The continue/park decision is RELEASE-gated, not sprint-gated (owner
-  # decision 2026-07-31): sprint dates drift and future sprints exist on the
-  # board before their release starts, so the boundary is the release
-  # version carried by the tracking issue's title and the milestone titles.
-  # The autopilot continues while the CURRENT release has open Backlog work
-  # (any sprint) and parks when it drains; it never crosses into the next
-  # release -- the gate reopens when the owner points RELEASE_ISSUE_NUMBER /
-  # RELEASE_BRANCH at the next release as part of the release ceremony.
-  release_version="$(release_version_from_issue "$RELEASE_ISSUE_NUMBER" 2>/dev/null || echo "")"
-  if [[ -z "$release_version" ]]; then
-    _warn "Autopilot: could not parse a vX.Y.Z version from release issue #${RELEASE_ISSUE_NUMBER}'s title -- no auto-kick (conservative stop)."
-  else
-    remaining="$(count_release_backlog_open "$release_version" 2>/dev/null || echo "")"
-    decision="$(python3 "${_LIB_DIR}/sprint_calc.py" autopilot-decision "${remaining:-0}")"
-    if [[ "$decision" == "continue" ]]; then
-      issue_comment "$RELEASE_ISSUE_NUMBER" "🔁 **Sprint Autopilot**: Issue #${ISSUE} merged. Release ${release_version} still has ${remaining} open Backlog issue(s) -- continuing automatically.
-
-READY_FOR_NEXT_ISSUE" \
-        && echo "[review] Autopilot: posted READY_FOR_NEXT_ISSUE (release ${release_version} has ${remaining} remaining)." >&2 \
-        || _warn "Autopilot: failed to post READY_FOR_NEXT_ISSUE kick."
-    else
-      issue_comment "$RELEASE_ISSUE_NUMBER" "🏁 **Sprint Autopilot**: Issue #${ISSUE} merged. Release ${release_version} has no open Backlog issues remaining -- the release backlog is drained and autopilot is parked. Merged work is in **Acceptance Testing** for stakeholder sign-off. Autopilot resumes automatically when \`RELEASE_ISSUE_NUMBER\` and \`RELEASE_BRANCH\` point at the next release; it never crosses a release boundary on its own." \
-        && echo "[review] Autopilot: release ${release_version} drained -- parked, no kick." >&2 \
-        || _warn "Autopilot: failed to post release-drained note."
-    fi
-  fi
-fi
+# The gated kick itself lives in sprint_autopilot_kick (lib/gh_project.sh),
+# shared with the 3-cycle review escalation path so an escalation continues
+# the queue the same way a merge does.
+sprint_autopilot_kick "$ISSUE" merged || _warn "Autopilot: kick helper failed unexpectedly."
 
 # ---- OPTIONAL: Branch cleanup ----
 echo "[review] ===== Performing optional cleanup =====" >&2

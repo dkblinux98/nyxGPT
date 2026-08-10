@@ -23,6 +23,7 @@ from nyxgpt import cloud as cloud_mod
 from nyxgpt import models, sessions
 from nyxgpt import ops as ops_mod
 from nyxgpt import self_heal as self_heal_mod
+from nyxgpt.aws_credentials_setup import run_aws_credentials_setup
 from nyxgpt.chat import chat, chat_stream
 from nyxgpt.config import (
     get_canary_error_rate_threshold,
@@ -33,6 +34,7 @@ from nyxgpt.config import (
     get_canary_total_replicas,
     get_default_model,
     get_ollama_base_url,
+    get_session_backend,
     get_sessions_dir,
     load_config,
 )
@@ -54,6 +56,14 @@ def _list_sessions_in_dir(sessions_dir: Path) -> list[dict[str, object]]:
         session, or an empty list if the directory doesn't exist. Files that
         are metadata sidecars (`*.meta.json`) or fail to parse are skipped.
     """
+    # Under the Cassandra backend the directory is not the store -- delegate
+    # to the backend-aware listing, which returns the same row shape (#3590).
+    try:
+        if get_session_backend(load_config(None)) == "cassandra":
+            return cast(list[dict[str, object]], sessions.list_sessions(None))
+    except Exception:
+        pass
+
     sessions_dir = Path(sessions_dir).expanduser()
     if not sessions_dir.exists():
         return []
@@ -760,7 +770,7 @@ def cmd_sessions(
         doc_id = new_name
         sf = sessions.session_file_for(name, effective_dir)
         mf = sessions.meta_file_for(sf)
-        if not sf.exists():
+        if not sessions.session_file_exists(sf):
             sessions.save_session_messages(sf, [])
         meta = sessions.load_session_meta(mf)
         meta = sessions.ensure_meta_defaults(meta)
@@ -1967,8 +1977,23 @@ def cli(argv: list[str] | None = None) -> int:
     ops_p = sub.add_parser("ops", help="Operational helpers")
     ops_sub = ops_p.add_subparsers(dest="ops_cmd", required=True)
 
+    def _add_quiet_flag(parser: argparse.ArgumentParser) -> None:
+        """Add the shared `--quiet` flag to a long-running `ops` subcommand's parser.
+
+        Default is live per-step progress (`[n/m] step...` announcements, a
+        heartbeat for slow steps, and a final slow-step summary); `--quiet`
+        drops back to the old terse OK/FAIL-only-per-result output, for
+        scripting (#3558).
+        """
+        parser.add_argument(
+            "--quiet",
+            action="store_true",
+            help="Terse output for scripting: OK/FAIL/SKIP per step, no live progress",
+        )
+
     ops_install = ops_sub.add_parser("install", help="Install operational helpers")
     _add_install_arguments(ops_install)
+    _add_quiet_flag(ops_install)
 
     ops_status = ops_sub.add_parser(
         "status", help="Show status of local services (docker/cassandra/agent/api)"
@@ -2007,6 +2032,7 @@ def cli(argv: list[str] | None = None) -> int:
             "observability Compose service (monitoring/logging/tracing/errors)"
         ),
     )
+    _add_quiet_flag(ops_restart)
 
     ops_stop = ops_sub.add_parser("stop", help="Stop local services (native and/or Docker Compose)")
     ops_stop.add_argument(
@@ -2024,11 +2050,13 @@ def cli(argv: list[str] | None = None) -> int:
         ],
         help="Service to stop",
     )
+    _add_quiet_flag(ops_stop)
 
     ops_down = ops_sub.add_parser(
         "down", help="Tear down the full stack (native services + Docker Compose)"
     )
     _add_down_arguments(ops_down)
+    _add_quiet_flag(ops_down)
 
     ops_env_sync = ops_sub.add_parser(
         "env-sync",
@@ -2038,6 +2066,7 @@ def cli(argv: list[str] | None = None) -> int:
     ops_env_sync.add_argument(
         "--env-file", help="Path to the .env file to update (default: <repo>/.env)"
     )
+    _add_quiet_flag(ops_env_sync)
 
     ops_secrets_sync = ops_sub.add_parser(
         "secrets-sync",
@@ -2066,13 +2095,14 @@ def cli(argv: list[str] | None = None) -> int:
         "--tail", type=int, default=200, help="Number of trailing log lines to show (default: 200)"
     )
 
-    ops_sub.add_parser(
+    ops_glitchtip_init = ops_sub.add_parser(
         "glitchtip-init",
         help=(
             "Auto-provision a GlitchTip admin user, org, project, and DSN "
             "(zero-touch error tracking); no-ops if glitchtip isn't up/healthy"
         ),
     )
+    _add_quiet_flag(ops_glitchtip_init)
 
     ops_sub.add_parser(
         "alert-test",
@@ -2082,13 +2112,14 @@ def cli(argv: list[str] | None = None) -> int:
         ),
     )
 
-    ops_sub.add_parser(
+    ops_observability = ops_sub.add_parser(
         "observability",
         help=(
             "Start the Grafana/Loki/Jaeger/GlitchTip Compose profiles "
             "(monitoring/logging/tracing/errors) without a raw docker compose command"
         ),
     )
+    _add_quiet_flag(ops_observability)
 
     ops_sub.add_parser(
         "migrate-volumes",
@@ -2153,10 +2184,12 @@ def cli(argv: list[str] | None = None) -> int:
         help="Seconds to wait for the booted stack to become healthy (default: 300)",
     )
 
-    # Add cloud command (AWS deployment lifecycle -- P6-11-class scope; today
-    # covers only `allow-ip`, the lockout-recovery path for the owner-IP-scoped
+    # Add cloud command (AWS deployment lifecycle -- P6-11-class scope). Today
+    # covers `allow-ip`, the lockout-recovery path for the owner-IP-scoped
     # SSH security group described in
-    # product_management/DECISION_PRIVATE_ACCESS_MECHANISM.md. `nyxgpt cloud
+    # product_management/DECISION_PRIVATE_ACCESS_MECHANISM.md, and
+    # `credentials-setup`, the guided AWS identity flow (P6-13, #3512) --
+    # see nyxgpt.aws_credentials_setup's module docstring. `nyxgpt cloud
     # deploy`/`destroy` (#3513) come later and are expected to write
     # ~/.nyxGPT/cloud/state.json so allow-ip can auto-discover the security
     # group without --security-group-id -- see nyxgpt.cloud's module docstring.
@@ -2191,6 +2224,20 @@ def cli(argv: list[str] | None = None) -> int:
             "AWS region (default: read from ~/.nyxGPT/cloud/state.json, then "
             "boto3's normal region resolution)"
         ),
+    )
+
+    cloud_credentials_setup = cloud_sub.add_parser(
+        "credentials-setup",
+        help=(
+            "Guided setup for the AWS identity nyxGPT uses for its own AWS API calls "
+            "(P6-13, #3512) -- masked entry, routed to ~/.aws/credentials, the OS "
+            "keychain, or left to an already-configured source; never config.ini"
+        ),
+    )
+    cloud_credentials_setup.add_argument(
+        "--config",
+        type=Path,
+        help="Path to config.ini (default: ~/.nyxGPT/config.ini)",
     )
 
     # Add canary command (local weighted-traffic canary rollout on a local k8s cluster --
@@ -2448,6 +2495,9 @@ def cli(argv: list[str] | None = None) -> int:
 
     if cmd == "cloud" and args.cloud_cmd == "allow-ip":
         return cloud_mod.allow_ip(args)
+
+    if cmd == "cloud" and args.cloud_cmd == "credentials-setup":
+        return run_aws_credentials_setup(cfg_path=args.config)
 
     if cmd == "canary":
         # Same per-invocation correlation id as the `ops` dispatch above --

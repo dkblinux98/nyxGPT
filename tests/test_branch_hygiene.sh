@@ -103,9 +103,10 @@ git push -q origin claude/issue-9104-keep-diff
 git checkout -q v2.0.0
 
 # gh stub: classify_mergeable/closed_unmerged_pr_exists only ever call
-# `gh issue view <n> ... --jq .state` or `gh pr list ...`. Route both
-# through canned responses instead of hitting the network. Read via
-# indirect expansion (${!varname}) in gh() below, not by name in this file.
+# `gh api repos/.../issues/<n> --jq '.state | ascii_upcase'` or
+# `gh api repos/.../pulls?head=...&state=closed...`. Route both through
+# canned responses instead of hitting the network. Read via indirect
+# expansion (${!varname}) in gh() below, not by name in this file.
 # shellcheck disable=SC2034
 ISSUE_STATE_9102="CLOSED"
 # shellcheck disable=SC2034
@@ -115,14 +116,23 @@ ISSUE_STATE_9104="CLOSED"
 PR_LIST_STUB="[]"
 
 gh() {
-  case "$1 $2" in
-    "issue view")
-      local issue="$3" varname
-      varname="ISSUE_STATE_${issue}"
-      echo "${!varname:-OPEN}"
-      ;;
-    "pr list")
-      echo "${PR_LIST_STUB}"
+  case "$1" in
+    api)
+      local resource="$2"
+      case "$resource" in
+        */issues/*)
+          local issue="${resource##*/}" varname
+          varname="ISSUE_STATE_${issue}"
+          echo "${!varname:-OPEN}"
+          ;;
+        */pulls\?*)
+          echo "${PR_LIST_STUB}"
+          ;;
+        *)
+          echo "[test] unexpected gh api resource: $resource" >&2
+          return 1
+          ;;
+      esac
       ;;
     *)
       echo "[test] unexpected gh invocation: $*" >&2
@@ -145,15 +155,16 @@ _assert_eq "unmerged + closed issue but diff content never landed is kept (empty
 
 # --- Test group 3: closed_unmerged_pr_exists reads the explicit ---
 # --- abandonment signal (PR closed without merging) straight from `gh` ---
-PR_LIST_STUB='[{"merged":false,"baseRefName":"v2.0.0"}]'
+# --- (REST shape: merged_at is null for an unmerged PR, base.ref for base) ---
+PR_LIST_STUB='[{"merged_at":null,"base":{"ref":"v2.0.0"}}]'
 if closed_unmerged_pr_exists "some/branch" "v2.0.0"; then
   echo "[ok] closed_unmerged_pr_exists true when a closed, unmerged PR targets base_branch"
 else
-  echo "[FAIL] closed_unmerged_pr_exists should be true for a closed PR with merged=false and matching base" >&2
+  echo "[FAIL] closed_unmerged_pr_exists should be true for a closed PR with merged_at=null and matching base" >&2
   FAILURES=$((FAILURES + 1))
 fi
 
-PR_LIST_STUB='[{"merged":true,"baseRefName":"v2.0.0"}]'
+PR_LIST_STUB='[{"merged_at":"2026-01-01T00:00:00Z","base":{"ref":"v2.0.0"}}]'
 if closed_unmerged_pr_exists "some/branch" "v2.0.0"; then
   echo "[FAIL] closed_unmerged_pr_exists should be false when the only closed PR was merged" >&2
   FAILURES=$((FAILURES + 1))

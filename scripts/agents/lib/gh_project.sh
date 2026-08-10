@@ -676,7 +676,7 @@ count_sprint_backlog_open() {
 # or nothing if the issue/title has no version.
 release_version_from_issue() {
   local release_issue="$1"
-  gh issue view "$release_issue" --repo "${REPO_OWNER}/${REPO_NAME}" --json title \
+  gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${release_issue}" \
     --jq '.title' 2>/dev/null | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1
 }
 
@@ -726,11 +726,427 @@ sprint_autopilot_paused() {
   local release_issue="$1"
   require_cmd jq
 
+  # --jq runs once per fetched page -- stream matching comments across all
+  # pages first, then slurp+sort+last in a second jq pass (see AGENTS.md).
   local last_state
   last_state="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${release_issue}/comments" --paginate \
-    --jq '[.[] | select(.body | test("^\\s*(PAUSE_SPRINT|RESUME_SPRINT)\\s*$"))] | sort_by(.created_at) | last | .body // empty' \
-    2>/dev/null | tr -d '[:space:]')"
+    --jq '.[] | select(.body | test("^\\s*(PAUSE_SPRINT|RESUME_SPRINT)\\s*$"))' 2>/dev/null \
+    | jq -s -r 'sort_by(.created_at) | last | .body // empty' \
+    | tr -d '[:space:]')"
   [[ "$last_state" == "PAUSE_SPRINT" ]]
+}
+
+# Sprint-autopilot continuation kick (#3480), shared by the post-merge path
+# (review_accept_and_merge.sh) and the 3-cycle review escalation path
+# (review_agent_auto_review.yml): both outcomes free the reviewer for the
+# next issue, so both post the same gated READY_FOR_NEXT_ISSUE kick on the
+# release tracking issue. `verb` is "merged", "escalated", or "anomaly" and
+# only changes the comment wording; every gate (SPRINT_AUTOPILOT,
+# RELEASE_ISSUE_NUMBER, PAUSE_SPRINT, release version parse, release-drained
+# park) is identical. Best-effort by design: always returns 0 so a kick
+# failure never fails the merge, escalation, or anomaly detection that
+# invoked it.
+sprint_autopilot_kick() {
+  local issue="$1" verb="${2:-merged}"
+  local event_phrase continue_phrase
+  if [[ "$verb" == "escalated" ]]; then
+    event_phrase="Issue #${issue} escalated to the owner after 3 review cycles"
+    continue_phrase="continuing with other work"
+  elif [[ "$verb" == "anomaly" ]]; then
+    # Distinct from "escalated" (#3694 review finding): this issue was not
+    # escalated to the owner and no review cycles occurred -- it hit a
+    # cross-issue infrastructure anomaly another issue already diagnosed.
+    # Reusing the "escalated" phrase here would misreport the cause on the
+    # release tracking issue, the exact channel this feature exists to keep
+    # accurate.
+    event_phrase="Issue #${issue} paused pending a cross-issue infrastructure anomaly (#3694)"
+    continue_phrase="continuing with other work"
+  else
+    event_phrase="Issue #${issue} merged"
+    continue_phrase="continuing automatically"
+  fi
+
+  echo "[review] ===== Sprint autopilot =====" >&2
+  local autopilot_value="${SPRINT_AUTOPILOT:-false}"
+  if [[ "$autopilot_value" != "true" ]]; then
+    echo "[review] Sprint autopilot disabled (SPRINT_AUTOPILOT=${autopilot_value}) -- no auto-kick." >&2
+  elif [[ -z "${RELEASE_ISSUE_NUMBER:-}" ]]; then
+    _warn "SPRINT_AUTOPILOT is on but RELEASE_ISSUE_NUMBER is not configured -- skipping auto-kick."
+  elif sprint_autopilot_paused "$RELEASE_ISSUE_NUMBER"; then
+    echo "[review] Sprint autopilot paused (PAUSE_SPRINT) -- no auto-kick." >&2
+    issue_comment "$RELEASE_ISSUE_NUMBER" "⏸️ **Sprint Autopilot**: ${event_phrase}, but autopilot is paused (\`PAUSE_SPRINT\`) -- no automatic kick posted. Comment \`RESUME_SPRINT\` to continue, or \`READY_FOR_NEXT_ISSUE\` to kick manually." \
+      || _warn "Failed to post autopilot-paused notice."
+  else
+    # The continue/park decision is RELEASE-gated, not sprint-gated (owner
+    # decision 2026-07-31): sprint dates drift and future sprints exist on the
+    # board before their release starts, so the boundary is the release
+    # version carried by the tracking issue's title and the milestone titles.
+    # The autopilot continues while the CURRENT release has open Backlog work
+    # (any sprint) and parks when it drains; it never crosses into the next
+    # release -- the gate reopens when the owner points RELEASE_ISSUE_NUMBER /
+    # RELEASE_BRANCH at the next release as part of the release ceremony.
+    local release_version remaining decision
+    release_version="$(release_version_from_issue "$RELEASE_ISSUE_NUMBER" 2>/dev/null || echo "")"
+    if [[ -z "$release_version" ]]; then
+      _warn "Autopilot: could not parse a vX.Y.Z version from release issue #${RELEASE_ISSUE_NUMBER}'s title -- no auto-kick (conservative stop)."
+    else
+      remaining="$(count_release_backlog_open "$release_version" 2>/dev/null || echo "")"
+      decision="$(python3 "${_LIB_DIR}/sprint_calc.py" autopilot-decision "${remaining:-0}")"
+      if [[ "$decision" == "continue" ]]; then
+        issue_comment "$RELEASE_ISSUE_NUMBER" "🔁 **Sprint Autopilot**: ${event_phrase}. Release ${release_version} still has ${remaining} open Backlog issue(s) -- ${continue_phrase}.
+
+READY_FOR_NEXT_ISSUE" \
+          && echo "[review] Autopilot: posted READY_FOR_NEXT_ISSUE (release ${release_version} has ${remaining} remaining)." >&2 \
+          || _warn "Autopilot: failed to post READY_FOR_NEXT_ISSUE kick."
+      else
+        issue_comment "$RELEASE_ISSUE_NUMBER" "🏁 **Sprint Autopilot**: ${event_phrase}. Release ${release_version} has no open Backlog issues remaining -- the release backlog is drained and autopilot is parked. Merged work is in **Acceptance Testing** for stakeholder sign-off. Autopilot resumes automatically when \`RELEASE_ISSUE_NUMBER\` and \`RELEASE_BRANCH\` point at the next release; it never crosses a release boundary on its own." \
+          && echo "[review] Autopilot: release ${release_version} drained -- parked, no kick." >&2 \
+          || _warn "Autopilot: failed to post release-drained note."
+      fi
+    fi
+  fi
+  return 0
+}
+
+# -------------------------
+# Human-channel escalation notifications (Slack DM, #3695)
+# -------------------------
+# On 2026-08-09 a Phase 3 self-heal FATAL diagnosis on #3513 sat unread in a
+# GitHub issue thread for ~8 hours while the pipeline burned ~50 redundant
+# retries -- comments alone don't reach a human who isn't actively watching.
+# This sends a DM to HUMAN_OWNER's Slack account for terminal agent outcomes
+# (review-agent 3-cycle escalation, self-heal FATAL/FIXED_REQUIRES_MERGE,
+# retry-budget exhaustion (#3689), scrummaster queue-blocked/pause reports).
+#
+# Owner decision 2026-08-09: reuse this repo's existing SLACK_BOT_TOKEN +
+# SLACK_USER_ID Actions secrets (SLACK_BOT_TOKEN already wired for
+# notify-merge-conflicts.yml; SLACK_USER_ID is the owner's Slack member id
+# for the DM channel param) -- no new secrets, no provider choice made by
+# this code. Every caller's GitHub-comment escalation path runs first and
+# unconditionally; this is purely additive and must never block or fail
+# that path, so every failure mode here (missing secrets, curl error,
+# non-ok Slack response) is a `_warn` + `return 0`, never a propagated
+# failure.
+_SLACK_NOTIFY_MARKER_PREFIX="<!-- slack-notify:"
+
+# True if a dedup marker for `dedup_key` was posted on `issue`'s comments
+# within `window_minutes` minutes (default 60). Prevents the same terminal
+# state re-firing a Slack DM on every retry/re-check of a stuck loop
+# (acceptance criterion: de-duplicated within a window). Best effort: a
+# lookup failure is treated as "not a duplicate" so a transient API/parse
+# error never permanently silences the channel.
+_slack_notify_recent() {
+  local issue="$1" dedup_key="$2" window_minutes="${3:-60}"
+  require_cmd jq
+  local marker="${_SLACK_NOTIFY_MARKER_PREFIX}${dedup_key} -->"
+  local cutoff
+  cutoff="$(python3 -c "
+import datetime, sys
+print((datetime.datetime.utcnow() - datetime.timedelta(minutes=int(sys.argv[1]))).strftime('%Y-%m-%dT%H:%M:%SZ'))
+" "$window_minutes" 2>/dev/null)"
+  [[ -n "$cutoff" ]] || return 1
+
+  # --paginate emits one JSON array per page -- slurp (-s) and flatten one
+  # level before filtering so the window check runs over the full combined
+  # comment history, not per-page (see AGENTS.md's --paginate note).
+  gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}/comments" --paginate 2>/dev/null \
+    | jq -s --arg marker "$marker" --arg cutoff "$cutoff" \
+      '[.[][] | select(.body | contains($marker)) | select(.created_at >= $cutoff)] | length > 0' 2>/dev/null \
+    | grep -q true
+}
+
+# Sends a Slack DM to HUMAN_OWNER for a terminal agent outcome. Args:
+#   $1 issue      issue/PR number the escalation is about
+#   $2 state      short terminal-state label (e.g. "FATAL", "review-escalation")
+#   $3 diagnosis  one-line diagnosis
+#   $4 action     recommended human action (e.g. "merge <sha> to v3.0.0")
+#   $5 dedup_key  stable key identifying this issue+step
+#                 (default: "${issue}:${state}")
+#   $6 window_minutes  dedup window in minutes (default: 60)
+#
+# Absent SLACK_BOT_TOKEN/SLACK_USER_ID degrades gracefully to comment-only
+# behavior (no-op here; the caller's own GitHub comment already carries the
+# escalation). Always returns 0 -- see header comment above.
+notify_human_escalation() {
+  local issue="$1" state="$2" diagnosis="$3" action="$4"
+  local dedup_key="${5:-${issue}:${state}}"
+  local window_minutes="${6:-60}"
+  require_cmd jq
+
+  if [[ -z "${SLACK_BOT_TOKEN:-}" || -z "${SLACK_USER_ID:-}" ]]; then
+    _warn "notify_human_escalation: SLACK_BOT_TOKEN/SLACK_USER_ID not configured -- skipping Slack DM (comment-only fallback stands)."
+    return 0
+  fi
+
+  if _slack_notify_recent "$issue" "$dedup_key" "$window_minutes"; then
+    _debug "notify_human_escalation: recent notification found for '${dedup_key}' -- skipping duplicate."
+    return 0
+  fi
+
+  local issue_url text payload response ok
+  issue_url="https://github.com/${REPO_OWNER}/${REPO_NAME}/issues/${issue}"
+  text="$(printf ':rotating_light: *%s* on <%s|#%s>\n*Diagnosis:* %s\n*Recommended action:* %s' \
+    "$state" "$issue_url" "$issue" "$diagnosis" "$action")"
+  payload="$(jq -n --arg channel "$SLACK_USER_ID" --arg text "$text" '{channel: $channel, text: $text}')"
+
+  response="$(curl -sS -X POST https://slack.com/api/chat.postMessage \
+    -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+    -H "Content-Type: application/json; charset=utf-8" \
+    -d "$payload" 2>/dev/null)" || response=""
+  ok="$(echo "$response" | jq -r '.ok // false' 2>/dev/null)"
+
+  if [[ "$ok" != "true" ]]; then
+    _warn "notify_human_escalation: Slack API call failed for issue #${issue} (response=${response:-<empty>}) -- falling back to comment-only."
+    return 0
+  fi
+
+  local marker
+  marker="${_SLACK_NOTIFY_MARKER_PREFIX}${dedup_key} -->"
+  issue_comment "$issue" "$(printf ':envelope: Notified @%s via Slack DM (%s).\n\n%s' "${HUMAN_OWNER:-the human owner}" "$state" "$marker")" \
+    || _warn "notify_human_escalation: Slack DM sent but failed to post dedup marker comment on #${issue}."
+
+  return 0
+}
+
+# -------------------------
+# Unresolved-escalation pause backstop (#3687)
+# -------------------------
+# "Unresolved escalation" = an open issue currently assigned to
+# HUMAN_OWNER. Both escalation paths (the review agent's 3-cycle breaker
+# and the huddle's type-(c) immediate/spec-ambiguity escalation) end in
+# assign_issue_verified(issue, HUMAN_OWNER) on a still-open issue; the
+# owner resolving it means reassigning it away or closing it. Purely
+# derived from live issue state -- no hidden counter to drift out of sync.
+_ESCALATION_PAUSE_MARKER="<!-- escalation-pause-backstop:3687 -->"
+
+# One line per open issue assigned to `owner` (default HUMAN_OWNER):
+# "#<number> <title>". Empty output if none, or if no owner is configured.
+unresolved_escalation_issues() {
+  local owner="${1:-${HUMAN_OWNER:-}}"
+  require_cmd jq
+  if [[ -z "$owner" ]]; then
+    _warn "unresolved_escalation_issues: no owner configured (HUMAN_OWNER unset)"
+    return 0
+  fi
+  # Raw fetch and jq filtering are separate commands (rather than gh's
+  # own --jq) so tests can stub the `gh` call with canned JSON and let the
+  # real jq filter run -- same split as real_label_names above.
+  _open_issues_assigned_to "$owner" \
+    | jq -r '.[] | select(.pull_request == null) | "#\(.number) \(.title)"'
+}
+
+# Raw (unfiltered) JSON array of open issues/PRs assigned to `owner`. Split
+# out so tests can stub the `gh` call in isolation.
+_open_issues_assigned_to() {
+  local owner="$1"
+  gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues" \
+    --method GET \
+    -f state=open \
+    -f assignee="$owner" \
+    --paginate 2>/dev/null || echo "[]"
+}
+
+# Number of non-empty lines in `$1`. Always echoes a number and returns 0,
+# even when the count is zero (grep -c would otherwise exit 1). Shared by
+# count_unresolved_escalations and escalation_pause_gate so the two never
+# drift apart.
+_count_lines() {
+  local n
+  n="$(grep -c . <<<"$1")" || true
+  echo "${n:-0}"
+}
+
+# Count of unresolved_escalation_issues.
+count_unresolved_escalations() {
+  local owner="${1:-${HUMAN_OWNER:-}}"
+  _count_lines "$(unresolved_escalation_issues "$owner")"
+}
+
+# Finds the id of our most recent pause-backstop report comment on
+# release_issue, if any (empty if none). Split out so tests can stub it
+# without a real gh/GraphQL round trip.
+#
+# `gh api --jq` has no `--arg` support, so the marker filter can't be
+# chained onto gh's own --jq -- fetch the raw paginated JSON (one array per
+# page) and filter/aggregate in a separate `jq -s` call instead, slurping
+# and flattening one level before sort_by/last so the aggregation runs over
+# every page combined, not per-page (see AGENTS.md's --paginate note).
+_escalation_pause_comment_id() {
+  local release_issue="$1"
+  gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${release_issue}/comments" --paginate 2>/dev/null \
+    | jq -s --arg marker "$_ESCALATION_PAUSE_MARKER" \
+      '[.[][] | select(.body | contains($marker))] | sort_by(.created_at) | last | .id // empty' \
+    || true
+}
+
+# Dispatch gate for the unresolved-escalation pause backstop. Dispatch
+# continues unconditionally through the first unresolved escalation (one
+# escalated item is normal traffic); with >=2 unresolved, new dispatch
+# pauses and this posts (or updates, if already posted) a loud report on
+# RELEASE_ISSUE_NUMBER listing the escalated issues. It resumes
+# automatically -- there is no separate "resume" action, the gate simply
+# re-evaluates live board state on every call and reopens once the count
+# drops below 2 (updating the report comment to say so).
+#
+# Returns 0 if dispatch may proceed, 1 if dispatch is paused. Best-effort
+# on the reporting side: a comment failure is warned, not fatal -- the
+# pause/resume decision itself always reflects the live count.
+escalation_pause_gate() {
+  local owner="${HUMAN_OWNER:-}" release_issue="${RELEASE_ISSUE_NUMBER:-}"
+  local issues count comment_id body
+
+  issues="$(unresolved_escalation_issues "$owner")"
+  count="$(_count_lines "$issues")"
+
+  if [[ -z "$release_issue" ]]; then
+    if [[ "$count" -ge 2 ]]; then
+      _warn "escalation_pause_gate: ${count} unresolved escalations but RELEASE_ISSUE_NUMBER is not configured -- cannot report, gate stays open."
+    fi
+    return 0
+  fi
+
+  comment_id="$(_escalation_pause_comment_id "$release_issue")"
+
+  if [[ "$count" -ge 2 ]]; then
+    body="$(printf '⏸️ **Scrummaster**: dispatch paused -- %s unresolved escalations\n\n%s\n\nDispatch resumes automatically once the unresolved count drops below 2 (no action needed beyond resolving the escalations below).\n\n%s' \
+      "$count" "$issues" "$_ESCALATION_PAUSE_MARKER")"
+    if [[ -n "$comment_id" ]]; then
+      gh api -X PATCH "repos/${REPO_OWNER}/${REPO_NAME}/issues/comments/${comment_id}" -f "body=${body}" >/dev/null 2>&1 \
+        || _warn "escalation_pause_gate: failed to update pause report on #${release_issue}"
+    else
+      issue_comment "$release_issue" "$body" \
+        || _warn "escalation_pause_gate: failed to post pause report on #${release_issue}"
+    fi
+    return 1
+  fi
+
+  if [[ -n "$comment_id" ]]; then
+    body="$(printf '▶️ **Scrummaster**: dispatch resumed -- unresolved escalations dropped below 2\n\n%s' "$_ESCALATION_PAUSE_MARKER")"
+    gh api -X PATCH "repos/${REPO_OWNER}/${REPO_NAME}/issues/comments/${comment_id}" -f "body=${body}" >/dev/null 2>&1 \
+      || _warn "escalation_pause_gate: failed to clear pause report on #${release_issue}"
+  fi
+  return 0
+}
+
+# -------------------------
+# Cross-issue infrastructure-anomaly collapse (#3694)
+# -------------------------
+# The 2026-08-09 postmortem (product_management/AGENTIC_SDLC_DESIGN.md §9;
+# issue #3694's "Problem / Motivation" carries the same account): a single
+# infra fault (`gh api search/issues` failing deterministically in
+# the "Check if PR already exists" step) failed the same step on 5 in-flight
+# issues, and each ran its own independent Phase 1-3 self-heal diagnosis --
+# ~45-50 Claude invocations for one fault. The same step failing on
+# different issues within a short window is one infrastructure event, not N
+# coding problems.
+#
+# The "run history" signal this derives from is the trail of failure
+# comments developer_auto_implement.yml already posts on every failed run --
+# plain issue-comment REST calls, deliberately NOT `gh api search/issues`
+# (the endpoint that caused the incident), so detection itself can't be
+# taken out by the same class of fault. The single tracking record is a
+# marker comment on RELEASE_ISSUE_NUMBER, re-derived fresh from the live
+# comment thread on every check -- same level-triggered shape as
+# escalation_pause_gate above, no hidden counter to drift out of sync. It
+# self-expires after CROSS_ISSUE_ANOMALY_WINDOW_MINUTES and can be cleared
+# early by an OWNER-authored `RESOLVE_ANOMALY` comment.
+CROSS_ISSUE_ANOMALY_WINDOW_MINUTES="${CROSS_ISSUE_ANOMALY_WINDOW_MINUTES:-60}"
+_CROSS_ISSUE_ANOMALY_PAUSE_MARKER="<!-- cross-issue-anomaly-pause:3694 -->"
+
+# Chronological (body, author_association, created_at) triples for
+# `release_issue`'s comment thread, as the compact JSON array
+# cross_issue_anomaly.py expects. Split out so tests can stub the `gh` call
+# in isolation, mirroring _escalation_pause_comment_id's fetch above.
+_release_issue_comments_json() {
+  local release_issue="$1"
+  gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${release_issue}/comments" --paginate \
+    --jq '[.[] | {id: .id, body: .body, author_association: .author_association, created_at: .created_at}]' \
+    | jq -s 'add // []'
+}
+
+# Cross-issue anomaly decision for (issue, failed_step): echoes the JSON
+# `cross_issue_anomaly.py decide` produces --
+# {"action":"skip"|"open"|"proceed", "origin_issue":N, ...}. "skip" means a
+# DIFFERENT issue already opened a matching, unresolved, in-window tracking
+# record for this step -- the caller should skip its own diagnosis and link
+# to origin_issue instead. Best-effort: any gh/jq/python failure degrades to
+# "open" (treat this issue as a fresh, standalone occurrence) so a
+# detection flake costs one extra one-off diagnosis, never a stuck run.
+cross_issue_anomaly_decision() {
+  local release_issue="$1" issue="$2" failed_step="$3" now_epoch="$4"
+  require_cmd jq; require_cmd python3
+  local fallback="{\"action\":\"open\",\"origin_issue\":${issue}}"
+  if [[ -z "$release_issue" ]]; then
+    echo "$fallback"
+    return 0
+  fi
+  local comments_json
+  comments_json="$(_release_issue_comments_json "$release_issue" 2>/dev/null)" || comments_json="[]"
+  echo "$comments_json" \
+    | python3 "${_LIB_DIR}/cross_issue_anomaly.py" decide "$issue" "$failed_step" "$now_epoch" "$CROSS_ISSUE_ANOMALY_WINDOW_MINUTES" \
+    2>/dev/null || echo "$fallback"
+}
+
+# Posts (or reuses) the single tracking-record marker comment for a newly-
+# opened anomaly -- "one diagnosis performed once, referenced by every
+# affected issue" (#3694). Called once, by the issue that `decide` returned
+# action="open" for. Idempotent in effect: a second call for the same
+# (step, still-open) pair just posts a fresh marker that `decide` will treat
+# as the newer of two markers for that step -- harmless, but callers should
+# still gate this on decide's actual "open" action to avoid the extra
+# comment. Best-effort: a post failure is warned, not fatal.
+open_cross_issue_anomaly() {
+  local release_issue="$1" origin_issue="$2" failed_step="$3" now_epoch="$4" run_url="$5"
+  [[ -z "$release_issue" ]] && return 0
+  require_cmd python3
+  local marker body
+  marker="$(python3 "${_LIB_DIR}/cross_issue_anomaly.py" marker "$failed_step" "$origin_issue" "$now_epoch")"
+  body="$(printf '🚨 **Cross-issue infrastructure anomaly detected** (#3694)\n\nStep `%s` failed on #%s and is being diagnosed now. If the same step fails on another issue within %s minutes, that issue will link here instead of repeating the diagnosis.\n\n[Failed run](%s)\n\nComment `RESOLVE_ANOMALY` (as the repo owner) once the underlying infrastructure fault is fixed, to close this out early.\n\n%s' \
+    "$failed_step" "$origin_issue" "$CROSS_ISSUE_ANOMALY_WINDOW_MINUTES" "$run_url" "$marker")"
+  issue_comment "$release_issue" "$body" \
+    || _warn "open_cross_issue_anomaly: failed to post tracking record on #${release_issue}"
+}
+
+# Dispatch gate composing with escalation_pause_gate (#3687): dispatch
+# pauses while ANY step currently has an open, unresolved cross-issue
+# anomaly marker on RELEASE_ISSUE_NUMBER (cleared by an OWNER
+# `RESOLVE_ANOMALY` comment, or by the detection window elapsing). Returns 0
+# if dispatch may proceed, 1 if paused; posts/updates a loud report exactly
+# like escalation_pause_gate.
+cross_issue_anomaly_pause_gate() {
+  local release_issue="${RELEASE_ISSUE_NUMBER:-}"
+  [[ -z "$release_issue" ]] && return 0
+  require_cmd jq; require_cmd python3
+
+  local comments_json is_open comment_id body
+  comments_json="$(_release_issue_comments_json "$release_issue" 2>/dev/null)" || comments_json="[]"
+  is_open="$(echo "$comments_json" \
+    | python3 "${_LIB_DIR}/cross_issue_anomaly.py" any-open "$(date +%s)" "$CROSS_ISSUE_ANOMALY_WINDOW_MINUTES" \
+    2>/dev/null)" || is_open="false"
+
+  comment_id="$(echo "$comments_json" \
+    | jq -r --arg marker "$_CROSS_ISSUE_ANOMALY_PAUSE_MARKER" \
+      '[.[] | select(.body | contains($marker))] | sort_by(.created_at) | last | .id // empty' 2>/dev/null || true)"
+
+  if [[ "$is_open" == "true" ]]; then
+    body="$(printf '⏸️ **Scrummaster**: dispatch paused -- an unresolved cross-issue infrastructure anomaly is open\n\nSee the anomaly tracking comment above for the affected step and originating issue. Comment `RESOLVE_ANOMALY` (as the repo owner) once the infrastructure fault is fixed, or wait for the %s-minute detection window to elapse.\n\n%s' \
+      "$CROSS_ISSUE_ANOMALY_WINDOW_MINUTES" "$_CROSS_ISSUE_ANOMALY_PAUSE_MARKER")"
+    if [[ -n "$comment_id" ]]; then
+      gh api -X PATCH "repos/${REPO_OWNER}/${REPO_NAME}/issues/comments/${comment_id}" -f "body=${body}" >/dev/null 2>&1 \
+        || _warn "cross_issue_anomaly_pause_gate: failed to update pause report on #${release_issue}"
+    else
+      issue_comment "$release_issue" "$body" \
+        || _warn "cross_issue_anomaly_pause_gate: failed to post pause report on #${release_issue}"
+    fi
+    return 1
+  fi
+
+  if [[ -n "$comment_id" ]]; then
+    body="$(printf '▶️ **Scrummaster**: dispatch resumed -- cross-issue infrastructure anomaly cleared\n\n%s' "$_CROSS_ISSUE_ANOMALY_PAUSE_MARKER")"
+    gh api -X PATCH "repos/${REPO_OWNER}/${REPO_NAME}/issues/comments/${comment_id}" -f "body=${body}" >/dev/null 2>&1 \
+      || _warn "cross_issue_anomaly_pause_gate: failed to clear pause report on #${release_issue}"
+  fi
+  return 0
 }
 
 # -------------------------
@@ -746,7 +1162,7 @@ issue_assign_only() {
 # touching `gh`.
 _issue_assignee_logins() {
   local issue="$1"
-  gh issue view "$issue" --repo "${REPO_OWNER}/${REPO_NAME}" --json assignees \
+  gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}" \
     --jq '[.assignees[].login] | sort | join(",")'
 }
 
@@ -814,7 +1230,7 @@ assign_and_trigger_developer() {
 
   # Check if developer is already assigned
   local current_assignee
-  current_assignee=$(gh issue view "$issue" --json assignees --jq '.assignees[].login' | grep -x "$DEV_AGENT" || echo "")
+  current_assignee=$(_issue_assignee_logins "$issue" 2>/dev/null | tr ',' '\n' | grep -x "$DEV_AGENT" || echo "")
 
   if [[ -n "$current_assignee" ]]; then
     # Developer already assigned - unassign first to force a new 'assigned'
@@ -872,7 +1288,7 @@ assign_and_trigger_developer() {
 classify_backlog_claim_state() {
   local issue="$1"
   local state assignees
-  state="$(gh issue view "$issue" --repo "${REPO_OWNER}/${REPO_NAME}" --json state --jq '.state' 2>/dev/null || echo "UNKNOWN")"
+  state="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}" --jq '.state | ascii_upcase' 2>/dev/null || echo "UNKNOWN")"
   if [[ "$state" != "OPEN" ]]; then
     echo "closed"
     return 0
@@ -981,8 +1397,8 @@ scrummaster_attempt_start() {
 # Prints the headRefName of every OPEN pull request, one per line. These are
 # always protected from any branch-deletion sweep.
 open_pr_head_branches() {
-  gh pr list --repo "${REPO_OWNER}/${REPO_NAME}" --state open \
-    --json headRefName --limit 200 --jq '.[].headRefName'
+  gh api "repos/${REPO_OWNER}/${REPO_NAME}/pulls?state=open&per_page=100" \
+    --paginate --jq '.[].head.ref'
 }
 
 # Best-effort remote branch delete: never fails the caller, since branch
@@ -1013,9 +1429,12 @@ extract_issue_number() {
 # `base_branch` — an explicit abandonment signal, safe to act on immediately.
 closed_unmerged_pr_exists() {
   local branch="$1" base_branch="$2" count
-  count="$(gh pr list --repo "${REPO_OWNER}/${REPO_NAME}" --head "$branch" --state closed \
-      --json merged,baseRefName --limit 20 2>/dev/null \
-    | jq --arg base "$base_branch" '[.[] | select(.merged == false and .baseRefName == $base)] | length')"
+  # --paginate emits one JSON array per page (not merged) -- slurp (-s) all
+  # pages into an outer array and flatten one level (`.[][]`) before
+  # counting, so `length` reflects the true total (see AGENTS.md).
+  count="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/pulls?head=${REPO_OWNER}:${branch}&state=closed&per_page=100" \
+      --paginate 2>/dev/null \
+    | jq -s --arg base "$base_branch" '[.[][] | select(.merged_at == null and .base.ref == $base)] | length')"
   [[ "${count:-0}" -gt 0 ]]
 }
 
@@ -1048,7 +1467,7 @@ classify_mergeable() {
   [[ -n "$issue" ]] || { echo ""; return 0; }
 
   local issue_state
-  issue_state="$(gh issue view "$issue" --repo "${REPO_OWNER}/${REPO_NAME}" --json state --jq '.state' 2>/dev/null || echo "")"
+  issue_state="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}" --jq '.state | ascii_upcase' 2>/dev/null || echo "")"
   [[ "$issue_state" == "CLOSED" ]] || { echo ""; return 0; }
 
   local mb
@@ -1092,7 +1511,7 @@ classify_mergeable() {
 #   1. it is not the head of any currently OPEN pull request, and
 #   2. classify_mergeable/closed_unmerged_pr_exists positively confirms it is
 #      merged, superseded, or explicitly abandoned (closed without merge).
-# Gate 1 alone is not sufficient: if the `gh pr list` call behind it fails
+# Gate 1 alone is not sufficient: if the REST pulls-list call behind it fails
 # transiently (rate limit, network blip, auth hiccup), it can silently
 # report zero open PRs, which previously left gate 2 blank and deleted every
 # sibling branch unconditionally — including the head of a live, unmerged PR
@@ -1336,11 +1755,12 @@ list_parked_blocked_issues() {
   rm -f "$tmp"
 }
 
-# GraphQL/REST state (OPEN/CLOSED) of an issue, split out from the sweep so
-# tests can stub it without mocking `gh` end-to-end.
+# REST state (OPEN/CLOSED, upper-cased to match historical GraphQL semantics)
+# of an issue, split out from the sweep so tests can stub it without mocking
+# `gh` end-to-end.
 _issue_open_state() {
   local n="$1"
-  gh issue view "$n" --repo "${REPO_OWNER}/${REPO_NAME}" --json state --jq '.state' 2>/dev/null || echo ""
+  gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${n}" --jq '.state | ascii_upcase' 2>/dev/null || echo ""
 }
 
 # Runs the sweep: lists parked issues (list_parked_blocked_issues), then

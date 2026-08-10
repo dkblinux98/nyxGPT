@@ -151,6 +151,18 @@ help, and a "Generate for me" option for `[auth] api_key`), backed by
 See [Canonical secret store & sync to GitHub Actions](#canonical-secret-store--sync-to-github-actions)
 below for what to do with these once they're set.
 
+### Option 5: Guided AWS credentials setup
+
+Any `nyxgpt cloud` command, and `[secrets] provider` above, needs AWS
+credentials available to boto3. `nyxgpt cloud credentials-setup` (and the
+`/admin` **AWS Credentials** wizard) walks through the same masked-entry,
+what-it-is/where-to-get-it treatment as Option 4 -- but the AWS access key
+ID/secret access key are **never written to `config.ini`**, routed instead
+to `~/.aws/credentials`, the OS keychain, or left alone if already available
+some other way (instance role, SSO, environment variables). See
+[`docs/cloud.md`](cloud.md#guided-aws-credentials-setup-p6-13-3512) for full
+details, including the `[cloud]` section this writes.
+
 ---
 
 ## Canonical secret store & sync to GitHub Actions
@@ -248,6 +260,7 @@ General application behavior.
 ```ini
 [nyxgpt]
 default_model = qwen2.5:0.5b
+session_backend = file
 sessions_dir = ~/.nyxGPT/sessions
 vectorstore_dir = ~/.nyxGPT/vectorstore
 chat_timeout_seconds = 60
@@ -260,7 +273,8 @@ system_prompt_minimize = false
 | Key | Description |
 |---|---|
 | `default_model` | Ollama model name used when none is specified (default: `llama3.1:8b`) |
-| `sessions_dir` | Directory for chat session storage (default: `~/.nyxGPT/sessions`). Must resolve *strictly inside* your home directory or the system temp directory -- values outside either, or equal to one of those roots exactly (e.g. `sessions_dir = ~`), are rejected at load time (CodeQL py/path-injection hardening, #3639/#3657). |
+| `session_backend` | Chat session storage backend: `file` (default) or `cassandra`. `cassandra` stores sessions in the stack's Cassandra (`[rag] cassandra_*`), so every deployment mode pointed at the same Cassandra shares one session list and multi-instance access is safe; existing `sessions_dir` files are imported once (idempotently) on API startup. Can be overridden per-process with the `NYXGPT_SESSION_BACKEND` environment variable. See [session-storage.md](session-storage.md) (#3590). |
+| `sessions_dir` | Directory for chat session storage with the `file` backend (default: `~/.nyxGPT/sessions`). **Deprecated** for multi-instance / containerized deployments: under `session_backend = cassandra` it is only read once as the migration source. Must resolve *strictly inside* your home directory or the system temp directory -- values outside either, or equal to one of those roots exactly (e.g. `sessions_dir = ~`), are rejected at load time (CodeQL py/path-injection hardening, #3639/#3657). |
 | `vectorstore_dir` | Directory for vector embeddings and RAG data (default: `~/.nyxGPT/vectorstore`). Same home-directory/temp-directory restriction as `sessions_dir`. |
 | `chat_timeout_seconds` | Timeout for a single chat request (default: `180`) |
 | `auto_summarize_enabled` | Automatically generate session title/summary/tags |
@@ -727,6 +741,59 @@ claude_code_oauth_token =
 repo's GitHub Actions secrets by `nyxgpt ops secrets-sync` -- see
 [Canonical secret store & sync to GitHub
 Actions](#canonical-secret-store--sync-to-github-actions).
+
+---
+
+## `[secrets]` section
+
+Cloud secrets provider for `[auth] api_key`, `[openai] api_key`, and
+`[github] pat` (P6-10, #3507) -- AWS-only, and only relevant on a cloud
+deploy. Local deploys leave this section unset and are unaffected.
+
+```ini
+[secrets]
+provider =
+region =
+ssm_prefix = /nyxgpt
+secretsmanager_id = nyxgpt
+```
+
+| Key | Description |
+|---|---|
+| `provider` | `""` (default, local deploy) reads the three credentials from `config.ini` as usual. `ssm` or `secretsmanager` resolves them from AWS instead -- see [`docs/cloud.md`](cloud.md#cloud-secrets-ssm--secrets-manager) for full setup, layout, and rotation. |
+| `region` | AWS region to resolve secrets from. Blank falls back to boto3's normal region resolution. |
+| `ssm_prefix` | SSM Parameter Store path prefix (`provider = ssm`). Each credential is one parameter at `f"{ssm_prefix}/{key}"`. |
+| `secretsmanager_id` | Secrets Manager secret id/ARN (`provider = secretsmanager`). Holds one JSON object with all three credentials. |
+
+See [`docs/cloud.md`](cloud.md#cloud-secrets-ssm--secrets-manager) for setup, the AWS-side layout, IAM permissions, and rotation.
+
+---
+
+## `[cloud]` section
+
+The AWS identity *reference* nyxGPT uses for its own AWS API calls (`nyxgpt
+cloud allow-ip`, cloud deploy, `[secrets]` resolution above) -- P6-13,
+#3512. Excluded from the general Configuration Wizard: it has its own
+guided flow instead (`nyxgpt cloud credentials-setup` / the `/admin` AWS
+Credentials wizard), since the actual AWS access key pair must never be
+hand-edited into this file.
+
+```ini
+[cloud]
+profile = nyxgpt
+region =
+credentials_source =
+```
+
+| Key | Description |
+|---|---|
+| `profile` | AWS CLI profile name nyxGPT uses when calling boto3. |
+| `region` | Default AWS region for nyxGPT's own AWS API calls. |
+| `credentials_source` | Where the access key pair for `profile` was routed by the guided setup: `profile` (`~/.aws/credentials`), `keychain` (OS keychain), or `ambient` (already available some other way). Set by the guided flow -- not meant to be hand-edited. |
+
+This section **never holds an AWS access key or secret access key** -- see
+[`docs/cloud.md`](cloud.md#guided-aws-credentials-setup-p6-13-3512) for
+where those actually go.
 
 ---
 

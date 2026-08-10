@@ -92,6 +92,45 @@ def autopilot_decision(remaining_open_backlog: int) -> str:
     return "continue" if remaining_open_backlog > 0 else "complete"
 
 
+_HUDDLE_DECISION_TYPES = frozenset({"a", "b", "c"})
+
+
+def huddle_routing_decision(disagreement_type: str, request_changes_count: int) -> str:
+    """#3687 review-huddle routing: given the review agent's classification
+    of a REQUEST_CHANGES round and the running count of REQUEST_CHANGES
+    reviews on the PR (including the one just submitted), decides what
+    review_agent_auto_review.yml does next. One of:
+
+    - "escalate_spec_ambiguity": type (c) -- the issue itself is unclear,
+      or resolution needs owner authority. Escalates immediately,
+      cycle zero, regardless of count.
+    - "huddle": type (b) judgment call (never loops -- huddles
+      immediately), or type (a) on its 2nd cycle (a verifiable-defect
+      loop that hasn't converged after one retry huddles instead of a
+      3rd blind retry).
+    - "escalate_cycle_limit": the existing 3-cycle outer breaker,
+      unchanged -- type (a) reaching its 3rd REQUEST_CHANGES review.
+    - "normal": type (a), cycle 1 -- return to developer as today.
+
+    An unrecognized disagreement_type is treated as "a" (the pre-#3687
+    default), so a missing/malformed classification never blocks the
+    existing loop -- it degrades to prior behavior rather than failing
+    closed or open unpredictably.
+    """
+    dtype = disagreement_type if disagreement_type in _HUDDLE_DECISION_TYPES else "a"
+
+    if dtype == "c":
+        return "escalate_spec_ambiguity"
+    if dtype == "b":
+        return "huddle"
+    # dtype == "a"
+    if request_changes_count >= 3:
+        return "escalate_cycle_limit"
+    if request_changes_count == 2:
+        return "huddle"
+    return "normal"
+
+
 _VERDICT_LABELS = {
     "on-track": "\U0001f7e2 On track",
     "at-risk": "\U0001f7e1 At risk",
@@ -202,7 +241,7 @@ def build_sprint_report(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _main(argv: list[str]) -> int:
     if not argv:
-        print("usage: sprint_calc.py <report|autopilot-decision>", file=sys.stderr)
+        print("usage: sprint_calc.py <report|autopilot-decision|huddle-routing>", file=sys.stderr)
         return 2
 
     cmd = argv[0]
@@ -213,6 +252,10 @@ def _main(argv: list[str]) -> int:
     if cmd == "autopilot-decision":
         remaining = int(argv[1])
         print(autopilot_decision(remaining))
+        return 0
+    if cmd == "huddle-routing":
+        disagreement_type, request_changes_count = argv[1], int(argv[2])
+        print(huddle_routing_decision(disagreement_type, request_changes_count))
         return 0
 
     print(f"unknown command: {cmd}", file=sys.stderr)

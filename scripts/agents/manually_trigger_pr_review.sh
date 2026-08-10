@@ -17,6 +17,7 @@ Description:
 
 Behavior:
   - Triggers the Claude Code Review workflow via workflow_dispatch
+  - Dispatches against RELEASE_BRANCH, not the repo default branch
   - Review-agent owns this process
   - Workflow uses REVIEW_AGENT_TOKEN for all operations
 
@@ -40,11 +41,20 @@ require_cmd gh
 
 REPO="${REPO_OWNER}/${REPO_NAME}"
 
-echo "[review] Triggering review workflow for PR #$PR" >&2
+echo "[review] Triggering review workflow for PR #$PR (ref: $RELEASE_BRANCH)" >&2
 
-# Trigger the workflow
+# --ref is not optional: without it `gh workflow run` dispatches the copy of
+# claude-code-review.yml on the repo *default* branch (master), which under
+# this project's branch rules only moves on releases and is therefore
+# arbitrarily far behind the active release branch. Dispatched reviews were
+# consequently running a stale workflow definition -- e.g. one whose
+# --json-schema predates the #3687 `disagreement_type` field, so every
+# dispatched REQUEST_CHANGES fell back to type (a) and, on its 2nd cycle,
+# routed to a huddle instead of the fix cycle the review actually called for
+# (#3704).
 gh workflow run claude-code-review.yml \
   --repo "$REPO" \
+  --ref "$RELEASE_BRANCH" \
   -f pr_number="$PR"
 
 echo "[review] ✓ Review workflow triggered for PR #$PR" >&2

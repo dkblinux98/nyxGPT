@@ -40,6 +40,16 @@ run `nyxgpt ops env-sync` instead, which copies them out of config.ini. This
 keeps config.ini as the one place you ever look for or rotate a secret,
 regardless of whether you're running nyxGPT natively or via Compose.
 
+**Exception for cloud (AWS) deploys:** `[auth] api_key`, `[openai]
+api_key`, and `[github] pat` must never be baked into an AMI, user-data
+script, tfvars file, or `config.ini` on a cloud instance. Setting
+`[secrets] provider` (`ssm` or `secretsmanager`) resolves those three from
+AWS SSM Parameter Store / Secrets Manager at read time instead -- see
+[`docs/cloud.md#cloud-secrets-ssm--secrets-manager`](cloud.md#cloud-secrets-ssm--secrets-manager)
+for setup and rotation. Every other secret in the table above, and every
+local deploy, keeps `config.ini` as its source of truth exactly as
+described here.
+
 If `monitoring.grafana_admin_password` is left unset, `nyxgpt ops install`
 falls back to an ops-managed secret it generates and stores at
 `~/.nyxGPT/secrets/grafana-admin-password`, and always deterministically

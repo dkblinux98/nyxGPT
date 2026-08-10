@@ -44,11 +44,12 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 from starlette.status import HTTP_401_UNAUTHORIZED
 
 import nyxgpt.config
 from nyxgpt import admin_activity as admin_activity_module
-from nyxgpt import api_models, config_wizard, models, secrets_setup, sessions
+from nyxgpt import api_models, aws_credentials_setup, config_wizard, models, secrets_setup, sessions
 from nyxgpt import canary as canary_module
 from nyxgpt import chat as chat_module
 from nyxgpt import error_tracking as error_tracking_module
@@ -99,6 +100,7 @@ from nyxgpt.batch_processor import BatchProcessor, RequestPriority
 from nyxgpt.chat import chat as run_chat
 from nyxgpt.chat import chat_stream
 from nyxgpt.config import (
+    get_auth_api_key,
     get_canary_error_rate_threshold,
     get_canary_latency_p95_threshold_ms,
     get_canary_min_requests,
@@ -117,10 +119,12 @@ from nyxgpt.config import (
     get_rag_min_score,
     get_rate_limit_config,
     get_rate_limit_enabled,
+    get_secrets_provider,
     get_self_heal_backoff_seconds,
     get_self_heal_check_interval_seconds,
     get_self_heal_default_enabled,
     get_self_heal_max_consecutive_restarts,
+    get_session_backend,
     get_sessions_dir,
     get_tracing_config,
     load_config,
@@ -303,6 +307,29 @@ async def lifespan(_app: FastAPI):
         )
     except Exception as e:
         log.error("Failed to prepare sessions directory %s: %s", sessions_dir, e)
+
+    # One-time (idempotent) import of legacy JSON session files into the DB
+    # when the Cassandra session backend is active (#3590). Sessions already
+    # present in the DB are never overwritten; the legacy files stay on disk
+    # as a read-only archive (see docs/session-storage.md).
+    try:
+        if get_session_backend(cfg) == "cassandra":
+            from nyxgpt import session_db
+
+            report = session_db.migrate_sessions_dir(sessions_dir)
+            log.info(
+                "Session backend: cassandra (migrated %d legacy file session(s), "
+                "%d already in DB, %d invalid, %d errors)",
+                len(report["migrated"]),
+                len(report["skipped_existing"]),
+                len(report["skipped_invalid"]),
+                len(report["errors"]),
+                extra={"component": "startup"},
+            )
+    except Exception as e:
+        # Never prevent API startup; session endpoints will surface store
+        # errors per-request if Cassandra stays unreachable.
+        log.error("Legacy session migration failed: %s", e, extra={"component": "startup"})
 
     # Pre-touch known RAG metric label combinations so legitimate zero
     # states render as 0 on the SPOG panels instead of "No data"
@@ -694,16 +721,22 @@ async def api_key_auth(request: Request, call_next):
         return await call_next(request)
 
     cfg = getattr(request.state, "cfg", None)
-    auth = _auth_cfg(cfg)
+    cfg = cfg or load_config(None)
     req_id = getattr(request.state, "request_id", None)
-    log.debug(
-        "auth check (request_id=%s) enabled=%s",
-        req_id,
-        bool(auth.get("enabled")),
-    )
-    if not auth.get("enabled"):
+
+    # Check `enabled` on its own first -- it's a plain config.ini read, no
+    # AWS call. Only resolve the (possibly cloud-sourced) api_key when auth
+    # is actually enabled, and do that resolution in a thread pool: this
+    # middleware is `async def`, so Starlette runs it directly on the event
+    # loop rather than dispatching it to a worker thread the way a plain
+    # `def` route handler would -- a synchronous boto3 call here would
+    # otherwise block the event loop for every concurrent request.
+    enabled = cfg.getboolean("auth", "enabled", fallback=False)
+    log.debug("auth check (request_id=%s) enabled=%s", req_id, enabled)
+    if not enabled:
         return await call_next(request)
 
+    auth = await run_in_threadpool(_auth_cfg, cfg)
     header = auth.get("header", "X-API-Key")
     expected = auth.get("api_key")
     provided = request.headers.get(header)
@@ -848,7 +881,7 @@ def _auth_cfg(cfg: ConfigParser | None = None) -> dict[str, Any]:
     """
     cfg = cfg or load_config(None)
     enabled = cfg.getboolean("auth", "enabled", fallback=False)
-    api_key = cfg.get("auth", "api_key", fallback="").strip()
+    api_key = get_auth_api_key(cfg)
     header = cfg.get("auth", "header", fallback="X-API-Key").strip() or "X-API-Key"
     return {
         "enabled": enabled,
@@ -1709,6 +1742,110 @@ def config_secrets_sync(payload: dict[str, Any] = Body(default={})) -> dict[str,
     }
 
 
+# --- Guided AWS credentials setup endpoints (P6-13, #3512) ---
+#
+# Deliberately separate from `/config/sections` and `/config/secrets`
+# above: the access key pair collected here is never written to
+# config.ini -- it's routed to ~/.aws/credentials or the OS keychain by
+# `aws_credentials_setup.save_aws_credentials`. Only the non-secret
+# `[cloud]` reference (profile/region/destination) goes through
+# `config_wizard.apply_updates`, and `[cloud]` is excluded from the
+# general wizard's schema for exactly this reason.
+
+
+@api.get("/config/aws-credentials")
+def config_aws_credentials_get(request: Request) -> dict[str, Any]:
+    """Return the guided AWS credentials flow's status: fields, `[cloud]` reference, and
+    where the access key pair is currently stored (masked). Never returns cleartext.
+    """
+    cfg = _req_cfg(request)
+    return aws_credentials_setup.aws_credentials_status(cfg)
+
+
+@api.post("/config/aws-credentials")
+def config_aws_credentials_update(
+    request: Request, payload: dict[str, Any] = Body(...)
+) -> dict[str, Any]:
+    """Validate and save AWS credentials via the guided flow (#3512).
+
+    Payload: `{"destination": "profile"|"keychain"|"ambient", "profile": ...,
+    "region": ..., "access_key_id"?: ..., "secret_access_key"?: ...}`. The
+    key pair (required for `profile`/`keychain`) is routed to
+    `~/.aws/credentials` or the OS keychain -- never config.ini. Only
+    profile/region/destination are written to config.ini's `[cloud]`
+    section.
+    """
+    destination = payload.get("destination")
+    profile = payload.get("profile")
+    region = payload.get("region")
+    if (
+        not isinstance(destination, str)
+        or not isinstance(profile, str)
+        or not isinstance(region, str)
+    ):
+        raise HTTPException(
+            status_code=400, detail="'destination', 'profile', and 'region' are required"
+        )
+
+    access_key_id = payload.get("access_key_id")
+    secret_access_key = payload.get("secret_access_key")
+    if access_key_id is not None and not isinstance(access_key_id, str):
+        raise HTTPException(status_code=400, detail="'access_key_id' must be a string")
+    if secret_access_key is not None and not isinstance(secret_access_key, str):
+        raise HTTPException(status_code=400, detail="'secret_access_key' must be a string")
+
+    try:
+        aws_credentials_setup.save_aws_credentials(
+            _config_file_path(), destination, profile, region, access_key_id, secret_access_key
+        )
+    except aws_credentials_setup.SecretValidationError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    except aws_credentials_setup.AwsCredentialsError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    nyxgpt.config._CACHED_CFG = None
+    nyxgpt.config._CACHED_PATH = None
+    nyxgpt.config._CACHED_MTIME_NS = None
+    request.state.cfg = load_config(None)
+    cfg = _req_cfg(request)
+
+    admin_activity_module.record(
+        "config.aws_credentials_set", f"profile={profile} destination={destination}"
+    )
+
+    return aws_credentials_setup.aws_credentials_status(cfg)
+
+
+@api.post("/config/aws-credentials/secret-store")
+def config_aws_secret_store_update(
+    request: Request, payload: dict[str, Any] = Body(...)
+) -> dict[str, Any]:
+    """Validate and save #3507's `[secrets]` provider reference (#3512's guided-flow parity).
+
+    Payload: `{"provider"?: ..., "region"?: ..., "ssm_prefix"?: ...,
+    "secretsmanager_id"?: ...}`. These aren't secret values themselves --
+    the actual application secrets stay in SSM/Secrets Manager -- so
+    they're written to config.ini like every other setting.
+    """
+    values = {
+        f.key: payload.get(f.key, "") for f in aws_credentials_setup.SECRET_STORE_REFERENCE_FIELDS
+    }
+    try:
+        aws_credentials_setup.save_secret_store_reference(_config_file_path(), values)
+    except aws_credentials_setup.SecretValidationError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+
+    nyxgpt.config._CACHED_CFG = None
+    nyxgpt.config._CACHED_PATH = None
+    nyxgpt.config._CACHED_MTIME_NS = None
+    request.state.cfg = load_config(None)
+    cfg = _req_cfg(request)
+
+    admin_activity_module.record("config.secret_store_reference_set", "secrets section updated")
+
+    return aws_credentials_setup.aws_credentials_status(cfg)
+
+
 _RESTART_TARGETS = {"api", "web", "ollama", "cassandra", "observability", "all"}
 
 
@@ -1942,6 +2079,22 @@ def admin_access_update(
     rotate = bool(payload.get("rotate"))
     new_key: str | None = None
     if rotate:
+        # When a cloud secrets provider is configured, `get_auth_api_key`
+        # always prefers the AWS-resolved value over config.ini (see
+        # `_resolve_cloud_secret`), so writing a new key to config.ini here
+        # would be inert: the middleware would keep enforcing the old
+        # cloud-stored key while this endpoint reported the new one as
+        # active. Reject explicitly instead of silently no-op'ing.
+        if get_secrets_provider(cfg):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "API key rotation via this dashboard is disabled because a cloud "
+                    "secrets provider ([secrets] provider) is configured. Rotate the "
+                    "value in AWS SSM Parameter Store or Secrets Manager instead -- "
+                    "see docs/cloud.md for the rotation procedure."
+                ),
+            )
         new_key = secrets.token_urlsafe(32)
         updates["api_key"] = new_key
 
@@ -2456,7 +2609,7 @@ def sessions_show(
     sd = _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None))
     sf = sessions.session_file_for(name, sd or sessions.default_sessions_dir())
     mf = sessions.meta_file_for(sf)
-    if not sf.exists():
+    if not sessions.session_file_exists(sf):
         raise HTTPException(status_code=404, detail="No such session")
 
     # Validate pagination parameters (Medium Issue 4)
@@ -2522,7 +2675,7 @@ def sessions_init(req: dict[str, Any] = Body(...)) -> dict[str, Any]:
         log.error("Failed to get session file path: %s", e)
         raise HTTPException(status_code=500, detail="Internal server error") from e
 
-    if sf.exists():
+    if sessions.session_file_exists(sf):
         return {"ok": True, "name": name, "existed": True}
 
     system = req.get("system")
@@ -2670,7 +2823,7 @@ def sessions_rename(
 
     # Check if current session exists
     sf = sessions.session_file_for(name, _sessions_dir)
-    if not sf.exists():
+    if not sessions.session_file_exists(sf):
         raise HTTPException(status_code=404, detail=f"Session '{name}' not found")
 
     if req.sync_filename:
@@ -2729,7 +2882,7 @@ def sessions_sync_filename(name: str, sessions_dir: str | None = None) -> dict[s
 
     # Check if session exists
     sf = sessions.session_file_for(name, _sessions_dir)
-    if not sf.exists():
+    if not sessions.session_file_exists(sf):
         raise HTTPException(status_code=404, detail=f"Session '{name}' not found")
 
     # Force filename sync
@@ -2792,7 +2945,7 @@ def get_message_rag_chunks(
 
     # Load session messages
     sf = sessions.session_file_for(name, _sessions_dir)
-    if not sf.exists():
+    if not sessions.session_file_exists(sf):
         raise HTTPException(status_code=404, detail=f"Session '{name}' not found")
 
     msgs = sessions.load_session_messages(sf)
@@ -2880,11 +3033,11 @@ def export_session_citations(
 
     # Load session messages
     sf = sessions.session_file_for(name, _sessions_dir)
-    if not sf.exists():
+    if not sessions.session_file_exists(sf):
         raise HTTPException(status_code=404, detail=f"Session '{name}' not found")
 
     # Use file locking to prevent race conditions during read
-    with sessions.file_lock(sf, timeout=5.0):
+    with sessions.session_lock(sf, timeout=5.0):
         msgs = sessions.load_session_messages(sf)
 
     # Extract all citations from assistant messages
@@ -2967,7 +3120,7 @@ def regenerate_response(
 
     # Load session to validate message index
     sf = sessions.session_file_for(name, _sessions_dir)
-    if not sf.exists():
+    if not sessions.session_file_exists(sf):
         raise HTTPException(status_code=404, detail="No such session")
 
     msgs = sessions.load_session_messages(sf)
@@ -4649,7 +4802,7 @@ def get_session_metadata(name: str) -> dict[str, Any]:
     mf = sessions.meta_file_for(sf)
 
     # Create session files if they don't exist
-    if not sf.exists():
+    if not sessions.session_file_exists(sf):
         sessions.save_session_messages(sf, [])
 
     meta = sessions.load_session_meta(mf)
@@ -4673,7 +4826,7 @@ def enable_session_rag(name: str) -> dict[str, Any]:
     mf = sessions.meta_file_for(sf)
 
     # Create session files if they don't exist
-    if not sf.exists():
+    if not sessions.session_file_exists(sf):
         sessions.save_session_messages(sf, [])
 
     meta = sessions.load_session_meta(mf)
@@ -4698,7 +4851,7 @@ def disable_session_rag(name: str) -> dict[str, Any]:
     mf = sessions.meta_file_for(sf)
 
     # Create session files if they don't exist
-    if not sf.exists():
+    if not sessions.session_file_exists(sf):
         sessions.save_session_messages(sf, [])
 
     meta = sessions.load_session_meta(mf)
@@ -4741,7 +4894,7 @@ def attach_document_to_session(name: str, req: AttachDocumentRequest) -> Session
     sf = sessions.session_file_for(name, sessions_dir)
     mf = sessions.meta_file_for(sf)
 
-    if not sf.exists():
+    if not sessions.session_file_exists(sf):
         sessions.save_session_messages(sf, [])
 
     meta = sessions.load_session_meta(mf)
