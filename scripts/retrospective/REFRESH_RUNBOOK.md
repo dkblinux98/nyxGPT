@@ -31,7 +31,17 @@ Artifact URL (republish to this URL, do not mint a new one):
    then `git pull` — the workflow commits the JSON to the dispatching branch. If
    dispatch fails, skip; the builder falls back to calendar weeks automatically.
 
-4. **Refresh the last-7-days review detail** → `data/dashboard_data.json`.
+4. **Refresh per-issue spend telemetry** → `data/spend.json` (#3696).
+   Dispatch the workflow `retro_spend_dump.yml` on the default branch
+   (`actions_run_trigger`, method `run_workflow`), wait for completion (this
+   one walks GitHub Actions run history across several workflows, including a
+   per-run `jobs`/`timing` API call for each `developer_auto_implement.yml`
+   and cost-tracked run — expect several minutes, not the ~1 min of the other
+   dumps), then `git pull` — the workflow commits the JSON to the dispatching
+   branch. If dispatch fails or `data/spend.json` doesn't exist yet, skip; the
+   builder omits the spend section entirely rather than erroring.
+
+5. **Refresh the last-7-days review detail** → `data/dashboard_data.json`.
    a. Gmail MCP `search_threads`:
       `from:notifications@github.com "Code Review - REQUEST_CHANGES" newer_than:8d`,
       fetch each thread (`get_thread`), and parse every message containing
@@ -54,13 +64,13 @@ Artifact URL (republish to this URL, do not mint a new one):
       "Last 7 days in review · <dates>" divider and the totals sentences in the
       first-pass panel and footer) to the new window.
 
-5. **Build**: `python3 scripts/retrospective/build_dashboard.py`
+6. **Build**: `python3 scripts/retrospective/build_dashboard.py`
    → `scripts/retrospective/retro.html`.
 
-6. **Publish** the built file with the Artifact tool to the URL above
+7. **Publish** the built file with the Artifact tool to the URL above
    (`url` parameter — same URL, do not create a new artifact). Favicon stays 🔍.
 
-7. **Commit** refreshed `data/*.json` (and GATE/template edits) via the
+8. **Commit** refreshed `data/*.json` (and GATE/template edits) via the
    `claude/retro-data` branch: force-reset `claude/retro-data` to the current
    default-branch tip (`git checkout -B claude/retro-data`), commit there, and
    `git push --force origin claude/retro-data`. The

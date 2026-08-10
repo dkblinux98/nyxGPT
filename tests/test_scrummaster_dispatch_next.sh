@@ -198,11 +198,81 @@ _assert_eq "(e) anomaly-paused: pause_reason is cross_issue_anomaly" "cross_issu
 _assert_eq "(e) anomaly-paused: nothing started" "" "$(_parse_next_issue "$OUT")"
 _assert_eq "(e) anomaly-paused: nothing recorded as tried" "" "$(_parse_tried "$OUT")"
 
-# Restore the default stubs for good measure (no further scenarios today,
-# but keeps this file safe to extend below without re-triggering (d)/(e)'s
-# "must not run" stubs).
+# Restore the default stubs so the #3695 scenarios below only exercise the
+# block they target, without re-triggering (d)/(e)'s "must not run" stubs.
 _escalation_pause_check() { return 0; }
 _cross_issue_anomaly_check() { return 0; }
+
+# --- Scenario (f): #3695 human-channel notification -- the escalation- ---
+# --- pause backstop (d) must fire _notify_dispatch_block with state ---
+# --- "dispatch-paused", targeted at RELEASE_ISSUE_NUMBER (the same ---
+# --- dispatch-wide target sprint_autopilot_kick/escalation_pause_gate ---
+# --- already report to). No RELEASE_ISSUE_NUMBER configured -> silently ---
+# --- skipped (same conservative default as escalation_pause_gate). ---
+NOTIFY_CALLS=()
+notify_human_escalation() { NOTIFY_CALLS+=("$*"); }
+
+_escalation_pause_check() { return 1; }
+RELEASE_ISSUE_NUMBER=""
+scrummaster_dispatch_next "0" >/dev/null 2>&1
+_assert_eq "(f) paused, no RELEASE_ISSUE_NUMBER: no Slack notification attempted" \
+  "0" "${#NOTIFY_CALLS[@]}"
+
+NOTIFY_CALLS=()
+RELEASE_ISSUE_NUMBER="3521"
+scrummaster_dispatch_next "0" >/dev/null 2>&1
+_assert_eq "(f) paused, with RELEASE_ISSUE_NUMBER: exactly one Slack notification" \
+  "1" "${#NOTIFY_CALLS[@]}"
+_assert_eq "(f) paused: notification targets the release tracking issue with state dispatch-paused" \
+  "3521 dispatch-paused" "$(echo "${NOTIFY_CALLS[0]}" | cut -d' ' -f1-2)"
+
+# The #3694 anomaly-pause backstop notifies too, with its own state (so the
+# message names the actual cause and the two backstops never de-duplicate
+# against each other).
+_escalation_pause_check() { return 0; }
+_cross_issue_anomaly_check() { return 1; }
+NOTIFY_CALLS=()
+scrummaster_dispatch_next "0" >/dev/null 2>&1
+_assert_eq "(f) anomaly-paused, with RELEASE_ISSUE_NUMBER: exactly one Slack notification" \
+  "1" "${#NOTIFY_CALLS[@]}"
+_assert_eq "(f) anomaly-paused: notification targets the release tracking issue with state anomaly-paused" \
+  "3521 anomaly-paused" "$(echo "${NOTIFY_CALLS[0]}" | cut -d' ' -f1-2)"
+_cross_issue_anomaly_check() { return 0; }
+
+# --- Scenario (g): #3695 queue-blocked (scenario (c)'s all-unclaimable ---
+# --- case) also fires _notify_dispatch_block, with state "queue-blocked" ---
+_escalation_pause_check() { return 0; }
+_select_next_candidate() {
+  case "$1" in
+    "") echo "90" ;;
+    "90") echo "91" ;;
+    *) echo "" ;;
+  esac
+}
+scrummaster_attempt_start() {
+  case "$1" in
+    90) echo "SKIPPED #90 reason=anomaly assignee=myGPT-review-agent"; return 11 ;;
+    91) echo "SKIPPED #91 reason=human_hold"; return 10 ;;
+    *) echo "[test] unexpected issue $1" >&2; return 1 ;;
+  esac
+}
+
+NOTIFY_CALLS=()
+RELEASE_ISSUE_NUMBER="3521"
+scrummaster_dispatch_next "0" >/dev/null 2>&1
+_assert_eq "(g) queue-blocked: exactly one Slack notification" "1" "${#NOTIFY_CALLS[@]}"
+_assert_eq "(g) queue-blocked: notification targets the release tracking issue with state queue-blocked" \
+  "3521 queue-blocked" "$(echo "${NOTIFY_CALLS[0]}" | cut -d' ' -f1-2)"
+
+# Started successfully (scenario (a) shape) -- no block, no notification.
+NOTIFY_CALLS=()
+_select_next_candidate() { echo "3593"; }
+scrummaster_attempt_start() { echo "STARTED #3593"; return 0; }
+scrummaster_dispatch_next "0" >/dev/null 2>&1
+_assert_eq "(g) normal start: no Slack notification attempted" "0" "${#NOTIFY_CALLS[@]}"
+
+unset -f notify_human_escalation
+RELEASE_ISSUE_NUMBER=""
 
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "All tests passed."

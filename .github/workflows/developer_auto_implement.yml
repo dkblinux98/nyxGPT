@@ -413,6 +413,7 @@ jobs:
           track_progress: true
           show_full_output: true
           claude_args: >-
+            --model claude-fable-5
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
@@ -552,6 +553,7 @@ jobs:
           track_progress: true
           show_full_output: true
           claude_args: >-
+            --model claude-fable-5
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
@@ -716,6 +718,7 @@ jobs:
           track_progress: true
           show_full_output: true
           claude_args: >-
+            --model claude-fable-5
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
@@ -1038,6 +1041,7 @@ jobs:
           track_progress: true
           show_full_output: true
           claude_args: >-
+            --model claude-fable-5
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
@@ -1147,6 +1151,7 @@ jobs:
           track_progress: true
           show_full_output: true
           claude_args: >-
+            --model claude-fable-5
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
@@ -1819,6 +1824,7 @@ jobs:
           track_progress: true
           show_full_output: false
           claude_args: >-
+            --model claude-fable-5
             --allowed-tools "Bash,Read,Grep"
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
@@ -2063,6 +2069,11 @@ jobs:
             }
 
             core.setOutput('developer_escalated', 'true');
+            // #3695: one-line diagnosis + recommended action for the human-
+            // channel (Slack) notification the "Sprint autopilot kick"
+            // step sends after this one.
+            core.setOutput('diagnosis', `Fix commit ${commitSha || 'unknown'} exists but is not reachable from the default branch -- retrying would just reproduce the same failure.`);
+            core.setOutput('action', recommendation || `Cherry-pick or merge commit ${commitSha || 'unknown'} onto the release branch.`);
             core.setFailed('Fix found but not reachable from the default branch (FIXED_REQUIRES_MERGE) -- escalated to owner');
 
       - name: Post fix success comment (Phase 2+3)
@@ -2178,6 +2189,14 @@ jobs:
               "$FAILED_STEP" "$RETRY_COUNT" "$SAME_SIG" "$ANALYSIS_PHASE" "$REASON" "$REPO" "$RUN_ID")"
             gh issue comment "$ISSUE" --body "$BODY"
             echo "escalated=true" >> "$GITHUB_OUTPUT"
+            # #3695: one-line diagnosis + recommended action for the human-
+            # channel (Slack) notification the "Sprint autopilot kick" step
+            # sends after this one. GITHUB_OUTPUT writes persist even though
+            # this step exits 1 below.
+            {
+              echo "diagnosis=${REASON} (failed step: ${FAILED_STEP})"
+              echo "action=Review the failed workflow logs, fix the underlying problem manually, then comment on the issue (as the repo owner) to reset the budget and RETRY_IMPLEMENTATION."
+            } >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
@@ -2274,6 +2293,11 @@ jobs:
             });
 
             core.setOutput('developer_escalated', 'true');
+            // #3695: one-line diagnosis + recommended action for the human-
+            // channel (Slack) notification the "Sprint autopilot kick"
+            // step sends after this one.
+            core.setOutput('diagnosis', explanation);
+            core.setOutput('action', 'Review the failed workflow logs, address the root cause, then comment RETRY_IMPLEMENTATION.');
             core.setFailed(`Fatal error (${errorClass}) - no auto-retry`);
 
       - name: Sprint autopilot kick (developer-side escalation)
@@ -2283,6 +2307,10 @@ jobs:
         # a review-cycle escalation does, so it must post the same
         # READY_FOR_NEXT_ISSUE continuation kick -- otherwise a stuck issue
         # silently parks the sprint-autopilot queue instead of moving on.
+        # Also sends the #3695 human-channel (Slack DM) notification for
+        # this terminal outcome -- whichever of the three escalation steps
+        # above actually ran is the one with non-empty outputs (a skipped
+        # step's outputs are always empty, never an error).
         if: |
           failure() && (
             steps.auto_retry.outputs.escalated == 'true' ||
@@ -2293,13 +2321,56 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_USER_ID: ${{ secrets.SLACK_USER_ID }}
+          STATE_FATAL: ${{ steps.escalate_fatal.outputs.developer_escalated }}
+          STATE_REQUIRES_MERGE: ${{ steps.escalate_requires_merge.outputs.developer_escalated }}
+          STATE_RETRY_EXHAUSTED: ${{ steps.auto_retry.outputs.escalated }}
+          DIAG_FATAL: ${{ steps.escalate_fatal.outputs.diagnosis }}
+          DIAG_REQUIRES_MERGE: ${{ steps.escalate_requires_merge.outputs.diagnosis }}
+          DIAG_RETRY_EXHAUSTED: ${{ steps.auto_retry.outputs.diagnosis }}
+          ACTION_FATAL: ${{ steps.escalate_fatal.outputs.action }}
+          ACTION_REQUIRES_MERGE: ${{ steps.escalate_requires_merge.outputs.action }}
+          ACTION_RETRY_EXHAUSTED: ${{ steps.auto_retry.outputs.action }}
+          STATE_ANOMALY: ${{ steps.cross_issue_anomaly.outputs.matched }}
+          ANOMALY_ORIGIN: ${{ steps.cross_issue_anomaly.outputs.origin_issue }}
+          ANOMALY_STEP: ${{ steps.classify_error.outputs.failed_step }}
         run: |
           set -euo pipefail
           source scripts/agents/lib/gh_project.sh
           load_config
           require_gh_auth
-          if [[ "${{ steps.cross_issue_anomaly.outputs.matched }}" == "true" ]]; then
-            sprint_autopilot_kick "${{ github.event.issue.number }}" anomaly
+          ISSUE="${{ github.event.issue.number }}"
+
+          if [[ "$STATE_ANOMALY" == "true" ]]; then
+            # #3694: distinct verb -- this issue was not escalated to the
+            # owner and no review cycles occurred; it hit a cross-issue
+            # infrastructure anomaly another issue already diagnosed.
+            sprint_autopilot_kick "$ISSUE" anomaly
+            STATE="cross-issue-anomaly"
+            DIAGNOSIS="Step '${ANOMALY_STEP}' failing here matches the unresolved cross-issue infrastructure anomaly tracked on #${ANOMALY_ORIGIN} (#3694) -- redundant diagnosis skipped."
+            ACTION="Resolve the shared anomaly tracked on #${ANOMALY_ORIGIN}; each affected issue resumes via RETRY_IMPLEMENTATION once it clears."
+            # Dedup on the ORIGIN issue, not this one: one infrastructure
+            # event should produce one Slack DM total, not one per affected
+            # issue (the same collapse #3694 applies to diagnosis).
+            DEDUP_KEY="${ANOMALY_ORIGIN}:developer:${STATE}"
           else
-            sprint_autopilot_kick "${{ github.event.issue.number }}" escalated
+            sprint_autopilot_kick "$ISSUE" escalated
+            if [[ "$STATE_FATAL" == "true" ]]; then
+              STATE="FATAL"
+              DIAGNOSIS="$DIAG_FATAL"
+              ACTION="$ACTION_FATAL"
+            elif [[ "$STATE_REQUIRES_MERGE" == "true" ]]; then
+              STATE="FIXED_REQUIRES_MERGE"
+              DIAGNOSIS="$DIAG_REQUIRES_MERGE"
+              ACTION="$ACTION_REQUIRES_MERGE"
+            else
+              STATE="retry-budget-exhausted"
+              DIAGNOSIS="$DIAG_RETRY_EXHAUSTED"
+              ACTION="$ACTION_RETRY_EXHAUSTED"
+            fi
+            DEDUP_KEY="${ISSUE}:developer:${STATE}"
           fi
+
+          notify_human_escalation "$ISSUE" "$STATE" "$DIAGNOSIS" "$ACTION" "$DEDUP_KEY" \
+            || echo "::warning::Human-channel notification failed for issue #${ISSUE} — escalation itself is unaffected."

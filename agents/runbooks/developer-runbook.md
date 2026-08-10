@@ -297,6 +297,22 @@ previously only the review-agent's escalation path did this, so a
 developer-side escalation could silently park the sprint-autopilot queue
 instead of freeing it to move to the next issue.
 
+**Human-channel (Slack) notification (#3695).** The 2026-08-09 #3513
+incident showed a correct `FATAL`/`FIXED_REQUIRES_MERGE` diagnosis can sit
+unread in the issue thread for hours if the owner is not actively watching
+GitHub -- the "Sprint autopilot kick (developer-side escalation)" step that
+follows all three exhaustion paths above also calls
+`notify_human_escalation` (`scripts/agents/lib/gh_project.sh`) with the
+firing step's one-line diagnosis and recommended action (e.g. "merge
+`<sha>` to v3.0.0" for `FIXED_REQUIRES_MERGE`). This sends a Slack DM to
+the owner via the existing `SLACK_BOT_TOKEN` + `SLACK_USER_ID` Actions
+secrets (already configured for `notify-merge-conflicts.yml` -- no new
+secrets). Missing secrets or a failed Slack call degrade silently to the
+comment-only behavior that already existed; the GitHub escalation comment
+is always posted regardless. Repeated firings for the same (issue, state)
+within a 60-minute window are suppressed via a dedup marker comment
+(`_slack_notify_recent`) so a retry loop cannot spam the channel.
+
 Separately, the "Verify issue is In Progress" and "Verify issue is assigned
 to developer-agent" gates are policy stops, not infra failures: they now
 set a `gate_stopped` step output that the self-heal entry points
@@ -308,8 +324,9 @@ run without triggering a spurious Phase 1-3 diagnosis or a misleading
 
 ## 3f) Cross-issue infrastructure-anomaly collapse (#3694)
 
-The 2026-08-09 postmortem (see issue #3694's "Problem / Motivation" for the
-full account): a runner-image change made `gh api search/issues` fail deterministically in
+The 2026-08-09 postmortem (`product_management/AGENTIC_SDLC_DESIGN.md` §9;
+issue #3694's "Problem / Motivation" carries the same account): a
+runner-image change made `gh api search/issues` fail deterministically in
 the "Check if PR already exists" step. Five issues were in flight, so the
 self-heal chain ran five independent Phase 1-3 diagnoses against the same
 infrastructure fault -- ~45-50 Claude invocations to re-derive the same

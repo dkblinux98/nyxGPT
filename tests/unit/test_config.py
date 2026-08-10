@@ -6,12 +6,14 @@ from pathlib import Path
 
 import pytest
 
+from nyxgpt import cloud_secrets
 from nyxgpt.config import (
     SECRETS_SYNC_MANIFEST,
     _expand_path,
     get_ann_oversample_factor,
     get_api_host,
     get_api_port,
+    get_auth_api_key,
     get_auth_enabled,
     get_batch_enabled,
     get_batch_size,
@@ -62,6 +64,10 @@ from nyxgpt.config import (
     get_rag_min_score,
     get_rate_limit_config,
     get_rate_limit_enabled,
+    get_secrets_provider,
+    get_secrets_region,
+    get_secrets_secretsmanager_id,
+    get_secrets_ssm_prefix,
     get_self_heal_backoff_seconds,
     get_self_heal_check_interval_seconds,
     get_self_heal_default_enabled,
@@ -2216,6 +2222,179 @@ def test_get_github_pat_reads_value(tmp_path: Path) -> None:
     _write(ini, "[github]\npat = ghp_abc123\n")
     cfg = load_config(str(ini))
     assert get_github_pat(cfg) == "ghp_abc123"
+
+
+# --- Cloud secrets (SSM / Secrets Manager, P6-10, #3507) ---
+
+
+@pytest.fixture(autouse=True)
+def _clear_cloud_secrets_cache():
+    cloud_secrets.clear_cache()
+    yield
+    cloud_secrets.clear_cache()
+
+
+def test_get_secrets_provider_defaults_to_empty(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[nyxgpt]\ndefault_model = llama3.1:8b\n")
+    cfg = load_config(str(ini))
+    assert get_secrets_provider(cfg) == ""
+
+
+def test_get_secrets_provider_reads_and_normalizes_value(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[secrets]\nprovider = SSM\n")
+    cfg = load_config(str(ini))
+    assert get_secrets_provider(cfg) == "ssm"
+
+
+def test_get_secrets_region_returns_none_when_unset(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[nyxgpt]\ndefault_model = llama3.1:8b\n")
+    cfg = load_config(str(ini))
+    assert get_secrets_region(cfg) is None
+
+
+def test_get_secrets_region_reads_value(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[secrets]\nregion = us-west-2\n")
+    cfg = load_config(str(ini))
+    assert get_secrets_region(cfg) == "us-west-2"
+
+
+def test_get_secrets_ssm_prefix_defaults(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[nyxgpt]\ndefault_model = llama3.1:8b\n")
+    cfg = load_config(str(ini))
+    assert get_secrets_ssm_prefix(cfg) == "/nyxgpt"
+
+
+def test_get_secrets_secretsmanager_id_defaults(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[nyxgpt]\ndefault_model = llama3.1:8b\n")
+    cfg = load_config(str(ini))
+    assert get_secrets_secretsmanager_id(cfg) == "nyxgpt"
+
+
+def test_get_auth_api_key_reads_local_value_when_provider_unset(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[auth]\napi_key = local-secret\n")
+    cfg = load_config(str(ini))
+    assert get_auth_api_key(cfg) == "local-secret"
+
+
+def test_get_auth_api_key_resolves_from_ssm_when_provider_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[secrets]\nprovider = ssm\n[auth]\napi_key = should-not-be-used\n")
+    cfg = load_config(str(ini))
+
+    monkeypatch.setattr(
+        cloud_secrets,
+        "resolve_secret",
+        lambda provider, key, **kwargs: f"cloud-{provider}-{key}",
+    )
+
+    assert get_auth_api_key(cfg) == "cloud-ssm-auth_api_key"
+
+
+def test_get_openai_api_key_resolves_from_secretsmanager_when_provider_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[secrets]\nprovider = secretsmanager\n[openai]\napi_key = should-not-be-used\n")
+    cfg = load_config(str(ini))
+
+    monkeypatch.setattr(
+        cloud_secrets,
+        "resolve_secret",
+        lambda provider, key, **kwargs: f"cloud-{provider}-{key}",
+    )
+
+    assert get_openai_api_key(cfg) == "cloud-secretsmanager-openai_api_key"
+
+
+def test_get_github_pat_resolves_from_cloud_when_provider_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[secrets]\nprovider = ssm\n[github]\npat = should-not-be-used\n")
+    cfg = load_config(str(ini))
+
+    monkeypatch.setattr(
+        cloud_secrets,
+        "resolve_secret",
+        lambda provider, key, **kwargs: f"cloud-{provider}-{key}",
+    )
+
+    assert get_github_pat(cfg) == "cloud-ssm-github_pat"
+
+
+def test_get_auth_api_key_returns_empty_not_local_value_when_cloud_fetch_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A configured provider that fails to resolve must not silently fall
+    back to a config.ini value -- cloud deploys never populate that value,
+    so the failure should surface as empty (and thus a locked-down/failing
+    integration) rather than be masked."""
+    ini = tmp_path / "config.ini"
+    _write(ini, "[secrets]\nprovider = ssm\n[auth]\napi_key = should-not-be-used\n")
+    cfg = load_config(str(ini))
+
+    def _raise(provider, key, **kwargs):
+        raise cloud_secrets.CloudSecretsError("boom")
+
+    monkeypatch.setattr(cloud_secrets, "resolve_secret", _raise)
+
+    assert get_auth_api_key(cfg) == ""
+
+
+def test_get_secrets_functions_pass_configured_region_and_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        "[secrets]\nprovider = ssm\nregion = eu-west-1\nssm_prefix = /custom\n"
+        "[auth]\napi_key = should-not-be-used\n",
+    )
+    cfg = load_config(str(ini))
+
+    calls = []
+
+    def _fake_resolve(provider, key, **kwargs):
+        calls.append((provider, key, kwargs))
+        return "cloud-value"
+
+    monkeypatch.setattr(cloud_secrets, "resolve_secret", _fake_resolve)
+
+    get_auth_api_key(cfg)
+
+    assert calls == [
+        (
+            "ssm",
+            "auth_api_key",
+            {"region": "eu-west-1", "ssm_prefix": "/custom", "secretsmanager_id": "nyxgpt"},
+        )
+    ]
+
+
+def test_validate_config_rejects_unknown_secrets_provider(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[secrets]\nprovider = vault\n")
+    cfg = load_config(str(ini))
+    errors = validate_config(cfg)
+    assert any("secrets.provider" in e for e in errors)
+
+
+def test_validate_config_accepts_known_secrets_providers(tmp_path: Path) -> None:
+    for provider in ("", "ssm", "secretsmanager"):
+        ini = tmp_path / f"config-{provider or 'empty'}.ini"
+        _write(ini, f"[secrets]\nprovider = {provider}\n")
+        cfg = load_config(str(ini))
+        errors = validate_config(cfg)
+        assert not any("secrets.provider" in e for e in errors)
 
 
 def test_get_github_repo_owner_and_name_read_values(tmp_path: Path) -> None:

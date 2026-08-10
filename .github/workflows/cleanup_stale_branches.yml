@@ -1,15 +1,18 @@
-name: Cleanup Stale Claude Branches
+name: Cleanup Stale Agent Branches
 
 # Belt-and-suspenders branch hygiene for the agent loop.
 #
 # The repo's "Automatically delete head branches" setting only deletes a
 # branch when its PR is *merged*. Branches from issues that were abandoned,
 # superseded, or closed as duplicates never merge, so nothing ever removes
-# them. This workflow sweeps both cases:
+# them. This workflow sweeps both cases across every prefix the agent loop
+# creates branches under (`claude/`, `feat/`, `fix/`, `chore/` — see
+# developer_create_branch.sh and reconcile_dead_branches.sh):
 #   * merged/contained branches (in case the setting missed one), and
-#   * unmerged `claude/*` branches with no open PR that are older than
-#     STALE_DAYS (the orphans).
-# Head branches of OPEN pull requests are always protected.
+#   * unmerged branches with no open PR that are older than STALE_DAYS
+#     (the orphans, e.g. #3693's dead `feat/*` stubs).
+# Head branches of OPEN pull requests are always protected, as are the base
+# branch, master/main, and any release branch (`v*`).
 
 on:
   schedule:
@@ -39,7 +42,7 @@ jobs:
   cleanup:
     runs-on: ubuntu-latest
     steps:
-      - name: Sweep merged and stale-orphan claude/* branches
+      - name: Sweep merged and stale-orphan agent branches
         uses: actions/github-script@v7
         env:
           # On a scheduled run there are no inputs, so these fall back to the
@@ -65,7 +68,19 @@ jobs:
               base = repoInfo.data.default_branch;
             }
             core.info(`Resolved base branch: ${base}`);
-            const PREFIX = 'claude/';
+
+            // Every prefix the agent loop creates branches under (#3693):
+            // developer_create_branch.sh emits claude/issue-*, feat/*, fix/*,
+            // chore/*; reconcile_dead_branches.sh and gh_project.sh sweep the
+            // same set. Keep this list in sync with those.
+            const PREFIXES = ['claude/', 'feat/', 'fix/', 'chore/'];
+
+            // Never swept, regardless of prefix match — explicit rather than
+            // relying on prefix mismatch (#3693): the resolved base branch,
+            // master/main, and any release branch (v3.0.0, v3.1.0-rc1, ...).
+            const ALWAYS_PROTECTED = new Set([base, 'master', 'main']);
+            const isReleaseBranch = (name) => /^v[0-9]/.test(name);
+
             const now = Date.now();
             const staleMs = staleDays * 24 * 60 * 60 * 1000;
 
@@ -76,25 +91,30 @@ jobs:
             const protectedHeads = new Set(openPRs.map(p => p.head.ref));
             core.info(`Protected open-PR heads: ${[...protectedHeads].join(', ') || '(none)'}`);
 
-            // 2. Candidate branches: claude/* except the base branch itself.
+            // 2. Candidate branches: any tracked prefix, minus always-protected.
             const branches = await github.paginate(github.rest.repos.listBranches, {
               owner, repo, per_page: 100,
             });
-            const candidates = branches.filter(b => b.name.startsWith(PREFIX) && b.name !== base);
+            const prefixOf = (name) => PREFIXES.find(p => name.startsWith(p));
+            const candidates = branches.filter(b =>
+              prefixOf(b.name) && !ALWAYS_PROTECTED.has(b.name) && !isReleaseBranch(b.name)
+            );
+            core.info(`Candidates by prefix: ${PREFIXES.map(p => `${p}=${candidates.filter(b => b.name.startsWith(p)).length}`).join(', ')}`);
 
-            const deleted = [];
-            const kept = [];
+            const deleted = []; // { prefix, line }
+            const kept = [];    // { prefix, line }
 
             for (const b of candidates) {
               const name = b.name;
+              const prefix = prefixOf(name);
 
-              if (protectedHeads.has(name)) { kept.push(`${name} — open PR`); continue; }
+              if (protectedHeads.has(name)) { kept.push({ prefix, line: `${name} — open PR` }); continue; }
 
               let reason = null;
               try {
                 // Octokit percent-encodes the {basehead} path parameter itself;
                 // pre-encoding the branch name double-encodes the "/" in every
-                // claude/* ref (%2F -> %252F) and 404s the compare, so every
+                // prefixed ref (%2F -> %252F) and 404s the compare, so every
                 // candidate was skipped as "inspection failed".
                 const cmp = await github.rest.repos.compareCommitsWithBasehead({
                   owner, repo, basehead: `${base}...${name}`,
@@ -110,34 +130,46 @@ jobs:
                   if (now - tipMs > staleMs) {
                     reason = `stale orphan — unmerged, no open PR, tip ${ageDays}d old`;
                   } else {
-                    kept.push(`${name} — unmerged but fresh (tip ${ageDays}d < ${staleDays}d)`);
+                    kept.push({ prefix, line: `${name} — unmerged but fresh (tip ${ageDays}d < ${staleDays}d)` });
                   }
                 }
               } catch (e) {
-                kept.push(`${name} — skipped (inspection failed: ${e.message})`);
+                kept.push({ prefix, line: `${name} — skipped (inspection failed: ${e.message})` });
                 continue;
               }
 
               if (!reason) continue;
 
               if (dryRun) {
-                deleted.push(`[dry run] would delete ${name} — ${reason}`);
+                deleted.push({ prefix, line: `[dry run] would delete ${name} — ${reason}` });
               } else {
                 try {
                   await github.rest.git.deleteRef({ owner, repo, ref: `heads/${name}` });
-                  deleted.push(`deleted ${name} — ${reason}`);
+                  deleted.push({ prefix, line: `deleted ${name} — ${reason}` });
                 } catch (e) {
-                  kept.push(`${name} — delete failed: ${e.message}`);
+                  kept.push({ prefix, line: `${name} — delete failed: ${e.message}` });
                 }
               }
             }
 
+            // Itemize per prefix so each tracked prefix's outcome is visible
+            // on its own in the job summary (#3693), not just a flat list.
+            function renderByPrefix(entries) {
+              if (!entries.length) return '_none_';
+              const sections = PREFIXES
+                .map(p => ({ p, lines: entries.filter(e => e.prefix === p).map(e => e.line) }))
+                .filter(s => s.lines.length);
+              return sections
+                .map(s => `**${s.p}** (${s.lines.length})\n` + s.lines.map(x => `- ${x}`).join('\n'))
+                .join('\n\n');
+            }
+
             core.summary
               .addHeading(`Branch cleanup${dryRun ? ' (dry run)' : ''}`)
-              .addRaw(`Base: \`${base}\` · stale threshold: ${staleDays}d · candidates: ${candidates.length}\n\n`)
+              .addRaw(`Base: \`${base}\` · stale threshold: ${staleDays}d · prefixes: ${PREFIXES.join(', ')} · candidates: ${candidates.length}\n\n`)
               .addHeading(dryRun ? 'Would delete' : 'Deleted', 3)
-              .addRaw((deleted.length ? deleted.map(x => `- ${x}`).join('\n') : '_none_') + '\n\n')
+              .addRaw(renderByPrefix(deleted) + '\n\n')
               .addHeading('Kept', 3)
-              .addRaw(kept.length ? kept.map(x => `- ${x}`).join('\n') : '_none_');
+              .addRaw(renderByPrefix(kept));
             await core.summary.write();
             core.info(`Result — removed: ${deleted.length}, kept: ${kept.length}`);

@@ -33,6 +33,13 @@ jobs:
 
     env:
       GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+      # #3695 human-channel (Slack DM) escalation notifications, sent by
+      # scrummaster_dispatch_next.sh on the dispatch-paused/queue-blocked
+      # terminal outcomes below. Absent/failing degrades gracefully to the
+      # existing comment-only behavior (see notify_human_escalation,
+      # scripts/agents/lib/gh_project.sh).
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_USER_ID: ${{ secrets.SLACK_USER_ID }}
 
     steps:
       - name: Checkout

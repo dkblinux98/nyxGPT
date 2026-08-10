@@ -39,6 +39,18 @@ escalation, see below) end in exactly that state.
   gate; the stale release-issue report is updated to say so rather than
   left dangling.
 
+Both this pause and the "every eligible Backlog candidate was unclaimable"
+queue-blocked case (`scrummaster_dispatch_next.sh`'s fall-through loop
+exhausting `MAX_ATTEMPTS`) are head-of-line blocks on the whole queue, so
+`scrummaster_dispatch_next.sh` also sends a Slack DM to the owner for each
+(`notify_human_escalation`, `scripts/agents/lib/gh_project.sh`, #3695),
+attached to and deduped against `RELEASE_ISSUE_NUMBER` -- the same
+dispatch-wide target the release-issue report above and
+`sprint_autopilot_kick` already use. Skipped silently if
+`RELEASE_ISSUE_NUMBER` is not configured, and never blocks the dispatch
+loop itself on a Slack failure (same graceful-degradation contract as
+every other `notify_human_escalation` caller).
+
 ## Cross-issue infrastructure-anomaly dispatch pause backstop (#3694)
 
 Composes with the escalation-pause backstop above: `scrummaster_dispatch_next.sh`
@@ -57,7 +69,10 @@ issue. While that record is open:
 
 - **New dispatch pauses.** A loud report is posted, or updated in place,
   on the release tracking issue -- mirroring the escalation-pause report's
-  shape.
+  shape. The dispatch also sends the #3695 Slack DM with its own state
+  (`anomaly-paused`, distinct from the escalation pause's
+  `dispatch-paused` so the message names the actual cause and the two
+  backstops never de-duplicate against each other).
 - **Resuming:** automatic, once the tracking record is resolved (an
   OWNER-authored `RESOLVE_ANOMALY` comment) or its detection window
   elapses -- no separate "resume" action, same as the escalation backstop.

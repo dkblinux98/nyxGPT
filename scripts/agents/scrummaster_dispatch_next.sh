@@ -96,6 +96,9 @@ scrummaster_dispatch_next() {
     echo "pause_reason=escalation"
     echo "next_issue="
     printf 'tried<<NYXGPT_TRIED_EOF\n%sNYXGPT_TRIED_EOF\n' ""
+    _notify_dispatch_block "dispatch-paused" \
+      "Scrummaster dispatch paused -- 2 or more unresolved escalations (open issues assigned to the owner)." \
+      "Resolve the unresolved escalations reported on the release tracking issue; dispatch resumes automatically once the count drops below 2."
     return 0
   fi
   if ! _cross_issue_anomaly_check; then
@@ -103,6 +106,12 @@ scrummaster_dispatch_next() {
     echo "pause_reason=cross_issue_anomaly"
     echo "next_issue="
     printf 'tried<<NYXGPT_TRIED_EOF\n%sNYXGPT_TRIED_EOF\n' ""
+    # Distinct state from the escalation pause's "dispatch-paused": the
+    # message must name the actual cause (#3694 accuracy requirement), and
+    # the two backstops must not de-duplicate against each other.
+    _notify_dispatch_block "anomaly-paused" \
+      "Scrummaster dispatch paused -- an unresolved cross-issue infrastructure anomaly is open on the release tracking issue (#3694)." \
+      "Resolve the anomaly (owner comment RESOLVE_ANOMALY on the release tracking issue, or let its detection window elapse); dispatch resumes automatically."
     return 0
   fi
   echo "paused=false"
@@ -131,6 +140,30 @@ scrummaster_dispatch_next() {
 
   echo "next_issue=${started}"
   printf 'tried<<NYXGPT_TRIED_EOF\n%sNYXGPT_TRIED_EOF\n' "$tried"
+
+  if [[ -z "$started" && -n "$tried" ]]; then
+    _notify_dispatch_block "queue-blocked" \
+      "Scrummaster dispatch started nothing -- every eligible Backlog candidate was unclaimable." \
+      "Inspect the unclaimable candidate(s) reported on the release tracking issue and resolve manually (#3665 decision matrix)."
+  fi
+}
+
+# #3695: human-channel (Slack DM) notification for the dispatch-wide
+# terminal outcomes above (escalation-pause backstop, cross-issue-anomaly
+# pause backstop (#3694), queue fully blocked)
+# -- all are head-of-line blocks on the whole sprint-autopilot queue, not
+# tied to any single issue, so they are attached to (and de-duplicated
+# against) RELEASE_ISSUE_NUMBER, the same target sprint_autopilot_kick and
+# escalation_pause_gate already report to. Silently skipped if
+# RELEASE_ISSUE_NUMBER is not configured -- same conservative default as
+# escalation_pause_gate's own reporting. Best-effort: never fails the
+# caller's dispatch loop.
+_notify_dispatch_block() {
+  local state="$1" diagnosis="$2" action="$3"
+  [[ -n "${RELEASE_ISSUE_NUMBER:-}" ]] || return 0
+  notify_human_escalation "$RELEASE_ISSUE_NUMBER" "$state" "$diagnosis" "$action" \
+    "${RELEASE_ISSUE_NUMBER}:${state}" \
+    || true
 }
 
 # Only run for real when executed directly -- tests source this file to

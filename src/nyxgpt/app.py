@@ -44,6 +44,7 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 from starlette.status import HTTP_401_UNAUTHORIZED
 
 import nyxgpt.config
@@ -99,6 +100,7 @@ from nyxgpt.batch_processor import BatchProcessor, RequestPriority
 from nyxgpt.chat import chat as run_chat
 from nyxgpt.chat import chat_stream
 from nyxgpt.config import (
+    get_auth_api_key,
     get_canary_error_rate_threshold,
     get_canary_latency_p95_threshold_ms,
     get_canary_min_requests,
@@ -117,6 +119,7 @@ from nyxgpt.config import (
     get_rag_min_score,
     get_rate_limit_config,
     get_rate_limit_enabled,
+    get_secrets_provider,
     get_self_heal_backoff_seconds,
     get_self_heal_check_interval_seconds,
     get_self_heal_default_enabled,
@@ -694,16 +697,22 @@ async def api_key_auth(request: Request, call_next):
         return await call_next(request)
 
     cfg = getattr(request.state, "cfg", None)
-    auth = _auth_cfg(cfg)
+    cfg = cfg or load_config(None)
     req_id = getattr(request.state, "request_id", None)
-    log.debug(
-        "auth check (request_id=%s) enabled=%s",
-        req_id,
-        bool(auth.get("enabled")),
-    )
-    if not auth.get("enabled"):
+
+    # Check `enabled` on its own first -- it's a plain config.ini read, no
+    # AWS call. Only resolve the (possibly cloud-sourced) api_key when auth
+    # is actually enabled, and do that resolution in a thread pool: this
+    # middleware is `async def`, so Starlette runs it directly on the event
+    # loop rather than dispatching it to a worker thread the way a plain
+    # `def` route handler would -- a synchronous boto3 call here would
+    # otherwise block the event loop for every concurrent request.
+    enabled = cfg.getboolean("auth", "enabled", fallback=False)
+    log.debug("auth check (request_id=%s) enabled=%s", req_id, enabled)
+    if not enabled:
         return await call_next(request)
 
+    auth = await run_in_threadpool(_auth_cfg, cfg)
     header = auth.get("header", "X-API-Key")
     expected = auth.get("api_key")
     provided = request.headers.get(header)
@@ -848,7 +857,7 @@ def _auth_cfg(cfg: ConfigParser | None = None) -> dict[str, Any]:
     """
     cfg = cfg or load_config(None)
     enabled = cfg.getboolean("auth", "enabled", fallback=False)
-    api_key = cfg.get("auth", "api_key", fallback="").strip()
+    api_key = get_auth_api_key(cfg)
     header = cfg.get("auth", "header", fallback="X-API-Key").strip() or "X-API-Key"
     return {
         "enabled": enabled,
@@ -1942,6 +1951,22 @@ def admin_access_update(
     rotate = bool(payload.get("rotate"))
     new_key: str | None = None
     if rotate:
+        # When a cloud secrets provider is configured, `get_auth_api_key`
+        # always prefers the AWS-resolved value over config.ini (see
+        # `_resolve_cloud_secret`), so writing a new key to config.ini here
+        # would be inert: the middleware would keep enforcing the old
+        # cloud-stored key while this endpoint reported the new one as
+        # active. Reject explicitly instead of silently no-op'ing.
+        if get_secrets_provider(cfg):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "API key rotation via this dashboard is disabled because a cloud "
+                    "secrets provider ([secrets] provider) is configured. Rotate the "
+                    "value in AWS SSM Parameter Store or Secrets Manager instead -- "
+                    "see docs/cloud.md for the rotation procedure."
+                ),
+            )
         new_key = secrets.token_urlsafe(32)
         updates["api_key"] = new_key
 

@@ -84,6 +84,119 @@ store AWS credentials itself. Guided credential collection is separate scope
 
 ---
 
+## Cloud secrets (SSM / Secrets Manager)
+
+On a cloud (AWS) deploy, `[auth] api_key`, `[openai] api_key`, and
+`[github] pat` must never be baked into an AMI, user-data script, tfvars
+file, or `config.ini` itself (P6-10, #3507). Set `[secrets] provider` in
+`config.ini` and nyxGPT resolves those three credentials from AWS at read
+time instead:
+
+```ini
+[secrets]
+provider = ssm            # or "secretsmanager"
+region = us-east-1        # optional -- falls back to boto3's normal region resolution
+ssm_prefix = /nyxgpt       # provider = ssm
+secretsmanager_id = nyxgpt # provider = secretsmanager
+```
+
+Leaving `provider` blank (the default) is a local deploy: the three
+credentials are read from `config.ini` exactly as before, unaffected.
+
+### SSM Parameter Store layout (`provider = ssm`)
+
+One `SecureString` parameter per credential, under `ssm_prefix`:
+
+| Parameter | Value |
+|---|---|
+| `{ssm_prefix}/auth_api_key` | The shared secret checked by `[auth] enabled` middleware |
+| `{ssm_prefix}/openai_api_key` | OpenAI API key |
+| `{ssm_prefix}/github_pat` | GitHub Personal Access Token |
+
+```bash
+aws ssm put-parameter --name /nyxgpt/auth_api_key --type SecureString --value "..."
+aws ssm put-parameter --name /nyxgpt/openai_api_key --type SecureString --value "..."
+aws ssm put-parameter --name /nyxgpt/github_pat --type SecureString --value "..."
+```
+
+Only credentials actually used need to be set -- a missing/unreadable
+parameter resolves to an empty value for that credential (see "Failure
+behavior" below), not an error that blocks the others.
+
+### Secrets Manager layout (`provider = secretsmanager`)
+
+One secret, at `secretsmanager_id`, holding a single JSON object with all
+three keys:
+
+```bash
+aws secretsmanager create-secret --name nyxgpt --secret-string '{
+  "auth_api_key": "...",
+  "openai_api_key": "...",
+  "github_pat": "..."
+}'
+```
+
+Secrets Manager bills per secret rather than per value, so one secret with
+several keys is the natural fit here (unlike SSM, which is priced and
+structured per parameter).
+
+### IAM permissions
+
+The instance role needs read access to whichever provider is configured:
+
+- `provider = ssm`: `ssm:GetParameter` on the `ssm_prefix` path, plus
+  `kms:Decrypt` on the key used to encrypt the `SecureString` parameters
+  (the default `alias/aws/ssm` key, unless a customer-managed key is used).
+- `provider = secretsmanager`: `secretsmanager:GetSecretValue` on
+  `secretsmanager_id`.
+
+No other AWS permissions are required for secret resolution.
+
+### Rotation
+
+Rotate a credential by updating its value in AWS -- `aws ssm put-parameter
+... --overwrite` or `aws secretsmanager update-secret ...` -- nothing on
+the instance needs to change:
+
+- Resolved values are cached in-process for 5 minutes, so a rotation takes
+  effect on its own within that window without a restart.
+- To force it immediately, restart the API: `nyxgpt ops restart api`.
+
+**The `/admin/access` dashboard's "rotate API key" button is disabled when a
+cloud secrets provider is configured.** `get_auth_api_key` always prefers the
+AWS-resolved value over `config.ini`, so a rotation written to `config.ini`
+by that endpoint would be inert -- the middleware would keep enforcing the
+old cloud-stored key while the dashboard reported the new one as active.
+`POST /admin/access` rejects `{"rotate": true}` with `400` in that case;
+rotate via the AWS CLI/console as above instead.
+
+### Failure behavior
+
+If a provider is configured but AWS resolution fails (missing parameter,
+denied IAM permission, boto3 not installed, etc.), that credential
+resolves to `""` -- it is never silently satisfied by falling back to a
+`config.ini` value cloud deploys don't populate anyway. For `[auth]
+api_key` this fails *closed*: with auth enabled and an empty expected key,
+no provided key can ever match, so the API rejects every request rather
+than accepting none. For `[openai] api_key` / `[github] pat`, that
+integration simply doesn't work until the underlying AWS issue is fixed;
+check the nyxGPT process logs for a `Cloud secret resolution failed for
+...` warning naming the failing key and provider.
+
+A sustained failure (outage, bad IAM, wrong prefix) is remembered for only
+30 seconds (vs. the 5-minute success cache), so resolution is retried
+periodically rather than requiring a restart once the underlying issue is
+fixed.
+
+### Testing
+
+`nyxgpt[cloud]` (`pip install "nyxgpt[cloud]"`) is required at runtime for
+either provider -- see `src/nyxgpt/cloud_secrets.py`. Tests exercise both
+providers against a mocked boto3 client (no live AWS dependency); see
+`tests/unit/test_cloud_secrets.py`.
+
+---
+
 ## Note for the AWS Terraform module (P6-8)
 
 `allow-ip` mutates the security group's port-22 ingress rule directly via
