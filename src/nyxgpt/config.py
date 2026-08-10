@@ -324,6 +324,42 @@ def get_sessions_dir(cfg: ConfigParser) -> Path:
     return _expand_path(val)
 
 
+VALID_SESSION_BACKENDS = ("file", "cassandra")
+
+
+def get_session_backend(cfg: ConfigParser) -> str:
+    """Return the chat-session storage backend: ``"file"`` or ``"cassandra"``.
+
+    Resolution order:
+    1. ``NYXGPT_SESSION_BACKEND`` environment variable (container/k8s override)
+    2. ``[nyxgpt] session_backend`` in config.ini
+    3. ``"file"`` (back-compat default)
+
+    ``"cassandra"`` stores sessions in the stack's Cassandra (see
+    ``nyxgpt.session_db``), giving every deployment mode pointed at the same
+    Cassandra an identical session list. With the ``"file"`` backend the
+    legacy ``[nyxgpt] sessions_dir`` JSON-file store is used; that setting is
+    deprecated for anything beyond the single-host native mode -- see
+    docs/session-storage.md.
+
+    An unrecognized value logs a warning and falls back to ``"file"``.
+    """
+    raw = os.environ.get("NYXGPT_SESSION_BACKEND", "").strip().lower()
+    if not raw:
+        try:
+            raw = cfg.get("nyxgpt", "session_backend", fallback="file").strip().lower()
+        except Exception:
+            raw = "file"
+    if raw not in VALID_SESSION_BACKENDS:
+        _logger.warning(
+            "Invalid session_backend %r (expected one of %s); using 'file'",
+            raw,
+            ", ".join(VALID_SESSION_BACKENDS),
+        )
+        return "file"
+    return raw
+
+
 def get_vectorstore_dir(cfg: ConfigParser) -> Path:
     """Return the vectorstore storage directory (``[nyxgpt] vectorstore_dir``).
 

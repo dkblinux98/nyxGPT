@@ -248,6 +248,7 @@ General application behavior.
 ```ini
 [nyxgpt]
 default_model = qwen2.5:0.5b
+session_backend = file
 sessions_dir = ~/.nyxGPT/sessions
 vectorstore_dir = ~/.nyxGPT/vectorstore
 chat_timeout_seconds = 60
@@ -260,7 +261,8 @@ system_prompt_minimize = false
 | Key | Description |
 |---|---|
 | `default_model` | Ollama model name used when none is specified (default: `llama3.1:8b`) |
-| `sessions_dir` | Directory for chat session storage (default: `~/.nyxGPT/sessions`). Must resolve *strictly inside* your home directory or the system temp directory -- values outside either, or equal to one of those roots exactly (e.g. `sessions_dir = ~`), are rejected at load time (CodeQL py/path-injection hardening, #3639/#3657). |
+| `session_backend` | Chat session storage backend: `file` (default) or `cassandra`. `cassandra` stores sessions in the stack's Cassandra (`[rag] cassandra_*`), so every deployment mode pointed at the same Cassandra shares one session list and multi-instance access is safe; existing `sessions_dir` files are imported once (idempotently) on API startup. Can be overridden per-process with the `NYXGPT_SESSION_BACKEND` environment variable. See [session-storage.md](session-storage.md) (#3590). |
+| `sessions_dir` | Directory for chat session storage with the `file` backend (default: `~/.nyxGPT/sessions`). **Deprecated** for multi-instance / containerized deployments: under `session_backend = cassandra` it is only read once as the migration source. Must resolve *strictly inside* your home directory or the system temp directory -- values outside either, or equal to one of those roots exactly (e.g. `sessions_dir = ~`), are rejected at load time (CodeQL py/path-injection hardening, #3639/#3657). |
 | `vectorstore_dir` | Directory for vector embeddings and RAG data (default: `~/.nyxGPT/vectorstore`). Same home-directory/temp-directory restriction as `sessions_dir`. |
 | `chat_timeout_seconds` | Timeout for a single chat request (default: `180`) |
 | `auto_summarize_enabled` | Automatically generate session title/summary/tags |
