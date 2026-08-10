@@ -4,7 +4,7 @@
 # versions.tf -- because it is the one part of the configuration nyxGPT
 # rewrites. `nyxgpt cloud state migrate` replaces this file in the synced,
 # ops-managed copy under ~/.nyxGPT/cloud/terraform/ with the S3 flavor (see
-# `nyxgpt.cloud_state.S3_BACKEND_TF`) and re-runs init with `-migrate-state`,
+# `nyxgpt.cloud_state.render_backend_tf`) and re-runs init with `-migrate-state`,
 # so the switch never has to text-edit a file that also carries the provider
 # and version pins.
 #
