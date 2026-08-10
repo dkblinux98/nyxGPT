@@ -399,21 +399,32 @@ def _run_terraform(
     capture: bool = False,
     extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Run `terraform -chdir=<synced config> <arguments>`, raising on failure."""
+    """Run `terraform -chdir=<synced config> <arguments>`, raising on failure.
+
+    stderr is always captured so a failure carries Terraform's own diagnostic
+    into the raised error -- the dashboard only ever sees that message, and
+    "terraform apply failed" with no reason is useless to an operator. stdout
+    is left attached to the terminal unless `capture` is set (it is for
+    `output -json`, which is parsed), so a CLI `plan`/`apply` still streams
+    Terraform's progress live rather than going silent for minutes.
+    """
     binary = ensure_terraform_binary()
     command = [binary, f"-chdir={TERRAFORM_DIR}", *arguments]
     env = {**os.environ, **(extra_env or {})}
     completed = subprocess.run(
         command,
-        capture_output=capture,
+        stdout=subprocess.PIPE if capture else None,
+        stderr=subprocess.PIPE,
         text=True,
         env=env,
     )
     if completed.returncode != 0:
-        detail = ""
-        if capture:
-            detail = f": {(completed.stderr or completed.stdout or '').strip()}"
+        diagnostic = (completed.stderr or completed.stdout or "").strip()
+        detail = f": {diagnostic}" if diagnostic else ""
         raise CloudCommandError(f"`terraform {' '.join(arguments)}` failed{detail}")
+    if not capture and completed.stderr:
+        # Warnings on a successful run still belong in front of the operator.
+        print(completed.stderr, end="", file=sys.stderr)
     return completed
 
 

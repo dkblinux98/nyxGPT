@@ -370,6 +370,39 @@ def test_ensure_terraform_binary_errors_without_brew(monkeypatch):
         cloud_infra.ensure_terraform_binary()
 
 
+def _fake_terraform(tmp_path, script: str) -> str:
+    """Write an executable stand-in for the terraform binary and return its path."""
+    binary = tmp_path / "terraform"
+    binary.write_text(f"#!/bin/sh\n{script}\n", encoding="utf-8")
+    binary.chmod(0o755)
+    return str(binary)
+
+
+def test_run_terraform_surfaces_the_diagnostic_on_failure(monkeypatch, tmp_path):
+    """A failed run must carry Terraform's own error text -- the dashboard shows only that."""
+    monkeypatch.setattr(
+        cloud_infra,
+        "ensure_terraform_binary",
+        lambda: _fake_terraform(tmp_path, 'echo "Error: no valid credential sources" >&2\nexit 1'),
+    )
+
+    with pytest.raises(CloudCommandError, match="no valid credential sources"):
+        cloud_infra._run_terraform(["apply"])
+
+
+def test_run_terraform_leaves_stdout_streaming_for_the_cli(monkeypatch, tmp_path, capfd):
+    """A long apply must not go silent: stdout stays attached unless it's being parsed."""
+    monkeypatch.setattr(
+        cloud_infra,
+        "ensure_terraform_binary",
+        lambda: _fake_terraform(tmp_path, 'echo "Creating aws_instance.this..."'),
+    )
+
+    cloud_infra._run_terraform(["apply"])
+
+    assert "Creating aws_instance.this" in capfd.readouterr().out
+
+
 def test_terraform_outputs_decodes_the_json_envelope(monkeypatch):
     payload = json.dumps({"instance_id": {"value": "i-1", "type": "string"}})
 
