@@ -91,6 +91,7 @@ def _read_config(cfg_path: Path) -> ConfigParser:
 
 
 def _validate_nonempty(value: str) -> str:
+    """Require a non-empty, whitespace-free value (the common case)."""
     v = value.strip()
     if not v:
         raise SecretValidationError("must not be empty")
@@ -105,6 +106,7 @@ def _validate_optional_str(value: str) -> str:
 
 
 def _validate_access_key_id(value: str) -> str:
+    """Validate an AWS access key id's shape: non-empty, no whitespace, 16-32 alphanumeric chars."""
     v = _validate_nonempty(value)
     if not (16 <= len(v) <= 32) or not v.isalnum():
         raise SecretValidationError(
@@ -115,6 +117,7 @@ def _validate_access_key_id(value: str) -> str:
 
 
 def _validate_secret_access_key(value: str) -> str:
+    """Validate an AWS secret access key's shape: non-empty, no whitespace, plausibly long."""
     v = _validate_nonempty(value)
     if len(v) < 30:
         raise SecretValidationError("doesn't look like an AWS secret access key (too short)")
@@ -125,6 +128,7 @@ _REGION_RE = re.compile(r"^[a-z]{2}(-gov|-iso[a-z]?)?-[a-z]+-\d$")
 
 
 def _validate_region(value: str) -> str:
+    """Validate an AWS region's shape, e.g. `us-east-1` or `us-gov-west-1`."""
     v = _validate_nonempty(value)
     if not _REGION_RE.fullmatch(v):
         raise SecretValidationError("doesn't look like an AWS region (expected e.g. us-east-1)")
@@ -135,6 +139,7 @@ _PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
 def _validate_profile_name(value: str) -> str:
+    """Validate an AWS CLI profile name: non-empty, letters/digits/`_`/`.`/`-` only."""
     v = _validate_nonempty(value)
     if not _PROFILE_NAME_RE.fullmatch(v):
         raise SecretValidationError("must contain only letters, digits, '_', '.', or '-'")
@@ -142,6 +147,7 @@ def _validate_profile_name(value: str) -> str:
 
 
 def _validate_secret_store_provider(value: str) -> str:
+    """Validate `[secrets] provider`: blank, `ssm`, or `secretsmanager`."""
     v = value.strip()
     if v and v not in (cloud_secrets.SSM_PROVIDER, cloud_secrets.SECRETS_MANAGER_PROVIDER):
         raise SecretValidationError(
@@ -317,6 +323,7 @@ def save_cloud_reference(
 
 
 def _read_aws_credentials_file(path: Path) -> ConfigParser:
+    """Read `path` (an AWS CLI-style credentials file) into a plain `ConfigParser`."""
     parser = ConfigParser()
     if path.exists():
         parser.read(path, encoding="utf-8")
@@ -367,6 +374,7 @@ def profile_credentials_status(profile: str, path: Path | None = None) -> dict[s
 
 
 def _keyring_module() -> Any:
+    """Return the imported `keyring` module, or None if it isn't installed."""
     return try_import("keyring")
 
 
