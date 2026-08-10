@@ -12,7 +12,7 @@ The API is designed to run **locally only** by default.
 
 ## API Endpoint Reference
 
-Quick reference of all 77 available endpoints:
+Quick reference of all 81 available endpoints:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|

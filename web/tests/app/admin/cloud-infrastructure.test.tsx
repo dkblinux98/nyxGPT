@@ -96,6 +96,118 @@ describe('CloudInfrastructurePage', () => {
     expect(body).toEqual({ region: 'eu-west-2' });
   });
 
+  it('applies with every provisioning input and reports the created instance', async () => {
+    mockStatus(notProvisioned);
+    let body: Record<string, unknown> | null = null;
+    server.use(
+      http.post('/api/v1/cloud/infra/apply', async ({ request }) => {
+        body = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({
+          action: 'apply',
+          outputs: { instance_id: 'i-0abc123', region: 'us-east-1' },
+        });
+      })
+    );
+
+    render(<CloudInfrastructurePage />);
+    await screen.findByText('not provisioned');
+
+    await userEvent.type(screen.getByLabelText('AWS region'), 'us-east-1');
+    await userEvent.type(screen.getByLabelText('Instance type'), 'm5.large');
+    await userEvent.type(screen.getByLabelText('Existing EC2 key pair'), 'owner-pair');
+    await userEvent.type(
+      screen.getByLabelText(/public key file to register/),
+      '~/.ssh/id_ed25519.pub'
+    );
+    await userEvent.type(screen.getByLabelText(/SSH source IP\/CIDR/), '198.51.100.7/32');
+    await userEvent.click(screen.getByRole('button', { name: 'Apply' }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/Instance i-0abc123 in us-east-1/)).toBeInTheDocument()
+    );
+    // Every field the operator filled in has to reach the backend -- a dropped
+    // owner_ip would silently provision against the auto-detected IP instead.
+    expect(body).toEqual({
+      region: 'us-east-1',
+      instance_type: 'm5.large',
+      ssh_key_name: 'owner-pair',
+      ssh_public_key: '~/.ssh/id_ed25519.pub',
+      owner_ip: '198.51.100.7/32',
+    });
+  });
+
+  it('does not fabricate instance details when apply returns no outputs', async () => {
+    mockStatus(notProvisioned);
+    server.use(
+      http.post('/api/v1/cloud/infra/apply', () => HttpResponse.json({ action: 'apply' }))
+    );
+
+    render(<CloudInfrastructurePage />);
+    await screen.findByText('not provisioned');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Apply' }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Instance unknown in the configured region/)
+      ).toBeInTheDocument()
+    );
+  });
+
+  it('surfaces a failed initial status load instead of rendering an empty substrate', async () => {
+    server.use(
+      http.get('/api/v1/cloud/infra', () => HttpResponse.json(null, { status: 500 }))
+    );
+
+    render(<CloudInfrastructurePage />);
+
+    // No `error` / `detail` in the body, so the HTTP status is the fallback.
+    expect(await screen.findByText(/HTTP 500/)).toBeInTheDocument();
+    expect(screen.getByText('not provisioned')).toBeInTheDocument();
+    expect(screen.getByText('none')).toBeInTheDocument();
+  });
+
+  it('surfaces a non-Error rejection from the status fetch', async () => {
+    const spy = vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce('network exploded');
+
+    render(<CloudInfrastructurePage />);
+
+    expect(await screen.findByText(/network exploded/)).toBeInTheDocument();
+    spy.mockRestore();
+  });
+
+  it.each([
+    ['a bare string error', { error: 'terraform plan failed' }, 400, /terraform plan failed/],
+    ['a FastAPI detail', { detail: 'no AWS credentials found' }, 400, /no AWS credentials found/],
+    ['an unrecognised shape', { unexpected: true }, 500, /HTTP 500/],
+    ['an error object without a message', { error: { code: 7 } }, 503, /HTTP 503/],
+  ])('reports %s from a failed plan', async (_label, payload, status, expected) => {
+    mockStatus(notProvisioned);
+    server.use(
+      http.post('/api/v1/cloud/infra/plan', () => HttpResponse.json(payload, { status }))
+    );
+
+    render(<CloudInfrastructurePage />);
+    await screen.findByText('not provisioned');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Plan' }));
+
+    await waitFor(() => expect(screen.getByText(expected)).toBeInTheDocument());
+  });
+
+  it('surfaces a non-Error rejection from an action', async () => {
+    mockStatus(notProvisioned);
+
+    render(<CloudInfrastructurePage />);
+    await screen.findByText('not provisioned');
+
+    const spy = vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce('plan exploded');
+    await userEvent.click(screen.getByRole('button', { name: 'Plan' }));
+
+    await waitFor(() => expect(screen.getByText(/plan exploded/)).toBeInTheDocument());
+    spy.mockRestore();
+  });
+
   it('surfaces a failed apply instead of claiming success', async () => {
     mockStatus(notProvisioned);
     server.use(

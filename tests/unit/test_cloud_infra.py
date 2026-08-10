@@ -10,6 +10,7 @@ own behaviour is covered by the plan-level suite in
 
 import argparse
 import json
+import shutil
 import subprocess
 
 import pytest
@@ -224,6 +225,47 @@ def test_init_pins_state_outside_the_synced_config(terraform_calls):
     assert f"-backend-config=path={cloud_infra.TFSTATE_FILE}" in init_call
     # State must not live inside the directory sync_terraform_config overwrites.
     assert cloud_infra.TERRAFORM_DIR not in cloud_infra.TFSTATE_FILE.parents
+
+
+def test_init_only_upgrades_providers_when_the_config_changed(terraform_calls):
+    """`-upgrade` re-resolves the provider registry; that belongs on real changes only."""
+    cloud_infra.plan_infra(_args())
+    assert "-upgrade" in terraform_calls[0], "first init must resolve providers"
+
+    terraform_calls.clear()
+    cloud_infra.plan_infra(_args())
+    assert "-upgrade" not in terraform_calls[0], "unchanged config must not re-resolve"
+    assert f"-backend-config=path={cloud_infra.TFSTATE_FILE}" in terraform_calls[0]
+
+    # An nyxGPT upgrade syncs a different configuration (here, one more `.tf`
+    # source than before) -- provider resolution has to run again.
+    (cloud_infra.TERRAFORM_DIR / "zz_upgraded.tf").write_text("# new source\n", encoding="utf-8")
+    terraform_calls.clear()
+    cloud_infra.plan_infra(_args())
+    assert "-upgrade" in terraform_calls[0]
+
+
+def test_init_upgrades_again_when_the_plugin_cache_is_removed(terraform_calls):
+    cloud_infra.plan_infra(_args())
+    shutil.rmtree(cloud_infra.TERRAFORM_DIR / ".terraform")
+
+    terraform_calls.clear()
+    cloud_infra.plan_infra(_args())
+    assert "-upgrade" in terraform_calls[0]
+
+
+def test_init_does_not_record_the_fingerprint_when_terraform_fails(monkeypatch):
+    """A failed init must not leave a stamp that suppresses the next `-upgrade`."""
+    cloud_infra.sync_terraform_config()
+
+    def boom(arguments, *, capture=False, extra_env=None):
+        raise CloudCommandError("`terraform init` failed")
+
+    monkeypatch.setattr(cloud_infra, "_run_terraform", boom)
+    with pytest.raises(CloudCommandError):
+        cloud_infra.terraform_init()
+
+    assert not (cloud_infra.TERRAFORM_DIR / ".terraform" / "nyxgpt-config.sha256").exists()
 
 
 def test_apply_writes_the_state_contract_allow_ip_reads(terraform_calls, monkeypatch):

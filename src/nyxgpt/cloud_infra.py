@@ -35,6 +35,7 @@ stops at the substrate.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.resources
 import json
 import os
@@ -428,17 +429,47 @@ def _run_terraform(
     return completed
 
 
+def _synced_config_fingerprint() -> str:
+    """SHA-256 over the synced Terraform sources, used to detect config changes."""
+    digest = hashlib.sha256()
+    for path in sorted(TERRAFORM_DIR.rglob("*")):
+        if path.is_file() and path.suffix in {".tf", ".hcl", ".tftest.hcl"}:
+            digest.update(str(path.relative_to(TERRAFORM_DIR)).encode("utf-8"))
+            digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
 def terraform_init() -> None:
-    """Initialize the synced configuration against the ops-managed state file."""
-    _run_terraform(
-        [
-            "init",
-            "-input=false",
-            "-upgrade",
-            f"-backend-config=path={TFSTATE_FILE}",
-        ],
-        capture=True,
-    )
+    """Initialize the synced configuration against the ops-managed state file.
+
+    Providers are only re-resolved (`-upgrade`) when the synced configuration
+    actually changed -- an nyxGPT upgrade, or a first run. Passing it on every
+    init made each plan/apply re-check the registry for nothing.
+    """
+    fingerprint = _synced_config_fingerprint()
+    # Lives under `.terraform/`, which init creates and `sync_terraform_config`
+    # deliberately leaves alone, so it tracks the plugin cache's own lifetime:
+    # delete that directory and the next init upgrades again, as it must.
+    stamp = TERRAFORM_DIR / ".terraform" / "nyxgpt-config.sha256"
+    try:
+        upgrade = stamp.read_text(encoding="utf-8").strip() != fingerprint
+    except OSError:
+        upgrade = True
+
+    arguments = ["init", "-input=false"]
+    if upgrade:
+        arguments.append("-upgrade")
+    arguments.append(f"-backend-config=path={TFSTATE_FILE}")
+    _run_terraform(arguments, capture=True)
+
+    # Recorded only after a successful init, so a failed one upgrades again.
+    try:
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.write_text(fingerprint + "\n", encoding="utf-8")
+    except OSError:
+        # The stamp is a cache, not state -- losing it costs one extra
+        # `-upgrade`, never correctness.
+        pass
 
 
 def terraform_outputs() -> dict[str, Any]:
