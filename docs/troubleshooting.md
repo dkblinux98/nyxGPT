@@ -382,13 +382,18 @@ but `pip install -e .` is still the fix to actually use the feature again.
 
 3. **Verify embedding model is available:**
    ```bash
-   ollama list | grep nomic-embed-text
+   nyxgpt models list | grep nomic-embed-text
    ```
 
    If missing:
    ```bash
-   ollama pull nomic-embed-text
+   nyxgpt models pull nomic-embed-text
    ```
+
+   nyxGPT normally pulls it for you on the first ingest (`[rag]
+   embedding_auto_pull = true`). Pull it by hand when that setting is
+   disabled, or when the auto-pull failed and ingestion reported
+   `Embedding model '...' is not installed in Ollama`.
 
 4. **Check similarity threshold:**
    - RAG filters results by similarity score

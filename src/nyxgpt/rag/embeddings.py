@@ -53,6 +53,9 @@ class EmbeddingConfig:
             batches.
         adaptive_batching: Whether to dynamically adjust batch size based on
             detected GPU memory instead of using a fixed `batch_size`.
+        auto_pull: Whether a missing embedding model should be pulled into
+            Ollama on first use instead of failing the request.
+        pull_timeout: Timeout in seconds for that auto-pull.
     """
 
     base_url: str
@@ -64,6 +67,8 @@ class EmbeddingConfig:
     max_workers: int = 4
     enable_gpu: bool = False
     adaptive_batching: bool = False
+    auto_pull: bool = True
+    pull_timeout: int = 600
 
 
 @dataclass
@@ -97,8 +102,22 @@ class EmbeddingError(RuntimeError):
     """Raised when embedding generation fails (transport, HTTP, or response-shape errors)."""
 
 
+class EmbeddingModelMissingError(EmbeddingError):
+    """Raised when the configured embedding model is not installed in Ollama.
+
+    Ollama answers `/api/embed` for an unknown model with a 404 whose body is
+    `{"error": "model \"...\" not found, try pulling it first"}`. That raw
+    transport error is meaningless to a user uploading a document, so it is
+    translated into this error with an actionable remediation message.
+    """
+
+
 # Global embedding cache instance (initialized lazily)
 _embedding_cache: CacheBackend[list[list[float]]] | None = None
+
+# Serializes auto-pulls of a missing embedding model so concurrent ingests
+# don't kick off the same multi-hundred-megabyte download several times.
+_pull_lock = threading.Lock()
 
 # Global thread pool for async operations (initialized lazily)
 _thread_pool: concurrent.futures.ThreadPoolExecutor | None = None
@@ -155,6 +174,10 @@ def _embedding_cfg(model: str | None = None, dimension: int | None = None) -> Em
     enable_gpu = cfg.getboolean("rag", "embedding_gpu_enabled", fallback=False)
     adaptive_batching = cfg.getboolean("rag", "embedding_adaptive_batching", fallback=False)
 
+    # First-use bootstrap: pull the embedding model if Ollama doesn't have it.
+    auto_pull = cfg.getboolean("rag", "embedding_auto_pull", fallback=True)
+    pull_timeout = cfg.getint("rag", "embedding_pull_timeout_seconds", fallback=600)
+
     return EmbeddingConfig(
         base_url=base_url,
         model=model,
@@ -165,6 +188,8 @@ def _embedding_cfg(model: str | None = None, dimension: int | None = None) -> Em
         max_workers=max_workers,
         enable_gpu=enable_gpu,
         adaptive_batching=adaptive_batching,
+        auto_pull=auto_pull,
+        pull_timeout=int(pull_timeout),
     )
 
 
@@ -409,6 +434,62 @@ def _post_json(url: str, payload: dict, timeout: int) -> dict:
             raise EmbeddingError(f"Failed to reach Ollama at {url}: {e}") from e
 
 
+def _is_model_missing_error(exc: Exception) -> bool:
+    """Return True if `exc` is Ollama's "model not installed" response.
+
+    Ollama returns HTTP 404 with a body like
+    `{"error": "model \"nomic-embed-text\" not found, try pulling it first"}`
+    when the requested embedding model has never been pulled. Any other 404
+    (wrong base URL, reverse proxy, ...) must not be mistaken for it, so the
+    body text is matched rather than the status code alone.
+    """
+    text = str(exc).lower()
+    return "not found" in text and "try pulling it first" in text
+
+
+def _missing_model_message(model: str, base_url: str, detail: str) -> str:
+    """Build an actionable error message for a missing embedding model."""
+    return (
+        f"Embedding model '{model}' is not installed in Ollama at {base_url}. "
+        f"Install it with `nyxgpt models pull {model}` and retry, or set "
+        f"[rag] embedding_model to a model you already have. ({detail})"
+    )
+
+
+def _pull_embedding_model(config: EmbeddingConfig) -> None:
+    """Pull the configured embedding model into Ollama.
+
+    This is the model half of the first-ingest bootstrap: the vector store
+    creates its keyspace/schema on demand, and likewise the embedding model is
+    provisioned on demand instead of requiring an out-of-band `models pull`
+    before the very first upload.
+
+    Args:
+        config: Resolved embedding configuration naming the model and server.
+
+    Raises:
+        EmbeddingModelMissingError: If auto-pull is disabled or the pull fails.
+    """
+    if not config.auto_pull:
+        raise EmbeddingModelMissingError(
+            _missing_model_message(
+                config.model, config.base_url, "[rag] embedding_auto_pull is disabled"
+            )
+        )
+
+    from nyxgpt.models import pull_model
+
+    logger.info("Embedding model '%s' missing; pulling it from Ollama", config.model)
+    with _pull_lock:
+        try:
+            pull_model(config.model, base_url=config.base_url, timeout_s=float(config.pull_timeout))
+        except Exception as e:
+            raise EmbeddingModelMissingError(
+                _missing_model_message(config.model, config.base_url, f"auto-pull failed: {e}")
+            ) from e
+    logger.info("Embedding model '%s' pulled successfully", config.model)
+
+
 def _batched(iterable, size):
     """Yield successive lists of up to `size` items from `iterable`.
 
@@ -535,6 +616,38 @@ async def _embed_texts_parallel(
     return result
 
 
+def _run_batches(batches: list[list[str]], url: str, config: EmbeddingConfig) -> list[list[float]]:
+    """Embed every batch, using the async path when it is enabled and useful.
+
+    Args:
+        batches: Pre-split batches of texts to embed.
+        url: Full URL of the Ollama embeddings endpoint.
+        config: Resolved embedding configuration.
+
+    Returns:
+        Flattened list of embedding vectors, one per input text.
+
+    Raises:
+        EmbeddingError: If any batch fails to embed.
+    """
+    if config.enable_async and len(batches) > 1:
+        executor = _get_thread_pool(config.max_workers)
+        try:
+            return asyncio.run(
+                _embed_texts_parallel(
+                    batches, url, config.model, config.timeout, config.dimension, executor
+                )
+            )
+        except RuntimeError as e:
+            # If an event loop is already running, fall back to sync
+            logger.debug(f"Async processing failed, falling back to sync: {e}")
+
+    out: list[list[float]] = []
+    for batch in batches:
+        out.extend(_embed_batch_sync(batch, url, config.model, config.timeout, config.dimension))
+    return out
+
+
 def embed_texts(
     texts: Iterable[str],
     *,
@@ -566,6 +679,8 @@ def embed_texts(
       - `[rag] embedding_max_workers` (parallel worker threads)
       - `[rag] embedding_gpu_enabled` (enable GPU optimization)
       - `[rag] embedding_adaptive_batching` (enable adaptive batch sizing)
+      - `[rag] embedding_auto_pull` (pull the model if Ollama doesn't have it)
+      - `[rag] embedding_pull_timeout_seconds` (timeout for that auto-pull)
       - `[cache] embedding_cache_enabled` (enable/disable caching)
       - `[cache] embedding_cache_backend` (memory or disk)
       - `[cache] embedding_cache_ttl_seconds` (cache expiration time)
@@ -579,6 +694,11 @@ def embed_texts(
     Returns:
         list of float vectors, one per input text.
         If collect_metrics=True, returns tuple of (embeddings, EmbeddingDebugMetrics).
+
+    Raises:
+        EmbeddingModelMissingError: If the embedding model is not installed in
+            Ollama and could not be pulled automatically.
+        EmbeddingError: If embedding otherwise fails.
     """
 
     texts_list = [t if isinstance(t, str) else str(t) for t in texts]
@@ -642,30 +762,26 @@ def embed_texts(
     batches = list(_batched(texts_list, optimal_batch_size))
     num_batches = len(batches)
 
-    # Process batches (async or sync)
-    if ecfg.enable_async and num_batches > 1:
-        # Async processing for multiple batches
-        executor = _get_thread_pool(ecfg.max_workers)
+    # Process batches (async or sync). On a fresh install the embedding model
+    # may never have been pulled into Ollama, which surfaces as a 404 on the
+    # very first ingest; pull it once and replay the batches rather than
+    # failing the upload with a raw transport error.
+    try:
+        out = _run_batches(batches, url, ecfg)
+    except EmbeddingError as e:
+        if not _is_model_missing_error(e):
+            raise
+        _pull_embedding_model(ecfg)
         try:
-            # Run async processing
-            out = asyncio.run(
-                _embed_texts_parallel(
-                    batches, url, ecfg.model, ecfg.timeout, ecfg.dimension, executor
+            out = _run_batches(batches, url, ecfg)
+        except EmbeddingError as retry_error:
+            if not _is_model_missing_error(retry_error):
+                raise
+            raise EmbeddingModelMissingError(
+                _missing_model_message(
+                    ecfg.model, ecfg.base_url, "still missing after an auto-pull"
                 )
-            )
-        except RuntimeError as e:
-            # If event loop is already running, fall back to sync
-            logger.debug(f"Async processing failed, falling back to sync: {e}")
-            out = []
-            for batch in batches:
-                batch_vecs = _embed_batch_sync(batch, url, ecfg.model, ecfg.timeout, ecfg.dimension)
-                out.extend(batch_vecs)
-    else:
-        # Synchronous processing
-        out = []
-        for batch in batches:
-            batch_vecs = _embed_batch_sync(batch, url, ecfg.model, ecfg.timeout, ecfg.dimension)
-            out.extend(batch_vecs)
+            ) from retry_error
 
     # Store in cache
     cache.set(cache_key, out)
