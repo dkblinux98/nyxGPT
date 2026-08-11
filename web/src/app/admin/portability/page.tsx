@@ -50,15 +50,20 @@ type AcceptanceStep = {
 };
 
 // `GET /api/v1/ops/release-candidate` -- the dashboard half of
-// `nyxgpt release rc` (#3727). Acceptance installs come from PyPI, so
-// testing the release-branch tip repo-less needs a published pre-release;
-// this panel says which one to pin and whether the line can be cut.
+// `nyxgpt release publish` (#3727). Acceptance installs come from PyPI, so
+// testing the release-branch tip repo-less needs a published pre-release --
+// a nightly `dev` build or an on-demand `rc`. This panel says which one to
+// pin and whether another can be cut.
 type ReleaseCandidatePlan = {
   branch: string;
+  channel: string;
   release: string;
   declared_version: string;
   published_rcs: string[];
+  published_dev_builds: string[];
   next_rc_version: string;
+  next_dev_version: string;
+  version: string;
   is_prerelease: boolean;
   publishable: boolean;
   blockers: string[];
@@ -400,7 +405,7 @@ export default function PortabilityPage() {
               }}
             >
               <h2 style={{ fontSize: '1.1rem', fontWeight: 'bold' }}>
-                Release candidate — acceptance-test the tip
+                PyPI builds — acceptance-test the tip
               </h2>
               {rc && (
                 <span style={badgeStyle(rc.publishable)}>
@@ -410,14 +415,16 @@ export default function PortabilityPage() {
             </div>
             <p style={{ fontSize: '0.85rem', color: 'var(--foreground-muted)' }}>
               Every install above comes from PyPI, so acceptance testing can only reach code that
-              has been published. A release candidate publishes the release-branch tip as a
-              pre-release, which a clean machine installs by exact pin. Cutting one is an owner
-              action carrying PyPI credentials, so it runs from a terminal, never from this page.
+              has been published. One pipeline publishes the release-branch tip on three channels —
+              a nightly <code>dev</code> build, an on-demand <code>rc</code>, and the release itself
+              (<code>stable</code>, run only by the owner&apos;s ceremony). Dev and rc builds are
+              pre-releases a clean machine installs by exact pin. Publishing is an owner action, so
+              it runs from a terminal or on the schedule, never from this page.
             </p>
 
             {rcError && (
               <p style={{ fontSize: '0.85rem', color: '#ef4444' }}>
-                Could not load the release-candidate plan: {rcError}
+                Could not load the publish plan: {rcError}
               </p>
             )}
 
@@ -433,7 +440,13 @@ export default function PortabilityPage() {
                     {rc.published_rcs.length > 0 ? rc.published_rcs.join(', ') : 'none yet'}
                   </div>
                   <div>
-                    Next candidate: <strong>{rc.next_rc_version}</strong>
+                    Nightly dev builds:{' '}
+                    {rc.published_dev_builds.length > 0
+                      ? rc.published_dev_builds.join(', ')
+                      : 'none yet'}
+                  </div>
+                  <div>
+                    Next <code>{rc.channel}</code> build: <strong>{rc.version}</strong>
                     {rc.is_prerelease && (
                       <span style={{ color: 'var(--foreground-muted)' }}>
                         {' '}
@@ -445,7 +458,7 @@ export default function PortabilityPage() {
 
                 {rc.pypi_lookup_error && (
                   <p style={{ fontSize: '0.8rem', color: '#ef4444', marginTop: '0.5rem' }}>
-                    PyPI lookup failed, so the next RC number is a guess: {rc.pypi_lookup_error}
+                    PyPI lookup failed, so the next build number is unknown: {rc.pypi_lookup_error}
                   </p>
                 )}
 
@@ -465,7 +478,7 @@ export default function PortabilityPage() {
                   </ul>
                 )}
 
-                <CommandList label="Cut the candidate" commands={[rc.commands.publish]} />
+                <CommandList label="Cut a build now" commands={[rc.commands.publish]} />
                 <CommandList
                   label="Point an acceptance install at it"
                   commands={[rc.commands.install, rc.commands.user_data, rc.commands.deploy]}
@@ -493,7 +506,8 @@ export default function PortabilityPage() {
                     color: 'var(--foreground-muted)',
                   }}
                 >
-                  Workflow: <code>.github/workflows/{rc.workflow}</code> (dispatch-only) — runbook:{' '}
+                  Workflow: <code>.github/workflows/{rc.workflow}</code> (nightly schedule + manual
+                  dispatch only) — runbook:{' '}
                   <code>{rc.docs}</code>
                 </p>
               </>

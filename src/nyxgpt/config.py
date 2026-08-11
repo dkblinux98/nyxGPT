@@ -1604,14 +1604,6 @@ SECRETS_SYNC_MANIFEST: dict[str, str] = {
     "github.scrummaster_agent_token": "SCRUMMASTER_AGENT_TOKEN",
     "github.review_agent_token": "REVIEW_AGENT_TOKEN",
     "monitoring.slack_bot_token": "SLACK_BOT_TOKEN",
-    # The release ceremony's PyPI upload token (`[pypi] PYPI_TOKEN`, read by
-    # scripts/release_ceremony.sh Phase 2). The release-candidate publish
-    # workflow (#3727) needs the same credential on the Actions side, and a
-    # PyPI token is shown exactly once at creation -- so it syncs from the
-    # canonical store rather than being pasted a second time into GitHub's
-    # settings. Owners using Trusted Publishing instead can leave it unset;
-    # the workflow falls back to OIDC when the secret is absent.
-    "pypi.pypi_token": "PYPI_API_TOKEN",
 }
 
 

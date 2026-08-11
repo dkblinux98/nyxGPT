@@ -880,7 +880,7 @@ providers against a mocked boto3 client (no live AWS dependency); see
 
 ---
 
-## Release candidates: acceptance-testing unreleased code
+## PyPI publishing: dev, rc and stable
 
 Every install path above pulls nyxGPT **from PyPI** -- `pip install nyxgpt`
 on a clean machine, `pip install nyxgpt==<version>` in the rendered
@@ -891,88 +891,138 @@ can only ever exercise code that has been *published*. Fix an acceptance
 failure, merge it to the release branch, and the clean-machine run still
 installs the last stable release, without the fix.
 
-A **release candidate** closes that gap (#3727). It publishes the
-release-branch tip to PyPI as a PEP 440 pre-release -- `3.0.0rc1`,
-`3.0.0rc2`, ... -- so a clean machine or a fresh EC2 instance can install
-exactly the tip, still with no checkout.
+**One pipeline** closes that gap (#3727):
+`.github/workflows/release-publish-pypi.yml` builds and publishes the
+release-branch tip on three channels. There is no second release workflow
+and no second script -- the ceremony delegates to this one too.
 
-An RC is for acceptance only. It is never announced, never a release, and
-never replaces the owner-run stable ceremony
-(`scripts/release_ceremony.sh` Phase 2, unchanged).
+| Channel | Version | Trigger | Who runs it |
+| --- | --- | --- | --- |
+| `dev` | `3.0.0.devN` | nightly schedule (or a manual dispatch) | automatic |
+| `rc` | `3.0.0rcN` | manual dispatch / `nyxgpt release publish --publish` | owner |
+| `stable` | `3.0.0` | `scripts/release_ceremony.sh` Phase 2 | owner, ceremony only |
 
-### Cutting one
+PEP 440 orders them `3.0.0.devN < 3.0.0rcN < 3.0.0`, so a nightly can never
+shadow a candidate and neither can shadow the release.
+
+Dev and rc builds are **acceptance-only**. They are never announced, never a
+release, and the ceremony's steps (master merge, tag, Homebrew tap, GitHub
+Release, sign-off) never run for them.
+
+### Nightly dev builds
+
+The schedule publishes `3.0.0.dev<run-number>` from the release-branch tip
+every night, so the morning's acceptance run can always install yesterday's
+merges. When the tip has not moved since the last successful nightly, the
+run **no-ops**: it compares `GITHUB_SHA` against the commit the last
+successful scheduled run built and publishes nothing. (PyPI versions are
+immutable, so every run that does publish gets a distinct number.)
+
+Nothing is needed to keep this going. To see what the next one would be:
+
+```bash
+nyxgpt release publish --channel dev
+```
+
+### Cutting a release candidate
 
 ```bash
 # What would be published, and whether the guardrails allow it here.
-nyxgpt release rc
+nyxgpt release publish
 
-# Cut it: dispatches .github/workflows/release-candidate-pypi.yml on the
-# release branch. The RC number is the next unused one, read from PyPI.
-nyxgpt release rc --publish
+# Cut it: dispatches release-publish-pypi.yml on the release branch. The RC
+# number is the next unused one, read from PyPI.
+nyxgpt release publish --publish
 
 # Or a specific number, when a run failed after upload and you need to skip one.
-nyxgpt release rc --publish --rc-number 4
+nyxgpt release publish --publish --number 4
+
+# An immediate dev build, without waiting for tonight's schedule.
+nyxgpt release publish --channel dev --publish
 ```
 
-`nyxgpt release rc` reports the release line, which RCs PyPI already serves,
-the next candidate version, and -- if it cannot be cut from where you are --
-exactly why. The same report is on the SRE dashboard at
-**Admin → Portability & Acceptance**, read-only: publishing carries PyPI
-credentials, so it is a terminal command and a dispatch-only workflow, never
-a button.
+`nyxgpt release rc` is kept as shorthand for `--channel rc`.
 
-The workflow itself builds an sdist and a wheel from the tip with
-`pyproject.toml`'s version rewritten to the RC (build-time only -- the RC
-version is never committed), runs `twine check` and a clean-venv smoke
-install, publishes, and then polls pypi.org until it serves the new version.
-Dispatch it with `dry_run: true` to do everything except the upload.
+The command reports the release line, which dev builds and RCs PyPI already
+serves, the next version, and -- if it cannot be cut from where you are --
+exactly why. The same report is on the SRE dashboard at **Admin →
+Portability & Acceptance**, read-only: publishing carries the owner's
+credentials, so it is a terminal command and a scheduled/dispatch-only
+workflow, never a button.
 
-### Pointing an acceptance run at it
+The workflow builds an sdist and a wheel from the tip with
+`pyproject.toml`'s version rewritten to the resolved version (build-time
+only -- it is never committed), runs `twine check` and a clean-venv smoke
+install that asserts the artifact reports the version it claims, publishes,
+and then polls pypi.org until it serves it. Dispatch it with
+`dry_run: true` to do everything except the upload.
 
-The provisioning templates already pin exactly, so an RC needs no special
-handling -- pass it wherever a version goes:
+### Pointing an acceptance run at a specific build
+
+The provisioning templates already pin exactly, so a dev or rc build needs
+no special handling -- pass it wherever a version goes:
 
 ```bash
 pip install nyxgpt==3.0.0rc3
 nyxgpt cloud user-data --os linux --version 3.0.0rc3
 nyxgpt cloud deploy --version 3.0.0rc3
+
+# ...and the same for a nightly:
+nyxgpt cloud deploy --version 3.0.0.dev41
 ```
 
 The exact `==` pin is what makes this work at all: pip excludes
 pre-releases from an unpinned requirement, so `pip install nyxgpt` keeps
 resolving to the latest **stable** release for every ordinary user, no
-matter how many RCs exist. (`pip install --pre nyxgpt` is the other way to
-opt in, if you want the newest RC without naming it.)
+matter how many dev or rc builds exist. (`pip install --pre nyxgpt` is the
+other way to opt in, if you want the newest pre-release without naming it.)
+
+### The release ceremony delegates here
+
+`scripts/release_ceremony.sh` Phase 2 no longer builds or uploads anything
+itself. It dispatches this same workflow with `channel=stable`, waits for
+the run, and then verifies pypi.org serves the release -- one publish
+mechanism, three entry points. The ceremony keeps only what is
+ceremony-exclusive: the master fast-forward, the tag, the GitHub Release,
+the Homebrew tap, the project close-out and the human stop points.
+
+Because of that, the ceremony needs **no PyPI credential at all**; the
+`--skip-pypi` flag still skips the phase.
 
 ### Guardrails
 
 | Guardrail | How it is enforced |
 | --- | --- |
-| Dispatch-only | The workflow has no `push`, `tag` or `release` trigger -- an RC is never cut by accident |
+| Scheduled + dispatch triggers only | The workflow has no `push`, `tag` or `release` trigger -- a build is never cut by accident |
 | Release branches only | The version step runs `python -m nyxgpt.release_candidate`, which exits non-zero for any ref that is not `v<X.Y.Z>` matching `pyproject.toml`'s declared version |
-| Never a stable version | What is uploaded is always `<release>rcN` -- a pre-release, which default installs skip |
-| No number reuse | The next number comes from what PyPI already serves, and PyPI rejects a re-upload anyway |
+| Dev and rc are never a stable version | What is uploaded is always `<release>.devN` / `<release>rcN` -- a pre-release, which default installs skip |
+| Stable is ceremony-only | The stable channel additionally requires the release tag at the built commit (Phase 1 creates it) *and* the ceremony's confirmation token, so dispatching `channel=stable` by hand publishes nothing |
+| No version reuse | The next number comes from what PyPI already serves, and PyPI rejects a re-upload anyway |
 
 The branch check and the version arithmetic live in
 `src/nyxgpt/release_candidate.py` (unit-tested), not in the workflow's YAML,
-so CI and the CLI cannot drift apart about what `3.0.0rcN` means.
+so CI, the ceremony and the CLI cannot drift apart about what a channel
+publishes.
 
 ### Owner setup (one-time)
 
-Publishing needs a credential on the repo side. Either option works; the
-workflow prefers the token when it is present.
+Publishing authenticates with **PyPI Trusted Publishing (OIDC)**. No PyPI
+token is stored in the repo, in Actions, or in `config.ini`.
 
-1. **Trusted Publishing (preferred, nothing stored).** On pypi.org, project
-   `nyxgpt` → *Publishing* → add a GitHub publisher: owner `dkblinux98`,
-   repository `nyxGPT`, workflow `release-candidate-pypi.yml`, environment
-   blank. The job's `id-token: write` permission mints the OIDC token; no
-   secret is ever stored in the repo.
-2. **API token.** Add a project-scoped PyPI token as the repo Actions secret
-   `PYPI_API_TOKEN`. If it is already in `config.ini` as `[pypi] PYPI_TOKEN`
-   (the ceremony's copy), `nyxgpt ops secrets-sync` can push it rather than
-   pasting a second copy into GitHub's settings.
+On pypi.org, project `nyxgpt` → *Publishing* → add a GitHub publisher:
 
-`nyxgpt release rc --publish` additionally needs `[github] pat`,
+| Field | Value |
+| --- | --- |
+| Owner | `dkblinux98` |
+| Repository | `nyxGPT` |
+| Workflow name | `release-publish-pypi.yml` |
+| Environment | *(blank)* |
+
+The job's `id-token: write` permission mints the OIDC token. The workflow
+filename above is part of the publisher's identity -- if it is ever renamed,
+update the publisher first or every publish will be rejected.
+
+`nyxgpt release publish --publish` additionally needs `[github] pat`,
 `repo_owner` and `repo_name` in `config.ini` -- the same values
 `nyxgpt ops secrets-sync` already uses -- because it dispatches the workflow
 through the GitHub API.

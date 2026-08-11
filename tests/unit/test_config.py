@@ -2462,25 +2462,6 @@ def test_secrets_sync_manifest_does_not_include_the_pat_itself() -> None:
     assert "github.pat" not in SECRETS_SYNC_MANIFEST
 
 
-def test_secrets_sync_manifest_carries_the_pypi_upload_token() -> None:
-    """The release-candidate workflow (#3727) needs the ceremony's own token in Actions.
-
-    A PyPI token is shown once at creation, so a second copy pasted into
-    GitHub's settings is exactly the drift this manifest exists to prevent.
-    """
-    assert SECRETS_SYNC_MANIFEST["pypi.pypi_token"] == "PYPI_API_TOKEN"
-
-
-def test_secrets_sync_manifest_reads_the_pypi_token_the_ceremony_uses(tmp_path: Path) -> None:
-    """`[pypi] PYPI_TOKEN` as release_ceremony.sh spells it resolves through the manifest."""
-    ini = tmp_path / "config.ini"
-    _write(ini, "[pypi]\nPYPI_TOKEN = pypi-abc123\n")
-    cfg = load_config(str(ini))
-
-    section, _, key = "pypi.pypi_token".partition(".")
-    assert cfg.get(section, key, fallback="") == "pypi-abc123"
-
-
 def test_log_effective_config_logs_at_info(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

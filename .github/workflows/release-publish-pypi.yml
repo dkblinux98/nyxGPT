@@ -1,0 +1,234 @@
+name: PyPI Publish (dev / rc / stable)
+
+run-name: >-
+  publish ${{ inputs.channel || 'dev' }}${{ inputs.dry_run && ' [dry run]' || '' }}
+  from ${{ github.ref_name }}
+
+# The ONE build-and-publish pipeline for PyPI (#3727, owner decision
+# 2026-08-11: "single release pipeline -- no parallel release
+# workflows/scripts"). One core, three entry points:
+#
+#   dev     nightly schedule -> `3.0.0.devN` from the release-branch tip,
+#           skipped when the tip has not moved since the last successful
+#           nightly. This is what makes acceptance testing of *unreleased*
+#           code possible: every repo-less path installs from PyPI, so
+#           without a published build it can only ever exercise the last
+#           stable release -- never the tip carrying the acceptance-failure
+#           fixes merged during that same round of testing.
+#   rc      manual dispatch  -> a deliberate `3.0.0rcN`.
+#   stable  scripts/release_ceremony.sh Phase 2 delegates here. The ceremony
+#           keeps only its ceremony-exclusive steps (master merge, tag,
+#           Homebrew tap, GitHub Release, sign-off); a dev or rc build never
+#           runs any of them.
+#
+# PEP 440 orders `3.0.0.devN < 3.0.0rcN < 3.0.0`, so a nightly can never
+# shadow a candidate and neither can shadow the release.
+#
+# Guardrails (each one enforced, not just described):
+#   * scheduled + dispatch triggers only -- there is no push, tag or release
+#     trigger below;
+#   * release branches only -- the version step refuses any ref that is not
+#     `v<X.Y.Z>` matching pyproject.toml's declared version;
+#   * pre-release version for dev and rc -- what gets uploaded is always
+#     `<release>.devN` / `<release>rcN`, so `pip install nyxgpt` cannot
+#     resolve to it (pip excludes pre-releases unless the user passes
+#     `--pre` or pins the version exactly);
+#   * stable is ceremony-only -- it additionally requires the release tag at
+#     the built commit (the ceremony creates it in Phase 1, before it
+#     delegates) and a confirmation token only the ceremony passes, so a
+#     release cannot be published by dispatching this workflow by hand;
+#   * no version reuse -- the next number is read from what PyPI already
+#     serves, and PyPI itself rejects a re-upload.
+#
+# The guardrails and the version arithmetic live in
+# `src/nyxgpt/release_candidate.py` (unit-tested), not in shell here, so CI,
+# the ceremony and `nyxgpt release publish` can never disagree about what a
+# channel publishes.
+#
+# AUTH: PyPI Trusted Publishing (OIDC) only -- there is no stored PyPI token
+# in this repo or in Actions. The publisher on pypi.org must name THIS file:
+#   pypi.org -> project `nyxgpt` -> Publishing -> add a GitHub publisher with
+#   owner `dkblinux98`, repository `nyxGPT`, workflow
+#   `release-publish-pypi.yml`, environment blank.
+# See docs/cloud.md#pypi-publishing-dev-rc-and-stable.
+
+on:
+  schedule:
+    # Nightly dev build from the default branch (the active release line).
+    - cron: '27 7 * * *'
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: 'Publish channel'
+        type: choice
+        options:
+          - rc
+          - dev
+          - stable
+        default: rc
+      number:
+        description: 'Explicit rc/dev number (blank = next unused, resolved from PyPI)'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Build, check and smoke-install only -- upload nothing to PyPI'
+        type: boolean
+        default: false
+      confirm:
+        description: 'stable channel only: the ceremony confirmation token'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read # read this workflow's own run history (nightly no-op check)
+      id-token: write # PyPI Trusted Publishing (OIDC) -- the only credential
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Tags are the stable channel's guardrail: the release tag must be
+          # at the built commit, and a shallow checkout carries none.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install build tooling
+        run: pip install --quiet build twine httpx
+
+      - name: Resolve the version and pin pyproject.toml
+        id: version
+        env:
+          CHANNEL: ${{ inputs.channel || 'dev' }}
+          NUMBER: ${{ inputs.number }}
+          CONFIRM: ${{ inputs.confirm }}
+          # The nightly no-op check reads this workflow's own run history.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # `nyxgpt.release_candidate` only needs stdlib + httpx, so it runs
+          # straight from the checkout -- no need to install the package
+          # (whose own version is what this step is about to rewrite).
+          PYTHONPATH: src
+        run: |
+          set -euo pipefail
+          echo "channel=${CHANNEL}" >> "$GITHUB_OUTPUT"
+          # This is the guardrail: the module exits non-zero for any ref that
+          # is not v<X.Y.Z> matching the declared version, for a stable build
+          # without the ceremony's tag and confirmation, and for a version
+          # PyPI already serves.
+          ARGS=(--branch "$GITHUB_REF_NAME" --channel "$CHANNEL" --pin pyproject.toml)
+          if [ -n "${NUMBER}" ]; then
+            ARGS+=(--number "${NUMBER}")
+          fi
+          if [ "${CHANNEL}" = "dev" ]; then
+            # Unique per run (PyPI versions are immutable) and a no-op when
+            # the tip has not moved since the last successful nightly.
+            ARGS+=(--run-number "$GITHUB_RUN_NUMBER" --skip-if-unchanged \
+                   --head-sha "$GITHUB_SHA" --repo "$GITHUB_REPOSITORY" \
+                   --exclude-run-id "$GITHUB_RUN_ID")
+          fi
+          if [ "${CHANNEL}" = "stable" ]; then
+            ARGS+=(--confirm "${CONFIRM}" \
+                   --tags-at-head "$(git tag --points-at HEAD | tr '\n' ' ')")
+          fi
+          VERSION=$(python -m nyxgpt.release_candidate "${ARGS[@]}")
+          if [ "${VERSION}" = "SKIP" ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::${GITHUB_REF_NAME} is unchanged since the last nightly -- nothing to publish."
+            exit 0
+          fi
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Publishing ${VERSION} (${CHANNEL}) from ${GITHUB_REF_NAME}"
+          # The pin is build-time only -- it is never committed, so the
+          # release branch keeps declaring the stable version it heads for.
+          git --no-pager diff -- pyproject.toml
+
+      - name: Build sdist + wheel
+        if: ${{ steps.version.outputs.publish == 'true' }}
+        run: python -m build
+
+      - name: twine check
+        if: ${{ steps.version.outputs.publish == 'true' }}
+        run: twine check dist/*
+
+      - name: Clean-venv smoke (the artifact must import and answer --help)
+        if: ${{ steps.version.outputs.publish == 'true' }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          python -m venv /tmp/smokeenv
+          /tmp/smokeenv/bin/pip install --quiet dist/*.whl
+          /tmp/smokeenv/bin/python -c "import nyxgpt"
+          INSTALLED=$(/tmp/smokeenv/bin/python -c "from importlib.metadata import version; print(version('nyxgpt'))")
+          echo "installed version: ${INSTALLED}"
+          # The artifact must report the version it claims to be: a pin that
+          # resolves to something else would make an acceptance run lie.
+          if [ "$INSTALLED" != "$VERSION" ]; then
+            echo "::error::built artifact reports ${INSTALLED}, expected ${VERSION}"
+            exit 1
+          fi
+          /tmp/smokeenv/bin/nyxgpt --help >/dev/null
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ steps.version.outputs.publish == 'true' }}
+        with:
+          name: nyxgpt-${{ steps.version.outputs.version }}
+          path: dist/*
+
+      - name: Dry run -- nothing uploaded
+        if: ${{ steps.version.outputs.publish == 'true' && inputs.dry_run }}
+        run: |
+          echo "::notice::dry_run: built and verified ${{ steps.version.outputs.version }}, uploaded nothing."
+
+      - name: Publish to PyPI (Trusted Publishing / OIDC)
+        if: ${{ steps.version.outputs.publish == 'true' && !inputs.dry_run }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+      - name: Verify PyPI serves the build
+        if: ${{ steps.version.outputs.publish == 'true' && !inputs.dry_run }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          code=000
+          for i in $(seq 1 20); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/nyxgpt/${VERSION}/json")
+            [ "$code" = "200" ] && break
+            echo "pypi.org does not serve nyxgpt==${VERSION} yet (attempt $i/20, http $code) -- retrying in 15s"
+            sleep 15
+          done
+          if [ "$code" != "200" ]; then
+            echo "::error::pypi.org never served nyxgpt==${VERSION}"
+            exit 1
+          fi
+
+      - name: Summary
+        if: ${{ steps.version.outputs.publish == 'true' && !inputs.dry_run }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          CHANNEL: ${{ steps.version.outputs.channel }}
+        run: |
+          {
+            echo "### \`${VERSION}\` published (${CHANNEL} channel)"
+            echo ""
+            echo "Built from \`${GITHUB_REF_NAME}\` at \`${GITHUB_SHA}\`."
+            if [ "${CHANNEL}" = "stable" ]; then
+              echo "This is the release itself -- published by the owner's ceremony."
+            else
+              echo "Acceptance-only pre-release. \`pip install nyxgpt\` still resolves"
+              echo "to the latest **stable** release."
+            fi
+            echo ""
+            echo '```'
+            echo "pip install nyxgpt==${VERSION}"
+            echo "nyxgpt cloud user-data --os linux --version ${VERSION}"
+            echo "nyxgpt cloud deploy --version ${VERSION}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

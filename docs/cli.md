@@ -16,8 +16,8 @@ documentation are linked out to instead of duplicated here:
 - Canary (`nyxgpt canary ...`) — see [Kubernetes](kubernetes.md)
 - Configuration wizard (`nyxgpt wizard`) — see [Configuration](configuration.md)
 - Guided secrets setup (`nyxgpt secrets setup`) — see [Configuration: Guided secrets setup](configuration.md#option-4-guided-secrets-setup)
-- Release candidates (`nyxgpt release rc`) — see
-  [Cloud: Release candidates](cloud.md#release-candidates-acceptance-testing-unreleased-code)
+- PyPI builds — dev/rc/stable (`nyxgpt release publish`) — see
+  [Cloud: PyPI publishing](cloud.md#pypi-publishing-dev-rc-and-stable)
 
 ---
 
@@ -92,32 +92,41 @@ reference (including the equivalent `GET /api/v1/sessions/search` API).
 
 ---
 
-## Release candidates (owner)
+## PyPI builds — dev, rc, stable (owner)
 
-`nyxgpt release rc` plans — and with `--publish`, cuts — a PyPI release
-candidate from the release-branch tip, so acceptance testing can install
-unreleased code on a machine with no repo checkout.
+`nyxgpt release publish` plans — and with `--publish`, cuts — a PyPI build
+from the release-branch tip, so acceptance testing can install unreleased
+code on a machine with no repo checkout. One pipeline serves all three
+channels; the nightly `dev` build runs on a schedule with no command at all.
 
 ```bash
 # What would be published, and whether it can be cut from here.
-nyxgpt release rc
+nyxgpt release publish
 
 # Machine-readable (the same payload GET /api/v1/ops/release-candidate returns).
-nyxgpt release rc --json
+nyxgpt release publish --json
 
 # Dispatch the publish workflow on the release branch.
-nyxgpt release rc --publish
+nyxgpt release publish --publish
+
+# An immediate dev build instead of waiting for tonight's schedule.
+nyxgpt release publish --channel dev --publish
+
+# `nyxgpt release rc` is shorthand for `--channel rc` (with `--rc-number`).
+nyxgpt release rc --publish --rc-number 4
 ```
 
 | Flag | Description |
 | --- | --- |
-| `--branch <branch>` | Release branch the RC is cut from. Default: `[github] RELEASE_BRANCH` from `config.ini`, else `v<declared version>`. Non-release branches are refused. |
+| `--branch <branch>` | Release branch the build is cut from. Default: `[github] RELEASE_BRANCH` from `config.ini`, else `v<declared version>`. Non-release branches are refused. |
+| `--channel <dev\|rc>` | Which channel to plan or publish (default `rc`). `stable` is published only by `scripts/release_ceremony.sh`, which delegates to the same workflow. |
 | `--publish` | Dispatch the publish workflow instead of only reporting what it would do. |
-| `--rc-number <n>` | Publish a specific RC number instead of the next unused one. |
+| `--number <n>` | Publish a specific rc/dev number instead of the next unused one. |
 | `--json` | Print the plan as JSON. |
 
-Exits non-zero when an RC cannot be cut from the given branch, so it can gate
-a script. What gets published is always a PEP 440 pre-release (`3.0.0rcN`),
-which `pip install nyxgpt` never resolves to. Full runbook, including the
-one-time PyPI credential setup:
-[Cloud — Release candidates](cloud.md#release-candidates-acceptance-testing-unreleased-code).
+Exits non-zero when a build cannot be cut from the given branch, so it can
+gate a script. What `dev` and `rc` publish is always a PEP 440 pre-release
+(`3.0.0.devN`, `3.0.0rcN`), which `pip install nyxgpt` never resolves to.
+Full runbook, including the one-time PyPI Trusted Publishing setup:
+[Cloud — PyPI publishing](cloud.md#pypi-publishing-dev-rc-and-stable).
+
