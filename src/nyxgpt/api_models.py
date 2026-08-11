@@ -33,7 +33,11 @@ class InfoResponse(BaseModel):
     ollama_base_url: str
     default_model: str
     sessions_dir: str
+    #: Version of the installed `nyxgpt` package -- the version actually running.
     release_version: str | None = None
+    #: Agent tooling's configured release branch (`[github] RELEASE_BRANCH`),
+    #: kept distinct from the running version (#3716).
+    release_branch: str | None = None
 
 
 class SessionsListResponse(BaseModel):
