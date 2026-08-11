@@ -16,6 +16,7 @@ import getpass
 import hashlib
 import importlib.metadata
 import importlib.resources
+import ipaddress
 import json
 import logging
 import os
@@ -5165,6 +5166,81 @@ def _tracing_wiring_issue(cfg_path: Path | None = None) -> str | None:
     )
 
 
+def _prometheus_api_scrape_issue(cfg_path: Path | None = None) -> str | None:
+    """Detect the #3721 failure mode: prometheus can't reach the native API.
+
+    Twin of `_tracing_wiring_issue` for the metrics half of the stack. A failed
+    scrape is just as silent: prometheus itself stays healthy and green, the
+    Monitoring panel reports "enabled" (it only checks the flag), and every
+    Grafana dashboard renders with no data at all. The classic cause is a plain
+    Linux docker engine, where `host.docker.internal` resolves to the bridge
+    gateway and a loopback-bound native uvicorn isn't listening there -- which
+    is what `host-api-relay` exists to bridge.
+
+    Asks prometheus for its own view of the `nyxgpt-api` target rather than
+    re-deriving reachability, so it reports the same `lastError` an operator
+    would see on prometheus's /targets page. Only runs when monitoring is
+    enabled and prometheus is actually up; any transport/parse failure returns
+    None (prometheus not reachable is the existing "stack is down" story, not
+    this check's finding).
+    """
+    cfg_path = cfg_path or (Path.home() / ".nyxGPT" / "config.ini")
+    if not cfg_path.exists():
+        return None
+
+    parser = ConfigParser()
+    try:
+        parser.read(cfg_path)
+    except Exception as e:
+        logger.warning(
+            "Failed to parse %s, skipping prometheus scrape check: %s",
+            cfg_path,
+            e,
+            extra={"component": "ops"},
+        )
+        return None
+
+    monitoring_config = get_monitoring_config(parser)
+    if not monitoring_config["enabled"]:
+        return None
+
+    base_url = str(monitoring_config["prometheus_ui_url"]).rstrip("/")
+    try:
+        resp = httpx.get(f"{base_url}/api/v1/targets", params={"state": "active"}, timeout=5.0)
+        resp.raise_for_status()
+        active = resp.json()["data"]["activeTargets"]
+    except Exception as e:
+        logger.debug(
+            "Prometheus targets unavailable at %s, skipping scrape check: %s",
+            base_url,
+            e,
+            extra={"component": "ops"},
+        )
+        return None
+
+    api_targets = [t for t in active if t.get("labels", {}).get("job") == "nyxgpt-api"]
+    if not api_targets or any(t.get("health") == "up" for t in api_targets):
+        return None
+
+    last_error = next(
+        (t.get("lastError") for t in api_targets if t.get("lastError")),
+        "no error reported",
+    )
+    hint = ""
+    if _is_linux():
+        hint = (
+            " On Linux this is usually the container->host-loopback gap (#3721): re-run "
+            "`nyxgpt ops observability` to (re)enable the host-api-relay service, and check "
+            "`nyxgpt ops logs host-api-relay`."
+        )
+    return (
+        "Prometheus cannot scrape the API's /metrics endpoint "
+        f"(job nyxgpt-api is down: {last_error}) -- every Grafana dashboard will render "
+        f"empty even though the stack looks healthy.{hint} "
+        "See docs/troubleshooting.md#grafana-dashboards-are-empty-on-linux."
+    )
+
+
 def _tracing_packages_doctor_issue(cfg_path: Path | None = None) -> str | None:
     """Detect the #3484 failure mode: a venv predating the #3430 OTel backbone
     (or missing a package `pip uninstall`'d since) is missing an
@@ -5377,7 +5453,10 @@ def doctor(_args) -> int:
     (when log aggregation is enabled and native logs exist) whether
     promtail is actually wired to see native-mode host logs, (when tracing
     is enabled) whether the configured OTLP endpoint actually has something
-    listening on it, (once the shared Ollama store has been configured)
+    listening on it, (when monitoring is enabled and Prometheus is up)
+    whether Prometheus's `nyxgpt-api` scrape target is actually up -- a
+    failed scrape leaves every Grafana dashboard empty while the stack
+    still looks healthy (#3721), (once the shared Ollama store has been configured)
     whether native Ollama's OLLAMA_MODELS env has drifted from it (#3431),
     and whether `~/.nyxGPT/secrets` is writable / holds the GlitchTip
     Grafana token when the observability stack is up (#3432), whether a
@@ -5512,6 +5591,10 @@ def doctor(_args) -> int:
     tracing_packages_issue = _tracing_packages_doctor_issue()
     if tracing_packages_issue:
         issues.append(tracing_packages_issue)
+
+    scrape_issue = _prometheus_api_scrape_issue()
+    if scrape_issue:
+        issues.append(scrape_issue)
 
     if _is_macos():
         # Linux has no equivalent drift to check: nyxgpt-ollama.service's
@@ -6990,6 +7073,211 @@ def _recreate_grafana_if_provisioning_drifted() -> OpsResult | None:
     )
 
 
+# --- Linux bridge->loopback relay for the native API (#3721) ---
+
+# Compose profile the `host-api-relay` service joins when it's needed, and the
+# inert profile name that keeps it out of every `--profile` selection when it
+# isn't. `monitoring` rather than a profile of its own, so the relay starts,
+# stops, restarts, and comes down in lockstep with prometheus -- it exists
+# purely to make prometheus's scrape of the native API reachable.
+HOST_RELAY_ENABLED_PROFILE = "monitoring"
+HOST_RELAY_DISABLED_PROFILE = "disabled"
+
+# Compose `.env` variables `_sync_host_relay_env` owns end-to-end. Like
+# COMPOSE_ENV_SECRET_MAP's secrets these are derived, never hand-edited: every
+# observability bring-up recomputes them from the OS, the docker bridge, and
+# config.ini, so a machine that changes (docker reinstalled on a different
+# subnet, `[api] host` widened by hand) reconciles on the next run.
+HOST_RELAY_ENV_PROFILE_VAR = "NYXGPT_HOST_RELAY_PROFILE"
+HOST_RELAY_ENV_GATEWAY_VAR = "NYXGPT_HOST_GATEWAY_IP"
+
+# `[api] host` values that leave the native API reachable only from the host
+# itself -- exactly the case the relay exists to bridge. Anything else already
+# listens on an address containers can reach (and, per app.py's P6-1 gate,
+# already required auth to start), so the relay would be redundant *and* would
+# fail to bind its own listener against the API's wildcard socket.
+LOOPBACK_API_HOSTS: frozenset[str] = frozenset({"", "127.0.0.1", "localhost", "::1"})
+
+
+def _docker_bridge_gateway_ip() -> str | None:
+    """Return the IPv4 gateway of docker's default `bridge` network.
+
+    This is the address `extra_hosts: host.docker.internal:host-gateway`
+    resolves to inside a container on a plain Linux engine (docker defaults
+    `--host-gateway-ip` to it), so it is the address the relay must listen on
+    for `host.docker.internal:8000` to reach the native API.
+
+    Returns None when docker isn't usable, the network has no IPv4 gateway, or
+    the output can't be parsed -- callers treat that as "leave the relay off"
+    rather than guessing at 172.17.0.1.
+    """
+    cp = _run(
+        [
+            "docker",
+            "network",
+            "inspect",
+            "bridge",
+            "--format",
+            "{{range .IPAM.Config}}{{.Gateway}} {{end}}",
+        ],
+        check=False,
+        expected=True,
+    )
+    if cp.returncode != 0:
+        return None
+    for token in (cp.stdout or "").split():
+        try:
+            addr = ipaddress.ip_address(token.strip())
+        except ValueError:
+            continue
+        if addr.version == 4:
+            return str(addr)
+    return None
+
+
+def _native_api_host(cfg_path: Path) -> str:
+    """Read `[api] host` from config.ini without importing the full config stack.
+
+    Falls back to the same `127.0.0.1` default the native wrapper scripts use
+    (`_NATIVE_API_WRAPPER_TEMPLATE`) when the file is missing or unparseable,
+    which is also the value that makes the relay necessary.
+    """
+    parser = ConfigParser()
+    try:
+        parser.read(cfg_path, encoding="utf-8")
+    except Exception as e:
+        logger.warning(
+            "Failed to parse %s while resolving the native API bind host; "
+            "assuming the 127.0.0.1 default: %s",
+            cfg_path,
+            e,
+            extra={"component": "ops"},
+        )
+        return "127.0.0.1"
+    return parser.get("api", "host", fallback="127.0.0.1").strip()
+
+
+def _host_relay_decision(cfg_path: Path) -> tuple[bool, str, str]:
+    """Decide whether the `host-api-relay` Compose service should run here.
+
+    Returns `(enabled, gateway_ip, reason)`. `gateway_ip` is always a usable
+    literal (the loopback placeholder when disabled) so the generated `.env`
+    never leaves Compose interpolating an empty `bind=` argument.
+    """
+    if not _is_linux():
+        # Docker Desktop proxies host.docker.internal to the host's loopback
+        # itself, so prometheus already reaches a native API on 127.0.0.1.
+        return False, "127.0.0.1", f"not needed on {platform.system()}"
+
+    api_host = _native_api_host(cfg_path)
+    if api_host.lower() not in LOOPBACK_API_HOSTS:
+        return (
+            False,
+            "127.0.0.1",
+            f"[api] host = {api_host} already listens beyond loopback",
+        )
+
+    gateway = _docker_bridge_gateway_ip()
+    if gateway is None:
+        return False, "127.0.0.1", "could not resolve the docker bridge gateway address"
+
+    return True, gateway, f"relaying {gateway} -> 127.0.0.1 for container scrapes"
+
+
+def _apply_env_updates(lines: list[str], updates: dict[str, str]) -> list[str]:
+    """Rewrite `VAR=...` lines in a `.env` file body, appending any that are absent.
+
+    Mirrors `sync_env_from_config`'s line-based rewrite so comments, ordering,
+    and every variable this function doesn't own survive verbatim.
+    """
+    patched = list(lines)
+    for var_name, value in updates.items():
+        new_line = f"{var_name}={value}"
+        for i, line in enumerate(patched):
+            if line.startswith(f"{var_name}="):
+                patched[i] = new_line
+                break
+        else:
+            patched.append(new_line)
+    return patched
+
+
+def _sync_host_relay_env(cfg_path: Path | None = None, env_path: Path | None = None) -> OpsResult:
+    """Write the `host-api-relay` toggle + bind address into Compose's `.env`.
+
+    On a plain Linux docker engine a container has no route to the host's
+    127.0.0.1, so prometheus cannot scrape a natively-installed `nyxgpt-api`
+    and every Grafana panel stays empty (#3721). Widening `[api] host` to
+    `0.0.0.0` fixes the scrape but publishes the API on every interface and
+    trips app.py's P6-1 bind-security gate (forcing auth on with it), which is
+    exactly the "no 0.0.0.0 ingress" posture P6-4 is meant to hold. Instead,
+    enable the `host-api-relay` Compose service: it shares the host's network
+    namespace, listens only on the docker bridge gateway, and forwards to the
+    host's own loopback.
+
+    Reconciles in both directions -- a host that no longer needs the relay
+    (moved to macOS's Docker Desktop, `[api] host` widened by hand, docker
+    removed) gets the profile written back to its inert `disabled` value, so
+    the next `up` drops the container instead of leaving it bound.
+
+    Never fails the caller: a `.env` that can't be written means Compose falls
+    back to the compose-file defaults (relay off), which is the pre-#3721
+    behaviour, not a broken stack.
+    """
+    cfg_path = cfg_path or (Path.home() / ".nyxGPT" / "config.ini")
+    # Anchored to the compose file every `docker compose -f ...` in this module
+    # passes, not to NYXGPT_HOME directly: Compose resolves `.env` relative to
+    # the compose file's own directory, and `self_heal.COMPOSE_FILE` is the one
+    # place that path can be overridden (NYXGPT_COMPOSE_FILE, used from inside
+    # the api container). Normally the two are the same `~/.nyxGPT`.
+    env_path = env_path or (self_heal.COMPOSE_FILE.parent / ".env")
+    example_path = env_path.parent / ".env.example"
+
+    enabled, gateway, reason = _host_relay_decision(cfg_path)
+    profile = HOST_RELAY_ENABLED_PROFILE if enabled else HOST_RELAY_DISABLED_PROFILE
+
+    if env_path.exists():
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+    elif example_path.exists():
+        lines = example_path.read_text(encoding="utf-8").splitlines()
+    else:
+        # `_sync_packaged_resources` hasn't run yet (or this is a bare test
+        # home). Compose has no `.env` to read either, so its own
+        # `disabled`/loopback defaults already describe the desired state.
+        return OpsResult(
+            True,
+            "Skipped host API relay (no Compose .env yet)",
+            f"Neither {env_path} nor {example_path} exists -- run `nyxgpt ops install`.",
+        )
+
+    updates = {
+        HOST_RELAY_ENV_PROFILE_VAR: profile,
+        HOST_RELAY_ENV_GATEWAY_VAR: gateway,
+    }
+    patched = _apply_env_updates(lines, updates)
+    if patched != lines or not env_path.exists():
+        try:
+            _ensure_dir(env_path.parent)
+            env_path.write_text("\n".join(patched) + "\n", encoding="utf-8")
+            os.chmod(env_path, 0o600)
+        except OSError as e:
+            return OpsResult(
+                True,
+                "Could not update the host API relay settings in .env",
+                f"{env_path}: {e}. Prometheus may not be able to scrape a native "
+                "API on Linux until this is writable.",
+            )
+
+    if enabled:
+        return OpsResult(
+            True,
+            f"Host API relay enabled ({reason})",
+            "Prometheus scrapes the native API through the docker bridge gateway; "
+            "`[api] host` stays loopback-only, so the API is not exposed to the LAN.",
+        )
+    return OpsResult(True, f"Host API relay disabled ({reason})")
+
+
 def _start_observability_stack(
     extra_compose_files: list[Path] | None = None, force_recreate: bool = False
 ) -> list[OpsResult]:
@@ -7115,6 +7403,13 @@ def _reconcile_grafana_provisioning() -> list[OpsResult]:
     results = [drift_result] if drift_result is not None else []
     if drift_result is not None and not drift_result.ok:
         return results
+
+    # Must run before the stack starts: it decides whether Compose resolves
+    # the `host-api-relay` service into the monitoring profile at all, which
+    # is what gives prometheus a route to a natively-installed API on Linux
+    # (#3721). `_start_observability_stack` reads `.env` when it enumerates
+    # services, so the write has to land first.
+    results.append(_sync_host_relay_env())
 
     start_results = _start_observability_stack()
     results += start_results

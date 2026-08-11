@@ -995,6 +995,122 @@ def test_tracing_wiring_issue_none_when_collector_reachable(monkeypatch, tmp_pat
     assert ops._tracing_wiring_issue(cfg_path) is None
 
 
+# --- doctor: prometheus -> native API scrape health (#3721) ---
+
+
+def _write_monitoring_config(cfg_path: Path, enabled: bool = True) -> None:
+    cfg_path.write_text(
+        "[monitoring]\n"
+        f"enabled = {'true' if enabled else 'false'}\n"
+        "prometheus_ui_url = http://localhost:9090\n",
+        encoding="utf-8",
+    )
+
+
+def _patch_prometheus_targets(monkeypatch, targets, *, raises: Exception | None = None):
+    def fake_get(url, params=None, timeout=None):
+        if raises is not None:
+            raise raises
+        assert url == "http://localhost:9090/api/v1/targets"
+        assert params == {"state": "active"}
+        return httpx.Response(
+            200,
+            json={"status": "success", "data": {"activeTargets": targets}},
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr(ops.httpx, "get", fake_get)
+
+
+@pytest.mark.unit
+def test_prometheus_api_scrape_issue_none_when_no_config(tmp_path):
+    assert ops._prometheus_api_scrape_issue(tmp_path / "missing.ini") is None
+
+
+@pytest.mark.unit
+def test_prometheus_api_scrape_issue_none_when_monitoring_disabled(tmp_path, monkeypatch):
+    cfg_path = tmp_path / "config.ini"
+    _write_monitoring_config(cfg_path, enabled=False)
+    monkeypatch.setattr(
+        ops.httpx, "get", lambda *a, **k: pytest.fail("must not query a disabled stack")
+    )
+
+    assert ops._prometheus_api_scrape_issue(cfg_path) is None
+
+
+@pytest.mark.unit
+def test_prometheus_api_scrape_issue_none_when_target_is_up(tmp_path, monkeypatch):
+    cfg_path = tmp_path / "config.ini"
+    _write_monitoring_config(cfg_path)
+    _patch_prometheus_targets(
+        monkeypatch, [{"labels": {"job": "nyxgpt-api"}, "health": "up", "lastError": ""}]
+    )
+
+    assert ops._prometheus_api_scrape_issue(cfg_path) is None
+
+
+@pytest.mark.unit
+def test_prometheus_api_scrape_issue_flags_a_down_target(tmp_path, monkeypatch):
+    """The #3721 symptom: prometheus itself is perfectly healthy, so nothing else
+    in doctor notices that every dashboard is rendering empty."""
+    cfg_path = tmp_path / "config.ini"
+    _write_monitoring_config(cfg_path)
+    _patch_prometheus_targets(
+        monkeypatch,
+        [
+            {
+                "labels": {"job": "nyxgpt-api"},
+                "health": "down",
+                "lastError": "dial tcp 172.17.0.1:8000: connect: connection refused",
+            }
+        ],
+    )
+    monkeypatch.setattr(ops, "_is_linux", lambda: True)
+
+    issue = ops._prometheus_api_scrape_issue(cfg_path)
+
+    assert issue is not None
+    assert "connection refused" in issue
+    assert "host-api-relay" in issue
+
+
+@pytest.mark.unit
+def test_prometheus_api_scrape_issue_omits_the_linux_hint_elsewhere(tmp_path, monkeypatch):
+    cfg_path = tmp_path / "config.ini"
+    _write_monitoring_config(cfg_path)
+    _patch_prometheus_targets(
+        monkeypatch, [{"labels": {"job": "nyxgpt-api"}, "health": "down", "lastError": "boom"}]
+    )
+    monkeypatch.setattr(ops, "_is_linux", lambda: False)
+
+    issue = ops._prometheus_api_scrape_issue(cfg_path)
+
+    assert issue is not None
+    assert "host-api-relay" not in issue
+
+
+@pytest.mark.unit
+def test_prometheus_api_scrape_issue_ignores_other_jobs(tmp_path, monkeypatch):
+    cfg_path = tmp_path / "config.ini"
+    _write_monitoring_config(cfg_path)
+    _patch_prometheus_targets(
+        monkeypatch, [{"labels": {"job": "prometheus"}, "health": "down", "lastError": "boom"}]
+    )
+
+    assert ops._prometheus_api_scrape_issue(cfg_path) is None
+
+
+@pytest.mark.unit
+def test_prometheus_api_scrape_issue_silent_when_prometheus_is_unreachable(tmp_path, monkeypatch):
+    """A stack that isn't up yet is the existing "stack is down" story -- this
+    check must not add a second, confusing issue line on top of it."""
+    cfg_path = tmp_path / "config.ini"
+    _write_monitoring_config(cfg_path)
+    _patch_prometheus_targets(monkeypatch, [], raises=httpx.ConnectError("no route"))
+
+    assert ops._prometheus_api_scrape_issue(cfg_path) is None
+
+
 @pytest.mark.unit
 def test_tracing_packages_doctor_issue_none_when_no_config(tmp_path):
     assert ops._tracing_packages_doctor_issue(tmp_path / "missing.ini") is None
@@ -5263,6 +5379,241 @@ def test_compose_available_true(monkeypatch):
     assert ops._compose_available() is True
 
 
+# --- host-api-relay: docker bridge -> host loopback (#3721) ---
+
+
+def _fake_network_inspect(stdout: str, rc: int = 0):
+    def fake_run(cmd, check=True, **_k):
+        assert cmd[:4] == ["docker", "network", "inspect", "bridge"]
+        return subprocess.CompletedProcess(cmd, rc, stdout=stdout)
+
+    return fake_run
+
+
+def _write_relay_config(cfg_path: Path, api_host: str = "127.0.0.1") -> None:
+    cfg_path.write_text(f"[api]\nhost = {api_host}\nport = 8000\n", encoding="utf-8")
+
+
+@pytest.mark.unit
+def test_docker_bridge_gateway_ip_parses_the_ipv4_gateway(monkeypatch):
+    monkeypatch.setattr(ops, "_run", _fake_network_inspect("172.17.0.1 \n"))
+    assert ops._docker_bridge_gateway_ip() == "172.17.0.1"
+
+
+@pytest.mark.unit
+def test_docker_bridge_gateway_ip_returns_none_when_docker_fails(monkeypatch):
+    monkeypatch.setattr(ops, "_run", _fake_network_inspect("", rc=1))
+    assert ops._docker_bridge_gateway_ip() is None
+
+
+@pytest.mark.unit
+def test_docker_bridge_gateway_ip_ignores_non_ipv4_gateways(monkeypatch):
+    """socat's `bind=` in docker-compose.yml is an IPv4 listener, and
+    host.docker.internal resolves to docker's IPv4 host-gateway -- an IPv6-only
+    answer must read as "unknown" rather than be passed through."""
+    monkeypatch.setattr(ops, "_run", _fake_network_inspect("fe80::1 not-an-ip \n"))
+    assert ops._docker_bridge_gateway_ip() is None
+
+
+@pytest.mark.unit
+def test_host_relay_decision_enabled_on_linux_with_loopback_api(tmp_path, monkeypatch):
+    cfg_path = tmp_path / "config.ini"
+    _write_relay_config(cfg_path)
+    monkeypatch.setattr(ops, "_is_linux", lambda: True)
+    monkeypatch.setattr(ops, "_docker_bridge_gateway_ip", lambda: "172.18.0.1")
+
+    enabled, gateway, _reason = ops._host_relay_decision(cfg_path)
+
+    assert enabled is True
+    assert gateway == "172.18.0.1"
+
+
+@pytest.mark.unit
+def test_host_relay_decision_defaults_to_enabled_before_the_wizard_runs(tmp_path, monkeypatch):
+    """No config.ini yet means the native wrapper's own 127.0.0.1 default
+    applies, which is exactly the case that needs the relay."""
+    monkeypatch.setattr(ops, "_is_linux", lambda: True)
+    monkeypatch.setattr(ops, "_docker_bridge_gateway_ip", lambda: "172.17.0.1")
+
+    enabled, gateway, _reason = ops._host_relay_decision(tmp_path / "missing.ini")
+
+    assert enabled is True
+    assert gateway == "172.17.0.1"
+
+
+@pytest.mark.unit
+def test_host_relay_decision_disabled_off_linux(tmp_path, monkeypatch):
+    """Docker Desktop proxies host.docker.internal to the host's loopback, so the
+    relay is unnecessary there -- and a second listener on the API port would
+    collide with uvicorn's own."""
+    cfg_path = tmp_path / "config.ini"
+    _write_relay_config(cfg_path)
+    monkeypatch.setattr(ops, "_is_linux", lambda: False)
+    monkeypatch.setattr(
+        ops,
+        "_docker_bridge_gateway_ip",
+        lambda: pytest.fail("must not probe docker on a non-Linux host"),
+    )
+
+    enabled, gateway, _reason = ops._host_relay_decision(cfg_path)
+
+    assert enabled is False
+    assert gateway == "127.0.0.1"
+
+
+@pytest.mark.unit
+def test_host_relay_decision_disabled_when_api_already_listens_beyond_loopback(
+    tmp_path, monkeypatch
+):
+    """An operator who deliberately set `[api] host = 0.0.0.0` already has a
+    container-reachable API (and, per app.py's P6-1 gate, auth enabled). Starting
+    the relay anyway would fail to bind against that wildcard socket."""
+    cfg_path = tmp_path / "config.ini"
+    _write_relay_config(cfg_path, api_host="0.0.0.0")
+    monkeypatch.setattr(ops, "_is_linux", lambda: True)
+    monkeypatch.setattr(ops, "_docker_bridge_gateway_ip", lambda: "172.17.0.1")
+
+    enabled, _gateway, reason = ops._host_relay_decision(cfg_path)
+
+    assert enabled is False
+    assert "already listens beyond loopback" in reason
+
+
+@pytest.mark.unit
+def test_host_relay_decision_disabled_when_gateway_unknown(tmp_path, monkeypatch):
+    cfg_path = tmp_path / "config.ini"
+    _write_relay_config(cfg_path)
+    monkeypatch.setattr(ops, "_is_linux", lambda: True)
+    monkeypatch.setattr(ops, "_docker_bridge_gateway_ip", lambda: None)
+
+    enabled, gateway, reason = ops._host_relay_decision(cfg_path)
+
+    assert enabled is False
+    assert gateway == "127.0.0.1"
+    assert "docker bridge gateway" in reason
+
+
+@pytest.mark.unit
+def test_sync_host_relay_env_enables_relay_and_preserves_other_lines(tmp_path, monkeypatch):
+    cfg_path = tmp_path / "config.ini"
+    _write_relay_config(cfg_path)
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "NYXGPT_BIND_ADDR=127.0.0.1\n"
+        "NYXGPT_API_PORT=8000\n"
+        "NYXGPT_HOST_RELAY_PROFILE=disabled\n"
+        "NYXGPT_HOST_GATEWAY_IP=127.0.0.1\n"
+        "GRAFANA_ADMIN_PASSWORD=secret\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ops, "_is_linux", lambda: True)
+    monkeypatch.setattr(ops, "_docker_bridge_gateway_ip", lambda: "172.17.0.1")
+
+    result = ops._sync_host_relay_env(cfg_path=cfg_path, env_path=env_path)
+
+    assert result.ok is True
+    content = env_path.read_text(encoding="utf-8")
+    assert "NYXGPT_HOST_RELAY_PROFILE=monitoring" in content
+    assert "NYXGPT_HOST_GATEWAY_IP=172.17.0.1" in content
+    # Every variable this function doesn't own survives verbatim.
+    assert "GRAFANA_ADMIN_PASSWORD=secret" in content
+    assert "NYXGPT_BIND_ADDR=127.0.0.1" in content
+
+
+@pytest.mark.unit
+def test_sync_host_relay_env_seeds_from_example_when_env_missing(tmp_path, monkeypatch):
+    cfg_path = tmp_path / "config.ini"
+    _write_relay_config(cfg_path)
+    (tmp_path / ".env.example").write_text(
+        "NYXGPT_HOST_RELAY_PROFILE=disabled\nNYXGPT_HOST_GATEWAY_IP=127.0.0.1\n",
+        encoding="utf-8",
+    )
+    env_path = tmp_path / ".env"
+    monkeypatch.setattr(ops, "_is_linux", lambda: True)
+    monkeypatch.setattr(ops, "_docker_bridge_gateway_ip", lambda: "172.17.0.1")
+
+    result = ops._sync_host_relay_env(cfg_path=cfg_path, env_path=env_path)
+
+    assert result.ok is True
+    assert "NYXGPT_HOST_RELAY_PROFILE=monitoring" in env_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.unit
+def test_sync_host_relay_env_appends_variables_absent_from_an_older_env(tmp_path, monkeypatch):
+    """Installs that predate #3721 have a `.env` with neither variable in it."""
+    cfg_path = tmp_path / "config.ini"
+    _write_relay_config(cfg_path)
+    env_path = tmp_path / ".env"
+    env_path.write_text("NYXGPT_API_PORT=8000\n", encoding="utf-8")
+    monkeypatch.setattr(ops, "_is_linux", lambda: True)
+    monkeypatch.setattr(ops, "_docker_bridge_gateway_ip", lambda: "172.17.0.1")
+
+    ops._sync_host_relay_env(cfg_path=cfg_path, env_path=env_path)
+
+    content = env_path.read_text(encoding="utf-8")
+    assert "NYXGPT_HOST_RELAY_PROFILE=monitoring" in content
+    assert "NYXGPT_HOST_GATEWAY_IP=172.17.0.1" in content
+
+
+@pytest.mark.unit
+def test_sync_host_relay_env_reconciles_back_to_disabled(tmp_path, monkeypatch):
+    """A host that stops needing the relay must have the profile written back, or
+    the next `up` leaves a stale socat bound to the bridge gateway."""
+    cfg_path = tmp_path / "config.ini"
+    _write_relay_config(cfg_path, api_host="0.0.0.0")
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "NYXGPT_HOST_RELAY_PROFILE=monitoring\nNYXGPT_HOST_GATEWAY_IP=172.17.0.1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ops, "_is_linux", lambda: True)
+    monkeypatch.setattr(ops, "_docker_bridge_gateway_ip", lambda: "172.17.0.1")
+
+    result = ops._sync_host_relay_env(cfg_path=cfg_path, env_path=env_path)
+
+    assert result.ok is True
+    content = env_path.read_text(encoding="utf-8")
+    assert "NYXGPT_HOST_RELAY_PROFILE=disabled" in content
+    assert "NYXGPT_HOST_RELAY_PROFILE=monitoring" not in content
+
+
+@pytest.mark.unit
+def test_sync_host_relay_env_skips_when_no_env_files_exist(tmp_path, monkeypatch):
+    cfg_path = tmp_path / "config.ini"
+    _write_relay_config(cfg_path)
+    env_path = tmp_path / ".env"
+    monkeypatch.setattr(ops, "_is_linux", lambda: True)
+    monkeypatch.setattr(ops, "_docker_bridge_gateway_ip", lambda: "172.17.0.1")
+
+    result = ops._sync_host_relay_env(cfg_path=cfg_path, env_path=env_path)
+
+    assert result.ok is True
+    assert "no Compose .env yet" in result.message
+    assert not env_path.exists()
+
+
+@pytest.mark.unit
+def test_sync_host_relay_env_never_fails_the_caller_on_an_unwritable_env(tmp_path, monkeypatch):
+    cfg_path = tmp_path / "config.ini"
+    _write_relay_config(cfg_path)
+    env_path = tmp_path / ".env"
+    env_path.write_text("NYXGPT_API_PORT=8000\n", encoding="utf-8")
+    monkeypatch.setattr(ops, "_is_linux", lambda: True)
+    monkeypatch.setattr(ops, "_docker_bridge_gateway_ip", lambda: "172.17.0.1")
+
+    def _boom(*_a, **_k):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(Path, "write_text", _boom)
+
+    result = ops._sync_host_relay_env(cfg_path=cfg_path, env_path=env_path)
+
+    # Degrades to the pre-#3721 behaviour (relay off), which is not a failed
+    # install -- Compose still brings the rest of the stack up.
+    assert result.ok is True
+    assert "Could not update the host API relay settings" in result.message
+
+
 @pytest.mark.unit
 def test_start_observability_stack_skips_without_docker(monkeypatch):
     monkeypatch.setattr(ops, "_compose_available", lambda: False)
@@ -6631,6 +6982,57 @@ def test_reconcile_grafana_provisioning_reports_single_failure_when_never_health
     failures = [r for r in results if not r.ok]
     assert len(failures) == 1
     assert "never became healthy" in failures[0].message
+
+
+@pytest.mark.unit
+def test_reconcile_grafana_provisioning_syncs_the_host_relay_before_starting(tmp_path, monkeypatch):
+    """#3721: `_start_observability_stack` enumerates services with `docker
+    compose config --services`, which reads `.env` -- so the relay profile has to
+    be written *before* the stack comes up, or the first `nyxgpt ops install` on
+    a Linux host still leaves prometheus unable to reach the native API."""
+    _write_grafana_fixture(tmp_path, monkeypatch, datasource_yml=_SAMPLE_DATASOURCE_YML)
+    monkeypatch.setattr(ops, "_recreate_grafana_if_provisioning_drifted", lambda: None)
+
+    order = []
+    monkeypatch.setattr(
+        ops,
+        "_sync_host_relay_env",
+        lambda: order.append("relay") or ops.OpsResult(True, "Host API relay enabled"),
+    )
+    monkeypatch.setattr(
+        ops,
+        "_start_observability_stack",
+        lambda: order.append("start") or [ops.OpsResult(True, "stack up")],
+    )
+
+    results = ops._reconcile_grafana_provisioning()
+
+    assert order == ["relay", "start"]
+    assert all(r.ok for r in results)
+    assert any("Host API relay" in r.message for r in results)
+
+
+@pytest.mark.unit
+def test_reconcile_grafana_provisioning_writes_the_relay_env_next_to_the_compose_file(
+    tmp_path, monkeypatch
+):
+    """End-to-end through the real `_sync_host_relay_env`: the generated `.env`
+    must land in the directory Compose resolves it from (the compose file's own),
+    otherwise the profile is written somewhere `docker compose -f` never reads."""
+    _write_grafana_fixture(tmp_path, monkeypatch, datasource_yml=_SAMPLE_DATASOURCE_YML)
+    (tmp_path / ".env").write_text("NYXGPT_API_PORT=8000\n", encoding="utf-8")
+    monkeypatch.setattr(ops, "_recreate_grafana_if_provisioning_drifted", lambda: None)
+    monkeypatch.setattr(ops, "_is_linux", lambda: True)
+    monkeypatch.setattr(ops, "_docker_bridge_gateway_ip", lambda: "172.17.0.1")
+    monkeypatch.setattr(
+        ops, "_start_observability_stack", lambda: [ops.OpsResult(True, "stack up")]
+    )
+
+    ops._reconcile_grafana_provisioning()
+
+    content = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "NYXGPT_HOST_RELAY_PROFILE=monitoring" in content
+    assert "NYXGPT_HOST_GATEWAY_IP=172.17.0.1" in content
 
 
 @pytest.mark.unit

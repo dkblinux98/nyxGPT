@@ -136,6 +136,15 @@ binding directly to `0.0.0.0`:
   inbound access to the API/web ports (8000/3000) to known source IPs at the
   host or network firewall.
 
+**Linux: do not widen `[api] host` just to make Prometheus work.** On a plain
+Linux Docker engine a container has no route to the host's `127.0.0.1`, so the
+observability stack's Prometheus cannot scrape a natively-installed API. That
+is not a reason to bind `0.0.0.0` — `nyxgpt ops` starts a `host-api-relay`
+container that listens *only* on the Docker bridge gateway (an address
+reachable from containers but not from the LAN) and forwards to the host's own
+loopback. The API keeps its loopback bind and its default no-auth posture. See
+[docker-compose.md](docker-compose.md#linux-scraping-the-native-api).
+
 **CORS:** the API only allows cross-origin requests from `127.0.0.1`/`localhost`
 on the default web UI ports by default. Override with the `NYXGPT_CORS_ORIGINS`
 environment variable (comma-separated) if the web UI is served from a

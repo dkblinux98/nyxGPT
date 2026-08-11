@@ -25,6 +25,7 @@ detects and stops any of those Compose containers it finds running.
 | `web`       | built from `web/Dockerfile` | Next.js web UI (`nyxgpt-web`)   | `3000`               |
 | `prometheus` <sup>*</sup> | `prom/prometheus:v3.13.1` | Scrapes the API's `/metrics` endpoint, evaluates alerting rules | `9090` |
 | `grafana` <sup>*</sup> | `grafana/grafana:13.1.1` | Pre-provisioned dashboards (system overview, RAG performance, API metrics, logs explorer) | `3001` |
+| `host-api-relay` <sup>*, Linux</sup> | `alpine/socat:1.8.0.3` | Lets `prometheus` scrape a *natively* installed API — see [Linux: scraping the native API](#linux-scraping-the-native-api) | — |
 | `loki` <sup>§</sup> | `grafana/loki:3.6.13` | Log storage + search API, with retention | — |
 | `promtail` <sup>§</sup> | `grafana/promtail:3.6.11` | Tails logs from both deployment modes and ships to Loki | — |
 | `otel-collector` <sup>†</sup> | `otel/opentelemetry-collector-contrib:0.157.0` | Receives OTLP spans from the API, forwards to Jaeger | `4318` (HTTP), `4317` (gRPC) |
@@ -297,6 +298,49 @@ a TLS-terminating reverse proxy in front of the loopback-bound ports (see
 `.env`), first set `[auth] enabled = true` in `~/.nyxGPT/config.ini` and
 re-run `nyxgpt ops env-sync` — otherwise the full API, including the
 filesystem tools endpoints, is reachable with no credential.
+
+### Linux: scraping the native API
+
+In the local-first layout the API is a *native* service on the host, not a
+Compose service, so `prometheus` scrapes it through
+`host.docker.internal:8000` (see `docker/prometheus.yml`).
+
+On Docker Desktop (macOS) that name is proxied by the VM and reaches anything
+bound to the host's `127.0.0.1`. On a plain Linux engine it does not: it
+resolves to the Docker **bridge gateway** (typically `172.17.0.1`), and a
+`uvicorn` bound to `127.0.0.1` is not listening there. The scrape fails with
+`connection refused`, and every Grafana dashboard renders empty even though
+Prometheus and Grafana are both perfectly healthy.
+
+The obvious workaround — setting `[api] host = 0.0.0.0` — publishes the API on
+*every* interface (LAN, VPN, public Wi-Fi) and trips the
+[bind-security gate](security.md#network-security), which then forces
+`[auth] enabled = true` as well. nyxGPT does the narrow version of that
+instead: on Linux, `nyxgpt ops install` / `nyxgpt ops observability` start a
+`host-api-relay` container that shares the host's network namespace, listens
+**only** on the bridge gateway address, and forwards to the host's own
+loopback:
+
+```
+prometheus ──▶ host.docker.internal:8000 ─▶ 172.17.0.1:8000 (relay) ─▶ 127.0.0.1:8000 (native API)
+```
+
+`[api] host` stays `127.0.0.1`, nothing is published to the LAN, and no auth
+change is required. Two generated `.env` variables control it — both rewritten
+on every bring-up, so don't hand-edit them:
+
+| Variable | Value |
+|---|---|
+| `NYXGPT_HOST_RELAY_PROFILE` | `monitoring` to enable the relay, `disabled` (the default) to keep it out of every profile |
+| `NYXGPT_HOST_GATEWAY_IP` | The address the relay binds — read from `docker network inspect bridge` |
+
+The relay is left `disabled` when it isn't needed or wouldn't be safe: on
+macOS, when `[api] host` is already non-loopback (that API is container-
+reachable already, and a second listener would fail to bind against its
+wildcard socket), or when the bridge gateway can't be resolved.
+
+`nyxgpt ops doctor` reports a down `nyxgpt-api` scrape target explicitly, so
+this failure mode no longer presents only as "the dashboards are empty".
 
 ## Disabling RAG / Cassandra
 
