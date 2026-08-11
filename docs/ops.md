@@ -541,6 +541,15 @@ Checks include:
   uninstalled) running degraded: missing instrumentors are silently skipped,
   or tracing is disabled outright if the exporter itself is missing. Flags
   the missing package names and points at `nyxgpt ops install`
+- (when monitoring is enabled and Prometheus is reachable) whether
+  Prometheus's own `nyxgpt-api` scrape target is actually `up`, reporting its
+  `lastError` verbatim -- the metrics twin of the OTLP check above, and just
+  as silent otherwise: a failed scrape leaves every Grafana dashboard
+  rendering "No data" while Prometheus, Grafana, and the API all report
+  healthy. On Linux the usual cause is that containers have no route to the
+  host's `127.0.0.1`, so the hint points at the `host-api-relay` service
+  (see
+  [docker-compose.md#linux-scraping-the-native-api](docker-compose.md#linux-scraping-the-native-api))
 - (macOS only, once the shared Ollama store has been configured) whether
   native Ollama's live `launchctl getenv OLLAMA_MODELS` still matches the
   expected shared `~/.nyxGPT/volumes/ollama/models` path -- catches drift
@@ -717,6 +726,15 @@ Behavior:
   runs [`nyxgpt ops glitchtip-init`](#nyxgpt-ops-glitchtip-init) right
   after this step, which waits for that health check and then flips those
   settings on once it has actually provisioned a DSN.
+- On **Linux**, reconciles the `host-api-relay` service before bringing the
+  stack up. Containers there have no route to the host's `127.0.0.1`, so
+  Prometheus cannot scrape a natively-installed API and every Grafana panel
+  stays empty; the relay listens on the Docker bridge gateway and forwards to
+  the host's loopback, so `[api] host` can stay `127.0.0.1` instead of being
+  widened to `0.0.0.0`. It's enabled only when it's both needed and safe (not
+  on macOS, not when `[api] host` is already non-loopback, not when the bridge
+  gateway can't be resolved) and written back to `disabled` when it isn't. See
+  [docker-compose.md](docker-compose.md#linux-scraping-the-native-api).
 
 Grafana dashboards, the Jaeger and Infinity/GlitchTip datasources, and the
 SRE Home landing dashboard are all pre-provisioned as code (see

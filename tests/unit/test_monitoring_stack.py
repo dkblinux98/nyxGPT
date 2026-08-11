@@ -168,6 +168,56 @@ def test_prometheus_service_maps_host_docker_internal_for_plain_linux_engines() 
     assert "host.docker.internal:host-gateway" in extra_hosts
 
 
+def _host_api_relay_service() -> dict:
+    compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text())
+    return compose["services"]["host-api-relay"]
+
+
+def test_host_api_relay_bridges_the_gateway_to_the_hosts_loopback() -> None:
+    """#3721: on plain Linux, `host.docker.internal:host-gateway` resolves to the
+    docker bridge gateway, which a loopback-bound native uvicorn does not listen
+    on -- so prometheus's scrape fails. The relay must listen on that gateway and
+    forward to the host's own 127.0.0.1, which only works from the host network
+    namespace."""
+    relay = _host_api_relay_service()
+
+    assert relay["network_mode"] == "host"
+
+    listen, forward = relay["command"]
+    assert listen.startswith("TCP-LISTEN:${NYXGPT_API_PORT:-8000}")
+    assert "bind=${NYXGPT_HOST_GATEWAY_IP:-127.0.0.1}" in listen
+    assert "fork" in listen
+    assert forward == "TCP:127.0.0.1:${NYXGPT_API_PORT:-8000}"
+
+
+def test_host_api_relay_is_inert_unless_ops_enables_it() -> None:
+    """The relay must not exist in any real profile by default: on Docker Desktop
+    it is unnecessary (the VM proxies host.docker.internal), and binding a second
+    listener on the API port there would collide. `nyxgpt ops` opts a Linux host
+    in by writing NYXGPT_HOST_RELAY_PROFILE=monitoring into .env."""
+    relay = _host_api_relay_service()
+    assert relay["profiles"] == ["${NYXGPT_HOST_RELAY_PROFILE:-disabled}"]
+
+
+def test_host_api_relay_publishes_no_ports() -> None:
+    """Regression guard for the P6-4 posture the relay exists to preserve: it is
+    the narrow alternative to `[api] host = 0.0.0.0`, so it must reach containers
+    via the bridge gateway bind alone -- never by publishing a port (which, under
+    `network_mode: host`, Compose would ignore anyway) or binding a wildcard."""
+    relay = _host_api_relay_service()
+    assert "ports" not in relay
+    assert "0.0.0.0" not in " ".join(relay["command"])
+
+
+def test_env_example_documents_the_generated_host_relay_variables() -> None:
+    """`.env` is seeded from `.env.example`, so both relay variables need inert
+    defaults there -- otherwise a fresh Compose-only install interpolates an empty
+    `bind=` argument into socat's listen address."""
+    env_example = (REPO_ROOT / ".env.example").read_text()
+    assert "NYXGPT_HOST_RELAY_PROFILE=disabled" in env_example
+    assert "NYXGPT_HOST_GATEWAY_IP=127.0.0.1" in env_example
+
+
 def _iter_promql_exprs(obj: object):
     if isinstance(obj, dict):
         if "expr" in obj and isinstance(obj["expr"], str):

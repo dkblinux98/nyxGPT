@@ -38,6 +38,7 @@ EXPECTED_PINS = {
     "glitchtip/glitchtip": "6.2.0",
     "postgres": "16.14",
     "redis": "7.4.9-alpine",
+    "alpine/socat": "1.8.0.3",
 }
 
 # docker-compose.yml `image:` values and terraform `docker_image` names for

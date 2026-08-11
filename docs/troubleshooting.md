@@ -158,6 +158,59 @@ but `pip install -e .` is still the fix to actually use the feature again.
 
 ---
 
+### Grafana Dashboards Are Empty on Linux
+
+**Symptoms:**
+- Every panel in every Grafana dashboard reads "No data", on a Linux host with
+  a native (non-Docker) nyxGPT install.
+- Prometheus and Grafana are both up and healthy; `nyxgpt ops status` shows
+  nothing wrong.
+- Prometheus's own `/targets` page lists `nyxgpt-api` as **DOWN** with
+  `dial tcp 172.17.0.1:8000: connect: connection refused`.
+- `curl http://localhost:8000/metrics` from the host works fine.
+
+**Cause:**
+
+Containers on a plain Linux Docker engine have **no route to the host's
+`localhost`**. Prometheus scrapes the native API through
+`host.docker.internal:8000`, which on Linux resolves to the Docker bridge
+gateway (`172.17.0.1`) — an address the loopback-bound `uvicorn` never
+listens on. Docker Desktop on macOS hides this difference by proxying
+`host.docker.internal` to the host's loopback, so the same config works there.
+
+**Solutions:**
+
+1. **Re-run the observability reconcile** — this enables the `host-api-relay`
+   container, which bridges the bridge gateway to the host's loopback:
+   ```bash
+   nyxgpt ops observability
+   ```
+
+2. **Confirm the fix:**
+   ```bash
+   nyxgpt ops doctor
+   ```
+   `doctor` reports a down `nyxgpt-api` scrape target explicitly, including
+   Prometheus's own `lastError`. Panels repopulate within one scrape interval
+   (15s).
+
+3. **If the relay didn't start**, check why it was left disabled:
+   ```bash
+   nyxgpt ops logs host-api-relay
+   ```
+   It is deliberately skipped when `[api] host` is already non-loopback (an
+   API bound to `0.0.0.0` is container-reachable without it), and when the
+   Docker bridge gateway can't be resolved.
+
+**Do not** "fix" this by setting `[api] host = 0.0.0.0`. That publishes the
+API on every interface the machine has, and the startup
+[bind-security gate](security.md#network-security) will then refuse to start
+until you also enable auth. The relay achieves the same reachability while
+keeping the API loopback-only — see
+[docker-compose.md](docker-compose.md#linux-scraping-the-native-api).
+
+---
+
 ## Configuration Problems
 
 ### Invalid Configuration Values

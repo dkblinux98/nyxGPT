@@ -4826,6 +4826,81 @@ def _tracing_wiring_issue(cfg_path: Path | None = None) -> str | None:
     )
 
 
+def _prometheus_api_scrape_issue(cfg_path: Path | None = None) -> str | None:
+    """Detect the #3721 failure mode: prometheus can't reach the native API.
+
+    Twin of `_tracing_wiring_issue` for the metrics half of the stack. A failed
+    scrape is just as silent: prometheus itself stays healthy and green, the
+    Monitoring panel reports "enabled" (it only checks the flag), and every
+    Grafana dashboard renders with no data at all. The classic cause is a plain
+    Linux docker engine, where `host.docker.internal` resolves to the bridge
+    gateway and a loopback-bound native uvicorn isn't listening there -- which
+    is what `host-api-relay` exists to bridge.
+
+    Asks prometheus for its own view of the `nyxgpt-api` target rather than
+    re-deriving reachability, so it reports the same `lastError` an operator
+    would see on prometheus's /targets page. Only runs when monitoring is
+    enabled and prometheus is actually up; any transport/parse failure returns
+    None (prometheus not reachable is the existing "stack is down" story, not
+    this check's finding).
+    """
+    cfg_path = cfg_path or (Path.home() / ".nyxGPT" / "config.ini")
+    if not cfg_path.exists():
+        return None
+
+    parser = ConfigParser()
+    try:
+        parser.read(cfg_path)
+    except Exception as e:
+        logger.warning(
+            "Failed to parse %s, skipping prometheus scrape check: %s",
+            cfg_path,
+            e,
+            extra={"component": "ops"},
+        )
+        return None
+
+    monitoring_config = get_monitoring_config(parser)
+    if not monitoring_config["enabled"]:
+        return None
+
+    base_url = str(monitoring_config["prometheus_ui_url"]).rstrip("/")
+    try:
+        resp = httpx.get(f"{base_url}/api/v1/targets", params={"state": "active"}, timeout=5.0)
+        resp.raise_for_status()
+        active = resp.json()["data"]["activeTargets"]
+    except Exception as e:
+        logger.debug(
+            "Prometheus targets unavailable at %s, skipping scrape check: %s",
+            base_url,
+            e,
+            extra={"component": "ops"},
+        )
+        return None
+
+    api_targets = [t for t in active if t.get("labels", {}).get("job") == "nyxgpt-api"]
+    if not api_targets or any(t.get("health") == "up" for t in api_targets):
+        return None
+
+    last_error = next(
+        (t.get("lastError") for t in api_targets if t.get("lastError")),
+        "no error reported",
+    )
+    hint = ""
+    if _is_linux():
+        hint = (
+            " On Linux this is usually the container->host-loopback gap (#3721): re-run "
+            "`nyxgpt ops observability` to (re)enable the host-api-relay service, and check "
+            "`nyxgpt ops logs host-api-relay`."
+        )
+    return (
+        "Prometheus cannot scrape the API's /metrics endpoint "
+        f"(job nyxgpt-api is down: {last_error}) -- every Grafana dashboard will render "
+        f"empty even though the stack looks healthy.{hint} "
+        "See docs/troubleshooting.md#grafana-dashboards-are-empty-on-linux."
+    )
+
+
 def _tracing_packages_doctor_issue(cfg_path: Path | None = None) -> str | None:
     """Detect the #3484 failure mode: a venv predating the #3430 OTel backbone
     (or missing a package `pip uninstall`'d since) is missing an
@@ -5043,7 +5118,10 @@ def doctor(_args) -> int:
     (when log aggregation is enabled and native logs exist) whether
     promtail is actually wired to see native-mode host logs, (when tracing
     is enabled) whether the configured OTLP endpoint actually has something
-    listening on it, (once the shared Ollama store has been configured)
+    listening on it, (when monitoring is enabled and Prometheus is up)
+    whether Prometheus's `nyxgpt-api` scrape target is actually up -- a
+    failed scrape leaves every Grafana dashboard empty while the stack
+    still looks healthy (#3721), (once the shared Ollama store has been configured)
     whether native Ollama's OLLAMA_MODELS env has drifted from it (#3431),
     and whether `~/.nyxGPT/secrets` is writable / holds the GlitchTip
     Grafana token when the observability stack is up (#3432), whether a
@@ -5178,6 +5256,10 @@ def doctor(_args) -> int:
     tracing_packages_issue = _tracing_packages_doctor_issue()
     if tracing_packages_issue:
         issues.append(tracing_packages_issue)
+
+    scrape_issue = _prometheus_api_scrape_issue()
+    if scrape_issue:
+        issues.append(scrape_issue)
 
     if _is_macos():
         # Linux has no equivalent drift to check: nyxgpt-ollama.service's
@@ -6803,7 +6885,12 @@ def _sync_host_relay_env(cfg_path: Path | None = None, env_path: Path | None = N
     behaviour, not a broken stack.
     """
     cfg_path = cfg_path or (Path.home() / ".nyxGPT" / "config.ini")
-    env_path = env_path or (NYXGPT_HOME / ".env")
+    # Anchored to the compose file every `docker compose -f ...` in this module
+    # passes, not to NYXGPT_HOME directly: Compose resolves `.env` relative to
+    # the compose file's own directory, and `self_heal.COMPOSE_FILE` is the one
+    # place that path can be overridden (NYXGPT_COMPOSE_FILE, used from inside
+    # the api container). Normally the two are the same `~/.nyxGPT`.
+    env_path = env_path or (self_heal.COMPOSE_FILE.parent / ".env")
     example_path = env_path.parent / ".env.example"
 
     enabled, gateway, reason = _host_relay_decision(cfg_path)
