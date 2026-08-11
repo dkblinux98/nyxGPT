@@ -45,6 +45,7 @@ def pull_model(
     name: str,
     base_url: str | None = None,
     progress_callback: Callable[[str, float], None] | None = None,
+    timeout_s: float = 600.0,
 ) -> dict[str, Any]:
     """Download a model from Ollama library.
 
@@ -54,6 +55,7 @@ def pull_model(
         progress_callback: Optional callback for progress updates.
             Called with (status: str, percentage: float) for each
             progress event. Percentage ranges from 0.0 to 100.0.
+        timeout_s: Request timeout in seconds for the pull.
 
     Returns:
         Final pull status dictionary
@@ -84,7 +86,7 @@ def pull_model(
     if progress_callback:
         # Stream progress events
         last_result = {}
-        for event in post_json_lines(url, payload, timeout_s=600.0):
+        for event in post_json_lines(url, payload, timeout_s=timeout_s):
             last_result = event
             status = event.get("status", "")
             # Calculate percentage from completed/total if available
@@ -95,7 +97,7 @@ def pull_model(
         return last_result
     else:
         # Non-streaming pull
-        return post_json(url, {**payload, "stream": False}, timeout_s=600.0)
+        return post_json(url, {**payload, "stream": False}, timeout_s=timeout_s)
 
 
 def delete_model(name: str, base_url: str | None = None) -> None:
