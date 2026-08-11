@@ -103,6 +103,8 @@ jobs:
         run: twine check dist/*
 
       - name: Clean-venv smoke (the artifact must import and answer --help)
+        env:
+          RC_VERSION: ${{ steps.version.outputs.rc_version }}
         run: |
           set -euo pipefail
           python -m venv /tmp/smokeenv
@@ -110,10 +112,12 @@ jobs:
           /tmp/smokeenv/bin/python -c "import nyxgpt"
           INSTALLED=$(/tmp/smokeenv/bin/python -c "from importlib.metadata import version; print(version('nyxgpt'))")
           echo "installed version: ${INSTALLED}"
-          [ "$INSTALLED" = "${{ steps.version.outputs.rc_version }}" ] || {
-            echo "::error::built artifact reports ${INSTALLED}, expected ${{ steps.version.outputs.rc_version }}"
+          # The artifact must report the RC it claims to be: a pin that
+          # resolves to something else would make an acceptance run lie.
+          if [ "$INSTALLED" != "$RC_VERSION" ]; then
+            echo "::error::built artifact reports ${INSTALLED}, expected ${RC_VERSION}"
             exit 1
-          }
+          fi
           /tmp/smokeenv/bin/nyxgpt --help >/dev/null
 
       - uses: actions/upload-artifact@v4

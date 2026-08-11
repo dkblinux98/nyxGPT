@@ -201,9 +201,17 @@ secrets"), backed by `POST /api/v1/config/secrets/sync`.
   | `[github] scrummaster_agent_token` | `SCRUMMASTER_AGENT_TOKEN` |
   | `[github] review_agent_token` | `REVIEW_AGENT_TOKEN` |
   | `[monitoring] slack_bot_token` | `SLACK_BOT_TOKEN` |
+  | `[pypi] pypi_token` | `PYPI_API_TOKEN` |
 
   Adding a new synced secret is a one-line addition to that dict -- see
   `src/nyxgpt/config.py`.
+
+  `[pypi] pypi_token` is the release ceremony's upload token
+  (`scripts/release_ceremony.sh` Phase 2). Syncing it lets the
+  [release-candidate publish workflow](cloud.md#release-candidates-acceptance-testing-unreleased-code)
+  upload pre-releases with the same credential instead of a second copy
+  pasted into GitHub's settings. Leave it unset if that workflow uses PyPI
+  Trusted Publishing (OIDC) instead -- it falls back automatically.
 - **`[github] pat` authenticates the sync call itself** (via the GitHub REST
   API's Actions secrets endpoints) and is not, itself, a sync target.
 - **Values never appear in logs, tracebacks, or command output.** Sync
