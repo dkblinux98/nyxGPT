@@ -5,6 +5,7 @@ import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import { extractSseEvents, safeJsonParse } from '../lib/sse';
 import { isQueuedForBackgroundSync } from '../lib/backgroundSync';
+import { formatVersion } from '../lib/version';
 import { useToast } from '../../contexts/ToastContext';
 import { useIsMobile } from '../../hooks/useIsMobile';
 
@@ -1638,7 +1639,7 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
           }}
         >
           <span style={{ fontWeight: 600 }}>nyxGPT</span>
-          <span style={{ opacity: 0.6 }}>{releaseVersion || ''}</span>
+          <span style={{ opacity: 0.6 }}>{formatVersion(releaseVersion)}</span>
           <span style={{ opacity: 0.5, fontSize: 12, marginLeft: 2 }}>›</span>
         </button>
 

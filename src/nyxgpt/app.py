@@ -150,6 +150,7 @@ from nyxgpt.rate_limiter import RateLimiter
 from nyxgpt.resource_monitor import ResourceMonitor, get_resource_monitor, init_resource_monitor
 from nyxgpt.token_counter import count_tokens as _count_usage_tokens
 from nyxgpt.tracing import current_trace_id
+from nyxgpt.version import running_version
 
 log = logging.getLogger("nyxgpt.api")
 
@@ -1159,14 +1160,20 @@ def prometheus_metrics_endpoint() -> Response:
 
 @api.get("/info", response_model=InfoResponse)
 def info(request: Request) -> InfoResponse:
-    """Return basic server info: Ollama URL, default model, sessions dir, and release version."""
+    """Return basic server info: Ollama URL, default model, sessions dir, and running version.
+
+    `release_version` is the version of the installed `nyxgpt` package -- what
+    is actually running -- not a configuration value. The agent tooling's
+    `[github] RELEASE_BRANCH` setting is reported separately as
+    `release_branch` so the two can never be confused (#3716).
+    """
     cfg = _req_cfg(request)
-    release_version = cfg.get("github", "RELEASE_BRANCH", fallback=None)
     return InfoResponse(
         ollama_base_url=get_ollama_base_url(cfg),
         default_model=get_default_model(cfg),
         sessions_dir=str(get_sessions_dir(cfg)),
-        release_version=release_version,
+        release_version=running_version(),
+        release_branch=cfg.get("github", "RELEASE_BRANCH", fallback=None),
     )
 
 

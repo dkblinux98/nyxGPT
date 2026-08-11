@@ -46,7 +46,10 @@ type Info = {
   ollama_base_url: string;
   default_model: string;
   sessions_dir: string;
+  /** Installed package version actually running (e.g. "3.0.0"). */
   release_version: string | null;
+  /** Agent tooling's configured release branch -- not the running version. */
+  release_branch?: string | null;
 };
 
 type SessionsResponse = {
