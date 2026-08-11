@@ -166,6 +166,14 @@ OPS_LAUNCHAGENTS_DIR = NYXGPT_HOME / "ops" / "launchagents"
 OPS_SYSTEMD_TEMPLATES_DIR = NYXGPT_HOME / "ops" / "systemd"
 OPS_SCRIPTS_SRC_DIR = NYXGPT_HOME / "scripts"
 
+# Where nyxgpt drops CLI tools it installs on the operator's behalf when no
+# package manager can supply them (currently `kind`/`kubectl` for
+# `nyxgpt ops install --kubernetes --local` -- see `_ensure_cli_tool`, #3724).
+# Kept inside the ops-managed home rather than a system location so no step
+# ever needs sudo; `_ensure_nyxgpt_bin_on_path` puts it on PATH for the
+# running process so the very same run can use what it just installed.
+NYXGPT_BIN_DIR = NYXGPT_HOME / "bin"
+
 # The container api-config is a derived, per-machine artifact (like .env):
 # it's bind-mounted into the containerized api and gets its DSN filled in at
 # runtime by `nyxgpt ops glitchtip-init`, so it isn't part of the packaged
@@ -3729,6 +3737,204 @@ K8S_IMAGE = "nyxgpt-api:local"
 KIND_CLUSTER_NAME = "nyxgpt-local"
 KIND_CONTEXT = f"kind-{KIND_CLUSTER_NAME}"
 
+# Official download endpoints for the two CLI tools the local Kubernetes path
+# needs. Both are "latest/stable" aliases rather than pinned versions, so a
+# clean machine gets a currently-supported binary without nyxGPT having to
+# ship (and age out) a version table. kind publishes per-platform release
+# assets under GitHub's `releases/latest/download` alias; kubectl publishes
+# its current stable version number at `stable.txt`, which then names the
+# binary path (see `_kubectl_download_url`).
+KIND_DOWNLOAD_URL = (
+    "https://github.com/kubernetes-sigs/kind/releases/latest/download/kind-{os}-{arch}"
+)
+KUBECTL_STABLE_URL = "https://dl.k8s.io/release/stable.txt"
+KUBECTL_DOWNLOAD_URL = "https://dl.k8s.io/release/{version}/bin/{os}/{arch}/kubectl"
+
+
+def _tool_platform() -> tuple[str, str] | None:
+    """Return (os, arch) slugs for kind/kubectl release assets, or None if unsupported.
+
+    Both projects use the same Go-style naming (`darwin`/`linux` x
+    `amd64`/`arm64`), which covers every platform nyxGPT targets (macOS and
+    Linux on Intel or ARM). Anything else falls back to an actionable
+    "install it yourself" error rather than guessing at an asset name.
+    """
+    system = {"Darwin": "darwin", "Linux": "linux"}.get(platform.system())
+    arch = {
+        "x86_64": "amd64",
+        "amd64": "amd64",
+        "arm64": "arm64",
+        "aarch64": "arm64",
+    }.get(platform.machine().lower())
+    if system is None or arch is None:
+        return None
+    return system, arch
+
+
+def _ensure_nyxgpt_bin_on_path() -> Path:
+    """Put `~/.nyxGPT/bin` on this process's PATH (idempotent) and return it.
+
+    Anything `_ensure_cli_tool` downloads lands there, and every later
+    `_which`/`_run` in the same process has to be able to find it -- a tool
+    installed mid-run is useless if the run that installed it can't invoke
+    it. Prepending to `os.environ["PATH"]` covers the current process and
+    every subprocess it spawns; `_ensure_kubectl_and_cluster` and
+    `_down_kubernetes_steps` call this first so a later `nyxgpt ops` run
+    finds the tools again even if the operator never touched their shell
+    profile. Creating the directory is left to `_download_tool_binary` (the
+    only thing that writes into it) -- a PATH entry that doesn't exist yet is
+    simply skipped by the lookup.
+    """
+    entry = str(NYXGPT_BIN_DIR)
+    current = os.environ.get("PATH", "")
+    if entry not in current.split(os.pathsep):
+        os.environ["PATH"] = f"{entry}{os.pathsep}{current}" if current else entry
+    return NYXGPT_BIN_DIR
+
+
+def _download_tool_binary(name: str, url: str) -> tuple[bool, str]:
+    """Download a single-file CLI binary from `url` into `~/.nyxGPT/bin/<name>`.
+
+    Writes to a temp path and `replace()`s it into position so an interrupted
+    download can never leave a truncated, executable binary behind. Returns
+    (ok, details) rather than an OpsResult so callers can fold the details
+    into whatever message fits their context.
+    """
+    bin_dir = _ensure_nyxgpt_bin_on_path()
+    _ensure_dir(bin_dir)
+    dest = bin_dir / name
+    tmp = dest.with_name(f".{name}.download")
+    try:
+        with httpx.stream("GET", url, follow_redirects=True, timeout=300.0) as resp:
+            resp.raise_for_status()
+            with tmp.open("wb") as fh:
+                for chunk in resp.iter_bytes():
+                    fh.write(chunk)
+        tmp.chmod(0o755)
+        tmp.replace(dest)
+    except (httpx.HTTPError, OSError) as e:
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
+        return False, f"{url}: {type(e).__name__}: {e}"
+    return True, f"downloaded {url} -> {dest}"
+
+
+def _kind_download_url(system: str, arch: str) -> str:
+    """Release-asset URL for the current kind build on this platform."""
+    return KIND_DOWNLOAD_URL.format(os=system, arch=arch)
+
+
+def _kubectl_download_url(system: str, arch: str) -> str:
+    """Release URL for the current *stable* kubectl on this platform.
+
+    kubectl has no "latest" alias, so the stable version number is fetched
+    first (a few bytes of plain text) and interpolated into the binary path.
+    """
+    resp = httpx.get(KUBECTL_STABLE_URL, follow_redirects=True, timeout=30.0)
+    resp.raise_for_status()
+    version = resp.text.strip()
+    return KUBECTL_DOWNLOAD_URL.format(version=version, os=system, arch=arch)
+
+
+def _ensure_cli_tool(
+    name: str,
+    *,
+    brew_formula: str,
+    url_for: Callable[[str, str], str],
+    manual_url: str,
+) -> list[OpsResult]:
+    """Ensure `name` is on PATH, installing it for the operator if it isn't (#3724).
+
+    `nyxgpt ops install --kubernetes --local` is specified to bring a local
+    Kubernetes deployment up on a machine that has nothing set up yet, so a
+    missing `kind`/`kubectl` is nyxGPT's job to resolve, not a prompt to hand
+    back to the operator (#3724: telling the user to go install kind was an
+    acceptance failure against #3596). Two acquisition paths, in order:
+
+    1. Homebrew, when present -- it's already the native-install prerequisite
+       on macOS, and it keeps the tool upgradable through the operator's own
+       package manager.
+    2. A direct download of the official release binary into
+       `~/.nyxGPT/bin` -- the Linux/no-brew path, and the fallback when a
+       brew install fails (e.g. no formula for the platform). Needs no root.
+
+    Only if both are unavailable does this fail, and then with a link the
+    operator can follow -- never a raw command to paste (CLAUDE.md's
+    Operational Command Wrapping rule).
+    """
+    _ensure_nyxgpt_bin_on_path()
+    found = _which(name)
+    if found is not None:
+        return [OpsResult(True, f"{name} already installed", f"path: {found}")]
+
+    notes: list[str] = []
+    if _which("brew") is not None:
+        cp = _run(["brew", "install", brew_formula], check=False)
+        if cp.returncode == 0 and _which(name) is not None:
+            return [OpsResult(True, f"Installed {name} via Homebrew", _cp_details(cp))]
+        notes.append(
+            f"Homebrew could not supply {name} (falling back to a direct download): "
+            + (_cp_details(cp) or "install reported success but the binary was still missing")
+        )
+
+    target = _tool_platform()
+    if target is None:
+        notes.append(
+            f"No prebuilt {name} for {platform.system()}/{platform.machine()}. "
+            f"Install it manually: {manual_url}"
+        )
+        return [
+            OpsResult(
+                False, f"{name} is missing and nyxgpt cannot install it here", "\n".join(notes)
+            )
+        ]
+
+    try:
+        url = url_for(*target)
+    except httpx.HTTPError as e:
+        notes.append(f"Could not resolve the {name} download URL: {type(e).__name__}: {e}")
+        return [
+            OpsResult(
+                False,
+                f"{name} is missing and nyxgpt could not download it",
+                "\n".join([*notes, f"Install it manually: {manual_url}"]),
+            )
+        ]
+
+    ok, details = _download_tool_binary(name, url)
+    notes.append(details)
+    if not ok:
+        notes.append(f"Install it manually: {manual_url}")
+        return [
+            OpsResult(
+                False, f"{name} is missing and nyxgpt could not download it", "\n".join(notes)
+            )
+        ]
+    if _which(name) is None:
+        notes.append(f"Install it manually: {manual_url}")
+        return [OpsResult(False, f"Installed {name} but it is still not on PATH", "\n".join(notes))]
+    return [OpsResult(True, f"Installed {name} into {NYXGPT_BIN_DIR}", "\n".join(notes))]
+
+
+def _ensure_kind_binary() -> list[OpsResult]:
+    """Install `kind` if it's missing so a local cluster can be provisioned (#3724)."""
+    return _ensure_cli_tool(
+        "kind",
+        brew_formula="kind",
+        url_for=_kind_download_url,
+        manual_url="https://kind.sigs.k8s.io/#installation",
+    )
+
+
+def _ensure_kubectl_binary() -> list[OpsResult]:
+    """Install `kubectl` if it's missing -- same rationale as `_ensure_kind_binary` (#3724)."""
+    return _ensure_cli_tool(
+        "kubectl",
+        brew_formula="kubernetes-cli",
+        url_for=_kubectl_download_url,
+        manual_url="https://kubernetes.io/docs/tasks/tools/",
+    )
+
 
 def _kind_cluster_exists(name: str = KIND_CLUSTER_NAME) -> bool:
     """Return whether a kind cluster named `name` already exists."""
@@ -3765,35 +3971,32 @@ def _ensure_kubectl_and_cluster() -> list[OpsResult]:
     Only when no cluster is reachable at all does this fall back to `kind` (#3596,
     owner decision 2026-08-03: kind is the provisioned local substrate) --
     reusing the `nyxgpt-local` cluster from a previous run if one is already there,
-    or creating it fresh otherwise. `kind`/Docker themselves remain real
-    prerequisites this can't install for the operator; a missing one produces an
+    or creating it fresh otherwise. `kubectl` and `kind` are installed here when
+    they're missing (`_ensure_cli_tool`, #3724) rather than being handed back to
+    the operator as homework: `--local` is meant to work on a machine with
+    nothing set up. Docker stays a genuine external prerequisite (it needs a
+    privileged system install / Docker Desktop), so a missing one produces an
     actionable error naming where to get it rather than a raw command to run.
     """
+    results: list[OpsResult] = []
+    _ensure_nyxgpt_bin_on_path()
     if _which("kubectl") is None:
-        return [
-            OpsResult(
-                False,
-                "kubectl not found on PATH",
-                "Install kubectl: https://kubernetes.io/docs/tasks/tools/",
-            )
-        ]
+        results += _ensure_kubectl_binary()
+        if not all(r.ok for r in results):
+            return results
+
     cp = _run(["kubectl", "cluster-info"], check=False, expected=True)
     if cp.returncode == 0:
-        return [OpsResult(True, "Kubernetes cluster reachable", f"context: {_kubectl_context()}")]
+        return results + [
+            OpsResult(True, "Kubernetes cluster reachable", f"context: {_kubectl_context()}")
+        ]
 
     if _which("kind") is None:
-        return [
-            OpsResult(
-                False,
-                "No reachable Kubernetes cluster, and kind is not installed to provision one",
-                "Install kind (https://kind.sigs.k8s.io/#installation) so `nyxgpt ops install "
-                "--kubernetes --local` can create a local cluster for you, or point kubectl's "
-                "current context at an existing cluster (minikube, Docker Desktop, ...) "
-                "yourself first.",
-            )
-        ]
+        results += _ensure_kind_binary()
+        if not all(r.ok for r in results):
+            return results
     if _which("docker") is None:
-        return [
+        return results + [
             OpsResult(
                 False,
                 "No reachable Kubernetes cluster, and kind needs Docker to create one",
@@ -3805,14 +4008,14 @@ def _ensure_kubectl_and_cluster() -> list[OpsResult]:
     if _kind_cluster_exists():
         cp = _run(["kubectl", "config", "use-context", KIND_CONTEXT], check=False)
         if cp.returncode != 0:
-            return [
+            return results + [
                 OpsResult(
                     False, f"kubectl config use-context {KIND_CONTEXT} failed", _cp_details(cp)
                 )
             ]
-        results = [OpsResult(True, f"Reusing existing kind cluster: {KIND_CLUSTER_NAME}")]
+        results.append(OpsResult(True, f"Reusing existing kind cluster: {KIND_CLUSTER_NAME}"))
     else:
-        results = _create_kind_cluster()
+        results += _create_kind_cluster()
         if not all(r.ok for r in results):
             return results
 
@@ -4116,7 +4319,13 @@ def _down_kubernetes_steps() -> list[OpsResult]:
     flag or state file: the reserved name is the only signal, and it's authoritative by
     construction -- `_ensure_kubectl_and_cluster` is the only code path that ever creates a
     cluster by that name.
+
+    Puts `~/.nyxGPT/bin` on PATH first so a `kubectl`/`kind` that a previous
+    `install --kubernetes --local` downloaded there (#3724) is still found by
+    the teardown that has to undo it, even from a shell that never had that
+    directory on its own PATH.
     """
+    _ensure_nyxgpt_bin_on_path()
     if _which("kubectl") is None:
         results = [OpsResult(False, "kubectl not found on PATH -- nothing to tear down")]
     else:
