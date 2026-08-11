@@ -12,6 +12,15 @@ name: Release Artifacts
 # and its confirmation. This workflow picks up right after Phase 1 of that
 # ceremony publishes the GitHub Release, which is what triggers it below.
 #
+# The `homebrew-tap` job below owns the STABLE formulas (`nyxgpt-api.rb`,
+# `nyxgpt-web.rb`) exclusively -- `brew install nyxgpt-api` resolves to the
+# latest stable release and nothing else may move it. Release candidates get
+# their own `nyxgpt-api@rc`/`nyxgpt-web@rc` formulas, stamped from the same
+# templates by release-publish-pypi.yml's `homebrew-tap-rc` job (#3727); the
+# nightly dev channel is PyPI-only and never touches the tap at all. The
+# `released` trigger above is part of that separation: an rc prerelease fires
+# `prereleased`, so it cannot start this workflow.
+#
 # The Homebrew tap job additionally needs a remote tap repository (e.g.
 # dkblinux98/homebrew-nyxgpt) and a push token the owner provisions once --
 # see docs/homebrew.md#remote-tap-repo-less-install. Until `vars.

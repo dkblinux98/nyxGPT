@@ -12,7 +12,11 @@ of 2026-08-11 there is one channel-parameterized build/publish pipeline
 * **dev** -- a nightly schedule publishes `3.0.0.devN` from the
   release-branch tip, skipping the run when the tip has not moved since the
   last successful nightly (`select_last_scheduled_sha`);
-* **rc** -- a manual dispatch cuts a deliberate `3.0.0rcN`;
+* **rc** -- a manual dispatch cuts a deliberate `3.0.0rcN`. This is the one
+  channel with a step past PyPI: it also cuts a GitHub *prerelease* carrying
+  the service tarballs and stamps `nyxgpt-api@rc` / `nyxgpt-web@rc` into the
+  Homebrew tap, so a candidate is installable on macOS the same repo-less way
+  a release is -- without ever writing the stable formulas (`RC_FORMULAS`);
 * **stable** -- `scripts/release_ceremony.sh` Phase 2 delegates to the same
   workflow. The ceremony keeps only its ceremony-exclusive steps (master
   merge, tag, Homebrew tap, GitHub Release, sign-off); a dev or rc build
@@ -72,6 +76,20 @@ PUBLISH_WORKFLOW_FILE = "release-publish-pypi.yml"
 
 #: The channels the pipeline understands, weakest version first.
 CHANNELS = ("dev", "rc", "stable")
+
+#: The remote Homebrew tap an rc publish stamps. `brew tap dkblinux98/nyxgpt`
+#: resolves to the `dkblinux98/homebrew-nyxgpt` repository -- the `homebrew-`
+#: prefix is Homebrew's own tap-naming convention.
+HOMEBREW_TAP = "dkblinux98/nyxgpt"
+
+#: The formulas an rc publish stamps -- deliberately NOT `nyxgpt-api` /
+#: `nyxgpt-web`. Homebrew has no pre-release semantics, so the only way to
+#: keep `brew install nyxgpt-api` resolving to the latest *stable* release is
+#: for the candidate to be a separate formula. `@rc` is the versioned-formula
+#: spelling Homebrew already uses (`python@3.12`), and the two `@rc` formulas
+#: declare `conflicts_with` their stable counterparts so a machine can only
+#: ever be on one channel at a time.
+RC_FORMULAS = ("nyxgpt-api@rc", "nyxgpt-web@rc")
 
 #: Printed by `main` instead of a version when a nightly has nothing to do
 #: (the release-branch tip has not moved since the last successful nightly).
@@ -193,12 +211,19 @@ def _require_release_version(release: str) -> None:
 def channel_version(channel: str, release: str, number: int | None = None) -> str:
     """The version `channel` publishes for `release`.
 
-    `stable` is the bare release version and takes no number; `dev` and `rc`
-    require one (the callers below resolve it from what PyPI serves).
+    `stable` is the bare release version and refuses a number -- there is no
+    such thing as "release 3.0.0, build 4", so silently dropping one would
+    let `--number 4` look honoured while publishing something else. `dev` and
+    `rc` require one (the callers below resolve it from what PyPI serves).
     """
     resolved = _check_channel(channel)
     if resolved == "stable":
         _require_release_version(release)
+        if number is not None:
+            raise ReleaseCandidateError(
+                f"The stable channel publishes {release.strip()} itself and takes no build "
+                f"number (got {number})"
+            )
         return release.strip()
     if number is None:
         raise ReleaseCandidateError(f"The {resolved} channel needs a build number")
@@ -545,8 +570,7 @@ def plan(
         "publishable": not blockers,
         "blockers": blockers,
         "commands": {
-            "plan": f"nyxgpt release publish --channel {resolved_channel}",
-            "publish": f"nyxgpt release publish --channel {resolved_channel} --publish",
+            **_channel_commands(resolved_channel),
             "install": f"pip install nyxgpt=={candidate}",
             "user_data": f"nyxgpt cloud user-data --os linux --version {candidate}",
             "deploy": f"nyxgpt cloud deploy --version {candidate}",
@@ -554,6 +578,32 @@ def plan(
         "guardrails": _guardrails(resolved_channel, candidate),
         "docs": DOCS_ANCHOR,
     }
+
+
+def _channel_commands(channel: str) -> dict[str, str]:
+    """How an operator plans and cuts a build on `channel`.
+
+    Every surface renders these verbatim, so they have to be commands that
+    actually run. `nyxgpt release publish --channel stable` is not one: the
+    CLI's `--channel` offers `dev` and `rc` only, because a release is cut by
+    the ceremony (which is what supplies the tag and the confirmation the
+    stable channel demands). Rendering it anyway would hand the operator a
+    line that fails with an argparse error.
+    """
+    if channel == "stable":
+        return {
+            "plan": "scripts/release_ceremony.sh --dry-run",
+            "publish": "scripts/release_ceremony.sh",
+        }
+    commands = {
+        "plan": f"nyxgpt release publish --channel {channel}",
+        "publish": f"nyxgpt release publish --channel {channel} --publish",
+    }
+    if channel == "rc":
+        # An rc is the only pre-release that is also installable with brew:
+        # its publish stamps `@rc` formulas into the tap (dev is PyPI-only).
+        commands["brew"] = f"brew tap {HOMEBREW_TAP} && brew install {' '.join(RC_FORMULAS)}"
+    return commands
 
 
 def _guardrails(channel: str, candidate: str) -> list[str]:
@@ -570,11 +620,30 @@ def _guardrails(channel: str, candidate: str) -> list[str]:
             "scripts/release_ceremony.sh passes.",
             "PyPI versions are immutable: a release that is already published is refused.",
         ]
-    return shared + [
+    channel_specific = [
         f"Pre-release version ({candidate}): `pip install nyxgpt` never resolves to it.",
-        "Acceptance only: a dev or rc build is never announced, and never runs a ceremony "
-        "step (master merge, tag, Homebrew tap, GitHub Release).",
     ]
+    if channel == "rc":
+        channel_specific += [
+            f"Separate Homebrew formulas ({', '.join(RC_FORMULAS)}): the stable "
+            "nyxgpt-api/nyxgpt-web formulas are never written by an rc publish, so "
+            "`brew install nyxgpt-api` still resolves to the latest stable release.",
+            "GitHub prerelease, never 'latest': the rc's release is marked as a prerelease, "
+            "so it does not become the repository's latest release and does not trigger the "
+            "stable artifact workflow (which fires on `released`, not `prereleased`).",
+        ]
+    else:
+        channel_specific.append(
+            "PyPI only: a dev build never touches the Homebrew tap or GitHub releases."
+        )
+    return (
+        shared
+        + channel_specific
+        + [
+            "Acceptance only: a dev or rc build is never announced, and never runs a ceremony "
+            "step (master merge, release tag, stable Homebrew formulas, GitHub Release).",
+        ]
+    )
 
 
 # --- Dispatching the publish workflow ------------------------------------
@@ -768,6 +837,14 @@ def release_publish(args: argparse.Namespace) -> int:
                 f"Dispatched {report['workflow']} on {branch} to publish "
                 f"{report['version']} ({channel} channel)."
             )
+            if channel == "dev":
+                # Every dev run carries the nightly's no-op check, dispatched
+                # or scheduled alike -- say so, rather than let the operator
+                # read "SKIPPED" off the run and think something broke.
+                print(
+                    "Note: a dev run publishes nothing when the tip has not moved since the "
+                    "last successful nightly -- that commit already has a dev build."
+                )
             print(f"Watch it: {dispatched['runs_url']}")
         return 0
 

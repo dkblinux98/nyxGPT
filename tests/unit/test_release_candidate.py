@@ -150,6 +150,13 @@ def test_channel_version_composes_each_channel():
     assert rc.channel_version("stable", "3.0.0") == "3.0.0"
 
 
+def test_channel_version_refuses_a_number_on_the_stable_channel():
+    """There is no "release 3.0.0, build 4" -- dropping the number silently
+    would let `--number 4` look honoured while publishing something else."""
+    with pytest.raises(rc.ReleaseCandidateError, match="takes no build number"):
+        rc.channel_version("stable", "3.0.0", 4)
+
+
 def test_channel_version_rejects_an_unknown_channel():
     with pytest.raises(rc.ReleaseCandidateError, match="Unknown channel"):
         rc.channel_version("nightly-ish", "3.0.0", 1)
@@ -346,6 +353,49 @@ def test_plan_states_the_stable_channel_is_ceremony_only():
 
     assert "ceremony only" in guardrails
     assert "release_ceremony.sh" in guardrails
+
+
+def test_stable_plan_renders_a_command_the_cli_actually_accepts():
+    """The CLI's --channel offers dev|rc only; rendering `--channel stable`
+    would hand an operator a line that fails with an argparse error."""
+    commands = rc.plan("v3.0.0", "stable", published=PUBLISHED)["commands"]
+
+    assert commands["publish"] == "scripts/release_ceremony.sh"
+    assert commands["plan"] == "scripts/release_ceremony.sh --dry-run"
+    assert "--channel stable" not in " ".join(commands.values())
+
+
+def test_rc_plan_renders_the_macos_acceptance_install():
+    """An rc also stamps @rc formulas, so the plan has to say how to install one."""
+    commands = rc.plan("v3.0.0", "rc", published=PUBLISHED)["commands"]
+
+    assert commands["brew"] == (
+        "brew tap dkblinux98/nyxgpt && brew install nyxgpt-api@rc nyxgpt-web@rc"
+    )
+    assert "nyxgpt-api " not in commands["brew"], "an rc must never install the stable formula"
+
+
+def test_dev_plan_offers_no_brew_command_because_the_nightly_is_pypi_only():
+    commands = rc.plan("v3.0.0", "dev", published=PUBLISHED, run_number=31)["commands"]
+
+    assert "brew" not in commands
+
+
+def test_rc_guardrails_state_the_stable_formulas_are_untouched():
+    guardrails = " ".join(rc.plan("v3.0.0", "rc", published=PUBLISHED)["guardrails"]).lower()
+
+    assert "nyxgpt-api@rc" in guardrails
+    assert "brew install nyxgpt-api` still resolves to the latest stable" in guardrails
+    assert "prerelease" in guardrails
+
+
+def test_dev_guardrails_state_the_nightly_never_touches_the_tap():
+    guardrails = " ".join(
+        rc.plan("v3.0.0", "dev", published=PUBLISHED, run_number=31)["guardrails"]
+    ).lower()
+
+    assert "pypi only" in guardrails
+    assert "never touches the homebrew tap" in guardrails
 
 
 # --- PyPI lookup ----------------------------------------------------------
@@ -691,6 +741,40 @@ def test_cli_reports_the_number_it_actually_dispatches(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "3.0.0rc9" in out
     assert "3.0.0rc3" not in out
+
+
+def test_cli_warns_that_a_dispatched_dev_build_can_no_op(monkeypatch, capsys):
+    """The workflow runs the nightly's unchanged-tip check for every dev run,
+    dispatched or scheduled -- so say so rather than let SKIPPED look broken."""
+    monkeypatch.setattr(rc, "fetch_published_versions", lambda *a, **k: list(PUBLISHED))
+    monkeypatch.setattr(
+        rc,
+        "dispatch",
+        lambda branch, channel="rc", number=None: {
+            "dispatched": True,
+            "runs_url": "https://github.com/x/y/actions",
+        },
+    )
+
+    assert rc.release_publish(_args(channel="dev", publish=True)) == 0
+
+    out = capsys.readouterr().out
+    assert "publishes nothing when the tip has not moved" in out
+
+
+def test_cli_does_not_warn_about_a_no_op_when_cutting_an_rc(monkeypatch, capsys):
+    monkeypatch.setattr(rc, "fetch_published_versions", lambda *a, **k: list(PUBLISHED))
+    monkeypatch.setattr(
+        rc,
+        "dispatch",
+        lambda branch, channel="rc", number=None: {
+            "dispatched": True,
+            "runs_url": "https://github.com/x/y/actions",
+        },
+    )
+
+    assert rc.release_publish(_args(publish=True)) == 0
+    assert "publishes nothing" not in capsys.readouterr().out
 
 
 def test_cli_publish_refuses_when_the_plan_is_blocked(monkeypatch, capsys):
@@ -1049,6 +1133,88 @@ def test_publish_workflow_publishes_with_the_official_pypa_action():
 
     assert len(publishers) == 1, "exactly one publish step -- one pipeline, not two"
     assert "!inputs.dry_run" in publishers[0]["if"]
+
+
+# --- The rc channel's Homebrew tap step (#3727, owner decision 17:44Z) ----
+
+
+def _rc_tap_job() -> dict:
+    jobs = _publish_workflow()["jobs"]
+    assert "homebrew-tap-rc" in jobs, "the rc channel must also stamp the tap"
+    return jobs["homebrew-tap-rc"]
+
+
+def test_only_the_rc_channel_can_reach_the_tap_job():
+    """Structural, not conditional: dev and stable never enter this job."""
+    job = _rc_tap_job()
+    condition = job["if"]
+
+    assert job["needs"] == "publish"
+    assert "needs.publish.outputs.channel == 'rc'" in condition
+    # A nightly that no-ops publishes nothing, so it must stamp nothing.
+    assert "needs.publish.outputs.publish == 'true'" in condition
+    assert "!inputs.dry_run" in condition
+
+
+def test_the_publish_job_exports_what_the_tap_job_gates_on():
+    """The gate above is only real if the channel actually reaches it."""
+    outputs = _publish_workflow()["jobs"]["publish"]["outputs"]
+
+    assert outputs["channel"] == "${{ steps.version.outputs.channel }}"
+    assert outputs["version"] == "${{ steps.version.outputs.version }}"
+    assert outputs["publish"] == "${{ steps.version.outputs.publish }}"
+
+
+def test_rc_tap_job_reuses_the_existing_formula_machinery():
+    """Owner decision: reuse build_homebrew_artifacts.py, not a parallel copy."""
+    run_steps = " ".join(step.get("run", "") for step in _rc_tap_job()["steps"])
+
+    assert "scripts/build_homebrew_artifacts.py" in run_steps
+    assert "--channel rc" in run_steps
+
+
+def test_rc_tap_job_never_writes_a_stable_formula():
+    """Clobber-safety: `brew install nyxgpt-api` must stay on the latest stable."""
+    steps = _rc_tap_job()["steps"]
+    run_steps = "\n".join(step.get("run", "") for step in steps)
+
+    for stable_formula in ("nyxgpt-api.rb", "nyxgpt-web.rb"):
+        # The only mentions allowed are the assertions that refuse to write it.
+        for line in run_steps.splitlines():
+            if stable_formula in line and "cp " in line:
+                raise AssertionError(f"rc tap job copies the stable formula: {line.strip()}")
+    for rc_formula in rc.RC_FORMULAS:
+        assert f"{rc_formula}.rb" in run_steps
+
+    # ...and it says so out loud rather than relying on the file names alone.
+    assert any("Assert no stable formula" in str(step.get("name", "")) for step in steps)
+
+
+def test_rc_tap_job_cuts_a_prerelease_that_is_never_latest():
+    run_steps = "\n".join(step.get("run", "") for step in _rc_tap_job()["steps"])
+
+    assert "gh release create" in run_steps
+    assert "--prerelease" in run_steps
+    assert "--latest=false" in run_steps
+    # Verifying the mutation is the house rule, not an extra.
+    assert "isPrerelease" in run_steps
+
+
+def test_rc_tap_job_can_write_releases_but_not_mint_a_pypi_token():
+    job = _rc_tap_job()
+
+    assert job["permissions"]["contents"] == "write"
+    assert "id-token" not in job["permissions"]
+
+
+def test_the_stable_tap_workflow_is_not_reachable_from_a_prerelease():
+    """release-artifacts.yml owns the stable formulas; `prereleased` must not start it."""
+    import yaml
+
+    path = REPO_ROOT / ".github" / "workflows" / "release-artifacts.yml"
+    triggers = yaml.safe_load(path.read_text(encoding="utf-8"))[True]
+
+    assert triggers["release"]["types"] == ["released"]
 
 
 # --- ONE pipeline: the ceremony delegates rather than duplicating ---------

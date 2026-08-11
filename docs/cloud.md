@@ -905,9 +905,15 @@ and no second script -- the ceremony delegates to this one too.
 PEP 440 orders them `3.0.0.devN < 3.0.0rcN < 3.0.0`, so a nightly can never
 shadow a candidate and neither can shadow the release.
 
-Dev and rc builds are **acceptance-only**. They are never announced, never a
-release, and the ceremony's steps (master merge, tag, Homebrew tap, GitHub
-Release, sign-off) never run for them.
+Dev and rc builds are **acceptance-only**. They are never announced and
+never a release, and no ceremony step (master merge, release tag, stable
+Homebrew formulas, GitHub Release, sign-off) runs for them.
+
+The `rc` channel is the one with a step past PyPI: because macOS installs
+with `brew`, not `pip`, an rc also cuts a GitHub **prerelease** carrying the
+service tarballs and stamps `nyxgpt-api@rc` / `nyxgpt-web@rc` into the
+Homebrew tap -- see [Accepting a candidate on macOS](#accepting-a-candidate-on-macos)
+below. The nightly `dev` channel is PyPI-only.
 
 ### Nightly dev builds
 
@@ -923,6 +929,13 @@ Nothing is needed to keep this going. To see what the next one would be:
 ```bash
 nyxgpt release publish --channel dev
 ```
+
+That no-op check runs for **every** dev build, not just the scheduled ones.
+So `nyxgpt release publish --channel dev --publish` on a tip that has not
+moved since last night's build dispatches a run that publishes nothing and
+reports `SKIP` -- correctly: that commit already has a dev build, and PyPI
+would refuse a second upload of it anyway. Install the existing one instead
+(`nyxgpt release publish --channel dev` names it).
 
 ### Cutting a release candidate
 
@@ -956,6 +969,37 @@ only -- it is never committed), runs `twine check` and a clean-venv smoke
 install that asserts the artifact reports the version it claims, publishes,
 and then polls pypi.org until it serves it. Dispatch it with
 `dry_run: true` to do everything except the upload.
+
+### Accepting a candidate on macOS
+
+macOS installs nyxGPT with `brew`, not `pip`, so a PyPI-only candidate would
+leave the whole macOS path acceptance-testable only one release behind. An
+`rc` publish therefore also (#3727):
+
+1. cuts a GitHub **prerelease** for the RC version -- marked prerelease and
+   explicitly not "latest" -- with the `nyxgpt-api`/`nyxgpt-web` source
+   tarballs as assets, and
+2. pushes stamped `nyxgpt-api@rc` / `nyxgpt-web@rc` formulas to the remote
+   tap, built from the same `homebrew/tap/*.rb.tmpl` templates the stable
+   formulas come from.
+
+```bash
+brew tap dkblinux98/nyxgpt
+brew install nyxgpt-api@rc nyxgpt-web@rc
+
+brew services start nyxgpt-api@rc
+brew services start nyxgpt-web@rc
+```
+
+**The stable formulas are never touched.** Homebrew has no pre-release
+semantics, so `brew install nyxgpt-api` staying on the latest stable release
+depends on an rc publish not producing a `nyxgpt-api.rb` at all -- which is
+exactly what it does, asserted in the job and in
+`tests/unit/test_build_homebrew_artifacts.py`. The nightly `dev` channel
+never reaches the tap job at all. Full detail, including how to switch a
+machine between channels (the `@rc` formulas `conflicts_with` the stable
+ones), is in
+[docs/homebrew.md](homebrew.md#release-candidate-formulas-rc).
 
 ### Pointing an acceptance run at a specific build
 
@@ -996,6 +1040,9 @@ Because of that, the ceremony needs **no PyPI credential at all**; the
 | Scheduled + dispatch triggers only | The workflow has no `push`, `tag` or `release` trigger -- a build is never cut by accident |
 | Release branches only | The version step runs `python -m nyxgpt.release_candidate`, which exits non-zero for any ref that is not `v<X.Y.Z>` matching `pyproject.toml`'s declared version |
 | Dev and rc are never a stable version | What is uploaded is always `<release>.devN` / `<release>rcN` -- a pre-release, which default installs skip |
+| An rc never clobbers the stable brew formulas | The rc tap job writes `nyxgpt-api@rc.rb`/`nyxgpt-web@rc.rb` only; it asserts no stable formula was produced and refuses to push if one would change, so `brew install nyxgpt-api` stays on the latest stable release |
+| An rc's GitHub release is never "latest" | It is created with `--prerelease --latest=false` and verified afterwards -- which also keeps `release-artifacts.yml` (trigger: `released`, not `prereleased`) out of the rc path |
+| The nightly never touches the tap | `homebrew-tap-rc` is gated on `channel == 'rc'`, so a `dev` build is PyPI-only by construction, not by convention |
 | Stable is ceremony-only | The stable channel additionally requires the release tag at the built commit (Phase 1 creates it) *and* the ceremony's confirmation token, so dispatching `channel=stable` by hand publishes nothing |
 | No version reuse | The next number comes from what PyPI already serves, and PyPI rejects a re-upload anyway |
 

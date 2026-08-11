@@ -483,6 +483,12 @@ export default function PortabilityPage() {
                   label="Point an acceptance install at it"
                   commands={[rc.commands.install, rc.commands.user_data, rc.commands.deploy]}
                 />
+                {/* Only the rc channel stamps the tap — a nightly dev build is
+                    PyPI-only, so the backend omits this command for it. */}
+                <CommandList
+                  label="Accept it on macOS (release candidates only)"
+                  commands={rc.commands.brew ? [rc.commands.brew] : []}
+                />
 
                 <ul
                   style={{

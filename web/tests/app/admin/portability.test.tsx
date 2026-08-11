@@ -388,6 +388,47 @@ describe('PortabilityPage', () => {
       expect(screen.getByText('ready to cut')).toBeInTheDocument();
     });
 
+    it('offers the macOS @rc install when the channel stamps the tap', async () => {
+      // An rc publish also pushes nyxgpt-api@rc/nyxgpt-web@rc to the tap, so
+      // the panel has to say how to accept a candidate on macOS too (#3727).
+      serveReport(mockReport);
+      render(<PortabilityPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText(/Accept it on macOS/)).toBeInTheDocument();
+      });
+      expect(
+        screen.getByText('brew tap dkblinux98/nyxgpt && brew install nyxgpt-api@rc nyxgpt-web@rc')
+      ).toBeInTheDocument();
+    });
+
+    it('omits the macOS install for a dev build, which never touches the tap', async () => {
+      // The backend omits `commands.brew` on the dev channel; rendering the
+      // heading anyway would advertise a formula no nightly ever publishes.
+      serveReport(mockReport);
+      serveRc({
+        ...rcPlan,
+        branch: 'v3.0.0',
+        channel: 'dev',
+        version: '3.0.0.dev42',
+        publishable: true,
+        blockers: [],
+        commands: {
+          plan: 'nyxgpt release publish --channel dev',
+          publish: 'nyxgpt release publish --channel dev --publish',
+          install: 'pip install nyxgpt==3.0.0.dev42',
+          user_data: 'nyxgpt cloud user-data --os linux --version 3.0.0.dev42',
+          deploy: 'nyxgpt cloud deploy --version 3.0.0.dev42',
+        },
+      });
+      render(<PortabilityPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('pip install nyxgpt==3.0.0.dev42')).toBeInTheDocument();
+      });
+      expect(screen.queryByText(/Accept it on macOS/)).not.toBeInTheDocument();
+    });
+
     it('lists the nightly dev builds already on PyPI', async () => {
       serveReport(mockReport);
       render(<PortabilityPage />);

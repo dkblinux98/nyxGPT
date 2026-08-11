@@ -127,6 +127,20 @@ nyxgpt release rc --publish --rc-number 4
 Exits non-zero when a build cannot be cut from the given branch, so it can
 gate a script. What `dev` and `rc` publish is always a PEP 440 pre-release
 (`3.0.0.devN`, `3.0.0rcN`), which `pip install nyxgpt` never resolves to.
+
+Cutting an `rc` additionally stamps `nyxgpt-api@rc` / `nyxgpt-web@rc` into
+the Homebrew tap (and cuts a GitHub prerelease with the service tarballs),
+so a candidate is installable on macOS too:
+
+```bash
+brew tap dkblinux98/nyxgpt && brew install nyxgpt-api@rc nyxgpt-web@rc
+```
+
+The stable `nyxgpt-api`/`nyxgpt-web` formulas are never written by an `rc`
+or `dev` publish — see [docs/homebrew.md](homebrew.md#release-candidate-formulas-rc).
+A dispatched `--channel dev --publish` publishes nothing when the tip has
+not moved since the last nightly (that commit already has a dev build); the
+run reports `SKIP` rather than failing.
 Full runbook, including the one-time PyPI Trusted Publishing setup:
 [Cloud — PyPI publishing](cloud.md#pypi-publishing-dev-rc-and-stable).
 

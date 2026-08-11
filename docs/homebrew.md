@@ -76,6 +76,71 @@ notice, not a failure) until the owner completes the two steps above.
 
 ---
 
+## Release-candidate formulas (`@rc`)
+
+Acceptance testing has to be able to install *unreleased* code on macOS the
+same repo-less way a release installs -- otherwise the brew path can only
+ever be accepted one release behind. Cutting a release candidate therefore
+stamps the tap too (#3727):
+
+```bash
+brew tap dkblinux98/nyxgpt
+brew install nyxgpt-api@rc nyxgpt-web@rc
+
+brew services start nyxgpt-api@rc
+brew services start nyxgpt-web@rc
+```
+
+Everything past `brew install` is identical to the stable formulas -- same
+tarball contents, same self-contained Cellar keg, same wrappers, same
+service names. `scripts/build_homebrew_artifacts.py --channel rc` derives
+the `@rc` formulas from the same `homebrew/tap/*.rb.tmpl` templates, so the
+two channels cannot drift about what the keg installs; only the class name,
+the description and the conflict declaration differ.
+
+### `brew install nyxgpt-api` is never affected
+
+Homebrew has no pre-release semantics -- a tap serves whatever version its
+formula names, and `brew install nyxgpt-api` takes it. So channel separation
+lives in the **formula names**, not in a flag:
+
+| | Stable | Release candidate |
+| --- | --- | --- |
+| Formulas | `nyxgpt-api`, `nyxgpt-web` | `nyxgpt-api@rc`, `nyxgpt-web@rc` |
+| Written by | `release-artifacts.yml`, on a GitHub Release | `release-publish-pypi.yml`'s `homebrew-tap-rc` job, on an `rc` publish |
+| Tarballs from | the release's GitHub Release | a GitHub **prerelease** for the RC (never "latest") |
+| `brew install nyxgpt-api` resolves to | this | never this |
+
+An `rc` publish never builds, copies or commits a stable formula file: the
+job asserts none was produced, and the tap push refuses if a stable formula
+would change. The nightly `dev` channel is PyPI-only and never touches the
+tap at all.
+
+### Switching a machine between channels
+
+The `@rc` formulas declare `conflicts_with` their stable counterparts,
+because both install the same `nyxgpt-api`/`nyxgpt-web` wrappers and the
+same brew service names. Switching channels is an explicit uninstall, never
+a silent swap:
+
+```bash
+# stable -> release candidate
+brew services stop nyxgpt-api && brew uninstall nyxgpt-api
+brew install nyxgpt-api@rc && brew services start nyxgpt-api@rc
+
+# ...and back once the release is out
+brew services stop nyxgpt-api@rc && brew uninstall nyxgpt-api@rc
+brew install nyxgpt-api && brew services start nyxgpt-api
+```
+
+`@rc` formulas are **acceptance-only**. They are not upgraded on a schedule,
+carry no support expectation, and are superseded the moment the release they
+are a candidate for ships. See
+[docs/cloud.md](cloud.md#pypi-publishing-dev-rc-and-stable) for cutting one
+and for the equivalent pip/cloud flows.
+
+---
+
 ## Installing the services
 
 Install both service formulas:
