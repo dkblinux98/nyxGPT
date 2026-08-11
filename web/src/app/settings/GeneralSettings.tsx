@@ -4,12 +4,16 @@ import { useEffect, useState } from 'react';
 import { useTheme } from '../../contexts/ThemeContext';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import ErrorMessage from '../../components/ErrorMessage';
+import { formatVersion } from '../lib/version';
 
 type Info = {
   ollama_base_url: string;
   default_model: string;
   sessions_dir: string;
+  /** Installed package version actually running (e.g. "3.0.0"). */
   release_version: string | null;
+  /** Agent tooling's configured release branch -- not the running version. */
+  release_branch?: string | null;
 };
 
 const cardStyle: React.CSSProperties = {
@@ -122,7 +126,7 @@ export default function GeneralSettings() {
           <div>
             <div style={rowStyle}>
               <span style={labelStyle}>Version</span>
-              <span style={valueStyle}>{info.release_version || 'unknown'}</span>
+              <span style={valueStyle}>{formatVersion(info.release_version) || 'unknown'}</span>
             </div>
             <div style={rowStyle}>
               <span style={labelStyle}>Default Model</span>
