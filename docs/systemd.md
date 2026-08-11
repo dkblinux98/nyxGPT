@@ -219,7 +219,7 @@ hand.
 | --- | --- | --- |
 | Ollama port takeover | `systemctl disable --now ollama.service` | Free 11434 for `nyxgpt-ollama` (above) |
 | Docker engine | `apt-get install -y docker.io docker-compose-v2` (or `dnf`/`yum`), `systemctl enable --now docker`, `usermod -aG docker $USER` | Cassandra and the whole observability stack are containers |
-| Observability data dirs | `chown -R <uid>:<gid> ~/.nyxGPT/volumes/{prometheus,grafana,loki}` | See below |
+| Observability data dirs | `chown -R <uid>:<gid> ~/.nyxGPT/volumes/{prometheus,grafana,loki}` | See below (falls back to a rootless POSIX ACL) |
 
 **Observability bind-mount ownership.** dockerd runs as root and creates a
 missing bind-mount source directory as `root:root`. Prometheus runs as uid
@@ -229,8 +229,18 @@ reports `dependency failed to start: container nyxgpt-prometheus-1 is
 unhealthy`. `nyxgpt ops install` pre-creates those directories before the
 stack starts and gives them an ownership their container can write to (macOS
 never hits this: Docker Desktop's file sharing remaps ownership for you).
-`nyxgpt ops doctor` reports any directory left in the broken state with the
-`chown` that fixes it.
+
+Without passwordless sudo the `chown` isn't available, so install falls back
+to a POSIX ACL instead -- `setfacl -R -m u:<uid>:rwx <dir>`, which only needs
+you to *own* the directory, not root. The ACL grants write access to exactly
+the one uid the container runs as and to no one else; nyxGPT deliberately
+does not make these directories world-writable, because `grafana.db` holds
+sessions and hashed credentials and every local user would inherit them. If
+the acl(5) tools aren't installed, the filesystem was mounted without ACL
+support, or the directory still contains root-owned files from an earlier
+broken run, install fails with the exact `sudo chown -R` to run instead.
+`nyxgpt ops doctor` reports any directory left in the broken state the same
+way.
 
 **Docker group membership.** Group membership is stamped into a login
 session when it's created, so being added to `docker` does not affect your

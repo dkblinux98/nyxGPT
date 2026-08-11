@@ -2425,11 +2425,18 @@ def _system_ollama_service_enabled() -> bool:
     it would grab port 11434 back from `nyxgpt-ollama.service` at the next
     boot. `is-enabled` also reports "enabled" for a unit that is masked-free
     but stopped, which is precisely the state we still want to disable.
+
+    "static" is deliberately *not* treated as a conflict: a static unit has no
+    `[Install]` section, so `systemctl disable` on it is a no-op -- reporting
+    it would leave `ops doctor` flagging a conflict nothing can ever clear.
+    A static unit is also not started at boot on its own, so it only matters
+    while it is running, which `_system_ollama_service_active()` already
+    covers.
     """
     if _which("systemctl") is None:
         return False
     cp = _run(["systemctl", "is-enabled", "ollama.service"], check=False, expected=True)
-    return (cp.stdout or "").strip() in {"enabled", "enabled-runtime", "static"}
+    return (cp.stdout or "").strip() in {"enabled", "enabled-runtime"}
 
 
 def _system_ollama_service_conflicts() -> bool:
@@ -4753,13 +4760,11 @@ def install(args) -> int:
         ("compose config (derive from native)", _generate_compose_config),
     ]
     if not getattr(args, "skip_observability", False):
-        # Must run before the observability stack starts: Grafana's Compose
-        # bind-mount auto-creates a missing ~/.nyxGPT/secrets root-owned on
-        # Linux (#3432), which then blocks the token write below.
-        # Must run before the observability stack starts, for the same reason
-        # the secrets dir does: dockerd creates a missing bind-mount source
-        # root-owned, which leaves Prometheus/Grafana/Loki's non-root uids
-        # unable to write their own data dirs (#3632).
+        # Must run before the observability stack starts: dockerd creates a
+        # missing bind-mount source root-owned, which leaves
+        # Prometheus/Grafana/Loki's non-root uids unable to write their own
+        # data dirs (#3632) -- the same failure mode ~/.nyxGPT/secrets hit in
+        # #3432, handled by the glitchtip secrets dir step below.
         steps.append(("observability volume dirs", _ensure_observability_volume_dirs))
         steps.append(("glitchtip secrets dir", _ensure_glitchtip_secrets_dir))
         steps.append(("slack webhook secret", _sync_grafana_slack_webhook_secret))
@@ -7858,6 +7863,53 @@ OBSERVABILITY_VOLUME_DIRS: tuple[str, ...] = (
 )
 
 
+def _dir_acl_grants_uid(path: Path, uid: int) -> bool:
+    """True if `path` already carries an effective POSIX ACL granting `uid` rwx.
+
+    Used both to keep `_ensure_observability_volume_dir` idempotent (don't
+    re-run the grant on every `ops install`) and to keep `ops doctor` quiet
+    about a directory that is reachable by its container through an ACL
+    rather than through ownership. `getfacl -cn` prints numeric entries with
+    no header; an entry the ACL mask has stripped down is annotated
+    `#effective:`, so a line carrying that marker is *not* a grant.
+    """
+    getfacl = _which("getfacl")
+    if getfacl is None:
+        return False
+    cp = _run([getfacl, "-cn", str(path)], check=False, expected=True)
+    if cp.returncode != 0:
+        return False
+    return any(
+        line.strip().startswith(f"user:{uid}:rwx") and "#effective" not in line
+        for line in (cp.stdout or "").splitlines()
+    )
+
+
+def _grant_dir_acl_to_uid(path: Path, uid: int) -> bool:
+    """Grant `uid` rwx on `path` (recursively) via a POSIX ACL, without root.
+
+    `setfacl` only requires being the file's owner, so this is the one lever a
+    non-root host user has to make a bind-mount source writable by a
+    container's uid -- bind mounts expose host uids verbatim (no user
+    namespace remapping), and the container's uid is neither ours nor in our
+    group. Unlike a world-writable chmod it grants exactly one uid and leaves
+    every other local user out, which matters because these directories hold
+    real state (`grafana.db` carries sessions and hashed credentials).
+
+    Recursive on purpose: a directory whose top level we own may still contain
+    root-owned files from an earlier broken run. `setfacl -R` fails on those,
+    which correctly drops the caller through to the actionable `sudo chown -R`
+    message instead of reporting success on a container that would still
+    crash-loop. Returns False when the acl(5) tools are absent or the
+    filesystem was not mounted with ACL support.
+    """
+    setfacl = _which("setfacl")
+    if setfacl is None:
+        return False
+    cp = _run([setfacl, "-R", "-m", f"u:{uid}:rwx", str(path)], check=False, expected=True)
+    return cp.returncode == 0
+
+
 def _ensure_observability_volume_dir(component: str) -> OpsResult:
     """Make one `~/.nyxGPT/volumes/<component>` directory usable by its container's uid."""
     path = volume_dir(component)  # creates it, owned by *this* user, if missing
@@ -7872,35 +7924,27 @@ def _ensure_observability_volume_dir(component: str) -> OpsResult:
         return OpsResult(False, f"Failed to stat {path}", f"{type(e).__name__}: {e}")
     if st.st_uid == uid:
         return OpsResult(True, f"{path} is owned by the container's uid ({uid})")
-    if st.st_uid == os.getuid() and st.st_mode & 0o002:
+    if _dir_acl_grants_uid(path, uid):
         # Already reconciled by this function's no-root fallback below; don't
         # re-run a sudo chown on every `ops install`.
-        return OpsResult(True, f"{path} is writable by the container's uid ({uid})")
+        return OpsResult(True, f"{path} grants write access to the container's uid ({uid})")
 
     cp = _privileged_run(["chown", "-R", f"{uid}:{gid}", str(path)], expected=True)
     if cp is not None and cp.returncode == 0:
         return OpsResult(True, f"Set owner of {path} to {uid}:{gid} for its container")
 
-    # No passwordless root. If we own the directory we can still make it
-    # writable by the container's uid the only other way a bind mount allows:
-    # the "other" write bit. Bind mounts expose host uids verbatim (no user
-    # namespace remapping), and the container's uid is neither our uid nor in
-    # our group, so 0o777 is what a non-root host user has available. These
-    # are container data directories under the operator's own home, not
-    # secrets (~/.nyxGPT/secrets is separate and stays 0o755).
-    if st.st_uid == os.getuid():
-        try:
-            os.chmod(path, 0o777)
-        except OSError as e:
-            return OpsResult(False, f"Failed to make {path} container-writable", f"{e}")
-        return OpsResult(True, f"Made {path} writable by the container's uid ({uid})")
+    # No passwordless root. If we own the directory we can still hand exactly
+    # this one uid write access with a POSIX ACL, which needs no root at all.
+    if st.st_uid == os.getuid() and _grant_dir_acl_to_uid(path, uid):
+        return OpsResult(True, f"Granted the container's uid ({uid}) write access to {path}")
 
     return OpsResult(
         False,
         f"{path} is owned by uid {st.st_uid} and cannot be made writable by its container",
         "dockerd runs as root and creates a missing bind-mount source directory as "
         "root:root, which then leaves the container's non-root uid unable to write "
-        f"(the container crash-loops as unhealthy). Fix with:\n"
+        "(the container crash-loops as unhealthy). Neither passwordless sudo nor a "
+        "POSIX ACL was available to reconcile it. Fix with:\n"
         f"  sudo chown -R {uid}:{gid} {path}\n"
         "then re-run `nyxgpt ops install`.",
     )
@@ -7944,7 +7988,10 @@ def _observability_volume_doctor_issues() -> list[str]:
             st = path.stat()
         except OSError:
             continue
-        if st.st_uid == uid or st.st_uid == os.getuid() or bool(st.st_mode & 0o002):
+        # World-writable is not something install() produces any more, but a
+        # machine reconciled by the first cut of this fix still carries it and
+        # its container is genuinely fine -- don't nag about it.
+        if st.st_uid == uid or bool(st.st_mode & 0o002) or _dir_acl_grants_uid(path, uid):
             continue
         issues.append(
             f"{path} is owned by uid {st.st_uid}, so the {component} container "

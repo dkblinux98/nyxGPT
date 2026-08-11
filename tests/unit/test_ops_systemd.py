@@ -393,7 +393,7 @@ def test_takeover_system_ollama_service_without_sudo(monkeypatch):
 # --- _system_ollama_service_enabled / _system_ollama_service_conflicts ---
 
 
-@pytest.mark.parametrize("stdout", ["enabled\n", "enabled-runtime\n", "static\n"])
+@pytest.mark.parametrize("stdout", ["enabled\n", "enabled-runtime\n"])
 def test_system_ollama_service_enabled_true(monkeypatch, stdout):
     monkeypatch.setattr(
         ops, "_which", lambda name: "/usr/bin/systemctl" if name == "systemctl" else None
@@ -405,12 +405,23 @@ def test_system_ollama_service_enabled_true(monkeypatch, stdout):
     assert calls == [["systemctl", "is-enabled", "ollama.service"]]
 
 
-@pytest.mark.parametrize("stdout", ["disabled\n", "masked\n", ""])
+@pytest.mark.parametrize("stdout", ["disabled\n", "masked\n", "static\n", ""])
 def test_system_ollama_service_enabled_false(monkeypatch, stdout):
     monkeypatch.setattr(
         ops, "_which", lambda name: "/usr/bin/systemctl" if name == "systemctl" else None
     )
     monkeypatch.setattr(ops, "_run", lambda cmd, **k: _cp(1, stdout=stdout))
+
+    assert ops._system_ollama_service_enabled() is False
+
+
+def test_system_ollama_service_enabled_false_for_static_unit(monkeypatch):
+    """`systemctl disable` on a static unit (no [Install] section) is a no-op, so
+    reporting it as a conflict would leave `ops doctor` flagging one forever."""
+    monkeypatch.setattr(
+        ops, "_which", lambda name: "/usr/bin/systemctl" if name == "systemctl" else None
+    )
+    monkeypatch.setattr(ops, "_run", lambda cmd, **k: _cp(0, stdout="static\n"))
 
     assert ops._system_ollama_service_enabled() is False
 
@@ -980,6 +991,7 @@ def test_ensure_observability_volume_dirs_chowns_to_container_uid(monkeypatch, t
     as uid 65534 and crash-loops on it. Pre-create + chown before the stack starts."""
     home = tmp_path / "home"
     monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "_dir_acl_grants_uid", lambda path, uid: False)
     privileged = []
     monkeypatch.setattr(ops, "_privileged_run", lambda cmd, **k: privileged.append(cmd) or _cp(0))
 
@@ -995,18 +1007,57 @@ def test_ensure_observability_volume_dirs_chowns_to_container_uid(monkeypatch, t
     assert (home / ".nyxGPT" / "volumes" / "glitchtip-postgres").is_dir()
 
 
-def test_ensure_observability_volume_dirs_falls_back_to_world_writable(monkeypatch, tmp_path):
-    """Without passwordless root, a directory we own can still be made writable
-    by the container's uid -- bind mounts expose host uids verbatim."""
+def test_ensure_observability_volume_dirs_falls_back_to_acl_grant(monkeypatch, tmp_path):
+    """Without passwordless root, a directory we own is handed to the container's
+    uid with a POSIX ACL -- never a world-writable chmod, which would expose
+    grafana.db (sessions, hashed credentials) to every local user (bandit B103)."""
     home = tmp_path / "home"
     monkeypatch.setattr(ops.Path, "home", lambda: home)
     monkeypatch.setattr(ops, "_privileged_run", lambda cmd, **k: None)
+    monkeypatch.setattr(ops, "_dir_acl_grants_uid", lambda path, uid: False)
+    granted = []
+    monkeypatch.setattr(
+        ops, "_grant_dir_acl_to_uid", lambda path, uid: granted.append((path, uid)) or True
+    )
 
     results = ops._ensure_observability_volume_dirs()
 
     assert all(r.ok for r in results)
     prom = home / ".nyxGPT" / "volumes" / "prometheus"
-    assert prom.stat().st_mode & 0o002
+    assert (prom, 65534) in granted
+    assert (home / ".nyxGPT" / "volumes" / "grafana", 472) in granted
+    assert not prom.stat().st_mode & 0o002, "must never be made world-writable"
+
+
+def test_ensure_observability_volume_dir_is_idempotent_once_acl_grants(monkeypatch, tmp_path):
+    """An already-granted directory must not re-run a sudo chown on every install."""
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "_dir_acl_grants_uid", lambda path, uid: True)
+    monkeypatch.setattr(
+        ops, "_privileged_run", lambda cmd, **k: pytest.fail(f"must not run privileged: {cmd}")
+    )
+
+    result = ops._ensure_observability_volume_dir("prometheus")
+
+    assert result.ok is True
+    assert "65534" in result.message
+
+
+def test_ensure_observability_volume_dir_reports_when_acl_unavailable(monkeypatch, tmp_path):
+    """No passwordless root and no ACL support (or root-owned leftovers inside):
+    fail actionably rather than loosening the directory for every local user."""
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "_privileged_run", lambda cmd, **k: None)
+    monkeypatch.setattr(ops, "_dir_acl_grants_uid", lambda path, uid: False)
+    monkeypatch.setattr(ops, "_grant_dir_acl_to_uid", lambda path, uid: False)
+
+    result = ops._ensure_observability_volume_dir("grafana")
+
+    assert result.ok is False
+    assert "sudo chown -R 472:0" in result.details
+    assert not (home / ".nyxGPT" / "volumes" / "grafana").stat().st_mode & 0o002
 
 
 def test_ensure_observability_volume_dirs_is_noop_off_linux(monkeypatch, tmp_path):
@@ -1025,6 +1076,12 @@ def test_ensure_observability_volume_dir_reports_root_owned_dir(monkeypatch, tmp
     home = tmp_path / "home"
     monkeypatch.setattr(ops.Path, "home", lambda: home)
     monkeypatch.setattr(ops, "_privileged_run", lambda cmd, **k: _cp(1))
+    monkeypatch.setattr(ops, "_dir_acl_grants_uid", lambda path, uid: False)
+    monkeypatch.setattr(
+        ops,
+        "_grant_dir_acl_to_uid",
+        lambda path, uid: pytest.fail("setfacl needs ownership; must not be attempted"),
+    )
     monkeypatch.setattr(ops.os, "getuid", lambda: 1000)
 
     class _Stat:
@@ -1039,10 +1096,71 @@ def test_ensure_observability_volume_dir_reports_root_owned_dir(monkeypatch, tmp
     assert "sudo chown -R 65534:65534" in result.details
 
 
+# --- POSIX ACL helpers (#3632) ---
+
+
+def test_grant_dir_acl_to_uid_runs_setfacl_recursively(monkeypatch, tmp_path):
+    """Recursive on purpose: root-owned leftovers inside a directory we own must
+    make the grant fail rather than report success on a still-broken container."""
+    monkeypatch.setattr(ops, "_which", lambda name: "/usr/bin/setfacl")
+    calls = []
+    monkeypatch.setattr(ops, "_run", lambda cmd, **k: calls.append(cmd) or _cp(0))
+
+    assert ops._grant_dir_acl_to_uid(tmp_path, 65534) is True
+    assert calls == [["/usr/bin/setfacl", "-R", "-m", "u:65534:rwx", str(tmp_path)]]
+
+
+def test_grant_dir_acl_to_uid_false_without_setfacl(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops, "_which", lambda name: None)
+    monkeypatch.setattr(ops, "_run", lambda cmd, **k: pytest.fail(f"must not run: {cmd}"))
+
+    assert ops._grant_dir_acl_to_uid(tmp_path, 65534) is False
+
+
+def test_grant_dir_acl_to_uid_false_when_setfacl_fails(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops, "_which", lambda name: "/usr/bin/setfacl")
+    monkeypatch.setattr(ops, "_run", lambda cmd, **k: _cp(1, stderr="Operation not supported"))
+
+    assert ops._grant_dir_acl_to_uid(tmp_path, 65534) is False
+
+
+def test_dir_acl_grants_uid_reads_getfacl(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops, "_which", lambda name: "/usr/bin/getfacl")
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: _cp(
+            0, stdout="user::rwx\nuser:65534:rwx\ngroup::r-x\nmask::rwx\nother::r-x\n"
+        ),
+    )
+
+    assert ops._dir_acl_grants_uid(tmp_path, 65534) is True
+    assert ops._dir_acl_grants_uid(tmp_path, 472) is False
+
+
+def test_dir_acl_grants_uid_ignores_mask_stripped_entry(monkeypatch, tmp_path):
+    """An entry the ACL mask has cut down is annotated `#effective:` and is not
+    a real grant -- treating it as one would leave the container crash-looping."""
+    monkeypatch.setattr(ops, "_which", lambda name: "/usr/bin/getfacl")
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, **k: _cp(0, stdout="user:65534:rwx\t#effective:r--\n")
+    )
+
+    assert ops._dir_acl_grants_uid(tmp_path, 65534) is False
+
+
+def test_dir_acl_grants_uid_false_without_getfacl(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops, "_which", lambda name: None)
+    monkeypatch.setattr(ops, "_run", lambda cmd, **k: pytest.fail(f"must not run: {cmd}"))
+
+    assert ops._dir_acl_grants_uid(tmp_path, 65534) is False
+
+
 def test_observability_volume_doctor_issues_flags_root_owned_dir(monkeypatch, tmp_path):
     home = tmp_path / "home"
     monkeypatch.setattr(ops.Path, "home", lambda: home)
     (home / ".nyxGPT" / "volumes" / "prometheus").mkdir(parents=True)
+    monkeypatch.setattr(ops, "_dir_acl_grants_uid", lambda path, uid: False)
     monkeypatch.setattr(ops.os, "getuid", lambda: 1000)
 
     class _Stat:
@@ -1056,11 +1174,45 @@ def test_observability_volume_doctor_issues_flags_root_owned_dir(monkeypatch, tm
     assert any("cannot write to it" in i and "65534" in i for i in issues)
 
 
-def test_observability_volume_doctor_issues_silent_when_owned_correctly(monkeypatch, tmp_path):
+def test_observability_volume_doctor_issues_flags_dir_we_own_without_acl(monkeypatch, tmp_path):
+    """Owning the directory ourselves is *not* enough -- the container runs as a
+    different uid, so a dir with no ACL grant is still a crash-loop."""
     home = tmp_path / "home"
     monkeypatch.setattr(ops.Path, "home", lambda: home)
     for name in ("prometheus", "grafana", "loki"):
         (home / ".nyxGPT" / "volumes" / name).mkdir(parents=True)
+    monkeypatch.setattr(ops, "_dir_acl_grants_uid", lambda path, uid: False)
+
+    issues = ops._observability_volume_doctor_issues()
+
+    assert len(issues) == 3
+
+
+def test_observability_volume_doctor_issues_silent_when_acl_grants(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    for name in ("prometheus", "grafana", "loki"):
+        (home / ".nyxGPT" / "volumes" / name).mkdir(parents=True)
+    monkeypatch.setattr(ops, "_dir_acl_grants_uid", lambda path, uid: True)
+
+    assert ops._observability_volume_doctor_issues() == []
+
+
+def test_observability_volume_doctor_issues_silent_on_legacy_world_writable(monkeypatch, tmp_path):
+    """A machine reconciled by the first cut of this fix is genuinely working;
+    doctor must not nag about a mode nyxGPT no longer produces."""
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    for name in ("prometheus", "grafana", "loki"):
+        (home / ".nyxGPT" / "volumes" / name).mkdir(parents=True, mode=0o777)
+    monkeypatch.setattr(ops, "_dir_acl_grants_uid", lambda path, uid: False)
+    monkeypatch.setattr(ops.os, "getuid", lambda: 1000)
+
+    class _Stat:
+        st_uid = 0
+        st_mode = 0o40777
+
+    monkeypatch.setattr(ops.Path, "stat", lambda self, **k: _Stat())
 
     assert ops._observability_volume_doctor_issues() == []
 
