@@ -51,6 +51,7 @@ nyxgpt ops env-sync
 nyxgpt ops secrets-sync
 nyxgpt ops logs
 nyxgpt ops observability
+nyxgpt ops credentials
 nyxgpt ops glitchtip-init
 nyxgpt ops migrate-volumes
 nyxgpt ops port-forward
@@ -722,6 +723,71 @@ Grafana dashboards, the Jaeger and Infinity/GlitchTip datasources, and the
 SRE Home landing dashboard are all pre-provisioned as code (see
 [docker-compose.md](docker-compose.md#grafana-single-pane-of-glass)) --
 starting the stack is the only step needed to get a populated SRE view.
+
+---
+
+## `nyxgpt ops credentials`
+
+Prints the admin logins for the observability UIs behind the SRE dashboard
+(Grafana and GlitchTip), so signing into one never means SSHing to the box
+and reading a secret file by hand (#3718).
+
+Usage:
+
+```bash
+nyxgpt ops credentials                      # both services
+nyxgpt ops credentials --service grafana    # just one
+nyxgpt ops credentials --json               # machine-readable
+```
+
+Example:
+
+```
+grafana
+  URL:      http://localhost:3001
+  Username: admin
+  Password: <the resolved password>
+  Source:   /Users/you/.nyxGPT/secrets/grafana-admin-password
+
+glitchtip
+  URL:      http://localhost:8080
+  Username: admin@nyxgpt.local
+  Password: <the resolved password>
+  Source:   /Users/you/.nyxGPT/config.ini [error_tracking] admin_password
+```
+
+Behavior:
+
+- **Each credential comes from its real source**, so what is printed is
+  what the running service actually accepts:
+  - Grafana: `[monitoring] grafana_admin_password` from config.ini when you
+    have set one (a deliberate override), otherwise the ops-managed secret
+    `nyxgpt ops install` generated at
+    `~/.nyxGPT/secrets/grafana-admin-password`.
+  - GlitchTip: the `[error_tracking] admin_email`/`admin_password` values
+    [`nyxgpt ops glitchtip-init`](#nyxgpt-ops-glitchtip-init) provisions
+    back into config.ini.
+  - The `Source:` line names which one answered -- useful when a login
+    fails and you need to know which of the two Grafana is actually set to.
+- **Reading never provisions.** If a service has no password yet, that is
+  reported as `(not provisioned)` with the wrapped command that creates one
+  (`nyxgpt ops install` for Grafana, `nyxgpt ops glitchtip-init` for
+  GlitchTip) rather than minting a value no running service would accept.
+- **CLI-side only.** These are ops-managed secrets and are deliberately
+  absent from every HTTP API response (#3458/#3466) -- `GET
+  /api/v1/monitoring` does not include the Grafana password, and this
+  command does not change that. The values go to stdout and are never
+  written to the logs.
+- For a cloud deployment, use
+  [`nyxgpt cloud credentials`](cloud.md#nyxgpt-cloud-credentials), which
+  reads the same values off the instance over the wrapped SSH access path.
+
+Exit codes:
+
+| Code | Meaning |
+|---|---|
+| 0 | Every requested service resolved a password |
+| 2 | At least one has none provisioned yet (the remediation is printed) |
 
 ---
 

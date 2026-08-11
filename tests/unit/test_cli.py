@@ -2986,6 +2986,51 @@ def test_ops_glitchtip_init_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(calls) == 1
 
 
+def test_ops_credentials_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`nyxgpt ops credentials` (#3718) reaches ops with its flags parsed --
+    the wrapped replacement for `ssh` + `cat`ing the secrets by hand."""
+    import nyxgpt.cli as cli_mod
+
+    calls: list[object] = []
+    monkeypatch.setattr(cli_mod.ops_mod, "credentials", lambda args: (calls.append(args), 0)[1])
+
+    exit_code = cli(["ops", "credentials", "--service", "grafana", "--json"])
+
+    assert exit_code == 0
+    assert len(calls) == 1
+    assert calls[0].service == "grafana"  # type: ignore[attr-defined]
+    assert calls[0].json is True  # type: ignore[attr-defined]
+
+
+def test_ops_credentials_defaults_to_every_service(monkeypatch: pytest.MonkeyPatch) -> None:
+    import nyxgpt.cli as cli_mod
+
+    calls: list[object] = []
+    monkeypatch.setattr(cli_mod.ops_mod, "credentials", lambda args: (calls.append(args), 0)[1])
+
+    assert cli(["ops", "credentials"]) == 0
+    assert calls[0].service == "all"  # type: ignore[attr-defined]
+    assert calls[0].json is False  # type: ignore[attr-defined]
+
+
+def test_cloud_credentials_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`nyxgpt cloud credentials` (#3718) routes to cloud_deploy's command
+    handler, so an operator never needs a manual ssh into the instance."""
+    import nyxgpt.cli as cli_mod
+
+    calls: list[object] = []
+    monkeypatch.setattr(
+        cli_mod.cloud_deploy_mod, "deploy_command", lambda args: (calls.append(args), 0)[1]
+    )
+
+    exit_code = cli(["cloud", "credentials", "--service", "glitchtip"])
+
+    assert exit_code == 0
+    assert len(calls) == 1
+    assert calls[0].cloud_cmd == "credentials"  # type: ignore[attr-defined]
+    assert calls[0].service == "glitchtip"  # type: ignore[attr-defined]
+
+
 def test_ops_alert_test_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     import nyxgpt.cli as cli_mod
 

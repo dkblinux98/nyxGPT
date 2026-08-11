@@ -108,6 +108,32 @@ group, so the tunnel is the only path in. If a local port is already taken
 (a local stack on 8000/3000, say), the tunnel refuses to open and says so;
 `nyxgpt ops down` frees them.
 
+### `nyxgpt cloud credentials`
+
+Logging into Grafana and GlitchTip: the observability UIs above ask for an
+admin login, and both passwords are
+ops-managed secrets generated on the instance — Grafana's by `nyxgpt ops
+install`, GlitchTip's by `nyxgpt ops glitchtip-init`. Read them from your
+workstation with:
+
+```bash
+nyxgpt cloud credentials                      # both services
+nyxgpt cloud credentials --service grafana    # just one
+nyxgpt cloud credentials --json               # machine-readable
+```
+
+This runs the instance's own
+[`nyxgpt ops credentials`](ops.md#nyxgpt-ops-credentials) over the same
+wrapped SSH access path every other deploy step uses — there is never a
+reason to `ssh` to the box and `cat` a secret file yourself (#3718). The
+URLs it prints are the instance's loopback URLs, reachable once `nyxgpt
+cloud tunnel` is open.
+
+A service whose password hasn't been provisioned yet prints as `(not
+provisioned)` with the command that provisions it, and the command exits 2.
+Credentials are never returned by the HTTP API (#3458/#3466); this path is
+CLI-side only.
+
 ### Tearing it down
 
 ```bash

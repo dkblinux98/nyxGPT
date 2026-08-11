@@ -783,3 +783,141 @@ def test_tunnel_invocation_shows_the_wrapped_ssh_command():
     invocation = cloud_deploy.tunnel_invocation(target, ["tracing"])
     assert invocation.startswith("ssh ")
     assert "16686:127.0.0.1:16686" in invocation
+
+
+# --- Remote credential retrieval (`nyxgpt cloud credentials`, #3718) ------
+
+
+_REMOTE_CREDS = [
+    {
+        "service": "grafana",
+        "url": "http://localhost:3001",
+        "username": "admin",
+        "password": "remote-grafana-pw",  # pragma: allowlist secret
+        "source": "/home/ec2-user/.nyxGPT/secrets/grafana-admin-password",
+        "remediation": "",
+        "available": True,
+    },
+    {
+        "service": "glitchtip",
+        "url": "http://localhost:8080",
+        "username": "admin@nyxgpt.local",
+        "password": "remote-glitchtip-pw",  # pragma: allowlist secret
+        "source": "/home/ec2-user/.nyxGPT/config.ini [error_tracking] admin_password",
+        "remediation": "",
+        "available": True,
+    },
+]
+
+
+def test_remote_credentials_runs_the_wrapped_ops_command_over_ssh(monkeypatch):
+    """No hand-rolled `ssh` + `cat`: the instance's own wrapped command is what
+    reads the secrets, through the same run_remote path as every other step."""
+    seen = {}
+
+    def fake_remote(target, command, **kwargs):
+        seen["command"] = command
+        return subprocess.CompletedProcess(["ssh"], 0, stdout=json.dumps(_REMOTE_CREDS), stderr="")
+
+    monkeypatch.setattr(cloud_deploy, "run_remote", fake_remote)
+
+    creds = cloud_deploy.remote_credentials(cloud_deploy.DeployTarget(host="h"))
+
+    assert "nyxgpt" in seen["command"] and "ops credentials --json" in seen["command"]
+    assert "cat" not in seen["command"]
+    assert [c["service"] for c in creds] == ["grafana", "glitchtip"]
+    assert creds[0]["password"] == "remote-grafana-pw"  # pragma: allowlist secret
+
+
+def test_remote_credentials_tolerates_leading_stderr_noise_on_stdout(monkeypatch):
+    """A remote CLI that prints a config warning before its JSON is still
+    parseable -- the payload starts at the first `[`."""
+    noisy = "prometheus-client is not installed\n" + json.dumps(_REMOTE_CREDS)
+    monkeypatch.setattr(
+        cloud_deploy,
+        "run_remote",
+        lambda *a, **k: subprocess.CompletedProcess(["ssh"], 0, stdout=noisy, stderr=""),
+    )
+
+    creds = cloud_deploy.remote_credentials(cloud_deploy.DeployTarget(host="h"))
+
+    assert len(creds) == 2
+
+
+def test_remote_credentials_passes_the_service_filter(monkeypatch):
+    seen = {}
+
+    def fake_remote(target, command, **kwargs):
+        seen["command"] = command
+        return subprocess.CompletedProcess(
+            ["ssh"], 0, stdout=json.dumps(_REMOTE_CREDS[:1]), stderr=""
+        )
+
+    monkeypatch.setattr(cloud_deploy, "run_remote", fake_remote)
+
+    cloud_deploy.remote_credentials(cloud_deploy.DeployTarget(host="h"), service="grafana")
+
+    assert "--service grafana" in seen["command"]
+
+
+def test_remote_credentials_reports_an_unreadable_instance(monkeypatch):
+    monkeypatch.setattr(
+        cloud_deploy,
+        "run_remote",
+        lambda *a, **k: subprocess.CompletedProcess(
+            ["ssh"], 127, stdout="", stderr="nyxgpt: command not found"
+        ),
+    )
+
+    with pytest.raises(CloudCommandError, match="command not found"):
+        cloud_deploy.remote_credentials(cloud_deploy.DeployTarget(host="h"))
+
+
+def test_credentials_command_prints_the_logins_and_the_tunnel_hint(
+    _isolated_cloud_home, monkeypatch, capsys
+):
+    _write_cloud_state(_isolated_cloud_home)
+    monkeypatch.setattr(
+        cloud_deploy,
+        "run_remote",
+        lambda *a, **k: subprocess.CompletedProcess(
+            ["ssh"], 0, stdout=json.dumps(_REMOTE_CREDS), stderr=""
+        ),
+    )
+
+    code = cloud_deploy.deploy_command(_args(cloud_cmd="credentials", service="all", json=False))
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "remote-grafana-pw" in out
+    assert "remote-glitchtip-pw" in out
+    assert "nyxgpt cloud tunnel" in out
+
+
+def test_credentials_command_exits_two_when_a_service_is_unprovisioned(
+    _isolated_cloud_home, monkeypatch, capsys
+):
+    _write_cloud_state(_isolated_cloud_home)
+    unprovisioned = [
+        dict(_REMOTE_CREDS[0]),
+        {
+            **_REMOTE_CREDS[1],
+            "password": "",
+            "available": False,
+            "remediation": "run `nyxgpt ops glitchtip-init`",
+        },
+    ]
+    monkeypatch.setattr(
+        cloud_deploy,
+        "run_remote",
+        lambda *a, **k: subprocess.CompletedProcess(
+            ["ssh"], 0, stdout=json.dumps(unprovisioned), stderr=""
+        ),
+    )
+
+    code = cloud_deploy.deploy_command(_args(cloud_cmd="credentials", service="all", json=False))
+
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "(not provisioned)" in out
+    assert "nyxgpt ops glitchtip-init" in out
