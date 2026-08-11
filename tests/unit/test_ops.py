@@ -10385,7 +10385,7 @@ def test_ensure_kubectl_and_cluster_reports_kind_install_failure(monkeypatch):
     results = ops._ensure_kubectl_and_cluster()
     assert results[-1].ok is False
     assert "could not download it" in results[-1].message
-    assert "kind.sigs.k8s.io" in results[-1].details
+    assert "https://kind.sigs.k8s.io/#installation" in results[-1].details
 
 
 @pytest.mark.unit
