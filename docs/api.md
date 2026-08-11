@@ -400,9 +400,16 @@ Returns basic runtime configuration details.
 {
   "ollama_base_url": "http://127.0.0.1:11434",
   "default_model": "llama3.1:8b",
-  "sessions_dir": "/Users/you/.nyxGPT/sessions"
+  "sessions_dir": "/Users/you/.nyxGPT/sessions",
+  "release_version": "3.0.0",
+  "release_branch": "v3.0.0"
 }
 ```
+
+| Field | Description |
+|-------|-------------|
+| `release_version` | Version of the installed `nyxgpt` package — the version actually running. Read from package metadata, so it is correct for both an installed artifact and a `pip install -e .` dev tree. This is what the web UI's header badge displays. |
+| `release_branch` | The agent tooling's `[github] RELEASE_BRANCH` config setting, or `null` if unset. A git branch name for the agent workflows — **not** the running version, and never used as one. |
 
 ---
 
