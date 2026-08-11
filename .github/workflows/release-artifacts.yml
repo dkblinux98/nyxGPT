@@ -4,11 +4,20 @@ name: Release Artifacts
 # install nyxGPT (#3622, split B of the repo-less portability requirement --
 # CLAUDE.md 2026-08-01): container images to GHCR and a remote Homebrew tap.
 #
-# PyPI itself is deliberately NOT published here -- that stays owner-run via
-# scripts/release_ceremony.sh Phase 2, which needs a stored PyPI token and
-# runs from the owner's machine (ceremony predates this workflow; see that
-# script's header). This workflow picks up right after Phase 1 of that
-# ceremony publishes the GitHub Release, which is what triggers it below.
+# Stable PyPI releases are deliberately NOT published here -- that stays
+# owner-run via scripts/release_ceremony.sh Phase 2, which needs a stored
+# PyPI token and runs from the owner's machine (ceremony predates this
+# workflow; see that script's header). This workflow picks up right after
+# Phase 1 of that ceremony publishes the GitHub Release, which is what
+# triggers it below.
+#
+# One exception exists, and only for pre-releases: release-candidate-pypi.yml
+# (#3727) publishes the release-branch tip to PyPI as `3.0.0rcN` on manual
+# dispatch, because acceptance testing installs from PyPI and would otherwise
+# be stuck on the last stable release. That path never publishes a stable
+# version -- what it uploads is always a PEP 440 pre-release, which
+# `pip install nyxgpt` does not resolve to -- so the ceremony above remains
+# the only way a release reaches users.
 #
 # The Homebrew tap job additionally needs a remote tap repository (e.g.
 # dkblinux98/homebrew-nyxgpt) and a push token the owner provisions once --

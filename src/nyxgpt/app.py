@@ -61,6 +61,7 @@ from nyxgpt import health as health_module
 from nyxgpt import metrics as prom_metrics
 from nyxgpt import ops as ops_module
 from nyxgpt import portability as portability_module
+from nyxgpt import release_candidate as release_candidate_module
 from nyxgpt import resource_metrics_store as resource_metrics_store_module
 from nyxgpt import restart_state as restart_state_module
 from nyxgpt import self_heal as self_heal_module
@@ -2709,6 +2710,35 @@ def ops_portability(_request: Request) -> dict[str, Any]:
     dashboard can load it on every visit.
     """
     return portability_module.check_matrix()
+
+
+# --- Release-candidate endpoint (#3727) ---
+#
+# The SRE-surface half of `nyxgpt release rc`: which release line the tip is
+# on, which RCs PyPI already serves, what the next RC version would be, and
+# the exact pinned commands that point an acceptance install at it.
+#
+# Read-only, following the same #3514 status-plus-CLI-pointers decision the
+# portability surface uses -- and here for a second reason: publishing to
+# PyPI is an owner action carrying repo and PyPI credentials, so it belongs
+# to the dispatch-only workflow and the owner's `nyxgpt release rc
+# --publish`, never to a button in a browser session.
+
+
+@api.get("/ops/release-candidate")
+def ops_release_candidate(_request: Request, branch: str | None = None) -> dict[str, Any]:
+    """Report the release-candidate plan for `branch` (default: the configured release branch).
+
+    Makes one outbound call, to PyPI's JSON API, to learn which RCs already
+    exist. A failed lookup is reported in `pypi_lookup_error` and clears
+    `publishable` rather than failing the request -- the dashboard should
+    still render the line's state when PyPI is unreachable.
+    """
+    target = (branch or release_candidate_module.default_branch()).strip()
+    try:
+        return release_candidate_module.plan(target)
+    except release_candidate_module.ReleaseCandidateError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
 
 
 # --- Model management endpoints ---

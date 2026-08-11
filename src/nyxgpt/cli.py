@@ -28,6 +28,7 @@ from nyxgpt import cloud_state as cloud_state_mod
 from nyxgpt import models, sessions
 from nyxgpt import ops as ops_mod
 from nyxgpt import portability as portability_mod
+from nyxgpt import release_candidate as release_candidate_mod
 from nyxgpt import self_heal as self_heal_mod
 from nyxgpt.aws_credentials_setup import run_aws_credentials_setup
 from nyxgpt.chat import chat, chat_stream
@@ -2772,6 +2773,43 @@ def cli(argv: list[str] | None = None) -> int:
         help="Print the full machine-readable record of the run instead of a summary",
     )
 
+    # nyxgpt release rc (#3727): the owner-side wrapper for the dispatch-only
+    # release-candidate publish workflow. Acceptance testing installs from
+    # PyPI, so without an RC it can only ever exercise the last stable
+    # release -- never the release-branch tip carrying the fixes merged
+    # during that same testing. See src/nyxgpt/release_candidate.py and
+    # docs/cloud.md's release-candidate section.
+    release_p = sub.add_parser("release", help="Release engineering helpers (owner)")
+    release_sub = release_p.add_subparsers(dest="release_cmd", required=True)
+
+    release_rc = release_sub.add_parser(
+        "rc",
+        help=(
+            "Plan (or publish, with --publish) a PyPI release candidate from the "
+            "release-branch tip so acceptance testing can install unreleased code"
+        ),
+    )
+    release_rc.add_argument(
+        "--branch",
+        help=(
+            "Release branch the RC is cut from (default: [github] RELEASE_BRANCH from "
+            "config.ini, else v<declared version>). Non-release branches are refused."
+        ),
+    )
+    release_rc.add_argument(
+        "--publish",
+        action="store_true",
+        help="Dispatch the publish workflow instead of only reporting what it would do",
+    )
+    release_rc.add_argument(
+        "--rc-number",
+        type=int,
+        help="Explicit RC number to publish (default: the next unused one, resolved from PyPI)",
+    )
+    release_rc.add_argument(
+        "--json", action="store_true", help="Print the plan as JSON instead of a summary"
+    )
+
     # Add canary command (local weighted-traffic canary rollout on a local k8s cluster --
     # the sole deployment model since #3409 retired blue/green in favor of it)
     canary_p = sub.add_parser("canary", help="Local canary deployment (kind/minikube/k3s cluster)")
@@ -3028,6 +3066,9 @@ def cli(argv: list[str] | None = None) -> int:
             return ops_mod.verify(args)
         if args.ops_cmd == "portability":
             return portability_mod.portability(args)
+
+    if cmd == "release" and args.release_cmd == "rc":
+        return release_candidate_mod.release_rc(args)
 
     if cmd == "cloud" and args.cloud_cmd == "allow-ip":
         return cloud_mod.allow_ip(args)

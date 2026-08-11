@@ -49,6 +49,26 @@ type AcceptanceStep = {
   expect: string;
 };
 
+// `GET /api/v1/ops/release-candidate` -- the dashboard half of
+// `nyxgpt release rc` (#3727). Acceptance installs come from PyPI, so
+// testing the release-branch tip repo-less needs a published pre-release;
+// this panel says which one to pin and whether the line can be cut.
+type ReleaseCandidatePlan = {
+  branch: string;
+  release: string;
+  declared_version: string;
+  published_rcs: string[];
+  next_rc_version: string;
+  is_prerelease: boolean;
+  publishable: boolean;
+  blockers: string[];
+  guardrails: string[];
+  pypi_lookup_error: string;
+  workflow: string;
+  docs: string;
+  commands: Record<string, string>;
+};
+
 type PortabilityReport = {
   targets: MatrixTarget[];
   acceptance_sequence: AcceptanceStep[];
@@ -114,9 +134,28 @@ function CommandList({ label, commands }: { label: string; commands: string[] })
 
 export default function PortabilityPage() {
   const [report, setReport] = useState<PortabilityReport | null>(null);
+  const [rc, setRc] = useState<ReleaseCandidatePlan | null>(null);
+  const [rcError, setRcError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // The RC plan reaches PyPI, so it loads on its own and never blocks (or
+  // fails) the matrix above it -- an unreachable PyPI must not hide which
+  // targets are repo-less.
+  const loadReleaseCandidate = useCallback(async () => {
+    setRcError(null);
+    try {
+      const res = await fetch('/api/v1/ops/release-candidate', { cache: 'no-store' });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || data.detail || `HTTP ${res.status}`);
+      }
+      setRc(data);
+    } catch (e: unknown) {
+      setRcError(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
 
   const loadReport = useCallback(async () => {
     setRefreshing(true);
@@ -138,7 +177,8 @@ export default function PortabilityPage() {
 
   useEffect(() => {
     void loadReport();
-  }, [loadReport]);
+    void loadReleaseCandidate();
+  }, [loadReport, loadReleaseCandidate]);
 
   if (loading) {
     return (
@@ -346,6 +386,118 @@ export default function PortabilityPage() {
                 </li>
               ))}
             </ol>
+          </div>
+
+          {/* --- Acceptance-testing unreleased code (#3727) --- */}
+          <div style={boxStyle}>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '1rem',
+                marginBottom: '0.5rem',
+              }}
+            >
+              <h2 style={{ fontSize: '1.1rem', fontWeight: 'bold' }}>
+                Release candidate — acceptance-test the tip
+              </h2>
+              {rc && (
+                <span style={badgeStyle(rc.publishable)}>
+                  {rc.publishable ? 'ready to cut' : 'blocked'}
+                </span>
+              )}
+            </div>
+            <p style={{ fontSize: '0.85rem', color: 'var(--foreground-muted)' }}>
+              Every install above comes from PyPI, so acceptance testing can only reach code that
+              has been published. A release candidate publishes the release-branch tip as a
+              pre-release, which a clean machine installs by exact pin. Cutting one is an owner
+              action carrying PyPI credentials, so it runs from a terminal, never from this page.
+            </p>
+
+            {rcError && (
+              <p style={{ fontSize: '0.85rem', color: '#ef4444' }}>
+                Could not load the release-candidate plan: {rcError}
+              </p>
+            )}
+
+            {rc && (
+              <>
+                <div style={{ fontSize: '0.85rem', marginTop: '0.5rem' }}>
+                  <div>
+                    Release line <strong>{rc.release}</strong> from branch{' '}
+                    <code>{rc.branch}</code>
+                  </div>
+                  <div>
+                    Published RCs:{' '}
+                    {rc.published_rcs.length > 0 ? rc.published_rcs.join(', ') : 'none yet'}
+                  </div>
+                  <div>
+                    Next candidate: <strong>{rc.next_rc_version}</strong>
+                    {rc.is_prerelease && (
+                      <span style={{ color: 'var(--foreground-muted)' }}>
+                        {' '}
+                        — a pre-release, so <code>pip install nyxgpt</code> never resolves to it
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {rc.pypi_lookup_error && (
+                  <p style={{ fontSize: '0.8rem', color: '#ef4444', marginTop: '0.5rem' }}>
+                    PyPI lookup failed, so the next RC number is a guess: {rc.pypi_lookup_error}
+                  </p>
+                )}
+
+                {rc.blockers.length > 0 && (
+                  <ul
+                    style={{
+                      marginTop: '0.75rem',
+                      marginBottom: 0,
+                      paddingLeft: '1.25rem',
+                      fontSize: '0.8rem',
+                      color: '#ef4444',
+                    }}
+                  >
+                    {rc.blockers.map((blocker) => (
+                      <li key={blocker}>{blocker}</li>
+                    ))}
+                  </ul>
+                )}
+
+                <CommandList label="Cut the candidate" commands={[rc.commands.publish]} />
+                <CommandList
+                  label="Point an acceptance install at it"
+                  commands={[rc.commands.install, rc.commands.user_data, rc.commands.deploy]}
+                />
+
+                <ul
+                  style={{
+                    marginTop: '0.75rem',
+                    marginBottom: 0,
+                    paddingLeft: '1.25rem',
+                    fontSize: '0.8rem',
+                    color: 'var(--foreground-muted)',
+                  }}
+                >
+                  {rc.guardrails.map((guardrail) => (
+                    <li key={guardrail}>{guardrail}</li>
+                  ))}
+                </ul>
+
+                <p
+                  style={{
+                    marginTop: '0.75rem',
+                    marginBottom: 0,
+                    fontSize: '0.75rem',
+                    color: 'var(--foreground-muted)',
+                  }}
+                >
+                  Workflow: <code>.github/workflows/{rc.workflow}</code> (dispatch-only) — runbook:{' '}
+                  <code>{rc.docs}</code>
+                </p>
+              </>
+            )}
           </div>
         </div>
       )}
