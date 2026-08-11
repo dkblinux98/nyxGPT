@@ -128,6 +128,7 @@ nyxgpt ops install
 - Optional **Docker Compose** stack for one-command bring-up of every component
 - **Published install artifacts** — container images for the Compose/k8s paths on GHCR (`ghcr.io/dkblinux98/nyxgpt-{api,web}`) and a remote Homebrew tap, built and published by `.github/workflows/release-artifacts.yml` on every GitHub Release, alongside the owner-run PyPI publish (`scripts/release_ceremony.sh`) — see [docs/homebrew.md#remote-tap](docs/homebrew.md#remote-tap)
 - **Repo-less portability, checked mechanically** (`nyxgpt ops portability`) — the matrix of deployment targets that install and operate with **no repo checkout** (macOS native, Linux systemd, Docker/Compose, Kubernetes, AWS EC2; Windows out of scope), each row asserting that no command fetches source and none is a raw `docker`/`kubectl`/`terraform` invocation, plus the clean-machine acceptance run — reported on the SRE dashboard at `/admin/portability` and documented in [docs/portability-matrix.md](docs/portability-matrix.md)
+- **Release candidates for acceptance testing** (`nyxgpt release rc`) — publishes the release-branch tip to PyPI as a pre-release (`3.0.0rcN`) from a dispatch-only workflow, so a clean machine or EC2 instance can acceptance-test unreleased code by exact pin with no checkout; `pip install nyxgpt` still resolves to the latest stable release — see [docs/cloud.md](docs/cloud.md#release-candidates-acceptance-testing-unreleased-code)
 - Robust unit and integration test suite
 
 ---

@@ -331,4 +331,91 @@ describe('PortabilityPage', () => {
       );
     });
   });
+
+  // --- Release candidate panel (#3727) ---
+  //
+  // Acceptance installs come from PyPI, so testing the release-branch tip
+  // repo-less needs a published pre-release. The panel says which one to
+  // pin; it never publishes one (that carries PyPI credentials).
+
+  describe('release candidate panel', () => {
+    function serveRc(payload: unknown, status = 200) {
+      server.use(
+        http.get('/api/v1/ops/release-candidate', () => HttpResponse.json(payload, { status }))
+      );
+    }
+
+    it('names the next candidate and the pinned commands that install it', async () => {
+      serveReport(mockReport);
+      render(<PortabilityPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText(/Release candidate/)).toBeInTheDocument();
+      });
+      expect(screen.getByText('3.0.0rc2')).toBeInTheDocument();
+      expect(screen.getByText('pip install nyxgpt==3.0.0rc2')).toBeInTheDocument();
+      expect(
+        screen.getByText('nyxgpt cloud user-data --os linux --version 3.0.0rc2')
+      ).toBeInTheDocument();
+      expect(screen.getByText('nyxgpt cloud deploy --version 3.0.0rc2')).toBeInTheDocument();
+      expect(screen.getByText('nyxgpt release rc --publish')).toBeInTheDocument();
+      expect(screen.getByText('ready to cut')).toBeInTheDocument();
+    });
+
+    it('shows why a candidate cannot be cut instead of offering one anyway', async () => {
+      serveReport(mockReport);
+      serveRc({
+        branch: 'feat/x',
+        release: '3.0.0',
+        declared_version: '3.0.0',
+        published_rcs: [],
+        next_rc_version: '3.0.0rc1',
+        is_prerelease: true,
+        publishable: false,
+        blockers: ['feat/x is not a release branch -- an RC is only ever cut from the tip'],
+        guardrails: [],
+        pypi_lookup_error: '',
+        workflow: 'release-candidate-pypi.yml',
+        docs: 'docs/cloud.md#release-candidates-acceptance-testing-unreleased-code',
+        commands: {
+          plan: 'nyxgpt release rc',
+          publish: 'nyxgpt release rc --publish',
+          install: 'pip install nyxgpt==3.0.0rc1',
+          user_data: 'nyxgpt cloud user-data --os linux --version 3.0.0rc1',
+          deploy: 'nyxgpt cloud deploy --version 3.0.0rc1',
+        },
+      });
+      render(<PortabilityPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('blocked')).toBeInTheDocument();
+      });
+      expect(screen.getByText(/is not a release branch/)).toBeInTheDocument();
+    });
+
+    it('keeps rendering the matrix when the release-candidate lookup fails', async () => {
+      serveReport(mockReport);
+      serveRc({ error: 'pypi unreachable' }, 502);
+      render(<PortabilityPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText(/Could not load the release-candidate plan/)).toBeInTheDocument();
+      });
+      // The matrix above it is unaffected -- an unreachable PyPI must not
+      // hide which targets are repo-less.
+      expect(screen.getByText('Linux native (systemd --user)')).toBeInTheDocument();
+    });
+
+    it('offers no control to publish -- cutting an RC is a terminal command', async () => {
+      serveReport(mockReport);
+      render(<PortabilityPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('3.0.0rc2')).toBeInTheDocument();
+      });
+      const buttons = screen.getAllByRole('button');
+      expect(buttons).toHaveLength(1);
+      expect(buttons[0]).toHaveTextContent(/Refresh/);
+    });
+  });
 });

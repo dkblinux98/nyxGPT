@@ -134,6 +134,23 @@ command; you never type `ssh`, `terraform`, `docker`, or `kubectl`.
 `nyxgpt ops portability` prints this same sequence, so the terminal you are
 accepting from can always tell you the next step.
 
+### Accepting code that isn't released yet
+
+Step 1 installs from PyPI, so by default the run exercises the last **stable**
+release — not the release-branch tip carrying the acceptance failures you just
+fixed. Cut a [release candidate](cloud.md#release-candidates-acceptance-testing-unreleased-code)
+(`nyxgpt release rc --publish`, #3727) and pin it instead:
+
+| # | Command |
+|---|---------|
+| 1 | `pip install nyxgpt==3.0.0rc3` |
+| 3 | `nyxgpt cloud deploy --version 3.0.0rc3` |
+
+Nothing else about the sequence changes: the RC is a published artifact like
+any other, so the run stays repo-less. An RC is acceptance-only and is never
+announced; `pip install nyxgpt` still resolves to the stable release, because
+pip excludes pre-releases from an unpinned requirement.
+
 ### Why step 5 passes `--skip-deploy`
 
 A bare `nyxgpt cloud smoke` deploys a stack of its own, tests it, and destroys

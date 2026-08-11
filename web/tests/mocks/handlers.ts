@@ -444,4 +444,35 @@ export const handlers = [
   http.post('/api/v1/rag/cache/clear', () => {
     return HttpResponse.json({ status: 'Query result cache cleared' });
   }),
+
+  // GET /api/v1/ops/release-candidate -- shaped like
+  // nyxgpt.release_candidate.plan() (#3727).
+  http.get('/api/v1/ops/release-candidate', () => {
+    return HttpResponse.json({
+      branch: 'v3.0.0',
+      is_release_branch: true,
+      branch_version: '3.0.0',
+      declared_version: '3.0.0',
+      version_matches_branch: true,
+      release: '3.0.0',
+      published_releases: ['2.1.0'],
+      published_rcs: ['3.0.0rc1'],
+      next_rc_number: 2,
+      next_rc_version: '3.0.0rc2',
+      is_prerelease: true,
+      workflow: 'release-candidate-pypi.yml',
+      pypi_lookup_error: '',
+      publishable: true,
+      blockers: [],
+      commands: {
+        plan: 'nyxgpt release rc',
+        publish: 'nyxgpt release rc --publish',
+        install: 'pip install nyxgpt==3.0.0rc2',
+        user_data: 'nyxgpt cloud user-data --os linux --version 3.0.0rc2',
+        deploy: 'nyxgpt cloud deploy --version 3.0.0rc2',
+      },
+      guardrails: ['Dispatch-only: the workflow has no push, tag or release trigger.'],
+      docs: 'docs/cloud.md#release-candidates-acceptance-testing-unreleased-code',
+    });
+  }),
 ];

@@ -880,6 +880,105 @@ providers against a mocked boto3 client (no live AWS dependency); see
 
 ---
 
+## Release candidates: acceptance-testing unreleased code
+
+Every install path above pulls nyxGPT **from PyPI** -- `pip install nyxgpt`
+on a clean machine, `pip install nyxgpt==<version>` in the rendered
+[user-data bootstrap](#target-os-provisioning-p6-12-3511), the same pin in
+`nyxgpt cloud deploy`'s remote provisioning script. That is the whole point
+of the repo-less requirement, and it has one consequence: acceptance testing
+can only ever exercise code that has been *published*. Fix an acceptance
+failure, merge it to the release branch, and the clean-machine run still
+installs the last stable release, without the fix.
+
+A **release candidate** closes that gap (#3727). It publishes the
+release-branch tip to PyPI as a PEP 440 pre-release -- `3.0.0rc1`,
+`3.0.0rc2`, ... -- so a clean machine or a fresh EC2 instance can install
+exactly the tip, still with no checkout.
+
+An RC is for acceptance only. It is never announced, never a release, and
+never replaces the owner-run stable ceremony
+(`scripts/release_ceremony.sh` Phase 2, unchanged).
+
+### Cutting one
+
+```bash
+# What would be published, and whether the guardrails allow it here.
+nyxgpt release rc
+
+# Cut it: dispatches .github/workflows/release-candidate-pypi.yml on the
+# release branch. The RC number is the next unused one, read from PyPI.
+nyxgpt release rc --publish
+
+# Or a specific number, when a run failed after upload and you need to skip one.
+nyxgpt release rc --publish --rc-number 4
+```
+
+`nyxgpt release rc` reports the release line, which RCs PyPI already serves,
+the next candidate version, and -- if it cannot be cut from where you are --
+exactly why. The same report is on the SRE dashboard at
+**Admin → Portability & Acceptance**, read-only: publishing carries PyPI
+credentials, so it is a terminal command and a dispatch-only workflow, never
+a button.
+
+The workflow itself builds an sdist and a wheel from the tip with
+`pyproject.toml`'s version rewritten to the RC (build-time only -- the RC
+version is never committed), runs `twine check` and a clean-venv smoke
+install, publishes, and then polls pypi.org until it serves the new version.
+Dispatch it with `dry_run: true` to do everything except the upload.
+
+### Pointing an acceptance run at it
+
+The provisioning templates already pin exactly, so an RC needs no special
+handling -- pass it wherever a version goes:
+
+```bash
+pip install nyxgpt==3.0.0rc3
+nyxgpt cloud user-data --os linux --version 3.0.0rc3
+nyxgpt cloud deploy --version 3.0.0rc3
+```
+
+The exact `==` pin is what makes this work at all: pip excludes
+pre-releases from an unpinned requirement, so `pip install nyxgpt` keeps
+resolving to the latest **stable** release for every ordinary user, no
+matter how many RCs exist. (`pip install --pre nyxgpt` is the other way to
+opt in, if you want the newest RC without naming it.)
+
+### Guardrails
+
+| Guardrail | How it is enforced |
+| --- | --- |
+| Dispatch-only | The workflow has no `push`, `tag` or `release` trigger -- an RC is never cut by accident |
+| Release branches only | The version step runs `python -m nyxgpt.release_candidate`, which exits non-zero for any ref that is not `v<X.Y.Z>` matching `pyproject.toml`'s declared version |
+| Never a stable version | What is uploaded is always `<release>rcN` -- a pre-release, which default installs skip |
+| No number reuse | The next number comes from what PyPI already serves, and PyPI rejects a re-upload anyway |
+
+The branch check and the version arithmetic live in
+`src/nyxgpt/release_candidate.py` (unit-tested), not in the workflow's YAML,
+so CI and the CLI cannot drift apart about what `3.0.0rcN` means.
+
+### Owner setup (one-time)
+
+Publishing needs a credential on the repo side. Either option works; the
+workflow prefers the token when it is present.
+
+1. **Trusted Publishing (preferred, nothing stored).** On pypi.org, project
+   `nyxgpt` → *Publishing* → add a GitHub publisher: owner `dkblinux98`,
+   repository `nyxGPT`, workflow `release-candidate-pypi.yml`, environment
+   blank. The job's `id-token: write` permission mints the OIDC token; no
+   secret is ever stored in the repo.
+2. **API token.** Add a project-scoped PyPI token as the repo Actions secret
+   `PYPI_API_TOKEN`. If it is already in `config.ini` as `[pypi] PYPI_TOKEN`
+   (the ceremony's copy), `nyxgpt ops secrets-sync` can push it rather than
+   pasting a second copy into GitHub's settings.
+
+`nyxgpt release rc --publish` additionally needs `[github] pat`,
+`repo_owner` and `repo_name` in `config.ini` -- the same values
+`nyxgpt ops secrets-sync` already uses -- because it dispatches the workflow
+through the GitHub API.
+
+---
+
 ## How `allow-ip` and the Terraform module coexist
 
 `allow-ip` mutates the security group's port-22 ingress rule directly via the

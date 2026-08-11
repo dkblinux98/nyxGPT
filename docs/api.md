@@ -61,6 +61,7 @@ Quick reference of all 82 available endpoints:
 | `/api/v1/cloud/deploy/destroy` | POST | Close the tunnel and tear the deployment down (requires `{"confirm": true}`) |
 | `/api/v1/cloud/deploy/tunnel` | POST | Open or close (`{"action": "stop"}`) the SSH access tunnel |
 | `/api/v1/ops/portability` | GET | Repo-less portability matrix per deployment target, its mechanical checks and open gaps, plus the clean-machine acceptance sequence |
+| `/api/v1/ops/release-candidate` | GET | Release-candidate plan for the release branch: published RCs, the next RC version, guardrails, and the pinned commands that point an acceptance install at it |
 | `/api/v1/models` | GET | List Ollama models |
 | `/api/v1/models/pull` | POST | Pull model from Ollama |
 | `/api/v1/models/{model_name}` | DELETE | Delete model |
@@ -1689,6 +1690,67 @@ no subprocesses, no network, no AWS.
 | `targets[].acceptance_ready` | Checks passed *and* no open gap |
 | `checkout` | The checkout evidence was resolved against, or `""` when running from an installed package |
 | `acceptance_ready` | Every in-scope target is installable and operable without a checkout — the capstone's portability criterion in one boolean |
+
+---
+
+## Release candidate
+
+### `GET /api/v1/ops/release-candidate`
+
+Report the release-candidate plan (#3727) — the dashboard half of
+`nyxgpt release rc`. Every install in the portability matrix comes from PyPI,
+so acceptance testing can only reach code that has been published; a release
+candidate publishes the release-branch tip as a PEP 440 pre-release
+(`3.0.0rcN`) that a clean machine installs by exact pin. See
+[cloud.md](cloud.md#release-candidates-acceptance-testing-unreleased-code).
+
+Optional query parameter `branch` (default: `[github] RELEASE_BRANCH` from
+config.ini, else `v<declared version>`).
+
+Read-only, and there is deliberately no `POST` counterpart: cutting an RC
+publishes to PyPI with the owner's repo and PyPI credentials, so it lives in
+the dispatch-only workflow and in `nyxgpt release rc --publish` — never behind
+a button a browser session could press. The endpoint makes one outbound call,
+to PyPI's JSON API, to learn which RCs already exist; a failed lookup is
+reported in `pypi_lookup_error` and clears `publishable` rather than failing
+the request.
+
+```json
+{
+  "branch": "v3.0.0",
+  "is_release_branch": true,
+  "branch_version": "3.0.0",
+  "declared_version": "3.0.0",
+  "version_matches_branch": true,
+  "release": "3.0.0",
+  "published_releases": ["2.1.0", "3.0.0"],
+  "published_rcs": ["3.0.0rc1", "3.0.0rc2"],
+  "next_rc_number": 3,
+  "next_rc_version": "3.0.0rc3",
+  "is_prerelease": true,
+  "workflow": "release-candidate-pypi.yml",
+  "pypi_lookup_error": "",
+  "publishable": true,
+  "blockers": [],
+  "commands": {
+    "plan": "nyxgpt release rc",
+    "publish": "nyxgpt release rc --publish",
+    "install": "pip install nyxgpt==3.0.0rc3",
+    "user_data": "nyxgpt cloud user-data --os linux --version 3.0.0rc3",
+    "deploy": "nyxgpt cloud deploy --version 3.0.0rc3"
+  },
+  "guardrails": ["Dispatch-only: ..."],
+  "docs": "docs/cloud.md#release-candidates-acceptance-testing-unreleased-code"
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `next_rc_version` | The version the publish workflow would upload — derived from what PyPI already serves, so a number is never reused |
+| `is_prerelease` | Always `true`: what gets published is a PEP 440 pre-release, so `pip install nyxgpt` cannot resolve to it |
+| `publishable` | The guardrails allow cutting an RC from `branch` (release branch, matching the declared version, PyPI reachable) |
+| `blockers` | Why it isn't publishable, one human-readable reason each |
+| `pypi_lookup_error` | Non-empty when PyPI could not be reached, which makes the next RC number a guess and blocks publishing |
 
 ---
 
