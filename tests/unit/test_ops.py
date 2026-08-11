@@ -10276,11 +10276,40 @@ def test_down_terraform_cache_prune_failure_is_non_fatal(monkeypatch):
 
 
 @pytest.mark.unit
-def test_ensure_kubectl_and_cluster_missing_kubectl(monkeypatch):
-    monkeypatch.setattr(ops, "_which", lambda prog: None)
+def test_ensure_kubectl_and_cluster_installs_missing_kubectl(monkeypatch):
+    """#3724: a missing kubectl is installed, not handed back to the operator."""
+    installed = {"kubectl": False}
+
+    def fake_which(prog):
+        if prog == "kubectl":
+            return "/tmp/bin/kubectl" if installed["kubectl"] else None
+        return "/usr/local/bin/" + prog if prog in ("kind", "docker") else None
+
+    def fake_ensure_kubectl():
+        installed["kubectl"] = True
+        return [ops.OpsResult(True, "Installed kubectl into /tmp/bin")]
+
+    monkeypatch.setattr(ops, "_which", fake_which)
+    monkeypatch.setattr(ops, "_ensure_kubectl_binary", fake_ensure_kubectl)
+    monkeypatch.setattr(ops, "_run", lambda cmd, check=True, **_k: CP(returncode=0))
     results = ops._ensure_kubectl_and_cluster()
-    assert results[0].ok is False
-    assert "kubectl not found" in results[0].message
+    assert all(r.ok for r in results)
+    assert any("Installed kubectl" in r.message for r in results)
+    assert any("Kubernetes cluster reachable" in r.message for r in results)
+
+
+@pytest.mark.unit
+def test_ensure_kubectl_and_cluster_reports_kubectl_install_failure(monkeypatch):
+    """When kubectl genuinely can't be installed, the failure is surfaced with a link."""
+    monkeypatch.setattr(ops, "_which", lambda prog: None)
+    monkeypatch.setattr(
+        ops,
+        "_ensure_kubectl_binary",
+        lambda: [ops.OpsResult(False, "kubectl is missing and nyxgpt could not download it", "x")],
+    )
+    results = ops._ensure_kubectl_and_cluster()
+    assert results[-1].ok is False
+    assert "kubectl" in results[-1].message
 
 
 @pytest.mark.unit
@@ -10295,19 +10324,68 @@ def test_ensure_kubectl_and_cluster_reachable(monkeypatch):
 
 
 @pytest.mark.unit
-def test_ensure_kubectl_and_cluster_unreachable_no_kind(monkeypatch):
-    """No cluster reachable and kind isn't installed -- actionable error, no raw-tool
+def test_ensure_kubectl_and_cluster_installs_missing_kind(monkeypatch):
+    """#3724: no cluster reachable and kind missing -- kind is installed and the
+    cluster provisioned, instead of asking the operator to install kind first."""
+    installed = {"kind": False}
+
+    def fake_which(prog):
+        if prog == "kind":
+            return "/tmp/bin/kind" if installed["kind"] else None
+        return "/usr/local/bin/" + prog if prog in ("kubectl", "docker") else None
+
+    def fake_ensure_kind():
+        installed["kind"] = True
+        return [ops.OpsResult(True, "Installed kind into /tmp/bin")]
+
+    calls = []
+
+    def fake_run(cmd, check=True, **_k):
+        calls.append(cmd)
+        if cmd[:2] == ["kubectl", "cluster-info"]:
+            return CP(returncode=1 if calls.count(cmd) == 1 else 0, stderr="refused")
+        if cmd[:3] == ["kind", "get", "clusters"]:
+            return CP(returncode=0, stdout="")
+        if cmd[:3] == ["kind", "create", "cluster"]:
+            return CP(returncode=0, stdout="created")
+        if cmd[:3] == ["kubectl", "config", "current-context"]:
+            return CP(returncode=0, stdout=ops.KIND_CONTEXT)
+        raise AssertionError(f"unexpected: {cmd}")
+
+    monkeypatch.setattr(ops, "_which", fake_which)
+    monkeypatch.setattr(ops, "_ensure_kind_binary", fake_ensure_kind)
+    monkeypatch.setattr(ops, "_run", fake_run)
+    results = ops._ensure_kubectl_and_cluster()
+    assert all(r.ok for r in results)
+    assert any("Installed kind" in r.message for r in results)
+    assert ["kind", "create", "cluster", "--name", "nyxgpt-local", "--wait", "60s"] in calls
+
+
+@pytest.mark.unit
+def test_ensure_kubectl_and_cluster_reports_kind_install_failure(monkeypatch):
+    """If kind truly can't be installed, the error links to the installer -- no raw-tool
     instructions (CLAUDE.md's Operational Command Wrapping rule)."""
     monkeypatch.setattr(
         ops, "_which", lambda prog: "/usr/local/bin/kubectl" if prog == "kubectl" else None
     )
     monkeypatch.setattr(
+        ops,
+        "_ensure_kind_binary",
+        lambda: [
+            ops.OpsResult(
+                False,
+                "kind is missing and nyxgpt could not download it",
+                "Install it manually: https://kind.sigs.k8s.io/#installation",
+            )
+        ],
+    )
+    monkeypatch.setattr(
         ops, "_run", lambda cmd, check=True, **_k: CP(returncode=1, stderr="refused")
     )
     results = ops._ensure_kubectl_and_cluster()
-    assert results[0].ok is False
-    assert "kind is not installed" in results[0].message
-    assert "Install kind" in results[0].details
+    assert results[-1].ok is False
+    assert "could not download it" in results[-1].message
+    assert "kind.sigs.k8s.io" in results[-1].details
 
 
 @pytest.mark.unit
@@ -10408,6 +10486,232 @@ def test_ensure_kubectl_and_cluster_provision_failure_reported(monkeypatch):
     results = ops._ensure_kubectl_and_cluster()
     assert results[-1].ok is False
     assert "kind create cluster" in results[-1].message
+
+
+# --- Kubernetes: CLI tool auto-install (#3724) ---
+
+
+@pytest.mark.unit
+def test_tool_platform_maps_supported_hosts(monkeypatch):
+    monkeypatch.setattr(ops.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(ops.platform, "machine", lambda: "arm64")
+    assert ops._tool_platform() == ("darwin", "arm64")
+    monkeypatch.setattr(ops.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(ops.platform, "machine", lambda: "x86_64")
+    assert ops._tool_platform() == ("linux", "amd64")
+
+
+@pytest.mark.unit
+def test_tool_platform_none_on_unsupported_host(monkeypatch):
+    monkeypatch.setattr(ops.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(ops.platform, "machine", lambda: "AMD64")
+    assert ops._tool_platform() is None
+
+
+@pytest.mark.unit
+def test_ensure_nyxgpt_bin_on_path_is_idempotent(monkeypatch, tmp_path):
+    bin_dir = tmp_path / "bin"
+    monkeypatch.setattr(ops, "NYXGPT_BIN_DIR", bin_dir)
+    monkeypatch.setenv("PATH", "/usr/bin")
+    assert ops._ensure_nyxgpt_bin_on_path() == bin_dir
+    assert os.environ["PATH"].split(os.pathsep)[0] == str(bin_dir)
+    ops._ensure_nyxgpt_bin_on_path()
+    assert os.environ["PATH"].split(os.pathsep).count(str(bin_dir)) == 1
+
+
+class _FakeStream:
+    """Minimal stand-in for the context manager `httpx.stream` returns."""
+
+    def __init__(self, chunks=(b"binary",), error=None):
+        self._chunks = chunks
+        self._error = error
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def raise_for_status(self):
+        if self._error is not None:
+            raise self._error
+
+    def iter_bytes(self):
+        yield from self._chunks
+
+
+@pytest.mark.unit
+def test_download_tool_binary_writes_executable(monkeypatch, tmp_path):
+    bin_dir = tmp_path / "bin"
+    monkeypatch.setattr(ops, "NYXGPT_BIN_DIR", bin_dir)
+    monkeypatch.setattr(ops.httpx, "stream", lambda *a, **k: _FakeStream((b"ki", b"nd")))
+    ok, details = ops._download_tool_binary("kind", "https://example.invalid/kind")
+    assert ok is True
+    dest = bin_dir / "kind"
+    assert dest.read_bytes() == b"kind"
+    assert os.access(dest, os.X_OK)
+    assert "https://example.invalid/kind" in details
+
+
+@pytest.mark.unit
+def test_download_tool_binary_cleans_up_on_failure(monkeypatch, tmp_path):
+    """A failed download leaves no partial (and never an executable) binary behind."""
+    bin_dir = tmp_path / "bin"
+    monkeypatch.setattr(ops, "NYXGPT_BIN_DIR", bin_dir)
+    monkeypatch.setattr(
+        ops.httpx,
+        "stream",
+        lambda *a, **k: _FakeStream(error=httpx.HTTPError("404 not found")),
+    )
+    ok, details = ops._download_tool_binary("kind", "https://example.invalid/kind")
+    assert ok is False
+    assert "HTTPError" in details
+    assert not (bin_dir / "kind").exists()
+    assert list(bin_dir.glob(".*download")) == []
+
+
+@pytest.mark.unit
+def test_kubectl_download_url_uses_stable_version(monkeypatch):
+    monkeypatch.setattr(
+        ops.httpx,
+        "get",
+        lambda *a, **k: httpx.Response(200, text="v1.31.0\n", request=httpx.Request("GET", a[0])),
+    )
+    url = ops._kubectl_download_url("linux", "arm64")
+    assert url == "https://dl.k8s.io/release/v1.31.0/bin/linux/arm64/kubectl"
+
+
+@pytest.mark.unit
+def test_ensure_cli_tool_noop_when_already_installed(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/kind")
+    monkeypatch.setattr(
+        ops, "_run", lambda *a, **k: pytest.fail("must not install an already-present tool")
+    )
+    results = ops._ensure_kind_binary()
+    assert results[0].ok is True
+    assert "already installed" in results[0].message
+
+
+@pytest.mark.unit
+def test_ensure_cli_tool_installs_via_brew(monkeypatch):
+    """Homebrew is preferred when present so the tool stays operator-upgradable."""
+    state = {"installed": False}
+
+    def fake_which(prog):
+        if prog == "brew":
+            return "/opt/homebrew/bin/brew"
+        if prog == "kind":
+            return "/opt/homebrew/bin/kind" if state["installed"] else None
+        return None
+
+    calls = []
+
+    def fake_run(cmd, check=True, **_k):
+        calls.append(cmd)
+        state["installed"] = True
+        return CP(returncode=0, stdout="poured")
+
+    monkeypatch.setattr(ops, "_which", fake_which)
+    monkeypatch.setattr(ops, "_run", fake_run)
+    results = ops._ensure_kind_binary()
+    assert results[0].ok is True
+    assert "via Homebrew" in results[0].message
+    assert calls == [["brew", "install", "kind"]]
+
+
+@pytest.mark.unit
+def test_ensure_cli_tool_downloads_when_no_brew(monkeypatch, tmp_path):
+    """The Linux/no-Homebrew path: fetch the official release binary into ~/.nyxGPT/bin."""
+    state = {"installed": False}
+    monkeypatch.setattr(
+        ops,
+        "_which",
+        lambda prog: (
+            (tmp_path / "kind").as_posix() if prog == "kind" and state["installed"] else None
+        ),
+    )
+    monkeypatch.setattr(ops, "_tool_platform", lambda: ("linux", "amd64"))
+    downloaded = {}
+
+    def fake_download(name, url):
+        downloaded["name"], downloaded["url"] = name, url
+        state["installed"] = True
+        return True, f"downloaded {url}"
+
+    monkeypatch.setattr(ops, "_download_tool_binary", fake_download)
+    results = ops._ensure_kind_binary()
+    assert results[0].ok is True
+    assert "Installed kind into" in results[0].message
+    assert downloaded["name"] == "kind"
+    assert downloaded["url"] == (
+        "https://github.com/kubernetes-sigs/kind/releases/latest/download/kind-linux-amd64"
+    )
+
+
+@pytest.mark.unit
+def test_ensure_cli_tool_falls_back_to_download_when_brew_fails(monkeypatch):
+    """A broken/absent formula doesn't strand the install -- the direct download still runs."""
+    state = {"installed": False}
+
+    def fake_which(prog):
+        if prog == "brew":
+            return "/opt/homebrew/bin/brew"
+        if prog == "kind":
+            return "/tmp/bin/kind" if state["installed"] else None
+        return None
+
+    def fake_download(name, url):
+        state["installed"] = True
+        return True, f"downloaded {url}"
+
+    monkeypatch.setattr(ops, "_which", fake_which)
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, check=True, **_k: CP(returncode=1, stderr="No available formula")
+    )
+    monkeypatch.setattr(ops, "_tool_platform", lambda: ("darwin", "arm64"))
+    monkeypatch.setattr(ops, "_download_tool_binary", fake_download)
+    results = ops._ensure_kind_binary()
+    assert results[0].ok is True
+    assert "No available formula" in results[0].details
+
+
+@pytest.mark.unit
+def test_ensure_cli_tool_reports_download_failure_with_manual_link(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda prog: None)
+    monkeypatch.setattr(ops, "_tool_platform", lambda: ("linux", "amd64"))
+    monkeypatch.setattr(ops, "_download_tool_binary", lambda name, url: (False, "boom"))
+    results = ops._ensure_kubectl_binary()
+    assert results[0].ok is False
+    assert "could not download it" in results[0].message
+    assert "https://kubernetes.io/docs/tasks/tools/" in results[0].details
+
+
+@pytest.mark.unit
+def test_ensure_cli_tool_reports_url_resolution_failure(monkeypatch):
+    """kubectl's stable-version lookup failing is reported, not raised."""
+    monkeypatch.setattr(ops, "_which", lambda prog: None)
+    monkeypatch.setattr(ops, "_tool_platform", lambda: ("linux", "amd64"))
+
+    def boom(system, arch):
+        raise httpx.ConnectError("dns failure")
+
+    monkeypatch.setattr(ops, "_kubectl_download_url", boom)
+    results = ops._ensure_kubectl_binary()
+    assert results[0].ok is False
+    assert "ConnectError" in results[0].details
+
+
+@pytest.mark.unit
+def test_ensure_cli_tool_unsupported_platform(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda prog: None)
+    monkeypatch.setattr(ops, "_tool_platform", lambda: None)
+    monkeypatch.setattr(
+        ops, "_download_tool_binary", lambda name, url: pytest.fail("no asset to download")
+    )
+    results = ops._ensure_kind_binary()
+    assert results[0].ok is False
+    assert "cannot install it here" in results[0].message
+    assert "https://kind.sigs.k8s.io/#installation" in results[0].details
 
 
 # --- Kubernetes: _build_and_load_k8s_image ---

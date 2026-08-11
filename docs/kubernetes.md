@@ -36,19 +36,40 @@ nyxgpt ops install --kubernetes --local
 Per the project's [Operational Command Wrapping](../CLAUDE.md) rule, this is
 the supported way to bring this deployment up — no raw `docker build`/
 `kubectl`/`kind` commands required, and **no pre-existing cluster is
-required either** (#3596). It wraps the whole documented flow below into one
-step: checks `kubectl` is on PATH, then checks whether kubectl's current
-context already reaches a cluster --
+required either** (#3596), and **no pre-installed `kubectl`/`kind` either**
+(#3724). It wraps the whole documented flow below into one step: makes sure
+`kubectl` is available (installing it if it isn't — see [CLI tools nyxgpt
+installs for you](#cli-tools-nyxgpt-installs-for-you)), then checks whether
+kubectl's current context already reaches a cluster --
 
 - **A cluster is already reachable** (minikube, Docker Desktop, an existing
   kind cluster, a remote context, ...): that cluster is used as-is, exactly
   like before -- bring-your-own remains fully supported.
-- **No cluster is reachable**: provisions a local [kind](https://kind.sigs.k8s.io/)
-  cluster named `nyxgpt-local` (owner decision 2026-08-03) -- reusing it on
-  later runs instead of recreating it. `kind` and Docker are the two real
-  prerequisites this can't install for you; if either is missing, the command
-  fails with an actionable error pointing at where to install it, rather than
-  a raw command to run yourself.
+- **No cluster is reachable**: installs [kind](https://kind.sigs.k8s.io/) if
+  it's missing, then provisions a local kind cluster named `nyxgpt-local`
+  (owner decision 2026-08-03) -- reusing it on later runs instead of
+  recreating it. Docker is the one real prerequisite this can't install for
+  you (it needs a privileged system install / Docker Desktop); if it's
+  missing, the command fails with an actionable error pointing at where to
+  install it, rather than a raw command to run yourself.
+
+### CLI tools nyxgpt installs for you
+
+`kubectl` and `kind` are provisioned automatically when they're missing
+(#3724) — you never have to install them yourself first:
+
+1. Via **Homebrew**, when `brew` is available, so the tool stays upgradable
+   through your own package manager.
+2. Otherwise (or if the formula fails) by downloading the **official release
+   binary** — kind's latest GitHub release asset, kubectl's current stable
+   build — into `~/.nyxGPT/bin`, which nyxgpt puts on `PATH` for the run that
+   installs it and for every later `nyxgpt ops` invocation. No `sudo` is
+   needed at any point.
+
+Add `~/.nyxGPT/bin` to your own shell `PATH` if you want to run `kubectl`
+directly outside of `nyxgpt ops`. Only when neither path can supply the tool
+(an unsupported platform, or no network) does the command fail, and then with
+a link to the installer.
 
 It then builds `nyxgpt-api:local` and `nyxgpt-web:local` and loads each into
 the cluster's image cache (kind/minikube get an explicit load step; Docker
@@ -100,13 +121,16 @@ expected to type by hand.
 
 ## Prerequisites
 
-- `kubectl` (with `kustomize` support, built in since 1.14)
-- Docker (to build the image, and to run `kind`'s cluster nodes as containers)
-- [kind](https://kind.sigs.k8s.io/#installation) -- only needed if you want
-  `nyxgpt ops install --kubernetes --local` to provision a cluster for you.
-  If you already have a reachable cluster (minikube, Docker Desktop's
-  built-in cluster, an existing kind cluster, or anything else `kubectl`'s
-  current context points at), that's used as-is and `kind` is never invoked.
+- Docker (to build the image, and to run `kind`'s cluster nodes as
+  containers) -- the one prerequisite you install yourself
+- `kubectl` (with `kustomize` support, built in since 1.14) -- installed for
+  you by `nyxgpt ops install --kubernetes --local` if it's missing (#3724)
+- [kind](https://kind.sigs.k8s.io/#installation) -- also installed for you,
+  and only needed if you want `nyxgpt ops install --kubernetes --local` to
+  provision a cluster. If you already have a reachable cluster (minikube,
+  Docker Desktop's built-in cluster, an existing kind cluster, or anything
+  else `kubectl`'s current context points at), that's used as-is and `kind`
+  is never installed or invoked.
 - The [metrics-server](https://github.com/kubernetes-sigs/metrics-server) addon, required for the HorizontalPodAutoscaler to read CPU usage
   - minikube: `minikube addons enable metrics-server`
   - kind: `kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml` (add `--kubelet-insecure-tls` to the container args for local clusters without valid kubelet certs)
