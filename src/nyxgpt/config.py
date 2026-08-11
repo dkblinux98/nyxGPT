@@ -1367,6 +1367,34 @@ def grafana_admin_password_path() -> Path:
     return Path.home() / ".nyxGPT" / "secrets" / "grafana-admin-password"
 
 
+def read_grafana_admin_password(cfg: ConfigParser) -> tuple[str, str]:
+    """Read the already-resolvable Grafana admin password as `(password, source)`.
+
+    The read-only half of `resolve_grafana_admin_password`'s lookup order,
+    factored out so `nyxgpt ops credentials` (#3718) can *report* the
+    password an operator should log in with -- and where it came from --
+    without the generate-and-persist side effect. When nothing is resolvable
+    yet, returns `("", "")`: printing a freshly minted secret no running
+    Grafana has ever been reconciled to would be a confidently wrong answer,
+    so the caller tells the operator to run `nyxgpt ops install` instead.
+
+    `source` is a human-readable provenance string for the value returned --
+    the config.ini key for a deliberate override, else the secret file's
+    path.
+    """
+    configured = get_monitoring_grafana_admin_password(cfg).strip()
+    if configured:
+        return configured, "config.ini [monitoring] grafana_admin_password"
+
+    path = grafana_admin_password_path()
+    if path.exists():
+        existing = path.read_text().strip()
+        if existing:
+            return existing, str(path)
+
+    return "", ""
+
+
 def resolve_grafana_admin_password(cfg: ConfigParser) -> str:
     """Resolve the Grafana admin password the same way `nyxgpt ops` reconciles
     the container to it.
@@ -1379,18 +1407,15 @@ def resolve_grafana_admin_password(cfg: ConfigParser) -> str:
 
     Shared between `ops.py` (install-time reconciliation) and `health.py`
     (reading Grafana's real alert state) so both resolve the same password
-    the same way instead of drifting apart (#3466).
+    the same way instead of drifting apart (#3466). The lookup itself lives
+    in `read_grafana_admin_password`; what this adds is the generate-once
+    write, so only the call sites that are entitled to mint a secret do.
     """
-    configured = get_monitoring_grafana_admin_password(cfg).strip()
-    if configured:
-        return configured
+    existing, _source = read_grafana_admin_password(cfg)
+    if existing:
+        return existing
 
     path = grafana_admin_password_path()
-    if path.exists():
-        existing = path.read_text().strip()
-        if existing:
-            return existing
-
     password = secrets.token_urlsafe(24)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     path.write_text(password)
@@ -1769,6 +1794,7 @@ __all__ = [
     "get_monitoring_config",
     "get_monitoring_grafana_admin_password",
     "grafana_admin_password_path",
+    "read_grafana_admin_password",
     "resolve_grafana_admin_password",
     "get_monitoring_slack_webhook_url",
     "get_monitoring_slack_bot_token",

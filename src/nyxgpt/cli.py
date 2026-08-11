@@ -2101,6 +2101,29 @@ def cli(argv: list[str] | None = None) -> int:
         "--tail", type=int, default=200, help="Number of trailing log lines to show (default: 200)"
     )
 
+    # `ops credentials` (#3718): the wrapped replacement for `ssh` + `cat`ing
+    # the Grafana secret file / GlitchTip config.ini values by hand. Local
+    # stdout only -- these stay out of the HTTP API by design (#3458/#3466).
+    ops_credentials = ops_sub.add_parser(
+        "credentials",
+        help=(
+            "Print the Grafana and GlitchTip admin logins for the stack on this "
+            "machine (never exposed over the API -- CLI only)"
+        ),
+    )
+    ops_credentials.add_argument(
+        "--service",
+        choices=["all", *ops_mod.CREDENTIAL_SERVICES],
+        default="all",
+        help="Limit output to one service (default: all)",
+    )
+    ops_credentials.add_argument(
+        "--config", help="Path to config.ini (default: ~/.nyxGPT/config.ini)"
+    )
+    ops_credentials.add_argument(
+        "--json", action="store_true", help="Emit JSON instead of the labeled text blocks"
+    )
+
     ops_glitchtip_init = ops_sub.add_parser(
         "glitchtip-init",
         help=(
@@ -2635,6 +2658,28 @@ def cli(argv: list[str] | None = None) -> int:
         help="Report whether a background tunnel is open, and what it forwards",
     )
 
+    # `cloud credentials` (#3718): the workstation-side counterpart of
+    # `nyxgpt ops credentials`, reading the deployment's observability logins
+    # over the same wrapped SSH access path -- so signing into Grafana or
+    # GlitchTip behind the tunnel never needs a hand-rolled `ssh` + `cat`.
+    cloud_credentials_p = cloud_sub.add_parser(
+        "credentials",
+        help=(
+            "Print the deployment's Grafana and GlitchTip admin logins, read over the "
+            "wrapped SSH access path (no manual ssh)"
+        ),
+    )
+    _add_ssh_access_flags(cloud_credentials_p)
+    cloud_credentials_p.add_argument(
+        "--service",
+        choices=["all", *ops_mod.CREDENTIAL_SERVICES],
+        default="all",
+        help="Limit output to one service (default: all)",
+    )
+    cloud_credentials_p.add_argument(
+        "--json", action="store_true", help="Emit JSON instead of the labeled text blocks"
+    )
+
     # `cloud smoke` -- the cloud counterpart of scripts/smoke-test.sh (P6-17,
     # #3515). Deploys, verifies chat/RAG/observability over the access tunnel,
     # and always tears the deployment down again -- on failure as well as on
@@ -2967,6 +3012,8 @@ def cli(argv: list[str] | None = None) -> int:
             return ops_mod.secrets_sync(args)
         if args.ops_cmd == "logs":
             return ops_mod.logs(args)
+        if args.ops_cmd == "credentials":
+            return ops_mod.credentials(args)
         if args.ops_cmd == "glitchtip-init":
             return ops_mod.glitchtip_init(args)
         if args.ops_cmd == "alert-test":
@@ -2997,7 +3044,7 @@ def cli(argv: list[str] | None = None) -> int:
     if cmd == "cloud" and args.cloud_cmd == "state":
         return cloud_state_mod.state_command(args)
 
-    if cmd == "cloud" and args.cloud_cmd in ("deploy", "destroy", "tunnel"):
+    if cmd == "cloud" and args.cloud_cmd in ("deploy", "destroy", "tunnel", "credentials"):
         return cloud_deploy_mod.deploy_command(args)
 
     if cmd == "cloud" and args.cloud_cmd == "smoke":

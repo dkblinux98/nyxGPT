@@ -60,6 +60,15 @@ fresh volume and an existing long-lived one, instead of depending on
 `GF_SECURITY_ADMIN_PASSWORD`, which Grafana only honors on first boot
 (#3458).
 
+To actually log into Grafana (or GlitchTip, whose admin credentials
+`nyxgpt ops glitchtip-init` provisions into config.ini), run `nyxgpt ops
+credentials` on the machine running the stack, or `nyxgpt cloud
+credentials` for a deployment — it prints each password from whichever
+source applies. Neither value is ever returned by an HTTP API endpoint
+(#3458/#3466), so this CLI path is the only way to read them, and it
+replaces SSHing to a box to `cat` the secret file by hand (#3718). See
+[`docs/ops.md`](ops.md#nyxgpt-ops-credentials).
+
 **Best practices:**
 
 - **Generate strong, random keys.** For the API auth key:
