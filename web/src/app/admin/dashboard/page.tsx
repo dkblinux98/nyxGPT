@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import LoadingSpinner from '../../../components/LoadingSpinner';
 import ErrorMessage from '../../../components/ErrorMessage';
 import QueryCacheStatsPanel from '../../../components/QueryCacheStatsPanel';
+import ObservabilityCredentialsHint from '../../../components/ObservabilityCredentialsHint';
 import { ADMIN_NAV, grafanaSreHomeUrl } from './nav';
 
 type OverviewData = {
@@ -428,6 +429,9 @@ export default function AdminDashboardPage() {
                       />
                     ))}
                   </div>
+                  {/* The SRE Overview tile above opens Grafana, which asks for
+                      a login the API is not allowed to hand out (#3718). */}
+                  <ObservabilityCredentialsHint />
                 </div>
               );
             })()

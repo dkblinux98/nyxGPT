@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import LoadingSpinner from '../../../components/LoadingSpinner';
 import ErrorMessage from '../../../components/ErrorMessage';
+import ObservabilityCredentialsHint from '../../../components/ObservabilityCredentialsHint';
 import { exploreQueryUrl } from '../../../lib/grafanaExplore';
 
 type Component = {
@@ -271,6 +272,8 @@ export default function SelfHealPage() {
               </a>
             )}
           </div>
+          {/* Both links land on Grafana's login form (#3718). */}
+          <ObservabilityCredentialsHint services="Grafana" />
         </div>
       )}
 
