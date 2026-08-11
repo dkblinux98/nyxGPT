@@ -18,4 +18,11 @@ scrape_configs:
       # stack is used (Docker Desktop routes host.docker.internal to
       # host-published ports; on plain Linux engines the compose file maps
       # host.docker.internal via extra_hosts: host-gateway).
+      #
+      # On plain Linux that mapping resolves to the docker bridge gateway,
+      # which a loopback-bound native uvicorn does NOT listen on -- so the
+      # compose file also runs `host-api-relay` there, listening on that same
+      # gateway address and forwarding to the host's 127.0.0.1 (#3721). That
+      # keeps this target correct on every platform without widening
+      # `[api] host` to 0.0.0.0.
       - targets: ["host.docker.internal:8000"]

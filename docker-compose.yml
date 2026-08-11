@@ -208,6 +208,42 @@ services:
       retries: 10
       start_period: 20s
 
+  # Linux-only bridge->loopback relay for the *native* API (#3721).
+  #
+  # On Docker Desktop (macOS) `host.docker.internal` is proxied by the VM and
+  # reaches services bound to the host's 127.0.0.1, so prometheus can scrape a
+  # brew-managed `nyxgpt-api` directly. On a plain Linux engine it cannot:
+  # `host.docker.internal:host-gateway` resolves to the docker bridge gateway
+  # (an address *on* the host, e.g. 172.17.0.1), and a uvicorn bound to
+  # 127.0.0.1 does not listen there. The scrape then fails with "connection
+  # refused" and every Grafana panel stays empty.
+  #
+  # The obvious workaround -- setting `[api] host = 0.0.0.0` -- publishes the
+  # API on every interface (LAN, VPN, public Wi-Fi) and trips the P6-1
+  # bind-security gate in app.py, forcing auth on too. This relay is the
+  # narrow version of that: it shares the host's network namespace, listens
+  # ONLY on the docker bridge gateway address, and forwards to the host's own
+  # loopback. Reachable from containers, unreachable from the LAN, and the API
+  # itself stays loopback-only.
+  #
+  # `nyxgpt ops install` / `nyxgpt ops observability` decide whether this runs:
+  # they set NYXGPT_HOST_RELAY_PROFILE=monitoring and NYXGPT_HOST_GATEWAY_IP in
+  # .env on Linux (and only when `[api] host` is still loopback), and leave the
+  # profile at its inert `disabled` default everywhere else -- so this service
+  # is invisible to `docker compose --profile monitoring` on macOS.
+  host-api-relay:
+    image: alpine/socat:1.8.0.3
+    restart: unless-stopped
+    profiles:
+      - ${NYXGPT_HOST_RELAY_PROFILE:-disabled}
+    # Required: only a container in the host's own network namespace can
+    # connect to the host's 127.0.0.1. It publishes no ports of its own --
+    # `bind=` below is what limits the listener to the bridge gateway.
+    network_mode: host
+    command:
+      - TCP-LISTEN:${NYXGPT_API_PORT:-8000},fork,reuseaddr,bind=${NYXGPT_HOST_GATEWAY_IP:-127.0.0.1}
+      - TCP:127.0.0.1:${NYXGPT_API_PORT:-8000}
+
   grafana:
     image: grafana/grafana:13.1.1
     restart: unless-stopped
