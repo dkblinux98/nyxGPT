@@ -997,6 +997,68 @@ def _print_deploy_summary(result: dict[str, Any]) -> None:
     )
 
 
+def remote_credentials(target: DeployTarget, service: str = "all") -> list[dict[str, Any]]:
+    """Read the deployment's Grafana/GlitchTip admin logins over wrapped SSH.
+
+    Runs the instance's own `nyxgpt ops credentials --json` (#3718) through
+    the same `run_remote` path every other deploy step uses, so an operator
+    never hand-rolls `ssh` + `cat` to sign into the observability UIs behind
+    the tunnel. `nyxgpt ops credentials` exits 2 when a service has no
+    provisioned password yet, which is a perfectly reportable answer -- the
+    per-service `remediation` text says what to run -- so only an unparseable
+    or transport-level failure raises here.
+    """
+    remote = (
+        f'"$HOME/.nyxGPT/venv/bin/nyxgpt" ops credentials --json --service {shlex.quote(service)}'
+    )
+    completed = run_remote(target, remote, timeout=120)
+    stdout = completed.stdout or ""
+    try:
+        parsed = json.loads(stdout[stdout.index("[") :])
+    except (ValueError, json.JSONDecodeError) as exc:
+        detail = (completed.stderr or "").strip() or stdout.strip() or "no output"
+        raise CloudCommandError(
+            f"Could not read credentials from {target.host}: {detail}. The instance may "
+            "predate `nyxgpt ops credentials` -- `nyxgpt cloud deploy` upgrades it."
+        ) from exc
+    return [dict(item) for item in parsed]
+
+
+def _print_credentials(creds: list[dict[str, Any]]) -> None:
+    """Print remote credential records in the same shape as the local command."""
+    blocks: list[str] = []
+    for cred in creds:
+        lines = [str(cred.get("service", ""))]
+        if cred.get("url"):
+            lines.append(f"  URL:      {cred['url']}")
+        lines.append(f"  Username: {cred.get('username', '')}")
+        if cred.get("available"):
+            lines.append(f"  Password: {cred.get('password', '')}")
+            lines.append(f"  Source:   {cred.get('source', '')} (on the instance)")
+        else:
+            lines.append("  Password: (not provisioned)")
+            lines.append(f"  Fix:      {cred.get('remediation', '')}")
+        blocks.append("\n".join(lines))
+    print("\n\n".join(blocks))
+
+
+def _credentials_command(args: argparse.Namespace) -> int:
+    """`nyxgpt cloud credentials` entry point.
+
+    Note the URLs printed are the instance's own loopback URLs; they are
+    reachable from the workstation once `nyxgpt cloud tunnel` is open, which
+    is the same wrapped access path the dashboard links assume.
+    """
+    target = resolve_target(args)
+    creds = remote_credentials(target, service=getattr(args, "service", "all") or "all")
+    if getattr(args, "json", False):
+        print(json.dumps(creds, indent=2))
+    else:
+        _print_credentials(creds)
+        print("\nReach these URLs with `nyxgpt cloud tunnel`.")
+    return 0 if all(c.get("available") for c in creds) else 2
+
+
 def _tunnel_command(args: argparse.Namespace) -> int:
     """`nyxgpt cloud tunnel` entry point."""
     if getattr(args, "stop", False):
@@ -1022,7 +1084,7 @@ def _tunnel_command(args: argparse.Namespace) -> int:
 
 
 def deploy_command(args: argparse.Namespace) -> int:
-    """`nyxgpt cloud {deploy,destroy,tunnel}` entry point."""
+    """`nyxgpt cloud {deploy,destroy,tunnel,credentials}` entry point."""
     subcommand = getattr(args, "cloud_cmd", "")
     try:
         if subcommand == "deploy":
@@ -1042,6 +1104,8 @@ def deploy_command(args: argparse.Namespace) -> int:
             print("Cloud deployment destroyed (tunnel closed, substrate torn down).")
         elif subcommand == "tunnel":
             return _tunnel_command(args)
+        elif subcommand == "credentials":
+            return _credentials_command(args)
         else:  # pragma: no cover - argparse enforces the choices
             raise CloudCommandError(f"Unknown `nyxgpt cloud` subcommand {subcommand!r}")
     except CloudCommandError as exc:

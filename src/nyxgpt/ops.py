@@ -50,6 +50,7 @@ from nyxgpt.config import (
     get_tracing_config,
     get_tracing_enabled,
     grafana_admin_password_path,
+    read_grafana_admin_password,
     resolve_grafana_admin_password,
 )
 from nyxgpt.logging import get_correlation_id
@@ -8870,6 +8871,198 @@ def glitchtip_init(args: Any) -> int:
         "ops: glitchtip-init %s",
         "succeeded" if ok else "failed",
         extra={"component": "ops", "action": "glitchtip-init", "ok": ok},
+    )
+    return 0 if ok else 2
+
+
+# --- Wrapped credential retrieval (`nyxgpt ops credentials`, #3718) ---
+#
+# Both observability UIs behind the SRE dashboard have admin credentials
+# that are deliberately never exposed over the HTTP API (#3458/#3466), and
+# until now had no wrapped way to read them either -- so logging into
+# Grafana or GlitchTip meant `ssh` + `cat` on the box, the rawest possible
+# violation of the Operational Command Wrapping requirement. These commands
+# close that gap CLI-side only: `nyxgpt ops credentials` on the machine
+# running the stack, `nyxgpt cloud credentials` (see cloud_deploy.py) for a
+# deployment, over the same wrapped SSH access path everything else uses.
+
+GRAFANA_ADMIN_USERNAME = "admin"
+
+CREDENTIAL_SERVICES = ("grafana", "glitchtip")
+
+
+@dataclass(frozen=True)
+class ServiceCredential:
+    """One service's admin login, plus where the password actually came from.
+
+    `password` is empty when nothing is resolvable yet; `remediation` then
+    says which wrapped command provisions it. `source` exists because the
+    same service can be credentialed three different ways (config.ini
+    override, ops-managed secret file, `glitchtip-init` provisioning) and an
+    operator debugging a failed login needs to know which one answered.
+    """
+
+    service: str
+    url: str
+    username: str
+    password: str
+    source: str
+    remediation: str = ""
+
+    @property
+    def available(self) -> bool:
+        """Whether a password could be resolved at all."""
+        return bool(self.password)
+
+    def as_dict(self) -> dict[str, Any]:
+        """JSON-serializable form, for `--json` and the cloud path's transport."""
+        return {
+            "service": self.service,
+            "url": self.url,
+            "username": self.username,
+            "password": self.password,
+            "source": self.source,
+            "remediation": self.remediation,
+            "available": self.available,
+        }
+
+
+def _grafana_credential(cfg: ConfigParser) -> ServiceCredential:
+    """Resolve Grafana's admin login the way `nyxgpt ops install` reconciles it.
+
+    Read-only: uses `read_grafana_admin_password` rather than
+    `resolve_grafana_admin_password`, so merely *asking* for the password on
+    a host that was never installed doesn't mint one -- see that function's
+    docstring.
+    """
+    password, source = read_grafana_admin_password(cfg)
+    return ServiceCredential(
+        service="grafana",
+        url=str(get_monitoring_config(cfg).get("grafana_ui_url", "")),
+        username=GRAFANA_ADMIN_USERNAME,
+        password=password,
+        source=source,
+        remediation=(
+            ""
+            if password
+            else (
+                "No Grafana admin password has been provisioned yet -- run "
+                "`nyxgpt ops install` (it generates and reconciles one), or set "
+                "[monitoring] grafana_admin_password in config.ini."
+            )
+        ),
+    )
+
+
+def _glitchtip_credential(cfg: ConfigParser, cfg_path: Path) -> ServiceCredential:
+    """Resolve GlitchTip's admin login from the config.ini `glitchtip-init` wrote.
+
+    Reads `cfg_path` directly rather than the cached `cfg`: `nyxgpt ops
+    glitchtip-init` persists the generated credentials by rewriting
+    config.ini (`_persist_admin_credentials`), and a long-lived process's
+    cached parser can be a provisioning run behind what is on disk.
+    """
+    parser = ConfigParser()
+    parser.optionxform = str  # type: ignore[assignment]
+    parser.read(cfg_path)
+
+    password = parser.get("error_tracking", "admin_password", fallback="").strip()
+    email = parser.get("error_tracking", "admin_email", fallback="").strip()
+    return ServiceCredential(
+        service="glitchtip",
+        url=str(get_error_tracking_config(cfg).get("glitchtip_ui_url", "")),
+        username=email or GLITCHTIP_DEFAULT_ADMIN_EMAIL,
+        password=password,
+        source=f"{cfg_path} [error_tracking] admin_password" if password else "",
+        remediation=(
+            ""
+            if password
+            else (
+                "No GlitchTip admin password has been provisioned yet -- run "
+                "`nyxgpt ops glitchtip-init` (it provisions the admin user and "
+                "saves the credentials)."
+            )
+        ),
+    )
+
+
+def resolve_service_credentials(
+    cfg_path: Path | None = None, services: Container[str] | None = None
+) -> list[ServiceCredential]:
+    """Resolve the admin logins for the observability UIs on this machine.
+
+    Each credential comes from its real source -- a config.ini override, the
+    ops-managed secret file, or the values `glitchtip-init` provisioned --
+    so what this prints is what the running service actually accepts.
+    `services` filters to a subset (default: all of `CREDENTIAL_SERVICES`).
+    """
+    from nyxgpt.config import load_config
+
+    path = cfg_path or (NYXGPT_HOME / "config.ini")
+    cfg = load_config(path)
+    wanted = CREDENTIAL_SERVICES if services is None else services
+
+    resolvers: dict[str, Callable[[], ServiceCredential]] = {
+        "grafana": lambda: _grafana_credential(cfg),
+        "glitchtip": lambda: _glitchtip_credential(cfg, path),
+    }
+    return [resolvers[name]() for name in CREDENTIAL_SERVICES if name in wanted]
+
+
+def format_credentials(creds: list[ServiceCredential]) -> str:
+    """Render `creds` for a terminal, one labeled block per service."""
+    blocks: list[str] = []
+    for cred in creds:
+        lines = [cred.service]
+        if cred.url:
+            lines.append(f"  URL:      {cred.url}")
+        if cred.available:
+            lines.append(f"  Username: {cred.username}")
+            lines.append(f"  Password: {cred.password}")
+            lines.append(f"  Source:   {cred.source}")
+        else:
+            lines.append(f"  Username: {cred.username}")
+            lines.append("  Password: (not provisioned)")
+            lines.append(f"  Fix:      {cred.remediation}")
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
+
+
+def credentials(args: Any) -> int:
+    """CLI entrypoint for `nyxgpt ops credentials`.
+
+    Prints the Grafana and GlitchTip admin logins for the stack on this
+    machine, replacing the `ssh` + `cat ~/.nyxGPT/secrets/...` an operator
+    otherwise needs to sign in (#3718). Output goes to stdout only: the
+    passwords are never logged (the log line below records service names and
+    whether each resolved, never a value) and remain absent from every HTTP
+    API response, preserving #3458/#3466.
+
+    Returns 0 when every requested service resolved, else 2 -- so a missing
+    credential is a scriptable failure rather than a silently empty field.
+    """
+    cfg_path = Path(args.config).expanduser() if getattr(args, "config", None) else None
+    service = getattr(args, "service", "all") or "all"
+    wanted = CREDENTIAL_SERVICES if service == "all" else (service,)
+
+    creds = resolve_service_credentials(cfg_path=cfg_path, services=wanted)
+
+    if getattr(args, "json", False):
+        print(json.dumps([c.as_dict() for c in creds], indent=2))
+    else:
+        print(format_credentials(creds))
+
+    ok = all(c.available for c in creds)
+    logger.info(
+        "ops: credentials %s",
+        "resolved" if ok else "incomplete",
+        extra={
+            "component": "ops",
+            "action": "credentials",
+            "services": [c.service for c in creds],
+            "resolved": [c.service for c in creds if c.available],
+            "ok": ok,
+        },
     )
     return 0 if ok else 2
 
