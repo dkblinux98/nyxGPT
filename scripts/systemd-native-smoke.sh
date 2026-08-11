@@ -5,12 +5,9 @@
 # -> teardown) but exercises `nyxgpt ops install` (no --terraform/--kubernetes
 # flag), the Homebrew-services-equivalent native path, on Linux.
 #
-# NOTE: this script is intentionally NOT wired into a GitHub Actions workflow
-# yet -- .github/workflows/* changes are outside this change's scope (see
-# the PR description). A maintainer should add a workflow that runs this on
-# `ubuntu-latest`, mirroring terraform-local-smoke.yml's structure, scoped to
-# changes under src/nyxgpt/ops.py, src/nyxgpt/self_heal.py, ops/systemd/**,
-# and this script.
+# Wired into CI as .github/workflows/linux-native-smoke.yml (runs on
+# `ubuntu-latest`, scoped to changes under src/nyxgpt/ops.py,
+# src/nyxgpt/self_heal.py, ops/systemd/**, and this script).
 #
 # Usage:
 #   ./scripts/systemd-native-smoke.sh                # full run
@@ -101,25 +98,21 @@ wait_for_unit_active() { # <unit>
   done
 }
 # The official installer run above auto-enables a *system-wide*
-# `ollama.service` bound to the same port `nyxgpt-ollama.service` needs --
-# `nyxgpt ops install` now detects that and adopts the system unit instead of
-# installing/starting its own (see `_reconcile_system_ollama_service` in
-# src/nyxgpt/ops.py, #3632), so nyxgpt-ollama.service is only expected to be
-# active when nothing else already claimed the port.
-ollama_adopted=0
+# `ollama.service` bound to the same port `nyxgpt-ollama.service` needs.
+# `nyxgpt ops install` stops and disables that system unit so nyxgpt owns
+# Ollama itself (`_takeover_system_ollama_service` in src/nyxgpt/ops.py,
+# #3632), so after install the system unit must be gone and nyxgpt-ollama
+# must be the one serving -- assert both, since an "adopted" system unit
+# would otherwise pass the HTTP check below while leaving Ollama pointed at
+# the wrong model store.
 if systemctl is-active --quiet ollama.service 2>/dev/null; then
-  ollama_adopted=1
-  log "System-wide ollama.service is active -- nyxgpt adopts it (nyxgpt-ollama.service is not installed/started, see docs/systemd.md)"
+  echo "::error::system-wide ollama.service is still active after install -- nyxgpt ops install should have disabled it"
+  fail_count=1
 fi
 
-for unit in nyxgpt-api nyxgpt-web nyxgpt-cassandra-logs nyxgpt-ollama-logs; do
+for unit in nyxgpt-api nyxgpt-web nyxgpt-ollama nyxgpt-cassandra-logs nyxgpt-ollama-logs; do
   wait_for_unit_active "$unit" || { echo "::error::$unit is not active"; fail_count=1; }
 done
-if [[ "$ollama_adopted" -eq 1 ]]; then
-  echo "  nyxgpt-ollama -> skipped (system ollama.service adopted instead)"
-else
-  wait_for_unit_active nyxgpt-ollama || { echo "::error::nyxgpt-ollama is not active"; fail_count=1; }
-fi
 
 log "Verifying core services are actually serving (up to ${WAIT_TIMEOUT_SECONDS}s each)"
 check() { # <label> <url> <expected>

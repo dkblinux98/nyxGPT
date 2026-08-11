@@ -23,6 +23,7 @@ import platform
 import re
 import secrets
 import shutil
+import socket
 import subprocess
 import sys
 import tarfile
@@ -90,10 +91,10 @@ NATIVE_BREW_SERVICES: dict[str, str] = {
 # Linux twin of NATIVE_BREW_SERVICES: maps a logical component to its
 # systemd --user unit name (see ops/systemd/*.service, #3508). "ollama" gets
 # its own nyxgpt-ollama.service so it's managed the same operator-facing way
-# as api/web -- *unless* a distro-installed system-wide `ollama.service`
-# (e.g. from the official installer) already holds port 11434, in which case
-# nyxGPT adopts that unit instead of fighting it for the port (#3632; see
-# `_system_ollama_service_active`/`_reconcile_system_ollama_service`).
+# as api/web -- including when a distro-installed system-wide `ollama.service`
+# (e.g. from the official installer) already holds port 11434, which install
+# stops and disables to take the port over (#3632; see
+# `_system_ollama_service_conflicts`/`_takeover_system_ollama_service`).
 NATIVE_SYSTEMD_SERVICES: dict[str, str] = {
     "api": "nyxgpt-api",
     "web": "nyxgpt-web",
@@ -682,6 +683,44 @@ def _log_nonzero_exit(
 def _which(prog: str) -> str | None:
     """Return the absolute path to `prog` on PATH, or None if it isn't found."""
     return shutil.which(prog)
+
+
+def _running_as_root() -> bool:
+    """True if this process already has root privileges (no sudo needed)."""
+    geteuid = getattr(os, "geteuid", None)
+    return geteuid is not None and geteuid() == 0
+
+
+def _privileged_run(
+    cmd: list[str], *, expected: bool = False
+) -> subprocess.CompletedProcess[str] | None:
+    """Run `cmd` with root privileges, never prompting for a password.
+
+    A handful of install steps genuinely need root on Linux and cannot be
+    expressed any other way: stopping/disabling the *system-scope*
+    `ollama.service` the official Ollama installer enables so nyxGPT's own
+    `nyxgpt-ollama.service` can hold port 11434 (#3632), installing the
+    Docker engine/Compose plugin from the distro's package manager, and
+    chowning a Docker-created root-owned bind-mount directory to the uid its
+    container runs as. All of them are reconciliation `nyxgpt ops install`
+    is expected to perform on its own -- an operator who has to hand-run
+    three `sudo` commands before `install` can finish is exactly the
+    friction #3632 was filed about.
+
+    `sudo -n` is the safety property that makes this acceptable: it *never*
+    prompts. On a host with passwordless sudo (the default on Ubuntu cloud
+    images and GitHub Actions runners) the command runs; anywhere else it
+    fails instantly and the caller reports the exact command for the
+    operator to run themselves, rather than hanging on a TTY prompt inside a
+    non-interactive install. Returns None when root is unreachable at all
+    (no `sudo` on PATH and not already root) so callers can distinguish
+    "couldn't even try" from "tried and was refused".
+    """
+    if _running_as_root():
+        return _run(cmd, check=False, expected=expected)
+    if _which("sudo") is None:
+        return None
+    return _run(["sudo", "-n", *cmd], check=False, expected=expected)
 
 
 def _read_project_version() -> str:
@@ -1912,8 +1951,8 @@ def _ensure_ollama_service() -> list[OpsResult]:
 # OS-agnostic: it just vendors source into a tarball) rather than duplicating
 # it. `ollama` is managed as its own systemd --user unit (`nyxgpt-ollama.service`)
 # so every native component is reachable through the same `systemctl --user`
-# surface -- unless a distro-installed system-wide `ollama.service` already
-# holds port 11434, in which case nyxGPT adopts it instead (#3632).
+# surface -- including on a host where the distro's system-wide
+# `ollama.service` holds port 11434, which install disables to free it (#3632).
 
 
 def _systemd_user_dir() -> Path:
@@ -2126,9 +2165,10 @@ SYS_PY="$(command -v python3 || echo /usr/bin/python3)"
 HOST="127.0.0.1"
 PORT="3000"
 API_BASE=""
+AUTH_KEY=""
 
 if [ -f "$CONFIG_FILE" ]; then
-  IFS=$'\\t' read -r HOST PORT API_BASE < <("$SYS_PY" - <<'PY'
+  IFS=$'\\t' read -r HOST PORT API_BASE AUTH_KEY < <("$SYS_PY" - <<'PY'
 import configparser
 import os
 
@@ -2141,8 +2181,16 @@ try:
 except Exception:
     port = '3000'
 api_base = cfg.get('web', 'api_base_url', fallback='')
+# The proxy in web/src/lib/apiProxy.ts attaches X-API-Key from
+# NYXGPT_AUTH_API_KEY; without it every proxied call 401s the moment
+# [auth] enabled is turned on (#3632).
+try:
+    auth_on = cfg.getboolean('auth', 'enabled', fallback=False)
+except Exception:
+    auth_on = False
+api_key = cfg.get('auth', 'api_key', fallback='').strip() if auth_on else ''
 
-print(f"{host}\\t{port}\\t{api_base}")
+print(f"{host}\\t{port}\\t{api_base}\\t{api_key}")
 PY
 )
 fi
@@ -2151,6 +2199,9 @@ export HOST="$HOST"
 export PORT="$PORT"
 if [ -n "$API_BASE" ]; then
   export NEXT_PUBLIC_API_BASE="$API_BASE"
+fi
+if [ -n "$AUTH_KEY" ]; then
+  export NYXGPT_AUTH_API_KEY="$AUTH_KEY"
 fi
 
 echo "nyxgpt-web starting (self-contained build)" >&2
@@ -2367,45 +2418,110 @@ def _system_ollama_service_active() -> bool:
     return (cp.stdout or "").strip() == "active"
 
 
-def _reconcile_system_ollama_service() -> list[OpsResult]:
-    """Adopt a pre-existing system-wide `ollama.service` instead of racing it for port 11434.
+def _system_ollama_service_enabled() -> bool:
+    """True if the system-wide `ollama.service` is enabled to start at boot.
 
-    Chosen reconciliation for #3632 (documented in docs/systemd.md): stopping
-    or disabling a *system* unit needs root (`sudo systemctl disable --now
-    ollama.service`), and nyxGPT never shells out to sudo on its own for
-    anything else either -- so rather than requiring that, install just skips
-    creating/starting `nyxgpt-ollama.service` and lets the already-running
-    system unit keep serving on 127.0.0.1:11434. If a *previous* run already
-    installed `nyxgpt-ollama.service` (now crash-looping against the same
-    port), that one IS a `--user` unit nyxGPT owns outright, so it's stopped
-    and disabled here to stop the crash loop.
+    Checked alongside `_system_ollama_service_active()` because a merely
+    *enabled* (currently stopped) system unit is just as much of a conflict:
+    it would grab port 11434 back from `nyxgpt-ollama.service` at the next
+    boot. `is-enabled` also reports "enabled" for a unit that is masked-free
+    but stopped, which is precisely the state we still want to disable.
+
+    "static" is deliberately *not* treated as a conflict: a static unit has no
+    `[Install]` section, so `systemctl disable` on it is a no-op -- reporting
+    it would leave `ops doctor` flagging a conflict nothing can ever clear.
+    A static unit is also not started at boot on its own, so it only matters
+    while it is running, which `_system_ollama_service_active()` already
+    covers.
     """
-    results = [
+    if _which("systemctl") is None:
+        return False
+    cp = _run(["systemctl", "is-enabled", "ollama.service"], check=False, expected=True)
+    return (cp.stdout or "").strip() in {"enabled", "enabled-runtime"}
+
+
+def _system_ollama_service_conflicts() -> bool:
+    """True if a distro-managed system-wide `ollama.service` would contend for port 11434."""
+    return _system_ollama_service_active() or _system_ollama_service_enabled()
+
+
+def _takeover_system_ollama_service() -> tuple[bool, list[OpsResult]]:
+    """Stop and disable a pre-existing system-wide `ollama.service` so
+    `nyxgpt-ollama.service` can own port 11434.
+
+    Chosen reconciliation for #3632 (documented in docs/systemd.md): nyxGPT
+    manages Ollama itself, the same operator-facing way it manages api/web,
+    rather than deferring to whatever the official Ollama installer
+    (`curl -fsSL https://ollama.com/install.sh | sh`) left enabled. An
+    earlier round of this fix *adopted* the system unit instead; that was
+    rejected in acceptance testing because it leaves the machine in a split
+    arrangement nyxgpt neither owns nor can restart, and leaves
+    `OLLAMA_MODELS` pointed at Ollama's own store rather than the shared
+    `~/.nyxGPT/volumes/ollama/models` one every other mode bind-mounts.
+
+    Stopping a *system*-scope unit needs root, which is done via
+    `_privileged_run`'s never-prompting `sudo -n` (see its docstring).
+    Returns `(port_free, results)`: `port_free` is False when the system
+    unit is still holding the port -- the caller must then NOT install or
+    start `nyxgpt-ollama.service`, since it could only crash-loop, which is
+    the exact failure this issue was filed for.
+    """
+    results: list[OpsResult] = []
+    cp = _privileged_run(["systemctl", "disable", "--now", "ollama.service"])
+    if cp is None or cp.returncode != 0:
+        details = ""
+        if cp is not None:
+            details = ((cp.stderr or "") + (cp.stdout or "")).strip()
+        return False, [
+            OpsResult(
+                False,
+                "System-wide ollama.service holds port 11434 and could not be disabled",
+                "nyxgpt manages Ollama itself via nyxgpt-ollama.service, which cannot "
+                "start while the distro's system unit owns the port. Root was not "
+                "available without a password prompt, so free the port by hand and "
+                "re-run install:\n"
+                "  sudo systemctl disable --now ollama.service && nyxgpt ops install"
+                + (f"\n{details}" if details else ""),
+            )
+        ]
+    results.append(
         OpsResult(
             True,
-            "Adopting system ollama.service (already serving on 127.0.0.1:11434)",
-            "Skipping nyxgpt-ollama.service install/start to avoid a port conflict. "
-            "To have nyxgpt manage Ollama itself instead, free the port first "
-            "(sudo systemctl disable --now ollama.service), then re-run "
-            "`nyxgpt ops install`.",
+            "Stopped and disabled system-wide ollama.service",
+            "Freed 127.0.0.1:11434 for nyxgpt-ollama.service, which nyxgpt manages "
+            "itself (pointed at the shared ~/.nyxGPT/volumes/ollama/models store). "
+            "See docs/systemd.md#ollama.",
         )
-    ]
-    unit_path = _systemd_user_dir() / "nyxgpt-ollama.service"
-    if unit_path.exists():
-        results.extend(_stop_systemd_service("nyxgpt-ollama"))
-        cp = _run(
-            ["systemctl", "--user", "disable", "nyxgpt-ollama.service"],
-            check=False,
-            expected=True,
-        )
-        if cp.returncode == 0:
-            results.append(
-                OpsResult(
-                    True,
-                    "Disabled stale nyxgpt-ollama.service in favor of the adopted system unit",
-                )
-            )
-    return results
+    )
+    # `disable --now` returns as soon as systemd accepts the job; the socket
+    # can still be held for a moment while `ollama serve` shuts down, and
+    # nyxgpt-ollama.service would lose the race and crash-loop exactly as
+    # before. Wait for the port to actually come free.
+    ollama_port = COMPOSE_COMPONENT_PORTS["ollama"]
+    if not _wait_for_port_free("127.0.0.1", ollama_port):
+        return False, [
+            *results,
+            OpsResult(
+                False,
+                f"Port {ollama_port} is still in use after disabling system ollama.service",
+                "Something else is serving on it (another Ollama process, a container). "
+                "Free it, then re-run `nyxgpt ops install`.",
+            ),
+        ]
+    return True, results
+
+
+def _wait_for_port_free(host: str, port: int, timeout: float = 15.0) -> bool:
+    """Poll until nothing accepts TCP connections on `host:port`, or `timeout` elapses."""
+    deadline = time.monotonic() + timeout
+    while True:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(1.0)
+            if sock.connect_ex((host, port)) != 0:
+                return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.5)
 
 
 def _install_native_ollama_systemd() -> list[OpsResult]:
@@ -2423,23 +2539,30 @@ def _install_native_ollama_systemd() -> list[OpsResult]:
     applies on every unit start, unlike `launchctl setenv`'s per-session
     scope; see ops/systemd/nyxgpt-ollama.service).
 
-    If a system-wide `ollama.service` already holds port 11434, adopts it
-    instead of installing/starting the nyxgpt unit at all (#3632; see
-    `_reconcile_system_ollama_service`).
+    If a system-wide `ollama.service` already holds port 11434, it is stopped
+    and disabled first so this unit can take the port over (#3632; see
+    `_takeover_system_ollama_service`). When that takeover can't be
+    completed, the nyxgpt unit is deliberately NOT installed or started --
+    it could only crash-loop against the port -- and the failure is reported
+    with the command that frees it.
     """
-    if _system_ollama_service_active():
-        return _reconcile_system_ollama_service()
-
     results: list[OpsResult] = []
+    if _system_ollama_service_conflicts():
+        port_free, takeover_results = _takeover_system_ollama_service()
+        results.extend(takeover_results)
+        if not port_free:
+            return results
+
     ollama_bin = _which("ollama")
     if ollama_bin is None:
         return [
+            *results,
             OpsResult(
                 False,
                 "ollama not found on PATH",
                 "Install it first: curl -fsSL https://ollama.com/install.sh | sh "
                 "(see the Linux install section in the docs)",
-            )
+            ),
         ]
 
     models_dir = _shared_ollama_models_dir()
@@ -2884,6 +3007,214 @@ def _ensure_mcp_deps() -> list[OpsResult]:
         results.append(OpsResult(False, "Failed to install MCP deps", f"{type(e).__name__}: {e}"))
 
     return results
+
+
+# --- Docker engine bootstrap (Linux) ---
+
+# Distro package sets that provide a working `docker` + `docker compose` pair,
+# tried in order. Each entry is (package-manager argv prefix, packages). The
+# Debian/Ubuntu compose plugin has been packaged under two names across
+# releases (`docker-compose-v2` on recent Ubuntu, `docker-compose-plugin` where
+# Docker's own repo is configured), so both are attempted before giving up.
+_LINUX_DOCKER_PACKAGE_SETS: tuple[tuple[str, list[str], list[str]], ...] = (
+    ("apt-get", ["apt-get", "install", "-y"], ["docker.io", "docker-compose-v2"]),
+    ("apt-get", ["apt-get", "install", "-y"], ["docker.io", "docker-compose-plugin"]),
+    ("dnf", ["dnf", "install", "-y"], ["docker", "docker-compose-plugin"]),
+    ("yum", ["yum", "install", "-y"], ["docker", "docker-compose-plugin"]),
+)
+
+_DOCKER_MANUAL_INSTALL_HINT = (
+    "Install Docker yourself, then re-run `nyxgpt ops install`:\n"
+    "  Debian/Ubuntu: sudo apt-get update && sudo apt-get install -y docker.io "
+    "docker-compose-v2\n"
+    "  Fedora/RHEL:   sudo dnf install -y docker docker-compose-plugin\n"
+    "  then:          sudo systemctl enable --now docker && sudo usermod -aG docker "
+    "$(whoami)"
+)
+
+
+def _docker_daemon_reachable() -> bool:
+    """True if `docker info` succeeds -- i.e. the daemon is up AND this user may talk to it.
+
+    Never raises: this runs inside `doctor` and inside install steps, where a
+    docker binary that can't even be executed is one more thing to report,
+    not a reason to abort the surrounding check.
+    """
+    if _which("docker") is None:
+        return False
+    try:
+        cp = _run(["docker", "info", "--format", "{{.ServerVersion}}"], check=False, expected=True)
+    except Exception as e:
+        logger.debug("ops: docker info failed: %s: %s", type(e).__name__, e)
+        return False
+    return cp.returncode == 0
+
+
+def _install_linux_docker_packages() -> list[OpsResult]:
+    """Install Docker engine + the Compose v2 plugin from the distro's package manager."""
+    for tool, install_cmd, packages in _LINUX_DOCKER_PACKAGE_SETS:
+        if _which(tool) is None:
+            continue
+        if tool == "apt-get":
+            # Without a package index a fresh cloud image's `install` just
+            # reports "Unable to locate package".
+            _privileged_run(["apt-get", "update"], expected=True)
+        cp = _privileged_run([*install_cmd, *packages])
+        if cp is None:
+            return [
+                OpsResult(
+                    False,
+                    "Docker is not installed and root is not available without a password",
+                    _DOCKER_MANUAL_INSTALL_HINT,
+                )
+            ]
+        if cp.returncode == 0:
+            return [OpsResult(True, f"Installed Docker packages: {', '.join(packages)}")]
+    return [
+        OpsResult(
+            False,
+            "Could not install Docker automatically",
+            _DOCKER_MANUAL_INSTALL_HINT,
+        )
+    ]
+
+
+def _ensure_docker_group_membership() -> list[OpsResult]:
+    """Add the invoking user to the `docker` group so non-root `docker` calls work.
+
+    The daemon's socket is root:docker 0660, so a fresh `apt-get install
+    docker.io` leaves every `docker` call failing with "permission denied
+    while trying to connect to the Docker daemon socket" until the user is in
+    that group -- and, crucially, until their *login session* is recreated:
+    group membership is stamped into a session's credentials at login, so an
+    already-running `systemd --user` manager (and every service it spawned,
+    including `nyxgpt-api`) keeps the old group set. That is exactly the
+    #3632 finding where `nyxgpt ops status` saw Cassandra running from a
+    fresh shell while the API-backed web UI reported it absent: the CLI had
+    the group, the long-lived API process didn't. Re-login guidance is
+    therefore part of the result, not an afterthought.
+    """
+    user = getpass.getuser()
+    if _running_as_root():
+        return [OpsResult(True, "Running as root; docker group membership not needed")]
+    cp = _privileged_run(["usermod", "-aG", "docker", user])
+    if cp is None or cp.returncode != 0:
+        return [
+            OpsResult(
+                False,
+                f"Could not add {user!r} to the 'docker' group",
+                f"Run: sudo usermod -aG docker {user} && sudo loginctl terminate-user {user}, "
+                "reconnect, then re-run `nyxgpt ops install`.",
+            )
+        ]
+    return [
+        OpsResult(
+            True,
+            f"Added {user!r} to the 'docker' group",
+            "Group membership only applies to *new* login sessions, so this shell (and "
+            "any already-running systemd --user services) still lack it. If docker "
+            f"commands still fail: sudo loginctl terminate-user {user}, then reconnect.",
+        )
+    ]
+
+
+def _ensure_docker_engine() -> list[OpsResult]:
+    """Ensure a usable Docker engine + Compose plugin exist before anything needs them.
+
+    `nyxgpt ops install` brings up Cassandra and the whole observability
+    stack in containers, so "install Docker first" was an undocumented
+    prerequisite the operator had to satisfy by hand -- #3632's finding that
+    `install` on a clean Linux box "doesn't install missing docker components
+    for observability", and the frictionless-install ask behind it. This step
+    reconciles that the same way every other install step reconciles its
+    piece: install the packages if missing, start/enable the daemon, and put
+    the invoking user in the `docker` group.
+
+    Linux only. macOS's Docker Desktop is a GUI application with a license
+    prompt -- installing it unattended is not something `ops install` should
+    do behind the operator's back, so there it only reports what's missing.
+    Every failure is actionable (the exact command to run by hand) rather
+    than fatal to the rest of install: a host that genuinely can't have
+    Docker still gets its native api/web/ollama services reconciled.
+    """
+    if not _is_linux():
+        if _which("docker") is None:
+            return [
+                OpsResult(
+                    False,
+                    "Docker not found on PATH",
+                    "Install Docker Desktop (https://docs.docker.com/desktop/install/mac-install/) "
+                    "and start it, then re-run `nyxgpt ops install`.",
+                )
+            ]
+        return [OpsResult(True, "Docker is available")]
+
+    results: list[OpsResult] = []
+    if _which("docker") is None:
+        results.extend(_install_linux_docker_packages())
+        if not any(r.ok for r in results):
+            return results
+
+    if _which("docker") is None:
+        return [
+            *results,
+            OpsResult(False, "Docker still not found on PATH", _DOCKER_MANUAL_INSTALL_HINT),
+        ]
+
+    if not _compose_available():
+        results.extend(_install_linux_docker_packages())
+
+    # A distro `docker.io` install leaves the unit enabled but, on a
+    # container/minimal image, not necessarily started.
+    cp = _privileged_run(["systemctl", "enable", "--now", "docker"], expected=True)
+    if cp is not None and cp.returncode == 0:
+        results.append(OpsResult(True, "Docker daemon enabled and started"))
+
+    if _docker_daemon_reachable():
+        results.append(OpsResult(True, "Docker daemon is reachable"))
+        return results
+
+    results.extend(_ensure_docker_group_membership())
+    if _docker_daemon_reachable():
+        results.append(OpsResult(True, "Docker daemon is reachable"))
+    else:
+        results.append(
+            OpsResult(
+                False,
+                "Docker is installed but this process cannot reach the daemon",
+                "Usually a group-membership change that hasn't reached this login "
+                f"session yet. Run: sudo loginctl terminate-user {getpass.getuser()}, "
+                "reconnect, then re-run `nyxgpt ops install`.",
+            )
+        )
+    return results
+
+
+def _docker_access_doctor_issue() -> str | None:
+    """`nyxgpt ops doctor` check for a Docker daemon this process can't talk to.
+
+    Distinct from doctor's existing "Missing tool in PATH: docker": here the
+    binary *is* present and the daemon may well be running -- the invoking
+    user just isn't in the `docker` group, or their session predates the
+    membership. That produced #3632's most confusing symptom, `nyxgpt ops
+    status` and the web UI disagreeing about whether Cassandra was running,
+    because they ran from sessions with different group sets.
+    """
+    if _which("docker") is None:
+        return None
+    if _docker_daemon_reachable():
+        return None
+    hint = ""
+    if _is_linux():
+        hint = (
+            f" -- if you were just added to the 'docker' group, the change only applies to "
+            f"new login sessions (run: sudo loginctl terminate-user {getpass.getuser()}, "
+            "then reconnect)"
+        )
+    return (
+        "Docker is installed but the daemon is unreachable from this process "
+        f"(run: nyxgpt ops install){hint}"
+    )
 
 
 # --- Local Cassandra container lifecycle ---
@@ -4409,6 +4740,11 @@ def install(args) -> int:
             lambda: _clear_intentional_stops(["api", "web", "ollama", "cassandra"]),
         ),
         ("config", _install_config),
+        # Everything container-backed below (Cassandra, the observability
+        # stack) needs a working engine, and requiring the operator to
+        # install Docker by hand first was itself an acceptance failure
+        # (#3632) -- so reconcile it here rather than assuming it.
+        ("docker engine", _ensure_docker_engine),
         ("migrate legacy volumes", migrate_legacy_volumes),
         ("phantom compose reconciliation", _reconcile_phantom_compose_app_containers),
         ("web deps", _ensure_web_deps),
@@ -4425,9 +4761,12 @@ def install(args) -> int:
         ("compose config (derive from native)", _generate_compose_config),
     ]
     if not getattr(args, "skip_observability", False):
-        # Must run before the observability stack starts: Grafana's Compose
-        # bind-mount auto-creates a missing ~/.nyxGPT/secrets root-owned on
-        # Linux (#3432), which then blocks the token write below.
+        # Must run before the observability stack starts: dockerd creates a
+        # missing bind-mount source root-owned, which leaves
+        # Prometheus/Grafana/Loki's non-root uids unable to write their own
+        # data dirs (#3632) -- the same failure mode ~/.nyxGPT/secrets hit in
+        # #3432, handled by the glitchtip secrets dir step below.
+        steps.append(("observability volume dirs", _ensure_observability_volume_dirs))
         steps.append(("glitchtip secrets dir", _ensure_glitchtip_secrets_dir))
         steps.append(("slack webhook secret", _sync_grafana_slack_webhook_secret))
         steps.append(("observability stack", _reconcile_grafana_provisioning))
@@ -4913,32 +5252,27 @@ def _ollama_env_drift_issue() -> str | None:
 
 
 def _linux_ollama_port_conflict_issue() -> str | None:
-    """Detect the #3632 port-11434 conflict: a stale `nyxgpt-ollama.service`
-    crash-looping against a system-wide `ollama.service` that already holds
-    the port.
+    """Detect the #3632 port-11434 conflict: a system-wide `ollama.service`
+    contending with the `nyxgpt-ollama.service` nyxgpt owns.
 
-    Only fires when `nyxgpt-ollama.service` is installed AND not active AND
-    the system unit is active -- the state a machine that installed before
-    the #3632 fix shipped (or that had `ollama.service` re-enabled after
-    `nyxgpt ops install` already adopted it) can be stuck in. A fresh
-    `nyxgpt ops install` self-heals this on its own
-    (`_install_native_ollama_systemd` adopts the system unit and disables
-    the stale one -- see `_reconcile_system_ollama_service`), so the
-    actionable remediation is just re-running install. Linux only; returns
-    None on macOS/other or when nothing conflicts.
+    Fires whenever the distro's system unit is active or enabled on Linux --
+    it either already holds the port (so `nyxgpt-ollama.service` crash-loops)
+    or will grab it back at the next boot. `nyxgpt ops install` reconciles
+    this itself now (`_takeover_system_ollama_service` stops and disables the
+    system unit), so re-running install is the first remediation offered,
+    with the explicit `sudo` command for a host where install couldn't get
+    root without a prompt. Linux only; returns None on macOS/other or when
+    nothing conflicts.
     """
     if not _is_linux():
         return None
-    if not (_systemd_user_dir() / "nyxgpt-ollama.service").exists():
-        return None
-    if not _system_ollama_service_active():
-        return None
-    if _systemd_services_snapshot().get("nyxgpt-ollama") == "started":
+    if not _system_ollama_service_conflicts():
         return None
     return (
-        "System-wide ollama.service is bound to port 11434, so nyxgpt-ollama.service "
-        "can't start (run: nyxgpt ops install to adopt the system service, or "
-        "sudo systemctl disable --now ollama.service to free the port for nyxgpt-ollama)"
+        "System-wide ollama.service is active/enabled and contends for port 11434 with "
+        "nyxgpt-ollama.service, which nyxgpt manages (run: nyxgpt ops install, or if it "
+        "reported it could not get root: sudo systemctl disable --now ollama.service && "
+        "nyxgpt ops install)"
     )
 
 
@@ -5192,6 +5526,11 @@ def doctor(_args) -> int:
     if linux_ollama_conflict_issue:
         issues.append(linux_ollama_conflict_issue)
 
+    docker_access_issue = _docker_access_doctor_issue()
+    if docker_access_issue:
+        issues.append(docker_access_issue)
+
+    issues += _observability_volume_doctor_issues()
     issues += _glitchtip_secrets_doctor_issues()
     error_tracking_drift_issue = _error_tracking_dsn_drift_issue()
     if error_tracking_drift_issue:
@@ -7498,6 +7837,169 @@ def _ensure_glitchtip_secrets_dir() -> list[OpsResult]:
         os.chmod(path, 0o755)
     _ensure_grafana_secret_placeholders()
     return [OpsResult(True, f"{path} exists and is writable")]
+
+
+# The uid:gid each observability image runs its main process as, for the host
+# directories docker-compose.yml bind-mounts into them. These are fixed in the
+# upstream images (they are not configurable per-deployment): Prometheus drops
+# to `nobody`, Grafana to its own `grafana` user in the root group, Loki to
+# `loki`. Services whose entrypoint still starts as root and fixes up its own
+# data directory (postgres/glitchtip) are deliberately absent -- they need the
+# directory to *exist* (so dockerd doesn't create it) but not to be chowned.
+OBSERVABILITY_VOLUME_OWNERS: dict[str, tuple[int, int]] = {
+    "prometheus": (65534, 65534),
+    "grafana": (472, 0),
+    "loki": (10001, 10001),
+}
+
+# Every ~/.nyxGPT/volumes/* directory an observability container bind-mounts,
+# whether or not it needs a chown -- all of them must exist before the stack
+# starts so dockerd never auto-creates one as root:root.
+OBSERVABILITY_VOLUME_DIRS: tuple[str, ...] = (
+    "prometheus",
+    "grafana",
+    "loki",
+    "glitchtip-postgres",
+    "glitchtip-uploads",
+)
+
+
+def _dir_acl_grants_uid(path: Path, uid: int) -> bool:
+    """True if `path` already carries an effective POSIX ACL granting `uid` rwx.
+
+    Used both to keep `_ensure_observability_volume_dir` idempotent (don't
+    re-run the grant on every `ops install`) and to keep `ops doctor` quiet
+    about a directory that is reachable by its container through an ACL
+    rather than through ownership. `getfacl -cn` prints numeric entries with
+    no header; an entry the ACL mask has stripped down is annotated
+    `#effective:`, so a line carrying that marker is *not* a grant.
+    """
+    getfacl = _which("getfacl")
+    if getfacl is None:
+        return False
+    cp = _run([getfacl, "-cn", str(path)], check=False, expected=True)
+    if cp.returncode != 0:
+        return False
+    return any(
+        line.strip().startswith(f"user:{uid}:rwx") and "#effective" not in line
+        for line in (cp.stdout or "").splitlines()
+    )
+
+
+def _grant_dir_acl_to_uid(path: Path, uid: int) -> bool:
+    """Grant `uid` rwx on `path` (recursively) via a POSIX ACL, without root.
+
+    `setfacl` only requires being the file's owner, so this is the one lever a
+    non-root host user has to make a bind-mount source writable by a
+    container's uid -- bind mounts expose host uids verbatim (no user
+    namespace remapping), and the container's uid is neither ours nor in our
+    group. Unlike a world-writable chmod it grants exactly one uid and leaves
+    every other local user out, which matters because these directories hold
+    real state (`grafana.db` carries sessions and hashed credentials).
+
+    Recursive on purpose: a directory whose top level we own may still contain
+    root-owned files from an earlier broken run. `setfacl -R` fails on those,
+    which correctly drops the caller through to the actionable `sudo chown -R`
+    message instead of reporting success on a container that would still
+    crash-loop. Returns False when the acl(5) tools are absent or the
+    filesystem was not mounted with ACL support.
+    """
+    setfacl = _which("setfacl")
+    if setfacl is None:
+        return False
+    cp = _run([setfacl, "-R", "-m", f"u:{uid}:rwx", str(path)], check=False, expected=True)
+    return cp.returncode == 0
+
+
+def _ensure_observability_volume_dir(component: str) -> OpsResult:
+    """Make one `~/.nyxGPT/volumes/<component>` directory usable by its container's uid."""
+    path = volume_dir(component)  # creates it, owned by *this* user, if missing
+    want = OBSERVABILITY_VOLUME_OWNERS.get(component)
+    if want is None:
+        return OpsResult(True, f"{path} exists")
+
+    uid, gid = want
+    try:
+        st = path.stat()
+    except OSError as e:
+        return OpsResult(False, f"Failed to stat {path}", f"{type(e).__name__}: {e}")
+    if st.st_uid == uid:
+        return OpsResult(True, f"{path} is owned by the container's uid ({uid})")
+    if _dir_acl_grants_uid(path, uid):
+        # Already reconciled by this function's no-root fallback below; don't
+        # re-run a sudo chown on every `ops install`.
+        return OpsResult(True, f"{path} grants write access to the container's uid ({uid})")
+
+    cp = _privileged_run(["chown", "-R", f"{uid}:{gid}", str(path)], expected=True)
+    if cp is not None and cp.returncode == 0:
+        return OpsResult(True, f"Set owner of {path} to {uid}:{gid} for its container")
+
+    # No passwordless root. If we own the directory we can still hand exactly
+    # this one uid write access with a POSIX ACL, which needs no root at all.
+    if st.st_uid == os.getuid() and _grant_dir_acl_to_uid(path, uid):
+        return OpsResult(True, f"Granted the container's uid ({uid}) write access to {path}")
+
+    return OpsResult(
+        False,
+        f"{path} is owned by uid {st.st_uid} and cannot be made writable by its container",
+        "dockerd runs as root and creates a missing bind-mount source directory as "
+        "root:root, which then leaves the container's non-root uid unable to write "
+        "(the container crash-loops as unhealthy). Neither passwordless sudo nor a "
+        "POSIX ACL was available to reconcile it. Fix with:\n"
+        f"  sudo chown -R {uid}:{gid} {path}\n"
+        "then re-run `nyxgpt ops install`.",
+    )
+
+
+def _ensure_observability_volume_dirs() -> list[OpsResult]:
+    """Pre-create every observability bind-mount directory with an ownership its
+    container can actually write to (#3632).
+
+    On Linux, dockerd (running as root) auto-creates a missing bind-mount
+    source directory as `root:root` the first time the container starts.
+    Prometheus then runs as uid 65534 inside the container, cannot write to
+    `/prometheus`, panics, and crash-loops -- which is what surfaced as
+    "dependency failed to start: container nyxgpt-prometheus-1 is unhealthy"
+    and took the whole observability bring-up (and GlitchTip provisioning
+    behind it) down with it. Grafana (uid 472) and Loki (uid 10001) sit on
+    the same landmine.
+
+    macOS never hits this -- Docker Desktop's VirtioFS/gRPC-FUSE sharing
+    presents bind mounts as owned by whatever uid the container asks for --
+    which is exactly why it went unnoticed until a plain Linux engine was
+    exercised. Runs as an early best-effort install step (same shape as
+    `_ensure_glitchtip_secrets_dir`, which fixed the sibling #3432 case for
+    `~/.nyxGPT/secrets`), so it never raises.
+    """
+    if not _is_linux():
+        return [OpsResult(True, "Not Linux; Docker Desktop handles bind-mount ownership")]
+    return [_ensure_observability_volume_dir(c) for c in OBSERVABILITY_VOLUME_DIRS]
+
+
+def _observability_volume_doctor_issues() -> list[str]:
+    """`nyxgpt ops doctor` checks for the #3632 root-owned bind-mount directories."""
+    if not _is_linux():
+        return []
+    issues: list[str] = []
+    for component, (uid, gid) in OBSERVABILITY_VOLUME_OWNERS.items():
+        path = Path.home() / ".nyxGPT" / "volumes" / VOLUME_DIR_NAMES[component]
+        if not path.exists():
+            continue
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        # World-writable is not something install() produces any more, but a
+        # machine reconciled by the first cut of this fix still carries it and
+        # its container is genuinely fine -- don't nag about it.
+        if st.st_uid == uid or bool(st.st_mode & 0o002) or _dir_acl_grants_uid(path, uid):
+            continue
+        issues.append(
+            f"{path} is owned by uid {st.st_uid}, so the {component} container "
+            f"(uid {uid}) cannot write to it and will crash-loop as unhealthy "
+            f"(run: sudo chown -R {uid}:{gid} {path} && nyxgpt ops install)"
+        )
+    return issues
 
 
 def _glitchtip_secrets_doctor_issues() -> list[str]:

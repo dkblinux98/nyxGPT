@@ -138,14 +138,15 @@ def test_list_native_component_status_includes_native_cassandra_on_linux(monkeyp
     assert cassandra.source == "native"
 
 
-def test_list_native_component_status_reports_adopted_system_ollama(monkeypatch):
-    """#3632: an adopted system ollama.service must report healthy=True via
-    the system unit -- not fall through to a crash-looping/absent
-    nyxgpt-ollama.service and get flagged (or restart-looped) as down.
+def test_list_native_component_status_reports_serving_system_ollama(monkeypatch):
+    """#3632: `ops install` normally disables a system ollama.service so
+    nyxgpt-ollama can own port 11434. When it couldn't (no passwordless root),
+    self-heal must report health via the unit that is actually serving rather
+    than restart-looping the nyxgpt unit that can only lose the port race.
     """
     monkeypatch.setattr(self_heal, "_system_ollama_service_active", lambda: True)
-    # Even if a stale nyxgpt-ollama.service is still installed and crash-looping
-    # (snapshot reports it "none"), the adopted branch must win over it.
+    # Even with a stale nyxgpt-ollama.service still installed and crash-looping
+    # (snapshot reports it "none"), the serving unit must win over it.
     monkeypatch.setattr(self_heal, "_systemd_services_snapshot", lambda: {"nyxgpt-ollama": "none"})
     monkeypatch.setattr(self_heal, "_native_container_state", lambda name: "absent")
 

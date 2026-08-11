@@ -305,26 +305,133 @@ def test_install_native_ollama_systemd_happy_path(monkeypatch, tmp_path):
     assert "ExecStart=/usr/bin/ollama serve" in dst.read_text(encoding="utf-8")
 
 
-def test_install_native_ollama_systemd_adopts_system_service(monkeypatch, tmp_path):
-    """#3632: a running system-wide ollama.service must be adopted, not fought for the port."""
+def test_install_native_ollama_systemd_takes_over_system_service(monkeypatch, tmp_path):
+    """#3632: a running system-wide ollama.service must be stopped/disabled so
+    nyxgpt-ollama.service can take port 11434 over -- not adopted (the
+    adoption behaviour shipped in the first round was rejected in acceptance
+    testing)."""
     home = tmp_path / "home"
     monkeypatch.setattr(ops.Path, "home", lambda: home)
     monkeypatch.setattr(
-        ops, "_which", lambda name: "/usr/bin/systemctl" if name == "systemctl" else None
+        ops,
+        "_which",
+        lambda name: {"systemctl": "/usr/bin/systemctl", "ollama": "/usr/bin/ollama"}.get(name),
+    )
+    monkeypatch.setattr(ops, "_migrate_native_ollama_models", lambda models_dir: [])
+    monkeypatch.setattr(ops, "_run", lambda cmd, **k: _cp(0, stdout="active"))
+    privileged = []
+    monkeypatch.setattr(ops, "_privileged_run", lambda cmd, **k: privileged.append(cmd) or _cp(0))
+    monkeypatch.setattr(ops, "_wait_for_port_free", lambda host, port, **k: True)
+    tpl = tmp_path / "nyxgpt-ollama.service"
+    tpl.write_text("ExecStart=__NYXGPT_OLLAMA_BIN__ serve\n", encoding="utf-8")
+    monkeypatch.setattr(ops, "_find_systemd_unit_template", lambda name: (tpl, [tpl]))
+
+    results = ops._install_native_ollama_systemd()
+
+    assert all(r.ok for r in results)
+    assert ["systemctl", "disable", "--now", "ollama.service"] in privileged
+    assert "Stopped and disabled system-wide ollama.service" in results[0].message
+    # ...and the nyxgpt unit is then actually installed on the freed port.
+    dst = home / ".config" / "systemd" / "user" / "nyxgpt-ollama.service"
+    assert "ExecStart=/usr/bin/ollama serve" in dst.read_text(encoding="utf-8")
+
+
+def test_install_native_ollama_systemd_refuses_when_port_cannot_be_freed(monkeypatch, tmp_path):
+    """#3632: if the system unit can't be disabled, nyxgpt-ollama.service must
+    NOT be installed/started -- it could only crash-loop against the taken
+    port, which is the original defect."""
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(
+        ops,
+        "_which",
+        lambda name: {"systemctl": "/usr/bin/systemctl", "ollama": "/usr/bin/ollama"}.get(name),
     )
     monkeypatch.setattr(ops, "_run", lambda cmd, **k: _cp(0, stdout="active"))
+    monkeypatch.setattr(
+        ops, "_privileged_run", lambda cmd, **k: _cp(1, stderr="a password is required")
+    )
     template_spy = []
     monkeypatch.setattr(
         ops, "_find_systemd_unit_template", lambda name: template_spy.append(name) or (None, [])
     )
 
     results = ops._install_native_ollama_systemd()
-    assert all(r.ok for r in results)
-    assert "Adopting system ollama.service" in results[0].message
-    # Never even tries to locate/install the nyxgpt-ollama.service template.
+
+    assert results[0].ok is False
+    assert "could not be disabled" in results[0].message
+    assert "sudo systemctl disable --now ollama.service" in results[0].details
     assert template_spy == []
-    dst = home / ".config" / "systemd" / "user" / "nyxgpt-ollama.service"
-    assert not dst.exists()
+    assert not (home / ".config" / "systemd" / "user" / "nyxgpt-ollama.service").exists()
+
+
+def test_takeover_system_ollama_service_fails_when_port_stays_busy(monkeypatch):
+    """`disable --now` returning 0 isn't enough: the socket can linger, and
+    starting nyxgpt-ollama into it would crash-loop exactly as before."""
+    monkeypatch.setattr(ops, "_privileged_run", lambda cmd, **k: _cp(0))
+    monkeypatch.setattr(ops, "_wait_for_port_free", lambda host, port, **k: False)
+
+    port_free, results = ops._takeover_system_ollama_service()
+
+    assert port_free is False
+    assert results[-1].ok is False
+    assert "still in use" in results[-1].message
+
+
+def test_takeover_system_ollama_service_without_sudo(monkeypatch):
+    """No root reachable at all (`_privileged_run` -> None) is reported with the
+    exact command an operator can run instead, never a prompt."""
+    monkeypatch.setattr(ops, "_privileged_run", lambda cmd, **k: None)
+
+    port_free, results = ops._takeover_system_ollama_service()
+
+    assert port_free is False
+    assert results[0].ok is False
+    assert "sudo systemctl disable --now ollama.service" in results[0].details
+
+
+# --- _system_ollama_service_enabled / _system_ollama_service_conflicts ---
+
+
+@pytest.mark.parametrize("stdout", ["enabled\n", "enabled-runtime\n"])
+def test_system_ollama_service_enabled_true(monkeypatch, stdout):
+    monkeypatch.setattr(
+        ops, "_which", lambda name: "/usr/bin/systemctl" if name == "systemctl" else None
+    )
+    calls = []
+    monkeypatch.setattr(ops, "_run", lambda cmd, **k: calls.append(cmd) or _cp(0, stdout=stdout))
+
+    assert ops._system_ollama_service_enabled() is True
+    assert calls == [["systemctl", "is-enabled", "ollama.service"]]
+
+
+@pytest.mark.parametrize("stdout", ["disabled\n", "masked\n", "static\n", ""])
+def test_system_ollama_service_enabled_false(monkeypatch, stdout):
+    monkeypatch.setattr(
+        ops, "_which", lambda name: "/usr/bin/systemctl" if name == "systemctl" else None
+    )
+    monkeypatch.setattr(ops, "_run", lambda cmd, **k: _cp(1, stdout=stdout))
+
+    assert ops._system_ollama_service_enabled() is False
+
+
+def test_system_ollama_service_enabled_false_for_static_unit(monkeypatch):
+    """`systemctl disable` on a static unit (no [Install] section) is a no-op, so
+    reporting it as a conflict would leave `ops doctor` flagging one forever."""
+    monkeypatch.setattr(
+        ops, "_which", lambda name: "/usr/bin/systemctl" if name == "systemctl" else None
+    )
+    monkeypatch.setattr(ops, "_run", lambda cmd, **k: _cp(0, stdout="static\n"))
+
+    assert ops._system_ollama_service_enabled() is False
+
+
+def test_system_ollama_service_conflicts_when_only_enabled(monkeypatch):
+    """A stopped-but-enabled system unit still conflicts: it grabs the port back at boot."""
+    monkeypatch.setattr(ops, "_system_ollama_service_active", lambda: False)
+    monkeypatch.setattr(ops, "_system_ollama_service_enabled", lambda: True)
+
+    assert ops._system_ollama_service_conflicts() is True
 
 
 # --- _system_ollama_service_active ---
@@ -360,43 +467,6 @@ def test_system_ollama_service_active_false_without_systemctl(monkeypatch):
     )
 
     assert ops._system_ollama_service_active() is False
-
-
-# --- _reconcile_system_ollama_service ---
-
-
-def test_reconcile_system_ollama_service_no_stale_unit(monkeypatch, tmp_path):
-    home = tmp_path / "home"
-    monkeypatch.setattr(ops.Path, "home", lambda: home)
-    monkeypatch.setattr(
-        ops, "_run", lambda cmd, **k: (_ for _ in ()).throw(AssertionError(f"unexpected: {cmd}"))
-    )
-
-    results = ops._reconcile_system_ollama_service()
-    assert len(results) == 1
-    assert results[0].ok is True
-    assert "Adopting system ollama.service" in results[0].message
-
-
-def test_reconcile_system_ollama_service_stops_and_disables_stale_unit(monkeypatch, tmp_path):
-    home = tmp_path / "home"
-    monkeypatch.setattr(ops.Path, "home", lambda: home)
-    unit_dir = home / ".config" / "systemd" / "user"
-    unit_dir.mkdir(parents=True)
-    (unit_dir / "nyxgpt-ollama.service").write_text("[Service]\n", encoding="utf-8")
-    monkeypatch.setattr(
-        ops, "_which", lambda name: "/usr/bin/systemctl" if name == "systemctl" else None
-    )
-    calls = []
-    monkeypatch.setattr(ops, "_run", lambda cmd, **k: calls.append(cmd) or _cp(0))
-
-    results = ops._reconcile_system_ollama_service()
-    assert all(r.ok for r in results)
-    messages = " ".join(r.message for r in results)
-    assert "Stopped systemd unit: nyxgpt-ollama" in messages
-    assert "Disabled stale nyxgpt-ollama.service" in messages
-    assert ["systemctl", "--user", "stop", "nyxgpt-ollama.service"] in calls
-    assert ["systemctl", "--user", "disable", "nyxgpt-ollama.service"] in calls
 
 
 # --- _install_native_api_systemd ---
@@ -778,48 +848,22 @@ def test_linux_ollama_port_conflict_issue_none_when_not_linux(monkeypatch):
     assert ops._linux_ollama_port_conflict_issue() is None
 
 
-def test_linux_ollama_port_conflict_issue_none_when_nyxgpt_unit_not_installed(
-    monkeypatch, tmp_path
-):
-    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path / "home")
-    monkeypatch.setattr(ops, "_system_ollama_service_active", lambda: True)
+def test_linux_ollama_port_conflict_issue_none_when_no_system_unit(monkeypatch):
+    monkeypatch.setattr(ops, "_system_ollama_service_conflicts", lambda: False)
     assert ops._linux_ollama_port_conflict_issue() is None
 
 
-def test_linux_ollama_port_conflict_issue_none_when_system_service_inactive(monkeypatch, tmp_path):
-    home = tmp_path / "home"
-    unit_dir = home / ".config" / "systemd" / "user"
-    unit_dir.mkdir(parents=True)
-    (unit_dir / "nyxgpt-ollama.service").write_text("[Service]\n", encoding="utf-8")
-    monkeypatch.setattr(ops.Path, "home", lambda: home)
-    monkeypatch.setattr(ops, "_system_ollama_service_active", lambda: False)
-    assert ops._linux_ollama_port_conflict_issue() is None
-
-
-def test_linux_ollama_port_conflict_issue_none_when_nyxgpt_unit_active(monkeypatch, tmp_path):
-    home = tmp_path / "home"
-    unit_dir = home / ".config" / "systemd" / "user"
-    unit_dir.mkdir(parents=True)
-    (unit_dir / "nyxgpt-ollama.service").write_text("[Service]\n", encoding="utf-8")
-    monkeypatch.setattr(ops.Path, "home", lambda: home)
-    monkeypatch.setattr(ops, "_system_ollama_service_active", lambda: True)
-    monkeypatch.setattr(ops, "_systemd_services_snapshot", lambda: {"nyxgpt-ollama": "started"})
-    assert ops._linux_ollama_port_conflict_issue() is None
-
-
-def test_linux_ollama_port_conflict_issue_flags_crash_loop(monkeypatch, tmp_path):
-    home = tmp_path / "home"
-    unit_dir = home / ".config" / "systemd" / "user"
-    unit_dir.mkdir(parents=True)
-    (unit_dir / "nyxgpt-ollama.service").write_text("[Service]\n", encoding="utf-8")
-    monkeypatch.setattr(ops.Path, "home", lambda: home)
-    monkeypatch.setattr(ops, "_system_ollama_service_active", lambda: True)
-    monkeypatch.setattr(ops, "_systemd_services_snapshot", lambda: {"nyxgpt-ollama": "none"})
+def test_linux_ollama_port_conflict_issue_flags_active_or_enabled_system_unit(monkeypatch):
+    """#3632 round 2: the conflict is reported whenever the system unit is
+    active *or* enabled, since an enabled-but-stopped unit takes the port back
+    at the next boot."""
+    monkeypatch.setattr(ops, "_system_ollama_service_conflicts", lambda: True)
 
     issue = ops._linux_ollama_port_conflict_issue()
     assert issue is not None
     assert "port 11434" in issue
     assert "nyxgpt ops install" in issue
+    assert "sudo systemctl disable --now ollama.service" in issue
 
 
 def test_doctor_reports_linux_ollama_port_conflict(monkeypatch, tmp_path):
@@ -841,3 +885,354 @@ def test_doctor_reports_linux_ollama_port_conflict(monkeypatch, tmp_path):
 
     rc = ops.doctor(SimpleNamespaceLike())
     assert rc == 2
+
+
+# --- Docker engine bootstrap (#3632) ---
+
+
+def test_ensure_docker_engine_installs_missing_docker(monkeypatch):
+    """#3632: `ops install` on a clean Linux box must install Docker itself
+    rather than failing the observability stack with an undocumented
+    prerequisite."""
+    present = {"apt-get": "/usr/bin/apt-get"}
+    monkeypatch.setattr(ops, "_which", lambda name: present.get(name))
+    privileged = []
+
+    def _fake_privileged(cmd, **kwargs):
+        privileged.append(cmd)
+        if cmd[:2] == ["apt-get", "install"]:
+            present["docker"] = "/usr/bin/docker"
+        return _cp(0)
+
+    monkeypatch.setattr(ops, "_privileged_run", _fake_privileged)
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_docker_daemon_reachable", lambda: True)
+
+    results = ops._ensure_docker_engine()
+
+    assert all(r.ok for r in results)
+    assert ["apt-get", "update"] in privileged
+    assert ["apt-get", "install", "-y", "docker.io", "docker-compose-v2"] in privileged
+    assert ["systemctl", "enable", "--now", "docker"] in privileged
+
+
+def test_ensure_docker_engine_adds_user_to_docker_group_when_daemon_unreachable(monkeypatch):
+    """The socket is root:docker 0660, so a fresh install leaves docker calls
+    denied until the user is in the group -- and until their login session is
+    recreated (#3632's `ops status` vs. web UI disagreement)."""
+    monkeypatch.setattr(ops, "_which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_running_as_root", lambda: False)
+    monkeypatch.setattr(ops, "_docker_daemon_reachable", lambda: False)
+    privileged = []
+    monkeypatch.setattr(ops, "_privileged_run", lambda cmd, **k: privileged.append(cmd) or _cp(0))
+
+    results = ops._ensure_docker_engine()
+
+    usermod = [cmd for cmd in privileged if cmd[0] == "usermod"]
+    assert usermod and usermod[0][:3] == ["usermod", "-aG", "docker"]
+    messages = " ".join(r.message for r in results)
+    details = " ".join(r.details for r in results)
+    assert "'docker' group" in messages
+    assert "loginctl terminate-user" in details
+
+
+def test_ensure_docker_engine_reports_actionable_failure_without_root(monkeypatch):
+    monkeypatch.setattr(
+        ops, "_which", lambda name: "/usr/bin/apt-get" if name == "apt-get" else None
+    )
+    monkeypatch.setattr(ops, "_privileged_run", lambda cmd, **k: None)
+
+    results = ops._ensure_docker_engine()
+
+    assert results[0].ok is False
+    assert "apt-get install -y docker.io" in results[0].details
+
+
+def test_ensure_docker_engine_does_not_install_on_macos(monkeypatch):
+    monkeypatch.setattr(ops, "_is_linux", lambda: False)
+    monkeypatch.setattr(ops, "_which", lambda name: None)
+    monkeypatch.setattr(
+        ops, "_privileged_run", lambda cmd, **k: pytest.fail(f"must not run privileged: {cmd}")
+    )
+
+    results = ops._ensure_docker_engine()
+
+    assert results[0].ok is False
+    assert "Docker Desktop" in results[0].details
+
+
+def test_docker_access_doctor_issue_flags_unreachable_daemon(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(ops, "_docker_daemon_reachable", lambda: False)
+
+    issue = ops._docker_access_doctor_issue()
+    assert issue is not None
+    assert "loginctl terminate-user" in issue
+
+
+def test_docker_access_doctor_issue_silent_when_healthy(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(ops, "_docker_daemon_reachable", lambda: True)
+
+    assert ops._docker_access_doctor_issue() is None
+
+
+def test_docker_access_doctor_issue_silent_without_docker(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda name: None)
+    assert ops._docker_access_doctor_issue() is None
+
+
+# --- Observability bind-mount ownership (#3632) ---
+
+
+def test_ensure_observability_volume_dirs_chowns_to_container_uid(monkeypatch, tmp_path):
+    """dockerd creates a missing bind-mount source root-owned; Prometheus runs
+    as uid 65534 and crash-loops on it. Pre-create + chown before the stack starts."""
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "_dir_acl_grants_uid", lambda path, uid: False)
+    privileged = []
+    monkeypatch.setattr(ops, "_privileged_run", lambda cmd, **k: privileged.append(cmd) or _cp(0))
+
+    results = ops._ensure_observability_volume_dirs()
+
+    assert all(r.ok for r in results)
+    prom = home / ".nyxGPT" / "volumes" / "prometheus"
+    assert prom.is_dir()
+    assert ["chown", "-R", "65534:65534", str(prom)] in privileged
+    assert ["chown", "-R", "472:0", str(home / ".nyxGPT" / "volumes" / "grafana")] in privileged
+    assert ["chown", "-R", "10001:10001", str(home / ".nyxGPT" / "volumes" / "loki")] in privileged
+    # Directories whose image fixes up its own data dir are created but not chowned.
+    assert (home / ".nyxGPT" / "volumes" / "glitchtip-postgres").is_dir()
+
+
+def test_ensure_observability_volume_dirs_falls_back_to_acl_grant(monkeypatch, tmp_path):
+    """Without passwordless root, a directory we own is handed to the container's
+    uid with a POSIX ACL -- never a world-writable chmod, which would expose
+    grafana.db (sessions, hashed credentials) to every local user (bandit B103)."""
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "_privileged_run", lambda cmd, **k: None)
+    monkeypatch.setattr(ops, "_dir_acl_grants_uid", lambda path, uid: False)
+    granted = []
+    monkeypatch.setattr(
+        ops, "_grant_dir_acl_to_uid", lambda path, uid: granted.append((path, uid)) or True
+    )
+
+    results = ops._ensure_observability_volume_dirs()
+
+    assert all(r.ok for r in results)
+    prom = home / ".nyxGPT" / "volumes" / "prometheus"
+    assert (prom, 65534) in granted
+    assert (home / ".nyxGPT" / "volumes" / "grafana", 472) in granted
+    assert not prom.stat().st_mode & 0o002, "must never be made world-writable"
+
+
+def test_ensure_observability_volume_dir_is_idempotent_once_acl_grants(monkeypatch, tmp_path):
+    """An already-granted directory must not re-run a sudo chown on every install."""
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "_dir_acl_grants_uid", lambda path, uid: True)
+    monkeypatch.setattr(
+        ops, "_privileged_run", lambda cmd, **k: pytest.fail(f"must not run privileged: {cmd}")
+    )
+
+    result = ops._ensure_observability_volume_dir("prometheus")
+
+    assert result.ok is True
+    assert "65534" in result.message
+
+
+def test_ensure_observability_volume_dir_reports_when_acl_unavailable(monkeypatch, tmp_path):
+    """No passwordless root and no ACL support (or root-owned leftovers inside):
+    fail actionably rather than loosening the directory for every local user."""
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "_privileged_run", lambda cmd, **k: None)
+    monkeypatch.setattr(ops, "_dir_acl_grants_uid", lambda path, uid: False)
+    monkeypatch.setattr(ops, "_grant_dir_acl_to_uid", lambda path, uid: False)
+
+    result = ops._ensure_observability_volume_dir("grafana")
+
+    assert result.ok is False
+    assert "sudo chown -R 472:0" in result.details
+    assert not (home / ".nyxGPT" / "volumes" / "grafana").stat().st_mode & 0o002
+
+
+def test_ensure_observability_volume_dirs_is_noop_off_linux(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops, "_is_linux", lambda: False)
+    monkeypatch.setattr(
+        ops, "_privileged_run", lambda cmd, **k: pytest.fail(f"must not run privileged: {cmd}")
+    )
+
+    results = ops._ensure_observability_volume_dirs()
+    assert results[0].ok is True
+
+
+def test_ensure_observability_volume_dir_reports_root_owned_dir(monkeypatch, tmp_path):
+    """The already-broken machine: the directory exists root-owned from a
+    previous run, and we have no way to fix it -- say exactly what to run."""
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "_privileged_run", lambda cmd, **k: _cp(1))
+    monkeypatch.setattr(ops, "_dir_acl_grants_uid", lambda path, uid: False)
+    monkeypatch.setattr(
+        ops,
+        "_grant_dir_acl_to_uid",
+        lambda path, uid: pytest.fail("setfacl needs ownership; must not be attempted"),
+    )
+    monkeypatch.setattr(ops.os, "getuid", lambda: 1000)
+
+    class _Stat:
+        st_uid = 0
+        st_mode = 0o40755
+
+    monkeypatch.setattr(ops.Path, "stat", lambda self, **k: _Stat())
+
+    result = ops._ensure_observability_volume_dir("prometheus")
+
+    assert result.ok is False
+    assert "sudo chown -R 65534:65534" in result.details
+
+
+# --- POSIX ACL helpers (#3632) ---
+
+
+def test_grant_dir_acl_to_uid_runs_setfacl_recursively(monkeypatch, tmp_path):
+    """Recursive on purpose: root-owned leftovers inside a directory we own must
+    make the grant fail rather than report success on a still-broken container."""
+    monkeypatch.setattr(ops, "_which", lambda name: "/usr/bin/setfacl")
+    calls = []
+    monkeypatch.setattr(ops, "_run", lambda cmd, **k: calls.append(cmd) or _cp(0))
+
+    assert ops._grant_dir_acl_to_uid(tmp_path, 65534) is True
+    assert calls == [["/usr/bin/setfacl", "-R", "-m", "u:65534:rwx", str(tmp_path)]]
+
+
+def test_grant_dir_acl_to_uid_false_without_setfacl(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops, "_which", lambda name: None)
+    monkeypatch.setattr(ops, "_run", lambda cmd, **k: pytest.fail(f"must not run: {cmd}"))
+
+    assert ops._grant_dir_acl_to_uid(tmp_path, 65534) is False
+
+
+def test_grant_dir_acl_to_uid_false_when_setfacl_fails(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops, "_which", lambda name: "/usr/bin/setfacl")
+    monkeypatch.setattr(ops, "_run", lambda cmd, **k: _cp(1, stderr="Operation not supported"))
+
+    assert ops._grant_dir_acl_to_uid(tmp_path, 65534) is False
+
+
+def test_dir_acl_grants_uid_reads_getfacl(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops, "_which", lambda name: "/usr/bin/getfacl")
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: _cp(
+            0, stdout="user::rwx\nuser:65534:rwx\ngroup::r-x\nmask::rwx\nother::r-x\n"
+        ),
+    )
+
+    assert ops._dir_acl_grants_uid(tmp_path, 65534) is True
+    assert ops._dir_acl_grants_uid(tmp_path, 472) is False
+
+
+def test_dir_acl_grants_uid_ignores_mask_stripped_entry(monkeypatch, tmp_path):
+    """An entry the ACL mask has cut down is annotated `#effective:` and is not
+    a real grant -- treating it as one would leave the container crash-looping."""
+    monkeypatch.setattr(ops, "_which", lambda name: "/usr/bin/getfacl")
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, **k: _cp(0, stdout="user:65534:rwx\t#effective:r--\n")
+    )
+
+    assert ops._dir_acl_grants_uid(tmp_path, 65534) is False
+
+
+def test_dir_acl_grants_uid_false_without_getfacl(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops, "_which", lambda name: None)
+    monkeypatch.setattr(ops, "_run", lambda cmd, **k: pytest.fail(f"must not run: {cmd}"))
+
+    assert ops._dir_acl_grants_uid(tmp_path, 65534) is False
+
+
+def test_observability_volume_doctor_issues_flags_root_owned_dir(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    (home / ".nyxGPT" / "volumes" / "prometheus").mkdir(parents=True)
+    monkeypatch.setattr(ops, "_dir_acl_grants_uid", lambda path, uid: False)
+    monkeypatch.setattr(ops.os, "getuid", lambda: 1000)
+
+    class _Stat:
+        st_uid = 0
+        st_mode = 0o40755
+
+    monkeypatch.setattr(ops.Path, "stat", lambda self, **k: _Stat())
+
+    issues = ops._observability_volume_doctor_issues()
+
+    assert any("cannot write to it" in i and "65534" in i for i in issues)
+
+
+def test_observability_volume_doctor_issues_flags_dir_we_own_without_acl(monkeypatch, tmp_path):
+    """Owning the directory ourselves is *not* enough -- the container runs as a
+    different uid, so a dir with no ACL grant is still a crash-loop."""
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    for name in ("prometheus", "grafana", "loki"):
+        (home / ".nyxGPT" / "volumes" / name).mkdir(parents=True)
+    monkeypatch.setattr(ops, "_dir_acl_grants_uid", lambda path, uid: False)
+
+    issues = ops._observability_volume_doctor_issues()
+
+    assert len(issues) == 3
+
+
+def test_observability_volume_doctor_issues_silent_when_acl_grants(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    for name in ("prometheus", "grafana", "loki"):
+        (home / ".nyxGPT" / "volumes" / name).mkdir(parents=True)
+    monkeypatch.setattr(ops, "_dir_acl_grants_uid", lambda path, uid: True)
+
+    assert ops._observability_volume_doctor_issues() == []
+
+
+def test_observability_volume_doctor_issues_silent_on_legacy_world_writable(monkeypatch, tmp_path):
+    """A machine reconciled by the first cut of this fix is genuinely working;
+    doctor must not nag about a mode nyxGPT no longer produces."""
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    for name in ("prometheus", "grafana", "loki"):
+        (home / ".nyxGPT" / "volumes" / name).mkdir(parents=True, mode=0o777)
+    monkeypatch.setattr(ops, "_dir_acl_grants_uid", lambda path, uid: False)
+    monkeypatch.setattr(ops.os, "getuid", lambda: 1000)
+
+    class _Stat:
+        st_uid = 0
+        st_mode = 0o40777
+
+    monkeypatch.setattr(ops.Path, "stat", lambda self, **k: _Stat())
+
+    assert ops._observability_volume_doctor_issues() == []
+
+
+# --- Native web wrapper auth key (#3632) ---
+
+
+def test_native_web_wrapper_exports_auth_api_key():
+    """Enabling [auth] must not break the native web UI: web/src/lib/apiProxy.ts
+    reads NYXGPT_AUTH_API_KEY, which was previously only wired in Compose mode."""
+    tpl = ops._NATIVE_WEB_WRAPPER_TEMPLATE
+    assert "read -r HOST PORT API_BASE AUTH_KEY" in tpl
+    assert "cfg.getboolean('auth', 'enabled', fallback=False)" in tpl
+    assert 'export NYXGPT_AUTH_API_KEY="$AUTH_KEY"' in tpl
+
+
+def test_install_includes_docker_engine_and_volume_dir_steps():
+    """Both new reconciliation steps must actually be wired into `ops install`,
+    and the volume-dir step must run before the observability stack starts."""
+    source = ops.install.__code__.co_consts
+    names = [c for c in source if isinstance(c, str)]
+    assert "docker engine" in names
+    assert "observability volume dirs" in names
