@@ -54,9 +54,10 @@ class NyxgptWeb < Formula
       HOST="127.0.0.1"
       PORT="3000"
       API_BASE=""
+      AUTH_KEY=""
 
       if [ -f "$CONFIG_FILE" ]; then
-        IFS=$'\t' read -r HOST PORT API_BASE < <("$SYS_PY" - <<'PY'
+        IFS=$'\t' read -r HOST PORT API_BASE AUTH_KEY < <("$SYS_PY" - <<'PY'
 import configparser
 import os
 
@@ -69,8 +70,16 @@ try:
 except Exception:
     port = '3000'
 api_base = cfg.get('web', 'api_base_url', fallback='')
+# The proxy in web/src/lib/apiProxy.ts attaches X-API-Key from
+# NYXGPT_AUTH_API_KEY; without it every proxied call 401s the moment
+# [auth] enabled is turned on (#3632).
+try:
+    auth_on = cfg.getboolean('auth', 'enabled', fallback=False)
+except Exception:
+    auth_on = False
+api_key = cfg.get('auth', 'api_key', fallback='').strip() if auth_on else ''
 
-print(f"{host}\t{port}\t{api_base}")
+print(f"{host}\t{port}\t{api_base}\t{api_key}")
 PY
 )
       fi
@@ -79,6 +88,9 @@ PY
       export PORT="$PORT"
       if [ -n "$API_BASE" ]; then
         export NEXT_PUBLIC_API_BASE="$API_BASE"
+      fi
+      if [ -n "$AUTH_KEY" ]; then
+        export NYXGPT_AUTH_API_KEY="$AUTH_KEY"
       fi
 
       echo "nyxgpt-web starting (self-contained Cellar build)" >&2

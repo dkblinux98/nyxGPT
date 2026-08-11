@@ -759,14 +759,17 @@ def _list_native_component_status() -> list[ComponentStatus]:
         native_names = NATIVE_BREW_SERVICES
     for component, native_name in native_names.items():
         if component == "ollama" and _is_linux() and _system_ollama_service_active():
-            # Adopted system ollama.service (#3632, see
-            # ops._reconcile_system_ollama_service): install deliberately
-            # skips/disables nyxgpt-ollama.service against it, so report
-            # health via the system unit instead of either flagging a
-            # doomed nyxgpt unit as down or silently omitting "ollama"
-            # (this component's out-of-scope-until-installed treatment
-            # below is for a component nobody's serving at all, not this
-            # one -- it IS being served, just not by our own unit).
+            # A system-wide ollama.service still holding port 11434 (#3632).
+            # `nyxgpt ops install` normally takes that port over -- it stops
+            # and disables the system unit so nyxgpt-ollama.service can own
+            # it (ops._takeover_system_ollama_service) -- so reaching here
+            # means the takeover could not complete (no passwordless root),
+            # and `ops doctor` is reporting the conflict with the command
+            # that resolves it. Until then, report health via the unit that
+            # is actually serving rather than restart-looping a
+            # nyxgpt-ollama.service that can only lose the port race: fighting
+            # the current arrangement would just crash-loop, and Ollama *is*
+            # reachable on 11434 either way.
             statuses.append(
                 ComponentStatus(
                     service="ollama",

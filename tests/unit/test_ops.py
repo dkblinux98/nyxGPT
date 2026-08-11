@@ -4873,6 +4873,9 @@ def test_ops_doctor_web_deps_present_and_undici_resolves(monkeypatch, capsys, tm
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+    # doctor now probes whether the docker daemon is actually reachable (#3632);
+    # this test's narrow subprocess.run stub is only for the node resolve probe.
+    monkeypatch.setattr(ops, "_docker_daemon_reachable", lambda: True)
     monkeypatch.setattr(
         ops.subprocess,
         "run",
@@ -12066,7 +12069,7 @@ def test_ops_install_default_verbose_prints_step_announcements(capsys):
         )
     assert rc == 0
     out = capsys.readouterr().out
-    assert "[1/17] sync packaged ops resources..." in out
+    assert "[1/18] sync packaged ops resources..." in out
 
 
 @pytest.mark.unit

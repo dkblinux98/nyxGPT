@@ -55,6 +55,17 @@ if [[ -n "${API_OVERRIDE:-}" ]]; then
   export NEXT_PUBLIC_API_BASE="$API_OVERRIDE"
 fi
 
+# web/src/lib/apiProxy.ts attaches X-API-Key from NYXGPT_AUTH_API_KEY on every
+# proxied call. Without it, turning on [auth] enabled leaves the web UI 401ing
+# against its own API (#3632) -- the key was only ever wired up in Compose mode.
+AUTH_ENABLED="$(get_ini auth enabled)"
+if [[ "${AUTH_ENABLED,,}" == "true" ]]; then
+  AUTH_KEY="$(get_ini auth api_key)"
+  if [[ -n "${AUTH_KEY:-}" ]]; then
+    export NYXGPT_AUTH_API_KEY="$AUTH_KEY"
+  fi
+fi
+
 cd "$REPO_DIR/web"
 
 # Clear Next.js cache to ensure fresh routes are recognized

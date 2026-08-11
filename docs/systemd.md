@@ -8,12 +8,12 @@ Homebrew services on macOS (#3508):
 2. **nyxgpt-web** - Next.js web UI
 
 A third unit, **nyxgpt-ollama**, runs native Ollama itself, so every native
-component is managed through the same `systemctl --user` surface -- *unless*
-a distro-installed system-wide `ollama.service` already holds Ollama's port
-(11434) when you run `nyxgpt ops install`, in which case nyxGPT adopts that
-unit instead of fighting it for the port. See
+component is managed through the same `systemctl --user` surface. If a
+distro-installed system-wide `ollama.service` already holds Ollama's port
+(11434), `nyxgpt ops install` stops and disables it so `nyxgpt-ollama` can
+take the port over -- see
 [Managing the Ollama service](#managing-the-ollama-service-nyxgpt-ollama)
-below for what "adopt" means and how to switch back.
+below.
 
 This is the recommended way to keep all three running locally without
 keeping terminals open -- and it's what `nyxgpt ops install` sets up for
@@ -46,6 +46,15 @@ script itself -- or run it by hand with `./scripts/systemd-native-smoke.sh`.
   ```bash
   curl -fsSL https://ollama.com/install.sh | sh
   ```
+  (That installer enables a system-wide `ollama.service`; `nyxgpt ops
+  install` disables it in favour of `nyxgpt-ollama` -- see
+  [System-wide `ollama.service` conflicts](#system-wide-ollamaservice-conflicts).)
+- Docker is **not** a prerequisite: `nyxgpt ops install` installs the engine
+  and the Compose plugin from your distro's package manager if they're
+  missing, starts the daemon, and adds you to the `docker` group. It uses
+  `sudo -n` (never prompts) for those steps -- on a host without passwordless
+  sudo it prints the exact commands to run by hand instead. See
+  [Privileged install steps](#privileged-install-steps).
 
 ---
 
@@ -155,7 +164,7 @@ tail -f ~/.nyxGPT/logs/nyxgpt-web.err.log
 
 ## Managing the Ollama service (nyxgpt-ollama)
 
-### System-wide `ollama.service` conflicts (adoption)
+### System-wide `ollama.service` conflicts
 
 The official Ollama Linux installer
 
@@ -164,29 +173,75 @@ curl -fsSL https://ollama.com/install.sh | sh
 ```
 
 auto-enables and starts a **system-wide** `ollama.service` bound to
-`127.0.0.1:11434` -- the same port `nyxgpt-ollama.service` needs. Since
-stopping/disabling a system-scope unit needs root, and nyxGPT never invokes
-`sudo` on its own for anything else either, `nyxgpt ops install` does not try
-to take the port by force. Instead it **adopts** the system unit: it detects
-the running `ollama.service` and skips installing/starting
-`nyxgpt-ollama.service` entirely, leaving the system unit to keep serving
-Ollama. If a previous install already created `nyxgpt-ollama.service` (e.g.
-before this reconciliation existed, now crash-looping against the same
-port), that unit -- unlike the system one -- IS a `--user` unit nyxGPT owns
-outright, so `nyxgpt ops install` stops and disables it.
+`127.0.0.1:11434` -- the same port `nyxgpt-ollama.service` needs, so the two
+can never both hold it.
 
-While adopted, `nyxgpt ops status`/the SRE dashboard report `ollama` healthy
-via the system unit, and self-heal does not try to restart the absent
-`nyxgpt-ollama.service`. `nyxgpt ops doctor` flags the crash-loop state (a
-stale `nyxgpt-ollama.service` installed but not active while the system unit
-is active) actionably if it's ever encountered.
-
-To have nyxGPT manage Ollama itself instead of the distro's system service,
-free the port first, then reinstall:
+**nyxGPT takes the port over.** `nyxgpt ops install` detects a system
+`ollama.service` that is active *or* merely enabled (a stopped-but-enabled
+unit would grab the port back at the next boot) and runs
 
 ```bash
-sudo systemctl disable --now ollama.service
-nyxgpt ops install
+sudo -n systemctl disable --now ollama.service
+```
+
+then waits for port 11434 to actually come free before installing and
+starting `nyxgpt-ollama.service`. That way Ollama is managed exactly like
+`nyxgpt-api`/`nyxgpt-web` -- one `systemctl --user` surface, restartable via
+`nyxgpt ops restart ollama`, and pointed at the shared
+`~/.nyxGPT/volumes/ollama/models` store every other deployment mode
+bind-mounts (the distro unit uses Ollama's own `~/.ollama/models` instead,
+so models pulled in one mode wouldn't show up in the others).
+
+If root isn't available without a password prompt, install does **not**
+start `nyxgpt-ollama.service` -- it could only crash-loop against the taken
+port, which is the failure this behaviour exists to prevent. It reports the
+command to run instead:
+
+```bash
+sudo systemctl disable --now ollama.service && nyxgpt ops install
+```
+
+`nyxgpt ops doctor` reports the same conflict whenever the system unit is
+active or enabled, and until it's resolved self-heal reports `ollama` health
+via whichever unit is actually serving rather than restart-looping the one
+that can't bind.
+
+### Privileged install steps
+
+`nyxgpt ops install` needs root for exactly three things on Linux, all of
+them run through `sudo -n` -- the `-n` is the point: it *never* prompts, so a
+non-interactive install can't hang waiting on a TTY. On a host with
+passwordless sudo (the default on Ubuntu cloud images) they just work;
+anywhere else each one fails immediately and prints the command to run by
+hand.
+
+| Step | Command | Why |
+| --- | --- | --- |
+| Ollama port takeover | `systemctl disable --now ollama.service` | Free 11434 for `nyxgpt-ollama` (above) |
+| Docker engine | `apt-get install -y docker.io docker-compose-v2` (or `dnf`/`yum`), `systemctl enable --now docker`, `usermod -aG docker $USER` | Cassandra and the whole observability stack are containers |
+| Observability data dirs | `chown -R <uid>:<gid> ~/.nyxGPT/volumes/{prometheus,grafana,loki}` | See below |
+
+**Observability bind-mount ownership.** dockerd runs as root and creates a
+missing bind-mount source directory as `root:root`. Prometheus runs as uid
+65534 inside its container, Grafana as 472, Loki as 10001 -- none of which
+can write to a root-owned directory, so the container panics and Compose
+reports `dependency failed to start: container nyxgpt-prometheus-1 is
+unhealthy`. `nyxgpt ops install` pre-creates those directories before the
+stack starts and gives them an ownership their container can write to (macOS
+never hits this: Docker Desktop's file sharing remaps ownership for you).
+`nyxgpt ops doctor` reports any directory left in the broken state with the
+`chown` that fixes it.
+
+**Docker group membership.** Group membership is stamped into a login
+session when it's created, so being added to `docker` does not affect your
+current shell -- or, more subtly, the already-running `systemd --user`
+manager and every service under it, including `nyxgpt-api`. That is how
+`nyxgpt ops status` (fresh shell, has the group) and the web UI's
+Infrastructure page (long-lived API process, doesn't) can disagree about
+whether Cassandra is running. Fix it by recreating the session:
+
+```bash
+sudo loginctl terminate-user "$USER"   # kills this SSH session; reconnect after
 ```
 
 ### Commands (nyxgpt-managed Ollama)
@@ -400,17 +455,21 @@ container that has no active login session.
 
 **Symptom**: `systemctl --user status nyxgpt-ollama` shows
 `activating (auto-restart)` or `failed`, and `nyxgpt ops doctor` reports
-`System-wide ollama.service is bound to port 11434, so nyxgpt-ollama.service
-can't start`.
+`System-wide ollama.service is active/enabled and contends for port 11434`.
 
-**Cause**: a distro-installed system-wide `ollama.service` is already
-serving on the port `nyxgpt-ollama.service` needs -- see
-[System-wide ollama.service conflicts](#system-wide-ollamaservice-conflicts-adoption)
-above. This only happens on a machine that installed before that
-reconciliation existed, or that had `ollama.service` re-enabled afterwards.
+**Cause**: a distro-installed system-wide `ollama.service` is holding the
+port `nyxgpt-ollama.service` needs -- see
+[System-wide ollama.service conflicts](#system-wide-ollamaservice-conflicts)
+above. Either it was re-enabled after install, or install couldn't get root
+without a password prompt to disable it.
 
-**Solution**: re-run `nyxgpt ops install` -- it detects the conflict, stops
-and disables the stale `nyxgpt-ollama.service`, and adopts the system unit.
+**Solution**: re-run `nyxgpt ops install` -- it stops and disables the system
+unit, then starts `nyxgpt-ollama` on the freed port. If it reports it can't
+get root:
+
+```bash
+sudo systemctl disable --now ollama.service && nyxgpt ops install
+```
 
 ---
 
