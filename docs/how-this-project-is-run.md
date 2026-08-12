@@ -101,10 +101,27 @@ about where the process broke:
   acceptance failure. Filed as a normal Backlog issue; it does not gate
   the original feature.
 
+Neither bucket is worked the moment it is filed. Both land in an
+**Acceptance Failed** holding lane and wait for the acceptance round to
+finish: the fix process starts once **Acceptance Testing** has drained
+(empty except the release tracking issue), at which point the whole holding
+lane moves to Backlog and the queue is kicked once. That keeps the owner's
+testing rhythm intact — test everything, drain, test the next candidate —
+instead of flooding the lane under test with freshly-merged fixes.
+Agent-process issues bypass the gate.
+
+The other end of the cycle is automated from the same signal: the owner
+moving the **release tracking issue** to "For Release" is the release
+sign-off, and the ceremony (master fast-forward, tag, GitHub Release,
+`stable` publish, Homebrew tap stamp, retirement of that line's release
+candidates) runs from it unattended.
+
 Full mechanics — the related-issue model, the blocking dependency, and the
 sweep that automatically promotes a feature to "For Release" once every
 related failure clears — are in
-[agents/runbooks/review-runbook.md](../agents/runbooks/review-runbook.md) §9.
+[agents/runbooks/review-runbook.md](../agents/runbooks/review-runbook.md) §9;
+the drain gate and the automated ceremony are in
+[docs/acceptance-drain-gate.md](acceptance-drain-gate.md).
 
 ## The retrospective
 

@@ -208,6 +208,12 @@ load_config() {
   # option is ever renamed.
   STATUS_ACCEPTANCE_TESTING="${STATUS_ACCEPTANCE_TESTING:-Acceptance Testing}"
 
+  # Holding lane for acceptance failures/improvements filed during a round
+  # (owner-created Project option, 2026-08-12, #3730 -- the drain gate). Same
+  # treatment as Acceptance Testing above: optional config key with a literal
+  # default, so no new repo variable is required.
+  STATUS_ACCEPTANCE_FAILED="${STATUS_ACCEPTANCE_FAILED:-Acceptance Failed}"
+
   # Timezone in which sprint-date boundaries are evaluated (owner rule,
   # 2026-07-31: "midnight is midnight EDT, not UTC"). Iteration start dates
   # are timezone-less, so every "has this sprint started/ended?" comparison
@@ -815,6 +821,267 @@ sprint_autopilot_paused() {
     | jq -s -r 'sort_by(.created_at) | last | .body // empty' \
     | tr -d '[:space:]')"
   [[ "$last_state" == "PAUSE_SPRINT" ]]
+}
+
+# -------------------------
+# Acceptance drain gate (#3730)
+# -------------------------
+# Owner decision 2026-08-12: acceptance failures and improvements filed
+# during an acceptance round land in the `Acceptance Failed` Status lane
+# and are NOT worked immediately. The fix process starts only once the
+# `Acceptance Testing` lane has DRAINED -- empty except the release
+# tracking issue, which is exempt and stays there until the whole release
+# is accepted. On drain, the held items move to `Backlog` for normal
+# scrummaster selection and the queue is kicked once.
+#
+# Rationale (from the issue): picking failures up the moment they are
+# filed floods Acceptance Testing with freshly-merged fixes mid-round and
+# burns RC cycles while the owner is still testing. The gate makes the
+# loop respect the owner's rhythm: test everything, drain, test the next
+# candidate.
+#
+# Agent-process issues bypass the gate (issue_bypasses_drain_gate below).
+
+# Every issue in the `Acceptance Testing` and `Acceptance Failed` lanes,
+# as {"acceptance_testing":[...],"acceptance_failed":[...]}. Pages the same
+# project-items query the selector and the autopilot use.
+#
+# Deliberately state-agnostic: an item awaiting acceptance is normally a
+# CLOSED issue, so "has the lane drained?" has to count closed items too --
+# unlike count_sprint_backlog_open, which asks about dispatchable work.
+acceptance_lane_snapshot() {
+  require_cmd jq
+  require_cmd python3
+
+  # Subshell + EXIT trap: the lib runs under `set -e`, so a mid-loop
+  # `graphql` failure would otherwise leave both temp files behind. A
+  # RETURN trap would outlive this function; a subshell scopes it exactly.
+  (
+    local project_id cursor="" tmp acc has_next next_cursor
+    project_id="$(get_project_id)"
+    tmp="$(mktemp)"
+    acc="$(mktemp)"
+    trap 'rm -f "$tmp" "$acc"' EXIT
+
+    local max_pages="${MAX_PAGES:-200}"
+    local page
+    for ((page = 1; page <= max_pages; page++)); do
+      if [[ -n "$cursor" ]]; then
+        graphql "$BACKLOG_PAGE_QUERY" -F project="$project_id" -F after="$cursor" >"$tmp"
+      else
+        graphql "$BACKLOG_PAGE_QUERY" -F project="$project_id" >"$tmp"
+      fi
+
+      STATUS_FIELD="$STATUS_FIELD" \
+        STATUS_ACCEPTANCE_TESTING="${STATUS_ACCEPTANCE_TESTING:-Acceptance Testing}" \
+        STATUS_ACCEPTANCE_FAILED="${STATUS_ACCEPTANCE_FAILED:-Acceptance Failed}" \
+        python3 "${_LIB_DIR}/drain_gate.py" summarize "$tmp" >>"$acc"
+
+      has_next="$(jq -r '.data.node.items.pageInfo.hasNextPage' "$tmp")"
+      next_cursor="$(jq -r '.data.node.items.pageInfo.endCursor // empty' "$tmp")"
+      [[ "$has_next" == "true" && -n "$next_cursor" ]] || break
+      cursor="$next_cursor"
+    done
+
+    python3 "${_LIB_DIR}/drain_gate.py" merge <"$acc"
+  )
+}
+
+# The features parked awaiting rework by the currently held issues
+# ("Related feature: #N", legacy "Parent feature: #N"), as a JSON array.
+# Those features park CLOSED in Acceptance Testing until every related
+# failure reaches For Release (promote_accepted_features.sh), so without
+# this the gate would deadlock: the feature waits on its failure, the
+# failure waits on the gate, and the gate waits on the feature.
+#
+# Labels are fetched alongside the body because only "Acceptance Failure"
+# issues park a feature -- the same filter promote_accepted_features.sh
+# applies, so the two sweeps always agree. A held Improvement never blocks
+# its related feature, so it must not exempt one either (drain_gate.py
+# rework_features applies the rule).
+#
+# An issue that cannot be read contributes nothing -- one unreadable issue
+# must not silently open the gate wider than it should, and the next poll
+# retries.
+drain_gate_rework_features() {
+  local held_json="$1"
+  require_cmd jq
+  require_cmd python3
+
+  local issues=() issue payload
+  while IFS= read -r issue; do
+    [[ -n "$issue" ]] || continue
+    payload="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}" \
+      --jq '{body: (.body // ""), labels: [.labels[]?.name]}' 2>/dev/null)" || {
+      _warn "drain_gate_rework_features: could not read #${issue} -- ignoring its related-feature marker"
+      continue
+    }
+    [[ -n "$payload" ]] || continue
+    issues+=("$payload")
+  done < <(jq -r '.[]' <<<"$held_json")
+
+  # Nothing readable held -> nothing parks a feature. (Guarded before the
+  # array expansion: `set -u` on bash 3.2 errors on an empty "${a[@]}".)
+  if [[ "${#issues[@]}" -eq 0 ]]; then
+    echo "[]"
+    return 0
+  fi
+
+  # One object per line -> `jq -s` slurps them once, instead of re-parsing
+  # the whole accumulator per held issue.
+  printf '%s\n' "${issues[@]}" \
+    | jq -s -c '.' \
+    | python3 "${_LIB_DIR}/drain_gate.py" rework \
+    | jq -c '.rework_features'
+}
+
+# {"open":bool,"blockers":[...],"held":[...],...} for the live board.
+# `open` means Acceptance Testing holds nothing but exempt items: the
+# release issue, and the features whose own failures this gate is holding.
+drain_gate_state() {
+  require_cmd jq
+  require_cmd python3
+  local snapshot held rework
+  snapshot="$(acceptance_lane_snapshot)" || return 1
+  held="$(jq -c '.acceptance_failed' <<<"$snapshot")"
+  rework="$(drain_gate_rework_features "$held")" || rework="[]"
+  [[ -n "$rework" ]] || rework="[]"
+  snapshot="$(jq -c --argjson r "$rework" '. + {rework_features: $r}' <<<"$snapshot")"
+  RELEASE_ISSUE="${RELEASE_ISSUE_NUMBER:-}" \
+    python3 "${_LIB_DIR}/drain_gate.py" decide <<<"$snapshot"
+}
+
+# True when `issue` is agent-process work and may be worked immediately
+# instead of being held in the Acceptance Failed lane. The rule is encoded
+# in drain_gate.py (body marker / owner-authored process exception /
+# optional label list), not inferred from context here.
+issue_bypasses_drain_gate() {
+  local issue="$1"
+  require_cmd python3
+  local issue_json
+  issue_json="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}" \
+    --jq '{title, body, labels}' 2>/dev/null)" || return 1
+  [[ -n "$issue_json" ]] || return 1
+  [[ "$(python3 "${_LIB_DIR}/drain_gate.py" bypass <<<"$issue_json")" == "true" ]]
+}
+
+# Same rule, applied to text that is not (yet) an issue -- the owner's
+# `@acceptance-failure` / `@improvement` comment body, which becomes the
+# filed issue's body. Keeps the process-exception rule in ONE place
+# (drain_gate.py) instead of re-implementing the match in each handler.
+text_bypasses_drain_gate() {
+  local text="$1"
+  require_cmd jq
+  require_cmd python3
+  [[ "$(jq -n --arg b "$text" '{body: $b}' \
+    | python3 "${_LIB_DIR}/drain_gate.py" bypass)" == "true" ]]
+}
+
+# Places `issue` in the Acceptance Failed lane (the gate's holding area)
+# and explains on the issue why it is not being worked yet.
+drain_gate_hold() {
+  local issue="$1" kind="${2:-acceptance failure}"
+  local lane="${STATUS_ACCEPTANCE_FAILED:-Acceptance Failed}"
+  set_issue_status "$issue" "$lane" \
+    || { _warn "drain_gate_hold: could not set status '${lane}' on #${issue}"; return 1; }
+  issue_comment "$issue" "⏸️ **Drain gate (#3730)**: this ${kind} is held in **${lane}** until the current acceptance round finishes.
+
+The fix process starts when **${STATUS_ACCEPTANCE_TESTING:-Acceptance Testing}** has drained (empty except the release tracking issue). At that point this issue moves to **${STATUS_BACKLOG}** automatically and the scrummaster queue is kicked once — no manual step." \
+    || _warn "drain_gate_hold: could not comment on #${issue}"
+  return 0
+}
+
+# Marker for the single kick a gate opening posts, so the release issue's
+# history shows which drain released which batch.
+DRAIN_GATE_KICK_MARKER="<!-- nyxgpt-drain-gate-release -->"
+
+# Opens the gate: moves every held Acceptance Failed item to Backlog and
+# kicks the scrummaster queue ONCE. Prints a JSON result. Idempotent by
+# construction -- once the lane is empty a later run releases nothing and
+# posts no kick, so a poll every few minutes is free of side effects.
+#
+# DRY_RUN=1 reports what it would do without mutating anything.
+drain_gate_release() {
+  require_cmd jq
+  local state held count released=() failed=()
+  state="$(drain_gate_state)" || {
+    _warn "drain_gate_release: could not read gate state"
+    return 1
+  }
+
+  if [[ "$(jq -r '.open' <<<"$state")" != "true" ]]; then
+    local blockers
+    blockers="$(jq -r '.blockers | join(", #")' <<<"$state")"
+    echo "[drain-gate] Gate CLOSED: Acceptance Testing still holds #${blockers}." >&2
+    jq -n -c --argjson s "$state" '$s + {action: "none", reason: "gate closed"}'
+    return 0
+  fi
+
+  held="$(jq -r '.held[]' <<<"$state")"
+  count="$(_count_lines "$held")"
+  if [[ "$count" == "0" ]]; then
+    echo "[drain-gate] Gate OPEN, nothing held -- nothing to do." >&2
+    jq -n -c --argjson s "$state" '$s + {action: "none", reason: "nothing held"}'
+    return 0
+  fi
+
+  echo "[drain-gate] Gate OPEN: releasing ${count} held issue(s) into ${STATUS_BACKLOG}." >&2
+  local rework_exempt
+  rework_exempt="$(jq -r '.rework_exempt // [] | join(", #")' <<<"$state")"
+  [[ -z "$rework_exempt" ]] \
+    || echo "[drain-gate] Awaiting-rework features exempt from the drain check: #${rework_exempt}." >&2
+  local issue
+  while IFS= read -r issue; do
+    [[ -n "$issue" ]] || continue
+    if [[ "${DRY_RUN:-0}" == "1" ]]; then
+      echo "[drain-gate] DRY_RUN: would move #${issue} -> ${STATUS_BACKLOG}" >&2
+      released+=("$issue")
+      continue
+    fi
+    if set_issue_status "$issue" "$STATUS_BACKLOG"; then
+      released+=("$issue")
+      issue_comment "$issue" "▶️ **Drain gate (#3730)**: the acceptance round has drained — moving this issue to **${STATUS_BACKLOG}** for normal scrummaster selection." \
+        || _warn "drain_gate_release: could not comment on #${issue}"
+    else
+      failed+=("$issue")
+      _warn "drain_gate_release: could not move #${issue} to ${STATUS_BACKLOG}"
+    fi
+  done <<<"$held"
+
+  # One kick for the whole batch, not one per issue: the dispatcher
+  # serializes on the `scrummaster-dispatch` concurrency group and picks
+  # the next issue itself, so N kicks would be N redundant runs.
+  local kicked=false refs=""
+  if [[ ${#released[@]} -gt 0 && "${DRY_RUN:-0}" != "1" ]]; then
+    refs="$(printf '#%s ' "${released[@]}")"
+    if [[ -z "${RELEASE_ISSUE_NUMBER:-}" ]]; then
+      _warn "drain_gate_release: RELEASE_ISSUE_NUMBER not configured -- released the lane but cannot kick the queue."
+    elif sprint_autopilot_paused "$RELEASE_ISSUE_NUMBER"; then
+      # Same rule as the autopilot: while PAUSE_SPRINT is in force nothing
+      # dispatches. The note must not name the kick token (a bare substring
+      # match triggers notify_scrum_ready.yml), so it carries the
+      # informational marker as well -- belt and braces, #3706.
+      issue_comment "$RELEASE_ISSUE_NUMBER" "⏸️ **Drain gate (#3730)**: acceptance round drained and ${refs% } moved to ${STATUS_BACKLOG}, but the sprint is paused (\`PAUSE_SPRINT\`) — no kick posted. Comment \`RESUME_SPRINT\` to continue.
+
+${AUTOPILOT_INFO_MARKER}" \
+        || _warn "drain_gate_release: could not post the paused notice."
+    else
+      # Count what actually moved, not what was held: a partial release
+      # would otherwise report a batch it did not deliver.
+      issue_comment "$RELEASE_ISSUE_NUMBER" "▶️ **Drain gate (#3730)**: **${STATUS_ACCEPTANCE_TESTING:-Acceptance Testing}** has drained (only this release issue remains). Released ${#released[@]} held issue(s) into ${STATUS_BACKLOG}: ${refs% }.
+
+${DRAIN_GATE_KICK_MARKER}
+
+READY_FOR_NEXT_ISSUE" \
+        && kicked=true \
+        || _warn "drain_gate_release: could not post the queue kick."
+    fi
+  fi
+
+  jq -n -c --argjson s "$state" --argjson kicked "$kicked" \
+    --argjson released "$(printf '%s\n' "${released[@]:-}" | jq -R 'select(length>0) | tonumber' | jq -s -c .)" \
+    --argjson failed "$(printf '%s\n' "${failed[@]:-}" | jq -R 'select(length>0) | tonumber' | jq -s -c .)" \
+    '$s + {action: "released", released: $released, failed: $failed, kicked: $kicked}'
 }
 
 # -------------------------
@@ -1776,12 +2043,30 @@ assign_and_trigger_developer() {
 #                  loudly (never silently reassign) and try the next
 #                  candidate.
 #   closed      -- issue is no longer OPEN. Skip quietly.
+#   drain_gate_held -- the issue sits in the `Acceptance Failed` holding
+#                  lane (#3730): the owner is still testing this
+#                  acceptance round. Skip quietly; the drain watcher moves
+#                  it to Backlog when the round drains.
 classify_backlog_claim_state() {
   local issue="$1"
   local state assignees
   state="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}" --jq '.state | ascii_upcase' 2>/dev/null || echo "UNKNOWN")"
   if [[ "$state" != "OPEN" ]]; then
     echo "closed"
+    return 0
+  fi
+
+  # Drain gate (#3730), enforced at the start point rather than trusted to
+  # the Backlog filter alone: a held issue is never started, whatever
+  # selected it. The gate opening is what moves an item OUT of this lane
+  # (drain_gate_release), so anything still in it is still gated -- no
+  # second gate-state lookup is needed here, and a costly project-wide
+  # page-through is avoided on every dispatch.
+  local held_lane status
+  held_lane="${STATUS_ACCEPTANCE_FAILED:-Acceptance Failed}"
+  status="$(issue_status "$issue" 2>/dev/null || echo "")"
+  if [[ "$status" == "$held_lane" ]]; then
+    echo "drain_gate_held"
     return 0
   fi
 
@@ -1838,6 +2123,11 @@ scrummaster_attempt_start() {
     duplicate)
       echo "SKIPPED #$issue reason=duplicate"
       echo "Skipped issue #$issue -- @${DEV_AGENT} already assigned (a concurrent/earlier dispatch already started it). Not a block; moving on."
+      return 10
+      ;;
+    drain_gate_held)
+      echo "SKIPPED #$issue reason=drain_gate_held"
+      echo "Skipped issue #$issue -- held in '${STATUS_ACCEPTANCE_FAILED:-Acceptance Failed}' while the acceptance round is still under test (#3730). Released automatically when ${STATUS_ACCEPTANCE_TESTING:-Acceptance Testing} drains; moving on."
       return 10
       ;;
     human_hold)

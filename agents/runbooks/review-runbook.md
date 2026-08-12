@@ -359,13 +359,19 @@ every related failure issue has itself been accepted (For Release).
 When acceptance testing shows the feature works as specified but the spec was
 incomplete or wrong, that is a **product management failure**, not an
 acceptance failure — the metric is charged to requirements, not to
-implementation (owner decision 2026-08-01). File it as a **new Backlog issue**
-through the normal flow (it does not jump the queue the way a defect does):
+implementation (owner decision 2026-08-01). File it by commenting
+**`@improvement`** on the feature issue (with the description in the same
+comment): `handle_improvement.yml` files it for you with the right label,
+relation and fields. Filing it by hand through the normal flow is equally
+fine — it does not jump the queue the way a defect does:
 
 - Label: **"Improvement"** (the existing label stands — no new label)
 - Body includes a `Related feature: #N` line when a related feature exists.
   If no feature issue applies, that is NOT a blocker — file and work the
   Improvement without it (owner decision 2026-08-02).
+- **Drain gate (owner decision 2026-08-12, #3730):** an improvement filed
+  during a round lands in the **`Acceptance Failed`** lane with the failures
+  and is worked once the round drains — see below.
 
 Per feature, the two labels give two separate counts for metrics:
 "Acceptance Failure"-labeled related issues = implementation failures;
@@ -393,8 +399,31 @@ That's it. The system will automatically (related-issue model, owner decision
   Relationships panel shows exactly what holds it back). NOT a sub-issue.
   Module/Priority/Effort/Milestone copy from the original; Sprint is the
   active sprint.
-- Set the new issue to "In Progress" and assign the developer agent to create
-  a `fix/N-...` branch and PR with `Closes #N`.
+- Place the new issue in the **"Acceptance Failed"** lane and hold it there
+  (drain gate, owner decision 2026-08-12, #3730) — it is not assigned or
+  worked while you are still testing this round.
+
+### The drain gate (owner decision 2026-08-12, #3730)
+
+Failures and improvements filed during a round wait in **"Acceptance
+Failed"**. The fix process starts when **"Acceptance Testing" drains** —
+empty except the release tracking issue, which is exempt and stays there
+until the whole release is accepted. On the drain, `acceptance_drain_gate.yml`
+moves every held item to **Backlog** and kicks the scrummaster queue **once**.
+
+So the rhythm is: **test the whole round → the agents drain the failures →
+test the next candidate.** Nothing you file mid-round can flood the lane you
+are still testing or burn an RC cycle.
+
+Two exemptions, both encoded rather than incidental:
+
+- the **release tracking issue** never counts as an item under test;
+- **agent-process issues** bypass the gate entirely and are worked
+  immediately — declare it in the issue body ("…bypasses the drain gate")
+  or with the `<!-- drain-gate: bypass -->` marker.
+
+Once released to Backlog, the item follows the normal flow: the developer
+agent takes it, creates a `fix/N-...` branch and a PR with `Closes #N`.
 
 **If the failure issue's fix fails your re-test:** comment
 `@acceptance-failure` on the FAILURE issue itself (the one carrying the

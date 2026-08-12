@@ -16,6 +16,13 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+# Tool caches. Never commit these: a `.mypy_cache` written under a different
+# dependency set false-fails a later run (see #3730), and shipping one on a
+# branch would spread that to every checkout.
+.mypy_cache/
+.mypy_cache_precommit/
+.ruff_cache/
+.pytest_cache/
 
 # macOS
 .DS_Store
