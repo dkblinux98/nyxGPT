@@ -316,7 +316,8 @@ def build_rc_publish_lines(rc_publish: dict[str, Any]) -> list[str]:
         watch = f" ([watch it]({runs_url}))" if runs_url else ""
         lines.append(
             f"📦 **Release candidate for this acceptance round:** {named} is publishing "
-            f"now{where} — PyPI plus the Homebrew `-rc` formulas, in one run{watch}."
+            f"now{where} — PyPI plus this line's Homebrew candidate formulas, in one "
+            f"run{watch}."
         )
     elif rc_publish.get("error"):
         why = f" ({reason})" if reason else ""
@@ -334,10 +335,17 @@ def build_rc_publish_lines(rc_publish: dict[str, Any]) -> list[str]:
         )
 
     if version:
+        # The tap formulas are named for the release line (#3735), so the
+        # brew line is derived from the candidate rather than hard-coded:
+        # `3.0.0rc2` installs `nyxgpt-api@3.0.0rc`.
+        release = version.split("rc")[0]
         lines.append("")
         lines.append("```bash")
         lines.append(f"pip install nyxgpt=={version}")
-        lines.append("brew tap dkblinux98/nyxgpt && brew install nyxgpt-api-rc nyxgpt-web-rc")
+        lines.append(
+            f"brew tap dkblinux98/nyxgpt && brew install "
+            f"nyxgpt-api@{release}rc nyxgpt-web@{release}rc"
+        )
         lines.append("```")
     lines.append("")
     lines.append(

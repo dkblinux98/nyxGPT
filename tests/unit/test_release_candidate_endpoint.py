@@ -4,7 +4,7 @@ CLAUDE.md's Definition of Done requires ops features to be reachable from
 the SRE/admin dashboard, not only the CLI. Publishing to PyPI carries the
 owner's credentials, so the dashboard half is deliberately read-only --
 these tests pin that shape: the endpoint returns exactly what the CLI plans
-for any of the three channels, and there is no write route beside it.
+for either channel, and there is no write route beside it.
 """
 
 from __future__ import annotations
@@ -90,14 +90,33 @@ def test_endpoint_does_not_dispatch_anything(monkeypatch):
     assert TestClient(app).get("/api/v1/ops/release-candidate?branch=v3.0.0").status_code == 200
 
 
-def test_endpoint_reports_the_dev_channel_the_nightly_publishes():
-    """The nightly's channel has to be inspectable from the dashboard too."""
-    payload = TestClient(app).get("/api/v1/ops/release-candidate?branch=v3.0.0&channel=dev").json()
+def test_endpoint_reports_the_stable_channel_the_ceremony_publishes():
+    """The release channel has to be inspectable from the dashboard too."""
+    payload = (
+        TestClient(app).get("/api/v1/ops/release-candidate?branch=v3.0.0&channel=stable").json()
+    )
 
-    assert payload["channel"] == "dev"
-    assert payload["version"] == "3.0.0.dev1"
-    assert payload["is_prerelease"] is True
-    assert payload["commands"]["install"] == "pip install nyxgpt==3.0.0.dev1"
+    assert payload["channel"] == "stable"
+    assert payload["is_prerelease"] is False
+    assert payload["commands"]["publish"] == "scripts/release_ceremony.sh"
+
+
+def test_endpoint_names_the_tap_formulas_for_the_line():
+    """The panel renders the `brew install` line, so the API has to carry it (#3735)."""
+    payload = TestClient(app).get("/api/v1/ops/release-candidate?branch=v3.0.0").json()
+
+    assert payload["rc_formulas"] == ["nyxgpt-api@3.0.0rc", "nyxgpt-web@3.0.0rc"]
+    assert payload["commands"]["brew"].endswith(
+        "brew install nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc"
+    )
+
+
+@pytest.mark.parametrize("channel", ["dev", "nightly"])
+def test_endpoint_rejects_the_retired_dev_channel(channel):
+    """#3735 retired the nightly -- asking for it is a 400, not a plan."""
+    response = TestClient(app).get(f"/api/v1/ops/release-candidate?branch=v3.0.0&channel={channel}")
+
+    assert response.status_code == 400
 
 
 def test_endpoint_rejects_an_unknown_channel():

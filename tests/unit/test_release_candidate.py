@@ -1,10 +1,11 @@
-"""Unit tests for the single PyPI publish pipeline -- dev, rc, stable (#3727).
+"""Unit tests for the single PyPI publish pipeline -- rc and stable (#3727,
+channels revised by #3735).
 
 Nothing here reaches PyPI or GitHub: the published-version lookup, the run
 history lookup and the workflow dispatch are replaced with recorders, so the
 tests assert on the part that actually has to be right -- the version
-arithmetic, the guardrails, the nightly's no-op condition, and the fact that
-a dev or rc build can never affect a plain `pip install nyxgpt`.
+arithmetic, the guardrails, the rc channel's no-op condition, and the fact
+that an rc build can never affect a plain `pip install nyxgpt`.
 
 Two later sections are the acceptance criteria this feature exists for: a
 pinned pre-release must survive the whole repo-less provisioning path
@@ -26,6 +27,9 @@ from nyxgpt import release_candidate as rc
 pytestmark = pytest.mark.unit
 
 
+# `3.0.0.dev5` is a *legacy* entry: the nightly channel is retired (#3735)
+# but PyPI keeps every version it was ever given, so the arithmetic still has
+# to read one as a pre-release that consumes no RC number.
 PUBLISHED = ("2.1.0", "3.0.0rc1", "3.0.0rc2", "1.0.0", "3.0.0.dev5")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -72,14 +76,6 @@ def test_parse_rc_version(version, expected):
     assert rc.parse_rc_version(version) == expected
 
 
-@pytest.mark.parametrize(
-    ("version", "expected"),
-    [("3.0.0.dev1", ("3.0.0", 1)), ("3.0.0.dev41", ("3.0.0", 41)), ("3.0.0rc1", None)],
-)
-def test_parse_dev_version(version, expected):
-    assert rc.parse_dev_version(version) == expected
-
-
 @pytest.mark.parametrize("version", ["3.0.0rc1", "3.0.0a1", "3.0.0b2", "3.0.0.dev4"])
 def test_prereleases_are_recognized(version):
     assert rc.is_prerelease(version) is True
@@ -90,9 +86,8 @@ def test_stable_releases_are_not_prereleases(version):
     assert rc.is_prerelease(version) is False
 
 
-def test_release_line_strips_every_prerelease_suffix():
+def test_release_line_strips_the_rc_suffix():
     assert rc.release_line("3.0.0rc7") == "3.0.0"
-    assert rc.release_line("3.0.0.dev7") == "3.0.0"
     assert rc.release_line("3.0.0") == "3.0.0"
 
 
@@ -116,10 +111,8 @@ def test_next_rc_number_is_not_fooled_by_gaps_or_ordering():
     assert rc.next_rc_number("3.0.0", ("3.0.0rc9", "3.0.0rc10")) == 11
 
 
-def test_dev_and_rc_numbering_are_independent():
-    """A published `3.0.0.dev5` must not consume an RC number, or vice versa."""
-    assert rc.next_dev_number("3.0.0", PUBLISHED) == 6
-    assert rc.next_dev_version("3.0.0", PUBLISHED) == "3.0.0.dev6"
+def test_a_legacy_dev_build_consumes_no_rc_number():
+    """PyPI still serves `3.0.0.dev5` from before #3735 retired the nightly."""
     assert rc.next_rc_number("3.0.0", PUBLISHED) == 3
 
 
@@ -133,20 +126,14 @@ def test_rc_version_rejects_a_zero_or_negative_number():
         rc.rc_version("3.0.0", 0)
 
 
-def test_dev_version_rejects_a_zero_number():
-    with pytest.raises(rc.ReleaseCandidateError, match="1 or greater"):
-        rc.dev_version("3.0.0", 0)
-
-
-def test_pep440_orders_dev_below_rc_below_the_release():
-    """The ordering guarantee: a nightly can never shadow an RC or the release."""
+def test_pep440_orders_rc_below_the_release():
+    """The ordering guarantee: a candidate can never shadow the release."""
     from packaging.version import Version
 
-    assert Version("3.0.0.dev99") < Version("3.0.0rc1") < Version("3.0.0rc2") < Version("3.0.0")
+    assert Version("3.0.0rc1") < Version("3.0.0rc2") < Version("3.0.0")
 
 
 def test_channel_version_composes_each_channel():
-    assert rc.channel_version("dev", "3.0.0", 7) == "3.0.0.dev7"
     assert rc.channel_version("rc", "3.0.0", 7) == "3.0.0rc7"
     assert rc.channel_version("stable", "3.0.0") == "3.0.0"
 
@@ -158,32 +145,50 @@ def test_channel_version_refuses_a_number_on_the_stable_channel():
         rc.channel_version("stable", "3.0.0", 4)
 
 
-def test_channel_version_rejects_an_unknown_channel():
+@pytest.mark.parametrize("channel", ["nightly-ish", "dev"])
+def test_channel_version_rejects_an_unknown_channel(channel):
+    """`dev` among them: the nightly channel is retired (#3735), so asking for
+    one must fail loudly rather than resolve to something."""
     with pytest.raises(rc.ReleaseCandidateError, match="Unknown channel"):
-        rc.channel_version("nightly-ish", "3.0.0", 1)
+        rc.channel_version(channel, "3.0.0", 1)
 
 
-def test_a_dev_or_rc_build_is_always_a_prerelease():
+def test_the_pipeline_understands_exactly_two_channels():
+    """Owner decision 2026-08-12 (#3735): rc and stable, nothing else."""
+    assert rc.CHANNELS == ("rc", "stable")
+
+
+def test_an_rc_build_is_always_a_prerelease():
     """The load-bearing guarantee: `pip install nyxgpt` can never resolve to one."""
     for number in (1, 2, 17):
         assert rc.is_prerelease(rc.channel_version("rc", "3.0.0", number))
-        assert rc.is_prerelease(rc.channel_version("dev", "3.0.0", number))
     # ...and the stable channel is, by construction, not one.
     assert rc.is_prerelease(rc.channel_version("stable", "3.0.0")) is False
 
 
-def test_resolve_dev_number_uses_the_run_number_so_every_nightly_is_unique():
-    """PyPI versions are immutable -- two nightlies must never claim one version."""
-    assert rc.resolve_dev_number("3.0.0", PUBLISHED, run_number=42) == 42
+# --- The tap formulas an rc publish stamps (#3735) ------------------------
 
 
-def test_resolve_dev_number_never_reuses_a_published_build():
-    """A fresh workflow file restarts its run counter at 1; PyPI already has dev5."""
-    assert rc.resolve_dev_number("3.0.0", PUBLISHED, run_number=1) == 6
+def test_rc_formulas_are_named_for_the_release_line():
+    """The owner's naming: version in the name, digit-leading so brew loads it."""
+    assert rc.rc_formulas("3.0.0") == ("nyxgpt-api@3.0.0rc", "nyxgpt-web@3.0.0rc")
+    assert rc.rc_formula_name("nyxgpt-api", "3.1.0") == "nyxgpt-api@3.1.0rc"
 
 
-def test_resolve_dev_number_falls_back_to_the_next_free_number():
-    assert rc.resolve_dev_number("3.0.0", PUBLISHED) == 6
+def test_rc_formulas_of_two_lines_are_different_formulas():
+    """Why the version is in the name: a candidate can never silently cross to
+    the next release line -- installing that one is a separate, deliberate act."""
+    assert set(rc.rc_formulas("3.0.0")).isdisjoint(rc.rc_formulas("3.1.0"))
+
+
+def test_rc_formulas_are_never_the_stable_formulas():
+    """`brew install nyxgpt-api` must keep resolving to the latest release."""
+    assert set(rc.rc_formulas("3.0.0")).isdisjoint(rc.TAP_SERVICES)
+
+
+def test_rc_formula_name_refuses_a_line_it_cannot_name():
+    with pytest.raises(rc.ReleaseCandidateError, match="not a release version"):
+        rc.rc_formula_name("nyxgpt-api", "3.0.0rc1")
 
 
 # --- pyproject pinning ----------------------------------------------------
@@ -214,12 +219,10 @@ def test_pin_version_rewrites_only_the_project_table():
     assert pinned.count("\n") == PYPROJECT.count("\n")
 
 
-def test_pin_version_accepts_a_dev_build():
-    import tomllib
-
-    assert tomllib.loads(rc.pin_version(PYPROJECT, "3.0.0.dev9"))["project"]["version"] == (
-        "3.0.0.dev9"
-    )
+def test_pin_version_refuses_a_retired_dev_build():
+    """Nothing publishes a `.devN` any more (#3735), so pinning one is a bug."""
+    with pytest.raises(rc.ReleaseCandidateError, match="unrecognized version"):
+        rc.pin_version(PYPROJECT, "3.0.0.dev9")
 
 
 def test_pin_version_result_is_still_parseable_toml():
@@ -231,7 +234,7 @@ def test_pin_version_result_is_still_parseable_toml():
     assert data["tool"]["something"]["version"] == "9.9.9"
 
 
-def test_pin_version_refuses_a_version_that_is_not_a_release_rc_or_dev():
+def test_pin_version_refuses_a_version_that_is_not_a_release_or_rc():
     with pytest.raises(rc.ReleaseCandidateError, match="unrecognized version"):
         rc.pin_version(PYPROJECT, "not-a-version")
 
@@ -264,18 +267,23 @@ def test_plan_from_the_release_branch_is_publishable():
     assert plan["version"] == "3.0.0rc3"
     assert plan["next_rc_version"] == "3.0.0rc3"
     assert plan["published_rcs"] == ["3.0.0rc1", "3.0.0rc2"]
-    assert plan["published_dev_builds"] == ["3.0.0.dev5"]
+    assert plan["rc_formulas"] == ["nyxgpt-api@3.0.0rc", "nyxgpt-web@3.0.0rc"]
     assert plan["is_prerelease"] is True
     assert plan["workflow"] == rc.PUBLISH_WORKFLOW_FILE
 
 
-def test_plan_for_the_dev_channel_uses_the_run_number():
-    plan = rc.plan("v3.0.0", "dev", published=PUBLISHED, run_number=31)
+def test_plan_refuses_the_retired_dev_channel():
+    """#3735: the nightly channel is gone -- asking for it is an error, not a
+    silent fallback to something else."""
+    with pytest.raises(rc.ReleaseCandidateError, match="Unknown channel"):
+        rc.plan("v3.0.0", "dev", published=PUBLISHED)
 
-    assert plan["channel"] == "dev"
-    assert plan["version"] == "3.0.0.dev31"
-    assert plan["is_prerelease"] is True
-    assert plan["commands"]["install"] == "pip install nyxgpt==3.0.0.dev31"
+
+def test_a_legacy_dev_build_is_not_listed_as_a_published_release():
+    """PyPI still serves `3.0.0.dev5`; it is a pre-release, not a release."""
+    plan = rc.plan("v3.0.0", published=PUBLISHED)
+
+    assert "3.0.0.dev5" not in plan["published_releases"]
 
 
 def test_plan_for_the_stable_channel_is_the_bare_release():
@@ -342,7 +350,8 @@ def test_plan_commands_pin_the_candidate_exactly():
 def test_plan_states_its_guardrails():
     guardrails = " ".join(rc.plan("v3.0.0", published=PUBLISHED)["guardrails"]).lower()
 
-    assert "dispatch triggers only" in guardrails
+    assert "dispatch trigger only" in guardrails
+    assert "no schedule" in guardrails
     assert "release branches only" in guardrails
     assert "pre-release" in guardrails
     assert "acceptance only" in guardrails
@@ -357,7 +366,7 @@ def test_plan_states_the_stable_channel_is_ceremony_only():
 
 
 def test_stable_plan_renders_a_command_the_cli_actually_accepts():
-    """The CLI's --channel offers dev|rc only; rendering `--channel stable`
+    """The CLI's --channel offers rc only; rendering `--channel stable`
     would hand an operator a line that fails with an argparse error."""
     commands = rc.plan("v3.0.0", "stable", published=PUBLISHED)["commands"]
 
@@ -367,17 +376,17 @@ def test_stable_plan_renders_a_command_the_cli_actually_accepts():
 
 
 def test_rc_plan_renders_the_macos_acceptance_install():
-    """An rc also stamps the -rc formulas, so the plan has to say how to install one."""
+    """An rc also stamps this line's formulas, so the plan says how to install one."""
     commands = rc.plan("v3.0.0", "rc", published=PUBLISHED)["commands"]
 
     assert commands["brew"] == (
-        "brew tap dkblinux98/nyxgpt && brew install nyxgpt-api-rc nyxgpt-web-rc"
+        "brew tap dkblinux98/nyxgpt && brew install nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc"
     )
     assert "nyxgpt-api " not in commands["brew"], "an rc must never install the stable formula"
 
 
-def test_dev_plan_offers_no_brew_command_because_the_nightly_is_pypi_only():
-    commands = rc.plan("v3.0.0", "dev", published=PUBLISHED, run_number=31)["commands"]
+def test_the_stable_plan_offers_no_brew_command_because_the_tap_is_the_ceremonys():
+    commands = rc.plan("v3.0.0", "stable", published=PUBLISHED)["commands"]
 
     assert "brew" not in commands
 
@@ -385,7 +394,7 @@ def test_dev_plan_offers_no_brew_command_because_the_nightly_is_pypi_only():
 def test_rc_guardrails_state_the_stable_formulas_are_untouched():
     guardrails = " ".join(rc.plan("v3.0.0", "rc", published=PUBLISHED)["guardrails"]).lower()
 
-    assert "nyxgpt-api-rc" in guardrails
+    assert "nyxgpt-api@3.0.0rc" in guardrails
     assert "brew install nyxgpt-api` still resolves to the latest stable" in guardrails
     assert "prerelease" in guardrails
 
@@ -400,22 +409,20 @@ def test_rc_guardrails_explain_the_automatic_candidate(monkeypatch):
     assert "no duplicate candidates" in guardrails
 
 
-def test_dev_guardrails_do_not_claim_the_autopilot_cuts_nightlies():
-    """The autopilot publishes candidates only -- the nightly is the schedule's."""
-    guardrails = " ".join(
-        rc.plan("v3.0.0", "dev", published=PUBLISHED, run_number=31)["guardrails"]
-    ).lower()
+def test_stable_guardrails_do_not_claim_the_autopilot_cuts_releases():
+    """The autopilot publishes candidates only -- a release is the ceremony's."""
+    guardrails = " ".join(rc.plan("v3.0.0", "stable", published=PUBLISHED)["guardrails"]).lower()
 
     assert "agentic-work-complete" not in guardrails
 
 
-def test_dev_guardrails_state_the_nightly_never_touches_the_tap():
-    guardrails = " ".join(
-        rc.plan("v3.0.0", "dev", published=PUBLISHED, run_number=31)["guardrails"]
-    ).lower()
+def test_no_guardrail_promises_a_scheduled_build():
+    """#3735 retired the nightly: nothing publishes on a timer any more."""
+    for channel in rc.CHANNELS:
+        guardrails = " ".join(rc.plan("v3.0.0", channel, published=PUBLISHED)["guardrails"]).lower()
 
-    assert "pypi only" in guardrails
-    assert "never touches the homebrew tap" in guardrails
+        assert "nightly" not in guardrails
+        assert "scheduled" not in guardrails
 
 
 # --- PyPI lookup ----------------------------------------------------------
@@ -474,7 +481,7 @@ def test_fetch_published_versions_raises_on_a_transport_error(monkeypatch):
         rc.fetch_published_versions()
 
 
-# --- The nightly's no-op condition ----------------------------------------
+# --- The tip-unchanged condition ------------------------------------------
 
 
 def _runs(*entries) -> dict:
@@ -482,6 +489,8 @@ def _runs(*entries) -> dict:
 
 
 def _run(run_id, sha, created_at, event="schedule", conclusion="success") -> dict:
+    """A run that is NOT a publish of either channel -- a leftover scheduled
+    run from before #3735, say. Nothing in the history may read as one."""
     return {
         "id": run_id,
         "head_sha": sha,
@@ -491,82 +500,12 @@ def _run(run_id, sha, created_at, event="schedule", conclusion="success") -> dic
     }
 
 
-def test_select_last_scheduled_sha_takes_the_newest_successful_nightly():
-    payload = _runs(
-        _run(1, "aaa", "2026-08-09T07:27:00Z"),
-        _run(3, "ccc", "2026-08-11T07:27:00Z"),
-        _run(2, "bbb", "2026-08-10T07:27:00Z"),
-    )
-
-    assert rc.select_last_scheduled_sha(payload) == "ccc"
-
-
-def test_select_last_scheduled_sha_ignores_dispatched_and_failed_runs():
-    """An rc dispatch or a failed nightly says nothing about what was published."""
-    payload = _runs(
-        _run(9, "dispatched", "2026-08-11T09:00:00Z", event="workflow_dispatch"),
-        _run(8, "failed", "2026-08-11T08:00:00Z", conclusion="failure"),
-        _run(7, "published", "2026-08-10T07:27:00Z"),
-    )
-
-    assert rc.select_last_scheduled_sha(payload) == "published"
-
-
-def test_select_last_scheduled_sha_ignores_the_callers_own_run():
-    payload = _runs(
-        _run(5, "mine", "2026-08-11T07:27:00Z"), _run(4, "prev", "2026-08-10T07:27:00Z")
-    )
-
-    assert rc.select_last_scheduled_sha(payload, exclude_run_id="5") == "prev"
-
-
-def test_select_last_scheduled_sha_is_empty_before_the_first_nightly():
-    assert rc.select_last_scheduled_sha(_runs()) == ""
-
-
-def test_fetch_last_scheduled_sha_asks_github_for_successful_scheduled_runs(monkeypatch):
-    import httpx
-
-    calls = []
-
-    def record(url, **kwargs):
-        calls.append((url, kwargs))
-        return _Response(200, _runs(_run(1, "abc123", "2026-08-10T07:27:00Z")))
-
-    monkeypatch.setattr(httpx, "get", record)
-
-    assert rc.fetch_last_scheduled_sha("dkblinux98/nyxGPT", token="ghs_x") == "abc123"
-
-    url, kwargs = calls[0]
-    assert f"/actions/workflows/{rc.PUBLISH_WORKFLOW_FILE}/runs" in url
-    assert "event=schedule" in url and "status=success" in url
-    assert kwargs["headers"]["Authorization"] == "Bearer ghs_x"
-
-
-def test_fetch_last_scheduled_sha_treats_a_workflow_with_no_history_as_empty(monkeypatch):
-    import httpx
-
-    monkeypatch.setattr(httpx, "get", lambda *a, **k: _Response(404))
-
-    assert rc.fetch_last_scheduled_sha("dkblinux98/nyxGPT") == ""
-
-
-def test_fetch_last_scheduled_sha_raises_rather_than_guessing(monkeypatch):
-    """A GitHub outage must not read as "nothing published yet" -- that republishes nightly."""
-    import httpx
-
-    monkeypatch.setattr(httpx, "get", lambda *a, **k: _Response(500))
-
-    with pytest.raises(rc.ReleaseCandidateError, match="HTTP 500"):
-        rc.fetch_last_scheduled_sha("dkblinux98/nyxGPT")
-
-
 # --- The rc channel's no-op condition (#3729) -----------------------------
 #
 # The sprint autopilot dispatches a candidate every time the sprint parks at
 # agentic-work-complete, so "has the tip moved since the last candidate?" has
-# to be answerable for rc exactly as it is for the nightly -- otherwise a
-# second observation of the same parked state cuts a duplicate rcN.
+# to be answerable -- otherwise a second observation of the same parked state
+# cuts a duplicate rcN.
 
 
 def _dispatch_run(run_id, sha, created_at, title="publish rc from v3.0.0", conclusion="success"):
@@ -591,10 +530,9 @@ def test_select_last_published_sha_rc_takes_the_newest_successful_candidate():
 
 
 def test_select_last_published_sha_rc_ignores_other_channels_dispatches():
-    """dev and stable arrive on the same trigger -- only the title tells them apart."""
+    """Both channels arrive on the same trigger -- only the title tells them apart."""
     payload = _runs(
         _dispatch_run(9, "stable", "2026-08-11T15:00:00Z", title="publish stable from v3.0.0"),
-        _dispatch_run(8, "dev", "2026-08-11T14:00:00Z", title="publish dev from v3.0.0"),
         _dispatch_run(7, "candidate", "2026-08-10T12:00:00Z"),
     )
 
@@ -611,10 +549,10 @@ def test_select_last_published_sha_rc_ignores_a_dry_run():
     assert rc.select_last_published_sha(payload, "rc") == "candidate"
 
 
-def test_select_last_published_sha_rc_ignores_failed_and_scheduled_runs():
+def test_select_last_published_sha_rc_ignores_failed_and_non_dispatch_runs():
     payload = _runs(
         _dispatch_run(9, "failed", "2026-08-11T15:00:00Z", conclusion="failure"),
-        _run(8, "nightly", "2026-08-11T07:27:00Z"),
+        _run(8, "scheduled-leftover", "2026-08-11T07:27:00Z"),
         _dispatch_run(7, "candidate", "2026-08-10T12:00:00Z"),
     )
 
@@ -634,14 +572,14 @@ def test_select_last_published_sha_is_empty_before_the_first_candidate():
     assert rc.select_last_published_sha(_runs(), "rc") == ""
 
 
-def test_select_last_published_sha_dev_is_unmoved_by_rc_dispatches():
-    """The two channels' histories are independent: an rc must not skip a nightly."""
+def test_select_last_published_sha_stable_is_unmoved_by_rc_dispatches():
+    """The two channels' histories are independent: a candidate is not a release."""
     payload = _runs(
         _dispatch_run(9, "candidate", "2026-08-11T15:00:00Z"),
-        _run(7, "nightly", "2026-08-10T07:27:00Z"),
+        _dispatch_run(7, "release", "2026-08-10T12:00:00Z", title="publish stable from v3.0.0"),
     )
 
-    assert rc.select_last_published_sha(payload, "dev") == "nightly"
+    assert rc.select_last_published_sha(payload, "stable") == "release"
 
 
 @pytest.mark.parametrize(
@@ -661,8 +599,10 @@ def test_run_published_channel_reads_the_workflow_run_name(title, expected):
     assert rc.run_published_channel(run, "rc") is expected
 
 
-def test_run_published_channel_dev_needs_no_title_because_only_the_nightly_is_scheduled():
-    assert rc.run_published_channel(_run(1, "sha", "2026-08-11T07:27:00Z"), "dev") is True
+def test_run_published_channel_ignores_a_scheduled_run():
+    """#3735 removed the schedule trigger; a leftover scheduled run in the
+    history published nothing and must not read as a candidate."""
+    assert rc.run_published_channel(_run(1, "sha", "2026-08-11T07:27:00Z"), "rc") is False
 
 
 def test_fetch_last_published_sha_asks_github_for_rc_dispatches(monkeypatch):
@@ -837,12 +777,12 @@ def test_main_rc_publishes_when_the_tip_has_moved(monkeypatch, capsys):
     assert capsys.readouterr().out.strip() == rc.next_rc_version("3.0.0", list(PUBLISHED))
 
 
-def test_main_rc_asks_github_for_rc_history_not_the_nightlys(monkeypatch, capsys):
-    """A candidate must not be skipped because a *nightly* built the same commit."""
+def test_main_rc_asks_github_for_rc_history_not_the_releases(monkeypatch, capsys):
+    """A candidate must not be skipped because the *ceremony* built that commit."""
     monkeypatch.setattr(rc, "fetch_published_versions", lambda *a, **k: list(PUBLISHED))
     seen = {}
 
-    def record(repo, channel="dev", **kwargs):
+    def record(repo, channel="stable", **kwargs):
         seen["channel"] = channel
         return ""
 
@@ -924,16 +864,29 @@ def test_dispatch_posts_the_workflow_dispatch(monkeypatch):
     assert result["channel"] == "rc"
 
 
-def test_dispatch_can_ask_for_an_immediate_dev_build(monkeypatch):
+def test_dispatch_defaults_to_the_rc_channel(monkeypatch):
     import httpx
 
     _stub_config(monkeypatch)
     calls = []
     monkeypatch.setattr(httpx, "post", lambda url, **kw: (calls.append(kw), _Response(204))[1])
 
-    rc.dispatch("v3.0.0", "dev")
+    rc.dispatch("v3.0.0")
 
-    assert calls[0]["json"]["inputs"] == {"channel": "dev"}
+    assert calls[0]["json"]["inputs"] == {"channel": "rc"}
+
+
+def test_dispatch_refuses_the_retired_dev_channel(monkeypatch):
+    """#3735: there is no nightly channel to dispatch any more."""
+    import httpx
+
+    def explode(*a, **k):  # pragma: no cover - reaching it fails the test
+        raise AssertionError("dispatch must not ask GitHub for a retired channel")
+
+    monkeypatch.setattr(httpx, "post", explode)
+
+    with pytest.raises(rc.ReleaseCandidateError, match="Unknown channel"):
+        rc.dispatch("v3.0.0", "dev")
 
 
 def test_dispatch_refuses_the_stable_channel(monkeypatch):
@@ -992,14 +945,22 @@ def test_cli_reports_the_plan(monkeypatch, capsys):
     assert "pip install nyxgpt==3.0.0rc3" in out
 
 
-def test_cli_reports_the_dev_channel_plan(monkeypatch, capsys):
+def test_cli_prints_the_macos_acceptance_install(monkeypatch, capsys):
+    """Every surface renders the candidate formulas by name (#3735)."""
     monkeypatch.setattr(rc, "fetch_published_versions", lambda *a, **k: list(PUBLISHED))
 
-    assert rc.release_publish(_args(channel="dev")) == 0
+    assert rc.release_publish(_args()) == 0
 
     out = capsys.readouterr().out
-    assert "3.0.0.dev6" in out
-    assert "dev channel" in out
+    assert "brew install nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc" in out
+    assert "nyxgpt-api@3.0.0rc, nyxgpt-web@3.0.0rc" in out  # the plan's formula line
+
+
+def test_cli_refuses_the_retired_dev_channel(monkeypatch, capsys):
+    monkeypatch.setattr(rc, "fetch_published_versions", lambda *a, **k: list(PUBLISHED))
+
+    assert rc.release_publish(_args(channel="dev")) == 1
+    assert "Unknown channel" in capsys.readouterr().err
 
 
 def test_release_rc_is_the_rc_channel(monkeypatch, capsys):
@@ -1091,25 +1052,6 @@ def test_cli_reports_the_number_it_actually_dispatches(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "3.0.0rc9" in out
     assert "3.0.0rc3" not in out
-
-
-def test_cli_warns_that_a_dispatched_dev_build_can_no_op(monkeypatch, capsys):
-    """The workflow runs the nightly's unchanged-tip check for every dev run,
-    dispatched or scheduled -- so say so rather than let SKIPPED look broken."""
-    monkeypatch.setattr(rc, "fetch_published_versions", lambda *a, **k: list(PUBLISHED))
-    monkeypatch.setattr(
-        rc,
-        "dispatch",
-        lambda branch, channel="rc", number=None: {
-            "dispatched": True,
-            "runs_url": "https://github.com/x/y/actions",
-        },
-    )
-
-    assert rc.release_publish(_args(channel="dev", publish=True)) == 0
-
-    out = capsys.readouterr().out
-    assert "publishes nothing when the tip has not moved" in out
 
 
 def test_cli_warns_that_an_rc_no_ops_on_an_unchanged_tip(monkeypatch, capsys):
@@ -1248,73 +1190,11 @@ def test_main_prints_the_json_plan_on_stderr(monkeypatch, capsys):
     assert json.loads(captured.err)["version"] == "3.0.0rc3"
 
 
-# --- the nightly dev channel, end to end through main() -------------------
+# --- the rc tip guard's remaining edges, end to end through main() --------
 
 
-def test_main_dev_uses_the_run_number_for_a_unique_version(monkeypatch, capsys):
-    monkeypatch.setattr(rc, "fetch_published_versions", lambda *a, **k: list(PUBLISHED))
-
-    assert rc.main(["--branch", "v3.0.0", "--channel", "dev", "--run-number", "88"]) == 0
-    assert capsys.readouterr().out.strip() == "3.0.0.dev88"
-
-
-def test_main_dev_skips_when_the_tip_is_unchanged(monkeypatch, capsys, tmp_path):
-    """The owner's no-op requirement: an unchanged tip publishes nothing."""
-    monkeypatch.setattr(rc, "fetch_published_versions", lambda *a, **k: list(PUBLISHED))
-    monkeypatch.setattr(rc, "fetch_last_published_sha", lambda *a, **k: "deadbeef")
-    pyproject = tmp_path / "pyproject.toml"
-    pyproject.write_text(PYPROJECT, encoding="utf-8")
-
-    exit_code = rc.main(
-        [
-            "--branch",
-            "v3.0.0",
-            "--channel",
-            "dev",
-            "--run-number",
-            "88",
-            "--skip-if-unchanged",
-            "--head-sha",
-            "deadbeef",
-            "--repo",
-            "dkblinux98/nyxGPT",
-            "--pin",
-            str(pyproject),
-        ]
-    )
-
-    assert exit_code == 0
-    assert capsys.readouterr().out.strip() == rc.SKIP_SENTINEL
-    # Nothing was pinned: the run stops before it builds anything.
-    assert pyproject.read_text(encoding="utf-8") == PYPROJECT
-
-
-def test_main_dev_publishes_when_the_tip_has_moved(monkeypatch, capsys):
-    monkeypatch.setattr(rc, "fetch_published_versions", lambda *a, **k: list(PUBLISHED))
-    monkeypatch.setattr(rc, "fetch_last_published_sha", lambda *a, **k: "oldsha")
-
-    exit_code = rc.main(
-        [
-            "--branch",
-            "v3.0.0",
-            "--channel",
-            "dev",
-            "--run-number",
-            "88",
-            "--skip-if-unchanged",
-            "--head-sha",
-            "newsha",
-            "--repo",
-            "dkblinux98/nyxGPT",
-        ]
-    )
-
-    assert exit_code == 0
-    assert capsys.readouterr().out.strip() == "3.0.0.dev88"
-
-
-def test_main_dev_publishes_the_first_nightly(monkeypatch, capsys):
-    """No previous successful nightly -> nothing to compare against -> publish."""
+def test_main_rc_publishes_the_first_candidate_of_a_line(monkeypatch, capsys):
+    """No previous successful candidate -> nothing to compare against -> publish."""
     monkeypatch.setattr(rc, "fetch_published_versions", lambda *a, **k: list(PUBLISHED))
     monkeypatch.setattr(rc, "fetch_last_published_sha", lambda *a, **k: "")
 
@@ -1323,8 +1203,6 @@ def test_main_dev_publishes_the_first_nightly(monkeypatch, capsys):
             [
                 "--branch",
                 "v3.0.0",
-                "--channel",
-                "dev",
                 "--skip-if-unchanged",
                 "--head-sha",
                 "newsha",
@@ -1334,10 +1212,10 @@ def test_main_dev_publishes_the_first_nightly(monkeypatch, capsys):
         )
         == 0
     )
-    assert capsys.readouterr().out.strip() == "3.0.0.dev6"
+    assert capsys.readouterr().out.strip() == "3.0.0rc3"
 
 
-def test_main_dev_fails_rather_than_publishing_blind_on_a_github_error(monkeypatch, capsys):
+def test_main_rc_fails_rather_than_publishing_blind_on_a_github_error(monkeypatch, capsys):
     monkeypatch.setattr(rc, "fetch_published_versions", lambda *a, **k: list(PUBLISHED))
 
     def explode(*a, **k):
@@ -1350,8 +1228,6 @@ def test_main_dev_fails_rather_than_publishing_blind_on_a_github_error(monkeypat
             [
                 "--branch",
                 "v3.0.0",
-                "--channel",
-                "dev",
                 "--skip-if-unchanged",
                 "--head-sha",
                 "newsha",
@@ -1362,6 +1238,14 @@ def test_main_dev_fails_rather_than_publishing_blind_on_a_github_error(monkeypat
         == 1
     )
     assert "Could not reach the GitHub API" in capsys.readouterr().err
+
+
+def test_main_refuses_the_retired_dev_channel(monkeypatch, capsys):
+    """The workflow can no longer ask for one, and neither can a hand-run."""
+    monkeypatch.setattr(rc, "fetch_published_versions", lambda *a, **k: list(PUBLISHED))
+
+    assert rc.main(["--branch", "v3.0.0", "--channel", "dev"]) == 1
+    assert "Unknown channel" in capsys.readouterr().err
 
 
 # --- the stable channel is ceremony-only ---------------------------------
@@ -1445,19 +1329,22 @@ def _publish_workflow_text() -> str:
     )
 
 
-def test_publish_workflow_runs_on_a_schedule_and_on_dispatch_only():
-    """No push/tag/release trigger: a build is never cut by accident."""
+def test_publish_workflow_runs_on_dispatch_only():
+    """No schedule, push, tag or release trigger: nothing is ever published
+    without being asked for (#3735 retired the nightly)."""
     # PyYAML parses the unquoted `on:` key as the boolean True.
     triggers = _publish_workflow()[True]
 
-    assert set(triggers) == {"schedule", "workflow_dispatch"}
-    assert triggers["schedule"], "the nightly dev build needs a cron entry"
+    assert set(triggers) == {"workflow_dispatch"}
+    # ...and no cron entry survives anywhere in the file.
+    assert "cron" not in _publish_workflow_text()
 
 
-def test_publish_workflow_offers_all_three_channels():
+def test_publish_workflow_offers_both_channels_and_no_others():
     channels = _publish_workflow()[True]["workflow_dispatch"]["inputs"]["channel"]["options"]
 
     assert set(channels) == set(rc.CHANNELS)
+    assert "dev" not in channels
 
 
 def test_publish_workflow_delegates_the_guardrail_to_the_tested_module():
@@ -1470,12 +1357,12 @@ def test_publish_workflow_delegates_the_guardrail_to_the_tested_module():
     assert "--skip-if-unchanged" in run_steps
 
 
-def test_publish_workflow_defaults_a_scheduled_run_to_the_dev_channel():
-    """`inputs.channel` is empty on a schedule -- the nightly must still be a dev build."""
+def test_publish_workflow_defaults_to_the_rc_channel():
+    """A dispatch with no channel is a candidate -- never a release."""
     steps = _publish_workflow()["jobs"]["publish"]["steps"]
     version_step = next(step for step in steps if step.get("id") == "version")
 
-    assert version_step["env"]["CHANNEL"] == "${{ inputs.channel || 'dev' }}"
+    assert version_step["env"]["CHANNEL"] == "${{ inputs.channel || 'rc' }}"
 
 
 def test_publish_workflow_can_mint_an_oidc_token_for_trusted_publishing():
@@ -1483,7 +1370,7 @@ def test_publish_workflow_can_mint_an_oidc_token_for_trusted_publishing():
 
     assert job["permissions"]["id-token"] == "write"
     assert job["permissions"]["contents"] == "read"
-    # The nightly no-op check reads this workflow's own run history.
+    # The rc no-op check reads this workflow's own run history.
     assert job["permissions"]["actions"] == "read"
 
 
@@ -1514,13 +1401,13 @@ def _rc_tap_job() -> dict:
 
 
 def test_only_the_rc_channel_can_reach_the_tap_job():
-    """Structural, not conditional: dev and stable never enter this job."""
+    """Structural, not conditional: the stable channel never enters this job."""
     job = _rc_tap_job()
     condition = job["if"]
 
     assert job["needs"] == "publish"
     assert "needs.publish.outputs.channel == 'rc'" in condition
-    # A nightly that no-ops publishes nothing, so it must stamp nothing.
+    # An rc that no-ops publishes nothing, so it must stamp nothing.
     assert "needs.publish.outputs.publish == 'true'" in condition
     assert "!inputs.dry_run" in condition
 
@@ -1552,8 +1439,11 @@ def test_rc_tap_job_never_writes_a_stable_formula():
         for line in run_steps.splitlines():
             if stable_formula in line and "cp " in line:
                 raise AssertionError(f"rc tap job copies the stable formula: {line.strip()}")
-    for rc_formula in rc.RC_FORMULAS:
-        assert f"{rc_formula}.rb" in run_steps
+    # What it does copy is this line's candidate formulas, named for the
+    # release the run is building (#3735) rather than hard-coded.
+    for service in rc.TAP_SERVICES:
+        assert f'{service}@${{RELEASE}}rc.rb"' in run_steps
+    assert 'RELEASE="${VERSION%%rc*}"' in run_steps
 
     # ...and it says so out loud rather than relying on the file names alone.
     assert any("Assert no stable formula" in str(step.get("name", "")) for step in steps)
@@ -1656,7 +1546,7 @@ def test_the_kick_path_can_only_dispatch_the_rc_channel():
     assert 'AUTOPILOT_RC_CHANNEL="rc"' in _autopilot_lib()
     # Every other channel is refused before the dispatch, not silently coerced.
     assert '[[ "$AUTOPILOT_RC_CHANNEL" != "rc" ]]' in body
-    for forbidden in ("stable", "dev", rc.STABLE_CONFIRMATION):
+    for forbidden in ("stable", rc.STABLE_CONFIRMATION):
         assert f"channel={forbidden}" not in body
 
 
@@ -1700,14 +1590,14 @@ def test_the_publish_workflow_guards_the_rc_channel_against_a_repeat_firing():
 
 
 def test_the_publish_workflow_run_name_stays_readable_by_the_rc_tip_guard():
-    """`run-name` is how a finished rc run is told apart from a dev or stable
+    """`run-name` is how a finished rc run is told apart from a stable
     dispatch (they share the workflow_dispatch event) -- keep them in sync."""
     workflow = _publish_workflow()
     run_name = " ".join(workflow["run-name"].split())
 
-    assert run_name.startswith("publish ${{ inputs.channel || 'dev' }}")
+    assert run_name.startswith("publish ${{ inputs.channel || 'rc' }}")
     # What GitHub renders for a real rc dispatch, and for a dry run.
-    rendered = run_name.replace("${{ inputs.channel || 'dev' }}", "rc").replace(
+    rendered = run_name.replace("${{ inputs.channel || 'rc' }}", "rc").replace(
         "${{ inputs.dry_run && ' [dry run]' || '' }}", ""
     )
     rendered = rendered.replace("${{ github.ref_name }}", "v3.0.0")

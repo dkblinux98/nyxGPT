@@ -1886,8 +1886,8 @@ def test_release_rc_parses_and_dispatches(
     [
         (["release", "publish"], {"channel": "rc", "number": None, "publish": False}),
         (
-            ["release", "publish", "--channel", "dev", "--publish"],
-            {"channel": "dev", "number": None, "publish": True},
+            ["release", "publish", "--channel", "rc", "--publish"],
+            {"channel": "rc", "number": None, "publish": True},
         ),
         (
             ["release", "publish", "--channel", "rc", "--number", "4"],
@@ -1913,10 +1913,12 @@ def test_release_publish_parses_every_channel(
     assert seen_args[0].publish is expected["publish"]
 
 
-def test_release_publish_refuses_the_stable_channel_at_the_parser() -> None:
-    """A release is published by the ceremony, which delegates to the same workflow."""
+@pytest.mark.parametrize("channel", ["stable", "dev"])
+def test_release_publish_refuses_an_undispatchable_channel_at_the_parser(channel: str) -> None:
+    """A release is published by the ceremony, which delegates to the same
+    workflow; the nightly `dev` channel no longer exists at all (#3735)."""
     with pytest.raises(SystemExit):
-        cli(["release", "publish", "--channel", "stable"])
+        cli(["release", "publish", "--channel", channel])
 
 
 def test_release_rc_propagates_a_refused_publish(monkeypatch: pytest.MonkeyPatch) -> None:
