@@ -51,18 +51,18 @@ type AcceptanceStep = {
 
 // `GET /api/v1/ops/release-candidate` -- the dashboard half of
 // `nyxgpt release publish` (#3727). Acceptance installs come from PyPI, so
-// testing the release-branch tip repo-less needs a published pre-release --
-// a nightly `dev` build or an on-demand `rc`. This panel says which one to
-// pin and whether another can be cut.
+// testing the release-branch tip repo-less needs a published pre-release: an
+// on-demand `rc`, which is the only pre-release channel there is (#3735
+// retired the nightly `dev` builds). This panel says which candidate to pin
+// and whether another can be cut.
 type ReleaseCandidatePlan = {
   branch: string;
   channel: string;
   release: string;
   declared_version: string;
   published_rcs: string[];
-  published_dev_builds: string[];
   next_rc_version: string;
-  next_dev_version: string;
+  rc_formulas: string[];
   version: string;
   is_prerelease: boolean;
   publishable: boolean;
@@ -415,14 +415,13 @@ export default function PortabilityPage() {
             </div>
             <p style={{ fontSize: '0.85rem', color: 'var(--foreground-muted)' }}>
               Every install above comes from PyPI, so acceptance testing can only reach code that
-              has been published. One pipeline publishes the release-branch tip on three channels —
-              a nightly <code>dev</code> build, an <code>rc</code>, and the release itself
-              (<code>stable</code>, run only by the owner&apos;s ceremony). Dev and rc builds are
-              pre-releases a clean machine installs by exact pin. Most acceptance rounds need no
-              command: the sprint autopilot cuts an <code>rc</code> when the sprint reaches
+              has been published. One pipeline publishes the release-branch tip on two channels —
+              an <code>rc</code> and the release itself (<code>stable</code>, run only by the
+              owner&apos;s ceremony). An rc is a pre-release a clean machine installs by exact pin.
+              Nothing is ever published on a schedule. Most acceptance rounds need no command: the
+              sprint autopilot cuts an <code>rc</code> when the sprint reaches
               agentic-work-complete and names it on the release tracking issue. Publishing by hand
-              is an owner action, so it runs from a terminal or on the schedule, never from this
-              page.
+              is an owner action, so it runs from a terminal, never from this page.
             </p>
 
             {rcError && (
@@ -443,10 +442,8 @@ export default function PortabilityPage() {
                     {rc.published_rcs.length > 0 ? rc.published_rcs.join(', ') : 'none yet'}
                   </div>
                   <div>
-                    Nightly dev builds:{' '}
-                    {rc.published_dev_builds.length > 0
-                      ? rc.published_dev_builds.join(', ')
-                      : 'none yet'}
+                    Tap formulas for this line:{' '}
+                    {rc.rc_formulas.length > 0 ? rc.rc_formulas.join(', ') : 'none'}
                   </div>
                   <div>
                     Next <code>{rc.channel}</code> build: <strong>{rc.version}</strong>
@@ -486,8 +483,11 @@ export default function PortabilityPage() {
                   label="Point an acceptance install at it"
                   commands={[rc.commands.install, rc.commands.user_data, rc.commands.deploy]}
                 />
-                {/* Only the rc channel stamps the tap — a nightly dev build is
-                    PyPI-only, so the backend omits this command for it. */}
+                {/* Only the rc channel stamps the tap — the stable formulas
+                    belong to the ceremony, so the backend omits this command
+                    for that channel. The formula names carry the release
+                    line (#3735), so this renders whatever the backend says
+                    rather than a hard-coded `brew install`. */}
                 <CommandList
                   label="Accept it on macOS (release candidates only)"
                   commands={rc.commands.brew ? [rc.commands.brew] : []}
@@ -515,8 +515,8 @@ export default function PortabilityPage() {
                     color: 'var(--foreground-muted)',
                   }}
                 >
-                  Workflow: <code>.github/workflows/{rc.workflow}</code> (nightly schedule + manual
-                  dispatch only) — runbook:{' '}
+                  Workflow: <code>.github/workflows/{rc.workflow}</code> (manual or autopilot
+                  dispatch only — no schedule) — runbook:{' '}
                   <code>{rc.docs}</code>
                 </p>
               </>

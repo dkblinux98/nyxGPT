@@ -3,8 +3,8 @@ set -uo pipefail
 
 # tests/test_retire_rc_formulas.sh
 # Tests for scripts/retire_rc_formulas.sh (#3730): the automated release
-# ceremony's final step, which removes a shipped line's `-rc` formulas from
-# the remote Homebrew tap. Runs against a real LOCAL bare repo standing in
+# ceremony's final step, which removes a shipped line's candidate formulas
+# (`nyxgpt-api@<release>rc`, #3735) from the remote Homebrew tap. Runs against a real LOCAL bare repo standing in
 # for the tap (TAP_CLONE_URL), so the clone/commit/push/verify path is
 # exercised end to end without GitHub.
 #
@@ -28,9 +28,12 @@ _assert_eq() {
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-# Builds a fresh bare "tap" whose -rc formulas carry $1 as their version.
+# Builds a fresh bare "tap" whose candidate formulas carry $1 as their
+# version. Their file names carry the release line the same way a real rc
+# publish names them (#3735): `3.0.0rc4` -> `nyxgpt-api@3.0.0rc.rb`.
 _make_tap() {
   local rc_version="$1"
+  local line="${rc_version%%rc*}"
   local bare="$WORK/tap.git" seed="$WORK/seed"
   rm -rf "$bare" "$seed"
   git init --quiet --bare -b main "$bare"
@@ -38,7 +41,8 @@ _make_tap() {
   mkdir -p "$seed/Formula"
   for name in nyxgpt-api nyxgpt-web; do
     printf 'class X < Formula\n  version "3.0.0"\nend\n' >"$seed/Formula/${name}.rb"
-    printf 'class XRc < Formula\n  version "%s"\nend\n' "$rc_version" >"$seed/Formula/${name}-rc.rb"
+    printf 'class XRc < Formula\n  version "%s"\nend\n' "$rc_version" \
+      >"$seed/Formula/${name}@${line}rc.rb"
   done
   git -C "$seed" config user.email t@example.com
   git -C "$seed" config user.name tester
@@ -64,14 +68,14 @@ _assert_eq "only the stable formulas remain" \
 BARE="$(_make_tap "3.1.0rc1")"
 TAP_CLONE_URL="$BARE" bash "$SCRIPT" 3.0.0 >/dev/null 2>&1
 _assert_eq "a newer line's candidates survive the older line's ceremony" \
-  "Formula/nyxgpt-api-rc.rb Formula/nyxgpt-api.rb Formula/nyxgpt-web-rc.rb Formula/nyxgpt-web.rb " \
+  "Formula/nyxgpt-api.rb Formula/nyxgpt-api@3.1.0rc.rb Formula/nyxgpt-web.rb Formula/nyxgpt-web@3.1.0rc.rb " \
   "$(_tap_files "$BARE")"
 
 # --- Test 3: DRY_RUN changes nothing ---
 BARE="$(_make_tap "3.0.0rc4")"
 DRY_RUN=1 TAP_CLONE_URL="$BARE" bash "$SCRIPT" 3.0.0 >/dev/null 2>&1
 _assert_eq "DRY_RUN leaves the tap untouched" \
-  "Formula/nyxgpt-api-rc.rb Formula/nyxgpt-api.rb Formula/nyxgpt-web-rc.rb Formula/nyxgpt-web.rb " \
+  "Formula/nyxgpt-api.rb Formula/nyxgpt-api@3.0.0rc.rb Formula/nyxgpt-web.rb Formula/nyxgpt-web@3.0.0rc.rb " \
   "$(_tap_files "$BARE")"
 
 # --- Test 4: re-running after a retirement is a no-op, not an error ---
@@ -96,6 +100,23 @@ esac
 BARE="$(_make_tap "3.0.0rc4")"
 TAP_CLONE_URL="$BARE" bash "$SCRIPT" "3.0" >/dev/null 2>&1
 _assert_eq "a non x.y.z version is refused" "2" "$?"
+
+# --- Test 7: the stamped version is checked, not just the file name ---
+# A formula named for this line but carrying another line's version is a
+# hand-edit, not something this ceremony may delete.
+BARE="$(_make_tap "3.0.0rc4")"
+SEED="$WORK/edit"
+rm -rf "$SEED"
+git clone --quiet "$BARE" "$SEED"
+printf 'class XRc < Formula\n  version "3.1.0rc1"\nend\n' >"$SEED/Formula/nyxgpt-api@3.0.0rc.rb"
+git -C "$SEED" config user.email t@example.com
+git -C "$SEED" config user.name tester
+git -C "$SEED" commit --quiet -am "hand edit"
+git -C "$SEED" push --quiet origin main
+TAP_CLONE_URL="$BARE" bash "$SCRIPT" 3.0.0 >/dev/null 2>&1
+_assert_eq "a formula stamped for another line is left in place" \
+  "Formula/nyxgpt-api.rb Formula/nyxgpt-api@3.0.0rc.rb Formula/nyxgpt-web.rb " \
+  "$(_tap_files "$BARE")"
 
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "All tests passed."

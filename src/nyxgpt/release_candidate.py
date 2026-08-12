@@ -1,4 +1,4 @@
-"""The single PyPI publish core: dev, rc and stable channels (#3727).
+"""The single PyPI publish core: the rc and stable channels (#3727).
 
 Acceptance testing of the repo-less paths installs nyxGPT **from PyPI**
 (`pip install nyxgpt`, the EC2 user-data bootstrap, `nyxgpt cloud deploy`),
@@ -6,46 +6,47 @@ so without a published artifact it can only ever exercise the *last stable
 release* -- never the release-branch tip carrying the acceptance-failure
 fixes merged during testing. This module is the version arithmetic and the
 guardrails behind the fix, and it is the *only* one: per the owner decision
-of 2026-08-11 there is one channel-parameterized build/publish pipeline
-(`.github/workflows/release-publish-pypi.yml`) with three entry points --
+of 2026-08-11, as revised on 2026-08-12 (#3735), there is one
+channel-parameterized build/publish pipeline
+(`.github/workflows/release-publish-pypi.yml`) with exactly two channels --
+`rc` and `stable`, one per acceptance candidate and one per release. There
+is no scheduled publish of any kind: what gets published is always a
+deliberate act.
 
-* **dev** -- a nightly schedule publishes `3.0.0.devN` from the
-  release-branch tip, skipping the run when the tip has not moved since the
-  last successful nightly (`select_last_scheduled_sha`);
 * **rc** -- a dispatch cuts a deliberate `3.0.0rcN`, by hand or from the
   sprint autopilot when the sprint reaches agentic-work-complete (#3729,
-  `autopilot_rc_preflight`). This is the one channel with a step past PyPI:
+  `autopilot_rc_preflight`). This is the channel with a step past PyPI:
   it also cuts a GitHub *prerelease* carrying the service tarballs and stamps
-  `nyxgpt-api-rc` / `nyxgpt-web-rc` into the Homebrew tap, so a candidate is
-  installable on macOS the same repo-less way a release is -- without ever
-  writing the stable formulas (`RC_FORMULAS`). Like the nightly it no-ops on
-  an unchanged tip, which is what lets the autopilot fire at every park
-  without cutting duplicate candidates (`select_last_published_sha`);
+  `nyxgpt-api@3.0.0rc` / `nyxgpt-web@3.0.0rc` into the Homebrew tap, so a
+  candidate is installable on macOS the same repo-less way a release is --
+  without ever writing the stable formulas (`rc_formulas`). It no-ops on an
+  unchanged tip, which is what lets the autopilot fire at every park without
+  cutting duplicate candidates (`select_last_published_sha`);
 * **stable** -- `scripts/release_ceremony.sh` Phase 2 delegates to the same
   workflow. The ceremony keeps only its ceremony-exclusive steps (master
-  merge, tag, Homebrew tap, GitHub Release, sign-off); a dev or rc build
-  never runs any of them.
+  merge, tag, Homebrew tap, GitHub Release, sign-off); an rc build never
+  runs any of them.
 
-PEP 440 orders these `3.0.0.devN < 3.0.0aN < 3.0.0bN < 3.0.0rcN < 3.0.0`, so
-a nightly can never shadow an RC and neither can shadow the release.
+PEP 440 orders these `3.0.0aN < 3.0.0bN < 3.0.0rcN < 3.0.0`, so a candidate
+can never shadow the release.
 
 Four properties matter, and each is a function here rather than a line of
 YAML, so they are testable and cannot drift between the workflow, the CLI,
 the ceremony and the dashboard:
 
-* **Pre-release unless the channel is stable.** What dev and rc publish is
-  `3.0.0.devN` / `3.0.0rcN`, which pip's resolver excludes from
-  `pip install nyxgpt` unless the user asks for it (`--pre`) or pins it
-  exactly. Cutting either therefore cannot change what a normal install
-  resolves to -- see `is_prerelease`.
+* **Pre-release unless the channel is stable.** What rc publishes is
+  `3.0.0rcN`, which pip's resolver excludes from `pip install nyxgpt` unless
+  the user asks for it (`--pre`) or pins it exactly. Cutting a candidate
+  therefore cannot change what a normal install resolves to -- see
+  `is_prerelease`.
 * **Release branch only.** A build is the *release line's* tip, so
   publishing is refused from anywhere but a `v<X.Y.Z>` branch whose number
   matches the version declared in `pyproject.toml`
   (`release_branch_version`, `plan`). A `3.0.0rc4` cut from a feature branch
   would claim to be the v3.0.0 line and would not be.
-* **Never reuses a version.** `next_rc_number` and `resolve_dev_number` read
-  what PyPI already serves; numbers only ever go up, and PyPI itself refuses
-  a re-upload of a version it already has (versions are immutable).
+* **Never reuses a version.** `next_rc_number` reads what PyPI already
+  serves; numbers only ever go up, and PyPI itself refuses a re-upload of a
+  version it already has (versions are immutable).
 * **Stable is ceremony-only.** The stable channel additionally requires the
   release tag to be at the ref's tip (the ceremony creates it in Phase 1,
   before it delegates the publish) plus an explicit confirmation token, so a
@@ -78,16 +79,17 @@ PYPI_JSON_URL = "https://pypi.org/pypi/{project}/json"
 #: name PyPI's Trusted Publisher configuration has to carry.
 PUBLISH_WORKFLOW_FILE = "release-publish-pypi.yml"
 
-#: The channels the pipeline understands, weakest version first.
-CHANNELS = ("dev", "rc", "stable")
+#: The channels the pipeline understands, weakest version first. Two only
+#: (owner decision 2026-08-12, #3735): a candidate per acceptance round and
+#: the release itself. The nightly `dev` channel is retired -- nothing is
+#: published on a schedule.
+CHANNELS = ("rc", "stable")
 
-#: How each channel reaches the pipeline. The nightly is the only thing the
-#: `schedule` trigger runs, so a scheduled run *is* a dev build; everything
-#: else arrives as a `workflow_dispatch` (the sprint autopilot's rc, #3729,
-#: and the ceremony's stable). Used to find the last successful build of a
-#: channel when deciding whether the tip has moved.
+#: How each channel reaches the pipeline: every publish is a deliberate
+#: `workflow_dispatch` (the sprint autopilot's rc, #3729, and the ceremony's
+#: stable). There is no `schedule` trigger. Used to find the last successful
+#: build of a channel when deciding whether the tip has moved.
 CHANNEL_TRIGGER_EVENT = {
-    "dev": "schedule",
     "rc": "workflow_dispatch",
     "stable": "workflow_dispatch",
 }
@@ -97,27 +99,18 @@ CHANNEL_TRIGGER_EVENT = {
 #: prefix is Homebrew's own tap-naming convention.
 HOMEBREW_TAP = "dkblinux98/nyxgpt"
 
-#: The formulas an rc publish stamps -- deliberately NOT `nyxgpt-api` /
-#: `nyxgpt-web`. Homebrew has no pre-release semantics, so the only way to
-#: keep `brew install nyxgpt-api` resolving to the latest *stable* release is
-#: for the candidate to be a separate formula. The suffix is `-rc`, not the
-#: `@rc` of the owner decision: Homebrew's `@` spelling is reserved for
-#: versioned formulas and its loader only turns `@` into `AT` before a digit
-#: (`python@3.12` -> `PythonAT312`), so `nyxgpt-api@rc` would demand the
-#: illegal constant `NyxgptApi@rc` and fail to load at all. The two `-rc`
-#: formulas declare `conflicts_with` their stable counterparts so a machine
-#: can only ever be on one channel at a time.
-RC_FORMULAS = ("nyxgpt-api-rc", "nyxgpt-web-rc")
+#: The services the tap carries a formula for, stable and candidate alike.
+TAP_SERVICES = ("nyxgpt-api", "nyxgpt-web")
 
-#: Printed by `main` instead of a version when a nightly has nothing to do
-#: (the release-branch tip has not moved since the last successful nightly).
+#: Printed by `main` instead of a version when a publish has nothing to do
+#: (the release-branch tip has not moved since the last published candidate).
 SKIP_SENTINEL = "SKIP"
 
 #: The stable channel refuses to resolve a version without this token, which
 #: only `scripts/release_ceremony.sh` passes.
 STABLE_CONFIRMATION = "ceremony"
 
-DOCS_ANCHOR = "docs/cloud.md#pypi-publishing-dev-rc-and-stable"
+DOCS_ANCHOR = "docs/cloud.md#pypi-publishing-rc-and-stable"
 
 # `v3.0.0` -- the release-branch naming this repo uses (CLAUDE.md: master is
 # releases only; work merges to the active release branch).
@@ -129,21 +122,24 @@ _RELEASE_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 # emits and what `pip install nyxgpt==3.0.0rc1` resolves.
 _RC_VERSION_RE = re.compile(r"^(\d+\.\d+\.\d+)rc(\d+)$")
 
-_DEV_VERSION_RE = re.compile(r"^(\d+\.\d+\.\d+)\.dev(\d+)$")
-
 # Any PEP 440 pre-/dev-release suffix: alpha, beta, release candidate, dev.
+# `.devN` is still recognized although nothing publishes one any more (#3735
+# retired the nightly): PyPI keeps every version it was ever given, so a
+# leftover dev build must still read as a pre-release rather than a release.
 _PRERELEASE_RE = re.compile(r"(?:a|b|rc)\d+$|\.dev\d+$")
 
 # `version = "3.0.0"` inside pyproject.toml's `[project]` table.
 _VERSION_ASSIGNMENT_RE = re.compile(r'^version\s*=\s*".*"\s*$')
 
-# The title a *publishing* rc run carries, as the publish workflow's
-# `run-name:` renders it ("publish rc from v3.0.0"). Dispatches all share
-# the `workflow_dispatch` event, so this title is the only record of which
-# channel a run built. A dry run renders "publish rc [dry run] from ..."
-# and uploads nothing, so it deliberately fails this match -- counting it
-# as a published candidate would suppress the next real one.
-_RC_RUN_TITLE_RE = re.compile(r"^publish\s+rc\s+from\s+\S+", re.IGNORECASE)
+# The title a *publishing* run carries, as the publish workflow's
+# `run-name:` renders it ("publish rc from v3.0.0"). Every publish is a
+# `workflow_dispatch`, so this title is the only record of which channel a
+# run built. A dry run renders "publish rc [dry run] from ..." and uploads
+# nothing, so it deliberately fails this match -- counting it as a published
+# candidate would suppress the next real one.
+_RUN_TITLE_TEMPLATE = r"^publish\s+{channel}\s+from\s+\S+"
+
+_RC_RUN_TITLE_RE = re.compile(_RUN_TITLE_TEMPLATE.format(channel="rc"), re.IGNORECASE)
 
 
 class ReleaseCandidateError(RuntimeError):
@@ -184,26 +180,47 @@ def parse_rc_version(version: str) -> tuple[str, int] | None:
     return (match.group(1), int(match.group(2))) if match else None
 
 
-def parse_dev_version(version: str) -> tuple[str, int] | None:
-    """Split `3.0.0.dev7` into `("3.0.0", 7)`; None if it isn't a dev version."""
-    match = _DEV_VERSION_RE.match(version.strip())
-    return (match.group(1), int(match.group(2))) if match else None
-
-
 def is_prerelease(version: str) -> bool:
     """True when pip's resolver treats `version` as a pre-release.
 
-    The load-bearing property of the dev and rc channels: while this is true
-    of everything they publish, `pip install nyxgpt` cannot resolve to one
+    The load-bearing property of the rc channel: while this is true of
+    everything it publishes, `pip install nyxgpt` cannot resolve to one
     (PEP 440 -- pre-releases are excluded unless requested).
     """
     return bool(_PRERELEASE_RE.search(version.strip()))
 
 
 def release_line(version: str) -> str:
-    """Return the release a version belongs to: `3.0.0rc2`, `3.0.0.dev4` -> `3.0.0`."""
-    parsed = parse_rc_version(version) or parse_dev_version(version)
+    """Return the release a version belongs to: `3.0.0rc2` -> `3.0.0`."""
+    parsed = parse_rc_version(version)
     return parsed[0] if parsed else version.strip()
+
+
+def rc_formula_name(service: str, release: str) -> str:
+    """The Homebrew formula the rc channel stamps for `service` on `release`.
+
+    `("nyxgpt-api", "3.0.0")` -> `nyxgpt-api@3.0.0rc` (owner decision
+    2026-08-12, #3735). Deliberately NOT `nyxgpt-api`: Homebrew has no
+    pre-release semantics, so the only way to keep `brew install nyxgpt-api`
+    resolving to the latest *stable* release is for the candidate to be a
+    separate formula. The name carries the release line, so a machine on
+    `nyxgpt-api@3.0.0rc` can never silently cross to the next line's
+    candidates -- those are a differently named formula -- and retiring a
+    shipped line's candidates is a matter of deleting formulas by name. It
+    loads because a digit follows the `@`: brew's `Formulary.class_s` turns
+    `nyxgpt-api@3.0.0rc` into `NyxgptApiAT300rc`.
+    """
+    _require_release_version(release)
+    return f"{service}@{release_line(release.strip())}rc"
+
+
+def rc_formulas(release: str) -> tuple[str, ...]:
+    """Both formulas an rc publish of `release` stamps into the tap.
+
+    They declare `conflicts_with` their stable counterparts, so a machine can
+    only ever be on one channel at a time.
+    """
+    return tuple(rc_formula_name(service, release) for service in TAP_SERVICES)
 
 
 def rc_version(release: str, number: int) -> str:
@@ -212,18 +229,6 @@ def rc_version(release: str, number: int) -> str:
     if number < 1:
         raise ReleaseCandidateError(f"RC number must be 1 or greater, got {number}")
     return f"{release.strip()}rc{number}"
-
-
-def dev_version(release: str, number: int) -> str:
-    """Compose the PEP 440 dev version for `release` + build `number`.
-
-    `3.0.0.dev41` sorts below every RC of the same line, so a nightly can
-    never shadow a candidate or the release itself.
-    """
-    _require_release_version(release)
-    if number < 1:
-        raise ReleaseCandidateError(f"Dev build number must be 1 or greater, got {number}")
-    return f"{release.strip()}.dev{number}"
 
 
 def _require_release_version(release: str) -> None:
@@ -239,8 +244,8 @@ def channel_version(channel: str, release: str, number: int | None = None) -> st
 
     `stable` is the bare release version and refuses a number -- there is no
     such thing as "release 3.0.0, build 4", so silently dropping one would
-    let `--number 4` look honoured while publishing something else. `dev` and
-    `rc` require one (the callers below resolve it from what PyPI serves).
+    let `--number 4` look honoured while publishing something else. `rc`
+    requires one (the callers below resolve it from what PyPI serves).
     """
     resolved = _check_channel(channel)
     if resolved == "stable":
@@ -253,17 +258,12 @@ def channel_version(channel: str, release: str, number: int | None = None) -> st
         return release.strip()
     if number is None:
         raise ReleaseCandidateError(f"The {resolved} channel needs a build number")
-    return rc_version(release, number) if resolved == "rc" else dev_version(release, number)
+    return rc_version(release, number)
 
 
 def published_rc_numbers(release: str, published: list[str] | tuple[str, ...]) -> list[int]:
     """RC numbers already published for `release`, ascending."""
     return _published_numbers(parse_rc_version, release, published)
-
-
-def published_dev_numbers(release: str, published: list[str] | tuple[str, ...]) -> list[int]:
-    """Dev build numbers already published for `release`, ascending."""
-    return _published_numbers(parse_dev_version, release, published)
 
 
 def _published_numbers(
@@ -289,54 +289,21 @@ def next_rc_number(release: str, published: list[str] | tuple[str, ...]) -> int:
     return numbers[-1] + 1 if numbers else 1
 
 
-def next_dev_number(release: str, published: list[str] | tuple[str, ...]) -> int:
-    """The next unused dev build number for `release` (1 when none exist yet)."""
-    numbers = published_dev_numbers(release, published)
-    return numbers[-1] + 1 if numbers else 1
-
-
 def next_rc_version(release: str, published: list[str] | tuple[str, ...]) -> str:
     """The next unused RC version for `release`, e.g. `3.0.0rc3`."""
     return rc_version(release, next_rc_number(release, published))
-
-
-def next_dev_version(release: str, published: list[str] | tuple[str, ...]) -> str:
-    """The next unused dev version for `release`, e.g. `3.0.0.dev12`."""
-    return dev_version(release, next_dev_number(release, published))
-
-
-def resolve_dev_number(
-    release: str, published: list[str] | tuple[str, ...], run_number: int | None = None
-) -> int:
-    """The dev build number a nightly should publish.
-
-    The workflow passes its `GITHUB_RUN_NUMBER` so every run gets a distinct
-    version (PyPI versions are immutable -- a repeat upload is rejected), but
-    a run counter restarts at 1 for a newly added workflow file, which could
-    collide with builds already on PyPI. Taking the larger of the two keeps
-    the version both unique and monotonic.
-    """
-    lowest_free = next_dev_number(release, published)
-    if run_number is None:
-        return lowest_free
-    if run_number < 1:
-        raise ReleaseCandidateError(f"Run number must be 1 or greater, got {run_number}")
-    return max(run_number, lowest_free)
 
 
 def next_channel_version(
     channel: str,
     release: str,
     published: list[str] | tuple[str, ...],
-    run_number: int | None = None,
 ) -> str:
     """The version `channel` would publish next for `release`."""
     resolved = _check_channel(channel)
     if resolved == "stable":
         return channel_version("stable", release)
-    if resolved == "rc":
-        return next_rc_version(release, published)
-    return dev_version(release, resolve_dev_number(release, published, run_number))
+    return next_rc_version(release, published)
 
 
 # --- pyproject.toml ------------------------------------------------------
@@ -375,18 +342,14 @@ def _checkout_pyproject() -> Path | None:
 def pin_version(pyproject_text: str, version: str) -> str:
     """Return `pyproject_text` with `[project] version` set to `version`.
 
-    The publish workflow builds a dev or rc artifact by rewriting this one
-    line in the checkout it already has -- the pre-release version is never
+    The publish workflow builds an rc artifact by rewriting this one line in
+    the checkout it already has -- the pre-release version is never
     committed, so the release branch keeps declaring the stable version it is
     heading for. Only the `[project]` table's assignment is touched; a
     `version = "..."` under some other table (a tool config, say) is left
     alone.
     """
-    recognized = (
-        parse_rc_version(version)
-        or parse_dev_version(version)
-        or _RELEASE_VERSION_RE.match(version)
-    )
+    recognized = parse_rc_version(version) or _RELEASE_VERSION_RE.match(version)
     if not recognized:
         raise ReleaseCandidateError(f"Refusing to pin an unrecognized version: {version!r}")
 
@@ -438,33 +401,27 @@ def fetch_published_versions(project: str = PYPI_PROJECT, timeout: float = 10.0)
     return sorted(str(version) for version in releases)
 
 
-# --- Tip-unchanged detection (dev nightly, rc autopilot) -----------------
+# --- Tip-unchanged detection (the rc autopilot) --------------------------
 
 
 def select_last_published_sha(
     payload: dict[str, Any],
-    channel: str = "dev",
+    channel: str = "rc",
     exclude_run_id: str | int = "",
 ) -> str:
     """The commit the last successful publish of `channel` built.
 
-    The tip-unchanged condition behind two no-ops, both owner requirements:
-
-    * **dev** -- skip the nightly when the release-branch tip has not moved
-      since the last successful nightly;
-    * **rc** -- the sprint autopilot dispatches a candidate every time the
-      sprint parks at agentic-work-complete (#3729), so repeated
-      observations of the same parked state must not cut duplicate
-      candidates. Only a tip that moved since the last published rc earns a
-      new rcN.
+    The tip-unchanged condition behind the rc no-op, an owner requirement:
+    the sprint autopilot dispatches a candidate every time the sprint parks
+    at agentic-work-complete (#3729), so repeated observations of the same
+    parked state must not cut duplicate candidates. Only a tip that moved
+    since the last published rc earns a new rcN.
 
     GitHub's own run history is the state store -- nothing has to be written
-    back to the repo or to PyPI to remember what was last built. The two
-    channels are told apart by how a run was triggered plus, for rc, the
-    run's title: a dispatch is `workflow_dispatch` whatever channel it
-    carries, and only the run title records which one it was (see
-    `_RC_RUN_TITLE_RE` -- the publish workflow's `run-name:` is load-bearing
-    for this and is shape-tested).
+    back to the repo or to PyPI to remember what was last built. Both
+    channels arrive as a `workflow_dispatch`, so the run's title is what
+    records which one it was (see `_RC_RUN_TITLE_RE` -- the publish
+    workflow's `run-name:` is load-bearing for this and is shape-tested).
 
     `exclude_run_id` drops the caller's own run, which is already listed as
     in-progress-then-success by the time a later run reads this.
@@ -488,32 +445,24 @@ def select_last_published_sha(
 def run_published_channel(run: dict[str, Any], channel: str) -> bool:
     """Whether a workflow run of the publish pipeline is a `channel` build.
 
-    A nightly is the only thing the `schedule` trigger runs, so dev needs no
-    title. Every other channel arrives as a `workflow_dispatch`, so rc is
-    identified by the run title the workflow's `run-name:` renders
-    ("publish rc from v3.0.0"). A dry run titles itself "publish rc
-    [dry run] from ..." and uploads nothing, so it deliberately does NOT
-    match -- treating it as a published candidate would suppress the next
-    real one.
+    Both channels arrive as a `workflow_dispatch`, so a run is identified by
+    the title the workflow's `run-name:` renders ("publish rc from v3.0.0").
+    A dry run titles itself "publish rc [dry run] from ..." and uploads
+    nothing, so it deliberately does NOT match -- treating it as a published
+    candidate would suppress the next real one.
     """
-    trigger = CHANNEL_TRIGGER_EVENT.get(_check_channel(channel), "")
+    resolved = _check_channel(channel)
+    trigger = CHANNEL_TRIGGER_EVENT.get(resolved, "")
     if not trigger or run.get("event") != trigger:
         return False
-    if channel == "dev":
-        return True
     title = str(run.get("display_title") or run.get("name") or "").strip()
-    return bool(_RC_RUN_TITLE_RE.match(title))
-
-
-def select_last_scheduled_sha(payload: dict[str, Any], exclude_run_id: str | int = "") -> str:
-    """The commit the last successful *nightly* built -- dev's spelling of
-    `select_last_published_sha`."""
-    return select_last_published_sha(payload, "dev", exclude_run_id)
+    title_re = re.compile(_RUN_TITLE_TEMPLATE.format(channel=re.escape(resolved)), re.IGNORECASE)
+    return bool(title_re.match(title))
 
 
 def fetch_last_published_sha(
     repo: str,
-    channel: str = "dev",
+    channel: str = "rc",
     workflow_file: str = PUBLISH_WORKFLOW_FILE,
     token: str = "",
     exclude_run_id: str | int = "",
@@ -521,10 +470,10 @@ def fetch_last_published_sha(
 ) -> str:
     """Ask GitHub for the commit the last successful `channel` build published.
 
-    Returns "" when there is no such run (the first nightly, and the first
-    candidate, always publish). Raises on a transport or protocol failure:
-    silently treating an API outage as "nothing published yet" would upload
-    a redundant build every time the API is flaky.
+    Returns "" when there is no such run (the first candidate of a line
+    always publishes). Raises on a transport or protocol failure: silently
+    treating an API outage as "nothing published yet" would upload a
+    redundant build every time the API is flaky.
     """
     import httpx
 
@@ -544,7 +493,7 @@ def fetch_last_published_sha(
     except httpx.HTTPError as exc:
         raise ReleaseCandidateError(f"Could not reach the GitHub API: {exc}") from exc
     if response.status_code == 404:
-        # The workflow has no run history yet (first nightly on a new file).
+        # The workflow has no run history yet (first publish on a new file).
         return ""
     if response.status_code != 200:
         raise ReleaseCandidateError(
@@ -555,25 +504,6 @@ def fetch_last_published_sha(
     except ValueError as exc:
         raise ReleaseCandidateError(f"GitHub returned invalid JSON for {url}: {exc}") from exc
     return select_last_published_sha(payload, channel, exclude_run_id)
-
-
-def fetch_last_scheduled_sha(
-    repo: str,
-    workflow_file: str = PUBLISH_WORKFLOW_FILE,
-    token: str = "",
-    exclude_run_id: str | int = "",
-    timeout: float = 30.0,
-) -> str:
-    """The commit the last successful nightly published -- dev's spelling of
-    `fetch_last_published_sha`."""
-    return fetch_last_published_sha(
-        repo,
-        "dev",
-        workflow_file=workflow_file,
-        token=token,
-        exclude_run_id=exclude_run_id,
-        timeout=timeout,
-    )
 
 
 # --- The sprint autopilot's rc preflight (#3729) --------------------------
@@ -647,7 +577,6 @@ def plan(
     channel: str = "rc",
     published: list[str] | tuple[str, ...] | None = None,
     pyproject_path: Path | None = None,
-    run_number: int | None = None,
 ) -> dict[str, Any]:
     """Describe the build that *would* be published from `branch`, and whether it may be.
 
@@ -671,8 +600,7 @@ def plan(
 
     release = branch_version or declared
     rc_numbers = published_rc_numbers(release, published)
-    dev_numbers = published_dev_numbers(release, published)
-    candidate = next_channel_version(resolved_channel, release, published, run_number)
+    candidate = next_channel_version(resolved_channel, release, published)
     version_matches_branch = bool(branch_version) and branch_version == declared
 
     blockers: list[str] = []
@@ -708,15 +636,17 @@ def plan(
         "release": release,
         "published_releases": [v for v in published if not is_prerelease(v)],
         "published_rcs": [rc_version(release, n) for n in rc_numbers],
-        "published_dev_builds": [dev_version(release, n) for n in dev_numbers],
         "next_rc_number": next_rc_number(release, published),
         "next_rc_version": next_rc_version(release, published),
-        "next_dev_version": next_dev_version(release, published),
+        # The tap formulas this line's candidates are installed as -- named
+        # for the release (#3735), so every surface can render the exact
+        # `brew install` line instead of hard-coding one that goes stale.
+        "rc_formulas": list(rc_formulas(release)),
         # What *this* channel would publish -- the same field whichever
         # entry point asked, so the dashboard and the workflow agree.
         "version": candidate,
-        # True for dev and rc by construction, false for stable; surfaced so
-        # the dashboard can state the guarantee rather than assert it in
+        # True for rc by construction, false for stable; surfaced so the
+        # dashboard can state the guarantee rather than assert it in
         # hand-written prose.
         "is_prerelease": is_prerelease(candidate),
         "workflow": PUBLISH_WORKFLOW_FILE,
@@ -724,7 +654,7 @@ def plan(
         "publishable": not blockers,
         "blockers": blockers,
         "commands": {
-            **_channel_commands(resolved_channel),
+            **_channel_commands(resolved_channel, release),
             "install": f"pip install nyxgpt=={candidate}",
             "user_data": f"nyxgpt cloud user-data --os linux --version {candidate}",
             "deploy": f"nyxgpt cloud deploy --version {candidate}",
@@ -734,36 +664,35 @@ def plan(
     }
 
 
-def _channel_commands(channel: str) -> dict[str, str]:
+def _channel_commands(channel: str, release: str) -> dict[str, str]:
     """How an operator plans and cuts a build on `channel`.
 
     Every surface renders these verbatim, so they have to be commands that
     actually run. `nyxgpt release publish --channel stable` is not one: the
-    CLI's `--channel` offers `dev` and `rc` only, because a release is cut by
-    the ceremony (which is what supplies the tag and the confirmation the
-    stable channel demands). Rendering it anyway would hand the operator a
-    line that fails with an argparse error.
+    CLI's `--channel` offers `rc` only, because a release is cut by the
+    ceremony (which is what supplies the tag and the confirmation the stable
+    channel demands). Rendering it anyway would hand the operator a line that
+    fails with an argparse error.
     """
     if channel == "stable":
         return {
             "plan": "scripts/release_ceremony.sh --dry-run",
             "publish": "scripts/release_ceremony.sh",
         }
-    commands = {
+    return {
         "plan": f"nyxgpt release publish --channel {channel}",
         "publish": f"nyxgpt release publish --channel {channel} --publish",
+        # An rc is a pre-release that is also installable with brew: its
+        # publish stamps this line's `@<release>rc` formulas into the tap.
+        "brew": f"brew tap {HOMEBREW_TAP} && brew install {' '.join(rc_formulas(release))}",
     }
-    if channel == "rc":
-        # An rc is the only pre-release that is also installable with brew:
-        # its publish stamps the `-rc` formulas into the tap (dev is PyPI-only).
-        commands["brew"] = f"brew tap {HOMEBREW_TAP} && brew install {' '.join(RC_FORMULAS)}"
-    return commands
 
 
 def _guardrails(channel: str, candidate: str) -> list[str]:
     """The guardrails in force for `channel`, in the words the surfaces render."""
     shared = [
-        "Scheduled and dispatch triggers only: the workflow has no push, tag or release trigger.",
+        "Dispatch trigger only: the workflow has no schedule, push, tag or release trigger, "
+        "so nothing is ever published without someone (or the autopilot) asking for it.",
         "Release branches only: it refuses any ref that is not v<X.Y.Z> matching pyproject.toml.",
         "Trusted Publishing (OIDC) only: no PyPI token is stored in the repo or in Actions.",
     ]
@@ -774,14 +703,14 @@ def _guardrails(channel: str, candidate: str) -> list[str]:
             "scripts/release_ceremony.sh passes.",
             "PyPI versions are immutable: a release that is already published is refused.",
         ]
-    channel_specific = [
-        f"Pre-release version ({candidate}): `pip install nyxgpt` never resolves to it.",
-    ]
-    if channel == "rc":
-        channel_specific += [
-            f"Separate Homebrew formulas ({', '.join(RC_FORMULAS)}): the stable "
-            "nyxgpt-api/nyxgpt-web formulas are never written by an rc publish, so "
-            "`brew install nyxgpt-api` still resolves to the latest stable release.",
+    return (
+        shared
+        + [
+            f"Pre-release version ({candidate}): `pip install nyxgpt` never resolves to it.",
+            f"Separate Homebrew formulas ({', '.join(rc_formulas(release_line(candidate)))}): "
+            "the stable nyxgpt-api/nyxgpt-web formulas are never written by an rc publish, so "
+            "`brew install nyxgpt-api` still resolves to the latest stable release. The name "
+            "carries the release line, so a candidate never crosses to the next one.",
             "GitHub prerelease, never 'latest': the rc's release is marked as a prerelease, "
             "so it does not become the repository's latest release and does not trigger the "
             "stable artifact workflow (which fires on `released`, not `prereleased`).",
@@ -791,16 +720,7 @@ def _guardrails(channel: str, candidate: str) -> list[str]:
             "No duplicate candidates: an rc whose release-branch tip has not moved since the "
             "last published candidate publishes nothing, so re-observing the same parked "
             "state cuts no second rcN.",
-        ]
-    else:
-        channel_specific.append(
-            "PyPI only: a dev build never touches the Homebrew tap or GitHub releases."
-        )
-    return (
-        shared
-        + channel_specific
-        + [
-            "Acceptance only: a dev or rc build is never announced, and never runs a ceremony "
+            "Acceptance only: an rc build is never announced, and never runs a ceremony "
             "step (master merge, release tag, stable Homebrew formulas, GitHub Release).",
         ]
     )
@@ -926,8 +846,8 @@ def _print_plan(report: dict[str, Any]) -> None:
     )
     print(f"  declared version   {report['declared_version']}")
     print(f"  published RCs      {', '.join(report['published_rcs']) or 'none'}")
-    print(f"  published dev      {', '.join(report['published_dev_builds']) or 'none'}")
     print(f"  next version       {report['version']}")
+    print(f"  tap formulas       {', '.join(report['rc_formulas'])}")
     print(f"  workflow           .github/workflows/{report['workflow']}")
 
     print("\nGuardrails:")
@@ -943,6 +863,8 @@ def _print_plan(report: dict[str, Any]) -> None:
 
     print("\nOnce published, acceptance-test the tip with no checkout:")
     print(f"  {report['commands']['install']}")
+    if report["commands"].get("brew"):
+        print(f"  {report['commands']['brew']}")
     print(f"  {report['commands']['user_data']}")
     print(f"  {report['commands']['deploy']}")
     print(f"\nFull runbook: {report['docs']}")
@@ -967,7 +889,7 @@ def release_publish(args: argparse.Namespace) -> int:
             # Fail here rather than dispatching a run that the workflow's own
             # guardrail will reject minutes later.
             requested = channel_version(channel, report["release"], number)
-            if requested in report["published_rcs"] or requested in report["published_dev_builds"]:
+            if requested in report["published_rcs"]:
                 raise ReleaseCandidateError(
                     f"{requested} is already on PyPI -- versions are immutable. "
                     f"Next unused is {report['version']}."
@@ -997,15 +919,7 @@ def release_publish(args: argparse.Namespace) -> int:
                 f"Dispatched {report['workflow']} on {branch} to publish "
                 f"{report['version']} ({channel} channel)."
             )
-            if channel == "dev":
-                # Every dev run carries the nightly's no-op check, dispatched
-                # or scheduled alike -- say so, rather than let the operator
-                # read "SKIPPED" off the run and think something broke.
-                print(
-                    "Note: a dev run publishes nothing when the tip has not moved since the "
-                    "last successful nightly -- that commit already has a dev build."
-                )
-            elif channel == "rc" and number is None:
+            if channel == "rc" and number is None:
                 # Same guard, same reason to say it out loud (#3729): the rc
                 # channel no-ops on an unchanged tip so the autopilot can
                 # dispatch a candidate at every park without cutting
@@ -1051,8 +965,9 @@ def main(argv: list[str] | None = None) -> int:
     The publish workflow runs exactly this instead of re-implementing the
     guardrails and the version arithmetic in shell, so CI, the ceremony and
     the CLI can never disagree about what a channel publishes. Prints the
-    resolved version to stdout -- or `SKIP` when a nightly has nothing to do;
-    everything else goes to stderr so the caller can use `$(...)` directly.
+    resolved version to stdout -- or `SKIP` when an rc has nothing to do (the
+    tip has not moved since the last published candidate); everything else
+    goes to stderr so the caller can use `$(...)` directly.
     """
     parser = argparse.ArgumentParser(
         prog="python -m nyxgpt.release_candidate",
@@ -1069,12 +984,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--number",
         default="",
-        help="Explicit rc/dev number (blank = next unused, resolved from PyPI)",
-    )
-    parser.add_argument(
-        "--run-number",
-        default="",
-        help="GITHUB_RUN_NUMBER, used to keep each nightly dev version unique",
+        help="Explicit rc number (blank = next unused, resolved from PyPI)",
     )
     parser.add_argument(
         "--pin",
@@ -1084,12 +994,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--head-sha",
         default="",
-        help="Commit being built; with --skip-if-unchanged, compared against the last nightly",
+        help=(
+            "Commit being built; with --skip-if-unchanged, compared against the last "
+            "published candidate"
+        ),
     )
     parser.add_argument(
         "--repo",
         default="",
-        help="owner/name used to look up the last successful nightly (GITHUB_REPOSITORY)",
+        help="owner/name used to look up the last published candidate (GITHUB_REPOSITORY)",
     )
     parser.add_argument(
         "--exclude-run-id", default="", help="Run id to ignore in that lookup (GITHUB_RUN_ID)"
@@ -1097,10 +1010,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--skip-if-unchanged",
         action="store_true",
-        help=(
-            "dev/rc channels: print SKIP when the tip is unchanged since the last "
-            "nightly (dev) or the last published candidate (rc)"
-        ),
+        help="rc channel: print SKIP when the tip is unchanged since the last published candidate",
     )
     parser.add_argument(
         "--autopilot-preflight",
@@ -1133,9 +1043,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         channel = _check_channel(args.channel)
-        run_number = _optional_int(args.run_number, "--run-number")
         requested = _optional_int(args.number, "--number")
-        report = plan(args.branch, channel, run_number=run_number)
+        report = plan(args.branch, channel)
     except ReleaseCandidateError as exc:
         return _fail(str(exc))
 
@@ -1167,13 +1076,13 @@ def main(argv: list[str] | None = None) -> int:
             )
 
     if args.skip_if_unchanged:
-        # The tip guard, for both channels that can fire repeatedly on their
-        # own: the nightly schedule, and the sprint autopilot's rc dispatch
-        # at agentic-work-complete (#3729). Stable is ceremony-only and
-        # cannot repeat, so it has no such guard.
+        # The tip guard, for the one channel that can fire repeatedly on its
+        # own: the sprint autopilot's rc dispatch at agentic-work-complete
+        # (#3729). Stable is ceremony-only and cannot repeat, so it has no
+        # such guard.
         if channel == "stable":
             return _fail(
-                "--skip-if-unchanged is the dev/rc tip guard -- the stable channel is "
+                "--skip-if-unchanged is the rc tip guard -- the stable channel is "
                 "ceremony-only and publishes exactly what the ceremony tagged"
             )
         if requested is not None:
@@ -1199,12 +1108,9 @@ def main(argv: list[str] | None = None) -> int:
             except ReleaseCandidateError as exc:
                 return _fail(str(exc))
             if last and last == args.head_sha.strip():
-                since = (
-                    "last successful nightly" if channel == "dev" else "last published candidate"
-                )
                 print(
                     f"release-publish: {args.branch} is still at {last[:12]}, unchanged since the "
-                    f"{since} -- nothing to publish.",
+                    "last published candidate -- nothing to publish.",
                     file=sys.stderr,
                 )
                 print(SKIP_SENTINEL)
@@ -1215,7 +1121,7 @@ def main(argv: list[str] | None = None) -> int:
             version = channel_version(channel, report["release"], requested)
         except ReleaseCandidateError as exc:
             return _fail(str(exc))
-        if version in report["published_rcs"] or version in report["published_dev_builds"]:
+        if version in report["published_rcs"]:
             return _fail(
                 f"{version} is already on PyPI -- PyPI never accepts a re-upload. "
                 f"Next unused is {report['version']}."

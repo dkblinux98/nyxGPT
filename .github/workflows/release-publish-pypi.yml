@@ -1,53 +1,52 @@
-name: PyPI Publish (dev / rc / stable)
+name: PyPI Publish (rc / stable)
 
-# LOAD-BEARING (#3729): every channel but `dev` arrives as a
-# `workflow_dispatch`, so this rendered title is the only record of which
-# channel a finished run built. `release_candidate.run_published_channel`
-# matches "publish rc from <ref>" to find the commit the last candidate was
-# cut from -- keep the wording, the order and the `[dry run]` marker (a dry
-# run uploads nothing and must not read as a published candidate).
+# LOAD-BEARING (#3729): both channels arrive as a `workflow_dispatch`, so
+# this rendered title is the only record of which channel a finished run
+# built. `release_candidate.run_published_channel` matches "publish rc from
+# <ref>" to find the commit the last candidate was cut from -- keep the
+# wording, the order and the `[dry run]` marker (a dry run uploads nothing
+# and must not read as a published candidate).
 run-name: >-
-  publish ${{ inputs.channel || 'dev' }}${{ inputs.dry_run && ' [dry run]' || '' }}
+  publish ${{ inputs.channel || 'rc' }}${{ inputs.dry_run && ' [dry run]' || '' }}
   from ${{ github.ref_name }}
 
 # The ONE build-and-publish pipeline for PyPI (#3727, owner decision
 # 2026-08-11: "single release pipeline -- no parallel release
-# workflows/scripts"). One core, three entry points:
+# workflows/scripts"; channels revised 2026-08-12 by #3735). One core, two
+# entry points -- and nothing is ever published on a schedule:
 #
-#   dev     nightly schedule -> `3.0.0.devN` from the release-branch tip,
-#           skipped when the tip has not moved since the last successful
-#           nightly. This is what makes acceptance testing of *unreleased*
-#           code possible: every repo-less path installs from PyPI, so
-#           without a published build it can only ever exercise the last
-#           stable release -- never the tip carrying the acceptance-failure
-#           fixes merged during that same round of testing.
-#   rc      dispatch         -> a deliberate `3.0.0rcN`, by hand or from the
-#           sprint autopilot when the sprint reaches agentic-work-complete
-#           (#3729). The rc channel is the only one with a step beyond PyPI:
-#           `homebrew-tap-rc` below also cuts a GitHub *prerelease* carrying
-#           the service tarballs and stamps `nyxgpt-api-rc` /
-#           `nyxgpt-web-rc` into the tap, so a candidate is installable on
-#           macOS the same repo-less way a release is. It never writes the
-#           stable formulas. Like the nightly it no-ops when the tip has not
-#           moved since the last published candidate -- that is what lets the
-#           autopilot dispatch at every park without duplicating candidates.
+#   rc      dispatch -> a deliberate `3.0.0rcN`, by hand or from the sprint
+#           autopilot when the sprint reaches agentic-work-complete (#3729).
+#           This is what makes acceptance testing of *unreleased* code
+#           possible: every repo-less path installs from PyPI, so without a
+#           published candidate it can only ever exercise the last stable
+#           release -- never the tip carrying the acceptance-failure fixes
+#           merged during that same round of testing. The rc channel is the
+#           one with a step beyond PyPI: `homebrew-tap-rc` below also cuts a
+#           GitHub *prerelease* carrying the service tarballs and stamps
+#           `nyxgpt-api@<release>rc` / `nyxgpt-web@<release>rc` into the tap,
+#           so a candidate is installable on macOS the same repo-less way a
+#           release is. It never writes the stable formulas. It no-ops when
+#           the tip has not moved since the last published candidate -- that
+#           is what lets the autopilot dispatch at every park without
+#           duplicating candidates.
 #   stable  scripts/release_ceremony.sh Phase 2 delegates here. The ceremony
 #           keeps only its ceremony-exclusive steps (master merge, tag,
-#           Homebrew tap, GitHub Release, sign-off); a dev or rc build never
-#           runs any of them.
+#           Homebrew tap, GitHub Release, sign-off); an rc build never runs
+#           any of them.
 #
-# PEP 440 orders `3.0.0.devN < 3.0.0rcN < 3.0.0`, so a nightly can never
-# shadow a candidate and neither can shadow the release.
+# PEP 440 orders `3.0.0rcN < 3.0.0`, so a candidate can never shadow the
+# release.
 #
 # Guardrails (each one enforced, not just described):
-#   * scheduled + dispatch triggers only -- there is no push, tag or release
-#     trigger below;
+#   * dispatch trigger only -- there is no schedule, push, tag or release
+#     trigger below, so nothing publishes without being asked;
 #   * release branches only -- the version step refuses any ref that is not
 #     `v<X.Y.Z>` matching pyproject.toml's declared version;
-#   * pre-release version for dev and rc -- what gets uploaded is always
-#     `<release>.devN` / `<release>rcN`, so `pip install nyxgpt` cannot
-#     resolve to it (pip excludes pre-releases unless the user passes
-#     `--pre` or pins the version exactly);
+#   * pre-release version for rc -- what gets uploaded is always
+#     `<release>rcN`, so `pip install nyxgpt` cannot resolve to it (pip
+#     excludes pre-releases unless the user passes `--pre` or pins the
+#     version exactly);
 #   * stable is ceremony-only -- it additionally requires the release tag at
 #     the built commit (the ceremony creates it in Phase 1, before it
 #     delegates) and a confirmation token only the ceremony passes, so a
@@ -65,12 +64,9 @@ run-name: >-
 #   pypi.org -> project `nyxgpt` -> Publishing -> add a GitHub publisher with
 #   owner `dkblinux98`, repository `nyxGPT`, workflow
 #   `release-publish-pypi.yml`, environment blank.
-# See docs/cloud.md#pypi-publishing-dev-rc-and-stable.
+# See docs/cloud.md#pypi-publishing-rc-and-stable.
 
 on:
-  schedule:
-    # Nightly dev build from the default branch (the active release line).
-    - cron: '27 7 * * *'
   workflow_dispatch:
     inputs:
       channel:
@@ -78,11 +74,10 @@ on:
         type: choice
         options:
           - rc
-          - dev
           - stable
         default: rc
       number:
-        description: 'Explicit rc/dev number (blank = next unused, resolved from PyPI)'
+        description: 'Explicit rc number (blank = next unused, resolved from PyPI)'
         required: false
         default: ''
       dry_run:
@@ -102,11 +97,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      actions: read # read this workflow's own run history (nightly no-op check)
+      actions: read # read this workflow's own run history (rc no-op check)
       id-token: write # PyPI Trusted Publishing (OIDC) -- the only credential
     outputs:
       # Consumed by homebrew-tap-rc below, which is the rc channel's only
-      # additional step. `publish` is 'false' when a nightly no-ops.
+      # additional step. `publish` is 'false' when an rc no-ops.
       channel: ${{ steps.version.outputs.channel }}
       version: ${{ steps.version.outputs.version }}
       publish: ${{ steps.version.outputs.publish }}
@@ -127,11 +122,11 @@ jobs:
       - name: Resolve the version and pin pyproject.toml
         id: version
         env:
-          CHANNEL: ${{ inputs.channel || 'dev' }}
+          CHANNEL: ${{ inputs.channel || 'rc' }}
           NUMBER: ${{ inputs.number }}
           CONFIRM: ${{ inputs.confirm }}
           DRY_RUN: ${{ inputs.dry_run }}
-          # The dev/rc no-op checks read this workflow's own run history.
+          # The rc no-op check reads this workflow's own run history.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # `nyxgpt.release_candidate` only needs stdlib + httpx, so it runs
           # straight from the checkout -- no need to install the package
@@ -148,15 +143,8 @@ jobs:
           if [ -n "${NUMBER}" ]; then
             ARGS+=(--number "${NUMBER}")
           fi
-          if [ "${CHANNEL}" = "dev" ]; then
-            # Unique per run (PyPI versions are immutable) and a no-op when
-            # the tip has not moved since the last successful nightly.
-            ARGS+=(--run-number "$GITHUB_RUN_NUMBER" --skip-if-unchanged \
-                   --head-sha "$GITHUB_SHA" --repo "$GITHUB_REPOSITORY" \
-                   --exclude-run-id "$GITHUB_RUN_ID")
-          fi
           if [ "${CHANNEL}" = "rc" ] && [ -z "${NUMBER}" ] && [ "${DRY_RUN}" != "true" ]; then
-            # The same tip guard on the rc channel (#3729). The sprint
+            # The tip guard on the rc channel (#3729). The sprint
             # autopilot dispatches a candidate every time the sprint parks at
             # agentic-work-complete, so repeated observations of that state
             # must not cut duplicate candidates -- only a release-branch tip
@@ -266,12 +254,15 @@ jobs:
             echo "nyxgpt cloud deploy --version ${VERSION}"
             echo '```'
             if [ "${CHANNEL}" = "rc" ]; then
+              # The candidate formulas are named for the release line
+              # (#3735), so derive the names rather than hard-coding them.
+              RELEASE="${VERSION%%rc*}"
               echo ""
               echo "macOS acceptance (the tap job below stamps these):"
               echo ""
               echo '```'
               echo "brew tap dkblinux98/nyxgpt"
-              echo "brew install nyxgpt-api-rc nyxgpt-web-rc"
+              echo "brew install nyxgpt-api@${RELEASE}rc nyxgpt-web@${RELEASE}rc"
               echo '```'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
@@ -280,19 +271,21 @@ jobs:
     # The rc channel's ONLY additional step (#3727, owner decision
     # 2026-08-11): a candidate has to be installable on macOS the same
     # repo-less way a release is, so an rc publish also cuts a GitHub
-    # *prerelease* carrying the service tarballs and stamps `-rc` formulas
-    # into the tap.
+    # *prerelease* carrying the service tarballs and stamps the candidate
+    # formulas into the tap.
     #
     # Clobber-safety is the hard requirement, and it is structural rather
     # than conditional:
-    #   * this job runs for the rc channel only -- `dev` (the nightly) and
-    #     `stable` never reach it, so a nightly is PyPI-only by construction;
-    #   * what it writes is `nyxgpt-api-rc.rb` / `nyxgpt-web-rc.rb`. The
+    #   * this job runs for the rc channel only -- `stable` never reaches
+    #     it, so the ceremony's formulas stay the ceremony's;
+    #   * what it writes is `nyxgpt-api@<release>rc.rb` /
+    #     `nyxgpt-web@<release>rc.rb` (#3735 -- the name carries the release
+    #     line, so a candidate can never silently cross to the next one). The
     #     stable `nyxgpt-api.rb` / `nyxgpt-web.rb` are different files and
     #     are never built, copied or `git add`ed here, so `brew install
     #     nyxgpt-api` keeps resolving to the latest stable release. (Homebrew
     #     has no pre-release semantics -- channel separation has to live in
-    #     the formula names.) The `-rc` formulas declare `conflicts_with`
+    #     the formula names.) The candidate formulas declare `conflicts_with`
     #     their stable counterparts, so switching channels on one machine is
     #     an explicit uninstall, never a silent swap;
     #   * the GitHub release is created with `--prerelease --latest=false`,
@@ -334,7 +327,7 @@ jobs:
           for stable in nyxgpt-api.rb nyxgpt-web.rb; do
             if [ -e "dist/homebrew/${stable}" ]; then
               echo "::error::an rc build produced ${stable} -- stable formulas must never be"
-              echo "::error::written by an rc or dev publish (see this job's header)"
+              echo "::error::written by an rc publish (see this job's header)"
               exit 1
             fi
           done
@@ -346,6 +339,9 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+          # `3.0.0rc4` -> `3.0.0`: the candidate formulas are named for the
+          # release line they are a candidate for (#3735).
+          RELEASE="${VERSION%%rc*}"
           cat > /tmp/rc-notes.md <<NOTES
           Acceptance-only release candidate built from \`${GITHUB_REF_NAME}\` at \`${GITHUB_SHA}\`.
 
@@ -354,7 +350,7 @@ jobs:
 
           \`\`\`bash
           pip install nyxgpt==${VERSION}
-          brew tap dkblinux98/nyxgpt && brew install nyxgpt-api-rc nyxgpt-web-rc
+          brew tap dkblinux98/nyxgpt && brew install nyxgpt-api@${RELEASE}rc nyxgpt-web@${RELEASE}rc
           \`\`\`
           NOTES
 
@@ -409,20 +405,25 @@ jobs:
           set -euo pipefail
           if [ -z "${TAP_TOKEN:-}" ]; then
             echo "::warning::HOMEBREW_TAP_REPO is set but HOMEBREW_TAP_TOKEN is missing -- skipping tap push."
-            echo "::warning::The -rc formulas are still attached as a workflow artifact."
+            echo "::warning::The candidate formulas are still attached as a workflow artifact."
             exit 0
           fi
+          RELEASE="${VERSION%%rc*}"
+          API_FORMULA="nyxgpt-api@${RELEASE}rc.rb"
+          WEB_FORMULA="nyxgpt-web@${RELEASE}rc.rb"
           TAP_DIR="$(mktemp -d)"
           git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/${TAP_REPO}.git" "$TAP_DIR"
           mkdir -p "$TAP_DIR/Formula"
-          # Only the `-rc` formulas -- the stable ones in this tap belong to the
-          # ceremony's release-artifacts.yml run and are left exactly as they are.
-          cp "dist/homebrew/nyxgpt-api-rc.rb" "$TAP_DIR/Formula/nyxgpt-api-rc.rb"
-          cp "dist/homebrew/nyxgpt-web-rc.rb" "$TAP_DIR/Formula/nyxgpt-web-rc.rb"
+          # Only this line's candidate formulas -- the stable ones in this tap
+          # belong to the ceremony's release-artifacts.yml run, and another
+          # line's candidates are differently named files, so both are left
+          # exactly as they are.
+          cp "dist/homebrew/${API_FORMULA}" "$TAP_DIR/Formula/${API_FORMULA}"
+          cp "dist/homebrew/${WEB_FORMULA}" "$TAP_DIR/Formula/${WEB_FORMULA}"
           cd "$TAP_DIR"
           git config user.name "nyxgpt-release-bot"
           git config user.email "actions@github.com"
-          git add "Formula/nyxgpt-api-rc.rb" "Formula/nyxgpt-web-rc.rb"
+          git add "Formula/${API_FORMULA}" "Formula/${WEB_FORMULA}"
           # Verifying the mutation: an rc push that touched a stable formula
           # would break `brew install nyxgpt-api` for every user.
           if ! git status --porcelain -- Formula/nyxgpt-api.rb Formula/nyxgpt-web.rb | grep -q .; then
@@ -432,7 +433,7 @@ jobs:
             exit 1
           fi
           if git diff --cached --quiet; then
-            echo "-rc formulas unchanged for ${VERSION} -- nothing to push"
+            echo "candidate formulas unchanged for ${VERSION} -- nothing to push"
           else
             git commit -m "nyxgpt ${VERSION} (release candidate)"
             git push origin HEAD
@@ -441,20 +442,22 @@ jobs:
       - name: Remote tap not configured
         if: ${{ vars.HOMEBREW_TAP_REPO == '' }}
         run: |
-          echo "::notice::HOMEBREW_TAP_REPO is not set -- the `-rc` formulas for ${VERSION} are"
-          echo "::notice::attached as a workflow artifact instead. See docs/homebrew.md#remote-tap."
+          echo "::notice::HOMEBREW_TAP_REPO is not set -- the candidate formulas for ${VERSION}"
+          echo "::notice::are attached as a workflow artifact instead. See docs/homebrew.md#remote-tap."
 
       - name: Summary
         run: |
+          RELEASE="${VERSION%%rc*}"
           {
             echo "### \`${VERSION}\` also stamped into the Homebrew tap"
             echo ""
             echo "GitHub **prerelease** (never \"latest\") with the service tarballs, plus"
-            echo "\`nyxgpt-api-rc\` / \`nyxgpt-web-rc\` formulas. The stable formulas are untouched."
+            echo "\`nyxgpt-api@${RELEASE}rc\` / \`nyxgpt-web@${RELEASE}rc\` formulas. The stable"
+            echo "formulas are untouched."
             echo ""
             echo '```bash'
             echo "brew tap dkblinux98/nyxgpt"
-            echo "brew install nyxgpt-api-rc nyxgpt-web-rc"
-            echo "brew services start nyxgpt-api-rc"
+            echo "brew install nyxgpt-api@${RELEASE}rc nyxgpt-web@${RELEASE}rc"
+            echo "brew services start nyxgpt-api@${RELEASE}rc"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
