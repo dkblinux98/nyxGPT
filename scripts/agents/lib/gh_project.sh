@@ -1004,7 +1004,9 @@ drain_gate_release() {
 ${AUTOPILOT_INFO_MARKER}" \
         || _warn "drain_gate_release: could not post the paused notice."
     else
-      issue_comment "$RELEASE_ISSUE_NUMBER" "▶️ **Drain gate (#3730)**: **${STATUS_ACCEPTANCE_TESTING:-Acceptance Testing}** has drained (only this release issue remains). Released ${count} held issue(s) into ${STATUS_BACKLOG}: ${refs% }.
+      # Count what actually moved, not what was held: a partial release
+      # would otherwise report a batch it did not deliver.
+      issue_comment "$RELEASE_ISSUE_NUMBER" "▶️ **Drain gate (#3730)**: **${STATUS_ACCEPTANCE_TESTING:-Acceptance Testing}** has drained (only this release issue remains). Released ${#released[@]} held issue(s) into ${STATUS_BACKLOG}: ${refs% }.
 
 ${DRAIN_GATE_KICK_MARKER}
 
