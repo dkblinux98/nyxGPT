@@ -11,15 +11,23 @@ Two channels share that machinery (#3727, owner decision 2026-08-11):
 * ``stable`` (the default) stamps `nyxgpt-api.rb` / `nyxgpt-web.rb` -- what
   `release-artifacts.yml` pushes to the tap on every GitHub Release, and
   what `brew install nyxgpt-api` resolves to.
-* ``rc`` stamps **separate** `nyxgpt-api@rc.rb` / `nyxgpt-web@rc.rb`
+* ``rc`` stamps **separate** `nyxgpt-api-rc.rb` / `nyxgpt-web-rc.rb`
   formulas from the same templates, for acceptance-testing an unreleased
   release candidate. Homebrew has no pre-release semantics, so channel
   separation lives in the formula *names*: an rc publish therefore never
   writes a stable formula file at all, and `brew install nyxgpt-api` keeps
   resolving to the latest stable release no matter how many RCs are cut.
-  The `@rc` formulas declare `conflicts_with` their stable counterparts, so
+  The `-rc` formulas declare `conflicts_with` their stable counterparts, so
   switching channels on one machine is an explicit uninstall rather than a
   silent clobber.
+
+  The suffix is `-rc`, not `@rc`: Homebrew's `@` spelling is reserved for
+  *versioned* formulas and its loader only translates `@` to `AT` when a
+  digit follows (`Formulary.class_s("python@3.12")` -> `PythonAT312`, but
+  `Formulary.class_s("nyxgpt-api@rc")` -> `NyxgptApi@rc`, which is not a
+  legal Ruby constant). A `<name>@rc` formula is therefore unloadable by any
+  Homebrew, whatever class it declares -- `assert_loadable_formula_name`
+  keeps that mistake from being reintroduced.
 
 Run from a repo checkout (CI's release-artifacts.yml / release-publish-pypi.yml
 jobs) -- this is a release-tooling script, not part of the installed package,
@@ -55,42 +63,72 @@ CHANNELS = ("stable", "rc")
 #: Formula-name suffix per channel. Empty for stable -- the stable formulas
 #: are the ones `brew install nyxgpt-api` resolves, and nothing but a stable
 #: release may ever write them.
-_CHANNEL_SUFFIX = {"stable": "", "rc": "@rc"}
+_CHANNEL_SUFFIX = {"stable": "", "rc": "-rc"}
 
 _CLASS_RE = re.compile(r"^class\s+(\w+)\s+<\s+Formula\b", re.MULTILINE)
 
 _LICENSE_RE = re.compile(r"^([ \t]*)license\s+\"[^\"]*\"[ \t]*$", re.MULTILINE)
 
+# `Formulary.class_s`, transcribed from Homebrew: capitalize, camel-case away
+# the separators, `+` -> `x`, and `@` -> `AT` *only* before a digit.
+_SEPARATOR_RE = re.compile(r"[-_.\s]([a-zA-Z0-9])")
+_AT_VERSION_RE = re.compile(r"(.)@(\d)")
+
+# An `@` that is not followed by a digit survives `class_s` verbatim and lands
+# in a would-be Ruby constant, which cannot be declared -- see `class_s` above.
+_UNLOADABLE_AT_RE = re.compile(r"@(?!\d)")
+
+
+def assert_loadable_formula_name(formula: str) -> str:
+    """Fail loudly on a formula file name Homebrew could never load.
+
+    `brew` derives the Ruby constant it looks for from the *file name*, and
+    `@` only becomes `AT` when a digit follows it. `nyxgpt-api@rc` therefore
+    resolves to `NyxgptApi@rc` -- not a legal constant, so no class
+    declaration inside the file can satisfy the loader and `brew info` fails
+    with "Expected to find class NyxgptApi@rc". Reserve `@` for real
+    versioned formulas (`python@3.12`) and use a plain suffix otherwise.
+    """
+    if _UNLOADABLE_AT_RE.search(formula):
+        raise ValueError(
+            f"{formula!r} is not a loadable Homebrew formula name: `@` is only "
+            "translated to `AT` when a digit follows it, so brew would look for "
+            f"the illegal constant {formula_class_name(formula)!r}"
+        )
+    return formula
+
 
 def formula_name(name: str, channel: str) -> str:
     """The formula this channel publishes for service `name`.
 
-    `("nyxgpt-api", "rc")` -> `nyxgpt-api@rc`. The suffix is what keeps an RC
+    `("nyxgpt-api", "rc")` -> `nyxgpt-api-rc`. The suffix is what keeps an RC
     off the stable formula: they are different formulas in the same tap, not
     two versions of one.
     """
     if channel not in _CHANNEL_SUFFIX:
         raise ValueError(f"Unknown channel {channel!r} -- expected one of {', '.join(CHANNELS)}")
-    return f"{name}{_CHANNEL_SUFFIX[channel]}"
+    return assert_loadable_formula_name(f"{name}{_CHANNEL_SUFFIX[channel]}")
 
 
 def formula_class_name(formula: str) -> str:
     """Homebrew's class name for a formula file name.
 
     Homebrew derives the class from the file name (`Formulary.class_s`):
-    hyphens camel-case, and `@` becomes a literal `AT` -- `python@3.12` is
-    `PythonAT312`, so `nyxgpt-api@rc` is `NyxgptApiATRc`. Getting this wrong
-    makes `brew install` fail to load the formula at all.
+    separators camel-case (`nyxgpt-api-rc` -> `NyxgptApiRc`), `+` becomes
+    `x`, and `@` becomes `AT` **only when a digit follows** -- `python@3.12`
+    is `PythonAT312`, but `nyxgpt-api@rc` is `NyxgptApi@rc`, which is why
+    that name is rejected by `assert_loadable_formula_name` rather than
+    stamped. Getting this wrong makes `brew install` fail to load the
+    formula at all.
     """
-    base, _, tag = formula.partition("@")
-    class_name = "".join(part.capitalize() for part in base.split("-"))
-    if tag:
-        class_name += "AT" + "".join(part.capitalize() for part in re.split(r"[-.]", tag))
-    return class_name
+    class_name = formula[:1].upper() + formula[1:].lower()
+    class_name = _SEPARATOR_RE.sub(lambda match: match.group(1).upper(), class_name)
+    class_name = class_name.replace("+", "x")
+    return _AT_VERSION_RE.sub(lambda match: f"{match.group(1)}AT{match.group(2)}", class_name, 1)
 
 
 def render_rc_formula(template_text: str, name: str) -> str:
-    """Turn a stamped stable formula into its `@rc` counterpart.
+    """Turn a stamped stable formula into its release-candidate counterpart.
 
     Derived from the same template rather than a parallel copy, so the two
     channels can never drift about what the keg actually installs -- only

@@ -14,7 +14,7 @@ of 2026-08-11 there is one channel-parameterized build/publish pipeline
   last successful nightly (`select_last_scheduled_sha`);
 * **rc** -- a manual dispatch cuts a deliberate `3.0.0rcN`. This is the one
   channel with a step past PyPI: it also cuts a GitHub *prerelease* carrying
-  the service tarballs and stamps `nyxgpt-api@rc` / `nyxgpt-web@rc` into the
+  the service tarballs and stamps `nyxgpt-api-rc` / `nyxgpt-web-rc` into the
   Homebrew tap, so a candidate is installable on macOS the same repo-less way
   a release is -- without ever writing the stable formulas (`RC_FORMULAS`);
 * **stable** -- `scripts/release_ceremony.sh` Phase 2 delegates to the same
@@ -85,11 +85,14 @@ HOMEBREW_TAP = "dkblinux98/nyxgpt"
 #: The formulas an rc publish stamps -- deliberately NOT `nyxgpt-api` /
 #: `nyxgpt-web`. Homebrew has no pre-release semantics, so the only way to
 #: keep `brew install nyxgpt-api` resolving to the latest *stable* release is
-#: for the candidate to be a separate formula. `@rc` is the versioned-formula
-#: spelling Homebrew already uses (`python@3.12`), and the two `@rc` formulas
-#: declare `conflicts_with` their stable counterparts so a machine can only
-#: ever be on one channel at a time.
-RC_FORMULAS = ("nyxgpt-api@rc", "nyxgpt-web@rc")
+#: for the candidate to be a separate formula. The suffix is `-rc`, not the
+#: `@rc` of the owner decision: Homebrew's `@` spelling is reserved for
+#: versioned formulas and its loader only turns `@` into `AT` before a digit
+#: (`python@3.12` -> `PythonAT312`), so `nyxgpt-api@rc` would demand the
+#: illegal constant `NyxgptApi@rc` and fail to load at all. The two `-rc`
+#: formulas declare `conflicts_with` their stable counterparts so a machine
+#: can only ever be on one channel at a time.
+RC_FORMULAS = ("nyxgpt-api-rc", "nyxgpt-web-rc")
 
 #: Printed by `main` instead of a version when a nightly has nothing to do
 #: (the release-branch tip has not moved since the last successful nightly).
@@ -601,7 +604,7 @@ def _channel_commands(channel: str) -> dict[str, str]:
     }
     if channel == "rc":
         # An rc is the only pre-release that is also installable with brew:
-        # its publish stamps `@rc` formulas into the tap (dev is PyPI-only).
+        # its publish stamps the `-rc` formulas into the tap (dev is PyPI-only).
         commands["brew"] = f"brew tap {HOMEBREW_TAP} && brew install {' '.join(RC_FORMULAS)}"
     return commands
 

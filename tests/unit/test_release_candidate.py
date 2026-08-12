@@ -366,11 +366,11 @@ def test_stable_plan_renders_a_command_the_cli_actually_accepts():
 
 
 def test_rc_plan_renders_the_macos_acceptance_install():
-    """An rc also stamps @rc formulas, so the plan has to say how to install one."""
+    """An rc also stamps the -rc formulas, so the plan has to say how to install one."""
     commands = rc.plan("v3.0.0", "rc", published=PUBLISHED)["commands"]
 
     assert commands["brew"] == (
-        "brew tap dkblinux98/nyxgpt && brew install nyxgpt-api@rc nyxgpt-web@rc"
+        "brew tap dkblinux98/nyxgpt && brew install nyxgpt-api-rc nyxgpt-web-rc"
     )
     assert "nyxgpt-api " not in commands["brew"], "an rc must never install the stable formula"
 
@@ -384,7 +384,7 @@ def test_dev_plan_offers_no_brew_command_because_the_nightly_is_pypi_only():
 def test_rc_guardrails_state_the_stable_formulas_are_untouched():
     guardrails = " ".join(rc.plan("v3.0.0", "rc", published=PUBLISHED)["guardrails"]).lower()
 
-    assert "nyxgpt-api@rc" in guardrails
+    assert "nyxgpt-api-rc" in guardrails
     assert "brew install nyxgpt-api` still resolves to the latest stable" in guardrails
     assert "prerelease" in guardrails
 

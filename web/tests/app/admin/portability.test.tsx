@@ -388,8 +388,8 @@ describe('PortabilityPage', () => {
       expect(screen.getByText('ready to cut')).toBeInTheDocument();
     });
 
-    it('offers the macOS @rc install when the channel stamps the tap', async () => {
-      // An rc publish also pushes nyxgpt-api@rc/nyxgpt-web@rc to the tap, so
+    it('offers the macOS rc install when the channel stamps the tap', async () => {
+      // An rc publish also pushes nyxgpt-api-rc/nyxgpt-web-rc to the tap, so
       // the panel has to say how to accept a candidate on macOS too (#3727).
       serveReport(mockReport);
       render(<PortabilityPage />);
@@ -398,7 +398,7 @@ describe('PortabilityPage', () => {
         expect(screen.getByText(/Accept it on macOS/)).toBeInTheDocument();
       });
       expect(
-        screen.getByText('brew tap dkblinux98/nyxgpt && brew install nyxgpt-api@rc nyxgpt-web@rc')
+        screen.getByText('brew tap dkblinux98/nyxgpt && brew install nyxgpt-api-rc nyxgpt-web-rc')
       ).toBeInTheDocument();
     });
 

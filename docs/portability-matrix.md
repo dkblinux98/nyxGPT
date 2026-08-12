@@ -152,11 +152,11 @@ from its own formulas instead — an rc publish stamps them into the same tap
 alongside the stable ones:
 
 ```bash
-brew tap dkblinux98/nyxgpt && brew install nyxgpt-api@rc nyxgpt-web@rc
+brew tap dkblinux98/nyxgpt && brew install nyxgpt-api-rc nyxgpt-web-rc
 ```
 
 `brew install nyxgpt-api` is unaffected and stays on the latest stable
-release ([docs/homebrew.md](homebrew.md#release-candidate-formulas-rc)).
+release ([docs/homebrew.md](homebrew.md#release-candidate-formulas-rc-channel)).
 
 Nothing else about the sequence changes: the build is a published artifact
 like any other, so the run stays repo-less. Dev and rc builds are

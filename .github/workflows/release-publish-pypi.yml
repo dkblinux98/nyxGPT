@@ -18,7 +18,7 @@ run-name: >-
 #   rc      manual dispatch  -> a deliberate `3.0.0rcN`. The rc channel is the
 #           only one with a step beyond PyPI: `homebrew-tap-rc` below also
 #           cuts a GitHub *prerelease* carrying the service tarballs and
-#           stamps `nyxgpt-api@rc` / `nyxgpt-web@rc` into the tap, so a
+#           stamps `nyxgpt-api-rc` / `nyxgpt-web-rc` into the tap, so a
 #           candidate is installable on macOS the same repo-less way a
 #           release is. It never writes the stable formulas.
 #   stable  scripts/release_ceremony.sh Phase 2 delegates here. The ceremony
@@ -248,7 +248,7 @@ jobs:
               echo ""
               echo '```'
               echo "brew tap dkblinux98/nyxgpt"
-              echo "brew install nyxgpt-api@rc nyxgpt-web@rc"
+              echo "brew install nyxgpt-api-rc nyxgpt-web-rc"
               echo '```'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
@@ -257,19 +257,19 @@ jobs:
     # The rc channel's ONLY additional step (#3727, owner decision
     # 2026-08-11): a candidate has to be installable on macOS the same
     # repo-less way a release is, so an rc publish also cuts a GitHub
-    # *prerelease* carrying the service tarballs and stamps `@rc` formulas
+    # *prerelease* carrying the service tarballs and stamps `-rc` formulas
     # into the tap.
     #
     # Clobber-safety is the hard requirement, and it is structural rather
     # than conditional:
     #   * this job runs for the rc channel only -- `dev` (the nightly) and
     #     `stable` never reach it, so a nightly is PyPI-only by construction;
-    #   * what it writes is `nyxgpt-api@rc.rb` / `nyxgpt-web@rc.rb`. The
+    #   * what it writes is `nyxgpt-api-rc.rb` / `nyxgpt-web-rc.rb`. The
     #     stable `nyxgpt-api.rb` / `nyxgpt-web.rb` are different files and
     #     are never built, copied or `git add`ed here, so `brew install
     #     nyxgpt-api` keeps resolving to the latest stable release. (Homebrew
     #     has no pre-release semantics -- channel separation has to live in
-    #     the formula names.) The `@rc` formulas declare `conflicts_with`
+    #     the formula names.) The `-rc` formulas declare `conflicts_with`
     #     their stable counterparts, so switching channels on one machine is
     #     an explicit uninstall, never a silent swap;
     #   * the GitHub release is created with `--prerelease --latest=false`,
@@ -299,7 +299,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Build tarballs and stamp the @rc formulas
+      - name: Build tarballs and stamp the rc formulas
         run: |
           python scripts/build_homebrew_artifacts.py "$VERSION" dist/homebrew \
             "https://github.com/${{ github.repository }}/releases/download/${VERSION}" \
@@ -331,7 +331,7 @@ jobs:
 
           \`\`\`bash
           pip install nyxgpt==${VERSION}
-          brew tap dkblinux98/nyxgpt && brew install nyxgpt-api@rc nyxgpt-web@rc
+          brew tap dkblinux98/nyxgpt && brew install nyxgpt-api-rc nyxgpt-web-rc
           \`\`\`
           NOTES
 
@@ -377,7 +377,7 @@ jobs:
           name: homebrew-tap-rc-formulas-${{ needs.publish.outputs.version }}
           path: dist/homebrew/*.rb
 
-      - name: Push the @rc formulas to the remote tap
+      - name: Push the rc formulas to the remote tap
         if: ${{ vars.HOMEBREW_TAP_REPO != '' }}
         env:
           TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO }}
@@ -386,20 +386,20 @@ jobs:
           set -euo pipefail
           if [ -z "${TAP_TOKEN:-}" ]; then
             echo "::warning::HOMEBREW_TAP_REPO is set but HOMEBREW_TAP_TOKEN is missing -- skipping tap push."
-            echo "::warning::The @rc formulas are still attached as a workflow artifact."
+            echo "::warning::The -rc formulas are still attached as a workflow artifact."
             exit 0
           fi
           TAP_DIR="$(mktemp -d)"
           git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/${TAP_REPO}.git" "$TAP_DIR"
           mkdir -p "$TAP_DIR/Formula"
-          # Only the @rc formulas -- the stable ones in this tap belong to the
+          # Only the `-rc` formulas -- the stable ones in this tap belong to the
           # ceremony's release-artifacts.yml run and are left exactly as they are.
-          cp "dist/homebrew/nyxgpt-api@rc.rb" "$TAP_DIR/Formula/nyxgpt-api@rc.rb"
-          cp "dist/homebrew/nyxgpt-web@rc.rb" "$TAP_DIR/Formula/nyxgpt-web@rc.rb"
+          cp "dist/homebrew/nyxgpt-api-rc.rb" "$TAP_DIR/Formula/nyxgpt-api-rc.rb"
+          cp "dist/homebrew/nyxgpt-web-rc.rb" "$TAP_DIR/Formula/nyxgpt-web-rc.rb"
           cd "$TAP_DIR"
           git config user.name "nyxgpt-release-bot"
           git config user.email "actions@github.com"
-          git add "Formula/nyxgpt-api@rc.rb" "Formula/nyxgpt-web@rc.rb"
+          git add "Formula/nyxgpt-api-rc.rb" "Formula/nyxgpt-web-rc.rb"
           # Verifying the mutation: an rc push that touched a stable formula
           # would break `brew install nyxgpt-api` for every user.
           if ! git status --porcelain -- Formula/nyxgpt-api.rb Formula/nyxgpt-web.rb | grep -q .; then
@@ -409,7 +409,7 @@ jobs:
             exit 1
           fi
           if git diff --cached --quiet; then
-            echo "@rc formulas unchanged for ${VERSION} -- nothing to push"
+            echo "-rc formulas unchanged for ${VERSION} -- nothing to push"
           else
             git commit -m "nyxgpt ${VERSION} (release candidate)"
             git push origin HEAD
@@ -418,7 +418,7 @@ jobs:
       - name: Remote tap not configured
         if: ${{ vars.HOMEBREW_TAP_REPO == '' }}
         run: |
-          echo "::notice::HOMEBREW_TAP_REPO is not set -- the @rc formulas for ${VERSION} are"
+          echo "::notice::HOMEBREW_TAP_REPO is not set -- the `-rc` formulas for ${VERSION} are"
           echo "::notice::attached as a workflow artifact instead. See docs/homebrew.md#remote-tap."
 
       - name: Summary
@@ -427,11 +427,11 @@ jobs:
             echo "### \`${VERSION}\` also stamped into the Homebrew tap"
             echo ""
             echo "GitHub **prerelease** (never \"latest\") with the service tarballs, plus"
-            echo "\`nyxgpt-api@rc\` / \`nyxgpt-web@rc\` formulas. The stable formulas are untouched."
+            echo "\`nyxgpt-api-rc\` / \`nyxgpt-web-rc\` formulas. The stable formulas are untouched."
             echo ""
             echo '```bash'
             echo "brew tap dkblinux98/nyxgpt"
-            echo "brew install nyxgpt-api@rc nyxgpt-web@rc"
-            echo "brew services start nyxgpt-api@rc"
+            echo "brew install nyxgpt-api-rc nyxgpt-web-rc"
+            echo "brew services start nyxgpt-api-rc"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
