@@ -15,12 +15,13 @@ RETRY_IMPLEMENTATION at every gate opening (the Sprint 8 cloud chain
 #3509 -> #3510 -> #3513 -> #3514/#3515/#3516 was hand-walked that way). The
 owner's requirement is no babysitting: the loop drives its own chain.
 
-INTERIM MECHANISM -- prose `Blocked by:` parsing below is a stopgap. It is
-superseded by the native issue Relationships work (W1/W2 in
-`product_management/AGENTIC_SDLC_DESIGN.md`, deferred to nyxAgent); when
-that lands, dependencies are read from the native API and this parser goes
-away. It is deliberately minimal: issue-body references only, no comment
-scanning, no transitive resolution.
+HISTORICAL FALLBACK -- the prose `Blocked by:` parser below is no longer the
+gating source. Since #3731 the gate is read from GitHub's **native**
+blocked-by relationships, walked transitively by `_issue_open_gate_refs` in
+`lib/gh_project.sh`; this parser is consulted only for issues that carry no
+native edges (bodies written before that change). Nothing writes prose gates
+any more. It is deliberately minimal: issue-body references only, no comment
+scanning.
 """
 
 from __future__ import annotations
@@ -59,7 +60,8 @@ def parse_blocked_by_refs(body: str | None) -> list[int]:
 
     Returns them de-duplicated, in first-seen order. Anything that is not on
     a `Blocked by` line is ignored, so a body that merely mentions `#1234`
-    in prose does not create a phantom gate.
+    in prose does not create a phantom gate. Fallback path only (#3731) --
+    native relationships win whenever the issue has any.
     """
     if not body:
         return []
@@ -184,8 +186,8 @@ def build_gate_lines(scan: dict[str, Any], resumed: int | None = None) -> list[s
 
     if resumed is not None:
         lines.append(
-            f"- **Auto-resumed:** #{resumed} — parked with all `Blocked by:` gates "
-            f"closed, retry trigger posted."
+            f"- **Auto-resumed:** #{resumed} — parked with all blocking "
+            f"relationships closed, retry trigger posted."
         )
     if waiting:
         rendered = "; ".join(
