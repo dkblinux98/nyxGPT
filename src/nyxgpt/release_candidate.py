@@ -785,6 +785,12 @@ def _guardrails(channel: str, candidate: str) -> list[str]:
             "GitHub prerelease, never 'latest': the rc's release is marked as a prerelease, "
             "so it does not become the repository's latest release and does not trigger the "
             "stable artifact workflow (which fires on `released`, not `prereleased`).",
+            "Cut automatically when the sprint reaches agentic-work-complete: the sprint "
+            "autopilot dispatches this channel (and only this channel) at that park, and "
+            "names the candidate on the release tracking issue.",
+            "No duplicate candidates: an rc whose release-branch tip has not moved since the "
+            "last published candidate publishes nothing, so re-observing the same parked "
+            "state cuts no second rcN.",
         ]
     else:
         channel_specific.append(

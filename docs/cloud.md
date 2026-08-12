@@ -899,7 +899,7 @@ and no second script -- the ceremony delegates to this one too.
 | Channel | Version | Trigger | Who runs it |
 | --- | --- | --- | --- |
 | `dev` | `3.0.0.devN` | nightly schedule (or a manual dispatch) | automatic |
-| `rc` | `3.0.0rcN` | manual dispatch / `nyxgpt release publish --publish` | owner |
+| `rc` | `3.0.0rcN` | the sprint autopilot parking at agentic-work-complete, a manual dispatch, or `nyxgpt release publish --publish` | automatic + owner |
 | `stable` | `3.0.0` | `scripts/release_ceremony.sh` Phase 2 | owner, ceremony only |
 
 PEP 440 orders them `3.0.0.devN < 3.0.0rcN < 3.0.0`, so a nightly can never
@@ -969,6 +969,42 @@ only -- it is never committed), runs `twine check` and a clean-venv smoke
 install that asserts the artifact reports the version it claims, publishes,
 and then polls pypi.org until it serves it. Dispatch it with
 `dry_run: true` to do everything except the upload.
+
+### Candidates cut themselves at agentic-work-complete
+
+Most rounds need no command at all (#3729). The owner's cadence is: wait for
+the sprint to reach **agentic work complete**, run a full acceptance round,
+file failures and improvements, repeat -- and the moment the sprint autopilot
+detects that state is exactly the moment a candidate should exist on every
+platform. So the park transition into `awaiting_acceptance`
+(`_autopilot_publish_rc` in `scripts/agents/lib/gh_project.sh`) dispatches
+this pipeline with `channel=rc`, and the park note on the release tracking
+issue names the version to install:
+
+> 📦 **Release candidate for this acceptance round:** `3.0.0rc2` is
+> publishing now from `v3.0.0` -- PyPI plus the Homebrew `-rc` formulas, in
+> one run.
+
+Three things bound it:
+
+- **Only that state.** A sprint with work still in flight has nothing to
+  accept, and a sprint already promoted to *For Release* has had its round.
+  The decision is #3709's park state -- there is no second state machine.
+- **Only `rc`.** The channel is a constant, re-checked at the dispatch. A
+  release needs the ceremony's tag and confirmation token, which this path
+  does not have and cannot obtain.
+- **No duplicates.** The rc channel carries the same tip guard as the
+  nightly: an rc dispatch whose release-branch tip has not moved since the
+  last published candidate resolves to `SKIP`. Repeat observations of the
+  same parked state therefore publish nothing, and the park note names the
+  existing candidate instead. (An explicit `number`, and a `dry_run`, opt
+  out of the guard -- both are deliberate acts.)
+
+The guard reads this workflow's own run history for the last successful rc,
+which is why the `run-name:` at the top of the file is load-bearing: every
+channel but `dev` arrives on the same `workflow_dispatch` event, so the
+rendered title ("publish rc from v3.0.0") is the only record of which
+channel a finished run built.
 
 ### Accepting a candidate on macOS
 
@@ -1043,7 +1079,8 @@ Because of that, the ceremony needs **no PyPI credential at all**; the
 | An rc never clobbers the stable brew formulas | The rc tap job writes `nyxgpt-api-rc.rb`/`nyxgpt-web-rc.rb` only; it asserts no stable formula was produced and refuses to push if one would change, so `brew install nyxgpt-api` stays on the latest stable release |
 | An rc's GitHub release is never "latest" | It is created with `--prerelease --latest=false` and verified afterwards -- which also keeps `release-artifacts.yml` (trigger: `released`, not `prereleased`) out of the rc path |
 | The nightly never touches the tap | `homebrew-tap-rc` is gated on `channel == 'rc'`, so a `dev` build is PyPI-only by construction, not by convention |
-| Stable is ceremony-only | The stable channel additionally requires the release tag at the built commit (Phase 1 creates it) *and* the ceremony's confirmation token, so dispatching `channel=stable` by hand publishes nothing |
+| Stable is ceremony-only | The stable channel additionally requires the release tag at the built commit (Phase 1 creates it) *and* the ceremony's confirmation token, so dispatching `channel=stable` by hand publishes nothing -- and the sprint autopilot's dispatch path hard-codes `rc` and refuses any other channel before it dispatches |
+| The autopilot never cuts a duplicate candidate | An rc dispatch on a release-branch tip that has not moved since the last published candidate resolves to `SKIP`, so re-observing the same parked state publishes nothing |
 | No version reuse | The next number comes from what PyPI already serves, and PyPI rejects a re-upload anyway |
 
 The branch check and the version arithmetic live in

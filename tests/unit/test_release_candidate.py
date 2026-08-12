@@ -390,6 +390,25 @@ def test_rc_guardrails_state_the_stable_formulas_are_untouched():
     assert "prerelease" in guardrails
 
 
+def test_rc_guardrails_explain_the_automatic_candidate(monkeypatch):
+    """The dashboard renders these verbatim, so the autopilot's behaviour has a
+    surface there too -- an owner reading the panel learns candidates cut
+    themselves at agentic-work-complete, and why a repeat cuts none."""
+    guardrails = " ".join(rc.plan("v3.0.0", "rc", published=PUBLISHED)["guardrails"]).lower()
+
+    assert "agentic-work-complete" in guardrails
+    assert "no duplicate candidates" in guardrails
+
+
+def test_dev_guardrails_do_not_claim_the_autopilot_cuts_nightlies():
+    """The autopilot publishes candidates only -- the nightly is the schedule's."""
+    guardrails = " ".join(
+        rc.plan("v3.0.0", "dev", published=PUBLISHED, run_number=31)["guardrails"]
+    ).lower()
+
+    assert "agentic-work-complete" not in guardrails
+
+
 def test_dev_guardrails_state_the_nightly_never_touches_the_tap():
     guardrails = " ".join(
         rc.plan("v3.0.0", "dev", published=PUBLISHED, run_number=31)["guardrails"]
