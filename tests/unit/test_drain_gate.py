@@ -58,6 +58,7 @@ def _clean_env(monkeypatch):
         "STATUS_ACCEPTANCE_FAILED",
         "RELEASE_ISSUE",
         "DRAIN_GATE_BYPASS_LABELS",
+        "DRAIN_GATE_REWORK_LABEL",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -205,11 +206,19 @@ def test_rework_exemption_is_absent_by_default(monkeypatch):
 # --- rework_features -------------------------------------------------
 
 
+def _failure(body: str) -> dict:
+    return {"body": body, "labels": [{"name": "Acceptance Failure"}]}
+
+
+def _improvement(body: str) -> dict:
+    return {"body": body, "labels": [{"name": "Improvement"}]}
+
+
 def test_rework_features_reads_both_marker_spellings():
     assert drain_gate.rework_features(
         [
-            "Related feature: #3600\n\nUpload 500s.",
-            "Parent feature: #3601\n\nlegacy marker",
+            _failure("Related feature: #3600\n\nUpload 500s."),
+            _failure("Parent feature: #3601\n\nlegacy marker"),
         ]
     ) == [3600, 3601]
 
@@ -217,16 +226,64 @@ def test_rework_features_reads_both_marker_spellings():
 def test_rework_features_deduplicates_and_ignores_unmarked_bodies():
     assert drain_gate.rework_features(
         [
-            "Related feature: #3600",
-            "Related feature: #3600",
-            "an improvement with no related feature",
-            "",
+            _failure("Related feature: #3600"),
+            _failure("Related feature: #3600"),
+            _failure("a failure with no related feature"),
+            _failure(""),
         ]
     ) == [3600]
 
 
 def test_rework_features_ignores_prose_that_merely_mentions_an_issue():
-    assert drain_gate.rework_features(["see #3600 for context, related to the feature"]) == []
+    assert (
+        drain_gate.rework_features([_failure("see #3600 for context, related to the feature")])
+        == []
+    )
+
+
+def test_only_held_acceptance_failures_park_a_feature():
+    """An Improvement never blocks its related feature's acceptance (owner
+    decision 2026-08-01), so it must not exempt that feature either: the
+    feature is genuinely still under test."""
+    assert drain_gate.rework_features([_improvement("Related feature: #3600")]) == []
+
+
+def test_a_feature_named_by_both_a_failure_and_an_improvement_is_parked():
+    assert drain_gate.rework_features(
+        [
+            _improvement("Related feature: #3600"),
+            _failure("Related feature: #3600"),
+        ]
+    ) == [3600]
+
+
+def test_only_the_failure_labeled_issues_marker_contributes():
+    assert drain_gate.rework_features(
+        [
+            _failure("Related feature: #3600"),
+            _improvement("Related feature: #3601"),
+        ]
+    ) == [3600]
+
+
+def test_rework_label_match_is_case_insensitive_and_tolerates_plain_strings():
+    assert drain_gate.rework_features(
+        [{"body": "Related feature: #3600", "labels": ["acceptance failure"]}]
+    ) == [3600]
+
+
+def test_an_unlabeled_held_issue_parks_nothing():
+    assert drain_gate.rework_features([{"body": "Related feature: #3600"}]) == []
+
+
+def test_rework_label_is_configurable(monkeypatch):
+    monkeypatch.setenv("DRAIN_GATE_REWORK_LABEL", "Production Defect")
+    assert drain_gate.rework_features(
+        [
+            _failure("Related feature: #3600"),
+            {"body": "Related feature: #3601", "labels": [{"name": "Production Defect"}]},
+        ]
+    ) == [3601]
 
 
 # --- bypass ----------------------------------------------------------

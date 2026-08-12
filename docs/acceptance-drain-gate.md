@@ -56,6 +56,18 @@ The rhythm the loop now respects:
     sweeps always agree on which failure belongs to which feature. Once the
     failures are released the exemption lapses — the feature is then waiting
     on ordinary in-flight work, which moves on its own.
+
+    **Only held issues labeled `Acceptance Failure` park a feature** — the
+    same label filter the promotion sweep applies, so the two sweeps agree
+    on this too. A held **Improvement** parks nothing: an improvement never
+    blocks its related feature's acceptance (owner decision 2026-08-01), so
+    a feature named only by held improvements is genuinely still under test
+    and keeps the gate closed. Without that filter, one `@improvement` on
+    the last feature under test would open the gate and drain the lane
+    mid-round — precisely what the gate exists to prevent. There is no
+    deadlock in the strict rule: an improvements-only feature leaves
+    `Acceptance Testing` by the owner's own hand-move, after which the gate
+    opens legitimately. (`DRAIN_GATE_REWORK_LABEL` overrides the label.)
 - On the opening, every held item moves to `Backlog` and the queue is kicked
   **once** for the whole batch (one kick, not one per issue — the dispatcher
   picks the next item itself).

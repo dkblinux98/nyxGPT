@@ -89,15 +89,19 @@ set_issue_status() { echo "$1 -> $2" >>"$STATUS_FILE"; }
 issue_comment() { printf '%s :: %s\n' "$1" "$2" >>"$COMMENT_FILE"; }
 sprint_autopilot_paused() { return 1; }
 
-# Bodies of the held issues, for the related-feature ("rework") lookup
-# drain_gate_state does. Empty by default: a held issue with no marker
-# exempts nothing.
+# Bodies and labels of the held issues, for the related-feature ("rework")
+# lookup drain_gate_state does. Empty bodies by default: a held issue with
+# no marker exempts nothing. Labels default to "Acceptance Failure" -- the
+# only label whose marker parks a feature -- so each test states only what
+# it is actually varying.
 declare -A ISSUE_BODIES=()
+declare -A ISSUE_LABELS=()
 gh() {
   local ref="$*" num
   num="${ref##*issues/}"
   num="${num%% *}"
-  echo "${ISSUE_BODIES[$num]:-}"
+  jq -cn --arg b "${ISSUE_BODIES[$num]:-}" --arg l "${ISSUE_LABELS[$num]:-Acceptance Failure}" \
+    '{body: $b, labels: ($l | split(",") | map(select(length > 0)))}'
 }
 
 # --- Test 1: acceptance_lane_snapshot buckets both lanes across pages ---
@@ -152,9 +156,11 @@ _assert_eq "a closed gate posts no comment" "" "$(cat "$COMMENT_FILE")"
 # --- Test 2b: a feature awaiting rework is NOT a blocker ---
 # Without this the gate deadlocks: #3600 parks closed in Acceptance Testing
 # until its failure #3700 reaches For Release, #3700 cannot start until the
-# gate opens, and the gate waits on #3600.
+# gate opens, and the gate waits on #3600. The held Improvement #3701 rides
+# along -- it parks nothing itself, but it drains with the batch.
 ISSUE_BODIES=([3700]="Related feature: #3600
-The upload page 500s." [3701]="Parent feature: #3600")
+The upload page 500s." [3701]="Related feature: #3600")
+ISSUE_LABELS=([3701]="Improvement")
 state="$(drain_gate_state)"
 _assert_eq "gate OPENS when the only item under test is a feature awaiting rework" \
   "true" "$(jq -r '.open' <<<"$state")"
@@ -164,9 +170,36 @@ _assert_eq "the awaiting-rework feature is reported as exempt" "[3600]" "$(jq -c
 : >"$STATUS_FILE"
 : >"$COMMENT_FILE"
 result="$(drain_gate_release 2>/dev/null)"
-_assert_eq "the deadlocked round now releases its failures" "[3700,3701]" "$(jq -c '.released' <<<"$result")"
+_assert_eq "the deadlocked round releases the failure AND the improvement" "[3700,3701]" "$(jq -c '.released' <<<"$result")"
 _assert_not_contains "the parked feature itself is never moved" "$(cat "$STATUS_FILE")" "3600 ->"
+
+# --- Test 2c: a held IMPROVEMENT parks nothing ---
+# An improvement never blocks its related feature's acceptance (owner
+# decision 2026-08-01), so #3600 is genuinely still under test: exempting
+# it here would drain the lane mid-round, which is exactly what the gate
+# exists to prevent. Same filter promote_accepted_features.sh applies.
+ISSUE_BODIES=([3700]="Related feature: #3600" [3701]="Related feature: #3600")
+ISSUE_LABELS=([3700]="Improvement" [3701]="Improvement")
+state="$(drain_gate_state)"
+_assert_eq "gate stays CLOSED when only held improvements name the feature under test" \
+  "false" "$(jq -r '.open' <<<"$state")"
+_assert_eq "the feature under test is still a blocker" "[3600]" "$(jq -c '.blockers' <<<"$state")"
+_assert_eq "an improvement earns its feature no rework exemption" "[]" "$(jq -c '.rework_exempt' <<<"$state")"
+
+: >"$STATUS_FILE"
+: >"$COMMENT_FILE"
+result="$(drain_gate_release 2>/dev/null)"
+_assert_eq "improvements-only: nothing drains mid-round" "none" "$(jq -r '.action' <<<"$result")"
+_assert_eq "improvements-only: no issue is moved" "" "$(cat "$STATUS_FILE")"
+
+# --- Test 2d: one Acceptance Failure among held improvements parks it ---
+ISSUE_LABELS=([3700]="Improvement")
+state="$(drain_gate_state)"
+_assert_eq "one held failure is enough to park the feature" "true" "$(jq -r '.open' <<<"$state")"
+_assert_eq "the parked feature is reported as exempt" "[3600]" "$(jq -c '.rework_exempt' <<<"$state")"
+
 ISSUE_BODIES=()
+ISSUE_LABELS=()
 
 # --- Test 3: the release issue is exempt -- gate OPENS with only it left ---
 graphql() {

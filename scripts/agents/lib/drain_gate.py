@@ -25,18 +25,28 @@ Three pure decisions live here so they can be unit-tested without GitHub:
               still sitting there because their own failures are held --
               see `rework_features` below.
 
-  rework      the bodies of the currently HELD issues -> the features
-              they name ("Related feature: #N", legacy "Parent feature:
-              #N" -- the same markers the promotion sweep reads). Those
-              features are not "still under test": the owner has already
-              failed them and they park closed in `Acceptance Testing`
-              until every related failure reaches `For Release`
+  rework      the currently HELD issues -> the features their bodies name
+              ("Related feature: #N", legacy "Parent feature: #N" -- the
+              same markers the promotion sweep reads), counting ONLY the
+              held issues labeled "Acceptance Failure". A failed feature
+              is not "still under test": the owner has already failed it
+              and it parks closed in `Acceptance Testing` until every
+              related FAILURE reaches `For Release`
               (scripts/agents/promote_accepted_features.sh, owner flow
-              2026-08-02). Counting them as blockers would deadlock the
-              gate -- the feature waits on its failure, the failure waits
-              on the gate, the gate waits on the feature -- so `decide`
-              subtracts them from the blockers alongside the release
-              issue.
+              2026-08-02). Counting such a feature as a blocker would
+              deadlock the gate -- the feature waits on its failure, the
+              failure waits on the gate, the gate waits on the feature --
+              so `decide` subtracts them from the blockers alongside the
+              release issue.
+
+              The label filter mirrors the one the promotion sweep applies
+              (`labels=Acceptance%20Failure`), so the two sweeps can never
+              disagree about which held issue parks which feature. It
+              matters because a held **Improvement** parks nothing: an
+              improvement never blocks its related feature's acceptance
+              (owner decision 2026-08-01), so a feature named only by held
+              improvements is genuinely still under test and must keep the
+              gate closed.
 
   bypass      one issue's labels/title/body -> may it skip the gate?
               The gate is for PRODUCT acceptance work. Agent-process
@@ -56,6 +66,11 @@ Env vars:
                                 today and agents may not create one, so
                                 the marker/heading rules below carry the
                                 rule until the owner adds a label.
+  DRAIN_GATE_REWORK_LABEL      the label a held issue must carry for its
+                                related-feature marker to park that
+                                feature (`rework`). Default "Acceptance
+                                Failure" -- the same label
+                                promote_accepted_features.sh filters on.
 """
 
 from __future__ import annotations
@@ -114,17 +129,37 @@ def summarize(page: dict) -> dict:
     return {"acceptance_testing": in_testing, "acceptance_failed": in_failed}
 
 
-def rework_features(bodies: list[str]) -> list[int]:
-    """The features named by the currently held issues.
+def _label_names(issue: dict) -> set[str]:
+    """Casefolded label names, tolerating both the API's `{"name": ...}`
+    objects and a plain list of strings."""
+    return {
+        ((lbl.get("name") if isinstance(lbl, dict) else str(lbl)) or "").casefold()
+        for lbl in issue.get("labels") or []
+    }
 
-    A feature whose failures are held is awaiting rework, not under test:
-    it parks closed in `Acceptance Testing` until every related failure
-    reaches `For Release`. Exempting it is what keeps the gate from
-    deadlocking on the work it is itself holding.
+
+def rework_features(issues: list[dict]) -> list[int]:
+    """The features parked awaiting rework by the currently held issues.
+
+    A feature whose **failures** are held is awaiting rework, not under
+    test: it parks closed in `Acceptance Testing` until every related
+    failure reaches `For Release`. Exempting it is what keeps the gate
+    from deadlocking on the work it is itself holding.
+
+    Only held issues labeled `DRAIN_GATE_REWORK_LABEL` ("Acceptance
+    Failure") count -- the same filter promote_accepted_features.sh
+    applies, so the sweep that parks a feature and the gate that exempts
+    it always agree. A held **Improvement** parks nothing (it never blocks
+    its related feature, owner decision 2026-08-01), so a feature named
+    only by held improvements stays a blocker and the gate stays closed
+    while the owner is still testing it.
     """
+    label = os.getenv("DRAIN_GATE_REWORK_LABEL", "Acceptance Failure").strip().casefold()
     found: set[int] = set()
-    for body in bodies:
-        for match in RELATED_FEATURE_RE.finditer(body or ""):
+    for issue in issues:
+        if label and label not in _label_names(issue):
+            continue
+        for match in RELATED_FEATURE_RE.finditer(issue.get("body") or ""):
             found.add(int(match.group(1)))
     return sorted(found)
 
@@ -190,15 +225,7 @@ def bypass(issue: dict) -> bool:
         for name in os.getenv("DRAIN_GATE_BYPASS_LABELS", "").split(",")
         if name.strip()
     }
-    if configured:
-        labels = {
-            (lbl.get("name") if isinstance(lbl, dict) else str(lbl)) or ""
-            for lbl in issue.get("labels") or []
-        }
-        if {name.casefold() for name in labels} & configured:
-            return True
-
-    return False
+    return bool(configured and _label_names(issue) & configured)
 
 
 def _merge(snapshots: list[dict]) -> dict:
@@ -237,12 +264,12 @@ def main(argv: list[str]) -> int:
         print("true" if bypass(json.load(sys.stdin)) else "false")
         return 0
     if cmd == "rework":
-        # stdin: JSON array of held issues ({"body": ...} each, extra keys
-        # ignored) -> {"rework_features": [...]}.
+        # stdin: JSON array of held issues ({"body": ..., "labels": [...]}
+        # each, extra keys ignored) -> {"rework_features": [...]}. Both
+        # keys matter: the marker lives in the body, and only issues
+        # labeled "Acceptance Failure" park a feature.
         issues = json.load(sys.stdin)
-        print(
-            json.dumps({"rework_features": rework_features([i.get("body") or "" for i in issues])})
-        )
+        print(json.dumps({"rework_features": rework_features(issues)}))
         return 0
 
     print(f"unknown subcommand: {cmd}", file=sys.stderr)

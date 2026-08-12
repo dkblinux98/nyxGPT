@@ -887,30 +887,52 @@ acceptance_lane_snapshot() {
   )
 }
 
-# The features named by the currently held issues ("Related feature: #N",
-# legacy "Parent feature: #N"), as a JSON array. Those features park CLOSED
-# in Acceptance Testing until every related failure reaches For Release
-# (promote_accepted_features.sh), so without this the gate would deadlock:
-# the feature waits on its failure, the failure waits on the gate, and the
-# gate waits on the feature. A body that cannot be read contributes
-# nothing -- one unreadable issue must not silently open the gate wider
-# than it should, and the next poll retries.
+# The features parked awaiting rework by the currently held issues
+# ("Related feature: #N", legacy "Parent feature: #N"), as a JSON array.
+# Those features park CLOSED in Acceptance Testing until every related
+# failure reaches For Release (promote_accepted_features.sh), so without
+# this the gate would deadlock: the feature waits on its failure, the
+# failure waits on the gate, and the gate waits on the feature.
+#
+# Labels are fetched alongside the body because only "Acceptance Failure"
+# issues park a feature -- the same filter promote_accepted_features.sh
+# applies, so the two sweeps always agree. A held Improvement never blocks
+# its related feature, so it must not exempt one either (drain_gate.py
+# rework_features applies the rule).
+#
+# An issue that cannot be read contributes nothing -- one unreadable issue
+# must not silently open the gate wider than it should, and the next poll
+# retries.
 drain_gate_rework_features() {
   local held_json="$1"
   require_cmd jq
   require_cmd python3
 
-  local issues="[]" issue body
+  local issues=() issue payload
   while IFS= read -r issue; do
     [[ -n "$issue" ]] || continue
-    body="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}" --jq '.body // ""' 2>/dev/null)" || {
+    payload="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}" \
+      --jq '{body: (.body // ""), labels: [.labels[]?.name]}' 2>/dev/null)" || {
       _warn "drain_gate_rework_features: could not read #${issue} -- ignoring its related-feature marker"
       continue
     }
-    issues="$(jq -c --arg b "$body" '. + [{body: $b}]' <<<"$issues")"
+    [[ -n "$payload" ]] || continue
+    issues+=("$payload")
   done < <(jq -r '.[]' <<<"$held_json")
 
-  python3 "${_LIB_DIR}/drain_gate.py" rework <<<"$issues" | jq -c '.rework_features'
+  # Nothing readable held -> nothing parks a feature. (Guarded before the
+  # array expansion: `set -u` on bash 3.2 errors on an empty "${a[@]}".)
+  if [[ "${#issues[@]}" -eq 0 ]]; then
+    echo "[]"
+    return 0
+  fi
+
+  # One object per line -> `jq -s` slurps them once, instead of re-parsing
+  # the whole accumulator per held issue.
+  printf '%s\n' "${issues[@]}" \
+    | jq -s -c '.' \
+    | python3 "${_LIB_DIR}/drain_gate.py" rework \
+    | jq -c '.rework_features'
 }
 
 # {"open":bool,"blockers":[...],"held":[...],...} for the live board.
