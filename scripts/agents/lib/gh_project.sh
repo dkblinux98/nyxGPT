@@ -989,10 +989,9 @@ drain_gate_release() {
   # One kick for the whole batch, not one per issue: the dispatcher
   # serializes on the `scrummaster-dispatch` concurrency group and picks
   # the next issue itself, so N kicks would be N redundant runs.
-  local kicked=false
-  local refs
-  refs="$(printf '#%s ' "${released[@]}")"
+  local kicked=false refs=""
   if [[ ${#released[@]} -gt 0 && "${DRY_RUN:-0}" != "1" ]]; then
+    refs="$(printf '#%s ' "${released[@]}")"
     if [[ -z "${RELEASE_ISSUE_NUMBER:-}" ]]; then
       _warn "drain_gate_release: RELEASE_ISSUE_NUMBER not configured -- released the lane but cannot kick the queue."
     elif sprint_autopilot_paused "$RELEASE_ISSUE_NUMBER"; then
