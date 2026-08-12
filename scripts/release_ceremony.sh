@@ -316,7 +316,10 @@ if [[ $DRY -eq 1 ]]; then
 else
   # statuses -> Done via the project lib (agent scripts' own path; run as owner)
   DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  if [[ -f "$DIR/agents/lib/gh_project.sh" ]]; then
+  # The config file is required too: load_config aborts without one, and an
+  # unattended run (#3730) that got this far has already published the
+  # release — it must degrade to the WARN below, not die at the close-out.
+  if [[ -f "$DIR/agents/lib/gh_project.sh" && -f "$CONFIG_FILE" ]]; then
     # shellcheck disable=SC1091
     source "$DIR/agents/lib/gh_project.sh"; load_config
     while read -r n; do
