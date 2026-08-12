@@ -177,3 +177,18 @@ scripts/agents/release_ceremony_watch.sh --check-only   # decide only, no writes
 ```
 
 or dispatch the workflow with `check_only=true`.
+
+---
+
+## Tests
+
+```bash
+pytest tests/unit/test_drain_gate.py tests/unit/test_ceremony_trigger.py  # pure decisions (CI)
+bash tests/test_drain_gate_lib.sh          # lane snapshot, gate open/closed, hold, release, start guard
+bash tests/test_release_ceremony_watch.sh  # ceremony trigger guardrails, against a fake gh
+bash tests/test_retire_rc_formulas.sh      # rc retirement, against a local bare repo standing in for the tap
+```
+
+The shell suites stub `gh`/`graphql` (or use a local git repo), so none of
+them touch GitHub. As with the other agent-loop shell suites, they are run
+on demand rather than in CI, which runs `pytest tests/unit/`.
