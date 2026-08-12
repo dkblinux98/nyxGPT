@@ -7,17 +7,17 @@ name: Release Artifacts
 # PyPI is NOT published here -- every PyPI upload, on every channel, goes
 # through the one publish pipeline, release-publish-pypi.yml (#3727, owner
 # decision 2026-08-11: a single release pipeline). That workflow publishes
-# `3.0.0.devN` nightly, `3.0.0rcN` on dispatch, and `3.0.0` when
-# scripts/release_ceremony.sh Phase 2 delegates to it with the release tag
-# and its confirmation. This workflow picks up right after Phase 1 of that
+# `3.0.0rcN` on dispatch and `3.0.0` when scripts/release_ceremony.sh Phase 2
+# delegates to it with the release tag and its confirmation -- two channels,
+# nothing on a schedule (#3735). This workflow picks up right after Phase 1 of that
 # ceremony publishes the GitHub Release, which is what triggers it below.
 #
 # The `homebrew-tap` job below owns the STABLE formulas (`nyxgpt-api.rb`,
 # `nyxgpt-web.rb`) exclusively -- `brew install nyxgpt-api` resolves to the
 # latest stable release and nothing else may move it. Release candidates get
-# their own `nyxgpt-api-rc`/`nyxgpt-web-rc` formulas, stamped from the same
-# templates by release-publish-pypi.yml's `homebrew-tap-rc` job (#3727); the
-# nightly dev channel is PyPI-only and never touches the tap at all. The
+# their own `nyxgpt-api@<release>rc`/`nyxgpt-web@<release>rc` formulas,
+# stamped from the same templates by release-publish-pypi.yml's
+# `homebrew-tap-rc` job (#3727, named for the release line by #3735). The
 # `released` trigger above is part of that separation: an rc prerelease fires
 # `prereleased`, so it cannot start this workflow.
 #

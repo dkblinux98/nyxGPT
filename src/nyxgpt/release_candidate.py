@@ -703,27 +703,24 @@ def _guardrails(channel: str, candidate: str) -> list[str]:
             "scripts/release_ceremony.sh passes.",
             "PyPI versions are immutable: a release that is already published is refused.",
         ]
-    return (
-        shared
-        + [
-            f"Pre-release version ({candidate}): `pip install nyxgpt` never resolves to it.",
-            f"Separate Homebrew formulas ({', '.join(rc_formulas(release_line(candidate)))}): "
-            "the stable nyxgpt-api/nyxgpt-web formulas are never written by an rc publish, so "
-            "`brew install nyxgpt-api` still resolves to the latest stable release. The name "
-            "carries the release line, so a candidate never crosses to the next one.",
-            "GitHub prerelease, never 'latest': the rc's release is marked as a prerelease, "
-            "so it does not become the repository's latest release and does not trigger the "
-            "stable artifact workflow (which fires on `released`, not `prereleased`).",
-            "Cut automatically when the sprint reaches agentic-work-complete: the sprint "
-            "autopilot dispatches this channel (and only this channel) at that park, and "
-            "names the candidate on the release tracking issue.",
-            "No duplicate candidates: an rc whose release-branch tip has not moved since the "
-            "last published candidate publishes nothing, so re-observing the same parked "
-            "state cuts no second rcN.",
-            "Acceptance only: an rc build is never announced, and never runs a ceremony "
-            "step (master merge, release tag, stable Homebrew formulas, GitHub Release).",
-        ]
-    )
+    return shared + [
+        f"Pre-release version ({candidate}): `pip install nyxgpt` never resolves to it.",
+        f"Separate Homebrew formulas ({', '.join(rc_formulas(release_line(candidate)))}): "
+        "the stable nyxgpt-api/nyxgpt-web formulas are never written by an rc publish, so "
+        "`brew install nyxgpt-api` still resolves to the latest stable release. The name "
+        "carries the release line, so a candidate never crosses to the next one.",
+        "GitHub prerelease, never 'latest': the rc's release is marked as a prerelease, "
+        "so it does not become the repository's latest release and does not trigger the "
+        "stable artifact workflow (which fires on `released`, not `prereleased`).",
+        "Cut automatically when the sprint reaches agentic-work-complete: the sprint "
+        "autopilot dispatches this channel (and only this channel) at that park, and "
+        "names the candidate on the release tracking issue.",
+        "No duplicate candidates: an rc whose release-branch tip has not moved since the "
+        "last published candidate publishes nothing, so re-observing the same parked "
+        "state cuts no second rcN.",
+        "Acceptance only: an rc build is never announced, and never runs a ceremony "
+        "step (master merge, release tag, stable Homebrew formulas, GitHub Release).",
+    ]
 
 
 # --- Dispatching the publish workflow ------------------------------------

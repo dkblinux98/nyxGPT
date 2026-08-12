@@ -85,18 +85,25 @@ stamps the tap too (#3727):
 
 ```bash
 brew tap dkblinux98/nyxgpt
-brew install nyxgpt-api-rc nyxgpt-web-rc
+brew install nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc
 
-brew services start nyxgpt-api-rc
-brew services start nyxgpt-web-rc
+brew services start nyxgpt-api@3.0.0rc
+brew services start nyxgpt-web@3.0.0rc
 ```
+
+The formula is named for the **release line** it is a candidate for, so
+`3.1.0`'s candidates are `nyxgpt-api@3.1.0rc` -- a different formula that no
+`brew upgrade` can slide a machine onto (#3735). Every RC of a line
+(`3.0.0rc1`, `3.0.0rc2`, ...) restamps the same `@3.0.0rc` formula, which is
+what makes `brew upgrade nyxgpt-api@3.0.0rc` the way to move to the round's
+newest candidate.
 
 Everything past `brew install` is identical to the stable formulas -- same
 tarball contents, same self-contained Cellar keg, same wrappers, same
 service names. `scripts/build_homebrew_artifacts.py --channel rc` derives
-the `-rc` formulas from the same `homebrew/tap/*.rb.tmpl` templates, so the
-two channels cannot drift about what the keg installs; only the class name,
-the description and the conflict declaration differ.
+the candidate formulas from the same `homebrew/tap/*.rb.tmpl` templates, so
+the two channels cannot drift about what the keg installs; only the class
+name, the description and the conflict declaration differ.
 
 ### `brew install nyxgpt-api` is never affected
 
@@ -106,34 +113,38 @@ lives in the **formula names**, not in a flag:
 
 | | Stable | Release candidate |
 | --- | --- | --- |
-| Formulas | `nyxgpt-api`, `nyxgpt-web` | `nyxgpt-api-rc`, `nyxgpt-web-rc` |
+| Formulas | `nyxgpt-api`, `nyxgpt-web` | `nyxgpt-api@3.0.0rc`, `nyxgpt-web@3.0.0rc` |
 | Written by | `release-artifacts.yml`, on a GitHub Release | `release-publish-pypi.yml`'s `homebrew-tap-rc` job, on an `rc` publish |
 | Tarballs from | the release's GitHub Release | a GitHub **prerelease** for the RC (never "latest") |
 | `brew install nyxgpt-api` resolves to | this | never this |
 
 An `rc` publish never builds, copies or commits a stable formula file: the
 job asserts none was produced, and the tap push refuses if a stable formula
-would change. The nightly `dev` channel is PyPI-only and never touches the
-tap at all.
+would change. The `stable` channel never reaches the tap job at all -- the
+stable formulas belong to the ceremony's `release-artifacts.yml` run.
 
-### Why `-rc` and not `@rc`
+### Why `@3.0.0rc` and not `@rc` or `-rc`
 
-Homebrew's `@` spelling is reserved for *versioned* formulas, and its loader
-(`Formulary.class_s`) only translates `@` into `AT` when a **digit** follows
-it: `python@3.12` becomes the class `PythonAT312`, but `nyxgpt-api@rc` would
-become `NyxgptApi@rc` -- not a legal Ruby constant, so no class declaration
-inside the file could satisfy the loader and `brew install nyxgpt-api@rc`
-fails with `Expected to find class NyxgptApi@rc`. The candidate formulas are
-therefore named `nyxgpt-api-rc`/`nyxgpt-web-rc`, which `brew` loads as
-`NyxgptApiRc`/`NyxgptWebRc`. Every substantive property of the original
-decision is unchanged -- separate formulas, stable never written,
-`conflicts_with`, prerelease-only tarballs; only the spelling of the suffix
-differs. `scripts/build_homebrew_artifacts.py` refuses to stamp any formula
-name with an unloadable `@`, so the mistake cannot come back.
+The version is in the name deliberately: a candidate formula is a candidate
+for **one release line**, and naming it so means a machine on `@3.0.0rc` can
+never be carried across to the next line's candidates by a `brew upgrade` --
+those are a differently named formula, installed only on purpose. It is also
+what lets the release ceremony retire a shipped line's candidates by name
+(`scripts/retire_rc_formulas.sh`) while leaving a newer line's alone.
+
+The spelling has to be digit-led. Homebrew's loader (`Formulary.class_s`)
+translates `@` into `AT` only when a **digit** follows it: `python@3.12`
+becomes the class `PythonAT312`, and `nyxgpt-api@3.0.0rc` becomes
+`NyxgptApiAT300rc` -- both load. A bare `nyxgpt-api@rc` would become
+`NyxgptApi@rc`, not a legal Ruby constant, so no class declaration inside
+the file could satisfy the loader and `brew install nyxgpt-api@rc` would
+fail with `Expected to find class NyxgptApi@rc`.
+`scripts/build_homebrew_artifacts.py` refuses to stamp any formula name with
+an unloadable `@`, so that mistake cannot come back.
 
 ### Switching a machine between channels
 
-The `-rc` formulas declare `conflicts_with` their stable counterparts,
+The candidate formulas declare `conflicts_with` their stable counterparts,
 because both install the same `nyxgpt-api`/`nyxgpt-web` wrappers and the
 same brew service names. Switching channels is an explicit uninstall, never
 a silent swap:
@@ -141,17 +152,20 @@ a silent swap:
 ```bash
 # stable -> release candidate
 brew services stop nyxgpt-api && brew uninstall nyxgpt-api
-brew install nyxgpt-api-rc && brew services start nyxgpt-api-rc
+brew install nyxgpt-api@3.0.0rc && brew services start nyxgpt-api@3.0.0rc
+
+# a newer candidate of the same line (same formula, restamped)
+brew update && brew upgrade nyxgpt-api@3.0.0rc
 
 # ...and back once the release is out
-brew services stop nyxgpt-api-rc && brew uninstall nyxgpt-api-rc
+brew services stop nyxgpt-api@3.0.0rc && brew uninstall nyxgpt-api@3.0.0rc
 brew install nyxgpt-api && brew services start nyxgpt-api
 ```
 
-`-rc` formulas are **acceptance-only**. They are not upgraded on a schedule,
-carry no support expectation, and are superseded the moment the release they
-are a candidate for ships. See
-[docs/cloud.md](cloud.md#pypi-publishing-dev-rc-and-stable) for cutting one
+Candidate formulas are **acceptance-only**. They are not upgraded on a
+schedule, carry no support expectation, and are removed from the tap by the
+release ceremony the moment the line they are a candidate for ships. See
+[docs/cloud.md](cloud.md#pypi-publishing-rc-and-stable) for cutting one
 and for the equivalent pip/cloud flows.
 
 ---
