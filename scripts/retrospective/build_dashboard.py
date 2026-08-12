@@ -18,6 +18,13 @@ Inputs (all under scripts/retrospective/data/ unless overridden):
                          cycle count) produced by the "Retro Dashboard - Dump Spend
                          Telemetry" workflow (#3696). When present, adds a per-sprint
                          cost view; omitted entirely from the dashboard otherwise.
+  relationships.json   - OPTIONAL: native issue relationships (blocked-by/blocks)
+                         produced by the "Retro Dashboard - Dump Relationships"
+                         workflow (#3731). Failure/improvement attribution is read
+                         from here, NOT from `Related feature: #N` body prose. When
+                         an issue has no native edge the corpus's prose-derived
+                         `related` field is used as a documented fallback so
+                         historical issues keep attributing correctly.
 
 Output: retro.html next to this script (publish it as the Artifact).
 
@@ -182,6 +189,52 @@ def classify(issue):
     if "Improvement" in issue["labels"]:
         return "pm"
     return None
+
+
+def blocks_map(relationships):
+    """issue number -> the issues it natively blocks, from relationships.json."""
+    if not relationships:
+        return {}
+    out = {}
+    for key, entry in (relationships.get("issues") or {}).items():
+        blocks = [int(b) for b in (entry or {}).get("blocks") or []]
+        if blocks:
+            out[int(key)] = blocks
+    return out
+
+
+def attribute_related(issues, relationships):
+    """Attach `related` / `relatedSource` to every issue, native first (#3731).
+
+    The native blocked-by/blocks relationship is the storage, so it wins.
+    Issues filed before that change have no native edge and fall back to the
+    corpus's `related` field (derived from the retired `Related feature: #N`
+    body line when the corpus was refreshed) -- the documented read-both
+    fallback, so historical attribution does not disappear.
+
+    Returns the source counts, which `qtotals` surfaces: when `prose` reaches
+    zero the fallback can be deleted outright.
+    """
+    native = blocks_map(relationships)
+    counts = {"native": 0, "prose": 0, "none": 0}
+    for issue in issues:
+        blocked = native.get(int(issue["n"]))
+        if blocked:
+            issue["related"] = blocked[0]
+            issue["relatedSource"] = "native"
+        elif issue.get("related"):
+            issue["related"] = int(issue["related"])
+            issue["relatedSource"] = "prose"
+        else:
+            issue["related"] = None
+            issue["relatedSource"] = None
+        # Only failure/improvement issues are expected to relate to anything;
+        # an unattributed feature is not a gap worth counting.
+        if issue["relatedSource"]:
+            counts[issue["relatedSource"]] += 1
+        elif classify(issue) is not None:
+            counts["none"] += 1
+    return counts
 
 
 def sprint_of_map(project_fields):
@@ -454,8 +507,9 @@ def takeaways(issues, dashboard, weeks, open_af):
     return out
 
 
-def build_qdata(issues, project_fields):
+def build_qdata(issues, project_fields, relationships=None):
     issues = [i for i in issues if i.get("milestone") not in EXCLUDED_MILESTONES]
+    attribution = attribute_related(issues, relationships)
     real_module = {}
     if project_fields:
         for item in project_fields.get("items", []):
@@ -528,6 +582,7 @@ def build_qdata(issues, project_fields):
             "pm": sum(1 for i in issues if i["cause"] == "pm"),
             "production": sum(1 for i in issues if "Production Defect" in i["labels"]),
         },
+        "attribution": attribution,
         "lens": {"causes": CAUSES, "labels": LABELS, "modules": mods_all},
     }
 
@@ -550,8 +605,10 @@ def main():
     reviews = json.loads(rv_path.read_text()) if rv_path.exists() else []
     sp_path = data / "spend.json"
     spend = json.loads(sp_path.read_text()) if sp_path.exists() else None
+    rel_path = data / "relationships.json"
+    relationships = json.loads(rel_path.read_text()) if rel_path.exists() else None
 
-    qdata = build_qdata(issues, project_fields)
+    qdata = build_qdata(issues, project_fields, relationships)
     classified = qdata.pop("issues_classified")
     qdata["gate"] = gate_series(classified, pr_times, reviews)
     now = datetime.now(UTC)

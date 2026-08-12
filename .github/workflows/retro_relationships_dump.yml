@@ -1,0 +1,48 @@
+name: Retro Dashboard - Dump Relationships
+
+# Dumps GitHub's NATIVE issue relationships (blocked-by / blocks) for every
+# Acceptance Failure and Improvement issue to
+# scripts/retrospective/data/relationships.json and commits the file back to
+# the dispatching branch (#3731). The retrospective attributes failures and
+# improvements from this file instead of parsing `Related feature: #N` body
+# prose, which is retired. Read-only against issues; writes only the JSON
+# snapshot. Mirrors retro_project_fields_dump.yml.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Dump native relationships
+        env:
+          GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+          REPO: ${{ vars.REPO_OWNER }}/${{ vars.REPO_NAME }}
+        run: |
+          set -euo pipefail
+          python3 scripts/retrospective/dump_relationships.py
+          jq '{generated_at, issues: (.issues | length)}' \
+            scripts/retrospective/data/relationships.json
+
+      - name: Commit snapshot
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scripts/retrospective/data/relationships.json
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore(retro): refresh native issue relationships snapshot"
+            git push origin "HEAD:${{ github.ref_name }}"
+          fi
