@@ -9,8 +9,9 @@
 #   Phase 2  PyPI publish — DELEGATED to the single publish pipeline
 #            (.github/workflows/release-publish-pypi.yml, channel `stable`).
 #            The ceremony no longer builds or uploads anything itself: there
-#            is one build/publish core for dev, rc and stable (#3727, owner
-#            decision 2026-08-11), it authenticates with PyPI Trusted
+#            is one build/publish core for rc and stable (#3727, owner
+#            decision 2026-08-11; channels revised by #3735), it
+#            authenticates with PyPI Trusted
 #            Publishing (OIDC), and no PyPI token is stored anywhere.
 #   Phase 3  Project close-out (statuses -> Done, milestone + issue close)
 #   Phase 4  Line reconciliation                       -> STOP: repoint
@@ -260,7 +261,7 @@ phase_boundary 1
 
 # --- Phase 2: PyPI (delegated to the single publish pipeline) ---
 #
-# One build/publish core serves dev, rc and stable (#3727). The ceremony's
+# One build/publish core serves rc and stable (#3727). The ceremony's
 # only job here is to ask for the `stable` channel and then verify the
 # result the same way it verifies every other mutation. The build, the
 # twine check, the clean-venv smoke and the upload all happen inside
