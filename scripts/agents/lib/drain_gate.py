@@ -145,7 +145,8 @@ def bypass(issue: dict) -> bool:
     }
     if configured:
         labels = {
-            (lbl.get("name") if isinstance(lbl, dict) else str(lbl)) or "" for lbl in issue.get("labels") or []
+            (lbl.get("name") if isinstance(lbl, dict) else str(lbl)) or ""
+            for lbl in issue.get("labels") or []
         }
         if {name.casefold() for name in labels} & configured:
             return True

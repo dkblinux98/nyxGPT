@@ -78,7 +78,9 @@ def test_does_not_fire_without_a_configured_release_issue():
 
 
 def test_honors_a_renamed_for_release_option():
-    result = ceremony_trigger.decide(_state(status="Ready to Ship", for_release_status="Ready to Ship"))
+    result = ceremony_trigger.decide(
+        _state(status="Ready to Ship", for_release_status="Ready to Ship")
+    )
     assert result["fire"] is True
 
 

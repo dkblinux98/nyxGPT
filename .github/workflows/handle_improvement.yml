@@ -159,7 +159,8 @@ jobs:
           # No blocking dependency: an improvement must never hold the
           # related feature out of For Release (owner decision 2026-08-01).
           if [[ "$GATED" == "1" ]]; then
-            drain_gate_hold "$NEW" "improvement"
+            drain_gate_hold "$NEW" "improvement" \
+              || _warn "drain gate: could not hold #${NEW} (it is already filed in the lane)"
           fi
 
           {

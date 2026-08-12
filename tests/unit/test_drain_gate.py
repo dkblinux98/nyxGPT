@@ -168,7 +168,11 @@ def test_ordinary_acceptance_failure_is_gated():
 
 
 def test_improvement_filed_during_acceptance_is_gated():
-    issue = {"title": "Improve upload UX", "body": "Related feature: #3600", "labels": [{"name": "Improvement"}]}
+    issue = {
+        "title": "Improve upload UX",
+        "body": "Related feature: #3600",
+        "labels": [{"name": "Improvement"}],
+    }
     assert drain_gate.bypass(issue) is False
 
 

@@ -244,8 +244,50 @@ again and receives a push.
 
 - **NEVER merge to master/main** - All merges go to the active release branch (e.g., v1.0.0)
 - Feature/fix branches are created from and merged back to the release branch
-- master/main is reserved for releases only (human controlled)
+- master/main is reserved for releases only
 - After merging to release branch, manually close linked issues (GitHub doesn't auto-close for non-default branch merges)
+
+**Master merges are ceremony-only and automated (Owner decision, 2026-08-12, #3730).**
+The old rule read "master/main is human controlled", meaning the owner ran the
+master fast-forward by hand. That is superseded: **the human control point is
+now the owner moving the release tracking issue to `For Release`.** That move
+is the sign-off, and from it the release ceremony runs end-to-end unattended —
+master fast-forward, tag, GitHub Release, `stable` publish via the #3727
+pipeline, stable Homebrew tap stamp, and retirement of that line's `-rc`
+formulas (`.github/workflows/release_ceremony.yml` →
+`scripts/agents/release_ceremony_watch.sh` → `scripts/release_ceremony.sh
+--unattended`). No human step happens after the move; any failure in the
+ceremony alerts the owner over the Slack DM channel (#3695) and stops.
+
+Nothing else may push master: agents still never merge to master, and the
+ceremony reaches it only through that one signed-off path. Phase 4 of the
+ceremony (next-line preparation and the repoint) remains owner-run.
+
+---
+
+## Acceptance Drain Gate (Owner decision, 2026-08-12, #3730)
+
+Acceptance failures and improvements filed **during** an acceptance round are
+held, not worked immediately:
+
+- `@acceptance-failure` and `@improvement` file their issues into the
+  **`Acceptance Failed`** Status lane. They are not selected, kicked or
+  auto-resumed while they sit there.
+- The gate **opens when `Acceptance Testing` has drained** — empty except the
+  release tracking issue, which is exempt and stays there until the whole
+  release is accepted.
+- On the opening, every held item moves to **`Backlog`** and the scrummaster
+  queue is kicked **once** (`scripts/agents/drain_gate.sh`, run by
+  `.github/workflows/acceptance_drain_gate.yml`).
+- **Agent-process issues bypass the gate** and are worked immediately. The
+  rule is encoded in `scripts/agents/lib/drain_gate.py`: an owner-authored
+  process exception in the body ("…bypasses the drain gate"), the
+  `<!-- drain-gate: bypass -->` marker, or a label listed in
+  `DRAIN_GATE_BYPASS_LABELS`.
+
+Rationale: working failures the moment they are filed floods Acceptance
+Testing with freshly-merged fixes mid-round and burns RC cycles while the
+owner is still testing. Test everything → drain → test the next candidate.
 
 ---
 

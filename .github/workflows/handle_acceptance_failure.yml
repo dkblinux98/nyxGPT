@@ -117,6 +117,18 @@ jobs:
           RELATED="$(echo "$issue_json" | jq -r '.body' \
             | grep -m1 -oE '(Parent|Related) feature: #[0-9]+' | grep -oE '[0-9]+' || true)"
 
+          # Drain gate (#3730): does this failure get worked now, or held
+          # until the acceptance round drains? Process work bypasses;
+          # product acceptance work is gated. The owner's own comment text
+          # can declare the exception, and so can the commented issue.
+          # Computed once here — both paths below branch on it.
+          GATED=1
+          if text_bypasses_drain_gate "$COMMENT_BODY" \
+            || issue_bypasses_drain_gate "$COMMENTED"; then
+            GATED=0
+          fi
+          echo "gated=$GATED" >> "$GITHUB_OUTPUT"
+
           # --- Path B: the commented issue is a handler-created FAILURE
           # issue of some parent — identified by its "Related feature: #N"
           # body marker, NOT by the "Acceptance Failure" label. (The label
@@ -127,17 +139,6 @@ jobs:
           # -> reopen the SAME issue and send it back through the process.
           # Its own history is the trail; no new issue is created for
           # another round of the same failure.
-          # Drain gate (#3730): does this failure get worked now, or held?
-          # Process work bypasses; product acceptance work is gated. The
-          # owner's own comment text can declare the exception, and so can
-          # the issue being commented on.
-          GATED=1
-          if text_bypasses_drain_gate "$COMMENT_BODY" \
-            || issue_bypasses_drain_gate "$COMMENTED"; then
-            GATED=0
-          fi
-          echo "gated=$GATED" >> "$GITHUB_OUTPUT"
-
           if [[ -n "$RELATED" ]]; then
             STATE="$(echo "$issue_json" | jq -r '.state')"
             if [[ "$STATE" == "CLOSED" ]]; then
@@ -146,7 +147,8 @@ jobs:
             if [[ "$GATED" == "1" ]]; then
               # Reopened, but parked in the holding lane: the owner is
               # still testing this round. The drain watcher releases it.
-              drain_gate_hold "$COMMENTED" "re-tested acceptance failure"
+              drain_gate_hold "$COMMENTED" "re-tested acceptance failure" \
+                || _warn "drain gate: could not hold #${COMMENTED} (it is already filed in the lane)"
             else
               set_issue_status "$COMMENTED" "$STATUS_IN_PROGRESS"
               assign_and_trigger_developer "$COMMENTED"
@@ -236,7 +238,8 @@ jobs:
           # untouched. Under the drain gate, "enters the cycle" means
           # "waits in Acceptance Failed until the round drains" (#3730).
           if [[ "$GATED" == "1" ]]; then
-            drain_gate_hold "$NEW" "acceptance failure"
+            drain_gate_hold "$NEW" "acceptance failure" \
+              || _warn "drain gate: could not hold #${NEW} (it is already filed in the lane)"
           else
             assign_and_trigger_developer "$NEW"
           fi
