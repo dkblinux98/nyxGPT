@@ -220,6 +220,32 @@ else
   echo "[ok] an ordinary acceptance failure is gated"
 fi
 
+# --- Test 9: a held issue can never be STARTED while it is in the lane ---
+# (the gate is enforced at the start point, not just by the Backlog filter)
+SCRUM_AGENT="myGPT-scrummaster-agent"
+DEV_AGENT="myGPT-developer-agent"
+HUMAN_OWNER="dkblinux98"
+gh() { echo "OPEN"; }
+_issue_assignee_logins() { echo ""; }
+
+issue_status() { echo "Acceptance Failed"; }
+_assert_eq "an issue in the holding lane classifies as drain_gate_held" \
+  "drain_gate_held" "$(classify_backlog_claim_state 3700)"
+
+: >"$STATUS_FILE"
+: >"$COMMENT_FILE"
+# `|| rc=$?` rather than a bare call: sourcing gh_project.sh turns on
+# `set -e`, so an unguarded non-zero return would end the test run here.
+rc=0
+out="$(scrummaster_attempt_start 3700)" || rc=$?
+_assert_eq "starting a held issue is a quiet skip" "10" "$rc"
+_assert_contains "the skip names the drain gate" "$out" "reason=drain_gate_held"
+_assert_eq "a held issue is never moved to In Progress" "" "$(cat "$STATUS_FILE")"
+
+issue_status() { echo "Backlog"; }
+_assert_eq "a Backlog issue is still claimable once released" \
+  "claimable" "$(classify_backlog_claim_state 3700)"
+
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "All tests passed."
   exit 0

@@ -1,0 +1,200 @@
+name: Handle Improvement
+
+# Owner decisions 2026-08-01 / 2026-08-02: an improvement filed during
+# acceptance testing of a feature is a PRODUCT MANAGEMENT failure (a spec
+# gap), distinct from an Acceptance Failure (an implementation defect). It
+# is filed as a normal issue labeled "Improvement" carrying a
+# "Related feature: #N" line when a related feature exists, and it never
+# gates the feature's move to "For Release".
+#
+# Owner decision 2026-08-12 (#3730): like acceptance failures, an
+# improvement filed DURING a round lands in the `Acceptance Failed` Status
+# lane and is not worked immediately. acceptance_drain_gate.yml moves the
+# whole holding lane to Backlog once `Acceptance Testing` has drained
+# (empty except the release tracking issue) and kicks the queue once.
+#
+# This is the `@improvement` counterpart of handle_acceptance_failure.yml
+# (`@acceptance-failure`). Both are stakeholder-acceptance commands: only
+# the human owner can issue them, and both are DISTINCT from the review
+# loop overrides (@approve-merge, @request-changes, @send-to-developer),
+# which operate on PRs.
+#
+# NOTE: issue_comment workflows execute from the repository DEFAULT branch.
+# Empirically that is the active release branch, so changes here go live
+# on merge.
+
+# Serialize per commented issue so two rapid comments file two distinct
+# improvements rather than racing on the same one.
+concurrency:
+  group: improvement-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  handle:
+    if: |
+      github.event.issue.pull_request == null &&
+      contains(github.event.comment.body, '@improvement') &&
+      github.event.comment.user.login == vars.HUMAN_OWNER
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      issues: write
+
+    env:
+      GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.RELEASE_BRANCH }}
+
+      - name: Write ephemeral config
+        run: |
+          CFG="$RUNNER_TEMP/nyxgpt-config.ini"
+          cat > "$CFG" <<EOF
+          REPO_OWNER=${{ vars.REPO_OWNER }}
+          REPO_NAME=${{ vars.REPO_NAME }}
+          PROJECT_OWNER=${{ vars.PROJECT_OWNER }}
+          PROJECT_NUMBER=${{ vars.PROJECT_NUMBER }}
+
+          DEV_AGENT=${{ vars.DEV_AGENT }}
+          REVIEW_AGENT=${{ vars.REVIEW_AGENT }}
+          SCRUM_AGENT=${{ vars.SCRUM_AGENT }}
+          HUMAN_OWNER=${{ vars.HUMAN_OWNER }}
+
+          STATUS_FIELD=${{ vars.STATUS_FIELD }}
+          STATUS_BACKLOG=${{ vars.STATUS_BACKLOG }}
+          STATUS_IN_PROGRESS=${{ vars.STATUS_IN_PROGRESS }}
+          STATUS_IN_REVIEW=${{ vars.STATUS_IN_REVIEW }}
+          STATUS_FOR_RELEASE=${{ vars.STATUS_FOR_RELEASE }}
+
+          RELEASE_BRANCH=${{ vars.RELEASE_BRANCH }}
+          RELEASE_ISSUE_NUMBER=${{ vars.RELEASE_ISSUE_NUMBER }}
+          EOF
+          echo "NYXGPT_CONFIG_FILE=$CFG" >> "$GITHUB_ENV"
+
+      - name: File the improvement
+        id: handle
+        env:
+          # Owner-authored comment text: passed via env (never interpolated
+          # into the script) so backticks/quotes in it can't inject.
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          COMMENT_URL: ${{ github.event.comment.html_url }}
+        run: |
+          set -euo pipefail
+          COMMENTED="${{ github.event.issue.number }}"
+          source scripts/agents/lib/gh_project.sh
+          load_config
+          require_gh_auth
+
+          issue_json="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${COMMENTED}" \
+            --jq '{title, labels, body}')"
+
+          # The related feature is the commented issue itself, unless the
+          # commented issue is already a related failure/improvement of
+          # some feature -- then the improvement belongs to that feature,
+          # exactly like handle_acceptance_failure.yml resolves it.
+          RELATED="$(echo "$issue_json" | jq -r '.body' \
+            | grep -m1 -oE '(Parent|Related) feature: #[0-9]+' | grep -oE '[0-9]+' || true)"
+          FEATURE="${RELATED:-$COMMENTED}"
+          FEATURE_TITLE="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${FEATURE}" --jq '.title')"
+
+          # Drain gate (#3730): improvements are held with the failures.
+          # Process work bypasses -- the rule lives in drain_gate.py.
+          GATED=1
+          if text_bypasses_drain_gate "$COMMENT_BODY" \
+            || issue_bypasses_drain_gate "$COMMENTED"; then
+            GATED=0
+          fi
+          echo "gated=$GATED" >> "$GITHUB_OUTPUT"
+
+          TITLE="improvement: ${FEATURE_TITLE#*: }"
+          TITLE="${TITLE:0:80}"
+
+          BODY_FILE="$RUNNER_TEMP/improvement-body.md"
+          {
+            echo "## Problem / Motivation"
+            echo
+            echo "Improvement identified during stakeholder acceptance testing (spec gap, not an implementation defect)."
+            echo
+            echo "Related feature: #${FEATURE}"
+            echo "Reported by: @${HUMAN_OWNER} — ${COMMENT_URL}"
+            echo
+            echo "## Requested Improvement"
+            echo
+            printf '%s\n' "$COMMENT_BODY"
+            echo
+            echo "## Acceptance Criteria"
+            echo
+            echo "- [ ] The requested improvement is implemented and verified"
+            echo
+            echo "## Notes"
+            echo
+            echo "- Improvements never gate the related feature's move to \"For Release\" (owner decision 2026-08-01)."
+          } > "$BODY_FILE"
+
+          ACTIVE_SPRINT="$(iteration_active_title "${SPRINT_FIELD:-Sprint}" 2>/dev/null || echo "")"
+
+          # Gated improvements are FILED into the holding lane so nothing
+          # can pick them up between creation and the hold.
+          FILE_STATUS="$STATUS_BACKLOG"
+          [[ "$GATED" == "1" ]] && FILE_STATUS="$STATUS_ACCEPTANCE_FAILED"
+
+          ARGS=(--title "$TITLE" --body-file "$BODY_FILE"
+                --label "Improvement"
+                --copy-from-issue "$FEATURE"
+                --status "$FILE_STATUS")
+          if [[ -n "$ACTIVE_SPRINT" && "$ACTIVE_SPRINT" != "null" ]]; then
+            ARGS+=(--sprint "$ACTIVE_SPRINT")
+          fi
+          NEW="$(scripts/agents/create_issue.sh "${ARGS[@]}" | tail -1)"
+          echo "Filed improvement #$NEW for feature #$FEATURE (gated=${GATED})"
+
+          # No blocking dependency: an improvement must never hold the
+          # related feature out of For Release (owner decision 2026-08-01).
+          if [[ "$GATED" == "1" ]]; then
+            drain_gate_hold "$NEW" "improvement"
+          fi
+
+          {
+            echo "issue=$NEW"
+            echo "feature=$FEATURE"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Post acknowledgement comment
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+          script: |
+            const commented = ${{ github.event.issue.number }};
+            const issue = Number('${{ steps.handle.outputs.issue }}');
+            const feature = '${{ steps.handle.outputs.feature }}';
+            const gated = '${{ steps.handle.outputs.gated }}' === '1';
+            const repoUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}`;
+
+            const startLine = gated
+              ? `- Held in **Acceptance Failed** — work starts when **Acceptance Testing** drains (only the release issue left), which moves it to Backlog and kicks the queue once\n`
+              : `- Queued in **Backlog** for normal scrummaster selection (process exception — the drain gate does not apply)\n`;
+
+            const body =
+              `💡 **Scrummaster Agent**: Improvement acknowledged.\n\n` +
+              `Filed as **#${issue}**, related to #${feature}. Improvements are product-management gaps, ` +
+              `not acceptance failures — this one does **not** block #${feature} from moving to **For Release**.\n\n` +
+              `**Flow (automated):**\n` +
+              startLine +
+              `- Developer agent implements it via a \`feat/${issue}-...\` branch and a PR with \`Closes #${issue}\`\n` +
+              `- Review agent reviews and merges; #${issue} then lands in Acceptance Testing for your review\n\n` +
+              `[Monitor progress](${repoUrl}/issues/${issue})`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: commented,
+              body
+            });

@@ -907,6 +907,18 @@ issue_bypasses_drain_gate() {
   [[ "$(python3 "${_LIB_DIR}/drain_gate.py" bypass <<<"$issue_json")" == "true" ]]
 }
 
+# Same rule, applied to text that is not (yet) an issue -- the owner's
+# `@acceptance-failure` / `@improvement` comment body, which becomes the
+# filed issue's body. Keeps the process-exception rule in ONE place
+# (drain_gate.py) instead of re-implementing the match in each handler.
+text_bypasses_drain_gate() {
+  local text="$1"
+  require_cmd jq
+  require_cmd python3
+  [[ "$(jq -n --arg b "$text" '{body: $b}' \
+    | python3 "${_LIB_DIR}/drain_gate.py" bypass)" == "true" ]]
+}
+
 # Places `issue` in the Acceptance Failed lane (the gate's holding area)
 # and explains on the issue why it is not being worked yet.
 drain_gate_hold() {
@@ -1968,12 +1980,30 @@ assign_and_trigger_developer() {
 #                  loudly (never silently reassign) and try the next
 #                  candidate.
 #   closed      -- issue is no longer OPEN. Skip quietly.
+#   drain_gate_held -- the issue sits in the `Acceptance Failed` holding
+#                  lane (#3730): the owner is still testing this
+#                  acceptance round. Skip quietly; the drain watcher moves
+#                  it to Backlog when the round drains.
 classify_backlog_claim_state() {
   local issue="$1"
   local state assignees
   state="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}" --jq '.state | ascii_upcase' 2>/dev/null || echo "UNKNOWN")"
   if [[ "$state" != "OPEN" ]]; then
     echo "closed"
+    return 0
+  fi
+
+  # Drain gate (#3730), enforced at the start point rather than trusted to
+  # the Backlog filter alone: a held issue is never started, whatever
+  # selected it. The gate opening is what moves an item OUT of this lane
+  # (drain_gate_release), so anything still in it is still gated -- no
+  # second gate-state lookup is needed here, and a costly project-wide
+  # page-through is avoided on every dispatch.
+  local held_lane status
+  held_lane="${STATUS_ACCEPTANCE_FAILED:-Acceptance Failed}"
+  status="$(issue_status "$issue" 2>/dev/null || echo "")"
+  if [[ "$status" == "$held_lane" ]]; then
+    echo "drain_gate_held"
     return 0
   fi
 
@@ -2030,6 +2060,11 @@ scrummaster_attempt_start() {
     duplicate)
       echo "SKIPPED #$issue reason=duplicate"
       echo "Skipped issue #$issue -- @${DEV_AGENT} already assigned (a concurrent/earlier dispatch already started it). Not a block; moving on."
+      return 10
+      ;;
+    drain_gate_held)
+      echo "SKIPPED #$issue reason=drain_gate_held"
+      echo "Skipped issue #$issue -- held in '${STATUS_ACCEPTANCE_FAILED:-Acceptance Failed}' while the acceptance round is still under test (#3730). Released automatically when ${STATUS_ACCEPTANCE_TESTING:-Acceptance Testing} drains; moving on."
       return 10
       ;;
     human_hold)

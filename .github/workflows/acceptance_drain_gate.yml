@@ -1,0 +1,116 @@
+name: Acceptance Drain Gate
+
+# Owner decision 2026-08-12 (#3730): acceptance failures and improvements
+# filed during an acceptance round are HELD in the `Acceptance Failed`
+# Status lane instead of being worked immediately -- otherwise the loop
+# floods `Acceptance Testing` with freshly-merged fixes while the owner is
+# still testing the round, burning RC cycles.
+#
+# This is the watcher that opens the hold. The gate opens when
+# `Acceptance Testing` has drained -- empty EXCEPT the release tracking
+# issue, which is exempt and stays there until the whole release is
+# accepted. On the opening, every held item moves to `Backlog` and the
+# scrummaster queue is kicked exactly once.
+#
+# Detection is event-driven where GitHub gives us an event, and cheaply
+# polled where it does not:
+#   * `workflow_run` on the promotion sweep and the parked-blocked sweep --
+#     those are what MOVE items out of (and into) Acceptance Testing, so a
+#     drain is usually detected seconds after it happens;
+#   * `issues: [closed]` -- a closing acceptance item is the other way the
+#     lane changes shape;
+#   * a 15-minute schedule as the backstop, because the owner moving the
+#     last item by hand on the project board raises no event this workflow
+#     can subscribe to (`projects_v2_item` is organization-projects only;
+#     this project belongs to a user).
+#
+# Polling is free of side effects by construction: with the lane already
+# empty the run releases nothing and posts nothing (drain_gate_release in
+# scripts/agents/lib/gh_project.sh).
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  issues:
+    types: [closed]
+  workflow_run:
+    workflows:
+      - "Promote Accepted Features"
+      - "Sweep Parked Blocked Issues"
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Report what would be released without changing anything"
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+  issues: write
+
+# One evaluation at a time: two runs opening the gate concurrently would
+# both see the same held lane and post two kicks.
+concurrency:
+  group: acceptance-drain-gate
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    if: vars.AGENTS_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.RELEASE_BRANCH }}
+
+      - name: Write ephemeral config
+        run: |
+          CFG="$RUNNER_TEMP/nyxgpt-config.ini"
+          cat > "$CFG" <<EOF
+          REPO_OWNER=${{ vars.REPO_OWNER }}
+          REPO_NAME=${{ vars.REPO_NAME }}
+          PROJECT_OWNER=${{ vars.PROJECT_OWNER }}
+          PROJECT_NUMBER=${{ vars.PROJECT_NUMBER }}
+
+          DEV_AGENT=${{ vars.DEV_AGENT }}
+          REVIEW_AGENT=${{ vars.REVIEW_AGENT }}
+          SCRUM_AGENT=${{ vars.SCRUM_AGENT }}
+          HUMAN_OWNER=${{ vars.HUMAN_OWNER }}
+
+          STATUS_FIELD=${{ vars.STATUS_FIELD }}
+          STATUS_BACKLOG=${{ vars.STATUS_BACKLOG }}
+          STATUS_IN_PROGRESS=${{ vars.STATUS_IN_PROGRESS }}
+          STATUS_IN_REVIEW=${{ vars.STATUS_IN_REVIEW }}
+          STATUS_FOR_RELEASE=${{ vars.STATUS_FOR_RELEASE }}
+
+          RELEASE_BRANCH=${{ vars.RELEASE_BRANCH }}
+          RELEASE_ISSUE_NUMBER=${{ vars.RELEASE_ISSUE_NUMBER }}
+          SPRINT_FIELD=${{ vars.SPRINT_FIELD }}
+          SPRINT_AUTOPILOT=${{ vars.SPRINT_AUTOPILOT }}
+          EOF
+          echo "NYXGPT_CONFIG_FILE=$CFG" >> "$GITHUB_ENV"
+
+      - name: Evaluate the drain gate
+        run: |
+          set -euo pipefail
+          DRY_RUN=0
+          if [[ "${{ github.event.inputs.dry_run || 'false' }}" == "true" ]]; then
+            DRY_RUN=1
+          fi
+          DRY_RUN="$DRY_RUN" scripts/agents/drain_gate.sh release | tee "$RUNNER_TEMP/gate.json"
+
+      - name: Summary
+        if: always()
+        run: |
+          RESULT="$(cat "$RUNNER_TEMP/gate.json" 2>/dev/null || echo '{}')"
+          {
+            echo "### Acceptance drain gate"
+            echo ""
+            echo "\`\`\`json"
+            echo "$RESULT"
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -26,6 +26,19 @@ on:
 # feature exists they carry the "Related feature: #N" line; when none
 # exists, that is not a blocker to filing or working the Improvement.
 #
+# DRAIN GATE (owner decision 2026-08-12, #3730): a failure filed during an
+# acceptance round is no longer worked immediately. It is placed in the
+# `Acceptance Failed` lane and stays there until `Acceptance Testing` has
+# drained (empty except the release issue) -- acceptance_drain_gate.yml
+# then moves the whole holding lane to Backlog and kicks the queue once.
+# Working failures mid-round floods Acceptance Testing with fresh fixes
+# while the owner is still testing and burns RC cycles.
+#
+# Agent-process work bypasses the gate and is assigned immediately, per
+# the rule encoded in scripts/agents/lib/drain_gate.py: an explicit
+# process exception in the owner's comment (or in the related issue's
+# body) opts out.
+#
 # NOTE: issue_comment workflows execute from the repository DEFAULT branch.
 # Empirically that is the active release branch, so changes here go live
 # on merge.
@@ -114,13 +127,30 @@ jobs:
           # -> reopen the SAME issue and send it back through the process.
           # Its own history is the trail; no new issue is created for
           # another round of the same failure.
+          # Drain gate (#3730): does this failure get worked now, or held?
+          # Process work bypasses; product acceptance work is gated. The
+          # owner's own comment text can declare the exception, and so can
+          # the issue being commented on.
+          GATED=1
+          if text_bypasses_drain_gate "$COMMENT_BODY" \
+            || issue_bypasses_drain_gate "$COMMENTED"; then
+            GATED=0
+          fi
+          echo "gated=$GATED" >> "$GITHUB_OUTPUT"
+
           if [[ -n "$RELATED" ]]; then
             STATE="$(echo "$issue_json" | jq -r '.state')"
             if [[ "$STATE" == "CLOSED" ]]; then
               gh issue reopen "$COMMENTED" --repo "${REPO_OWNER}/${REPO_NAME}"
             fi
-            set_issue_status "$COMMENTED" "$STATUS_IN_PROGRESS"
-            assign_and_trigger_developer "$COMMENTED"
+            if [[ "$GATED" == "1" ]]; then
+              # Reopened, but parked in the holding lane: the owner is
+              # still testing this round. The drain watcher releases it.
+              drain_gate_hold "$COMMENTED" "re-tested acceptance failure"
+            else
+              set_issue_status "$COMMENTED" "$STATUS_IN_PROGRESS"
+              assign_and_trigger_developer "$COMMENTED"
+            fi
             {
               echo "mode=reopened"
               echo "issue=$COMMENTED"
@@ -174,10 +204,16 @@ jobs:
           # feature so this issue stays inside the same release wall.
           ACTIVE_SPRINT="$(iteration_active_title "${SPRINT_FIELD:-Sprint}" 2>/dev/null || echo "")"
 
+          # Gated failures are FILED into the holding lane -- they never
+          # pass through In Progress, so nothing can pick them up in the
+          # window between creation and the hold (#3730).
+          FILE_STATUS="$STATUS_IN_PROGRESS"
+          [[ "$GATED" == "1" ]] && FILE_STATUS="$STATUS_ACCEPTANCE_FAILED"
+
           ARGS=(--title "$TITLE" --body-file "$BODY_FILE"
                 --label "Acceptance Failure"
                 --copy-from-issue "$FEATURE"
-                --status "$STATUS_IN_PROGRESS")
+                --status "$FILE_STATUS")
           if [[ -n "$ACTIVE_SPRINT" && "$ACTIVE_SPRINT" != "null" ]]; then
             ARGS+=(--sprint "$ACTIVE_SPRINT")
           fi
@@ -196,8 +232,14 @@ jobs:
             echo "[warn] Could not mark #$NEW as blocking #$FEATURE (promotion sweep will retry)"
           fi
 
-          # Only the new issue enters the rework cycle; the feature is untouched.
-          assign_and_trigger_developer "$NEW"
+          # Only the new issue enters the rework cycle; the feature is
+          # untouched. Under the drain gate, "enters the cycle" means
+          # "waits in Acceptance Failed until the round drains" (#3730).
+          if [[ "$GATED" == "1" ]]; then
+            drain_gate_hold "$NEW" "acceptance failure"
+          else
+            assign_and_trigger_developer "$NEW"
+          fi
 
           {
             echo "mode=filed"
@@ -217,7 +259,18 @@ jobs:
             const feature = '${{ steps.handle.outputs.feature }}';
             const num = '${{ steps.handle.outputs.num }}';
             const dev_agent = process.env.DEV_AGENT;
+            const gated = '${{ steps.handle.outputs.gated }}' === '1';
             const repoUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}`;
+
+            // Drain gate (#3730): a gated failure waits in Acceptance
+            // Failed until this acceptance round drains, so the flow the
+            // acknowledgement describes must be the one that will actually
+            // happen -- promising "assigned to the developer agent" while
+            // the issue sits parked is exactly the confusion the lane
+            // exists to remove.
+            const startLine = gated
+              ? `- Held in **Acceptance Failed** — the fix process starts when **Acceptance Testing** drains (only the release issue left), which moves it to Backlog and kicks the queue once\n`
+              : `- Assigned to @${dev_agent} immediately (process exception — the drain gate does not apply)\n`;
 
             let body;
             if (mode === 'reopened') {
@@ -226,18 +279,19 @@ jobs:
                 : '';
               body =
                 `🔧 **Scrummaster Agent**: Acceptance failure on this fix acknowledged.\n\n` +
-                `This issue is **reopened** and sent back through the process — ` +
-                `assigned to @${dev_agent} for a new fix. Its own history is the trail of this failure's resolution; no new issue is created.\n\n` +
+                `This issue is **reopened** and sent back through the process. ` +
+                `Its own history is the trail of this failure's resolution; no new issue is created.\n\n` +
                 `**Flow (automated):**\n` +
+                startLine +
                 `- Developer agent fixes on a new \`fix/${issue}-...\` branch, PR with \`Closes #${issue}\`\n` +
                 `- Review agent reviews and merges; this issue returns to Acceptance Testing for your re-test${featNote}`;
             } else {
               body =
                 `🔧 **Scrummaster Agent**: Acceptance failure acknowledged.\n\n` +
-                `Filed as **#${issue}** — unique failure ${num} for #${feature}, related and marked as **blocking** this issue — ` +
-                `assigned to @${dev_agent} for investigation and fix.\n\n` +
+                `Filed as **#${issue}** — unique failure ${num} for #${feature}, related and marked as **blocking** this issue.\n\n` +
                 `**Flow (automated):**\n` +
                 `- This issue stays closed in **Acceptance Testing** and is otherwise untouched\n` +
+                startLine +
                 `- Developer agent fixes via a \`fix/${issue}-...\` branch and a PR with \`Closes #${issue}\`\n` +
                 `- Review agent reviews and merges; #${issue} then lands in Acceptance Testing for your re-test\n` +
                 `- If #${issue}'s fix fails your re-test, comment \`@acceptance-failure\` **on #${issue}** — it is reopened and re-cycled, not replaced\n` +
