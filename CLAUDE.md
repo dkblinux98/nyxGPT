@@ -194,7 +194,8 @@ When creating GitHub issues:
 - Module: Auto-detect from keywords (web-ui, api, rag, cli, tui, testing, documentation, security, observability), fallback to "api"
 - Label: "Feature" (or "Acceptance Failure" for bugs/defects found before release)
 - **NEVER use a "Bug" or "Production Defect" label.** "Production Defect" (formerly "Bug") is reserved for production issues and applied only by the human owner. A `bug:` title prefix is fine; the label for any pre-release defect is always "Acceptance Failure".
-- **"Improvement" label + acceptance testing (Owner decision, 2026-08-01, related-marker form 2026-08-02):** an improvement filed during acceptance testing of a feature counts as a *product management failure* (spec gap), distinct from an Acceptance Failure (implementation defect). File it as a normal Backlog issue labeled "Improvement" with a `Related feature: #N` line in the body when a related feature exists — if none applies, that is not a blocker to filing or working it. Improvements never gate a feature's move to "For Release". See `agents/runbooks/review-runbook.md` §9.
+- **"Improvement" label + acceptance testing (Owner decision, 2026-08-01; relationship form 2026-08-12, #3731):** an improvement filed during acceptance testing of a feature counts as a *product management failure* (spec gap), distinct from an Acceptance Failure (implementation defect). File it with the **`@improvement`** comment command on the issue (or as a normal Backlog issue labeled "Improvement"); if no feature issue applies, that is not a blocker to filing or working it. See `agents/runbooks/review-runbook.md` §9.
+  - The old `Related feature: #N` body line is **retired** — see "Issue Relationships" below. The 2026-08-01 rule that improvements never gate a feature's move to "For Release" is **superseded** by the same decision: an improvement filed against an issue blocks its acceptance exactly like a failure does. The label still keeps the two apart as *statistics* (spec gap vs implementation defect); only the gating changed.
 - Sprint: Current sprint (if active)
 - Milestone: Current open milestone (if exists)
 
@@ -288,6 +289,37 @@ held, not worked immediately:
 Rationale: working failures the moment they are filed floods Acceptance
 Testing with freshly-merged fixes mid-round and burns RC cycles while the
 owner is still testing. Test everything → drain → test the next candidate.
+
+---
+
+## Issue Relationships (Owner decision, 2026-08-12, #3731)
+
+**GitHub's native issue relationships (blocked by / blocks) are the only
+storage for the link between issues. Never body prose, never comment
+markers.**
+
+- The owner files acceptance work with two comment commands, both owner-only
+  and both on issues (never PRs): **`@acceptance-failure`**
+  (`handle_acceptance_failure.yml`) and **`@improvement`**
+  (`handle_improvement.yml`). They differ only in the label applied and the
+  copy posted.
+- Both record the same semantics: **the new issue blocks acceptance of the
+  marked issue, and transitively anything blocked by that one.** The write is
+  a native blocked-by edge (`mark_issue_blocked_by` in
+  `scripts/agents/lib/gh_project.sh`); transitivity is *not* written as extra
+  edges — promote/drain logic walks the chain instead
+  (`transitive_blocked_by_issues`, `scripts/agents/lib/issue_relationships.py`).
+- The `Related feature: #N` / `Parent feature: #N` body convention is
+  **retired**. Nothing writes it. It is still *read* as a documented fallback
+  for issues filed before this decision, and
+  `promote_accepted_features.sh` heals any such link into a real native edge
+  on its next sweep, so historical data converges instead of needing a
+  separate backfill.
+- Consumers: `promote_accepted_features.sh` (transitive promotion gate),
+  `_issue_open_gate_refs` / `parked_resume.py` (auto-resume gating), and the
+  retrospective (`scripts/retrospective/dump_relationships.py` →
+  `data/relationships.json` → `build_dashboard.py`, which reports the
+  `native`/`prose`/`none` attribution split in `qtotals.attribution`).
 
 ---
 

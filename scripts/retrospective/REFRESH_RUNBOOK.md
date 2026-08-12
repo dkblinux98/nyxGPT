@@ -20,10 +20,30 @@ Artifact URL (republish to this URL, do not mint a new one):
    Via the GitHub MCP server: `search_issues` with query
    `repo:dkblinux98/nyxGPT is:issue`, `sort:created`, `order:asc`, 100/page, all
    pages. Keep per issue: `n` (number), `title`, `labels` (names), `milestone`
-   (title), `created` (created_at), `state`, `closed` (closed_at or null), and
-   `related` (the issue number from the first `Related feature: #N` line in the
-   body, or null — Acceptance Failure and Improvement issues carry this per the
-   2026-08-02 related-issue model). Overwrite the file.
+   (title), `created` (created_at), `state`, `closed` (closed_at or null).
+   Overwrite the file.
+
+   Do **not** parse `Related feature: #N` out of bodies any more — that
+   convention is retired (owner decision 2026-08-12, #3731) and attribution now
+   comes from native relationships in step 2b. The `related` field is still
+   *read* if present on historical entries (see step 2b), so leave whatever is
+   already in the file for issues created before that date rather than
+   stripping it.
+
+2b. **Refresh native issue relationships** → `data/relationships.json` (#3731).
+   Dispatch the workflow `retro_relationships_dump.yml` on the default branch
+   (`actions_run_trigger`, method `run_workflow`), wait for completion (~1 min —
+   it walks the dependency API for every `Acceptance Failure` / `Improvement`
+   issue), then `git pull` — the workflow commits the JSON to the dispatching
+   branch. If dispatch fails, skip; the builder falls back to the prose-derived
+   `related` values already in `all_issues.json`.
+
+   `build_dashboard.py` resolves each issue's related feature **native first**:
+   the `blocks` edge from `relationships.json` wins, and the corpus's `related`
+   field is used only when there is no native edge (historical issues). The
+   split is reported as `qtotals.attribution` (`native` / `prose` / `none`) —
+   when `prose` reaches 0, the fallback and any leftover `related` fields can be
+   deleted outright.
 
 3. **Refresh real sprint assignments** → `data/project_fields.json`.
    Dispatch the workflow `retro_project_fields_dump.yml` on the default branch
@@ -107,8 +127,14 @@ builder counts them separately everywhere (`qtotals.pm`, the `pm` cause lens,
 monthly `gate[].pm`); AF-only aggregates (aging, backlog flow, interception
 rate) exclude them.
 
-**Failure-issue model (2026-08-02):** a unique acceptance failure is filed as a
-NEW issue related to the feature via `Related feature: #N` + a blocking
-dependency; the original feature stays closed. A fix failing re-test REOPENS the
-same failure issue — so failure-issue counts understate failure rounds; watch
-for reopened failure issues when narrating trends.
+**Failure-issue model (2026-08-02; storage changed 2026-08-12, #3731):** a
+unique acceptance failure is filed as a NEW issue that **blocks** the feature
+through GitHub's native blocked-by/blocks relationship — no body prose, no
+comment markers. The same is true of an Improvement filed with `@improvement`.
+The original feature stays closed. A fix failing re-test REOPENS the same
+failure issue — so failure-issue counts understate failure rounds; watch for
+reopened failure issues when narrating trends.
+
+Attribution therefore reads `data/relationships.json` (step 2b), with the
+retired `Related feature: #N` prose surviving only as the historical fallback
+described there.

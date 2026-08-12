@@ -94,12 +94,23 @@ sprint_autopilot_paused() { return 1; }
 # no marker exempts nothing. Labels default to "Acceptance Failure" -- the
 # only label whose marker parks a feature -- so each test states only what
 # it is actually varying.
+#
+# ISSUE_BLOCKS holds the NATIVE relationship (#3731): space-separated issue
+# numbers each held issue blocks. Empty by default so the tests that predate
+# native edges keep exercising the retired-marker fallback.
 declare -A ISSUE_BODIES=()
 declare -A ISSUE_LABELS=()
+declare -A ISSUE_BLOCKS=()
 gh() {
-  local ref="$*" num
+  local ref="$*" num rest n
   num="${ref##*issues/}"
   num="${num%% *}"
+  rest="${num#*/}"
+  num="${num%%/*}"
+  if [[ "$rest" == "dependencies/blocking" ]]; then
+    for n in ${ISSUE_BLOCKS[$num]:-}; do echo "$n"; done
+    return 0
+  fi
   jq -cn --arg b "${ISSUE_BODIES[$num]:-}" --arg l "${ISSUE_LABELS[$num]:-Acceptance Failure}" \
     '{body: $b, labels: ($l | split(",") | map(select(length > 0)))}'
 }
@@ -173,33 +184,48 @@ result="$(drain_gate_release 2>/dev/null)"
 _assert_eq "the deadlocked round releases the failure AND the improvement" "[3700,3701]" "$(jq -c '.released' <<<"$result")"
 _assert_not_contains "the parked feature itself is never moved" "$(cat "$STATUS_FILE")" "3600 ->"
 
-# --- Test 2c: a held IMPROVEMENT parks nothing ---
-# An improvement never blocks its related feature's acceptance (owner
-# decision 2026-08-01), so #3600 is genuinely still under test: exempting
-# it here would drain the lane mid-round, which is exactly what the gate
-# exists to prevent. Same filter promote_accepted_features.sh applies.
+# --- Test 2c: a held IMPROVEMENT parks its issue too (#3731) ---
+# Owner decision 2026-08-12, superseding 2026-08-01: `@improvement` writes
+# the same native blocking relationship as `@acceptance-failure`, so the
+# promotion sweep will not move #3600 while a held improvement blocks it.
+# Not exempting it would deadlock the gate on its own held work -- the same
+# reason failures are exempt. Same filter promote_accepted_features.sh
+# applies, so the two sweeps still agree.
 ISSUE_BODIES=([3700]="Related feature: #3600" [3701]="Related feature: #3600")
 ISSUE_LABELS=([3700]="Improvement" [3701]="Improvement")
 state="$(drain_gate_state)"
-_assert_eq "gate stays CLOSED when only held improvements name the feature under test" \
-  "false" "$(jq -r '.open' <<<"$state")"
-_assert_eq "the feature under test is still a blocker" "[3600]" "$(jq -c '.blockers' <<<"$state")"
-_assert_eq "an improvement earns its feature no rework exemption" "[]" "$(jq -c '.rework_exempt' <<<"$state")"
+_assert_eq "gate OPENS when only held improvements block the issue under test" \
+  "true" "$(jq -r '.open' <<<"$state")"
+_assert_eq "no blockers remain" "[]" "$(jq -c '.blockers' <<<"$state")"
+_assert_eq "an improvement earns its issue a rework exemption" "[3600]" "$(jq -c '.rework_exempt' <<<"$state")"
 
 : >"$STATUS_FILE"
 : >"$COMMENT_FILE"
 result="$(drain_gate_release 2>/dev/null)"
-_assert_eq "improvements-only: nothing drains mid-round" "none" "$(jq -r '.action' <<<"$result")"
-_assert_eq "improvements-only: no issue is moved" "" "$(cat "$STATUS_FILE")"
+_assert_eq "improvements-only: the deadlocked round drains" "released" "$(jq -r '.action' <<<"$result")"
+_assert_contains "improvements-only: the held improvement moves" "$(cat "$STATUS_FILE")" "3700 -> Backlog"
 
-# --- Test 2d: one Acceptance Failure among held improvements parks it ---
-ISSUE_LABELS=([3700]="Improvement")
+# --- Test 2d: a held issue with neither handler label parks nothing ---
+# (the stub falls back to "Acceptance Failure" for an *empty* value, so the
+# labels are set to a third label rather than cleared)
+ISSUE_LABELS=([3700]="Feature" [3701]="Feature")
 state="$(drain_gate_state)"
-_assert_eq "one held failure is enough to park the feature" "true" "$(jq -r '.open' <<<"$state")"
-_assert_eq "the parked feature is reported as exempt" "[3600]" "$(jq -c '.rework_exempt' <<<"$state")"
+_assert_eq "a non-handler-labeled held issue earns no exemption" "false" "$(jq -r '.open' <<<"$state")"
+_assert_eq "the issue under test is still a blocker" "[3600]" "$(jq -c '.blockers' <<<"$state")"
+
+# --- Test 2e: the NATIVE relationship wins over a stale body marker ---
+# The body still names #99 (a historical marker); the native edge says the
+# held issue blocks #3600. The gate must follow the relationship.
+ISSUE_BODIES=([3700]="Related feature: #99" [3701]="Related feature: #99")
+ISSUE_LABELS=([3700]="Acceptance Failure" [3701]="Acceptance Failure")
+ISSUE_BLOCKS=([3700]="3600" [3701]="3600")
+state="$(drain_gate_state)"
+_assert_eq "the native blocking edge decides the exemption" "[3600]" "$(jq -c '.rework_exempt' <<<"$state")"
+_assert_eq "gate opens on the native relationship alone" "true" "$(jq -r '.open' <<<"$state")"
 
 ISSUE_BODIES=()
 ISSUE_LABELS=()
+ISSUE_BLOCKS=()
 
 # --- Test 3: the release issue is exempt -- gate OPENS with only it left ---
 graphql() {

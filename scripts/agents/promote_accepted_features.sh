@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
-# Promote features whose acceptance failures are all accepted (owner flow,
-# 2026-08-02): an acceptance failure is a separate issue RELATED to its
-# feature ("Related feature: #N" body line, legacy "Parent feature: #N"
-# accepted too) and marked as blocking it. The feature parks closed in
-# "Acceptance Testing" while its failures are reworked; when EVERY related
-# failure issue reaches "For Release", this sweep promotes the feature to
-# "For Release" and comments the promotion on it.
+# Promote issues whose acceptance blockers are all accepted (owner flow,
+# 2026-08-02; native relationships since #3731, owner decision 2026-08-12).
 #
-# Also heals the native blocking relationship: any related failure issue
-# not yet marked as blocking its feature gets the dependency added
-# (idempotent), so the feature's Relationships panel always shows what is
-# holding it back.
+# An issue filed during acceptance testing -- an Acceptance Failure
+# (@acceptance-failure) or an Improvement (@improvement) -- is a separate
+# issue that BLOCKS the issue it was filed against, expressed through
+# GitHub's native blocked-by/blocks relationship. The blocked issue parks
+# closed in "Acceptance Testing" while its blockers are reworked; when EVERY
+# blocker -- directly and TRANSITIVELY (a blocker of a blocker gates too) --
+# reaches "For Release", this sweep promotes it to "For Release" and comments
+# the promotion on it.
+#
+# Relationship storage is native only. The retired `Related feature: #N` body
+# marker is still READ for issues filed before #3731 (documented historical
+# fallback) and any such link is HEALED into a native relationship here, so
+# old data converges on the new storage instead of needing a separate
+# backfill. Nothing writes prose markers any more.
 #
 # Run via .github/workflows/promote_accepted_features.yml (cron + dispatch).
 #
@@ -30,55 +35,72 @@ log() { echo "[promote] $*" >&2; }
 # issue_status() (project Status of an issue) is shared from lib/gh_project.sh
 # -- also used by the parked-blocked-issue sweep (#3631).
 
-# feature<TAB>af rows from every Acceptance Failure issue carrying a marker.
-rows="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues?labels=Acceptance%20Failure&state=all&per_page=100" --paginate \
-  --jq '.[] | select(has("pull_request") | not) | . as $i | ($i.body | capture("(Parent|Related) feature: #(?<f>[0-9]+)")? | .f // empty) as $f
-      | select($f != "") | "\($f)\t\($i.number)"')"
+# Candidate blockers: every Acceptance Failure and Improvement issue. Both
+# labels are swept because both commands now record a blocking relationship
+# (owner decision 2026-08-12) -- an improvement filed against an issue holds
+# its acceptance exactly like a failure does.
+candidates="$(for label in "Acceptance%20Failure" "Improvement"; do
+  gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues?labels=${label}&state=all&per_page=100" --paginate \
+    --jq '.[] | select(has("pull_request") | not) | {number, body: (.body // "")}'
+done | jq -s -c 'unique_by(.number)')"
 
-if [[ -z "$rows" ]]; then
-  log "No acceptance-failure issues with a related-feature marker found. Nothing to do."
+if [[ "$(jq 'length' <<<"$candidates")" == "0" ]]; then
+  log "No acceptance-failure or improvement issues found. Nothing to do."
   exit 0
 fi
 
-declare -A afs_by_feature=()
-while IFS=$'\t' read -r feature af; do
-  [[ -n "$feature" && -n "$af" ]] || continue
-  afs_by_feature["$feature"]+="${af} "
-done <<< "$rows"
+# Resolve each candidate's target issue: its native `blocks` edges, falling
+# back to the retired body marker. issue_relationships.py owns that rule.
+records="$(jq -c '.[]' <<<"$candidates" | while IFS= read -r rec; do
+  n="$(jq -r '.number' <<<"$rec")"
+  blocks="$(blocking_issues "$n" | jq -R -n -c '[inputs | select(length > 0) | tonumber]')"
+  jq -c --argjson b "$blocks" '{number, body, blocks: $b}' <<<"$rec"
+done | jq -s -c .)"
+
+blockers_json="$(python3 "$DIR/lib/issue_relationships.py" feature-blockers <<<"$records")"
+
+if [[ "$(jq 'length' <<<"$blockers_json")" == "0" ]]; then
+  log "No acceptance-failure/improvement issue is related to another issue. Nothing to do."
+  exit 0
+fi
 
 promoted=0
-for feature in "${!afs_by_feature[@]}"; do
-  af_list=(${afs_by_feature[$feature]})
+while IFS= read -r feature; do
+  mapfile -t direct < <(jq -r --arg f "$feature" '.[$f][]' <<<"$blockers_json")
 
-  # Heal blocking links: each failure issue must be marked as blocking its
-  # feature (idempotent; failures here never abort the sweep).
-  blocked_by="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${feature}/dependencies/blocked_by" \
-    --jq '[.[].number] | join(",")' 2>/dev/null || echo "")"
-  for af in "${af_list[@]}"; do
-    if [[ ",${blocked_by}," != *",${af},"* ]]; then
-      if [[ "$DRY_RUN" == "1" ]]; then
-        log "DRY_RUN: would mark #$af as blocking #$feature"
-      else
-        af_dbid="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${af}" --jq '.id')"
-        gh api -X POST "repos/${REPO_OWNER}/${REPO_NAME}/issues/${feature}/dependencies/blocked_by" \
-          -F issue_id="$af_dbid" >/dev/null 2>&1 \
-          && log "Marked #$af as blocking #$feature" \
-          || log "[warn] Could not mark #$af as blocking #$feature"
-      fi
+  # Heal missing native links (idempotent). A historical issue resolved
+  # through the prose fallback gets a real relationship here, which is the
+  # one-time backfill: after this sweep runs, its gate is native.
+  for blocker in "${direct[@]}"; do
+    if [[ "$DRY_RUN" == "1" ]]; then
+      log "DRY_RUN: would ensure #$blocker is marked as blocking #$feature"
+    elif mark_issue_blocked_by "$feature" "$blocker"; then
+      log "#$blocker is marked as blocking #$feature"
+    else
+      log "[warn] Could not mark #$blocker as blocking #$feature"
     fi
   done
 
   fstatus="$(issue_status "$feature")"
   if [[ "$fstatus" != "$ACCEPTANCE_STATUS" ]]; then
-    log "#$feature status '$fstatus' != '$ACCEPTANCE_STATUS' -- not a promotion candidate (failures: ${af_list[*]})"
+    log "#$feature status '$fstatus' != '$ACCEPTANCE_STATUS' -- not a promotion candidate (blockers: ${direct[*]})"
     continue
   fi
 
+  # The gate is the TRANSITIVE blocked_by closure, not just the direct
+  # blockers: a failure filed against a failure holds the original issue too.
+  # In DRY_RUN the heal above did not run, so fall back to the resolved
+  # direct list when the native walk returns nothing.
+  mapfile -t gate < <(transitive_blocked_by_issues "$feature")
+  if [[ "${#gate[@]}" -eq 0 ]]; then
+    gate=("${direct[@]}")
+  fi
+
   all_accepted=1
-  for af in "${af_list[@]}"; do
-    astatus="$(issue_status "$af")"
+  for blocker in "${gate[@]}"; do
+    astatus="$(issue_status "$blocker")"
     if [[ "$astatus" != "$STATUS_FOR_RELEASE" ]]; then
-      log "#$feature waits: related failure #$af is '$astatus' (needs '$STATUS_FOR_RELEASE')"
+      log "#$feature waits: blocker #$blocker is '$astatus' (needs '$STATUS_FOR_RELEASE')"
       all_accepted=0
       break
     fi
@@ -86,16 +108,16 @@ for feature in "${!afs_by_feature[@]}"; do
   [[ "$all_accepted" == "1" ]] || continue
 
   if [[ "$DRY_RUN" == "1" ]]; then
-    log "DRY_RUN: would promote #$feature to '$STATUS_FOR_RELEASE' (all of: ${af_list[*]} accepted)"
+    log "DRY_RUN: would promote #$feature to '$STATUS_FOR_RELEASE' (all of: ${gate[*]} accepted)"
     continue
   fi
 
   set_issue_status "$feature" "$STATUS_FOR_RELEASE"
-  af_refs="$(printf '#%s, ' "${af_list[@]}")"
+  gate_refs="$(printf '#%s, ' "${gate[@]}")"
   gh issue comment "$feature" --repo "${REPO_OWNER}/${REPO_NAME}" --body \
-    "✅ **Scrummaster Agent**: every related acceptance-failure issue (${af_refs%, }) has been accepted (For Release) — promoting this issue to **For Release** (owner flow, 2026-08-02)."
-  log "Promoted #$feature to '$STATUS_FOR_RELEASE' (failures accepted: ${af_list[*]})"
+    "✅ **Scrummaster Agent**: every issue blocking this one (${gate_refs%, }) has been accepted (For Release) — promoting this issue to **For Release**. Blocking is read from GitHub's native relationships, transitively (owner decision 2026-08-12, #3731)."
+  log "Promoted #$feature to '$STATUS_FOR_RELEASE' (blockers accepted: ${gate[*]})"
   promoted=$((promoted + 1))
-done
+done < <(jq -r 'keys[]' <<<"$blockers_json")
 
 log "Done. Promoted ${promoted} issue(s)."

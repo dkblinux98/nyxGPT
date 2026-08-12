@@ -3,9 +3,18 @@ name: Handle Improvement
 # Owner decisions 2026-08-01 / 2026-08-02: an improvement filed during
 # acceptance testing of a feature is a PRODUCT MANAGEMENT failure (a spec
 # gap), distinct from an Acceptance Failure (an implementation defect). It
-# is filed as a normal issue labeled "Improvement" carrying a
-# "Related feature: #N" line when a related feature exists, and it never
-# gates the feature's move to "For Release".
+# is filed as a normal issue labeled "Improvement".
+#
+# Owner decision 2026-08-12 (#3731), superseding the "improvements never
+# gate" half of the 2026-08-01 decision: BOTH acceptance-testing commands
+# record the same semantics — the filed issue BLOCKS acceptance of the issue
+# it was filed against, and transitively anything blocked by that one. The
+# storage is GitHub's NATIVE blocked-by/blocks relationship: no
+# "Related feature: #N" body prose, no comment markers. The retired prose
+# marker is still READ as a fallback for issues filed before that change.
+# The Improvement label still distinguishes the failure statistic (a spec
+# gap, cause `pm`) from an Acceptance Failure (an implementation defect) —
+# only the gating behaviour changed.
 #
 # Owner decision 2026-08-12 (#3730): like acceptance failures, an
 # improvement filed DURING a round lands in the `Acceptance Failed` Status
@@ -94,14 +103,19 @@ jobs:
           require_gh_auth
 
           issue_json="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${COMMENTED}" \
-            --jq '{title, labels, body}')"
+            --jq '{title, labels: [.labels[].name], body: (.body // "")}')"
+          COMMENTED_BODY="$(echo "$issue_json" | jq -r '.body')"
 
-          # The related feature is the commented issue itself, unless the
-          # commented issue is already a related failure/improvement of
-          # some feature -- then the improvement belongs to that feature,
-          # exactly like handle_acceptance_failure.yml resolves it.
-          RELATED="$(echo "$issue_json" | jq -r '.body' \
-            | grep -m1 -oE '(Parent|Related) feature: #[0-9]+' | grep -oE '[0-9]+' || true)"
+          # The feature is the commented issue itself, unless the commented
+          # issue is already a handler-filed failure/improvement -- then the
+          # improvement belongs to the issue THAT one blocks, exactly like
+          # handle_acceptance_failure.yml resolves it. Resolution is native
+          # (#3731): the label plus a real blocking edge, with the retired
+          # body marker as the historical fallback.
+          RELATED=""
+          if echo "$issue_json" | jq -e '.labels | any(. == "Acceptance Failure" or . == "Improvement")' >/dev/null; then
+            RELATED="$(related_feature_of "$COMMENTED" "$COMMENTED_BODY" || true)"
+          fi
           FEATURE="${RELATED:-$COMMENTED}"
           FEATURE_TITLE="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${FEATURE}" --jq '.title')"
 
@@ -123,7 +137,6 @@ jobs:
             echo
             echo "Improvement identified during stakeholder acceptance testing (spec gap, not an implementation defect)."
             echo
-            echo "Related feature: #${FEATURE}"
             echo "Reported by: @${HUMAN_OWNER} — ${COMMENT_URL}"
             echo
             echo "## Requested Improvement"
@@ -136,7 +149,8 @@ jobs:
             echo
             echo "## Notes"
             echo
-            echo "- Improvements never gate the related feature's move to \"For Release\" (owner decision 2026-08-01)."
+            echo "- The issue this blocks is recorded in GitHub's **Relationships** panel (native blocked-by), not in this body. It is promoted to \"For Release\" automatically once everything blocking it, transitively, reaches \"For Release\" (owner decision 2026-08-12, #3731)."
+            echo "- An Improvement is a product-management gap (spec), not an implementation defect — that distinction lives in the label, and the retrospective counts it separately."
           } > "$BODY_FILE"
 
           ACTIVE_SPRINT="$(iteration_active_title "${SPRINT_FIELD:-Sprint}" 2>/dev/null || echo "")"
@@ -156,8 +170,17 @@ jobs:
           NEW="$(scripts/agents/create_issue.sh "${ARGS[@]}" | tail -1)"
           echo "Filed improvement #$NEW for feature #$FEATURE (gated=${GATED})"
 
-          # No blocking dependency: an improvement must never hold the
-          # related feature out of For Release (owner decision 2026-08-01).
+          # THE relationship record (#3731): the improvement BLOCKS the issue
+          # it was filed against, in GitHub's native relationships — the same
+          # write handle_acceptance_failure.yml makes. Nothing is written to
+          # the body or to a comment. Best-effort; promote_accepted_features.sh
+          # heals a missing link on its next sweep.
+          if mark_issue_blocked_by "$FEATURE" "$NEW"; then
+            echo "Marked #$NEW as blocking #$FEATURE"
+          else
+            echo "[warn] Could not mark #$NEW as blocking #$FEATURE (promotion sweep will retry)"
+          fi
+
           if [[ "$GATED" == "1" ]]; then
             drain_gate_hold "$NEW" "improvement" \
               || _warn "drain gate: could not put #${NEW} in the holding lane --" \
@@ -186,8 +209,10 @@ jobs:
 
             const body =
               `💡 **Scrummaster Agent**: Improvement acknowledged.\n\n` +
-              `Filed as **#${issue}**, related to #${feature}. Improvements are product-management gaps, ` +
-              `not acceptance failures — this one does **not** block #${feature} from moving to **For Release**.\n\n` +
+              `Filed as **#${issue}**, recorded as **blocking** #${feature} through GitHub's native Relationships ` +
+              `(no body markers). Improvements are product-management gaps, not acceptance failures — the label keeps ` +
+              `that distinction in the retrospective — but #${feature} now waits on #${issue}, and on anything blocking ` +
+              `#${issue}, before it can move to **For Release** (owner decision 2026-08-12, #3731).\n\n` +
               `**Flow (automated):**\n` +
               startLine +
               `- Developer agent implements it via a \`feat/${issue}-...\` branch and a PR with \`Closes #${issue}\`\n` +

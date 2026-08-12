@@ -887,18 +887,20 @@ acceptance_lane_snapshot() {
   )
 }
 
-# The features parked awaiting rework by the currently held issues
-# ("Related feature: #N", legacy "Parent feature: #N"), as a JSON array.
-# Those features park CLOSED in Acceptance Testing until every related
-# failure reaches For Release (promote_accepted_features.sh), so without
-# this the gate would deadlock: the feature waits on its failure, the
-# failure waits on the gate, and the gate waits on the feature.
+# The issues parked awaiting rework by the currently held issues, as a JSON
+# array. Read from each held issue's NATIVE blocking relationship (#3731),
+# with the retired "Related feature: #N" body marker kept as the historical
+# fallback. Those issues park CLOSED in Acceptance Testing until everything
+# blocking them reaches For Release (promote_accepted_features.sh), so
+# without this the gate would deadlock: the issue waits on its failure, the
+# failure waits on the gate, and the gate waits on the issue.
 #
-# Labels are fetched alongside the body because only "Acceptance Failure"
-# issues park a feature -- the same filter promote_accepted_features.sh
-# applies, so the two sweeps always agree. A held Improvement never blocks
-# its related feature, so it must not exempt one either (drain_gate.py
-# rework_features applies the rule).
+# Labels are fetched alongside the edges because only issues carrying a
+# rework label park anything -- the same filter promote_accepted_features.sh
+# applies, so the two sweeps always agree. Since #3731 that covers held
+# Improvements too: they write the same blocking relationship, so exempting
+# fewer issues than the sweep parks would reintroduce the deadlock
+# (drain_gate.py rework_features applies the rule).
 #
 # An issue that cannot be read contributes nothing -- one unreadable issue
 # must not silently open the gate wider than it should, and the next poll
@@ -908,15 +910,18 @@ drain_gate_rework_features() {
   require_cmd jq
   require_cmd python3
 
-  local issues=() issue payload
+  local issues=() issue payload blocks
   while IFS= read -r issue; do
     [[ -n "$issue" ]] || continue
     payload="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}" \
       --jq '{body: (.body // ""), labels: [.labels[]?.name]}' 2>/dev/null)" || {
-      _warn "drain_gate_rework_features: could not read #${issue} -- ignoring its related-feature marker"
+      _warn "drain_gate_rework_features: could not read #${issue} -- ignoring its blocking relationship"
       continue
     }
     [[ -n "$payload" ]] || continue
+    blocks="$(blocking_issues "$issue" | jq -R -n -c '[inputs | select(length > 0) | tonumber]' 2>/dev/null)"
+    [[ -n "$blocks" ]] || blocks="[]"
+    payload="$(jq -c --argjson b "$blocks" '. + {blocks: $b}' <<<"$payload")"
     issues+=("$payload")
   done < <(jq -r '.[]' <<<"$held_json")
 
@@ -1135,31 +1140,45 @@ _issue_active_dev_run_ids() {
 
 # Blocker issue numbers of `issue` that are still OPEN, one per line.
 #
-# Two sources, unioned: the prose `Blocked by: #N` references in the issue
-# body (INTERIM -- see lib/parked_resume.py; superseded by the native
-# Relationships work, W1/W2 in product_management/AGENTIC_SDLC_DESIGN.md,
-# deferred to nyxAgent) and the native blocked_by dependencies the rest of
-# this library already uses. The union is deliberate: resuming an issue that
-# still has a real open gate is the one failure mode worth paying an extra
-# API call to avoid.
+# Native relationships are the source of truth (#3731): the walk starts from
+# `issue`'s native blocked_by dependencies and follows them TRANSITIVELY --
+# an open blocker's own open blockers gate this issue too. Traversal stops at
+# closed blockers: a closed blocker is done, and whatever once blocked *it*
+# no longer holds anything back.
+#
+# The prose `Blocked by: #N` body references (INTERIM -- see
+# lib/parked_resume.py) are a FALLBACK for issues written before native
+# relationships, consulted only when the issue has no native blocked_by
+# edges. Nothing writes prose gates any more.
 _issue_open_gate_refs() {
   local issue="$1" body="$2"
   require_cmd python3
-  local -a refs=()
+  local -a frontier=()
   local r state
   while IFS= read -r r; do
-    [[ -n "$r" ]] && refs+=("$r")
-  done < <(printf '%s' "$body" | python3 "${_LIB_DIR}/parked_resume.py" parse-blocked-by 2>/dev/null)
-  while IFS= read -r r; do
-    [[ -n "$r" ]] && refs+=("$r")
+    [[ -n "$r" ]] && frontier+=("$r")
   done < <(blocked_by_issues "$issue")
 
+  if [[ "${#frontier[@]}" -eq 0 ]]; then
+    while IFS= read -r r; do
+      [[ -n "$r" ]] && frontier+=("$r")
+    done < <(printf '%s' "$body" | python3 "${_LIB_DIR}/parked_resume.py" parse-blocked-by 2>/dev/null)
+  fi
+
   local -A seen=()
-  for r in ${refs[@]+"${refs[@]}"}; do
+  seen["$issue"]=1
+  while [[ "${#frontier[@]}" -gt 0 ]]; do
+    r="${frontier[0]}"
+    frontier=("${frontier[@]:1}")
     [[ -n "${seen[$r]:-}" ]] && continue
     seen["$r"]=1
     state="$(_issue_open_state "$r")"
-    [[ "$state" == "OPEN" ]] && echo "$r"
+    [[ "$state" == "OPEN" ]] || continue
+    echo "$r"
+    local next
+    while IFS= read -r next; do
+      [[ -n "$next" && -z "${seen[$next]:-}" ]] && frontier+=("$next")
+    done < <(blocked_by_issues "$r")
   done
   return 0
 }
@@ -1978,6 +1997,107 @@ open_blocked_by_issues() {
   local issue="$1"
   gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}/dependencies/blocked_by" \
     --jq '.[] | select(.state=="open") | .number' 2>/dev/null || true
+}
+
+# -------------------------
+# Native relationships as the ONLY relationship storage (#3731)
+# -------------------------
+# Owner decision 2026-08-12: the link between an issue filed during
+# acceptance testing and the issue it was filed against is a native
+# blocked-by/blocks relationship. The retired `Related feature: #N` body
+# marker is read as a fallback for historical issues only -- nothing writes
+# it any more. Graph math lives in lib/issue_relationships.py.
+
+# All issue numbers `issue` BLOCKS (native `blocking` dependencies), one per
+# line. For a handler-filed acceptance failure / improvement this is the
+# feature it was filed against.
+blocking_issues() {
+  local issue="$1"
+  gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}/dependencies/blocking" \
+    --jq '.[].number' 2>/dev/null || true
+}
+
+# Marks `blocker` as blocking `issue` (i.e. adds `issue` <- blocked_by
+# <- `blocker`). Idempotent: a link that already exists is reported as
+# success, since the API rejects the duplicate and there is nothing to do.
+# Returns non-zero only when the link genuinely could not be established --
+# callers treat that as best-effort and let the promotion sweep heal it.
+mark_issue_blocked_by() {
+  local issue="$1" blocker="$2" existing blocker_dbid
+  existing="$(blocked_by_issues "$issue" | tr '\n' ',')"
+  if [[ ",${existing}" == *",${blocker},"* ]]; then
+    return 0
+  fi
+  blocker_dbid="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${blocker}" --jq '.id' 2>/dev/null || true)"
+  [[ -n "$blocker_dbid" ]] || return 1
+  gh api -X POST "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}/dependencies/blocked_by" \
+    -F issue_id="$blocker_dbid" >/dev/null 2>&1
+}
+
+# Walks a native dependency direction transitively from `issue` and prints
+# every reachable issue number, ascending, excluding `issue` itself.
+# `direction` is "blocked_by" (everything transitively blocking `issue` --
+# its full acceptance gate) or "blocking" (everything `issue` transitively
+# blocks). Edges are collected here; the closure/cycle safety is
+# issue_relationships.py's job.
+_transitive_dependency_issues() {
+  local issue="$1" direction="$2"
+  require_cmd jq
+  require_cmd python3
+  local -a frontier=("$issue")
+  local -A visited=()
+  local edges_file node neighbour
+  edges_file="$(mktemp)"
+  : > "$edges_file"
+
+  while [[ "${#frontier[@]}" -gt 0 ]]; do
+    node="${frontier[0]}"
+    frontier=("${frontier[@]:1}")
+    [[ -n "${visited[$node]:-}" ]] && continue
+    visited["$node"]=1
+    local -a neighbours=()
+    while IFS= read -r neighbour; do
+      [[ -n "$neighbour" ]] || continue
+      neighbours+=("$neighbour")
+      [[ -n "${visited[$neighbour]:-}" ]] || frontier+=("$neighbour")
+    done < <(if [[ "$direction" == "blocking" ]]; then blocking_issues "$node"; else blocked_by_issues "$node"; fi)
+    printf '%s\n' "${neighbours[@]+"${neighbours[@]}"}" \
+      | jq -R -n --argjson k "$node" -c '{key: ($k | tostring), value: [inputs | select(length > 0) | tonumber]}' \
+      >> "$edges_file"
+  done
+
+  jq -s -c 'from_entries' "$edges_file" \
+    | python3 "${_LIB_DIR}/issue_relationships.py" transitive "$issue"
+  rm -f "$edges_file"
+}
+
+# Everything transitively blocking `issue`: the complete set that must be
+# accepted before `issue` can be promoted.
+transitive_blocked_by_issues() {
+  _transitive_dependency_issues "$1" "blocked_by"
+}
+
+# Everything `issue` transitively blocks -- the "and transitively anything
+# blocked by that one" half of the owner's rule.
+transitive_blocking_issues() {
+  _transitive_dependency_issues "$1" "blocking"
+}
+
+# The feature an acceptance-failure / improvement issue was filed against:
+# the first native `blocking` edge, falling back to the retired
+# `Related feature: #N` body marker for issues filed before #3731. Prints
+# nothing when the issue is related to nothing (a plain feature issue).
+related_feature_of() {
+  local issue="$1" body="${2-}"
+  require_cmd jq
+  require_cmd python3
+  local blocks
+  blocks="$(blocking_issues "$issue" | jq -R -n -c '[inputs | select(length > 0) | tonumber]' 2>/dev/null || echo '[]')"
+  if [[ -z "${2+set}" ]]; then
+    body="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}" --jq '.body // ""' 2>/dev/null || echo "")"
+  fi
+  jq -n -c --argjson b "${blocks:-[]}" --arg body "$body" '{blocks: $b, body: $body}' \
+    | python3 "${_LIB_DIR}/issue_relationships.py" resolve-related 2>/dev/null | head -1
 }
 
 # Assign issue to developer and trigger workflow

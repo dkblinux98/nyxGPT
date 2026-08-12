@@ -349,10 +349,10 @@ until those land.
 
 ### If acceptance passes
 Move the issue to "For Release" in the project board. No action needed in GitHub.
-**Gate:** an issue with related acceptance-failure issues (see below) is NOT
-moved to "For Release" by hand — the promotion sweep
+**Gate:** an issue that anything blocks (see below) is NOT moved to
+"For Release" by hand — the promotion sweep
 (`promote_accepted_features.yml`, every 30 min) moves it automatically once
-every related failure issue has itself been accepted (For Release).
+everything blocking it, transitively, has itself been accepted (For Release).
 
 ### If acceptance reveals an improvement (not a defect)
 
@@ -366,18 +366,25 @@ relation and fields. Filing it by hand through the normal flow is equally
 fine — it does not jump the queue the way a defect does:
 
 - Label: **"Improvement"** (the existing label stands — no new label)
-- Body includes a `Related feature: #N` line when a related feature exists.
-  If no feature issue applies, that is NOT a blocker — file and work the
-  Improvement without it (owner decision 2026-08-02).
+- The link to the issue it was filed against is a **native blocked-by
+  relationship** — visible in that issue's Relationships panel, written by
+  the handler, stored nowhere else (owner decision 2026-08-12, #3731). No
+  `Related feature: #N` body line; that convention is retired. If no feature
+  issue applies, that is NOT a blocker — file and work the Improvement
+  without a relationship.
 - **Drain gate (owner decision 2026-08-12, #3730):** an improvement filed
   during a round lands in the **`Acceptance Failed`** lane with the failures
   and is worked once the round drains — see below.
 
 Per feature, the two labels give two separate counts for metrics:
-"Acceptance Failure"-labeled related issues = implementation failures;
-"Improvement"-labeled related issues filed during acceptance = requirements
-gaps. An improvement does NOT gate the feature's move to "For Release" —
-only acceptance-failure issues do.
+"Acceptance Failure"-labeled issues = implementation failures;
+"Improvement"-labeled issues filed during acceptance = requirements gaps.
+
+**Gating (owner decision 2026-08-12, #3731, superseding the 2026-08-01
+"improvements never gate" rule):** an improvement blocks its issue's move to
+"For Release" exactly like an acceptance failure does — both commands write
+the same native blocked-by relationship. The label distinction is a
+*statistic*, not a gate.
 
 ### If acceptance fails (bug found after merge)
 
@@ -393,10 +400,11 @@ That's it. The system will automatically (related-issue model, owner decision
 - Leave the original feature/doc/release/improvement issue **intact** — it
   stays closed, keeps its labels, and remains in "Acceptance Testing". The
   original never re-enters the dev/review cycle.
-- Create a **new** issue labeled "Acceptance Failure", RELATED to the
-  original via a `Related feature: #N` body line and marked as **blocking**
-  the original (native issue-dependency relationship — the original's
-  Relationships panel shows exactly what holds it back). NOT a sub-issue.
+- Create a **new** issue labeled "Acceptance Failure" marked as **blocking**
+  the original through GitHub's native issue relationship — the original's
+  Relationships panel shows exactly what holds it back, and that panel is the
+  only place the link is stored (owner decision 2026-08-12, #3731: no body
+  prose, no comment markers). NOT a sub-issue.
   Module/Priority/Effort/Milestone copy from the original; Sprint is the
   active sprint.
 - Place the new issue in the **"Acceptance Failed"** lane and hold it there
@@ -426,20 +434,23 @@ Once released to Backlog, the item follows the normal flow: the developer
 agent takes it, creates a `fix/N-...` branch and a PR with `Closes #N`.
 
 **If the failure issue's fix fails your re-test:** comment
-`@acceptance-failure` on the FAILURE issue itself (the one carrying the
-`Related feature: #N` body marker — that marker, not the "Acceptance
-Failure" label, is what the automation keys on, since owner-filed defect
-issues carry the label too while being parents) — it is **reopened** and
+`@acceptance-failure` on the FAILURE issue itself — it is **reopened** and
 sent back through dev → review (no new issue; its own history is the trail
 of that failure's resolution). A genuinely NEW, distinct failure of the
-feature gets its own related issue via a comment on the feature.
+feature gets its own issue via a comment on the feature.
 
-**Promotion:** when every related acceptance-failure issue reaches
-"For Release", the feature is promoted to "For Release" automatically by
-the promotion sweep, with a comment recording which failures cleared it.
-Unique-failure count per feature (usually 1) = its related
-"Acceptance Failure" issues; rework rounds live inside each failure issue's
-history.
+The automation tells those two cases apart by requiring **both** a handler
+label ("Acceptance Failure" or "Improvement") **and** a native blocking edge
+(#3731). Neither alone is enough: owner-filed defect issues carry the label
+while being parents themselves, and a plain feature can block a sequenced
+successor.
+
+**Promotion:** when everything blocking an issue reaches "For Release" —
+directly and **transitively**, so a failure filed against a failure counts —
+it is promoted to "For Release" automatically by the promotion sweep, with a
+comment recording which issues cleared it. Unique-failure count per feature
+(usually 1) = the "Acceptance Failure"-labeled issues blocking it; rework
+rounds live inside each failure issue's history.
 
 > **Note:** `@acceptance-failure` is only accepted from the human owner account and only on
 > issues (not PRs). It is entirely separate from the review-loop overrides

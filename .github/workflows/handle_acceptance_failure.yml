@@ -5,26 +5,28 @@ on:
     types: [created]
 
 # Related-issue acceptance-failure model (owner decision 2026-08-02,
-# superseding the sub-issue model of 2026-08-01):
+# superseding the sub-issue model of 2026-08-01; relationship storage moved
+# to native relationships 2026-08-12, #3731):
 #
 # - A unique acceptance failure against a feature/doc/release/improvement
-#   issue becomes a NEW issue labeled "Acceptance Failure", RELATED to the
-#   original via a "Related feature: #N" body line and marked as BLOCKING
-#   the original through GitHub's native issue-dependency relationship —
-#   NOT a sub-issue. The original is never reopened or relabeled; it stays
-#   closed in "Acceptance Testing".
+#   issue becomes a NEW issue labeled "Acceptance Failure" that BLOCKS the
+#   original through GitHub's native blocked-by/blocks relationship — NOT a
+#   sub-issue, and NOT a "Related feature: #N" body marker (that prose
+#   convention is retired; it is only still READ for historical issues).
+#   The original is never reopened or relabeled; it stays closed in
+#   "Acceptance Testing".
 # - If the failure issue's fix later fails stakeholder re-test, commenting
 #   @acceptance-failure ON THE FAILURE ISSUE reopens THAT SAME issue and
 #   sends it back through dev -> review. No per-round issues are created;
 #   the failure issue's own history is the trail of its resolution.
-# - When every related failure issue reaches "For Release", the original
-#   is promoted to "For Release" automatically by
+# - When every blocking issue reaches "For Release" — directly and
+#   transitively — the original is promoted to "For Release" automatically by
 #   promote_accepted_features.yml (scripts/agents/promote_accepted_features.sh),
 #   which also heals any missing blocking links.
 #
-# Improvement issues follow the same relation convention: when a related
-# feature exists they carry the "Related feature: #N" line; when none
-# exists, that is not a blocker to filing or working the Improvement.
+# Improvement issues (handle_improvement.yml) record the same native
+# relationship; the two commands differ only in the label they apply and the
+# copy they post.
 #
 # DRAIN GATE (owner decision 2026-08-12, #3730): a failure filed during an
 # acceptance round is no longer worked immediately. It is placed in the
@@ -113,9 +115,26 @@ jobs:
           require_gh_auth
 
           issue_json="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${COMMENTED}" \
-            --jq '{state: (.state | ascii_upcase), title, labels, body}')"
-          RELATED="$(echo "$issue_json" | jq -r '.body' \
-            | grep -m1 -oE '(Parent|Related) feature: #[0-9]+' | grep -oE '[0-9]+' || true)"
+            --jq '{state: (.state | ascii_upcase), title, labels: [.labels[].name], body: (.body // "")}')"
+          COMMENTED_BODY="$(echo "$issue_json" | jq -r '.body')"
+
+          # Is the commented issue one this loop FILED against something else
+          # (a failure/improvement whose fix just failed re-test), or is it
+          # the thing being acceptance-tested?
+          #
+          # Two conditions must both hold: it carries a handler label AND it
+          # natively blocks another issue (#3731 — the relationship is the
+          # storage; the retired body marker is the fallback for issues filed
+          # before that). The label alone is not enough: owner-filed defect
+          # issues like #3463/#3469 also carry "Acceptance Failure" and are
+          # themselves PARENTS being acceptance-tested — keying on the label
+          # reopened #3463 when the owner wanted a second failure issue
+          # (2026-08-02). A blocking edge alone is not enough either: a plain
+          # feature can block a sequenced successor.
+          RELATED=""
+          if echo "$issue_json" | jq -e '.labels | any(. == "Acceptance Failure" or . == "Improvement")' >/dev/null; then
+            RELATED="$(related_feature_of "$COMMENTED" "$COMMENTED_BODY" || true)"
+          fi
 
           # Drain gate (#3730): does this failure get worked now, or held
           # until the acceptance round drains? Process work bypasses;
@@ -129,16 +148,11 @@ jobs:
           fi
           echo "gated=$GATED" >> "$GITHUB_OUTPUT"
 
-          # --- Path B: the commented issue is a handler-created FAILURE
-          # issue of some parent — identified by its "Related feature: #N"
-          # body marker, NOT by the "Acceptance Failure" label. (The label
-          # is also carried by owner-filed defect issues like #3463/#3469,
-          # which are themselves PARENTS being acceptance-tested; keying on
-          # the label reopened #3463 when the owner wanted a second related
-          # failure issue, 2026-08-02.) Its fix failed the owner's re-test
-          # -> reopen the SAME issue and send it back through the process.
-          # Its own history is the trail; no new issue is created for
-          # another round of the same failure.
+          # --- Path B: the commented issue is a handler-filed failure/
+          # improvement issue (resolved above). Its fix failed the owner's
+          # re-test -> reopen the SAME issue and send it back through the
+          # process. Its own history is the trail; no new issue is created
+          # for another round of the same failure.
           if [[ -n "$RELATED" ]]; then
             STATE="$(echo "$issue_json" | jq -r '.state')"
             if [[ "$STATE" == "CLOSED" ]]; then
@@ -168,15 +182,25 @@ jobs:
           FEATURE="$COMMENTED"
           FEATURE_TITLE="$(echo "$issue_json" | jq -r '.title')"
 
-          # Unique-failure number = existing related failure issues + 1
-          # (exact body-marker match, not text search, so #34 never counts
-          # for #3). Usually 1.
+          # Unique-failure number = existing failure issues against this
+          # feature + 1. Read from the native relationship (the issues
+          # blocking FEATURE that carry the "Acceptance Failure" label),
+          # unioned with the retired body marker so numbering stays
+          # continuous for features whose earlier failures predate #3731.
+          # The prose arm matches the exact marker, not free text, so #34
+          # never counts for #3.
           # --jq runs once per fetched page -- stream matching issues across
-          # all pages first, then slurp+count (see AGENTS.md).
-          EXISTING="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues?labels=Acceptance%20Failure&state=all&per_page=100" \
+          # all pages first, then de-duplicate (see AGENTS.md).
+          NATIVE_AFS="$(blocked_by_issues "$FEATURE" | while IFS= read -r b; do
+            [[ -n "$b" ]] || continue
+            gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${b}" \
+              --jq 'select([.labels[].name] | index("Acceptance Failure")) | .number' 2>/dev/null || true
+          done)"
+          PROSE_AFS="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues?labels=Acceptance%20Failure&state=all&per_page=100" \
             --paginate \
-            --jq ".[] | select(has(\"pull_request\") | not) | select(.body | test(\"(Parent|Related) feature: #${FEATURE}\\\\b\"))" \
-            | jq -s 'length')"
+            --jq ".[] | select(has(\"pull_request\") | not) | select(.body | test(\"(Parent|Related) feature: #${FEATURE}\\\\b\")) | .number")"
+          EXISTING="$(printf '%s\n%s\n' "$NATIVE_AFS" "$PROSE_AFS" \
+            | grep -E '^[0-9]+$' | sort -u | wc -l | tr -d ' ')"
           NUM=$((EXISTING + 1))
 
           TITLE="bug: acceptance failure ${NUM} for #${FEATURE} - ${FEATURE_TITLE#*: }"
@@ -186,9 +210,8 @@ jobs:
           {
             echo "## Problem / Motivation"
             echo
-            echo "Stakeholder acceptance testing of the related feature failed (unique failure ${NUM})."
+            echo "Stakeholder acceptance testing failed (unique failure ${NUM})."
             echo
-            echo "Related feature: #${FEATURE}"
             echo "Reported by: @${HUMAN_OWNER} — ${COMMENT_URL}"
             echo
             echo "## Reported Failure"
@@ -199,7 +222,10 @@ jobs:
             echo
             echo "- [ ] The reported failure is fixed and verified"
             echo "- [ ] If this issue's fix fails re-test, it is REOPENED (comment @acceptance-failure here) — not replaced by a new issue"
-            echo "- [ ] Related feature #${FEATURE} is promoted to \"For Release\" automatically once every related failure issue reaches \"For Release\""
+            echo
+            echo "## Notes"
+            echo
+            echo "- The issue this blocks is recorded in GitHub's **Relationships** panel (native blocked-by), not in this body — see the \"Blocking\" section of this issue. It is promoted to \"For Release\" automatically once everything blocking it, transitively, reaches \"For Release\"."
           } > "$BODY_FILE"
 
           # Rework happens in the active sprint; everything else (Module,
@@ -223,13 +249,13 @@ jobs:
           NEW="$(scripts/agents/create_issue.sh "${ARGS[@]}" | tail -1)"
           echo "Created related acceptance-failure issue #$NEW (unique failure ${NUM}) for feature #$FEATURE"
 
-          # Native dependency (owner requirement 2026-08-02): the failure
-          # issue BLOCKS the feature — the feature's Relationships panel
-          # shows exactly what is holding it out of For Release. Best-effort;
-          # the promotion sweep heals missing links.
-          NEW_DBID="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${NEW}" --jq '.id')"
-          if gh api -X POST "repos/${REPO_OWNER}/${REPO_NAME}/issues/${FEATURE}/dependencies/blocked_by" \
-               -F issue_id="$NEW_DBID" >/dev/null 2>&1; then
+          # THE relationship record (owner requirement 2026-08-02, sole
+          # storage since #3731): the failure issue BLOCKS the feature, so
+          # the feature's Relationships panel shows exactly what is holding
+          # it out of For Release. Transitive blocking is not written as
+          # extra edges — promote/drain logic walks the chain instead.
+          # Best-effort; the promotion sweep heals missing links.
+          if mark_issue_blocked_by "$FEATURE" "$NEW"; then
             echo "Marked #$NEW as blocking #$FEATURE"
           else
             echo "[warn] Could not mark #$NEW as blocking #$FEATURE (promotion sweep will retry)"
@@ -280,7 +306,7 @@ jobs:
             let body;
             if (mode === 'reopened') {
               const featNote = feature
-                ? `\n- Related feature #${feature} continues to wait on this issue before it can move to **For Release**`
+                ? `\n- #${feature} continues to wait on this issue — it is blocked by it in GitHub's Relationships panel — before it can move to **For Release**`
                 : '';
               body =
                 `🔧 **Scrummaster Agent**: Acceptance failure on this fix acknowledged.\n\n` +
@@ -293,14 +319,14 @@ jobs:
             } else {
               body =
                 `🔧 **Scrummaster Agent**: Acceptance failure acknowledged.\n\n` +
-                `Filed as **#${issue}** — unique failure ${num} for #${feature}, related and marked as **blocking** this issue.\n\n` +
+                `Filed as **#${issue}** — unique failure ${num} for #${feature}. It is recorded as **blocking** this issue through GitHub's native Relationships (no body markers).\n\n` +
                 `**Flow (automated):**\n` +
                 `- This issue stays closed in **Acceptance Testing** and is otherwise untouched\n` +
                 startLine +
                 `- Developer agent fixes via a \`fix/${issue}-...\` branch and a PR with \`Closes #${issue}\`\n` +
                 `- Review agent reviews and merges; #${issue} then lands in Acceptance Testing for your re-test\n` +
                 `- If #${issue}'s fix fails your re-test, comment \`@acceptance-failure\` **on #${issue}** — it is reopened and re-cycled, not replaced\n` +
-                `- When every related failure issue reaches **For Release**, this issue is promoted to For Release automatically\n\n` +
+                `- When everything blocking this issue reaches **For Release** — directly and transitively — it is promoted to For Release automatically\n\n` +
                 `[Monitor progress](${repoUrl}/issues/${issue})`;
             }
 
