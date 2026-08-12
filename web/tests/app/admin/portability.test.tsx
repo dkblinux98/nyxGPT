@@ -345,9 +345,8 @@ describe('PortabilityPage', () => {
       release: '3.0.0',
       declared_version: '3.0.0',
       published_rcs: [],
-      published_dev_builds: [],
       next_rc_version: '3.0.0rc1',
-      next_dev_version: '3.0.0.dev1',
+      rc_formulas: ['nyxgpt-api@3.0.0rc', 'nyxgpt-web@3.0.0rc'],
       version: '3.0.0rc1',
       is_prerelease: true,
       publishable: false,
@@ -355,7 +354,7 @@ describe('PortabilityPage', () => {
       guardrails: [],
       pypi_lookup_error: '',
       workflow: 'release-publish-pypi.yml',
-      docs: 'docs/cloud.md#pypi-publishing-dev-rc-and-stable',
+      docs: 'docs/cloud.md#pypi-publishing-rc-and-stable',
       commands: {
         plan: 'nyxgpt release publish --channel rc',
         publish: 'nyxgpt release publish --channel rc --publish',
@@ -389,8 +388,9 @@ describe('PortabilityPage', () => {
     });
 
     it('offers the macOS rc install when the channel stamps the tap', async () => {
-      // An rc publish also pushes nyxgpt-api-rc/nyxgpt-web-rc to the tap, so
-      // the panel has to say how to accept a candidate on macOS too (#3727).
+      // An rc publish also pushes this line's `@3.0.0rc` formulas to the tap,
+      // so the panel says how to accept a candidate on macOS too (#3727,
+      // named for the release line by #3735).
       serveReport(mockReport);
       render(<PortabilityPage />);
 
@@ -398,45 +398,49 @@ describe('PortabilityPage', () => {
         expect(screen.getByText(/Accept it on macOS/)).toBeInTheDocument();
       });
       expect(
-        screen.getByText('brew tap dkblinux98/nyxgpt && brew install nyxgpt-api-rc nyxgpt-web-rc')
+        screen.getByText(
+          'brew tap dkblinux98/nyxgpt && brew install nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc'
+        )
       ).toBeInTheDocument();
     });
 
-    it('omits the macOS install for a dev build, which never touches the tap', async () => {
-      // The backend omits `commands.brew` on the dev channel; rendering the
-      // heading anyway would advertise a formula no nightly ever publishes.
+    it('omits the macOS install for the stable channel, whose tap is the ceremony\'s', async () => {
+      // The backend omits `commands.brew` on the stable channel; rendering
+      // the heading anyway would advertise a candidate formula a release
+      // publish never writes.
       serveReport(mockReport);
       serveRc({
         ...rcPlan,
         branch: 'v3.0.0',
-        channel: 'dev',
-        version: '3.0.0.dev42',
+        channel: 'stable',
+        version: '3.0.0',
+        is_prerelease: false,
         publishable: true,
         blockers: [],
         commands: {
-          plan: 'nyxgpt release publish --channel dev',
-          publish: 'nyxgpt release publish --channel dev --publish',
-          install: 'pip install nyxgpt==3.0.0.dev42',
-          user_data: 'nyxgpt cloud user-data --os linux --version 3.0.0.dev42',
-          deploy: 'nyxgpt cloud deploy --version 3.0.0.dev42',
+          plan: 'scripts/release_ceremony.sh --dry-run',
+          publish: 'scripts/release_ceremony.sh',
+          install: 'pip install nyxgpt==3.0.0',
+          user_data: 'nyxgpt cloud user-data --os linux --version 3.0.0',
+          deploy: 'nyxgpt cloud deploy --version 3.0.0',
         },
       });
       render(<PortabilityPage />);
 
       await waitFor(() => {
-        expect(screen.getByText('pip install nyxgpt==3.0.0.dev42')).toBeInTheDocument();
+        expect(screen.getByText('pip install nyxgpt==3.0.0')).toBeInTheDocument();
       });
       expect(screen.queryByText(/Accept it on macOS/)).not.toBeInTheDocument();
     });
 
-    it('lists the nightly dev builds already on PyPI', async () => {
+    it('names the tap formulas this release line publishes', async () => {
       serveReport(mockReport);
       render(<PortabilityPage />);
 
       await waitFor(() => {
-        expect(screen.getByText(/Nightly dev builds/)).toBeInTheDocument();
+        expect(screen.getByText(/Tap formulas for this line/)).toBeInTheDocument();
       });
-      expect(screen.getByText(/3\.0\.0\.dev4/)).toBeInTheDocument();
+      expect(screen.getByText(/nyxgpt-api@3\.0\.0rc, nyxgpt-web@3\.0\.0rc/)).toBeInTheDocument();
     });
 
     it('shows why a build cannot be cut instead of offering one anyway', async () => {
@@ -448,9 +452,8 @@ describe('PortabilityPage', () => {
         expect(screen.getByText('blocked')).toBeInTheDocument();
       });
       expect(screen.getByText(/is not a release branch/)).toBeInTheDocument();
-      // Both lines ("Published RCs", "Nightly dev builds") say so explicitly
-      // rather than rendering an empty list.
-      expect(screen.getAllByText(/none yet/)).toHaveLength(2);
+      // "Published RCs" says so explicitly rather than rendering an empty list.
+      expect(screen.getAllByText(/none yet/)).toHaveLength(1);
     });
 
     it('warns when PyPI could not be reached, rather than trusting the number', async () => {

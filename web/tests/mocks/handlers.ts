@@ -459,10 +459,9 @@ export const handlers = [
       release: '3.0.0',
       published_releases: ['2.1.0'],
       published_rcs: ['3.0.0rc1'],
-      published_dev_builds: ['3.0.0.dev4'],
       next_rc_number: 2,
       next_rc_version: '3.0.0rc2',
-      next_dev_version: '3.0.0.dev5',
+      rc_formulas: ['nyxgpt-api@3.0.0rc', 'nyxgpt-web@3.0.0rc'],
       version: '3.0.0rc2',
       is_prerelease: true,
       workflow: 'release-publish-pypi.yml',
@@ -472,15 +471,15 @@ export const handlers = [
       commands: {
         plan: 'nyxgpt release publish --channel rc',
         publish: 'nyxgpt release publish --channel rc --publish',
-        brew: 'brew tap dkblinux98/nyxgpt && brew install nyxgpt-api-rc nyxgpt-web-rc',
+        brew: 'brew tap dkblinux98/nyxgpt && brew install nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc',
         install: 'pip install nyxgpt==3.0.0rc2',
         user_data: 'nyxgpt cloud user-data --os linux --version 3.0.0rc2',
         deploy: 'nyxgpt cloud deploy --version 3.0.0rc2',
       },
       guardrails: [
-        'Scheduled and dispatch triggers only: the workflow has no push, tag or release trigger.',
+        'Dispatch trigger only: the workflow has no schedule, push, tag or release trigger.',
       ],
-      docs: 'docs/cloud.md#pypi-publishing-dev-rc-and-stable',
+      docs: 'docs/cloud.md#pypi-publishing-rc-and-stable',
     });
   }),
 ];
