@@ -1,0 +1,121 @@
+name: Release Ceremony (Automated)
+
+# Owner decision 2026-08-12 (#3730): the owner moving the RELEASE TRACKING
+# ISSUE to `For Release` is the human sign-off for the release. From that
+# signal the ceremony runs end-to-end unattended:
+#
+#   master fast-forward -> tag + GitHub Release -> `stable` publish via the
+#   #3727 pipeline -> stable Homebrew tap stamp (release-artifacts.yml
+#   triggers on the published release) -> retirement of that line's
+#   `-rc` formulas.
+#
+# This SUPERSEDES the "master/main merges are human-controlled" rule: the
+# release-issue move to For Release is the new human control point (see
+# CLAUDE.md, Branch Rules).
+#
+# Detection: the project Status field lives on a USER project, whose item
+# changes raise no `projects_v2_item` event a workflow can subscribe to, so
+# the trigger is a cheap poll of the release issue's Status plus the
+# obvious event hooks. The poll is free of side effects -- the trigger is
+# edge-triggered by a version-scoped marker comment, so once a ceremony has
+# started every later poll is a no-op (scripts/agents/lib/ceremony_trigger.py,
+# unit-tested in tests/unit/test_ceremony_trigger.py).
+#
+# Phase 4 (next-line preparation + repoint) stays owner-run: it needs the
+# owner's local config.ini mirror and next-line decisions.
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Re-run the ceremony even if a marker for this version exists"
+        required: false
+        default: "false"
+      check_only:
+        description: "Only report whether the ceremony would fire"
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+  issues: write
+
+# The ceremony is irreversible; never let two run at once.
+concurrency:
+  group: release-ceremony
+  cancel-in-progress: false
+
+jobs:
+  ceremony:
+    if: vars.AGENTS_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    env:
+      # Read-side gh calls run as the scrummaster agent; the ceremony's own
+      # mutations (master push, tag, release, repo vars) need the owner-level
+      # token, passed separately as NYXGPT_CEREMONY_PAT.
+      GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+      NYXGPT_CEREMONY_PAT: ${{ secrets.RELEASE_CEREMONY_TOKEN }}
+      TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO }}
+      TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      # Owner DM channel for a ceremony failure (#3695).
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_USER_ID: ${{ secrets.SLACK_USER_ID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.RELEASE_BRANCH }}
+          fetch-depth: 0
+
+      - name: Write ephemeral config
+        run: |
+          CFG="$RUNNER_TEMP/nyxgpt-config.ini"
+          cat > "$CFG" <<EOF
+          REPO_OWNER=${{ vars.REPO_OWNER }}
+          REPO_NAME=${{ vars.REPO_NAME }}
+          PROJECT_OWNER=${{ vars.PROJECT_OWNER }}
+          PROJECT_NUMBER=${{ vars.PROJECT_NUMBER }}
+
+          DEV_AGENT=${{ vars.DEV_AGENT }}
+          REVIEW_AGENT=${{ vars.REVIEW_AGENT }}
+          SCRUM_AGENT=${{ vars.SCRUM_AGENT }}
+          HUMAN_OWNER=${{ vars.HUMAN_OWNER }}
+
+          STATUS_FIELD=${{ vars.STATUS_FIELD }}
+          STATUS_BACKLOG=${{ vars.STATUS_BACKLOG }}
+          STATUS_IN_PROGRESS=${{ vars.STATUS_IN_PROGRESS }}
+          STATUS_IN_REVIEW=${{ vars.STATUS_IN_REVIEW }}
+          STATUS_FOR_RELEASE=${{ vars.STATUS_FOR_RELEASE }}
+
+          RELEASE_BRANCH=${{ vars.RELEASE_BRANCH }}
+          RELEASE_ISSUE_NUMBER=${{ vars.RELEASE_ISSUE_NUMBER }}
+          EOF
+          echo "NYXGPT_CONFIG_FILE=$CFG" >> "$GITHUB_ENV"
+
+      - name: Evaluate the trigger and run the ceremony
+        run: |
+          set -uo pipefail
+          ARGS=()
+          if [[ "${{ github.event.inputs.check_only || 'false' }}" == "true" ]]; then
+            ARGS+=(--check-only)
+          fi
+          FORCE=0
+          if [[ "${{ github.event.inputs.force || 'false' }}" == "true" ]]; then
+            FORCE=1
+          fi
+          FORCE_CEREMONY="$FORCE" scripts/agents/release_ceremony_watch.sh "${ARGS[@]}" \
+            | tee "$RUNNER_TEMP/ceremony.json"
+          exit "${PIPESTATUS[0]}"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Release ceremony trigger"
+            echo ""
+            echo '```json'
+            cat "$RUNNER_TEMP/ceremony.json" 2>/dev/null || echo '{}'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

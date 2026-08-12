@@ -41,6 +41,18 @@
 #     --skip-scan-gate       skip the code-scanning gate (v2.1.0 decision;
 #                            keep the gate for lines with the full CI suite)
 #     --skip-pypi            skip Phase 2
+#     --unattended           no interactive stop points: every `confirm`
+#                            passes automatically. Used by the automated
+#                            ceremony (#3730), where the owner's move of the
+#                            release issue to `For Release` IS the sign-off.
+#                            Credentials come from NYXGPT_CEREMONY_PAT (or
+#                            GH_TOKEN) instead of ~/.nyxGPT/config.ini.
+#     --stop-after-phase N   stop cleanly after phase N (0-4, default 4).
+#                            The automated ceremony stops after Phase 3:
+#                            Phase 4 repoints the line, which needs the
+#                            owner's local config.ini and next-line
+#                            decisions, and is not part of the automated
+#                            scope (#3730).
 #     --dry-run              run all read-only checks; print, don't mutate
 #
 # Major (x.0.0) line preparation — performed BEFORE any repoint, per owner
@@ -68,6 +80,7 @@ VERSION="${1:-}"; [[ -n "$VERSION" ]] || { grep -E '^#( |$)' "$0" | sed 's/^# \{
 shift
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "VERSION must be x.y.z, got: $VERSION"
 NEXT_BRANCH=""; NEXT_RELEASE_ISSUE=""; NEXT_TITLE=""; SKIP_SCAN=0; SKIP_PYPI=0; DRY=0; PHASE4_ONLY=0
+UNATTENDED=0; STOP_AFTER_PHASE=4
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --next-branch)        NEXT_BRANCH="$2"; shift 2 ;;
@@ -76,17 +89,22 @@ while [[ $# -gt 0 ]]; do
     --phase4-only)        PHASE4_ONLY=1; shift ;;
     --skip-scan-gate)     SKIP_SCAN=1; shift ;;
     --skip-pypi)          SKIP_PYPI=1; shift ;;
+    --unattended)         UNATTENDED=1; shift ;;
+    --stop-after-phase)   STOP_AFTER_PHASE="$2"; shift 2 ;;
     --dry-run)            DRY=1; shift ;;
     *) fail "unknown option: $1" ;;
   esac
 done
+[[ "$STOP_AFTER_PHASE" =~ ^[0-4]$ ]] || fail "--stop-after-phase takes 0-4, got: $STOP_AFTER_PHASE"
 
 REL_BRANCH="v${VERSION}"
 if [[ "$VERSION" =~ ^[0-9]+\.0\.0$ ]]; then REL_TYPE="major"; else REL_TYPE="point"; fi
-if [[ -z "$NEXT_BRANCH" && $DRY -eq 0 ]]; then
+# --next-branch only matters to Phase 4; a run that stops earlier (the
+# automated ceremony, #3730) neither needs nor should guess a next line.
+if [[ -z "$NEXT_BRANCH" && $DRY -eq 0 && $STOP_AFTER_PHASE -ge 4 ]]; then
   fail "--next-branch is required (point: existing line to forward-port into; major: new RC branch to create)"
 fi
-if [[ "$REL_TYPE" == "point" && -z "$NEXT_RELEASE_ISSUE" && $DRY -eq 0 ]]; then
+if [[ "$REL_TYPE" == "point" && -z "$NEXT_RELEASE_ISSUE" && $DRY -eq 0 && $STOP_AFTER_PHASE -ge 4 ]]; then
   fail "point release requires --next-release-issue (the next line's existing release issue)"
 fi
 NEXT_VERSION="${NEXT_BRANCH#v}"
@@ -97,7 +115,17 @@ ini_get() { # ini_get SECTION KEY
     $0==sec {s=1; next} /^\[/{s=0}
     s && $1 ~ "^"key"[ \t]*$" {v=$2; gsub(/[ \t]/,"",v); print v; exit}' "$CONFIG_FILE"
 }
-PAT="$(ini_get github PAT)";           [[ -n "$PAT" ]] || fail "[github] PAT not found in $CONFIG_FILE"
+# Unattended runs (the automated ceremony, #3730) have no config.ini on the
+# runner: the credential arrives as NYXGPT_CEREMONY_PAT (or an already-
+# exported GH_TOKEN). It still has to be an owner-level token -- Phase 1
+# pushes master, which the ruleset only lets the owner bypass.
+if [[ -f "$CONFIG_FILE" ]]; then
+  PAT="$(ini_get github PAT)"
+else
+  PAT=""
+fi
+PAT="${NYXGPT_CEREMONY_PAT:-${PAT:-${GH_TOKEN:-}}}"
+[[ -n "$PAT" ]] || fail "no credential: set NYXGPT_CEREMONY_PAT, or add [github] PAT to $CONFIG_FILE"
 # Phase 2 delegates the upload to the publish workflow (Trusted Publishing),
 # so the ceremony holds no PyPI credential at all.
 PUBLISH_WORKFLOW="release-publish-pypi.yml"
@@ -113,9 +141,21 @@ mutate() { # mutate "description" cmd...
 
 confirm() { # confirm "prompt-token"
   [[ $DRY -eq 1 ]] && { log "DRY-RUN: stop point '$1' auto-skipped"; return 0; }
+  # Unattended: the owner's move of the release issue to `For Release` is
+  # the sign-off (owner decision 2026-08-12, #3730), so there is no second
+  # human confirmation to collect -- and no TTY to collect it on.
+  [[ $UNATTENDED -eq 1 ]] && { log "UNATTENDED: stop point '$1' auto-confirmed (release-issue sign-off)"; return 0; }
   echo
   read -r -p "[ceremony] STOP POINT — type '$1' to continue: " ans
   [[ "$ans" == "$1" ]] || fail "aborted at stop point (expected '$1')"
+}
+
+# Ends the run cleanly after the last phase the caller asked for.
+phase_boundary() { # phase_boundary N
+  if [[ $STOP_AFTER_PHASE -le $1 ]]; then
+    log "Stopping after Phase $1 (--stop-after-phase ${STOP_AFTER_PHASE})."
+    exit 0
+  fi
 }
 
 # =====================================================================
@@ -186,6 +226,7 @@ fi
 [[ $GATE_FAIL -eq 0 ]] || fail "entry gate failed — fix the items above and re-run"
 log "Phase 0 gate: PASS"
 confirm "ship it"
+phase_boundary 0
 
 # --- Phase 1: master fast-forward, then publish (master-first, owner order) ---
 log "Phase 1: master fast-forward -> publish release"
@@ -215,6 +256,7 @@ if [[ $DRY -eq 0 ]]; then
   [[ "$TAG_SHA" == "$TIP" ]] || fail "verify failed: tag ${VERSION} at $TAG_SHA, expected $TIP"
   log "  verified: tag ${VERSION} == release tip; release published"
 fi
+phase_boundary 1
 
 # --- Phase 2: PyPI (delegated to the single publish pipeline) ---
 #
@@ -265,6 +307,7 @@ else
   [[ "$code" == "200" ]] || fail "verify failed: pypi.org does not serve nyxgpt ${VERSION}"
   log "  verified live: https://pypi.org/project/nyxgpt/${VERSION}/"
 fi
+phase_boundary 2
 
 # --- Phase 3: project close-out ---
 log "Phase 3: project close-out"
@@ -295,6 +338,7 @@ else
   [[ "$(gh issue view "$RELEASE_ISSUE" -R "$REPO" --json state --jq .state)" == "CLOSED" ]] || fail "verify failed: release issue still open"
   log "  verified: release issue #$RELEASE_ISSUE closed"
 fi
+phase_boundary 3
 
 # --- Phase 4: next-line preparation + repoint ---
 log "Phase 4: next-line preparation ($REL_TYPE release)"
