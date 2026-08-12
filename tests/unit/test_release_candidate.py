@@ -1713,3 +1713,35 @@ def test_the_publish_workflow_run_name_stays_readable_by_the_rc_tip_guard():
     rendered = rendered.replace("${{ github.ref_name }}", "v3.0.0")
     assert rc._RC_RUN_TITLE_RE.match(rendered), rendered
     assert not rc._RC_RUN_TITLE_RE.match(rendered.replace("rc from", "rc [dry run] from"))
+
+
+def test_main_rc_honours_an_explicit_number_over_the_tip_guard(monkeypatch, capsys):
+    """`--number` names a version deliberately; the guard must not silently
+    turn that into a no-op (the workflow drops the flag for the same reason)."""
+    monkeypatch.setattr(rc, "fetch_published_versions", lambda *a, **k: list(PUBLISHED))
+
+    def explode(*a, **k):  # pragma: no cover - asserted by not being called
+        raise AssertionError("an explicitly numbered build must not consult the tip guard")
+
+    monkeypatch.setattr(rc, "fetch_last_published_sha", explode)
+
+    exit_code = rc.main(
+        [
+            "--branch",
+            "v3.0.0",
+            "--channel",
+            "rc",
+            "--number",
+            "9",
+            "--skip-if-unchanged",
+            "--head-sha",
+            "deadbeef",
+            "--repo",
+            "dkblinux98/nyxGPT",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out.strip() == "3.0.0rc9"
+    assert "ignoring the unchanged-tip guard" in captured.err

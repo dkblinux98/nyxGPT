@@ -1176,26 +1176,39 @@ def main(argv: list[str] | None = None) -> int:
                 "--skip-if-unchanged is the dev/rc tip guard -- the stable channel is "
                 "ceremony-only and publishes exactly what the ceremony tagged"
             )
-        if not args.head_sha.strip():
-            return _fail("--skip-if-unchanged needs --head-sha")
-        try:
-            last = fetch_last_published_sha(
-                args.repo,
-                channel,
-                token=os.environ.get("GITHUB_TOKEN", ""),
-                exclude_run_id=args.exclude_run_id,
-            )
-        except ReleaseCandidateError as exc:
-            return _fail(str(exc))
-        if last and last == args.head_sha.strip():
-            since = "last successful nightly" if channel == "dev" else "last published candidate"
+        if requested is not None:
+            # An explicitly numbered build is deliberate intent (the operator
+            # named the version), so it overrides the guard here exactly as
+            # the workflow drops the flag for it -- the two must agree, or
+            # `--number` would look honoured and publish nothing.
             print(
-                f"release-publish: {args.branch} is still at {last[:12]}, unchanged since the "
-                f"{since} -- nothing to publish.",
+                f"release-publish: --number {requested} was given explicitly -- "
+                "ignoring the unchanged-tip guard.",
                 file=sys.stderr,
             )
-            print(SKIP_SENTINEL)
-            return 0
+        elif not args.head_sha.strip():
+            return _fail("--skip-if-unchanged needs --head-sha")
+        else:
+            try:
+                last = fetch_last_published_sha(
+                    args.repo,
+                    channel,
+                    token=os.environ.get("GITHUB_TOKEN", ""),
+                    exclude_run_id=args.exclude_run_id,
+                )
+            except ReleaseCandidateError as exc:
+                return _fail(str(exc))
+            if last and last == args.head_sha.strip():
+                since = (
+                    "last successful nightly" if channel == "dev" else "last published candidate"
+                )
+                print(
+                    f"release-publish: {args.branch} is still at {last[:12]}, unchanged since the "
+                    f"{since} -- nothing to publish.",
+                    file=sys.stderr,
+                )
+                print(SKIP_SENTINEL)
+                return 0
 
     if requested is not None:
         try:
