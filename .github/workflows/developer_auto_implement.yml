@@ -1008,7 +1008,17 @@ jobs:
           echo "::endgroup::"
 
           echo "::group::Running mypy"
-          python -m mypy src/ 2>&1 | tee /tmp/mypy_attempt1.log
+          # --no-incremental: this step runs in a reused workspace, so a
+          # `.mypy_cache` left by an earlier run under a different dependency
+          # set (e.g. pre-commit's isolated mirrors-mypy venv, which has no
+          # opentelemetry) makes the gate lie in both directions. mypy's
+          # staleness check keys on source-file hashes, not on which
+          # third-party packages are importable, so the stale entry survives
+          # and reports errors in files the change never touched -- #3730 lost
+          # a full retry cycle to a phantom `Module "opentelemetry" has no
+          # attribute "trace"`. A cold run costs ~11s; a false verdict costs
+          # an agent cycle.
+          python -m mypy --no-incremental src/ 2>&1 | tee /tmp/mypy_attempt1.log
           [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           echo "::endgroup::"
 
@@ -1118,7 +1128,8 @@ jobs:
           echo "::endgroup::"
 
           echo "::group::Running mypy"
-          python -m mypy src/ 2>&1 | tee /tmp/mypy_attempt2.log
+          # --no-incremental for the same reason as attempt 1 (see #3730).
+          python -m mypy --no-incremental src/ 2>&1 | tee /tmp/mypy_attempt2.log
           [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           echo "::endgroup::"
 
@@ -1214,7 +1225,8 @@ jobs:
           echo "::endgroup::"
 
           echo "::group::Final mypy verification"
-          python -m mypy src/
+          # --no-incremental for the same reason as attempt 1 (see #3730).
+          python -m mypy --no-incremental src/
           echo "::endgroup::"
 
           echo "::group::Final pytest verification (unit tests - integration tests skipped in CI)"
