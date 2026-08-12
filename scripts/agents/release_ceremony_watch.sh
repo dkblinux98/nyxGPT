@@ -108,7 +108,27 @@ fi
 
 if [[ "$CHECK_ONLY" == "1" ]]; then
   echo "[ceremony-watch] --check-only: would run the ceremony for ${VERSION} (${REASON})" >&2
+  if [[ -z "${NYXGPT_CEREMONY_PAT:-}" ]]; then
+    echo "[ceremony-watch] --check-only: NYXGPT_CEREMONY_PAT is not set — the ceremony would stop before starting." >&2
+  fi
   exit 0
+fi
+
+# Fail fast on a missing ceremony token, BEFORE the marker is claimed: the
+# scrummaster token cannot fast-forward master, so without this the
+# ceremony would post its start comment, run the read-only entry gate and
+# only then die at the Phase 1 push — with the marker already stamped.
+if [[ -z "${NYXGPT_CEREMONY_PAT:-}" ]]; then
+  echo "[ceremony-watch] Ceremony token not configured (RELEASE_CEREMONY_TOKEN / NYXGPT_CEREMONY_PAT) — refusing to start." >&2
+  issue_comment "$RELEASE_ISSUE" "🚨 **Release ceremony (${VERSION}) did not start**: the ceremony token is not configured (repository secret \`RELEASE_CEREMONY_TOKEN\`).
+
+Nothing was changed — no tag, no master merge, no publish. Configure the secret (an owner-level token that may push to \`master\`) and the next poll starts the ceremony automatically." \
+    || _warn "ceremony-watch: could not post the missing-token report."
+  notify_human_escalation "$RELEASE_ISSUE" "release-ceremony-no-token" \
+    "Automated release ceremony for ${VERSION} could not start: RELEASE_CEREMONY_TOKEN is not configured" \
+    "Add the RELEASE_CEREMONY_TOKEN repository secret (owner-level token with push access to master); the next poll retries" \
+    "${RELEASE_ISSUE}:ceremony-token:${VERSION}" 1440 || true
+  exit 1
 fi
 
 # Claim the ceremony BEFORE doing anything irreversible: the marker is what
@@ -121,8 +141,18 @@ Scope: master fast-forward → tag + GitHub Release → \`stable\` publish (#372
 
 [Ceremony run](${RUN_URL})
 
-${MARKER}" \
-  || _warn "ceremony-watch: could not post the ceremony marker — continuing (the ceremony's own gates still protect it)."
+${MARKER}" || {
+  # The marker IS the claim. Without it a later poll would start a second
+  # ceremony, hit the Phase 0 tag gate and DM the owner a false alarm.
+  # Nothing irreversible has happened yet, so stopping here is free and the
+  # next poll retries the whole thing cleanly.
+  _warn "ceremony-watch: could not post the ceremony marker — refusing to start the ceremony unclaimed. The next poll will retry."
+  notify_human_escalation "$RELEASE_ISSUE" "release-ceremony-unclaimed" \
+    "Automated release ceremony for ${VERSION} could not claim the release issue (marker comment failed) — it did NOT start" \
+    "Check GitHub API availability and the ceremony token; the next poll retries automatically" \
+    "${RELEASE_ISSUE}:ceremony-claim:${VERSION}" 60 || true
+  exit 1
+}
 
 ceremony_failed() {
   local step="$1" detail="$2"
@@ -142,7 +172,7 @@ The ceremony stopped here — nothing further ran. Re-run it after fixing the ca
 }
 
 echo "[ceremony-watch] Running the ceremony for ${VERSION} (Phases 0-3, unattended)." >&2
-if ! NYXGPT_CEREMONY_PAT="${NYXGPT_CEREMONY_PAT:-${GH_TOKEN:-}}" \
+if ! NYXGPT_CEREMONY_PAT="${NYXGPT_CEREMONY_PAT}" \
   "$ROOT/scripts/release_ceremony.sh" "$VERSION" --unattended --stop-after-phase 3; then
   ceremony_failed "the ceremony itself (Phases 0-3: entry gate, master/tag/release, stable publish, close-out)" \
     "See the run log for which phase stopped it. The entry gate is read-only, so a gate failure changed nothing."

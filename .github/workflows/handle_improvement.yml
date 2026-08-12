@@ -160,7 +160,8 @@ jobs:
           # related feature out of For Release (owner decision 2026-08-01).
           if [[ "$GATED" == "1" ]]; then
             drain_gate_hold "$NEW" "improvement" \
-              || _warn "drain gate: could not hold #${NEW} (it is already filed in the lane)"
+              || _warn "drain gate: could not put #${NEW} in the holding lane --" \
+                      "it may already be there, or the lane option may be missing. Check its Status."
           fi
 
           {

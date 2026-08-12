@@ -41,9 +41,21 @@ The rhythm the loop now respects:
   assigned, kicked or auto-resumed while they sit there — and
   `classify_backlog_claim_state` refuses to start anything in that lane, so
   the hold does not depend on the selector's Backlog filter alone.
-- The gate **opens when `Acceptance Testing` is empty except the release
-  tracking issue**, which is exempt: it stays in that lane until the whole
-  release is accepted.
+- The gate **opens when `Acceptance Testing` is empty except its exempt
+  items**:
+  - the **release tracking issue** — it stays in that lane until the whole
+    release is accepted;
+  - any **feature awaiting rework** — a feature the owner has already failed
+    parks closed in `Acceptance Testing` until every related failure reaches
+    `For Release` (`promote_accepted_features.sh`, owner flow 2026-08-02).
+    It is exempt while its own failures are held, because otherwise the gate
+    would deadlock on the work it is holding: the feature waits on its
+    failure, the failure waits on the gate, and the gate waits on the
+    feature. The link is the `Related feature: #N` (legacy
+    `Parent feature: #N`) marker the promotion sweep reads, so the two
+    sweeps always agree on which failure belongs to which feature. Once the
+    failures are released the exemption lapses — the feature is then waiting
+    on ordinary in-flight work, which moves on its own.
 - On the opening, every held item moves to `Backlog` and the queue is kicked
   **once** for the whole batch (one kick, not one per issue — the dispatcher
   picks the next item itself).
@@ -69,8 +81,8 @@ too, so an exception can be declared at filing time.
 
 | Path | Role |
 |---|---|
-| `scripts/agents/lib/drain_gate.py` | pure decisions: lane summary, gate state, bypass rule |
-| `scripts/agents/lib/gh_project.sh` | `acceptance_lane_snapshot`, `drain_gate_state`, `drain_gate_hold`, `drain_gate_release`, `issue_bypasses_drain_gate` |
+| `scripts/agents/lib/drain_gate.py` | pure decisions: lane summary, gate state, rework exemption, bypass rule |
+| `scripts/agents/lib/gh_project.sh` | `acceptance_lane_snapshot`, `drain_gate_rework_features`, `drain_gate_state`, `drain_gate_hold`, `drain_gate_release`, `issue_bypasses_drain_gate` |
 | `scripts/agents/drain_gate.sh` | `state` (read-only) / `release` (open the gate) |
 | `.github/workflows/acceptance_drain_gate.yml` | the watcher |
 
@@ -150,7 +162,12 @@ only when **all** of these hold:
   is never re-run. A previous line's marker never suppresses a new line's
   ceremony.
 
-The marker is posted **before** anything irreversible happens.
+The marker is posted **before** anything irreversible happens — and if it
+cannot be posted, the ceremony does not start at all. Claiming is the point:
+an unclaimed ceremony would let the next poll start a second one, which then
+dies at the tag gate and DMs the owner a false alarm. Nothing has changed at
+that point, so the next poll simply retries. The ceremony token is checked at
+the same point, before the claim.
 
 ### Failure handling
 
@@ -165,7 +182,7 @@ Re-run after fixing the cause: dispatch **Release Ceremony (Automated)** with
 
 | Name | Kind | Purpose |
 |---|---|---|
-| `RELEASE_CEREMONY_TOKEN` | secret | owner-level token; Phase 1 pushes master (ruleset bypass) |
+| `RELEASE_CEREMONY_TOKEN` | secret | owner-level token; Phase 1 pushes master (ruleset bypass). Checked **before** the ceremony claims the release issue: unconfigured, the watcher reports it on the issue, DMs the owner and stops without changing anything |
 | `HOMEBREW_TAP_REPO` / `HOMEBREW_TAP_TOKEN` | var / secret | tap stamp and rc retirement (optional — an unconfigured tap is a warning, not a failure) |
 | `SLACK_BOT_TOKEN` / `SLACK_USER_ID` | secrets | owner DM on failure (#3695) |
 | `RELEASE_ISSUE_NUMBER`, `STATUS_FOR_RELEASE`, `RELEASE_BRANCH` | vars | existing loop configuration |

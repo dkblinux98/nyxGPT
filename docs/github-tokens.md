@@ -63,7 +63,7 @@ Configure these in: **Settings → Secrets and variables → Actions → Variabl
 
 | Secret | Purpose |
 |---|---|
-| `RELEASE_CEREMONY_TOKEN` | Owner-level token for the automated release ceremony — Phase 1 pushes `master`, which only the owner may do (ruleset bypass). Without it the ceremony cannot run. |
+| `RELEASE_CEREMONY_TOKEN` | Owner-level token for the automated release ceremony — Phase 1 pushes `master`, which only the owner may do (ruleset bypass). Without it the ceremony refuses to start: the watcher fails fast before claiming the release issue, comments the reason and DMs the owner, so nothing is tagged or published half-way. |
 | `HOMEBREW_TAP_TOKEN` | Push access to `HOMEBREW_TAP_REPO`, for the stable tap stamp and the retirement of that line's `-rc` formulas. Optional: an unconfigured tap is a warning, not a failure. |
 
 ## Token Scopes Required

@@ -148,7 +148,8 @@ jobs:
               # Reopened, but parked in the holding lane: the owner is
               # still testing this round. The drain watcher releases it.
               drain_gate_hold "$COMMENTED" "re-tested acceptance failure" \
-                || _warn "drain gate: could not hold #${COMMENTED} (it is already filed in the lane)"
+                || _warn "drain gate: could not put #${COMMENTED} in the holding lane --" \
+                        "it may already be there, or the lane option may be missing. Check its Status."
             else
               set_issue_status "$COMMENTED" "$STATUS_IN_PROGRESS"
               assign_and_trigger_developer "$COMMENTED"
@@ -239,7 +240,8 @@ jobs:
           # "waits in Acceptance Failed until the round drains" (#3730).
           if [[ "$GATED" == "1" ]]; then
             drain_gate_hold "$NEW" "acceptance failure" \
-              || _warn "drain gate: could not hold #${NEW} (it is already filed in the lane)"
+              || _warn "drain gate: could not put #${NEW} in the holding lane --" \
+                      "it may already be there, or the lane option may be missing. Check its Status."
           else
             assign_and_trigger_developer "$NEW"
           fi

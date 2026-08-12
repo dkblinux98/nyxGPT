@@ -20,8 +20,23 @@ Three pure decisions live here so they can be unit-tested without GitHub:
 
   decide      merged lane snapshot -> is the gate open? The gate opens
               when `Acceptance Testing` holds nothing except the release
-              tracking issue, which is exempt: it stays in that lane
-              until the whole release is accepted.
+              tracking issue (exempt: it stays in that lane until the
+              whole release is accepted) and the features that are only
+              still sitting there because their own failures are held --
+              see `rework_features` below.
+
+  rework      the bodies of the currently HELD issues -> the features
+              they name ("Related feature: #N", legacy "Parent feature:
+              #N" -- the same markers the promotion sweep reads). Those
+              features are not "still under test": the owner has already
+              failed them and they park closed in `Acceptance Testing`
+              until every related failure reaches `For Release`
+              (scripts/agents/promote_accepted_features.sh, owner flow
+              2026-08-02). Counting them as blockers would deadlock the
+              gate -- the feature waits on its failure, the failure waits
+              on the gate, the gate waits on the feature -- so `decide`
+              subtracts them from the blockers alongside the release
+              issue.
 
   bypass      one issue's labels/title/body -> may it skip the gate?
               The gate is for PRODUCT acceptance work. Agent-process
@@ -60,6 +75,11 @@ BYPASS_PROSE_RE = re.compile(r"bypass(?:es)?\s+the\s+drain\s+gate", re.IGNORECAS
 # work (no prose to match against).
 BYPASS_MARKER = "<!-- drain-gate: bypass -->"
 
+# The link from a held failure/improvement back to the feature it was filed
+# against. Same marker pair promote_accepted_features.sh reads, so the two
+# sweeps always agree on which failure belongs to which feature.
+RELATED_FEATURE_RE = re.compile(r"(?:Parent|Related)\s+feature:\s*#(\d+)", re.IGNORECASE)
+
 
 def _lane(page: dict) -> tuple[list[int], list[int]]:
     status_field = os.getenv("STATUS_FIELD", "Status")
@@ -94,25 +114,52 @@ def summarize(page: dict) -> dict:
     return {"acceptance_testing": in_testing, "acceptance_failed": in_failed}
 
 
+def rework_features(bodies: list[str]) -> list[int]:
+    """The features named by the currently held issues.
+
+    A feature whose failures are held is awaiting rework, not under test:
+    it parks closed in `Acceptance Testing` until every related failure
+    reaches `For Release`. Exempting it is what keeps the gate from
+    deadlocking on the work it is itself holding.
+    """
+    found: set[int] = set()
+    for body in bodies:
+        for match in RELATED_FEATURE_RE.finditer(body or ""):
+            found.add(int(match.group(1)))
+    return sorted(found)
+
+
 def decide(snapshot: dict) -> dict:
     """Gate state from a merged lane snapshot.
 
-    Open when `Acceptance Testing` is empty except for the release issue.
-    `blockers` is what is still holding it closed; `held` is what gets
-    released into Backlog when it opens.
+    Open when `Acceptance Testing` holds nothing but exempt items: the
+    release tracking issue, and any feature that a currently held issue
+    names as its related feature (that feature is parked awaiting rework,
+    and the rework cannot start until this very gate opens).
+
+    `blockers` is what is still holding the gate closed; `held` is what
+    gets released into Backlog when it opens.
     """
     release_issue = os.getenv("RELEASE_ISSUE", "").strip()
-    exempt = {int(release_issue)} if release_issue.isdigit() else set()
+    release_exempt = {int(release_issue)} if release_issue.isdigit() else set()
 
     testing = sorted({int(n) for n in snapshot.get("acceptance_testing", [])})
     held = sorted({int(n) for n in snapshot.get("acceptance_failed", [])})
+    rework = {int(n) for n in snapshot.get("rework_features", [])}
+
+    # A feature only earns the exemption while its failures are actually
+    # held: once they are released the feature is back to waiting on
+    # ordinary in-flight work, which does move on its own.
+    rework = rework if held else set()
+    exempt = release_exempt | rework
     blockers = [n for n in testing if n not in exempt]
 
     return {
         "open": not blockers,
         "blockers": blockers,
         "held": held,
-        "release_issue_exempt": sorted(exempt & set(testing)),
+        "release_issue_exempt": sorted(release_exempt & set(testing)),
+        "rework_exempt": sorted(rework & set(testing)),
     }
 
 
@@ -164,7 +211,10 @@ def _merge(snapshots: list[dict]) -> dict:
 
 def main(argv: list[str]) -> int:
     if not argv:
-        print("usage: drain_gate.py {summarize <page.json>|decide|merge|bypass}", file=sys.stderr)
+        print(
+            "usage: drain_gate.py {summarize <page.json>|decide|merge|bypass|rework}",
+            file=sys.stderr,
+        )
         return 2
 
     cmd = argv[0]
@@ -185,6 +235,14 @@ def main(argv: list[str]) -> int:
         return 0
     if cmd == "bypass":
         print("true" if bypass(json.load(sys.stdin)) else "false")
+        return 0
+    if cmd == "rework":
+        # stdin: JSON array of held issues ({"body": ...} each, extra keys
+        # ignored) -> {"rework_features": [...]}.
+        issues = json.load(sys.stdin)
+        print(
+            json.dumps({"rework_features": rework_features([i.get("body") or "" for i in issues])})
+        )
         return 0
 
     print(f"unknown subcommand: {cmd}", file=sys.stderr)

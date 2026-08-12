@@ -57,7 +57,18 @@ concurrency:
 
 jobs:
   gate:
-    if: vars.AGENTS_ENABLED == 'true'
+    # Actor gate (#3600, going-public hardening): the job carries a
+    # secret-backed GH_TOKEN, so the `issues` path only runs for the owner
+    # or one of the agents. The evaluation is identical on every path (the
+    # event payload is never read) -- schedule / workflow_run / dispatch
+    # are unaffected, so a stranger closing an issue simply raises nothing.
+    if: >-
+      vars.AGENTS_ENABLED == 'true' &&
+      (github.event_name != 'issues' ||
+      github.actor == vars.HUMAN_OWNER ||
+      github.actor == vars.SCRUM_AGENT ||
+      github.actor == vars.DEV_AGENT ||
+      github.actor == vars.REVIEW_AGENT)
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}

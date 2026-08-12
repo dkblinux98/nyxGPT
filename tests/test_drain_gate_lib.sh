@@ -89,6 +89,17 @@ set_issue_status() { echo "$1 -> $2" >>"$STATUS_FILE"; }
 issue_comment() { printf '%s :: %s\n' "$1" "$2" >>"$COMMENT_FILE"; }
 sprint_autopilot_paused() { return 1; }
 
+# Bodies of the held issues, for the related-feature ("rework") lookup
+# drain_gate_state does. Empty by default: a held issue with no marker
+# exempts nothing.
+declare -A ISSUE_BODIES=()
+gh() {
+  local ref="$*" num
+  num="${ref##*issues/}"
+  num="${num%% *}"
+  echo "${ISSUE_BODIES[$num]:-}"
+}
+
 # --- Test 1: acceptance_lane_snapshot buckets both lanes across pages ---
 GRAPHQL_CALLS_FILE="$(mktemp)"
 echo 0 >"$GRAPHQL_CALLS_FILE"
@@ -123,9 +134,13 @@ graphql() {
     "$(_item 3700 "Acceptance Failed")" \
     "$(_item 3701 "Acceptance Failed")"
 }
+# The held issues were filed against a DIFFERENT feature, so #3600 really
+# is still under test.
+ISSUE_BODIES=([3700]="Related feature: #3599" [3701]="an improvement with no related feature")
 state="$(drain_gate_state)"
-_assert_eq "gate is closed while #3600 is still in Acceptance Testing" "false" "$(jq -r '.open' <<<"$state")"
+_assert_eq "gate is closed while an unrelated #3600 is still in Acceptance Testing" "false" "$(jq -r '.open' <<<"$state")"
 _assert_eq "the blocker is reported" "[3600]" "$(jq -c '.blockers' <<<"$state")"
+_assert_eq "an unrelated feature earns no rework exemption" "[]" "$(jq -c '.rework_exempt' <<<"$state")"
 
 : >"$STATUS_FILE"
 : >"$COMMENT_FILE"
@@ -133,6 +148,25 @@ result="$(drain_gate_release 2>/dev/null)"
 _assert_eq "a closed gate releases nothing" "none" "$(jq -r '.action' <<<"$result")"
 _assert_eq "a closed gate moves no issue" "" "$(cat "$STATUS_FILE")"
 _assert_eq "a closed gate posts no comment" "" "$(cat "$COMMENT_FILE")"
+
+# --- Test 2b: a feature awaiting rework is NOT a blocker ---
+# Without this the gate deadlocks: #3600 parks closed in Acceptance Testing
+# until its failure #3700 reaches For Release, #3700 cannot start until the
+# gate opens, and the gate waits on #3600.
+ISSUE_BODIES=([3700]="Related feature: #3600
+The upload page 500s." [3701]="Parent feature: #3600")
+state="$(drain_gate_state)"
+_assert_eq "gate OPENS when the only item under test is a feature awaiting rework" \
+  "true" "$(jq -r '.open' <<<"$state")"
+_assert_eq "no blockers remain" "[]" "$(jq -c '.blockers' <<<"$state")"
+_assert_eq "the awaiting-rework feature is reported as exempt" "[3600]" "$(jq -c '.rework_exempt' <<<"$state")"
+
+: >"$STATUS_FILE"
+: >"$COMMENT_FILE"
+result="$(drain_gate_release 2>/dev/null)"
+_assert_eq "the deadlocked round now releases its failures" "[3700,3701]" "$(jq -c '.released' <<<"$result")"
+_assert_not_contains "the parked feature itself is never moved" "$(cat "$STATUS_FILE")" "3600 ->"
+ISSUE_BODIES=()
 
 # --- Test 3: the release issue is exempt -- gate OPENS with only it left ---
 graphql() {

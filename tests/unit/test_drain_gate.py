@@ -6,7 +6,8 @@ Covers the three decisions the acceptance drain gate rests on:
     Failed lanes on one page of the project-items query (closed issues
     included: an item awaiting acceptance is normally closed).
   * `decide` — the gate opens only when Acceptance Testing is empty
-    EXCEPT the release tracking issue, which is exempt.
+    EXCEPT the release tracking issue and any feature that is only still
+    parked there because its own failures are held (`rework_features`).
   * `bypass` — agent-process issues skip the gate; product acceptance
     work does not.
 """
@@ -140,6 +141,92 @@ def test_release_issue_is_only_exempt_when_configured():
 def test_decide_deduplicates_and_sorts():
     state = drain_gate.decide({"acceptance_testing": [], "acceptance_failed": [9, 3, 9]})
     assert state["held"] == [3, 9]
+
+
+# --- decide: features awaiting rework are not blockers ---------------
+#
+# The deadlock this guards against: a failed feature parks CLOSED in
+# Acceptance Testing until every related failure reaches For Release
+# (promote_accepted_features.sh), and that failure is held by this gate.
+# Counting the feature as a blocker makes the gate wait on the very work
+# it is holding -- a circular wait no automation can break.
+
+
+def test_feature_awaiting_rework_does_not_block_the_gate(monkeypatch):
+    monkeypatch.setenv("RELEASE_ISSUE", "3521")
+    state = drain_gate.decide(
+        {
+            "acceptance_testing": [3521, 3600],
+            "acceptance_failed": [3700],
+            "rework_features": [3600],
+        }
+    )
+    assert state["open"] is True
+    assert state["blockers"] == []
+    assert state["rework_exempt"] == [3600]
+    assert state["held"] == [3700]
+
+
+def test_an_unrelated_feature_still_under_test_keeps_the_gate_closed(monkeypatch):
+    monkeypatch.setenv("RELEASE_ISSUE", "3521")
+    state = drain_gate.decide(
+        {
+            "acceptance_testing": [3521, 3600, 3601],
+            "acceptance_failed": [3700],
+            "rework_features": [3600],
+        }
+    )
+    assert state["open"] is False
+    assert state["blockers"] == [3601]
+    assert state["rework_exempt"] == [3600]
+
+
+def test_rework_exemption_lapses_once_the_lane_is_empty(monkeypatch):
+    """With nothing held the failures are already in flight; the feature is
+    then waiting on ordinary work that moves on its own, so it goes back to
+    being an honest blocker rather than a standing exemption."""
+    monkeypatch.setenv("RELEASE_ISSUE", "3521")
+    state = drain_gate.decide(
+        {"acceptance_testing": [3521, 3600], "acceptance_failed": [], "rework_features": [3600]}
+    )
+    assert state["open"] is False
+    assert state["blockers"] == [3600]
+    assert state["rework_exempt"] == []
+
+
+def test_rework_exemption_is_absent_by_default(monkeypatch):
+    monkeypatch.setenv("RELEASE_ISSUE", "3521")
+    state = drain_gate.decide({"acceptance_testing": [3521, 3600], "acceptance_failed": [3700]})
+    assert state["open"] is False
+    assert state["blockers"] == [3600]
+    assert state["rework_exempt"] == []
+
+
+# --- rework_features -------------------------------------------------
+
+
+def test_rework_features_reads_both_marker_spellings():
+    assert drain_gate.rework_features(
+        [
+            "Related feature: #3600\n\nUpload 500s.",
+            "Parent feature: #3601\n\nlegacy marker",
+        ]
+    ) == [3600, 3601]
+
+
+def test_rework_features_deduplicates_and_ignores_unmarked_bodies():
+    assert drain_gate.rework_features(
+        [
+            "Related feature: #3600",
+            "Related feature: #3600",
+            "an improvement with no related feature",
+            "",
+        ]
+    ) == [3600]
+
+
+def test_rework_features_ignores_prose_that_merely_mentions_an_issue():
+    assert drain_gate.rework_features(["see #3600 for context, related to the feature"]) == []
 
 
 # --- bypass ----------------------------------------------------------

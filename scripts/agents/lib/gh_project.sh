@@ -853,42 +853,78 @@ acceptance_lane_snapshot() {
   require_cmd jq
   require_cmd python3
 
-  local project_id cursor="" tmp acc has_next next_cursor
-  project_id="$(get_project_id)"
-  tmp="$(mktemp)"
-  acc="$(mktemp)"
+  # Subshell + EXIT trap: the lib runs under `set -e`, so a mid-loop
+  # `graphql` failure would otherwise leave both temp files behind. A
+  # RETURN trap would outlive this function; a subshell scopes it exactly.
+  (
+    local project_id cursor="" tmp acc has_next next_cursor
+    project_id="$(get_project_id)"
+    tmp="$(mktemp)"
+    acc="$(mktemp)"
+    trap 'rm -f "$tmp" "$acc"' EXIT
 
-  local max_pages="${MAX_PAGES:-200}"
-  local page
-  for ((page = 1; page <= max_pages; page++)); do
-    if [[ -n "$cursor" ]]; then
-      graphql "$BACKLOG_PAGE_QUERY" -F project="$project_id" -F after="$cursor" >"$tmp"
-    else
-      graphql "$BACKLOG_PAGE_QUERY" -F project="$project_id" >"$tmp"
-    fi
+    local max_pages="${MAX_PAGES:-200}"
+    local page
+    for ((page = 1; page <= max_pages; page++)); do
+      if [[ -n "$cursor" ]]; then
+        graphql "$BACKLOG_PAGE_QUERY" -F project="$project_id" -F after="$cursor" >"$tmp"
+      else
+        graphql "$BACKLOG_PAGE_QUERY" -F project="$project_id" >"$tmp"
+      fi
 
-    STATUS_FIELD="$STATUS_FIELD" \
-      STATUS_ACCEPTANCE_TESTING="${STATUS_ACCEPTANCE_TESTING:-Acceptance Testing}" \
-      STATUS_ACCEPTANCE_FAILED="${STATUS_ACCEPTANCE_FAILED:-Acceptance Failed}" \
-      python3 "${_LIB_DIR}/drain_gate.py" summarize "$tmp" >>"$acc"
+      STATUS_FIELD="$STATUS_FIELD" \
+        STATUS_ACCEPTANCE_TESTING="${STATUS_ACCEPTANCE_TESTING:-Acceptance Testing}" \
+        STATUS_ACCEPTANCE_FAILED="${STATUS_ACCEPTANCE_FAILED:-Acceptance Failed}" \
+        python3 "${_LIB_DIR}/drain_gate.py" summarize "$tmp" >>"$acc"
 
-    has_next="$(jq -r '.data.node.items.pageInfo.hasNextPage' "$tmp")"
-    next_cursor="$(jq -r '.data.node.items.pageInfo.endCursor // empty' "$tmp")"
-    [[ "$has_next" == "true" && -n "$next_cursor" ]] || break
-    cursor="$next_cursor"
-  done
+      has_next="$(jq -r '.data.node.items.pageInfo.hasNextPage' "$tmp")"
+      next_cursor="$(jq -r '.data.node.items.pageInfo.endCursor // empty' "$tmp")"
+      [[ "$has_next" == "true" && -n "$next_cursor" ]] || break
+      cursor="$next_cursor"
+    done
 
-  python3 "${_LIB_DIR}/drain_gate.py" merge <"$acc"
-
-  rm -f "$tmp" "$acc"
+    python3 "${_LIB_DIR}/drain_gate.py" merge <"$acc"
+  )
 }
 
-# {"open":bool,"blockers":[...],"held":[...]} for the live board. `open`
-# means Acceptance Testing holds nothing but the release issue.
-drain_gate_state() {
+# The features named by the currently held issues ("Related feature: #N",
+# legacy "Parent feature: #N"), as a JSON array. Those features park CLOSED
+# in Acceptance Testing until every related failure reaches For Release
+# (promote_accepted_features.sh), so without this the gate would deadlock:
+# the feature waits on its failure, the failure waits on the gate, and the
+# gate waits on the feature. A body that cannot be read contributes
+# nothing -- one unreadable issue must not silently open the gate wider
+# than it should, and the next poll retries.
+drain_gate_rework_features() {
+  local held_json="$1"
+  require_cmd jq
   require_cmd python3
-  local snapshot
+
+  local issues="[]" issue body
+  while IFS= read -r issue; do
+    [[ -n "$issue" ]] || continue
+    body="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}" --jq '.body // ""' 2>/dev/null)" || {
+      _warn "drain_gate_rework_features: could not read #${issue} -- ignoring its related-feature marker"
+      continue
+    }
+    issues="$(jq -c --arg b "$body" '. + [{body: $b}]' <<<"$issues")"
+  done < <(jq -r '.[]' <<<"$held_json")
+
+  python3 "${_LIB_DIR}/drain_gate.py" rework <<<"$issues" | jq -c '.rework_features'
+}
+
+# {"open":bool,"blockers":[...],"held":[...],...} for the live board.
+# `open` means Acceptance Testing holds nothing but exempt items: the
+# release issue, and the features whose own failures this gate is holding.
+drain_gate_state() {
+  require_cmd jq
+  require_cmd python3
+  local snapshot held rework
   snapshot="$(acceptance_lane_snapshot)" || return 1
+  held="$(jq -c '.acceptance_failed' <<<"$snapshot")"
+  rework="$(drain_gate_rework_features "$held")" || rework="[]"
+  [[ -n "$rework" ]] || rework="[]"
+  snapshot="$(jq -c --argjson r "$rework" '. + {rework_features: $r}' <<<"$snapshot")"
   RELEASE_ISSUE="${RELEASE_ISSUE_NUMBER:-}" \
     python3 "${_LIB_DIR}/drain_gate.py" decide <<<"$snapshot"
 }
@@ -968,6 +1004,10 @@ drain_gate_release() {
   fi
 
   echo "[drain-gate] Gate OPEN: releasing ${count} held issue(s) into ${STATUS_BACKLOG}." >&2
+  local rework_exempt
+  rework_exempt="$(jq -r '.rework_exempt // [] | join(", #")' <<<"$state")"
+  [[ -z "$rework_exempt" ]] \
+    || echo "[drain-gate] Awaiting-rework features exempt from the drain check: #${rework_exempt}." >&2
   local issue
   while IFS= read -r issue; do
     [[ -n "$issue" ]] || continue

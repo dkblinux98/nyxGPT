@@ -144,6 +144,70 @@ export FAKE_STATUS="For Release"
 out="$(_run)"
 _assert_eq "no RELEASE_ISSUE_NUMBER -> no ceremony" "false" "$(jq -r '.fire' <<<"$out")"
 
+# --- Tests 7/8: the two pre-flight guards, exercised for real ------------
+# These run the watcher WITHOUT --check-only, so it takes the firing path.
+# It runs from a sandbox copy of scripts/ whose release_ceremony.sh and
+# retire_rc_formulas.sh are recorders: if a guard ever regresses the test
+# fails loudly instead of starting a real ceremony.
+SANDBOX="$WORK/sandbox"
+mkdir -p "$SANDBOX/scripts"
+cp -R "$ROOT_DIR/scripts/agents" "$SANDBOX/scripts/agents"
+RAN_FILE="$WORK/ceremony-ran"
+for stub in release_ceremony.sh retire_rc_formulas.sh; do
+  cat >"$SANDBOX/scripts/$stub" <<EOF
+#!/usr/bin/env bash
+echo "$stub \$*" >>"$RAN_FILE"
+EOF
+  chmod +x "$SANDBOX/scripts/$stub"
+done
+SANDBOX_SCRIPT="$SANDBOX/scripts/agents/release_ceremony_watch.sh"
+
+_write_config 3521
+export FAKE_TITLE="Release v3.0.0 — Phase 6"
+export FAKE_COMMENTS='[]'
+export FAKE_STATUS="For Release"
+
+# Test 7: no ceremony token -> refuse before claiming anything.
+: >"$RAN_FILE"
+err="$(NYXGPT_CEREMONY_PAT="" NYXGPT_CONFIG_FILE="$WORK/config.ini" bash "$SANDBOX_SCRIPT" 2>&1 >/dev/null)"
+rc=$?
+_assert_eq "a missing ceremony token fails the run" "1" "$rc"
+_assert_contains "the missing token is named" "$err" "Ceremony token not configured"
+_assert_eq "no ceremony runs without a token" "" "$(cat "$RAN_FILE")"
+
+# Test 8: the marker comment cannot be posted -> refuse to start unclaimed.
+# (starting anyway would let the next poll fire a second ceremony)
+cat >"$WORK/bin/gh" <<'FAKE'
+#!/usr/bin/env bash
+args="$*"
+case "$args" in
+  *"auth status"*)
+    exit 0 ;;
+  *"-X POST"*comments*)
+    echo "[fake-gh] comment POST refused" >&2
+    exit 1 ;;
+  *graphql*)
+    printf '{"data":{"repository":{"issue":{"projectItems":{"nodes":[{"fieldValues":{"nodes":[{"field":{"name":"Status"},"name":"%s"}]}}]}}}}}\n' "$FAKE_STATUS"
+    exit 0 ;;
+  *comments*)
+    echo "${FAKE_COMMENTS:-[]}"
+    exit 0 ;;
+  *issues/*)
+    echo "$FAKE_TITLE"
+    exit 0 ;;
+esac
+echo "[fake-gh] unexpected call: $args" >&2
+exit 1
+FAKE
+chmod +x "$WORK/bin/gh"
+
+: >"$RAN_FILE"
+err="$(NYXGPT_CEREMONY_PAT="fake-token" NYXGPT_CONFIG_FILE="$WORK/config.ini" bash "$SANDBOX_SCRIPT" 2>&1 >/dev/null)"
+rc=$?
+_assert_eq "an unclaimable ceremony fails the run" "1" "$rc"
+_assert_contains "the refusal explains the unposted claim" "$err" "refusing to start the ceremony unclaimed"
+_assert_eq "no ceremony runs unclaimed" "" "$(cat "$RAN_FILE")"
+
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "All tests passed."
   exit 0
