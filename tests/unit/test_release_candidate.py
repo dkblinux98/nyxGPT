@@ -15,6 +15,7 @@ same workflow rather than uploading on its own.
 """
 
 import argparse
+import io
 import json
 from pathlib import Path
 
@@ -389,6 +390,25 @@ def test_rc_guardrails_state_the_stable_formulas_are_untouched():
     assert "prerelease" in guardrails
 
 
+def test_rc_guardrails_explain_the_automatic_candidate(monkeypatch):
+    """The dashboard renders these verbatim, so the autopilot's behaviour has a
+    surface there too -- an owner reading the panel learns candidates cut
+    themselves at agentic-work-complete, and why a repeat cuts none."""
+    guardrails = " ".join(rc.plan("v3.0.0", "rc", published=PUBLISHED)["guardrails"]).lower()
+
+    assert "agentic-work-complete" in guardrails
+    assert "no duplicate candidates" in guardrails
+
+
+def test_dev_guardrails_do_not_claim_the_autopilot_cuts_nightlies():
+    """The autopilot publishes candidates only -- the nightly is the schedule's."""
+    guardrails = " ".join(
+        rc.plan("v3.0.0", "dev", published=PUBLISHED, run_number=31)["guardrails"]
+    ).lower()
+
+    assert "agentic-work-complete" not in guardrails
+
+
 def test_dev_guardrails_state_the_nightly_never_touches_the_tap():
     guardrails = " ".join(
         rc.plan("v3.0.0", "dev", published=PUBLISHED, run_number=31)["guardrails"]
@@ -539,6 +559,336 @@ def test_fetch_last_scheduled_sha_raises_rather_than_guessing(monkeypatch):
 
     with pytest.raises(rc.ReleaseCandidateError, match="HTTP 500"):
         rc.fetch_last_scheduled_sha("dkblinux98/nyxGPT")
+
+
+# --- The rc channel's no-op condition (#3729) -----------------------------
+#
+# The sprint autopilot dispatches a candidate every time the sprint parks at
+# agentic-work-complete, so "has the tip moved since the last candidate?" has
+# to be answerable for rc exactly as it is for the nightly -- otherwise a
+# second observation of the same parked state cuts a duplicate rcN.
+
+
+def _dispatch_run(run_id, sha, created_at, title="publish rc from v3.0.0", conclusion="success"):
+    return {
+        "id": run_id,
+        "head_sha": sha,
+        "created_at": created_at,
+        "event": "workflow_dispatch",
+        "conclusion": conclusion,
+        "display_title": title,
+    }
+
+
+def test_select_last_published_sha_rc_takes_the_newest_successful_candidate():
+    payload = _runs(
+        _dispatch_run(1, "aaa", "2026-08-09T12:00:00Z"),
+        _dispatch_run(3, "ccc", "2026-08-11T12:00:00Z"),
+        _dispatch_run(2, "bbb", "2026-08-10T12:00:00Z"),
+    )
+
+    assert rc.select_last_published_sha(payload, "rc") == "ccc"
+
+
+def test_select_last_published_sha_rc_ignores_other_channels_dispatches():
+    """dev and stable arrive on the same trigger -- only the title tells them apart."""
+    payload = _runs(
+        _dispatch_run(9, "stable", "2026-08-11T15:00:00Z", title="publish stable from v3.0.0"),
+        _dispatch_run(8, "dev", "2026-08-11T14:00:00Z", title="publish dev from v3.0.0"),
+        _dispatch_run(7, "candidate", "2026-08-10T12:00:00Z"),
+    )
+
+    assert rc.select_last_published_sha(payload, "rc") == "candidate"
+
+
+def test_select_last_published_sha_rc_ignores_a_dry_run():
+    """A dry run uploads nothing, so counting it would suppress the next real candidate."""
+    payload = _runs(
+        _dispatch_run(9, "dry", "2026-08-11T15:00:00Z", title="publish rc [dry run] from v3.0.0"),
+        _dispatch_run(7, "candidate", "2026-08-10T12:00:00Z"),
+    )
+
+    assert rc.select_last_published_sha(payload, "rc") == "candidate"
+
+
+def test_select_last_published_sha_rc_ignores_failed_and_scheduled_runs():
+    payload = _runs(
+        _dispatch_run(9, "failed", "2026-08-11T15:00:00Z", conclusion="failure"),
+        _run(8, "nightly", "2026-08-11T07:27:00Z"),
+        _dispatch_run(7, "candidate", "2026-08-10T12:00:00Z"),
+    )
+
+    assert rc.select_last_published_sha(payload, "rc") == "candidate"
+
+
+def test_select_last_published_sha_rc_ignores_the_callers_own_run():
+    payload = _runs(
+        _dispatch_run(5, "mine", "2026-08-11T12:00:00Z"),
+        _dispatch_run(4, "prev", "2026-08-10T12:00:00Z"),
+    )
+
+    assert rc.select_last_published_sha(payload, "rc", exclude_run_id="5") == "prev"
+
+
+def test_select_last_published_sha_is_empty_before_the_first_candidate():
+    assert rc.select_last_published_sha(_runs(), "rc") == ""
+
+
+def test_select_last_published_sha_dev_is_unmoved_by_rc_dispatches():
+    """The two channels' histories are independent: an rc must not skip a nightly."""
+    payload = _runs(
+        _dispatch_run(9, "candidate", "2026-08-11T15:00:00Z"),
+        _run(7, "nightly", "2026-08-10T07:27:00Z"),
+    )
+
+    assert rc.select_last_published_sha(payload, "dev") == "nightly"
+
+
+@pytest.mark.parametrize(
+    "title,expected",
+    [
+        ("publish rc from v3.0.0", True),
+        ("PUBLISH RC FROM v3.0.0", True),
+        ("publish rc [dry run] from v3.0.0", False),
+        ("publish dev from v3.0.0", False),
+        ("publish stable from v3.0.0", False),
+        ("", False),
+    ],
+)
+def test_run_published_channel_reads_the_workflow_run_name(title, expected):
+    run = _dispatch_run(1, "sha", "2026-08-11T12:00:00Z", title=title)
+
+    assert rc.run_published_channel(run, "rc") is expected
+
+
+def test_run_published_channel_dev_needs_no_title_because_only_the_nightly_is_scheduled():
+    assert rc.run_published_channel(_run(1, "sha", "2026-08-11T07:27:00Z"), "dev") is True
+
+
+def test_fetch_last_published_sha_asks_github_for_rc_dispatches(monkeypatch):
+    import httpx
+
+    calls = []
+
+    def record(url, **kwargs):
+        calls.append(url)
+        return _Response(200, _runs(_dispatch_run(1, "abc123", "2026-08-10T12:00:00Z")))
+
+    monkeypatch.setattr(httpx, "get", record)
+
+    assert rc.fetch_last_published_sha("dkblinux98/nyxGPT", "rc") == "abc123"
+    assert "event=workflow_dispatch" in calls[0] and "status=success" in calls[0]
+
+
+# --- The autopilot's preflight (#3729) ------------------------------------
+
+
+def test_autopilot_preflight_dispatches_the_next_candidate_when_the_tip_moved():
+    decision = rc.autopilot_rc_preflight(
+        "v3.0.0",
+        ["3.0.0rc1", "2.9.0"],
+        _runs(_dispatch_run(1, "oldsha", "2026-08-10T12:00:00Z")),
+        head_sha="newsha",
+    )
+
+    assert decision["dispatch"] is True
+    assert decision["version"] == "3.0.0rc2"
+    assert decision["last_sha"] == "oldsha"
+
+
+def test_autopilot_preflight_is_a_noop_on_an_unchanged_tip():
+    """Repeat observations of the same parked state must not cut a duplicate candidate."""
+    decision = rc.autopilot_rc_preflight(
+        "v3.0.0",
+        ["3.0.0rc1"],
+        _runs(_dispatch_run(1, "samesha", "2026-08-10T12:00:00Z")),
+        head_sha="samesha",
+    )
+
+    assert decision["dispatch"] is False
+    # It still names what the acceptance round should install.
+    assert decision["version"] == "3.0.0rc1"
+    assert "unchanged" in decision["reason"]
+
+
+def test_autopilot_preflight_publishes_the_first_candidate_of_a_release_line():
+    decision = rc.autopilot_rc_preflight("v3.0.0", ["2.9.0"], _runs(), head_sha="newsha")
+
+    assert decision["dispatch"] is True
+    assert decision["version"] == "3.0.0rc1"
+    assert decision["last_sha"] == ""
+
+
+def test_autopilot_preflight_dispatches_when_the_tip_is_unknown():
+    """An unreadable tip is "unknown", never "no" -- the pipeline's guard still decides."""
+    decision = rc.autopilot_rc_preflight(
+        "v3.0.0",
+        ["3.0.0rc1"],
+        _runs(_dispatch_run(1, "samesha", "2026-08-10T12:00:00Z")),
+        head_sha="",
+    )
+
+    assert decision["dispatch"] is True
+    assert decision["version"] == "3.0.0rc2"
+
+
+def test_autopilot_preflight_refuses_a_non_release_branch():
+    with pytest.raises(rc.ReleaseCandidateError, match="release branches"):
+        rc.autopilot_rc_preflight("feat/3729-something", ["3.0.0rc1"], _runs(), head_sha="sha")
+
+
+def test_autopilot_preflight_agrees_with_the_pipelines_own_guard():
+    """Preflight and pipeline must never disagree about the same tip: one implementation."""
+    runs = _runs(_dispatch_run(1, "samesha", "2026-08-10T12:00:00Z"))
+    decision = rc.autopilot_rc_preflight("v3.0.0", ["3.0.0rc1"], runs, head_sha="samesha")
+
+    assert decision["dispatch"] is False
+    assert rc.select_last_published_sha(runs, "rc") == "samesha"
+
+
+def test_main_autopilot_preflight_prints_the_decision_as_json(monkeypatch, capsys):
+    """The shell library reads this on stdout; it makes no network call of its own."""
+    monkeypatch.setattr(
+        "sys.stdin",
+        io.StringIO(
+            json.dumps(
+                {
+                    "published": ["3.0.0rc1"],
+                    "runs": _runs(_dispatch_run(1, "oldsha", "2026-08-10T12:00:00Z")),
+                }
+            )
+        ),
+    )
+
+    def explode(*a, **k):  # pragma: no cover - asserted by not being called
+        raise AssertionError("the preflight must not reach the network")
+
+    monkeypatch.setattr(rc, "fetch_published_versions", explode)
+
+    exit_code = rc.main(["--branch", "v3.0.0", "--autopilot-preflight", "--head-sha", "newsha"])
+
+    assert exit_code == 0
+    decision = json.loads(capsys.readouterr().out)
+    assert decision == {
+        "dispatch": True,
+        "version": "3.0.0rc2",
+        "last_sha": "oldsha",
+        "release": "3.0.0",
+        "reason": "v3.0.0 has moved since the last published candidate",
+    }
+
+
+def test_main_autopilot_preflight_reports_a_broken_payload(monkeypatch, capsys):
+    monkeypatch.setattr("sys.stdin", io.StringIO("not json"))
+
+    assert rc.main(["--branch", "v3.0.0", "--autopilot-preflight"]) == 1
+    assert "not JSON" in capsys.readouterr().err
+
+
+def test_main_rc_skips_when_the_tip_is_unchanged_since_the_last_candidate(
+    monkeypatch, capsys, tmp_path
+):
+    """The idempotency the autopilot relies on: same tip -> no second candidate."""
+    monkeypatch.setattr(rc, "fetch_published_versions", lambda *a, **k: list(PUBLISHED))
+    monkeypatch.setattr(rc, "fetch_last_published_sha", lambda *a, **k: "deadbeef")
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(PYPROJECT, encoding="utf-8")
+
+    exit_code = rc.main(
+        [
+            "--branch",
+            "v3.0.0",
+            "--channel",
+            "rc",
+            "--skip-if-unchanged",
+            "--head-sha",
+            "deadbeef",
+            "--repo",
+            "dkblinux98/nyxGPT",
+            "--pin",
+            str(pyproject),
+        ]
+    )
+
+    assert exit_code == 0
+    assert capsys.readouterr().out.strip() == rc.SKIP_SENTINEL
+    assert pyproject.read_text(encoding="utf-8") == PYPROJECT
+
+
+def test_main_rc_publishes_when_the_tip_has_moved(monkeypatch, capsys):
+    monkeypatch.setattr(rc, "fetch_published_versions", lambda *a, **k: list(PUBLISHED))
+    monkeypatch.setattr(rc, "fetch_last_published_sha", lambda *a, **k: "oldsha")
+
+    exit_code = rc.main(
+        [
+            "--branch",
+            "v3.0.0",
+            "--channel",
+            "rc",
+            "--skip-if-unchanged",
+            "--head-sha",
+            "newsha",
+            "--repo",
+            "dkblinux98/nyxGPT",
+        ]
+    )
+
+    assert exit_code == 0
+    assert capsys.readouterr().out.strip() == rc.next_rc_version("3.0.0", list(PUBLISHED))
+
+
+def test_main_rc_asks_github_for_rc_history_not_the_nightlys(monkeypatch, capsys):
+    """A candidate must not be skipped because a *nightly* built the same commit."""
+    monkeypatch.setattr(rc, "fetch_published_versions", lambda *a, **k: list(PUBLISHED))
+    seen = {}
+
+    def record(repo, channel="dev", **kwargs):
+        seen["channel"] = channel
+        return ""
+
+    monkeypatch.setattr(rc, "fetch_last_published_sha", record)
+
+    rc.main(
+        [
+            "--branch",
+            "v3.0.0",
+            "--channel",
+            "rc",
+            "--skip-if-unchanged",
+            "--head-sha",
+            "newsha",
+            "--repo",
+            "dkblinux98/nyxGPT",
+        ]
+    )
+
+    assert seen["channel"] == "rc"
+
+
+def test_main_refuses_the_tip_guard_on_the_stable_channel(monkeypatch, capsys):
+    """A release publishes exactly what the ceremony tagged -- it never no-ops."""
+    monkeypatch.setattr(rc, "fetch_published_versions", lambda *a, **k: list(PUBLISHED))
+
+    exit_code = rc.main(
+        [
+            "--branch",
+            "v3.0.0",
+            "--channel",
+            "stable",
+            "--confirm",
+            rc.STABLE_CONFIRMATION,
+            "--tags-at-head",
+            "3.0.0",
+            "--skip-if-unchanged",
+            "--head-sha",
+            "newsha",
+            "--repo",
+            "dkblinux98/nyxGPT",
+        ]
+    )
+
+    assert exit_code == 1
+    assert "ceremony-only" in capsys.readouterr().err
 
 
 # --- Dispatch -------------------------------------------------------------
@@ -762,7 +1112,9 @@ def test_cli_warns_that_a_dispatched_dev_build_can_no_op(monkeypatch, capsys):
     assert "publishes nothing when the tip has not moved" in out
 
 
-def test_cli_does_not_warn_about_a_no_op_when_cutting_an_rc(monkeypatch, capsys):
+def test_cli_warns_that_an_rc_no_ops_on_an_unchanged_tip(monkeypatch, capsys):
+    """Since #3729 the rc channel carries the same guard -- say so, or the
+    operator reads "SKIPPED" off the run and thinks something broke."""
     monkeypatch.setattr(rc, "fetch_published_versions", lambda *a, **k: list(PUBLISHED))
     monkeypatch.setattr(
         rc,
@@ -774,6 +1126,23 @@ def test_cli_does_not_warn_about_a_no_op_when_cutting_an_rc(monkeypatch, capsys)
     )
 
     assert rc.release_publish(_args(publish=True)) == 0
+    assert "publishes nothing when the tip has not moved" in capsys.readouterr().out
+
+
+def test_cli_does_not_warn_about_a_no_op_for_an_explicitly_numbered_rc(monkeypatch, capsys):
+    """An explicit number is deliberate intent, and the workflow drops the
+    guard for it -- promising a no-op there would be wrong."""
+    monkeypatch.setattr(rc, "fetch_published_versions", lambda *a, **k: list(PUBLISHED))
+    monkeypatch.setattr(
+        rc,
+        "dispatch",
+        lambda branch, channel="rc", number=None: {
+            "dispatched": True,
+            "runs_url": "https://github.com/x/y/actions",
+        },
+    )
+
+    assert rc.release_publish(_args(publish=True, number=9)) == 0
     assert "publishes nothing" not in capsys.readouterr().out
 
 
@@ -892,7 +1261,7 @@ def test_main_dev_uses_the_run_number_for_a_unique_version(monkeypatch, capsys):
 def test_main_dev_skips_when_the_tip_is_unchanged(monkeypatch, capsys, tmp_path):
     """The owner's no-op requirement: an unchanged tip publishes nothing."""
     monkeypatch.setattr(rc, "fetch_published_versions", lambda *a, **k: list(PUBLISHED))
-    monkeypatch.setattr(rc, "fetch_last_scheduled_sha", lambda *a, **k: "deadbeef")
+    monkeypatch.setattr(rc, "fetch_last_published_sha", lambda *a, **k: "deadbeef")
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text(PYPROJECT, encoding="utf-8")
 
@@ -922,7 +1291,7 @@ def test_main_dev_skips_when_the_tip_is_unchanged(monkeypatch, capsys, tmp_path)
 
 def test_main_dev_publishes_when_the_tip_has_moved(monkeypatch, capsys):
     monkeypatch.setattr(rc, "fetch_published_versions", lambda *a, **k: list(PUBLISHED))
-    monkeypatch.setattr(rc, "fetch_last_scheduled_sha", lambda *a, **k: "oldsha")
+    monkeypatch.setattr(rc, "fetch_last_published_sha", lambda *a, **k: "oldsha")
 
     exit_code = rc.main(
         [
@@ -947,7 +1316,7 @@ def test_main_dev_publishes_when_the_tip_has_moved(monkeypatch, capsys):
 def test_main_dev_publishes_the_first_nightly(monkeypatch, capsys):
     """No previous successful nightly -> nothing to compare against -> publish."""
     monkeypatch.setattr(rc, "fetch_published_versions", lambda *a, **k: list(PUBLISHED))
-    monkeypatch.setattr(rc, "fetch_last_scheduled_sha", lambda *a, **k: "")
+    monkeypatch.setattr(rc, "fetch_last_published_sha", lambda *a, **k: "")
 
     assert (
         rc.main(
@@ -974,7 +1343,7 @@ def test_main_dev_fails_rather_than_publishing_blind_on_a_github_error(monkeypat
     def explode(*a, **k):
         raise rc.ReleaseCandidateError("Could not reach the GitHub API: boom")
 
-    monkeypatch.setattr(rc, "fetch_last_scheduled_sha", explode)
+    monkeypatch.setattr(rc, "fetch_last_published_sha", explode)
 
     assert (
         rc.main(
@@ -1256,3 +1625,123 @@ def test_ceremony_keeps_its_ceremony_exclusive_steps():
     assert "refs/heads/master" in text
     assert "releases/${DRAFT_ID}" in text
     assert "RELEASE_BRANCH" in text
+
+
+# --- The autopilot's rc dispatch, as a shape (#3729) ----------------------
+#
+# The behaviour lives in scripts/agents/lib/gh_project.sh (exercised by
+# tests/test_sprint_autopilot_lib.sh). What is asserted here is the shape the
+# owner decision fixes: the kick path publishes candidates and *only*
+# candidates, and the pipeline it dispatches carries the tip guard that makes
+# a repeat firing a no-op.
+
+
+def _autopilot_lib() -> str:
+    return (REPO_ROOT / "scripts" / "agents" / "lib" / "gh_project.sh").read_text(encoding="utf-8")
+
+
+def _publish_rc_function() -> str:
+    """The body of _autopilot_publish_rc -- the whole kick-to-publish path."""
+    text = _autopilot_lib()
+    start = text.index("_autopilot_publish_rc() {")
+    end = text.index("\n}\n", start)
+    return text[start:end]
+
+
+def test_the_kick_path_can_only_dispatch_the_rc_channel():
+    """A release is cut by the ceremony (tag + confirmation), never by the loop."""
+    body = _publish_rc_function()
+
+    assert 'channel="$AUTOPILOT_RC_CHANNEL"' in body
+    assert 'AUTOPILOT_RC_CHANNEL="rc"' in _autopilot_lib()
+    # Every other channel is refused before the dispatch, not silently coerced.
+    assert '[[ "$AUTOPILOT_RC_CHANNEL" != "rc" ]]' in body
+    for forbidden in ("stable", "dev", rc.STABLE_CONFIRMATION):
+        assert f"channel={forbidden}" not in body
+
+
+def test_the_kick_path_dispatches_the_one_publish_pipeline():
+    """No parallel release workflow: it dispatches #3727's pipeline by name."""
+    text = _autopilot_lib()
+
+    assert f'AUTOPILOT_PUBLISH_WORKFLOW="{rc.PUBLISH_WORKFLOW_FILE}"' in text
+    assert 'gh workflow run "$AUTOPILOT_PUBLISH_WORKFLOW"' in _publish_rc_function()
+
+
+def test_the_kick_path_publishes_only_at_agentic_work_complete():
+    """It reuses #3709's park state rather than deciding completion itself."""
+    text = _autopilot_lib()
+
+    assert 'AUTOPILOT_RC_PARK_STATE="awaiting_acceptance"' in text
+    assert '[[ "$state" != "$AUTOPILOT_RC_PARK_STATE" ]]' in _publish_rc_function()
+
+
+def test_the_kick_path_asks_the_tested_module_what_it_would_publish():
+    """The preflight is the same implementation the pipeline's guard uses."""
+    text = _autopilot_lib()
+
+    assert "python3 -m nyxgpt.release_candidate" in text
+    assert "--autopilot-preflight" in text
+
+
+def test_the_publish_workflow_guards_the_rc_channel_against_a_repeat_firing():
+    """The idempotency the autopilot relies on lives in the pipeline, per the
+    owner decision -- so a duplicate cannot be cut even by a hand dispatch."""
+    steps = _publish_workflow()["jobs"]["publish"]["steps"]
+    version_step = next(step for step in steps if step.get("id") == "version")
+    run = version_step["run"]
+
+    assert '[ "${CHANNEL}" = "rc" ]' in run
+    assert "--skip-if-unchanged" in run
+    # An explicit number and a dry run are deliberate acts, so they opt out.
+    assert '[ -z "${NUMBER}" ]' in run
+    assert '[ "${DRY_RUN}" != "true" ]' in run
+    assert version_step["env"]["DRY_RUN"] == "${{ inputs.dry_run }}"
+
+
+def test_the_publish_workflow_run_name_stays_readable_by_the_rc_tip_guard():
+    """`run-name` is how a finished rc run is told apart from a dev or stable
+    dispatch (they share the workflow_dispatch event) -- keep them in sync."""
+    workflow = _publish_workflow()
+    run_name = " ".join(workflow["run-name"].split())
+
+    assert run_name.startswith("publish ${{ inputs.channel || 'dev' }}")
+    # What GitHub renders for a real rc dispatch, and for a dry run.
+    rendered = run_name.replace("${{ inputs.channel || 'dev' }}", "rc").replace(
+        "${{ inputs.dry_run && ' [dry run]' || '' }}", ""
+    )
+    rendered = rendered.replace("${{ github.ref_name }}", "v3.0.0")
+    assert rc._RC_RUN_TITLE_RE.match(rendered), rendered
+    assert not rc._RC_RUN_TITLE_RE.match(rendered.replace("rc from", "rc [dry run] from"))
+
+
+def test_main_rc_honours_an_explicit_number_over_the_tip_guard(monkeypatch, capsys):
+    """`--number` names a version deliberately; the guard must not silently
+    turn that into a no-op (the workflow drops the flag for the same reason)."""
+    monkeypatch.setattr(rc, "fetch_published_versions", lambda *a, **k: list(PUBLISHED))
+
+    def explode(*a, **k):  # pragma: no cover - asserted by not being called
+        raise AssertionError("an explicitly numbered build must not consult the tip guard")
+
+    monkeypatch.setattr(rc, "fetch_last_published_sha", explode)
+
+    exit_code = rc.main(
+        [
+            "--branch",
+            "v3.0.0",
+            "--channel",
+            "rc",
+            "--number",
+            "9",
+            "--skip-if-unchanged",
+            "--head-sha",
+            "deadbeef",
+            "--repo",
+            "dkblinux98/nyxGPT",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out.strip() == "3.0.0rc9"
+    assert "ignoring the unchanged-tip guard" in captured.err

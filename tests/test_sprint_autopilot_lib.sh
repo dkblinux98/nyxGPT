@@ -517,6 +517,132 @@ result="$(_issue_active_dev_run_ids "my issue" | tr '\n' ' ')"
 _assert_eq "only live runs for this issue count as active" "12 " "$result"
 _assert_eq "no title means no attribution and no false 'active'" "" "$(_issue_active_dev_run_ids "")"
 
+# ---------------------------------------------------------------------------
+# #3729: the rc publish at agentic-work-complete
+# ---------------------------------------------------------------------------
+# The autopilot cuts the candidate an acceptance round installs the moment the
+# sprint parks at agentic-work-complete. What has to be true: it fires on that
+# state and no other, it publishes `rc` and can never publish `stable`, and a
+# repeat observation of the same parked state cuts no duplicate.
+
+# shellcheck source=/dev/null
+source "$ROOT_DIR/scripts/agents/lib/gh_project.sh"
+RELEASE_BRANCH="v3.0.0"
+REPO_OWNER="dkblinux98"
+REPO_NAME="nyxGPT"
+
+DISPATCH_FILE="$(mktemp)"
+trap 'rm -f "$GRAPHQL_CALLS_FILE" "$COMMENT_FILE" "$RESUME_FILE" "$DISPATCH_FILE"' EXIT
+
+# `gh workflow run ...` is the only gh call these tests exercise; everything
+# else the helper needs comes from the stubbed preflight.
+gh() {
+  if [[ "${1:-}" == "workflow" ]]; then
+    printf '%s\n' "$*" > "$DISPATCH_FILE"
+    [[ "${MOCK_DISPATCH_FAILS:-0}" == "1" ]] && return 1
+    return 0
+  fi
+  return 1
+}
+MOCK_DISPATCH_FAILS=0
+_dispatch_args() { cat "$DISPATCH_FILE" 2>/dev/null || echo ""; }
+
+_awaiting='{"state":"awaiting_acceptance","awaiting_acceptance":[3510,3513]}'
+
+# --- Test 17: a park that reached agentic-work-complete dispatches rc ---
+_autopilot_rc_preflight() { echo '{"dispatch":true,"version":"3.0.0rc2","last_sha":"old","release":"3.0.0","reason":"moved"}'; }
+: > "$DISPATCH_FILE"
+result="$(_autopilot_publish_rc "$_awaiting")"
+_assert_eq "agentic-work-complete dispatches a candidate" "true" "$(jq -r '.dispatched' <<<"$result")"
+_assert_eq "the park note is handed the resolved candidate version" "3.0.0rc2" "$(jq -r '.version' <<<"$result")"
+_assert_contains "the dispatch names the publish workflow" "$(_dispatch_args)" "release-publish-pypi.yml"
+_assert_contains "the dispatch targets the release branch" "$(_dispatch_args)" "--ref v3.0.0"
+
+# --- Test 18: the kick path can only ever publish candidates ---
+_assert_contains "the dispatched channel is rc" "$(_dispatch_args)" "channel=rc"
+_assert_not_contains "the kick path never dispatches stable" "$(_dispatch_args)" "stable"
+_assert_eq "the reported channel is rc" "rc" "$(jq -r '.channel' <<<"$result")"
+
+# Forcing any other channel refuses outright rather than publishing it: a
+# release is cut by the ceremony (tag + confirmation), never by this path.
+: > "$DISPATCH_FILE"
+AUTOPILOT_RC_CHANNEL="stable"
+result="$(_autopilot_publish_rc "$_awaiting" 2>/dev/null)"
+_assert_eq "a non-rc channel is refused, not published" "false" "$(jq -r '.dispatched' <<<"$result")"
+_assert_eq "refusing a non-rc channel dispatches nothing at all" "" "$(_dispatch_args)"
+AUTOPILOT_RC_CHANNEL="rc"
+
+# --- Test 19: every other park state publishes nothing ---
+for _state in work_in_flight sprint_complete empty ""; do
+  : > "$DISPATCH_FILE"
+  result="$(_autopilot_publish_rc "{\"state\":\"${_state}\"}")"
+  _assert_eq "park state '${_state:-none}' publishes no candidate" "{}" "$result"
+  _assert_eq "park state '${_state:-none}' dispatches nothing" "" "$(_dispatch_args)"
+done
+: > "$DISPATCH_FILE"
+result="$(_autopilot_publish_rc "")"
+_assert_eq "an unreadable park state publishes nothing" "{}" "$result"
+
+# --- Test 20: an unchanged tip is a no-op that still names the candidate ---
+# This is the idempotency the owner decision calls for: repeated observations
+# of the same parked state must not produce a second rcN.
+_autopilot_rc_preflight() { echo '{"dispatch":false,"version":"3.0.0rc1","last_sha":"same","release":"3.0.0","reason":"v3.0.0 is unchanged since the last published candidate (same) -- no new candidate is needed."}'; }
+: > "$DISPATCH_FILE"
+result="$(_autopilot_publish_rc "$_awaiting")"
+_assert_eq "an unchanged tip dispatches nothing" "" "$(_dispatch_args)"
+_assert_eq "an unchanged tip reports the no-op" "true" "$(jq -r '.noop' <<<"$result")"
+_assert_eq "the no-op still names what to install" "3.0.0rc1" "$(jq -r '.version' <<<"$result")"
+
+# --- Test 21: an unavailable preflight is "unknown", never "no" ---
+# The pipeline carries the same tip guard, so dispatching blind is safe --
+# staying silent because a lookup failed would skip the acceptance round's
+# candidate entirely.
+_autopilot_rc_preflight() { return 1; }
+: > "$DISPATCH_FILE"
+result="$(_autopilot_publish_rc "$_awaiting")"
+_assert_eq "a failed preflight still dispatches" "true" "$(jq -r '.dispatched' <<<"$result")"
+_assert_contains "a blind dispatch is still rc" "$(_dispatch_args)" "channel=rc"
+_assert_eq "a blind dispatch claims no version it does not know" "" "$(jq -r '.version' <<<"$result")"
+
+# --- Test 22: a refused dispatch is reported, not swallowed ---
+_autopilot_rc_preflight() { echo '{"dispatch":true,"version":"3.0.0rc2","last_sha":"old","release":"3.0.0","reason":"moved"}'; }
+MOCK_DISPATCH_FAILS=1
+result="$(_autopilot_publish_rc "$_awaiting" 2>/dev/null)"
+_assert_eq "a refused dispatch is not reported as dispatched" "false" "$(jq -r '.dispatched' <<<"$result")"
+_assert_eq "a refused dispatch is flagged as an error" "true" "$(jq -r '.error' <<<"$result")"
+MOCK_DISPATCH_FAILS=0
+
+# --- Test 23: the kick wires it end-to-end and the park note names it ---
+# The point of the feature: the owner reads the park note and knows what to
+# install, without dispatching anything by hand.
+SPRINT_AUTOPILOT="true"
+RELEASE_ISSUE_NUMBER="2759"
+SPRINT_FIELD="Sprint"
+STATUS_FOR_RELEASE="For Release"
+sprint_autopilot_paused() { return 1; }
+release_version_from_issue() { echo "v3.0.0"; }
+release_backlog_by_sprint() { echo '{"Sprint 8":0}'; }
+iteration_active_title() { echo "Sprint 8"; }
+issue_comment() { printf '%s' "$2" > "$COMMENT_FILE"; }
+autopilot_scan_parked() { echo '{"resumable":[],"waiting":[],"exhausted":[],"active":[],"selected":null}'; }
+_autopilot_post_resume() { echo "$1" > "$RESUME_FILE"; }
+sprint_population_snapshot() { echo '{"open":{},"closed":{"Acceptance Testing":[3510,3513]}}'; }
+: > "$DISPATCH_FILE"
+sprint_autopilot_kick 3510 merged 2>/dev/null
+body="$(cat "$COMMENT_FILE")"
+_assert_contains "the agentic-complete park dispatches a candidate" "$(_dispatch_args)" "channel=rc"
+_assert_contains "the park note names the candidate" "$body" "3.0.0rc2"
+_assert_contains "the park note gives the install command" "$body" "pip install nyxgpt==3.0.0rc2"
+_assert_not_contains "publishing a candidate does not turn a park into a kick" "$body" "READY_FOR_NEXT_ISSUE"
+
+# A sprint still working publishes nothing and says nothing about candidates.
+sprint_population_snapshot() { echo '{"open":{"In Progress":[3513]},"closed":{}}'; }
+: > "$DISPATCH_FILE"
+sprint_autopilot_kick 3510 merged 2>/dev/null
+body="$(cat "$COMMENT_FILE")"
+_assert_eq "an in-flight park dispatches no candidate" "" "$(_dispatch_args)"
+_assert_not_contains "an in-flight park note mentions no candidate" "$body" "Release candidate"
+
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "All tests passed."
   exit 0

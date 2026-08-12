@@ -76,6 +76,27 @@ agents never self-promote. If the population snapshot can't be read, the
 decision degrades to the pre-#3709 Backlog-only count and the note claims no
 completion state.
 
+### The candidate an acceptance round installs (#3729)
+
+The transition into `awaiting_acceptance` is the start of an acceptance
+round, so it publishes the artifact that round tests: `_autopilot_publish_rc`
+(`lib/gh_project.sh`) dispatches
+[`release-publish-pypi.yml`](cloud.md#pypi-publishing-dev-rc-and-stable)
+with `channel=rc`, cutting a `3.0.0rcN` to PyPI **and** the Homebrew `-rc`
+formulas in one run, and the park note names the version to install.
+
+- **Only that state.** `work_in_flight` has nothing to accept yet;
+  `sprint_complete` has already been accepted. The trigger is the park state
+  above -- there is no parallel state machine deciding when a sprint is done.
+- **Only `rc`.** The channel is a constant and is re-checked at the dispatch
+  (shape-tested). A release is cut only by `scripts/release_ceremony.sh`,
+  which carries a tag and a confirmation token this path does not have.
+- **Repeats are no-ops.** The pipeline skips an rc whose release-branch tip
+  has not moved since the last published candidate, so observing the same
+  parked state again cuts no duplicate -- the note then names the existing
+  candidate instead. If the dispatch itself fails, the note says so and
+  gives the manual command; it never silently omits the candidate.
+
 ### Dependency-aware auto-resume (#3709)
 
 On every kick, before any park, the loop scans the active sprint's In
@@ -123,7 +144,9 @@ marker) on the release tracking issue.
 ### The sprint boundary is an acceptance gate
 
 Owner context, 2026-08-10: a sprint completes -> the owner runs acceptance
-testing on it -> the next sprint begins. The park note says so explicitly,
+testing on it -> the next sprint begins. The candidate that round installs is
+published automatically at the boundary (#3729, above). The park note says so
+explicitly,
 and nothing resumes the loop on its own -- a new sprint window opening does
 not by itself dispatch work, because only a kick starts selection and agents
 post kicks only after a merge. That is deliberate: auto-resume would consume

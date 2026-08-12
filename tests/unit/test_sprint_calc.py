@@ -486,3 +486,98 @@ class TestParkNoteStates:
         assert "the in-flight issues above finish" not in self._note(
             {"state": sprint_calc.PARK_SPRINT_COMPLETE, "accepted": [1]}
         )
+
+
+class TestReleaseCandidateSection:
+    """The park note's release-candidate section (#3729).
+
+    When the sprint reaches agentic-work-complete the autopilot cuts the
+    candidate that acceptance round installs, and the note has to answer the
+    owner's only question at that moment -- "what do I install?" -- with a
+    version, not a link to a run nobody has read yet.
+    """
+
+    def _note(self, rc_publish, state=None):
+        return sprint_calc.build_sprint_park_note(
+            {
+                "event_phrase": "Issue #3510 merged",
+                "sprint_title": "Sprint 8",
+                "release_version": "v3.0.0",
+                "by_sprint": {"Sprint 8": 0},
+                "park_state": {
+                    "state": state or sprint_calc.PARK_AWAITING_ACCEPTANCE,
+                    "awaiting_acceptance": [3510, 3513],
+                },
+                "resume_scan": {},
+                "rc_publish": rc_publish,
+            }
+        )
+
+    def test_dispatched_candidate_is_named_with_its_install_commands(self):
+        note = self._note(
+            {
+                "dispatched": True,
+                "channel": "rc",
+                "branch": "v3.0.0",
+                "version": "3.0.0rc2",
+                "runs_url": "https://github.com/dkblinux98/nyxGPT/actions/x",
+            }
+        )
+        assert "`3.0.0rc2` is publishing now from `v3.0.0`" in note
+        assert "pip install nyxgpt==3.0.0rc2" in note
+        assert "brew install nyxgpt-api-rc nyxgpt-web-rc" in note
+        assert "https://github.com/dkblinux98/nyxGPT/actions/x" in note
+
+    def test_a_dispatch_with_no_preflight_version_still_reports_the_publish(self):
+        """The preflight is best-effort; the run resolves the number either way."""
+        note = self._note({"dispatched": True, "channel": "rc", "branch": "v3.0.0"})
+        assert "is publishing now from `v3.0.0`" in note
+        assert "resolved by the run" in note
+        # No version to pin, so no install block that would name the wrong one.
+        assert "pip install nyxgpt==" not in note
+
+    def test_a_noop_names_the_candidate_the_round_should_install(self):
+        note = self._note(
+            {
+                "dispatched": False,
+                "noop": True,
+                "channel": "rc",
+                "branch": "v3.0.0",
+                "version": "3.0.0rc1",
+                "reason": "v3.0.0 is unchanged since the last published candidate",
+            }
+        )
+        assert "no new candidate was cut" in note
+        assert "`3.0.0rc1`" in note
+        assert "pip install nyxgpt==3.0.0rc1" in note
+
+    def test_a_failed_dispatch_says_so_and_names_the_manual_command(self):
+        note = self._note(
+            {
+                "dispatched": False,
+                "error": True,
+                "channel": "rc",
+                "reason": "GitHub refused the workflow dispatch",
+            }
+        )
+        assert "could not be dispatched" in note
+        assert "GitHub refused the workflow dispatch" in note
+        assert "nyxgpt release publish --channel rc --publish" in note
+
+    def test_the_section_is_absent_when_no_candidate_was_published(self):
+        """Every park state but agentic-work-complete publishes nothing."""
+        note = self._note({}, state=sprint_calc.PARK_WORK_IN_FLIGHT)
+        assert "Release candidate" not in note
+        assert "pip install" not in note
+
+    def test_the_note_never_calls_a_candidate_a_release(self):
+        note = self._note({"dispatched": True, "version": "3.0.0rc2", "branch": "v3.0.0"})
+        assert "A candidate is **not** a release" in note
+        # ...and it still cannot dispatch work or claim sprint completion.
+        assert "READY_FOR_NEXT_ISSUE" not in note
+        assert sprint_calc.AUTOPILOT_INFO_MARKER in note
+
+    def test_the_candidate_comes_before_the_backlog_accounting(self):
+        """The owner's next action is installing it, so it leads the note."""
+        note = self._note({"dispatched": True, "version": "3.0.0rc2", "branch": "v3.0.0"})
+        assert note.index("Release candidate") < note.index("Work resumes when either")

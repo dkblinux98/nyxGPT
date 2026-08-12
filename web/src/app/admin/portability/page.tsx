@@ -416,10 +416,13 @@ export default function PortabilityPage() {
             <p style={{ fontSize: '0.85rem', color: 'var(--foreground-muted)' }}>
               Every install above comes from PyPI, so acceptance testing can only reach code that
               has been published. One pipeline publishes the release-branch tip on three channels —
-              a nightly <code>dev</code> build, an on-demand <code>rc</code>, and the release itself
+              a nightly <code>dev</code> build, an <code>rc</code>, and the release itself
               (<code>stable</code>, run only by the owner&apos;s ceremony). Dev and rc builds are
-              pre-releases a clean machine installs by exact pin. Publishing is an owner action, so
-              it runs from a terminal or on the schedule, never from this page.
+              pre-releases a clean machine installs by exact pin. Most acceptance rounds need no
+              command: the sprint autopilot cuts an <code>rc</code> when the sprint reaches
+              agentic-work-complete and names it on the release tracking issue. Publishing by hand
+              is an owner action, so it runs from a terminal or on the schedule, never from this
+              page.
             </p>
 
             {rcError && (
