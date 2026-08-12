@@ -445,7 +445,10 @@ describe('PortabilityPage', () => {
 
     it('shows why a build cannot be cut instead of offering one anyway', async () => {
       serveReport(mockReport);
-      serveRc(rcPlan);
+      // A plan naming neither a published rc nor a tap formula -- an older API
+      // pod behind this page would serve exactly that. Both lists say so in
+      // words instead of rendering an empty string next to their label.
+      serveRc({ ...rcPlan, rc_formulas: [] });
       render(<PortabilityPage />);
 
       await waitFor(() => {
@@ -454,6 +457,7 @@ describe('PortabilityPage', () => {
       expect(screen.getByText(/is not a release branch/)).toBeInTheDocument();
       // "Published RCs" says so explicitly rather than rendering an empty list.
       expect(screen.getAllByText(/none yet/)).toHaveLength(1);
+      expect(screen.getByText(/Tap formulas for this line: none$/)).toBeInTheDocument();
     });
 
     it('warns when PyPI could not be reached, rather than trusting the number', async () => {
