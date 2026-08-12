@@ -289,6 +289,65 @@ def _park_headline(event_phrase: str, sprint_title: str, park_state: dict[str, A
     return lines
 
 
+def build_rc_publish_lines(rc_publish: dict[str, Any]) -> list[str]:
+    """The release-candidate section of the park note (#3729).
+
+    The autopilot cuts a candidate when the sprint reaches
+    agentic-work-complete, because that park *is* the start of an acceptance
+    round. The note's job here is to answer the owner's only question at
+    that moment -- "what do I install to test this round?" -- with a version,
+    not a link to a run whose number nobody has read yet.
+
+    Renders nothing at all for a park that publishes no candidate (`{}`),
+    which is every other park state.
+    """
+    if not rc_publish:
+        return []
+
+    version = str(rc_publish.get("version") or "")
+    branch = str(rc_publish.get("branch") or "")
+    runs_url = str(rc_publish.get("runs_url") or "")
+    reason = str(rc_publish.get("reason") or "")
+    lines: list[str] = []
+
+    if rc_publish.get("dispatched"):
+        named = f"`{version}`" if version else "the next candidate (`rcN`, resolved by the run)"
+        where = f" from `{branch}`" if branch else ""
+        watch = f" ([watch it]({runs_url}))" if runs_url else ""
+        lines.append(
+            f"📦 **Release candidate for this acceptance round:** {named} is publishing "
+            f"now{where} — PyPI plus the Homebrew `-rc` formulas, in one run{watch}."
+        )
+    elif rc_publish.get("error"):
+        why = f" ({reason})" if reason else ""
+        lines.append(
+            f"⚠️ **Release candidate:** the automatic `rc` publish could not be "
+            f"dispatched{why}. Publish one by hand with `nyxgpt release publish "
+            f"--channel rc --publish` before starting the acceptance round."
+        )
+    else:
+        named = f"`{version}`" if version else "the last published candidate"
+        why = f" ({reason})" if reason else ""
+        lines.append(
+            f"📦 **Release candidate for this acceptance round:** {named} — no new "
+            f"candidate was cut{why}."
+        )
+
+    if version:
+        lines.append("")
+        lines.append("```bash")
+        lines.append(f"pip install nyxgpt=={version}")
+        lines.append("brew tap dkblinux98/nyxgpt && brew install nyxgpt-api-rc nyxgpt-web-rc")
+        lines.append("```")
+    lines.append("")
+    lines.append(
+        "A candidate is **not** a release: `pip install nyxgpt` and `brew install "
+        "nyxgpt-api` keep resolving to the latest stable version, and the autopilot "
+        "never publishes one (#3729 — a release is cut only by the ceremony)."
+    )
+    return lines
+
+
 def build_sprint_park_note(payload: dict[str, Any]) -> str:
     """Renders the loud park note posted on the release tracking issue when
     the active sprint's Backlog pool drains (#3706).
@@ -308,12 +367,16 @@ def build_sprint_park_note(payload: dict[str, Any]) -> str:
       resume_scan      the parked-issue scan (#3709) as classify_candidates()
                        returns it, plus "selected" -- what was auto-resumed
                        this cycle, and what is still waiting on gates
+      rc_publish       what the agentic-work-complete rc dispatch did
+                       (#3729), as _autopilot_publish_rc reports it. Empty
+                       for every park state that publishes no candidate
     """
     event_phrase = payload.get("event_phrase", "Work completed")
     sprint_title = payload.get("sprint_title") or ""
     release_version = payload.get("release_version") or ""
     park_state: dict[str, Any] = payload.get("park_state") or {}
     resume_scan: dict[str, Any] = payload.get("resume_scan") or {}
+    rc_publish: dict[str, Any] = payload.get("rc_publish") or {}
     by_sprint: dict[str, int] = {
         str(k): int(v) for k, v in (payload.get("by_sprint") or {}).items() if int(v) > 0
     }
@@ -340,6 +403,14 @@ def build_sprint_park_note(payload: dict[str, Any]) -> str:
             f"no sprint pool to draw from and autopilot is parked."
         )
     lines.append("")
+
+    # Directly under the headline: at agentic-work-complete the owner's next
+    # action is installing the candidate, so it comes before the backlog
+    # accounting (#3729).
+    rc_lines = build_rc_publish_lines(rc_publish)
+    if rc_lines:
+        lines.extend(rc_lines)
+        lines.append("")
 
     gate_lines = build_gate_lines(resume_scan, resume_scan.get("selected"))
     if gate_lines:

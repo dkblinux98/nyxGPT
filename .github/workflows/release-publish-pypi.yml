@@ -1,5 +1,11 @@
 name: PyPI Publish (dev / rc / stable)
 
+# LOAD-BEARING (#3729): every channel but `dev` arrives as a
+# `workflow_dispatch`, so this rendered title is the only record of which
+# channel a finished run built. `release_candidate.run_published_channel`
+# matches "publish rc from <ref>" to find the commit the last candidate was
+# cut from -- keep the wording, the order and the `[dry run]` marker (a dry
+# run uploads nothing and must not read as a published candidate).
 run-name: >-
   publish ${{ inputs.channel || 'dev' }}${{ inputs.dry_run && ' [dry run]' || '' }}
   from ${{ github.ref_name }}
@@ -15,12 +21,16 @@ run-name: >-
 #           without a published build it can only ever exercise the last
 #           stable release -- never the tip carrying the acceptance-failure
 #           fixes merged during that same round of testing.
-#   rc      manual dispatch  -> a deliberate `3.0.0rcN`. The rc channel is the
-#           only one with a step beyond PyPI: `homebrew-tap-rc` below also
-#           cuts a GitHub *prerelease* carrying the service tarballs and
-#           stamps `nyxgpt-api-rc` / `nyxgpt-web-rc` into the tap, so a
-#           candidate is installable on macOS the same repo-less way a
-#           release is. It never writes the stable formulas.
+#   rc      dispatch         -> a deliberate `3.0.0rcN`, by hand or from the
+#           sprint autopilot when the sprint reaches agentic-work-complete
+#           (#3729). The rc channel is the only one with a step beyond PyPI:
+#           `homebrew-tap-rc` below also cuts a GitHub *prerelease* carrying
+#           the service tarballs and stamps `nyxgpt-api-rc` /
+#           `nyxgpt-web-rc` into the tap, so a candidate is installable on
+#           macOS the same repo-less way a release is. It never writes the
+#           stable formulas. Like the nightly it no-ops when the tip has not
+#           moved since the last published candidate -- that is what lets the
+#           autopilot dispatch at every park without duplicating candidates.
 #   stable  scripts/release_ceremony.sh Phase 2 delegates here. The ceremony
 #           keeps only its ceremony-exclusive steps (master merge, tag,
 #           Homebrew tap, GitHub Release, sign-off); a dev or rc build never
@@ -120,7 +130,8 @@ jobs:
           CHANNEL: ${{ inputs.channel || 'dev' }}
           NUMBER: ${{ inputs.number }}
           CONFIRM: ${{ inputs.confirm }}
-          # The nightly no-op check reads this workflow's own run history.
+          DRY_RUN: ${{ inputs.dry_run }}
+          # The dev/rc no-op checks read this workflow's own run history.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # `nyxgpt.release_candidate` only needs stdlib + httpx, so it runs
           # straight from the checkout -- no need to install the package
@@ -144,6 +155,18 @@ jobs:
                    --head-sha "$GITHUB_SHA" --repo "$GITHUB_REPOSITORY" \
                    --exclude-run-id "$GITHUB_RUN_ID")
           fi
+          if [ "${CHANNEL}" = "rc" ] && [ -z "${NUMBER}" ] && [ "${DRY_RUN}" != "true" ]; then
+            # The same tip guard on the rc channel (#3729). The sprint
+            # autopilot dispatches a candidate every time the sprint parks at
+            # agentic-work-complete, so repeated observations of that state
+            # must not cut duplicate candidates -- only a release-branch tip
+            # that moved since the last published rc earns a new rcN.
+            # Skipped for an explicit --number (the operator is deliberately
+            # naming a version) and for a dry run (which uploads nothing, so
+            # it must stay reproducible on an unchanged tip).
+            ARGS+=(--skip-if-unchanged --head-sha "$GITHUB_SHA" \
+                   --repo "$GITHUB_REPOSITORY" --exclude-run-id "$GITHUB_RUN_ID")
+          fi
           if [ "${CHANNEL}" = "stable" ]; then
             ARGS+=(--confirm "${CONFIRM}" \
                    --tags-at-head "$(git tag --points-at HEAD | tr '\n' ' ')")
@@ -151,7 +174,7 @@ jobs:
           VERSION=$(python -m nyxgpt.release_candidate "${ARGS[@]}")
           if [ "${VERSION}" = "SKIP" ]; then
             echo "publish=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::${GITHUB_REF_NAME} is unchanged since the last nightly -- nothing to publish."
+            echo "::notice::${GITHUB_REF_NAME} is unchanged since the last ${CHANNEL} publish -- nothing to publish."
             exit 0
           fi
           echo "publish=true" >> "$GITHUB_OUTPUT"

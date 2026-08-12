@@ -12,11 +12,15 @@ of 2026-08-11 there is one channel-parameterized build/publish pipeline
 * **dev** -- a nightly schedule publishes `3.0.0.devN` from the
   release-branch tip, skipping the run when the tip has not moved since the
   last successful nightly (`select_last_scheduled_sha`);
-* **rc** -- a manual dispatch cuts a deliberate `3.0.0rcN`. This is the one
-  channel with a step past PyPI: it also cuts a GitHub *prerelease* carrying
-  the service tarballs and stamps `nyxgpt-api-rc` / `nyxgpt-web-rc` into the
-  Homebrew tap, so a candidate is installable on macOS the same repo-less way
-  a release is -- without ever writing the stable formulas (`RC_FORMULAS`);
+* **rc** -- a dispatch cuts a deliberate `3.0.0rcN`, by hand or from the
+  sprint autopilot when the sprint reaches agentic-work-complete (#3729,
+  `autopilot_rc_preflight`). This is the one channel with a step past PyPI:
+  it also cuts a GitHub *prerelease* carrying the service tarballs and stamps
+  `nyxgpt-api-rc` / `nyxgpt-web-rc` into the Homebrew tap, so a candidate is
+  installable on macOS the same repo-less way a release is -- without ever
+  writing the stable formulas (`RC_FORMULAS`). Like the nightly it no-ops on
+  an unchanged tip, which is what lets the autopilot fire at every park
+  without cutting duplicate candidates (`select_last_published_sha`);
 * **stable** -- `scripts/release_ceremony.sh` Phase 2 delegates to the same
   workflow. The ceremony keeps only its ceremony-exclusive steps (master
   merge, tag, Homebrew tap, GitHub Release, sign-off); a dev or rc build
@@ -77,6 +81,17 @@ PUBLISH_WORKFLOW_FILE = "release-publish-pypi.yml"
 #: The channels the pipeline understands, weakest version first.
 CHANNELS = ("dev", "rc", "stable")
 
+#: How each channel reaches the pipeline. The nightly is the only thing the
+#: `schedule` trigger runs, so a scheduled run *is* a dev build; everything
+#: else arrives as a `workflow_dispatch` (the sprint autopilot's rc, #3729,
+#: and the ceremony's stable). Used to find the last successful build of a
+#: channel when deciding whether the tip has moved.
+CHANNEL_TRIGGER_EVENT = {
+    "dev": "schedule",
+    "rc": "workflow_dispatch",
+    "stable": "workflow_dispatch",
+}
+
 #: The remote Homebrew tap an rc publish stamps. `brew tap dkblinux98/nyxgpt`
 #: resolves to the `dkblinux98/homebrew-nyxgpt` repository -- the `homebrew-`
 #: prefix is Homebrew's own tap-naming convention.
@@ -121,6 +136,14 @@ _PRERELEASE_RE = re.compile(r"(?:a|b|rc)\d+$|\.dev\d+$")
 
 # `version = "3.0.0"` inside pyproject.toml's `[project]` table.
 _VERSION_ASSIGNMENT_RE = re.compile(r'^version\s*=\s*".*"\s*$')
+
+# The title a *publishing* rc run carries, as the publish workflow's
+# `run-name:` renders it ("publish rc from v3.0.0"). Dispatches all share
+# the `workflow_dispatch` event, so this title is the only record of which
+# channel a run built. A dry run renders "publish rc [dry run] from ..."
+# and uploads nothing, so it deliberately fails this match -- counting it
+# as a published candidate would suppress the next real one.
+_RC_RUN_TITLE_RE = re.compile(r"^publish\s+rc\s+from\s+\S+", re.IGNORECASE)
 
 
 class ReleaseCandidateError(RuntimeError):
@@ -415,25 +438,43 @@ def fetch_published_versions(project: str = PYPI_PROJECT, timeout: float = 10.0)
     return sorted(str(version) for version in releases)
 
 
-# --- Nightly change detection --------------------------------------------
+# --- Tip-unchanged detection (dev nightly, rc autopilot) -----------------
 
 
-def select_last_scheduled_sha(payload: dict[str, Any], exclude_run_id: str | int = "") -> str:
-    """The commit the last successful *scheduled* run of the workflow built.
+def select_last_published_sha(
+    payload: dict[str, Any],
+    channel: str = "dev",
+    exclude_run_id: str | int = "",
+) -> str:
+    """The commit the last successful publish of `channel` built.
 
-    The nightly's no-op condition (owner requirement: skip the publish when
-    the release-branch tip is unchanged since the last published build).
+    The tip-unchanged condition behind two no-ops, both owner requirements:
+
+    * **dev** -- skip the nightly when the release-branch tip has not moved
+      since the last successful nightly;
+    * **rc** -- the sprint autopilot dispatches a candidate every time the
+      sprint parks at agentic-work-complete (#3729), so repeated
+      observations of the same parked state must not cut duplicate
+      candidates. Only a tip that moved since the last published rc earns a
+      new rcN.
+
     GitHub's own run history is the state store -- nothing has to be written
-    back to the repo or to PyPI to remember what was last built.
+    back to the repo or to PyPI to remember what was last built. The two
+    channels are told apart by how a run was triggered plus, for rc, the
+    run's title: a dispatch is `workflow_dispatch` whatever channel it
+    carries, and only the run title records which one it was (see
+    `_RC_RUN_TITLE_RE` -- the publish workflow's `run-name:` is load-bearing
+    for this and is shape-tested).
 
     `exclude_run_id` drops the caller's own run, which is already listed as
     in-progress-then-success by the time a later run reads this.
     """
+    resolved = _check_channel(channel)
     runs = payload.get("workflow_runs") or []
     candidates = [
         run
         for run in runs
-        if run.get("event") == "schedule"
+        if run_published_channel(run, resolved)
         and run.get("conclusion") == "success"
         and str(run.get("id", "")) != str(exclude_run_id or "")
         and run.get("head_sha")
@@ -444,25 +485,53 @@ def select_last_scheduled_sha(payload: dict[str, Any], exclude_run_id: str | int
     return str(newest["head_sha"])
 
 
-def fetch_last_scheduled_sha(
+def run_published_channel(run: dict[str, Any], channel: str) -> bool:
+    """Whether a workflow run of the publish pipeline is a `channel` build.
+
+    A nightly is the only thing the `schedule` trigger runs, so dev needs no
+    title. Every other channel arrives as a `workflow_dispatch`, so rc is
+    identified by the run title the workflow's `run-name:` renders
+    ("publish rc from v3.0.0"). A dry run titles itself "publish rc
+    [dry run] from ..." and uploads nothing, so it deliberately does NOT
+    match -- treating it as a published candidate would suppress the next
+    real one.
+    """
+    trigger = CHANNEL_TRIGGER_EVENT.get(_check_channel(channel), "")
+    if not trigger or run.get("event") != trigger:
+        return False
+    if channel == "dev":
+        return True
+    title = str(run.get("display_title") or run.get("name") or "").strip()
+    return bool(_RC_RUN_TITLE_RE.match(title))
+
+
+def select_last_scheduled_sha(payload: dict[str, Any], exclude_run_id: str | int = "") -> str:
+    """The commit the last successful *nightly* built -- dev's spelling of
+    `select_last_published_sha`."""
+    return select_last_published_sha(payload, "dev", exclude_run_id)
+
+
+def fetch_last_published_sha(
     repo: str,
+    channel: str = "dev",
     workflow_file: str = PUBLISH_WORKFLOW_FILE,
     token: str = "",
     exclude_run_id: str | int = "",
     timeout: float = 30.0,
 ) -> str:
-    """Ask GitHub for the commit the last successful nightly published.
+    """Ask GitHub for the commit the last successful `channel` build published.
 
-    Returns "" when there is no such run (the first nightly always
-    publishes). Raises on a transport or protocol failure: silently treating
-    an API outage as "nothing published yet" would upload a redundant build
-    every night the API is flaky.
+    Returns "" when there is no such run (the first nightly, and the first
+    candidate, always publish). Raises on a transport or protocol failure:
+    silently treating an API outage as "nothing published yet" would upload
+    a redundant build every time the API is flaky.
     """
     import httpx
 
+    event = CHANNEL_TRIGGER_EVENT[_check_channel(channel)]
     url = (
         f"https://api.github.com/repos/{repo}/actions/workflows/{workflow_file}"
-        "/runs?event=schedule&status=success&per_page=30"
+        f"/runs?event={event}&status=success&per_page=30"
     )
     headers = {
         "Accept": "application/vnd.github+json",
@@ -485,7 +554,89 @@ def fetch_last_scheduled_sha(
         payload = response.json()
     except ValueError as exc:
         raise ReleaseCandidateError(f"GitHub returned invalid JSON for {url}: {exc}") from exc
-    return select_last_scheduled_sha(payload, exclude_run_id)
+    return select_last_published_sha(payload, channel, exclude_run_id)
+
+
+def fetch_last_scheduled_sha(
+    repo: str,
+    workflow_file: str = PUBLISH_WORKFLOW_FILE,
+    token: str = "",
+    exclude_run_id: str | int = "",
+    timeout: float = 30.0,
+) -> str:
+    """The commit the last successful nightly published -- dev's spelling of
+    `fetch_last_published_sha`."""
+    return fetch_last_published_sha(
+        repo,
+        "dev",
+        workflow_file=workflow_file,
+        token=token,
+        exclude_run_id=exclude_run_id,
+        timeout=timeout,
+    )
+
+
+# --- The sprint autopilot's rc preflight (#3729) --------------------------
+
+
+def autopilot_rc_preflight(
+    branch: str,
+    published: list[str] | tuple[str, ...],
+    runs: dict[str, Any],
+    head_sha: str = "",
+) -> dict[str, Any]:
+    """What dispatching an rc for `head_sha` would publish -- decided without
+    dispatching anything.
+
+    The sprint autopilot parks when the sprint reaches agentic-work-complete
+    and dispatches a candidate for that acceptance round (#3729). It calls
+    this first so the park note can name what the owner should install,
+    instead of pointing at a run whose version nobody knows yet. The
+    decision is the same tip comparison the pipeline itself enforces
+    (`select_last_published_sha`), so a preflight that says "dispatch" and a
+    pipeline that then SKIPs cannot disagree about the same tip.
+
+    Inputs are handed in rather than fetched: the caller (the agent shell
+    library) already has `gh`/`curl` authenticated, and this keeps the
+    decision a pure, testable function with no network of its own.
+
+    Returns `dispatch` (should the autopilot fire?), `version` (the rcN it
+    would cut, or the already-published rcN when it would not), `last_sha`
+    and a human `reason` for the park note.
+    """
+    release = release_branch_version(branch)
+    if release is None:
+        raise ReleaseCandidateError(
+            f"Refusing to plan a candidate from {branch!r} -- release branches (v3.0.0) only."
+        )
+    versions = [str(v) for v in published]
+    last_sha = select_last_published_sha(runs or {}, "rc")
+    head = (head_sha or "").strip()
+    numbers = published_rc_numbers(release, versions)
+    current = rc_version(release, numbers[-1]) if numbers else ""
+
+    if last_sha and head and last_sha == head:
+        return {
+            "dispatch": False,
+            "version": current,
+            "last_sha": last_sha,
+            "release": release,
+            "reason": (
+                f"{branch} is unchanged since the last published candidate "
+                f"({last_sha[:12]}) -- no new candidate is needed."
+            ),
+        }
+    return {
+        "dispatch": True,
+        "version": next_rc_version(release, versions),
+        "last_sha": last_sha,
+        "release": release,
+        "reason": (
+            f"{branch} has moved since the last published candidate"
+            if last_sha
+            else f"no candidate has been published from {branch} yet"
+        ),
+    }
 
 
 # --- The plan the CLI, the API, the ceremony and the dashboard all render --
@@ -848,6 +999,16 @@ def release_publish(args: argparse.Namespace) -> int:
                     "Note: a dev run publishes nothing when the tip has not moved since the "
                     "last successful nightly -- that commit already has a dev build."
                 )
+            elif channel == "rc" and number is None:
+                # Same guard, same reason to say it out loud (#3729): the rc
+                # channel no-ops on an unchanged tip so the autopilot can
+                # dispatch a candidate at every park without cutting
+                # duplicates. An explicit --number overrides it.
+                print(
+                    "Note: an rc run publishes nothing when the tip has not moved since the "
+                    "last published candidate -- that commit already has one. Pass a number "
+                    "to override."
+                )
             print(f"Watch it: {dispatched['runs_url']}")
         return 0
 
@@ -930,7 +1091,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--skip-if-unchanged",
         action="store_true",
-        help="dev channel: print SKIP when the tip is unchanged since the last nightly",
+        help=(
+            "dev/rc channels: print SKIP when the tip is unchanged since the last "
+            "nightly (dev) or the last published candidate (rc)"
+        ),
+    )
+    parser.add_argument(
+        "--autopilot-preflight",
+        action="store_true",
+        help=(
+            "Print, as JSON, whether the sprint autopilot should dispatch an rc for "
+            "--head-sha and which version that would be. Reads "
+            '{"published": [...], "runs": {...}} on stdin; makes no network calls.'
+        ),
     )
     parser.add_argument(
         "--tags-at-head",
@@ -944,6 +1117,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--json", action="store_true", help="Print the full plan as JSON to stderr")
     args = parser.parse_args(argv)
+
+    if args.autopilot_preflight:
+        # The autopilot's naming question, not a build: it needs the answer
+        # *before* dispatching, and it runs in the agent workflows where the
+        # package's HTTP dependency may not be installed -- so the caller
+        # hands the two API reads in on stdin and this stays pure (#3729).
+        return _autopilot_preflight_cli(args)
 
     try:
         channel = _check_channel(args.channel)
@@ -980,21 +1160,32 @@ def main(argv: list[str] | None = None) -> int:
                 "delegates the publish"
             )
 
-    if channel == "dev" and args.skip_if_unchanged:
+    if args.skip_if_unchanged:
+        # The tip guard, for both channels that can fire repeatedly on their
+        # own: the nightly schedule, and the sprint autopilot's rc dispatch
+        # at agentic-work-complete (#3729). Stable is ceremony-only and
+        # cannot repeat, so it has no such guard.
+        if channel == "stable":
+            return _fail(
+                "--skip-if-unchanged is the dev/rc tip guard -- the stable channel is "
+                "ceremony-only and publishes exactly what the ceremony tagged"
+            )
         if not args.head_sha.strip():
             return _fail("--skip-if-unchanged needs --head-sha")
         try:
-            last = fetch_last_scheduled_sha(
+            last = fetch_last_published_sha(
                 args.repo,
+                channel,
                 token=os.environ.get("GITHUB_TOKEN", ""),
                 exclude_run_id=args.exclude_run_id,
             )
         except ReleaseCandidateError as exc:
             return _fail(str(exc))
         if last and last == args.head_sha.strip():
+            since = "last successful nightly" if channel == "dev" else "last published candidate"
             print(
                 f"release-publish: {args.branch} is still at {last[:12]}, unchanged since the "
-                "last successful nightly -- nothing to publish.",
+                f"{since} -- nothing to publish.",
                 file=sys.stderr,
             )
             print(SKIP_SENTINEL)
@@ -1023,6 +1214,39 @@ def main(argv: list[str] | None = None) -> int:
         print(f"release-publish: pinned {path} to {version}", file=sys.stderr)
 
     print(version)
+    return 0
+
+
+def _autopilot_preflight_cli(args: argparse.Namespace) -> int:
+    """`--autopilot-preflight`: answer the sprint autopilot's rc question.
+
+    Stdin carries what the caller already fetched -- `published` (PyPI's
+    version list) and `runs` (this workflow's successful dispatch history) --
+    and stdout carries the JSON decision the park note renders. Everything
+    the answer depends on is an input, so the agent shell library needs no
+    Python HTTP stack and this stays a unit-testable function.
+    """
+    try:
+        raw = sys.stdin.read()
+    except OSError as exc:  # pragma: no cover - stdin is always readable in practice
+        return _fail(f"could not read the preflight payload on stdin: {exc}")
+    try:
+        payload = json.loads(raw) if raw.strip() else {}
+    except ValueError as exc:
+        return _fail(f"the preflight payload on stdin is not JSON: {exc}")
+    if not isinstance(payload, dict):
+        return _fail("the preflight payload on stdin must be a JSON object")
+
+    published = payload.get("published") or []
+    runs = payload.get("runs") or {}
+    if not isinstance(published, list) or not isinstance(runs, dict):
+        return _fail('the preflight payload needs "published" (list) and "runs" (object)')
+
+    try:
+        decision = autopilot_rc_preflight(args.branch, published, runs, args.head_sha)
+    except ReleaseCandidateError as exc:
+        return _fail(str(exc))
+    print(json.dumps(decision))
     return 0
 
 

@@ -984,6 +984,134 @@ RETRY_IMPLEMENTATION
 ${marker}"
 }
 
+# -------------------------
+# Release candidate at agentic-work-complete (#3729)
+# -------------------------
+# The owner's acceptance cadence is: wait for the sprint to reach "agentic
+# work complete", run a full acceptance round, file failures/improvements,
+# repeat. The moment the autopilot detects that state is exactly the moment
+# a candidate should exist on every platform, so the park transition
+# dispatches the #3727 publish pipeline (PyPI + Homebrew tap in one run)
+# instead of leaving the owner to dispatch it by hand.
+#
+# Three properties, each enforced below rather than merely intended:
+#
+#   * it reuses the park detection (`sprint_park_state`) -- there is no
+#     second state machine deciding when the sprint is done;
+#   * the channel is `rc`, hard-coded and re-checked at the dispatch (the
+#     kick path can never publish `stable`; a release is cut only by
+#     scripts/release_ceremony.sh, which carries a tag and a confirmation
+#     token this path does not have);
+#   * repeat observations of the same parked state are no-ops. The
+#     authority for that is the pipeline's own tip guard, so a candidate is
+#     never duplicated even if this preflight is unavailable.
+
+#: The one park state that means "agentic work complete" (#3709): every
+#: sprint item closed into acceptance, nothing open, nothing in flight.
+#: `sprint_complete` deliberately does NOT publish -- by then the owner has
+#: already accepted the round this candidate would have been for.
+AUTOPILOT_RC_PARK_STATE="awaiting_acceptance"
+#: Never anything else. See the guard in _autopilot_publish_rc.
+AUTOPILOT_RC_CHANNEL="rc"
+AUTOPILOT_PUBLISH_WORKFLOW="release-publish-pypi.yml"
+
+# Asks src/nyxgpt/release_candidate.py what an rc dispatch would publish
+# from `branch` right now: the next `3.0.0rcN`, or the already-published
+# candidate when the branch tip has not moved since it was cut. The two API
+# reads happen here (the agent runners have `gh` and `curl` authenticated,
+# not necessarily the package's HTTP stack) and the decision happens there,
+# so this path and the pipeline share one implementation of "has the tip
+# moved?". Echoes the decision JSON, or nothing at all when the preflight
+# cannot run -- callers must treat that as "unknown", never as "no".
+_autopilot_rc_preflight() {
+  local branch="$1"
+  local tip published runs
+  tip="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/commits/${branch}" --jq '.sha' 2>/dev/null || echo "")"
+  published="$(curl -fsSL --max-time 20 "https://pypi.org/pypi/nyxgpt/json" 2>/dev/null |
+    jq -c '[.releases | keys[]]' 2>/dev/null || echo "")"
+  jq -e 'type == "array"' <<<"${published:-null}" >/dev/null 2>&1 || published='[]'
+  # Only the fields the decision reads -- naming them keeps it obvious that
+  # the run title is load-bearing (it is how an rc run is told apart from a
+  # dev or stable dispatch).
+  runs="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/actions/workflows/${AUTOPILOT_PUBLISH_WORKFLOW}/runs?event=workflow_dispatch&status=success&per_page=30" \
+    --jq '{workflow_runs: [.workflow_runs[] | {id, event, conclusion, head_sha, created_at, display_title, name}]}' 2>/dev/null || echo "")"
+  jq -e 'has("workflow_runs")' <<<"${runs:-null}" >/dev/null 2>&1 || runs='{}'
+
+  jq -n -c --argjson p "$published" --argjson r "$runs" '{published: $p, runs: $r}' |
+    PYTHONPATH="${_LIB_DIR}/../../../src" python3 -m nyxgpt.release_candidate \
+      --autopilot-preflight --branch "$branch" --head-sha "$tip" 2>/dev/null
+}
+
+# Dispatches the rc publish for a park that just reached agentic-work-
+# complete and echoes what the park note should say about it (JSON; `{}`
+# when this park state is not the one that publishes). Best-effort like
+# every other autopilot step: a failure here is reported in the note and
+# never breaks the park.
+_autopilot_publish_rc() {
+  local park_state="${1:-}"
+  require_cmd jq
+  local state branch preflight version reason runs_url
+
+  jq -e . <<<"${park_state:-null}" >/dev/null 2>&1 || park_state='{}'
+  state="$(jq -r '.state // empty' <<<"$park_state" 2>/dev/null || echo "")"
+  if [[ "$state" != "$AUTOPILOT_RC_PARK_STATE" ]]; then
+    # Not the transition into agentic-work-complete: publish nothing. Work
+    # still in flight has no candidate to test, and a sprint already
+    # accepted to For Release has had its acceptance round.
+    echo '{}'
+    return 0
+  fi
+
+  if [[ "$AUTOPILOT_RC_CHANNEL" != "rc" ]]; then
+    # Unreachable by design, and deliberately fatal to the dispatch rather
+    # than merely surprising: this path must never be able to publish a
+    # release. Cutting one is the ceremony's job (tag + confirmation token).
+    _warn "Autopilot: refusing to publish channel '${AUTOPILOT_RC_CHANNEL}' -- the kick path publishes candidates only."
+    jq -n -c --arg c "$AUTOPILOT_RC_CHANNEL" \
+      '{dispatched: false, error: true, reason: ("refused to publish channel " + $c + " -- the autopilot publishes candidates only")}'
+    return 0
+  fi
+
+  branch="$(get_release_branch 2>/dev/null || echo "")"
+  if [[ -z "$branch" ]]; then
+    _warn "Autopilot: no RELEASE_BRANCH configured -- cannot dispatch a release candidate."
+    jq -n -c '{dispatched: false, error: true, channel: "rc", reason: "no RELEASE_BRANCH is configured"}'
+    return 0
+  fi
+
+  preflight="$(_autopilot_rc_preflight "$branch" 2>/dev/null || echo "")"
+  jq -e 'has("dispatch")' <<<"${preflight:-null}" >/dev/null 2>&1 || preflight=""
+
+  version=""
+  reason=""
+  if [[ -n "$preflight" ]]; then
+    version="$(jq -r '.version // ""' <<<"$preflight")"
+    reason="$(jq -r '.reason // ""' <<<"$preflight")"
+    if [[ "$(jq -r '.dispatch // false' <<<"$preflight")" != "true" ]]; then
+      # The tip has not moved since the last candidate, so the pipeline
+      # would resolve this to SKIP. Don't spend a run to be told that --
+      # report the candidate the owner should install instead.
+      echo "[review] Autopilot: ${branch} is unchanged since ${version:-the last candidate} -- no new rc dispatched." >&2
+      jq -n -c --arg b "$branch" --arg v "$version" --arg r "$reason" \
+        '{dispatched: false, noop: true, channel: "rc", branch: $b, version: $v, reason: $r}'
+      return 0
+    fi
+  fi
+
+  runs_url="https://github.com/${REPO_OWNER}/${REPO_NAME}/actions/workflows/${AUTOPILOT_PUBLISH_WORKFLOW}"
+  if gh workflow run "$AUTOPILOT_PUBLISH_WORKFLOW" -R "${REPO_OWNER}/${REPO_NAME}" \
+    --ref "$branch" -f channel="$AUTOPILOT_RC_CHANNEL" >/dev/null 2>&1; then
+    echo "[review] Autopilot: dispatched an rc publish on ${branch}${version:+ (${version})}." >&2
+    jq -n -c --arg b "$branch" --arg v "$version" --arg u "$runs_url" \
+      '{dispatched: true, channel: "rc", branch: $b, version: $v, runs_url: $u}'
+  else
+    _warn "Autopilot: failed to dispatch the rc publish on ${branch}."
+    jq -n -c --arg b "$branch" --arg v "$version" --arg u "$runs_url" \
+      '{dispatched: false, error: true, channel: "rc", branch: $b, version: $v, runs_url: $u,
+        reason: "GitHub refused the workflow dispatch"}'
+  fi
+}
+
 # Sprint-autopilot continuation kick (#3480), shared by the post-merge path
 # (review_accept_and_merge.sh) and the 3-cycle review escalation path
 # (review_agent_auto_review.yml): both outcomes free the reviewer for the
@@ -1129,7 +1257,12 @@ READY_FOR_NEXT_ISSUE" \
           || _warn "Autopilot: failed to post READY_FOR_NEXT_ISSUE kick."
       else
         echo "[review] Autopilot: sprint ${active_sprint} has no dispatchable Backlog work (park state: ${state:-unknown}) -- parked, no kick." >&2
-        _autopilot_park_note "$event_phrase" "$active_sprint" "$release_version" "$park_state" "$scan"
+        # #3729: a park that just reached agentic-work-complete is the start
+        # of an acceptance round, so cut the candidate that round installs
+        # before writing the note -- the note then names it.
+        local rc_publish
+        rc_publish="$(_autopilot_publish_rc "$park_state" 2>/dev/null || echo '{}')"
+        _autopilot_park_note "$event_phrase" "$active_sprint" "$release_version" "$park_state" "$scan" "$rc_publish"
       fi
     fi
   fi
@@ -1143,7 +1276,7 @@ READY_FOR_NEXT_ISSUE" \
 # to a note without one rather than skipping the note entirely.
 _autopilot_park_note() {
   local event_phrase="$1" active_sprint="$2" release_version="$3"
-  local park_state="${4:-}" resume_scan="${5:-}"
+  local park_state="${4:-}" resume_scan="${5:-}" rc_publish="${6:-}"
   local by_sprint body
   by_sprint="$(release_backlog_by_sprint "$release_version" "${SPRINT_FIELD:-Sprint}" 2>/dev/null || echo "")"
   [[ -n "$by_sprint" ]] || by_sprint="{}"
@@ -1152,10 +1285,14 @@ _autopilot_park_note() {
   # doesn't support.
   jq -e . <<<"${park_state:-null}" >/dev/null 2>&1 || park_state="{}"
   jq -e . <<<"${resume_scan:-null}" >/dev/null 2>&1 || resume_scan="{}"
+  # What the rc dispatch did (#3729), so the note names the candidate this
+  # acceptance round installs. `{}` renders no candidate section at all.
+  jq -e . <<<"${rc_publish:-null}" >/dev/null 2>&1 || rc_publish="{}"
 
   body="$(jq -n --arg e "$event_phrase" --arg s "$active_sprint" --arg v "$release_version" \
     --argjson b "$by_sprint" --argjson p "$park_state" --argjson r "$resume_scan" \
-    '{event_phrase:$e, sprint_title:$s, release_version:$v, by_sprint:$b, park_state:$p, resume_scan:$r}' \
+    --argjson c "$rc_publish" \
+    '{event_phrase:$e, sprint_title:$s, release_version:$v, by_sprint:$b, park_state:$p, resume_scan:$r, rc_publish:$c}' \
     | python3 "${_LIB_DIR}/sprint_calc.py" park-note)"
 
   issue_comment "$RELEASE_ISSUE_NUMBER" "$body" \
