@@ -134,6 +134,36 @@ command; you never type `ssh`, `terraform`, `docker`, or `kubectl`.
 `nyxgpt ops portability` prints this same sequence, so the terminal you are
 accepting from can always tell you the next step.
 
+### Accepting code that isn't released yet
+
+Step 1 installs from PyPI, so by default the run exercises the last **stable**
+release — not the release-branch tip carrying the acceptance failures you just
+fixed. Pin a [nightly dev build or a release candidate](cloud.md#pypi-publishing-dev-rc-and-stable)
+instead — the nightly publishes the tip automatically, and
+`nyxgpt release publish --publish` cuts an RC on demand (#3727):
+
+| # | Command |
+|---|---------|
+| 1 | `pip install nyxgpt==3.0.0rc3` |
+| 3 | `nyxgpt cloud deploy --version 3.0.0rc3` |
+
+On **macOS**, where the repo-less install is `brew`, an `rc` is installed
+from its own formulas instead — an rc publish stamps them into the same tap
+alongside the stable ones:
+
+```bash
+brew tap dkblinux98/nyxgpt && brew install nyxgpt-api-rc nyxgpt-web-rc
+```
+
+`brew install nyxgpt-api` is unaffected and stays on the latest stable
+release ([docs/homebrew.md](homebrew.md#release-candidate-formulas-rc-channel)).
+
+Nothing else about the sequence changes: the build is a published artifact
+like any other, so the run stays repo-less. Dev and rc builds are
+acceptance-only and are never announced; `pip install nyxgpt` still resolves
+to the stable release, because pip excludes pre-releases from an unpinned
+requirement.
+
 ### Why step 5 passes `--skip-deploy`
 
 A bare `nyxgpt cloud smoke` deploys a stack of its own, tests it, and destroys

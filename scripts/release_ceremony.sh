@@ -6,7 +6,12 @@
 #   Phase 1  master fast-forward, then publish the draft release
 #            (master is always the authoritative latest release; the
 #            release tag is created on master AFTER the fast-forward)
-#   Phase 2  PyPI publish (build from tag, verify, upload, verify live)
+#   Phase 2  PyPI publish — DELEGATED to the single publish pipeline
+#            (.github/workflows/release-publish-pypi.yml, channel `stable`).
+#            The ceremony no longer builds or uploads anything itself: there
+#            is one build/publish core for dev, rc and stable (#3727, owner
+#            decision 2026-08-11), it authenticates with PyPI Trusted
+#            Publishing (OIDC), and no PyPI token is stored anywhere.
 #   Phase 3  Project close-out (statuses -> Done, milestone + issue close)
 #   Phase 4  Line reconciliation                       -> STOP: repoint
 #            point release: merge release into the next development line
@@ -14,7 +19,8 @@
 #
 # Run LOCALLY by the human owner. Credentials come from ~/.nyxGPT/config.ini:
 #   [github] PAT          — owner PAT (ruleset bypass: master push, repoint)
-#   [pypi]   PYPI_TOKEN   — project-scoped upload token
+# No PyPI credential is needed here: Phase 2 dispatches the publish workflow,
+# which uploads with Trusted Publishing (OIDC) from GitHub Actions.
 #
 # Usage:
 #   scripts/release_ceremony.sh VERSION [options]
@@ -92,8 +98,9 @@ ini_get() { # ini_get SECTION KEY
     s && $1 ~ "^"key"[ \t]*$" {v=$2; gsub(/[ \t]/,"",v); print v; exit}' "$CONFIG_FILE"
 }
 PAT="$(ini_get github PAT)";           [[ -n "$PAT" ]] || fail "[github] PAT not found in $CONFIG_FILE"
-PYPI_TOKEN="$(ini_get pypi PYPI_TOKEN)"
-[[ $SKIP_PYPI -eq 1 || -n "$PYPI_TOKEN" ]] || fail "[pypi] PYPI_TOKEN not found (or pass --skip-pypi)"
+# Phase 2 delegates the upload to the publish workflow (Trusted Publishing),
+# so the ceremony holds no PyPI credential at all.
+PUBLISH_WORKFLOW="release-publish-pypi.yml"
 export GH_TOKEN="$PAT"   # the ceremony is the human owner's act — all gh calls run as the owner
 AUTH_URL="https://x-access-token:${PAT}@github.com/${REPO}.git"
 
@@ -209,35 +216,54 @@ if [[ $DRY -eq 0 ]]; then
   log "  verified: tag ${VERSION} == release tip; release published"
 fi
 
-# --- Phase 2: PyPI ---
+# --- Phase 2: PyPI (delegated to the single publish pipeline) ---
+#
+# One build/publish core serves dev, rc and stable (#3727). The ceremony's
+# only job here is to ask for the `stable` channel and then verify the
+# result the same way it verifies every other mutation. The build, the
+# twine check, the clean-venv smoke and the upload all happen inside
+# release-publish-pypi.yml, with Trusted Publishing instead of a token —
+# and the workflow refuses a stable build unless the release tag Phase 1
+# just created is at the ref's tip and this confirmation is passed.
 if [[ $SKIP_PYPI -eq 1 ]]; then
   log "Phase 2: skipped (--skip-pypi)"
 elif [[ $DRY -eq 1 ]]; then
-  log "Phase 2 DRY-RUN: would build from tag ${VERSION}, twine check, clean-venv smoke, upload, verify live"
+  log "Phase 2 DRY-RUN: would dispatch ${PUBLISH_WORKFLOW} (channel=stable) on ${REL_BRANCH} and wait for pypi.org to serve ${VERSION}"
 else
-  log "Phase 2: PyPI publish"
-  WORK=$(mktemp -d)
-  trap 'rm -rf "$WORK"; git worktree prune >/dev/null 2>&1 || true' EXIT
-  git worktree add --detach "$WORK/src" "$TIP" >/dev/null
-  python3 -m venv "$WORK/buildenv"
-  "$WORK/buildenv/bin/pip" -q install --upgrade build twine
-  ( cd "$WORK/src" && "$WORK/buildenv/bin/python" -m build --outdir "$WORK/dist" ) >/dev/null
-  "$WORK/buildenv/bin/twine" check "$WORK"/dist/* | sed 's/^/  /'
-  # clean-venv smoke: the uploaded artifact must at least import and answer --help
-  python3 -m venv "$WORK/smokeenv"
-  "$WORK/smokeenv/bin/pip" -q install "$WORK"/dist/*.whl
-  "$WORK/smokeenv/bin/python" -c "import nyxgpt" || fail "smoke failed: import nyxgpt"
-  "$WORK/smokeenv/bin/nyxgpt" --help >/dev/null 2>&1 || log "  note: 'nyxgpt --help' unavailable in bare install (acceptable if documented)"
-  log "  smoke ok — uploading to PyPI"
-  TWINE_USERNAME=__token__ TWINE_PASSWORD="$PYPI_TOKEN" \
-    "$WORK/buildenv/bin/twine" upload --non-interactive "$WORK"/dist/* >/dev/null
+  log "Phase 2: PyPI publish — delegated to ${PUBLISH_WORKFLOW} (channel=stable)"
+  DISPATCH_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  gh workflow run "$PUBLISH_WORKFLOW" -R "$REPO" --ref "$REL_BRANCH" \
+    -f channel=stable -f confirm=ceremony -f number='' -f dry_run=false \
+    || fail "could not dispatch ${PUBLISH_WORKFLOW}"
+
+  # Locate the run we just asked for (dispatch returns nothing identifying
+  # it), then wait for it — never assume success from a non-error response.
+  RUN_ID=""
+  for i in $(seq 1 12); do
+    sleep 5
+    RUN_ID=$(gh run list -R "$REPO" --workflow "$PUBLISH_WORKFLOW" --event workflow_dispatch \
+      --limit 10 --json databaseId,headSha,createdAt \
+      --jq "[.[] | select(.headSha==\"${TIP}\") | select(.createdAt >= \"${DISPATCH_AT}\")][0].databaseId" 2>/dev/null || true)
+    [[ -n "$RUN_ID" && "$RUN_ID" != "null" ]] && break
+  done
+  [[ -n "$RUN_ID" && "$RUN_ID" != "null" ]] || fail "dispatched ${PUBLISH_WORKFLOW} but could not find its run — check the Actions tab"
+  log "  run: https://github.com/${REPO}/actions/runs/${RUN_ID}"
+
+  CONCLUSION=""
+  for i in $(seq 1 120); do   # up to ~30 minutes
+    STATUS=$(gh run view "$RUN_ID" -R "$REPO" --json status --jq .status)
+    [[ "$STATUS" == "completed" ]] && { CONCLUSION=$(gh run view "$RUN_ID" -R "$REPO" --json conclusion --jq .conclusion); break; }
+    sleep 15
+  done
+  [[ "$CONCLUSION" == "success" ]] \
+    || fail "publish run ${RUN_ID} ended '${CONCLUSION:-timed out}' — see https://github.com/${REPO}/actions/runs/${RUN_ID}"
+
   for i in $(seq 1 12); do
     code=$(curl -s -o /dev/null -w "%{http_code}" "https://pypi.org/pypi/nyxgpt/${VERSION}/json")
     [[ "$code" == "200" ]] && break; sleep 10
   done
   [[ "$code" == "200" ]] || fail "verify failed: pypi.org does not serve nyxgpt ${VERSION}"
   log "  verified live: https://pypi.org/project/nyxgpt/${VERSION}/"
-  git worktree remove "$WORK/src" --force >/dev/null 2>&1 || true
 fi
 
 # --- Phase 3: project close-out ---

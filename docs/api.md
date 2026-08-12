@@ -61,6 +61,7 @@ Quick reference of all 82 available endpoints:
 | `/api/v1/cloud/deploy/destroy` | POST | Close the tunnel and tear the deployment down (requires `{"confirm": true}`) |
 | `/api/v1/cloud/deploy/tunnel` | POST | Open or close (`{"action": "stop"}`) the SSH access tunnel |
 | `/api/v1/ops/portability` | GET | Repo-less portability matrix per deployment target, its mechanical checks and open gaps, plus the clean-machine acceptance sequence |
+| `/api/v1/ops/release-candidate` | GET | Release-candidate plan for the release branch: published RCs, the next RC version, guardrails, and the pinned commands that point an acceptance install at it |
 | `/api/v1/models` | GET | List Ollama models |
 | `/api/v1/models/pull` | POST | Pull model from Ollama |
 | `/api/v1/models/{model_name}` | DELETE | Delete model |
@@ -1689,6 +1690,80 @@ no subprocesses, no network, no AWS.
 | `targets[].acceptance_ready` | Checks passed *and* no open gap |
 | `checkout` | The checkout evidence was resolved against, or `""` when running from an installed package |
 | `acceptance_ready` | Every in-scope target is installable and operable without a checkout — the capstone's portability criterion in one boolean |
+
+---
+
+## PyPI publish plan
+
+### `GET /api/v1/ops/release-candidate`
+
+Report the PyPI publish plan (#3727) — the dashboard half of
+`nyxgpt release publish`. Every install in the portability matrix comes from
+PyPI, so acceptance testing can only reach code that has been published; one
+pipeline publishes the release-branch tip as a nightly `dev` build, an
+on-demand `rc`, or the release itself (`stable`, ceremony-only). See
+[cloud.md](cloud.md#pypi-publishing-dev-rc-and-stable).
+
+Optional query parameters:
+
+| Parameter | Default | Meaning |
+| --- | --- | --- |
+| `branch` | `[github] RELEASE_BRANCH` from config.ini, else `v<declared version>` | Release branch to plan against |
+| `channel` | `rc` | `dev`, `rc` or `stable` — an unknown value is a `400` |
+
+Read-only, and there is deliberately no `POST` counterpart: publishing to
+PyPI carries the owner's repo credentials, so it lives in the
+schedule/dispatch-only workflow and in `nyxgpt release publish --publish` —
+never behind a button a browser session could press. The endpoint makes one
+outbound call, to PyPI's JSON API, to learn which versions already exist; a
+failed lookup is reported in `pypi_lookup_error` and clears `publishable`
+rather than failing the request.
+
+```json
+{
+  "branch": "v3.0.0",
+  "channel": "rc",
+  "channels": ["dev", "rc", "stable"],
+  "is_release_branch": true,
+  "branch_version": "3.0.0",
+  "declared_version": "3.0.0",
+  "version_matches_branch": true,
+  "release": "3.0.0",
+  "published_releases": ["2.1.0", "3.0.0"],
+  "published_rcs": ["3.0.0rc1", "3.0.0rc2"],
+  "published_dev_builds": ["3.0.0.dev41"],
+  "next_rc_number": 3,
+  "next_rc_version": "3.0.0rc3",
+  "next_dev_version": "3.0.0.dev42",
+  "version": "3.0.0rc3",
+  "is_prerelease": true,
+  "workflow": "release-publish-pypi.yml",
+  "pypi_lookup_error": "",
+  "publishable": true,
+  "blockers": [],
+  "commands": {
+    "plan": "nyxgpt release publish --channel rc",
+    "publish": "nyxgpt release publish --channel rc --publish",
+    "brew": "brew tap dkblinux98/nyxgpt && brew install nyxgpt-api-rc nyxgpt-web-rc",
+    "install": "pip install nyxgpt==3.0.0rc3",
+    "user_data": "nyxgpt cloud user-data --os linux --version 3.0.0rc3",
+    "deploy": "nyxgpt cloud deploy --version 3.0.0rc3"
+  },
+  "guardrails": ["Scheduled and dispatch triggers only: ..."],
+  "docs": "docs/cloud.md#pypi-publishing-dev-rc-and-stable"
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `version` | The version the publish workflow would upload for `channel` — derived from what PyPI already serves, so a number is never reused |
+| `next_rc_version` / `next_dev_version` | The next unused version on each pre-release channel |
+| `is_prerelease` | `true` for `dev` and `rc`: what gets published is a PEP 440 pre-release, so `pip install nyxgpt` cannot resolve to it. `false` only for `stable` |
+| `publishable` | The guardrails allow cutting an RC from `branch` (release branch, matching the declared version, PyPI reachable) |
+| `blockers` | Why it isn't publishable, one human-readable reason each |
+| `pypi_lookup_error` | Non-empty when PyPI could not be reached, which makes the next RC number a guess and blocks publishing |
+| `commands.brew` | Present on the `rc` channel only: an rc publish also stamps `nyxgpt-api-rc`/`nyxgpt-web-rc` into the Homebrew tap, so a candidate is installable on macOS. Absent for `dev` (PyPI-only) and `stable` (the stable formulas are the ceremony's) |
+| `commands.plan` / `commands.publish` | For `stable` these are `scripts/release_ceremony.sh` — the CLI's `--channel` offers `dev`/`rc` only, so rendering a `--channel stable` command would hand the operator a line that fails |
 
 ---
 

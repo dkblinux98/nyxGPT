@@ -444,4 +444,43 @@ export const handlers = [
   http.post('/api/v1/rag/cache/clear', () => {
     return HttpResponse.json({ status: 'Query result cache cleared' });
   }),
+
+  // GET /api/v1/ops/release-candidate -- shaped like
+  // nyxgpt.release_candidate.plan() (#3727).
+  http.get('/api/v1/ops/release-candidate', () => {
+    return HttpResponse.json({
+      branch: 'v3.0.0',
+      channel: 'rc',
+      channels: ['dev', 'rc', 'stable'],
+      is_release_branch: true,
+      branch_version: '3.0.0',
+      declared_version: '3.0.0',
+      version_matches_branch: true,
+      release: '3.0.0',
+      published_releases: ['2.1.0'],
+      published_rcs: ['3.0.0rc1'],
+      published_dev_builds: ['3.0.0.dev4'],
+      next_rc_number: 2,
+      next_rc_version: '3.0.0rc2',
+      next_dev_version: '3.0.0.dev5',
+      version: '3.0.0rc2',
+      is_prerelease: true,
+      workflow: 'release-publish-pypi.yml',
+      pypi_lookup_error: '',
+      publishable: true,
+      blockers: [],
+      commands: {
+        plan: 'nyxgpt release publish --channel rc',
+        publish: 'nyxgpt release publish --channel rc --publish',
+        brew: 'brew tap dkblinux98/nyxgpt && brew install nyxgpt-api-rc nyxgpt-web-rc',
+        install: 'pip install nyxgpt==3.0.0rc2',
+        user_data: 'nyxgpt cloud user-data --os linux --version 3.0.0rc2',
+        deploy: 'nyxgpt cloud deploy --version 3.0.0rc2',
+      },
+      guardrails: [
+        'Scheduled and dispatch triggers only: the workflow has no push, tag or release trigger.',
+      ],
+      docs: 'docs/cloud.md#pypi-publishing-dev-rc-and-stable',
+    });
+  }),
 ];

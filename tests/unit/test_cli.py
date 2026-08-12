@@ -1850,6 +1850,84 @@ def test_ops_portability_propagates_the_strict_gate_failure(
     assert cli(["ops", "portability", "--strict"]) == 1
 
 
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["release", "rc"], {"publish": False, "rc_number": None, "branch": None}),
+        (["release", "rc", "--publish"], {"publish": True, "rc_number": None, "branch": None}),
+        (
+            ["release", "rc", "--publish", "--rc-number", "4", "--branch", "v3.0.0"],
+            {"publish": True, "rc_number": 4, "branch": "v3.0.0"},
+        ),
+    ],
+)
+def test_release_rc_parses_and_dispatches(
+    monkeypatch: pytest.MonkeyPatch, argv: list[str], expected: dict
+) -> None:
+    """`nyxgpt release rc` (#3727) reaches nyxgpt.release_candidate with its flags."""
+    import nyxgpt.cli as cli_mod
+
+    seen_args = []
+    monkeypatch.setattr(
+        cli_mod.release_candidate_mod, "release_rc", lambda args: seen_args.append(args) or 0
+    )
+
+    exit_code = cli(argv)
+
+    assert exit_code == 0
+    assert len(seen_args) == 1
+    assert seen_args[0].publish is expected["publish"]
+    assert seen_args[0].rc_number == expected["rc_number"]
+    assert seen_args[0].branch == expected["branch"]
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["release", "publish"], {"channel": "rc", "number": None, "publish": False}),
+        (
+            ["release", "publish", "--channel", "dev", "--publish"],
+            {"channel": "dev", "number": None, "publish": True},
+        ),
+        (
+            ["release", "publish", "--channel", "rc", "--number", "4"],
+            {"channel": "rc", "number": 4, "publish": False},
+        ),
+    ],
+)
+def test_release_publish_parses_every_channel(
+    monkeypatch: pytest.MonkeyPatch, argv: list[str], expected: dict
+) -> None:
+    """`nyxgpt release publish` (#3727) is the wrapper for the one publish pipeline."""
+    import nyxgpt.cli as cli_mod
+
+    seen_args = []
+    monkeypatch.setattr(
+        cli_mod.release_candidate_mod, "release_publish", lambda args: seen_args.append(args) or 0
+    )
+
+    assert cli(argv) == 0
+    assert len(seen_args) == 1
+    assert seen_args[0].channel == expected["channel"]
+    assert seen_args[0].number == expected["number"]
+    assert seen_args[0].publish is expected["publish"]
+
+
+def test_release_publish_refuses_the_stable_channel_at_the_parser() -> None:
+    """A release is published by the ceremony, which delegates to the same workflow."""
+    with pytest.raises(SystemExit):
+        cli(["release", "publish", "--channel", "stable"])
+
+
+def test_release_rc_propagates_a_refused_publish(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A blocked plan (wrong branch, unreachable PyPI) has to surface as a non-zero exit."""
+    import nyxgpt.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod.release_candidate_mod, "release_rc", lambda args: 1)
+
+    assert cli(["release", "rc", "--publish"]) == 1
+
+
 # --- Interactive chat mode tests ---
 
 
