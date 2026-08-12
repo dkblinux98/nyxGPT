@@ -25,28 +25,26 @@ Three pure decisions live here so they can be unit-tested without GitHub:
               still sitting there because their own failures are held --
               see `rework_features` below.
 
-  rework      the currently HELD issues -> the features their bodies name
-              ("Related feature: #N", legacy "Parent feature: #N" -- the
-              same markers the promotion sweep reads), counting ONLY the
-              held issues labeled "Acceptance Failure". A failed feature
-              is not "still under test": the owner has already failed it
-              and it parks closed in `Acceptance Testing` until every
-              related FAILURE reaches `For Release`
-              (scripts/agents/promote_accepted_features.sh, owner flow
-              2026-08-02). Counting such a feature as a blocker would
-              deadlock the gate -- the feature waits on its failure, the
-              failure waits on the gate, the gate waits on the feature --
-              so `decide` subtracts them from the blockers alongside the
-              release issue.
+  rework      the currently HELD issues -> the issues they BLOCK, read
+              from GitHub's native relationships (`blocks`, owner decision
+              2026-08-12 / #3731) with the retired "Related feature: #N"
+              body marker as the historical fallback. A failed feature is
+              not "still under test": the owner has already failed it and
+              it parks closed in `Acceptance Testing` until everything
+              blocking it reaches `For Release`
+              (scripts/agents/promote_accepted_features.sh). Counting such
+              a feature as a blocker would deadlock the gate -- the feature
+              waits on its failure, the failure waits on the gate, the gate
+              waits on the feature -- so `decide` subtracts them from the
+              blockers alongside the release issue.
 
-              The label filter mirrors the one the promotion sweep applies
-              (`labels=Acceptance%20Failure`), so the two sweeps can never
-              disagree about which held issue parks which feature. It
-              matters because a held **Improvement** parks nothing: an
-              improvement never blocks its related feature's acceptance
-              (owner decision 2026-08-01), so a feature named only by held
-              improvements is genuinely still under test and must keep the
-              gate closed.
+              The label filter mirrors the one the promotion sweep applies,
+              so the two sweeps can never disagree about which held issue
+              parks which issue. Since #3731 that is BOTH handler labels:
+              `@improvement` writes the same blocking relationship as
+              `@acceptance-failure`, so a held Improvement parks its issue
+              exactly like a held failure -- and must, or the same deadlock
+              reappears for improvements.
 
   bypass      one issue's labels/title/body -> may it skip the gate?
               The gate is for PRODUCT acceptance work. Agent-process
@@ -66,11 +64,13 @@ Env vars:
                                 today and agents may not create one, so
                                 the marker/heading rules below carry the
                                 rule until the owner adds a label.
-  DRAIN_GATE_REWORK_LABEL      the label a held issue must carry for its
-                                related-feature marker to park that
-                                feature (`rework`). Default "Acceptance
-                                Failure" -- the same label
-                                promote_accepted_features.sh filters on.
+  DRAIN_GATE_REWORK_LABELS     comma-separated labels a held issue must
+                                carry for its blocking relationship to park
+                                the issue it blocks (`rework`). Default
+                                "Acceptance Failure,Improvement" -- the same
+                                labels promote_accepted_features.sh sweeps.
+                                `DRAIN_GATE_REWORK_LABEL` (singular) is
+                                still honoured as a back-compatible alias.
 """
 
 from __future__ import annotations
@@ -90,10 +90,16 @@ BYPASS_PROSE_RE = re.compile(r"bypass(?:es)?\s+the\s+drain\s+gate", re.IGNORECAS
 # work (no prose to match against).
 BYPASS_MARKER = "<!-- drain-gate: bypass -->"
 
-# The link from a held failure/improvement back to the feature it was filed
-# against. Same marker pair promote_accepted_features.sh reads, so the two
-# sweeps always agree on which failure belongs to which feature.
+# Retired body marker, read-only fallback for issues filed before #3731.
+# The link from a held failure/improvement back to the issue it was filed
+# against now lives in GitHub's native relationships; gh_project.sh supplies
+# them as `blocks` on each held issue and they win whenever present.
 RELATED_FEATURE_RE = re.compile(r"(?:Parent|Related)\s+feature:\s*#(\d+)", re.IGNORECASE)
+
+# Labels whose held issues park the issue they block. Mirrors the labels
+# promote_accepted_features.sh sweeps (#3731) — if the gate exempted fewer
+# than the sweep parks, the gate would deadlock on its own held work.
+DEFAULT_REWORK_LABELS = ("Acceptance Failure", "Improvement")
 
 
 def _lane(page: dict) -> tuple[list[int], list[int]]:
@@ -138,26 +144,37 @@ def _label_names(issue: dict) -> set[str]:
     }
 
 
-def rework_features(issues: list[dict]) -> list[int]:
-    """The features parked awaiting rework by the currently held issues.
+def _rework_labels() -> set[str]:
+    """Labels whose held issues park what they block, case-folded."""
+    raw = os.getenv("DRAIN_GATE_REWORK_LABELS") or os.getenv("DRAIN_GATE_REWORK_LABEL")
+    if raw is None:
+        raw = ",".join(DEFAULT_REWORK_LABELS)
+    return {part.strip().casefold() for part in raw.split(",") if part.strip()}
 
-    A feature whose **failures** are held is awaiting rework, not under
-    test: it parks closed in `Acceptance Testing` until every related
-    failure reaches `For Release`. Exempting it is what keeps the gate
+
+def rework_features(issues: list[dict]) -> list[int]:
+    """The issues parked awaiting rework by the currently held issues.
+
+    An issue whose failures/improvements are held is awaiting rework, not
+    under test: it parks closed in `Acceptance Testing` until everything
+    blocking it reaches `For Release`. Exempting it is what keeps the gate
     from deadlocking on the work it is itself holding.
 
-    Only held issues labeled `DRAIN_GATE_REWORK_LABEL` ("Acceptance
-    Failure") count -- the same filter promote_accepted_features.sh
-    applies, so the sweep that parks a feature and the gate that exempts
-    it always agree. A held **Improvement** parks nothing (it never blocks
-    its related feature, owner decision 2026-08-01), so a feature named
-    only by held improvements stays a blocker and the gate stays closed
-    while the owner is still testing it.
+    The link is read from each held issue's **native** `blocks` edges
+    (#3731), falling back to the retired body marker for issues filed before
+    that. Only held issues carrying a rework label count -- the same filter
+    promote_accepted_features.sh applies, so the sweep that parks an issue
+    and the gate that exempts it always agree. Since both handler commands
+    now write the relationship, that filter covers Improvements too.
     """
-    label = os.getenv("DRAIN_GATE_REWORK_LABEL", "Acceptance Failure").strip().casefold()
+    labels = _rework_labels()
     found: set[int] = set()
     for issue in issues:
-        if label and label not in _label_names(issue):
+        if labels and not (labels & _label_names(issue)):
+            continue
+        native = [int(n) for n in issue.get("blocks") or []]
+        if native:
+            found.update(native)
             continue
         for match in RELATED_FEATURE_RE.finditer(issue.get("body") or ""):
             found.add(int(match.group(1)))

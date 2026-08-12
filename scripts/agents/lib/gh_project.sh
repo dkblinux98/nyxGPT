@@ -887,18 +887,20 @@ acceptance_lane_snapshot() {
   )
 }
 
-# The features parked awaiting rework by the currently held issues
-# ("Related feature: #N", legacy "Parent feature: #N"), as a JSON array.
-# Those features park CLOSED in Acceptance Testing until every related
-# failure reaches For Release (promote_accepted_features.sh), so without
-# this the gate would deadlock: the feature waits on its failure, the
-# failure waits on the gate, and the gate waits on the feature.
+# The issues parked awaiting rework by the currently held issues, as a JSON
+# array. Read from each held issue's NATIVE blocking relationship (#3731),
+# with the retired "Related feature: #N" body marker kept as the historical
+# fallback. Those issues park CLOSED in Acceptance Testing until everything
+# blocking them reaches For Release (promote_accepted_features.sh), so
+# without this the gate would deadlock: the issue waits on its failure, the
+# failure waits on the gate, and the gate waits on the issue.
 #
-# Labels are fetched alongside the body because only "Acceptance Failure"
-# issues park a feature -- the same filter promote_accepted_features.sh
-# applies, so the two sweeps always agree. A held Improvement never blocks
-# its related feature, so it must not exempt one either (drain_gate.py
-# rework_features applies the rule).
+# Labels are fetched alongside the edges because only issues carrying a
+# rework label park anything -- the same filter promote_accepted_features.sh
+# applies, so the two sweeps always agree. Since #3731 that covers held
+# Improvements too: they write the same blocking relationship, so exempting
+# fewer issues than the sweep parks would reintroduce the deadlock
+# (drain_gate.py rework_features applies the rule).
 #
 # An issue that cannot be read contributes nothing -- one unreadable issue
 # must not silently open the gate wider than it should, and the next poll
@@ -908,15 +910,18 @@ drain_gate_rework_features() {
   require_cmd jq
   require_cmd python3
 
-  local issues=() issue payload
+  local issues=() issue payload blocks
   while IFS= read -r issue; do
     [[ -n "$issue" ]] || continue
     payload="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}" \
       --jq '{body: (.body // ""), labels: [.labels[]?.name]}' 2>/dev/null)" || {
-      _warn "drain_gate_rework_features: could not read #${issue} -- ignoring its related-feature marker"
+      _warn "drain_gate_rework_features: could not read #${issue} -- ignoring its blocking relationship"
       continue
     }
     [[ -n "$payload" ]] || continue
+    blocks="$(blocking_issues "$issue" | jq -R -n -c '[inputs | select(length > 0) | tonumber]' 2>/dev/null)"
+    [[ -n "$blocks" ]] || blocks="[]"
+    payload="$(jq -c --argjson b "$blocks" '. + {blocks: $b}' <<<"$payload")"
     issues+=("$payload")
   done < <(jq -r '.[]' <<<"$held_json")
 

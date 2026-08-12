@@ -74,7 +74,9 @@ def candidate_issues(repo: str) -> list[int]:
     numbers: list[int] = []
     for label in RELATIONSHIP_LABELS:
         quoted = label.replace(" ", "%20")
-        page = _gh_json(f"repos/{repo}/issues?labels={quoted}&state=all&per_page=100", paginate=True)
+        page = _gh_json(
+            f"repos/{repo}/issues?labels={quoted}&state=all&per_page=100", paginate=True
+        )
         for item in page or []:
             if not isinstance(item, dict) or "pull_request" in item:
                 continue

@@ -28,7 +28,8 @@ import json
 import re
 import sys
 from collections import deque
-from typing import Any, Iterable, Mapping
+from collections.abc import Iterable, Mapping
+from typing import Any
 
 # Retired convention, read-only: `Related feature: #123`, and the even older
 # `Parent feature: #123` from the sub-issue model (2026-08-01). Matched only
@@ -86,10 +87,7 @@ def _as_numbers(items: Iterable[Any] | None) -> list[int]:
     """
     out: list[int] = []
     for item in items or []:
-        if isinstance(item, Mapping):
-            value = item.get("number")
-        else:
-            value = item
+        value = item.get("number") if isinstance(item, Mapping) else item
         if value is None:
             continue
         num = int(value)

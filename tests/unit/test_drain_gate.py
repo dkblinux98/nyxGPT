@@ -59,6 +59,7 @@ def _clean_env(monkeypatch):
         "RELEASE_ISSUE",
         "DRAIN_GATE_BYPASS_LABELS",
         "DRAIN_GATE_REWORK_LABEL",
+        "DRAIN_GATE_REWORK_LABELS",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -241,11 +242,17 @@ def test_rework_features_ignores_prose_that_merely_mentions_an_issue():
     )
 
 
-def test_only_held_acceptance_failures_park_a_feature():
-    """An Improvement never blocks its related feature's acceptance (owner
-    decision 2026-08-01), so it must not exempt that feature either: the
-    feature is genuinely still under test."""
-    assert drain_gate.rework_features([_improvement("Related feature: #3600")]) == []
+def test_held_improvements_park_their_issue_too():
+    """Owner decision 2026-08-12 (#3731), superseding 2026-08-01.
+
+    `@improvement` now writes the same native blocking relationship as
+    `@acceptance-failure`, so promote_accepted_features.sh will not promote
+    an issue while a held improvement blocks it. If the gate did not exempt
+    that issue, the deadlock the exemption exists to prevent would simply
+    reappear for improvements: the issue waits on the improvement, the
+    improvement waits on the gate, the gate waits on the issue.
+    """
+    assert drain_gate.rework_features([_improvement("Related feature: #3600")]) == [3600]
 
 
 def test_a_feature_named_by_both_a_failure_and_an_improvement_is_parked():
@@ -257,13 +264,39 @@ def test_a_feature_named_by_both_a_failure_and_an_improvement_is_parked():
     ) == [3600]
 
 
-def test_only_the_failure_labeled_issues_marker_contributes():
+def test_both_handler_labels_contribute():
     assert drain_gate.rework_features(
         [
             _failure("Related feature: #3600"),
             _improvement("Related feature: #3601"),
         ]
-    ) == [3600]
+    ) == [3600, 3601]
+
+
+# --- native relationships beat the retired body marker (#3731) --------
+
+
+def test_native_blocks_edges_are_preferred_over_prose():
+    issue = {
+        "body": "Related feature: #99",
+        "labels": [{"name": "Acceptance Failure"}],
+        "blocks": [3600],
+    }
+    assert drain_gate.rework_features([issue]) == [3600]
+
+
+def test_prose_is_the_fallback_for_issues_with_no_native_edges():
+    issue = {
+        "body": "Related feature: #3600",
+        "labels": [{"name": "Acceptance Failure"}],
+        "blocks": [],
+    }
+    assert drain_gate.rework_features([issue]) == [3600]
+
+
+def test_a_held_issue_blocking_several_issues_parks_all_of_them():
+    issue = {"body": "", "labels": [{"name": "Improvement"}], "blocks": [3600, 3601]}
+    assert drain_gate.rework_features([issue]) == [3600, 3601]
 
 
 def test_rework_label_match_is_case_insensitive_and_tolerates_plain_strings():
@@ -277,6 +310,7 @@ def test_an_unlabeled_held_issue_parks_nothing():
 
 
 def test_rework_label_is_configurable(monkeypatch):
+    """The singular env var stays honoured for back compatibility."""
     monkeypatch.setenv("DRAIN_GATE_REWORK_LABEL", "Production Defect")
     assert drain_gate.rework_features(
         [
@@ -284,6 +318,14 @@ def test_rework_label_is_configurable(monkeypatch):
             {"body": "Related feature: #3601", "labels": [{"name": "Production Defect"}]},
         ]
     ) == [3601]
+
+
+def test_rework_labels_plural_takes_precedence(monkeypatch):
+    monkeypatch.setenv("DRAIN_GATE_REWORK_LABEL", "Production Defect")
+    monkeypatch.setenv("DRAIN_GATE_REWORK_LABELS", "Acceptance Failure,Improvement")
+    assert drain_gate.rework_features(
+        [_failure("Related feature: #3600"), _improvement("Related feature: #3601")]
+    ) == [3600, 3601]
 
 
 # --- bypass ----------------------------------------------------------
