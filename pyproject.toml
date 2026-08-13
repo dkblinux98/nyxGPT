@@ -126,7 +126,8 @@ where = ["src"]
 # itself contains symlinks back to the canonical top-level files
 # (docker/, docker-compose.yml, ops/, .env.example, four scripts/*.sh,
 # terraform/aws/ for the AWS substrate `nyxgpt cloud infra` provisions --
-# #3509) rather than copies, so there is exactly one place to edit each file;
+# #3509, and docs/ for the web UI's Support -> Docs viewer -- #3745) rather
+# than copies, so there is exactly one place to edit each file;
 # setuptools dereferences symlinks when it builds the wheel/sdist, so the
 # built artifact contains real file content, not links.
 [tool.setuptools.package-data]

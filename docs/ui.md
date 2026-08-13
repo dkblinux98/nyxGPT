@@ -296,6 +296,7 @@ Back-nav follows two conventions depending on how a page is reached, not on its 
 Click **⚙️ Settings** at the bottom of the sidebar to open the navigation menu that gates every admin/ops destination:
 
 - **Admin** — a collapsible group. Clicking it expands in place (chevron rotates) to reveal: Dashboard, Manage Models, RAG Collections, and RAG Playground — the dashboard as the single admin entry point, plus the three day-to-day user tools. The Configuration Wizard, Resource Usage, Usage Analytics, Observability, Deployment, and Canary Rollout shortcuts were removed from this submenu (#3396); those destinations remain reachable from the [Admin Dashboard](#admin-dashboard)'s Configuration and System Status sections. The group stays open until you click a link, click outside the menu, or press `Escape` — clicking **Admin** itself only toggles the submenu and never closes the menu.
+- **Support** — a collapsible group (#3745), sitting between Admin and Theme, with exactly two items: **Docs** (`/support/docs`, the documentation packaged with this install — renders offline) and **File an Issue** (GitHub's support issue form, prefilled with the running version and platform; needs internet and a GitHub account, which its tooltip says). Like Admin, it expands in place and toggling it never closes the menu; unlike Admin, opening it lazily fetches `/api/v1/support/context`, and File an Issue stays disabled until that link resolves. See [Support menu](#support-menu).
 - **Theme** — Light/Dark toggle, same state as the [Settings page](#settings) appearance setting.
 
 Clicking any link navigates and closes the menu. Clicking anywhere outside the menu (tracked via a ref on the menu container, not `stopPropagation`) or pressing `Escape` closes it without navigating.
@@ -654,6 +655,43 @@ This produces interactive treemaps at `web/.next/analyze/client.html`,
 `nodejs.html`, and `edge.html` showing exactly what contributes to each
 chunk's size (via `@next/bundle-analyzer`). Use this before/after adding a
 new dependency or page to catch regressions.
+
+---
+
+## Support menu
+
+The sidebar's **Settings → Support** group has exactly two items, and both
+exist for the same reason: someone who installed nyxGPT from PyPI or Homebrew
+has no repository checkout, so neither the docs nor an issue-reporting path
+would otherwise be reachable from the product.
+
+**Docs** (`/support/docs`) renders the documentation that shipped with the
+installed package. The whole `docs/*.md` tree is package data inside the wheel
+(`nyxgpt.resources/docs`, the mechanism #3621 introduced for the ops layer's
+runtime data), resolved through `importlib.resources` and never relative to a
+source tree — so the documents shown match the version that is running by
+construction, and they render with no network access. Links *between*
+documents are rewritten server-side onto `/support/docs/...` so the tree
+browses as a unit; links to files that only a checkout has resolve to the
+hosted copy on GitHub. The Markdown is rendered to HTML by the API
+(`/api/v1/support/docs`, `/api/v1/support/docs/{slug}`) with active content
+stripped before the page injects it.
+
+**File an Issue** opens
+[`.github/ISSUE_TEMPLATE/support.yml`](https://github.com/dkblinux98/nyxGPT/blob/master/.github/ISSUE_TEMPLATE/support.yml)
+on GitHub with the running version and platform prefilled from
+`/api/v1/support/context`. This is a link, not an API call — nyxGPT never
+files an issue on a user's behalf, and there is no POST endpoint under
+`/support` to do it with. Unlike Docs, it needs internet access and a GitHub
+account, which the menu says in its tooltip rather than letting the link fail
+silently offline.
+
+Reports filed this way carry the `Support` label, which the template declares
+itself (a `labels=` URL parameter is silently dropped for a filer without
+write access — exactly the filer this form is for). That label routes the
+report onto the separate **nyxGPT Support** project and keeps it out of the
+agent delivery loop entirely: no code-project item, no field stamping, no
+sprint, no selection. See `scripts/agents/lib/support_label.py`.
 
 ---
 

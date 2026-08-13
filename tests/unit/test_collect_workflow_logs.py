@@ -12,6 +12,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,15 @@ sys.modules[_spec.name] = collect_workflow_logs
 _spec.loader.exec_module(collect_workflow_logs)
 
 
+def _ago(seconds: float) -> str:
+    """An ISO-8601 UTC timestamp `seconds` in the past.
+
+    Relative, not hard-coded: the store's `stats` window is measured from
+    `time.time()`, so a fixed date eventually ages out and fails the suite.
+    """
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - seconds))
+
+
 def _raw_run(run_id: int, conclusion: str = "success") -> dict:
     return {
         "databaseId": run_id,
@@ -35,8 +45,8 @@ def _raw_run(run_id: int, conclusion: str = "success") -> dict:
         "status": "completed",
         "conclusion": conclusion,
         "headBranch": "feat/2844-add-thing",
-        "createdAt": "2026-07-14T07:00:00Z",
-        "updatedAt": "2026-07-14T07:05:00Z",
+        "createdAt": _ago(3600),
+        "updatedAt": _ago(3300),
         "url": f"https://github.com/dkblinux98/nyxGPT/actions/runs/{run_id}",
         "displayTitle": "some commit message",
     }
