@@ -242,6 +242,17 @@ brew services stop nyxgpt-api@3.0.0rc && brew uninstall nyxgpt-api@3.0.0rc
 brew install nyxgpt-api && brew services start nyxgpt-api
 ```
 
+If the tap does not carry the stable formula the candidate names — a tap
+whose stable formulas have not been published yet — `brew` warns that the
+conflict refers to an unknown formula and **carries on installing**. The
+warning is cosmetic and the declaration is deliberately left unconditional:
+Homebrew resolves `conflicts_with` when it loads the formula and offers no
+way to make one tolerant of a missing counterpart, so removing it to silence
+the warning would trade a cosmetic message for the silent channel clobber it
+exists to prevent. The name itself cannot go stale — it is derived from the
+stable formula the same publishing script stamps
+(`scripts/build_homebrew_artifacts.py`).
+
 Candidate formulas are **acceptance-only**. They are not upgraded on a
 schedule, carry no support expectation, and are removed from the tap by the
 release ceremony the moment the line they are a candidate for ships. See
@@ -275,6 +286,25 @@ existing or staying in place afterwards. Each install also gets:
 vendored source actually changed since the last install (checksum-compared);
 otherwise it reports the existing install is already up to date and just
 (re)starts the service.
+
+### How the keg venv is built
+
+The `nyxgpt-api` keg creates its venv with `python -m venv --without-pip` and
+then has Homebrew's `python@3.12` install pip into it (`pip --python`). That
+is deliberate: a plain `python -m venv` runs `ensurepip --upgrade
+--default-pip`, which bootstraps pip from wheels vendored inside the
+`python@3.12` keg — the only part of the install that depends on
+Homebrew-managed keg state rather than on the tarball being installed. On a
+stock Homebrew Mac that step exited 1 and took the whole `brew install` with
+it, so it is no longer in the path at all.
+
+Both api formulas (the local one and the remote tap's template) carry this
+same recipe, and a unit test asserts they cannot drift apart.
+[`macos-brew-smoke.yml`](../.github/workflows/macos-brew-smoke.yml) installs
+the formulas for real on a hosted `macos-15` runner — the working tree's
+recipe on every formula change, and the published candidate from this tap
+after every rc cut — and checks the keg's venv has a working pip, imports
+`nyxgpt.app` and runs `nyxgpt --version`.
 
 ---
 

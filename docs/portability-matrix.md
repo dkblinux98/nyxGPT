@@ -68,11 +68,17 @@ A row is **acceptance-ready** when its checks pass *and* it has no open gap.
 - **macOS native** — `release-artifacts.yml` stamps both formulas and pushes
   them to the remote tap when `HOMEBREW_TAP_REPO` is configured (and always
   attaches them to the GitHub Release otherwise; see
-  [homebrew.md](homebrew.md#remote-tap)). The brew/launchd reconciliation
-  itself is owner-verified — GitHub Actions has no Apple Silicon runner.
+  [homebrew.md](homebrew.md#remote-tap)). Coverage is split:
+  [`macos-brew-smoke.yml`](../.github/workflows/macos-brew-smoke.yml) installs
+  the formulas on a hosted `macos-15` runner — the working tree's own recipe on
+  every formula change, and the published candidate from the real tap after
+  every rc cut — so an install-breaking recipe fails in CI rather than on a
+  clean Mac. The **operate** half (brew services / launchd reconciliation,
+  `nyxgpt up`) stays owner-verified on the owner's workstation.
 - **EC2 Mac** targets (`mac2.metal`, `mac1.metal`) are documentation-verified
-  only, for the same reason plus the 24-hour minimum Dedicated Host
-  allocation. See [cloud.md](cloud.md)'s target-OS support matrix.
+  only: hosted macOS runners cover a brew install but are not EC2 instances,
+  and a Dedicated Host bills a 24-hour minimum. See [cloud.md](cloud.md)'s
+  target-OS support matrix.
 
 ### Open gaps
 
