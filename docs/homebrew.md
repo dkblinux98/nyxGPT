@@ -74,6 +74,60 @@ and attaches the tarballs to each GitHub Release and uploads the stamped
 formulas as a workflow artifact -- it just skips the tap push (logged as a
 notice, not a failure) until the owner completes the two steps above.
 
+**The tap serves stable releases from v2.1.0 onward.** The tap machinery
+(#3622) postdates 2.1.0, so that release was published to the tap by the
+backfill below (#3737) rather than by its own release run; releases from
+3.0.0 on are pushed by their ceremony automatically. Earlier releases
+(1.0.0, 2.0.0) are not in the tap and will not be added -- `brew install
+nyxgpt-api` resolves to the latest stable release, which is what the tap
+exists to serve.
+
+### Backfilling a release that predates the tap
+
+A tag cut before the tap machinery has no copy of it: 2.1.0's tree contains
+neither `scripts/build_homebrew_artifacts.py` nor `homebrew/tap/*.rb.tmpl`,
+which is why dispatching the workflow against it originally failed outright.
+The job therefore takes **two checkouts** rather than one:
+
+| Tree | Comes from | Provides |
+| --- | --- | --- |
+| workspace root | the ref the run started on (release commit, or the branch a backfill is dispatched from) | the release tooling: build script, formula templates, `nyxgpt.ops` |
+| `release-source/` | the target tag | the service source the tarballs vendor |
+
+`scripts/build_homebrew_artifacts.py ... --source-root release-source` is
+what joins them, so the published tarballs are the tag's real code while the
+formulas are stamped from templates that tag never contained. For a normal
+release the two checkouts are the same commit and nothing changes.
+
+To backfill a release, dispatch **Release Artifacts** from a branch that has
+the tooling (e.g. the active release branch):
+
+```
+version:  2.1.0        # must already exist as a published GitHub Release
+tap_only: true         # skip the images and the PyPI smokes -- tap only
+```
+
+The run builds `nyxgpt-api-2.1.0.tar.gz` / `nyxgpt-web-2.1.0.tar.gz` from
+the 2.1.0 source, attaches them to the existing 2.1.0 release (`--clobber`),
+and pushes stamped `nyxgpt-api.rb` / `nyxgpt-web.rb` to `HOMEBREW_TAP_REPO`.
+Verify on a clean Mac:
+
+```bash
+brew tap dkblinux98/nyxgpt
+brew install nyxgpt-api nyxgpt-web
+brew services start nyxgpt-api && brew services start nyxgpt-web
+```
+
+Two guardrails make this safe to point at any tag:
+
+* **Stable formulas only from real releases.** The job refuses a tag whose
+  GitHub Release is a draft or a prerelease, and the build script refuses
+  any version that is not a plain `X.Y.Z` -- a release candidate cannot
+  reach the stable formulas, whatever is typed into the dispatch form.
+* **`@<line>rc` formulas are never touched.** The stable channel writes only
+  `nyxgpt-api.rb` / `nyxgpt-web.rb`; the job asserts exactly those two files
+  were stamped before it pushes, and it copies nothing else into the tap.
+
 ---
 
 ## Release-candidate formulas (rc channel)
