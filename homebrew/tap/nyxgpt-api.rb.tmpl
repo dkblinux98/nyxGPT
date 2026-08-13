@@ -41,7 +41,10 @@ class NyxgptApi < Formula
     # and install scheme -- without ensurepip ever running. PEP 668's
     # externally-managed marker on the Homebrew keg does not apply: the
     # install target is the venv, which is not externally managed.
-    system python, "-m", "pip", "install", "--python", venv/"bin/python", "--upgrade", "pip"
+    # `--python` is a top-level pip option and must precede the subcommand:
+    # placed after `install`, pip exits with "The --python option must be
+    # placed before the pip subcommand name" and takes `brew install` down.
+    system python, "-m", "pip", "--python", venv/"bin/python", "install", "--upgrade", "pip"
     system venv/"bin/pip", "install", buildpath
 
     # config_wizard builds its schema from example.config.ini at import time

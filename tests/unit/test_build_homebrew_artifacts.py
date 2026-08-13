@@ -754,6 +754,14 @@ _API_FORMULAS = {
 
 _WITHOUT_PIP = 'system python, "-m", "venv", "--without-pip", venv'
 _ENSUREPIP_VENV = 'system python, "-m", "venv", venv'
+# `--python` is a top-level pip option: after the subcommand pip refuses with
+# "The --python option must be placed before the pip subcommand name" and the
+# install dies one step past where #3753 originally did. Pinned as the whole
+# line so the *order* is what fails here, in the Linux suite, rather than on a
+# macOS runner.
+_PIP_BOOTSTRAP = (
+    'system python, "-m", "pip", "--python", venv/"bin/python", "install", "--upgrade", "pip"'
+)
 
 
 def _venv_recipe(text: str) -> list[str]:
@@ -788,7 +796,7 @@ def test_pip_is_installed_into_the_keg_venv_by_the_homebrew_python(which):
 
     bootstrap = [line for line in recipe if '"-m", "pip"' in line]
     assert len(bootstrap) == 1, recipe
-    assert '"--python", venv/"bin/python"' in bootstrap[0]
+    assert bootstrap[0] == _PIP_BOOTSTRAP
     # Everything downstream still installs through the venv's own pip.
     assert 'system venv/"bin/pip", "install", buildpath' in recipe
 
@@ -821,6 +829,8 @@ def test_stamped_formulas_ship_the_ensurepip_free_recipe(
 
     assert _WITHOUT_PIP in recipe
     assert _ENSUREPIP_VENV not in recipe
+    # The published formula has to carry the working option order too.
+    assert _PIP_BOOTSTRAP in recipe
 
 
 @pytest.mark.parametrize("name", ["nyxgpt-api", "nyxgpt-web"])

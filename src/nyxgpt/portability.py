@@ -90,14 +90,18 @@ class Target:
 
     `status` is the row's verification level, and is deliberately more
     granular than pass/fail because the five targets are not verifiable the
-    same way -- one has a GitHub Actions runner, one needs a billed AWS
-    account, one needs Apple Silicon hardware CI does not have:
+    same way -- one runs end to end on a GitHub Actions runner, one needs a
+    billed AWS account, one is only half coverable by a hosted runner:
 
     * ``ci-verified`` -- a workflow in this repo installs and operates the
       target from published artifacts on every release, with no checkout.
     * ``acceptance`` -- the path is implemented and CI covers what it can,
-      but the final demonstration needs hardware or an account no runner
-      has (Apple Silicon; a real AWS account). Owner acceptance closes it.
+      but the final demonstration needs an account or a persistent machine
+      no runner is (a real AWS account; a macOS workstation whose brew
+      services and launchd agents survive the job). Owner acceptance closes
+      it. Note this is *not* "CI has no Apple Silicon": hosted `macos-15`
+      runners are Apple Silicon and `macos-brew-smoke.yml` uses them to
+      verify the macOS *install* half (#3753).
     * ``gap`` -- the target cannot be installed without a checkout today.
       `gaps` says exactly what is missing.
     """

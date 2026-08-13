@@ -42,7 +42,7 @@ A row is **acceptance-ready** when its checks pass *and* it has no open gap.
 
 | Target | Published artifact | Install (clean machine) | Operate | Tear down | State |
 |---|---|---|---|---|---|
-| macOS native (Homebrew + launchd) | Remote tap `dkblinux98/homebrew-nyxgpt` | `brew tap dkblinux98/homebrew-nyxgpt`<br>`brew install nyxgpt-api nyxgpt-web` | `nyxgpt up` | `nyxgpt down` | Owner acceptance — no Apple Silicon CI runner exists |
+| macOS native (Homebrew + launchd) | Remote tap `dkblinux98/homebrew-nyxgpt` | `brew tap dkblinux98/homebrew-nyxgpt`<br>`brew install nyxgpt-api nyxgpt-web` | `nyxgpt up` | `nyxgpt down` | Install **verified in CI** (`macos-brew-smoke.yml`); operate half owner acceptance |
 | Linux native (systemd `--user`) | PyPI wheel | `pip install nyxgpt` | `nyxgpt up` | `nyxgpt down` | **Verified in CI** on every release |
 | Docker / Compose | `ghcr.io/dkblinux98/nyxgpt-api`, `…/nyxgpt-web` | `pip install nyxgpt` | `nyxgpt up`, `nyxgpt ops observability` | `nyxgpt down` | **Gap** — see below |
 | Kubernetes | the same two images | `pip install nyxgpt` | `nyxgpt ops install --kubernetes --local` | `nyxgpt ops down --kubernetes` | **Gap** — see below |
