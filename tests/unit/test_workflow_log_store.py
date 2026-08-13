@@ -9,28 +9,12 @@ import json
 import sqlite3
 import subprocess
 import time
-from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from nyxgpt import workflow_log_store
 
 pytestmark = pytest.mark.unit
-
-
-def _recent_window(duration_s: int = 300) -> tuple[str, str]:
-    """A (created_at, updated_at) pair ending just now, `duration_s` apart.
-
-    The "recent run" fixtures must stay inside the 30-day analytics window that
-    `query_runs(since_days=...)` and `compute_summary(days=...)` apply, so they
-    are anchored to the clock. A hardcoded literal date silently ages out of
-    that window and starts failing the suite on a date unrelated to any change.
-    Both stamps come off one `now` so the duration is exact.
-    """
-    updated = datetime.now(UTC).replace(microsecond=0) - timedelta(minutes=5)
-    created = updated - timedelta(seconds=duration_s)
-    fmt = "%Y-%m-%dT%H:%M:%SZ"
-    return created.strftime(fmt), updated.strftime(fmt)
 
 
 @pytest.fixture
@@ -42,20 +26,31 @@ def conn():
     connection.close()
 
 
+def _ago(seconds: float) -> str:
+    """An ISO-8601 UTC timestamp `seconds` in the past.
+
+    Fixture timestamps must be relative to now: the store filters on
+    `time.time() - days * 86400`, so a hard-coded date silently ages out of
+    the 30-day window and turns these tests into a dated time bomb.
+    """
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - seconds))
+
+
+# One hour ago, comfortably inside every window under test; the pair is five
+# minutes apart so `duration_s` is a stable 300.0.
+RECENT_CREATED_AT = _ago(3600)
+RECENT_UPDATED_AT = _ago(3300)
+
+
 def _raw_run(
     run_id: int,
     workflow_name: str = "Developer Agent",
     status: str = "completed",
     conclusion: str | None = "success",
     branch: str = "feat/2844-add-thing",
-    created_at: str | None = None,
-    updated_at: str | None = None,
+    created_at: str = RECENT_CREATED_AT,
+    updated_at: str = RECENT_UPDATED_AT,
 ) -> dict:
-    # Default to a run that started 10 minutes ago and finished 5 minutes ago:
-    # always inside the analytics window, always exactly 300s long.
-    default_created, default_updated = _recent_window()
-    created_at = created_at if created_at is not None else default_created
-    updated_at = updated_at if updated_at is not None else default_updated
     return {
         "databaseId": run_id,
         "workflowName": workflow_name,

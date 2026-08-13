@@ -51,6 +51,19 @@ example_config = root.joinpath("example.config.ini")
 assert example_config.is_file(), f"missing {example_config}"
 assert "[nyxgpt]" in example_config.read_text(encoding="utf-8")
 
+# #3745: the whole docs/*.md tree ships in the wheel -- it is the only
+# documentation a PyPI/Homebrew user has, rendered by the web UI under
+# Support -> Docs. Checked through importlib.resources rather than by
+# importing nyxgpt.support, because this venv installs with --no-deps and
+# that module needs markdown/bs4 at import time; what matters here is that
+# the *files* are in the artifact.
+docs = root.joinpath("docs")
+assert docs.is_dir(), f"missing {docs}"
+packaged_docs = {p.name for p in docs.iterdir() if p.name.endswith(".md")}
+assert "README.md" in packaged_docs, f"docs index missing from wheel: {packaged_docs}"
+assert len(packaged_docs) > 10, f"docs tree looks truncated in the wheel: {packaged_docs}"
+assert "configuration.md" in packaged_docs, f"docs tree incomplete in wheel: {packaged_docs}"
+
 # #3509: `nyxgpt cloud infra` provisions the AWS substrate from the packaged
 # terraform/aws configuration (nyxgpt.cloud_infra.packaged_terraform_dir), so
 # a checkout-free machine must find the whole module tree here.

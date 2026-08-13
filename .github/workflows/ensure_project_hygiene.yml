@@ -8,7 +8,13 @@ on:
 
 jobs:
   add-to-project:
-    if: github.event_name == 'issues'
+    # `Support`-labeled issues are user support reports (#3745): they belong
+    # to the separate nyxGPT Support project's own auto-add workflow, never
+    # to the code project. Skipping here is what keeps them out of the agent
+    # loop entirely -- no project item, no field stamping, no sprint.
+    if: >-
+      github.event_name == 'issues'
+      && !contains(github.event.issue.labels.*.name, 'Support')
     runs-on: ubuntu-latest
     permissions:
       issues: write

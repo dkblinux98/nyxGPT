@@ -65,6 +65,7 @@ from nyxgpt import release_candidate as release_candidate_module
 from nyxgpt import resource_metrics_store as resource_metrics_store_module
 from nyxgpt import restart_state as restart_state_module
 from nyxgpt import self_heal as self_heal_module
+from nyxgpt import support as support_module
 from nyxgpt import tracing as tracing_module
 from nyxgpt import usage_analytics as usage_analytics_module
 from nyxgpt.api_models import (
@@ -2755,6 +2756,43 @@ def ops_release_candidate(
         return release_candidate_module.plan(target, requested_channel)
     except release_candidate_module.ReleaseCandidateError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+# --- Support endpoints (#3745) ---
+#
+# The web UI's Support menu, which is the only documentation surface a user
+# who installed from PyPI or Homebrew has: they never checked the repo out,
+# so `docs/*.md` ships in the wheel and is served from the package here.
+#
+# All three are read-only. "File an Issue" is deliberately a *link* the UI
+# opens, not an endpoint that posts on the user's behalf -- see
+# `nyxgpt.support`.
+
+
+@api.get("/support/docs")
+def support_docs_index(_request: Request) -> dict[str, Any]:
+    """List the packaged documentation as `{documents: [{slug, title, summary}]}`."""
+    return {"documents": support_module.list_documents()}
+
+
+@api.get("/support/docs/{slug}")
+def support_document(_request: Request, slug: str) -> dict[str, str]:
+    """Render one packaged document to HTML for the Support -> Docs viewer.
+
+    A slug naming no packaged document is a 404, not a 500: it is ordinary
+    user input from the URL bar, and `nyxgpt.support` rejects anything that
+    could reach outside the packaged docs directory.
+    """
+    try:
+        return support_module.render_document(slug)
+    except support_module.DocumentNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
+
+@api.get("/support/context")
+def support_context(_request: Request) -> dict[str, Any]:
+    """Report the running environment and the prefilled issue-form link."""
+    return support_module.support_context()
 
 
 # --- Model management endpoints ---

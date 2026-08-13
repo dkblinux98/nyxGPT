@@ -1,0 +1,56 @@
+name: Support request
+description: Report a problem with nyxGPT, ask a question, or request a feature.
+title: "support: "
+# Template-declared labels apply for every filer, including someone with no
+# write access to this repo -- which is the filer this form exists for. The
+# label is also the routing key: the nyxGPT Support project auto-adds
+# `is:issue label:Support`, and the agent loop skips these issues entirely
+# (see scripts/agents/lib/support_label.py). A label parameter in the URL
+# would NOT do this -- GitHub silently drops it for non-collaborators.
+labels: ["Support"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this.
+
+        This form is for **users of nyxGPT**. You do not need to know anything
+        about the internals — describe what you were doing and what happened.
+
+        The version and platform fields are prefilled when you open this form
+        from the web UI under **Support → File an Issue**.
+
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened?
+      description: >-
+        What were you trying to do, what did you expect, and what happened
+        instead? Paste any error message you saw.
+      placeholder: |
+        I clicked "Send" in the chat and got a spinner that never stopped.
+        The page showed: "Failed to fetch from backend".
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Installed version
+      description: >-
+        Prefilled from the running install when you open this form from the
+        web UI. Otherwise, run `nyxgpt --version`.
+      placeholder: "3.0.0"
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: >-
+        Prefilled from the running install. Otherwise, your operating system
+        and version.
+      placeholder: "Darwin 24.5.0 (arm64), Python 3.11.9"
+    validations:
+      required: true

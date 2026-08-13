@@ -12,7 +12,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
-from datetime import UTC, datetime, timedelta
+import time
 from pathlib import Path
 
 import pytest
@@ -29,29 +29,24 @@ sys.modules[_spec.name] = collect_workflow_logs
 _spec.loader.exec_module(collect_workflow_logs)
 
 
-def _recent_window(duration_s: int = 300) -> tuple[str, str]:
-    """A (created_at, updated_at) pair ending just now, `duration_s` apart.
+def _ago(seconds: float) -> str:
+    """An ISO-8601 UTC timestamp `seconds` in the past.
 
-    `stats` summarises the last 30 days, so the fixture run has to be anchored
-    to the clock — a hardcoded literal date ages out of that window and starts
-    failing the suite on a date unrelated to any change.
+    Relative, not hard-coded: the store's `stats` window is measured from
+    `time.time()`, so a fixed date eventually ages out and fails the suite.
     """
-    updated = datetime.now(UTC).replace(microsecond=0) - timedelta(minutes=5)
-    created = updated - timedelta(seconds=duration_s)
-    fmt = "%Y-%m-%dT%H:%M:%SZ"
-    return created.strftime(fmt), updated.strftime(fmt)
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - seconds))
 
 
 def _raw_run(run_id: int, conclusion: str = "success") -> dict:
-    created_at, updated_at = _recent_window()
     return {
         "databaseId": run_id,
         "workflowName": "Developer Agent",
         "status": "completed",
         "conclusion": conclusion,
         "headBranch": "feat/2844-add-thing",
-        "createdAt": created_at,
-        "updatedAt": updated_at,
+        "createdAt": _ago(3600),
+        "updatedAt": _ago(3300),
         "url": f"https://github.com/dkblinux98/nyxGPT/actions/runs/{run_id}",
         "displayTitle": "some commit message",
     }

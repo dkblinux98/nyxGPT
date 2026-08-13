@@ -618,7 +618,15 @@ BACKLOG_PAGE_QUERY='query($project:ID!, $after:String){
         nodes{
           content{
             __typename
-            ... on Issue { number state milestone { title } }
+            ... on Issue {
+              number
+              state
+              milestone { title }
+              # Needed so the summarizer can refuse `Support`-labeled user
+              # reports as candidates (#3745) -- it can only filter on a
+              # label the query actually fetches.
+              labels(first:20){ nodes { name } }
+            }
           }
           fieldValues(first:50){
             nodes{
