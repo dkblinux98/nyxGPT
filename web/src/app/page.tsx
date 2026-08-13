@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Image from 'next/image';
+import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import ThemeToggle from '../components/ThemeToggle';
 import LoadingSpinner from '../components/LoadingSpinner';
@@ -52,6 +53,14 @@ type Info = {
   release_branch?: string | null;
 };
 
+/** What the Support menu's "File an Issue" item needs (#3745). */
+type SupportContext = {
+  /** GitHub's issue form, with version and platform already filled in. */
+  issue_form_url: string;
+  /** Says plainly that filing needs internet and an account; docs do not. */
+  network_note: string;
+};
+
 type SessionsResponse = {
   sessions: Array<{
     name: string;
@@ -74,6 +83,11 @@ function Home() {
   const [info, setInfo] = useState<Info | null>(null);
   const [showSettingsMenu, setShowSettingsMenu] = useState<boolean>(false);
   const [showAdminSubmenu, setShowAdminSubmenu] = useState<boolean>(false);
+  const [showSupportSubmenu, setShowSupportSubmenu] = useState<boolean>(false);
+  // The "File an Issue" target, prefilled with this install's version and
+  // platform (#3745). Fetched lazily when the Support group is first opened
+  // so an offline install pays nothing for a link it may never use.
+  const [supportContext, setSupportContext] = useState<SupportContext | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loadingInfo, setLoadingInfo] = useState<boolean>(true);
 
@@ -538,12 +552,14 @@ function Home() {
       if (settingsMenuRef.current && !settingsMenuRef.current.contains(e.target as Node)) {
         setShowSettingsMenu(false);
         setShowAdminSubmenu(false);
+        setShowSupportSubmenu(false);
       }
     };
     const handleEscape = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setShowSettingsMenu(false);
         setShowAdminSubmenu(false);
+        setShowSupportSubmenu(false);
       }
     };
 
@@ -556,6 +572,28 @@ function Home() {
       };
     }
   }, [showSettingsMenu]);
+
+  // Resolve the "File an Issue" link the first time the Support group is
+  // opened (#3745). Deliberately lazy and deliberately silent on failure:
+  // the link is the only part of the Support menu that needs anything beyond
+  // this machine, and Docs must stay usable when it can't be built.
+  useEffect(() => {
+    if (!showSupportSubmenu || supportContext) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/v1/support/context');
+        if (!res.ok) return;
+        const data: SupportContext = await res.json();
+        if (!cancelled) setSupportContext(data);
+      } catch {
+        // Leave the item disabled rather than opening a broken link.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [showSupportSubmenu, supportContext]);
 
   // Helper function to announce actions to screen readers
   const announce = useCallback((message: string) => {
@@ -1354,6 +1392,106 @@ function Home() {
                   >
                     <span>🧪</span>
                     <span>RAG Playground</span>
+                  </a>
+                </div>
+              )}
+
+              {/* Divider */}
+              <div style={{ height: 1, background: 'var(--border-light)', margin: '6px 0' }} />
+
+              {/* Support (collapsible group) -- exactly two items, Docs and
+                  File an Issue (#3745). This is the only documentation and
+                  reporting path a user who installed from PyPI or Homebrew
+                  has: they never checked the repo out. */}
+              <button
+                onClick={() => {
+                  setShowSupportSubmenu((prev) => !prev);
+                }}
+                aria-expanded={showSupportSubmenu}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 8,
+                  padding: '8px 16px',
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'var(--foreground)',
+                  fontSize: 14,
+                  cursor: 'pointer',
+                  width: '100%',
+                  textAlign: 'left',
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--button-hover)')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+              >
+                <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span>💬</span>
+                  <span>Support</span>
+                </span>
+                <span
+                  style={{
+                    fontSize: 10,
+                    transform: showSupportSubmenu ? 'rotate(90deg)' : 'none',
+                    transition: 'transform 0.15s ease',
+                  }}
+                >
+                  ▶
+                </span>
+              </button>
+
+              {showSupportSubmenu && (
+                <div role="group" aria-label="Support">
+                  {/* Docs -- packaged with the install, renders offline */}
+                  <Link
+                    href="/support/docs"
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      padding: '8px 16px 8px 32px',
+                      textDecoration: 'none',
+                      color: 'var(--foreground)',
+                      fontSize: 14,
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--button-hover)')}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                    onClick={() => setShowSettingsMenu(false)}
+                  >
+                    <span>📖</span>
+                    <span>Docs</span>
+                  </Link>
+
+                  {/* File an Issue -- opens GitHub's issue form with this
+                      install's version and platform prefilled. Needs
+                      internet and a GitHub account, hence the title text and
+                      the disabled state until the link resolves. */}
+                  <a
+                    href={supportContext?.issue_form_url ?? '#'}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={
+                      supportContext?.network_note ??
+                      'Filing an issue opens GitHub and needs internet access and a GitHub account.'
+                    }
+                    aria-disabled={!supportContext}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      padding: '8px 16px 8px 32px',
+                      textDecoration: 'none',
+                      color: 'var(--foreground)',
+                      fontSize: 14,
+                      opacity: supportContext ? 1 : 0.5,
+                      pointerEvents: supportContext ? 'auto' : 'none',
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--button-hover)')}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                    onClick={() => setShowSettingsMenu(false)}
+                  >
+                    <span>🐛</span>
+                    <span>File an Issue</span>
                   </a>
                 </div>
               )}

@@ -5,6 +5,13 @@ started, read [Installing nyxGPT](ops.md#installing-nyxgpt) and
 [Configuration](configuration.md) first. The root
 [README](../README.md) is deliberately a thin pointer into this index.
 
+**In the product:** this tree ships inside the installed package, so the web
+UI serves it under **Support → Docs** — the same documents, matching the
+version you are running, readable with no checkout and no internet. The
+Support menu's second item, **File an Issue**, opens a report form prefilled
+with your version and platform (it needs internet and a GitHub account). See
+[ui.md](ui.md#support-menu).
+
 ## Feature overview
 
 What nyxGPT does, with the doc that covers each area. Nothing here is a

@@ -1,0 +1,17 @@
+# Blank issues MUST stay enabled (#3745).
+#
+# The agent loop files issues in CLAUDE.md's body structure (Problem /
+# Motivation, Acceptance Criteria, Technical Details) via `gh issue create`,
+# not through this directory's forms. Setting `blank_issues_enabled: false`
+# to "force" everyone onto the support form would break the scrummaster,
+# developer and review agents' filing path.
+#
+# support.yml is for *users*; blank issues are for the agent loop and the
+# owner.
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://github.com/dkblinux98/nyxGPT/tree/master/docs
+    about: >-
+      Browse the docs. If you have nyxGPT installed, the same documents are
+      available offline in the web UI under Support → Docs.

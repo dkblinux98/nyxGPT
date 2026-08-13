@@ -9,6 +9,13 @@ nyxGPT provides two persistent background services using **Homebrew services**:
 
 This is the recommended way to keep both services running locally without keeping terminals open.
 
+A Homebrew install has no repository checkout, so the documentation you would
+otherwise read from `docs/` ships inside the package instead: once
+`nyxgpt-web` is running, the whole tree is served in the web UI under
+**Support → Docs**, offline and matching the installed version. The same menu's
+**File an Issue** item reports a problem with your version and platform already
+filled in. See [ui.md](ui.md#support-menu).
+
 ---
 
 ## Prerequisites

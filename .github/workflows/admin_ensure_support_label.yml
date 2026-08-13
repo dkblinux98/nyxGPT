@@ -1,0 +1,46 @@
+name: Admin - Ensure Support Label
+
+# Creates the `Support` label the user-facing issue form declares (#3745).
+#
+# This exists as a workflow rather than a remembered manual step because a
+# template naming a nonexistent label applies *nothing*, silently: the form
+# would keep working, the report would land unlabeled, the nyxGPT Support
+# project's auto-add filter (`is:issue label:Support`) would never match it,
+# and nothing would fail loudly. The label is therefore infrastructure, and
+# it is created idempotently -- re-running this only refreshes the colour and
+# description.
+#
+# Label creation is otherwise forbidden to agents (CLAUDE.md); the owner
+# authorized this one specifically on #3745, which is why this is
+# dispatch-only and scoped to a single label name.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  ensure-label:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+      LABEL: Support
+      COLOR: "0e8a16"
+      DESC: >-
+        User-filed support report (web UI -> Support -> File an Issue).
+        Routed to the nyxGPT Support project; skipped by the agent loop.
+    steps:
+      - name: Create or update the Support label
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Ensuring label '$LABEL' in ${{ github.repository }}"
+          # --force makes this idempotent: creates when absent, updates the
+          # colour/description when already present.
+          gh label create "$LABEL" \
+            --repo "${{ github.repository }}" \
+            --color "$COLOR" \
+            --description "$DESC" \
+            --force
+          gh label list --repo "${{ github.repository }}" --search "$LABEL"

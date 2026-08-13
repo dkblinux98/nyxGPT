@@ -26,14 +26,30 @@ def conn():
     connection.close()
 
 
+def _ago(seconds: float) -> str:
+    """An ISO-8601 UTC timestamp `seconds` in the past.
+
+    Fixture timestamps must be relative to now: the store filters on
+    `time.time() - days * 86400`, so a hard-coded date silently ages out of
+    the 30-day window and turns these tests into a dated time bomb.
+    """
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - seconds))
+
+
+# One hour ago, comfortably inside every window under test; the pair is five
+# minutes apart so `duration_s` is a stable 300.0.
+RECENT_CREATED_AT = _ago(3600)
+RECENT_UPDATED_AT = _ago(3300)
+
+
 def _raw_run(
     run_id: int,
     workflow_name: str = "Developer Agent",
     status: str = "completed",
     conclusion: str | None = "success",
     branch: str = "feat/2844-add-thing",
-    created_at: str = "2026-07-14T07:00:00Z",
-    updated_at: str = "2026-07-14T07:05:00Z",
+    created_at: str = RECENT_CREATED_AT,
+    updated_at: str = RECENT_UPDATED_AT,
 ) -> dict:
     return {
         "databaseId": run_id,

@@ -657,6 +657,43 @@ new dependency or page to catch regressions.
 
 ---
 
+## Support menu
+
+The sidebar's **Settings → Support** group has exactly two items, and both
+exist for the same reason: someone who installed nyxGPT from PyPI or Homebrew
+has no repository checkout, so neither the docs nor an issue-reporting path
+would otherwise be reachable from the product.
+
+**Docs** (`/support/docs`) renders the documentation that shipped with the
+installed package. The whole `docs/*.md` tree is package data inside the wheel
+(`nyxgpt.resources/docs`, the mechanism #3621 introduced for the ops layer's
+runtime data), resolved through `importlib.resources` and never relative to a
+source tree — so the documents shown match the version that is running by
+construction, and they render with no network access. Links *between*
+documents are rewritten server-side onto `/support/docs/...` so the tree
+browses as a unit; links to files that only a checkout has resolve to the
+hosted copy on GitHub. The Markdown is rendered to HTML by the API
+(`/api/v1/support/docs`, `/api/v1/support/docs/{slug}`) with active content
+stripped before the page injects it.
+
+**File an Issue** opens
+[`.github/ISSUE_TEMPLATE/support.yml`](https://github.com/dkblinux98/nyxGPT/blob/master/.github/ISSUE_TEMPLATE/support.yml)
+on GitHub with the running version and platform prefilled from
+`/api/v1/support/context`. This is a link, not an API call — nyxGPT never
+files an issue on a user's behalf, and there is no POST endpoint under
+`/support` to do it with. Unlike Docs, it needs internet access and a GitHub
+account, which the menu says in its tooltip rather than letting the link fail
+silently offline.
+
+Reports filed this way carry the `Support` label, which the template declares
+itself (a `labels=` URL parameter is silently dropped for a filer without
+write access — exactly the filer this form is for). That label routes the
+report onto the separate **nyxGPT Support** project and keeps it out of the
+agent delivery loop entirely: no code-project item, no field stamping, no
+sprint, no selection. See `scripts/agents/lib/support_label.py`.
+
+---
+
 ## Operational dependencies
 
 For reliable UI operation, ensure the following are active:

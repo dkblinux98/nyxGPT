@@ -56,6 +56,8 @@ import os
 import re
 import sys
 
+from support_label import is_support_issue
+
 
 def phase_num(title: str | None) -> int:
     if not title:
@@ -123,6 +125,13 @@ def summarize(page: dict) -> dict:
         if c.get("state") != "OPEN":
             continue
         open_issues += 1
+
+        # A user support report is never agent work (#3745). The hygiene
+        # workflow already declines to put one on the board, so reaching
+        # here means someone added it by hand -- refuse it as a candidate
+        # anyway rather than letting a user's report be "implemented".
+        if is_support_issue((c.get("labels") or {}).get("nodes")):
+            continue
 
         if status != status_backlog:
             continue
