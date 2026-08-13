@@ -14,6 +14,8 @@
 #   ASSIGNEE      Login to add as assignee (optional).
 #   MILESTONE     Milestone title to set, resolved to its number (optional).
 #   CLEAR_SPRINT  "true" to clear the Sprint iteration field (default false).
+#   SPRINT        Iteration title to set ("ACTIVE" = current iteration; optional;
+#                 mutually exclusive with CLEAR_SPRINT).
 #   STATUS        Status option name to set (optional; validated).
 #   DRY_RUN       "true" (default) = report what would change; "false" = apply.
 #
@@ -28,6 +30,7 @@ ITEMS="${ITEMS:?ITEMS is required (comma/space-separated issue/PR numbers)}"
 ASSIGNEE="${ASSIGNEE:-}"
 MILESTONE="${MILESTONE:-}"
 CLEAR_SPRINT="${CLEAR_SPRINT:-false}"
+SPRINT="${SPRINT:-}"
 STATUS="${STATUS:-}"
 SPRINT_FIELD="${SPRINT_FIELD:-Sprint}"
 
@@ -35,8 +38,10 @@ load_config
 require_gh_auth
 require_cmd jq
 
-[[ -n "$ASSIGNEE" || -n "$MILESTONE" || "$CLEAR_SPRINT" == "true" || -n "$STATUS" ]] \
-  || _die "Nothing to do: set at least one of ASSIGNEE, MILESTONE, CLEAR_SPRINT, STATUS"
+[[ -n "$ASSIGNEE" || -n "$MILESTONE" || "$CLEAR_SPRINT" == "true" || -n "$SPRINT" || -n "$STATUS" ]] \
+  || _die "Nothing to do: set at least one of ASSIGNEE, MILESTONE, CLEAR_SPRINT, SPRINT, STATUS"
+[[ -z "$SPRINT" || "$CLEAR_SPRINT" != "true" ]] \
+  || _die "SPRINT and CLEAR_SPRINT are mutually exclusive"
 
 # Resolve/validate inputs up front so a typo fails before any write.
 milestone_number=""
@@ -77,6 +82,7 @@ echo "[admin-fields] items: ${normalized} (dry_run=${DRY_RUN})" >&2
 [[ -n "$ASSIGNEE" ]] && echo "[admin-fields]   assignee += ${ASSIGNEE}" >&2
 [[ -n "$MILESTONE" ]] && echo "[admin-fields]   milestone -> '${MILESTONE}' (#${milestone_number})" >&2
 [[ "$CLEAR_SPRINT" == "true" ]] && echo "[admin-fields]   ${SPRINT_FIELD} -> (cleared)" >&2
+[[ -n "$SPRINT" ]] && echo "[admin-fields]   ${SPRINT_FIELD} -> '${SPRINT}'" >&2
 [[ -n "$STATUS" ]] && echo "[admin-fields]   ${STATUS_FIELD} -> '${STATUS}'" >&2
 
 if [[ "$DRY_RUN" != "false" ]]; then
@@ -99,7 +105,7 @@ for n in $normalized; do
       && echo "[admin-fields] #${n} milestone -> ${MILESTONE}" >&2 \
       || { _warn "#${n}: failed to set milestone"; item_ok=0; }
   fi
-  if [[ "$CLEAR_SPRINT" == "true" || -n "$STATUS" ]]; then
+  if [[ "$CLEAR_SPRINT" == "true" || -n "$SPRINT" || -n "$STATUS" ]]; then
     item_id="$(item_id_for_content "$n" || true)"
     if [[ -z "$item_id" || "$item_id" == "null" ]]; then
       echo "[admin-fields] #${n} not on the project board — board fields skipped" >&2
@@ -113,6 +119,11 @@ for n in $normalized; do
         clear_project_field_value "$item_id" "$SPRINT_FIELD" \
           && echo "[admin-fields] #${n} ${SPRINT_FIELD} cleared" >&2 \
           || { _warn "#${n}: failed to clear ${SPRINT_FIELD}"; item_ok=0; }
+      fi
+      if [[ -n "$SPRINT" ]]; then
+        set_project_field_value "$item_id" "$SPRINT_FIELD" "$SPRINT" \
+          && echo "[admin-fields] #${n} ${SPRINT_FIELD} -> ${SPRINT}" >&2 \
+          || { _warn "#${n}: failed to set ${SPRINT_FIELD}"; item_ok=0; }
       fi
     fi
   fi

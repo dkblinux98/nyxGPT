@@ -21,6 +21,9 @@ on:
         description: 'Clear the Sprint iteration field'
         type: boolean
         default: false
+      sprint:
+        description: 'Iteration title to set ("ACTIVE" = current; blank = leave unchanged)'
+        default: ''
       status:
         description: 'Status option to set (blank = leave unchanged)'
         default: ''
@@ -54,6 +57,7 @@ jobs:
           ASSIGNEE: ${{ github.event.inputs.assignee }}
           MILESTONE: ${{ github.event.inputs.milestone }}
           CLEAR_SPRINT: ${{ github.event.inputs.clear_sprint }}
+          SPRINT: ${{ github.event.inputs.sprint }}
           STATUS: ${{ github.event.inputs.status }}
           DRY_RUN: ${{ github.event.inputs.dry_run }}
         run: |
