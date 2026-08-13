@@ -230,9 +230,13 @@ jobs:
                 # (#3736, PR #3728 2026-08-11).
                 # --jq runs once per fetched page -- stream matching comments
                 # across all pages first, then slurp (see AGENTS.md).
-                COMMENTS_JSON=$(gh api "repos/${{ github.repository }}/issues/$PR/comments" \
-                  --paginate --jq '.[]' | jq -s '.')
-                HANDLED_FLAG=$(jq -n --argjson comments "$COMMENTS_JSON" '{comments: $comments}' \
+                # The thread is piped, never passed in argv: a long thread
+                # serializes to hundreds of KB and a single execve argument
+                # is capped at MAX_ARG_STRLEN (128KB), so `jq -n --argjson
+                # comments "$JSON"` dies with "Argument list too long" on
+                # exactly the contentious threads this step must govern.
+                HANDLED_FLAG=$(gh api "repos/${{ github.repository }}/issues/$PR/comments" \
+                  --paginate --jq '.[]' | jq -s '{comments: .}' \
                   | python3 "$GITHUB_WORKSPACE/scripts/agents/lib/review_handoff.py" \
                       handoff-recorded "$COMMENT_CREATED")
                 if [[ "$HANDLED_FLAG" == "true" ]]; then
@@ -331,8 +335,16 @@ jobs:
           COMMENTS_JSON=$(gh api "repos/${{ github.repository }}/issues/$PR/comments" \
             --paginate --jq '.[]' | jq -s '.')
 
-          PLAN=$(jq -n --argjson reviews "$REVIEWS_JSON" --argjson comments "$COMMENTS_JSON" \
-            '{reviews: $reviews, comments: $comments}' \
+          # The two payloads are joined by `printf`, a bash *builtin*, so the
+          # thread never crosses an execve boundary. `jq -n --argjson reviews
+          # "$REVIEWS_JSON" ...` would: jq is an external binary and a single
+          # argument is capped at MAX_ARG_STRLEN (128KB), so a long thread
+          # fails the step with "Argument list too long" -- and the threads
+          # that reach three cycles, a huddle or an escalation are precisely
+          # the long ones (incident PR #3728 is already at ~96KB of comment
+          # JSON). A step that dies here never executes the REQUEST_CHANGES
+          # verdict, i.e. the stall this issue exists to remove.
+          PLAN=$(printf '{"reviews":%s,"comments":%s}' "$REVIEWS_JSON" "$COMMENTS_JSON" \
             | python3 "$GITHUB_WORKSPACE/scripts/agents/lib/review_handoff.py" \
                 plan-round "$REVIEW_AGENT")
           echo "$PLAN"

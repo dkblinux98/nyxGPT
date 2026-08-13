@@ -124,7 +124,11 @@ def parse_decision(body: str) -> str:
         if "|" in text:  # unfilled template
             continue
         text = re.sub(r"[^a-z\- ]+", " ", text).strip()
-        if text.startswith("change"):
+        # "change" / "change approach" / "change-approach" -- but the word
+        # boundary matters: "changed my mind, escalate" is prose, not a
+        # change-approach decision, and must fall through to "" so the round
+        # reads as undecided rather than acting on a misparse.
+        if re.match(r"change(?:[- ]?approach)?\b", text):
             return "change-approach"
         for value in DECISION_VALUES:
             if text.startswith(value):

@@ -124,6 +124,32 @@ OUT="$(REVIEW_HANDOFF_WAIT_SECONDS=4 bash "$SCRIPT" 3684 2>&1)"
 wait
 _assert_contains "late event-chain handoff stands the backstop down" "$OUT" "backstop stands down"
 
+# --- Test 5: a long thread does not blow the execve argument limit (#3736) ---
+# The threads that reach three review cycles, a huddle or an escalation are
+# exactly the long ones -- incident PR #3728 was already at ~96KB of comment
+# JSON. Building the plan payload with `jq -n --argjson comments "$comments"`
+# put the whole thread in one execve argument, capped at MAX_ARG_STRLEN
+# (131072 bytes), so the backstop died with "Argument list too long" at the
+# moment it was most needed. The payload is assembled with the `printf`
+# builtin now, which has no such limit. ~240KB here, comfortably past the cap.
+echo "$RC_REVIEW" > "$TMP_ROOT/reviews.json"
+FILLER="$(printf 'x%.0s' {1..4000})"
+: > "$TMP_ROOT/comments.json"
+for i in {1..60}; do
+  printf '{"created_at":"2026-08-09T19:%02d:00Z","id":%d,"body":"chatter %s"}\n' \
+    "$((i % 60))" "$i" "$FILLER" >> "$TMP_ROOT/comments.json"
+done
+THREAD_BYTES="$(wc -c < "$TMP_ROOT/comments.json")"
+if [[ "$THREAD_BYTES" -le 131072 ]]; then
+  echo "[FAIL] long-thread fixture is only ${THREAD_BYTES}B, below MAX_ARG_STRLEN" >&2
+  FAILURES=$((FAILURES + 1))
+fi
+
+OUT="$(bash "$SCRIPT" 3684 2>&1)"
+_assert_not_contains "a ${THREAD_BYTES}B thread does not exceed the argument limit" \
+  "$OUT" "Argument list too long"
+_assert_contains "a long thread still plans the repair" "$OUT" "action=return_to_developer"
+
 if [[ "$FAILURES" -gt 0 ]]; then
   echo "$FAILURES test(s) failed" >&2
   exit 1

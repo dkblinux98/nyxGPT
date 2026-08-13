@@ -509,3 +509,78 @@ class TestBackstopScript:
             timeout=120,
         )
         assert result.returncode == 0, result.stdout + result.stderr
+
+
+class TestThreadPayloadIsNeverPassedInArgv:
+    """The plan payload must reach python3 over a pipe, never through argv.
+
+    A single execve argument is capped at MAX_ARG_STRLEN (131072 bytes), and
+    `jq` is an external binary -- so `jq -n --argjson comments "$COMMENTS_JSON"`
+    hard-fails with "Argument list too long" once the thread grows past ~128KB.
+    That is precisely backwards: the threads that reach three review cycles, a
+    huddle or an escalation are the long ones (incident PR #3728 was already at
+    ~96KB of comment JSON), so the routing step would die exactly on the PRs
+    #3736 exists to keep moving. Both callers assemble the payload with the
+    `printf` *builtin* (or stream it straight out of `gh`), which has no limit.
+    """
+
+    #: Comfortably past MAX_ARG_STRLEN so the old pattern could not pass.
+    _OVERSIZED = 131072 * 2
+
+    def _oversized_thread(self):
+        comments = []
+        size = 0
+        while size < self._OVERSIZED:
+            minute = len(comments) % 60
+            comment = _comment(f"2026-08-12T18:{minute:02d}:00Z", "x" * 4000, 900)
+            comments.append(comment)
+            size += len(json.dumps(comment))
+        return comments
+
+    def test_workflow_join_pattern_survives_an_oversized_thread(self, tmp_path):
+        # The literal pattern `review_agent_auto_review.yml`'s count step uses,
+        # exercised at a size that breaks `jq -n --argjson`. The payloads are
+        # read into shell variables by command substitution -- as they are in
+        # the workflow, where they come from `$(gh api ...)` -- because an
+        # environment string is capped at MAX_ARG_STRLEN too, so handing them
+        # to bash through `env` would fail the exec before the test could run.
+        comments_json = json.dumps(self._oversized_thread())
+        assert len(comments_json) > 131072
+        reviews_file = tmp_path / "reviews.json"
+        comments_file = tmp_path / "comments.json"
+        reviews_file.write_text(json.dumps([_review("CHANGES_REQUESTED", "2026-08-12T18:00:00Z")]))
+        comments_file.write_text(comments_json)
+        script = (
+            f'REVIEWS_JSON="$(cat {reviews_file})"\n'
+            f'COMMENTS_JSON="$(cat {comments_file})"\n'
+            'printf \'{"reviews":%s,"comments":%s}\' "$REVIEWS_JSON" "$COMMENTS_JSON"'
+            f' | python3 "{_MODULE_PATH}" plan-round "{AGENT}"'
+        )
+        result = subprocess.run(
+            ["bash", "-euo", "pipefail", "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert "Argument list too long" not in result.stderr
+        assert result.returncode == 0, result.stdout + result.stderr
+        parsed = dict(line.split("=", 1) for line in result.stdout.strip().splitlines())
+        assert parsed["action"] == "return_to_developer"
+
+    @pytest.mark.parametrize(
+        "relative_path",
+        [
+            ".github/workflows/review_agent_auto_review.yml",
+            "scripts/agents/review_ensure_handoff.sh",
+        ],
+    )
+    def test_no_caller_rebuilds_the_payload_through_jq_argv(self, relative_path):
+        source = (Path(__file__).resolve().parents[2] / relative_path).read_text()
+        # Comment lines are exempt: both files explain this very hazard.
+        code = [line for line in source.splitlines() if not line.lstrip().startswith("#")]
+        offenders = [line.strip() for line in code if "--argjson" in line]
+        assert not offenders, (
+            f"{relative_path} passes a payload to jq in argv ({offenders}); a "
+            "thread over MAX_ARG_STRLEN (128KB) would abort the step (#3736). "
+            "Pipe it into python3 instead, or join it with the printf builtin."
+        )

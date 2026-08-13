@@ -82,6 +82,19 @@ class TestParseDecision:
     def test_unknown_value_is_not_a_decision(self):
         assert huddle_state.parse_decision("HUDDLE_DECISION: maybe later") == ""
 
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "HUDDLE_DECISION: changed my mind -- escalate",
+            "HUDDLE_DECISION: changes are needed elsewhere first",
+        ],
+    )
+    def test_prose_merely_starting_with_change_is_not_change_approach(self, body):
+        # "change" only decides the round on a word boundary; anything else is
+        # prose, and a misparse here would re-arm the cycle counter and hand
+        # the PR back to the developer on a decision nobody made.
+        assert huddle_state.parse_decision(body) == ""
+
     def test_no_marker_is_not_a_decision(self):
         assert huddle_state.parse_decision("## Huddle Decision\n\nWe should proceed.") == ""
 
