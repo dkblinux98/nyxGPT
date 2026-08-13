@@ -61,7 +61,14 @@ This preserves your release-issue checklist signal: unchecked = planned, checked
 ### review-agent
 - `manually_trigger_pr_review.sh <PR_NUMBER>` — manually trigger review workflow (for re-reviews or if auto-trigger failed). Dispatches against `RELEASE_BRANCH`, never the repo default branch — see `agents/runbooks/review-runbook.md` §5a
 - `review_ensure_handoff.sh <PR_NUMBER>` — dispatch-mode backstop (#3704): verifies a REQUEST_CHANGES verdict actually handed off to the developer/huddle/owner, and performs the handoff itself if the event chain dropped it. Run automatically as the last step of a `workflow_dispatch` review; idempotent, so it is safe to re-run by hand
-- `review_accept_and_merge.sh <PR_NUMBER_OR_URL> <ISSUE_NUMBER>` — merge PR to release branch, delete branch, close issue, set status -> In Review, assign human owner for stakeholder acceptance
+- `review_accept_and_merge.sh <PR_NUMBER_OR_URL> <ISSUE_NUMBER>` — merge PR to release branch, delete branch, set the merged PR's own project card -> `Closed` (#3742), close issue, set issue status -> Acceptance Testing, assign human owner for stakeholder acceptance
+
+### PR lane hygiene (#3742)
+The invariant: no merged or closed PR's project card sits in an active lane.
+All three paths are agent-side (no reliance on the board's built-in "Pull
+request merged" automation) and idempotent, and none of them touch issues.
+- `pr_close_project_status.sh [--dry-run] <PR_NUMBER>` — stamps a merged/closed PR's card to `STATUS_CLOSED` (default `Closed`); no-op for an open PR. Run automatically by `pr_project_status_on_close.yml` on every `pull_request: closed`, covering rejected PRs and merges the review agent did not perform.
+- `reconcile_pr_lane.sh` — backstop sweep for cards that predate the invariant or lost a stamp to a flaky API. `SOURCE_STATUS` narrows to one lane (blank = every active lane), `TARGET_STATUS` overrides the destination, `DRY_RUN=true` (default) lists only. Run daily in apply mode by `sweep_pr_status.yml`.
 
 ### branch hygiene
 - `reconcile_dead_branches.sh [--dry-run] [base_branch]` — sweeps `claude/*`, `feat/*`, `fix/*`, `chore/*` branches and deletes ones that are merged/contained in `base_branch`, superseded (linked issue closed + equivalent commits already on `base_branch`), or the head of a PR closed without merging. `developer_create_branch.sh` also auto-deletes superseded prior-attempt branches for the same issue every time it creates/reuses a branch.

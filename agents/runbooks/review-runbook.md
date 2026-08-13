@@ -337,6 +337,14 @@ for the dispatch-side detail.
 When PR is merged (automatically on APPROVE or via human `@approve-merge` override):
 - Automation merges into active release branch (NEVER merge to master/main)
 - Delete short-lived feature/fix branches created for the feature
+- **Set the PR's own project item Status -> `Closed`** (owner decision,
+  2026-08-12, reaffirmed 2026-08-13, #3742). A PR card is a review-lane
+  artifact, not a work item: leaving it in `In Review` drowns the owner's
+  acceptance queue (13 + 3 cards hand-swept on 2026-08-10, 10 on
+  2026-08-13). This is agent-side on purpose — the board's built-in "Pull
+  request merged" automation is GitHub-proprietary (the agent system must
+  stay portable to non-GitHub deployments), is not retroactive, and was
+  observed enabled while the debris accumulated.
 - Close the issue (GitHub state)
 - Check the issue's native blocked-by dependencies (`/issues/{n}/dependencies/blocked_by`):
   - **No open blockers (normal case):** set issue status -> Acceptance
@@ -356,6 +364,21 @@ When PR is merged (automatically on APPROVE or via human `@approve-merge` overri
 - Post-merge, parked case: issue should be CLOSED (GitHub state) + In Review
   (project status) + NOT assigned to human (still shows the review agent /
   prior assignee) until the sweep promotes it
+
+### PR lane invariant (#3742)
+
+No merged or closed PR's project item may sit in `In Review` (or any other
+active lane). Three paths enforce it, all agent-side and all idempotent:
+
+| Path | Script | Covers |
+| --- | --- | --- |
+| Merge flow | `scripts/agents/review_accept_and_merge.sh` (via `close_pr_project_item`) | PRs the review agent merges |
+| Close event | `.github/workflows/pr_project_status_on_close.yml` -> `scripts/agents/pr_close_project_status.sh` | Any `pull_request: closed` — rejected/abandoned PRs, owner and ceremony merges |
+| Sweep backstop | `.github/workflows/sweep_pr_status.yml` -> `scripts/agents/reconcile_pr_lane.sh` | Cards predating the invariant, plus any stamp lost to a flaky API. Runs daily and applies; manual dispatch is dry-run by default and can narrow to one lane via `SOURCE_STATUS` |
+
+The terminal lane is `STATUS_CLOSED` (config key, default `Closed`). Issues
+are never touched by any of the three. Regression coverage:
+`tests/test_pr_lane_hygiene.sh` / `tests/unit/test_pr_lane_hygiene.py`.
 
 ## 9) Human stakeholder acceptance
 

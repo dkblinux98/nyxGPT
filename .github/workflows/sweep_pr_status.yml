@@ -1,22 +1,39 @@
 name: Sweep PR Status
 
-# Admin helper: PRs get Status "In Review" at creation (PR hygiene, #3307)
-# but nothing moves them after merge/close, so they accumulate and drown the
-# owner's issue-acceptance queue. This sweep finds project items that are
-# MERGED or CLOSED pull requests sitting in the source status and moves them
-# to the target status. Issues are never touched. Dry-run by default.
+# Backstop half of the #3742 PR lane invariant. PRs get Status "In Review"
+# at creation (PR hygiene, #3307); the merge flow and the
+# pull_request:closed handler now stamp them to "Closed" on the way out.
+# This sweep catches what those two cannot reach: cards that predate the
+# invariant (13 + 3 hand-swept on 2026-08-10, 10 on 2026-08-13) and any
+# stamp that lost to a flaky API. Issues are never touched.
+#
+# Schedule applies changes (this is a self-healing invariant, not a
+# proposal); manual dispatch defaults to dry-run so the owner can inspect
+# first. The logic lives in scripts/agents/reconcile_pr_lane.sh so it is
+# testable outside Actions.
+#
+# Note on the first run: GitHub only fires `schedule` from the DEFAULT
+# branch, so the daily run starts once master fast-forwards at the next
+# release ceremony. Until then — including the one-time backfill of the
+# cards that were already stranded when this landed — dispatch this
+# workflow against the release branch (Run workflow -> Branch: the active
+# release branch, dry_run: false); the run then uses this branch's copy of
+# both the workflow and the script.
 
 on:
+  schedule:
+    # 07:20 UTC daily — after the overnight agent traffic, before the owner's day.
+    - cron: '20 7 * * *'
   workflow_dispatch:
     inputs:
       source_status:
-        description: 'Only sweep PRs currently in this Status'
-        required: true
-        default: 'In Review'
+        description: 'Only sweep PRs currently in this Status (blank = every active lane)'
+        required: false
+        default: ''
       target_status:
-        description: 'Status to move swept PRs to'
-        required: true
-        default: 'Closed'
+        description: 'Status to move swept PRs to (blank = configured STATUS_CLOSED)'
+        required: false
+        default: ''
       dry_run:
         description: 'true = list only, false = apply'
         required: true
@@ -24,6 +41,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: sweep-pr-status
+  cancel-in-progress: false
 
 jobs:
   sweep:
@@ -59,104 +80,10 @@ jobs:
           EOF
           echo "NYXGPT_CONFIG_FILE=/tmp/nyxgpt-config.ini" >> "$GITHUB_ENV"
 
-      - name: Sweep merged/closed PRs
+      - name: Sweep merged/closed PRs into the terminal lane
         env:
           SOURCE_STATUS: ${{ inputs.source_status }}
           TARGET_STATUS: ${{ inputs.target_status }}
-          DRY_RUN: ${{ inputs.dry_run }}
-        run: |
-          set -euo pipefail
-          source scripts/agents/lib/gh_project.sh
-          load_config
-          require_gh_auth
-          require_cmd python3
-          project_id="$(get_project_id)"
-
-          # Validate the target status option exists before touching anything.
-          single_select_option_id "$STATUS_FIELD" "$TARGET_STATUS" >/dev/null
-
-          read -r -d '' QUERY <<'GQL' || true
-          query($project:ID!, $after:String){
-            node(id:$project){
-              ... on ProjectV2{
-                items(first:100, after:$after){
-                  pageInfo{ hasNextPage endCursor }
-                  nodes{
-                    id
-                    content{
-                      __typename
-                      ... on PullRequest { number state title }
-                    }
-                    fieldValues(first:50){
-                      nodes{
-                        __typename
-                        ... on ProjectV2ItemFieldSingleSelectValue {
-                          field{ ... on ProjectV2SingleSelectField { name } }
-                          name
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-          GQL
-
-          page_file="$(mktemp)"
-          targets_file="$(mktemp)"
-          after=""
-          while : ; do
-            if [[ -n "$after" ]]; then
-              graphql "$QUERY" -F project="$project_id" -f after="$after" > "$page_file"
-            else
-              graphql "$QUERY" -F project="$project_id" > "$page_file"
-            fi
-
-            STATUS_FIELD="$STATUS_FIELD" SOURCE_STATUS="$SOURCE_STATUS" \
-            python3 - "$page_file" >> "$targets_file" <<'PY'
-          import json, os, sys
-          d = json.load(open(sys.argv[1], encoding="utf-8"))
-          status_field = os.environ.get("STATUS_FIELD", "Status")
-          source = os.environ["SOURCE_STATUS"]
-          for it in d["data"]["node"]["items"]["nodes"]:
-              c = it.get("content") or {}
-              if c.get("__typename") != "PullRequest":
-                  continue
-              if c.get("state") not in ("MERGED", "CLOSED"):
-                  continue
-              status = None
-              for fv in it["fieldValues"]["nodes"]:
-                  if fv.get("__typename") == "ProjectV2ItemFieldSingleSelectValue" \
-                     and (fv.get("field") or {}).get("name") == status_field:
-                      status = fv.get("name")
-              if status == source:
-                  print(f"{it['id']}\t{c['number']}\t{c['state']}\t{c['title']}")
-          PY
-
-            has_next="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); pi=d["data"]["node"]["items"]["pageInfo"]; print("yes" if pi["hasNextPage"] else "no")' "$page_file")"
-            if [[ "$has_next" == "yes" ]]; then
-              after="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["data"]["node"]["items"]["pageInfo"]["endCursor"])' "$page_file")"
-            else
-              break
-            fi
-          done
-
-          count="$(wc -l < "$targets_file" | tr -d ' ')"
-          echo "=== ${count} merged/closed PR(s) in '${SOURCE_STATUS}' (dry_run=${DRY_RUN}) ==="
-          cut -f2- "$targets_file" | while IFS=$'\t' read -r num state title; do
-            echo "PR|${num}|${state}|${title}"
-          done
-
-          if [[ "$DRY_RUN" == "true" ]]; then
-            echo "Dry run: no changes applied."
-            exit 0
-          fi
-
-          moved=0
-          while IFS=$'\t' read -r item_id num state title; do
-            set_project_field_value "$item_id" "$STATUS_FIELD" "$TARGET_STATUS"
-            moved=$((moved+1))
-            echo "moved PR #${num} -> ${TARGET_STATUS}"
-          done < "$targets_file"
-          echo "=== Moved ${moved} PR(s) to '${TARGET_STATUS}' ==="
+          # Scheduled runs heal the board; manual runs honour the input.
+          DRY_RUN: ${{ github.event_name == 'schedule' && 'false' || inputs.dry_run }}
+        run: bash scripts/agents/reconcile_pr_lane.sh

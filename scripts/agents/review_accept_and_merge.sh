@@ -152,6 +152,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "[dry-run] base_branch=$pr_base_branch" >&2
   echo "[dry-run] pr_head_branch=$pr_head_branch" >&2
   echo "[dry-run] would: gh pr merge $PR --merge --delete-branch" >&2
+  echo "[dry-run] would: set PR #$PR project Status -> '$STATUS_CLOSED'" >&2
   echo "[dry-run] would: gh issue close $ISSUE" >&2
   dry_run_open_blockers="$(open_blocked_by_issues "$ISSUE" 2>/dev/null || true)"
   if [[ -n "$dry_run_open_blockers" ]]; then
@@ -182,6 +183,22 @@ if ! gh pr merge "$PR" --repo "${REPO_OWNER}/${REPO_NAME}" --merge --delete-bran
   exit 1
 fi
 echo "[review] ✓ PR #${PR} merged successfully" >&2
+
+# PR lane invariant (owner decision 2026-08-12, reaffirmed 2026-08-13,
+# #3742): the merged PR's OWN project item moves to STATUS_CLOSED as part of
+# this same operation. Previously only the issue got post-merge hygiene, so
+# merged PR cards stranded in "In Review" and the owner swept them by hand
+# (13 + 3 on 2026-08-10, 10 on 2026-08-13). Done agent-side on purpose: the
+# board's built-in "Pull request merged" automation is GitHub-proprietary
+# and was observed enabled while the debris accumulated. Best-effort with
+# retries -- the merge already landed, so a board hiccup must not fail the
+# run; reconcile_pr_lane.sh sweeps anything that slips through.
+echo "[review] Setting PR #${PR} project Status to '${STATUS_CLOSED}'..." >&2
+if close_pr_project_item "$PR"; then
+  echo "[review] ✓ PR #${PR} project item -> ${STATUS_CLOSED}" >&2
+else
+  _warn "Failed to set PR #${PR} project Status to '${STATUS_CLOSED}'. PR is merged but its card may still sit in an active lane; the periodic PR-lane sweep will reconcile it."
+fi
 
 # Close the issue (GitHub state) - required because merge to non-default branch doesn't auto-close
 echo "[review] Closing issue #${ISSUE}..." >&2

@@ -214,6 +214,14 @@ load_config() {
   # default, so no new repo variable is required.
   STATUS_ACCEPTANCE_FAILED="${STATUS_ACCEPTANCE_FAILED:-Acceptance Failed}"
 
+  # Terminal lane for a PR's own project item (owner decision, 2026-08-12,
+  # reaffirmed 2026-08-13, #3742). A PR card is a review-lane artifact, not
+  # a work item: once the PR is merged or closed it must leave the active
+  # lanes so it stops drowning the owner's acceptance queue. Same treatment
+  # as the two statuses above -- optional config key with a literal default,
+  # so no new repo variable is required.
+  STATUS_CLOSED="${STATUS_CLOSED:-Closed}"
+
   # Timezone in which sprint-date boundaries are evaluated (owner rule,
   # 2026-07-31: "midnight is midnight EDT, not UTC"). Iteration start dates
   # are timezone-less, so every "has this sprint started/ended?" comparison
@@ -2475,6 +2483,133 @@ set_field_with_retry() {
     sleep $((2 * i))
   done
   return 1
+}
+
+# -------------------------
+# PR lane invariant (#3742, owner decision 2026-08-12/2026-08-13)
+# -------------------------
+# ensure_pr_project_hygiene() puts a PR card into STATUS_IN_REVIEW at
+# creation; nothing used to take it back out, so merged and closed PRs
+# accumulated in the owner's acceptance queue (13 + 3 swept by hand on
+# 2026-08-10, 10 more on 2026-08-13). The invariant is now agent-side:
+# every path that merges or closes a PR stamps that PR's project item to
+# STATUS_CLOSED itself. The board's built-in "Pull request merged"
+# automation is deliberately NOT relied on -- it is GitHub-proprietary (the
+# agent system must stay portable to non-GitHub deployments), it is not
+# retroactive, and it was observed enabled while the debris kept piling up.
+
+# Project item id for PR `pr_number` in this project, adding the PR to the
+# project if it has no item yet. Empty output + non-zero means the item
+# could not be resolved or created.
+#
+# Not ensure_issue_in_project(): that scan matches only `... on Issue`
+# content, so a PR (content typename PullRequest) never matches and it falls
+# through to the add path on every call, resolving the PR's *issue* node id.
+# Here the item is read straight off the PR, and the add fallback uses the
+# PullRequest node id.
+pr_project_item_id() {
+  require_cmd jq
+  local pr_number="$1"
+  local project_id item_id content_id
+
+  project_id="$(get_project_id)"
+
+  local q_find='query($owner:String!, $name:String!, $num:Int!){
+    repository(owner:$owner, name:$name){
+      pullRequest(number:$num){
+        projectItems(first:20){ nodes { id project { id } } }
+      }
+    }
+  }'
+  item_id="$(graphql "$q_find" -F owner="$REPO_OWNER" -F name="$REPO_NAME" -F num="$pr_number" \
+    | jq -r --arg p "$project_id" '
+        .data.repository.pullRequest.projectItems.nodes[]?
+        | select(.project.id == $p)
+        | .id
+      ' | head -n 1)"
+
+  if [[ -n "$item_id" && "$item_id" != "null" ]]; then
+    echo "$item_id"
+    return 0
+  fi
+
+  content_id="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/pulls/${pr_number}" --jq '.node_id' 2>/dev/null || true)"
+  [[ -n "$content_id" && "$content_id" != "null" ]] || return 1
+
+  local q_add='mutation($project:ID!, $content:ID!){
+    addProjectV2ItemById(input:{ projectId:$project, contentId:$content }){
+      item { id }
+    }
+  }'
+  item_id="$(graphql "$q_add" -F project="$project_id" -F content="$content_id" \
+    | jq -r '.data.addProjectV2ItemById.item.id // empty')"
+  [[ -n "$item_id" ]] || return 1
+  echo "$item_id"
+}
+
+# Current project Status of PR `pr_number` (empty if the PR has no item or
+# no Status set). The read half of the lane invariant -- used by the sweep
+# and by tests asserting no closed PR is left in an active lane.
+pr_status() {
+  require_cmd jq
+  local pr_number="$1" project_id
+  project_id="$(get_project_id)"
+
+  local q='query($owner:String!, $name:String!, $num:Int!){
+    repository(owner:$owner, name:$name){
+      pullRequest(number:$num){
+        projectItems(first:20){
+          nodes{
+            project { id }
+            fieldValues(first:50){
+              nodes{
+                ... on ProjectV2ItemFieldSingleSelectValue {
+                  field { ... on ProjectV2SingleSelectField { name } }
+                  name
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }'
+  graphql "$q" -F owner="$REPO_OWNER" -F name="$REPO_NAME" -F num="$pr_number" \
+    | jq -r --arg p "$project_id" --arg f "$STATUS_FIELD" '
+        .data.repository.pullRequest.projectItems.nodes[]?
+        | select(.project.id == $p)
+        | .fieldValues.nodes[]?
+        | select(.field.name == $f)
+        | .name // empty
+      ' | head -n 1
+}
+
+# Sets PR `pr_number`'s project Status to `status`, with the same retry
+# treatment ensure_pr_project_hygiene uses on the way in.
+set_pr_status() {
+  local pr_number="$1" status="$2"
+  local item_id
+  item_id="$(pr_project_item_id "$pr_number")" || true
+  if [[ -z "$item_id" || "$item_id" == "null" ]]; then
+    _warn "Could not resolve a project item for PR #${pr_number} -- Status '${status}' not set."
+    return 1
+  fi
+  set_field_with_retry "$item_id" "$STATUS_FIELD" "$status"
+}
+
+# The lane invariant itself: move a merged/closed PR's card to
+# STATUS_CLOSED. Idempotent -- re-stamping an already-Closed card is a
+# no-op write, so the merge flow, the pull_request:closed handler and the
+# periodic sweep can all run over the same PR safely.
+close_pr_project_item() {
+  local pr_number="$1"
+  local current
+  current="$(pr_status "$pr_number" 2>/dev/null || true)"
+  if [[ "$current" == "$STATUS_CLOSED" ]]; then
+    _debug "PR #${pr_number} project item already '${STATUS_CLOSED}'."
+    return 0
+  fi
+  set_pr_status "$pr_number" "$STATUS_CLOSED"
 }
 
 ensure_pr_project_hygiene() {
