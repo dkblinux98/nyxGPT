@@ -41,7 +41,7 @@ import httpx
 from nacl import public as nacl_public
 
 from nyxgpt import metrics as prom_metrics
-from nyxgpt import self_heal, tracing
+from nyxgpt import release_tarball, self_heal, tracing
 from nyxgpt import verify as verify_mod
 from nyxgpt.config import (
     get_error_tracking_config,
@@ -56,6 +56,19 @@ from nyxgpt.config import (
     resolve_grafana_admin_password,
 )
 from nyxgpt.logging import get_correlation_id
+
+# The vendored-source tarball builder lives in its own stdlib-only module
+# (#3741) so release tooling -- `scripts/build_homebrew_artifacts.py`, run by
+# CI jobs that only check the repo out -- can import it without dragging in
+# this module's runtime dependencies (httpx, pynacl, the metrics/tracing
+# stack). Re-exported here because the local file:// tap install path below
+# has always called these by their `ops.` names.
+from nyxgpt.release_tarball import (  # noqa: F401
+    _WEB_VENDOR_EXCLUDES,
+    _sha256_file,
+    _vendor_tree,
+    build_release_dist_tarball,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -820,15 +833,6 @@ def _sync_packaged_resources() -> list[OpsResult]:
     return [OpsResult(True, f"Synced packaged ops resources to {NYXGPT_HOME}")]
 
 
-def _sha256_file(path: Path) -> str:
-    """Return the hex-encoded SHA-256 digest of the file at `path`."""
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def _tap_repo(tap: str) -> Path:
     """Return the local checkout path of Homebrew tap `tap` (`brew --repo <tap>`)."""
     cp = _run(["brew", "--repo", tap])
@@ -1293,109 +1297,20 @@ def _cleanup_stale_log_symlinks() -> list[OpsResult]:
     return results
 
 
-# Directories `_vendor_tree` never copies into a dist tarball -- gitignored
-# build artifacts the formula regenerates fresh inside the Cellar keg
-# (`web/`'s `node_modules`/`.next`/etc.), or VCS metadata that has no
-# business in a release tarball.
-_WEB_VENDOR_EXCLUDES = frozenset(
-    {
-        "node_modules",
-        ".next",
-        "coverage",
-        "out",
-        "build",
-        ".vercel",
-        ".turbo",
-        ".git",
-    }
-)
-
-
-def _vendor_tree(src: Path, dst: Path, *, excludes: frozenset[str] = frozenset()) -> None:
-    """Copy the directory tree `src` to `dst`, skipping any dir named in `excludes`."""
-
-    def _ignore(_dir_path: str, names: list[str]) -> set[str]:
-        return {n for n in names if n in excludes}
-
-    shutil.copytree(src, dst, ignore=_ignore)
-
-
 def _create_dist_tarball(
     tap_dir: Path, name: str, version: str, source_root: Path | None = None
 ) -> Path:
-    """Build a `<name>-<version>.tar.gz` distribution under `tap_dir/dist`.
+    """`nyxgpt.release_tarball._create_dist_tarball`, defaulted to *this* module's REPO_ROOT.
 
-    Vendors the actual source the formula needs to build a self-contained
-    app inside the Cellar keg -- `pyproject.toml` + `src/nyxgpt/` for
-    `nyxgpt-api` (the formula creates a Cellar-local venv and `pip install`s
-    this tree), or the `web/` source tree, minus its gitignored
-    `node_modules`/`.next` build output (the formula runs `npm ci`/`npm run
-    build` fresh inside the keg), for `nyxgpt-web`. Either way, the
-    installed app no longer depends on the repo checkout or an editable
-    `.venv` at runtime (#3406) -- replacing the old placeholder tarball that
-    only ever contained a `README.txt`.
-
-    `source_root` is the tree to vendor *from*, defaulting to this checkout
-    (`REPO_ROOT`) -- what every local install path wants. Release tooling
-    passes a second checkout instead, so the tarballs can be built from a
-    release tag's source while the tooling itself runs from a branch that
-    has it (#3737: 2.1.0 predates this machinery entirely).
-
-    Replaces any existing tarball of the same name/version. Returns the
-    path to the created tarball.
+    The builder itself moved to the stdlib-only `nyxgpt.release_tarball`
+    module (#3741) so release tooling can import it without this module's
+    third-party dependencies. Every local install path here still calls it
+    by its `ops.` name and expects "vendor from the checkout `ops.REPO_ROOT`
+    points at", so the default is resolved here rather than there.
     """
-    src_root = REPO_ROOT if source_root is None else Path(source_root)
-    dist_dir = tap_dir / "dist"
-    _ensure_dir(dist_dir)
-    tar_path = dist_dir / f"{name}-{version}.tar.gz"
-
-    tmp = dist_dir / f".tmp-{name}-{version}"
-    if tmp.exists():
-        shutil.rmtree(tmp)
-    _ensure_dir(tmp)
-    root = tmp / f"{name}-{version}"
-
-    if name == "nyxgpt-web":
-        _vendor_tree(src_root / "web", root, excludes=_WEB_VENDOR_EXCLUDES)
-    else:
-        _vendor_tree(src_root / "src" / "nyxgpt", root / "src" / "nyxgpt")
-        shutil.copy2(src_root / "pyproject.toml", root / "pyproject.toml")
-        # config_wizard builds its schema from example.config.ini at import
-        # time (#3388), so `import nyxgpt.app` needs the file present. A venv
-        # install has no repo root above the package, so ship the template in
-        # the tarball; the formula copies it next to the installed package
-        # where _resolve_example_config_path() finds it with no env var (#3406).
-        shutil.copy2(src_root / "example.config.ini", root / "example.config.ini")
-
-    if tar_path.exists():
-        tar_path.unlink()
-
-    with tarfile.open(tar_path, "w:gz") as tf:
-        tf.add(root, arcname=f"{name}-{version}")
-
-    shutil.rmtree(tmp, ignore_errors=True)
-    return tar_path
-
-
-def build_release_dist_tarball(
-    name: str, version: str, dist_root: Path, source_root: Path | None = None
-) -> Path:
-    """Public wrapper around `_create_dist_tarball` for release tooling (#3622).
-
-    Builds the same vendored `nyxgpt-api`/`nyxgpt-web` source tarball the
-    local file:// Homebrew tap flow (`_install_homebrew_api`/`_web`) has
-    always built, but at an arbitrary output directory rather than a live
-    `brew --repo` tap checkout -- one implementation of "what goes in the
-    tarball", used both by the local install path and by
-    scripts/release/build_homebrew_artifacts.py to produce the tarballs a
-    *remote* tap's formula points at (attached as GitHub Release assets).
-
-    `source_root` selects the tree the tarball is vendored from (default:
-    this checkout). Publishing a tag whose own tree has no release tooling
-    -- the 2.1.0 tap backfill, #3737 -- runs the tooling from a branch that
-    has it and points this at a checkout of the tag.
-    """
-    return _create_dist_tarball(dist_root, name, version, source_root)
+    return release_tarball._create_dist_tarball(
+        tap_dir, name, version, REPO_ROOT if source_root is None else source_root
+    )
 
 
 def _brew_install_or_reinstall(spec: str, name: str, *, sha256: str, marker_dir: Path) -> str:
