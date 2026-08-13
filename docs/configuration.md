@@ -24,6 +24,26 @@ The same configuration file is used by:
 
 ---
 
+## Runtime data layout
+
+All runtime state lives under `~/.nyxGPT/`, never in a source checkout:
+
+```text
+~/.nyxGPT/
+├── config.ini    # this file
+├── sessions/     # conversation sessions
+├── logs/         # API, web UI, Ollama, and Cassandra logs
+├── volumes/      # bind-mounted service data (Cassandra, Ollama models, Prometheus, ...)
+└── scripts/      # service wrapper scripts, synced from package data
+```
+
+No runtime data is stored in the git repository, and nothing under
+`~/.nyxGPT/` is removed by `nyxgpt down` (data volumes are only dropped by an
+explicit `nyxgpt ops down --volumes --yes-really` — see
+[ops.md](ops.md#removing-data-volumes)).
+
+---
+
 ## Creating a config file
 
 ### Option 1: Interactive wizard (recommended)

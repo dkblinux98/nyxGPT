@@ -96,6 +96,18 @@ For complex tasks or when you need help:
 
 ## Development Environment Setup
 
+A source checkout is for developing nyxGPT itself. Installing and operating it
+never requires one — see [Installing nyxGPT](ops.md#installing-nyxgpt) and the
+[portability matrix](portability-matrix.md).
+
+### Project naming and repository hygiene
+
+- Distribution name: **nyxGPT**; Python package name: **nyxgpt**
+- Runtime data is always externalized to `~/.nyxGPT/` (see
+  [configuration.md](configuration.md#runtime-data-layout)) — never written
+  into the checkout
+- Build artifacts such as `*.egg-info/` must not be committed
+
 ### Prerequisites
 - Python 3.11+
 - Node.js 18+ (for web UI)

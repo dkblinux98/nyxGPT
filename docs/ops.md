@@ -36,6 +36,68 @@ Logs default to:
 
 ---
 
+## Installing nyxGPT
+
+nyxGPT installs from published artifacts — the PyPI wheel, the remote Homebrew
+tap, or the GHCR container images. A repository checkout is **only** used for
+developing nyxGPT itself ([development.md](development.md)); no user-facing
+install or operate flow requires one.
+
+### Prerequisites
+
+- Python 3.11+ (or Homebrew, on the macOS native path)
+- Docker — required for the Cassandra container behind RAG
+- Node.js — for the local web UI on the native paths
+
+Ollama is installed and managed for you by `nyxgpt ops install` (Homebrew
+service on macOS, `nyxgpt-ollama.service` on Linux).
+
+### Install
+
+```bash
+pip install nyxgpt          # Linux and macOS
+```
+
+On macOS you can instead install the native services from the remote tap, which
+brings their launchd wiring with them:
+
+```bash
+brew tap dkblinux98/homebrew-nyxgpt
+brew install nyxgpt-api nyxgpt-web
+```
+
+(That is the remote tap — see [homebrew.md](homebrew.md#remote-tap).)
+
+Other targets — Docker/Compose, Kubernetes, AWS EC2 — and the exact install
+command and current state of each are in the
+[portability matrix](portability-matrix.md#the-matrix). To acceptance-test a
+build that has not been released yet, install a pinned release candidate rather
+than the latest stable: see
+[PyPI publishing (rc and stable)](cloud.md#pypi-publishing-rc-and-stable) and
+[Accepting code that isn't released yet](portability-matrix.md#accepting-code-that-isnt-released-yet).
+
+### First run
+
+```bash
+nyxgpt wizard          # interactive setup: Ollama connection, default model, RAG, config.ini
+nyxgpt secrets setup   # guided, masked entry for optional secrets ([openai] api_key, [github] pat)
+nyxgpt up              # reconcile and start everything, wait for health, print the web UI URL
+nyxgpt chat "Hello"    # or use the web UI at the printed URL
+```
+
+The wizard tests your Ollama connection, helps you pick a default model,
+optionally configures RAG, and generates `~/.nyxGPT/config.ini` — all runtime
+configuration and data live outside the repository (see
+[configuration.md](configuration.md#runtime-data-layout)). `nyxgpt secrets
+setup` walks through any remaining human-provided secrets one at a time (masked
+input, where to obtain each one, format validation) and is safe to re-run.
+
+From there, [`nyxgpt ops`](#command-summary) covers restarting, stopping,
+tearing down, and diagnosing every component, and [cli.md](cli.md) is the full
+command reference.
+
+---
+
 ## Command Summary
 
 ```bash

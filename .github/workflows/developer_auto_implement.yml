@@ -804,9 +804,9 @@ jobs:
               - If still failing after 3 attempts, report what's blocking you
             - **MANDATORY DOCUMENTATION**: Update documentation for ALL user-facing changes:
               * If you modify src/nyxgpt/api.py or src/nyxgpt/app.py → Update docs/api.md
-              * If you modify src/nyxgpt/cli.py → Update docs/configuration.md or README.md CLI section
+              * If you modify src/nyxgpt/cli.py → Update docs/cli.md (and docs/configuration.md if config changed)
               * If you add/change config options → Update example.config.ini AND docs/configuration.md
-              * If you add new features → Update README.md feature list
+              * If you add new features → Update the owning docs/*.md and, if user-visible, the feature overview in docs/README.md. NEVER add feature detail, install matrices, command listings, or world-state claims to README.md — it is a pointer layer by owner decision (#3743): identity, a minimal install pointer, and the docs index only.
               * For ANY code change, check if docs/ files need updates
             - Commit changes with clear messages that MUST include issue references.
 
