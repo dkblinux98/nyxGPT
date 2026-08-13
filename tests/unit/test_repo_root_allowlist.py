@@ -55,14 +55,11 @@ _ALLOWLIST: dict[str, set[str]] = {
         # for an installed package.
         'pyproject = REPO_ROOT / "pyproject.toml"',
         'pyproject_path = REPO_ROOT / "pyproject.toml"',
-        # Homebrew tap tarball vendoring (`ops package`) -- building a
-        # distributable artifact FROM a repo checkout; sibling issue B
-        # ("publish install artifacts") retires this REPO_ROOT dependency
-        # by publishing pre-built artifacts instead. Since #3737 the tree it
-        # vendors is a parameter (`source_root`) and REPO_ROOT is only its
-        # default, so the four vendoring call sites this replaced are no
-        # longer REPO_ROOT-relative at all.
-        "src_root = REPO_ROOT if source_root is None else Path(source_root)",
+        # `ops._create_dist_tarball`: the builder itself moved to the
+        # stdlib-only `release_tarball` module (#3741), but every local
+        # install path here calls it expecting "vendor from the checkout
+        # ops.REPO_ROOT points at", so this wrapper resolves that default.
+        "tap_dir, name, version, REPO_ROOT if source_root is None else source_root",
         # Docker image build fingerprinting for the nyxgpt-api image --
         # `docker build`'s context and source-change fingerprint are
         # necessarily a repo checkout's files.
@@ -99,6 +96,18 @@ _ALLOWLIST: dict[str, set[str]] = {
         'K8S_DIR = REPO_ROOT / "k8s"',
         "context: Path = REPO_ROOT,",
         'context=REPO_ROOT / "web",',
+    },
+    "src/nyxgpt/release_tarball.py": {
+        # Homebrew tap tarball vendoring (`ops package`) -- building a
+        # distributable artifact FROM a repo checkout; sibling issue B
+        # ("publish install artifacts") retires this REPO_ROOT dependency
+        # by publishing pre-built artifacts instead. Since #3737 the tree it
+        # vendors is a parameter (`source_root`) and REPO_ROOT is only its
+        # default, so the four vendoring call sites this replaced are no
+        # longer REPO_ROOT-relative at all. Split out of ops.py by #3741 so
+        # release tooling can import the builder without ops.py's
+        # third-party dependencies -- the REPO_ROOT rationale is unchanged.
+        "src_root = REPO_ROOT if source_root is None else Path(source_root)",
     },
     "src/nyxgpt/verify.py": {
         # `nyxgpt ops verify`'s Playwright dashboard screenshot harness --

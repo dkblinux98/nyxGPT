@@ -2,9 +2,9 @@
 """Build remote-Homebrew-tap release artifacts for a given version (#3622).
 
 Builds the `nyxgpt-api`/`nyxgpt-web` vendored source tarballs (the same
-tarball `nyxgpt.ops.build_release_dist_tarball` / the local file:// tap
-flow builds), then stamps `homebrew/tap/*.rb.tmpl` with the tarballs'
-real url/sha256/version to produce ready-to-publish formula files.
+tarball `nyxgpt.release_tarball.build_release_dist_tarball` / the local
+file:// tap flow builds), then stamps `homebrew/tap/*.rb.tmpl` with the
+tarballs' real url/sha256/version to produce ready-to-publish formula files.
 
 Two channels share that machinery (#3727, owner decision 2026-08-11):
 
@@ -69,7 +69,13 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from nyxgpt.ops import _sha256_file, build_release_dist_tarball  # noqa: E402
+# `nyxgpt.release_tarball` imports nothing but the standard library (#3741),
+# so this script runs from a bare checkout + `setup-python` with no
+# `pip install` step at all -- which is exactly what the two CI jobs that run
+# it provide. Importing the same helpers from `nyxgpt.ops` instead pulled in
+# httpx/pynacl and the whole metrics/tracing stack, and killed the rc tap job
+# after the candidate had already been published to PyPI.
+from nyxgpt.release_tarball import _sha256_file, build_release_dist_tarball  # noqa: E402
 
 _FORMULAS = ("nyxgpt-api", "nyxgpt-web")
 
