@@ -9,12 +9,28 @@ import json
 import sqlite3
 import subprocess
 import time
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from nyxgpt import workflow_log_store
 
 pytestmark = pytest.mark.unit
+
+
+def _recent_window(duration_s: int = 300) -> tuple[str, str]:
+    """A (created_at, updated_at) pair ending just now, `duration_s` apart.
+
+    The "recent run" fixtures must stay inside the 30-day analytics window that
+    `query_runs(since_days=...)` and `compute_summary(days=...)` apply, so they
+    are anchored to the clock. A hardcoded literal date silently ages out of
+    that window and starts failing the suite on a date unrelated to any change.
+    Both stamps come off one `now` so the duration is exact.
+    """
+    updated = datetime.now(UTC).replace(microsecond=0) - timedelta(minutes=5)
+    created = updated - timedelta(seconds=duration_s)
+    fmt = "%Y-%m-%dT%H:%M:%SZ"
+    return created.strftime(fmt), updated.strftime(fmt)
 
 
 @pytest.fixture
@@ -32,9 +48,14 @@ def _raw_run(
     status: str = "completed",
     conclusion: str | None = "success",
     branch: str = "feat/2844-add-thing",
-    created_at: str = "2026-07-14T07:00:00Z",
-    updated_at: str = "2026-07-14T07:05:00Z",
+    created_at: str | None = None,
+    updated_at: str | None = None,
 ) -> dict:
+    # Default to a run that started 10 minutes ago and finished 5 minutes ago:
+    # always inside the analytics window, always exactly 300s long.
+    default_created, default_updated = _recent_window()
+    created_at = created_at if created_at is not None else default_created
+    updated_at = updated_at if updated_at is not None else default_updated
     return {
         "databaseId": run_id,
         "workflowName": workflow_name,
