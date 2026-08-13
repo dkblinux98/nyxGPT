@@ -163,6 +163,21 @@ The formula is named for the **release line** it is a candidate for, so
 what makes `brew upgrade nyxgpt-api@3.0.0rc` the way to move to the round's
 newest candidate.
 
+The prerelease the candidate formulas point at is **created with its
+tarballs attached**, in one `gh release create` call. Releases in this
+repository are immutable -- a published release can never gain an asset, and
+creating it first and uploading afterwards is what left `3.0.0rc3` published
+with no tarballs and the tap empty (#3747). The job reads the release back
+and refuses to stamp a formula unless both tarballs are on it, and it runs
+`scripts/supersede_incomplete_rc_releases.sh <line>` first, which deletes any
+incomplete candidate release of that line (or, when the platform refuses the
+delete, marks it superseded in its notes). Run that script by hand the same
+way if a leftover ever needs clearing:
+
+```bash
+scripts/supersede_incomplete_rc_releases.sh 3.0.0 --repo dkblinux98/nyxGPT --dry-run
+```
+
 Everything past `brew install` is identical to the stable formulas -- same
 tarball contents, same self-contained Cellar keg, same wrappers, same
 service names. `scripts/build_homebrew_artifacts.py --channel rc` derives

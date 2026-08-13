@@ -1459,6 +1459,228 @@ def test_rc_tap_job_cuts_a_prerelease_that_is_never_latest():
     assert "isPrerelease" in run_steps
 
 
+# --- Immutable releases: assets go on at creation or not at all (#3747) ----
+#
+# Run 31663088319 published the `3.0.0rc3` prerelease and then tried to upload
+# its tarballs, which GitHub refused with `HTTP 422: Cannot upload assets to
+# an immutable release` -- leaving a published candidate with no assets and an
+# empty tap. These pin the ordering that cannot regress.
+
+
+def _rc_asset_names(version: str = "${VERSION}") -> tuple[str, ...]:
+    """The tarball names a candidate release must carry, as the job spells them."""
+    return tuple(f"{service}-{version}.tar.gz" for service in rc.TAP_SERVICES)
+
+
+def test_rc_tap_job_attaches_its_assets_in_the_release_create_call():
+    """The tarballs are positional arguments of `gh release create` itself."""
+    steps = _rc_tap_job()["steps"]
+    create_step = next(step for step in steps if "gh release create" in step.get("run", ""))
+    lines = create_step["run"].splitlines()
+    start = next(i for i, line in enumerate(lines) if line.strip().startswith("gh release create"))
+
+    # The create command runs to the first line that is not continued.
+    command_lines: list[str] = []
+    for line in lines[start:]:
+        command_lines.append(line)
+        if not line.rstrip().endswith("\\"):
+            break
+    command = "\n".join(command_lines)
+
+    for tarball in ('"$API_TARBALL"', '"$WEB_TARBALL"'):
+        assert tarball in command, f"{tarball} is not attached in the create call"
+    # ...and those hold the tarballs the build step actually wrote.
+    for name in _rc_asset_names():
+        assert name in create_step["run"]
+
+
+def test_rc_tap_job_never_uploads_an_asset_after_publishing():
+    """`gh release upload` cannot work here at all -- releases are immutable."""
+    run_steps = "\n".join(step.get("run", "") for step in _rc_tap_job()["steps"])
+
+    assert "gh release upload" not in run_steps
+    assert "--clobber" not in run_steps
+
+
+def test_rc_tap_job_refuses_a_release_it_cannot_complete():
+    """An existing release missing a tarball can never gain one: fail, do not upload."""
+    run_steps = "\n".join(step.get("run", "") for step in _rc_tap_job()["steps"])
+
+    assert "immutable" in run_steps.lower()
+    for name in _rc_asset_names():
+        assert name in run_steps
+
+
+def test_rc_tap_job_verifies_both_tarballs_are_attached():
+    """Verifying the mutation: the formulas point at these assets by URL."""
+    steps = _rc_tap_job()["steps"]
+    verify_step = next(
+        step for step in steps if "isPrerelease" in step.get("run", "") and "assets" in step["run"]
+    )
+    body = verify_step["run"]
+
+    assert "--json assets" in body
+    for name in _rc_asset_names():
+        assert name in body, f"the verification does not assert {name}"
+
+
+def test_rc_tap_job_retires_an_incomplete_candidate_before_cutting_a_new_one():
+    """The `3.0.0rc3` leftover (and any future one) is swept, not left installable."""
+    steps = _rc_tap_job()["steps"]
+    runs = [step.get("run", "") for step in steps]
+    sweep_index = next(
+        i for i, body in enumerate(runs) if "supersede_incomplete_rc_releases.sh" in body
+    )
+    create_index = next(i for i, body in enumerate(runs) if "gh release create" in body)
+
+    assert sweep_index < create_index, "the sweep must run before the release is cut"
+    assert (REPO_ROOT / "scripts" / "supersede_incomplete_rc_releases.sh").is_file()
+
+
+def test_the_supersede_sweep_suite_passes():
+    """The sweep's behaviour, run here because `pytest -v` is the gate this repo runs."""
+    import subprocess
+
+    suite = REPO_ROOT / "tests" / "test_supersede_incomplete_rc_releases.sh"
+    result = subprocess.run(
+        ["bash", str(suite)], capture_output=True, text=True, timeout=300, cwd=REPO_ROOT
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+# The two steps above, run for real against a fake `gh`. Shape assertions
+# alone would not have caught #3747 -- the old job's shape was fine, its
+# ordering was not -- so the create and verify steps are executed here with
+# their own shell, and every gh call they make is recorded.
+
+_FAKE_GH = """#!/usr/bin/env bash
+echo "$*" >> "$GH_CALLS"
+case "$*" in
+  *"--json assets"*)   echo "${FAKE_ASSETS:-}"; exit 0 ;;
+  *"--json isPrerelease"*) echo "${FAKE_IS_PRERELEASE:-true}"; exit 0 ;;
+  *"--json tagName"*)  echo "${FAKE_LATEST_TAG:-(none)}"; exit 0 ;;
+  "release view "*)    [ "${FAKE_RELEASE_EXISTS:-0}" = "1" ] && exit 0 || exit 1 ;;
+  "release create "*)  exit 0 ;;
+esac
+exit 0
+"""
+
+_RC = "3.0.0rc9"
+
+
+def _run_tap_step(name_fragment: str, tmp_path, *, tarballs: bool = True, **fake_env):
+    """Execute one `homebrew-tap-rc` step in a sandbox with a recording `gh`."""
+    import os
+    import subprocess
+
+    step = next(
+        s for s in _rc_tap_job()["steps"] if name_fragment in str(s.get("name", "")) and "run" in s
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    gh = bin_dir / "gh"
+    gh.write_text(_FAKE_GH, encoding="utf-8")
+    gh.chmod(0o755)
+
+    dist = tmp_path / "dist" / "homebrew" / "dist"
+    dist.mkdir(parents=True, exist_ok=True)
+    if tarballs:
+        for service in rc.TAP_SERVICES:
+            (dist / f"{service}-{_RC}.tar.gz").write_bytes(b"tarball")
+
+    calls = tmp_path / "gh-calls"
+    calls.write_text("", encoding="utf-8")
+    script = tmp_path / "step.sh"
+    script.write_text(step["run"], encoding="utf-8")
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "VERSION": _RC,
+        "REPO": "test-owner/test-repo",
+        "GITHUB_SHA": "deadbeef",
+        "GITHUB_REF_NAME": "v3.0.0",
+        "GH_TOKEN": "fake",
+        "GH_CALLS": str(calls),
+        **{k: str(v) for k, v in fake_env.items()},
+    }
+    result = subprocess.run(
+        ["bash", str(script)], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60
+    )
+    return result, calls.read_text(encoding="utf-8")
+
+
+def test_the_create_step_publishes_the_release_with_both_tarballs(tmp_path):
+    result, calls = _run_tap_step("Cut the GitHub prerelease", tmp_path, FAKE_RELEASE_EXISTS=0)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    create = next(line for line in calls.splitlines() if line.startswith("release create"))
+    assert "--prerelease" in create and "--latest=false" in create
+    for service in rc.TAP_SERVICES:
+        assert f"dist/homebrew/dist/{service}-{_RC}.tar.gz" in create
+    # The whole point: no second call adds anything to the published release.
+    assert "release upload" not in calls
+
+
+def test_the_create_step_reuses_a_release_that_is_already_complete(tmp_path):
+    """A re-run (e.g. the tap push failed) must not try to re-cut the release."""
+    assets = " ".join(f"{service}-{_RC}.tar.gz" for service in rc.TAP_SERVICES)
+    result, calls = _run_tap_step(
+        "Cut the GitHub prerelease", tmp_path, FAKE_RELEASE_EXISTS=1, FAKE_ASSETS=assets
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "release create" not in calls
+
+
+def test_the_create_step_refuses_a_release_it_can_never_complete(tmp_path):
+    """The #3747 state: a published candidate missing a tarball. Fail, do not upload."""
+    result, calls = _run_tap_step(
+        "Cut the GitHub prerelease",
+        tmp_path,
+        FAKE_RELEASE_EXISTS=1,
+        FAKE_ASSETS=f"{rc.TAP_SERVICES[0]}-{_RC}.tar.gz",
+    )
+
+    assert result.returncode != 0
+    assert "release create" not in calls
+    assert "release upload" not in calls
+    assert "immutable release can never gain one" in result.stdout
+
+
+def test_the_create_step_refuses_when_a_tarball_was_not_built(tmp_path):
+    result, calls = _run_tap_step("Cut the GitHub prerelease", tmp_path, tarballs=False)
+
+    assert result.returncode != 0
+    assert calls.strip() == "", "nothing may be published when the assets are missing"
+
+
+def test_the_verify_step_passes_only_when_both_tarballs_are_attached(tmp_path):
+    assets = " ".join(f"{service}-{_RC}.tar.gz" for service in rc.TAP_SERVICES)
+    ok, _ = _run_tap_step("Verify the release", tmp_path, FAKE_ASSETS=assets)
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+
+    half, _ = _run_tap_step(
+        "Verify the release", tmp_path, FAKE_ASSETS=f"{rc.TAP_SERVICES[0]}-{_RC}.tar.gz"
+    )
+    assert half.returncode != 0
+    assert f"does not carry {rc.TAP_SERVICES[1]}-{_RC}.tar.gz" in half.stdout
+
+
+def test_the_verify_step_still_refuses_a_release_that_is_not_a_prerelease(tmp_path):
+    assets = " ".join(f"{service}-{_RC}.tar.gz" for service in rc.TAP_SERVICES)
+
+    not_pre, _ = _run_tap_step(
+        "Verify the release", tmp_path, FAKE_ASSETS=assets, FAKE_IS_PRERELEASE="false"
+    )
+    assert not_pre.returncode != 0
+
+    became_latest, _ = _run_tap_step(
+        "Verify the release", tmp_path, FAKE_ASSETS=assets, FAKE_LATEST_TAG=_RC
+    )
+    assert became_latest.returncode != 0
+
+
 def test_rc_tap_job_can_write_releases_but_not_mint_a_pypi_token():
     job = _rc_tap_job()
 
