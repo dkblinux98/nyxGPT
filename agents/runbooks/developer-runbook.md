@@ -411,6 +411,41 @@ If flaky tests appear, isolate and fix; escalate if persistent.
     a minimal install pointer, and the docs index only.
 - Update architecture notes only if human-approved architecture change is required
 
+### Inverse-claims sweep: fix what your change makes untrue (#3744)
+
+Updating the docs for your change is only half the job. Also ask: **does this
+change falsify something already written elsewhere in the tree?** Prose that
+your change turns false is your change's bug, even when it lives in a file you
+never opened.
+
+Before you submit, for the capability/behavior/constraint you added, removed
+or inverted, grep the *whole* tree for existing assertions about it —
+
+```bash
+grep -rin "<capability terms>" README.md docs/ agents/ CLAUDE.md \
+  product_management/ src/ web/src/
+```
+
+— using the capability's own vocabulary plus expiry phrasing ("not yet",
+"does not support", "currently", "still required", "will ship"). Fix every
+sentence the merged state makes false, in this PR. The reviewer runs the same
+check (`agents/runbooks/review-runbook.md` §1a) and an unfixed falsified claim
+is a Medium (blocking) finding.
+
+**Do not write world-state claims with built-in expiry.** "This has not
+shipped in a PyPI release yet", "the currently published version is X", "a
+repo checkout is still required", "planned for Phase N" are true only until
+someone lands the work — and the PR that lands it will not be looking at your
+sentence. Point at a living source instead: the PyPI project page,
+`docs/portability-matrix.md`, generated command/API docs, the release tracking
+issue. The reviewer flags a newly introduced expiry-dated claim as a Medium
+finding.
+
+**Motivating incident (#3743, 2026-08-13):** #3727/#3735 shipped repo-less
+PyPI publishing while `README.md` still asserted that it had not shipped and a
+checkout was still required. Both dev and reviewer passed the diff-scoped docs
+criterion honestly — the falsified section simply was not in the diff.
+
 ## 6) Commit discipline
 - Small commits with clear messages
 - Reference issue in PR body: "Closes #ISSUE"

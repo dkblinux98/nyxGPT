@@ -48,6 +48,10 @@ The review-agent OWNS the review process:
 - No architecture boundary violations
 - No secrets committed
 - Clear docs updates for user-facing changes
+- **Inverse-claims check (#3744):** the change must not leave *falsified*
+  claims anywhere else in the tree, including files the diff never touches.
+  See §1a — a falsified claim found and left unfixed is a Medium (blocking)
+  finding.
 - Reasonable maintainability
 - **End-to-end usability (Definition of Done, CLAUDE.md):** nyxGPT user features must be usable from the web interface; ops/SRE features must be operable from the SRE/admin dashboard. A backend-only implementation is a Medium (blocking) finding unless the issue explicitly scopes it backend-only with owner approval and a linked frontend follow-up issue.
 - **Workflow actor gates (#3600, going-public hardening):** any new or edited `.github/workflows/*.yml` job triggered by `issues`, `issue_comment`, `pull_request`, or `pull_request_review*` that carries write permissions or a secret-backed `GH_TOKEN` MUST gate its `if:` on the actor's identity (`comment.user.login`/`review.user.login` against `vars.HUMAN_OWNER` or the relevant agent var) — a trigger phrase with no author check is a Medium (blocking) finding. See `agents/runbooks/developer-runbook.md` §3b for the pattern and the fork-PR guard requirement on merge/review paths.
@@ -59,6 +63,56 @@ The review-agent OWNS the review process:
 - Security concerns beyond secret detection
 - Potential bugs or edge cases not covered by tests
 - API contract consistency and backward compatibility
+
+## 1a) Inverse-claims check: what does this change make *untrue*? (#3744)
+
+The documentation criterion above is **diff-scoped**: "is documentation for
+this change updated?" It asks only about the change's own surfaces. The
+inverse question is a separate check, and it is the one that has escaped both
+agents:
+
+> **Does this change falsify any claim already written somewhere else in the
+> tree?**
+
+**Motivating incident (2026-08-13, #3743).** #3727/#3735 shipped repo-less
+PyPI publishing. `README.md`'s install section asserted that "this has not
+shipped in a PyPI release yet… a repo checkout is still required" — a claim
+the very capability under review made false. The developer and the reviewer
+both passed the documentation criterion *honestly*: the README section was
+outside the diff's surfaces, so "docs for this change updated?" was answered
+yes while the tree now shipped a lie. #3743 fixed the instance; this section
+closes the class.
+
+**How to run the check.** For every PR, before deciding:
+
+1. Name the capability/behavior/constraint the change adds, removes, or
+   inverts (e.g. "installable from PyPI without a checkout", "`nyxgpt ops
+   down` now preserves volumes", "Windows unsupported").
+2. **Search the tree for existing assertions about it**, not just the files in
+   the diff — `grep -ri` over `README.md`, `docs/`, `agents/`, `CLAUDE.md`,
+   `product_management/`, help text and UI strings, using the *capability's*
+   vocabulary (product name, command, flag, service, "not yet", "does not
+   support", "requires", "currently"). The diff is the wrong place to look by
+   construction; the whole point is that the falsified prose lives elsewhere.
+3. Read each hit and decide: does the merged state still make this sentence
+   true? A sentence that the PR turns false — or that describes a workaround
+   the PR makes unnecessary — must be updated in this PR.
+4. **A falsified claim found and left unfixed is a Medium (blocking)
+   finding.** Cite it as `file:line`, quote the claim, and state what the
+   change makes true instead. Report the search you ran (paths/terms) in the
+   review's `### Documentation Status` section so an empty result is
+   distinguishable from a check that was never run.
+
+**Expiry-dated claims are a finding in themselves.** Prose that encodes
+world-state with built-in expiry — "not yet published", "the current version
+is X", "this will ship in Phase N", "a checkout is still required" — is
+guaranteed to rot and is what made #3743 possible. New or edited docs must
+point at living sources instead (the PyPI project page, `docs/portability-
+matrix.md`, generated command/API docs, the release tracking issue). Flag a
+newly introduced expiry-dated claim as a Medium finding and ask for the
+pointer form; pre-existing ones are Minor unless *this* PR falsifies them, in
+which case they are Medium under the rule above. See
+`agents/runbooks/developer-runbook.md` §5 for the authoring side.
 
 ## 2) Severity model
 - Critical: correctness/security/data-loss/performance regression; must block merge

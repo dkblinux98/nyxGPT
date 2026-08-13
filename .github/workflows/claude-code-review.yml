@@ -360,12 +360,60 @@ jobs:
               ${{ steps.docs.outputs.user_facing_undocumented == 'true' &&
                  '❌ YES (BLOCKS APPROVE)' || '✅ NO' }}
 
+            Note: the signals above are diff-scoped. They cannot detect prose
+            this change *falsifies* elsewhere in the tree — you must run the
+            inverse-claims check below yourself.
+
             MANDATORY: You MUST REQUEST_CHANGES if:
             - ANY linter or test failed (including TypeScript/Vitest when web/** changed)
             - Source code changed WITHOUT test updates (tests_updated=false)
             - User-facing code changed WITHOUT documentation updates (user_facing_undocumented=true)
+            - This change falsifies a claim written elsewhere in the tree and
+              the PR does not fix it (inverse-claims check, review-runbook §1a)
 
             Do not APPROVE until all checks pass, tests are updated, AND documentation is complete.
+
+            ## Inverse-claims check (REQUIRED, review-runbook.md §1a, #3744)
+
+            The documentation criterion above only asks "are docs for this
+            change updated?" You MUST also ask the inverse: **what does this
+            change make untrue elsewhere?** Consequences for existing prose
+            are in scope even when that prose is nowhere near the diff.
+
+            Motivating incident (#3743, 2026-08-13): #3727/#3735 shipped
+            repo-less PyPI publishing while README.md still asserted "this has
+            not shipped in a PyPI release yet… a repo checkout is still
+            required". Both dev and reviewer passed the docs criterion
+            honestly — that section was outside the diff's surfaces — and the
+            tree shipped a claim the PR itself had falsified.
+
+            Run it like this, before deciding:
+
+            1. Name the capability/behavior/constraint this PR adds, removes,
+               or inverts.
+            2. Search the WHOLE tree for existing assertions about it — not
+               just changed files. e.g.
+               `grep -rin "<capability terms>" README.md docs/ agents/ CLAUDE.md product_management/ web/src src/`
+               using the capability's own vocabulary plus expiry phrasing
+               ("not yet", "does not support", "currently", "still required",
+               "will ship", "planned").
+            3. Read each hit: is that sentence still true after this merges?
+               A sentence this PR turns false — or that describes a workaround
+               it makes unnecessary — must be fixed in THIS PR.
+            4. A falsified claim found and left unfixed is a **Medium
+               (blocking)** finding: cite `file:line`, quote the claim, state
+               what is true instead.
+            5. Newly introduced world-state claims with built-in expiry
+               ("currently published version…", "not yet shipped", "requires a
+               checkout") are themselves a **Medium** finding — docs must
+               point at living sources instead (PyPI project page,
+               `docs/portability-matrix.md`, generated docs, release tracking
+               issue). Pre-existing ones are Minor unless this PR falsifies
+               them.
+
+            Report the search you actually ran in the `### Documentation
+            Status` section, so "no falsified claims" is distinguishable from
+            "never checked".
 
             ## Review Instructions
 
@@ -411,6 +459,9 @@ jobs:
             - No architecture boundary violations
             - No secrets committed
             - Clear docs updates for user-facing changes
+            - Inverse-claims check (§1a): the change does not leave falsified
+              claims elsewhere in the tree — check the change's *consequences*
+              for existing prose, not only its own surfaces
             - Reasonable maintainability
 
             Additional quality checks:
@@ -464,6 +515,16 @@ jobs:
             - User-facing code changed: [YES/NO]
             - Documentation updated: [YES/NO]
             [If user-facing code changed without docs, this BLOCKS APPROVE]
+            - Inverse-claims check (§1a, #3744) — capability this PR
+              adds/removes/inverts: [one line]
+            - Tree searched for claims about it: [the exact grep terms and
+              paths you ran — required, "N/A" is not an acceptable answer]
+            - Claims falsified by this change: [NONE / file:line + quote for each]
+            - New expiry-dated world-state claims introduced: [NONE / file:line each]
+            [If this change falsifies an existing claim the PR does not fix,
+            this BLOCKS APPROVE (Medium)]
+            [If the PR introduces a new expiry-dated world-state claim instead
+            of pointing at a living source, this BLOCKS APPROVE (Medium)]
 
             ${{ steps.previous_review.outputs.is_rereview == 'true' && '
             ### Fix Verification (for re-reviews)
@@ -520,6 +581,8 @@ jobs:
               * Tests or linters failed
               * Source code changed without test updates
               * User-facing code changed without documentation updates
+              * The change falsifies a claim elsewhere in the tree and the PR
+                does not fix it (inverse-claims check, §1a/#3743)
             - For re-reviews: MUST verify ALL previous Critical/Medium issues are resolved
             - Be specific with file paths and line numbers for all issues
             - Explain how to fix blocking issues

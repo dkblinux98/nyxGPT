@@ -71,6 +71,14 @@ REVIEW CRITERIA (from agents/runbooks/review-runbook.md)
 - No architecture boundary violations
 - No secrets committed
 - Documentation updated for user-facing changes
+- Inverse-claims check (#3744, runbook §1a): the change does not leave
+  falsified claims elsewhere in the tree. Ask what this change makes UNTRUE,
+  grep the whole tree (README.md, docs/, agents/, CLAUDE.md,
+  product_management/, UI strings) for existing assertions about the
+  capability, and report the search you ran in "### Documentation Status".
+  An unfixed falsified claim, or a newly introduced expiry-dated world-state
+  claim ("not yet shipped", "currently published version…"), is a Medium
+  (blocking) finding. Motivating incident: #3743.
 - Code quality and maintainability
 - Performance and security considerations
 
