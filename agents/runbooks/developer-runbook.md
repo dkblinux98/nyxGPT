@@ -402,9 +402,13 @@ If flaky tests appear, isolate and fix; escalate if persistent.
 ## 5) Documentation
 - Update docs for any user-facing change:
   - Modified `src/nyxgpt/api.py` or `src/nyxgpt/app.py` → Update `docs/api.md`
-  - Modified `src/nyxgpt/cli.py` → Update `docs/configuration.md` or `README.md` CLI section
+  - Modified `src/nyxgpt/cli.py` → Update `docs/cli.md` (and `docs/configuration.md` if config changed)
   - Added/changed config options → Update `example.config.ini` AND `docs/configuration.md`
-  - Added new features → Update `README.md` feature list
+  - Added new features → Update the owning `docs/*.md` and, if the feature is
+    user-visible, the feature overview in `docs/README.md`. **Never add feature
+    detail, install matrices, command listings, or world-state claims to
+    `README.md`** — it is a pointer layer by owner decision (#3743): identity,
+    a minimal install pointer, and the docs index only.
 - Update architecture notes only if human-approved architecture change is required
 
 ## 6) Commit discipline
