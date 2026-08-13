@@ -49,6 +49,7 @@ from nyxgpt.logging import configure_logging, mint_correlation_id
 from nyxgpt.rag.rag import ingest_document, retrieve_context
 from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
 from nyxgpt.secrets_setup import run_secrets_setup
+from nyxgpt.version import running_version
 from nyxgpt.wizard import run_wizard
 
 
@@ -1688,6 +1689,15 @@ def cli(argv: list[str] | None = None) -> int:
         "--config",
         type=Path,
         help="Path to config.ini (defaults to ~/.nyxGPT/config.ini)",
+    )
+    # Step 1 of the owner acceptance sequence (nyxgpt.portability) and the
+    # macOS brew smoke job both run `nyxgpt --version` on a machine with no
+    # checkout, so the version comes from installed package metadata (#3753).
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"nyxgpt {running_version()}",
+        help="Print the running nyxGPT version and exit",
     )
 
     sub = parser.add_subparsers(dest="command")
