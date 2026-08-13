@@ -38,9 +38,17 @@ CLI:
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
+from datetime import UTC, datetime, timedelta
 from typing import Any
+
+#: How long a triggered-but-undecided huddle keeps the review path silent.
+#: Bounded on purpose: an in-flight huddle must not be able to stall a PR
+#: forever if the position or mediation run never happens. Overridable with
+#: NYXGPT_HUDDLE_STALE_HOURS.
+STALE_AFTER_HOURS = float(os.environ.get("NYXGPT_HUDDLE_STALE_HOURS") or 6)
 
 #: Machine-readable review payload `claude-code-review.yml` persists after
 #: every review. It both delimits a round and embeds the review's free text,
@@ -210,7 +218,37 @@ def escalation_recorded(comments: list[dict[str, Any]], since: str = "") -> bool
     return any(marker_comments(comments, marker, since) for marker in ESCALATION_MARKERS)
 
 
-def huddle_status(comments: list[dict[str, Any]]) -> dict[str, Any]:
+def _is_stale(trigger_at: str, now: datetime | None, stale_after_hours: float) -> bool:
+    """Has a still-undecided huddle been open longer than the deadline?
+
+    A pending huddle silences the whole review path, so a huddle that never
+    reaches a decision -- the position run dies, the mediation run never
+    fires -- would stall the PR indefinitely. That is the same failure this
+    issue is fixing, so the deferral is bounded: past the deadline the round
+    routes by cycle count again, exactly as it did before #3736.
+
+    An unparsable timestamp is treated as NOT stale: guessing "expired" from
+    a value that could not be read would drop the deferral on a live huddle.
+    """
+    if not trigger_at:
+        return False
+    try:
+        opened = datetime.fromisoformat(trigger_at.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if opened.tzinfo is None:
+        opened = opened.replace(tzinfo=UTC)
+    reference = now or datetime.now(UTC)
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=UTC)
+    return (reference - opened) > timedelta(hours=stale_after_hours)
+
+
+def huddle_status(
+    comments: list[dict[str, Any]],
+    now: datetime | None = None,
+    stale_after_hours: float | None = None,
+) -> dict[str, Any]:
     """State of the huddle for the current review round.
 
     Keys:
@@ -221,6 +259,7 @@ def huddle_status(comments: list[dict[str, Any]]) -> dict[str, Any]:
       decision        proceed|change-approach|descope|escalate|"" (this round)
       decision_at     when it landed
       pending         triggered, no decision yet -- nothing else may act
+      stale           triggered, undecided, and past the deferral deadline
       resumable       decision hands the work back to the developer agent
       escalated       the mediation escalated; the review path must not re-escalate
       dispatched      the decision's "what happens next" has been executed
@@ -236,6 +275,10 @@ def huddle_status(comments: list[dict[str, Any]]) -> dict[str, Any]:
     dispatched = bool(
         decision_entry and marker_comments(comments, HUDDLE_DISPATCH_MARKER, decision_at)
     )
+    # Resolved at call time, not bound as a default: the deadline is
+    # configuration, and tests/callers must be able to override it.
+    deadline = STALE_AFTER_HOURS if stale_after_hours is None else stale_after_hours
+    stale = bool(triggers) and not decision and _is_stale(trigger_at, now, deadline)
 
     return {
         "round_start": start,
@@ -244,7 +287,8 @@ def huddle_status(comments: list[dict[str, Any]]) -> dict[str, Any]:
         "trigger_at": trigger_at,
         "decision": decision,
         "decision_at": decision_at,
-        "pending": bool(triggers) and not decision,
+        "pending": bool(triggers) and not decision and not stale,
+        "stale": stale,
         "resumable": decision in RESUMABLE_DECISIONS,
         "escalated": decision == "escalate",
         "dispatched": dispatched,

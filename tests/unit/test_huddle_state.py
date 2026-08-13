@@ -16,6 +16,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -36,6 +37,17 @@ STRUCTURED = 'nyxgpt-structured-review {"decision":"REQUEST_CHANGES","disagreeme
 
 def _comment(created_at, body, comment_id=0):
     return {"created_at": created_at, "body": body, "id": comment_id}
+
+
+#: Fixed reference clock: the fixtures below are dated, so the
+#: pending-huddle deadline must be evaluated against a pinned "now"
+#: rather than the wall clock, or these tests would start failing six
+#: hours after the dates they describe.
+NOW = datetime(2026, 8, 12, 19, 30, tzinfo=UTC)
+
+
+def _status(comments, now=NOW):
+    return huddle_state.huddle_status(comments, now=now)
 
 
 def _round(structured_at="2026-08-12T18:00:00Z"):
@@ -95,7 +107,7 @@ class TestRoundScoping:
             _comment("2026-08-12T17:05:00Z", "🤝 Huddle triggered\n\nHUDDLE_TRIGGERED", 2),
             _comment("2026-08-12T18:00:00Z", STRUCTURED, 3),
         ]
-        status = huddle_state.huddle_status(comments)
+        status = _status(comments)
         assert status["triggered"] is False
         assert status["pending"] is False
 
@@ -109,7 +121,7 @@ class TestRoundScoping:
                 1,
             )
         ]
-        assert huddle_state.huddle_status(comments)["triggered"] is False
+        assert _status(comments)["triggered"] is False
 
 
 class TestPrimaryMarkerComment:
@@ -155,7 +167,7 @@ class TestPrimaryMarkerComment:
 class TestHuddleStatus:
     def test_triggered_without_a_decision_is_pending(self):
         comments = _round() + [_comment("2026-08-12T18:07:20Z", "HUDDLE_TRIGGERED", 501)]
-        status = huddle_state.huddle_status(comments)
+        status = _status(comments)
         assert status["pending"] is True
         assert status["triggered"] is True
         assert status["decision"] == ""
@@ -165,14 +177,14 @@ class TestHuddleStatus:
             _comment("2026-08-12T18:07:20Z", "HUDDLE_TRIGGERED", 501),
             _comment("2026-08-12T18:09:05Z", "HUDDLE_TRIGGERED", 502),
         ]
-        assert huddle_state.huddle_status(comments)["trigger_count"] == 2
+        assert _status(comments)["trigger_count"] == 2
 
     def test_decision_closes_the_pending_state_and_is_resumable(self):
         comments = _round() + [
             _comment("2026-08-12T18:07:20Z", "HUDDLE_TRIGGERED", 501),
             _comment("2026-08-12T19:04:00Z", "## Huddle Decision\n\nHUDDLE_DECISION: proceed", 601),
         ]
-        status = huddle_state.huddle_status(comments)
+        status = _status(comments)
         assert status["pending"] is False
         assert status["decision"] == "proceed"
         assert status["resumable"] is True
@@ -184,7 +196,7 @@ class TestHuddleStatus:
             _comment("2026-08-12T18:07:20Z", "HUDDLE_TRIGGERED", 501),
             _comment("2026-08-12T19:04:00Z", "HUDDLE_DECISION: escalate", 601),
         ]
-        status = huddle_state.huddle_status(comments)
+        status = _status(comments)
         assert status["escalated"] is True
         assert status["resumable"] is False
 
@@ -194,14 +206,48 @@ class TestHuddleStatus:
             _comment("2026-08-12T19:04:00Z", "HUDDLE_DECISION: change-approach", 601),
             _comment("2026-08-12T19:05:00Z", "🔁 dispatched\n\nHUDDLE_DECISION_DISPATCHED", 602),
         ]
-        assert huddle_state.huddle_status(comments)["dispatched"] is True
+        assert _status(comments)["dispatched"] is True
 
     def test_an_unparsable_decision_leaves_the_huddle_pending(self):
         comments = _round() + [
             _comment("2026-08-12T18:07:20Z", "HUDDLE_TRIGGERED", 501),
             _comment("2026-08-12T19:04:00Z", "HUDDLE_DECISION: [proceed|descope]", 601),
         ]
-        assert huddle_state.huddle_status(comments)["pending"] is True
+        assert _status(comments)["pending"] is True
+
+    def test_an_abandoned_huddle_stops_deferring_after_the_deadline(self):
+        # A pending huddle silences the whole review path, so the deferral
+        # is bounded: if the position or mediation run never happens, the
+        # round must route by cycle count again instead of stalling.
+        comments = _round() + [_comment("2026-08-12T18:07:20Z", "HUDDLE_TRIGGERED", 501)]
+        now = datetime(2026, 8, 13, 6, 0, tzinfo=UTC)
+        status = huddle_state.huddle_status(comments, now=now)
+        assert status["stale"] is True
+        assert status["pending"] is False
+
+    def test_a_fresh_huddle_is_still_pending(self):
+        comments = _round() + [_comment("2026-08-12T18:07:20Z", "HUDDLE_TRIGGERED", 501)]
+        now = datetime(2026, 8, 12, 19, 0, tzinfo=UTC)
+        status = huddle_state.huddle_status(comments, now=now)
+        assert status["pending"] is True
+        assert status["stale"] is False
+
+    def test_a_decided_huddle_is_never_stale(self):
+        comments = _round() + [
+            _comment("2026-08-12T18:07:20Z", "HUDDLE_TRIGGERED", 501),
+            _comment("2026-08-12T19:04:00Z", "HUDDLE_DECISION: proceed", 601),
+        ]
+        now = datetime(2026, 8, 20, 0, 0, tzinfo=UTC)
+        assert huddle_state.huddle_status(comments, now=now)["stale"] is False
+
+    def test_an_unreadable_timestamp_keeps_the_deferral(self):
+        # Guessing "expired" from a timestamp that could not be parsed would
+        # drop the deferral on a live huddle.
+        comments = _round() + [_comment("not-a-timestamp", "HUDDLE_TRIGGERED", 501)]
+        now = datetime(2026, 8, 20, 0, 0, tzinfo=UTC)
+        status = huddle_state.huddle_status(comments, now=now)
+        assert status["stale"] is False
+        assert status["pending"] is True
 
     def test_decision_from_before_the_trigger_does_not_close_it(self):
         comments = [
@@ -209,7 +255,7 @@ class TestHuddleStatus:
             _comment("2026-08-12T18:00:00Z", STRUCTURED, 100),
             _comment("2026-08-12T18:07:20Z", "HUDDLE_TRIGGERED", 501),
         ]
-        assert huddle_state.huddle_status(comments)["pending"] is True
+        assert _status(comments)["pending"] is True
 
 
 class TestEscalationRecorded:

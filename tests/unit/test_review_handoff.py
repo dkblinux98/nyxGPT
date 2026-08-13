@@ -13,6 +13,7 @@ import io
 import json
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,11 @@ sys.modules[_spec.name] = review_handoff
 _spec.loader.exec_module(review_handoff)
 
 AGENT = "myGPT-review-agent"
+
+#: Pinned reference clock for the huddle deadline: the incident
+#: fixtures below are dated, so evaluating "is this huddle stale?"
+#: against the wall clock would make these tests expire.
+NOW = datetime(2026, 8, 12, 19, 30, tzinfo=UTC)
 
 
 def _review(state, submitted_at, login=AGENT, body=""):
@@ -299,7 +305,10 @@ class TestHuddleRaceRegressions:
             _structured("2026-08-11T18:06:00Z", "a", 100),
             _comment("2026-08-11T18:07:20Z", "🤝 Huddle triggered\n\nHUDDLE_TRIGGERED", 501),
         ]
-        plan = review_handoff.plan_round(reviews, comments, AGENT)
+        # Minutes after the first trigger -- the window the second run of the
+        # same verdict actually lands in.
+        now = datetime(2026, 8, 11, 18, 9, tzinfo=UTC)
+        plan = review_handoff.plan_round(reviews, comments, AGENT, now=now)
         assert plan["action"] == "none"
         assert plan["route"] == "defer_huddle_pending"
         assert plan["huddle_pending"] is True
@@ -311,7 +320,8 @@ class TestHuddleRaceRegressions:
             _review("CHANGES_REQUESTED", "2026-08-11T18:05:00Z"),
         ]
         comments = [_structured("2026-08-11T18:06:00Z", "a", 100)]
-        assert review_handoff.plan_round(reviews, comments, AGENT)["action"] == "huddle"
+        now = datetime(2026, 8, 11, 18, 7, tzinfo=UTC)
+        assert review_handoff.plan_round(reviews, comments, AGENT, now=now)["action"] == "huddle"
 
     def test_huddle_decision_suppresses_escalation_and_restarts_the_fix_cycle(self):
         # Incident (ii): three REQUEST_CHANGES rounds -- the raw count that
@@ -328,7 +338,7 @@ class TestHuddleRaceRegressions:
             _comment("2026-08-12T18:57:00Z", "HUDDLE_TRIGGERED", 501),
             _comment("2026-08-12T19:04:00Z", "## Huddle Decision\n\nHUDDLE_DECISION: proceed", 601),
         ]
-        plan = review_handoff.plan_round(reviews, comments, AGENT)
+        plan = review_handoff.plan_round(reviews, comments, AGENT, now=NOW)
         assert plan["action"] == "return_to_developer"
         assert plan["route"] == "normal"
         assert plan["request_changes_count"] == 3
@@ -342,7 +352,7 @@ class TestHuddleRaceRegressions:
             _comment("2026-08-12T14:01:00Z", "HUDDLE_TRIGGERED", 501),
             _comment("2026-08-12T14:10:00Z", "HUDDLE_DECISION: change-approach", 601),
         ]
-        plan = review_handoff.plan_round(reviews, comments, AGENT)
+        plan = review_handoff.plan_round(reviews, comments, AGENT, now=NOW)
         assert plan["action"] == "return_to_developer"
         assert plan["effective_count"] == 0
 
@@ -360,7 +370,7 @@ class TestHuddleRaceRegressions:
             _comment("2026-08-12T19:04:00Z", "HUDDLE_DECISION: proceed", 601),
             _structured("2026-08-12T22:01:00Z", "a", 700),
         ]
-        plan = review_handoff.plan_round(reviews, comments, AGENT)
+        plan = review_handoff.plan_round(reviews, comments, AGENT, now=NOW)
         assert plan["action"] == "escalate"
         assert plan["escalate_reason"] == "cycle_limit"
         assert plan["effective_count"] == 3
@@ -374,7 +384,7 @@ class TestHuddleRaceRegressions:
             _comment("2026-08-12T18:02:00Z", "HUDDLE_TRIGGERED", 501),
             _comment("2026-08-12T18:30:00Z", "HUDDLE_DECISION: descope", 601),
         ]
-        plan = review_handoff.plan_round(reviews, comments, AGENT)
+        plan = review_handoff.plan_round(reviews, comments, AGENT, now=NOW)
         assert plan["action"] == "return_to_developer"
 
     def test_huddle_escalation_is_not_escalated_again(self):
@@ -386,9 +396,21 @@ class TestHuddleRaceRegressions:
             _comment("2026-08-12T04:01:00Z", "HUDDLE_TRIGGERED", 501),
             _comment("2026-08-12T04:30:00Z", "HUDDLE_DECISION: escalate", 601),
         ]
-        plan = review_handoff.plan_round(reviews, comments, AGENT)
+        plan = review_handoff.plan_round(reviews, comments, AGENT, now=NOW)
         assert plan["action"] == "none"
         assert plan["route"] == "defer_huddle_escalated"
+
+    def test_an_abandoned_huddle_releases_the_round(self):
+        # The deferral cannot become its own stall: a huddle triggered long
+        # ago that never reached a decision routes by cycle count again.
+        reviews = [_review("CHANGES_REQUESTED", "2020-01-01T00:00:00Z")]
+        comments = [
+            _structured("2020-01-01T00:01:00Z", "a", 100),
+            _comment("2020-01-01T00:02:00Z", "HUDDLE_TRIGGERED", 501),
+        ]
+        plan = review_handoff.plan_round(reviews, comments, AGENT, now=NOW)
+        assert plan["action"] == "return_to_developer"
+        assert plan["huddle_pending"] is False
 
     def test_a_thread_with_no_huddle_routes_exactly_as_before(self):
         reviews = [_review("CHANGES_REQUESTED", f"2026-08-12T0{n}:00:00Z") for n in range(1, 4)]
@@ -440,6 +462,9 @@ class TestCli:
             ],
         }
         monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+        # The CLI reads the wall clock; the fixture is dated, so widen the
+        # pending-huddle deadline instead of pinning the clock here.
+        monkeypatch.setattr(review_handoff.huddle_state, "STALE_AFTER_HOURS", 10**6)
 
         assert review_handoff._main(["plan-round", AGENT]) == 0
 

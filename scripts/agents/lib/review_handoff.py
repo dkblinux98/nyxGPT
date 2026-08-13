@@ -33,6 +33,7 @@ import importlib.util
 import json
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -237,6 +238,7 @@ def plan_round(
     comments: list[dict[str, Any]],
     review_agent: str,
     review_body: str = "",
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """Route the current REQUEST_CHANGES round, deferring to the huddle (#3736).
 
@@ -247,7 +249,9 @@ def plan_round(
       yet): nothing happens. Not another trigger, not an escalation -- the
       huddle owns the round until it decides. This is also what deduplicates
       the trigger, since the second run of the same verdict sees the first
-      run's marker.
+      run's marker. Bounded by `huddle_state.STALE_AFTER_HOURS`: a huddle
+      that never reaches a decision releases the round rather than stalling
+      the PR forever.
     - **huddle escalated**: the mediation run already handed the issue to
       the owner with the standard primitives; a second escalation here would
       only spam the thread.
@@ -258,9 +262,11 @@ def plan_round(
       unconditionally.
 
     `action` is one of "none" / "return_to_developer" / "huddle" /
-    "escalate"; `route` carries the finer-grained reason.
+    "escalate"; `route` carries the finer-grained reason. `now` is the
+    reference time for the pending-huddle deadline (defaults to the clock;
+    injected by tests).
     """
-    status = huddle_state.huddle_status(comments)
+    status = huddle_state.huddle_status(comments, now=now)
     count = request_changes_count(reviews, review_agent)
     effective = effective_request_changes_count(reviews, comments, review_agent)
     dtype = disagreement_type(comments, review_body)
