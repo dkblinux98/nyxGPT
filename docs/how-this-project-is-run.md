@@ -98,8 +98,8 @@ about where the process broke:
 - **Improvement** — the implementation does exactly what was specified,
   but the specification itself was incomplete or wrong. This is charged to
   requirements, not implementation — a product management failure, not an
-  acceptance failure. Filed as a normal Backlog issue; it does not gate
-  the original feature.
+  acceptance failure. It gates the original feature exactly as a failure
+  does; the label difference is a statistic, not a gate.
 
 Neither bucket is worked the moment it is filed. Both land in an
 **Acceptance Failed** holding lane and wait for the acceptance round to
@@ -122,6 +122,33 @@ related failure clears — are in
 [agents/runbooks/review-runbook.md](../agents/runbooks/review-runbook.md) §9;
 the drain gate and the automated ceremony are in
 [docs/acceptance-drain-gate.md](acceptance-drain-gate.md).
+
+## The documentation contract (both directions)
+
+Two questions are asked about documentation on every change, and they are
+deliberately separate:
+
+1. **Forward** — are the docs *for this change* updated? Enforced
+   diff-scoped by the review workflow: user-facing code changed with no doc
+   update blocks approval.
+2. **Inverse** — does this change make something already written
+   *elsewhere* untrue? This is not detectable from the diff, so the review
+   agent runs it by hand: name the capability the change adds, removes or
+   inverts, grep the whole tree for existing assertions about it, and fix
+   every sentence the merged state falsifies. An unfixed falsified claim is
+   a Medium (blocking) finding.
+
+The inverse question exists because of a concrete miss (#3743, 2026-08-13):
+repo-less PyPI publishing shipped while `README.md` still asserted it had
+not shipped and a repo checkout was still required. Both agents passed the
+forward check honestly — the false section was simply nowhere near the
+diff. Its corollary is an authoring rule: docs must not contain world-state
+claims with built-in expiry ("not yet shipped", "the currently published
+version is…", "planned for Phase N"); they point at living sources — the
+PyPI project page, [the portability matrix](portability-matrix.md),
+generated command/API docs, the release tracking issue — instead. Full
+contract text: [review runbook](../agents/runbooks/review-runbook.md) §1a
+and [developer runbook](../agents/runbooks/developer-runbook.md) §5.
 
 ## The retrospective
 

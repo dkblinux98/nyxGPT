@@ -808,6 +808,28 @@ jobs:
               * If you add/change config options → Update example.config.ini AND docs/configuration.md
               * If you add new features → Update the owning docs/*.md and, if user-visible, the feature overview in docs/README.md. NEVER add feature detail, install matrices, command listings, or world-state claims to README.md — it is a pointer layer by owner decision (#3743): identity, a minimal install pointer, and the docs index only.
               * For ANY code change, check if docs/ files need updates
+            - **INVERSE-CLAIMS SWEEP (#3744, developer-runbook §5)**: updating docs
+              for your change is only half the job — also fix what your change makes
+              UNTRUE elsewhere in the tree, including files the diff never touches:
+              * Name the capability/behavior/constraint you added, removed or inverted.
+              * Grep the whole tree for existing assertions about it, e.g.
+                `grep -rin "<capability terms>" README.md docs/ agents/ CLAUDE.md product_management/ src/ web/src/`
+                — use the capability's vocabulary plus expiry phrasing ("not yet",
+                "does not support", "currently", "still required", "will ship").
+              * Fix every sentence the merged state makes false, in THIS PR. The
+                reviewer runs the same check (review-runbook §1a) and an unfixed
+                falsified claim is a Medium (blocking) finding.
+              * Motivating incident (#3743, 2026-08-13): #3727/#3735 shipped repo-less
+                PyPI publishing while README.md still said it had not shipped and a
+                checkout was still required — outside the diff, so the diff-scoped
+                docs check passed while the tree shipped a falsehood.
+            - **NO EXPIRY-DATED WORLD-STATE CLAIMS (#3744)**: never write prose that is
+              true only until someone lands the next change — "not yet shipped", "the
+              currently published version is X", "a repo checkout is still required",
+              "planned for Phase N". Point at a living source instead (PyPI project
+              page, docs/portability-matrix.md, generated command/API docs, the release
+              tracking issue). The reviewer flags newly introduced expiry-dated claims
+              as a Medium finding.
             - Commit changes with clear messages that MUST include issue references.
 
             CRITICAL COMMIT MESSAGE FORMAT:
