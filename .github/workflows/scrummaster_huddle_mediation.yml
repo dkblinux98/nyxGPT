@@ -76,8 +76,25 @@ jobs:
           echo "pr_number=$PR" >> "$GITHUB_OUTPUT"
           echo "issue_number=$ISSUE" >> "$GITHUB_OUTPUT"
 
+      # #3736: one mediation per huddle. A duplicated huddle produced two
+      # mediation runs on PR #3728 (2026-08-11) racing to post competing
+      # decisions on the same thread. Only the round's *first*
+      # HUDDLE_MEDIATION_REQUESTED marker mediates; a later one stands down.
+      - name: Mediation dedupe guard
+        id: guard
+        run: |
+          set -euo pipefail
+          PRIMARY=$(gh api "repos/${{ github.repository }}/issues/${{ steps.get_pr.outputs.pr_number }}/comments" \
+            --paginate --jq '.[]' | jq -s '{comments: .}' \
+            | python3 scripts/agents/lib/huddle_state.py guard HUDDLE_MEDIATION_REQUESTED "${{ github.event.comment.id }}")
+          echo "primary=$PRIMARY" >> "$GITHUB_OUTPUT"
+          if [[ "$PRIMARY" != "true" ]]; then
+            echo "::notice::Comment ${{ github.event.comment.id }} is a duplicate mediation request for this review round -- standing down"
+          fi
+
       - name: Run mediation
         id: mediate
+        if: steps.guard.outputs.primary == 'true'
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

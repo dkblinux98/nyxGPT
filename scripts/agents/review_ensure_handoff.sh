@@ -76,13 +76,18 @@ log() { echo "[handoff] $*" >&2; }
 # Both endpoints are paginated: --jq runs once per fetched page, so matching
 # objects are streamed across pages first and slurped into one array after
 # (see AGENTS.md).
+#
+# The two payloads are joined with `printf`, a bash *builtin*, so the thread
+# is never passed to an external binary in argv. `jq -n --argjson reviews
+# "$reviews" ...` would do exactly that, and a single execve argument is
+# capped at MAX_ARG_STRLEN (128KB) -- a long thread aborts the backstop with
+# "Argument list too long" just when it is needed most (#3736).
 fetch_plan() {
-  local reviews comments payload
+  local reviews comments
   reviews="$(gh api "repos/${REPO}/pulls/${PR}/reviews" --paginate --jq '.[]' | jq -s '.')"
   comments="$(gh api "repos/${REPO}/issues/${PR}/comments" --paginate --jq '.[]' | jq -s '.')"
-  payload="$(jq -n --argjson reviews "$reviews" --argjson comments "$comments" \
-    '{reviews: $reviews, comments: $comments}')"
-  echo "$payload" | python3 "$DIR/lib/review_handoff.py" plan "$REVIEW_AGENT"
+  printf '{"reviews":%s,"comments":%s}' "$reviews" "$comments" \
+    | python3 "$DIR/lib/review_handoff.py" plan "$REVIEW_AGENT"
 }
 
 # Populated by eval'ing fetch_plan's key=value output.

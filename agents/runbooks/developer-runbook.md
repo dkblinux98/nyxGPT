@@ -452,7 +452,13 @@ another fix cycle:
    your position and the review's position (its review comment) and posts a
    `## Huddle Decision` comment: `HUDDLE_DECISION: proceed|change-approach|
    descope|escalate`.
-4. When the next fix cycle runs (`developer_auto_implement.yml`'s "Run
+4. `huddle_decision_dispatch.yml` starts the next fix cycle for you on a
+   proceed / change-approach / descope decision: the issue goes back to **In
+   Progress** and is reassigned to you, with a `HUDDLE_DECISION_DISPATCHED`
+   comment on the PR (#3736). You do not wait for anything else, and the
+   3-cycle counter is re-armed at that point — the rounds that led to the
+   huddle no longer count toward escalation.
+5. When that fix cycle runs (`developer_auto_implement.yml`'s "Run
    Claude Code to fix review issues" step), check for a `HUDDLE_DECISION:`
    comment on the PR first (Step 1.5 in that prompt) and **execute the
    agreed plan** — proceed with the original fix, follow the stated

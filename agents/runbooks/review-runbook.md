@@ -267,9 +267,49 @@ huddle" step posts the `HUDDLE_TRIGGERED` marker):
    approach** (stated) / **descope** (e.g. drop a named test, split the
    issue) / **escalate to owner** (runs the same `assign_issue_verified` +
    `sprint_autopilot_kick` escalation primitives §6 uses).
-4. The next fix cycle (`developer_auto_implement.yml`'s "Run Claude Code to
-   fix review issues" step) reads any `HUDDLE_DECISION:` comment on the PR
+4. `huddle_decision_dispatch.yml` executes the decision's "what happens
+   next": **proceed** / **change-approach** / **descope** put the issue back
+   to **In Progress** and hand it to the developer agent
+   (`assign_and_trigger_developer`, the same primitive a REQUEST_CHANGES
+   round uses), with a `HUDDLE_DECISION_DISPATCHED` marker so a duplicate
+   decision cannot start two fix cycles. **escalate** is terminal — the
+   mediation run already performed it.
+5. That fix cycle (`developer_auto_implement.yml`'s "Run Claude Code to
+   fix review issues" step) reads the `HUDDLE_DECISION:` comment on the PR
    and executes the agreed plan rather than deciding independently.
+
+**The huddle owns its round (#3736).** Two races used to make the protocol
+lose to the machinery around it; both are now closed by state on the thread
+rather than timing, in `scripts/agents/lib/huddle_state.py` (round scoping,
+marker dedupe, decision parsing) and `plan_round` in
+`scripts/agents/lib/review_handoff.py` (routing, shared with the §5
+dispatch-mode backstop so the two can never disagree):
+
+- **One huddle per round.** A *review round* starts at the newest
+  `nyxgpt-structured-review` comment. While a round has a `HUDDLE_TRIGGERED`
+  and no decision, nothing else fires — no second trigger, no return to the
+  developer, no escalation. `review_agent_auto_review.yml` can execute one
+  verdict twice (the `pull_request_review` event and the structured-comment
+  fallback), and on PR #3728 both posted a trigger: two developer-position
+  runs, two mediations, the second diagnosing the duplication itself. The
+  fallback's footprint check now includes `HUDDLE_TRIGGERED`, the trigger
+  step re-reads the state immediately before posting, and — the guard that
+  holds even if one still lands — `developer_huddle_position.yml` and
+  `scrummaster_huddle_mediation.yml` act only for the round's *first* marker
+  comment.
+- **A decision re-arms the cycle counter.** proceed / change-approach /
+  descope mean the disagreement was resolved, so only REQUEST_CHANGES
+  reviews submitted *after* the decision count toward §6's 3-cycle breaker
+  (`effective_request_changes_count`). On PR #3733 a "proceed" decision at
+  19:04 was followed by the cycle-limit escalation at 19:10, which parked
+  the issue on the owner and stalled the pipeline until a manual reset — the
+  mediation had written that escalating "would spend an owner turn on a
+  small mechanical change nobody disputes". Re-arming is not amnesty: three
+  fresh failed rounds after a huddle still escalate.
+- **One escalation per event.** The escalation step re-checks the thread
+  before it acts, and the redundant "Post completion comment" restatement of
+  the escalation is gone (it made every escalation arrive as a pair, and two
+  pairs when the trigger paths raced).
 
 ## 6c) Unresolved-escalation dispatch pause backstop (#3687)
 
