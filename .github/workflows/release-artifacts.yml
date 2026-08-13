@@ -35,6 +35,16 @@ name: Release Artifacts
 # may still want to flip the resulting package's visibility to public in
 # GitHub package settings after the first publish).
 
+#
+# BACKFILL (#3737): a tag that predates this machinery can still be published
+# to the tap. The `homebrew-tap` job takes TWO checkouts -- the release
+# tooling from the branch the run was dispatched from, and the target tag's
+# source into `release-source/` -- so `brew install nyxgpt-api` can resolve to
+# 2.1.0 even though the 2.1.0 tree contains neither
+# `scripts/build_homebrew_artifacts.py` nor `homebrew/tap/*.rb.tmpl`. Dispatch
+# it from a branch that has the tooling with `version: 2.1.0`, `tap_only:
+# true`; see docs/homebrew.md#backfilling-a-release-that-predates-the-tap.
+
 on:
   release:
     types: [released]
@@ -43,12 +53,17 @@ on:
       version:
         description: 'Release tag to (re-)publish artifacts for, e.g. 2.1.0 (must already exist as a tag)'
         required: true
+      tap_only:
+        description: 'Publish only the Homebrew tap formulas (skip images and the PyPI smokes) -- the backfill one-shot'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
   container-images:
+    if: ${{ !inputs.tap_only }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -93,18 +108,70 @@ jobs:
     env:
       VERSION: ${{ github.event.release.tag_name || inputs.version }}
     steps:
+      # Two checkouts, deliberately (#3737). The tooling and the source it
+      # vendors are the same commit for a normal release, but they are NOT
+      # for a tag cut before this machinery existed -- and checking out only
+      # the tag is what made the 2026-08-11 backfill attempt against 2.1.0
+      # fail with "no such file: scripts/build_homebrew_artifacts.py".
+      #
+      # 1. This workspace: the release TOOLING (build script, templates,
+      #    nyxgpt.ops) from the ref this run was started on -- the release
+      #    commit itself on a `released` event, the dispatched branch on a
+      #    backfill.
+      - uses: actions/checkout@v4
+
+      # 2. `release-source/`: the SOURCE the tarballs are vendored from,
+      #    always the target tag, so what users install is that release's
+      #    code and nothing newer.
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.VERSION }}
+          path: release-source
 
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
+      - name: Verify the target tag is a published stable release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Stable formulas are what `brew install nyxgpt-api` resolves to, so
+          # they are only ever stamped from a real release. The `released`
+          # trigger already guarantees that; this is the guard for the
+          # dispatch path, where any tag string can be typed in.
+          meta=$(gh release view "$VERSION" -R "$REPO" \
+            --json tagName,isDraft,isPrerelease)
+          echo "$meta"
+          draft=$(echo "$meta" | jq -r .isDraft)
+          prerelease=$(echo "$meta" | jq -r .isPrerelease)
+          if [ "$draft" != "false" ] || [ "$prerelease" != "false" ]; then
+            echo "::error::${VERSION} is a draft or prerelease -- the stable tap formulas"
+            echo "::error::are published only for real releases (release candidates get"
+            echo "::error::their own @<line>rc formulas from release-publish-pypi.yml)"
+            exit 1
+          fi
+
       - name: Build tarballs and stamp formulas
         run: |
           python scripts/build_homebrew_artifacts.py "$VERSION" dist/homebrew \
-            "https://github.com/${{ github.repository }}/releases/download/${VERSION}"
+            "https://github.com/${{ github.repository }}/releases/download/${VERSION}" \
+            --source-root release-source
+
+      - name: Assert only the stable formulas were stamped
+        run: |
+          set -euo pipefail
+          # The rc formulas belong to release-publish-pypi.yml and to the
+          # acceptance round they were cut for: this job must never write or
+          # push one, whatever tag it was pointed at.
+          stamped=$(cd dist/homebrew && ls -1 ./*.rb | sed 's|^\./||' | sort | tr '\n' ' ')
+          echo "stamped: ${stamped}"
+          if [ "$stamped" != "nyxgpt-api.rb nyxgpt-web.rb " ]; then
+            echo "::error::expected exactly the two stable formulas, got: ${stamped}"
+            exit 1
+          fi
 
       - name: Attach tarballs to the GitHub Release
         env:
@@ -162,6 +229,7 @@ jobs:
     # install -> verify -> down cycle as scripts/systemd-native-smoke.sh
     # (that script itself lives in the repo, so it can't be invoked here
     # without a checkout -- the cycle is inlined instead).
+    if: ${{ !inputs.tap_only }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -249,6 +317,7 @@ jobs:
     # install -> verify -> down cycle by hand). See docs/cloud.md's target-OS
     # support matrix: this covers the Linux-AMI half; EC2 Mac has no
     # available GitHub Actions runner and is documentation-verified only.
+    if: ${{ !inputs.tap_only }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

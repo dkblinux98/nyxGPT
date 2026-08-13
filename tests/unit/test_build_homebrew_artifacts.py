@@ -289,3 +289,254 @@ def test_rc_formula_installs_exactly_what_the_stable_one_does(
     # Everything from `def install` down is byte-identical -- the keg an RC
     # installs is the same recipe as the release's, on a different tarball.
     assert stable[stable.index("  def install") :] == rc[rc.index("  def install") :]
+
+
+# --- Backfilling a tag that predates the tooling (#3737) ------------------
+#
+# 2.1.0 was cut before any of this existed: its tree has no
+# `scripts/build_homebrew_artifacts.py` and no `homebrew/tap/*.rb.tmpl`, so
+# the tap job's single "checkout the tag" step could not publish it at all.
+# The split these tests pin is tooling-here / source-there: the templates and
+# the builder come from the checkout the script runs in, the tarball contents
+# come from `--source-root`.
+
+
+def _write_fake_source_tree(root: Path) -> Path:
+    """A minimal but complete nyxGPT source checkout, marked so it is identifiable.
+
+    Stands in for a checkout of an old release tag: same layout, contents
+    that could not possibly have come from this working tree.
+    """
+    (root / "pyproject.toml").write_text(
+        '[project]\nname = "nyxgpt-from-the-tag"\n', encoding="utf-8"
+    )
+    (root / "example.config.ini").write_text("[nyxgpt]\n; from the tag\n", encoding="utf-8")
+    (root / "src" / "nyxgpt").mkdir(parents=True)
+    (root / "src" / "nyxgpt" / "__init__.py").write_text(
+        '__version__ = "from-the-tag"\n', encoding="utf-8"
+    )
+    (root / "web").mkdir()
+    (root / "web" / "package.json").write_text(
+        '{"name": "nyxgpt-web-from-the-tag"}\n', encoding="utf-8"
+    )
+    return root
+
+
+@pytest.fixture(scope="module")
+def backfilled_artifacts(tmp_path_factory):
+    """Stable formulas for a version whose source is a *different* checkout."""
+    source_root = _write_fake_source_tree(tmp_path_factory.mktemp("release-source"))
+    out_dir = tmp_path_factory.mktemp("homebrew-artifacts-backfill")
+    cp = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "9.9.9",
+            str(out_dir),
+            BASE_URL,
+            "--source-root",
+            str(source_root),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert cp.returncode == 0, f"script failed:\nstdout:\n{cp.stdout}\nstderr:\n{cp.stderr}"
+    return out_dir
+
+
+@pytest.mark.parametrize("name", ["nyxgpt-api", "nyxgpt-web"])
+def test_backfill_vendors_the_tarballs_from_the_source_root(backfilled_artifacts, name):
+    """What users install has to be the *tag's* code, not the tooling branch's."""
+    with tarfile.open(backfilled_artifacts / "dist" / f"{name}-9.9.9.tar.gz") as tf:
+        names = tf.getnames()
+        if name == "nyxgpt-api":
+            member = tf.extractfile("nyxgpt-api-9.9.9/pyproject.toml")
+        else:
+            member = tf.extractfile("nyxgpt-web-9.9.9/package.json")
+        assert member is not None
+        content = member.read().decode("utf-8")
+
+    assert "from-the-tag" in content
+    # ...and nothing leaked in from this checkout alongside it.
+    if name == "nyxgpt-api":
+        assert sorted(n for n in names if n.endswith(".py")) == [
+            "nyxgpt-api-9.9.9/src/nyxgpt/__init__.py"
+        ]
+
+
+def test_backfill_stamps_formulas_from_the_tooling_checkouts_templates(backfilled_artifacts):
+    """The whole point: the tag has no templates, so these must be ours.
+
+    Placeholder-free and pointing at the real tarball -- a formula stamped
+    from the tag's (nonexistent) templates could not exist at all.
+    """
+    for name in ("nyxgpt-api", "nyxgpt-web"):
+        formula = (backfilled_artifacts / f"{name}.rb").read_text(encoding="utf-8")
+        digest = hashlib.sha256(
+            (backfilled_artifacts / "dist" / f"{name}-9.9.9.tar.gz").read_bytes()
+        ).hexdigest()
+
+        template = (REPO_ROOT / "homebrew" / "tap" / f"{name}.rb.tmpl").read_text(encoding="utf-8")
+        assert formula == (
+            template.replace("__URL__", f"{BASE_URL}/{name}-9.9.9.tar.gz")
+            .replace("__SHA256__", digest)
+            .replace("__VERSION__", "9.9.9")
+        )
+
+
+def test_backfill_writes_only_the_stable_formulas(backfilled_artifacts):
+    """Guardrail: a backfill never touches an `@<line>rc` formula."""
+    assert sorted(p.name for p in backfilled_artifacts.glob("*.rb")) == [
+        "nyxgpt-api.rb",
+        "nyxgpt-web.rb",
+    ]
+
+
+def test_default_source_root_is_this_checkout():
+    assert build_homebrew_artifacts.resolve_source_root(None) is None
+
+
+def test_source_root_must_be_a_real_source_checkout(tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="not a nyxGPT source checkout"):
+        build_homebrew_artifacts.resolve_source_root(tmp_path)
+
+
+def test_source_root_must_exist(tmp_path):
+    with pytest.raises(ValueError, match="does not exist"):
+        build_homebrew_artifacts.resolve_source_root(tmp_path / "nope")
+
+
+def test_script_reports_a_bad_source_root_without_a_traceback(tmp_path):
+    """An operator error in a release run should read as one line, not a crash."""
+    out_dir = tmp_path / "out"
+    cp = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "9.9.9",
+            str(out_dir),
+            BASE_URL,
+            "--source-root",
+            str(tmp_path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert cp.returncode == 2
+    assert "not a nyxGPT source checkout" in cp.stderr
+    assert "Traceback" not in cp.stderr
+
+
+def test_source_root_flag_without_a_value_is_a_usage_error(tmp_path):
+    cp = subprocess.run(
+        [sys.executable, str(SCRIPT), "9.9.9", str(tmp_path), BASE_URL, "--source-root"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert cp.returncode == 2
+    assert "usage:" in cp.stderr
+
+
+# --- The stable channel only ever stamps a real release (#3737) -----------
+
+
+@pytest.mark.parametrize("version", ["2.1.0", "3.0.0", "10.2.13"])
+def test_assert_release_version_accepts_a_release(version):
+    assert build_homebrew_artifacts.assert_release_version(version) == version
+
+
+@pytest.mark.parametrize("version", ["3.0.0rc4", "3.0.0.dev1", "v2.1.0", "latest", "2.1"])
+def test_stable_formulas_are_refused_for_anything_but_a_release(version):
+    """`brew install nyxgpt-api` must never be able to land on a pre-release."""
+    with pytest.raises(ValueError, match="not a release version"):
+        build_homebrew_artifacts.assert_release_version(version)
+
+
+def test_stable_build_refuses_a_release_candidate_version(tmp_path):
+    cp = subprocess.run(
+        [sys.executable, str(SCRIPT), "9.9.9rc4", str(tmp_path / "out"), BASE_URL],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert cp.returncode == 2
+    assert "not a release version" in cp.stderr
+    # Refused before anything was built, not cleaned up afterwards.
+    assert not list((tmp_path / "out").glob("*.rb"))
+
+
+# --- The tap job's backfill path (#3737) ----------------------------------
+
+
+def _release_artifacts_workflow() -> dict:
+    import yaml
+
+    path = REPO_ROOT / ".github" / "workflows" / "release-artifacts.yml"
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def _tap_job() -> dict:
+    return _release_artifacts_workflow()["jobs"]["homebrew-tap"]
+
+
+def test_tap_job_checks_out_the_tooling_and_the_tag_separately():
+    """The 2026-08-11 failure: one checkout of the tag, no build script in it."""
+    checkouts = [s for s in _tap_job()["steps"] if "actions/checkout" in str(s.get("uses", ""))]
+
+    assert len(checkouts) == 2
+    tooling, source = checkouts
+    # The tooling checkout takes no `ref`: the ref the run started on is the
+    # release commit on a `released` event, and the dispatched branch (which
+    # has the tooling) on a backfill.
+    assert "ref" not in tooling.get("with", {})
+    assert source["with"]["ref"] == "${{ env.VERSION }}"
+    assert source["with"]["path"] == "release-source"
+
+
+def test_tap_job_builds_the_tarballs_from_the_tag_source():
+    run_steps = "\n".join(step.get("run", "") for step in _tap_job()["steps"])
+
+    assert "scripts/build_homebrew_artifacts.py" in run_steps
+    assert "--source-root release-source" in run_steps
+
+
+def test_tap_job_verifies_the_tag_is_a_published_release():
+    """Dispatch accepts any string; the stable formulas accept only a release."""
+    steps = _tap_job()["steps"]
+    run_steps = "\n".join(step.get("run", "") for step in steps)
+
+    assert any("published stable release" in str(s.get("name", "")) for s in steps)
+    assert "gh release view" in run_steps
+    assert "isPrerelease" in run_steps
+    assert "isDraft" in run_steps
+
+
+def test_tap_job_asserts_it_stamped_no_rc_formula():
+    steps = _tap_job()["steps"]
+    run_steps = "\n".join(step.get("run", "") for step in steps)
+
+    assert any("only the stable formulas" in str(s.get("name", "")) for s in steps)
+    assert '"nyxgpt-api.rb nyxgpt-web.rb "' in run_steps
+
+
+def test_backfill_is_a_parameter_of_the_existing_job_not_a_second_workflow():
+    """Owner criterion: a dispatchable one-shot, not a parallel copy."""
+    workflow = _release_artifacts_workflow()
+    jobs = workflow["jobs"]
+    inputs = workflow[True]["workflow_dispatch"]["inputs"]
+
+    assert inputs["tap_only"]["type"] == "boolean"
+    assert inputs["tap_only"]["default"] is False
+    # `tap_only` skips everything except the tap job -- which is never gated
+    # by it, or a backfill would publish nothing.
+    assert "if" not in jobs["homebrew-tap"]
+    for job in ("container-images", "artifact-install-smoke", "ec2-linux-user-data-smoke"):
+        assert jobs[job]["if"] == "${{ !inputs.tap_only }}"
