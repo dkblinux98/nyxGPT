@@ -1320,7 +1320,9 @@ def _vendor_tree(src: Path, dst: Path, *, excludes: frozenset[str] = frozenset()
     shutil.copytree(src, dst, ignore=_ignore)
 
 
-def _create_dist_tarball(tap_dir: Path, name: str, version: str) -> Path:
+def _create_dist_tarball(
+    tap_dir: Path, name: str, version: str, source_root: Path | None = None
+) -> Path:
     """Build a `<name>-<version>.tar.gz` distribution under `tap_dir/dist`.
 
     Vendors the actual source the formula needs to build a self-contained
@@ -1333,9 +1335,16 @@ def _create_dist_tarball(tap_dir: Path, name: str, version: str) -> Path:
     `.venv` at runtime (#3406) -- replacing the old placeholder tarball that
     only ever contained a `README.txt`.
 
+    `source_root` is the tree to vendor *from*, defaulting to this checkout
+    (`REPO_ROOT`) -- what every local install path wants. Release tooling
+    passes a second checkout instead, so the tarballs can be built from a
+    release tag's source while the tooling itself runs from a branch that
+    has it (#3737: 2.1.0 predates this machinery entirely).
+
     Replaces any existing tarball of the same name/version. Returns the
     path to the created tarball.
     """
+    src_root = REPO_ROOT if source_root is None else Path(source_root)
     dist_dir = tap_dir / "dist"
     _ensure_dir(dist_dir)
     tar_path = dist_dir / f"{name}-{version}.tar.gz"
@@ -1347,16 +1356,16 @@ def _create_dist_tarball(tap_dir: Path, name: str, version: str) -> Path:
     root = tmp / f"{name}-{version}"
 
     if name == "nyxgpt-web":
-        _vendor_tree(REPO_ROOT / "web", root, excludes=_WEB_VENDOR_EXCLUDES)
+        _vendor_tree(src_root / "web", root, excludes=_WEB_VENDOR_EXCLUDES)
     else:
-        _vendor_tree(REPO_ROOT / "src" / "nyxgpt", root / "src" / "nyxgpt")
-        shutil.copy2(REPO_ROOT / "pyproject.toml", root / "pyproject.toml")
+        _vendor_tree(src_root / "src" / "nyxgpt", root / "src" / "nyxgpt")
+        shutil.copy2(src_root / "pyproject.toml", root / "pyproject.toml")
         # config_wizard builds its schema from example.config.ini at import
         # time (#3388), so `import nyxgpt.app` needs the file present. A venv
         # install has no repo root above the package, so ship the template in
         # the tarball; the formula copies it next to the installed package
         # where _resolve_example_config_path() finds it with no env var (#3406).
-        shutil.copy2(REPO_ROOT / "example.config.ini", root / "example.config.ini")
+        shutil.copy2(src_root / "example.config.ini", root / "example.config.ini")
 
     if tar_path.exists():
         tar_path.unlink()
@@ -1368,7 +1377,9 @@ def _create_dist_tarball(tap_dir: Path, name: str, version: str) -> Path:
     return tar_path
 
 
-def build_release_dist_tarball(name: str, version: str, dist_root: Path) -> Path:
+def build_release_dist_tarball(
+    name: str, version: str, dist_root: Path, source_root: Path | None = None
+) -> Path:
     """Public wrapper around `_create_dist_tarball` for release tooling (#3622).
 
     Builds the same vendored `nyxgpt-api`/`nyxgpt-web` source tarball the
@@ -1378,8 +1389,13 @@ def build_release_dist_tarball(name: str, version: str, dist_root: Path) -> Path
     tarball", used both by the local install path and by
     scripts/release/build_homebrew_artifacts.py to produce the tarballs a
     *remote* tap's formula points at (attached as GitHub Release assets).
+
+    `source_root` selects the tree the tarball is vendored from (default:
+    this checkout). Publishing a tag whose own tree has no release tooling
+    -- the 2.1.0 tap backfill, #3737 -- runs the tooling from a branch that
+    has it and points this at a checkout of the tag.
     """
-    return _create_dist_tarball(dist_root, name, version)
+    return _create_dist_tarball(dist_root, name, version, source_root)
 
 
 def _brew_install_or_reinstall(spec: str, name: str, *, sha256: str, marker_dir: Path) -> str:

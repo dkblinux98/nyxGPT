@@ -58,11 +58,11 @@ _ALLOWLIST: dict[str, set[str]] = {
         # Homebrew tap tarball vendoring (`ops package`) -- building a
         # distributable artifact FROM a repo checkout; sibling issue B
         # ("publish install artifacts") retires this REPO_ROOT dependency
-        # by publishing pre-built artifacts instead.
-        '_vendor_tree(REPO_ROOT / "web", root, excludes=_WEB_VENDOR_EXCLUDES)',
-        '_vendor_tree(REPO_ROOT / "src" / "nyxgpt", root / "src" / "nyxgpt")',
-        'shutil.copy2(REPO_ROOT / "pyproject.toml", root / "pyproject.toml")',
-        'shutil.copy2(REPO_ROOT / "example.config.ini", root / "example.config.ini")',
+        # by publishing pre-built artifacts instead. Since #3737 the tree it
+        # vendors is a parameter (`source_root`) and REPO_ROOT is only its
+        # default, so the four vendoring call sites this replaced are no
+        # longer REPO_ROOT-relative at all.
+        "src_root = REPO_ROOT if source_root is None else Path(source_root)",
         # Docker image build fingerprinting for the nyxgpt-api image --
         # `docker build`'s context and source-change fingerprint are
         # necessarily a repo checkout's files.
