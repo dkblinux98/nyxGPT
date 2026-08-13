@@ -2774,9 +2774,9 @@ def cli(argv: list[str] | None = None) -> int:
     )
 
     # nyxgpt release publish (#3727): the owner-side wrapper for the single
-    # PyPI publish pipeline (dev / rc / stable). Acceptance testing installs
-    # from PyPI, so without a dev or rc build it can only ever exercise the
-    # last stable release -- never the release-branch tip carrying the fixes
+    # PyPI publish pipeline (rc / stable, #3735). Acceptance testing installs
+    # from PyPI, so without an rc build it can only ever exercise the last
+    # stable release -- never the release-branch tip carrying the fixes
     # merged during that same testing. See src/nyxgpt/release_candidate.py
     # and docs/cloud.md's PyPI publishing section.
     release_p = sub.add_parser("release", help="Release engineering helpers (owner)")
@@ -2801,18 +2801,18 @@ def cli(argv: list[str] | None = None) -> int:
         if channelled:
             parser.add_argument(
                 "--channel",
-                choices=["dev", "rc"],
+                choices=["rc"],
                 default="rc",
                 help=(
-                    "Which channel to plan/publish (default: rc). The stable channel is "
-                    "published only by scripts/release_ceremony.sh, which delegates to the "
-                    "same workflow."
+                    "Which channel to plan/publish (default: rc -- the only dispatchable "
+                    "one). The stable channel is published only by "
+                    "scripts/release_ceremony.sh, which delegates to the same workflow."
                 ),
             )
             parser.add_argument(
                 "--number",
                 type=int,
-                help="Explicit rc/dev number (default: the next unused one, resolved from PyPI)",
+                help="Explicit rc number (default: the next unused one, resolved from PyPI)",
             )
         else:
             parser.add_argument(

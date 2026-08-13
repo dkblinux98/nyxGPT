@@ -73,10 +73,10 @@ describe('/api/v1/ops/release-candidate proxy route', () => {
     mockFetch({ status: 200 });
 
     const { GET } = await import(ROUTE);
-    await GET(req('?branch=v3.0.0&channel=dev'));
+    await GET(req('?branch=v3.0.0&channel=stable'));
 
     expect(calledUrl()).toBe(
-      'http://127.0.0.1:8000/api/v1/ops/release-candidate?branch=v3.0.0&channel=dev'
+      'http://127.0.0.1:8000/api/v1/ops/release-candidate?branch=v3.0.0&channel=stable'
     );
   });
 

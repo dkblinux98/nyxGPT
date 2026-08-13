@@ -880,7 +880,7 @@ providers against a mocked boto3 client (no live AWS dependency); see
 
 ---
 
-## PyPI publishing: dev, rc and stable
+## PyPI publishing: rc and stable
 
 Every install path above pulls nyxGPT **from PyPI** -- `pip install nyxgpt`
 on a clean machine, `pip install nyxgpt==<version>` in the rendered
@@ -893,49 +893,28 @@ installs the last stable release, without the fix.
 
 **One pipeline** closes that gap (#3727):
 `.github/workflows/release-publish-pypi.yml` builds and publishes the
-release-branch tip on three channels. There is no second release workflow
-and no second script -- the ceremony delegates to this one too.
+release-branch tip on two channels (#3735). There is no second release
+workflow and no second script -- the ceremony delegates to this one too --
+and **nothing is published on a schedule**: every publish is a deliberate
+dispatch, by the owner or by the sprint autopilot.
 
 | Channel | Version | Trigger | Who runs it |
 | --- | --- | --- | --- |
-| `dev` | `3.0.0.devN` | nightly schedule (or a manual dispatch) | automatic |
 | `rc` | `3.0.0rcN` | the sprint autopilot parking at agentic-work-complete, a manual dispatch, or `nyxgpt release publish --publish` | automatic + owner |
 | `stable` | `3.0.0` | `scripts/release_ceremony.sh` Phase 2 | owner, ceremony only |
 
-PEP 440 orders them `3.0.0.devN < 3.0.0rcN < 3.0.0`, so a nightly can never
-shadow a candidate and neither can shadow the release.
+PEP 440 orders them `3.0.0rcN < 3.0.0`, so a candidate can never shadow the
+release.
 
-Dev and rc builds are **acceptance-only**. They are never announced and
-never a release, and no ceremony step (master merge, release tag, stable
-Homebrew formulas, GitHub Release, sign-off) runs for them.
+An rc build is **acceptance-only**. It is never announced and never a
+release, and no ceremony step (master merge, release tag, stable Homebrew
+formulas, GitHub Release, sign-off) runs for it.
 
 The `rc` channel is the one with a step past PyPI: because macOS installs
 with `brew`, not `pip`, an rc also cuts a GitHub **prerelease** carrying the
-service tarballs and stamps `nyxgpt-api-rc` / `nyxgpt-web-rc` into the
-Homebrew tap -- see [Accepting a candidate on macOS](#accepting-a-candidate-on-macos)
-below. The nightly `dev` channel is PyPI-only.
-
-### Nightly dev builds
-
-The schedule publishes `3.0.0.dev<run-number>` from the release-branch tip
-every night, so the morning's acceptance run can always install yesterday's
-merges. When the tip has not moved since the last successful nightly, the
-run **no-ops**: it compares `GITHUB_SHA` against the commit the last
-successful scheduled run built and publishes nothing. (PyPI versions are
-immutable, so every run that does publish gets a distinct number.)
-
-Nothing is needed to keep this going. To see what the next one would be:
-
-```bash
-nyxgpt release publish --channel dev
-```
-
-That no-op check runs for **every** dev build, not just the scheduled ones.
-So `nyxgpt release publish --channel dev --publish` on a tip that has not
-moved since last night's build dispatches a run that publishes nothing and
-reports `SKIP` -- correctly: that commit already has a dev build, and PyPI
-would refuse a second upload of it anyway. Install the existing one instead
-(`nyxgpt release publish --channel dev` names it).
+service tarballs and stamps `nyxgpt-api@3.0.0rc` / `nyxgpt-web@3.0.0rc` into
+the Homebrew tap -- see
+[Accepting a candidate on macOS](#accepting-a-candidate-on-macos) below.
 
 ### Cutting a release candidate
 
@@ -949,19 +928,16 @@ nyxgpt release publish --publish
 
 # Or a specific number, when a run failed after upload and you need to skip one.
 nyxgpt release publish --publish --number 4
-
-# An immediate dev build, without waiting for tonight's schedule.
-nyxgpt release publish --channel dev --publish
 ```
 
 `nyxgpt release rc` is kept as shorthand for `--channel rc`.
 
-The command reports the release line, which dev builds and RCs PyPI already
-serves, the next version, and -- if it cannot be cut from where you are --
-exactly why. The same report is on the SRE dashboard at **Admin →
-Portability & Acceptance**, read-only: publishing carries the owner's
-credentials, so it is a terminal command and a scheduled/dispatch-only
-workflow, never a button.
+The command reports the release line, which RCs PyPI already serves, the
+next version, the tap formulas that candidate installs as, and -- if it
+cannot be cut from where you are -- exactly why. The same report is on the
+SRE dashboard at **Admin → Portability & Acceptance**, read-only:
+publishing carries the owner's credentials, so it is a terminal command and
+a dispatch-only workflow, never a button.
 
 The workflow builds an sdist and a wheel from the tip with
 `pyproject.toml`'s version rewritten to the resolved version (build-time
@@ -982,8 +958,8 @@ this pipeline with `channel=rc`, and the park note on the release tracking
 issue names the version to install:
 
 > 📦 **Release candidate for this acceptance round:** `3.0.0rc2` is
-> publishing now from `v3.0.0` -- PyPI plus the Homebrew `-rc` formulas, in
-> one run.
+> publishing now from `v3.0.0` -- PyPI plus this line's Homebrew candidate
+> formulas, in one run.
 
 Three things bound it:
 
@@ -993,18 +969,18 @@ Three things bound it:
 - **Only `rc`.** The channel is a constant, re-checked at the dispatch. A
   release needs the ceremony's tag and confirmation token, which this path
   does not have and cannot obtain.
-- **No duplicates.** The rc channel carries the same tip guard as the
-  nightly: an rc dispatch whose release-branch tip has not moved since the
-  last published candidate resolves to `SKIP`. Repeat observations of the
+- **No duplicates.** The rc channel carries a tip guard: an rc dispatch
+  whose release-branch tip has not moved since the last published candidate
+  resolves to `SKIP`. Repeat observations of the
   same parked state therefore publish nothing, and the park note names the
   existing candidate instead. (An explicit `number`, and a `dry_run`, opt
   out of the guard -- both are deliberate acts.)
 
 The guard reads this workflow's own run history for the last successful rc,
-which is why the `run-name:` at the top of the file is load-bearing: every
-channel but `dev` arrives on the same `workflow_dispatch` event, so the
-rendered title ("publish rc from v3.0.0") is the only record of which
-channel a finished run built.
+which is why the `run-name:` at the top of the file is load-bearing: both
+channels arrive on the same `workflow_dispatch` event, so the rendered title
+("publish rc from v3.0.0") is the only record of which channel a finished
+run built.
 
 ### Accepting a candidate on macOS
 
@@ -1015,46 +991,45 @@ leave the whole macOS path acceptance-testable only one release behind. An
 1. cuts a GitHub **prerelease** for the RC version -- marked prerelease and
    explicitly not "latest" -- with the `nyxgpt-api`/`nyxgpt-web` source
    tarballs as assets, and
-2. pushes stamped `nyxgpt-api-rc` / `nyxgpt-web-rc` formulas to the remote
-   tap, built from the same `homebrew/tap/*.rb.tmpl` templates the stable
-   formulas come from.
+2. pushes stamped `nyxgpt-api@<release>rc` / `nyxgpt-web@<release>rc`
+   formulas to the remote tap, built from the same `homebrew/tap/*.rb.tmpl`
+   templates the stable formulas come from. The name carries the release
+   line the candidate belongs to (#3735), so a machine on `@3.0.0rc` never
+   silently crosses to the next line's candidates.
 
 ```bash
 brew tap dkblinux98/nyxgpt
-brew install nyxgpt-api-rc nyxgpt-web-rc
+brew install nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc
 
-brew services start nyxgpt-api-rc
-brew services start nyxgpt-web-rc
+brew services start nyxgpt-api@3.0.0rc
+brew services start nyxgpt-web@3.0.0rc
 ```
 
 **The stable formulas are never touched.** Homebrew has no pre-release
 semantics, so `brew install nyxgpt-api` staying on the latest stable release
 depends on an rc publish not producing a `nyxgpt-api.rb` at all -- which is
 exactly what it does, asserted in the job and in
-`tests/unit/test_build_homebrew_artifacts.py`. The nightly `dev` channel
-never reaches the tap job at all. Full detail, including how to switch a
-machine between channels (the `-rc` formulas `conflicts_with` the stable
-ones), is in
+`tests/unit/test_build_homebrew_artifacts.py`. The `stable` channel never
+reaches the tap job at all -- the stable formulas are the ceremony's. Full
+detail, including how to switch a machine between channels (the candidate
+formulas `conflicts_with` the stable ones), is in
 [docs/homebrew.md](homebrew.md#release-candidate-formulas-rc-channel).
 
 ### Pointing an acceptance run at a specific build
 
-The provisioning templates already pin exactly, so a dev or rc build needs
-no special handling -- pass it wherever a version goes:
+The provisioning templates already pin exactly, so a candidate needs no
+special handling -- pass it wherever a version goes:
 
 ```bash
 pip install nyxgpt==3.0.0rc3
 nyxgpt cloud user-data --os linux --version 3.0.0rc3
 nyxgpt cloud deploy --version 3.0.0rc3
-
-# ...and the same for a nightly:
-nyxgpt cloud deploy --version 3.0.0.dev41
 ```
 
 The exact `==` pin is what makes this work at all: pip excludes
 pre-releases from an unpinned requirement, so `pip install nyxgpt` keeps
 resolving to the latest **stable** release for every ordinary user, no
-matter how many dev or rc builds exist. (`pip install --pre nyxgpt` is the
+matter how many candidates exist. (`pip install --pre nyxgpt` is the
 other way to opt in, if you want the newest pre-release without naming it.)
 
 ### The release ceremony delegates here
@@ -1062,7 +1037,7 @@ other way to opt in, if you want the newest pre-release without naming it.)
 `scripts/release_ceremony.sh` Phase 2 no longer builds or uploads anything
 itself. It dispatches this same workflow with `channel=stable`, waits for
 the run, and then verifies pypi.org serves the release -- one publish
-mechanism, three entry points. The ceremony keeps only what is
+mechanism, two entry points. The ceremony keeps only what is
 ceremony-exclusive: the master fast-forward, the tag, the GitHub Release,
 the Homebrew tap, the project close-out and the human stop points.
 
@@ -1073,12 +1048,13 @@ Because of that, the ceremony needs **no PyPI credential at all**; the
 
 | Guardrail | How it is enforced |
 | --- | --- |
-| Scheduled + dispatch triggers only | The workflow has no `push`, `tag` or `release` trigger -- a build is never cut by accident |
+| Dispatch trigger only | The workflow has no `schedule`, `push`, `tag` or `release` trigger -- nothing is published without being asked for, and nothing is published on a timer (#3735) |
 | Release branches only | The version step runs `python -m nyxgpt.release_candidate`, which exits non-zero for any ref that is not `v<X.Y.Z>` matching `pyproject.toml`'s declared version |
-| Dev and rc are never a stable version | What is uploaded is always `<release>.devN` / `<release>rcN` -- a pre-release, which default installs skip |
-| An rc never clobbers the stable brew formulas | The rc tap job writes `nyxgpt-api-rc.rb`/`nyxgpt-web-rc.rb` only; it asserts no stable formula was produced and refuses to push if one would change, so `brew install nyxgpt-api` stays on the latest stable release |
+| A candidate is never a stable version | What an rc uploads is always `<release>rcN` -- a pre-release, which default installs skip |
+| An rc never clobbers the stable brew formulas | The rc tap job writes `nyxgpt-api@<release>rc.rb`/`nyxgpt-web@<release>rc.rb` only; it asserts no stable formula was produced and refuses to push if one would change, so `brew install nyxgpt-api` stays on the latest stable release |
+| A candidate never crosses release lines | The formula name carries the line (`nyxgpt-api@3.0.0rc`), so the next line's candidates are a different formula -- installing them is a deliberate act, and the ceremony retires a shipped line's candidates by name |
 | An rc's GitHub release is never "latest" | It is created with `--prerelease --latest=false` and verified afterwards -- which also keeps `release-artifacts.yml` (trigger: `released`, not `prereleased`) out of the rc path |
-| The nightly never touches the tap | `homebrew-tap-rc` is gated on `channel == 'rc'`, so a `dev` build is PyPI-only by construction, not by convention |
+| The ceremony's formulas are never written by a candidate | `homebrew-tap-rc` is gated on `channel == 'rc'`, so the `stable` channel cannot reach it by construction, not by convention |
 | Stable is ceremony-only | The stable channel additionally requires the release tag at the built commit (Phase 1 creates it) *and* the ceremony's confirmation token, so dispatching `channel=stable` by hand publishes nothing -- and the sprint autopilot's dispatch path hard-codes `rc` and refuses any other channel before it dispatches |
 | The autopilot never cuts a duplicate candidate | An rc dispatch on a release-branch tip that has not moved since the last published candidate resolves to `SKIP`, so re-observing the same parked state publishes nothing |
 | No version reuse | The next number comes from what PyPI already serves, and PyPI rejects a re-upload anyway |

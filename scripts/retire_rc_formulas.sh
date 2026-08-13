@@ -1,20 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# retire_rc_formulas.sh — retire a released line's `-rc` formulas from the
-# remote Homebrew tap (#3730, part of the automated release ceremony).
+# retire_rc_formulas.sh — retire a released line's candidate formulas from
+# the remote Homebrew tap (#3730, part of the automated release ceremony).
 #
-# The rc channel (#3727) stamps `nyxgpt-api-rc.rb` / `nyxgpt-web-rc.rb` into
-# the tap so an acceptance candidate is installable the same repo-less way a
-# release is. Once the line ships, those candidates are dead: `brew install
-# nyxgpt-api-rc` would keep installing a pre-release of a version that is now
-# available as the stable formula. This removes them.
+# The rc channel (#3727) stamps `nyxgpt-api@<release>rc.rb` /
+# `nyxgpt-web@<release>rc.rb` into the tap so an acceptance candidate is
+# installable the same repo-less way a release is. Once the line ships, those
+# candidates are dead: `brew install nyxgpt-api@3.0.0rc` would keep
+# installing a pre-release of a version that is now available as the stable
+# formula. This removes them.
 #
-# It is deliberately version-scoped, not a blanket delete. Only formulas
-# whose stamped version belongs to the RELEASED line (`X.Y.Zrc<N>`) are
-# retired; if the tap already carries candidates for a LATER line (the next
-# RC series can start before the previous line's ceremony completes), they
-# are left exactly as they are.
+# It is deliberately version-scoped, and since #3735 the *file name* carries
+# the line: only `@<VERSION>rc` formulas are touched, so candidates for a
+# LATER line (the next RC series can start before the previous line's
+# ceremony completes) are differently named files and are left exactly as
+# they are. The stamped `version` is checked too, so a hand-edited formula
+# whose contents belong to another line is reported and kept.
 #
 # The stable formulas (`nyxgpt-api.rb` / `nyxgpt-web.rb`) are never touched —
 # verified before pushing, the same structural guard the rc publish uses.
@@ -39,7 +41,7 @@ VERSION="${1:-}"
 
 log() { echo "[retire-rc] $*"; }
 
-RC_FORMULAS=(Formula/nyxgpt-api-rc.rb Formula/nyxgpt-web-rc.rb)
+RC_FORMULAS=("Formula/nyxgpt-api@${VERSION}rc.rb" "Formula/nyxgpt-web@${VERSION}rc.rb")
 STABLE_FORMULAS=(Formula/nyxgpt-api.rb Formula/nyxgpt-web.rb)
 
 CLONE_URL="${TAP_CLONE_URL:-}"

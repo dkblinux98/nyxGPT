@@ -1,7 +1,7 @@
 // GET-only proxy for the PyPI publish plan (#3727).
 //
 // There is deliberately no POST: publishing to PyPI runs in the
-// schedule/dispatch-only workflow and in `nyxgpt release publish --publish`
+// dispatch-only workflow and in `nyxgpt release publish --publish`
 // -- not behind a button a browser session could press. The page renders
 // the pinned install commands the backend returns, in the same
 // status-plus-CLI-pointers shape as the portability surface (#3514).
@@ -9,7 +9,7 @@ import { apiFetch } from "@/lib/apiProxy";
 import { logger } from "@/lib/logger";
 import { withRequestLog } from "@/lib/withRequestLog";
 
-// The backend accepts `?branch=` and `?channel=` (dev/rc/stable); forward
+// The backend accepts `?branch=` and `?channel=` (rc/stable); forward
 // them so this proxy exposes the same surface the documented API does.
 const FORWARDED_PARAMS = ["branch", "channel"] as const;
 

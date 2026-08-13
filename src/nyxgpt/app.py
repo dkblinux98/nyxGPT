@@ -2722,8 +2722,8 @@ def ops_portability(_request: Request) -> dict[str, Any]:
 # Read-only, following the same #3514 status-plus-CLI-pointers decision the
 # portability surface uses -- and here for a second reason: publishing to
 # PyPI is an owner action carrying repo credentials, so it belongs to the
-# schedule/dispatch-only workflow and the owner's `nyxgpt release publish
-# --publish`, never to a button in a browser session.
+# dispatch-only workflow and the owner's `nyxgpt release publish --publish`,
+# never to a button in a browser session.
 
 
 @api.get("/ops/release-candidate")
@@ -2732,8 +2732,9 @@ def ops_release_candidate(
 ) -> dict[str, Any]:
     """Report the publish plan for `branch` (default: the configured release branch).
 
-    `channel` selects dev, rc (default) or stable -- the same three channels
-    the single publish pipeline understands.
+    `channel` selects rc (default) or stable -- the same two channels the
+    single publish pipeline understands (#3735 retired the nightly `dev`
+    channel).
 
     Makes one outbound call, to PyPI's JSON API, to learn which versions
     already exist. A failed lookup is reported in `pypi_lookup_error` and

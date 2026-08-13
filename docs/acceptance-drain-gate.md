@@ -149,8 +149,9 @@ loop, and now reaches a release only through this one signed-off path.
 5. **Phase 3** project close-out: statuses → Done, milestone closed, release
    issue closed with a summary.
 6. **rc retirement** — `scripts/retire_rc_formulas.sh` removes that line's
-   `nyxgpt-api-rc` / `nyxgpt-web-rc` formulas from the tap. Version-scoped: a
-   later line's candidates are left alone.
+   `nyxgpt-api@<VERSION>rc` / `nyxgpt-web@<VERSION>rc` formulas from the tap.
+   Version-scoped by name (#3735): a later line's candidates are a different
+   formula and are left alone.
 
 **Phase 4 (next-line preparation and the repoint) stays owner-run** — it needs
 the owner's local `config.ini` mirror and next-line decisions:

@@ -45,7 +45,7 @@ def built_artifacts(tmp_path_factory):
 
 @pytest.fixture(scope="module")
 def built_rc_artifacts(tmp_path_factory):
-    """The rc channel's output: `-rc` formulas, and nothing else (#3727)."""
+    """The rc channel's output: the `@<release>rc` formulas, nothing else."""
     out_dir = tmp_path_factory.mktemp("homebrew-artifacts-rc")
     cp = subprocess.run(
         [
@@ -140,18 +140,18 @@ def test_rc_channel_never_writes_a_stable_formula(built_rc_artifacts):
     """
     written = sorted(p.name for p in built_rc_artifacts.glob("*.rb"))
 
-    assert written == ["nyxgpt-api-rc.rb", "nyxgpt-web-rc.rb"]
+    assert written == ["nyxgpt-api@9.9.9rc.rb", "nyxgpt-web@9.9.9rc.rb"]
     assert not (built_rc_artifacts / "nyxgpt-api.rb").exists()
     assert not (built_rc_artifacts / "nyxgpt-web.rb").exists()
 
 
 @pytest.mark.parametrize(
     ("name", "class_name"),
-    [("nyxgpt-api", "NyxgptApiRc"), ("nyxgpt-web", "NyxgptWebRc")],
+    [("nyxgpt-api", "NyxgptApiAT999rc"), ("nyxgpt-web", "NyxgptWebAT999rc")],
 )
 def test_rc_formula_declares_homebrews_class_name(built_rc_artifacts, name, class_name):
     """`brew` derives the class from the file name -- a mismatch fails to load."""
-    formula = (built_rc_artifacts / f"{name}-rc.rb").read_text(encoding="utf-8")
+    formula = (built_rc_artifacts / f"{name}@9.9.9rc.rb").read_text(encoding="utf-8")
 
     assert f"class {class_name} < Formula" in formula
 
@@ -161,8 +161,11 @@ def test_rc_formula_declares_homebrews_class_name(built_rc_artifacts, name, clas
     [
         # Verified against real Homebrew: `brew ruby -e 'puts
         # Formulary.class_s("<formula>")'`.
-        ("nyxgpt-api-rc", "NyxgptApiRc"),
-        ("nyxgpt-web-rc", "NyxgptWebRc"),
+        # The names the rc channel actually stamps since #3735: the release
+        # line lives in the formula name, and the digit after `@` is what
+        # makes brew translate it to `AT`.
+        ("nyxgpt-api@3.0.0rc", "NyxgptApiAT300rc"),
+        ("nyxgpt-web@3.0.0rc", "NyxgptWebAT300rc"),
         ("nyxgpt-api", "NyxgptApi"),
         ("python@3.12", "PythonAT312"),
         # The trap this pins: `@` is translated to `AT` only before a DIGIT,
@@ -182,7 +185,8 @@ def test_unloadable_formula_names_are_refused(formula):
     name*; for `nyxgpt-api@rc` that is `NyxgptApi@rc`, which is not legal
     Ruby, so no `class ... < Formula` line inside the file can satisfy the
     loader ("Expected to find class NyxgptApi@rc"). This is why the rc
-    channel's suffix is `-rc` and not the `@rc` of the original decision.
+    channel's suffix names the release line -- `@3.0.0rc`, whose digit makes
+    brew translate the `@` -- rather than a bare `@rc`.
     """
     with pytest.raises(ValueError, match="not a loadable Homebrew formula name"):
         build_homebrew_artifacts.assert_loadable_formula_name(formula)
@@ -191,7 +195,7 @@ def test_unloadable_formula_names_are_refused(formula):
 @pytest.mark.parametrize("channel", ["stable", "rc"])
 @pytest.mark.parametrize("name", ["nyxgpt-api", "nyxgpt-web"])
 def test_every_published_formula_name_is_loadable(name, channel):
-    formula = build_homebrew_artifacts.formula_name(name, channel)
+    formula = build_homebrew_artifacts.formula_name(name, channel, "3.0.0rc7")
 
     assert build_homebrew_artifacts.assert_loadable_formula_name(formula) == formula
     # The constant brew will look for has to be declarable Ruby.
@@ -201,22 +205,55 @@ def test_every_published_formula_name_is_loadable(name, channel):
 def test_the_names_this_script_stamps_are_the_names_the_cli_tells_users_to_install():
     """One source of truth: the tap job stamps what `nyxgpt release publish` prints.
 
-    `release_candidate.RC_FORMULAS` is what the CLI, the dashboard panel and
+    `release_candidate.rc_formulas` is what the CLI, the dashboard panel and
     the docs render as the `brew install` line -- a rename here that missed
     it would advertise a formula the tap does not carry.
     """
-    from nyxgpt.release_candidate import RC_FORMULAS
+    from nyxgpt.release_candidate import rc_formulas
 
     stamped = tuple(
-        build_homebrew_artifacts.formula_name(name, "rc") for name in ("nyxgpt-api", "nyxgpt-web")
+        build_homebrew_artifacts.formula_name(name, "rc", "3.0.0rc7")
+        for name in ("nyxgpt-api", "nyxgpt-web")
     )
 
-    assert stamped == RC_FORMULAS
+    assert stamped == rc_formulas("3.0.0")
+    assert stamped == ("nyxgpt-api@3.0.0rc", "nyxgpt-web@3.0.0rc")
+
+
+def test_the_rc_formula_name_carries_the_release_line():
+    """The property the owner's naming exists for (#3735): a candidate for one
+    line can never silently become a candidate for the next -- they are
+    differently named formulas, so crossing lines takes a deliberate install."""
+    api = build_homebrew_artifacts.formula_name
+
+    assert api("nyxgpt-api", "rc", "3.0.0rc4") == "nyxgpt-api@3.0.0rc"
+    assert api("nyxgpt-api", "rc", "3.1.0rc1") == "nyxgpt-api@3.1.0rc"
+    assert api("nyxgpt-api", "rc", "3.0.0rc4") != api("nyxgpt-api", "rc", "3.1.0rc1")
+    # Stable is unsuffixed whatever version it stamps -- that is the formula
+    # `brew install nyxgpt-api` resolves.
+    assert api("nyxgpt-api", "stable", "3.0.0") == "nyxgpt-api"
+
+
+def test_an_rc_formula_cannot_be_named_without_a_version():
+    """Naming it anyway would produce a line-less `@rc` brew cannot even load."""
+    with pytest.raises(ValueError, match="needs the candidate's version"):
+        build_homebrew_artifacts.formula_name("nyxgpt-api", "rc")
+
+
+@pytest.mark.parametrize("version", ["3.0.0rc4", "3.0.0"])
+def test_release_line_accepts_a_release_or_a_candidate_of_one(version):
+    assert build_homebrew_artifacts.release_line(version) == "3.0.0"
+
+
+@pytest.mark.parametrize("version", ["rc4", "3.0", "3.0.0.dev1", "latest"])
+def test_release_line_refuses_a_version_it_cannot_place(version):
+    with pytest.raises(ValueError, match="not a release or release-candidate version"):
+        build_homebrew_artifacts.release_line(version)
 
 
 @pytest.mark.parametrize("name", ["nyxgpt-api", "nyxgpt-web"])
 def test_rc_formula_conflicts_with_its_stable_counterpart(built_rc_artifacts, name):
-    formula = (built_rc_artifacts / f"{name}-rc.rb").read_text(encoding="utf-8")
+    formula = (built_rc_artifacts / f"{name}@9.9.9rc.rb").read_text(encoding="utf-8")
 
     assert f'conflicts_with "{name}",' in formula
     assert "because:" in formula
@@ -228,7 +265,7 @@ def test_rc_formula_is_stamped_with_the_real_rc_tarball(built_rc_artifacts, name
     assert tarfile.is_tarfile(tarball)
     digest = hashlib.sha256(tarball.read_bytes()).hexdigest()
 
-    formula = (built_rc_artifacts / f"{name}-rc.rb").read_text(encoding="utf-8")
+    formula = (built_rc_artifacts / f"{name}@9.9.9rc.rb").read_text(encoding="utf-8")
 
     assert f'sha256 "{digest}"' in formula
     assert 'version "9.9.9rc4"' in formula
@@ -247,7 +284,7 @@ def test_rc_formula_installs_exactly_what_the_stable_one_does(
 ):
     """Derived from the same template, not a parallel copy: only the identity differs."""
     stable = (built_artifacts / f"{name}.rb").read_text(encoding="utf-8")
-    rc = (built_rc_artifacts / f"{name}-rc.rb").read_text(encoding="utf-8")
+    rc = (built_rc_artifacts / f"{name}@9.9.9rc.rb").read_text(encoding="utf-8")
 
     # Everything from `def install` down is byte-identical -- the keg an RC
     # installs is the same recipe as the release's, on a different tarball.

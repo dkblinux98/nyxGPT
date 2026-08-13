@@ -81,9 +81,10 @@ completion state.
 The transition into `awaiting_acceptance` is the start of an acceptance
 round, so it publishes the artifact that round tests: `_autopilot_publish_rc`
 (`lib/gh_project.sh`) dispatches
-[`release-publish-pypi.yml`](cloud.md#pypi-publishing-dev-rc-and-stable)
-with `channel=rc`, cutting a `3.0.0rcN` to PyPI **and** the Homebrew `-rc`
-formulas in one run, and the park note names the version to install.
+[`release-publish-pypi.yml`](cloud.md#pypi-publishing-rc-and-stable)
+with `channel=rc`, cutting a `3.0.0rcN` to PyPI **and** this line's Homebrew
+candidate formulas (`nyxgpt-api@3.0.0rc` / `nyxgpt-web@3.0.0rc`) in one run,
+and the park note names the version to install.
 
 - **Only that state.** `work_in_flight` has nothing to accept yet;
   `sprint_complete` has already been accepted. The trigger is the park state

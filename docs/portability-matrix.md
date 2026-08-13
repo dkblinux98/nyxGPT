@@ -138,9 +138,10 @@ accepting from can always tell you the next step.
 
 Step 1 installs from PyPI, so by default the run exercises the last **stable**
 release — not the release-branch tip carrying the acceptance failures you just
-fixed. Pin a [nightly dev build or a release candidate](cloud.md#pypi-publishing-dev-rc-and-stable)
-instead — the nightly publishes the tip automatically, and
-`nyxgpt release publish --publish` cuts an RC on demand (#3727):
+fixed. Pin a [release candidate](cloud.md#pypi-publishing-rc-and-stable)
+instead — the sprint autopilot cuts one when the sprint reaches
+agentic-work-complete, and `nyxgpt release publish --publish` cuts one on
+demand (#3727):
 
 | # | Command |
 |---|---------|
@@ -152,15 +153,15 @@ from its own formulas instead — an rc publish stamps them into the same tap
 alongside the stable ones:
 
 ```bash
-brew tap dkblinux98/nyxgpt && brew install nyxgpt-api-rc nyxgpt-web-rc
+brew tap dkblinux98/nyxgpt && brew install nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc
 ```
 
 `brew install nyxgpt-api` is unaffected and stays on the latest stable
 release ([docs/homebrew.md](homebrew.md#release-candidate-formulas-rc-channel)).
 
 Nothing else about the sequence changes: the build is a published artifact
-like any other, so the run stays repo-less. Dev and rc builds are
-acceptance-only and are never announced; `pip install nyxgpt` still resolves
+like any other, so the run stays repo-less. Candidates are acceptance-only
+and are never announced; `pip install nyxgpt` still resolves
 to the stable release, because pip excludes pre-releases from an unpinned
 requirement.
 

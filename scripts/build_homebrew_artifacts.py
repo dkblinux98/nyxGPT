@@ -11,23 +11,26 @@ Two channels share that machinery (#3727, owner decision 2026-08-11):
 * ``stable`` (the default) stamps `nyxgpt-api.rb` / `nyxgpt-web.rb` -- what
   `release-artifacts.yml` pushes to the tap on every GitHub Release, and
   what `brew install nyxgpt-api` resolves to.
-* ``rc`` stamps **separate** `nyxgpt-api-rc.rb` / `nyxgpt-web-rc.rb`
-  formulas from the same templates, for acceptance-testing an unreleased
-  release candidate. Homebrew has no pre-release semantics, so channel
-  separation lives in the formula *names*: an rc publish therefore never
-  writes a stable formula file at all, and `brew install nyxgpt-api` keeps
-  resolving to the latest stable release no matter how many RCs are cut.
-  The `-rc` formulas declare `conflicts_with` their stable counterparts, so
+* ``rc`` stamps **separate** `nyxgpt-api@<release>rc.rb` /
+  `nyxgpt-web@<release>rc.rb` formulas (e.g. `nyxgpt-api@3.0.0rc.rb`) from
+  the same templates, for acceptance-testing an unreleased release
+  candidate. Homebrew has no pre-release semantics, so channel separation
+  lives in the formula *names*: an rc publish therefore never writes a
+  stable formula file at all, and `brew install nyxgpt-api` keeps resolving
+  to the latest stable release no matter how many RCs are cut. The
+  candidate formulas declare `conflicts_with` their stable counterparts, so
   switching channels on one machine is an explicit uninstall rather than a
   silent clobber.
 
-  The suffix is `-rc`, not `@rc`: Homebrew's `@` spelling is reserved for
-  *versioned* formulas and its loader only translates `@` to `AT` when a
-  digit follows (`Formulary.class_s("python@3.12")` -> `PythonAT312`, but
-  `Formulary.class_s("nyxgpt-api@rc")` -> `NyxgptApi@rc`, which is not a
-  legal Ruby constant). A `<name>@rc` formula is therefore unloadable by any
-  Homebrew, whatever class it declares -- `assert_loadable_formula_name`
-  keeps that mistake from being reintroduced.
+  The name carries the **release line** (owner decision 2026-08-12, #3735):
+  `nyxgpt-api@3.0.0rc` is a candidate for 3.0.0 and can never silently
+  become a candidate for the next line -- 3.1.0's candidates are a
+  differently named formula, so a machine left on `@3.0.0rc` stays where the
+  operator put it and the released line's candidates are retired by name.
+  Homebrew's `@` spelling is what makes that legible, and it loads because a
+  **digit** follows the `@`: `Formulary.class_s("nyxgpt-api@3.0.0rc")` ->
+  `NyxgptApiAT300rc`. `@rc` (no digit) would render the illegal constant
+  `NyxgptApi@rc` -- `assert_loadable_formula_name` keeps that mistake out.
 
 Run from a repo checkout (CI's release-artifacts.yml / release-publish-pypi.yml
 jobs) -- this is a release-tooling script, not part of the installed package,
@@ -60,10 +63,8 @@ _FORMULAS = ("nyxgpt-api", "nyxgpt-web")
 
 CHANNELS = ("stable", "rc")
 
-#: Formula-name suffix per channel. Empty for stable -- the stable formulas
-#: are the ones `brew install nyxgpt-api` resolves, and nothing but a stable
-#: release may ever write them.
-_CHANNEL_SUFFIX = {"stable": "", "rc": "-rc"}
+# `3.0.0rc4` / `3.0.0` -> the `3.0.0` release line the candidate belongs to.
+_RELEASE_LINE_RE = re.compile(r"^(\d+\.\d+\.\d+)(?:rc\d+)?$")
 
 _CLASS_RE = re.compile(r"^class\s+(\w+)\s+<\s+Formula\b", re.MULTILINE)
 
@@ -86,8 +87,9 @@ def assert_loadable_formula_name(formula: str) -> str:
     `@` only becomes `AT` when a digit follows it. `nyxgpt-api@rc` therefore
     resolves to `NyxgptApi@rc` -- not a legal constant, so no class
     declaration inside the file can satisfy the loader and `brew info` fails
-    with "Expected to find class NyxgptApi@rc". Reserve `@` for real
-    versioned formulas (`python@3.12`) and use a plain suffix otherwise.
+    with "Expected to find class NyxgptApi@rc". The candidate formulas spell
+    the release line right after the `@` (`nyxgpt-api@3.0.0rc` ->
+    `NyxgptApiAT300rc`), which is exactly the digit-gated form brew loads.
     """
     if _UNLOADABLE_AT_RE.search(formula):
         raise ValueError(
@@ -98,28 +100,50 @@ def assert_loadable_formula_name(formula: str) -> str:
     return formula
 
 
-def formula_name(name: str, channel: str) -> str:
+def release_line(version: str) -> str:
+    """The release a version belongs to: `3.0.0rc4` -> `3.0.0`.
+
+    Raises on anything that is not a release or an RC of one -- the formula
+    name is derived from this, and a name that misstates its line is exactly
+    what the versioned naming exists to prevent.
+    """
+    match = _RELEASE_LINE_RE.match(version.strip())
+    if match is None:
+        raise ValueError(
+            f"{version!r} is not a release or release-candidate version -- expected X.Y.Z "
+            "or X.Y.ZrcN, e.g. 3.0.0rc1"
+        )
+    return match.group(1)
+
+
+def formula_name(name: str, channel: str, version: str = "") -> str:
     """The formula this channel publishes for service `name`.
 
-    `("nyxgpt-api", "rc")` -> `nyxgpt-api-rc`. The suffix is what keeps an RC
-    off the stable formula: they are different formulas in the same tap, not
-    two versions of one.
+    `("nyxgpt-api", "rc", "3.0.0rc4")` -> `nyxgpt-api@3.0.0rc`. The suffix is
+    what keeps an RC off the stable formula: they are different formulas in
+    the same tap, not two versions of one. It carries the release line, so a
+    candidate for 3.0.0 can never silently become a candidate for 3.1.0 --
+    that is a differently named formula, installed deliberately or not at all.
     """
-    if channel not in _CHANNEL_SUFFIX:
+    if channel not in CHANNELS:
         raise ValueError(f"Unknown channel {channel!r} -- expected one of {', '.join(CHANNELS)}")
-    return assert_loadable_formula_name(f"{name}{_CHANNEL_SUFFIX[channel]}")
+    if channel == "stable":
+        return assert_loadable_formula_name(name)
+    if not version.strip():
+        raise ValueError("The rc channel needs the candidate's version to name its formula")
+    return assert_loadable_formula_name(f"{name}@{release_line(version)}rc")
 
 
 def formula_class_name(formula: str) -> str:
     """Homebrew's class name for a formula file name.
 
     Homebrew derives the class from the file name (`Formulary.class_s`):
-    separators camel-case (`nyxgpt-api-rc` -> `NyxgptApiRc`), `+` becomes
-    `x`, and `@` becomes `AT` **only when a digit follows** -- `python@3.12`
-    is `PythonAT312`, but `nyxgpt-api@rc` is `NyxgptApi@rc`, which is why
-    that name is rejected by `assert_loadable_formula_name` rather than
-    stamped. Getting this wrong makes `brew install` fail to load the
-    formula at all.
+    separators camel-case (`nyxgpt-api` -> `NyxgptApi`), `+` becomes `x`,
+    and `@` becomes `AT` **only when a digit follows** -- `python@3.12` is
+    `PythonAT312` and `nyxgpt-api@3.0.0rc` is `NyxgptApiAT300rc`, but
+    `nyxgpt-api@rc` is `NyxgptApi@rc`, which is why that name is rejected by
+    `assert_loadable_formula_name` rather than stamped. Getting this wrong
+    makes `brew install` fail to load the formula at all.
     """
     class_name = formula[:1].upper() + formula[1:].lower()
     class_name = _SEPARATOR_RE.sub(lambda match: match.group(1).upper(), class_name)
@@ -127,21 +151,21 @@ def formula_class_name(formula: str) -> str:
     return _AT_VERSION_RE.sub(lambda match: f"{match.group(1)}AT{match.group(2)}", class_name, 1)
 
 
-def render_rc_formula(template_text: str, name: str) -> str:
+def render_rc_formula(template_text: str, name: str, version: str) -> str:
     """Turn a stamped stable formula into its release-candidate counterpart.
 
     Derived from the same template rather than a parallel copy, so the two
     channels can never drift about what the keg actually installs -- only
     the class name, the description and the conflict declaration differ.
     """
-    rc_formula = formula_name(name, "rc")
+    rc_formula = formula_name(name, "rc", version)
     text, substitutions = _CLASS_RE.subn(
         f"class {formula_class_name(rc_formula)} < Formula", template_text, count=1
     )
     if substitutions != 1:
         raise ValueError(f"{name}: template has no `class ... < Formula` line to rename")
 
-    text = text.replace('desc "', 'desc "Release candidate: ', 1)
+    text = text.replace('desc "', f'desc "Release candidate {version} -- ', 1)
 
     match = _LICENSE_RE.search(text)
     if match is None:
@@ -184,8 +208,8 @@ def build(version: str, out_dir: Path, base_url: str, channel: str = "stable") -
             .replace("__VERSION__", version)
         )
         if channel == "rc":
-            stamped = render_rc_formula(stamped, name)
-        formula_path = out_dir / f"{formula_name(name, channel)}.rb"
+            stamped = render_rc_formula(stamped, name, version)
+        formula_path = out_dir / f"{formula_name(name, channel, version)}.rb"
         formula_path.write_text(stamped, encoding="utf-8")
         written.append(formula_path)
         print(f"{name}: {tarball} (sha256={sha256}) -> {formula_path}")

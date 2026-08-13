@@ -525,7 +525,7 @@ class TestReleaseCandidateSection:
         )
         assert "`3.0.0rc2` is publishing now from `v3.0.0`" in note
         assert "pip install nyxgpt==3.0.0rc2" in note
-        assert "brew install nyxgpt-api-rc nyxgpt-web-rc" in note
+        assert "brew install nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc" in note
         assert "https://github.com/dkblinux98/nyxGPT/actions/x" in note
 
     def test_a_dispatch_with_no_preflight_version_still_reports_the_publish(self):
