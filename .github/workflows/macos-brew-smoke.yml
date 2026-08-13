@@ -1,0 +1,195 @@
+name: macOS Brew Smoke
+
+# Installs the Homebrew formulas on a real macOS Homebrew and asserts the keg
+# actually works (#3753). Until this existed the brew path was
+# documentation-verified only: every formula change shipped unexecuted, and
+# the keg venv bootstrap broke on stock Homebrew macOS with an `ensurepip`
+# exit 1 that no CI job could have seen. GitHub-hosted macos-15 runners ship
+# Homebrew, so `brew install` is testable for real -- the "no macOS CI"
+# limitation applies to EC2 Mac, not to plain brew-install verification.
+#
+# Two jobs, because they answer two different questions:
+#
+#   keg-install  Does the recipe in THIS checkout install? Stamps the rc
+#                formulas from the working tree into a throwaway local tap and
+#                installs from a file:// tarball, so a broken recipe fails on
+#                the PR that wrote it -- no publish required. The throwaway tap
+#                deliberately carries no stable formula, which also keeps the
+#                absent-`conflicts_with`-counterpart case (#3753) exercised.
+#   published-tap  Does what the owner actually types work? `brew tap` +
+#                `brew install` against the real published tap. Needs a
+#                published candidate, so it runs on dispatch and after an rc
+#                cut, never on a PR.
+#
+# Cost: macOS runners bill at a multiple of Linux, so the PR trigger is
+# paths-filtered down to the formulas, the stamping script and this file.
+on:
+  pull_request:
+    paths:
+      - 'homebrew/**'
+      - 'scripts/build_homebrew_artifacts.py'
+      - 'src/nyxgpt/release_tarball.py'
+      - '.github/workflows/macos-brew-smoke.yml'
+  workflow_dispatch:
+    inputs:
+      formula_version:
+        description: 'Published candidate to install from the tap, e.g. 3.0.0rc4 (blank = skip that job)'
+        required: false
+        default: ''
+      include_web:
+        description: 'Also install nyxgpt-web (adds a full Next.js build)'
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      formula_version:
+        description: 'Published candidate to install from the tap, e.g. 3.0.0rc4'
+        required: false
+        type: string
+        default: ''
+
+# Read-only: both jobs only check the repo out and drive brew locally.
+permissions:
+  contents: read
+
+jobs:
+  keg-install:
+    name: Install the working tree's formulas
+    # PRs and dispatch build from the checkout; a workflow_call from the rc
+    # publish path is only interested in the published tap.
+    if: github.event_name != 'workflow_call'
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # The keg builds its venv from Homebrew's python@3.12 (the formula's
+      # declared dependency), NOT from the setup-python above -- that one only
+      # runs the stamping script, which is stdlib-only (#3741).
+      - name: Install the formula's declared Python dependency
+        run: brew install python@3.12
+
+      - name: Show the python@3.12 keg's ensurepip state
+        # Diagnostics for the failure this job exists to catch: if ensurepip is
+        # broken on the runner too, the log says so instead of leaving a bare
+        # exit 1. Never fails the job -- the recipe no longer uses ensurepip,
+        # and proving that is the point.
+        continue-on-error: true
+        run: |
+          PY="$(brew --prefix python@3.12)/bin/python3.12"
+          echo "python: $PY"
+          "$PY" --version
+          "$PY" -m pip --version
+          ls "$("$PY" -c 'import ensurepip, os; print(os.path.dirname(ensurepip.__file__))')/_bundled" || true
+
+      - name: Stamp the rc formulas from this checkout
+        env:
+          # The rc channel is what the owner installs, so smoke-test that
+          # rendering (renamed class, conflicts_with block), not just stable.
+          SMOKE_VERSION: 3.0.0rc0
+        run: |
+          set -euo pipefail
+          python scripts/build_homebrew_artifacts.py "$SMOKE_VERSION" dist/homebrew \
+            "file://${PWD}/dist/homebrew/dist" --channel rc
+          ls -1 dist/homebrew/*.rb
+
+      - name: Create a throwaway local tap
+        run: |
+          set -euo pipefail
+          brew tap-new nyxgpt/brew-smoke --no-git 2>/dev/null || brew tap-new nyxgpt/brew-smoke
+          TAP_DIR="$(brew --repository nyxgpt/brew-smoke)"
+          mkdir -p "$TAP_DIR/Formula"
+          # Only the candidate formulas -- this tap intentionally has no
+          # stable counterpart, so `conflicts_with "nyxgpt-api"` here names a
+          # formula the tap does not carry (the #3753 secondary finding).
+          cp dist/homebrew/*.rb "$TAP_DIR/Formula/"
+          ls -1 "$TAP_DIR/Formula/"
+
+      - name: Install nyxgpt-api from the local tap
+        run: |
+          set -euo pipefail
+          # Not `set -o pipefail`-hostile: the log is what a maintainer reads
+          # when the venv step fails, so keep it verbose.
+          brew install --verbose nyxgpt/brew-smoke/nyxgpt-api@3.0.0rc 2>&1 | tail -80
+
+      - name: Verify the keg venv was really built
+        run: |
+          set -euo pipefail
+          KEG="$(brew --prefix nyxgpt-api@3.0.0rc)"
+          VENV="$KEG/libexec/venv"
+          test -x "$VENV/bin/python3" || { echo "::error::no venv python in the keg"; exit 1; }
+          # The bootstrap this job exists to defend: pip has to be IN the venv,
+          # put there without ensurepip.
+          "$VENV/bin/pip" --version
+          "$VENV/bin/python3" -c 'import nyxgpt.app; print("nyxgpt.app imports")'
+          "$VENV/bin/nyxgpt" --version
+          test -f "$KEG/bin/nyxgpt-api" || { echo "::error::no nyxgpt-api wrapper"; exit 1; }
+          # `brew test` runs the formula's own test block against the keg.
+          brew test nyxgpt/brew-smoke/nyxgpt-api@3.0.0rc
+
+      - name: Install nyxgpt-web from the local tap
+        if: ${{ inputs.include_web }}
+        run: |
+          set -euo pipefail
+          brew install --verbose nyxgpt/brew-smoke/nyxgpt-web@3.0.0rc 2>&1 | tail -80
+          brew test nyxgpt/brew-smoke/nyxgpt-web@3.0.0rc
+
+      - name: Install logs on failure
+        if: failure()
+        run: |
+          for log in ~/Library/Logs/Homebrew/nyxgpt-api@3.0.0rc/*; do
+            echo "--- $log ---"
+            cat "$log" || true
+          done
+
+  published-tap:
+    name: Install the published candidate from the real tap
+    # The owner's literal command path. Needs a published candidate and a
+    # configured tap, so it is dispatch/rc-cut only.
+    if: ${{ inputs.formula_version != '' && vars.HOMEBREW_TAP_REPO != '' }}
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: Tap and install the candidate
+        env:
+          TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO }}
+          VERSION: ${{ inputs.formula_version }}
+        run: |
+          set -euo pipefail
+          # `dkblinux98/homebrew-nyxgpt` -> the `dkblinux98/nyxgpt` brew names.
+          TAP="${TAP_REPO/homebrew-/}"
+          RELEASE="${VERSION%%rc*}"
+          echo "tapping $TAP for nyxgpt-api@${RELEASE}rc"
+          brew tap "$TAP"
+          brew install --verbose "${TAP}/nyxgpt-api@${RELEASE}rc" 2>&1 | tail -80
+
+      - name: Verify the installed keg
+        env:
+          VERSION: ${{ inputs.formula_version }}
+        run: |
+          set -euo pipefail
+          RELEASE="${VERSION%%rc*}"
+          KEG="$(brew --prefix "nyxgpt-api@${RELEASE}rc")"
+          VENV="$KEG/libexec/venv"
+          "$VENV/bin/pip" --version
+          "$VENV/bin/python3" -c 'import nyxgpt.app; print("nyxgpt.app imports")'
+          "$VENV/bin/nyxgpt" --version
+          test -f "$KEG/bin/nyxgpt-api" || { echo "::error::no nyxgpt-api wrapper"; exit 1; }
+          # The installed version has to be the candidate that was asked for,
+          # not whatever the tap happened to already carry.
+          brew list --versions "nyxgpt-api@${RELEASE}rc" | grep -F "$VERSION"
+
+      - name: Install logs on failure
+        if: failure()
+        env:
+          VERSION: ${{ inputs.formula_version }}
+        run: |
+          RELEASE="${VERSION%%rc*}"
+          for log in ~/Library/Logs/Homebrew/nyxgpt-api@${RELEASE}rc/*; do
+            echo "--- $log ---"
+            cat "$log" || true
+          done
