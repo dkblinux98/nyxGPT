@@ -27,8 +27,25 @@ class NyxgptApi < Formula
   def install
     python = Formula["python@3.12"].opt_bin/"python3.12"
     venv = libexec/"venv"
-    system python, "-m", "venv", venv
-    system venv/"bin/pip", "install", "--upgrade", "pip"
+
+    # `--without-pip` is load-bearing (#3753). A plain `python -m venv` runs
+    # `ensurepip --upgrade --default-pip` inside the new venv, and ensurepip
+    # bootstraps pip from wheels vendored in the `python@3.12` keg -- the one
+    # step of this install that depends on Homebrew-managed keg state rather
+    # than on our own tarball. On a stock Homebrew macOS it exited 1 and took
+    # the whole `brew install` down with it. Nothing here needs ensurepip:
+    # pip is placed into the venv directly below, by the same Homebrew python
+    # that is already a declared dependency.
+    system python, "-m", "venv", "--without-pip", venv
+    # `pip --python` (pip 22.3+) installs into *another* interpreter's
+    # environment, so the venv gets a real pip -- with the venv's own shebang
+    # and install scheme -- without ensurepip ever running. PEP 668's
+    # externally-managed marker on the Homebrew keg does not apply: the
+    # install target is the venv, which is not externally managed.
+    # `--python` is a top-level pip option and must precede the subcommand:
+    # placed after `install`, pip exits with "The --python option must be
+    # placed before the pip subcommand name" and takes `brew install` down.
+    system python, "-m", "pip", "--python", venv/"bin/python", "install", "--upgrade", "pip"
     system venv/"bin/pip", "install", buildpath
 
     # config_wizard builds its schema from example.config.ini at import time

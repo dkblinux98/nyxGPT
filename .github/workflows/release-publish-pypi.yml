@@ -522,3 +522,19 @@ jobs:
             echo "brew services start nyxgpt-api@${RELEASE}rc"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  macos-brew-smoke:
+    # Verifies the candidate the tap job just published actually installs on a
+    # real macOS Homebrew (#3753). Runs after the tap push rather than before
+    # it -- the point is to exercise `brew tap` + `brew install` exactly as the
+    # owner does, which needs the formulas to be published first. A failure
+    # here therefore reports a broken candidate; it cannot un-publish one, and
+    # deliberately does not gate the tap push.
+    needs: [publish, homebrew-tap-rc]
+    if: >-
+      ${{ needs.publish.outputs.publish == 'true'
+          && needs.publish.outputs.channel == 'rc'
+          && !inputs.dry_run }}
+    uses: ./.github/workflows/macos-brew-smoke.yml
+    with:
+      formula_version: ${{ needs.publish.outputs.version }}

@@ -242,14 +242,25 @@ def render_rc_formula(template_text: str, name: str, version: str) -> str:
     if match is None:
         raise ValueError(f"{name}: template has no `license` line to anchor conflicts_with to")
     indent = match.group(1)
+    # The counterpart is derived, never spelled by hand: it is exactly the
+    # formula the stable channel of *this* script stamps, so the reference can
+    # never dangle at a name nothing publishes.
+    stable = formula_name(name, "stable")
     block = "\n\n" + "\n".join(
         [
-            f"{indent}# Acceptance-only channel (#3727): `brew install {name}` must always",
+            f"{indent}# Acceptance-only channel (#3727): `brew install {stable}` must always",
             f"{indent}# resolve to the latest stable release, so this is a separate formula",
             f"{indent}# rather than a newer version of that one. Installing both would fight",
             f"{indent}# over the same bin wrapper and the same brew service name.",
-            f'{indent}conflicts_with "{name}",',
-            f'{indent}  because: "both install the same {name} wrapper and brew service"',
+            f"{indent}#",
+            f"{indent}# A tap that does not (yet) carry {stable}.rb makes brew warn that the",
+            f"{indent}# conflict names an unknown formula, and warn is all it does -- the",
+            f"{indent}# install proceeds (#3753). The declaration is deliberately kept",
+            f"{indent}# unconditional: Homebrew resolves conflicts_with at load time with no",
+            f"{indent}# way to make one tolerant, and dropping it to silence a warning would",
+            f"{indent}# trade a cosmetic message for the silent channel clobber it prevents.",
+            f'{indent}conflicts_with "{stable}",',
+            f'{indent}  because: "both install the same {stable} wrapper and brew service"',
         ]
     )
     rest = text[match.end() :]

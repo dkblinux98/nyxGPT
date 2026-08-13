@@ -90,14 +90,18 @@ class Target:
 
     `status` is the row's verification level, and is deliberately more
     granular than pass/fail because the five targets are not verifiable the
-    same way -- one has a GitHub Actions runner, one needs a billed AWS
-    account, one needs Apple Silicon hardware CI does not have:
+    same way -- one runs end to end on a GitHub Actions runner, one needs a
+    billed AWS account, one is only half coverable by a hosted runner:
 
     * ``ci-verified`` -- a workflow in this repo installs and operates the
       target from published artifacts on every release, with no checkout.
     * ``acceptance`` -- the path is implemented and CI covers what it can,
-      but the final demonstration needs hardware or an account no runner
-      has (Apple Silicon; a real AWS account). Owner acceptance closes it.
+      but the final demonstration needs an account or a persistent machine
+      no runner is (a real AWS account; a macOS workstation whose brew
+      services and launchd agents survive the job). Owner acceptance closes
+      it. Note this is *not* "CI has no Apple Silicon": hosted `macos-15`
+      runners are Apple Silicon and `macos-brew-smoke.yml` uses them to
+      verify the macOS *install* half (#3753).
     * ``gap`` -- the target cannot be installed without a checkout today.
       `gaps` says exactly what is missing.
     """
@@ -150,15 +154,20 @@ TARGETS: tuple[Target, ...] = (
         status="acceptance",
         evidence=(
             ".github/workflows/release-artifacts.yml",
+            ".github/workflows/macos-brew-smoke.yml",
             "docs/homebrew.md",
             "docs/ops.md",
         ),
         notes=(
-            "The native path GitHub Actions cannot cover: there is no Apple Silicon "
-            "runner, so the brew/launchd reconciliation is owner-verified on the "
-            "owner's workstation. Publishing is automated -- release-artifacts.yml "
-            "stamps and pushes both formulas to the remote tap when HOMEBREW_TAP_REPO "
-            "is configured, and always attaches them to the release otherwise."
+            "Split coverage. The *install* half is CI-verified on a real macOS "
+            "Homebrew: macos-brew-smoke.yml installs the formulas on a macos-15 "
+            "runner -- the working tree's own recipe on every formula change, and "
+            "the published candidate from the tap after every rc cut (#3753). The "
+            "*operate* half (brew services / launchd reconciliation, nyxgpt up) "
+            "stays owner-verified on the owner's workstation. Publishing is "
+            "automated -- release-artifacts.yml stamps and pushes both formulas to "
+            "the remote tap when HOMEBREW_TAP_REPO is configured, and always "
+            "attaches them to the release otherwise."
         ),
     ),
     Target(
@@ -260,8 +269,9 @@ TARGETS: tuple[Target, ...] = (
             "spend money: terraform-aws-validate.yml runs with dummy credentials, so "
             "the live deploy/smoke/teardown against a real account is the owner "
             "acceptance run in ACCEPTANCE_SEQUENCE. EC2 Mac targets are "
-            "documentation-verified only (no Apple Silicon runner, and a Dedicated "
-            "Host bills a 24h minimum)."
+            "documentation-verified only: GitHub Actions' macOS runners are hosted "
+            "(fine for brew installs -- see macos-native -- but not an EC2 "
+            "instance), and a Dedicated Host bills a 24h minimum."
         ),
     ),
 )

@@ -612,13 +612,21 @@ def _jobs_running_the_build_script() -> list[tuple[str, str, dict]]:
     return found
 
 
-def test_both_tap_jobs_are_still_the_only_callers():
-    """A third caller needs the same dependency check applied to it."""
+def test_the_known_callers_are_still_the_only_callers():
+    """A new caller needs the same dependency check applied to it.
+
+    The macOS smoke job (#3753) is the third: it stamps the working tree's
+    formulas into a throwaway tap so a broken recipe fails on the PR that
+    wrote it. It is held to the same bar as the two publishing jobs by
+    `test_jobs_running_the_build_script_provide_what_it_imports` below, which
+    iterates whatever this function finds.
+    """
     callers = {(workflow, job) for workflow, job, _ in _jobs_running_the_build_script()}
 
     assert callers == {
         ("release-artifacts.yml", "homebrew-tap"),
         ("release-publish-pypi.yml", "homebrew-tap-rc"),
+        ("macos-brew-smoke.yml", "keg-install"),
     }
 
 
@@ -724,3 +732,212 @@ def test_the_blocker_hook_would_have_caught_the_original_failure(tmp_path):
 
     assert cp.returncode != 0
     assert "blocked third-party import: httpx" in cp.stderr
+
+
+# --- The keg venv bootstrap (#3753) ---------------------------------------
+#
+# Owner acceptance of the rc install path died here: `brew install
+# nyxgpt-api@3.0.0rc` on stock Homebrew macOS failed creating the keg venv,
+# with `ensurepip --upgrade --default-pip` exiting 1. A plain `python -m venv`
+# runs ensurepip implicitly, and ensurepip bootstraps pip from wheels vendored
+# in the `python@3.12` keg -- the only step of this install that depends on
+# Homebrew-managed keg state rather than on our own tarball.
+#
+# The recipe now creates the venv with `--without-pip` and puts pip in itself,
+# so ensurepip is out of the install path entirely. These tests pin that for
+# both formulas that carry the recipe and for what the script actually stamps.
+
+_API_FORMULAS = {
+    "local": REPO_ROOT / "homebrew" / "nyxgpt-api.rb",
+    "tap-template": REPO_ROOT / "homebrew" / "tap" / "nyxgpt-api.rb.tmpl",
+}
+
+_WITHOUT_PIP = 'system python, "-m", "venv", "--without-pip", venv'
+_ENSUREPIP_VENV = 'system python, "-m", "venv", venv'
+# `--python` is a top-level pip option: after the subcommand pip refuses with
+# "The --python option must be placed before the pip subcommand name" and the
+# install dies one step past where #3753 originally did. Pinned as the whole
+# line so the *order* is what fails here, in the Linux suite, rather than on a
+# macOS runner.
+_PIP_BOOTSTRAP = (
+    'system python, "-m", "pip", "--python", venv/"bin/python", "install", "--upgrade", "pip"'
+)
+
+
+def _venv_recipe(text: str) -> list[str]:
+    """The keg's venv bootstrap: code lines from `def install` to the wrapper.
+
+    Comments and blank lines are dropped so this compares what the formula
+    *runs*, not how it is documented -- the two files explain themselves with
+    different issue references on purpose.
+    """
+    start = text.index("  def install")
+    end = text.index('(bin/"nyxgpt-api").write')
+    return [
+        line.strip()
+        for line in text[start:end].splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+
+
+@pytest.mark.parametrize("which", sorted(_API_FORMULAS))
+def test_keg_venv_is_built_without_ensurepip(which):
+    recipe = _venv_recipe(_API_FORMULAS[which].read_text(encoding="utf-8"))
+
+    assert _WITHOUT_PIP in recipe
+    # The exact line the owner's install died on.
+    assert _ENSUREPIP_VENV not in recipe
+
+
+@pytest.mark.parametrize("which", sorted(_API_FORMULAS))
+def test_pip_is_installed_into_the_keg_venv_by_the_homebrew_python(which):
+    """`--without-pip` is only safe because pip is put in deliberately."""
+    recipe = _venv_recipe(_API_FORMULAS[which].read_text(encoding="utf-8"))
+
+    bootstrap = [line for line in recipe if '"-m", "pip"' in line]
+    assert len(bootstrap) == 1, recipe
+    assert bootstrap[0] == _PIP_BOOTSTRAP
+    # Everything downstream still installs through the venv's own pip.
+    assert 'system venv/"bin/pip", "install", buildpath' in recipe
+
+
+def test_both_api_formulas_carry_the_same_venv_recipe():
+    """The local formula and the tap template are one recipe in two files.
+
+    #3753 had to be fixed in both. Nothing enforced that they agree, so this
+    pins it: a bootstrap fix applied to one file and not the other fails here
+    rather than on the next owner install.
+    """
+    local, template = (
+        _venv_recipe(path.read_text(encoding="utf-8"))
+        for path in (_API_FORMULAS["local"], _API_FORMULAS["tap-template"])
+    )
+
+    assert local == template
+
+
+@pytest.mark.parametrize("channel", ["stable", "rc"])
+def test_stamped_formulas_ship_the_ensurepip_free_recipe(
+    built_artifacts, built_rc_artifacts, channel
+):
+    """What is published, not just what is in the templates."""
+    out_dir, filename = {
+        "stable": (built_artifacts, "nyxgpt-api.rb"),
+        "rc": (built_rc_artifacts, "nyxgpt-api@9.9.9rc.rb"),
+    }[channel]
+    recipe = _venv_recipe((out_dir / filename).read_text(encoding="utf-8"))
+
+    assert _WITHOUT_PIP in recipe
+    assert _ENSUREPIP_VENV not in recipe
+    # The published formula has to carry the working option order too.
+    assert _PIP_BOOTSTRAP in recipe
+
+
+@pytest.mark.parametrize("name", ["nyxgpt-api", "nyxgpt-web"])
+def test_rc_conflicts_with_the_name_the_stable_channel_actually_publishes(built_rc_artifacts, name):
+    """The conflict target is derived from the stable channel, never typed.
+
+    A `conflicts_with` naming a formula nothing publishes would warn on every
+    install (#3753's secondary finding) -- so the name it declares has to be
+    the one this same script stamps for the stable channel.
+    """
+    stable = build_homebrew_artifacts.formula_name(name, "stable")
+    formula = (built_rc_artifacts / f"{name}@9.9.9rc.rb").read_text(encoding="utf-8")
+
+    assert f'conflicts_with "{stable}",' in formula
+
+
+def test_an_absent_stable_counterpart_is_documented_as_benign(built_rc_artifacts):
+    """Assessed, not silently left alone: warn-only, kept unconditional."""
+    formula = (built_rc_artifacts / "nyxgpt-api@9.9.9rc.rb").read_text(encoding="utf-8")
+
+    assert "install proceeds" in formula
+    assert "unknown formula" in formula
+
+
+# --- The macOS brew smoke job (#3753) -------------------------------------
+#
+# The brew path was documentation-verified only until this workflow: every
+# formula change shipped unexecuted, which is how an install-breaking recipe
+# reached the owner's machine. macos-15 runners ship Homebrew, so the install
+# is testable for real.
+
+
+def _macos_smoke_workflow() -> dict:
+    import yaml
+
+    path = REPO_ROOT / ".github" / "workflows" / "macos-brew-smoke.yml"
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def _job_run_script(job: dict) -> str:
+    return "\n".join(str(step.get("run", "")) for step in job["steps"])
+
+
+@pytest.mark.parametrize("job_name", ["keg-install", "published-tap"])
+def test_brew_smoke_runs_on_a_real_macos_runner(job_name):
+    job = _macos_smoke_workflow()["jobs"][job_name]
+
+    assert str(job["runs-on"]).startswith("macos")
+
+
+def test_brew_smoke_installs_the_working_trees_own_recipe():
+    """Catches a broken recipe on the PR that writes it, before any publish."""
+    script = _job_run_script(_macos_smoke_workflow()["jobs"]["keg-install"])
+
+    assert "scripts/build_homebrew_artifacts.py" in script
+    assert "brew install" in script
+
+
+def test_brew_smoke_verifies_the_pip_ensurepip_used_to_provide():
+    """A green `brew install` is not enough -- the venv has to have a pip."""
+    script = _job_run_script(_macos_smoke_workflow()["jobs"]["keg-install"])
+
+    assert '"$VENV/bin/pip" --version' in script
+    assert "import nyxgpt.app" in script
+    assert '"$VENV/bin/nyxgpt" --version' in script
+
+
+def test_brew_smoke_installs_the_published_candidate_the_way_the_owner_does():
+    script = _job_run_script(_macos_smoke_workflow()["jobs"]["published-tap"])
+
+    assert "brew tap" in script
+    assert "brew install" in script
+
+
+def test_brew_smoke_pr_trigger_covers_what_can_break_the_recipe():
+    """macOS runners are expensive: paths-filtered, but not past the point."""
+    paths = _macos_smoke_workflow()[True]["pull_request"]["paths"]
+
+    assert "homebrew/**" in paths
+    assert "scripts/build_homebrew_artifacts.py" in paths
+
+
+def test_every_rc_cut_smoke_installs_the_candidate_it_published():
+    """The owner's failing path, run on the candidate before the owner does."""
+    import yaml
+
+    path = REPO_ROOT / ".github" / "workflows" / "release-publish-pypi.yml"
+    job = yaml.safe_load(path.read_text(encoding="utf-8"))["jobs"]["macos-brew-smoke"]
+
+    assert job["uses"] == "./.github/workflows/macos-brew-smoke.yml"
+    # After the tap push: it installs what was published, so it cannot gate it.
+    assert "homebrew-tap-rc" in job["needs"]
+    assert job["with"]["formula_version"] == "${{ needs.publish.outputs.version }}"
+
+
+def test_an_rc_cut_smokes_the_published_tap_and_not_the_checkout():
+    """`github.event_name` cannot express this, so an input has to.
+
+    Inside a called workflow `github.event_name` reports the *caller's* event
+    (`workflow_dispatch`), never `workflow_call` -- gating the checkout-build
+    job on it would silently run a second macOS runner on every rc cut, for a
+    recipe the tap job already published.
+    """
+    workflow = _macos_smoke_workflow()
+    condition = str(workflow["jobs"]["keg-install"]["if"])
+
+    assert "github.event_name != 'workflow_call'" not in condition
+    assert "inputs.run_keg_install" in condition
+    # The caller omits it, so the workflow_call default is what skips the job.
+    assert workflow[True]["workflow_call"]["inputs"]["run_keg_install"]["default"] is False

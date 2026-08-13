@@ -698,7 +698,10 @@ EC2 Mac has no CI coverage -- GitHub Actions has no macOS EC2 runner, and
 Apple's licensing does not permit running macOS in a container -- so the
 macOS support matrix above is documentation-verified, not CI-verified (the
 acceptance criteria call for CI coverage "where feasible (Linux at
-minimum)"). One consequence worth an owner/manual verification pass on a
+minimum)"). This is about EC2 Mac specifically, not about macOS as such:
+plain Homebrew installs *are* CI-verified on hosted macOS runners by
+[`macos-brew-smoke.yml`](../.github/workflows/macos-brew-smoke.yml), which is
+what covers `brew install nyxgpt-api` on a real Mac. One consequence worth an owner/manual verification pass on a
 real `mac*.metal` instance: the macOS script's `brew services start` calls
 depend on a launchd session for the login user, the launchd analogue of the
 systemd session the Linux script sets up explicitly. EC2 Mac's default

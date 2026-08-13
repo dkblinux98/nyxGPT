@@ -7,6 +7,7 @@ import pytest
 
 from nyxgpt import sessions
 from nyxgpt.cli import cli
+from nyxgpt.version import running_version
 
 pytestmark = pytest.mark.unit
 
@@ -3783,3 +3784,35 @@ def test_cli_canary_dispatch_mints_correlation_id(monkeypatch: pytest.MonkeyPatc
 
     assert exit_code == 0
     assert os.environ.get("NYXGPT_CORRELATION_ID")
+
+
+def test_cli_version_flag_prints_running_version(capsys: pytest.CaptureFixture[str]) -> None:
+    """`nyxgpt --version` must exit 0 and print the installed version.
+
+    Step 1 of the owner acceptance sequence and the macOS brew smoke job both
+    run this on a machine with no checkout; it exited 2 with "unrecognized
+    arguments" until #3753.
+    """
+    with pytest.raises(SystemExit) as excinfo:
+        cli(["--version"])
+
+    assert excinfo.value.code == 0
+    assert capsys.readouterr().out.strip() == f"nyxgpt {running_version()}"
+
+
+def test_cli_version_is_read_from_package_metadata_not_a_literal(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The printed version must track the installed distribution.
+
+    Pins the wiring, not a value: a hardcoded string would keep the test above
+    green while drifting from the released artifact (the #3716 failure mode).
+    """
+    from nyxgpt import cli as cli_module
+
+    monkeypatch.setattr(cli_module, "running_version", lambda: "9.9.9-from-metadata")
+
+    with pytest.raises(SystemExit):
+        cli(["--version"])
+
+    assert capsys.readouterr().out.strip() == "nyxgpt 9.9.9-from-metadata"
