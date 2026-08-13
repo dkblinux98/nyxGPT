@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
+import os
 import subprocess
 import sys
 import tarfile
@@ -540,3 +542,179 @@ def test_backfill_is_a_parameter_of_the_existing_job_not_a_second_workflow():
     assert "if" not in jobs["homebrew-tap"]
     for job in ("container-images", "artifact-install-smoke", "ec2-linux-user-data-smoke"):
         assert jobs[job]["if"] == "${{ !inputs.tap_only }}"
+
+
+# --- The script's dependency surface (#3741) ------------------------------
+#
+# The first live rc cut published 3.0.0rc1 to PyPI and then lost the tap:
+# `homebrew-tap-rc` checks the repo out, sets Python up and runs this script
+# with no `pip install` step at all, and the script imported `nyxgpt.ops` --
+# which imports httpx (and pynacl, and the metrics/tracing stack) at module
+# level. `ModuleNotFoundError: No module named 'httpx'`, after the candidate
+# was already immutable on PyPI.
+#
+# The fix was the import boundary rather than a longer install step (the
+# builder now lives in the stdlib-only `nyxgpt.release_tarball`), so what
+# these tests pin is the *pairing*: whatever the script imports, the jobs
+# that run it must provide. Both halves are checked -- what the script needs,
+# and what the jobs install -- so either side moving alone fails here instead
+# of mid-release.
+
+
+def _third_party_imports() -> list[str]:
+    """Top-level non-stdlib packages loading this script pulls in.
+
+    `nyxgpt` itself doesn't count: the jobs check the repo out, and the
+    script puts `src/` on `sys.path` -- but anything else has to come from
+    an install step the tap jobs don't have.
+    """
+    probe = f"""
+import importlib.util, json, sys
+baseline = set(sys.modules)
+spec = importlib.util.spec_from_file_location("bha", {str(SCRIPT)!r})
+module = importlib.util.module_from_spec(spec)
+sys.modules["bha"] = module
+spec.loader.exec_module(module)
+roots = {{name.split(".")[0] for name in set(sys.modules) - baseline}}
+print(json.dumps(sorted(
+    root for root in roots
+    if root not in sys.stdlib_module_names
+    and not root.startswith("_")
+    and root not in ("nyxgpt", "bha")
+)))
+"""
+    cp = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, timeout=60)
+    assert cp.returncode == 0, f"probe failed:\nstdout:\n{cp.stdout}\nstderr:\n{cp.stderr}"
+    return list(json.loads(cp.stdout))
+
+
+def test_build_script_imports_nothing_beyond_the_stdlib():
+    """#3741: what the tap jobs give this script is a checkout and a Python."""
+    assert _third_party_imports() == []
+
+
+def _job_install_commands(job: dict) -> str:
+    return "\n".join(str(step.get("run", "")) for step in job["steps"])
+
+
+def _jobs_running_the_build_script() -> list[tuple[str, str, dict]]:
+    """Every (workflow, job name, job) in .github/workflows that runs the script."""
+    import yaml
+
+    found = []
+    for path in sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml")):
+        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for job_name, job in (workflow.get("jobs") or {}).items():
+            steps = job.get("steps") or []
+            runs = "\n".join(str(step.get("run", "")) for step in steps)
+            if "scripts/build_homebrew_artifacts.py" in runs:
+                found.append((path.name, job_name, job))
+    return found
+
+
+def test_both_tap_jobs_are_still_the_only_callers():
+    """A third caller needs the same dependency check applied to it."""
+    callers = {(workflow, job) for workflow, job, _ in _jobs_running_the_build_script()}
+
+    assert callers == {
+        ("release-artifacts.yml", "homebrew-tap"),
+        ("release-publish-pypi.yml", "homebrew-tap-rc"),
+    }
+
+
+def test_jobs_running_the_build_script_provide_what_it_imports():
+    """The #3741 pairing: the job's setup must cover the script's imports.
+
+    Today the script needs nothing installed, so a bare checkout plus
+    `setup-python` is a complete setup and neither job has an install step.
+    Add a third-party import anywhere in the script's closure without adding
+    an install step to both jobs and this fails -- which is the failure the
+    rc cut discovered by publishing to PyPI first.
+    """
+    needed = _third_party_imports()
+
+    for workflow, job_name, job in _jobs_running_the_build_script():
+        installs = _job_install_commands(job)
+        missing = [package for package in needed if package not in installs]
+        assert not missing, (
+            f"{workflow}:{job_name} runs scripts/build_homebrew_artifacts.py but "
+            f"never installs {', '.join(missing)} -- either add an install step "
+            "to every job that runs it, or keep the script's imports inside the "
+            "stdlib-only nyxgpt.release_tarball boundary (#3741)"
+        )
+        # The script vendors `src/nyxgpt/` and reaches `nyxgpt` through it, so
+        # a checkout is the one thing the setup can never drop.
+        assert any(
+            "actions/checkout" in str(step.get("uses", "")) for step in job["steps"]
+        ), f"{workflow}:{job_name} runs the build script without checking the repo out"
+
+
+def test_build_script_runs_end_to_end_with_third_party_imports_blocked(tmp_path):
+    """The CI condition itself: a Python with no site-packages worth having.
+
+    Blocking rather than trusting the dev venv is the point -- every
+    developer machine has httpx installed, so nothing short of blocking it
+    reproduces what the tap jobs actually run with.
+    """
+    hook_dir = tmp_path / "hook"
+    hook_dir.mkdir()
+    (hook_dir / "sitecustomize.py").write_text(
+        '''"""Refuse every import that isn't stdlib or nyxGPT (test hook)."""
+import sys
+
+
+class _ThirdPartyBlocker:
+    def find_spec(self, fullname, path=None, target=None):
+        root = fullname.split(".")[0]
+        if root in sys.stdlib_module_names or root in ("nyxgpt", "sitecustomize"):
+            return None
+        raise ModuleNotFoundError(f"blocked third-party import: {fullname}")
+
+
+sys.meta_path.insert(0, _ThirdPartyBlocker())
+''',
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "out"
+
+    cp = subprocess.run(
+        [sys.executable, str(SCRIPT), "9.9.9rc1", str(out_dir), BASE_URL, "--channel", "rc"],
+        capture_output=True,
+        text=True,
+        timeout=180,
+        env={**os.environ, "PYTHONPATH": str(hook_dir)},
+    )
+
+    assert cp.returncode == 0, f"script failed:\nstdout:\n{cp.stdout}\nstderr:\n{cp.stderr}"
+    assert "ModuleNotFoundError" not in cp.stderr
+    assert (out_dir / "nyxgpt-api@9.9.9rc.rb").is_file()
+    assert (out_dir / "nyxgpt-web@9.9.9rc.rb").is_file()
+    assert (out_dir / "dist" / "nyxgpt-api-9.9.9rc1.tar.gz").is_file()
+    assert (out_dir / "dist" / "nyxgpt-web-9.9.9rc1.tar.gz").is_file()
+
+
+def test_the_blocker_hook_would_have_caught_the_original_failure(tmp_path):
+    """Guard the guard: a blocked import must actually fail the run."""
+    hook_dir = tmp_path / "hook"
+    hook_dir.mkdir()
+    (hook_dir / "sitecustomize.py").write_text(
+        "import sys\n\n\n"
+        "class _Blocker:\n"
+        "    def find_spec(self, fullname, path=None, target=None):\n"
+        "        if fullname.split('.')[0] == 'httpx':\n"
+        "            raise ModuleNotFoundError('blocked third-party import: httpx')\n"
+        "        return None\n\n\n"
+        "sys.meta_path.insert(0, _Blocker())\n",
+        encoding="utf-8",
+    )
+
+    cp = subprocess.run(
+        [sys.executable, "-c", "import httpx"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env={**os.environ, "PYTHONPATH": str(hook_dir)},
+    )
+
+    assert cp.returncode != 0
+    assert "blocked third-party import: httpx" in cp.stderr

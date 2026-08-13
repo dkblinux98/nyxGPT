@@ -91,13 +91,24 @@ The job therefore takes **two checkouts** rather than one:
 
 | Tree | Comes from | Provides |
 | --- | --- | --- |
-| workspace root | the ref the run started on (release commit, or the branch a backfill is dispatched from) | the release tooling: build script, formula templates, `nyxgpt.ops` |
+| workspace root | the ref the run started on (release commit, or the branch a backfill is dispatched from) | the release tooling: build script, formula templates, `nyxgpt.release_tarball` |
 | `release-source/` | the target tag | the service source the tarballs vendor |
 
 `scripts/build_homebrew_artifacts.py ... --source-root release-source` is
 what joins them, so the published tarballs are the tag's real code while the
 formulas are stamped from templates that tag never contained. For a normal
 release the two checkouts are the same commit and nothing changes.
+
+Both tap jobs (this one and the rc channel's `homebrew-tap-rc`) run the
+script with **no `pip install` step**: a checkout and `setup-python` are the
+whole setup. That is only true because the script imports the tarball
+builder from `nyxgpt.release_tarball`, which is stdlib-only by design -- it
+was split out of `nyxgpt.ops` after importing that module dragged in
+`httpx`/`pynacl` and killed the rc tap job with a `ModuleNotFoundError`
+*after* the candidate had already been published to PyPI (#3741). Adding a
+third-party import to that module's closure means adding an install step to
+every job that runs the script; `tests/unit/test_build_homebrew_artifacts.py`
+fails if the two ever disagree.
 
 To backfill a release, dispatch **Release Artifacts** from a branch that has
 the tooling (e.g. the active release branch):
