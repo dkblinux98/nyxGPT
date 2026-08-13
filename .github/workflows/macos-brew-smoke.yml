@@ -40,6 +40,10 @@ on:
         description: 'Also install nyxgpt-web (adds a full Next.js build)'
         type: boolean
         default: false
+      run_keg_install:
+        description: "Also install this checkout's own formulas"
+        type: boolean
+        default: true
   workflow_call:
     inputs:
       formula_version:
@@ -47,6 +51,11 @@ on:
         required: false
         type: string
         default: ''
+      run_keg_install:
+        description: "Also install the calling ref's own formulas (off by default)"
+        required: false
+        type: boolean
+        default: false
 
 # Read-only: both jobs only check the repo out and drive brew locally.
 permissions:
@@ -55,9 +64,12 @@ permissions:
 jobs:
   keg-install:
     name: Install the working tree's formulas
-    # PRs and dispatch build from the checkout; a workflow_call from the rc
-    # publish path is only interested in the published tap.
-    if: github.event_name != 'workflow_call'
+    # PRs and dispatch build from the checkout. An rc cut calls this workflow
+    # for the published-tap job only, and gets this one skipped by the
+    # `run_keg_install` default -- deliberately NOT gated on
+    # `github.event_name`, which inside a called workflow reports the
+    # *caller's* event (`workflow_dispatch`), never `workflow_call`.
+    if: ${{ github.event_name == 'pull_request' || inputs.run_keg_install }}
     runs-on: macos-15
     timeout-minutes: 60
     steps:
@@ -112,8 +124,10 @@ jobs:
       - name: Install nyxgpt-api from the local tap
         run: |
           set -euo pipefail
-          # Not `set -o pipefail`-hostile: the log is what a maintainer reads
-          # when the venv step fails, so keep it verbose.
+          # `pipefail` is what makes the `tail` safe: a failing `brew install`
+          # still fails the step rather than being masked by tail's exit 0.
+          # The trimmed tail is the readable part; the full Homebrew log is
+          # dumped by the on-failure step below.
           brew install --verbose nyxgpt/brew-smoke/nyxgpt-api@3.0.0rc 2>&1 | tail -80
 
       - name: Verify the keg venv was really built

@@ -914,3 +914,20 @@ def test_every_rc_cut_smoke_installs_the_candidate_it_published():
     # After the tap push: it installs what was published, so it cannot gate it.
     assert "homebrew-tap-rc" in job["needs"]
     assert job["with"]["formula_version"] == "${{ needs.publish.outputs.version }}"
+
+
+def test_an_rc_cut_smokes_the_published_tap_and_not_the_checkout():
+    """`github.event_name` cannot express this, so an input has to.
+
+    Inside a called workflow `github.event_name` reports the *caller's* event
+    (`workflow_dispatch`), never `workflow_call` -- gating the checkout-build
+    job on it would silently run a second macOS runner on every rc cut, for a
+    recipe the tap job already published.
+    """
+    workflow = _macos_smoke_workflow()
+    condition = str(workflow["jobs"]["keg-install"]["if"])
+
+    assert "github.event_name != 'workflow_call'" not in condition
+    assert "inputs.run_keg_install" in condition
+    # The caller omits it, so the workflow_call default is what skips the job.
+    assert workflow[True]["workflow_call"]["inputs"]["run_keg_install"]["default"] is False
