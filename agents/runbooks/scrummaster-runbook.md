@@ -98,9 +98,17 @@ exactly one `## Huddle Decision` comment choosing:
   `sprint_autopilot_kick`, the same primitives the 3-cycle breaker uses)
   rather than deferring it to a later step.
 
-The decision is advisory text the next fix cycle
-(`developer_auto_implement.yml`) reads and executes -- mediation does not
-dispatch the fix itself.
+The decision's content is advisory text the next fix cycle
+(`developer_auto_implement.yml`) reads and executes; mediation does not
+dispatch that fix itself. **Starting it is not left to chance, though
+(#3736):** `huddle_decision_dispatch.yml` reacts to the decision comment and,
+for proceed / change-approach / descope, puts the issue back to In Progress
+and hands it to the developer agent. Before that workflow existed the
+decision just sat there -- on PR #3733 the thing that eventually moved was
+the 3-cycle escalation firing six minutes after a "proceed", parking the
+issue on the owner. Post exactly one decision comment; a duplicated or
+re-posted decision is ignored by the dispatcher (only the round's first
+decision runs, and only once).
 
 ## Triggering the workflow
 

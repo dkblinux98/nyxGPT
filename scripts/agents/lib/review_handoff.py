@@ -20,6 +20,11 @@ the same split `sprint_calc.py` uses for the sprint math.
 Routing itself is NOT re-implemented here: `huddle_routing_decision` is
 imported from `sprint_calc.py` so the backstop and the primary workflow can
 never disagree about whether a round loops, huddles, or escalates (#3687).
+
+Since #3736 the *primary* workflow calls `plan_round` here too, for the same
+reason: the huddle-state deferral (don't escalate a round a huddle already
+resolved, don't trigger a second huddle for one round) has to be the same
+decision on both paths, or the race it exists to remove simply moves.
 """
 
 from __future__ import annotations
@@ -31,13 +36,21 @@ import sys
 from pathlib import Path
 from typing import Any
 
-_SPRINT_CALC_PATH = Path(__file__).resolve().parent / "sprint_calc.py"
-_spec = importlib.util.spec_from_file_location("_review_handoff_sprint_calc", _SPRINT_CALC_PATH)
-if _spec is None or _spec.loader is None:  # pragma: no cover - defensive
-    raise ImportError(f"cannot load sprint_calc from {_SPRINT_CALC_PATH}")
-sprint_calc = importlib.util.module_from_spec(_spec)
-sys.modules[_spec.name] = sprint_calc
-_spec.loader.exec_module(sprint_calc)
+
+def _load_sibling(name: str) -> Any:
+    """Import a sibling lib module by path (these are scripts, not a package)."""
+    path = Path(__file__).resolve().parent / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(f"_review_handoff_{name}", path)
+    if spec is None or spec.loader is None:  # pragma: no cover - defensive
+        raise ImportError(f"cannot load {name} from {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+sprint_calc = _load_sibling("sprint_calc")
+huddle_state = _load_sibling("huddle_state")
 
 huddle_routing_decision = sprint_calc.huddle_routing_decision
 
@@ -188,6 +201,106 @@ def disagreement_type(
     return "a"
 
 
+def effective_request_changes_count(
+    reviews: list[dict[str, Any]],
+    comments: list[dict[str, Any]],
+    review_agent: str,
+) -> int:
+    """REQUEST_CHANGES reviews that count toward the 3-cycle breaker (#3736).
+
+    A huddle decision of proceed / change-approach / descope *re-arms* the
+    fix cycle: the disagreement was resolved by the huddle, so the rounds
+    that led to it are history, not evidence that the loop is stuck.
+    Reviews submitted after the decision are the only ones counted. Without
+    this, a huddle that concluded "proceed" was followed straight into the
+    cycle-limit escalation it had just argued against (PR #3733).
+
+    With no resumable decision on the PR this is the plain cumulative count,
+    identical to `request_changes_count`.
+    """
+    decision = huddle_state.latest_decision(comments)
+    if not decision or decision["decision"] not in huddle_state.RESUMABLE_DECISIONS:
+        return request_changes_count(reviews, review_agent)
+
+    since = str(decision["created_at"])
+    return sum(
+        1
+        for r in reviews
+        if _login(r) == review_agent
+        and str(r.get("state", "")).upper() == "CHANGES_REQUESTED"
+        and str(r.get("submitted_at") or "") > since
+    )
+
+
+def plan_round(
+    reviews: list[dict[str, Any]],
+    comments: list[dict[str, Any]],
+    review_agent: str,
+    review_body: str = "",
+) -> dict[str, Any]:
+    """Route the current REQUEST_CHANGES round, deferring to the huddle (#3736).
+
+    This is `huddle_routing_decision` plus the state of the huddle that the
+    counter alone cannot see:
+
+    - **huddle pending** (a `HUDDLE_TRIGGERED` this round with no decision
+      yet): nothing happens. Not another trigger, not an escalation -- the
+      huddle owns the round until it decides. This is also what deduplicates
+      the trigger, since the second run of the same verdict sees the first
+      run's marker.
+    - **huddle escalated**: the mediation run already handed the issue to
+      the owner with the standard primitives; a second escalation here would
+      only spam the thread.
+    - **huddle resumed** (proceed / change-approach / descope): the cycle
+      counter is re-armed (`effective_request_changes_count`) and the round
+      routes as an ordinary fix cycle. A round that has already huddled
+      never huddles twice -- including type (b), which otherwise huddles
+      unconditionally.
+
+    `action` is one of "none" / "return_to_developer" / "huddle" /
+    "escalate"; `route` carries the finer-grained reason.
+    """
+    status = huddle_state.huddle_status(comments)
+    count = request_changes_count(reviews, review_agent)
+    effective = effective_request_changes_count(reviews, comments, review_agent)
+    dtype = disagreement_type(comments, review_body)
+
+    plan: dict[str, Any] = {
+        "disagreement_type": dtype,
+        "request_changes_count": count,
+        "effective_count": effective,
+        "loop_number": effective + 1,
+        "huddle_decision": status["decision"],
+        "huddle_pending": status["pending"],
+    }
+
+    if status["pending"]:
+        plan.update(action="none", route="defer_huddle_pending", reason="huddle-pending")
+        return plan
+
+    if status["escalated"]:
+        plan.update(action="none", route="defer_huddle_escalated", reason="huddle-escalated")
+        return plan
+
+    route = huddle_routing_decision(dtype, effective)
+    if route == "huddle" and status["triggered"]:
+        # This round already huddled and got its answer -- run the fix cycle
+        # the decision called for instead of huddling about it again.
+        route = "normal"
+
+    plan["route"] = route
+    if route == "escalate_spec_ambiguity":
+        plan.update(action="escalate", escalate_reason="spec_ambiguity")
+    elif route == "escalate_cycle_limit":
+        plan.update(action="escalate", escalate_reason="cycle_limit")
+    elif route == "huddle":
+        plan.update(action="huddle")
+    else:
+        plan.update(action="return_to_developer")
+
+    return plan
+
+
 def plan_handoff(
     reviews: list[dict[str, Any]],
     comments: list[dict[str, Any]],
@@ -207,6 +320,9 @@ def plan_handoff(
     - "huddle": post the huddle trigger instead of another blind fix cycle.
     - "escalate": hand to the human owner; `escalate_reason` is
       "spec_ambiguity" or "cycle_limit".
+
+    Routing (including the #3736 huddle-state deferral) comes from
+    `plan_round`, shared with the primary workflow.
     """
     verdict = latest_verdict(reviews, review_agent)
     if verdict is None:
@@ -219,34 +335,16 @@ def plan_handoff(
     if handoff_recorded(comments, submitted_at):
         return {"action": "none", "reason": "handoff-already-recorded"}
 
-    count = request_changes_count(reviews, review_agent)
-    dtype = disagreement_type(comments, str(verdict.get("body") or ""))
-    route = huddle_routing_decision(dtype, count)
-
-    plan: dict[str, Any] = {
-        "disagreement_type": dtype,
-        "request_changes_count": count,
-        "loop_number": count + 1,
-        "route": route,
-    }
-
-    if route == "escalate_spec_ambiguity":
-        plan.update(action="escalate", escalate_reason="spec_ambiguity")
-    elif route == "escalate_cycle_limit":
-        plan.update(action="escalate", escalate_reason="cycle_limit")
-    elif route == "huddle":
-        plan.update(action="huddle")
-    else:
-        plan.update(action="return_to_developer")
-
-    return plan
+    return plan_round(reviews, comments, review_agent, str(verdict.get("body") or ""))
 
 
 def _shell_lines(plan: dict[str, Any]) -> str:
     """Render a plan as `key=value` lines for `eval` in the bash caller.
 
-    Values are constrained by construction (enum-ish strings and ints), so
-    no quoting/escaping is needed or done.
+    Values are constrained by construction (enum-ish strings, ints and
+    bools), so no quoting/escaping is needed or done. Bools render as
+    true/false: the caller writes these straight into `$GITHUB_OUTPUT`,
+    where step conditions compare against those spellings.
     """
     keys = (
         "action",
@@ -255,24 +353,50 @@ def _shell_lines(plan: dict[str, Any]) -> str:
         "escalate_reason",
         "disagreement_type",
         "request_changes_count",
+        "effective_count",
         "loop_number",
+        "huddle_decision",
+        "huddle_pending",
     )
-    return "\n".join(f"{key}={plan.get(key, '')}" for key in keys)
+    rendered = []
+    for key in keys:
+        value = plan.get(key, "")
+        if isinstance(value, bool):
+            value = "true" if value else "false"
+        rendered.append(f"{key}={value}")
+    return "\n".join(rendered)
 
 
 def _main(argv: list[str]) -> int:
-    if len(argv) != 2 or argv[0] != "plan":
-        print("usage: review_handoff.py plan <review_agent>  # PR JSON on stdin", file=sys.stderr)
+    usage = (
+        "usage: review_handoff.py <plan|plan-round> <review_agent>  # PR JSON on stdin\n"
+        "       review_handoff.py handoff-recorded <since>          # PR JSON on stdin"
+    )
+    if len(argv) != 2 or argv[0] not in ("plan", "plan-round", "handoff-recorded"):
+        print(usage, file=sys.stderr)
         return 2
 
     payload = json.loads(sys.stdin.read())
-    plan = plan_handoff(
-        payload.get("reviews") or [],
-        payload.get("comments") or [],
-        argv[1],
-    )
-    print(_shell_lines(plan))
-    return 0
+    reviews = payload.get("reviews") or []
+    comments = payload.get("comments") or []
+
+    if argv[0] == "plan":
+        print(_shell_lines(plan_handoff(reviews, comments, argv[1])))
+        return 0
+    if argv[0] == "plan-round":
+        print(_shell_lines(plan_round(reviews, comments, argv[1])))
+        return 0
+    if argv[0] == "handoff-recorded":
+        # Used by review_agent_auto_review.yml's structured-comment fallback
+        # to detect that the pull_request_review path already executed this
+        # verdict. Sharing HANDOFF_MARKERS with the backstop is the fix for
+        # the fallback missing HUDDLE_TRIGGERED entirely and posting a
+        # second huddle trigger (#3736, PR #3728).
+        print("true" if handoff_recorded(comments, argv[1]) else "false")
+        return 0
+
+    print(usage, file=sys.stderr)
+    return 2
 
 
 if __name__ == "__main__":

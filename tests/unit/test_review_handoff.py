@@ -40,8 +40,13 @@ def _review(state, submitted_at, login=AGENT, body=""):
     }
 
 
-def _comment(created_at, body):
-    return {"created_at": created_at, "body": body}
+def _comment(created_at, body, comment_id=0):
+    return {"created_at": created_at, "body": body, "id": comment_id}
+
+
+def _structured(created_at, dtype="a", comment_id=0):
+    body = f'<!-- nyxgpt-structured-review: {{"disagreement_type":"{dtype}"}} -->'
+    return _comment(created_at, body, comment_id)
 
 
 class TestLatestVerdict:
@@ -273,6 +278,126 @@ class TestPlanHandoff:
         assert plan["escalate_reason"] == "cycle_limit"
 
 
+class TestHuddleRaceRegressions:
+    """The two incident shapes from #3736, as routing decisions.
+
+    (i)  PR #3728, 2026-08-11 -- the huddle trigger fired twice for one
+         round, spawning two developer-position runs and two mediations.
+    (ii) PR #3733, 2026-08-12 -- a "proceed" huddle decision was followed
+         six minutes later by the 3-cycle escalation, which parked the
+         issue on the owner and stalled the pipeline.
+    """
+
+    def test_double_trigger_in_one_round_yields_a_single_huddle(self):
+        # Incident (i): the second run of the same verdict must find the
+        # first run's marker and do nothing -- no second HUDDLE_TRIGGERED.
+        reviews = [
+            _review("CHANGES_REQUESTED", "2026-08-11T17:00:00Z"),
+            _review("CHANGES_REQUESTED", "2026-08-11T18:05:00Z"),
+        ]
+        comments = [
+            _structured("2026-08-11T18:06:00Z", "a", 100),
+            _comment("2026-08-11T18:07:20Z", "🤝 Huddle triggered\n\nHUDDLE_TRIGGERED", 501),
+        ]
+        plan = review_handoff.plan_round(reviews, comments, AGENT)
+        assert plan["action"] == "none"
+        assert plan["route"] == "defer_huddle_pending"
+        assert plan["huddle_pending"] is True
+
+    def test_first_run_of_that_round_still_triggers_the_huddle(self):
+        # Same round, before any trigger exists: the huddle must fire once.
+        reviews = [
+            _review("CHANGES_REQUESTED", "2026-08-11T17:00:00Z"),
+            _review("CHANGES_REQUESTED", "2026-08-11T18:05:00Z"),
+        ]
+        comments = [_structured("2026-08-11T18:06:00Z", "a", 100)]
+        assert review_handoff.plan_round(reviews, comments, AGENT)["action"] == "huddle"
+
+    def test_huddle_decision_suppresses_escalation_and_restarts_the_fix_cycle(self):
+        # Incident (ii): three REQUEST_CHANGES rounds -- the raw count that
+        # tripped the 3-cycle breaker -- but the huddle decided "proceed"
+        # after them, so the counter is re-armed and the round hands back to
+        # the developer instead of spending an owner turn.
+        reviews = [
+            _review("CHANGES_REQUESTED", "2026-08-12T18:00:00Z"),
+            _review("CHANGES_REQUESTED", "2026-08-12T18:30:00Z"),
+            _review("CHANGES_REQUESTED", "2026-08-12T18:55:00Z"),
+        ]
+        comments = [
+            _structured("2026-08-12T18:56:00Z", "a", 100),
+            _comment("2026-08-12T18:57:00Z", "HUDDLE_TRIGGERED", 501),
+            _comment("2026-08-12T19:04:00Z", "## Huddle Decision\n\nHUDDLE_DECISION: proceed", 601),
+        ]
+        plan = review_handoff.plan_round(reviews, comments, AGENT)
+        assert plan["action"] == "return_to_developer"
+        assert plan["route"] == "normal"
+        assert plan["request_changes_count"] == 3
+        assert plan["effective_count"] == 0
+        assert plan["huddle_decision"] == "proceed"
+
+    def test_change_approach_decision_also_rearms_the_counter(self):
+        reviews = [_review("CHANGES_REQUESTED", f"2026-08-12T1{n}:00:00Z") for n in range(1, 4)]
+        comments = [
+            _structured("2026-08-12T14:00:00Z", "a", 100),
+            _comment("2026-08-12T14:01:00Z", "HUDDLE_TRIGGERED", 501),
+            _comment("2026-08-12T14:10:00Z", "HUDDLE_DECISION: change-approach", 601),
+        ]
+        plan = review_handoff.plan_round(reviews, comments, AGENT)
+        assert plan["action"] == "return_to_developer"
+        assert plan["effective_count"] == 0
+
+    def test_cycles_after_a_decision_count_again_toward_the_breaker(self):
+        # Re-arming is not amnesty: three fresh failed rounds after the
+        # huddle still escalate.
+        reviews = [
+            _review("CHANGES_REQUESTED", "2026-08-12T18:00:00Z"),
+            _review("CHANGES_REQUESTED", "2026-08-12T20:00:00Z"),
+            _review("CHANGES_REQUESTED", "2026-08-12T21:00:00Z"),
+            _review("CHANGES_REQUESTED", "2026-08-12T22:00:00Z"),
+        ]
+        comments = [
+            _comment("2026-08-12T18:10:00Z", "HUDDLE_TRIGGERED", 501),
+            _comment("2026-08-12T19:04:00Z", "HUDDLE_DECISION: proceed", 601),
+            _structured("2026-08-12T22:01:00Z", "a", 700),
+        ]
+        plan = review_handoff.plan_round(reviews, comments, AGENT)
+        assert plan["action"] == "escalate"
+        assert plan["escalate_reason"] == "cycle_limit"
+        assert plan["effective_count"] == 3
+
+    def test_a_decided_round_never_huddles_twice(self):
+        # Type (b) huddles regardless of count -- but not about a question
+        # this round already answered.
+        reviews = [_review("CHANGES_REQUESTED", "2026-08-12T18:00:00Z")]
+        comments = [
+            _structured("2026-08-12T18:01:00Z", "b", 100),
+            _comment("2026-08-12T18:02:00Z", "HUDDLE_TRIGGERED", 501),
+            _comment("2026-08-12T18:30:00Z", "HUDDLE_DECISION: descope", 601),
+        ]
+        plan = review_handoff.plan_round(reviews, comments, AGENT)
+        assert plan["action"] == "return_to_developer"
+
+    def test_huddle_escalation_is_not_escalated_again(self):
+        # The mediation run performs the escalation itself; the review path
+        # must not add a second one.
+        reviews = [_review("CHANGES_REQUESTED", f"2026-08-12T0{n}:00:00Z") for n in range(1, 4)]
+        comments = [
+            _structured("2026-08-12T04:00:00Z", "a", 100),
+            _comment("2026-08-12T04:01:00Z", "HUDDLE_TRIGGERED", 501),
+            _comment("2026-08-12T04:30:00Z", "HUDDLE_DECISION: escalate", 601),
+        ]
+        plan = review_handoff.plan_round(reviews, comments, AGENT)
+        assert plan["action"] == "none"
+        assert plan["route"] == "defer_huddle_escalated"
+
+    def test_a_thread_with_no_huddle_routes_exactly_as_before(self):
+        reviews = [_review("CHANGES_REQUESTED", f"2026-08-12T0{n}:00:00Z") for n in range(1, 4)]
+        plan = review_handoff.plan_round(reviews, [], AGENT)
+        assert plan["action"] == "escalate"
+        assert plan["escalate_reason"] == "cycle_limit"
+        assert plan["effective_count"] == plan["request_changes_count"] == 3
+
+
 class TestCli:
     def test_plan_emits_eval_ready_key_value_lines(self, monkeypatch, capsys):
         payload = {
@@ -297,12 +422,47 @@ class TestCli:
             "escalate_reason",
             "disagreement_type",
             "request_changes_count",
+            "effective_count",
             "loop_number",
+            "huddle_decision",
+            "huddle_pending",
         }
+        # Booleans render as true/false: the primary workflow writes these
+        # straight into $GITHUB_OUTPUT, where step conditions compare them.
+        assert parsed["huddle_pending"] == "false"
+
+    def test_plan_round_is_callable_from_the_primary_workflow(self, monkeypatch, capsys):
+        payload = {
+            "reviews": [_review("CHANGES_REQUESTED", "2026-08-12T18:00:00Z")],
+            "comments": [
+                _structured("2026-08-12T18:01:00Z", "a", 100),
+                _comment("2026-08-12T18:02:00Z", "HUDDLE_TRIGGERED", 501),
+            ],
+        }
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+
+        assert review_handoff._main(["plan-round", AGENT]) == 0
+
+        parsed = dict(line.split("=", 1) for line in capsys.readouterr().out.strip().splitlines())
+        assert parsed["action"] == "none"
+        assert parsed["huddle_pending"] == "true"
+
+    def test_handoff_recorded_reports_the_huddle_trigger(self, monkeypatch, capsys):
+        # The fallback trigger path's dedupe: a huddle trigger IS a handoff
+        # footprint, which it used to miss entirely (#3736).
+        payload = {
+            "reviews": [],
+            "comments": [_comment("2026-08-11T18:07:20Z", "HUDDLE_TRIGGERED", 501)],
+        }
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+
+        assert review_handoff._main(["handoff-recorded", "2026-08-11T18:05:00Z"]) == 0
+        assert capsys.readouterr().out.strip() == "true"
 
     def test_bad_usage_exits_two(self, capsys):
         assert review_handoff._main([]) == 2
         assert "usage:" in capsys.readouterr().err
+        assert review_handoff._main(["nope", AGENT]) == 2
 
 
 class TestBackstopScript:

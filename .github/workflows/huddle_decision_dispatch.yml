@@ -1,0 +1,177 @@
+name: Huddle Decision Dispatch
+
+# #3736: execute a huddle decision's "what happens next".
+#
+# The #3687 protocol ends with `scrummaster_huddle_mediation.yml` posting a
+# `## Huddle Decision` comment -- and, until now, nothing acting on it. The
+# decision was advisory text that the *next* fix cycle would read, but no
+# machinery started that fix cycle: the issue stayed In Review, assigned to
+# the review agent, waiting for something to happen. On PR #3733 the thing
+# that happened was the 3-cycle escalation firing six minutes after a
+# "proceed" decision, parking the issue on the owner until a manual reset --
+# the mediation had even written that escalating "would spend an owner turn
+# on a small mechanical change nobody disputes".
+#
+# So the decision now dispatches itself: proceed / change-approach / descope
+# hand the issue back to the developer agent exactly as a REQUEST_CHANGES
+# round does (In Progress + assign_and_trigger_developer), and the fix cycle
+# reads the decision from the PR thread as it already does
+# (developer_auto_implement.yml). `escalate` is terminal and left alone --
+# the mediation run performs that escalation itself.
+#
+# Runs under REVIEW_AGENT_TOKEN because `assign_and_trigger_developer` backs
+# the assignment with a RETRY_IMPLEMENTATION comment, and
+# developer_auto_implement.yml honors that comment only from the owner, the
+# dev agent, or the review agent.
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  dispatch:
+    if: >-
+      vars.AGENTS_ENABLED == 'true' &&
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, 'HUDDLE_DECISION:') &&
+      (github.event.comment.user.login == vars.SCRUM_AGENT ||
+       github.event.comment.user.login == vars.HUMAN_OWNER)
+    runs-on: ubuntu-latest
+
+    # One dispatch at a time per PR: a duplicated mediation (the shape this
+    # issue also fixes) must not produce two competing redispatches.
+    concurrency:
+      group: huddle-decision-dispatch-${{ github.event.issue.number }}
+      cancel-in-progress: false
+
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+
+    env:
+      GH_TOKEN: ${{ secrets.REVIEW_AGENT_TOKEN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.RELEASE_BRANCH }}
+          fetch-depth: 0
+
+      - name: Auth gh
+        run: gh auth status
+
+      - name: Write ephemeral config.ini
+        shell: bash
+        run: |
+          set -euo pipefail
+          CFG="$RUNNER_TEMP/nyxgpt-config.ini"
+
+          cat > "$CFG" <<EOF
+          REPO_OWNER=${{ vars.REPO_OWNER }}
+          REPO_NAME=${{ vars.REPO_NAME }}
+          PROJECT_OWNER=${{ vars.PROJECT_OWNER }}
+          PROJECT_NUMBER=${{ vars.PROJECT_NUMBER }}
+
+          DEV_AGENT=${{ vars.DEV_AGENT }}
+          REVIEW_AGENT=${{ vars.REVIEW_AGENT }}
+          SCRUM_AGENT=${{ vars.SCRUM_AGENT }}
+          HUMAN_OWNER=${{ vars.HUMAN_OWNER }}
+
+          STATUS_FIELD=${{ vars.STATUS_FIELD }}
+          STATUS_BACKLOG=${{ vars.STATUS_BACKLOG }}
+          STATUS_IN_PROGRESS=${{ vars.STATUS_IN_PROGRESS }}
+          STATUS_IN_REVIEW=${{ vars.STATUS_IN_REVIEW }}
+          STATUS_FOR_RELEASE=${{ vars.STATUS_FOR_RELEASE }}
+
+          RELEASE_BRANCH=${{ vars.RELEASE_BRANCH }}
+          RELEASE_ISSUE_NUMBER=${{ vars.RELEASE_ISSUE_NUMBER }}
+          SPRINT_AUTOPILOT=${{ vars.SPRINT_AUTOPILOT }}
+          SPRINT_FIELD=${{ vars.SPRINT_FIELD }}
+          EOF
+
+          echo "NYXGPT_CONFIG_FILE=$CFG" >> "$GITHUB_ENV"
+
+      - name: Resolve decision and dedupe
+        id: decide
+        shell: bash
+        env:
+          # Untrusted comment body via env, never interpolated into the
+          # script -- same rule as review_agent_auto_review.yml.
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          PR="${{ github.event.issue.number }}"
+          LIB="$GITHUB_WORKSPACE/scripts/agents/lib/huddle_state.py"
+
+          DECISION=$(printf '%s' "${COMMENT_BODY:-}" | python3 "$LIB" decision)
+          echo "decision=$DECISION" >> "$GITHUB_OUTPUT"
+          echo "Huddle decision: '${DECISION:-<unparsable>}'"
+
+          COMMENTS=$(gh api "repos/${{ github.repository }}/issues/$PR/comments" \
+            --paginate --jq '.[]' | jq -s '{comments: .}')
+
+          # Only the round's first decision comment dispatches, and only if
+          # no dispatch has already happened for it -- so a re-posted or
+          # duplicated decision cannot start two fix cycles.
+          PRIMARY=$(printf '%s' "$COMMENTS" | python3 "$LIB" guard 'HUDDLE_DECISION:' "${{ github.event.comment.id }}")
+          DISPATCHED=$(printf '%s' "$COMMENTS" | python3 "$LIB" status | sed -n 's/^dispatched=//p')
+
+          RUN=false
+          case "$DECISION" in
+            proceed|change-approach|descope)
+              if [[ "$PRIMARY" == "true" && "$DISPATCHED" != "true" ]]; then
+                RUN=true
+              else
+                echo "::notice::Decision already dispatched for this round (primary=$PRIMARY, dispatched=$DISPATCHED) -- standing down"
+              fi
+              ;;
+            escalate)
+              echo "::notice::Huddle escalated -- the mediation run owns that handoff, nothing to dispatch"
+              ;;
+            *)
+              echo "::notice::No parsable decision in this comment -- nothing to dispatch"
+              ;;
+          esac
+          echo "run=$RUN" >> "$GITHUB_OUTPUT"
+
+          ISSUE=$(gh api "repos/${{ github.repository }}/pulls/$PR" --jq '.body // ""' \
+            | sed -n 's/.*Closes #\([0-9]*\).*/\1/p' | head -1)
+          if [[ -z "$ISSUE" && "$RUN" == "true" ]]; then
+            echo "::error::PR #$PR body does not contain 'Closes #N' -- cannot dispatch the huddle decision"
+            exit 1
+          fi
+          echo "issue_number=$ISSUE" >> "$GITHUB_OUTPUT"
+
+      - name: Restart the fix cycle
+        if: steps.decide.outputs.run == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          PR="${{ github.event.issue.number }}"
+          ISSUE="${{ steps.decide.outputs.issue_number }}"
+          DECISION="${{ steps.decide.outputs.decision }}"
+
+          echo "::group::Dispatching huddle decision '$DECISION' for issue #$ISSUE"
+
+          bash -lc "cd '$GITHUB_WORKSPACE' && \
+            source scripts/agents/lib/gh_project.sh && \
+            load_config && \
+            require_gh_auth && \
+            set_issue_status '$ISSUE' \"\$STATUS_IN_PROGRESS\" && \
+            assign_and_trigger_developer '$ISSUE'"
+
+          DEV_AGENT="${{ vars.DEV_AGENT }}"
+          BODY=$(printf '%s\n\n%s\n\n%s\n%s\n%s\n\n%s\n\n%s' \
+            "🔁 **Huddle decision dispatched**: \`${DECISION}\`" \
+            "Issue #${ISSUE} has been returned to **In Progress** and assigned to @${DEV_AGENT} to carry out the huddle decision above." \
+            "**Developer Instructions:**" \
+            "1. Read the \`## Huddle Decision\` comment on this PR -- its \"What happens next\" section is the plan; follow it rather than deciding independently" \
+            "2. Implement, run the tests locally, commit and push -- the PR will be automatically re-reviewed" \
+            "The review-cycle counter is re-armed by this decision (#3736): the rounds that led to the huddle no longer count toward the 3-cycle escalation." \
+            "HUDDLE_DECISION_DISPATCHED")
+          gh pr comment "$PR" --body "$BODY"
+
+          echo "::endgroup::"
+          echo "✓ Huddle decision '$DECISION' dispatched to @${DEV_AGENT} for issue #${ISSUE}"

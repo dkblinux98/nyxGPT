@@ -221,12 +221,21 @@ jobs:
                   echo "::notice::PR #$PR already merged by the pull_request_review path; skipping"
                 fi
               else
+                # Footprint check shared with the dispatch-mode backstop
+                # (lib/review_handoff.py HANDOFF_MARKERS). It must cover the
+                # huddle trigger too: this check used to look only for the
+                # return-to-developer and escalation footprints, so a huddle
+                # round left no footprint here and both paths posted a
+                # HUDDLE_TRIGGERED -- two dev-position runs, two mediations
+                # (#3736, PR #3728 2026-08-11).
                 # --jq runs once per fetched page -- stream matching comments
-                # across all pages first, then slurp+count (see AGENTS.md).
-                HANDLED=$(gh api "repos/${{ github.repository }}/issues/$PR/comments" --paginate --jq \
-                  ".[] | select((.created_at > \"$COMMENT_CREATED\") and ((.body | contains(\"review loop\")) or (.body | contains(\"Escalated after 3 review cycles\"))))" \
-                  | jq -s 'length' || echo 0)
-                if [[ "${HANDLED:-0}" -gt 0 ]]; then
+                # across all pages first, then slurp (see AGENTS.md).
+                COMMENTS_JSON=$(gh api "repos/${{ github.repository }}/issues/$PR/comments" \
+                  --paginate --jq '.[]' | jq -s '.')
+                HANDLED_FLAG=$(jq -n --argjson comments "$COMMENTS_JSON" '{comments: $comments}' \
+                  | python3 "$GITHUB_WORKSPACE/scripts/agents/lib/review_handoff.py" \
+                      handoff-recorded "$COMMENT_CREATED")
+                if [[ "$HANDLED_FLAG" == "true" ]]; then
                   DECISION="ALREADY_HANDLED"
                   echo "::notice::REQUEST_CHANGES for PR #$PR already executed by the pull_request_review path; skipping"
                 fi
@@ -296,53 +305,53 @@ jobs:
           set -euo pipefail
           PR="${{ steps.get_pr.outputs.pr_number }}"
 
-          # Query PR reviews with CHANGES_REQUESTED state from review-agent
-          # Count how many times we've requested changes (excludes APPROVED reviews)
+          # Routing is not computed here: lib/review_handoff.py's plan_round
+          # is the single decision for both this workflow and the
+          # dispatch-mode backstop (review_ensure_handoff.sh), so the two can
+          # never disagree (#3704, #3687). It combines the cumulative
+          # REQUEST_CHANGES count, the a/b/c disagreement classification the
+          # review agent posted in its latest nyxgpt-structured-review
+          # comment, and -- since #3736 -- the state of the huddle:
+          #
+          #   * huddle pending (triggered, no decision yet) -> action "none".
+          #     Nothing fires, which is also what stops a second run of the
+          #     same verdict from posting a duplicate trigger.
+          #   * huddle decided proceed/change-approach/descope -> the cycle
+          #     counter is re-armed, so the round runs the fix cycle the
+          #     decision called for instead of the 3-cycle escalation that
+          #     used to race it (PR #3733, 2026-08-12).
+          #   * huddle escalated -> the mediation already handed off to the
+          #     owner; this path stays quiet.
+          #
+          # Both endpoints are paginated: --jq runs once per fetched page, so
+          # matching objects are streamed first and slurped after (AGENTS.md).
           REVIEW_AGENT="${{ vars.REVIEW_AGENT }}"
-          COUNT=$(gh api "repos/${{ github.repository }}/pulls/$PR/reviews" --jq "
-            [.[] |
-             select(.user.login == \"$REVIEW_AGENT\" and
-                    .state == \"CHANGES_REQUESTED\")] |
-            length
-          ")
+          REVIEWS_JSON=$(gh api "repos/${{ github.repository }}/pulls/$PR/reviews" \
+            --paginate --jq '.[]' | jq -s '.')
+          COMMENTS_JSON=$(gh api "repos/${{ github.repository }}/issues/$PR/comments" \
+            --paginate --jq '.[]' | jq -s '.')
 
-          echo "loop_count=$COUNT" >> "$GITHUB_OUTPUT"
-          echo "Review loop count (REQUEST_CHANGES only): $COUNT"
+          PLAN=$(jq -n --argjson reviews "$REVIEWS_JSON" --argjson comments "$COMMENTS_JSON" \
+            '{reviews: $reviews, comments: $comments}' \
+            | python3 "$GITHUB_WORKSPACE/scripts/agents/lib/review_handoff.py" \
+                plan-round "$REVIEW_AGENT")
+          echo "$PLAN"
 
-          # #3687 huddle protocol: read the disagreement-type classification
-          # (a/b/c) the review agent posted in its most recent
-          # nyxgpt-structured-review comment (claude-code-review.yml's
-          # "Persist structured review output to PR" step). Same
-          # fetch-then-slurp-last pattern as "Check for previous
-          # REQUEST_CHANGES reviews" in claude-code-review.yml -- --jq runs
-          # once per fetched page, so matching bodies are streamed across
-          # pages first, then slurped+last in a second jq pass (see
-          # AGENTS.md). Falls back to "a" (the pre-#3687 default --
-          # verifiable defect, loops as before) on any parse failure, so a
-          # missing/malformed classification degrades to prior behavior
-          # instead of blocking the loop or over-escalating.
-          LATEST_STRUCTURED=$(gh api "repos/${{ github.repository }}/issues/$PR/comments" --paginate --jq '
-            .[] | select(.body | contains("nyxgpt-structured-review"))
-          ' 2>/dev/null | jq -s -r '
-            last | .body // ""
-          ' || echo "")
-          DTYPE=$(echo "$LATEST_STRUCTURED" | grep -o '"disagreement_type":"[abc]"' | head -1 | cut -d'"' -f4 || true)
-          [[ "$DTYPE" == "a" || "$DTYPE" == "b" || "$DTYPE" == "c" ]] || DTYPE="a"
-          echo "disagreement_type=$DTYPE" >> "$GITHUB_OUTPUT"
-          echo "Disagreement type: $DTYPE"
+          action=""; route=""; escalate_reason=""; disagreement_type=""
+          request_changes_count=""; effective_count=""; loop_number=""
+          huddle_decision=""; huddle_pending=""; reason=""
+          eval "$PLAN"
 
-          ROUTE=$(python3 "$GITHUB_WORKSPACE/scripts/agents/lib/sprint_calc.py" huddle-routing "$DTYPE" "$COUNT")
-          echo "Huddle routing decision: $ROUTE (type=$DTYPE, count=$COUNT)"
+          echo "loop_count=$effective_count" >> "$GITHUB_OUTPUT"
+          echo "total_count=$request_changes_count" >> "$GITHUB_OUTPUT"
+          echo "disagreement_type=$disagreement_type" >> "$GITHUB_OUTPUT"
+          echo "huddle_decision=$huddle_decision" >> "$GITHUB_OUTPUT"
+          echo "route=$route" >> "$GITHUB_OUTPUT"
 
-          case "$ROUTE" in
-            escalate_spec_ambiguity)
+          case "$action" in
+            escalate)
               echo "escalate=true" >> "$GITHUB_OUTPUT"
-              echo "escalate_reason=spec_ambiguity" >> "$GITHUB_OUTPUT"
-              echo "huddle=false" >> "$GITHUB_OUTPUT"
-              ;;
-            escalate_cycle_limit)
-              echo "escalate=true" >> "$GITHUB_OUTPUT"
-              echo "escalate_reason=cycle_limit" >> "$GITHUB_OUTPUT"
+              echo "escalate_reason=$escalate_reason" >> "$GITHUB_OUTPUT"
               echo "huddle=false" >> "$GITHUB_OUTPUT"
               ;;
             huddle)
@@ -350,10 +359,18 @@ jobs:
               echo "escalate_reason=" >> "$GITHUB_OUTPUT"
               echo "huddle=true" >> "$GITHUB_OUTPUT"
               ;;
-            *)
+            return_to_developer)
               echo "escalate=false" >> "$GITHUB_OUTPUT"
               echo "escalate_reason=" >> "$GITHUB_OUTPUT"
               echo "huddle=false" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              # "none" -- the huddle owns this round (pending or escalated).
+              echo "escalate=false" >> "$GITHUB_OUTPUT"
+              echo "escalate_reason=" >> "$GITHUB_OUTPUT"
+              echo "huddle=false" >> "$GITHUB_OUTPUT"
+              echo "defer=true" >> "$GITHUB_OUTPUT"
+              echo "::notice::Deferring to the huddle protocol on PR #$PR (route=$route) -- no loop, no escalation"
               ;;
           esac
 
@@ -367,6 +384,23 @@ jobs:
           REASON="${{ steps.count.outputs.escalate_reason }}"
 
           echo "::group::Escalating to human ($REASON)"
+
+          # Escalate at most once per event (#3736). The two trigger paths
+          # (pull_request_review and the structured-comment fallback) raced
+          # on PR #3733 and each ran the whole escalation, so the owner got
+          # two escalation comments per run, twice over. The fallback's own
+          # dedupe is timing-based (it sleeps, then looks for a footprint);
+          # this is the state-based backstop right before the irreversible
+          # part -- if an escalation for this review round is already on the
+          # thread, this run stands down instead of repeating it.
+          ALREADY=$(gh api "repos/${{ github.repository }}/issues/$PR/comments" \
+            --paginate --jq '.[]' | jq -s '{comments: .}' \
+            | python3 "$GITHUB_WORKSPACE/scripts/agents/lib/huddle_state.py" escalation-recorded)
+          if [[ "$ALREADY" == "true" ]]; then
+            echo "::notice::PR #$PR already carries an escalation for this review round -- skipping duplicate escalation"
+            echo "::endgroup::"
+            exit 0
+          fi
 
           # Keep issue in "In Review" status and assign to human owner.
           # Verified + retried (not a bare issue_assign_only call) because
@@ -460,7 +494,7 @@ jobs:
           exit 0
 
       - name: Return to developer (if changes requested and not escalated or huddling)
-        if: steps.parse_decision.outputs.decision == 'REQUEST_CHANGES' && steps.count.outputs.escalate == 'false' && steps.count.outputs.huddle == 'false'
+        if: steps.parse_decision.outputs.decision == 'REQUEST_CHANGES' && steps.count.outputs.escalate == 'false' && steps.count.outputs.huddle == 'false' && steps.count.outputs.defer != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -509,6 +543,23 @@ jobs:
           DEV_AGENT="${{ vars.DEV_AGENT }}"
 
           echo "::group::Triggering huddle for issue #$ISSUE (type $DTYPE)"
+
+          # At most one huddle per review round (#3736). The routing step
+          # already refuses to route a round that has a trigger on it, but
+          # the two trigger paths of this workflow can be minutes apart, so
+          # the state is re-read here, immediately before posting. A trigger
+          # that slips through both checks is still absorbed downstream:
+          # developer_huddle_position.yml and scrummaster_huddle_mediation.yml
+          # act only for the round's *first* marker comment.
+          TRIGGERED=$(gh api "repos/${{ github.repository }}/issues/$PR/comments" \
+            --paginate --jq '.[]' | jq -s '{comments: .}' \
+            | python3 "$GITHUB_WORKSPACE/scripts/agents/lib/huddle_state.py" status \
+            | sed -n 's/^triggered=//p')
+          if [[ "$TRIGGERED" == "true" ]]; then
+            echo "::notice::A huddle is already open for this review round on PR #$PR -- not triggering a second one"
+            echo "::endgroup::"
+            exit 0
+          fi
 
           if [[ "$DTYPE" == "b" ]]; then
             REASON_LINE="This is a **judgment call** (design/approach disagreement) -- those never loop through another blind fix cycle, they go straight to a huddle."
@@ -571,17 +622,19 @@ jobs:
           echo "::endgroup::"
           echo "✓ Issue sent to developer-agent by human override"
 
+      # Merge-only (#3736). This step used to post a second escalation
+      # comment restating the one the escalation step had already posted,
+      # so every escalation arrived as a pair -- and when the two trigger
+      # paths raced, as two pairs (PR #3733, 2026-08-12). The escalation
+      # step's comment is the record; nothing is added by echoing it.
       - name: Post completion comment
-        if: always() && (steps.parse_decision.outputs.decision == 'APPROVE' || steps.count.outputs.escalate == 'true')
+        if: always() && steps.parse_decision.outputs.decision == 'APPROVE'
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.REVIEW_AGENT_TOKEN }}
           script: |
             const pr_number = ${{ steps.get_pr.outputs.pr_number }};
             const decision = '${{ steps.parse_decision.outputs.decision }}';
-            const trigger_type = '${{ steps.parse_decision.outputs.trigger_type }}';
-            const escalate = '${{ steps.count.outputs.escalate }}';
-            const loop_count = '${{ steps.count.outputs.loop_count }}';
 
             let body;
             if (decision === 'APPROVE') {
@@ -602,10 +655,6 @@ jobs:
               }
               body = '✅ **Review Agent**: Code review approved and PR merged.\n\n' +
                      'Changes have been merged to release branch.';
-            } else if (decision === 'REQUEST_CHANGES' && escalate === 'true') {
-              body = '⚠️ **Review Agent**: Escalated after 3 review cycles.\n\n' +
-                     '3 review attempts completed but issues persist. ' +
-                     'Manual intervention required. Assigned to @${{ vars.HUMAN_OWNER }}.';
             }
 
             await github.rest.issues.createComment({

@@ -58,7 +58,28 @@ jobs:
         id: get_pr
         run: echo "pr_number=${{ github.event.issue.number }}" >> "$GITHUB_OUTPUT"
 
+      # #3736: one position run per huddle, whatever the thread looks like.
+      # The review workflow can execute a single verdict twice (the
+      # pull_request_review event and the structured-comment fallback), and
+      # on PR #3728 both posted a HUDDLE_TRIGGERED -- two position runs, two
+      # mediations, the second of which had to diagnose the duplication
+      # itself. The review side now guards against posting the second
+      # trigger; this is the guard that holds even if one still lands: only
+      # the round's *first* trigger comment gets a position.
+      - name: Huddle dedupe guard
+        id: guard
+        run: |
+          set -euo pipefail
+          PRIMARY=$(gh api "repos/${{ github.repository }}/issues/${{ steps.get_pr.outputs.pr_number }}/comments" \
+            --paginate --jq '.[]' | jq -s '{comments: .}' \
+            | python3 scripts/agents/lib/huddle_state.py guard HUDDLE_TRIGGERED "${{ github.event.comment.id }}")
+          echo "primary=$PRIMARY" >> "$GITHUB_OUTPUT"
+          if [[ "$PRIMARY" != "true" ]]; then
+            echo "::notice::Comment ${{ github.event.comment.id }} is a duplicate huddle trigger for this review round -- standing down"
+          fi
+
       - name: Post developer position
+        if: steps.guard.outputs.primary == 'true'
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
