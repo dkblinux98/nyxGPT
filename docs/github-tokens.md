@@ -57,6 +57,7 @@ Configure these in: **Settings → Secrets and variables → Actions → Variabl
 | `SPRINT_FIELD` | `Sprint` | Project iteration field name for sprint scoping/reporting (#3480); optional, defaults to `Sprint` |
 | `STATUS_ACCEPTANCE_TESTING` | `Acceptance Testing` | Post-merge acceptance lane; optional, defaults to the literal name |
 | `STATUS_ACCEPTANCE_FAILED` | `Acceptance Failed` | Drain-gate holding lane (#3730); optional, defaults to the literal name — see `docs/acceptance-drain-gate.md` |
+| `STATUS_CLOSED` | `Closed` | Terminal lane for a merged/closed PR's own project card (#3742); optional, defaults to the literal name — the merge flow, the `pull_request: closed` handler and the daily sweep all stamp it |
 | `DRAIN_GATE_BYPASS_LABELS` | *(empty)* | Comma-separated labels that mark an issue as agent-process work, exempt from the drain gate (#3730); optional |
 
 ### Release ceremony secrets (#3730)

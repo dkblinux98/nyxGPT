@@ -1,0 +1,63 @@
+name: PR Project Status on Close
+
+# Event-driven half of the #3742 PR lane invariant (owner decision
+# 2026-08-12, reaffirmed 2026-08-13): when a PR leaves the review lane —
+# merged OR closed without merging — its own project card moves to the
+# terminal "Closed" status.
+#
+# review_accept_and_merge.sh already stamps the PRs the review agent merges;
+# this covers every other exit path (rejected/abandoned PRs, owner merges,
+# ceremony merges). The stamp is idempotent, so both running is harmless.
+#
+# Deliberately NOT the board's built-in "Pull request merged" automation:
+# that rule is GitHub-proprietary (the agent system must stay portable to
+# non-GitHub deployments), it is not retroactive, and it was enabled while
+# merged PRs kept stranding in "In Review".
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: pr-project-status-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  stamp-closed-lane:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout agent scripts
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.RELEASE_BRANCH }}
+
+      - name: Stamp PR project item -> Closed
+        env:
+          GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          cat > /tmp/nyxgpt-config.ini <<EOF
+          REPO_OWNER=${{ vars.REPO_OWNER }}
+          REPO_NAME=${{ vars.REPO_NAME }}
+          PROJECT_OWNER=${{ vars.PROJECT_OWNER }}
+          PROJECT_NUMBER=${{ vars.PROJECT_NUMBER }}
+
+          DEV_AGENT=${{ vars.DEV_AGENT }}
+          REVIEW_AGENT=${{ vars.REVIEW_AGENT }}
+          SCRUM_AGENT=${{ vars.SCRUM_AGENT }}
+          HUMAN_OWNER=${{ vars.HUMAN_OWNER }}
+
+          STATUS_FIELD=${{ vars.STATUS_FIELD }}
+          STATUS_BACKLOG=${{ vars.STATUS_BACKLOG }}
+          STATUS_IN_PROGRESS=${{ vars.STATUS_IN_PROGRESS }}
+          STATUS_IN_REVIEW=${{ vars.STATUS_IN_REVIEW }}
+          STATUS_FOR_RELEASE=${{ vars.STATUS_FOR_RELEASE }}
+
+          RELEASE_BRANCH=${{ vars.RELEASE_BRANCH }}
+          EOF
+          export NYXGPT_CONFIG_FILE=/tmp/nyxgpt-config.ini
+          bash scripts/agents/pr_close_project_status.sh "$PR_NUMBER"
