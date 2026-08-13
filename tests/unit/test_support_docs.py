@@ -99,10 +99,36 @@ def test_render_link_rewriting_rules():
     # In-page anchors and absolute URLs are left exactly as they are.
     assert support._rewrite_link("#section") == "#section"
     assert support._rewrite_link("https://example.com/x") == "https://example.com/x"
-    # A repo path that only a checkout has becomes the hosted copy.
-    assert support._rewrite_link("../src/nyxgpt/ops.py").startswith(
-        f"{support.ISSUE_REPO_URL}/blob/{support.REPO_DEFAULT_BRANCH}/"
+    # A repo path that only a checkout has becomes the hosted copy. Assert the
+    # *whole* URL: a prefix assertion passes even when the path is mangled.
+    blob = f"{support.ISSUE_REPO_URL}/blob/{support.REPO_DEFAULT_BRANCH}"
+    assert support._rewrite_link("../src/nyxgpt/ops.py") == f"{blob}/src/nyxgpt/ops.py"
+    assert support._rewrite_link("scripts/agents/") == f"{blob}/scripts/agents/"
+    assert support._rewrite_link("../../pyproject.toml") == f"{blob}/pyproject.toml"
+    # A dotfile directory keeps its leading dot: stripping `./` as a character
+    # set (rather than as a prefix) turned `.github` into `github`, a dead
+    # link for the real `docs/portability-matrix.md` reference.
+    assert (
+        support._rewrite_link("../.github/workflows/linux-native-smoke.yml")
+        == f"{blob}/.github/workflows/linux-native-smoke.yml"
     )
+
+
+def test_render_never_drops_a_leading_dot_from_a_repo_path():
+    """Tree-wide: no shipped doc renders a `.github/...` link as `github/...`.
+
+    `docs/portability-matrix.md` links to `../.github/workflows/...`; with a
+    character-set strip that shipped as a dead GitHub URL.
+    """
+    blob = f"{support.ISSUE_REPO_URL}/blob/{support.REPO_DEFAULT_BRANCH}"
+    mangled = []
+    for slug in (doc["slug"] for doc in support.list_documents()):
+        soup = BeautifulSoup(support.render_document(slug)["html"], "html.parser")
+        for anchor in soup.find_all("a"):
+            href = anchor.get("href")
+            if isinstance(href, str) and href.startswith(f"{blob}/github/"):
+                mangled.append(f"{slug}: {href}")
+    assert not mangled, f"dotfile directory mangled in rendered links: {mangled}"
 
 
 def test_rendered_html_carries_no_active_content():

@@ -64,6 +64,12 @@ _RELATIVE_DOC_LINK_RE = re.compile(
     r"^(?!\w+:)(?:\./)?(?P<slug>[A-Za-z0-9][A-Za-z0-9._-]*)\.md(?P<anchor>#.*)?$"
 )
 
+#: Leading `./` / `../` segments on a repo-relative link, stripped as a prefix
+#: before the path is appended to the hosted repo URL. This must not be a
+#: `str.lstrip('./')`: that strips a *character set*, so `../.github/...`
+#: would lose the dot of `.github` and produce a dead link.
+_RELATIVE_PREFIX_RE = re.compile(r"^(?:\.\.?/)+")
+
 #: Rendered docs are injected into the page as HTML. The content is trusted
 #: (it ships in the wheel), but rendering it as active content would turn any
 #: future docs edit into a scripting surface, so strip it unconditionally.
@@ -168,7 +174,8 @@ def _rewrite_link(href: str) -> str:
     # A repo-relative path to something that isn't a packaged doc
     # (`../src/nyxgpt/ops.py`, `scripts/agents/`): only a checkout has it, so
     # point at the hosted copy instead of emitting a dead relative link.
-    return f"{ISSUE_REPO_URL}/blob/{REPO_DEFAULT_BRANCH}/{href.lstrip('./')}"
+    relative = _RELATIVE_PREFIX_RE.sub("", href)
+    return f"{ISSUE_REPO_URL}/blob/{REPO_DEFAULT_BRANCH}/{relative}"
 
 
 def _sanitize(html: str) -> str:

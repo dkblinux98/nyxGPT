@@ -160,6 +160,9 @@ def test_a_support_issue_on_the_board_is_never_selected(tmp_path):
     summary = _summarize(_page([SUPPORT_LABEL]), tmp_path)
     assert summary["best_issue"] is None
     assert summary["backlog_open"] == 0
+    # Nor does it inflate the open-work count: it is not work this loop can
+    # ever do, so counting it would misreport the queue's depth.
+    assert summary["open_issues"] == 0
 
 
 def test_an_ordinary_issue_is_still_selected(tmp_path):
@@ -167,6 +170,7 @@ def test_an_ordinary_issue_is_still_selected(tmp_path):
     summary = _summarize(_page(["Feature"]), tmp_path)
     assert summary["best_issue"] == 4242
     assert summary["backlog_open"] == 1
+    assert summary["open_issues"] == 1
 
 
 def test_the_project_query_asks_for_labels():

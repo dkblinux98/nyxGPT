@@ -124,14 +124,18 @@ def summarize(page: dict) -> dict:
 
         if c.get("state") != "OPEN":
             continue
-        open_issues += 1
 
         # A user support report is never agent work (#3745). The hygiene
         # workflow already declines to put one on the board, so reaching
         # here means someone added it by hand -- refuse it as a candidate
-        # anyway rather than letting a user's report be "implemented".
+        # anyway rather than letting a user's report be "implemented". The
+        # guard sits above `open_issues` so a hand-added report doesn't
+        # inflate the open-work count either: it is not work this loop can
+        # ever do.
         if is_support_issue((c.get("labels") or {}).get("nodes")):
             continue
+
+        open_issues += 1
 
         if status != status_backlog:
             continue
