@@ -292,7 +292,13 @@ jobs:
     #     so it is never the repository's "Latest" release. That also keeps
     #     release-artifacts.yml (which triggers on `release: [released]`,
     #     not `prereleased`) out of this path -- the stable tap push stays
-    #     tied to the ceremony's own release.
+    #     tied to the ceremony's own release;
+    #   * the tarballs are attached AT CREATION, in the same `gh release
+    #     create` call. Releases in this repository are immutable, so an asset
+    #     that is not on a release when it is published can never be added to
+    #     it (#3747): a candidate is therefore published complete or not
+    #     published at all, and the formulas are only ever stamped against a
+    #     release whose assets have been read back and verified.
     needs: publish
     if: >-
       ${{ needs.publish.outputs.publish == 'true'
@@ -333,7 +339,21 @@ jobs:
           done
           ls -1 dist/homebrew/*.rb
 
-      - name: Cut the GitHub prerelease with the service tarballs
+      - name: Retire any incomplete candidate release on this line
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # #3747: a candidate release that is missing a tarball is deleted (or,
+          # if the platform refuses, marked superseded in its notes) before this
+          # run cuts a new one -- including the `3.0.0rc3` the old
+          # upload-after-publish step left behind. Best-effort by design: a
+          # leftover nobody can retire must not block the next candidate, and
+          # the create/verify steps below are what actually gate the formulas.
+          scripts/supersede_incomplete_rc_releases.sh "${VERSION%%rc*}" --repo "$REPO"
+
+      - name: Cut the GitHub prerelease with the service tarballs attached
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -342,6 +362,16 @@ jobs:
           # `3.0.0rc4` -> `3.0.0`: the candidate formulas are named for the
           # release line they are a candidate for (#3735).
           RELEASE="${VERSION%%rc*}"
+          API_TARBALL="dist/homebrew/dist/nyxgpt-api-${VERSION}.tar.gz"
+          WEB_TARBALL="dist/homebrew/dist/nyxgpt-web-${VERSION}.tar.gz"
+          for tarball in "$API_TARBALL" "$WEB_TARBALL"; do
+            if [ ! -s "$tarball" ]; then
+              echo "::error::${tarball} was not built -- refusing to cut a release the"
+              echo "::error::candidate formulas would point at with nothing behind it"
+              exit 1
+            fi
+          done
+
           cat > /tmp/rc-notes.md <<NOTES
           Acceptance-only release candidate built from \`${GITHUB_REF_NAME}\` at \`${GITHUB_SHA}\`.
 
@@ -355,28 +385,59 @@ jobs:
           NOTES
 
           if gh release view "$VERSION" -R "$REPO" >/dev/null 2>&1; then
-            echo "::notice::release ${VERSION} already exists -- re-uploading its assets"
-          else
-            gh release create "$VERSION" \
-              -R "$REPO" \
-              --target "$GITHUB_SHA" \
-              --title "nyxGPT $VERSION (release candidate)" \
-              --prerelease \
-              --latest=false \
-              --notes-file /tmp/rc-notes.md
+            # Releases in this repository are IMMUTABLE: once published, one can
+            # never gain or change an asset -- run 31663088319 died on
+            # `HTTP 422: Cannot upload assets to an immutable release` creating
+            # the release first and uploading afterwards (#3747). So an existing
+            # release is either already complete (a re-run: reuse it) or beyond
+            # repair, and the sweep above already tried to retire it.
+            HAVE=$(gh release view "$VERSION" -R "$REPO" --json assets --jq '[.assets[].name] | join(" ")')
+            for name in "nyxgpt-api-${VERSION}.tar.gz" "nyxgpt-web-${VERSION}.tar.gz"; do
+              case " $HAVE " in
+                *" $name "*) ;;
+                *)
+                  echo "::error::release ${VERSION} already exists without ${name}, and an"
+                  echo "::error::immutable release can never gain one. Publish the next candidate"
+                  echo "::error::instead -- rcN numbers are cheap and PyPI has burned this one."
+                  exit 1 ;;
+              esac
+            done
+            echo "::notice::release ${VERSION} already carries both tarballs -- reusing it"
+            exit 0
           fi
-          gh release upload "$VERSION" \
-            dist/homebrew/dist/nyxgpt-api-"$VERSION".tar.gz \
-            dist/homebrew/dist/nyxgpt-web-"$VERSION".tar.gz \
-            --clobber -R "$REPO"
 
-      - name: Verify the release is a prerelease and not "latest"
+          # The assets go on AT CREATION -- never uploaded afterwards, which
+          # immutability forbids. `gh release create` takes them as positional
+          # arguments, so the release is published complete or not at all.
+          gh release create "$VERSION" \
+            -R "$REPO" \
+            --target "$GITHUB_SHA" \
+            --title "nyxGPT $VERSION (release candidate)" \
+            --prerelease \
+            --latest=false \
+            --notes-file /tmp/rc-notes.md \
+            "$API_TARBALL" "$WEB_TARBALL"
+
+      - name: Verify the release is a complete prerelease and not "latest"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           IS_PRERELEASE=$(gh release view "$VERSION" -R "$REPO" --json isPrerelease --jq .isPrerelease)
+          # Verifying the mutation, not assuming it: the formulas stamped below
+          # point at these two assets by URL, so a release missing either one is
+          # an uninstallable candidate (#3747).
+          ASSETS=$(gh release view "$VERSION" -R "$REPO" --json assets --jq '[.assets[].name] | join(" ")')
+          echo "assets=${ASSETS}"
+          for name in "nyxgpt-api-${VERSION}.tar.gz" "nyxgpt-web-${VERSION}.tar.gz"; do
+            case " $ASSETS " in
+              *" $name "*) ;;
+              *)
+                echo "::error::release ${VERSION} does not carry ${name}"
+                exit 1 ;;
+            esac
+          done
           # `gh release view` with no tag resolves the repository's "Latest"
           # release; it exits non-zero when there is none at all, which is
           # itself a pass for this check.

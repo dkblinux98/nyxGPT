@@ -997,6 +997,18 @@ leave the whole macOS path acceptance-testable only one release behind. An
    line the candidate belongs to (#3735), so a machine on `@3.0.0rc` never
    silently crosses to the next line's candidates.
 
+**A candidate release is published complete or not at all.** Releases in this
+repository are immutable: once published, one can never gain or change an
+asset. The tarballs are therefore attached in the same `gh release create`
+call that publishes the prerelease -- never uploaded afterwards, which is what
+`HTTP 422: Cannot upload assets to an immutable release` used to cost a
+candidate cycle (#3747) -- and the job reads the release back and refuses to
+stamp the formulas unless both tarballs are on it. A leftover candidate
+release that is missing one is deleted (or, if the platform refuses the
+delete, banner-marked "superseded" in its notes) by
+`scripts/supersede_incomplete_rc_releases.sh`, which the job runs before it
+cuts a new candidate.
+
 ```bash
 brew tap dkblinux98/nyxgpt
 brew install nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc
@@ -1054,6 +1066,7 @@ Because of that, the ceremony needs **no PyPI credential at all**; the
 | An rc never clobbers the stable brew formulas | The rc tap job writes `nyxgpt-api@<release>rc.rb`/`nyxgpt-web@<release>rc.rb` only; it asserts no stable formula was produced and refuses to push if one would change, so `brew install nyxgpt-api` stays on the latest stable release |
 | A candidate never crosses release lines | The formula name carries the line (`nyxgpt-api@3.0.0rc`), so the next line's candidates are a different formula -- installing them is a deliberate act, and the ceremony retires a shipped line's candidates by name |
 | An rc's GitHub release is never "latest" | It is created with `--prerelease --latest=false` and verified afterwards -- which also keeps `release-artifacts.yml` (trigger: `released`, not `prereleased`) out of the rc path |
+| A candidate release always carries both tarballs | Releases here are immutable, so the assets are attached in the `gh release create` call itself and the release is read back before the formulas are stamped; an existing release missing one is retired rather than uploaded to (#3747) |
 | The ceremony's formulas are never written by a candidate | `homebrew-tap-rc` is gated on `channel == 'rc'`, so the `stable` channel cannot reach it by construction, not by convention |
 | Stable is ceremony-only | The stable channel additionally requires the release tag at the built commit (Phase 1 creates it) *and* the ceremony's confirmation token, so dispatching `channel=stable` by hand publishes nothing -- and the sprint autopilot's dispatch path hard-codes `rc` and refuses any other channel before it dispatches |
 | The autopilot never cuts a duplicate candidate | An rc dispatch on a release-branch tip that has not moved since the last published candidate resolves to `SKIP`, so re-observing the same parked state publishes nothing |
