@@ -662,11 +662,17 @@ def test_build_script_runs_end_to_end_with_third_party_imports_blocked(tmp_path)
         '''"""Refuse every import that isn't stdlib or nyxGPT (test hook)."""
 import sys
 
+# `site` imports these two itself, after this hook is already installed --
+# they are interpreter startup hooks, not third-party packages, and blocking
+# them only makes the interpreter print a ModuleNotFoundError of our own
+# making onto the stderr this test reads.
+_STARTUP_HOOKS = ("sitecustomize", "usercustomize")
+
 
 class _ThirdPartyBlocker:
     def find_spec(self, fullname, path=None, target=None):
         root = fullname.split(".")[0]
-        if root in sys.stdlib_module_names or root in ("nyxgpt", "sitecustomize"):
+        if root in sys.stdlib_module_names or root in ("nyxgpt", *_STARTUP_HOOKS):
             return None
         raise ModuleNotFoundError(f"blocked third-party import: {fullname}")
 
