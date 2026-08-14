@@ -48,6 +48,15 @@ It is per tap and per machine, not per formula or per version: trust
 api, web — installs and upgrades without repeating it. On a Homebrew old
 enough not to gate third-party taps the step is simply unnecessary.
 
+Homebrew spells this subcommand `brew tap-trust <tap>` on some builds and
+`brew trust <tap>` on others; if one is rejected as an unknown command, run
+the other — the error `brew install` prints names the spelling your Homebrew
+wants. Take the whole-tap form either way. Homebrew also offers a grant
+scoped to a single formula, and it is not enough here: installing a
+candidate makes brew resolve
+`conflicts_with "nyxgpt-api"` and load the *stable* formula, which a grant
+scoped to the candidate leaves untrusted, and the install aborts (#3770).
+
 `dkblinux98/nyxgpt` is the tap's name everywhere Homebrew asks for one. The
 repository behind it is `dkblinux98/homebrew-nyxgpt` — Homebrew's naming
 convention is to strip the `homebrew-` prefix, and both spellings resolve to

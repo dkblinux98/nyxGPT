@@ -275,10 +275,24 @@ jobs:
           echo "tapping $TAP for nyxgpt-api@${RELEASE}rc"
           brew tap "$TAP"
           # The owner's literal path includes the third-party tap trust step
-          # (#3752). The runner's Homebrew does not gate yet, so this is a
-          # no-op today and future-proofing for when the image updates;
-          # tolerated failure covers a Homebrew without the subcommand.
-          brew tap-trust "$TAP" || true
+          # (#3752). Trust the WHOLE TAP, never a single formula: installing
+          # `nyxgpt-api@X.Y.Zrc` makes brew resolve its
+          # `conflicts_with "nyxgpt-api"`, which *loads* the stable formula
+          # too, so a grant scoped to the formula named on the command line
+          # leaves the install refusing its own counterpart. That is exactly
+          # how both rc8 publish runs died (#3770) -- brew implicitly trusted
+          # the requested `nyxgpt-api@3.0.0rc` and then refused the stable
+          # `nyxgpt-api` the tap started carrying with the #3763 backfill.
+          #
+          # Two spellings, because the subcommand is not the same on every
+          # Homebrew: the runner's own gate prescribes `brew trust <tap>`,
+          # while `brew tap-trust <tap>` is the spelling the docs and the
+          # generated install commands use. Try both -- a swallowed "unknown
+          # command" is precisely what left this job untrusted before.
+          # Failing both is still tolerated: a Homebrew old enough not to
+          # gate third-party taps has neither subcommand and nothing to trust.
+          brew tap-trust "$TAP" || brew trust "$TAP" \
+            || echo "::warning::neither 'brew tap-trust' nor 'brew trust' accepted $TAP -- proceeding untrusted"
           # The `conflicts_with "nyxgpt-api"` warning is benign (brew warns and
           # installs anyway -- see docs/homebrew.md), but "is the stable
           # counterpart actually in the tap?" kept being answered by guesswork

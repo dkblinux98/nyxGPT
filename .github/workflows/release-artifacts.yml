@@ -353,7 +353,7 @@ jobs:
           creation (#3763).
 
           \`\`\`bash
-          brew tap dkblinux98/nyxgpt && (brew tap-trust dkblinux98/nyxgpt || true) && brew install nyxgpt-api nyxgpt-web
+          brew tap dkblinux98/nyxgpt && (brew tap-trust dkblinux98/nyxgpt || brew trust dkblinux98/nyxgpt || true) && brew install nyxgpt-api nyxgpt-web
           \`\`\`
           NOTES
 

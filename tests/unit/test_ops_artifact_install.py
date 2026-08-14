@@ -397,6 +397,57 @@ def test_install_homebrew_api_uses_the_published_tap_without_a_checkout(artifact
     assert ["brew", "tap-trust", "dkblinux98/nyxgpt"] in calls
     assert ["brew", "install", "dkblinux98/nyxgpt/nyxgpt-api"] in calls
     assert results[-1].message == "nyxgpt-api"
+    # The tap, never one formula: `conflicts_with` makes brew load the
+    # counterpart formula, which a per-formula grant leaves untrusted (#3770).
+    assert not any("--formula" in call for call in calls)
+
+
+def test_the_tap_trust_step_falls_back_to_the_other_spelling(artifact_root, monkeypatch):
+    """`brew tap-trust` failing does not mean the tap is trusted (#3770).
+
+    Homebrew spells the whole-tap grant `tap-trust` on some builds and
+    `trust` on others. Treating the first one's "unknown command" as the end
+    of the story is how the published-tap smoke job ran untrusted for two
+    rc cuts, so an install that needs the gate open tries both.
+    """
+    calls = []
+
+    def _fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return _cp(1 if list(cmd)[:2] == ["brew", "tap-trust"] else 0)
+
+    monkeypatch.setattr(ops, "_which", lambda name: "/opt/homebrew/bin/brew")
+    monkeypatch.setattr(ops.importlib.metadata, "version", lambda _n: "3.0.0")
+    monkeypatch.setattr(ops, "_run", _fake_run)
+    monkeypatch.setattr(ops, "_restart_brew_service", lambda name: [ops.OpsResult(True, name)])
+
+    results = ops._install_homebrew_api()
+
+    assert all(r.ok for r in results), results
+    assert ["brew", "trust", "dkblinux98/nyxgpt"] in calls
+    # Trust has to land before the install it exists to unblock.
+    assert calls.index(["brew", "trust", "dkblinux98/nyxgpt"]) < calls.index(
+        ["brew", "install", "dkblinux98/nyxgpt/nyxgpt-api"]
+    )
+
+
+def test_neither_trust_spelling_existing_does_not_fail_the_install(artifact_root, monkeypatch):
+    """A Homebrew old enough not to gate third-party taps has nothing to trust."""
+    calls = []
+
+    def _fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return _cp(1 if "trust" in list(cmd)[1] else 0)
+
+    monkeypatch.setattr(ops, "_which", lambda name: "/opt/homebrew/bin/brew")
+    monkeypatch.setattr(ops.importlib.metadata, "version", lambda _n: "3.0.0")
+    monkeypatch.setattr(ops, "_run", _fake_run)
+    monkeypatch.setattr(ops, "_restart_brew_service", lambda name: [ops.OpsResult(True, name)])
+
+    results = ops._install_homebrew_api()
+
+    assert all(r.ok for r in results), results
+    assert ["brew", "install", "dkblinux98/nyxgpt/nyxgpt-api"] in calls
 
 
 def test_install_homebrew_web_uses_the_published_tap_without_a_checkout(artifact_root, monkeypatch):

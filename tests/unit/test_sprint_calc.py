@@ -528,9 +528,12 @@ class TestReleaseCandidateSection:
         assert "brew install nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc" in note
         # The note is the round's copy-paste install line, so it has to clear
         # Homebrew's third-party tap gate as written (#3752) -- and tolerate a
-        # Homebrew that has no `tap-trust` subcommand.
+        # Homebrew that has neither spelling of the trust subcommand
+        # (#3770 -- `tap-trust` on some builds, `trust` on others).
         assert "brew tap dkblinux98/nyxgpt" in note
-        assert "(brew tap-trust dkblinux98/nyxgpt || true)" in note
+        assert (
+            "(brew tap-trust dkblinux98/nyxgpt || brew trust dkblinux98/nyxgpt || true)"
+        ) in note
         assert note.index("tap-trust") < note.index("brew install nyxgpt-api@")
         assert "https://github.com/dkblinux98/nyxGPT/actions/x" in note
 

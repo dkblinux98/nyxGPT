@@ -749,11 +749,15 @@ def _channel_commands(channel: str, release: str) -> dict[str, str]:
         # An rc is a pre-release that is also installable with brew: its
         # publish stamps this line's `@<release>rc` formulas into the tap.
         # The trust step is what stops a fresh Mac from dead-ending at
-        # Homebrew's third-party tap gate (#3752); it is wrapped in
-        # `|| true` because a Homebrew old enough not to gate has no
-        # `tap-trust` subcommand, and this line has to run on both.
+        # Homebrew's third-party tap gate (#3752). Both spellings of the
+        # whole-tap grant are tried, because Homebrew calls it `tap-trust`
+        # on some builds and `trust` on others and an untried spelling is
+        # indistinguishable from a trusted tap (#3770); the trailing
+        # `|| true` keeps the line running on a Homebrew that has neither
+        # and nothing to trust.
         "brew": (
-            f"brew tap {HOMEBREW_TAP} && (brew tap-trust {HOMEBREW_TAP} || true) "
+            f"brew tap {HOMEBREW_TAP} "
+            f"&& (brew tap-trust {HOMEBREW_TAP} || brew trust {HOMEBREW_TAP} || true) "
             f"&& brew install {' '.join(rc_formulas(release))}"
         ),
     }

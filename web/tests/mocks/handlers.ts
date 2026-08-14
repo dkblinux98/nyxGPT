@@ -472,7 +472,8 @@ export const handlers = [
         plan: 'nyxgpt release publish --channel rc',
         publish: 'nyxgpt release publish --channel rc --publish',
         brew:
-          'brew tap dkblinux98/nyxgpt && (brew tap-trust dkblinux98/nyxgpt || true) && ' +
+          'brew tap dkblinux98/nyxgpt && (brew tap-trust dkblinux98/nyxgpt || ' +
+          'brew trust dkblinux98/nyxgpt || true) && ' +
           'brew install nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc',
         install: 'pip install nyxgpt==3.0.0rc2',
         user_data: 'nyxgpt cloud user-data --os linux --version 3.0.0rc2',

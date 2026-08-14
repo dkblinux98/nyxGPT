@@ -1659,9 +1659,15 @@ def _install_from_remote_tap(name: str) -> list[OpsResult]:
     if cp.returncode != 0:
         return [OpsResult(False, f"Failed to tap {REMOTE_TAP}", _cp_details(cp))]
     # Homebrew gates formulas from third-party taps: without trust, `brew
-    # install` stops instead of installing (#3752). Tolerated on failure --
-    # Homebrew builds predating `tap-trust` have nothing to trust.
-    _run(["brew", "tap-trust", REMOTE_TAP], check=False, expected=True)
+    # install` stops instead of installing (#3752). Trust the tap, never one
+    # formula -- installing a candidate resolves its `conflicts_with` against
+    # the stable formula, which brew then has to load too, and a per-formula
+    # grant does not cover it (#3770). The subcommand is spelled `tap-trust`
+    # on some Homebrews and `trust` on others, so try both. Tolerated on
+    # failure -- Homebrew builds predating the trust gate have nothing to
+    # trust.
+    if _run(["brew", "tap-trust", REMOTE_TAP], check=False, expected=True).returncode != 0:
+        _run(["brew", "trust", REMOTE_TAP], check=False, expected=True)
 
     cp = _run(["brew", "install", spec], check=False)
     if cp.returncode != 0:
