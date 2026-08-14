@@ -61,6 +61,12 @@ get_project_id() { echo "proj-1"; }
 
 _item() {
   # $1=number $2=status $3=state (default CLOSED)
+  #
+  # State matters in the holding lane since #3780: OPEN there is this
+  # round's held rework (what the handlers file, and what a gate opening
+  # releases), CLOSED is a feature the owner tested, failed and parked --
+  # which the gate must leave alone. The lane fixtures below therefore say
+  # OPEN explicitly.
   local number="$1" status="$2" state="${3:-CLOSED}"
   cat <<EOF
 {"content":{"__typename":"Issue","number":${number},"state":"${state}"},"fieldValues":{"nodes":[{"__typename":"ProjectV2ItemFieldSingleSelectValue","field":{"name":"Status"},"name":"${status}"}]}}
@@ -125,10 +131,10 @@ graphql() {
     _page_response "true" "cursor-1" \
       "$(_item 3521 "Acceptance Testing")" \
       "$(_item 3600 "Acceptance Testing")" \
-      "$(_item 3700 "Acceptance Failed")"
+      "$(_item 3700 "Acceptance Failed" OPEN)"
   else
     _page_response "false" "" \
-      "$(_item 3701 "Acceptance Failed")" \
+      "$(_item 3701 "Acceptance Failed" OPEN)" \
       "$(_item 3800 "Backlog" OPEN)"
   fi
 }
@@ -138,6 +144,8 @@ _assert_eq "snapshot collects the Acceptance Testing lane across pages" \
   "[3521,3600]" "$(jq -c '.acceptance_testing' <<<"$snapshot")"
 _assert_eq "snapshot collects the Acceptance Failed lane across pages" \
   "[3700,3701]" "$(jq -c '.acceptance_failed' <<<"$snapshot")"
+_assert_eq "an OPEN holding-lane item is held work, not a parked feature" \
+  "[]" "$(jq -c '.acceptance_failed_parked' <<<"$snapshot")"
 
 # --- Test 2: gate stays CLOSED while a non-release item is under test ---
 # (single page from here on -- the paging stub above has consumed its
@@ -146,8 +154,8 @@ graphql() {
   _page_response "false" "" \
     "$(_item 3521 "Acceptance Testing")" \
     "$(_item 3600 "Acceptance Testing")" \
-    "$(_item 3700 "Acceptance Failed")" \
-    "$(_item 3701 "Acceptance Failed")"
+    "$(_item 3700 "Acceptance Failed" OPEN)" \
+    "$(_item 3701 "Acceptance Failed" OPEN)"
 }
 # The held issues were filed against a DIFFERENT feature, so #3600 really
 # is still under test.
@@ -231,8 +239,8 @@ ISSUE_BLOCKS=()
 graphql() {
   _page_response "false" "" \
     "$(_item 3521 "Acceptance Testing")" \
-    "$(_item 3700 "Acceptance Failed")" \
-    "$(_item 3701 "Acceptance Failed")"
+    "$(_item 3700 "Acceptance Failed" OPEN)" \
+    "$(_item 3701 "Acceptance Failed" OPEN)"
 }
 state="$(drain_gate_state)"
 _assert_eq "gate opens when only the release issue remains under test" "true" "$(jq -r '.open' <<<"$state")"
@@ -251,6 +259,56 @@ kicks="$(grep -c "READY_FOR_NEXT_ISSUE" "$COMMENT_FILE")"
 _assert_eq "the queue is kicked exactly once for the whole batch" "1" "$kicks"
 _assert_contains "the kick lands on the release tracking issue" "$(cat "$COMMENT_FILE")" "3521 ::"
 
+# --- Test 3b: a feature the owner parked in the holding lane (#3780) ---
+# Owner decision 2026-08-14: `Acceptance Failed` is also where the owner
+# parks features they have tested and failed, "so that I don't get lost as
+# to what I've tested that has failed". Those are CLOSED; this round's held
+# rework is OPEN. The gate releases the rework and must leave the feature
+# exactly where the owner put it -- the 2026-08-14 incident in
+# agents/LEDGER.md is what happens when automation rearranges that lane.
+graphql() {
+  _page_response "false" "" \
+    "$(_item 3521 "Acceptance Testing")" \
+    "$(_item 3508 "Acceptance Failed" CLOSED)" \
+    "$(_item 3700 "Acceptance Failed" OPEN)"
+}
+# The held failure blocks the parked feature -- the shape that used to
+# deadlock: the feature waits on its failure, the failure waits on the gate.
+ISSUE_BLOCKS=([3700]="3508")
+
+snapshot="$(acceptance_lane_snapshot)"
+_assert_eq "a CLOSED holding-lane item is reported as an owner-parked feature" \
+  "[3508]" "$(jq -c '.acceptance_failed_parked' <<<"$snapshot")"
+
+state="$(drain_gate_state)"
+_assert_eq "the gate still opens with a parked feature in the lane" "true" "$(jq -r '.open' <<<"$state")"
+_assert_eq "only the OPEN rework counts as held" "[3700]" "$(jq -c '.held' <<<"$state")"
+_assert_eq "the parked feature is reported, not held" "[3508]" "$(jq -c '.parked' <<<"$state")"
+
+: >"$STATUS_FILE"
+: >"$COMMENT_FILE"
+result="$(drain_gate_release 2>/dev/null)"
+_assert_eq "the release moves the held rework" "[3700]" "$(jq -c '.released' <<<"$result")"
+_assert_not_contains "the parked feature is never moved by the gate" \
+  "$(cat "$STATUS_FILE")" "3508 ->"
+_assert_not_contains "and it is never commented on by the gate" \
+  "$(cat "$COMMENT_FILE")" "3508 ::"
+
+# --- Test 3c: a lane holding ONLY parked features releases nothing ---
+graphql() {
+  _page_response "false" "" \
+    "$(_item 3521 "Acceptance Testing")" \
+    "$(_item 3508 "Acceptance Failed" CLOSED)" \
+    "$(_item 3596 "Acceptance Failed" CLOSED)"
+}
+: >"$STATUS_FILE"
+: >"$COMMENT_FILE"
+result="$(drain_gate_release 2>/dev/null)"
+_assert_eq "a lane of parked features has nothing to release" "none" "$(jq -r '.action' <<<"$result")"
+_assert_eq "and nothing moves" "" "$(cat "$STATUS_FILE")"
+_assert_eq "and no kick is posted" "" "$(cat "$COMMENT_FILE")"
+ISSUE_BLOCKS=()
+
 # --- Test 4: an open gate with an empty holding lane is a no-op ---
 graphql() {
   _page_response "false" "" "$(_item 3521 "Acceptance Testing")"
@@ -265,7 +323,7 @@ _assert_eq "nothing held -> no kick (idempotent polling)" "" "$(cat "$COMMENT_FI
 graphql() {
   _page_response "false" "" \
     "$(_item 3521 "Acceptance Testing")" \
-    "$(_item 3700 "Acceptance Failed")"
+    "$(_item 3700 "Acceptance Failed" OPEN)"
 }
 sprint_autopilot_paused() { return 0; }
 : >"$STATUS_FILE"

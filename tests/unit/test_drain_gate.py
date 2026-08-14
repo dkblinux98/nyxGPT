@@ -4,10 +4,13 @@ Covers the three decisions the acceptance drain gate rests on:
 
   * `summarize` — which issues sit in the Acceptance Testing / Acceptance
     Failed lanes on one page of the project-items query (closed issues
-    included: an item awaiting acceptance is normally closed).
+    included: an item awaiting acceptance is normally closed), and which
+    of the Acceptance Failed items are the owner's parked features
+    (#3780).
   * `decide` — the gate opens only when Acceptance Testing is empty
     EXCEPT the release tracking issue and any feature that is only still
-    parked there because its own failures are held (`rework_features`).
+    parked there because its own failures are held (`rework_features`);
+    and it releases only held rework, never a parked feature.
   * `bypass` — agent-process issues skip the gate; product acceptance
     work does not.
 """
@@ -15,6 +18,8 @@ Covers the three decisions the acceptance drain gate rests on:
 from __future__ import annotations
 
 import importlib.util
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -70,13 +75,29 @@ def _clean_env(monkeypatch):
 def test_summarize_buckets_both_lanes():
     page = _page(
         _item(1, "Acceptance Testing"),
-        _item(2, "Acceptance Failed"),
+        _item(2, "Acceptance Failed", state="OPEN"),
         _item(3, "Backlog"),
         _item(4, "Acceptance Testing", state="OPEN"),
     )
     assert drain_gate.summarize(page) == {
         "acceptance_testing": [1, 4],
         "acceptance_failed": [2],
+        "acceptance_failed_parked": [],
+    }
+
+
+def test_summarize_marks_closed_holding_lane_items_as_parked():
+    """Owner decision 2026-08-14 (#3780): the owner also parks features they
+    have tested and failed in `Acceptance Failed`. Those are CLOSED (merged,
+    then failed); this round's held rework is OPEN."""
+    page = _page(
+        _item(3508, "Acceptance Failed", state="CLOSED"),
+        _item(3700, "Acceptance Failed", state="OPEN"),
+    )
+    assert drain_gate.summarize(page) == {
+        "acceptance_testing": [],
+        "acceptance_failed": [3508, 3700],
+        "acceptance_failed_parked": [3508],
     }
 
 
@@ -93,14 +114,26 @@ def test_summarize_ignores_pull_requests_and_unstatused_items():
         _item(10, "Acceptance Testing", typename="PullRequest"),
         _item(11, None),
     )
-    assert drain_gate.summarize(page) == {"acceptance_testing": [], "acceptance_failed": []}
+    assert drain_gate.summarize(page) == {
+        "acceptance_testing": [],
+        "acceptance_failed": [],
+        "acceptance_failed_parked": [],
+    }
 
 
 def test_summarize_honors_renamed_lanes(monkeypatch):
     monkeypatch.setenv("STATUS_ACCEPTANCE_TESTING", "Testing")
     monkeypatch.setenv("STATUS_ACCEPTANCE_FAILED", "Failed")
-    page = _page(_item(1, "Testing"), _item(2, "Failed"), _item(3, "Acceptance Testing"))
-    assert drain_gate.summarize(page) == {"acceptance_testing": [1], "acceptance_failed": [2]}
+    page = _page(
+        _item(1, "Testing"),
+        _item(2, "Failed", state="OPEN"),
+        _item(3, "Acceptance Testing"),
+    )
+    assert drain_gate.summarize(page) == {
+        "acceptance_testing": [1],
+        "acceptance_failed": [2],
+        "acceptance_failed_parked": [],
+    }
 
 
 # --- decide ----------------------------------------------------------
@@ -194,6 +227,119 @@ def test_rework_exemption_lapses_once_the_lane_is_empty(monkeypatch):
     assert state["open"] is False
     assert state["blockers"] == [3600]
     assert state["rework_exempt"] == []
+
+
+# --- decide: features the owner parked in `Acceptance Failed` (#3780) ---
+#
+# The owner uses the holding lane for two different things: this round's
+# held rework (OPEN, filed by the handlers) and features they have tested
+# and FAILED (CLOSED, waiting on their blockers). The gate releases the
+# first and must never touch the second -- that placement is owner signal,
+# and the 2026-08-14 incident recorded in agents/LEDGER.md is what happens
+# when automation rearranges it.
+
+
+def test_a_parked_feature_is_not_released_by_the_gate(monkeypatch):
+    monkeypatch.setenv("RELEASE_ISSUE", "3521")
+    state = drain_gate.decide(
+        {
+            "acceptance_testing": [3521],
+            "acceptance_failed": [3508, 3700],
+            "acceptance_failed_parked": [3508],
+        }
+    )
+    assert state["open"] is True
+    assert state["held"] == [3700]
+    assert state["parked"] == [3508]
+
+
+def test_a_parked_feature_alone_in_the_lane_releases_nothing(monkeypatch):
+    """Its blockers are already in flight; there is nothing to release, and
+    the feature itself waits for the promotion sweep, not for the gate."""
+    monkeypatch.setenv("RELEASE_ISSUE", "3521")
+    state = drain_gate.decide(
+        {
+            "acceptance_testing": [3521],
+            "acceptance_failed": [3596],
+            "acceptance_failed_parked": [3596],
+        }
+    )
+    assert state["open"] is True
+    assert state["held"] == []
+    assert state["parked"] == [3596]
+
+
+def test_a_parked_feature_does_not_deadlock_the_gate_against_its_own_blockers(monkeypatch):
+    """The whole holding lane is the parked feature plus the failures that
+    block it. The gate must still open (nothing is under test), release the
+    failures, and leave the feature alone -- otherwise the feature waits on
+    its failures, the failures wait on the gate, and the gate never runs."""
+    monkeypatch.setenv("RELEASE_ISSUE", "3521")
+    state = drain_gate.decide(
+        {
+            "acceptance_testing": [3521],
+            "acceptance_failed": [3509, 3700, 3701],
+            "acceptance_failed_parked": [3509],
+            "rework_features": [3509],
+        }
+    )
+    assert state["open"] is True
+    assert state["held"] == [3700, 3701]
+    assert state["parked"] == [3509]
+
+
+def test_a_parked_feature_is_never_counted_as_a_gate_blocker(monkeypatch):
+    """It is not in the lane under test, so it cannot hold the gate closed
+    in either direction -- the exemption reads both lanes."""
+    monkeypatch.setenv("RELEASE_ISSUE", "3521")
+    state = drain_gate.decide(
+        {
+            "acceptance_testing": [3521],
+            "acceptance_failed": [3508],
+            "acceptance_failed_parked": [3508],
+            "rework_features": [3508],
+        }
+    )
+    assert state["blockers"] == []
+    assert state["rework_exempt"] == []  # #3508 is not in the testing lane
+
+
+def test_a_parked_key_that_names_items_outside_the_lane_is_ignored(monkeypatch):
+    monkeypatch.setenv("RELEASE_ISSUE", "3521")
+    state = drain_gate.decide(
+        {
+            "acceptance_testing": [3521],
+            "acceptance_failed": [3700],
+            "acceptance_failed_parked": [3508, 9999],
+        }
+    )
+    assert state["held"] == [3700]
+    assert state["parked"] == []
+
+
+def test_without_the_parked_key_the_whole_lane_is_held(monkeypatch):
+    """Pre-#3780 behavior is the default: a snapshot that says nothing about
+    parked items releases everything it holds."""
+    monkeypatch.setenv("RELEASE_ISSUE", "3521")
+    state = drain_gate.decide({"acceptance_testing": [3521], "acceptance_failed": [3700, 3701]})
+    assert state["held"] == [3700, 3701]
+    assert state["parked"] == []
+
+
+def test_rework_exemption_lapses_when_only_parked_features_remain(monkeypatch):
+    """Nothing is actually held, so a feature still under test is an honest
+    blocker again -- the exemption follows held work, not lane occupancy."""
+    monkeypatch.setenv("RELEASE_ISSUE", "3521")
+    state = drain_gate.decide(
+        {
+            "acceptance_testing": [3521, 3600],
+            "acceptance_failed": [3508],
+            "acceptance_failed_parked": [3508],
+            "rework_features": [3600],
+        }
+    )
+    assert state["open"] is False
+    assert state["blockers"] == [3600]
 
 
 def test_rework_exemption_is_absent_by_default(monkeypatch):
@@ -387,4 +533,48 @@ def test_merge_combines_pages_without_duplicates():
             {"acceptance_testing": [1, 3], "acceptance_failed": []},
         ]
     )
-    assert merged == {"acceptance_testing": [1, 2, 3], "acceptance_failed": [5]}
+    assert merged == {
+        "acceptance_testing": [1, 2, 3],
+        "acceptance_failed": [5],
+        "acceptance_failed_parked": [],
+    }
+
+
+def test_merge_carries_parked_items_across_pages():
+    """A parked feature and its held failures can land on different pages;
+    losing the parked key on one of them would release the feature."""
+    merged = drain_gate._merge(
+        [
+            {"acceptance_failed": [3508], "acceptance_failed_parked": [3508]},
+            {"acceptance_failed": [3700], "acceptance_failed_parked": []},
+        ]
+    )
+    assert merged["acceptance_failed"] == [3508, 3700]
+    assert merged["acceptance_failed_parked"] == [3508]
+
+
+# --- the shell helpers that consume these decisions -------------------
+
+
+class TestDrainGateShellBehaviour:
+    """Runs `tests/test_drain_gate_lib.sh` (stubbed `gh`/`graphql`, no
+    network) under pytest.
+
+    The pure decisions above are only half the gate: the lane snapshot, the
+    rework lookup and the release loop live in `lib/gh_project.sh` and are
+    what actually move issues. Wiring the suite in here means `pytest -v` —
+    the gate this repo really runs — executes them too, instead of relying
+    on someone remembering the on-demand shell command.
+    """
+
+    def test_shell_suite_passes(self):
+        if shutil.which("jq") is None:
+            pytest.skip("jq is required by the shell suite")
+        suite = Path(__file__).resolve().parents[1] / "test_drain_gate_lib.sh"
+        result = subprocess.run(
+            ["bash", str(suite)],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
