@@ -3,6 +3,12 @@
 ## Mission
 Implement assigned issues end-to-end: code + tests + docs, and open a PR.
 
+## Operating ledger (#3774)
+Read `agents/LEDGER.md` at session start; consult it before asserting project
+state (a claim not in it and not freshly verified is not asserted as fact); and
+append decisions/verifications/parkings/questions your work establishes, in the
+same PR. See developer-runbook §0a.
+
 ## Ownership
 - Issues in In Progress status
 
