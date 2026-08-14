@@ -31,8 +31,41 @@ The rhythm the loop now respects:
 | Status lane | Meaning |
 |---|---|
 | `Acceptance Testing` | items the owner is testing this round |
-| `Acceptance Failed` | failures/improvements found this round, **held** |
+| `Acceptance Failed` | failures/improvements found this round, **held** — *and* features the owner has tested and failed, **parked** (see below) |
 | `Backlog` | released work, normal scrummaster selection |
+
+### `Acceptance Failed` holds two different things (owner decision 2026-08-14, #3780)
+
+The owner also parks **features they have tested and failed** in that lane —
+"so that I don't get lost as to what I've tested that has failed". So the lane
+carries two populations, and the machinery tells them apart by **issue state**:
+
+| In `Acceptance Failed` | State | What it is | What the machinery does |
+|---|---|---|---|
+| this round's rework | **OPEN** | a failure/improvement the handlers just filed (or a reopened fix that failed re-test) | **held** — released to `Backlog` when the gate opens |
+| a parked feature | **CLOSED** | already implemented and merged, then failed by the owner; waiting on its blockers | **left alone** — the only move is promotion to `For Release` once its whole blocked-by closure is accepted |
+
+State is the honest discriminator: held rework is always open (the handlers
+file a fresh issue, and a fix that fails re-test is *reopened*), while a parked
+feature is closed because it was merged. A label check would misread a closed
+failure issue the owner parked after re-testing it.
+
+Two rules follow, and both are enforced rather than documented:
+
+- `promote_accepted_features.sh` treats a feature parked in `Acceptance Failed`
+  **identically to one parked in `Acceptance Testing`** — a promotion candidate
+  whose transitive blocked-by closure gates it. An OPEN item in the lane is
+  held rework and is never promoted; #3730's holding-pen behavior is unchanged.
+- **Nothing moves a feature out of `Acceptance Failed` while any blocker is
+  open.** The placement is owner signal: agents read it, they do not rearrange
+  it. Only the all-blockers-accepted promotion moves it, and the drain gate
+  reports it (`parked` in the gate state, and a line in the release log) rather
+  than releasing it.
+
+Motivating incident: #3508, #3509 and #3596 sat parked with no cascade even
+though their failure issues had been fixed, and the placements were then
+mistaken for stale board state and swept — recorded in `agents/LEDGER.md`
+(D-001 note, 2026-08-14).
 
 ### The rule
 
@@ -46,8 +79,9 @@ The rhythm the loop now respects:
   - the **release tracking issue** — it stays in that lane until the whole
     release is accepted;
   - any **feature awaiting rework** — a feature the owner has already failed
-    parks closed in `Acceptance Testing` until everything blocking it reaches
-    `For Release` (`promote_accepted_features.sh`, owner flow 2026-08-02).
+    parks closed in `Acceptance Testing` (or in `Acceptance Failed`, #3780)
+    until everything blocking it reaches `For Release`
+    (`promote_accepted_features.sh`, owner flow 2026-08-02).
     It is exempt while its own blockers are held, because otherwise the gate
     would deadlock on the work it is holding: the feature waits on its
     failure, the failure waits on the gate, and the gate waits on the
@@ -69,7 +103,8 @@ The rhythm the loop now respects:
     `DRAIN_GATE_REWORK_LABEL` remains a back-compatible alias.)
 - On the opening, every held item moves to `Backlog` and the queue is kicked
   **once** for the whole batch (one kick, not one per issue — the dispatcher
-  picks the next item itself).
+  picks the next item itself). Parked features (closed items in the lane, see
+  above) are not held items: they are named in the run log and left in place.
 - While `PAUSE_SPRINT` is in force the lane is still released, but no kick is
   posted; the note carries the informational marker so it cannot itself
   dispatch work.
@@ -92,7 +127,8 @@ too, so an exception can be declared at filing time.
 
 | Path | Role |
 |---|---|
-| `scripts/agents/lib/drain_gate.py` | pure decisions: lane summary, gate state, rework exemption, bypass rule |
+| `scripts/agents/lib/drain_gate.py` | pure decisions: lane summary (including the parked/held split), gate state, rework exemption, bypass rule |
+| `scripts/agents/promote_accepted_features.sh` | promotes a parked issue out of either lane once its whole blocked-by closure is accepted |
 | `scripts/agents/lib/gh_project.sh` | `acceptance_lane_snapshot`, `drain_gate_rework_features`, `drain_gate_state`, `drain_gate_hold`, `drain_gate_release`, `issue_bypasses_drain_gate` |
 | `scripts/agents/drain_gate.sh` | `state` (read-only) / `release` (open the gate) |
 | `.github/workflows/acceptance_drain_gate.yml` | the watcher |
@@ -212,12 +248,16 @@ or dispatch the workflow with `check_only=true`.
 ## Tests
 
 ```bash
-pytest tests/unit/test_drain_gate.py tests/unit/test_ceremony_trigger.py  # pure decisions (CI)
-bash tests/test_drain_gate_lib.sh          # lane snapshot, gate open/closed, hold, release, start guard
+pytest tests/unit/test_drain_gate.py tests/unit/test_ceremony_trigger.py  # pure decisions + the drain-gate shell suite (CI)
+bash tests/test_drain_gate_lib.sh          # lane snapshot, parked/held split, gate open/closed, hold, release, start guard
+bash tests/test_promote_accepted_features.sh  # promotion out of both parking lanes (also run by pytest)
 bash tests/test_release_ceremony_watch.sh  # ceremony trigger guardrails, against a fake gh
 bash tests/test_retire_rc_formulas.sh      # rc retirement, against a local bare repo standing in for the tap
 ```
 
 The shell suites stub `gh`/`graphql` (or use a local git repo), so none of
-them touch GitHub. As with the other agent-loop shell suites, they are run
-on demand rather than in CI, which runs `pytest tests/unit/`.
+them touch GitHub. The two acceptance-cascade suites are wired into
+`pytest tests/unit/` — the gate this repo actually runs — so the lane
+snapshot, the release loop and the promotion sweep are *executed*, not just
+inspected, on every CI run; the remaining agent-loop shell suites are still
+run on demand.

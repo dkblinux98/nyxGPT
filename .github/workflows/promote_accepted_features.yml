@@ -1,11 +1,20 @@
 name: Promote Accepted Features
 
-# Owner flow 2026-08-02 (companion to handle_acceptance_failure.yml): a
-# feature parks closed in "Acceptance Testing" while its related
-# acceptance-failure issues are reworked; when EVERY related failure issue
-# reaches "For Release", the feature is promoted to "For Release"
-# automatically. The sweep also heals the native blocking relationship
-# (failure blocks feature) if the handler couldn't set it.
+# Owner flow 2026-08-02 (companion to handle_acceptance_failure.yml), with
+# the dual-lane extension of 2026-08-14 (#3780): a feature parks CLOSED
+# while the acceptance failures and improvements blocking it are reworked.
+# It parks in EITHER "Acceptance Testing" OR "Acceptance Failed" — the
+# owner uses the latter to keep what they have tested and failed visible in
+# one place — and both lanes are handled identically here. When every issue
+# in the feature's TRANSITIVE blocked-by closure (#3731) has reached
+# "For Release", the feature is promoted to "For Release" automatically;
+# while any blocker is still open the sweep moves nothing at all, so the
+# owner's lane placement is read, never rearranged. In "Acceptance Failed"
+# only CLOSED items are candidates: the OPEN ones there are the drain
+# gate's held rework (#3730) and are never promoted.
+#
+# The sweep also heals the native blocking relationship (failure blocks
+# feature) if the handler couldn't set it.
 
 on:
   schedule:

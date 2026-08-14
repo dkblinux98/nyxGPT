@@ -18,6 +18,16 @@ Three pure decisions live here so they can be unit-tested without GitHub:
               "has the lane drained?" is a question about every item in
               it, not just the open ones.
 
+              It also reports which `Acceptance Failed` items are CLOSED
+              (`acceptance_failed_parked`). That is the dual-lane rule of
+              owner decision 2026-08-14 (#3780): the owner parks features
+              they have tested and FAILED in the same lane, "so that I
+              don't get lost as to what I've tested that has failed". A
+              closed item there is such a parked feature -- already
+              implemented and merged, waiting on its blockers; an OPEN one
+              is holding-pen work filed this round (#3730), which is what
+              the gate releases.
+
   decide      merged lane snapshot -> is the gate open? The gate opens
               when `Acceptance Testing` holds nothing except the release
               tracking issue (exempt: it stays in that lane until the
@@ -25,18 +35,27 @@ Three pure decisions live here so they can be unit-tested without GitHub:
               still sitting there because their own failures are held --
               see `rework_features` below.
 
+              `held` (what a gate opening releases into Backlog) is the
+              `Acceptance Failed` lane MINUS the parked features above.
+              Their lane placement is owner signal: agents read it, they
+              never rearrange it. Only promote_accepted_features.sh moves
+              such a feature, and only once its whole blocked-by closure
+              has reached `For Release`.
+
   rework      the currently HELD issues -> the issues they BLOCK, read
               from GitHub's native relationships (`blocks`, owner decision
               2026-08-12 / #3731) with the retired "Related feature: #N"
               body marker as the historical fallback. A failed feature is
               not "still under test": the owner has already failed it and
-              it parks closed in `Acceptance Testing` until everything
-              blocking it reaches `For Release`
+              it parks closed in `Acceptance Testing` OR in `Acceptance
+              Failed` (#3780) until everything blocking it reaches
+              `For Release`
               (scripts/agents/promote_accepted_features.sh). Counting such
               a feature as a blocker would deadlock the gate -- the feature
               waits on its failure, the failure waits on the gate, the gate
               waits on the feature -- so `decide` subtracts them from the
-              blockers alongside the release issue.
+              blockers alongside the release issue, in whichever of the two
+              lanes the owner parked them.
 
               The label filter mirrors the one the promotion sweep applies,
               so the two sweeps can never disagree about which held issue
@@ -102,13 +121,14 @@ RELATED_FEATURE_RE = re.compile(r"(?:Parent|Related)\s+feature:\s*#(\d+)", re.IG
 DEFAULT_REWORK_LABELS = ("Acceptance Failure", "Improvement")
 
 
-def _lane(page: dict) -> tuple[list[int], list[int]]:
+def _lane(page: dict) -> tuple[list[int], list[int], list[int]]:
     status_field = os.getenv("STATUS_FIELD", "Status")
     testing = os.getenv("STATUS_ACCEPTANCE_TESTING", "Acceptance Testing")
     failed = os.getenv("STATUS_ACCEPTANCE_FAILED", "Acceptance Failed")
 
     in_testing: list[int] = []
     in_failed: list[int] = []
+    parked: list[int] = []
 
     for it in page["data"]["node"]["items"]["nodes"]:
         content = it.get("content") or {}
@@ -126,13 +146,25 @@ def _lane(page: dict) -> tuple[list[int], list[int]]:
             in_testing.append(int(content["number"]))
         elif status == failed:
             in_failed.append(int(content["number"]))
+            # CLOSED in the holding lane == a feature the owner tested,
+            # failed and parked there (#3780). Held rework filed this round
+            # is OPEN: the handlers file a fresh issue, and a re-failed fix
+            # is REOPENED. State is the honest discriminator -- a label
+            # check would misread a closed failure issue the owner parked
+            # after re-testing it.
+            if str(content.get("state") or "").upper() == "CLOSED":
+                parked.append(int(content["number"]))
 
-    return in_testing, in_failed
+    return in_testing, in_failed, parked
 
 
 def summarize(page: dict) -> dict:
-    in_testing, in_failed = _lane(page)
-    return {"acceptance_testing": in_testing, "acceptance_failed": in_failed}
+    in_testing, in_failed, parked = _lane(page)
+    return {
+        "acceptance_testing": in_testing,
+        "acceptance_failed": in_failed,
+        "acceptance_failed_parked": parked,
+    }
 
 
 def _label_names(issue: dict) -> set[str]:
@@ -156,9 +188,11 @@ def rework_features(issues: list[dict]) -> list[int]:
     """The issues parked awaiting rework by the currently held issues.
 
     An issue whose failures/improvements are held is awaiting rework, not
-    under test: it parks closed in `Acceptance Testing` until everything
-    blocking it reaches `For Release`. Exempting it is what keeps the gate
-    from deadlocking on the work it is itself holding.
+    under test: it parks closed in `Acceptance Testing` -- or, since #3780,
+    in `Acceptance Failed` where the owner keeps what they have tested and
+    failed -- until everything blocking it reaches `For Release`. Exempting
+    it is what keeps the gate from deadlocking on the work it is itself
+    holding, in either lane.
 
     The link is read from each held issue's **native** `blocks` edges
     (#3731), falling back to the retired body marker for issues filed before
@@ -190,13 +224,20 @@ def decide(snapshot: dict) -> dict:
     and the rework cannot start until this very gate opens).
 
     `blockers` is what is still holding the gate closed; `held` is what
-    gets released into Backlog when it opens.
+    gets released into Backlog when it opens; `parked` is what sits in the
+    holding lane as owner signal and is deliberately left where it is
+    (#3780).
     """
     release_issue = os.getenv("RELEASE_ISSUE", "").strip()
     release_exempt = {int(release_issue)} if release_issue.isdigit() else set()
 
     testing = sorted({int(n) for n in snapshot.get("acceptance_testing", [])})
-    held = sorted({int(n) for n in snapshot.get("acceptance_failed", [])})
+    lane = sorted({int(n) for n in snapshot.get("acceptance_failed", [])})
+    # Features the owner parked in the holding lane are not held work: the
+    # gate never moves them (owner decision 2026-08-14, #3780). Absent key
+    # -> the whole lane is held, which is the pre-#3780 behavior.
+    parked = {int(n) for n in snapshot.get("acceptance_failed_parked", [])} & set(lane)
+    held = [n for n in lane if n not in parked]
     rework = {int(n) for n in snapshot.get("rework_features", [])}
 
     # A feature only earns the exemption while its failures are actually
@@ -210,6 +251,7 @@ def decide(snapshot: dict) -> dict:
         "open": not blockers,
         "blockers": blockers,
         "held": held,
+        "parked": sorted(parked),
         "release_issue_exempt": sorted(release_exempt & set(testing)),
         "rework_exempt": sorted(rework & set(testing)),
     }
@@ -246,7 +288,11 @@ def bypass(issue: dict) -> bool:
 
 
 def _merge(snapshots: list[dict]) -> dict:
-    merged: dict[str, list[int]] = {"acceptance_testing": [], "acceptance_failed": []}
+    merged: dict[str, list[int]] = {
+        "acceptance_testing": [],
+        "acceptance_failed": [],
+        "acceptance_failed_parked": [],
+    }
     for snap in snapshots:
         for key in merged:
             merged[key].extend(int(n) for n in snap.get(key, []))

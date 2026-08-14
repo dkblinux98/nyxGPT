@@ -165,6 +165,15 @@ def test_promotion_sweep_sweeps_improvements_too():
     assert "Acceptance%20Failure" in body
 
 
+def test_promotion_sweep_reads_both_parking_lanes():
+    """Owner decision 2026-08-14 (#3780): a feature parked in the holding
+    lane is a promotion candidate too, and only a CLOSED one is (an OPEN
+    item there is drain-gate-held rework)."""
+    body = PROMOTE_SH.read_text()
+    assert "STATUS_ACCEPTANCE_FAILED" in body
+    assert "_issue_open_state" in body
+
+
 class TestPromotionSweepBehaviour:
     """Runs the sweep end to end against a stubbed `gh` (no network).
 

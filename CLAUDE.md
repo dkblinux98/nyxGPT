@@ -351,6 +351,15 @@ held, not worked immediately:
 - On the opening, every held item moves to **`Backlog`** and the scrummaster
   queue is kicked **once** (`scripts/agents/drain_gate.sh`, run by
   `.github/workflows/acceptance_drain_gate.yml`).
+- **`Acceptance Failed` holds two populations (owner decision 2026-08-14,
+  #3780).** The owner also parks *features they have tested and failed*
+  there. The machinery splits them by issue state: **open** = this round's
+  held rework (released on the drain, as above); **closed** = a parked
+  feature, which the gate never moves and which
+  `promote_accepted_features.sh` promotes to `For Release` — from either
+  parking lane — once its whole transitive blocked-by closure is accepted.
+  While any blocker is open, nothing moves it: the placement is owner
+  signal. See `docs/acceptance-drain-gate.md`.
 - **Agent-process issues bypass the gate** and are worked immediately. The
   rule is encoded in `scripts/agents/lib/drain_gate.py`: an owner-authored
   process exception in the body ("…bypasses the drain gate"), the

@@ -6,10 +6,19 @@
 # (@acceptance-failure) or an Improvement (@improvement) -- is a separate
 # issue that BLOCKS the issue it was filed against, expressed through
 # GitHub's native blocked-by/blocks relationship. The blocked issue parks
-# closed in "Acceptance Testing" while its blockers are reworked; when EVERY
-# blocker -- directly and TRANSITIVELY (a blocker of a blocker gates too) --
-# reaches "For Release", this sweep promotes it to "For Release" and comments
-# the promotion on it.
+# closed while its blockers are reworked; when EVERY blocker -- directly and
+# TRANSITIVELY (a blocker of a blocker gates too) -- reaches "For Release",
+# this sweep promotes it to "For Release" and comments the promotion on it.
+#
+# TWO lanes hold such a parked issue (owner decision 2026-08-14, #3780):
+# "Acceptance Testing" (the 2026-08-02 flow) and "Acceptance Failed", where
+# the owner also parks what they have tested and failed, "so that I don't
+# get lost as to what I've tested that has failed". Both are promotion
+# candidates and are treated identically here. In the holding lane only a
+# CLOSED item is such a parked issue: an OPEN one there is rework the drain
+# gate is holding (#3730) and is never promoted -- it has not been fixed
+# yet. Nothing else moves an issue out of that lane; its placement is owner
+# signal, and only this all-blockers-accepted promotion may change it.
 #
 # Relationship storage is native only. The retired `Related feature: #N` body
 # marker is still READ for issues filed before #3731 (documented historical
@@ -29,6 +38,7 @@ require_gh_auth
 
 DRY_RUN="${DRY_RUN:-0}"
 ACCEPTANCE_STATUS="${STATUS_ACCEPTANCE_TESTING:-Acceptance Testing}"
+FAILED_STATUS="${STATUS_ACCEPTANCE_FAILED:-Acceptance Failed}"
 
 log() { echo "[promote] $*" >&2; }
 
@@ -82,8 +92,19 @@ while IFS= read -r feature; do
   done
 
   fstatus="$(issue_status "$feature")"
-  if [[ "$fstatus" != "$ACCEPTANCE_STATUS" ]]; then
-    log "#$feature status '$fstatus' != '$ACCEPTANCE_STATUS' -- not a promotion candidate (blockers: ${direct[*]})"
+  parked_lane=0
+  if [[ "$fstatus" == "$FAILED_STATUS" ]]; then
+    # The owner's other parking lane (#3780). Only a CLOSED item here is a
+    # parked feature; an OPEN one is drain-gate-held rework (#3730), whose
+    # behavior this change leaves untouched.
+    fstate="$(_issue_open_state "$feature")"
+    if [[ "$fstate" != "CLOSED" ]]; then
+      log "#$feature is ${fstate:-UNKNOWN} in '$FAILED_STATUS' -- held rework, not a promotion candidate (blockers: ${direct[*]})"
+      continue
+    fi
+    parked_lane=1
+  elif [[ "$fstatus" != "$ACCEPTANCE_STATUS" ]]; then
+    log "#$feature status '$fstatus' is neither '$ACCEPTANCE_STATUS' nor '$FAILED_STATUS' -- not a promotion candidate (blockers: ${direct[*]})"
     continue
   fi
 
@@ -100,7 +121,9 @@ while IFS= read -r feature; do
   for blocker in "${gate[@]}"; do
     astatus="$(issue_status "$blocker")"
     if [[ "$astatus" != "$STATUS_FOR_RELEASE" ]]; then
-      log "#$feature waits: blocker #$blocker is '$astatus' (needs '$STATUS_FOR_RELEASE')"
+      # Not promotable -> nothing moves. A parked feature stays exactly
+      # where the owner put it, in either lane (#3780).
+      log "#$feature waits in '$fstatus': blocker #$blocker is '$astatus' (needs '$STATUS_FOR_RELEASE')"
       all_accepted=0
       break
     fi
@@ -108,15 +131,21 @@ while IFS= read -r feature; do
   [[ "$all_accepted" == "1" ]] || continue
 
   if [[ "$DRY_RUN" == "1" ]]; then
-    log "DRY_RUN: would promote #$feature to '$STATUS_FOR_RELEASE' (all of: ${gate[*]} accepted)"
+    log "DRY_RUN: would promote #$feature from '$fstatus' to '$STATUS_FOR_RELEASE' (all of: ${gate[*]} accepted)"
     continue
   fi
 
   set_issue_status "$feature" "$STATUS_FOR_RELEASE"
   gate_refs="$(printf '#%s, ' "${gate[@]}")"
+  # Plain `if`, not `[[ ]] && …`: under `set -e` a false test as the whole
+  # statement would exit the sweep.
+  from_note=""
+  if [[ "$parked_lane" == "1" ]]; then
+    from_note=" It was parked in **${FAILED_STATUS}** — the lane the owner also uses for features they have tested and failed — and this promotion is the only move the machinery makes out of it (owner decision 2026-08-14, #3780)."
+  fi
   gh issue comment "$feature" --repo "${REPO_OWNER}/${REPO_NAME}" --body \
-    "✅ **Scrummaster Agent**: every issue blocking this one (${gate_refs%, }) has been accepted (For Release) — promoting this issue to **For Release**. Blocking is read from GitHub's native relationships, transitively (owner decision 2026-08-12, #3731)."
-  log "Promoted #$feature to '$STATUS_FOR_RELEASE' (blockers accepted: ${gate[*]})"
+    "✅ **Scrummaster Agent**: every issue blocking this one (${gate_refs%, }) has been accepted (For Release) — promoting this issue to **For Release**. Blocking is read from GitHub's native relationships, transitively (owner decision 2026-08-12, #3731).${from_note}"
+  log "Promoted #$feature from '$fstatus' to '$STATUS_FOR_RELEASE' (blockers accepted: ${gate[*]})"
   promoted=$((promoted + 1))
 done < <(jq -r 'keys[]' <<<"$blockers_json")
 

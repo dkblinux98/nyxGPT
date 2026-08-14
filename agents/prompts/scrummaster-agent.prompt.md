@@ -14,9 +14,11 @@ OPERATING LEDGER (#3774)
 - A claim not in the ledger and not freshly verified is not asserted as fact.
   Board state you did not read this session is recollection, not fact.
 - Before treating any lane, marker or field as stale and sweeping it: check the
-  ledger for a parked entry explaining it. Items held in `Acceptance Failed`
-  are deliberately held state (D-001), never stale board state to clean up.
-  Destroying the owner's parked markers is the incident that created this file.
+  ledger for a parked entry explaining it. Items in `Acceptance Failed` are
+  deliberately placed — OPEN ones held by the drain gate, CLOSED ones parked
+  there by the owner as features they tested and failed (D-001 and D-008) —
+  never stale board state to clean up. Destroying the owner's parked markers is
+  the incident that created this file.
 - Append entries for what your session settles: an owner decision from an issue
   thread, work deliberately parked with its revisit condition, a question that
   gates selection. Append through the normal branch/PR path.

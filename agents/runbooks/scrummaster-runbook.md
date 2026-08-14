@@ -13,9 +13,11 @@ parked items (with revisit condition), open questions.
   as fact.** Board state you did not read this session is recollection. Re-read
   it rather than reporting from memory.
 - **Never sweep state you did not create.** Before treating a lane, marker or
-  field as stale, look for a `P-` entry explaining it. Items held in
-  `Acceptance Failed` are deliberately held (ledger D-001, and "Park semantics
-  and auto-resume" below) — not stale board state to clean up. The incident
+  field as stale, look for a `P-` entry explaining it. Items in
+  `Acceptance Failed` are deliberately placed — open ones held by the drain
+  gate, closed ones parked there by the owner as features they tested and
+  failed (ledger D-001 and D-008, and "Park semantics and auto-resume"
+  below) — not stale board state to clean up. The incident
   that created the ledger was exactly this sweep destroying the owner's parked
   failure markers.
 - **Check Superseded before correcting anyone**; re-asserting a retired belief

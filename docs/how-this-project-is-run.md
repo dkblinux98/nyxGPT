@@ -150,11 +150,17 @@ about where the process broke:
 Neither bucket is worked the moment it is filed. Both land in an
 **Acceptance Failed** holding lane and wait for the acceptance round to
 finish: the fix process starts once **Acceptance Testing** has drained
-(empty except the release tracking issue), at which point the whole holding
-lane moves to Backlog and the queue is kicked once. That keeps the owner's
+(empty except the release tracking issue), at which point the held items
+move to Backlog and the queue is kicked once. That keeps the owner's
 testing rhythm intact — test everything, drain, test the next candidate —
 instead of flooding the lane under test with freshly-merged fixes.
 Agent-process issues bypass the gate.
+
+The same lane is also where the owner parks **features they have tested and
+failed**, so that what has failed stays visible in one place. Those are
+closed issues, and the machinery reads the difference: closed items in the
+lane are parked and are moved only by the promotion sweep, once everything
+blocking them is accepted; open items are the round's held rework.
 
 The other end of the cycle is automated from the same signal: the owner
 moving the **release tracking issue** to "For Release" is the release

@@ -14,6 +14,10 @@ set -euo pipefail
 # release is accepted). On the opening, every held item moves to `Backlog`
 # for normal scrummaster selection and the queue is kicked exactly once.
 #
+# Held means the OPEN part of the lane. The CLOSED items there are features
+# the owner tested, failed and parked (owner decision 2026-08-14, #3780);
+# they are reported as `parked` and never moved by this script.
+#
 # Idempotent: with the lane already empty it releases nothing and posts
 # nothing, so it is safe to poll (acceptance_drain_gate.yml runs it on a
 # schedule and after every promotion sweep).

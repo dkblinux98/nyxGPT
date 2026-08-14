@@ -858,13 +858,20 @@ sprint_autopilot_paused() {
 #
 # Agent-process issues bypass the gate (issue_bypasses_drain_gate below).
 
-# Every issue in the `Acceptance Testing` and `Acceptance Failed` lanes,
-# as {"acceptance_testing":[...],"acceptance_failed":[...]}. Pages the same
-# project-items query the selector and the autopilot use.
+# Every issue in the `Acceptance Testing` and `Acceptance Failed` lanes, as
+# {"acceptance_testing":[...],"acceptance_failed":[...],
+#  "acceptance_failed_parked":[...]}. Pages the same project-items query the
+# selector and the autopilot use.
 #
-# Deliberately state-agnostic: an item awaiting acceptance is normally a
-# CLOSED issue, so "has the lane drained?" has to count closed items too --
-# unlike count_sprint_backlog_open, which asks about dispatchable work.
+# Deliberately state-agnostic for the lane lists: an item awaiting acceptance
+# is normally a CLOSED issue, so "has the lane drained?" has to count closed
+# items too -- unlike count_sprint_backlog_open, which asks about
+# dispatchable work.
+#
+# `acceptance_failed_parked` is the CLOSED subset of the holding lane: the
+# features the owner tested, failed and parked there (owner decision
+# 2026-08-14, #3780). The gate never moves those; only the promotion sweep
+# does, once their whole blocked-by closure is accepted.
 acceptance_lane_snapshot() {
   require_cmd jq
   require_cmd python3
@@ -906,10 +913,12 @@ acceptance_lane_snapshot() {
 # The issues parked awaiting rework by the currently held issues, as a JSON
 # array. Read from each held issue's NATIVE blocking relationship (#3731),
 # with the retired "Related feature: #N" body marker kept as the historical
-# fallback. Those issues park CLOSED in Acceptance Testing until everything
-# blocking them reaches For Release (promote_accepted_features.sh), so
-# without this the gate would deadlock: the issue waits on its failure, the
-# failure waits on the gate, and the gate waits on the issue.
+# fallback. Those issues park CLOSED in Acceptance Testing -- or in
+# Acceptance Failed, where the owner keeps what they have tested and failed
+# (#3780) -- until everything blocking them reaches For Release
+# (promote_accepted_features.sh), so without this the gate would deadlock:
+# the issue waits on its failure, the failure waits on the gate, and the
+# gate waits on the issue.
 #
 # Labels are fetched alongside the edges because only issues carrying a
 # rework label park anything -- the same filter promote_accepted_features.sh
@@ -964,7 +973,11 @@ drain_gate_state() {
   require_cmd python3
   local snapshot held rework
   snapshot="$(acceptance_lane_snapshot)" || return 1
-  held="$(jq -c '.acceptance_failed' <<<"$snapshot")"
+  # Owner-parked features (CLOSED items in the holding lane, #3780) are not
+  # held work: they are subtracted here so the rework lookup does not spend
+  # an API call per parked feature, and `decide` subtracts them again from
+  # `held` so a gate opening can never move one.
+  held="$(jq -c '.acceptance_failed - (.acceptance_failed_parked // [])' <<<"$snapshot")"
   rework="$(drain_gate_rework_features "$held")" || rework="[]"
   [[ -n "$rework" ]] || rework="[]"
   snapshot="$(jq -c --argjson r "$rework" '. + {rework_features: $r}' <<<"$snapshot")"
@@ -1016,8 +1029,10 @@ The fix process starts when **${STATUS_ACCEPTANCE_TESTING:-Acceptance Testing}**
 # history shows which drain released which batch.
 DRAIN_GATE_KICK_MARKER="<!-- nyxgpt-drain-gate-release -->"
 
-# Opens the gate: moves every held Acceptance Failed item to Backlog and
-# kicks the scrummaster queue ONCE. Prints a JSON result. Idempotent by
+# Opens the gate: moves every HELD Acceptance Failed item to Backlog and
+# kicks the scrummaster queue ONCE. Held means the round's open rework; the
+# owner's parked (CLOSED) features in the same lane are reported and left
+# exactly where they are (#3780). Prints a JSON result. Idempotent by
 # construction -- once the lane is empty a later run releases nothing and
 # posts no kick, so a poll every few minutes is free of side effects.
 #
@@ -1037,6 +1052,13 @@ drain_gate_release() {
     jq -n -c --argjson s "$state" '$s + {action: "none", reason: "gate closed"}'
     return 0
   fi
+
+  # Never silently drop what the gate deliberately leaves behind: an owner
+  # parked it there (#3780) and the run log has to show it was seen.
+  local parked
+  parked="$(jq -r '.parked // [] | join(", #")' <<<"$state")"
+  [[ -z "$parked" ]] \
+    || echo "[drain-gate] Owner-parked features left in ${STATUS_ACCEPTANCE_FAILED:-Acceptance Failed}: #${parked} (moved only by the promotion sweep, #3780)." >&2
 
   held="$(jq -r '.held[]' <<<"$state")"
   count="$(_count_lines "$held")"

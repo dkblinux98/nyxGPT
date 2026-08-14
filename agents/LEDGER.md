@@ -226,6 +226,22 @@ not agent-editable except to add a `Re-verify` result or a supersession pointer.
   re-propose disabling immutability as a fix for `HTTP 422` asset-upload errors.
   Source: owner in session, 2026-08-14; #3763.
 
+- **D-008** · 2026-08-14 · owner — The `Acceptance Failed` lane holds **two**
+  populations, and the cascade machinery reads both. Besides this round's held
+  rework (#3730), the owner parks there the *features they have tested and
+  failed*, "so that I don't get lost as to what I've tested that has failed".
+  The discriminator is issue **state**: **open** = held rework, released to
+  `Backlog` when the gate opens; **closed** = a parked feature, which
+  `promote_accepted_features.sh` treats exactly like one parked in
+  `Acceptance Testing` (promoted to `For Release` when its whole transitive
+  blocked-by closure is accepted) and which **nothing else may move** — the
+  placement is owner signal, and while any blocker is open the machinery leaves
+  it untouched. Extends **D-001**, whose "held state, never stale board state
+  to sweep" rule now covers parked features too.
+  Source: #3780; `docs/acceptance-drain-gate.md` §`Acceptance Failed` holds two
+  different things; `scripts/agents/promote_accepted_features.sh`;
+  `scripts/agents/lib/drain_gate.py`.
+
 ## Verifications
 
 - **V-001** · 2026-08-14 — Releases in this repository are immutable: a
@@ -323,6 +339,19 @@ not agent-editable except to add a `Re-verify` result or a supersession pointer.
   `rest_path=repos/dkblinux98/nyxGPT/immutable-releases`.
   Re-verify when: agent tokens gain repository-administration read scope, or
   `gh_query.yml` changes its token.
+
+- **V-008** · 2026-08-14 — The dual-lane rule of **D-008** is executed, not
+  just written: a CLOSED issue parked in `Acceptance Failed` is promoted to
+  `For Release` only when its whole transitive closure is accepted, is left
+  untouched while any blocker is open, and is never released to `Backlog` by a
+  gate opening; an OPEN issue in the same lane keeps its #3730 holding-pen
+  behavior (released on the drain, never promoted).
+  Method: `bash tests/test_promote_accepted_features.sh` and
+  `bash tests/test_drain_gate_lib.sh` run 2026-08-14 on the #3780 branch —
+  both run the real scripts against a stubbed `gh`/`graphql`, and both are now
+  executed by `pytest tests/unit/` as well.
+  Re-verify when: the lane names change, or either sweep's candidate rule is
+  edited.
 
 ## Parked
 

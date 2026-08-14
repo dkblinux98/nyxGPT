@@ -637,8 +637,9 @@ the same native blocked-by relationship. The label distinction is a
 That's it. The system will automatically (related-issue model, owner decision
 2026-08-02):
 - Leave the original feature/doc/release/improvement issue **intact** — it
-  stays closed, keeps its labels, and remains in "Acceptance Testing". The
-  original never re-enters the dev/review cycle.
+  stays closed, keeps its labels, and stays in whichever parking lane it is
+  in: "Acceptance Testing", or "Acceptance Failed" if you moved it there
+  (#3780). The original never re-enters the dev/review cycle.
 - Create a **new** issue labeled "Acceptance Failure" marked as **blocking**
   the original through GitHub's native issue relationship — the original's
   Relationships panel shows exactly what holds it back, and that panel is the
@@ -668,6 +669,13 @@ Two exemptions, both encoded rather than incidental:
 - **agent-process issues** bypass the gate entirely and are worked
   immediately — declare it in the issue body ("…bypasses the drain gate")
   or with the `<!-- drain-gate: bypass -->` marker.
+
+**You may also park a failed feature in that lane** (owner decision
+2026-08-14, #3780) — it is where you keep what you have tested and failed.
+The machinery reads it: a **closed** item in `Acceptance Failed` is a parked
+feature, promoted to "For Release" by the promotion sweep once its whole
+blocked-by closure is accepted, and moved by nothing else. An **open** item
+is this round's held rework, released to Backlog on the drain as above.
 
 Once released to Backlog, the item follows the normal flow: the developer
 agent takes it, creates a `fix/N-...` branch and a PR with `Closes #N`.
