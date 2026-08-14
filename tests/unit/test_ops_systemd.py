@@ -1215,6 +1215,46 @@ def test_docker_hop_not_used_when_nothing_reaches_the_daemon(monkeypatch, _no_do
     assert "loginctl terminate-user" in results[-1].details
 
 
+def test_docker_engine_step_reports_no_failure_once_a_hop_recovers_it(
+    monkeypatch, _no_docker_socket_hop
+):
+    """#3762: `[4/23] docker engine` printed `[FAIL] ...` and then `[OK]` lines
+    for the same step. A group change ops then routed around is a `[NOTE]`, not
+    a failure -- and the step's overall verdict must say it passed."""
+    _hop_engine_env(monkeypatch, _hop_run_stub())
+    # The group change itself fails; the `sg docker` hop still gets there.
+    monkeypatch.setattr(
+        ops, "_privileged_run", lambda cmd, **k: _cp(1 if cmd[0] == "usermod" else 0)
+    )
+
+    results = ops._ensure_docker_engine()
+
+    assert all(r.ok for r in results), [r.message for r in results if not r.ok]
+    superseded = [r for r in results if ops._result_status_label(r) == "NOTE"]
+    assert superseded, [r.message for r in results]
+    assert "'docker' group" in superseded[0].message
+    # The original remediation survives for anyone reading the detail line.
+    assert "loginctl terminate-user" in superseded[0].details
+    assert results[-1].ok is True and "`sg docker`" in results[-1].message
+
+
+def test_docker_engine_step_keeps_the_group_failure_when_nothing_recovers_it(
+    monkeypatch, _no_docker_socket_hop
+):
+    """The other direction: with no hop available the failed attempt is part of
+    why the step failed, so it must not be softened into a note."""
+    _hop_engine_env(monkeypatch, _hop_run_stub(available=()))
+    monkeypatch.setattr(
+        ops, "_privileged_run", lambda cmd, **k: _cp(1 if cmd[0] == "usermod" else 0)
+    )
+
+    results = ops._ensure_docker_engine()
+
+    failures = [r.message for r in results if not r.ok]
+    assert any("'docker' group" in m for m in failures)
+    assert results[-1].ok is False
+
+
 def test_hop_env_probe_checks_home_and_a_forwarded_variable(monkeypatch, _no_docker_socket_hop):
     """Both mechanisms the hop must not break are exercised: `${HOME}` (Compose
     bind-mount interpolation) and an `env=`-passed variable (`docker compose

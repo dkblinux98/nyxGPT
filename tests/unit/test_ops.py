@@ -12781,6 +12781,64 @@ def test_emit_results_prints_skip_label_for_skipped_result(capsys):
 
 
 @pytest.mark.unit
+def test_result_status_label_note_for_superseded_attempt():
+    """#3762: an attempt the step recovered from is neither OK nor FAIL."""
+    r = ops.OpsResult(True, "Superseded: could not add 'ec2-user' to the 'docker' group")
+    assert ops._result_status_label(r) == "NOTE"
+
+
+@pytest.mark.unit
+def test_superseded_attempts_keeps_the_diagnostic_and_passes_successes_through():
+    failed = ops.OpsResult(False, "Could not add 'x' to the 'docker' group", "run usermod")
+    ok = ops.OpsResult(True, "Docker daemon enabled and started")
+
+    settled = ops._superseded_attempts([failed, ok])
+
+    assert [r.ok for r in settled] == [True, True]
+    assert settled[0].message.startswith("Superseded: Could not add 'x'")
+    assert settled[0].details == "run usermod"
+    assert settled[1] is ok
+
+
+@pytest.mark.unit
+def test_run_steps_closes_a_mixed_step_with_one_verdict(capsys):
+    """#3762: `[4/23] docker engine` printed a FAIL and then two OKs, with no
+    answer to "did step 4 pass?". The verdict is now the step's last word."""
+    steps = [
+        (
+            "docker engine",
+            lambda: [
+                ops.OpsResult(False, "Could not install Docker Compose automatically"),
+                ops.OpsResult(True, "Docker daemon enabled and started"),
+                ops.OpsResult(True, "Docker daemon is reachable"),
+            ],
+        )
+    ]
+
+    ops._run_steps("install", steps)
+
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith("[")]
+    assert lines[-1] == (
+        "[FAIL] step 1/1 'docker engine' did not fully succeed: 1 of 3 checks failed "
+        "(Could not install Docker Compose automatically)"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "results",
+    [
+        [ops.OpsResult(True, "all good"), ops.OpsResult(True, "also good")],
+        [ops.OpsResult(False, "all bad"), ops.OpsResult(False, "also bad")],
+    ],
+)
+def test_run_steps_adds_no_verdict_when_a_step_already_reads_coherently(capsys, results):
+    ops._run_steps("install", [("a step", lambda: results)])
+
+    assert "did not fully succeed" not in capsys.readouterr().out
+
+
+@pytest.mark.unit
 def test_step_heartbeat_prints_still_running_line_while_step_is_in_flight(monkeypatch):
     # Speed the heartbeat up so the test doesn't wait the real 5s interval.
     monkeypatch.setattr(ops, "_STEP_HEARTBEAT_INTERVAL_S", 0.01)
