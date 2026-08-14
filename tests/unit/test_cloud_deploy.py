@@ -8,6 +8,7 @@ repo-less guarantee on the provisioning script.
 """
 
 import argparse
+import io
 import json
 import subprocess
 
@@ -213,8 +214,44 @@ def test_provision_script_skips_observability_when_asked():
         cloud_deploy.resolve_plan(_args(skip_observability=True))
     )
     assert 'NYXGPT_PROFILES="monitoring,logging,tracing,errors"' in with_obs
-    assert "ops observability" in with_obs
+    # With profiles the *install* reconciles them (its "observability stack"
+    # step), so the script no longer follows it with a second `ops
+    # observability` pass -- see the single-pass test below (#3762).
+    assert "run_nyxgpt ops install\n" in with_obs
     assert 'NYXGPT_PROFILES=""' in without
+    assert "run_nyxgpt ops install --skip-observability" in without
+
+
+@pytest.mark.parametrize("profiles", ["monitoring,logging,tracing,errors", ""])
+def test_provision_script_runs_exactly_one_install_pass(profiles):
+    """#3762: the owner watched the full 23-step install run twice in one deploy.
+
+    Two causes, both gone: rc5's `sg docker -c "..." || "$NYXGPT" ...` retry
+    (removed by #3760) and the `ops observability` call that followed a full
+    `ops install`, re-running the same Grafana provisioning reconcile.
+
+    The `if` block is executed with `run_nyxgpt` stubbed rather than
+    string-matched, so both branches are counted as they actually run -- a
+    text scan sees the taken and untaken branch alike.
+    """
+    script = cloud_deploy.render_provision_script(cloud_deploy.resolve_plan(_args()))
+    start = script.index('if [ -n "$NYXGPT_PROFILES" ]; then')
+    block = script[start : script.index("\nfi\n", start) + len("\nfi\n")]
+
+    completed = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'run_nyxgpt() {{ echo "PASS: $*"; }}\nNYXGPT_PROFILES="{profiles}"\n{block}',
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    passes = [line for line in completed.stdout.splitlines() if line.startswith("PASS:")]
+    assert passes == [
+        "PASS: ops install" if profiles else "PASS: ops install --skip-observability"
+    ], completed.stdout
 
 
 def test_provision_script_never_runs_nyxgpt_without_the_docker_group():
@@ -227,8 +264,7 @@ def test_provision_script_never_runs_nyxgpt_without_the_docker_group():
 
     assert 'sg docker -c "$NYXGPT $*"' in script
     assert '|| "$NYXGPT" ops' not in script
-    for command in ("ops install", "ops observability"):
-        assert f"run_nyxgpt {command}" in script
+    assert "run_nyxgpt ops install" in script
 
 
 def test_provision_script_leaves_the_compose_plugin_to_ops_install():
@@ -266,11 +302,20 @@ def test_provision_script_enables_self_healing_without_observability(monkeypatch
     assert '"$NYXGPT" self-heal enable' in script
 
 
-def test_provision_instance_reports_self_heal_enabled(monkeypatch):
-    def fake_run(argv, **kwargs):
-        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+def _fake_provision_run(monkeypatch, returncode, output):
+    """Stand in for the remote run, recording the script it was handed."""
+    seen = {}
 
-    monkeypatch.setattr(cloud_deploy.subprocess, "run", fake_run)
+    def fake_run(target, script):
+        seen["script"] = script
+        return returncode, list(output)
+
+    monkeypatch.setattr(cloud_deploy, "_run_provision_script", fake_run)
+    return seen
+
+
+def test_provision_instance_reports_self_heal_enabled(monkeypatch):
+    _fake_provision_run(monkeypatch, 0, [])
     target = cloud_deploy.DeployTarget(host="198.51.100.10")
 
     result = cloud_deploy.provision_instance(target, cloud_deploy.resolve_plan(_args()))
@@ -279,13 +324,89 @@ def test_provision_instance_reports_self_heal_enabled(monkeypatch):
 
 
 def test_provision_instance_raises_with_the_remote_diagnostic(monkeypatch):
-    def fake_run(argv, **kwargs):
-        return subprocess.CompletedProcess(argv, 1, stdout="", stderr="dnf: no such package")
-
-    monkeypatch.setattr(cloud_deploy.subprocess, "run", fake_run)
+    _fake_provision_run(monkeypatch, 1, ["dnf: no such package"])
     target = cloud_deploy.DeployTarget(host="198.51.100.10")
     with pytest.raises(CloudCommandError, match="no such package"):
         cloud_deploy.provision_instance(target, cloud_deploy.resolve_plan(_args()))
+
+
+def test_provision_failure_lists_every_failed_step_untruncated():
+    """#3762: the summary quoted a character slice of stderr, so the owner's run
+    ended on `Provisioning the instance failed: 2-user/.nyxGPT/volumes/...` --
+    the tail of `ec2-user`, spliced mid-word, and not a failed step at all."""
+    long_path = "/home/ec2-user/.nyxGPT/volumes/prometheus"
+    output = [
+        "[1/23] sync packaged ops resources...",
+        "[OK] Synced packaged ops resources",
+        "[4/23] docker engine...",
+        "[FAIL] Could not install Docker Compose automatically",
+        "[OK] Docker daemon is reachable",
+        "[FAIL] step 4/23 'docker engine' did not fully succeed: 1 of 3 checks failed",
+        f"[FAIL] {long_path} is owned by the container's uid (65534)",
+    ]
+
+    detail = cloud_deploy._provision_failure_detail(output)
+
+    assert detail.splitlines()[0] == "Provisioning the instance failed. Failed steps:"
+    assert "[FAIL] Could not install Docker Compose automatically" in detail
+    assert "'docker engine' did not fully succeed" in detail
+    # Untruncated and never spliced mid-word: the whole path survives.
+    assert long_path in detail
+    # Successful steps are not dressed up as failures.
+    assert "Docker daemon is reachable" not in detail
+
+
+def test_provision_failure_falls_back_to_whole_tail_lines():
+    """A failure before `ops install` starts has no `[FAIL]` line to name, so the
+    fallback quotes the tail -- cut on line boundaries, never mid-line."""
+    output = [f"line {i}" for i in range(60)]
+
+    detail = cloud_deploy._provision_failure_detail(output)
+
+    lines = detail.splitlines()
+    assert lines[0].startswith("Provisioning the instance failed with no step-level diagnostic.")
+    quoted = [line.strip() for line in lines[1:]]
+    assert quoted == [f"line {i}" for i in range(60 - cloud_deploy._PROVISION_TAIL_LINES, 60)]
+
+
+def test_provision_failure_says_so_when_nothing_was_returned():
+    assert "no diagnostic returned" in cloud_deploy._provision_failure_detail(["", "  "])
+
+
+def test_run_provision_script_streams_and_captures_merged_output(monkeypatch, capsys):
+    """The operator sees the run live *and* the summary can quote it (#3762):
+    stderr is merged into stdout so both are captured in the right order."""
+    handed = {}
+
+    class _FakeProc:
+        returncode = 2
+
+        def __init__(self):
+            self.stdin = io.StringIO()
+            self.stdout = io.StringIO("[1/23] config...\n[FAIL] boom\n")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_popen(argv, **kwargs):
+        handed["argv"] = argv
+        handed["kwargs"] = kwargs
+        return _FakeProc()
+
+    monkeypatch.setattr(cloud_deploy.subprocess, "Popen", fake_popen)
+    target = cloud_deploy.DeployTarget(host="198.51.100.10")
+
+    returncode, output = cloud_deploy._run_provision_script(target, "echo hi")
+
+    assert returncode == 2
+    assert output == ["[1/23] config...", "[FAIL] boom"]
+    assert handed["kwargs"]["stderr"] is subprocess.STDOUT
+    assert handed["argv"][-1] == "bash -s"
+    # Streamed as it arrives rather than withheld until the end.
+    assert "[FAIL] boom" in capsys.readouterr().out
 
 
 # --- SSH command construction --------------------------------------------

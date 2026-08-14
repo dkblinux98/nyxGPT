@@ -294,19 +294,59 @@ class OpsResult:
     details: str = ""
 
 
+# Prefix a step uses to mark an attempt that failed but that a later fallback
+# in the *same* step already made moot -- see `_superseded_attempts`.
+_SUPERSEDED_PREFIX = "Superseded"
+
+
 def _result_status_label(r: OpsResult) -> str:
-    """Return the stdout status label for `r`: "OK", "FAIL", or "SKIP".
+    """Return the stdout status label for `r`: "OK", "FAIL", "SKIP" or "NOTE".
 
     A skip is still `ok=True` (accounting/exit-code logic is unaffected) but
     reads misleadingly as a plain "OK" -- results whose message starts with
     "Skipped" (the existing convention for a deliberate no-op, e.g. "no
     docker found") print as SKIP instead (#3558).
+
+    "NOTE" is the same idea for the other direction: an attempt that *failed*
+    but that the step then recovered from is not a success and not a failure,
+    and printing it as either misreports the step (#3762).
     """
     if not r.ok:
         return "FAIL"
     if r.message.strip().lower().startswith("skip"):
         return "SKIP"
+    if r.message.strip().startswith(_SUPERSEDED_PREFIX):
+        return "NOTE"
     return "OK"
+
+
+def _superseded_attempts(results: list[OpsResult]) -> list[OpsResult]:
+    """Rewrite failed attempts in `results` that a later fallback already made moot.
+
+    A step that tries one route, fails, and then succeeds by another route
+    used to print `[FAIL] <first route>` followed by `[OK] <second route>`,
+    which reads as a step contradicting itself -- the owner's 2026-08-14
+    cloud acceptance run saw exactly that under `[4/23] docker engine`
+    (#3762). The attempt genuinely failed, so it is not relabelled "OK";
+    it becomes a `[NOTE]` whose details keep the original diagnostic, and
+    the step's verdict is left to the result that actually settled it.
+
+    Successful results pass through untouched, so callers can hand a whole
+    sub-step's output here without filtering first.
+    """
+    settled: list[OpsResult] = []
+    for r in results:
+        if r.ok:
+            settled.append(r)
+            continue
+        settled.append(
+            OpsResult(
+                True,
+                f"{_SUPERSEDED_PREFIX}: {r.message} (recovered below -- not a failure of this step)",
+                r.details,
+            )
+        )
+    return settled
 
 
 def _emit_results(action: str, results: list[OpsResult]) -> bool:
@@ -456,8 +496,52 @@ def _run_steps(
         if elapsed >= _SLOW_STEP_THRESHOLD_S:
             slow_steps.append((step_name, elapsed))
         _emit_results(action, step_results)
+        _emit_step_verdict(action, step_name, i, total, step_results)
         results.extend(step_results)
     return results, slow_steps
+
+
+def _emit_step_verdict(
+    action: str,
+    step_name: str,
+    index: int,
+    total: int,
+    results: list[OpsResult],
+) -> None:
+    """Print one closing verdict for a step whose results were mixed (#3762).
+
+    Each `OpsResult` is true on its own, but a step that emits a `[FAIL]`
+    and then `[OK]` lines for its other checks has no single answer to "did
+    step 4 pass?" -- the owner's 2026-08-14 cloud acceptance run read that
+    output as self-contradictory. The step's last word is added here so the
+    answer is always the last line about it.
+
+    Only mixed steps get a verdict: an all-OK or all-FAIL step already reads
+    coherently, and a failure the step recovered from is a `[NOTE]`
+    (`_superseded_attempts`), not a failure, so it doesn't trigger one either.
+    """
+    failures = [r for r in results if not r.ok]
+    if not failures or len(failures) == len(results):
+        return
+    summary = "; ".join(r.message for r in failures)
+    print(
+        f"[FAIL] step {index}/{total} {step_name!r} did not fully succeed: "
+        f"{len(failures)} of {len(results)} checks failed ({summary})"
+    )
+    logger.warning(
+        "ops: %s step %s did not fully succeed: %s",
+        action,
+        step_name,
+        summary,
+        extra={
+            "component": "ops",
+            "action": action,
+            "step": step_name,
+            "ok": False,
+            "failed_checks": len(failures),
+            "total_checks": len(results),
+        },
+    )
 
 
 def _print_slow_steps_summary(slow_steps: list[tuple[str, float]]) -> None:
@@ -3686,16 +3770,22 @@ def _ensure_docker_engine() -> list[OpsResult]:
         results.append(OpsResult(True, "Docker daemon is reachable"))
         return results
 
-    results.extend(_ensure_docker_group_membership())
+    # The group-membership attempt is reported *after* we know whether the
+    # daemon ended up reachable: a `usermod` that failed on a host ops then
+    # reached through `sudo -n docker` is history, not this step's verdict
+    # (#3762). Only when nothing worked does it stay a `[FAIL]`.
+    group_results = _ensure_docker_group_membership()
     if _docker_daemon_reachable():
+        results.extend(_superseded_attempts(group_results))
         results.append(OpsResult(True, "Docker daemon is reachable"))
     elif _enable_docker_socket_hop():
         hop = _DOCKER_SOCKET_HOP_LABELS[str(_docker_socket_hop())]
+        results.extend(_superseded_attempts(group_results))
         results.append(
             OpsResult(
                 True,
                 f"Docker daemon is reachable via {hop} for the rest of this run",
-                "The 'docker' group membership added above only applies to new login "
+                "A 'docker' group membership only applies to new login "
                 f"sessions, so ops runs Docker through {hop} for the rest of this "
                 "process instead of failing every container step. The hop preserves "
                 "this session's environment, so Compose bind mounts still resolve "
@@ -3704,6 +3794,9 @@ def _ensure_docker_engine() -> list[OpsResult]:
             )
         )
     else:
+        # Nothing recovered it, so the failed attempt keeps its `[FAIL]`:
+        # it is part of why this step failed, not noise to hide.
+        results.extend(group_results)
         results.append(
             OpsResult(
                 False,

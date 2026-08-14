@@ -556,9 +556,16 @@ fi
 # --- Bring the stack up ------------------------------------------------
 # Services bind 127.0.0.1 (P6-1 loopback default); nothing is published to a
 # non-loopback address, which is what makes the SSH tunnel the only path in.
+#
+# Exactly one install pass per deploy (#3762). `ops install` without
+# `--skip-observability` already runs the observability volume/secret/stack
+# steps, so the `ops observability` call that used to follow it re-ran the
+# same Grafana provisioning reconcile a second time -- work the operator
+# reads as the deploy repeating itself, on top of the `|| "$NYXGPT" ...`
+# retry #3760 removed. A re-deploy still converges: `ops install` is a
+# reconcile, not a first-run-only bootstrap.
 if [ -n "$NYXGPT_PROFILES" ]; then
   run_nyxgpt ops install
-  run_nyxgpt ops observability
 else
   run_nyxgpt ops install --skip-observability
 fi
@@ -592,6 +599,74 @@ def render_provision_script(plan: DeployPlan) -> str:
     )
 
 
+# How many trailing lines of the provisioning output a failure summary quotes
+# when the run produced no `[FAIL]` line to name (an OS-package or shell
+# error before `ops install` ever started, say). Whole lines, never a
+# character slice -- see `_provision_failure_detail`.
+_PROVISION_TAIL_LINES = 25
+
+# The prefix `nyxgpt ops` puts on every failed check, including the per-step
+# verdict line `_emit_step_verdict` adds (#3762).
+_OPS_FAIL_PREFIX = "[FAIL]"
+
+
+def _run_provision_script(target: DeployTarget, script: str) -> tuple[int, list[str]]:
+    """Run `script` on the instance, echoing its output live and keeping a copy.
+
+    stdout was streamed straight to the terminal before and stderr was
+    captured but never shown until the end, so the two interleaved wrongly
+    for the operator *and* the only text a failure could quote was stderr --
+    which is precisely where `ops install`'s `[FAIL]` lines are not (they go
+    to stdout). Merging the streams fixes both: errors appear in place, and
+    the failure summary can name the steps that actually failed (#3762).
+
+    The script is written to stdin in one go before reading: it is a few KB,
+    comfortably inside the pipe buffer, so this cannot deadlock against a
+    remote that hasn't started draining yet.
+    """
+    argv = [*ssh_argv(target), "bash -s"]
+    output: list[str] = []
+    with subprocess.Popen(
+        argv,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    ) as proc:
+        assert proc.stdin is not None and proc.stdout is not None  # nosec B101 - pipes requested
+        proc.stdin.write(script)
+        proc.stdin.close()
+        for line in proc.stdout:
+            print(line, end="")
+            output.append(line.rstrip("\n"))
+    return proc.returncode, output
+
+
+def _provision_failure_detail(output: list[str]) -> str:
+    """Summarize why provisioning failed, from the run's own output.
+
+    Lists every failed step in full rather than splicing a fixed number of
+    characters off the end of the log: the owner's 2026-08-14 acceptance run
+    ended on `Provisioning the instance failed: 2-user/.nyxGPT/volumes/...`,
+    where `2-user` is the tail of `ec2-user` left by a mid-word slice of the
+    captured stderr (#3762). Failed steps are quoted untruncated; the tail is
+    only a fallback, and is cut on line boundaries.
+    """
+    failures = [line.strip() for line in output if line.strip().startswith(_OPS_FAIL_PREFIX)]
+    if failures:
+        listed = "\n".join(f"  {line}" for line in failures)
+        return f"Provisioning the instance failed. Failed steps:\n{listed}"
+    tail = [line for line in output if line.strip()][-_PROVISION_TAIL_LINES:]
+    if not tail:
+        return "Provisioning the instance failed (no diagnostic returned)."
+    quoted = "\n".join(f"  {line}" for line in tail)
+    return (
+        "Provisioning the instance failed with no step-level diagnostic. "
+        f"Last {len(tail)} line(s) of its output:\n{quoted}"
+    )
+
+
 def provision_instance(target: DeployTarget, plan: DeployPlan) -> dict[str, Any]:
     """Install and start the nyxGPT stack on the instance.
 
@@ -602,14 +677,9 @@ def provision_instance(target: DeployTarget, plan: DeployPlan) -> dict[str, Any]
     script = render_provision_script(plan)
     # `bash -s` over stdin rather than a quoted argv: the script is long and
     # multi-line, and piping it keeps quoting out of the picture entirely.
-    argv = [*ssh_argv(target), "bash -s"]
-    completed = subprocess.run(argv, input=script, stderr=subprocess.PIPE, text=True)
-    if completed.returncode != 0:
-        detail = (completed.stderr or "").strip()
-        raise CloudCommandError(
-            "Provisioning the instance failed"
-            + (f": {detail[-2000:]}" if detail else " (no diagnostic returned).")
-        )
+    returncode, output = _run_provision_script(target, script)
+    if returncode != 0:
+        raise CloudCommandError(_provision_failure_detail(output))
     # `self_heal_enabled` is safe to assert rather than re-probe: the script
     # runs under `set -euo pipefail`, so a failed `self-heal enable` would
     # have made this a non-zero exit and raised above.

@@ -201,8 +201,28 @@ a hung one:
 If a step fails -- including one that raises an unexpected exception -- the
 output names the step, shows the underlying error, and gives a remediation
 hint (run `nyxgpt ops doctor` for diagnostics, or `nyxgpt ops logs
-<service>` for recent logs) instead of a bare `[FAIL]` line. A run's summary
-also lists any step that took longer than a few seconds, with its duration,
+<service>` for recent logs) instead of a bare `[FAIL]` line.
+
+A step that checks several things reports one coherent status rather than a
+mix the reader has to reconcile (#3762):
+
+- An attempt that failed but that the *same step* then recovered from --
+  adding the invoking user to the `docker` group fails, and ops reaches the
+  daemon through `sg docker` instead -- prints as `[NOTE] Superseded: ...`,
+  keeping the original diagnostic in its detail line without claiming the
+  step failed.
+- A step that really did end with some checks failing and others passing
+  closes with a single verdict line, so the last thing printed about a step
+  is always its answer:
+
+```
+[4/23] docker engine...
+[FAIL] Could not install Docker Compose automatically
+[OK] Docker daemon is reachable
+[FAIL] step 4/23 'docker engine' did not fully succeed: 1 of 3 checks failed (Could not install Docker Compose automatically)
+```
+
+A run's summary also lists any step that took longer than a few seconds, with its duration,
 so slow steps are easy to spot after the fact:
 
 ```
@@ -212,8 +232,9 @@ Slow steps (over 3s):
 ```
 
 Pass `--quiet` to any of these commands for the old terse, scripting-friendly
-output -- just the `[OK]`/`[FAIL]`/`[SKIP]` line per step, with no `[n/m]`
-announcements, heartbeat, or slow-step summary:
+output -- just the `[OK]`/`[FAIL]`/`[SKIP]`/`[NOTE]` result lines and the
+per-step verdict, with no `[n/m]` announcements, heartbeat, or slow-step
+summary:
 
 ```bash
 nyxgpt ops install --quiet
