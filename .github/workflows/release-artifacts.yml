@@ -26,9 +26,21 @@ name: Release Artifacts
 # see docs/homebrew.md#remote-tap-repo-less-install. Until `vars.
 # HOMEBREW_TAP_REPO` is set, that job's push step logs a skip and still
 # succeeds; the stamped formulas are uploaded as a workflow artifact either
-# way, and the tarballs are always attached to the GitHub Release (that part
-# needs no owner secret -- the default GITHUB_TOKEN can write release
-# assets on this repo).
+# way, and the tarballs are always published on a GitHub release (that part
+# needs no owner secret -- the default GITHUB_TOKEN can create releases and
+# write their assets on this repo).
+#
+# WHERE THE TARBALLS LIVE (#3763): on a release of their own, tagged
+# `<version>-homebrew`, created with the assets attached in the same `gh
+# release create` call. Releases in this repository are IMMUTABLE -- a
+# published one can never gain an asset -- and the release named by the
+# version is published by the ceremony before these tarballs are even built,
+# so `gh release upload` against it is a guaranteed `HTTP 422: Cannot upload
+# assets to an immutable release` (#3747's failure class; it is what killed
+# both 2.1.0 backfill runs). The sidecar is a prerelease and never "latest",
+# so it is not a second release of nyxGPT and cannot re-trigger this
+# workflow. A version whose own release already carries both tarballs is
+# served from that release instead, so nothing already published moves.
 #
 # GHCR image publishing also needs no owner secret: GITHUB_TOKEN with
 # `packages: write` is sufficient to push to ghcr.io/<owner>/...  (the owner
@@ -154,10 +166,45 @@ jobs:
             exit 1
           fi
 
+      - name: Resolve the release that will serve the tarballs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Releases here are IMMUTABLE: once published, one can never gain an
+          # asset (#3747). The release named by $VERSION is published by the
+          # ceremony *before* these tarballs are built, so uploading them onto
+          # it afterwards is a guaranteed `HTTP 422: Cannot upload assets to an
+          # immutable release` -- the error that killed both 2.1.0 backfill
+          # runs (#3763). The tarballs therefore get their own release,
+          # `<version>-homebrew`, created with its assets attached.
+          #
+          # The one exception is a release that already carries both tarballs
+          # (a historic release, or a re-run of this job): serving from it
+          # keeps the formulas pointing where they already point.
+          WANT_API="nyxgpt-api-${VERSION}.tar.gz"
+          WANT_WEB="nyxgpt-web-${VERSION}.tar.gz"
+          HAVE=$(gh release view "$VERSION" -R "$REPO" --json assets \
+            --jq '[.assets[].name] | join(" ")')
+          echo "assets on ${VERSION}: ${HAVE:-(none)}"
+          ASSET_TAG=$(python scripts/build_homebrew_artifacts.py --asset-tag "$VERSION")
+          case " $HAVE " in
+            *" $WANT_API "*)
+              case " $HAVE " in
+                *" $WANT_WEB "*) ASSET_TAG="$VERSION" ;;
+              esac ;;
+          esac
+          echo "::notice::${VERSION} tarballs will be served from release ${ASSET_TAG}"
+          echo "ASSET_TAG=${ASSET_TAG}" >> "$GITHUB_ENV"
+
       - name: Build tarballs and stamp formulas
         run: |
+          # BASE_URL is the serving release resolved above -- the formulas'
+          # `url` must name the release the assets are actually published on,
+          # not the version's own release.
           python scripts/build_homebrew_artifacts.py "$VERSION" dist/homebrew \
-            "https://github.com/${{ github.repository }}/releases/download/${VERSION}" \
+            "https://github.com/${{ github.repository }}/releases/download/${ASSET_TAG}" \
             --source-root release-source
 
       - name: Assert only the stable formulas were stamped
@@ -173,14 +220,122 @@ jobs:
             exit 1
           fi
 
-      - name: Attach tarballs to the GitHub Release
+      - name: Publish the tarballs with their release (assets at creation)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
         run: |
-          gh release upload "$VERSION" \
-            dist/homebrew/dist/nyxgpt-api-"$VERSION".tar.gz \
-            dist/homebrew/dist/nyxgpt-web-"$VERSION".tar.gz \
-            --clobber -R "${{ github.repository }}"
+          set -euo pipefail
+          API_TARBALL="dist/homebrew/dist/nyxgpt-api-${VERSION}.tar.gz"
+          WEB_TARBALL="dist/homebrew/dist/nyxgpt-web-${VERSION}.tar.gz"
+          for tarball in "$API_TARBALL" "$WEB_TARBALL"; do
+            if [ ! -s "$tarball" ]; then
+              echo "::error::${tarball} was not built -- refusing to publish a release the"
+              echo "::error::stamped formulas would point at with nothing behind it"
+              exit 1
+            fi
+          done
+
+          if gh release view "$ASSET_TAG" -R "$REPO" >/dev/null 2>&1; then
+            HAVE=$(gh release view "$ASSET_TAG" -R "$REPO" --json assets \
+              --jq '[.assets[].name] | join(" ")')
+            COMPLETE=1
+            for name in "nyxgpt-api-${VERSION}.tar.gz" "nyxgpt-web-${VERSION}.tar.gz"; do
+              case " $HAVE " in
+                *" $name "*) ;;
+                *) COMPLETE=0 ;;
+              esac
+            done
+            if [ "$COMPLETE" = "1" ]; then
+              echo "::notice::${ASSET_TAG} already carries both tarballs -- reusing it"
+              exit 0
+            fi
+            if [ "$ASSET_TAG" = "$VERSION" ]; then
+              # Unreachable by construction (the resolve step only picks
+              # $VERSION when both tarballs are already on it), and a guard
+              # rather than a comment because the alternative below deletes
+              # what it is pointed at -- never a real release.
+              echo "::error::${VERSION} is incomplete and an immutable release cannot gain"
+              echo "::error::assets -- re-run so the tarballs are served from their own release"
+              exit 1
+            fi
+            # A half-published sidecar (an interrupted create leaves a draft):
+            # it can never gain the missing asset, so it is retired and cut
+            # again rather than pointed at.
+            echo "::notice::${ASSET_TAG} exists without both tarballs -- retiring it"
+            if ! gh release delete "$ASSET_TAG" -R "$REPO" --yes --cleanup-tag; then
+              echo "::error::${ASSET_TAG} is incomplete and could not be deleted, and an"
+              echo "::error::immutable release can never gain the missing tarball. Delete it"
+              echo "::error::by hand (or publish under the next patch version) and re-run."
+              exit 1
+            fi
+          fi
+
+          # The sidecar names the code it ships: the target tag's own commit,
+          # from the release-source checkout.
+          TARGET_SHA=$(git -C release-source rev-parse HEAD)
+          cat > /tmp/homebrew-assets-notes.md <<NOTES
+          Homebrew source tarballs for **nyxGPT ${VERSION}**.
+
+          **This is not a release** -- see [${VERSION}](https://github.com/${REPO}/releases/tag/${VERSION})
+          for that. Releases in this repository are immutable, so a published release can
+          never gain an asset; the vendored \`nyxgpt-api\` / \`nyxgpt-web\` source tarballs the
+          stable Homebrew formulas install from are published here instead, attached at
+          creation (#3763).
+
+          \`\`\`bash
+          brew tap dkblinux98/nyxgpt && (brew tap-trust dkblinux98/nyxgpt || true) && brew install nyxgpt-api nyxgpt-web
+          \`\`\`
+          NOTES
+
+          # Assets go on AT CREATION -- never uploaded afterwards, which
+          # immutability forbids. `--prerelease --latest=false` keeps this off
+          # the repository's "Latest" release and out of the `released` event,
+          # so it cannot re-trigger this workflow.
+          gh release create "$ASSET_TAG" \
+            -R "$REPO" \
+            --target "$TARGET_SHA" \
+            --title "nyxGPT $VERSION (Homebrew tarballs)" \
+            --prerelease \
+            --latest=false \
+            --notes-file /tmp/homebrew-assets-notes.md \
+            "$API_TARBALL" "$WEB_TARBALL"
+
+      - name: Verify the serving release carries both tarballs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Verifying the mutation, not assuming it: the formulas pushed below
+          # point at these two assets by URL, so a release missing either one
+          # is an uninstallable formula on every Mac that taps it.
+          ASSETS=$(gh release view "$ASSET_TAG" -R "$REPO" --json assets \
+            --jq '[.assets[].name] | join(" ")')
+          echo "assets on ${ASSET_TAG}: ${ASSETS}"
+          for name in "nyxgpt-api-${VERSION}.tar.gz" "nyxgpt-web-${VERSION}.tar.gz"; do
+            case " $ASSETS " in
+              *" $name "*) ;;
+              *)
+                echo "::error::release ${ASSET_TAG} does not carry ${name}"
+                exit 1 ;;
+            esac
+          done
+          # The sidecar must never displace the release itself as "Latest".
+          LATEST=$(gh release view -R "$REPO" --json tagName --jq .tagName 2>/dev/null || echo "(none)")
+          echo "repository latest=${LATEST}"
+          if [ "$ASSET_TAG" != "$VERSION" ] && [ "$LATEST" = "$ASSET_TAG" ]; then
+            echo "::error::${ASSET_TAG} became the repository's latest release"
+            exit 1
+          fi
+
+          # The formulas' `url` must name the release the assets are on --
+          # a mismatch here is a formula that 404s at `brew install`.
+          for formula in dist/homebrew/nyxgpt-api.rb dist/homebrew/nyxgpt-web.rb; do
+            grep -q "releases/download/${ASSET_TAG}/" "$formula" || {
+              echo "::error::${formula} is not stamped against ${ASSET_TAG}"
+              exit 1; }
+          done
 
       - uses: actions/upload-artifact@v4
         with:

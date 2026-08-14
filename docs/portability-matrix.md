@@ -67,8 +67,8 @@ A row is **acceptance-ready** when its checks pass *and* it has no open gap.
   acceptance run below.
 - **macOS native** — `release-artifacts.yml` stamps both formulas and pushes
   them to the remote tap when `HOMEBREW_TAP_REPO` is configured (and always
-  attaches them to the GitHub Release otherwise; see
-  [homebrew.md](homebrew.md#remote-tap)). Coverage is split:
+  publishes the tarballs on the release's `<version>-homebrew` release
+  otherwise; see [homebrew.md](homebrew.md#remote-tap)). Coverage is split:
   [`macos-brew-smoke.yml`](../.github/workflows/macos-brew-smoke.yml) installs
   the formulas on a hosted `macos-15` runner — the working tree's own recipe on
   every formula change, and the published candidate from the real tap after

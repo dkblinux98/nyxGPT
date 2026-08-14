@@ -544,6 +544,122 @@ def test_backfill_is_a_parameter_of_the_existing_job_not_a_second_workflow():
         assert jobs[job]["if"] == "${{ !inputs.tap_only }}"
 
 
+# --- Immutable releases: the tarballs get their own release (#3763) -------
+#
+# Both 2.1.0 backfill runs built the tarballs correctly and then died on
+# `HTTP 422: Cannot upload assets to an immutable release`, trying to
+# `gh release upload --clobber` them onto the already-published 2.1.0
+# release. A published release here can never gain an asset -- and that is
+# not a backfill-only problem: the ceremony publishes every release before
+# this job builds its tarballs, so the upload step could never have worked
+# for any version. The tarballs are published on a release of their own,
+# `<version>-homebrew`, created with the assets attached.
+
+
+def test_asset_release_tag_is_the_versions_own_sidecar():
+    assert build_homebrew_artifacts.asset_release_tag("2.1.0") == "2.1.0-homebrew"
+
+
+def test_asset_release_tag_refuses_anything_but_a_release():
+    """A candidate's tarballs ride its own prerelease -- it has no sidecar."""
+    with pytest.raises(ValueError):
+        build_homebrew_artifacts.asset_release_tag("9.9.9rc4")
+
+
+def test_asset_release_tag_refuses_a_tag_it_produced_itself():
+    """`2.1.0-homebrew-homebrew` would be a release nothing publishes."""
+    from nyxgpt import release_tarball
+
+    with pytest.raises(ValueError):
+        release_tarball.homebrew_asset_release_tag("2.1.0-homebrew")
+
+
+def test_asset_tag_query_prints_the_serving_release():
+    """What the tap job builds BASE_URL from -- one definition, not a shell string."""
+    cp = subprocess.run(
+        [sys.executable, str(SCRIPT), "--asset-tag", "2.1.0"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert cp.returncode == 0, cp.stderr
+    assert cp.stdout.strip() == "2.1.0-homebrew"
+
+
+@pytest.mark.parametrize("argv", [["--asset-tag"], ["--asset-tag", "9.9.9", "out"]])
+def test_asset_tag_query_takes_exactly_one_version(argv):
+    cp = subprocess.run(
+        [sys.executable, str(SCRIPT), *argv],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert cp.returncode == 2
+    assert "usage:" in cp.stderr
+
+
+def test_asset_tag_query_reports_a_non_release_version_without_a_traceback():
+    cp = subprocess.run(
+        [sys.executable, str(SCRIPT), "--asset-tag", "9.9.9rc4"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert cp.returncode == 2
+    assert "Traceback" not in cp.stderr
+    assert "not a release version" in cp.stderr
+
+
+def _tap_run_steps() -> str:
+    return "\n".join(step.get("run", "") for step in _tap_job()["steps"])
+
+
+def test_tap_job_never_uploads_assets_onto_an_existing_release():
+    """The literal 2026-08-13 failure: `gh release upload --clobber` on 2.1.0."""
+    run_steps = _tap_run_steps()
+
+    assert "gh release upload" not in run_steps
+    assert "--clobber" not in run_steps
+
+
+def test_tap_job_publishes_the_tarballs_with_the_release_that_carries_them():
+    run_steps = _tap_run_steps()
+
+    assert "gh release create" in run_steps
+    # Assets as positional arguments of the create call -- the only way an
+    # immutable release can ever carry them.
+    assert '"$API_TARBALL" "$WEB_TARBALL"' in run_steps
+    # Never a second release of nyxGPT, and never able to re-trigger this
+    # workflow (which listens for `released`, not `prereleased`).
+    assert "--prerelease" in run_steps
+    assert "--latest=false" in run_steps
+
+
+def test_tap_job_stamps_the_formulas_against_the_serving_release():
+    """A formula stamped with the version's own tag would 404 at `brew install`."""
+    run_steps = _tap_run_steps()
+
+    assert 'ASSET_TAG=$(python scripts/build_homebrew_artifacts.py --asset-tag "$VERSION")' in (
+        run_steps
+    )
+    assert "releases/download/${ASSET_TAG}" in run_steps
+    # ...and nothing points the formulas at the version's own release.
+    assert "releases/download/${VERSION}" not in run_steps
+
+
+def test_tap_job_reads_the_serving_release_back_before_pushing_the_formulas():
+    steps = _tap_job()["steps"]
+    names = [str(step.get("name", "")) for step in steps]
+
+    verify = next(i for i, name in enumerate(names) if "Verify the serving release" in name)
+    push = next(i for i, name in enumerate(names) if "Push stamped formulas" in name)
+    assert verify < push
+    assert "does not carry" in steps[verify]["run"]
+
+
 # --- The script's dependency surface (#3741) ------------------------------
 #
 # The first live rc cut published 3.0.0rc1 to PyPI and then lost the tap:

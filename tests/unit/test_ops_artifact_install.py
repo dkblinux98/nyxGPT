@@ -149,6 +149,38 @@ def test_download_release_tarball_writes_the_asset(monkeypatch, tmp_path):
     assert tar.read_bytes() == b"tarball-bytes"
 
 
+def test_download_release_tarball_falls_back_to_the_homebrew_release(monkeypatch, tmp_path):
+    """A stable release cannot carry its own tarballs (#3763).
+
+    Releases in this repository are immutable, so a release published before
+    its Homebrew tarballs were built can never gain them -- they are
+    published on a `<version>-homebrew` release instead, which is where the
+    stamped formulas point too. An artifact install has to look there.
+    """
+    tried = []
+
+    def _fake_stream(method, url, **kwargs):
+        tried.append(url)
+        if "-homebrew/" not in url:
+            return _FakeStream(status_error=ops.httpx.HTTPError("404 Not Found"))
+        return _FakeStream()
+
+    monkeypatch.setattr(ops.httpx, "stream", _fake_stream)
+
+    tar = ops._download_release_tarball(tmp_path, "nyxgpt-api", "2.1.0")
+
+    assert tried == [
+        "https://github.com/dkblinux98/nyxGPT/releases/download/2.1.0/nyxgpt-api-2.1.0.tar.gz",
+        "https://github.com/dkblinux98/nyxGPT/releases/download/2.1.0-homebrew/"
+        "nyxgpt-api-2.1.0.tar.gz",
+    ]
+    # Same filename either source served it from.
+    assert tar == tmp_path / "dist" / "nyxgpt-api-2.1.0.tar.gz"
+    assert tar.read_bytes() == b"tarball-bytes"
+    # The 404'd first attempt left no partial download behind.
+    assert not list((tmp_path / "dist").glob(".nyxgpt-api*"))
+
+
 def test_download_release_tarball_reports_the_url_on_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(
         ops.httpx,
@@ -162,6 +194,9 @@ def test_download_release_tarball_reports_the_url_on_failure(monkeypatch, tmp_pa
     message = str(excinfo.value)
     assert "nyxgpt-web-9.9.9.tar.gz" in message
     assert "404 Not Found" in message
+    # Both places it looked, so the diagnosis names what was actually tried.
+    assert "download/9.9.9/" in message
+    assert "download/9.9.9-homebrew/" in message
     # No truncated archive left behind for the next run to install from.
     assert not list((tmp_path / "dist").glob(".nyxgpt-web*"))
     assert not (tmp_path / "dist" / "nyxgpt-web-9.9.9.tar.gz").exists()

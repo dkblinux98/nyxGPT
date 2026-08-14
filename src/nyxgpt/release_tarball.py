@@ -78,6 +78,46 @@ _ALWAYS_VENDOR_EXCLUDES = frozenset({"__pycache__", ".DS_Store"})
 # dropped too.
 _ALWAYS_VENDOR_EXCLUDE_SUFFIXES = (".pyc", ".pyo")
 
+# The tag of the release that SERVES a version's tarballs (#3763).
+#
+# GitHub releases in this repository are immutable: once published, one can
+# never gain or change an asset. A stable release is published by the release
+# ceremony (a draft flipped to `draft=false`) *before* its Homebrew tarballs
+# are built, so uploading them onto it afterwards is a guaranteed
+# `HTTP 422: Cannot upload assets to an immutable release` -- which is exactly
+# how both 2.1.0 backfill runs died, and how every future release's tap push
+# would have died too.
+#
+# So the tarballs get a release of their own, tagged `<version>-homebrew`,
+# created with its assets attached in the same `gh release create` call. It is
+# published as a prerelease and never "latest", so it is not a second release
+# of nyxGPT and cannot re-trigger `release-artifacts.yml` (which listens for
+# `released`, not `prereleased`).
+#
+# `scripts/build_homebrew_artifacts.py` stamps the formulas' `url` against
+# this tag, and `nyxgpt.ops._download_release_tarball` falls back to it when
+# an artifact install fetches the same tarballs -- both from this one
+# definition, so the publisher and the consumers cannot disagree about where
+# the assets live.
+HOMEBREW_ASSET_TAG_SUFFIX = "-homebrew"
+
+
+def homebrew_asset_release_tag(version: str) -> str:
+    """The tag of the release carrying `version`'s Homebrew source tarballs.
+
+    `2.1.0` -> `2.1.0-homebrew`. See `HOMEBREW_ASSET_TAG_SUFFIX` for why the
+    assets do not live on the release named by the version itself.
+    """
+    tag = version.strip()
+    if not tag:
+        raise ValueError("a version is required to name its Homebrew asset release")
+    if tag.endswith(HOMEBREW_ASSET_TAG_SUFFIX):
+        raise ValueError(
+            f"{version!r} is already a Homebrew asset release tag -- pass the version "
+            "it serves (e.g. 2.1.0), not the tag"
+        )
+    return f"{tag}{HOMEBREW_ASSET_TAG_SUFFIX}"
+
 
 def _sha256_file(path: Path) -> str:
     """Return the hex-encoded SHA-256 digest of the file at `path`."""

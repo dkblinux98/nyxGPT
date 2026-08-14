@@ -49,15 +49,20 @@ source, stamped by templates the tag never contained.
 Usage:
     python scripts/build_homebrew_artifacts.py VERSION OUT_DIR BASE_URL \
         [--channel rc] [--source-root DIR]
+    python scripts/build_homebrew_artifacts.py --asset-tag VERSION
 
     VERSION   e.g. 2.1.0 (or 3.0.0rc4 with --channel rc)
     OUT_DIR   directory to write tarballs + stamped formulas into
     BASE_URL  download URL prefix the tarballs will be published under,
-              e.g. https://github.com/dkblinux98/nyxGPT/releases/download/2.1.0
+              e.g. https://github.com/dkblinux98/nyxGPT/releases/download/2.1.0-homebrew
               (formula `url` becomes "<BASE_URL>/<tarball filename>")
     --channel stable (default) or rc -- see above
     --source-root  checkout to vendor the service source from (default: this
               checkout) -- see above
+    --asset-tag  print the release tag a stable version's tarballs are
+              published under (`2.1.0` -> `2.1.0-homebrew`) and exit -- what
+              the tap job builds its BASE_URL from (#3763, see
+              `asset_release_tag`)
 """
 
 from __future__ import annotations
@@ -76,7 +81,11 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 # it provide. Importing the same helpers from `nyxgpt.ops` instead pulled in
 # httpx/pynacl and the whole metrics/tracing stack, and killed the rc tap job
 # after the candidate had already been published to PyPI.
-from nyxgpt.release_tarball import _sha256_file, build_release_dist_tarball  # noqa: E402
+from nyxgpt.release_tarball import (  # noqa: E402
+    _sha256_file,
+    build_release_dist_tarball,
+    homebrew_asset_release_tag,
+)
 
 _FORMULAS = ("nyxgpt-api", "nyxgpt-web")
 
@@ -171,6 +180,20 @@ def assert_release_version(version: str) -> str:
             "rc channel (--channel rc), which writes its own @<line>rc formulas."
         )
     return version.strip()
+
+
+def asset_release_tag(version: str) -> str:
+    """The release tag the stable tarballs for `version` are published under.
+
+    `2.1.0` -> `2.1.0-homebrew`. Releases in this repository are immutable,
+    so the release named by the version itself -- published by the ceremony
+    before these tarballs exist -- can never gain them (#3763); the formulas'
+    `url` therefore points at a sidecar release created with its assets
+    attached. `release-artifacts.yml` asks this script for the tag rather
+    than spelling the suffix in shell, so the tag the assets are published
+    under and the tag the formulas are stamped with are one definition.
+    """
+    return homebrew_asset_release_tag(assert_release_version(version))
 
 
 def resolve_source_root(source_root: str | Path | None) -> Path | None:
@@ -370,7 +393,10 @@ def build(
     return written
 
 
-_USAGE = "usage: {prog} VERSION OUT_DIR BASE_URL [--channel rc] [--source-root DIR]"
+_USAGE = (
+    "usage: {prog} VERSION OUT_DIR BASE_URL [--channel rc] [--source-root DIR]\n"
+    "       {prog} --asset-tag VERSION"
+)
 
 
 def _take_option(args: list[str], flag: str) -> str | None:
@@ -392,9 +418,24 @@ def _take_option(args: list[str], flag: str) -> str | None:
 
 def main(argv: list[str]) -> int:
     args = list(argv[1:])
+    asset_tag_for = _take_option(args, "--asset-tag")
     channel = _take_option(args, "--channel")
     source_root = _take_option(args, "--source-root")
     channel = "stable" if channel is None else channel
+
+    if asset_tag_for is not None:
+        # Query mode: print where this version's tarballs are published and
+        # exit. The tap job needs that tag before anything is built, because
+        # it is what the formulas' `url` is stamped with.
+        if not asset_tag_for.strip() or args:
+            print(_USAGE.format(prog=argv[0]), file=sys.stderr)
+            return 2
+        try:
+            print(asset_release_tag(asset_tag_for))
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        return 0
 
     if len(args) != 3 or channel not in CHANNELS or source_root == "":
         print(_USAGE.format(prog=argv[0]), file=sys.stderr)
