@@ -92,6 +92,30 @@ on:
 permissions:
   contents: read
 
+# ONE CUT AT A TIME (#3771). The tip-unchanged no-op guard below can only
+# answer for candidates that are already *registered* -- it reads this
+# workflow's finished run history -- so two runs that overlap in the window
+# before either has published both read "no candidate for this tip" and both
+# publish. That is not hypothetical: on 2026-08-14 two rc dispatches 34
+# seconds apart cut `3.0.0rc7` and `3.0.0rc8` from the identical tip, burning
+# rc7 dead (PyPI versions are immutable -- a burned number is never reused).
+# This group is what makes the guard's answer true: a second cut does not
+# evaluate it until the first run has finished and is in the history it reads.
+#
+# `cancel-in-progress: false` is load-bearing, not a default worth changing:
+# a queued cut must WAIT, never kill the running one. A run cancelled
+# mid-upload can leave PyPI serving a version that no successful run records,
+# which is exactly the state the guard cannot see -- so the next cut would
+# burn another number. Queuing costs a few minutes; cancelling costs an rc.
+#
+# The group is deliberately global rather than per-ref or per-channel: every
+# channel and every release line publishes into the one `nyxgpt` PyPI project,
+# and each resolves its version from what that project already serves, so any
+# two overlapping runs race over the same numbers.
+concurrency:
+  group: pypi-publish
+  cancel-in-progress: false
+
 jobs:
   publish:
     runs-on: ubuntu-latest

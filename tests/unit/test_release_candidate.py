@@ -569,6 +569,88 @@ def test_select_last_published_sha_rc_ignores_the_callers_own_run():
     assert rc.select_last_published_sha(payload, "rc", exclude_run_id="5") == "prev"
 
 
+# --- Concurrent cuts (#3771) ----------------------------------------------
+#
+# Two rc dispatches 34 seconds apart both published on 2026-08-14: each
+# evaluated the tip guard before the other had registered a candidate, so
+# rc7 and rc8 were cut from one tip and rc7 was burned dead. A run that has
+# started counts as owning its tip, whether or not it has concluded.
+
+
+def _in_flight_run(run_id, sha, created_at, status="in_progress", title="publish rc from v3.0.0"):
+    """A cut that has started and not concluded -- no `conclusion` at all,
+    which is exactly how GitHub reports it."""
+    return {
+        "id": run_id,
+        "head_sha": sha,
+        "created_at": created_at,
+        "event": "workflow_dispatch",
+        "status": status,
+        "conclusion": None,
+        "display_title": title,
+    }
+
+
+@pytest.mark.parametrize("status", rc.IN_FLIGHT_RUN_STATUSES)
+def test_select_last_published_sha_counts_a_cut_that_is_still_in_flight(status):
+    payload = _runs(
+        _in_flight_run(9, "racing", "2026-08-14T09:53:07Z", status=status),
+        _dispatch_run(7, "older", "2026-08-10T12:00:00Z"),
+    )
+
+    assert rc.select_last_published_sha(payload, "rc", exclude_run_id="10") == "racing"
+
+
+def test_a_second_cut_on_the_same_tip_sees_the_first_one_running():
+    """The rc7/rc8 race itself: the second run must not read its own tip as
+    unclaimed just because the first has not finished uploading."""
+    tip = "6f1c2ab"
+    payload = _runs(
+        _in_flight_run(31789936427, tip, "2026-08-14T09:53:07Z"),
+        _dispatch_run(31789000000, tip, "2026-08-13T12:00:00Z", conclusion="failure"),
+    )
+
+    assert rc.select_last_published_sha(payload, "rc", exclude_run_id="31789980538") == tip
+
+
+def test_select_last_published_sha_ignores_an_in_flight_dry_run():
+    """A dry run uploads nothing whether it is finished or not."""
+    payload = _runs(
+        _in_flight_run(9, "dry", "2026-08-14T15:00:00Z", title="publish rc [dry run] from v3.0.0"),
+        _dispatch_run(7, "candidate", "2026-08-10T12:00:00Z"),
+    )
+
+    assert rc.select_last_published_sha(payload, "rc") == "candidate"
+
+
+def test_select_last_published_sha_ignores_the_callers_own_in_flight_run():
+    """Every run is in flight while it reads this -- excluding itself is what
+    stops the guard from skipping every cut ever dispatched."""
+    payload = _runs(
+        _in_flight_run(5, "mine", "2026-08-14T12:00:00Z"),
+        _dispatch_run(4, "prev", "2026-08-10T12:00:00Z"),
+    )
+
+    assert rc.select_last_published_sha(payload, "rc", exclude_run_id="5") == "prev"
+
+
+@pytest.mark.parametrize(
+    "run,claims",
+    [
+        ({"conclusion": "success"}, True),
+        ({"status": "in_progress", "conclusion": None}, True),
+        ({"status": "queued", "conclusion": None}, True),
+        ({"status": "completed", "conclusion": "failure"}, False),
+        ({"status": "completed", "conclusion": "cancelled"}, False),
+        ({}, False),
+    ],
+)
+def test_run_claims_tip_blocks_on_unfinished_not_on_unsuccessful(run, claims):
+    """A failed run used its number for nothing, so a retry on the same tip
+    must still publish; an unfinished one may already have uploaded."""
+    assert rc.run_claims_tip(run) is claims
+
+
 def test_select_last_published_sha_is_empty_before_the_first_candidate():
     assert rc.select_last_published_sha(_runs(), "rc") == ""
 
@@ -618,7 +700,11 @@ def test_fetch_last_published_sha_asks_github_for_rc_dispatches(monkeypatch):
     monkeypatch.setattr(httpx, "get", record)
 
     assert rc.fetch_last_published_sha("dkblinux98/nyxGPT", "rc") == "abc123"
-    assert "event=workflow_dispatch" in calls[0] and "status=success" in calls[0]
+    assert "event=workflow_dispatch" in calls[0]
+    # NOT narrowed to successes server-side (#3771): an in-flight cut has no
+    # conclusion, and it is the run a racing dispatch has to see. The
+    # success/failure filtering happens in `run_claims_tip` instead.
+    assert "status=" not in calls[0]
 
 
 # --- The autopilot's preflight (#3729) ------------------------------------
@@ -1781,6 +1867,23 @@ def test_the_kick_path_dispatches_the_one_publish_pipeline():
     assert 'gh workflow run "$AUTOPILOT_PUBLISH_WORKFLOW"' in _publish_rc_function()
 
 
+def test_the_kick_path_preflight_can_see_a_cut_that_is_still_running():
+    """#3771: the autopilot does not queue behind the pipeline's concurrency
+    group -- it decides *whether to dispatch at all* -- so its run listing
+    must include in-flight runs, or it fires alongside a cut in progress."""
+    text = _autopilot_lib()
+    start = text.index("_autopilot_rc_preflight() {")
+    body = text[start : text.index("\n}\n", start)]
+
+    runs_query = next(line for line in body.splitlines() if "/runs?" in line)
+    assert "status=success" not in runs_query
+    # The field `run_claims_tip` reads has to survive the jq projection that
+    # trims each run down to what the decision uses.
+    projection = body[body.index(runs_query) :]
+    projection = projection[: projection.index("2>/dev/null")]
+    assert "workflow_runs" in projection and "status" in projection
+
+
 def test_the_kick_path_publishes_only_at_agentic_work_complete():
     """It reuses #3709's park state rather than deciding completion itself."""
     text = _autopilot_lib()
@@ -1810,6 +1913,48 @@ def test_the_publish_workflow_guards_the_rc_channel_against_a_repeat_firing():
     assert '[ -z "${NUMBER}" ]' in run
     assert '[ "${DRY_RUN}" != "true" ]' in run
     assert version_step["env"]["DRY_RUN"] == "${{ inputs.dry_run }}"
+
+
+def test_the_publish_workflow_serializes_its_cuts():
+    """#3771: the tip guard reads finished runs, so overlapping cuts both
+    read "no candidate yet" and both publish -- rc7 and rc8 from one tip on
+    2026-08-14. The concurrency group is what makes the guard's answer true."""
+    workflow = _publish_workflow()
+    concurrency = workflow.get("concurrency")
+
+    assert concurrency, "the publish pipeline must run under a concurrency group"
+    # Queued, never killed: a cut cancelled mid-upload can leave PyPI serving
+    # a version no successful run records -- invisible to the guard, so the
+    # next cut burns another number.
+    assert concurrency["cancel-in-progress"] is False
+    # Global, not per-ref or per-channel: every channel and every release
+    # line resolves its version from the one `nyxgpt` PyPI project, so any
+    # two overlapping runs race over the same numbers.
+    assert "${{" not in str(concurrency["group"])
+
+
+def test_the_publish_workflow_evaluates_the_tip_guard_inside_the_serialized_job():
+    """The ordering the fix depends on: a queued run must re-evaluate the
+    guard when it starts, not carry an answer computed at dispatch time."""
+    workflow = _publish_workflow()
+    publish = workflow["jobs"]["publish"]
+    steps = publish["steps"]
+    version_step = next(step for step in steps if step.get("id") == "version")
+
+    # The guard is a step of the job the concurrency group gates ...
+    assert workflow.get("concurrency")
+    assert "--skip-if-unchanged" in version_step["run"]
+    # ... and every step that can publish is gated on its verdict, so a
+    # queued run that finds the tip already taken uploads nothing.
+    publishing = [
+        step
+        for step in steps
+        if "pypa/gh-action-pypi-publish" in str(step.get("uses", ""))
+        or step.get("name") == "Build sdist + wheel"
+    ]
+    assert publishing
+    for step in publishing:
+        assert "steps.version.outputs.publish == 'true'" in step["if"]
 
 
 def test_the_publish_workflow_run_name_stays_readable_by_the_rc_tip_guard():

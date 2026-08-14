@@ -1334,9 +1334,12 @@ _autopilot_rc_preflight() {
   jq -e 'type == "array"' <<<"${published:-null}" >/dev/null 2>&1 || published='[]'
   # Only the fields the decision reads -- naming them keeps it obvious that
   # the run title is load-bearing (it is how an rc run is told apart from a
-  # dev or stable dispatch).
-  runs="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/actions/workflows/${AUTOPILOT_PUBLISH_WORKFLOW}/runs?event=workflow_dispatch&status=success&per_page=30" \
-    --jq '{workflow_runs: [.workflow_runs[] | {id, event, conclusion, head_sha, created_at, display_title, name}]}' 2>/dev/null || echo "")"
+  # dev or stable dispatch). `status` is one of them (#3771): the listing is
+  # NOT narrowed to successes, because a cut that is still in flight has no
+  # conclusion yet and is precisely the run this preflight must not race --
+  # dispatching alongside it is how two candidates get cut from one tip.
+  runs="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/actions/workflows/${AUTOPILOT_PUBLISH_WORKFLOW}/runs?event=workflow_dispatch&per_page=30" \
+    --jq '{workflow_runs: [.workflow_runs[] | {id, event, status, conclusion, head_sha, created_at, display_title, name}]}' 2>/dev/null || echo "")"
   jq -e 'has("workflow_runs")' <<<"${runs:-null}" >/dev/null 2>&1 || runs='{}'
 
   jq -n -c --argjson p "$published" --argjson r "$runs" '{published: $p, runs: $r}' |

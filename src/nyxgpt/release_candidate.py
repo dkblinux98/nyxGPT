@@ -110,6 +110,11 @@ SKIP_SENTINEL = "SKIP"
 #: only `scripts/release_ceremony.sh` passes.
 STABLE_CONFIRMATION = "ceremony"
 
+#: GitHub run states that mean a publish has started but not concluded. Such
+#: a run has no `conclusion` yet, but it has already claimed its head commit
+#: -- so for the tip guard it counts exactly like a finished one (#3771).
+IN_FLIGHT_RUN_STATUSES = ("queued", "in_progress", "waiting", "requested", "pending")
+
 DOCS_ANCHOR = "docs/cloud.md#pypi-publishing-rc-and-stable"
 
 # `v3.0.0` -- the release-branch naming this repo uses (CLAUDE.md: master is
@@ -423,6 +428,14 @@ def select_last_published_sha(
     records which one it was (see `_RC_RUN_TITLE_RE` -- the publish
     workflow's `run-name:` is load-bearing for this and is shape-tested).
 
+    A run that is still *in flight* claims its tip too (`run_claims_tip`,
+    #3771): it has no conclusion yet, but it is already resolving or
+    uploading a version for that commit, so treating it as "nothing published
+    here" is what let two overlapping runs cut rc7 and rc8 from one tip. The
+    publish workflow's `concurrency:` group is the primary fix -- this is the
+    layer that also covers callers which do not queue behind it, such as the
+    autopilot's preflight.
+
     `exclude_run_id` drops the caller's own run, which is already listed as
     in-progress-then-success by the time a later run reads this.
     """
@@ -432,7 +445,7 @@ def select_last_published_sha(
         run
         for run in runs
         if run_published_channel(run, resolved)
-        and run.get("conclusion") == "success"
+        and run_claims_tip(run)
         and str(run.get("id", "")) != str(exclude_run_id or "")
         and run.get("head_sha")
     ]
@@ -460,6 +473,21 @@ def run_published_channel(run: dict[str, Any], channel: str) -> bool:
     return bool(title_re.match(title))
 
 
+def run_claims_tip(run: dict[str, Any]) -> bool:
+    """Whether `run` has taken its head commit's candidate, or is taking it.
+
+    True for a run that succeeded, and for one that is still in flight
+    (#3771): a cut that is mid-resolve or mid-upload owns that tip's version
+    just as firmly as a finished one, and the second run of a race must see
+    it. A run that *failed* is deliberately false -- its number was never
+    used, so a retry on the same tip must be free to publish. That asymmetry
+    is the whole point: unfinished blocks, unsuccessful does not.
+    """
+    if str(run.get("status") or "").strip().lower() in IN_FLIGHT_RUN_STATUSES:
+        return True
+    return run.get("conclusion") == "success"
+
+
 def fetch_last_published_sha(
     repo: str,
     channel: str = "rc",
@@ -474,13 +502,19 @@ def fetch_last_published_sha(
     always publishes). Raises on a transport or protocol failure: silently
     treating an API outage as "nothing published yet" would upload a
     redundant build every time the API is flaky.
+
+    The listing is deliberately NOT narrowed to `status=success` server-side:
+    a run that is still in flight has no conclusion, so that filter hid
+    exactly the run a racing cut needs to see (#3771). `run_claims_tip` does
+    the filtering here instead, where in-flight and succeeded both count and
+    failed does not.
     """
     import httpx
 
     event = CHANNEL_TRIGGER_EVENT[_check_channel(channel)]
     url = (
         f"https://api.github.com/repos/{repo}/actions/workflows/{workflow_file}"
-        f"/runs?event={event}&status=success&per_page=30"
+        f"/runs?event={event}&per_page=30"
     )
     headers = {
         "Accept": "application/vnd.github+json",
@@ -725,6 +759,10 @@ def _guardrails(channel: str, candidate: str) -> list[str]:
         "No duplicate candidates: an rc whose release-branch tip has not moved since the "
         "last published candidate publishes nothing, so re-observing the same parked "
         "state cuts no second rcN.",
+        "One cut at a time: the pipeline runs under a concurrency group (queued, never "
+        "cancelled), so a second dispatch waits for the running one to finish and then "
+        "resolves against a history that already contains it -- two overlapping cuts "
+        "cannot both publish from one tip.",
         "Acceptance only: an rc build is never announced, and never runs a ceremony "
         "step (master merge, release tag, stable Homebrew formulas, GitHub Release).",
     ]
