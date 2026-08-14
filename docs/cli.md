@@ -131,7 +131,9 @@ Cutting an `rc` additionally stamps `nyxgpt-api@<release>rc` /
 with the service tarballs), so a candidate is installable on macOS too:
 
 ```bash
-brew tap dkblinux98/nyxgpt && brew install nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc
+brew tap dkblinux98/nyxgpt
+brew tap-trust dkblinux98/nyxgpt   # one-time per machine (docs/homebrew.md)
+brew install nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc
 ```
 
 The formula name carries the release line, so a candidate never crosses to

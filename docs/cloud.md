@@ -642,8 +642,11 @@ nyxgpt cloud user-data --os macos
 
 **`--os macos`** (EC2 Mac -- see the [support matrix](#target-os-support-matrix)
 below): installs Homebrew if missing, `brew tap`s the remote tap
-(`dkblinux98/homebrew-nyxgpt`) and installs `nyxgpt-api`/`nyxgpt-web`,
-seeds `~/.nyxGPT/config.ini`, and starts both via `brew services`. This
+(`dkblinux98/nyxgpt`, the `dkblinux98/homebrew-nyxgpt` repository),
+`brew tap-trust`s it so the non-interactive install does not stop at
+Homebrew's third-party tap gate (#3752), installs
+`nyxgpt-api`/`nyxgpt-web`, seeds `~/.nyxGPT/config.ini`, and starts both
+via `brew services`. This
 follows [the documented local remote-tap flow](homebrew.md#remote-tap)
 exactly -- it deliberately does **not** call `nyxgpt ops install`, whose
 macOS path builds a *local* tap from a repo checkout
@@ -1020,6 +1023,7 @@ cuts a new candidate.
 
 ```bash
 brew tap dkblinux98/nyxgpt
+brew tap-trust dkblinux98/nyxgpt   # one-time per machine (docs/homebrew.md)
 brew install nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc
 
 brew services start nyxgpt-api@3.0.0rc

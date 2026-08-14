@@ -144,9 +144,13 @@ TARGETS: tuple[Target, ...] = (
     Target(
         key="macos-native",
         name="macOS native (Homebrew + launchd)",
-        artifact="Remote Homebrew tap (dkblinux98/homebrew-nyxgpt) + PyPI wheel",
+        artifact="Remote Homebrew tap (dkblinux98/nyxgpt) + PyPI wheel",
         install=(
-            "brew tap dkblinux98/homebrew-nyxgpt",
+            "brew tap dkblinux98/nyxgpt",
+            # Homebrew gates formulas from third-party taps: without this,
+            # `brew install` stops instead of installing (#3752). One-time
+            # per tap, per machine -- docs/homebrew.md#trusting-the-tap.
+            "brew tap-trust dkblinux98/nyxgpt",
             "brew install nyxgpt-api nyxgpt-web",
         ),
         operate=("nyxgpt up", "nyxgpt ops status", "nyxgpt ops doctor"),

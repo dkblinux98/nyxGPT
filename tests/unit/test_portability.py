@@ -73,9 +73,7 @@ def test_repo_less_check_rejects_fetching_source(command):
 
 
 def test_repo_less_check_passes_for_published_artifacts():
-    target = _target(
-        install=("brew tap dkblinux98/homebrew-nyxgpt", "brew install nyxgpt-api nyxgpt-web")
-    )
+    target = _target(install=("brew tap dkblinux98/nyxgpt", "brew install nyxgpt-api nyxgpt-web"))
 
     assert _check(target, "repo_less")["passed"]
 

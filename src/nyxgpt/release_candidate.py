@@ -684,7 +684,14 @@ def _channel_commands(channel: str, release: str) -> dict[str, str]:
         "publish": f"nyxgpt release publish --channel {channel} --publish",
         # An rc is a pre-release that is also installable with brew: its
         # publish stamps this line's `@<release>rc` formulas into the tap.
-        "brew": f"brew tap {HOMEBREW_TAP} && brew install {' '.join(rc_formulas(release))}",
+        # The trust step is what stops a fresh Mac from dead-ending at
+        # Homebrew's third-party tap gate (#3752); it is wrapped in
+        # `|| true` because a Homebrew old enough not to gate has no
+        # `tap-trust` subcommand, and this line has to run on both.
+        "brew": (
+            f"brew tap {HOMEBREW_TAP} && (brew tap-trust {HOMEBREW_TAP} || true) "
+            f"&& brew install {' '.join(rc_formulas(release))}"
+        ),
     }
 
 

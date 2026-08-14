@@ -342,9 +342,14 @@ def build_rc_publish_lines(rc_publish: dict[str, Any]) -> list[str]:
         lines.append("")
         lines.append("```bash")
         lines.append(f"pip install nyxgpt=={version}")
+        # Homebrew gates formulas from third-party taps: without the trust
+        # step the install stops at the prompt instead of installing
+        # (#3752). Tolerated failure, mirroring `release_candidate`'s
+        # `_channel_commands` -- a Homebrew old enough not to gate has no
+        # `tap-trust` subcommand, and a bare `&&` chain would abort there.
         lines.append(
-            f"brew tap dkblinux98/nyxgpt && brew install "
-            f"nyxgpt-api@{release}rc nyxgpt-web@{release}rc"
+            f"brew tap dkblinux98/nyxgpt && (brew tap-trust dkblinux98/nyxgpt || true) "
+            f"&& brew install nyxgpt-api@{release}rc nyxgpt-web@{release}rc"
         )
         lines.append("```")
     lines.append("")

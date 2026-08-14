@@ -42,7 +42,7 @@ A row is **acceptance-ready** when its checks pass *and* it has no open gap.
 
 | Target | Published artifact | Install (clean machine) | Operate | Tear down | State |
 |---|---|---|---|---|---|
-| macOS native (Homebrew + launchd) | Remote tap `dkblinux98/homebrew-nyxgpt` | `brew tap dkblinux98/homebrew-nyxgpt`<br>`brew install nyxgpt-api nyxgpt-web` | `nyxgpt up` | `nyxgpt down` | Install **verified in CI** (`macos-brew-smoke.yml`); operate half owner acceptance |
+| macOS native (Homebrew + launchd) | Remote tap `dkblinux98/nyxgpt` | `brew tap dkblinux98/nyxgpt`<br>`brew tap-trust dkblinux98/nyxgpt`<br>`brew install nyxgpt-api nyxgpt-web` | `nyxgpt up` | `nyxgpt down` | Install **verified in CI** (`macos-brew-smoke.yml`); operate half owner acceptance |
 | Linux native (systemd `--user`) | PyPI wheel | `pip install nyxgpt` | `nyxgpt up` | `nyxgpt down` | **Verified in CI** on every release |
 | Docker / Compose | `ghcr.io/dkblinux98/nyxgpt-api`, `…/nyxgpt-web` | `pip install nyxgpt` | `nyxgpt up`, `nyxgpt ops observability` | `nyxgpt down` | **Gap** — see below |
 | Kubernetes | the same two images | `pip install nyxgpt` | `nyxgpt ops install --kubernetes --local` | `nyxgpt ops down --kubernetes` | **Gap** — see below |
@@ -159,7 +159,9 @@ from its own formulas instead — an rc publish stamps them into the same tap
 alongside the stable ones:
 
 ```bash
-brew tap dkblinux98/nyxgpt && brew install nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc
+brew tap dkblinux98/nyxgpt
+brew tap-trust dkblinux98/nyxgpt   # one-time per machine (docs/homebrew.md)
+brew install nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc
 ```
 
 `brew install nyxgpt-api` is unaffected and stays on the latest stable
@@ -197,7 +199,9 @@ The three non-AWS targets are accepted the same way, on a clean machine each:
 
 ```bash
 # macOS native
-brew tap dkblinux98/homebrew-nyxgpt && brew install nyxgpt-api nyxgpt-web
+brew tap dkblinux98/nyxgpt
+brew tap-trust dkblinux98/nyxgpt   # one-time: Homebrew gates third-party taps
+brew install nyxgpt-api nyxgpt-web
 nyxgpt up && nyxgpt ops status && nyxgpt down
 
 # Linux native (systemd --user)

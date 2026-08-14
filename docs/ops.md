@@ -54,19 +54,25 @@ service on macOS, `nyxgpt-ollama.service` on Linux).
 
 ### Install
 
-```bash
-pip install nyxgpt          # Linux and macOS
-```
-
-On macOS you can instead install the native services from the remote tap, which
-brings their launchd wiring with them:
+On **macOS**, install the native services from the remote tap, which brings
+their launchd wiring with them:
 
 ```bash
-brew tap dkblinux98/homebrew-nyxgpt
+brew tap dkblinux98/nyxgpt
+brew tap-trust dkblinux98/nyxgpt   # one-time: Homebrew gates third-party taps
 brew install nyxgpt-api nyxgpt-web
 ```
 
-(That is the remote tap — see [homebrew.md](homebrew.md#remote-tap).)
+(That is the remote tap — see [homebrew.md](homebrew.md#remote-tap), and
+[Trusting the tap](homebrew.md#trusting-the-tap-one-time-required) for the
+trust step.) pip is not the macOS path: Homebrew's Python is PEP 668
+externally managed, so `pip3 install nyxgpt` is refused.
+
+On **Linux**, install the published wheel from PyPI:
+
+```bash
+pipx install nyxgpt   # or `pip install nyxgpt` where the system Python is not externally managed
+```
 
 Other targets — Docker/Compose, Kubernetes, AWS EC2 — and the exact install
 command and current state of each are in the
