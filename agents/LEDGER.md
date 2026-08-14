@@ -345,6 +345,16 @@ not agent-editable except to add a `Re-verify` result or a supersession pointer.
   catch a spend runaway.
   Source: `product_management/AGENTIC_SDLC_DESIGN.md` §9a.
 
+- **P-003** · 2026-08-14 · owner — nyxAgent design discussion, seeded with the
+  AWS article "How frontier teams are reinventing AI-native development"
+  (aws.amazon.com/blogs/machine-learning/how-frontier-teams-are-reinventing-ai-native-development/).
+  Its five practices (invest in agent context; slow down to speed up; feed
+  agents instead of babysitting; make intent explicit; shift testing left) map
+  closely onto this project's #3774/#3775/#3730 decisions; its unpriced gap is
+  churn cost (#3776's subject).
+  Reason: owner wants the discussion held deliberately, not ad hoc.
+  Revisit when: Sprint 9 (nyxAgent) grooming, alongside P-001.
+
 ## Open questions
 
 - **Q-001** · 2026-08-14 · developer-agent (#3774) — Should the ledger be
