@@ -155,6 +155,58 @@ def test_provision_script_installs_the_pinned_published_release():
     assert 'pip" install --quiet "nyxgpt==${NYXGPT_VERSION}"' in script
 
 
+def test_provision_script_installs_node_before_ops_install():
+    """#3761: without npm, `ops install`'s web step fails and the deploy has no web UI.
+
+    The owner's acceptance run stopped at `[14/23] native web service` ->
+    `npm not found; cannot install nyxgpt-web`, which per the Definition of
+    Done is a failed deploy, not a partial one.
+    """
+    script = cloud_deploy.render_provision_script(cloud_deploy.resolve_plan(_args()))
+
+    # Both package-manager branches of the support matrix (dnf on Amazon
+    # Linux, apt-get on Ubuntu) get Node 20, not just one.
+    assert "rpm.nodesource.com/setup_20.x" in script
+    assert "deb.nodesource.com/setup_20.x" in script
+    # Before the install that needs it -- the real invocation, not the
+    # narration around it.
+    assert script.index("nodesource.com") < script.index("run_nyxgpt ops install")
+
+
+def test_provision_script_keeps_an_existing_node_20_installation():
+    """Re-deploys and Node-preinstalled AMIs shouldn't reinstall the toolchain."""
+    script = cloud_deploy.render_provision_script(cloud_deploy.resolve_plan(_args()))
+
+    assert 'if ! command -v npm >/dev/null 2>&1 || [ "${NODE_MAJOR:-0}" -lt 20 ]; then' in script
+
+
+def test_provision_script_fails_fast_when_npm_is_still_missing():
+    """A missing toolchain should name itself, not surface 14 steps later."""
+    script = cloud_deploy.render_provision_script(cloud_deploy.resolve_plan(_args()))
+
+    assert "node/npm could not be installed" in script
+    assert script.index("node/npm could not be installed") < script.index("run_nyxgpt ops install")
+
+    # The script runs under `set -euo pipefail`, so an install that exits
+    # non-zero would abort before the diagnostic ever printed. Every install
+    # in the Node block has to be non-fatal for the check above to be
+    # reachable at all.
+    assert "set -euo pipefail" in script
+    node_block = script[
+        script.index("NODE_MAJOR=0") : script.index("node/npm could not be installed")
+    ]
+    installs = [
+        line.strip()
+        for line in node_block.splitlines()
+        if ("dnf install" in line or "apt-get install" in line) and not line.strip().startswith("#")
+    ]
+    assert installs, "the Node block installs nothing"
+    # A continued command is only fatal on its last line, where the `|| true` sits.
+    assert all(
+        line.endswith("|| true") or line.endswith("\\") for line in installs
+    ), f"an install can abort before the diagnostic: {installs}"
+
+
 def test_provision_script_skips_observability_when_asked():
     with_obs = cloud_deploy.render_provision_script(cloud_deploy.resolve_plan(_args()))
     without = cloud_deploy.render_provision_script(
@@ -200,8 +252,10 @@ def test_provision_script_enables_self_healing(monkeypatch):
 
     assert '"$NYXGPT" self-heal enable' in script
     # After the stack exists, not before -- enabling the watchdog is
-    # meaningless until there are components for it to watch.
-    assert script.index("ops install") < script.index("self-heal enable")
+    # meaningless until there are components for it to watch. Anchored on the
+    # invocation, not the bare words: #3761's Node block narrates `ops install`
+    # in a comment far earlier in the script.
+    assert script.index("run_nyxgpt ops install") < script.index("self-heal enable")
 
 
 def test_provision_script_enables_self_healing_without_observability(monkeypatch):

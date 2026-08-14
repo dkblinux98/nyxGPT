@@ -62,8 +62,9 @@ reach from your workstation. It:
    wherever you are; the deploy reports that CIDR and then waits for the
    freshly booted instance to accept SSH.
 3. **Provisions the instance from published artifacts** — installs the OS
-   packages, the Docker engine, Ollama, and a **published** `nyxgpt` release,
-   then runs `nyxgpt ops install` on the box. See
+   packages, Node 20 (from NodeSource, the toolchain `ops install` builds and
+   runs the web bundle with), the Docker engine, Ollama, and a **published**
+   `nyxgpt` release, then runs `nyxgpt ops install` on the box. See
    [Repo-less by construction](#repo-less-by-construction) below and
    [Docker on the instance](#docker-on-the-instance).
 4. **Enables self-healing** — a cloud instance is unattended by definition,
@@ -248,6 +249,7 @@ place: nothing has proved the deployment is gone.
 | --- | --- |
 | `did not accept SSH within 300s` | Usually a stale security-group rule — run `nyxgpt cloud allow-ip` (see [Lockout recovery](#lockout-recovery)). Also possible on a very slow first boot: retry with `--ssh-timeout 600`. |
 | `Provisioning the instance failed` | The remote install's own diagnostic is included. Re-running `nyxgpt cloud deploy` is safe — provisioning is idempotent. |
+| `node/npm could not be installed` | Neither NodeSource nor the distro's own packages produced a Node toolchain, so `ops install` could not build the web bundle. Usually a blocked egress to `nodesource.com`; the instance needs outbound HTTPS. |
 | `never returned 200 within 900s` | The stack installed but isn't healthy. The tunnel is left open; `nyxgpt cloud deploy --status` and the instance's own `nyxgpt ops doctor` say more. |
 | `Could not open the SSH tunnel` | A local port is already bound, most often by a local nyxGPT stack. |
 
