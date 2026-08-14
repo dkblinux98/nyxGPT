@@ -64,6 +64,7 @@ from __future__ import annotations
 
 import re
 import sys
+import textwrap
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -95,6 +96,14 @@ _RELEASE_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 # message instead of a FileNotFoundError from inside the tarball builder --
 # or, worse, an api tarball vendored from the tooling checkout by accident.
 _SOURCE_TREE_MARKERS = ("pyproject.toml", "example.config.ini", "src/nyxgpt", "web")
+
+# Markers around the `sitecustomize.py` the api formulas write into their
+# build environment (#3753). They delimit Python living inside a Ruby heredoc,
+# which nothing else in this repo can syntax-check -- `extract_build_shim`
+# below is what lets the release build, the unit suite and the macOS smoke job
+# all read that one source instead of re-deriving it.
+_SHIM_BEGIN = "# nyxgpt-mac-ver-shim: begin"
+_SHIM_END = "# nyxgpt-mac-ver-shim: end"
 
 _CLASS_RE = re.compile(r"^class\s+(\w+)\s+<\s+Formula\b", re.MULTILINE)
 
@@ -222,6 +231,49 @@ def formula_class_name(formula: str) -> str:
     return _AT_VERSION_RE.sub(lambda match: f"{match.group(1)}AT{match.group(2)}", class_name, 1)
 
 
+def has_build_shim(formula_text: str) -> bool:
+    """True if this formula embeds the mac_ver build shim (the api one does)."""
+    return _SHIM_BEGIN in formula_text and _SHIM_END in formula_text
+
+
+def extract_build_shim(formula_text: str) -> str:
+    """Return the `sitecustomize.py` source an api formula writes at build time.
+
+    The shim is Python nested inside a Ruby heredoc, so no linter, formatter
+    or import in this repo ever looks at it -- a typo there would first be
+    heard about from a failed `brew install` on someone's Mac, which is
+    exactly how #3753 reached owner acceptance twice. Pulling the source back
+    out gives the release build something to compile (`validate_build_shim`),
+    the unit suite something to execute, and the macOS smoke job something to
+    inject a fault into, all from the single copy the formula ships.
+    """
+    lines = formula_text.splitlines(keepends=True)
+    begin = next((index for index, line in enumerate(lines) if _SHIM_BEGIN in line), None)
+    end = next((index for index, line in enumerate(lines) if _SHIM_END in line), None)
+    if begin is None or end is None or end < begin:
+        raise ValueError(
+            f"formula does not embed a build shim delimited by {_SHIM_BEGIN!r} / {_SHIM_END!r}"
+        )
+    # Ruby's `<<~` strips the heredoc indentation at runtime; the file on disk
+    # still carries it, so the extracted source has to be dedented to be the
+    # Python that actually lands in the build environment.
+    return textwrap.dedent("".join(lines[begin : end + 1]))
+
+
+def validate_build_shim(formula_text: str, formula: str) -> None:
+    """Refuse to publish a formula whose embedded shim is not valid Python.
+
+    A no-op for formulas that embed no shim (`nyxgpt-web` builds with npm and
+    never starts a Python interpreter).
+    """
+    if not has_build_shim(formula_text):
+        return
+    try:
+        compile(extract_build_shim(formula_text), f"<{formula} build shim>", "exec")
+    except SyntaxError as exc:
+        raise ValueError(f"{formula}: the embedded build shim is not valid Python: {exc}") from exc
+
+
 def render_rc_formula(template_text: str, name: str, version: str) -> str:
     """Turn a stamped stable formula into its release-candidate counterpart.
 
@@ -309,6 +361,7 @@ def build(
         )
         if channel == "rc":
             stamped = render_rc_formula(stamped, name, version)
+        validate_build_shim(stamped, name)
         formula_path = out_dir / f"{formula_name(name, channel, version)}.rb"
         formula_path.write_text(stamped, encoding="utf-8")
         written.append(formula_path)

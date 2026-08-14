@@ -28,6 +28,123 @@ class NyxgptApi < Formula
     python = Formula["python@3.12"].opt_bin/"python3.12"
     venv = libexec/"venv"
 
+    # Round 2 of #3753. With ensurepip gone the install died one step later,
+    # inside pip's own startup:
+    #
+    #   File ".../pip/_vendor/truststore/_macos.py", line 22, in <module>
+    #     _mac_version_info = tuple(map(int, _mac_version.split(".")))
+    #   ValueError: invalid literal for int() with base 10: ''
+    #
+    # `platform.mac_ver()` returns no release in this build environment
+    # (`_mac_ver_xml()` could not read SystemVersion.plist, so mac_ver() fell
+    # through to its default empty release), and two things pip does on every
+    # install parse that string unguarded: truststore, its default TLS backend
+    # since pip 24.2, and `packaging.tags.mac_platforms`, which computes the
+    # wheel tags to resolve against. So pip cannot start at all -- not even
+    # with `--no-index`, since `InstallCommand.run` builds its session before
+    # it looks at the flag. pip means to degrade gracefully here but only
+    # catches `ImportError`, so a `ValueError` out of the module body escapes
+    # and no combination of pip options reaches the fallback.
+    #
+    # Repair the value rather than chase the cause: the reason mac_ver() is
+    # empty is macOS-side and not observable from here, but the recipe only
+    # needs it to be answerable. A `sitecustomize` on PYTHONPATH runs at
+    # interpreter startup, so one file covers every interpreter that asks --
+    # this python, the venv python `pip --python` re-execs into, and pip's
+    # build-isolation subprocesses. It lives in buildpath, so it is gone once
+    # the keg is built and nothing ships it.
+    shim = buildpath/"brew-build-shim"
+    shim.mkpath
+    (shim/"sitecustomize.py").write <<~'PY'
+      # nyxgpt-mac-ver-shim: begin (#3753)
+      """Repair platform.mac_ver() for every tool this build runs.
+
+      `site` imports this at interpreter startup because the formula's install
+      block puts its directory on PYTHONPATH; see that block for the failure
+      it exists to prevent.
+      """
+      import os
+      import platform
+      import sys
+
+
+      def _is_version(value):
+          """True for the dotted-integer string mac_ver() promises to return."""
+          return bool(value) and all(part.isdigit() for part in value.split("."))
+
+
+      def _chain_to_the_real_sitecustomize():
+          """Run the sitecustomize this interpreter would otherwise have imported.
+
+          PYTHONPATH precedes site-packages, so this file shadows a brewed
+          python's own sitecustomize if it has one. Dropping that silently
+          would change the build environment in ways unrelated to the fix.
+          """
+          here = os.path.dirname(os.path.abspath(__file__))
+          for entry in sys.path:
+              directory = entry or os.curdir
+              candidate = os.path.join(directory, "sitecustomize.py")
+              if os.path.abspath(directory) == here or not os.path.isfile(candidate):
+                  continue
+              with open(candidate, "rb") as handle:
+                  source = handle.read()
+              exec(compile(source, candidate, "exec"), {"__file__": candidate})
+              return
+
+
+      def _repair_mac_ver():
+          """Give mac_ver() a usable release when the OS lookup came back empty."""
+          try:
+              current = platform.mac_ver()[0]
+          except Exception:
+              current = ""
+          if _is_version(current):
+              return
+
+          try:
+              import subprocess
+
+              release = subprocess.run(
+                  ["/usr/bin/sw_vers", "-productVersion"],
+                  capture_output=True,
+                  text=True,
+                  timeout=30,
+                  check=False,
+              ).stdout.strip()
+          except Exception:
+              release = ""
+
+          if not _is_version(release):
+              # A floor, not a guess at the real version: >= 10.8 clears
+              # truststore's minimum, >= 10.16 is what makes it load
+              # Security.framework by absolute path instead of find_library,
+              # and 11.0 is the tag every Apple Silicon wheel is published
+              # under -- so pip still resolves binary wheels rather than
+              # falling back to building each one from source.
+              release = "11.0"
+
+          machine = platform.machine()
+          platform.mac_ver = lambda *args, **kwargs: (release, ("", "", ""), machine)
+          print(
+              "nyxgpt: platform.mac_ver() returned no release in this build "
+              "environment; reporting " + release + " so pip can start (#3753)",
+              file=sys.stderr,
+          )
+
+
+      # Guarded so the shim can be imported and exercised by the test suite
+      # without patching the interpreter it is being read into.
+      if __name__ == "sitecustomize":
+          try:
+              _chain_to_the_real_sitecustomize()
+          except Exception as exc:
+              print("nyxgpt: sitecustomize chain skipped: %r" % (exc,), file=sys.stderr)
+          if sys.platform == "darwin":
+              _repair_mac_ver()
+      # nyxgpt-mac-ver-shim: end
+    PY
+    ENV.prepend_path "PYTHONPATH", shim
+
     # `--without-pip` is load-bearing (#3753). A plain `python -m venv` runs
     # `ensurepip --upgrade --default-pip` inside the new venv, and ensurepip
     # bootstraps pip from wheels vendored in the `python@3.12` keg -- the one
