@@ -155,6 +155,39 @@ def test_provision_script_installs_the_pinned_published_release():
     assert 'pip" install --quiet "nyxgpt==${NYXGPT_VERSION}"' in script
 
 
+def test_provision_script_installs_node_before_ops_install():
+    """#3761: without npm, `ops install`'s web step fails and the deploy has no web UI.
+
+    The owner's acceptance run stopped at `[14/23] native web service` ->
+    `npm not found; cannot install nyxgpt-web`, which per the Definition of
+    Done is a failed deploy, not a partial one.
+    """
+    script = cloud_deploy.render_provision_script(cloud_deploy.resolve_plan(_args()))
+
+    # Both package-manager branches of the support matrix (dnf on Amazon
+    # Linux, apt-get on Ubuntu) get Node 20, not just one.
+    assert "rpm.nodesource.com/setup_20.x" in script
+    assert "deb.nodesource.com/setup_20.x" in script
+    # Before the install that needs it -- the real invocation, not the
+    # narration around it.
+    assert script.index("nodesource.com") < script.index("$NYXGPT ops install")
+
+
+def test_provision_script_keeps_an_existing_node_20_installation():
+    """Re-deploys and Node-preinstalled AMIs shouldn't reinstall the toolchain."""
+    script = cloud_deploy.render_provision_script(cloud_deploy.resolve_plan(_args()))
+
+    assert 'if ! command -v npm >/dev/null 2>&1 || [ "${NODE_MAJOR:-0}" -lt 20 ]; then' in script
+
+
+def test_provision_script_fails_fast_when_npm_is_still_missing():
+    """A missing toolchain should name itself, not surface 14 steps later."""
+    script = cloud_deploy.render_provision_script(cloud_deploy.resolve_plan(_args()))
+
+    assert "node/npm could not be installed" in script
+    assert script.index("node/npm could not be installed") < script.index("$NYXGPT ops install")
+
+
 def test_provision_script_skips_observability_when_asked():
     with_obs = cloud_deploy.render_provision_script(cloud_deploy.resolve_plan(_args()))
     without = cloud_deploy.render_provision_script(

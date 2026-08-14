@@ -458,6 +458,46 @@ fi
 PY=python3.11
 command -v "$PY" >/dev/null 2>&1 || PY=python3
 
+# --- Node.js 20 (the web bundle's build and run toolchain) -------------
+# `nyxgpt ops install`'s "native web service" step runs `npm ci`/`npm run
+# build`, and the wrapper it installs execs `npm run start`, so npm has to
+# be here before `ops install` runs. Without it that step fails with "npm
+# not found; cannot install nyxgpt-web" and the deploy leaves an API with no
+# web surface, which is not a working nyxGPT (#3761).
+#
+# Node 20 from NodeSource rather than the distro repos -- the same source
+# scripts/cloud/ec2-user-data-linux.sh.tmpl uses, and for the same reason:
+# the AMIs in the target-OS support matrix ship a Node older than the one
+# the web bundle builds against. Where NodeSource has no repo for the
+# release, fall back to the distro's own packages, then verify.
+NODE_MAJOR=0
+if command -v node >/dev/null 2>&1; then
+  NODE_MAJOR=$(node -v | sed 's/^v//' | cut -d. -f1)
+fi
+if ! command -v npm >/dev/null 2>&1 || [ "${NODE_MAJOR:-0}" -lt 20 ]; then
+  if command -v dnf >/dev/null 2>&1; then
+    if curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo -E bash - >/dev/null; then
+      sudo dnf install -y nodejs >/dev/null
+    else
+      sudo dnf install -y nodejs20 nodejs20-npm >/dev/null \\
+        || sudo dnf install -y nodejs npm >/dev/null
+    fi
+  else
+    if curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - >/dev/null; then
+      sudo apt-get install -y -qq nodejs >/dev/null
+    else
+      sudo apt-get install -y -qq nodejs npm >/dev/null
+    fi
+  fi
+fi
+
+# Stop here, naming the actual problem, rather than most of the way through
+# `ops install` with a bare "npm not found".
+if ! command -v npm >/dev/null 2>&1; then
+  echo "node/npm could not be installed -- 'nyxgpt ops install' cannot build the nyxgpt-web bundle without npm" >&2
+  exit 1
+fi
+
 # --- Docker (Cassandra + the observability stack run as containers) ----
 sudo systemctl enable --now docker
 sudo usermod -aG docker "$(id -un)" || true
