@@ -66,9 +66,11 @@ A row is **acceptance-ready** when its checks pass *and* it has no open gap.
   dummy credentials, so the live deploy/smoke/teardown is the owner
   acceptance run below.
 - **macOS native** — `release-artifacts.yml` stamps both formulas and pushes
-  them to the remote tap when `HOMEBREW_TAP_REPO` is configured (and always
-  publishes the tarballs on the release's `<version>-homebrew` release
-  otherwise; see [homebrew.md](homebrew.md#remote-tap)). Coverage is split:
+  them to the remote tap when `HOMEBREW_TAP_REPO` is configured, and uploads
+  them as a workflow artifact otherwise; either way the tarballs they install
+  from are published on a companion `<version>-homebrew` release, because a
+  published release is immutable (see
+  [homebrew.md](homebrew.md#where-the-tarballs-are-published)). Coverage is split:
   [`macos-brew-smoke.yml`](../.github/workflows/macos-brew-smoke.yml) installs
   the formulas on a hosted `macos-15` runner — the working tree's own recipe on
   every formula change, and the published candidate from the real tap after

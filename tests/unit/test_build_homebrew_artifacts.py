@@ -694,6 +694,20 @@ def test_tap_job_stamps_the_formulas_against_the_already_published_tarballs():
     assert "--source-root release-source" in run_steps
 
 
+def test_tap_job_does_not_read_an_api_failure_as_an_empty_release():
+    """A suppressed 5xx would read a *serving* sidecar as empty and retire it."""
+    resolve = next(
+        s for s in _tap_job()["steps"] if "Resolve the release" in str(s.get("name", ""))
+    )
+    run = resolve["run"]
+
+    # `gh release view` failing is only benign when the release is absent;
+    # anything else fails the job rather than being answered with "".
+    assert "2>/dev/null" not in run
+    assert "grep -qi 'release not found'" in run
+    assert "refusing to guess" in run
+
+
 def test_tap_job_verifies_the_stamped_sha256_against_the_served_asset():
     """Without this, a mismatch reaches the tap and breaks every `brew install`."""
     steps = _tap_job()["steps"]

@@ -170,8 +170,12 @@ TARGETS: tuple[Target, ...] = (
             "*operate* half (brew services / launchd reconciliation, nyxgpt up) "
             "stays owner-verified on the owner's workstation. Publishing is "
             "automated -- release-artifacts.yml stamps and pushes both formulas to "
-            "the remote tap when HOMEBREW_TAP_REPO is configured, and always "
-            "attaches them to the release otherwise."
+            "the remote tap when HOMEBREW_TAP_REPO is configured, and uploads them "
+            "as a workflow artifact otherwise. The tarballs they install from are "
+            "published on a companion <version>-homebrew release (a published "
+            "release is immutable and can never gain an asset), or served from "
+            "the version's own release when it already carries them -- "
+            "docs/homebrew.md#where-the-tarballs-are-published."
         ),
     ),
     Target(
