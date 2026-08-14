@@ -23,6 +23,7 @@ import os
 import platform
 import re
 import secrets
+import shlex
 import shutil
 import socket
 import subprocess
@@ -555,30 +556,64 @@ def record_canary_action(
     _record_ops_action(f"canary-{action}", component, result, message)
 
 
-# Flipped on by `_enable_docker_sudo_fallback` (see its docstring) when this
-# process cannot reach the Docker socket directly -- the invoking session
-# predates its `docker` group membership -- but can reach it through
-# passwordless sudo. It is applied centrally in `_run` rather than at the ~40
-# `["docker", ...]` call sites in this module, so no Docker call path can
-# forget it and re-introduce #3760's mid-deploy "permission denied ...
-# /var/run/docker.sock".
-_DOCKER_SUDO_FALLBACK = False
+# Set by `_enable_docker_socket_hop` (see its docstring) when this process
+# cannot reach the Docker socket directly -- the invoking session predates its
+# `docker` group membership. Either "sg" (re-run the command under the docker
+# group) or "sudo" (passwordless sudo), whichever is available *and* proven to
+# carry this process's environment through unchanged. It is applied centrally
+# in `_run` rather than at the ~40 `["docker", ...]` call sites in this module,
+# so no Docker call path can forget it and re-introduce #3760's mid-deploy
+# "permission denied ... /var/run/docker.sock".
+_DOCKER_SOCKET_HOP: str | None = None
+
+# How each hop is spelled, and how it reads in an OpsResult.
+_DOCKER_SOCKET_HOP_LABELS = {"sg": "`sg docker`", "sudo": "`sudo -n docker`"}
 
 
-def _docker_sudo_fallback_active() -> bool:
-    """True while ops is routing its Docker calls through `sudo -n docker`."""
-    return _DOCKER_SUDO_FALLBACK
+def _docker_socket_hop() -> str | None:
+    """The hop ops is currently routing its Docker calls through, if any."""
+    return _DOCKER_SOCKET_HOP
 
 
-def _apply_docker_sudo_fallback(cmd: list[str]) -> list[str]:
-    """Prefix a bare `docker ...` argv with `sudo -n` while the fallback is active.
+def _docker_socket_hop_active() -> bool:
+    """True while ops is reaching the Docker socket through a hop."""
+    return _DOCKER_SOCKET_HOP is not None
+
+
+def _wrap_docker_hop(cmd: list[str], hop: str | None) -> list[str]:
+    """Rewrite `cmd` to run through `hop`, preserving the environment it sees.
+
+    Both forms are environment-preserving *by construction*, which is the
+    whole point (#3760 review): `docker-compose.yml` interpolates `${HOME}`
+    for every bind mount, and `docker compose exec -e VAR` (bare, no `=value`)
+    forwards secrets out of this process's environment without ever putting
+    them on argv (CodeQL #105/#106). A hop that resets the environment would
+    silently relocate every volume under `/root` and drop those secrets.
+
+    - `sg docker -c ...` re-runs the command with the `docker` group added to
+      the credentials, leaving the environment entirely alone. It takes a
+      command *string*, so argv is shell-quoted with `shlex.join`.
+    - `sudo -n --preserve-env ...` opts out of sudo's default `env_reset`
+      (and, on Amazon Linux/RHEL, its `always_set_home`). `--preserve-env`
+      needs the sudoers SETENV tag, which `NOPASSWD: ALL` implies -- and
+      `_docker_hop_preserves_env` verifies it rather than assuming it.
+    """
+    if hop == "sg":
+        return ["sg", "docker", "-c", shlex.join(cmd)]
+    if hop == "sudo":
+        return ["sudo", "-n", "--preserve-env", *cmd]
+    return cmd
+
+
+def _apply_docker_socket_hop(cmd: list[str]) -> list[str]:
+    """Route a bare `docker ...` argv through the active hop.
 
     Only rewrites argv whose *first* element is `docker`, so an argv that is
     already privileged (`_privileged_run` puts `sudo` in front) is never
     double-wrapped, and no non-Docker command is touched.
     """
-    if _DOCKER_SUDO_FALLBACK and cmd and cmd[0] == "docker":
-        return ["sudo", "-n", *cmd]
+    if _DOCKER_SOCKET_HOP is not None and cmd and cmd[0] == "docker":
+        return _wrap_docker_hop(cmd, _DOCKER_SOCKET_HOP)
     return cmd
 
 
@@ -607,8 +642,11 @@ def _run(
     INFO with `expected_message` (or a generic "expected exit" message)
     instead of WARNING, while any other non-zero exit still logs at WARNING
     exactly as today (#3574).
-    A bare `docker ...` argv is routed through `sudo -n` while
-    `_apply_docker_sudo_fallback` is active (see `_enable_docker_sudo_fallback`).
+    A bare `docker ...` argv is routed through the active Docker socket hop
+    (`_apply_docker_socket_hop`, see `_enable_docker_socket_hop`). Logging
+    keeps the *unwrapped* argv: `_redact_cmd` masks secrets element by
+    element, and `sg -c` collapses argv into one shell string it could not
+    then see into.
     Pass `input` to feed the subprocess's stdin (e.g. a secret a caller
     doesn't want to put on `cmd`'s argv at all -- argv is visible to `ps`,
     shell history, and this function's own non-zero-exit logging, while
@@ -618,10 +656,14 @@ def _run(
     from this process's environment into the container without the value
     ever appearing on argv (CodeQL #105/#106).
     """
-    cmd = _apply_docker_sudo_fallback(cmd)
     try:
         result = subprocess.run(
-            cmd, check=check, text=True, capture_output=True, input=input, env=env
+            _apply_docker_socket_hop(cmd),
+            check=check,
+            text=True,
+            capture_output=True,
+            input=input,
+            env=env,
         )
     except subprocess.CalledProcessError as e:
         _log_nonzero_exit(
@@ -3013,7 +3055,7 @@ _LINUX_COMPOSE_PACKAGE_SETS: tuple[tuple[str, list[str], list[str]], ...] = (
 # Where a manually fetched Compose v2 plugin goes. The Docker CLI scans this
 # directory for `docker-<subcommand>` plugins for *every* user on the host,
 # which is what a per-user `~/.docker/cli-plugins` install would not do -- and
-# ops may end up invoking Docker as root (`_enable_docker_sudo_fallback`).
+# ops may end up invoking Docker as root (`_enable_docker_socket_hop`).
 COMPOSE_PLUGIN_DIR = Path("/usr/local/lib/docker/cli-plugins")
 
 # Docker publishes one static plugin binary per platform with every Compose
@@ -3165,7 +3207,18 @@ def _install_compose_plugin_binary() -> list[OpsResult]:
         ["chmod", "0755", str(dest)],
     ):
         cp = _privileged_run(cmd)
-        if cp is None or cp.returncode != 0:
+        if cp is None:
+            # Root is unreachable (no passwordless sudo) -- name that, rather
+            # than reporting the generic "could not install" the engine path
+            # distinguishes too.
+            return [
+                OpsResult(
+                    False,
+                    f"Could not install the Docker Compose plugin (root required for `{cmd[0]}`)",
+                    _DOCKER_MANUAL_INSTALL_HINT,
+                )
+            ]
+        if cp.returncode != 0:
             return [
                 OpsResult(
                     False,
@@ -3240,8 +3293,62 @@ def _ensure_docker_group_membership() -> list[OpsResult]:
     ]
 
 
-def _enable_docker_sudo_fallback() -> bool:
-    """Route ops' Docker calls through `sudo -n docker` for the rest of this process.
+# Name of the throwaway variable `_docker_hop_preserves_env` passes through a
+# candidate hop. It stands in for the real `env=`-forwarded secrets
+# (`DJANGO_SUPERUSER_PASSWORD` and friends, see `_glitchtip_ensure_superuser`)
+# without putting a real one on a probe's argv.
+_HOP_ENV_PROBE_VAR = "NYXGPT_DOCKER_HOP_PROBE"
+
+
+def _docker_hop_preserves_env(hop: str) -> bool:
+    """True if `hop` hands this process's environment through unchanged.
+
+    Two variables are checked because two different mechanisms depend on
+    them, and both fail *silently* rather than loudly if the hop resets the
+    environment (#3760 review):
+
+    - `HOME`, which `docker-compose.yml` interpolates into every bind-mount
+      source. Under sudo's `env_reset` + `always_set_home` (the Amazon
+      Linux/RHEL default, i.e. exactly the distro this targets) it becomes
+      `/root`, so the observability stack comes up bound to
+      `/root/.nyxGPT/volumes/...` while the ownership fixes chown the user's
+      home -- Grafana/Prometheus/Loki cannot write their data dirs, and the
+      next non-hop run recreates the containers against the user-home mounts,
+      abandoning whatever was written under `/root`.
+    - an arbitrary caller-supplied variable, standing in for the
+      `_run(env=...)` secrets `docker compose exec -e VAR` forwards into a
+      container without ever putting the value on argv.
+
+    A hop that fails this check is not used at all: a loud "cannot reach the
+    daemon, reconnect" is a better outcome than containers quietly built
+    against the wrong paths.
+    """
+    home = os.environ.get("HOME")
+    if not home:  # pragma: no cover - defensive; POSIX logins always set HOME
+        return False
+    sentinel = "nyxgpt-hop-probe"
+    script = f'printf "%s\\n%s" "$HOME" "${_HOP_ENV_PROBE_VAR}"'
+    cp = _run(
+        _wrap_docker_hop(["sh", "-c", script], hop),
+        check=False,
+        expected=True,
+        env={**os.environ, _HOP_ENV_PROBE_VAR: sentinel},
+    )
+    return cp.returncode == 0 and cp.stdout == f"{home}\n{sentinel}"
+
+
+def _docker_hop_reaches_daemon(hop: str) -> bool:
+    """True if a `docker` call made through `hop` can talk to the daemon."""
+    cp = _run(
+        _wrap_docker_hop(["docker", "info", "--format", "{{.ServerVersion}}"], hop),
+        check=False,
+        expected=True,
+    )
+    return cp.returncode == 0
+
+
+def _enable_docker_socket_hop() -> bool:
+    """Reach the Docker socket through `sg docker`/`sudo` for the rest of this process.
 
     `usermod -aG docker` cannot reach an already-open login session: group
     membership is stamped into a session's credentials when it is created. In
@@ -3249,34 +3356,40 @@ def _enable_docker_sudo_fallback() -> bool:
     "permission denied while trying to connect to the Docker daemon socket"
     moments after the first pass had created the Cassandra container (#3760).
     Telling the operator to reconnect and start the deploy over is a poor
-    answer when ops already holds the privilege it needs: on a host with
-    passwordless sudo (EC2's `ec2-user`, Ubuntu cloud images) `sudo -n docker`
-    reaches the socket immediately, so Cassandra, the observability stack and
-    the Grafana credential reconcile all complete in the same pass.
+    answer when ops already holds the privilege it needs.
 
-    Returns True if the fallback is now active. The group membership is still
-    added either way, so a later login needs no sudo hop at all. Deliberately
-    a last resort, tried only *after* the real group change has been attempted
-    and found not to have taken effect -- never as a way to skip it.
+    `sg docker` is tried first: it applies the group membership just added,
+    needs no sudoers assumptions at all, preserves the environment by
+    construction, and is the same mechanism the cloud provisioning script
+    already validates with `sg docker -c true`. Passwordless sudo
+    (`sudo -n --preserve-env`) is the second choice, for a host where the
+    group change itself could not be made. Either way the hop must prove it
+    preserves the environment before it is used -- see
+    `_docker_hop_preserves_env` for why an env-resetting hop is worse than no
+    hop.
+
+    Returns True if a hop is now active. The group membership is still added
+    either way, so a later login needs no hop at all. Deliberately a last
+    resort, tried only *after* the real group change has been attempted and
+    found not to have taken effect -- never as a way to skip it.
     """
-    global _DOCKER_SUDO_FALLBACK
-    if _DOCKER_SUDO_FALLBACK:
+    global _DOCKER_SOCKET_HOP
+    if _DOCKER_SOCKET_HOP is not None:
         return True
-    if _running_as_root() or _which("sudo") is None or _which("docker") is None:
+    if _running_as_root() or _which("docker") is None:
         return False
-    try:
-        cp = _run(
-            ["sudo", "-n", "docker", "info", "--format", "{{.ServerVersion}}"],
-            check=False,
-            expected=True,
-        )
-    except Exception as e:  # pragma: no cover - defensive, mirrors _docker_daemon_reachable
-        logger.debug("ops: sudo docker info failed: %s: %s", type(e).__name__, e)
-        return False
-    if cp.returncode != 0:
-        return False
-    _DOCKER_SUDO_FALLBACK = True
-    return True
+    for hop in ("sg", "sudo"):
+        if _which(hop) is None:
+            continue
+        try:
+            usable = _docker_hop_reaches_daemon(hop) and _docker_hop_preserves_env(hop)
+        except Exception as e:  # pragma: no cover - defensive, mirrors _docker_daemon_reachable
+            logger.debug("ops: %s docker probe failed: %s: %s", hop, type(e).__name__, e)
+            continue
+        if usable:
+            _DOCKER_SOCKET_HOP = hop
+            return True
+    return False
 
 
 def _ensure_docker_engine() -> list[OpsResult]:
@@ -3345,16 +3458,18 @@ def _ensure_docker_engine() -> list[OpsResult]:
     results.extend(_ensure_docker_group_membership())
     if _docker_daemon_reachable():
         results.append(OpsResult(True, "Docker daemon is reachable"))
-    elif _enable_docker_sudo_fallback():
+    elif _enable_docker_socket_hop():
+        hop = _DOCKER_SOCKET_HOP_LABELS[str(_docker_socket_hop())]
         results.append(
             OpsResult(
                 True,
-                "Docker daemon is reachable via `sudo docker` for the rest of this run",
+                f"Docker daemon is reachable via {hop} for the rest of this run",
                 "The 'docker' group membership added above only applies to new login "
-                "sessions, so ops runs Docker through `sudo -n docker` for the rest of "
-                "this process instead of failing every container step. Reconnect (or "
-                f"run: sudo loginctl terminate-user {getpass.getuser()}) to drop the "
-                "sudo hop.",
+                f"sessions, so ops runs Docker through {hop} for the rest of this "
+                "process instead of failing every container step. The hop preserves "
+                "this session's environment, so Compose bind mounts still resolve "
+                "under this user's home. Reconnect (or run: sudo loginctl "
+                f"terminate-user {getpass.getuser()}) to drop it.",
             )
         )
     else:

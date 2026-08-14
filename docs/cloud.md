@@ -186,7 +186,10 @@ invokes runs under `sg docker`, which grants the group immediately and without
 a re-login; the script resolves once, up front, whether `sg` works, rather than
 retrying a failed command without the group and turning an unrelated failure
 into a `permission denied ... /var/run/docker.sock` cascade. `ops install` has
-its own belt-and-braces fallback for the same problem
+its own belt-and-braces hop for the same problem — `sg docker` there too,
+falling back to `sudo -n --preserve-env` — and it verifies the hop preserves
+`HOME` before using it, so Compose bind mounts keep resolving under
+`/home/ec2-user` rather than `/root`
 ([Docker group membership](systemd.md#privileged-install-steps)).
 
 ### From the dashboard: status, not controls (P6-15, #3514)
