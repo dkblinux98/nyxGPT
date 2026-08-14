@@ -262,6 +262,11 @@ jobs:
               echo ""
               echo '```'
               echo "brew tap dkblinux98/nyxgpt"
+              # Homebrew gates formulas from third-party taps: without the
+              # trust step `brew install` stops at the prompt instead of
+              # installing (#3752). Tolerated failure -- a Homebrew old
+              # enough not to gate has no `tap-trust` subcommand.
+              echo "brew tap-trust dkblinux98/nyxgpt || true"
               echo "brew install nyxgpt-api@${RELEASE}rc nyxgpt-web@${RELEASE}rc"
               echo '```'
             fi
@@ -380,7 +385,7 @@ jobs:
 
           \`\`\`bash
           pip install nyxgpt==${VERSION}
-          brew tap dkblinux98/nyxgpt && brew install nyxgpt-api@${RELEASE}rc nyxgpt-web@${RELEASE}rc
+          brew tap dkblinux98/nyxgpt && (brew tap-trust dkblinux98/nyxgpt || true) && brew install nyxgpt-api@${RELEASE}rc nyxgpt-web@${RELEASE}rc
           \`\`\`
           NOTES
 
@@ -518,6 +523,9 @@ jobs:
             echo ""
             echo '```bash'
             echo "brew tap dkblinux98/nyxgpt"
+            # See the acceptance summary above: the tap has to be trusted
+            # before Homebrew will install from it (#3752).
+            echo "brew tap-trust dkblinux98/nyxgpt || true"
             echo "brew install nyxgpt-api@${RELEASE}rc nyxgpt-web@${RELEASE}rc"
             echo "brew services start nyxgpt-api@${RELEASE}rc"
             echo '```'

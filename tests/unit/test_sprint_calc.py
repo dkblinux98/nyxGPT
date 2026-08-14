@@ -526,6 +526,12 @@ class TestReleaseCandidateSection:
         assert "`3.0.0rc2` is publishing now from `v3.0.0`" in note
         assert "pip install nyxgpt==3.0.0rc2" in note
         assert "brew install nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc" in note
+        # The note is the round's copy-paste install line, so it has to clear
+        # Homebrew's third-party tap gate as written (#3752) -- and tolerate a
+        # Homebrew that has no `tap-trust` subcommand.
+        assert "brew tap dkblinux98/nyxgpt" in note
+        assert "(brew tap-trust dkblinux98/nyxgpt || true)" in note
+        assert note.index("tap-trust") < note.index("brew install nyxgpt-api@")
         assert "https://github.com/dkblinux98/nyxGPT/actions/x" in note
 
     def test_a_dispatch_with_no_preflight_version_still_reports_the_publish(self):

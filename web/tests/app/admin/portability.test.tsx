@@ -397,9 +397,12 @@ describe('PortabilityPage', () => {
       await waitFor(() => {
         expect(screen.getByText(/Accept it on macOS/)).toBeInTheDocument();
       });
+      // The tap-trust step is part of the rendered line: Homebrew gates
+      // third-party taps, so the owner's copy-paste has to carry it (#3752).
       expect(
         screen.getByText(
-          'brew tap dkblinux98/nyxgpt && brew install nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc'
+          'brew tap dkblinux98/nyxgpt && (brew tap-trust dkblinux98/nyxgpt || true) && ' +
+            'brew install nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc'
         )
       ).toBeInTheDocument();
     });
