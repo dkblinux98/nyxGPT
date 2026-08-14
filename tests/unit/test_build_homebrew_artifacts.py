@@ -544,6 +544,286 @@ def test_backfill_is_a_parameter_of_the_existing_job_not_a_second_workflow():
         assert jobs[job]["if"] == "${{ !inputs.tap_only }}"
 
 
+# --- Immutable releases: the tarballs get their own release (#3763) -------
+#
+# Both 2.1.0 backfill runs built the tarballs correctly and then died on
+# `HTTP 422: Cannot upload assets to an immutable release`, trying to
+# `gh release upload --clobber` them onto the already-published 2.1.0
+# release. A published release here can never gain an asset -- and that is
+# not a backfill-only problem: the ceremony publishes every release before
+# this job builds its tarballs, so the upload step could never have worked
+# for any version. The tarballs are published on a release of their own,
+# `<version>-homebrew`, created with the assets attached.
+
+
+def test_asset_release_tag_is_the_versions_own_sidecar():
+    assert build_homebrew_artifacts.asset_release_tag("2.1.0") == "2.1.0-homebrew"
+
+
+def test_asset_release_tag_refuses_anything_but_a_release():
+    """A candidate's tarballs ride its own prerelease -- it has no sidecar."""
+    with pytest.raises(ValueError):
+        build_homebrew_artifacts.asset_release_tag("9.9.9rc4")
+
+
+def test_asset_release_tag_refuses_a_tag_it_produced_itself():
+    """`2.1.0-homebrew-homebrew` would be a release nothing publishes."""
+    from nyxgpt import release_tarball
+
+    with pytest.raises(ValueError):
+        release_tarball.homebrew_asset_release_tag("2.1.0-homebrew")
+
+
+def test_asset_tag_query_prints_the_serving_release():
+    """What the tap job builds BASE_URL from -- one definition, not a shell string."""
+    cp = subprocess.run(
+        [sys.executable, str(SCRIPT), "--asset-tag", "2.1.0"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert cp.returncode == 0, cp.stderr
+    assert cp.stdout.strip() == "2.1.0-homebrew"
+
+
+@pytest.mark.parametrize("argv", [["--asset-tag"], ["--asset-tag", "9.9.9", "out"]])
+def test_asset_tag_query_takes_exactly_one_version(argv):
+    cp = subprocess.run(
+        [sys.executable, str(SCRIPT), *argv],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert cp.returncode == 2
+    assert "usage:" in cp.stderr
+
+
+def test_asset_tag_query_reports_a_non_release_version_without_a_traceback():
+    cp = subprocess.run(
+        [sys.executable, str(SCRIPT), "--asset-tag", "9.9.9rc4"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert cp.returncode == 2
+    assert "Traceback" not in cp.stderr
+    assert "not a release version" in cp.stderr
+
+
+def _tap_run_steps() -> str:
+    return "\n".join(step.get("run", "") for step in _tap_job()["steps"])
+
+
+def test_tap_job_never_uploads_assets_onto_an_existing_release():
+    """The literal 2026-08-13 failure: `gh release upload --clobber` on 2.1.0."""
+    run_steps = _tap_run_steps()
+
+    assert "gh release upload" not in run_steps
+    assert "--clobber" not in run_steps
+
+
+def test_tap_job_publishes_the_tarballs_with_the_release_that_carries_them():
+    run_steps = _tap_run_steps()
+
+    assert "gh release create" in run_steps
+    # Assets as positional arguments of the create call -- the only way an
+    # immutable release can ever carry them.
+    assert '"$API_TARBALL" "$WEB_TARBALL"' in run_steps
+    # Never a second release of nyxGPT, and never able to re-trigger this
+    # workflow (which listens for `released`, not `prereleased`).
+    assert "--prerelease" in run_steps
+    assert "--latest=false" in run_steps
+
+
+def test_tap_job_stamps_the_formulas_against_the_serving_release():
+    """A formula stamped with the version's own tag would 404 at `brew install`."""
+    run_steps = _tap_run_steps()
+
+    assert 'ASSET_TAG=$(python scripts/build_homebrew_artifacts.py --asset-tag "$VERSION")' in (
+        run_steps
+    )
+    assert "releases/download/${ASSET_TAG}" in run_steps
+    # ...and nothing points the formulas at the version's own release.
+    assert "releases/download/${VERSION}" not in run_steps
+
+
+def test_tap_job_reads_the_serving_release_back_before_pushing_the_formulas():
+    steps = _tap_job()["steps"]
+    names = [str(step.get("name", "")) for step in steps]
+
+    verify = next(i for i, name in enumerate(names) if "Verify the serving release" in name)
+    push = next(i for i, name in enumerate(names) if "Push stamped formulas" in name)
+    assert verify < push
+    assert "does not carry" in steps[verify]["run"]
+
+
+# --- Formulas must agree with the bytes that are actually served (#3763) ---
+#
+# Tarball builds are not byte-reproducible: gzip embeds a build timestamp and
+# the tar members carry the checkout's mtimes, so two builds of identical
+# source differ in sha256 (demonstrated on #3769: `77d28855...` vs
+# `d3d8e39d...` seconds apart -- not asserted here, because two builds inside
+# one second *can* coincide and a flaky proof of the premise is worth less
+# than the invariants below). Any path that stamps a *fresh build* while an
+# earlier run's assets stay published therefore ships formulas whose checksum
+# brew can never satisfy -- and because releases are immutable, the served
+# bytes can never be corrected to match. The reuse path stamps against the
+# downloaded assets instead, and the verify step re-checks the digest.
+
+
+def test_tap_job_stamps_the_formulas_against_the_already_published_tarballs():
+    steps = _tap_job()["steps"]
+    names = [str(step.get("name", "")) for step in steps]
+    run_steps = _tap_run_steps()
+
+    # The serving release's completeness is resolved *before* anything is
+    # stamped, because it is what decides where the sha256 comes from.
+    resolve = next(i for i, name in enumerate(names) if "Resolve the release" in name)
+    download = next(i for i, name in enumerate(names) if "already carries" in name)
+    build = next(i for i, name in enumerate(names) if "Build tarballs and stamp" in name)
+    assert resolve < download < build
+    assert steps[download]["if"] == "${{ env.SERVED == 'true' }}"
+    assert "gh release download" in steps[download]["run"]
+    assert "SERVED=${SERVED}" in steps[resolve]["run"]
+
+    # Served bytes stamp the formulas; only an unpublished version is built.
+    assert "--tarballs-from served-tarballs" in run_steps
+    assert "--source-root release-source" in run_steps
+
+
+def test_tap_job_does_not_read_an_api_failure_as_an_empty_release():
+    """A suppressed 5xx would read a *serving* sidecar as empty and retire it."""
+    resolve = next(
+        s for s in _tap_job()["steps"] if "Resolve the release" in str(s.get("name", ""))
+    )
+    run = resolve["run"]
+
+    # `gh release view` failing is only benign when the release is absent;
+    # anything else fails the job rather than being answered with "".
+    assert "2>/dev/null" not in run
+    assert "grep -qi 'release not found'" in run
+    assert "refusing to guess" in run
+
+
+def test_tap_job_verifies_the_stamped_sha256_against_the_served_asset():
+    """Without this, a mismatch reaches the tap and breaks every `brew install`."""
+    steps = _tap_job()["steps"]
+    verify = next(s for s in steps if "Verify the serving release" in str(s.get("name", "")))
+    run = verify["run"]
+
+    # The digest is checked against the downloaded asset, not against what
+    # the run believes it published.
+    assert "gh release download" in run
+    assert "sha256sum" in run
+    assert 'if [ "$served" != "$stamped" ]; then' in run
+    assert "exit 1" in run
+
+
+def test_tap_job_reuses_the_serving_release_without_republishing():
+    publish = next(
+        s for s in _tap_job()["steps"] if "Publish the tarballs" in str(s.get("name", ""))
+    )
+
+    # Reuse is the resolved decision, not a second look at the release: a
+    # divergence between the two would stamp one way and publish the other.
+    assert 'if [ "${SERVED}" = "true" ]; then' in publish["run"]
+    assert "reusing it" in publish["run"]
+
+
+def test_stamping_from_published_tarballs_uses_their_digest(tmp_path):
+    """The reuse path: the formula's sha256 is the served file's, not a rebuild's."""
+    served = tmp_path / "served"
+    served.mkdir()
+    digests = {}
+    for name in ("nyxgpt-api", "nyxgpt-web"):
+        tarball = served / f"{name}-9.9.9.tar.gz"
+        tarball.write_bytes(b"not really a tarball, but these are the published bytes")
+        digests[name] = hashlib.sha256(tarball.read_bytes()).hexdigest()
+
+    out_dir = tmp_path / "out"
+    build_homebrew_artifacts.build("9.9.9", out_dir, BASE_URL, tarballs_from=served)
+
+    for name, digest in digests.items():
+        assert f'sha256 "{digest}"' in (out_dir / f"{name}.rb").read_text(encoding="utf-8")
+        # ...and the bytes land where a build would have put them, so the
+        # publish step's existence guard and the uploaded artifact agree.
+        assert (out_dir / "dist" / f"{name}-9.9.9.tar.gz").read_bytes() == (
+            served / f"{name}-9.9.9.tar.gz"
+        ).read_bytes()
+
+
+@pytest.mark.parametrize(
+    "present", [(), ("nyxgpt-api",), ("nyxgpt-web",)], ids=["neither", "api-only", "web-only"]
+)
+def test_stamping_refuses_a_half_published_tarball_directory(tmp_path, present):
+    """Stamping half a pair would leave one formula disagreeing with its bytes."""
+    served = tmp_path / "served"
+    served.mkdir()
+    for name in present:
+        (served / f"{name}-9.9.9.tar.gz").write_bytes(b"published")
+
+    with pytest.raises(ValueError, match="does not hold the published tarballs"):
+        build_homebrew_artifacts.build("9.9.9", tmp_path / "out", BASE_URL, tarballs_from=served)
+
+
+def test_stamping_refuses_an_empty_published_tarball(tmp_path):
+    served = tmp_path / "served"
+    served.mkdir()
+    (served / "nyxgpt-api-9.9.9.tar.gz").write_bytes(b"published")
+    (served / "nyxgpt-web-9.9.9.tar.gz").write_bytes(b"")
+
+    with pytest.raises(ValueError, match="missing or empty"):
+        build_homebrew_artifacts.build("9.9.9", tmp_path / "out", BASE_URL, tarballs_from=served)
+
+
+def test_source_root_and_tarballs_from_are_mutually_exclusive(tmp_path):
+    """Nothing is vendored when the published tarballs are what is stamped."""
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        build_homebrew_artifacts.build(
+            "9.9.9",
+            tmp_path / "out",
+            BASE_URL,
+            source_root=REPO_ROOT,
+            tarballs_from=tmp_path,
+        )
+
+
+def test_tarballs_from_a_missing_directory_is_reported_without_a_traceback(tmp_path):
+    cp = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "9.9.9",
+            str(tmp_path / "out"),
+            BASE_URL,
+            "--tarballs-from",
+            str(tmp_path / "nope"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+
+    assert cp.returncode == 2
+    assert "Traceback" not in cp.stderr
+    assert "does not exist" in cp.stderr
+
+
+def test_tarballs_from_without_a_value_is_a_usage_error(tmp_path):
+    cp = subprocess.run(
+        [sys.executable, str(SCRIPT), "9.9.9", str(tmp_path / "out"), BASE_URL, "--tarballs-from"],
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+
+    assert cp.returncode == 2
+    assert "usage:" in cp.stderr
+
+
 # --- The script's dependency surface (#3741) ------------------------------
 #
 # The first live rc cut published 3.0.0rc1 to PyPI and then lost the tap:

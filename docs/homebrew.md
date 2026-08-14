@@ -90,7 +90,8 @@ For a machine that has never cloned nyxGPT, `nyxgpt ops install`'s local
 tarball from, which is why `nyxgpt ops install` falls back to this tap
 there. `.github/workflows/release-artifacts.yml` publishes a
 **remote** tap instead (#3622): on every GitHub Release, it builds the same
-`nyxgpt-api`/`nyxgpt-web` source tarballs, attaches them as release assets,
+`nyxgpt-api`/`nyxgpt-web` source tarballs, publishes them as the assets of a
+`<version>-homebrew` release (see [below](#where-the-tarballs-are-published)),
 and pushes stamped formulas (real `url`/`sha256`/`version`, no placeholders)
 to a separate tap repository the owner provisions once.
 
@@ -115,13 +116,46 @@ tarball's `url` points.
    to this repo's Actions settings.
 
 Until both exist, `release-artifacts.yml`'s `homebrew-tap` job still builds
-and attaches the tarballs to each GitHub Release and uploads the stamped
+and publishes the tarballs for each release and uploads the stamped
 formulas as a workflow artifact -- it just skips the tap push (logged as a
 notice, not a failure) until the owner completes the two steps above.
 
+### Where the tarballs are published
+
+Not on the release named by the version -- on a release of its own, tagged
+**`<version>-homebrew`** (e.g. `2.1.0-homebrew`), created with both tarballs
+attached in the same `gh release create` call. That is what the stable
+formulas' `url` points at.
+
+Releases in this repository are **immutable**: once published, a release can
+never gain or change an asset. The release ceremony publishes `X.Y.Z` before
+these tarballs are built, so uploading them onto it afterwards can only
+return `HTTP 422: Cannot upload assets to an immutable release` -- which is
+exactly how both 2.1.0 backfill runs died, and how every later release's tap
+push would have died too (#3763, the same immutability class as #3747). The
+sidecar release is marked prerelease and never "latest", so it is not a
+second release of nyxGPT and cannot re-trigger `release-artifacts.yml`.
+
+A release that already carries both tarballs is served from that release
+instead, so nothing already published moves. `nyxgpt ops install`'s artifact
+path looks in both places for the same reason (`_release_asset_urls` in
+`src/nyxgpt/ops.py`), and the job refuses to push formulas it has not read
+the assets back for.
+
+When the tarballs are already published -- a re-run, or a release from before
+this machinery -- the formulas are stamped against the **downloaded assets**,
+not against a fresh build (`--tarballs-from`). Tarball builds are not
+byte-reproducible: gzip embeds a build timestamp and the tar members carry the
+checkout's mtimes, so two builds of identical source have different `sha256`s.
+Re-stamping from a rebuild would therefore publish formulas whose checksum
+cannot match the bytes brew downloads, on every machine that taps -- and
+immutability means the served bytes could never be corrected. The verify step
+downloads each asset and hard-fails unless its digest is what the formula was
+stamped with, so this cannot regress silently.
+
 **The tap serves stable releases from v2.1.0 onward.** The tap machinery
-(#3622) postdates 2.1.0, so that release was published to the tap by the
-backfill below (#3737) rather than by its own release run; releases from
+(#3622) postdates 2.1.0, so that release reaches the tap through the
+backfill below (#3737) rather than through its own release run; releases from
 3.0.0 on are pushed by their ceremony automatically. Earlier releases
 (1.0.0, 2.0.0) are not in the tap and will not be added -- `brew install
 nyxgpt-api` resolves to the latest stable release, which is what the tap
@@ -142,7 +176,10 @@ The job therefore takes **two checkouts** rather than one:
 `scripts/build_homebrew_artifacts.py ... --source-root release-source` is
 what joins them, so the published tarballs are the tag's real code while the
 formulas are stamped from templates that tag never contained. For a normal
-release the two checkouts are the same commit and nothing changes.
+release the two checkouts are the same commit and nothing changes. (A run
+whose tarballs are already published stamps `--tarballs-from` those assets
+instead and vendors nothing -- see [above](#where-the-tarballs-are-published);
+the `release-source/` checkout is then unused.)
 
 Both tap jobs (this one and the rc channel's `homebrew-tap-rc`) run the
 script with **no `pip install` step**: a checkout and `setup-python` are the
@@ -164,9 +201,10 @@ tap_only: true         # skip the images and the PyPI smokes -- tap only
 ```
 
 The run builds `nyxgpt-api-2.1.0.tar.gz` / `nyxgpt-web-2.1.0.tar.gz` from
-the 2.1.0 source, attaches them to the existing 2.1.0 release (`--clobber`),
-and pushes stamped `nyxgpt-api.rb` / `nyxgpt-web.rb` to `HOMEBREW_TAP_REPO`.
-Verify on a clean Mac:
+the 2.1.0 source, publishes them on the `2.1.0-homebrew` release
+([above](#where-the-tarballs-are-published) -- the 2.1.0 release itself is
+immutable and can never take them), and pushes stamped `nyxgpt-api.rb` /
+`nyxgpt-web.rb` to `HOMEBREW_TAP_REPO`. Verify on a clean Mac:
 
 ```bash
 brew tap dkblinux98/nyxgpt
@@ -242,7 +280,7 @@ lives in the **formula names**, not in a flag:
 | --- | --- | --- |
 | Formulas | `nyxgpt-api`, `nyxgpt-web` | `nyxgpt-api@3.0.0rc`, `nyxgpt-web@3.0.0rc` |
 | Written by | `release-artifacts.yml`, on a GitHub Release | `release-publish-pypi.yml`'s `homebrew-tap-rc` job, on an `rc` publish |
-| Tarballs from | the release's GitHub Release | a GitHub **prerelease** for the RC (never "latest") |
+| Tarballs from | the release's `<version>-homebrew` release (never "latest") | a GitHub **prerelease** for the RC (never "latest") |
 | `brew install nyxgpt-api` resolves to | this | never this |
 
 An `rc` publish never builds, copies or commits a stable formula file: the

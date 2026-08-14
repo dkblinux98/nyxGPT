@@ -1334,8 +1334,10 @@ Avoid manually invoking `brew services`/`launchctl` (macOS), `systemctl` (Linux)
 - The native `api`/`web` services are built from the same
   `nyxgpt-api-<version>`/`nyxgpt-web-<version>` source tarballs either way:
   vendored from the checkout when there is one, downloaded from that
-  version's published GitHub Release assets when there isn't (macOS reaches
-  the same artifacts through the [remote Homebrew tap](homebrew.md#remote-tap)).
+  version's published release assets when there isn't -- its own release for
+  a candidate, its `<version>-homebrew` release for a stable version
+  ([why](homebrew.md#where-the-tarballs-are-published)); macOS reaches the
+  same artifacts through the [remote Homebrew tap](homebrew.md#remote-tap).
   So an artifact install installs the services without ever needing a
   checkout-shaped path (#3759) -- see [systemd.md](systemd.md#installing-the-services).
 

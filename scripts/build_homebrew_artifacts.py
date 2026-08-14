@@ -46,23 +46,43 @@ running this script from a branch that has the tooling and pointing
 `--source-root` at a checkout of the tag. The tarballs are then 2.1.0's real
 source, stamped by templates the tag never contained.
 
+`--tarballs-from` stamps the formulas from tarballs that are *already
+published* rather than building new ones (#3763). Tarball builds are not
+byte-reproducible -- gzip embeds a timestamp and the tar members carry the
+checkout's mtimes -- so two builds of the identical source have different
+sha256s. Whenever the serving release already carries the assets (a re-run,
+or a release from before this machinery), re-stamping from a fresh build
+would publish formulas whose `sha256` cannot match the bytes brew downloads,
+and immutability means those bytes can never be corrected. Pointing this at
+the downloaded assets makes the formula agree with what is actually served.
+
 Usage:
     python scripts/build_homebrew_artifacts.py VERSION OUT_DIR BASE_URL \
-        [--channel rc] [--source-root DIR]
+        [--channel rc] [--source-root DIR | --tarballs-from DIR]
+    python scripts/build_homebrew_artifacts.py --asset-tag VERSION
 
     VERSION   e.g. 2.1.0 (or 3.0.0rc4 with --channel rc)
     OUT_DIR   directory to write tarballs + stamped formulas into
     BASE_URL  download URL prefix the tarballs will be published under,
-              e.g. https://github.com/dkblinux98/nyxGPT/releases/download/2.1.0
+              e.g. https://github.com/dkblinux98/nyxGPT/releases/download/2.1.0-homebrew
               (formula `url` becomes "<BASE_URL>/<tarball filename>")
     --channel stable (default) or rc -- see above
     --source-root  checkout to vendor the service source from (default: this
               checkout) -- see above
+    --tarballs-from  directory holding the already-published
+              `<name>-<version>.tar.gz` files to stamp against, instead of
+              building them -- see above. Mutually exclusive with
+              `--source-root`: nothing is vendored when the tarballs are given.
+    --asset-tag  print the release tag a stable version's tarballs are
+              published under (`2.1.0` -> `2.1.0-homebrew`) and exit -- what
+              the tap job builds its BASE_URL from (#3763, see
+              `asset_release_tag`)
 """
 
 from __future__ import annotations
 
 import re
+import shutil
 import sys
 import textwrap
 from pathlib import Path
@@ -76,7 +96,11 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 # it provide. Importing the same helpers from `nyxgpt.ops` instead pulled in
 # httpx/pynacl and the whole metrics/tracing stack, and killed the rc tap job
 # after the candidate had already been published to PyPI.
-from nyxgpt.release_tarball import _sha256_file, build_release_dist_tarball  # noqa: E402
+from nyxgpt.release_tarball import (  # noqa: E402
+    _sha256_file,
+    build_release_dist_tarball,
+    homebrew_asset_release_tag,
+)
 
 _FORMULAS = ("nyxgpt-api", "nyxgpt-web")
 
@@ -173,6 +197,20 @@ def assert_release_version(version: str) -> str:
     return version.strip()
 
 
+def asset_release_tag(version: str) -> str:
+    """The release tag the stable tarballs for `version` are published under.
+
+    `2.1.0` -> `2.1.0-homebrew`. Releases in this repository are immutable,
+    so the release named by the version itself -- published by the ceremony
+    before these tarballs exist -- can never gain them (#3763); the formulas'
+    `url` therefore points at a sidecar release created with its assets
+    attached. `release-artifacts.yml` asks this script for the tag rather
+    than spelling the suffix in shell, so the tag the assets are published
+    under and the tag the formulas are stamped with are one definition.
+    """
+    return homebrew_asset_release_tag(assert_release_version(version))
+
+
 def resolve_source_root(source_root: str | Path | None) -> Path | None:
     """Validate `--source-root` before anything is built from it.
 
@@ -192,6 +230,34 @@ def resolve_source_root(source_root: str | Path | None) -> Path | None:
         raise ValueError(
             f"--source-root {root} is not a nyxGPT source checkout -- missing "
             f"{', '.join(missing)}"
+        )
+    return root
+
+
+def resolve_published_tarballs(tarballs_from: str | Path | None, version: str) -> Path | None:
+    """Validate `--tarballs-from` before a formula is stamped against it.
+
+    Returns None for "build the tarballs" (the default), otherwise the
+    resolved directory -- refusing one that does not hold a non-empty
+    tarball for *both* services. Stamping half a pair would push one formula
+    agreeing with the served bytes and one not, which is the failure this
+    mode exists to prevent.
+    """
+    if tarballs_from is None:
+        return None
+    root = Path(tarballs_from).expanduser().resolve()
+    if not root.is_dir():
+        raise ValueError(f"--tarballs-from {root} does not exist or is not a directory")
+    missing = [
+        f"{name}-{version}.tar.gz"
+        for name in _FORMULAS
+        if not (root / f"{name}-{version}.tar.gz").is_file()
+        or (root / f"{name}-{version}.tar.gz").stat().st_size == 0
+    ]
+    if missing:
+        raise ValueError(
+            f"--tarballs-from {root} does not hold the published tarballs for {version} "
+            f"-- missing or empty: {', '.join(missing)}"
         )
     return root
 
@@ -329,28 +395,52 @@ def build(
     base_url: str,
     channel: str = "stable",
     source_root: str | Path | None = None,
+    tarballs_from: str | Path | None = None,
 ) -> list[Path]:
     """Build both tarballs and stamp both formulas for `channel`.
 
     `source_root` is the checkout the service source is vendored from,
     defaulting to this one; the templates are always this checkout's, which
     is what lets a pre-tooling tag be published at all (#3737).
+
+    `tarballs_from` stamps against tarballs that are already published
+    instead of building any (#3763) -- see the module docstring for why a
+    rebuild cannot be substituted for the served bytes. The two are mutually
+    exclusive: there is nothing to vendor when the tarballs are given.
     """
     if channel not in CHANNELS:
         raise ValueError(f"Unknown channel {channel!r} -- expected one of {', '.join(CHANNELS)}")
     if channel == "stable":
         assert_release_version(version)
+    if source_root is not None and tarballs_from is not None:
+        raise ValueError(
+            "--source-root and --tarballs-from are mutually exclusive -- no source is "
+            "vendored when the published tarballs are what the formulas are stamped against"
+        )
     src_root = resolve_source_root(source_root)
+    published = resolve_published_tarballs(tarballs_from, version)
     out_dir.mkdir(parents=True, exist_ok=True)
     base_url = base_url.rstrip("/")
     if src_root is not None:
         # Worth a line in the CI log: a backfill run's whole correctness is
         # "these tarballs are the tag's source, these templates are not".
         print(f"vendoring {version} service source from {src_root} (templates from {REPO_ROOT})")
+    if published is not None:
+        print(f"stamping {version} against the already-published tarballs in {published}")
 
     written: list[Path] = []
     for name in _FORMULAS:
-        tarball = build_release_dist_tarball(name, version, out_dir, src_root)
+        if published is None:
+            tarball = build_release_dist_tarball(name, version, out_dir, src_root)
+        else:
+            # Copied into the layout a build would have produced, so every
+            # downstream consumer (the workflow's existence guard, the
+            # uploaded artifact) reads one place whichever mode ran.
+            dist_dir = out_dir / "dist"
+            dist_dir.mkdir(parents=True, exist_ok=True)
+            tarball = dist_dir / f"{name}-{version}.tar.gz"
+            if (published / tarball.name).resolve() != tarball.resolve():
+                shutil.copyfile(published / tarball.name, tarball)
         sha256 = _sha256_file(tarball)
         template_path = REPO_ROOT / "homebrew" / "tap" / f"{name}.rb.tmpl"
         stamped = (
@@ -370,7 +460,11 @@ def build(
     return written
 
 
-_USAGE = "usage: {prog} VERSION OUT_DIR BASE_URL [--channel rc] [--source-root DIR]"
+_USAGE = (
+    "usage: {prog} VERSION OUT_DIR BASE_URL [--channel rc] "
+    "[--source-root DIR | --tarballs-from DIR]\n"
+    "       {prog} --asset-tag VERSION"
+)
 
 
 def _take_option(args: list[str], flag: str) -> str | None:
@@ -392,17 +486,33 @@ def _take_option(args: list[str], flag: str) -> str | None:
 
 def main(argv: list[str]) -> int:
     args = list(argv[1:])
+    asset_tag_for = _take_option(args, "--asset-tag")
     channel = _take_option(args, "--channel")
     source_root = _take_option(args, "--source-root")
+    tarballs_from = _take_option(args, "--tarballs-from")
     channel = "stable" if channel is None else channel
 
-    if len(args) != 3 or channel not in CHANNELS or source_root == "":
+    if asset_tag_for is not None:
+        # Query mode: print where this version's tarballs are published and
+        # exit. The tap job needs that tag before anything is built, because
+        # it is what the formulas' `url` is stamped with.
+        if not asset_tag_for.strip() or args:
+            print(_USAGE.format(prog=argv[0]), file=sys.stderr)
+            return 2
+        try:
+            print(asset_release_tag(asset_tag_for))
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        return 0
+
+    if len(args) != 3 or channel not in CHANNELS or source_root == "" or tarballs_from == "":
         print(_USAGE.format(prog=argv[0]), file=sys.stderr)
         return 2
 
     version, out_dir_arg, base_url = args
     try:
-        build(version, Path(out_dir_arg), base_url, channel, source_root)
+        build(version, Path(out_dir_arg), base_url, channel, source_root, tarballs_from)
     except ValueError as exc:
         # Guardrail failures (a non-release version on the stable channel, a
         # --source-root that is not a checkout) are operator errors, not

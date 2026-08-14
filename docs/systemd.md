@@ -80,7 +80,7 @@ Where those two tarballs come from depends on what the machine has:
 
 | Install | Tarball source |
 | --- | --- |
-| Artifact install (`pip install nyxgpt`) | the published `nyxgpt-api-<version>.tar.gz` / `nyxgpt-web-<version>.tar.gz` assets on that version's GitHub Release -- downloaded at install time, the same artifacts the Homebrew formulas install from |
+| Artifact install (`pip install nyxgpt`) | the published `nyxgpt-api-<version>.tar.gz` / `nyxgpt-web-<version>.tar.gz` assets -- on its own release for a candidate, on its `<version>-homebrew` release for a stable version ([why](homebrew.md#where-the-tarballs-are-published)) -- downloaded at install time, the same artifacts the Homebrew formulas install from |
 | Source checkout (`pip install -e .`) | vendored from the checkout, so a working tree's changes are what gets installed |
 
 The version is the one the running `nyxgpt` reports on an artifact install,

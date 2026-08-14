@@ -26,9 +26,21 @@ name: Release Artifacts
 # see docs/homebrew.md#remote-tap-repo-less-install. Until `vars.
 # HOMEBREW_TAP_REPO` is set, that job's push step logs a skip and still
 # succeeds; the stamped formulas are uploaded as a workflow artifact either
-# way, and the tarballs are always attached to the GitHub Release (that part
-# needs no owner secret -- the default GITHUB_TOKEN can write release
-# assets on this repo).
+# way, and the tarballs are always published on a GitHub release (that part
+# needs no owner secret -- the default GITHUB_TOKEN can create releases and
+# write their assets on this repo).
+#
+# WHERE THE TARBALLS LIVE (#3763): on a release of their own, tagged
+# `<version>-homebrew`, created with the assets attached in the same `gh
+# release create` call. Releases in this repository are IMMUTABLE -- a
+# published one can never gain an asset -- and the release named by the
+# version is published by the ceremony before these tarballs are even built,
+# so `gh release upload` against it is a guaranteed `HTTP 422: Cannot upload
+# assets to an immutable release` (#3747's failure class; it is what killed
+# both 2.1.0 backfill runs). The sidecar is a prerelease and never "latest",
+# so it is not a second release of nyxGPT and cannot re-trigger this
+# workflow. A version whose own release already carries both tarballs is
+# served from that release instead, so nothing already published moves.
 #
 # GHCR image publishing also needs no owner secret: GITHUB_TOKEN with
 # `packages: write` is sufficient to push to ghcr.io/<owner>/...  (the owner
@@ -154,11 +166,120 @@ jobs:
             exit 1
           fi
 
+      - name: Resolve the release that will serve the tarballs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Releases here are IMMUTABLE: once published, one can never gain an
+          # asset (#3747). The release named by $VERSION is published by the
+          # ceremony *before* these tarballs are built, so uploading them onto
+          # it afterwards is a guaranteed `HTTP 422: Cannot upload assets to an
+          # immutable release` -- the error that killed both 2.1.0 backfill
+          # runs (#3763). The tarballs therefore get their own release,
+          # `<version>-homebrew`, created with its assets attached.
+          #
+          # The one exception is a release that already carries both tarballs
+          # (a historic release, or a re-run of this job): serving from it
+          # keeps the formulas pointing where they already point.
+          #
+          # Whether the serving release ALREADY carries the bytes is the other
+          # half of the answer, and it decides how the formulas get their
+          # sha256. Tarball builds are not byte-reproducible (gzip stamps a
+          # timestamp, tar members carry the checkout's mtimes), so stamping a
+          # re-run's fresh build against assets published by an earlier run
+          # would ship formulas that fail `brew install` checksum verification
+          # on every machine -- and immutability means the served bytes can
+          # never be corrected to match. When the assets are already there,
+          # they are downloaded and stamped against instead (#3763).
+          have_both() {
+            case " $1 " in
+              *" nyxgpt-api-${VERSION}.tar.gz "*)
+                case " $1 " in
+                  *" nyxgpt-web-${VERSION}.tar.gz "*) return 0 ;;
+                esac ;;
+            esac
+            return 1
+          }
+          # A release that does not exist yet is a real answer (nothing is
+          # published); an API failure is not. Suppressing the difference
+          # would let a transient 5xx read a *serving* sidecar as empty, and
+          # the retirement branch below would then delete assets the formulas
+          # of earlier runs are stamped against.
+          assets_on() {
+            local err out
+            err=$(mktemp)
+            if out=$(gh release view "$1" -R "$REPO" --json assets \
+                --jq '[.assets[].name] | join(" ")' 2>"$err"); then
+              rm -f "$err"
+              printf '%s' "$out"
+              return 0
+            fi
+            if grep -qi 'release not found' "$err"; then
+              rm -f "$err"
+              return 0
+            fi
+            echo "::error::could not read the assets on release $1 -- refusing to guess" >&2
+            cat "$err" >&2
+            rm -f "$err"
+            return 1
+          }
+
+          HAVE=$(assets_on "$VERSION")
+          echo "assets on ${VERSION}: ${HAVE:-(none)}"
+          if have_both "$HAVE"; then
+            ASSET_TAG="$VERSION"
+            SERVED=true
+          else
+            ASSET_TAG=$(python scripts/build_homebrew_artifacts.py --asset-tag "$VERSION")
+            SIDECAR_HAVE=$(assets_on "$ASSET_TAG")
+            echo "assets on ${ASSET_TAG}: ${SIDECAR_HAVE:-(none)}"
+            if have_both "$SIDECAR_HAVE"; then SERVED=true; else SERVED=false; fi
+          fi
+          echo "::notice::${VERSION} tarballs will be served from release ${ASSET_TAG}"
+          if [ "$SERVED" = "true" ]; then
+            echo "::notice::${ASSET_TAG} already carries both tarballs -- the formulas will be"
+            echo "::notice::stamped against those published bytes, not a fresh build"
+          fi
+          echo "ASSET_TAG=${ASSET_TAG}" >> "$GITHUB_ENV"
+          echo "SERVED=${SERVED}" >> "$GITHUB_ENV"
+
+      - name: Download the tarballs the serving release already carries
+        if: ${{ env.SERVED == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # The bytes brew will actually download, fetched so the formulas can
+          # be stamped with *their* sha256 (see the resolve step above).
+          rm -rf served-tarballs && mkdir -p served-tarballs
+          for name in nyxgpt-api nyxgpt-web; do
+            gh release download "$ASSET_TAG" -R "$REPO" \
+              --pattern "${name}-${VERSION}.tar.gz" --dir served-tarballs
+          done
+          (cd served-tarballs && sha256sum ./*.tar.gz)
+
       - name: Build tarballs and stamp formulas
         run: |
+          set -euo pipefail
+          # BASE_URL is the serving release resolved above -- the formulas'
+          # `url` must name the release the assets are actually published on,
+          # not the version's own release.
+          #
+          # Where the sha256 comes from is the other half: the tag's source
+          # when the tarballs are still to be published, and the already-served
+          # bytes when they are not (a re-run, or a historic release). A fresh
+          # build cannot stand in for published bytes -- see the resolve step.
+          if [ "${SERVED}" = "true" ]; then
+            SOURCE_ARGS=(--tarballs-from served-tarballs)
+          else
+            SOURCE_ARGS=(--source-root release-source)
+          fi
           python scripts/build_homebrew_artifacts.py "$VERSION" dist/homebrew \
-            "https://github.com/${{ github.repository }}/releases/download/${VERSION}" \
-            --source-root release-source
+            "https://github.com/${{ github.repository }}/releases/download/${ASSET_TAG}" \
+            "${SOURCE_ARGS[@]}"
 
       - name: Assert only the stable formulas were stamped
         run: |
@@ -173,14 +294,141 @@ jobs:
             exit 1
           fi
 
-      - name: Attach tarballs to the GitHub Release
+      - name: Publish the tarballs with their release (assets at creation)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
         run: |
-          gh release upload "$VERSION" \
-            dist/homebrew/dist/nyxgpt-api-"$VERSION".tar.gz \
-            dist/homebrew/dist/nyxgpt-web-"$VERSION".tar.gz \
-            --clobber -R "${{ github.repository }}"
+          set -euo pipefail
+          API_TARBALL="dist/homebrew/dist/nyxgpt-api-${VERSION}.tar.gz"
+          WEB_TARBALL="dist/homebrew/dist/nyxgpt-web-${VERSION}.tar.gz"
+          for tarball in "$API_TARBALL" "$WEB_TARBALL"; do
+            if [ ! -s "$tarball" ]; then
+              echo "::error::${tarball} was not built -- refusing to publish a release the"
+              echo "::error::stamped formulas would point at with nothing behind it"
+              exit 1
+            fi
+          done
+
+          # Resolved before anything was stamped, because it is what decided
+          # where the formulas' sha256 came from: the served bytes stay served,
+          # and the formulas already agree with them.
+          if [ "${SERVED}" = "true" ]; then
+            echo "::notice::${ASSET_TAG} already carries both tarballs -- reusing it"
+            exit 0
+          fi
+
+          if gh release view "$ASSET_TAG" -R "$REPO" >/dev/null 2>&1; then
+            if [ "$ASSET_TAG" = "$VERSION" ]; then
+              # Unreachable by construction (the resolve step only picks
+              # $VERSION when both tarballs are already on it), and a guard
+              # rather than a comment because the alternative below deletes
+              # what it is pointed at -- never a real release.
+              echo "::error::${VERSION} is incomplete and an immutable release cannot gain"
+              echo "::error::assets -- re-run so the tarballs are served from their own release"
+              exit 1
+            fi
+            # A half-published sidecar (an interrupted create leaves a draft):
+            # it can never gain the missing asset, so it is retired and cut
+            # again rather than pointed at.
+            echo "::notice::${ASSET_TAG} exists without both tarballs -- retiring it"
+            if ! gh release delete "$ASSET_TAG" -R "$REPO" --yes --cleanup-tag; then
+              echo "::error::${ASSET_TAG} is incomplete and could not be deleted, and an"
+              echo "::error::immutable release can never gain the missing tarball. Delete it"
+              echo "::error::by hand (or publish under the next patch version) and re-run."
+              exit 1
+            fi
+          fi
+
+          # The sidecar names the code it ships: the target tag's own commit,
+          # from the release-source checkout.
+          TARGET_SHA=$(git -C release-source rev-parse HEAD)
+          cat > /tmp/homebrew-assets-notes.md <<NOTES
+          Homebrew source tarballs for **nyxGPT ${VERSION}**.
+
+          **This is not a release** -- see [${VERSION}](https://github.com/${REPO}/releases/tag/${VERSION})
+          for that. Releases in this repository are immutable, so a published release can
+          never gain an asset; the vendored \`nyxgpt-api\` / \`nyxgpt-web\` source tarballs the
+          stable Homebrew formulas install from are published here instead, attached at
+          creation (#3763).
+
+          \`\`\`bash
+          brew tap dkblinux98/nyxgpt && (brew tap-trust dkblinux98/nyxgpt || true) && brew install nyxgpt-api nyxgpt-web
+          \`\`\`
+          NOTES
+
+          # Assets go on AT CREATION -- never uploaded afterwards, which
+          # immutability forbids. `--prerelease --latest=false` keeps this off
+          # the repository's "Latest" release and out of the `released` event,
+          # so it cannot re-trigger this workflow.
+          gh release create "$ASSET_TAG" \
+            -R "$REPO" \
+            --target "$TARGET_SHA" \
+            --title "nyxGPT $VERSION (Homebrew tarballs)" \
+            --prerelease \
+            --latest=false \
+            --notes-file /tmp/homebrew-assets-notes.md \
+            "$API_TARBALL" "$WEB_TARBALL"
+
+      - name: Verify the serving release carries both tarballs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Verifying the mutation, not assuming it: the formulas pushed below
+          # point at these two assets by URL, so a release missing either one
+          # is an uninstallable formula on every Mac that taps it.
+          ASSETS=$(gh release view "$ASSET_TAG" -R "$REPO" --json assets \
+            --jq '[.assets[].name] | join(" ")')
+          echo "assets on ${ASSET_TAG}: ${ASSETS}"
+          for name in "nyxgpt-api-${VERSION}.tar.gz" "nyxgpt-web-${VERSION}.tar.gz"; do
+            case " $ASSETS " in
+              *" $name "*) ;;
+              *)
+                echo "::error::release ${ASSET_TAG} does not carry ${name}"
+                exit 1 ;;
+            esac
+          done
+          # The sidecar must never displace the release itself as "Latest".
+          LATEST=$(gh release view -R "$REPO" --json tagName --jq .tagName 2>/dev/null || echo "(none)")
+          echo "repository latest=${LATEST}"
+          if [ "$ASSET_TAG" != "$VERSION" ] && [ "$LATEST" = "$ASSET_TAG" ]; then
+            echo "::error::${ASSET_TAG} became the repository's latest release"
+            exit 1
+          fi
+
+          # The formulas' `url` must name the release the assets are on --
+          # a mismatch here is a formula that 404s at `brew install`.
+          for formula in dist/homebrew/nyxgpt-api.rb dist/homebrew/nyxgpt-web.rb; do
+            grep -q "releases/download/${ASSET_TAG}/" "$formula" || {
+              echo "::error::${formula} is not stamped against ${ASSET_TAG}"
+              exit 1; }
+          done
+
+          # ...and its `sha256` must be the digest of the bytes that release
+          # actually serves. A formula pointing at the right URL with the wrong
+          # digest fails `brew install` checksum verification on every machine,
+          # and an immutable release can never be corrected to match -- so this
+          # is checked against the downloaded asset, not against what this run
+          # believes it published. Tarball builds are not byte-reproducible, so
+          # "we just built these" is not evidence (#3763).
+          CHECK_DIR="$(mktemp -d)"
+          for name in nyxgpt-api nyxgpt-web; do
+            asset="${name}-${VERSION}.tar.gz"
+            gh release download "$ASSET_TAG" -R "$REPO" --pattern "$asset" --dir "$CHECK_DIR"
+            served=$(sha256sum "${CHECK_DIR}/${asset}" | cut -d ' ' -f 1)
+            stamped=$(sed -n 's/^[[:space:]]*sha256 "\([0-9a-f]\{64\}\)"[[:space:]]*$/\1/p' \
+              "dist/homebrew/${name}.rb" | head -1)
+            echo "${name}: served=${served} stamped=${stamped:-(none)}"
+            if [ "$served" != "$stamped" ]; then
+              echo "::error::${name}.rb is stamped sha256=${stamped:-(none)} but ${ASSET_TAG}"
+              echo "::error::serves ${served} -- every \`brew install ${name}\` would fail"
+              echo "::error::checksum verification, and the released bytes cannot be changed."
+              exit 1
+            fi
+          done
+          rm -rf "$CHECK_DIR"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -195,7 +443,8 @@ jobs:
         run: |
           if [ -z "${TAP_TOKEN:-}" ]; then
             echo "::warning::HOMEBREW_TAP_REPO is set but HOMEBREW_TAP_TOKEN is missing -- skipping tap push."
-            echo "::warning::Formulas are still attached as a workflow artifact and on the release."
+            echo "::warning::Formulas are still uploaded as a workflow artifact, and the tarballs"
+            echo "::warning::they point at are published on the ${ASSET_TAG} release."
             exit 0
           fi
           TAP_DIR="$(mktemp -d)"

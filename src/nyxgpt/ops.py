@@ -1490,9 +1490,30 @@ def _create_dist_tarball(
 # the checkout when there is one and downloads the published asset when
 # there isn't; everything downstream (venv, pip install, npm build, wrapper,
 # unit) is unchanged and shared by both paths.
+#
+# `{tag}` is the release the assets are *published on*, which is not always
+# the release named by the version (#3763): a candidate carries its own
+# tarballs, but a stable release is published before they are built and can
+# never gain an asset afterwards, so its tarballs are served from the
+# `<version>-homebrew` sidecar release. `_release_asset_urls` tries both, in
+# that order, from `release_tarball.homebrew_asset_release_tag` -- the same
+# definition `scripts/build_homebrew_artifacts.py` stamps the Homebrew
+# formulas' `url` with.
 RELEASE_ASSET_URL = (
-    "https://github.com/dkblinux98/nyxGPT/releases/download/{version}/{name}-{version}.tar.gz"
+    "https://github.com/dkblinux98/nyxGPT/releases/download/{tag}/{name}-{version}.tar.gz"
 )
+
+
+def _release_asset_urls(name: str, version: str) -> list[str]:
+    """Every URL `<name>-<version>.tar.gz` may be published at, best first.
+
+    The version's own release first -- where a release candidate's tarballs
+    are, and where releases published before #3763 carry theirs -- then the
+    `<version>-homebrew` sidecar the stable tarballs are published on now.
+    """
+    tags = [version, release_tarball.homebrew_asset_release_tag(version)]
+    return [RELEASE_ASSET_URL.format(tag=tag, name=name, version=version) for tag in tags]
+
 
 # The published Homebrew tap, macOS's artifact channel (docs/homebrew.md).
 # Used when `nyxgpt ops install` runs on macOS from an artifact install: the
@@ -1551,31 +1572,42 @@ def _download_release_tarball(dest_dir: Path, name: str, version: str) -> Path:
     truncated archive behind for the next run to install from (the same
     reason `_download_tool_binary` does it).
 
-    Raises RuntimeError with the URL and the underlying error when the
-    asset can't be fetched -- the caller turns that into an OpsResult
-    rather than letting a traceback stand in for a diagnosis.
+    Tries every release the asset may be published on (`_release_asset_urls`
+    -- the version's own release, then its `<version>-homebrew` sidecar), so
+    a stable version whose release could not take the assets still installs.
+
+    Raises RuntimeError with the URLs tried and the last underlying error
+    when the asset can't be fetched anywhere -- the caller turns that into an
+    OpsResult rather than letting a traceback stand in for a diagnosis.
     """
     dist_dir = dest_dir / "dist"
     _ensure_dir(dist_dir)
     tar_path = dist_dir / f"{name}-{version}.tar.gz"
-    url = RELEASE_ASSET_URL.format(name=name, version=version)
     tmp = dist_dir / f".{name}-{version}.download"
-    try:
-        with httpx.stream("GET", url, follow_redirects=True, timeout=300.0) as resp:
-            resp.raise_for_status()
-            with tmp.open("wb") as fh:
-                for chunk in resp.iter_bytes():
-                    fh.write(chunk)
-        tmp.replace(tar_path)
-    except (httpx.HTTPError, OSError) as e:
-        with contextlib.suppress(OSError):
-            tmp.unlink(missing_ok=True)
-        raise RuntimeError(
-            f"Could not download the published {name} {version} artifact from {url} "
-            f"({type(e).__name__}: {e}). Check network access to github.com, and that "
-            f"{version} is a published release or release candidate."
-        ) from e
-    return tar_path
+    urls = _release_asset_urls(name, version)
+    last_error: Exception | None = None
+    for url in urls:
+        try:
+            with httpx.stream("GET", url, follow_redirects=True, timeout=300.0) as resp:
+                resp.raise_for_status()
+                with tmp.open("wb") as fh:
+                    for chunk in resp.iter_bytes():
+                        fh.write(chunk)
+            tmp.replace(tar_path)
+        except (httpx.HTTPError, OSError) as e:
+            # Never leave a truncated archive behind for the next candidate
+            # URL -- or the next run -- to install from.
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
+            last_error = e
+            continue
+        return tar_path
+    raise RuntimeError(
+        f"Could not download the published {name} {version} artifact from "
+        f"{' or '.join(urls)} ({type(last_error).__name__}: {last_error}). Check network "
+        f"access to github.com, and that {version} is a published release or release "
+        "candidate."
+    ) from last_error
 
 
 def _service_source_tarball(dest_dir: Path, name: str, version: str) -> Path:
