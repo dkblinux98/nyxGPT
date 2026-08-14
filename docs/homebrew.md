@@ -72,8 +72,9 @@ brew tap dkblinux98/nyxgpt-local
 
 `nyxgpt ops install` generates this tap's formulas **locally from a repo
 checkout** (it vendors `pyproject.toml`/`src/nyxgpt/` and `web/` into a
-tarball and points the formula at it via a `file://` URL) -- see
-[Remote tap](#remote-tap) below for the repo-less alternative.
+tarball and points the formula at it via a `file://` URL). Run on a machine
+with no checkout, it installs from the published
+[remote tap](#remote-tap) instead -- same formulas, published source (#3759).
 
 Only source is vendored: gitignored build output (`node_modules`, `.next`,
 ...), VCS metadata, interpreter bytecode caches (`__pycache__`, `.pyc`,
@@ -86,7 +87,8 @@ have been developing in produces the same artifact as a fresh one.
 
 For a machine that has never cloned nyxGPT, `nyxgpt ops install`'s local
 `file://` tap above isn't an option -- there's no checkout to vendor a
-tarball from. `.github/workflows/release-artifacts.yml` publishes a
+tarball from, which is why `nyxgpt ops install` falls back to this tap
+there. `.github/workflows/release-artifacts.yml` publishes a
 **remote** tap instead (#3622): on every GitHub Release, it builds the same
 `nyxgpt-api`/`nyxgpt-web` source tarballs, attaches them as release assets,
 and pushes stamped formulas (real `url`/`sha256`/`version`, no placeholders)

@@ -3823,12 +3823,19 @@ def test_install_homebrew_api_no_brew(monkeypatch):
 
 
 @pytest.mark.unit
-def test_install_homebrew_api_missing_template(monkeypatch, tmp_path):
+def test_install_homebrew_api_without_a_checkout_uses_the_published_tap(monkeypatch, tmp_path):
+    """No formula template means no checkout -- install the published formula (#3759).
+
+    Full coverage of the remote-tap path lives in
+    tests/unit/test_ops_artifact_install.py; this pins the dispatch.
+    """
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/brew")
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops, "_install_from_remote_tap", lambda name: [ops.OpsResult(True, name)])
+
     results = ops._install_homebrew_api()
-    assert results[0].ok is False
-    assert "Missing homebrew/nyxgpt-api.rb" in results[0].message
+
+    assert results == [ops.OpsResult(True, "nyxgpt-api")]
 
 
 @pytest.mark.unit
@@ -3949,12 +3956,15 @@ def test_install_homebrew_web_no_brew(monkeypatch):
 
 
 @pytest.mark.unit
-def test_install_homebrew_web_missing_template(monkeypatch, tmp_path):
+def test_install_homebrew_web_without_a_checkout_uses_the_published_tap(monkeypatch, tmp_path):
+    """Artifact install -- see the api twin above (#3759)."""
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/brew")
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops, "_install_from_remote_tap", lambda name: [ops.OpsResult(True, name)])
+
     results = ops._install_homebrew_web()
-    assert results[0].ok is False
-    assert "Missing homebrew/nyxgpt-web.rb" in results[0].message
+
+    assert results == [ops.OpsResult(True, "nyxgpt-web")]
 
 
 @pytest.mark.unit
@@ -4522,10 +4532,11 @@ def _fake_subprocess_run(*, ci_rc=0, ci_stderr="", install_rc=0, resolve_rc=0):
 
 @pytest.mark.unit
 def test_ensure_web_deps_no_web_dir(monkeypatch, tmp_path):
+    """No `web/` means an artifact install, not a broken checkout (#3759)."""
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     results = ops._ensure_web_deps()
     assert results[0].ok is True
-    assert "Web directory not present" in results[0].message
+    assert "not applicable to an artifact install" in results[0].message
 
 
 @pytest.mark.unit
@@ -4765,10 +4776,11 @@ def test_ensure_web_deps_handles_exception(monkeypatch, tmp_path):
 
 @pytest.mark.unit
 def test_ensure_mcp_deps_no_package_json(monkeypatch, tmp_path):
+    """No root package.json means an artifact install (#3759)."""
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     results = ops._ensure_mcp_deps()
     assert results[0].ok is True
-    assert "No root package.json found" in results[0].message
+    assert "not applicable to an artifact install" in results[0].message
 
 
 @pytest.mark.unit

@@ -1310,5 +1310,12 @@ Avoid manually invoking `brew services`/`launchctl` (macOS), `systemctl` (Linux)
   (`.tf`/`.yaml` files on disk), the `web/` npm project -- still resolve
   paths relative to the checkout; see `tests/unit/test_repo_root_allowlist.py`
   for the exact, reviewed list.
+- The native `api`/`web` services are built from the same
+  `nyxgpt-api-<version>`/`nyxgpt-web-<version>` source tarballs either way:
+  vendored from the checkout when there is one, downloaded from that
+  version's published GitHub Release assets when there isn't (macOS reaches
+  the same artifacts through the [remote Homebrew tap](homebrew.md#remote-tap)).
+  So an artifact install installs the services without ever needing a
+  checkout-shaped path (#3759) -- see [systemd.md](systemd.md#installing-the-services).
 
 ```
