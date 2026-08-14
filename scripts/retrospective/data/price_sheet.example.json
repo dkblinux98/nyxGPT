@@ -1,0 +1,18 @@
+{
+ "_comment": "Copy to price_sheet.json and fill in the per-million-token rates you are actually billed at, read from Anthropic's pricing page at the time you refresh. Rates are deliberately NOT committed with real values: a checked-in price is a world-state claim that silently goes stale (#3744). Without price_sheet.json the churn view reports tokens only and omits dollars entirely. `default` is used for any model with no explicit entry; keys are USD per 1,000,000 tokens.",
+ "currency": "USD",
+ "default": {
+  "input": 0.0,
+  "output": 0.0,
+  "cache_write": 0.0,
+  "cache_read": 0.0
+ },
+ "models": {
+  "claude-opus-5": {
+   "input": 0.0,
+   "output": 0.0,
+   "cache_write": 0.0,
+   "cache_read": 0.0
+  }
+ }
+}

@@ -1,0 +1,57 @@
+name: Retro Dashboard - Dump Churn Cost
+
+# Derives per-round churn-cost telemetry -- token spend per Claude-invoking
+# workflow step, split into context re-establishment vs change production,
+# rolled up per issue across rounds -- from GitHub Actions run history and
+# job logs, and commits it to scripts/retrospective/data/churn.json on the
+# dispatching branch. Owner decision (2026-08-14, churn-cost discussion,
+# #3776): the per-session cost of re-onboarding a zero-memory agent is
+# invisible in ordinary spend math, so the retrospective makes it visible.
+# Read-only against GitHub Actions; writes only the JSON snapshot.
+#
+# Dollars are attached only when scripts/retrospective/data/price_sheet.json
+# exists (see price_sheet.example.json) -- rates are owner-configured, never
+# committed. The hand-maintained stale-context incident log
+# (data/stale_context_incidents.json) is validated here, so a malformed edit
+# fails this workflow instead of silently disappearing from the dashboard.
+
+on:
+  workflow_dispatch:
+    inputs:
+      window_days:
+        description: "Days of run history to walk (each round costs a log download)"
+        required: false
+        default: "30"
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Dump churn-cost telemetry
+        env:
+          GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+          REPO: ${{ github.repository }}
+          CHURN_WINDOW_DAYS: ${{ inputs.window_days }}
+        run: python3 scripts/retrospective/dump_churn.py
+
+      - name: Commit snapshot
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scripts/retrospective/data/churn.json
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore(retro): refresh churn-cost telemetry snapshot"
+            git push origin "HEAD:${{ github.ref_name }}"
+          fi
