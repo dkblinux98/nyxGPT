@@ -1744,7 +1744,7 @@ rather than failing the request.
   "commands": {
     "plan": "nyxgpt release publish --channel rc",
     "publish": "nyxgpt release publish --channel rc --publish",
-    "brew": "brew tap dkblinux98/nyxgpt && (brew tap-trust dkblinux98/nyxgpt || true) && brew install nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc",
+    "brew": "brew tap dkblinux98/nyxgpt && (brew tap-trust dkblinux98/nyxgpt || brew trust dkblinux98/nyxgpt || true) && brew install nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc",
     "install": "pip install nyxgpt==3.0.0rc3",
     "user_data": "nyxgpt cloud user-data --os linux --version 3.0.0rc3",
     "deploy": "nyxgpt cloud deploy --version 3.0.0rc3"
@@ -1763,7 +1763,7 @@ rather than failing the request.
 | `publishable` | The guardrails allow cutting an RC from `branch` (release branch, matching the declared version, PyPI reachable) |
 | `blockers` | Why it isn't publishable, one human-readable reason each |
 | `pypi_lookup_error` | Non-empty when PyPI could not be reached, which makes the next RC number a guess and blocks publishing |
-| `commands.brew` | Present on the `rc` channel only: an rc publish also stamps `nyxgpt-api@<release>rc`/`nyxgpt-web@<release>rc` into the Homebrew tap, so a candidate is installable on macOS. Includes the one-time `brew tap-trust` step Homebrew's third-party tap gate requires (tolerated failure on a Homebrew without the subcommand — [homebrew.md](homebrew.md#trusting-the-tap)). Absent for `stable` (the stable formulas are the ceremony's) |
+| `commands.brew` | Present on the `rc` channel only: an rc publish also stamps `nyxgpt-api@<release>rc`/`nyxgpt-web@<release>rc` into the Homebrew tap, so a candidate is installable on macOS. Includes the one-time whole-tap trust step Homebrew's third-party tap gate requires, in both spellings (`brew tap-trust` on some builds, `brew trust` on others — an untried spelling is indistinguishable from a trusted tap, #3770), with tolerated failure on a Homebrew that has neither and nothing to trust ([homebrew.md](homebrew.md#trusting-the-tap)). Absent for `stable` (the stable formulas are the ceremony's) |
 | `commands.plan` / `commands.publish` | For `stable` these are `scripts/release_ceremony.sh` — the CLI's `--channel` offers `rc` only, so rendering a `--channel stable` command would hand the operator a line that fails |
 
 ---

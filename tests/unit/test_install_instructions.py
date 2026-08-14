@@ -206,12 +206,24 @@ _BREW_TAP_TRUST = re.compile(r"(?<![\w-])brew (?:tap-)?trust(?![\w-])(?!\s+--for
 #: Trust scoped to a single formula -- never sufficient, see above.
 _BREW_FORMULA_TRUST = re.compile(r"(?<![\w-])brew (?:tap-)?trust\s+--formula(?![\w-])")
 
+#: A trust step that tolerates its own failure (`... || true`), from the
+#: `tap-trust` spelling to the tolerance. Only a non-interactive step is
+#: written this way -- nobody types `|| true` -- and that is exactly the step
+#: no human is watching when the subcommand turns out not to exist. The span
+#: crosses newlines because these sequences ship fragmented across adjacent
+#: string literals as often as they ship on one line.
+_TOLERATED_TRUST = re.compile(r"(?<![\w-])brew tap-trust\b.{0,240}?\|\|\s*true", re.DOTALL)
+
 _BREW_INSTALL = re.compile(r"(?<![\w-])brew install(?![\w-])")
 
 #: Prose about an install sequence is not an install sequence. Comments
 #: legitimately name the commands they are explaining -- including this
 #: repo's own `# ... without this, brew install stops ...` notes.
 _COMMENT = re.compile(r"^(#|//|/\*|\*(?!\*)|<!--|--\s)")
+
+#: Neither is a message about the commands. A warning that names the two
+#: spellings it could not run is the opposite of having run them.
+_MESSAGE = re.compile(r"^(echo|printf)(?![\w-])")
 
 
 def _untrusted_taps(script: str) -> list[str]:
@@ -429,6 +441,56 @@ def test_no_shipped_file_settles_for_per_formula_trust():
     )
 
 
+def _single_spelling_trust(text: str) -> list[str]:
+    """Tolerated-failure trust steps that try only the `tap-trust` spelling."""
+    return [
+        match.group(0)
+        for match in _TOLERATED_TRUST.finditer(text)
+        if not re.search(r"(?<![\w-])brew trust(?![\w-])", match.group(0))
+    ]
+
+
+def test_no_shipped_file_tolerates_the_failure_of_a_single_trust_spelling():
+    """`|| true` after one spelling is a grant that silently never happened.
+
+    This is #3770 itself: the smoke job's `brew tap-trust <tap> || true` met a
+    Homebrew whose gate prescribes `brew trust <tap>`, the unknown subcommand
+    exited non-zero, `|| true` swallowed it, and an untrusted tap became
+    indistinguishable from a trusted one until the install refused a formula.
+    Anything written in that shape has to try the other spelling before it
+    tolerates anything.
+
+    Mirrors count, which is the reason this scan is tree-wide rather than a
+    check on the generator: the string `commands.brew` emits is copied
+    verbatim into the API docs and pinned by the web suite, and all three
+    copies survived the first fix of this issue unchanged.
+    """
+    offenders = {
+        str(relative): steps
+        for relative in _scanned_files()
+        if (steps := _single_spelling_trust((_REPO_ROOT / relative).read_text(encoding="utf-8")))
+    }
+
+    assert not offenders, "trust step tolerating failure after one spelling:\n" + "\n".join(
+        f"  {path}: {step}" for path, steps in offenders.items() for step in steps
+    )
+
+
+def test_the_single_spelling_scan_would_catch_the_regression_it_is_named_for():
+    """The literal command both rc8 publish runs died on, and its fix."""
+    assert _single_spelling_trust(f"brew tap-trust {_TAP} || true")
+    assert _single_spelling_trust(
+        f"'brew tap {_TAP} && (brew tap-trust {_TAP} || true) && ' +\n'brew install nyxgpt-api'"
+    )
+    assert not _single_spelling_trust(f"brew tap-trust {_TAP} || brew trust {_TAP} || true")
+    assert not _single_spelling_trust(
+        f"'brew tap-trust {_TAP} || ' +\n    'brew trust {_TAP} || true'"
+    )
+    # An interactive document naming one spelling is not this shape: the
+    # reader sees the error and reads on. Only tolerated failure is silent.
+    assert not _single_spelling_trust(f"brew tap-trust {_TAP}")
+
+
 #: The executable, non-interactive tap sequences: nothing types an answer to
 #: a trust prompt for them, and a swallowed "unknown command" reads exactly
 #: like success. Each has to try both spellings Homebrew uses (#3770).
@@ -447,15 +509,18 @@ def test_the_unattended_install_paths_try_both_trust_spellings(path: Path):
     was swallowed, no trust was granted, and the install died on the stable
     formula `conflicts_with` pulled in. Both spellings, then tolerate.
     """
-    # Comments stripped, because both files *explain* the two spellings right
-    # above the commands that run them -- prose is not an invocation. The
+    # Comments and messages stripped, because both files *explain* the two
+    # spellings right above the commands that run them, and the workflow's
+    # fallback warning names both subcommands in its own text. Prose is not an
+    # invocation, and neither is an echo -- without dropping them, deleting
+    # the commands but leaving the warning behind would still pass. The
     # commands themselves reach brew as `brew` (the workflow) or `"$BREW_BIN"`
     # (the EC2 template), so the subcommand is what these key on.
     commands = [
         segment.strip()
         for line in (_REPO_ROOT / path).read_text(encoding="utf-8").splitlines()
         for segment in _CHAIN_SEPARATOR.split(line)
-        if not _COMMENT.match(segment.strip())
+        if not _COMMENT.match(segment.strip()) and not _MESSAGE.match(segment.strip())
     ]
 
     assert any(
