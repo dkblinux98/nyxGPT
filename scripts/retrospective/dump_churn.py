@@ -39,9 +39,13 @@ stated here and echoed into churn.json and the dashboard):
   turn markers is recorded with an unknown split and excluded from split
   aggregates (but still counted in token totals).
 
-Dollars are attached only when `data/price_sheet.json` exists (see
-`data/price_sheet.example.json`); prices are owner-configured, never
-hard-coded here.
+Dollars are attached only when a price sheet is configured — the dispatched
+workflow passes one in from the `CHURN_PRICE_SHEET_JSON` repo variable; a
+local run may instead drop a (gitignored) `data/price_sheet.json`. See
+`load_price_sheet` for the full resolution order. Rates are owner-configured
+and never committed to this repo: `data/price_sheet.example.json` ships
+zeroed placeholders so no rate is asserted here (#3744). With no sheet
+configured, the churn view reports tokens only.
 
 Log windowing: only runs started within CHURN_WINDOW_DAYS (default 30) are
 walked, because each round costs a log download. Rounds already recorded in
@@ -65,12 +69,20 @@ from dump_spend import gh, issue_of, iter_json_objects  # noqa: E402
 DATA_DIR = HERE / "data"
 DEFAULT_WINDOW_DAYS = 30
 
-# Workflows that invoke anthropics/claude-code-action on an issue's branch.
+# Every workflow that invokes anthropics/claude-code-action. This list and
+# CLAUDE_STEP_RE below are a pair, and both are pinned by
+# tests/unit/test_dump_churn.py::TestWorkflowCoverage, which parses the real
+# workflow YAML: every workflow in the tree that uses claude-code-action must
+# be listed here, and every one of its action steps must have a name this
+# regex matches. Without that test a step rename silently drops rounds.
+#
+# review_agent_auto_review.yml is deliberately absent: it invokes no
+# claude-code-action step at all (its reviews are produced by
+# claude-code-review.yml, which is listed).
 CHURN_WORKFLOWS = [
     "developer_auto_implement.yml",
     "claude.yml",
     "claude-code-review.yml",
-    "review_agent_auto_review.yml",
     "developer_huddle_position.yml",
     "scrummaster_huddle_mediation.yml",
 ]
@@ -78,11 +90,18 @@ CHURN_WORKFLOWS = [
 # Step names that ARE a Claude invocation. Deliberately stricter than
 # dump_spend.py's "name contains claude": shell steps like "Check Claude
 # progress completion" and "Read Claude analysis result" mention Claude but
-# spend no tokens, and counting them would invent rounds.
-CLAUDE_STEP_RE = re.compile(r"^\s*(run claude|claude fix issues|deep analysis with claude)", re.I)
+# spend no tokens, and counting them would invent rounds. The huddle steps
+# ("Post developer position", "Run mediation") do not say "Claude" at all,
+# hence the explicit alternatives rather than a name-contains rule.
+CLAUDE_STEP_RE = re.compile(
+    r"^\s*(run claude|claude fix issues|deep analysis with claude"
+    r"|post developer position|run mediation)",
+    re.I,
+)
 
 # Round kind, first match wins (an acceptance-fix step also says "fix").
 ROUND_KIND_RULES = [
+    ("huddle", r"position|mediation"),
     ("acceptance-fix", r"acceptance"),
     ("review-fix", r"review fix|fix review issues"),
     ("self-heal", r"fix issues|attempt\s*\d|deep analysis"),
@@ -128,8 +147,10 @@ METHODOLOGY = {
     ),
     "attribution": "Runs are attributed to an issue by head-branch name (see dump_spend.py).",
     "dollars": (
-        "Reported only when data/price_sheet.json is configured; per-million "
-        "rates are owner-supplied, never hard-coded in this repo."
+        "Reported only when a price sheet is configured at dump time (the "
+        "CHURN_PRICE_SHEET_JSON repo variable, or a local gitignored "
+        "data/price_sheet.json). Per-million rates are owner-supplied and "
+        "never committed to this repo."
     ),
 }
 
@@ -196,21 +217,33 @@ def job_log(repo, job_id):
         return ""
 
 
+def step_key(step):
+    """Stable per-job identity for a step.
+
+    The Jobs API numbers steps within a job, so `number` is unique even when
+    two steps share a name; the name is only a fallback for callers (and
+    older dumps) that carry no number.
+    """
+    number = step.get("number")
+    return number if number is not None else (step.get("name") or "")
+
+
 def split_log_by_steps(log_text, steps):
-    """Slice a job log into {step name: [lines]} using each step's time window.
+    """Slice a job log into {step_key: [lines]} using each step's time window.
 
     Raw job logs carry no step *names*, only `##[group]` markers for the
     command — but every line is timestamp-prefixed and the Jobs API gives
     each step's started_at/completed_at, so the timestamps are the reliable
     boundary. Untimestamped continuation lines stay with the step that the
-    preceding timestamped line landed in.
+    preceding timestamped line landed in. Segments are keyed by `step_key`,
+    not by name, so two identically-named steps in one job cannot collide.
     """
     windows = []
     for step in steps:
         start, end = parse_ts(step.get("started_at")), parse_ts(step.get("completed_at"))
         if start is None:
             continue
-        windows.append((start, end, step.get("name") or ""))
+        windows.append((start, end, step_key(step)))
     windows.sort(key=lambda w: w[0])
 
     segments = defaultdict(list)
@@ -219,9 +252,9 @@ def split_log_by_steps(log_text, steps):
         m = LINE_TS_RE.match(line)
         if m:
             ts, body = parse_ts(m.group(1)), m.group(2)
-            for start, end, name in windows:
+            for start, end, key in windows:
                 if ts >= start and (end is None or ts <= end):
-                    current = name
+                    current = key
                     break
             else:
                 current = None
@@ -285,9 +318,13 @@ def split_tokens(usage):
     tokens = usage["tokens"]
     total = tokens["total"] if tokens else 0
 
-    if turns == 0:
+    if turns == 0 or tokens is None:
+        # No turn markers (nothing to split by) or no usage at all (expired
+        # log) — either way the split is unknown, not a measured 0/0. Both
+        # aggregates key off this, so they agree: totals_of counts
+        # source == "unknown", rollup_issues counts context_tokens is None.
         return {
-            "context_turns": 0,
+            "context_turns": turns if tokens is None else 0,
             "production_turns": 0,
             "context_tokens": None,
             "production_tokens": None,
@@ -315,7 +352,15 @@ def split_tokens(usage):
 
 
 def rounds_from_run(repo, run, jobs_fn, job_log_fn):
-    """Every Claude step of one workflow run, as unnumbered round records."""
+    """Every Claude step of one workflow run, as unnumbered round records.
+
+    `issue` is None for runs whose head branch carries no issue number. That
+    is the normal case for the two huddle workflows and for claude.yml: they
+    are `issue_comment`-triggered and check out the release branch, so there
+    is no per-issue attribution to be had from run metadata. Their rounds are
+    still recorded and still counted in totals — as *unattributed* rounds
+    (see `totals_of`) — rather than being dropped or, worse, guessed at.
+    """
     issue = issue_of(run.get("head_branch"))
     out = []
     for job in jobs_fn(repo, run["id"]):
@@ -326,7 +371,7 @@ def rounds_from_run(repo, run, jobs_fn, job_log_fn):
         segments = split_log_by_steps(job_log_fn(repo, job["id"]), steps)
         for step in claude_steps:
             name = step.get("name") or ""
-            usage = parse_usage(segments.get(name, []))
+            usage = parse_usage(segments.get(step_key(step), []))
             out.append(
                 {
                     "issue": issue,
@@ -336,6 +381,7 @@ def rounds_from_run(repo, run, jobs_fn, job_log_fn):
                     or run.get("name")
                     or "unknown",
                     "step": name,
+                    "step_number": step.get("number"),
                     "kind": round_kind(name),
                     "started_at": step.get("started_at") or run.get("run_started_at"),
                     "tokens": usage["tokens"],
@@ -362,15 +408,26 @@ def collect(repo, since, list_runs_fn=list_runs, jobs_fn=list_jobs, job_log_fn=j
     return rounds
 
 
+def round_key(r):
+    """Identity of a round across refreshes: its job, and its step within it.
+
+    Prefers the step *number* over its name for the same reason
+    `split_log_by_steps` does — two identically-named steps in one job would
+    otherwise collide and one would overwrite the other.
+    """
+    number = r.get("step_number")
+    return (r.get("job_id"), number if number is not None else (r.get("step") or ""))
+
+
 def merge_rounds(existing, fresh):
     """Union of previously-dumped and freshly-walked rounds, freshest winning.
 
-    Keyed by (job_id, step) so a re-walk of the same window updates rather
-    than duplicates, and rounds that have aged out of the window survive.
+    Keyed by `round_key` so a re-walk of the same window updates rather than
+    duplicates, and rounds that have aged out of the window survive.
     """
-    by_key = {(r.get("job_id"), r.get("step")): r for r in existing or []}
+    by_key = {round_key(r): r for r in existing or []}
     for r in fresh:
-        by_key[(r.get("job_id"), r.get("step"))] = r
+        by_key[round_key(r)] = r
     merged = list(by_key.values())
     merged.sort(
         key=lambda r: (r.get("started_at") or "", r.get("job_id") or 0, r.get("step") or "")
@@ -451,9 +508,29 @@ def incident_tally(doc):
     }
 
 
-def load_price_sheet(path=None):
-    """Owner-configured per-million token prices, or None when unconfigured."""
-    path = Path(path or os.environ.get("CHURN_PRICE_SHEET") or DATA_DIR / "price_sheet.json")
+def load_price_sheet(path=None, env=None):
+    """Owner-configured per-million token prices, or None when unconfigured.
+
+    Resolution order, and the single story about where rates live: rates are
+    never committed to this repo (#3744 — a committed rate is a world-state
+    claim that goes stale, and the shipped `price_sheet.example.json` is
+    zeroed precisely so the repo asserts none).
+
+      1. `CHURN_PRICE_SHEET_JSON` — the sheet's JSON *content*. This is how
+         the dispatched workflow gets it: from the repo variable of the same
+         name, so nothing is written to the checkout and nothing can be
+         committed by accident.
+      2. `CHURN_PRICE_SHEET` — a path, for pointing at a sheet held anywhere.
+      3. `data/price_sheet.json` — a local sheet, for running the dump by
+         hand. It is gitignored, so this path cannot become a committed rate.
+
+    None of the three configured means the churn view reports tokens only.
+    """
+    env = os.environ if env is None else env
+    inline = (env.get("CHURN_PRICE_SHEET_JSON") or "").strip() if path is None else ""
+    if inline:
+        return json.loads(inline)
+    path = Path(path or env.get("CHURN_PRICE_SHEET") or DATA_DIR / "price_sheet.json")
     if not path.exists():
         return None
     return json.loads(path.read_text())
@@ -522,8 +599,10 @@ def rollup_issues(rounds, sheet=None):
         if cost is not None:
             entry["cost_usd"] = round((entry["cost_usd"] or 0.0) + cost, 4)
         for key, op in (("first_round_at", min), ("last_round_at", max)):
-            if r.get("started_at") and entry[key]:
-                entry[key] = op(entry[key], r["started_at"])
+            # A first-seen round with no timestamp seeds the entry with None;
+            # a later round that does have one must still fill it in.
+            if r.get("started_at"):
+                entry[key] = op(entry[key], r["started_at"]) if entry[key] else r["started_at"]
 
     for entry in issues.values():
         entry["kinds"] = dict(entry["kinds"])
@@ -533,9 +612,20 @@ def rollup_issues(rounds, sheet=None):
 
 
 def totals_of(rounds, issues, sheet=None):
+    """Project-wide churn totals.
+
+    Token totals span *every* round, including the unattributed ones (huddle
+    and standalone-session runs, which carry no issue in their branch name);
+    the per-issue rollups necessarily do not. `unattributed_rounds` /
+    `unattributed_tokens` make that gap explicit, so the two figures are not
+    read as disagreeing and partial per-issue data is not read as complete.
+    """
+    unattributed = [r for r in rounds if r.get("issue") is None]
     totals = {
         "rounds": len(rounds),
         "issues": len(issues),
+        "unattributed_rounds": len(unattributed),
+        "unattributed_tokens": sum((r.get("tokens") or {}).get("total", 0) for r in unattributed),
         "tokens": _empty_tokens(),
         "context_tokens": sum(i["context_tokens"] for i in issues.values()),
         "production_tokens": sum(i["production_tokens"] for i in issues.values()),

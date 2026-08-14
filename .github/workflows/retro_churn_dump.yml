@@ -9,9 +9,14 @@ name: Retro Dashboard - Dump Churn Cost
 # invisible in ordinary spend math, so the retrospective makes it visible.
 # Read-only against GitHub Actions; writes only the JSON snapshot.
 #
-# Dollars are attached only when scripts/retrospective/data/price_sheet.json
-# exists (see price_sheet.example.json) -- rates are owner-configured, never
-# committed. The hand-maintained stale-context incident log
+# Dollars are attached only when the CHURN_PRICE_SHEET_JSON repo variable
+# holds a price sheet (shape: scripts/retrospective/data/price_sheet.example.json,
+# which ships zeroed placeholders so the repo asserts no rate -- #3744).
+# Rates are owner-configured and never committed: passing them through the
+# variable keeps them out of the checkout entirely, and dollars are computed
+# here at dump time, so editing the variable changes nothing until this
+# workflow is re-dispatched. Unset, the churn view reports tokens only.
+# The hand-maintained stale-context incident log
 # (data/stale_context_incidents.json) is validated here, so a malformed edit
 # fails this workflow instead of silently disappearing from the dashboard.
 
@@ -41,6 +46,7 @@ jobs:
           GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
           REPO: ${{ github.repository }}
           CHURN_WINDOW_DAYS: ${{ inputs.window_days }}
+          CHURN_PRICE_SHEET_JSON: ${{ vars.CHURN_PRICE_SHEET_JSON }}
         run: python3 scripts/retrospective/dump_churn.py
 
       - name: Commit snapshot

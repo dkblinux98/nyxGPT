@@ -84,15 +84,20 @@ Artifact URL (republish to this URL, do not mint a new one):
    zero. Each refresh merges into the previously-dumped rounds, so history
    accumulates instead of being re-fetched.
 
-   **Dollars** appear only when `data/price_sheet.json` exists. Copy
-   `data/price_sheet.example.json` to `price_sheet.json`, fill in the
-   per-million rates you are actually billed at (read from Anthropic's
-   pricing page at that moment — the example ships zeroed placeholders
-   precisely so no rate is asserted by this repo), and commit it with the
-   rest of the data refresh in step 8. Re-check the rates whenever you
-   refresh, and **re-dispatch this workflow after editing the sheet**:
-   dollars are computed at dump time, so an edited sheet changes nothing
-   until the dump re-runs. Without the file, the view reports tokens only.
+   **Dollars** appear only when a price sheet is configured, and **the rates
+   are never committed** — the repo ships only the zeroed
+   `data/price_sheet.example.json`, precisely so it asserts no rate (#3744).
+   Take that file's shape, fill in the per-million rates you are actually
+   billed at (read from Anthropic's pricing page at that moment), and store
+   the JSON in the **`CHURN_PRICE_SHEET_JSON` repo variable**
+   (`gh variable set CHURN_PRICE_SHEET_JSON < your-sheet.json`); the workflow
+   passes it to the dump, so nothing lands in the checkout. Do **not** commit
+   a `price_sheet.json` — that path is gitignored. For a local run of
+   `dump_churn.py`, saving the sheet as `data/price_sheet.json` works too.
+   Re-check the rates whenever you refresh, and **re-dispatch this workflow
+   after changing them**: dollars are computed at dump time, so a changed
+   sheet changes nothing until the dump re-runs. With no sheet configured,
+   the view reports tokens only.
 
    **Recording a stale-context incident** (the third part of churn cost —
    new-hire errors, where an agent acts on a fact a later session had already

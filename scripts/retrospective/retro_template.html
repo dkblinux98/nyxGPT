@@ -434,9 +434,11 @@
     the first file-modifying tool use count as context re-establishment and the rest as change production; the
     round's token total is split pro rata by that turn ratio. Usage is reported once per step rather than per
     turn, so the split is an explicit approximation, and rounds whose logs yield no turn markers are counted in
-    token totals but excluded from the split. Dollars appear only when a price sheet is configured
-    (<span class="mono">data/price_sheet.json</span>, see the committed example) — rates are owner-supplied,
-    never hard-coded here. Shown only when <span class="mono">data/churn.json</span> has been refreshed by the
+    token totals but excluded from the split. Huddle and standalone-session rounds run on the release branch,
+    so they carry no issue attribution; they are counted in the totals as unattributed rather than guessed at.
+    Dollars appear only when a price sheet was configured at dump time — the rates are owner-supplied and never
+    committed to the repository, which ships only a zeroed example. Shown only when
+    <span class="mono">data/churn.json</span> has been refreshed by the
     "Retro Dashboard - Dump Churn Cost" workflow.</p>
     <p><strong>Last 7 days.</strong> The 57 REQUEST_CHANGES reviews on nyxGPT PRs between 2026-08-02 and
     2026-08-09, parsed from the pull-request reviews themselves (Critical / Medium / Minor findings sections).
@@ -454,6 +456,12 @@ const QDATA = __QDATA__;
 const DATA = __DATA__;
 
 const fmt = n => n.toLocaleString('en-US');
+/* The one HTML-escape helper for text going into innerHTML, declared before
+   its first use. Most data here is machine-derived, but the stale-context
+   incident log is hand-written prose (#3776), so it is escaped rather than
+   trusted -- and coerces, because incident fields are not all strings. */
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c =>
+  ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'})[c]);
 const CVAR = ['var(--c1)','var(--c2)','var(--c3)','var(--c4)','var(--c5)','var(--c6)','var(--c7)','var(--c8)'];
 
 /* ---------- project-wide quality ---------- */
@@ -667,7 +675,8 @@ if (CHURN) {
   document.getElementById('churndesc').textContent =
     `What re-onboarding a zero-memory agent costs, over ${fmt(ct.rounds || 0)} agent round${ct.rounds === 1 ? '' : 's'} across ${fmt(ct.issues || 0)} issue${ct.issues === 1 ? '' : 's'} as of ${CHURN.generatedAt ? new Date(CHURN.generatedAt).toLocaleDateString('en-US', {month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC'}) : 'the last refresh'}. ` +
     `${CHURN.methodology.split || ''} ${ct.unknown_split_rounds ? `${ct.unknown_split_rounds} round(s) yielded no turn markers and are counted in tokens but excluded from the split.` : ''}` +
-    `${ct.priced ? '' : ' No price sheet is configured, so this view reports tokens only.'}`;
+    `${ct.unattributed_rounds ? ` ${fmt(ct.unattributed_rounds)} round(s) ran on the release branch (huddles, standalone sessions) and carry no issue attribution; their ${fmt(ct.unattributed_tokens || 0)} tokens are in these totals but not in the per-issue table below.` : ''}` +
+    `${ct.priced ? '' : ' No price sheet was configured at dump time, so this view reports tokens only.'}`;
   document.getElementById('churntiles').innerHTML = [
     {label: 'Total tokens', value: fmt(tok), note: `${fmt(ct.rounds || 0)} rounds, ${fmt(ct.multi_round_issues || 0)} multi-round issues`},
     {label: 'Context share', value: pct === null || pct === undefined ? '·' : pct + '%', note: 'tokens spent re-establishing context, not producing change'},
@@ -711,15 +720,15 @@ if (CHURN) {
     agent acted on a fact that a later session had already changed. Hand-recorded in
     <span class="mono">data/stale_context_incidents.json</span>.</p>
     ${Object.entries(INC.byKind).map(([kind, n]) => `<div class="themebar">
-      <span class="tname">${kind}</span><span class="tbar"><i style="width:${20 + n / INC.total * 160}px"></i><span class="tn">${n}</span></span>
+      <span class="tname">${esc(kind)}</span><span class="tbar"><i style="width:${20 + n / INC.total * 160}px"></i><span class="tn">${n}</span></span>
     </div>`).join('')}
     <details class="cleanlist"><summary>Show the ${INC.total} recorded incident${INC.total === 1 ? '' : 's'}</summary>
       <div class="tablewrap"><table>
         <thead><tr><th>Date</th><th>Kind</th><th>Incident</th><th class="num">Recorded in</th></tr></thead>
         <tbody>${INC.incidents.map(i => `<tr>
-          <td>${i.date}</td><td><span class="chipm">${i.kind}</span></td>
-          <td>${i.title}<div class="mmeta">${i.summary}</div></td>
-          <td class="num"><a href="https://github.com/dkblinux98/nyxGPT/issues/${i.recordedIn}" target="_blank" rel="noopener">#${i.recordedIn}</a></td>
+          <td>${esc(i.date)}</td><td><span class="chipm">${esc(i.kind)}</span></td>
+          <td>${esc(i.title)}<div class="mmeta">${esc(i.summary)}</div></td>
+          <td class="num"><a href="https://github.com/dkblinux98/nyxGPT/issues/${encodeURIComponent(i.recordedIn)}" target="_blank" rel="noopener">#${esc(i.recordedIn)}</a></td>
         </tr>`).join('')}</tbody>
       </table></div>
     </details>` : '';
@@ -804,7 +813,6 @@ document.getElementById('cleanrows').innerHTML = DATA.cleanPRs.map(p => `<tr>
   <td class="num">${p.merged.slice(5,10)}</td>
 </tr>`).join('');
 
-const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const rowsEl = document.getElementById('rows');
 rowsEl.innerHTML = DATA.issues.map((it, i) => {
   const id = it.issue ? `#${it.issue}` : `PR #${it.pr}`;

@@ -68,11 +68,63 @@ class TestStepClassification:
             ("Run Claude Code to fix acceptance failure", "acceptance-fix"),
             ("Claude Fix Issues (Attempt 2)", "self-heal"),
             ("Run Claude Code Review", "review"),
+            ("Post developer position", "huddle"),
+            ("Run mediation", "huddle"),
             ("Run Claude Code", "session"),
         ],
     )
     def test_round_kind_mapping(self, dump_churn, name, kind):
         assert dump_churn.round_kind(name) == kind
+
+
+def _action_steps(workflow_path):
+    """Names of every step in a workflow that uses anthropics/claude-code-action."""
+    import yaml
+
+    doc = yaml.safe_load(workflow_path.read_text()) or {}
+    names = []
+    for job in (doc.get("jobs") or {}).values():
+        for step in job.get("steps") or []:
+            if "claude-code-action" in str(step.get("uses") or ""):
+                names.append(step.get("name") or "")
+    return names
+
+
+class TestWorkflowCoverage:
+    """Pin CHURN_WORKFLOWS/CLAUDE_STEP_RE against the real workflow YAML.
+
+    Both are hand-maintained strings describing files that live elsewhere in
+    the tree, so they rot silently: a renamed step or a new Claude-invoking
+    workflow drops rounds from the dump with no error, and partial data is
+    then presented as complete. These tests are the tripwire.
+    """
+
+    WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
+
+    def test_every_listed_workflow_exists_and_invokes_the_action(self, dump_churn):
+        for name in dump_churn.CHURN_WORKFLOWS:
+            path = self.WORKFLOW_DIR / name
+            assert path.exists(), f"{name} is listed in CHURN_WORKFLOWS but does not exist"
+            assert _action_steps(path), (
+                f"{name} is listed in CHURN_WORKFLOWS but invokes no claude-code-action "
+                "step, so it can never yield a round"
+            )
+
+    def test_every_action_step_name_is_matched_by_the_regex(self, dump_churn):
+        for name in dump_churn.CHURN_WORKFLOWS:
+            for step_name in _action_steps(self.WORKFLOW_DIR / name):
+                assert dump_churn.is_claude_step({"name": step_name, "conclusion": "success"}), (
+                    f"{name} step {step_name!r} invokes claude-code-action but is not "
+                    "matched by CLAUDE_STEP_RE, so its token spend would vanish"
+                )
+
+    def test_no_claude_invoking_workflow_is_missing_from_the_list(self, dump_churn):
+        invoking = {p.name for p in self.WORKFLOW_DIR.glob("*.yml") if _action_steps(p)}
+        missing = invoking - set(dump_churn.CHURN_WORKFLOWS)
+        assert not missing, f"workflows invoke claude-code-action but are not walked: {missing}"
+
+    def test_listed_workflows_are_not_stale_duplicates(self, dump_churn):
+        assert len(dump_churn.CHURN_WORKFLOWS) == len(set(dump_churn.CHURN_WORKFLOWS))
 
 
 class TestSplitLogBySteps:
@@ -206,6 +258,42 @@ class TestSplitTokens:
         assert split["source"] == "unknown"
         assert split["context_tokens"] is None
         assert split["production_tokens"] is None
+
+    @pytest.mark.parametrize("first_mutation_turn", [None, 2])
+    def test_turns_without_usage_are_unknown_not_a_zero_split(
+        self, dump_churn, first_mutation_turn
+    ):
+        """An expired log can yield turn markers but no usage.
+
+        Reporting that as a *known* 0/0 split would let a round with unknown
+        spend count as measured; it must be unknown however the turns fell.
+        """
+        split = dump_churn.split_tokens(
+            {"tokens": None, "turns": 6, "first_mutation_turn": first_mutation_turn}
+        )
+        assert split["source"] == "unknown"
+        assert split["context_tokens"] is None
+        assert split["production_tokens"] is None
+
+    def test_unknown_splits_agree_across_both_aggregates(self, dump_churn):
+        """totals_of keys off `source`, rollup_issues off `context_tokens`."""
+        rounds = [
+            {
+                "issue": 7,
+                "kind": "implement",
+                "round": 1,
+                "started_at": "2026-08-10T00:00:00Z",
+                "tokens": None,
+                "split": dump_churn.split_tokens(
+                    {"tokens": None, "turns": 6, "first_mutation_turn": 2}
+                ),
+            }
+        ]
+        issues = dump_churn.rollup_issues(rounds)
+        totals = dump_churn.totals_of(rounds, issues)
+        assert issues[7]["unknown_split_rounds"] == 1
+        assert totals["unknown_split_rounds"] == 1
+        assert totals["unknown_token_rounds"] == 1
 
 
 class TestCollect:
@@ -357,6 +445,28 @@ class TestMergeAndNumberRounds:
         dump_churn.number_rounds(rounds)
         assert rounds[0]["round"] is None
 
+    def test_same_named_steps_in_one_job_do_not_collide(self, dump_churn):
+        """Step name alone is not unique within a job; the step number is."""
+        a = {
+            **self._round(1, "Run Claude Code", "2026-08-01T00:00:00Z", total=10),
+            "step_number": 4,
+        }
+        b = {
+            **self._round(1, "Run Claude Code", "2026-08-01T01:00:00Z", total=20),
+            "step_number": 9,
+        }
+        merged = dump_churn.merge_rounds([], [a, b])
+        assert len(merged) == 2
+        assert sorted(r["tokens"]["total"] for r in merged) == [10, 20]
+
+    def test_rounds_without_a_step_number_still_merge_by_name(self, dump_churn):
+        """Older dumps carry no step_number; they must not duplicate."""
+        old = [self._round(1, "a", "2026-07-01T00:00:00Z", total=10)]
+        fresh = [{**self._round(1, "a", "2026-07-01T00:00:00Z", total=99), "step_number": None}]
+        merged = dump_churn.merge_rounds(old, fresh)
+        assert len(merged) == 1
+        assert merged[0]["tokens"]["total"] == 99
+
 
 class TestRollupAndTotals:
     def _round(self, issue, started, ctx, prod, round_no=None, kind="implement"):
@@ -428,6 +538,31 @@ class TestRollupAndTotals:
         rounds = [self._round(None, "2026-08-10T00:00:00Z", 10, 10, round_no=None)]
         assert dump_churn.rollup_issues(rounds) == {}
 
+    def test_totals_report_the_unattributed_gap_explicitly(self, dump_churn):
+        """Huddle/session rounds have no issue; totals must say so, not hide it.
+
+        Their tokens are in the project totals but in no per-issue row, and a
+        reader comparing the two would otherwise see them silently disagree.
+        """
+        rounds = [
+            self._round(1, "2026-08-10T00:00:00Z", 100, 100, round_no=1),
+            self._round(None, "2026-08-11T00:00:00Z", 30, 20, round_no=None, kind="huddle"),
+        ]
+        issues = dump_churn.rollup_issues(rounds)
+        totals = dump_churn.totals_of(rounds, issues)
+        assert totals["rounds"] == 3 - 1  # both rounds counted, one unattributed
+        assert totals["issues"] == 1
+        assert totals["unattributed_rounds"] == 1
+        assert totals["unattributed_tokens"] == 50
+        assert totals["tokens"]["total"] == 250
+
+    def test_a_first_round_without_a_timestamp_is_backfilled_by_later_rounds(self, dump_churn):
+        first = self._round(9, None, 100, 100, round_no=1)
+        second = self._round(9, "2026-08-12T00:00:00Z", 100, 100, round_no=2)
+        entry = dump_churn.rollup_issues([first, second])[9]
+        assert entry["first_round_at"] == "2026-08-12T00:00:00Z"
+        assert entry["last_round_at"] == "2026-08-12T00:00:00Z"
+
     def test_totals_aggregate_across_issues(self, dump_churn):
         rounds = [
             self._round(1, "2026-08-10T00:00:00Z", 100, 100, round_no=1),
@@ -487,6 +622,54 @@ class TestPricing:
         issues = dump_churn.rollup_issues(rounds, self.SHEET)
         assert issues[5]["cost_usd"] == pytest.approx(9.0)  # 6.00 input + 3.00 output
         assert dump_churn.totals_of(rounds, issues, self.SHEET)["priced"] is True
+
+
+class TestPriceSheetResolution:
+    """Rates are never committed; the dump reads them from the environment.
+
+    The workflow passes the CHURN_PRICE_SHEET_JSON repo variable straight
+    through, so nothing lands in the checkout and nothing can be committed by
+    accident; a local run may point at a file instead.
+    """
+
+    SHEET = {"default": {"input": 3.0, "output": 15.0}}
+
+    def test_inline_json_from_the_repo_variable_is_used(self, dump_churn):
+        env = {"CHURN_PRICE_SHEET_JSON": json.dumps(self.SHEET)}
+        assert dump_churn.load_price_sheet(env=env) == self.SHEET
+
+    def test_a_path_is_read_when_no_inline_sheet_is_set(self, dump_churn, tmp_path):
+        sheet = tmp_path / "sheet.json"
+        sheet.write_text(json.dumps(self.SHEET))
+        assert dump_churn.load_price_sheet(env={"CHURN_PRICE_SHEET": str(sheet)}) == self.SHEET
+
+    def test_inline_wins_over_a_path(self, dump_churn, tmp_path):
+        sheet = tmp_path / "sheet.json"
+        sheet.write_text(json.dumps({"default": {"input": 99.0}}))
+        env = {
+            "CHURN_PRICE_SHEET_JSON": json.dumps(self.SHEET),
+            "CHURN_PRICE_SHEET": str(sheet),
+        }
+        assert dump_churn.load_price_sheet(env=env) == self.SHEET
+
+    def test_unset_and_absent_means_tokens_only(self, dump_churn, tmp_path):
+        assert dump_churn.load_price_sheet(path=tmp_path / "nope.json", env={}) is None
+
+    def test_a_blank_variable_is_treated_as_unset(self, dump_churn, tmp_path):
+        """An unconfigured repo variable expands to "", not to absent."""
+        env = {"CHURN_PRICE_SHEET_JSON": "   ", "CHURN_PRICE_SHEET": str(tmp_path / "nope.json")}
+        assert dump_churn.load_price_sheet(env=env) is None
+
+    def test_the_shipped_example_asserts_no_rate(self, dump_churn):
+        """#3744: the repo must not carry a rate that can go stale."""
+        example = json.loads((RETRO_DIR / "data" / "price_sheet.example.json").read_text())
+        rates = [v for group in ("default",) for v in example[group].values()]
+        for model in example["models"].values():
+            rates.extend(model.values())
+        assert rates and all(rate == 0.0 for rate in rates)
+
+    def test_a_real_price_sheet_is_never_committed(self, dump_churn):
+        assert not (RETRO_DIR / "data" / "price_sheet.json").exists()
 
 
 class TestIncidents:
