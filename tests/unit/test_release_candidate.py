@@ -380,7 +380,8 @@ def test_rc_plan_renders_the_macos_acceptance_install():
     commands = rc.plan("v3.0.0", "rc", published=PUBLISHED)["commands"]
 
     assert commands["brew"] == (
-        "brew tap dkblinux98/nyxgpt && (brew tap-trust dkblinux98/nyxgpt || true) "
+        "brew tap dkblinux98/nyxgpt "
+        "&& (brew tap-trust dkblinux98/nyxgpt || brew trust dkblinux98/nyxgpt || true) "
         "&& brew install nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc"
     )
     assert "nyxgpt-api " not in commands["brew"], "an rc must never install the stable formula"

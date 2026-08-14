@@ -55,9 +55,14 @@ BREW_BIN=$(sudo -u "$NYXGPT_TARGET_USER" -H bash -lc 'command -v brew')
 sudo -u "$NYXGPT_TARGET_USER" -H "$BREW_BIN" tap dkblinux98/nyxgpt
 # Homebrew gates installs from third-party taps, and this script is
 # non-interactive: without the trust step the `brew install` below stops at
-# the prompt and provisioning dead-ends (#3752). Tolerated failure -- a
-# Homebrew old enough not to gate has no `tap-trust` subcommand.
-sudo -u "$NYXGPT_TARGET_USER" -H "$BREW_BIN" tap-trust dkblinux98/nyxgpt || true
+# the prompt and provisioning dead-ends (#3752). Trust is per tap, which is
+# what the install below needs -- a per-formula grant does not cover the
+# counterpart formula `conflicts_with` makes brew load (#3770). The
+# subcommand is spelled `tap-trust` on some Homebrews and `trust` on others,
+# so try both; failing both is tolerated -- a Homebrew old enough not to
+# gate has neither subcommand and nothing to trust.
+sudo -u "$NYXGPT_TARGET_USER" -H "$BREW_BIN" tap-trust dkblinux98/nyxgpt \
+  || sudo -u "$NYXGPT_TARGET_USER" -H "$BREW_BIN" trust dkblinux98/nyxgpt || true
 sudo -u "$NYXGPT_TARGET_USER" -H "$BREW_BIN" install nyxgpt-api nyxgpt-web
 
 sudo -u "$NYXGPT_TARGET_USER" -H mkdir -p "$TARGET_HOME/.nyxGPT"

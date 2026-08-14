@@ -170,15 +170,18 @@ def test_the_generated_rc_install_command_trusts_the_tap_it_adds():
 
 
 def test_the_generated_rc_install_command_survives_a_homebrew_without_tap_trust():
-    """Trust is tolerated-failure: one line has to run on both Homebrews.
+    """Trust is tolerated-failure: one line has to run on every Homebrew.
 
     A bare `&& brew tap-trust ... && brew install` would abort the whole
     command on a Homebrew old enough not to gate third-party taps, trading
-    one dead end for another.
+    one dead end for another. It also has to try the other spelling of the
+    same whole-tap grant before giving up: a Homebrew that gates but calls
+    it `brew trust` would otherwise install from an untrusted tap and stop
+    (#3770).
     """
     brew = rc.plan("v3.0.0", "rc", published=("3.0.0rc1",))["commands"]["brew"]
 
-    assert f"(brew tap-trust {_TAP} || true)" in brew
+    assert f"(brew tap-trust {_TAP} || brew trust {_TAP} || true)" in brew
 
 
 #: A shell command chain is one *logical* line per command. Splitting on the
@@ -192,7 +195,17 @@ _CHAIN_SEPARATOR = re.compile(r"&&|\|\||;|\\n")
 #: `brew tap <target>`, but not `brew tap-new`/`brew tap-trust` and not the
 #: tail of the word "Homebrew" -- "the remote Homebrew tap and ..." is prose.
 _BREW_TAP = re.compile(r"(?<![\w-])brew tap(?!-)\s+[\"'$\w]")
-_BREW_TAP_TRUST = re.compile(r"(?<![\w-])brew tap-trust(?![\w-])")
+
+#: Whole-tap trust, in either spelling Homebrew uses (`brew tap-trust <tap>`
+#: and `brew trust <tap>` are the same grant on the builds that carry them).
+#: `--formula` is deliberately excluded: that grant covers one formula, and
+#: an install that resolves `conflicts_with` loads its counterpart too, which
+#: stays untrusted and aborts the install (#3770).
+_BREW_TAP_TRUST = re.compile(r"(?<![\w-])brew (?:tap-)?trust(?![\w-])(?!\s+--formula)")
+
+#: Trust scoped to a single formula -- never sufficient, see above.
+_BREW_FORMULA_TRUST = re.compile(r"(?<![\w-])brew (?:tap-)?trust\s+--formula(?![\w-])")
+
 _BREW_INSTALL = re.compile(r"(?<![\w-])brew install(?![\w-])")
 
 #: Prose about an install sequence is not an install sequence. Comments
@@ -325,6 +338,12 @@ def test_every_skipped_file_states_why_it_is_skipped():
             'echo "brew tap dkblinux98/nyxgpt"\necho "brew install nyxgpt-api"\n',
             id="echoed-into-a-summary",
         ),
+        pytest.param(
+            "brew tap dkblinux98/nyxgpt\n"
+            "brew trust --formula dkblinux98/nyxgpt/nyxgpt-api@3.0.0rc\n"
+            "brew install dkblinux98/nyxgpt/nyxgpt-api@3.0.0rc\n",
+            id="per-formula-trust-is-not-tap-trust",
+        ),
     ],
 )
 def test_the_untrusted_tap_scan_would_catch_a_regression(script: str):
@@ -365,11 +384,86 @@ def test_the_untrusted_tap_scan_would_catch_a_regression(script: str):
             "`brew install nyxgpt-api` resolves to the latest stable release.\n",
             id="the-word-homebrew-is-not-a-tap-command",
         ),
+        pytest.param(
+            "brew tap dkblinux98/nyxgpt\n"
+            "brew trust dkblinux98/nyxgpt\n"
+            "brew install nyxgpt-api\n",
+            id="the-other-spelling-of-whole-tap-trust",
+        ),
+        pytest.param(
+            "brew tap dkblinux98/nyxgpt\n"
+            "brew tap-trust dkblinux98/nyxgpt || brew trust dkblinux98/nyxgpt || true\n"
+            "brew install nyxgpt-api\n",
+            id="both-spellings-tried-in-one-chain",
+        ),
     ],
 )
 def test_the_untrusted_tap_scan_does_not_cry_wolf(script: str):
     """A scan that flags prose gets silenced, and then it protects nothing."""
     assert not _untrusted_taps(script)
+
+
+def test_no_shipped_file_settles_for_per_formula_trust():
+    """Per-formula trust is a dead end the moment the tap holds two channels.
+
+    Both rc8 publish runs stamped the tap, then died installing the candidate
+    (#3770): `conflicts_with "nyxgpt-api"` makes brew *load* the stable
+    formula, so trust granted to `nyxgpt-api@3.0.0rc` alone is not trust to
+    install it. Whole-tap trust is the only grant that covers a tap carrying
+    stable and candidate formulas at once -- which this one has since the
+    #3763 backfill.
+
+    Prose counts. A per-formula command written into a document is a
+    per-formula command someone pastes into a terminal, so the ban is on the
+    literal invocation appearing in a shipped file at all -- documents say
+    *why* it is not enough without spelling out the flag.
+    """
+    offenders = [
+        str(relative)
+        for relative in _scanned_files()
+        if _BREW_FORMULA_TRUST.search((_REPO_ROOT / relative).read_text(encoding="utf-8"))
+    ]
+
+    assert not offenders, "per-formula brew trust instead of whole-tap trust:\n" + "\n".join(
+        f"  {path}" for path in offenders
+    )
+
+
+#: The executable, non-interactive tap sequences: nothing types an answer to
+#: a trust prompt for them, and a swallowed "unknown command" reads exactly
+#: like success. Each has to try both spellings Homebrew uses (#3770).
+_NON_INTERACTIVE_TRUST_SEQUENCES = (
+    Path(".github") / "workflows" / "macos-brew-smoke.yml",
+    Path("scripts") / "cloud" / "ec2-user-data-macos.sh.tmpl",
+)
+
+
+@pytest.mark.parametrize("path", _NON_INTERACTIVE_TRUST_SEQUENCES, ids=lambda p: p.name)
+def test_the_unattended_install_paths_try_both_trust_spellings(path: Path):
+    """`brew tap-trust` failing is not evidence that the tap is trusted.
+
+    The published-tap smoke job ran `brew tap-trust <tap> || true` against a
+    Homebrew whose gate prescribes `brew trust <tap>`: the unknown subcommand
+    was swallowed, no trust was granted, and the install died on the stable
+    formula `conflicts_with` pulled in. Both spellings, then tolerate.
+    """
+    # Comments stripped, because both files *explain* the two spellings right
+    # above the commands that run them -- prose is not an invocation. The
+    # commands themselves reach brew as `brew` (the workflow) or `"$BREW_BIN"`
+    # (the EC2 template), so the subcommand is what these key on.
+    commands = [
+        segment.strip()
+        for line in (_REPO_ROOT / path).read_text(encoding="utf-8").splitlines()
+        for segment in _CHAIN_SEPARATOR.split(line)
+        if not _COMMENT.match(segment.strip())
+    ]
+
+    assert any(
+        re.search(r"(?<![\w-])tap-trust(?![\w-])", command) for command in commands
+    ), f"{path} never runs `brew tap-trust`"
+    assert any(
+        re.search(r"(?<![\w-])trust(?![\w-])", command) for command in commands
+    ), f"{path} has no `brew trust` fallback for a Homebrew without `tap-trust`"
 
 
 def test_the_portability_matrix_row_carries_the_trust_step():
