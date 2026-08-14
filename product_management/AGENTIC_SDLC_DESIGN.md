@@ -264,6 +264,36 @@ W5 ──▶ W6 (charters/runbooks/docs)
 
 ## 9. Watching must be intelligent, not scripted (owner principle, 2026-08-09)
 
+### 9a. Deciding must be intelligent too (owner principle, 2026-08-13)
+
+The 2026-08-13 rc-cut standstill extends the watching principle one level
+deeper — from *observing* the system to *deciding* within it:
+
+After the last agentic merge of the day, the board reached a state no rule
+anticipated: Backlog empty, nothing in flight — but one drain-gated failure
+frozen in `Acceptance Failed`, untouchable by design. The autopilot's park
+logic asked a boolean ("any open sprint issues?"), answered "not complete,"
+and refused to cut a candidate — while the owner sat blocked on a second
+machine needing the already-merged fix published to continue the very round
+the held issue belonged to. Every rule behaved as written; their
+composition produced "wait" at the moment the owner needed "ship." A human
+supervisor resolved it in seconds by weighing context no boolean holds:
+what merged, what is held and why, and what the owner is actually doing.
+
+**Principle:** at genuine decision points — cut a candidate or hold; select
+an issue or park; escalate or continue — the decision function is an agent
+invocation with the owner's cadence and intent as its charter, not a
+condition expression. Scripts remain as guardrails defining what may never
+happen (no stable publish without ceremony sign-off; no touching held
+issues; no Support-labeled selection); inside those rails, judgment picks
+the action and writes down its reasoning, the way the park comment already
+writes down its boolean. The huddle mediation (#3687) is the existing proof
+of the pattern: a scripted trigger hands a contested decision to an agent
+that reads the whole thread and rules.
+
+Floors, never ceilings — same as watching.
+
+
 Recorded from the 2026-08-09 incident post-mortem, **binding on the future
 nyxAgent agent-dashboard design**:
 
