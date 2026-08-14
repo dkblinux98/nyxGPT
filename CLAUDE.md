@@ -100,6 +100,37 @@ Do not spend excessive time reading bootstrap/context files before addressing th
 - The developer agent must implement the frontend surface as part of the same issue, and the review agent must treat a missing frontend surface as a **Medium (blocking) finding** — unless the issue body explicitly scopes the work as backend-only with an owner-approved rationale and a linked follow-up issue for the frontend.
 - Context: several past issues were merged with backend-only implementations that no user could reach (e.g. #2688 shipped Kubernetes manifests for the API pod only — deploying them does not produce a working nyxGPT). This rule exists to prevent that pattern.
 
+### Executed verification: nothing reaches acceptance testing unexecuted (Owner Requirement, 2026-08-14, #3775)
+
+**A change whose claim is about runtime behavior is done only when that claim
+has been demonstrated by *executing* it on the target platform.** Review in
+this pipeline means inspection; inspection cannot see an `ensurepip` exit 1, a
+missing `npm`, or a path that resolves relative to a repo that is not there.
+
+- **In scope (executed evidence required):** installs and packaging, service
+  lifecycle, provisioning/deployment, cross-platform or OS-specific behavior,
+  and anything that depends on what exists on the target machine.
+- **Accepted evidence:** a CI job run on the target platform — the existing
+  smoke workflows (`macos-brew-smoke.yml`, `linux-native-smoke.yml`,
+  `terraform-local-smoke.yml`) and `nyxgpt ops verify` all count — or an
+  equivalent demonstrated-by-running proof, cited in the PR by run URL or
+  command transcript. Where the runner does not naturally reproduce the
+  failure, *inject the condition*: prove it fails without the fix and passes
+  with it (the `macos-brew-smoke.yml` fault-injection job is the template).
+  When no job covers the changed path, the developer agent adds one as part of
+  the same issue.
+- **Exempt:** pure-logic changes fully covered by unit tests, and prose-only
+  changes. The gate targets behavior claims unit tests structurally cannot
+  reach.
+- The review agent must treat missing executed evidence on an in-scope change
+  as a **Medium (blocking) finding** — and must not demand evidence CI
+  genuinely cannot produce (the short list in `docs/live-verification-ci.md`),
+  which is named in the review instead.
+- Context: #3753 (`ensurepip` exit 1, then the `mac_ver()` crash), #3759
+  (artifact installs resolving repo-relative paths) and #3761 (no `npm` on
+  cloud instances) all reached owner acceptance testing and were all
+  discoverable by running the install once on a clean target.
+
 ---
 
 ## Operational Command Wrapping (Owner Requirement, 2026-07-15)

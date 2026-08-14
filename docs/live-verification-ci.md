@@ -164,7 +164,12 @@ and screenshots make verifiable in the review loop:
 - **Apple Silicon brew-services native layout** -- `nyxgpt ops verify` boots
   a pure-Compose stack (matches every other CI gate in this repo); it does
   not exercise the native launchd/brew path `nyxgpt ops install` uses on
-  macOS.
+  macOS. This covers the *operate* half only: the Homebrew keg **install** is
+  executed on a real `macos-15` runner by
+  [`macos-brew-smoke.yml`](../.github/workflows/macos-brew-smoke.yml), so a
+  formula change is not exempt from the executed-verification gate
+  (`agents/runbooks/review-runbook.md` §1b) on the grounds that this entry
+  exists.
 - **Real Slack delivery** -- `nyxgpt ops alert-test` (separate command)
   posts through Grafana's contact-point test API; actually landing a
   message in a real Slack workspace still requires a real webhook secret,

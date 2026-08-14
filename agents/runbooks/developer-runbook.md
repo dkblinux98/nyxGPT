@@ -399,6 +399,74 @@ Pre-commit hooks MUST pass before commit succeeds.
 
 If flaky tests appear, isolate and fix; escalate if persistent.
 
+## 4a) Executed verification: run your claim on the target (#3775)
+
+§4's loop proves the code is well-formed and its logic is unit-tested. It
+proves nothing about what happens when the thing runs on a real machine.
+`ensurepip` exit 1 on stock Homebrew (#3753), `platform.mac_ver()` answering
+empty (#3753 again), `npm` missing from a cloud image (#3761), artifact
+installs resolving paths relative to a repo that is not there (#3759) — every
+one of those shipped through a green §4 loop and a passing review, and every
+one was found by the owner running the install once.
+
+> **If your change's claim is about runtime, install or platform behavior, you
+> produce the evidence that it was executed on that platform — as part of this
+> issue, not as a follow-up.**
+
+**Does the gate apply?** Yes if the change touches installs or packaging
+(formulas, tarballs, wheels, venv bootstrap, dependency resolution), service
+lifecycle (`nyxgpt ops` install/up/restart/down, launchd, systemd, container
+start, health), provisioning or deployment (Terraform, cloud-init, EC2,
+Kubernetes, Compose), cross-platform or OS-specific behavior, or anything that
+depends on what exists on the target machine (interpreter version, `npm`,
+`brew`, `docker`, filesystem layout, repo-relative path resolution).
+
+No if the change is pure logic fully covered by unit tests, or prose-only.
+That exemption is the gate's point, not a loophole: it targets exactly the
+behavior claims unit tests structurally cannot reach.
+
+**Produce one of these, and cite it in the PR body** (run URL, workflow + job
+name, or the command with its output):
+
+1. a run of the smoke workflow that covers your path —
+   [`macos-brew-smoke.yml`](../../.github/workflows/macos-brew-smoke.yml)
+   (Homebrew keg install on a real macOS runner),
+   [`linux-native-smoke.yml`](../../.github/workflows/linux-native-smoke.yml)
+   (`nyxgpt ops install` on a real systemd userland),
+   [`terraform-local-smoke.yml`](../../.github/workflows/terraform-local-smoke.yml)
+   (local Terraform apply);
+2. a `workflow_dispatch` run of one of those, or of another workflow that
+   exercises the changed path;
+3. `nyxgpt ops verify` (§2 of the review runbook) where your change is in its
+   coverage;
+4. the command itself, run on the target, with its output pasted in.
+
+**If no job covers your path, add one.** That is part of the implementation,
+not a follow-up issue. Copy the shape of the templates above: path-filtered
+triggers so the cost lands only on PRs that can break it,
+`permissions: contents: read` for a read-only smoke, and a header comment
+saying which question the job answers.
+
+**Inject the condition when the runner is green by luck.** A job that only
+runs the install passes on every machine that fails to reproduce the bug —
+which is how the rc5 candidate passed CI and died on the owner's Mac. When
+your fix targets a condition the runner does not naturally exhibit, prove both
+halves: the failure reproduces without the fix, and disappears with it. See
+`macos-brew-smoke.yml`'s "Reproduce the empty mac_ver() failure, then prove
+the shim fixes it" step.
+
+**What genuinely cannot be executed in CI** is the short documented list in
+`docs/live-verification-ci.md` (the native launchd/brew-services *operate*
+path, real Slack delivery, LLM answer quality), plus EC2 Mac hardware, which
+has no hosted runner (`docs/portability-matrix.md`). Name which item applies
+and what the owner must exercise — and prefer injecting the condition over
+deferring to that list. Note what is *not* on it: the Homebrew keg install
+runs on a real `macos-15` runner in `macos-brew-smoke.yml`, so a formula
+change cannot claim macOS is untestable.
+
+The reviewer runs the same gate (`agents/runbooks/review-runbook.md` §1b) and
+missing executed evidence is a Medium (blocking) finding.
+
 ## 5) Documentation
 - Update docs for any user-facing change:
   - Modified `src/nyxgpt/api.py` or `src/nyxgpt/app.py` → Update `docs/api.md`

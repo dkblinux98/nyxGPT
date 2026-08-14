@@ -370,6 +370,9 @@ jobs:
             - User-facing code changed WITHOUT documentation updates (user_facing_undocumented=true)
             - This change falsifies a claim written elsewhere in the tree and
               the PR does not fix it (inverse-claims check, review-runbook §1a)
+            - The PR makes a runtime/install/platform behavior claim with NO
+              executed evidence on the target platform (executed-verification
+              gate, review-runbook §1b)
 
             Do not APPROVE until all checks pass, tests are updated, AND documentation is complete.
 
@@ -414,6 +417,68 @@ jobs:
             Report the search you actually ran in the `### Documentation
             Status` section, so "no falsified claims" is distinguishable from
             "never checked".
+
+            ## Executed-verification gate (REQUIRED, review-runbook.md §1b, #3775)
+
+            Your review is an *inspection*. Inspection reads a formula and
+            concludes the venv bootstraps; it cannot see `ensurepip` exit 1 on
+            stock Homebrew, `platform.mac_ver()` answering empty, `npm` absent
+            from a cloud image, or a path resolving relative to a repo the
+            target does not have. Those four defects (#3753 twice, #3761,
+            #3759) all passed review and were all found by the owner running
+            the thing once.
+
+            **Nothing reaches owner acceptance testing whose runtime claim has
+            not been demonstrated by execution on the target platform.**
+
+            IN SCOPE (executed evidence required): installs and packaging
+            (formulas, tarballs, wheels, venv bootstrap, dependency
+            resolution); service lifecycle (`nyxgpt ops` install/up/restart/
+            down, launchd, systemd, container start, health); provisioning and
+            deployment (Terraform, cloud-init, EC2, Kubernetes, Compose);
+            cross-platform or OS-specific behavior; anything depending on what
+            exists on the target (interpreter version, `npm`, `brew`, `docker`,
+            filesystem layout, repo-relative path resolution).
+
+            ACCEPTED EVIDENCE — at least one, cited in the PR by run URL, job
+            name, or command transcript:
+            1. a CI job run on the target platform; the existing smoke
+               workflows count (`macos-brew-smoke.yml`,
+               `linux-native-smoke.yml`, `terraform-local-smoke.yml`);
+            2. a `workflow_dispatch` run of one of those or another workflow
+               exercising the changed path;
+            3. `nyxgpt ops verify`, where the change is in its coverage;
+            4. the actual command run on the target, with its output.
+
+            It must exercise the CHANGED path on the TARGET platform — a Linux
+            job does not verify a macOS keg, and a unit test mocking
+            `systemctl` does not verify a systemd unit. Where the runner does
+            not naturally reproduce the failure, the evidence must INJECT the
+            condition and show both halves: it fails without the fix and
+            passes with it (`macos-brew-smoke.yml`'s "Reproduce the empty
+            mac_ver() failure, then prove the shim fixes it" step is the
+            template — the rc5 candidate passed here and died on the owner's
+            Mac precisely because the job only ran the install).
+
+            If NO job covers the changed path, that is the finding, not the
+            excuse: the PR must add one (developer-runbook §4a).
+
+            EXEMPT: pure-logic changes fully covered by unit tests; prose-only
+            changes (docs, runbooks, prompts) whose contract text is pinned by
+            tests; and what `docs/live-verification-ci.md` documents as
+            genuinely not-CI-coverable (the native launchd/brew-services
+            *operate* path, real Slack delivery, LLM answer quality), plus EC2
+            Mac hardware, which has no hosted runner — name which applies and
+            what the owner must exercise. The Homebrew keg *install* is NOT on
+            that list: `macos-brew-smoke.yml` runs it on a real macos-15
+            runner, so "macOS can't be tested in CI" does not excuse a formula
+            change. Never REQUEST_CHANGES demanding evidence that is
+            structurally impossible to produce, or that a cited run already
+            produced.
+
+            Missing executed evidence on an in-scope change is a **Medium
+            (blocking)** finding: cite the claim, name the platform it was
+            never run on, and say which job would have run it.
 
             ## Review Instructions
 
@@ -462,6 +527,9 @@ jobs:
             - Inverse-claims check (§1a): the change does not leave falsified
               claims elsewhere in the tree — check the change's *consequences*
               for existing prose, not only its own surfaces
+            - Executed-verification gate (§1b): a runtime/install/platform
+              claim is demonstrated by execution on the target platform and
+              cited in the PR — inspection alone is not evidence
             - Reasonable maintainability
 
             Additional quality checks:
@@ -526,6 +594,21 @@ jobs:
             [If the PR introduces a new expiry-dated world-state claim instead
             of pointing at a living source, this BLOCKS APPROVE (Medium)]
 
+            ### Executed Verification
+            - Runtime/install/platform claim in this PR: [one line, or NONE —
+              pure logic covered by unit tests / prose-only change]
+            - Target platform(s) the claim is about: [e.g. macOS Homebrew keg,
+              Linux systemd --user, EC2 cloud-init, N/A]
+            - Executed evidence cited: [run URL / workflow + job name /
+              command transcript — required when a claim is named above;
+              "reviewed the code" is NOT evidence]
+            - Failure reproduced without the fix: [YES + where / N/A — required
+              when the runner does not naturally exhibit the condition (#3753)]
+            - Not-CI-coverable items deferred to owner acceptance: [NONE, or
+              the specific entries from docs/live-verification-ci.md]
+            [If a runtime/install/platform claim has no executed evidence on
+            its target, this BLOCKS APPROVE (Medium) — §1b]
+
             ${{ steps.previous_review.outputs.is_rereview == 'true' && '
             ### Fix Verification (for re-reviews)
             [For each previous Critical/Medium issue:]
@@ -583,11 +666,16 @@ jobs:
               * User-facing code changed without documentation updates
               * The change falsifies a claim elsewhere in the tree and the PR
                 does not fix it (inverse-claims check, §1a/#3743)
+              * A runtime/install/platform claim has no executed evidence on
+                its target platform (executed-verification gate, §1b/#3775)
             - For re-reviews: MUST verify ALL previous Critical/Medium issues are resolved
             - Be specific with file paths and line numbers for all issues
             - Explain how to fix blocking issues
             - If tests are missing, add as a Medium issue: "Missing tests for code changes"
             - If documentation is missing, add as a Medium issue: "Missing documentation for user-facing changes"
+            - If executed evidence is missing on a runtime/install/platform
+              change, add as a Medium issue: "Missing executed verification on
+              <target platform>" and name the job that would have run it
             - If REQUEST_CHANGES, you MUST include the "### Disagreement Type" section and its
               a/b/c classification -- an automated workflow reads it to decide whether to loop,
               huddle, or escalate (#3687). Type (a) with no new diagnosis this round should

@@ -20,6 +20,13 @@ Follow agents/runbooks/developer-runbook.md. In particular:
   - pytest -v (all tests pass)
   - validate-web-routes.sh (if web routes changed)
 - Keep working until all checks pass (like a human developer would)
+- Produce executed evidence for any runtime/install/platform claim (#3775,
+  runbook §4a): run the smoke workflow that covers the changed path
+  (`macos-brew-smoke.yml`, `linux-native-smoke.yml`,
+  `terraform-local-smoke.yml`) or the command on the target, add a smoke job
+  when none covers it, and cite the run in the PR body. The reviewer blocks on
+  a runtime claim that was never executed. Pure-logic changes fully covered by
+  unit tests are exempt
 - Only after all checks pass: commit, push, open PR
 - Open PR targeting active release branch with "Closes #ISSUE" in body
 - Move issue Status -> In Review and assign review-agent as PR reviewer

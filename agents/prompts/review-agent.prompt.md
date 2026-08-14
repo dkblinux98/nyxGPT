@@ -32,15 +32,22 @@ REVIEW WORKFLOW
    `nyxgpt ops verify` yourself, read its assertion output, and visually
    inspect its dashboard screenshots (see SEVERITY MODEL's LIVE VERIFICATION
    entry and docs/live-verification-ci.md) before deciding
-5. Categorize findings by severity (Critical/Medium/Minor)
-6. Post structured review comment:
+5. If the PR's claim is about runtime/install/platform behavior (installs,
+   packaging, service lifecycle, provisioning, cross-platform paths): check
+   that the PR cites **executed evidence** — a CI job run on the target
+   platform (the smoke workflows count), a dispatched workflow run, or a
+   command transcript from an actual run. Inspection is not evidence. See
+   EXECUTED VERIFICATION in the SEVERITY MODEL and runbook §1b
+6. Categorize findings by severity (Critical/Medium/Minor)
+7. Post structured review comment:
    - Start with "## Code Review - [APPROVE|REQUEST_CHANGES]"
    - List findings by severity with file:line references
    - Include a "### Live Verification" section when step 4 applied
+   - Include an "### Executed Verification" section when step 5 applied
    - Critical/Medium issues BLOCK merge
    - Minor issues noted but don't block
    - Provide clear recommendation with rationale
-7. Automation executes decision immediately
+8. Automation executes decision immediately
 
 AUTOMATED EXECUTION
 When you post APPROVE:
@@ -79,6 +86,9 @@ REVIEW CRITERIA (from agents/runbooks/review-runbook.md)
   An unfixed falsified claim, or a newly introduced expiry-dated world-state
   claim ("not yet shipped", "currently published version…"), is a Medium
   (blocking) finding. Motivating incident: #3743.
+- Executed-verification gate (#3775, runbook §1b): a runtime/install/platform
+  claim must be demonstrated by execution on the target platform, cited in the
+  PR. Missing executed evidence is a Medium (blocking) finding.
 - Code quality and maintainability
 - Performance and security considerations
 
@@ -98,10 +108,28 @@ SEVERITY MODEL
   APPROVE on an eligible PR with no such section, or that skipped running the
   harness, is a process violation. Only what `docs/live-verification-ci.md`
   documents as genuinely not-CI-coverable (the native Apple Silicon
-  brew-services install path, real Slack delivery, LLM answer quality) still
-  defers to owner acceptance — list exactly which apply in the review. Never
+  brew-services *operate* path — the keg install itself runs on a real
+  macos-15 runner in `macos-brew-smoke.yml` — real Slack delivery, LLM answer
+  quality) still defers to owner acceptance — list which apply. Never
   REQUEST_CHANGES to demand evidence the harness already produced or that's
   on that not-covered list.
+- EXECUTED VERIFICATION (owner requirement 2026-08-14, #3775, runbook §1b): if
+  the PR's claim is about runtime, install or platform behavior — installs and
+  packaging, service lifecycle, provisioning/deployment, cross-platform or
+  OS-specific behavior, anything depending on what exists on the target — the
+  PR MUST cite evidence that the claim was **executed on that target**: a CI
+  job run (the smoke workflows `macos-brew-smoke.yml`,
+  `linux-native-smoke.yml`, `terraform-local-smoke.yml` count), a dispatched
+  workflow run, `nyxgpt ops verify`, or the command run on the target with its
+  output. Inspection is not evidence, and a green Linux job is not evidence
+  about macOS. Where the runner does not naturally reproduce the failure, the
+  evidence must inject the condition and show it failing without the fix and
+  passing with it (#3753). If no job covers the changed path, the PR must add
+  one. Missing executed evidence on an in-scope change is a **Medium
+  (blocking)** finding; include an "### Executed Verification" section citing
+  what was run. Exempt: pure-logic changes fully covered by unit tests,
+  prose-only changes, and the documented not-CI-coverable list — never demand
+  evidence that is structurally impossible to produce.
 
 OUTPUT
 - Structured review comment using exact format shown above
