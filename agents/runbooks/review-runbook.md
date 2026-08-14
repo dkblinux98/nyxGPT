@@ -54,6 +54,10 @@ The review-agent OWNS the review process:
   finding.
 - Reasonable maintainability
 - **End-to-end usability (Definition of Done, CLAUDE.md):** nyxGPT user features must be usable from the web interface; ops/SRE features must be operable from the SRE/admin dashboard. A backend-only implementation is a Medium (blocking) finding unless the issue explicitly scopes it backend-only with owner approval and a linked frontend follow-up issue.
+- **Executed-verification gate (#3775):** a change whose claim is about
+  runtime, install or platform behavior must be demonstrated by *execution on
+  the target platform*, not by inspection. See §1c — missing executed evidence
+  on an in-scope change is a Medium (blocking) finding.
 - **Workflow actor gates (#3600, going-public hardening):** any new or edited `.github/workflows/*.yml` job triggered by `issues`, `issue_comment`, `pull_request`, or `pull_request_review*` that carries write permissions or a secret-backed `GH_TOKEN` MUST gate its `if:` on the actor's identity (`comment.user.login`/`review.user.login` against `vars.HUMAN_OWNER` or the relevant agent var) — a trigger phrase with no author check is a Medium (blocking) finding. See `agents/runbooks/developer-runbook.md` §3b for the pattern and the fork-PR guard requirement on merge/review paths.
 - **Live verification (#3555/P6-18):** if the PR touches observability, metrics, or a UI surface, run `nyxgpt ops verify` yourself and cite its output/screenshots — see §2's "Live verification" entry below for the full rule.
 
@@ -150,6 +154,86 @@ right now — since the entry should point at that source instead.
 **Append** entries for what the review settles: a fact you verified while
 reviewing (with method), a decision reached in a huddle, a question left open.
 
+## 1c) Executed-verification gate: was the claim ever run? (#3775)
+
+Review in this pipeline means inspection. Inspection reads a formula and
+concludes the venv bootstraps; it cannot see `ensurepip` exit 1 on stock
+Homebrew, `platform.mac_ver()` answering empty, `npm` absent from a cloud
+image, or a path resolving relative to a repo the target does not have. Those
+four defects (#3753 twice, #3761, #3759) all passed review and were all found
+by the owner running the thing once.
+
+> **A change whose claim is about runtime, install or platform behavior does
+> not reach acceptance testing until that claim has been demonstrated by
+> executing it on the target platform.**
+
+**In scope — executed evidence required.** The claim is about what happens
+when it runs, on a machine:
+
+- installs and packaging (formulas, tarballs, wheels, venv bootstrap,
+  dependency resolution, `pip install` of a published artifact);
+- service lifecycle (`nyxgpt ops install/up/restart/down`, launchd, systemd,
+  container start, health/readiness);
+- provisioning and deployment (Terraform, cloud-init, EC2, Kubernetes,
+  Compose);
+- cross-platform or OS-specific behavior, and anything that depends on what
+  exists on the target (interpreter version, `npm`, `brew`, `docker`,
+  filesystem layout, repo-relative path resolution).
+
+**Accepted evidence.** At least one of these, *cited in the PR* by run URL,
+job name, or command transcript:
+
+1. a CI job run on the target platform — the existing smoke workflows count:
+   [`macos-brew-smoke.yml`](../../.github/workflows/macos-brew-smoke.yml),
+   [`linux-native-smoke.yml`](../../.github/workflows/linux-native-smoke.yml),
+   [`terraform-local-smoke.yml`](../../.github/workflows/terraform-local-smoke.yml);
+2. a `workflow_dispatch` run of one of those, or of another workflow that
+   exercises the changed path;
+3. `nyxgpt ops verify` (§2's live-verification harness) where the change is in
+   its coverage;
+4. an equivalent demonstrated-by-running proof: the actual command, run on the
+   target, with its output.
+
+The evidence must exercise **the changed path on the target platform** — a
+Linux job does not verify a macOS keg, and a unit test that mocks `systemctl`
+does not verify a systemd unit.
+
+**Fault injection where the runner is green by luck (#3753 round two).** A job
+that only runs the install passes on every machine that fails to reproduce the
+bug — which is exactly how the rc5 candidate passed CI and died on the owner's
+Mac. When the fix targets a condition the runner does not naturally exhibit,
+the evidence must *inject* that condition and show both halves: the failure
+reproduces without the fix, and disappears with it.
+`macos-brew-smoke.yml`'s "Reproduce the empty mac_ver() failure, then prove the
+shim fixes it" step is the template.
+
+**No covering job? The PR adds one.** "Nothing tests this path" is the finding,
+not the excuse — the developer contract requires a smoke job for a changed path
+that has none (`agents/runbooks/developer-runbook.md` §4a), using the
+workflows above as templates.
+
+**Explicitly exempt.**
+
+- **Pure-logic changes fully covered by unit tests** — the gate targets
+  behavior claims unit tests structurally cannot reach, not code they already
+  cover.
+- **Prose-only changes** (docs, runbooks, prompts, charters), including
+  agent-process changes whose contract text is pinned by tests.
+- **What CI genuinely cannot produce** — the short documented list in
+  `docs/live-verification-ci.md` (the native launchd/brew-services *operate*
+  path, real Slack delivery, LLM answer quality), plus EC2 Mac hardware, for
+  which no hosted runner exists (`docs/portability-matrix.md`). Name which
+  item applies and what the owner must exercise; do not defer to it when the
+  condition could be injected instead, and note that the brew *install* half
+  is covered by `macos-brew-smoke.yml` — "macOS can't be tested in CI" is not
+  a valid excuse for a formula change.
+
+**Severity and symmetry.** Missing executed evidence on an in-scope change is a
+**Medium (blocking)** finding: cite the claim, name the platform it was never
+run on, and say which job would have run it. The symmetry from §2 holds —
+never REQUEST_CHANGES demanding evidence that is structurally impossible to
+produce, or that a cited run already produced.
+
 ## 2) Severity model
 - Critical: correctness/security/data-loss/performance regression; must block merge
 - Medium: significant bug risk, missing tests, broken contract, poor maintainability; must block merge
@@ -190,7 +274,9 @@ review agent runs this harness itself, in CI, before deciding:**
 **What still defers to owner acceptance** — because CI genuinely cannot
 exercise it, not because it's inconvenient — is the short, explicit list
 `docs/live-verification-ci.md` documents: the Apple Silicon native
-brew-services install path (CI only exercises the Compose path), real Slack
+brew-services *operate* path (this harness only exercises the Compose path;
+the keg **install** is executed on a real `macos-15` runner by
+`macos-brew-smoke.yml`, so it is not on this list), real Slack
 delivery (no real webhook secret in CI), and LLM response *quality* (CI's
 model is stubbed/tiny — the pipeline being intact end to end is what's
 asserted, not answer quality). List exactly which of these apply, explicitly,

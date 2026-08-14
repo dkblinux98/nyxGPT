@@ -124,6 +124,15 @@ change with no web UI surface, or an ops feature with no admin-dashboard
 surface, is an incomplete implementation, and the review agent is required
 to block on it as a Medium finding.
 
+It also requires **executed verification**: a change whose claim is about
+runtime, install or platform behavior reaches acceptance testing only once
+that claim has been demonstrated by running it on the target platform — a
+smoke job on a real macOS/Linux runner, a dispatched workflow run, or the
+command itself with its output — cited in the pull request. Review here is
+inspection, and inspection cannot see a broken venv bootstrap or a missing
+`npm` on a cloud image. The mechanics, including which smoke job covers which
+platform, are in [Testing](testing.md#executed-verification-smoke-jobs-on-real-targets-3775).
+
 When human acceptance testing (after merge) turns something up, it is
 classified into one of two buckets, because they mean different things
 about where the process broke:

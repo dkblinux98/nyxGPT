@@ -207,6 +207,17 @@ not agent-editable except to add a `Re-verify` result or a supersession pointer.
   asserted as fact.
   Source: #3774.
 
+- **D-006** · 2026-08-14 · owner — Nothing reaches owner acceptance testing
+  whose runtime, install or platform claim has not been demonstrated by
+  *execution on the target platform*. Inspection is not evidence; the PR cites a
+  run (smoke workflow, dispatched workflow, `nyxgpt ops verify`, or a command
+  transcript from the target). Where the runner is green by luck the evidence
+  must inject the failing condition and show both halves. Missing executed
+  evidence on an in-scope change is a Medium (blocking) review finding; pure
+  logic covered by unit tests and prose-only changes are exempt.
+  Source: #3775; `agents/runbooks/review-runbook.md` §1c;
+  `agents/runbooks/developer-runbook.md` §4a; `CLAUDE.md` §Definition of Done.
+
 ## Verifications
 
 - **V-001** · 2026-08-14 — Releases in this repository are immutable: a
@@ -275,6 +286,20 @@ not agent-editable except to add a `Re-verify` result or a supersession pointer.
   Method: read `.github/workflows/code_scan_report.yml`; `CLAUDE.md` §Tooling.
   Re-verify when: the repository moves off CodeQL default setup, or agent tokens
   gain `security_events` scope.
+
+- **V-006** · 2026-08-14 — The Homebrew keg **install** path is CI-coverable on
+  a real macOS runner: `macos-brew-smoke.yml` runs `brew install` of the working
+  tree's formulas and of the published tap candidate on `macos-15`, and injects
+  the empty `mac_ver()` condition to prove the shim. "macOS cannot be tested in
+  CI" is therefore not a valid deferral for a formula or install change — only
+  the native launchd/brew-services *operate* half still defers to the owner.
+  Method: read `.github/workflows/macos-brew-smoke.yml` — jobs at `runs-on:
+  macos-15`, steps "Install nyxgpt-api from the local tap", "Tap and install the
+  candidate", "Reproduce the empty mac_ver() failure, then prove the shim fixes
+  it". The deferral lists in `review-runbook.md` §2, the review prompt and
+  `docs/live-verification-ci.md` were corrected to match under #3775.
+  Re-verify when: `macos-brew-smoke.yml` stops installing on a macOS runner, or
+  GitHub retires hosted macOS runners.
 
 ## Parked
 

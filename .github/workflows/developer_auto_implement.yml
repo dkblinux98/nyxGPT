@@ -458,6 +458,22 @@ jobs:
 
             If any check fails: fix and re-run ALL checks (up to 3 attempts)
 
+            **EXECUTED VERIFICATION (#3775, developer-runbook §4a)**: this is an
+            acceptance failure — the owner found it by RUNNING nyxGPT, which is
+            exactly what the checks above cannot do. If the failure is about runtime,
+            install or platform behavior (installs/packaging, service lifecycle,
+            provisioning, cross-platform paths, anything depending on what exists on
+            the target machine), demonstrate the fix by EXECUTION on that platform and
+            cite it in the PR: a run of the covering smoke workflow
+            (`.github/workflows/macos-brew-smoke.yml`, `linux-native-smoke.yml`,
+            `terraform-local-smoke.yml`), a `workflow_dispatch` run, `nyxgpt ops
+            verify`, or the command run on the target with its output. If no job covers
+            the path, add one in THIS PR. If the runner does not naturally reproduce
+            the condition, INJECT it and show both halves — fails without the fix,
+            passes with it (macos-brew-smoke.yml's mac_ver() step is the template).
+            Pure-logic fixes fully covered by unit tests are exempt. The reviewer
+            blocks on missing executed evidence (Medium, review-runbook §1c).
+
             ### Step 4: Commit and push
             Commit: "fix: address acceptance failure (#${{ github.event.issue.number }})"
 
@@ -635,6 +651,20 @@ jobs:
 
             If any check fails: fix and re-run ALL checks (up to 3 attempts)
 
+            **EXECUTED VERIFICATION (#3775, developer-runbook §4a)**: if this PR's
+            claim is about runtime, install or platform behavior (installs/packaging,
+            service lifecycle, provisioning, cross-platform paths, anything depending
+            on what exists on the target machine), it needs evidence that it was
+            EXECUTED on that platform — a run of the covering smoke workflow
+            (`.github/workflows/macos-brew-smoke.yml`, `linux-native-smoke.yml`,
+            `terraform-local-smoke.yml`), a `workflow_dispatch` run, `nyxgpt ops
+            verify`, or the command run on the target with its output — cited in the PR
+            body. Add a smoke job in THIS PR if none covers the path, and inject the
+            condition when the runner does not naturally reproduce it (#3753).
+            Pure-logic changes fully covered by unit tests are exempt. Missing executed
+            evidence is a Medium (blocking) review finding (review-runbook §1c), so
+            expect this round to repeat without it.
+
             ### Step 4: Commit and push
             Commit: "fix: address code review findings (#${{ github.event.issue.number }})"
 
@@ -802,6 +832,47 @@ jobs:
               **CRITICAL**: Do NOT commit until ALL checks pass. Run checks in a loop:
               - Try to fix issues up to 3 times
               - If still failing after 3 attempts, report what's blocking you
+            - **EXECUTED VERIFICATION (#3775, developer-runbook §4a)**: the checks
+              above prove the code is well-formed and its logic is unit-tested. They
+              prove nothing about what happens when it RUNS on a real machine. If your
+              change's claim is about runtime, install or platform behavior, you must
+              demonstrate it by EXECUTION on the target platform and cite that evidence
+              in the PR body:
+              * **Applies to**: installs and packaging (formulas, tarballs, wheels, venv
+                bootstrap, dependency resolution); service lifecycle (`nyxgpt ops`
+                install/up/restart/down, launchd, systemd, container start, health);
+                provisioning/deployment (Terraform, cloud-init, EC2, Kubernetes,
+                Compose); cross-platform or OS-specific behavior; anything depending on
+                what exists on the target (interpreter version, `npm`, `brew`, `docker`,
+                filesystem layout, repo-relative path resolution).
+              * **Exempt**: pure-logic changes fully covered by unit tests, and
+                prose-only changes. The gate targets behavior claims unit tests
+                structurally cannot reach.
+              * **Evidence** = a run, not a reading: a CI job run on the target platform
+                (`.github/workflows/macos-brew-smoke.yml` for the Homebrew keg,
+                `linux-native-smoke.yml` for the systemd --user install,
+                `terraform-local-smoke.yml` for Terraform), a `workflow_dispatch` run of
+                one of those, `nyxgpt ops verify`, or the command run on the target with
+                its output. Cite the run URL / workflow + job name / transcript.
+              * **No job covers your path? Add one in THIS PR** — that is part of the
+                implementation, not a follow-up. Copy a template above: path-filtered
+                triggers, `permissions: contents: read`, a header comment stating which
+                question the job answers.
+              * **Inject the condition when the runner is green by luck (#3753)**: a job
+                that only runs the install passes on every machine that fails to
+                reproduce the bug — that is how the rc5 candidate passed CI and died on
+                the owner's Mac. Prove both halves: fails without the fix, passes with
+                it (see macos-brew-smoke.yml's "Reproduce the empty mac_ver() failure,
+                then prove the shim fixes it" step).
+              * Only `docs/live-verification-ci.md`'s short list (the native
+                launchd/brew-services *operate* path, real Slack delivery, LLM answer
+                quality) plus EC2 Mac hardware genuinely cannot be executed in CI — name
+                which applies rather than deferring silently. The Homebrew keg *install*
+                is not on that list: macos-brew-smoke.yml runs it on a real macos-15
+                runner.
+              * The reviewer blocks on this: missing executed evidence is a Medium
+                (blocking) finding (review-runbook §1c). Motivating defects: #3753,
+                #3759, #3761.
             - **MANDATORY DOCUMENTATION**: Update documentation for ALL user-facing changes:
               * If you modify src/nyxgpt/api.py or src/nyxgpt/app.py → Update docs/api.md
               * If you modify src/nyxgpt/cli.py → Update docs/cli.md (and docs/configuration.md if config changed)

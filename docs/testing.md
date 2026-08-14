@@ -237,6 +237,57 @@ unrelated to this change; flagged here per this issue's "explicitly
 skip-with-comment anything red" allowance rather than fixed, since resolving
 the race is a concurrency fix in `embeddings.py`, not CI-gate scope.
 
+## Executed verification: smoke jobs on real targets (#3775)
+
+Unit tests prove logic; they cannot prove what happens when nyxGPT is
+*installed and run* on a machine. A mocked `systemctl` says nothing about a
+systemd unit, and reading a Homebrew formula says nothing about whether its
+venv bootstraps on stock Homebrew. Every defect in the #3753 / #3759 / #3761
+family was invisible to the test suite and obvious on first execution.
+
+So, by owner requirement
+([Definition of Done](../CLAUDE.md#definition-of-done-owner-requirement-2026-07-08)),
+**a change whose claim is about runtime, install or platform behavior must be
+demonstrated by executing it on the target platform**, with the run cited in
+the PR. The review agent blocks on a missing run
+([review runbook §1c](../agents/runbooks/review-runbook.md)); the developer
+agent produces it
+([developer runbook §4a](../agents/runbooks/developer-runbook.md)).
+
+### The smoke jobs that count as evidence
+
+| Workflow | Runs on | What it proves | Triggers |
+| --- | --- | --- | --- |
+| [`macos-brew-smoke.yml`](../.github/workflows/macos-brew-smoke.yml) | `macos-15` | The working tree's Homebrew formulas install into a real keg, and the published tap installs what the owner actually types | PR (paths: `homebrew/**`, artifact/tarball scripts), dispatch, called after an rc cut |
+| [`linux-native-smoke.yml`](../.github/workflows/linux-native-smoke.yml) | `ubuntu-latest` | `nyxgpt ops install` on a real systemd userland: every unit active, api/web responding, diagnostics, `nyxgpt ops down` | PR/push (paths: `src/nyxgpt/ops.py`, `self_heal.py`, `ops/systemd/**`, the smoke script) |
+| [`terraform-local-smoke.yml`](../.github/workflows/terraform-local-smoke.yml) | `ubuntu-latest` | The Terraform path applies locally end-to-end | PR/push (paths: `terraform/**`) |
+| `nyxgpt ops verify` (see [live verification in CI](live-verification-ci.md)) | review job | The Compose stack boots, chat/RAG traffic lands in Prometheus, every touched Grafana panel's own query re-executes, screenshots captured | Run by the review agent on observability/metrics/UI PRs |
+
+A run of the wrong platform is not evidence: a green Linux job says nothing
+about a macOS keg. If no job covers the changed path, the PR adds one — copy
+the shape of the table's entries (path-filtered triggers so cost lands only on
+PRs that can break it, `permissions: contents: read` for a read-only smoke,
+and a header comment stating which question the job answers).
+
+### Injecting the failure, not hoping for it
+
+A job that only runs the install is green on every machine that fails to
+reproduce the bug. That is how the rc5 candidate passed CI and died on the
+owner's Mac: the runner answered `platform.mac_ver()` and their machine did
+not. `macos-brew-smoke.yml`'s "Reproduce the empty `mac_ver()` failure, then
+prove the shim fixes it" step is the pattern to copy — assert the failure
+happens **without** the fix, so a green result **with** it means something.
+
+### What still cannot be executed in CI
+
+The short list in [live verification in CI](live-verification-ci.md) — the
+native launchd/brew-services *operate* path, real Slack delivery, and LLM
+answer *quality* — plus EC2 Mac hardware, which has no hosted runner (see the
+[portability matrix](portability-matrix.md)). Those are named explicitly in
+the PR and exercised by the owner during acceptance testing; everything else
+gets run. Note what is *not* on the list: the Homebrew keg install runs on a
+real `macos-15` runner, so a formula change cannot claim macOS is untestable.
+
 ## Notes
 
 - Integration tests will be skipped automatically if required services are not reachable.
