@@ -505,8 +505,25 @@ if ! command -v npm >/dev/null 2>&1; then
 fi
 
 # --- Docker (Cassandra + the observability stack run as containers) ----
+# The Compose plugin is deliberately NOT installed here: Amazon Linux 2023
+# packages no compose at all, so `nyxgpt ops install` owns that decision (it
+# tries the distro package, then Docker's own release binary) rather than this
+# script guessing per-distro package names.
 sudo systemctl enable --now docker
 sudo usermod -aG docker "$(id -un)" || true
+
+# `usermod -aG` cannot reach an already-open login session, so every nyxGPT
+# command that talks to the Docker socket runs under `sg docker`, which grants
+# the group immediately and without a re-login. Resolved once, up front: the
+# `sg ... || <bare command>` form this replaced re-ran the whole command
+# *without* the group whenever the first attempt failed for an unrelated
+# reason, turning one failed step into a "permission denied ...
+# /var/run/docker.sock" cascade on the retry (#3760).
+if command -v sg >/dev/null 2>&1 && sg docker -c true >/dev/null 2>&1; then
+  run_nyxgpt() { sg docker -c "$NYXGPT $*"; }
+else
+  run_nyxgpt() { "$NYXGPT" "$@"; }
+fi
 
 # --- A systemd --user session that survives logout ---------------------
 # `nyxgpt ops install` installs systemd --user units; without lingering they
@@ -540,11 +557,10 @@ fi
 # Services bind 127.0.0.1 (P6-1 loopback default); nothing is published to a
 # non-loopback address, which is what makes the SSH tunnel the only path in.
 if [ -n "$NYXGPT_PROFILES" ]; then
-  sg docker -c "$NYXGPT ops install" || "$NYXGPT" ops install
-  sg docker -c "$NYXGPT ops observability" || "$NYXGPT" ops observability
+  run_nyxgpt ops install
+  run_nyxgpt ops observability
 else
-  sg docker -c "$NYXGPT ops install --skip-observability" \\
-    || "$NYXGPT" ops install --skip-observability
+  run_nyxgpt ops install --skip-observability
 fi
 
 # --- Self-healing ------------------------------------------------------

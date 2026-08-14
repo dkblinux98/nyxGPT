@@ -23,6 +23,7 @@ import os
 import platform
 import re
 import secrets
+import shlex
 import shutil
 import socket
 import subprocess
@@ -555,6 +556,67 @@ def record_canary_action(
     _record_ops_action(f"canary-{action}", component, result, message)
 
 
+# Set by `_enable_docker_socket_hop` (see its docstring) when this process
+# cannot reach the Docker socket directly -- the invoking session predates its
+# `docker` group membership. Either "sg" (re-run the command under the docker
+# group) or "sudo" (passwordless sudo), whichever is available *and* proven to
+# carry this process's environment through unchanged. It is applied centrally
+# in `_run` rather than at the ~40 `["docker", ...]` call sites in this module,
+# so no Docker call path can forget it and re-introduce #3760's mid-deploy
+# "permission denied ... /var/run/docker.sock".
+_DOCKER_SOCKET_HOP: str | None = None
+
+# How each hop is spelled, and how it reads in an OpsResult.
+_DOCKER_SOCKET_HOP_LABELS = {"sg": "`sg docker`", "sudo": "`sudo -n docker`"}
+
+
+def _docker_socket_hop() -> str | None:
+    """The hop ops is currently routing its Docker calls through, if any."""
+    return _DOCKER_SOCKET_HOP
+
+
+def _docker_socket_hop_active() -> bool:
+    """True while ops is reaching the Docker socket through a hop."""
+    return _DOCKER_SOCKET_HOP is not None
+
+
+def _wrap_docker_hop(cmd: list[str], hop: str | None) -> list[str]:
+    """Rewrite `cmd` to run through `hop`, preserving the environment it sees.
+
+    Both forms are environment-preserving *by construction*, which is the
+    whole point (#3760 review): `docker-compose.yml` interpolates `${HOME}`
+    for every bind mount, and `docker compose exec -e VAR` (bare, no `=value`)
+    forwards secrets out of this process's environment without ever putting
+    them on argv (CodeQL #105/#106). A hop that resets the environment would
+    silently relocate every volume under `/root` and drop those secrets.
+
+    - `sg docker -c ...` re-runs the command with the `docker` group added to
+      the credentials, leaving the environment entirely alone. It takes a
+      command *string*, so argv is shell-quoted with `shlex.join`.
+    - `sudo -n --preserve-env ...` opts out of sudo's default `env_reset`
+      (and, on Amazon Linux/RHEL, its `always_set_home`). `--preserve-env`
+      needs the sudoers SETENV tag, which `NOPASSWD: ALL` implies -- and
+      `_docker_hop_preserves_env` verifies it rather than assuming it.
+    """
+    if hop == "sg":
+        return ["sg", "docker", "-c", shlex.join(cmd)]
+    if hop == "sudo":
+        return ["sudo", "-n", "--preserve-env", *cmd]
+    return cmd
+
+
+def _apply_docker_socket_hop(cmd: list[str]) -> list[str]:
+    """Route a bare `docker ...` argv through the active hop.
+
+    Only rewrites argv whose *first* element is `docker`, so an argv that is
+    already privileged (`_privileged_run` puts `sudo` in front) is never
+    double-wrapped, and no non-Docker command is touched.
+    """
+    if _DOCKER_SOCKET_HOP is not None and cmd and cmd[0] == "docker":
+        return _wrap_docker_hop(cmd, _DOCKER_SOCKET_HOP)
+    return cmd
+
+
 def _run(
     cmd: list[str],
     *,
@@ -580,6 +642,11 @@ def _run(
     INFO with `expected_message` (or a generic "expected exit" message)
     instead of WARNING, while any other non-zero exit still logs at WARNING
     exactly as today (#3574).
+    A bare `docker ...` argv is routed through the active Docker socket hop
+    (`_apply_docker_socket_hop`, see `_enable_docker_socket_hop`). Logging
+    keeps the *unwrapped* argv: `_redact_cmd` masks secrets element by
+    element, and `sg -c` collapses argv into one shell string it could not
+    then see into.
     Pass `input` to feed the subprocess's stdin (e.g. a secret a caller
     doesn't want to put on `cmd`'s argv at all -- argv is visible to `ps`,
     shell history, and this function's own non-zero-exit logging, while
@@ -591,7 +658,12 @@ def _run(
     """
     try:
         result = subprocess.run(
-            cmd, check=check, text=True, capture_output=True, input=input, env=env
+            _apply_docker_socket_hop(cmd),
+            check=check,
+            text=True,
+            capture_output=True,
+            input=input,
+            env=env,
         )
     except subprocess.CalledProcessError as e:
         _log_nonzero_exit(
@@ -3182,24 +3254,76 @@ def _ensure_mcp_deps() -> list[OpsResult]:
 
 # --- Docker engine bootstrap (Linux) ---
 
-# Distro package sets that provide a working `docker` + `docker compose` pair,
-# tried in order. Each entry is (package-manager argv prefix, packages). The
-# Debian/Ubuntu compose plugin has been packaged under two names across
-# releases (`docker-compose-v2` on recent Ubuntu, `docker-compose-plugin` where
-# Docker's own repo is configured), so both are attempted before giving up.
-_LINUX_DOCKER_PACKAGE_SETS: tuple[tuple[str, list[str], list[str]], ...] = (
-    ("apt-get", ["apt-get", "install", "-y"], ["docker.io", "docker-compose-v2"]),
-    ("apt-get", ["apt-get", "install", "-y"], ["docker.io", "docker-compose-plugin"]),
-    ("dnf", ["dnf", "install", "-y"], ["docker", "docker-compose-plugin"]),
-    ("yum", ["yum", "install", "-y"], ["docker", "docker-compose-plugin"]),
+# Distro package sets that provide the Docker *engine*, tried in order. Each
+# entry is (package-manager argv prefix, packages).
+#
+# Engine and Compose plugin are installed as two separate transactions
+# (`_LINUX_COMPOSE_PACKAGE_SETS` below) because the two are not packaged
+# together everywhere. Amazon Linux 2023 carries `docker` but ships no compose
+# package in its repos at all, so the combined `dnf install -y docker
+# docker-compose-plugin` this used to run failed as a unit -- taking the engine
+# down with the plugin and reporting "Could not install Docker automatically"
+# on a host where the engine alone would have installed fine (#3760).
+_LINUX_DOCKER_ENGINE_PACKAGE_SETS: tuple[tuple[str, list[str], list[str]], ...] = (
+    ("apt-get", ["apt-get", "install", "-y"], ["docker.io"]),
+    ("dnf", ["dnf", "install", "-y"], ["docker"]),
+    ("yum", ["yum", "install", "-y"], ["docker"]),
 )
+
+# Distro package sets that provide the Compose v2 CLI plugin. The Debian/Ubuntu
+# plugin has been packaged under two names across releases
+# (`docker-compose-v2` on recent Ubuntu, `docker-compose-plugin` where Docker's
+# own repo is configured), so both are attempted before giving up. Distros that
+# package nothing at all (Amazon Linux 2023) fall through to
+# `_install_compose_plugin_binary`.
+_LINUX_COMPOSE_PACKAGE_SETS: tuple[tuple[str, list[str], list[str]], ...] = (
+    ("apt-get", ["apt-get", "install", "-y"], ["docker-compose-v2"]),
+    ("apt-get", ["apt-get", "install", "-y"], ["docker-compose-plugin"]),
+    ("dnf", ["dnf", "install", "-y"], ["docker-compose-plugin"]),
+    ("yum", ["yum", "install", "-y"], ["docker-compose-plugin"]),
+)
+
+# Where a manually fetched Compose v2 plugin goes. The Docker CLI scans this
+# directory for `docker-<subcommand>` plugins for *every* user on the host,
+# which is what a per-user `~/.docker/cli-plugins` install would not do -- and
+# ops may end up invoking Docker as root (`_enable_docker_socket_hop`).
+COMPOSE_PLUGIN_DIR = Path("/usr/local/lib/docker/cli-plugins")
+
+# Docker publishes one static plugin binary per platform with every Compose
+# release. `releases/latest/download/...` is GitHub's own redirect to the
+# newest release's asset, so this URL keeps resolving without a version bump
+# here -- and the fetch is verified by actually running `docker compose
+# version` afterwards rather than trusted blind.
+_COMPOSE_PLUGIN_URL = (
+    "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-{arch}"
+)
+
+# `platform.machine()` -> the architecture suffix in Compose's release assets.
+_COMPOSE_PLUGIN_ARCHES: dict[str, str] = {
+    "x86_64": "x86_64",
+    "amd64": "x86_64",
+    "aarch64": "aarch64",
+    "arm64": "aarch64",
+    "armv6l": "armv6",
+    "armv7l": "armv7",
+    "ppc64le": "ppc64le",
+    "riscv64": "riscv64",
+    "s390x": "s390x",
+}
 
 _DOCKER_MANUAL_INSTALL_HINT = (
     "Install Docker yourself, then re-run `nyxgpt ops install`:\n"
-    "  Debian/Ubuntu: sudo apt-get update && sudo apt-get install -y docker.io "
+    "  Debian/Ubuntu:     sudo apt-get update && sudo apt-get install -y docker.io "
     "docker-compose-v2\n"
-    "  Fedora/RHEL:   sudo dnf install -y docker docker-compose-plugin\n"
-    "  then:          sudo systemctl enable --now docker && sudo usermod -aG docker "
+    "  Fedora/RHEL:       sudo dnf install -y docker docker-compose-plugin\n"
+    "  Amazon Linux 2023: sudo dnf install -y docker  (its repos carry no compose\n"
+    "                     package, so fetch the plugin binary as well:\n"
+    f"                     sudo mkdir -p {COMPOSE_PLUGIN_DIR} && sudo curl -fsSL -o "
+    f"{COMPOSE_PLUGIN_DIR / 'docker-compose'} \\\n"
+    "                     https://github.com/docker/compose/releases/latest/download/"
+    "docker-compose-linux-$(uname -m) \\\n"
+    f"                     && sudo chmod 0755 {COMPOSE_PLUGIN_DIR / 'docker-compose'})\n"
+    "  then:              sudo systemctl enable --now docker && sudo usermod -aG docker "
     "$(whoami)"
 )
 
@@ -3221,26 +3345,53 @@ def _docker_daemon_reachable() -> bool:
     return cp.returncode == 0
 
 
-def _install_linux_docker_packages() -> list[OpsResult]:
-    """Install Docker engine + the Compose v2 plugin from the distro's package manager."""
-    for tool, install_cmd, packages in _LINUX_DOCKER_PACKAGE_SETS:
+def _install_packages_from_sets(
+    package_sets: tuple[tuple[str, list[str], list[str]], ...],
+    *,
+    expected_failure: bool = False,
+) -> tuple[str, list[str]]:
+    """Install the first of `package_sets` whose package manager exists and succeeds.
+
+    Returns `("installed", packages)` on the first successful transaction,
+    `("no-root", [])` when root isn't reachable at all (so the caller can say
+    so rather than blaming the distro), or `("failed", [])` when every
+    matching set was attempted without success -- including the case where no
+    package manager on this host matched any set.
+
+    `expected_failure=True` logs a non-zero exit at DEBUG instead of WARNING,
+    for sets that are *routinely* absent (no distro packages the Compose
+    plugin under every name, and trying is how we find out).
+    """
+    refreshed_apt = False
+    for tool, install_cmd, packages in package_sets:
         if _which(tool) is None:
             continue
-        if tool == "apt-get":
+        if tool == "apt-get" and not refreshed_apt:
             # Without a package index a fresh cloud image's `install` just
             # reports "Unable to locate package".
+            refreshed_apt = True
             _privileged_run(["apt-get", "update"], expected=True)
-        cp = _privileged_run([*install_cmd, *packages])
+        cp = _privileged_run([*install_cmd, *packages], expected=expected_failure)
         if cp is None:
-            return [
-                OpsResult(
-                    False,
-                    "Docker is not installed and root is not available without a password",
-                    _DOCKER_MANUAL_INSTALL_HINT,
-                )
-            ]
+            return ("no-root", [])
         if cp.returncode == 0:
-            return [OpsResult(True, f"Installed Docker packages: {', '.join(packages)}")]
+            return ("installed", packages)
+    return ("failed", [])
+
+
+def _install_linux_docker_engine() -> list[OpsResult]:
+    """Install the Docker engine from the distro's package manager."""
+    status, packages = _install_packages_from_sets(_LINUX_DOCKER_ENGINE_PACKAGE_SETS)
+    if status == "installed":
+        return [OpsResult(True, f"Installed Docker engine packages: {', '.join(packages)}")]
+    if status == "no-root":
+        return [
+            OpsResult(
+                False,
+                "Docker is not installed and root is not available without a password",
+                _DOCKER_MANUAL_INSTALL_HINT,
+            )
+        ]
     return [
         OpsResult(
             False,
@@ -3248,6 +3399,90 @@ def _install_linux_docker_packages() -> list[OpsResult]:
             _DOCKER_MANUAL_INSTALL_HINT,
         )
     ]
+
+
+def _install_compose_plugin_binary() -> list[OpsResult]:
+    """Install Docker's own Compose v2 plugin binary into `COMPOSE_PLUGIN_DIR`.
+
+    The escape hatch for distros that package no compose at all. Amazon Linux
+    2023 is the case that forced it: `dnf install docker` gives a perfectly
+    healthy engine, but there is no `docker-compose-plugin` in its repos, so
+    every Compose-backed step of `ops install` -- the observability stack, the
+    Grafana admin credential reconcile -- skipped or failed on a host that
+    could run them fine (#3760).
+    """
+    machine = platform.machine()
+    arch = _COMPOSE_PLUGIN_ARCHES.get(machine.lower())
+    if arch is None:
+        return [
+            OpsResult(
+                False,
+                f"Docker publishes no Compose plugin build for architecture {machine!r}",
+                _DOCKER_MANUAL_INSTALL_HINT,
+            )
+        ]
+    if _which("curl") is None:
+        return [
+            OpsResult(
+                False,
+                "Could not install the Docker Compose plugin (curl not found on PATH)",
+                _DOCKER_MANUAL_INSTALL_HINT,
+            )
+        ]
+
+    dest = COMPOSE_PLUGIN_DIR / "docker-compose"
+    url = _COMPOSE_PLUGIN_URL.format(arch=arch)
+    for cmd in (
+        ["mkdir", "-p", str(COMPOSE_PLUGIN_DIR)],
+        ["curl", "-fsSL", "--retry", "3", "-o", str(dest), url],
+        ["chmod", "0755", str(dest)],
+    ):
+        cp = _privileged_run(cmd)
+        if cp is None:
+            # Root is unreachable (no passwordless sudo) -- name that, rather
+            # than reporting the generic "could not install" the engine path
+            # distinguishes too.
+            return [
+                OpsResult(
+                    False,
+                    f"Could not install the Docker Compose plugin (root required for `{cmd[0]}`)",
+                    _DOCKER_MANUAL_INSTALL_HINT,
+                )
+            ]
+        if cp.returncode != 0:
+            return [
+                OpsResult(
+                    False,
+                    "Could not install the Docker Compose plugin automatically",
+                    _DOCKER_MANUAL_INSTALL_HINT,
+                )
+            ]
+
+    if not _compose_available():
+        return [
+            OpsResult(
+                False,
+                f"Fetched {dest} but `docker compose` is still not usable",
+                _DOCKER_MANUAL_INSTALL_HINT,
+            )
+        ]
+    return [
+        OpsResult(
+            True,
+            f"Installed the Docker Compose plugin to {dest}",
+            f"Fetched from {url} -- this distro's repos carry no compose package.",
+        )
+    ]
+
+
+def _install_linux_compose_plugin() -> list[OpsResult]:
+    """Ensure `docker compose` works: distro package first, release binary second."""
+    status, packages = _install_packages_from_sets(
+        _LINUX_COMPOSE_PACKAGE_SETS, expected_failure=True
+    )
+    if status == "installed" and _compose_available():
+        return [OpsResult(True, f"Installed Docker Compose packages: {', '.join(packages)}")]
+    return _install_compose_plugin_binary()
 
 
 def _ensure_docker_group_membership() -> list[OpsResult]:
@@ -3289,6 +3524,105 @@ def _ensure_docker_group_membership() -> list[OpsResult]:
     ]
 
 
+# Name of the throwaway variable `_docker_hop_preserves_env` passes through a
+# candidate hop. It stands in for the real `env=`-forwarded secrets
+# (`DJANGO_SUPERUSER_PASSWORD` and friends, see `_glitchtip_ensure_superuser`)
+# without putting a real one on a probe's argv.
+_HOP_ENV_PROBE_VAR = "NYXGPT_DOCKER_HOP_PROBE"
+
+
+def _docker_hop_preserves_env(hop: str) -> bool:
+    """True if `hop` hands this process's environment through unchanged.
+
+    Two variables are checked because two different mechanisms depend on
+    them, and both fail *silently* rather than loudly if the hop resets the
+    environment (#3760 review):
+
+    - `HOME`, which `docker-compose.yml` interpolates into every bind-mount
+      source. Under sudo's `env_reset` + `always_set_home` (the Amazon
+      Linux/RHEL default, i.e. exactly the distro this targets) it becomes
+      `/root`, so the observability stack comes up bound to
+      `/root/.nyxGPT/volumes/...` while the ownership fixes chown the user's
+      home -- Grafana/Prometheus/Loki cannot write their data dirs, and the
+      next non-hop run recreates the containers against the user-home mounts,
+      abandoning whatever was written under `/root`.
+    - an arbitrary caller-supplied variable, standing in for the
+      `_run(env=...)` secrets `docker compose exec -e VAR` forwards into a
+      container without ever putting the value on argv.
+
+    A hop that fails this check is not used at all: a loud "cannot reach the
+    daemon, reconnect" is a better outcome than containers quietly built
+    against the wrong paths.
+    """
+    home = os.environ.get("HOME")
+    if not home:  # pragma: no cover - defensive; POSIX logins always set HOME
+        return False
+    sentinel = "nyxgpt-hop-probe"
+    script = f'printf "%s\\n%s" "$HOME" "${_HOP_ENV_PROBE_VAR}"'
+    cp = _run(
+        _wrap_docker_hop(["sh", "-c", script], hop),
+        check=False,
+        expected=True,
+        env={**os.environ, _HOP_ENV_PROBE_VAR: sentinel},
+    )
+    return cp.returncode == 0 and cp.stdout == f"{home}\n{sentinel}"
+
+
+def _docker_hop_reaches_daemon(hop: str) -> bool:
+    """True if a `docker` call made through `hop` can talk to the daemon."""
+    cp = _run(
+        _wrap_docker_hop(["docker", "info", "--format", "{{.ServerVersion}}"], hop),
+        check=False,
+        expected=True,
+    )
+    return cp.returncode == 0
+
+
+def _enable_docker_socket_hop() -> bool:
+    """Reach the Docker socket through `sg docker`/`sudo` for the rest of this process.
+
+    `usermod -aG docker` cannot reach an already-open login session: group
+    membership is stamped into a session's credentials when it is created. In
+    a `nyxgpt cloud deploy` that meant the deploy's second pass died on
+    "permission denied while trying to connect to the Docker daemon socket"
+    moments after the first pass had created the Cassandra container (#3760).
+    Telling the operator to reconnect and start the deploy over is a poor
+    answer when ops already holds the privilege it needs.
+
+    `sg docker` is tried first: it applies the group membership just added,
+    needs no sudoers assumptions at all, preserves the environment by
+    construction, and is the same mechanism the cloud provisioning script
+    already validates with `sg docker -c true`. Passwordless sudo
+    (`sudo -n --preserve-env`) is the second choice, for a host where the
+    group change itself could not be made. Either way the hop must prove it
+    preserves the environment before it is used -- see
+    `_docker_hop_preserves_env` for why an env-resetting hop is worse than no
+    hop.
+
+    Returns True if a hop is now active. The group membership is still added
+    either way, so a later login needs no hop at all. Deliberately a last
+    resort, tried only *after* the real group change has been attempted and
+    found not to have taken effect -- never as a way to skip it.
+    """
+    global _DOCKER_SOCKET_HOP
+    if _DOCKER_SOCKET_HOP is not None:
+        return True
+    if _running_as_root() or _which("docker") is None:
+        return False
+    for hop in ("sg", "sudo"):
+        if _which(hop) is None:
+            continue
+        try:
+            usable = _docker_hop_reaches_daemon(hop) and _docker_hop_preserves_env(hop)
+        except Exception as e:  # pragma: no cover - defensive, mirrors _docker_daemon_reachable
+            logger.debug("ops: %s docker probe failed: %s: %s", hop, type(e).__name__, e)
+            continue
+        if usable:
+            _DOCKER_SOCKET_HOP = hop
+            return True
+    return False
+
+
 def _ensure_docker_engine() -> list[OpsResult]:
     """Ensure a usable Docker engine + Compose plugin exist before anything needs them.
 
@@ -3300,6 +3634,13 @@ def _ensure_docker_engine() -> list[OpsResult]:
     reconciles that the same way every other install step reconciles its
     piece: install the packages if missing, start/enable the daemon, and put
     the invoking user in the `docker` group.
+
+    Engine and Compose plugin are reconciled independently, because a distro
+    that has one need not have the other: Amazon Linux 2023 packages the
+    engine and no compose at all, so its plugin comes from Docker's own
+    release binary (#3760). If the group change turns out not to reach this
+    already-open session, ops falls back to `sudo -n docker` for the rest of
+    the run rather than failing every later Docker step.
 
     Linux only. macOS's Docker Desktop is a GUI application with a license
     prompt -- installing it unattended is not something `ops install` should
@@ -3322,7 +3663,7 @@ def _ensure_docker_engine() -> list[OpsResult]:
 
     results: list[OpsResult] = []
     if _which("docker") is None:
-        results.extend(_install_linux_docker_packages())
+        results.extend(_install_linux_docker_engine())
         if not any(r.ok for r in results):
             return results
 
@@ -3333,7 +3674,7 @@ def _ensure_docker_engine() -> list[OpsResult]:
         ]
 
     if not _compose_available():
-        results.extend(_install_linux_docker_packages())
+        results.extend(_install_linux_compose_plugin())
 
     # A distro `docker.io` install leaves the unit enabled but, on a
     # container/minimal image, not necessarily started.
@@ -3348,6 +3689,20 @@ def _ensure_docker_engine() -> list[OpsResult]:
     results.extend(_ensure_docker_group_membership())
     if _docker_daemon_reachable():
         results.append(OpsResult(True, "Docker daemon is reachable"))
+    elif _enable_docker_socket_hop():
+        hop = _DOCKER_SOCKET_HOP_LABELS[str(_docker_socket_hop())]
+        results.append(
+            OpsResult(
+                True,
+                f"Docker daemon is reachable via {hop} for the rest of this run",
+                "The 'docker' group membership added above only applies to new login "
+                f"sessions, so ops runs Docker through {hop} for the rest of this "
+                "process instead of failing every container step. The hop preserves "
+                "this session's environment, so Compose bind mounts still resolve "
+                "under this user's home. Reconnect (or run: sudo loginctl "
+                f"terminate-user {getpass.getuser()}) to drop it.",
+            )
+        )
     else:
         results.append(
             OpsResult(

@@ -229,8 +229,21 @@ hand.
 | Step | Command | Why |
 | --- | --- | --- |
 | Ollama port takeover | `systemctl disable --now ollama.service` | Free 11434 for `nyxgpt-ollama` (above) |
-| Docker engine | `apt-get install -y docker.io docker-compose-v2` (or `dnf`/`yum`), `systemctl enable --now docker`, `usermod -aG docker $USER` | Cassandra and the whole observability stack are containers |
+| Docker engine | `apt-get install -y docker.io` (or `dnf`/`yum install -y docker`), `systemctl enable --now docker`, `usermod -aG docker $USER` | Cassandra and the whole observability stack are containers |
+| Docker Compose plugin | `apt-get install -y docker-compose-v2` (or `docker-compose-plugin`), else the release binary — see below | The observability stack and the Grafana credential reconcile are Compose-driven |
 | Observability data dirs | `chown -R <uid>:<gid> ~/.nyxGPT/volumes/{prometheus,grafana,loki}` | See below (falls back to a rootless POSIX ACL) |
+
+**Engine and Compose plugin are separate transactions.** Not every distro
+packages both: Amazon Linux 2023 carries `docker` and no compose package at
+all, so a combined `dnf install -y docker docker-compose-plugin` fails as a
+unit and takes the engine down with the plugin. Install therefore reconciles
+them independently, and when no package provides the plugin it fetches
+Docker's own static plugin binary to
+`/usr/local/lib/docker/cli-plugins/docker-compose` (system-wide, so it is
+visible to root too) and verifies `docker compose version` actually works
+before reporting success. If even that is unavailable — no `curl`, no root,
+an architecture Docker publishes no build for — the step fails with the exact
+commands to run by hand, per distro, and the rest of install still runs.
 
 **Observability bind-mount ownership.** dockerd runs as root and creates a
 missing bind-mount source directory as `root:root`. Prometheus runs as uid
@@ -264,6 +277,36 @@ whether Cassandra is running. Fix it by recreating the session:
 ```bash
 sudo loginctl terminate-user "$USER"   # kills this SSH session; reconnect after
 ```
+
+Install itself does not stop and wait for that, though. When the group change
+it just made hasn't reached the running session, `nyxgpt ops install` routes
+its own Docker calls through a *hop* for the remainder of that process and
+says so in its output, so Cassandra, the observability stack and the Grafana
+credential reconcile all complete in the same pass instead of failing with
+`permission denied while trying to connect to the Docker daemon socket`. Two
+hops are tried, in order:
+
+| Hop | Form | Notes |
+| --- | --- | --- |
+| `sg docker` | `sg docker -c '<command>'` | Preferred: applies the membership just granted, needs no sudoers configuration, and leaves the environment alone. Same mechanism the cloud provisioning script uses. |
+| passwordless sudo | `sudo -n --preserve-env docker …` | For a host where the group change itself couldn't be made. `--preserve-env` needs the sudoers `SETENV` tag, which `NOPASSWD: ALL` implies. |
+
+**A hop must preserve the environment, or it isn't used.** `docker-compose.yml`
+interpolates `${HOME}` into every bind-mount source, and the GlitchTip
+superuser step forwards its credentials with `docker compose exec -e VAR`
+(bare, value only in the environment — never on a command line). A hop that
+resets the environment — plain `sudo`, whose `env_reset` plus Amazon
+Linux/RHEL's `always_set_home` hands the Docker CLI `HOME=/root` — would
+quietly build the observability stack against `/root/.nyxGPT/volumes/...`
+while the ownership fixes above chown *your* home, and drop those credentials
+before they reach the container. Install therefore probes each candidate hop
+with both `HOME` and a forwarded variable before adopting it, and reports the
+unreachable daemon and the `loginctl` command above rather than adopting one
+that fails the probe.
+
+The group membership is still added — a hop only covers the run that created
+it, and disappears once you reconnect. It is a last resort, attempted only
+after the real group change was made and found not to have taken effect.
 
 ### Commands (nyxgpt-managed Ollama)
 
