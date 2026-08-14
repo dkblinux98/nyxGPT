@@ -1021,6 +1021,36 @@ channels arrive on the same `workflow_dispatch` event, so the rendered title
 ("publish rc from v3.0.0") is the only record of which channel a finished
 run built.
 
+Reading history is also why the pipeline runs under a `concurrency` group
+(`pypi-publish`, `cancel-in-progress: false`). The guard can only answer for
+candidates already in that history, so two runs overlapping in the window
+before either has published both read "this tip has no candidate" and both
+publish -- which is how `3.0.0rc7` and `3.0.0rc8` were cut from one tip and
+rc7 burned dead. The group makes a second cut *wait* rather than race: it
+resolves its version only once the first run is finished and visible. It is
+never cancelled, because a run killed mid-upload can leave PyPI serving a
+version no successful run records -- the one state the guard cannot see.
+Nothing is lost by waiting: the queued run re-evaluates the guard when it
+starts and resolves to `SKIP` if the first run published this tip's
+candidate.
+
+The two layers deliberately read the history differently:
+
+* **inside the pipeline**, the guard counts *finished successes only*. The
+  concurrency group already guarantees the winning cut is finished and
+  visible by the time a queued run looks, so any other unfinished run in the
+  listing is queued *behind* the caller and has published nothing. Deferring
+  to that one would be backwards and mutual -- the running cut would skip for
+  the queued one and the queued one for the first's skip-success, leaving a
+  tip with no candidate looking permanently claimed;
+* **the autopilot's preflight** decides whether to dispatch at all, so it
+  never queues behind the group and nothing else stops it firing alongside a
+  cut in progress. It is the stricter reader: a run that is still *in flight*
+  already owns its tip (`run_claims_tip(..., include_in_flight=True)`).
+
+Neither layer counts a *failed* run: its number went unused, so a retry on
+the same tip stays free to publish.
+
 ### Accepting a candidate on macOS
 
 macOS installs nyxGPT with `brew`, not `pip`, so a PyPI-only candidate would
@@ -1110,6 +1140,7 @@ Because of that, the ceremony needs **no PyPI credential at all**; the
 | The ceremony's formulas are never written by a candidate | `homebrew-tap-rc` is gated on `channel == 'rc'`, so the `stable` channel cannot reach it by construction, not by convention |
 | Stable is ceremony-only | The stable channel additionally requires the release tag at the built commit (Phase 1 creates it) *and* the ceremony's confirmation token, so dispatching `channel=stable` by hand publishes nothing -- and the sprint autopilot's dispatch path hard-codes `rc` and refuses any other channel before it dispatches |
 | The autopilot never cuts a duplicate candidate | An rc dispatch on a release-branch tip that has not moved since the last published candidate resolves to `SKIP`, so re-observing the same parked state publishes nothing |
+| Two cuts never race | The pipeline runs under the `pypi-publish` concurrency group with `cancel-in-progress: false`, so a second dispatch queues behind the running one and re-evaluates the tip guard against a history that already contains it, instead of both reading "no candidate yet" and both publishing (#3771) |
 | No version reuse | The next number comes from what PyPI already serves, and PyPI rejects a re-upload anyway |
 
 The branch check and the version arithmetic live in
