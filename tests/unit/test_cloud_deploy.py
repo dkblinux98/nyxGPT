@@ -165,6 +165,30 @@ def test_provision_script_skips_observability_when_asked():
     assert 'NYXGPT_PROFILES=""' in without
 
 
+def test_provision_script_never_runs_nyxgpt_without_the_docker_group():
+    """#3760: `usermod -aG docker` doesn't reach this already-open SSH session,
+    so the old `sg docker -c "..." || "$NYXGPT" ...` form silently retried the
+    whole command *without* the group whenever the first attempt failed for an
+    unrelated reason -- turning one failed step into a "permission denied ...
+    /var/run/docker.sock" cascade."""
+    script = cloud_deploy.render_provision_script(cloud_deploy.resolve_plan(_args()))
+
+    assert 'sg docker -c "$NYXGPT $*"' in script
+    assert '|| "$NYXGPT" ops' not in script
+    for command in ("ops install", "ops observability"):
+        assert f"run_nyxgpt {command}" in script
+
+
+def test_provision_script_leaves_the_compose_plugin_to_ops_install():
+    """Amazon Linux 2023 packages no compose at all, so the per-distro decision
+    lives in `nyxgpt ops install` (distro package, then release binary) rather
+    than being guessed here (#3760)."""
+    script = cloud_deploy.render_provision_script(cloud_deploy.resolve_plan(_args()))
+
+    assert "docker-compose-plugin" not in script
+    assert "docker-compose-v2" not in script
+
+
 def test_provision_script_enables_self_healing(monkeypatch):
     """P6-16 (#3516) accepts a *self-healing* deployment, not merely a running one.
 

@@ -7,6 +7,8 @@ systemctl/npm/pip invoked. Every test here pins `platform.system()` to
 pins its own tests to "Darwin".
 """
 
+import logging
+import shlex
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -912,7 +914,7 @@ def test_ensure_docker_engine_installs_missing_docker(monkeypatch):
 
     assert all(r.ok for r in results)
     assert ["apt-get", "update"] in privileged
-    assert ["apt-get", "install", "-y", "docker.io", "docker-compose-v2"] in privileged
+    assert ["apt-get", "install", "-y", "docker.io"] in privileged
     assert ["systemctl", "enable", "--now", "docker"] in privileged
 
 
@@ -981,6 +983,321 @@ def test_docker_access_doctor_issue_silent_when_healthy(monkeypatch):
 def test_docker_access_doctor_issue_silent_without_docker(monkeypatch):
     monkeypatch.setattr(ops, "_which", lambda name: None)
     assert ops._docker_access_doctor_issue() is None
+
+
+# --- Amazon Linux 2023 Docker provisioning (#3760) ---
+
+
+@pytest.fixture
+def _no_docker_socket_hop(monkeypatch):
+    """Keep the process-wide Docker socket hop out of neighbouring tests."""
+    monkeypatch.setattr(ops, "_DOCKER_SOCKET_HOP", None)
+
+
+def test_docker_engine_installs_on_amazon_linux_without_a_compose_package(monkeypatch):
+    """Amazon Linux 2023 has `docker` but no compose package at all, so the old
+    combined `dnf install docker docker-compose-plugin` transaction failed as a
+    unit and reported "Could not install Docker automatically" on a host whose
+    engine would have installed fine (#3760)."""
+    present = {"dnf": "/usr/bin/dnf"}
+    monkeypatch.setattr(ops, "_which", lambda name: present.get(name))
+    privileged = []
+
+    def _fake_privileged(cmd, **kwargs):
+        privileged.append(cmd)
+        if cmd[:2] == ["dnf", "install"] and "docker" in cmd:
+            present["docker"] = "/usr/bin/docker"
+            return _cp(0)
+        if cmd[:2] == ["dnf", "install"]:  # docker-compose-plugin: no such package here
+            return _cp(1, stderr="No match for argument: docker-compose-plugin")
+        return _cp(0)
+
+    monkeypatch.setattr(ops, "_privileged_run", _fake_privileged)
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_docker_daemon_reachable", lambda: True)
+
+    results = ops._ensure_docker_engine()
+
+    assert ["dnf", "install", "-y", "docker"] in privileged
+    assert all(r.ok for r in results), [r.message for r in results]
+
+
+def test_compose_plugin_falls_back_to_the_release_binary(monkeypatch):
+    """No distro package -> fetch Docker's own plugin binary system-wide, and
+    prove it works before reporting success."""
+    monkeypatch.setattr(ops, "_which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(ops.platform, "machine", lambda: "aarch64")
+    privileged = []
+    monkeypatch.setattr(
+        ops,
+        "_privileged_run",
+        lambda cmd, **k: privileged.append(cmd)
+        or (_cp(1) if cmd[:2] == ["dnf", "install"] else _cp(0)),
+    )
+    # Unusable until the binary lands, usable afterwards.
+    monkeypatch.setattr(
+        ops,
+        "_compose_available",
+        lambda: any(cmd[0] == "chmod" for cmd in privileged),
+    )
+
+    results = ops._install_linux_compose_plugin()
+
+    dest = str(ops.COMPOSE_PLUGIN_DIR / "docker-compose")
+    curl = [cmd for cmd in privileged if cmd[0] == "curl"]
+    assert curl, privileged
+    assert curl[0][-2:] == [
+        dest,
+        "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-aarch64",
+    ]
+    assert ["mkdir", "-p", str(ops.COMPOSE_PLUGIN_DIR)] in privileged
+    assert ["chmod", "0755", dest] in privileged
+    assert results[-1].ok is True
+    assert dest in results[-1].message
+
+
+def test_compose_plugin_binary_reports_failure_when_it_still_does_not_work(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(ops.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(ops, "_privileged_run", lambda cmd, **k: _cp(0))
+    monkeypatch.setattr(ops, "_compose_available", lambda: False)
+
+    results = ops._install_compose_plugin_binary()
+
+    assert results[0].ok is False
+    assert "Amazon Linux 2023" in results[0].details
+
+
+def test_compose_plugin_binary_names_the_missing_root_rather_than_a_generic_failure(monkeypatch):
+    """`_privileged_run` returning None means root is unreachable, not that the
+    command failed -- say which, the way the engine path does."""
+    monkeypatch.setattr(ops, "_which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(ops.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(ops, "_privileged_run", lambda cmd, **k: None)
+
+    results = ops._install_compose_plugin_binary()
+
+    assert results[0].ok is False
+    assert "root required" in results[0].message
+
+
+def test_compose_plugin_package_install_is_preferred_over_the_binary(monkeypatch):
+    monkeypatch.setattr(
+        ops, "_which", lambda name: "/usr/bin/apt-get" if name == "apt-get" else None
+    )
+    privileged = []
+    monkeypatch.setattr(ops, "_privileged_run", lambda cmd, **k: privileged.append(cmd) or _cp(0))
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+
+    results = ops._install_linux_compose_plugin()
+
+    assert ["apt-get", "install", "-y", "docker-compose-v2"] in privileged
+    assert not [cmd for cmd in privileged if cmd[0] == "curl"]
+    assert results[0].ok is True
+
+
+def test_manual_install_hint_names_amazon_linux():
+    assert "Amazon Linux 2023" in ops._DOCKER_MANUAL_INSTALL_HINT
+    assert "docker-compose-linux-$(uname -m)" in ops._DOCKER_MANUAL_INSTALL_HINT
+
+
+_HOP_HOME = "/home/ec2-user"
+
+
+def _hop_run_stub(*, available=("sg", "sudo"), sudo_resets_env=False):
+    """A `_run` stand-in that emulates each hop's *environment* semantics.
+
+    A mocked `subprocess.run` cannot observe sudo's `env_reset`, so the stub
+    models it explicitly: `sg docker -c ...` hands the caller's environment
+    through untouched, while a sudoers configuration that ignores
+    `--preserve-env` replaces `HOME` with `/root` (Amazon Linux/RHEL
+    `always_set_home`) and drops every `env=`-passed variable.
+    """
+
+    def _run(cmd, **kwargs):
+        sentinel = (kwargs.get("env") or {}).get(ops._HOP_ENV_PROBE_VAR, "")
+        if cmd[:3] == ["sg", "docker", "-c"]:
+            if "sg" not in available:
+                return _cp(1, stderr="sg: group 'docker' does not exist")
+            home, forwarded = _HOP_HOME, sentinel
+        elif cmd[:2] == ["sudo", "-n"]:
+            if "sudo" not in available:
+                return _cp(1, stderr="sudo: a password is required")
+            home, forwarded = ("/root", "") if sudo_resets_env else (_HOP_HOME, sentinel)
+        else:  # a bare `docker ...` -- the socket this session cannot reach
+            return _cp(1, stderr="permission denied ... /var/run/docker.sock")
+        if "printf" in cmd[-1]:
+            return _cp(0, stdout=f"{home}\n{forwarded}")
+        return _cp(0, stdout="27.0.3")
+
+    return _run
+
+
+def _hop_engine_env(monkeypatch, run_stub):
+    """Wire `_ensure_docker_engine` up to the point where it needs a hop."""
+    monkeypatch.setenv("HOME", _HOP_HOME)
+    monkeypatch.setattr(ops, "_which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(ops, "_running_as_root", lambda: False)
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_docker_daemon_reachable", lambda: False)
+    monkeypatch.setattr(ops, "_privileged_run", lambda cmd, **k: _cp(0))
+    monkeypatch.setattr(ops, "_run", run_stub)
+
+
+def test_docker_calls_hop_to_the_docker_group_within_the_same_run(
+    monkeypatch, _no_docker_socket_hop
+):
+    """`usermod -aG docker` never reaches the already-open session, which is
+    what killed the second pass of the cloud deploy mid-run (#3760). Rather
+    than telling the operator to reconnect, ops re-runs its Docker calls under
+    the group it just granted itself."""
+    _hop_engine_env(monkeypatch, _hop_run_stub())
+
+    results = ops._ensure_docker_engine()
+
+    assert ops._docker_socket_hop() == "sg"
+    assert results[-1].ok is True
+    assert "`sg docker`" in results[-1].message
+    # The real group change is still made -- the hop is only for this run.
+    assert "new login sessions" in results[-1].details
+    assert ops._apply_docker_socket_hop(["docker", "ps"]) == ["sg", "docker", "-c", "docker ps"]
+    # Already-privileged and non-Docker argv are left exactly as they are.
+    assert ops._apply_docker_socket_hop(["sudo", "-n", "docker", "ps"]) == [
+        "sudo",
+        "-n",
+        "docker",
+        "ps",
+    ]
+    assert ops._apply_docker_socket_hop(["systemctl", "status"]) == ["systemctl", "status"]
+
+
+def test_docker_hop_falls_back_to_sudo_when_sg_is_unusable(monkeypatch, _no_docker_socket_hop):
+    """A host where the group change itself could not be made still gets a hop,
+    via passwordless sudo -- but only the environment-preserving form."""
+    _hop_engine_env(monkeypatch, _hop_run_stub(available=("sudo",)))
+
+    results = ops._ensure_docker_engine()
+
+    assert ops._docker_socket_hop() == "sudo"
+    assert results[-1].ok is True
+    assert ops._apply_docker_socket_hop(["docker", "ps"]) == [
+        "sudo",
+        "-n",
+        "--preserve-env",
+        "docker",
+        "ps",
+    ]
+
+
+def test_docker_hop_refused_when_it_would_reset_the_environment(monkeypatch, _no_docker_socket_hop):
+    """The Critical finding on #3766: `sudo`'s `env_reset` + `always_set_home`
+    makes the Docker CLI see `HOME=/root`, so `docker-compose.yml` interpolates
+    every bind mount under `/root/.nyxGPT/volumes` while the ownership fixes
+    chown the user's home, and `env=`-forwarded GlitchTip secrets never reach
+    the container. A hop that does that is worse than no hop, so it is refused
+    and the loud reconnect guidance is reported instead."""
+    _hop_engine_env(monkeypatch, _hop_run_stub(available=("sudo",), sudo_resets_env=True))
+
+    results = ops._ensure_docker_engine()
+
+    assert ops._docker_socket_hop() is None
+    assert results[-1].ok is False
+    assert "loginctl terminate-user" in results[-1].details
+
+
+def test_docker_hop_not_used_when_nothing_reaches_the_daemon(monkeypatch, _no_docker_socket_hop):
+    _hop_engine_env(monkeypatch, _hop_run_stub(available=()))
+
+    results = ops._ensure_docker_engine()
+
+    assert ops._docker_socket_hop() is None
+    assert results[-1].ok is False
+    assert "loginctl terminate-user" in results[-1].details
+
+
+def test_hop_env_probe_checks_home_and_a_forwarded_variable(monkeypatch, _no_docker_socket_hop):
+    """Both mechanisms the hop must not break are exercised: `${HOME}` (Compose
+    bind-mount interpolation) and an `env=`-passed variable (`docker compose
+    exec -e VAR` secret forwarding, CodeQL #105/#106)."""
+    monkeypatch.setenv("HOME", _HOP_HOME)
+    seen = []
+
+    def _run(cmd, **kwargs):
+        seen.append((cmd, kwargs.get("env", {})))
+        return _cp(0, stdout=f"{_HOP_HOME}\nnyxgpt-hop-probe")
+
+    monkeypatch.setattr(ops, "_run", _run)
+
+    assert ops._docker_hop_preserves_env("sg") is True
+    cmd, env = seen[0]
+    assert cmd[:3] == ["sg", "docker", "-c"]
+    assert "$HOME" in cmd[3] and f"${ops._HOP_ENV_PROBE_VAR}" in cmd[3]
+    assert env[ops._HOP_ENV_PROBE_VAR] == "nyxgpt-hop-probe"
+
+
+def test_run_routes_docker_through_the_hop_while_it_is_active(monkeypatch, _no_docker_socket_hop):
+    """The rewrite lives in `_run` so no Docker call site can forget it."""
+    monkeypatch.setattr(ops, "_DOCKER_SOCKET_HOP", "sg")
+    seen = []
+
+    def _fake_subprocess_run(cmd, **kwargs):
+        seen.append(cmd)
+        return _cp(0)
+
+    monkeypatch.setattr(ops.subprocess, "run", _fake_subprocess_run)
+
+    ops._run(["docker", "ps", "-a"], check=False)
+    ops._run(["systemctl", "is-active", "docker"], check=False)
+
+    assert seen == [
+        ["sg", "docker", "-c", "docker ps -a"],
+        ["systemctl", "is-active", "docker"],
+    ]
+
+
+def test_hop_quotes_compose_argv_and_keeps_secrets_off_the_shell_string(
+    monkeypatch, _no_docker_socket_hop
+):
+    """`sg -c` takes a command *string*, so argv must be shell-quoted -- and the
+    `-e VAR` secret forwarding stays bare (value in the environment, never on
+    the command line) exactly as `_glitchtip_ensure_superuser` builds it."""
+    monkeypatch.setattr(ops, "_DOCKER_SOCKET_HOP", "sg")
+    argv = [
+        "docker",
+        "compose",
+        "-f",
+        "/opt/nyx gpt/docker-compose.yml",
+        "exec",
+        "-T",
+        "-e",
+        "DJANGO_SUPERUSER_PASSWORD",
+        "web",
+        "sh",
+        "-c",
+        "createsuperuser --noinput",
+    ]
+
+    wrapped = ops._apply_docker_socket_hop(argv)
+
+    assert wrapped[:3] == ["sg", "docker", "-c"]
+    assert shlex.split(wrapped[3]) == argv
+    assert "hunter2" not in wrapped[3]
+
+
+def test_run_logs_the_unwrapped_argv_so_redaction_still_applies(
+    monkeypatch, caplog, _no_docker_socket_hop
+):
+    """`_redact_cmd` masks argv element by element; `sg -c` collapses argv into
+    one shell string it could not see into, so the log keeps the logical argv."""
+    monkeypatch.setattr(ops, "_DOCKER_SOCKET_HOP", "sg")
+    monkeypatch.setattr(ops.subprocess, "run", lambda cmd, **k: _cp(1, stderr="boom"))
+
+    with caplog.at_level(logging.WARNING, logger="nyxgpt.ops"):
+        ops._run(["docker", "login", "--password", "hunter2"], check=False)
+
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert "hunter2" not in logged
+    assert "--password ***" in logged
 
 
 # --- Observability bind-mount ownership (#3632) ---
