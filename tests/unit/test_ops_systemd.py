@@ -912,7 +912,7 @@ def test_ensure_docker_engine_installs_missing_docker(monkeypatch):
 
     assert all(r.ok for r in results)
     assert ["apt-get", "update"] in privileged
-    assert ["apt-get", "install", "-y", "docker.io", "docker-compose-v2"] in privileged
+    assert ["apt-get", "install", "-y", "docker.io"] in privileged
     assert ["systemctl", "enable", "--now", "docker"] in privileged
 
 
@@ -981,6 +981,182 @@ def test_docker_access_doctor_issue_silent_when_healthy(monkeypatch):
 def test_docker_access_doctor_issue_silent_without_docker(monkeypatch):
     monkeypatch.setattr(ops, "_which", lambda name: None)
     assert ops._docker_access_doctor_issue() is None
+
+
+# --- Amazon Linux 2023 Docker provisioning (#3760) ---
+
+
+@pytest.fixture
+def _no_docker_sudo_fallback(monkeypatch):
+    """Keep the process-wide `sudo docker` flag out of neighbouring tests."""
+    monkeypatch.setattr(ops, "_DOCKER_SUDO_FALLBACK", False)
+
+
+def test_docker_engine_installs_on_amazon_linux_without_a_compose_package(monkeypatch):
+    """Amazon Linux 2023 has `docker` but no compose package at all, so the old
+    combined `dnf install docker docker-compose-plugin` transaction failed as a
+    unit and reported "Could not install Docker automatically" on a host whose
+    engine would have installed fine (#3760)."""
+    present = {"dnf": "/usr/bin/dnf"}
+    monkeypatch.setattr(ops, "_which", lambda name: present.get(name))
+    privileged = []
+
+    def _fake_privileged(cmd, **kwargs):
+        privileged.append(cmd)
+        if cmd[:2] == ["dnf", "install"] and "docker" in cmd:
+            present["docker"] = "/usr/bin/docker"
+            return _cp(0)
+        if cmd[:2] == ["dnf", "install"]:  # docker-compose-plugin: no such package here
+            return _cp(1, stderr="No match for argument: docker-compose-plugin")
+        return _cp(0)
+
+    monkeypatch.setattr(ops, "_privileged_run", _fake_privileged)
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_docker_daemon_reachable", lambda: True)
+
+    results = ops._ensure_docker_engine()
+
+    assert ["dnf", "install", "-y", "docker"] in privileged
+    assert all(r.ok for r in results), [r.message for r in results]
+
+
+def test_compose_plugin_falls_back_to_the_release_binary(monkeypatch):
+    """No distro package -> fetch Docker's own plugin binary system-wide, and
+    prove it works before reporting success."""
+    monkeypatch.setattr(ops, "_which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(ops.platform, "machine", lambda: "aarch64")
+    privileged = []
+    monkeypatch.setattr(
+        ops,
+        "_privileged_run",
+        lambda cmd, **k: privileged.append(cmd)
+        or (_cp(1) if cmd[:2] == ["dnf", "install"] else _cp(0)),
+    )
+    # Unusable until the binary lands, usable afterwards.
+    monkeypatch.setattr(
+        ops,
+        "_compose_available",
+        lambda: any(cmd[0] == "chmod" for cmd in privileged),
+    )
+
+    results = ops._install_linux_compose_plugin()
+
+    dest = str(ops.COMPOSE_PLUGIN_DIR / "docker-compose")
+    curl = [cmd for cmd in privileged if cmd[0] == "curl"]
+    assert curl, privileged
+    assert curl[0][-2:] == [
+        dest,
+        "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-aarch64",
+    ]
+    assert ["mkdir", "-p", str(ops.COMPOSE_PLUGIN_DIR)] in privileged
+    assert ["chmod", "0755", dest] in privileged
+    assert results[-1].ok is True
+    assert dest in results[-1].message
+
+
+def test_compose_plugin_binary_reports_failure_when_it_still_does_not_work(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(ops.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(ops, "_privileged_run", lambda cmd, **k: _cp(0))
+    monkeypatch.setattr(ops, "_compose_available", lambda: False)
+
+    results = ops._install_compose_plugin_binary()
+
+    assert results[0].ok is False
+    assert "Amazon Linux 2023" in results[0].details
+
+
+def test_compose_plugin_package_install_is_preferred_over_the_binary(monkeypatch):
+    monkeypatch.setattr(
+        ops, "_which", lambda name: "/usr/bin/apt-get" if name == "apt-get" else None
+    )
+    privileged = []
+    monkeypatch.setattr(ops, "_privileged_run", lambda cmd, **k: privileged.append(cmd) or _cp(0))
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+
+    results = ops._install_linux_compose_plugin()
+
+    assert ["apt-get", "install", "-y", "docker-compose-v2"] in privileged
+    assert not [cmd for cmd in privileged if cmd[0] == "curl"]
+    assert results[0].ok is True
+
+
+def test_manual_install_hint_names_amazon_linux():
+    assert "Amazon Linux 2023" in ops._DOCKER_MANUAL_INSTALL_HINT
+    assert "docker-compose-linux-$(uname -m)" in ops._DOCKER_MANUAL_INSTALL_HINT
+
+
+def test_docker_calls_fall_back_to_sudo_within_the_same_run(monkeypatch, _no_docker_sudo_fallback):
+    """`usermod -aG docker` never reaches the already-open session, which is
+    what killed the second pass of the cloud deploy mid-run (#3760). Rather
+    than telling the operator to reconnect, ops uses passwordless sudo for the
+    rest of the process."""
+    monkeypatch.setattr(ops, "_which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(ops, "_running_as_root", lambda: False)
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_docker_daemon_reachable", lambda: False)
+    monkeypatch.setattr(ops, "_privileged_run", lambda cmd, **k: _cp(0))
+    # Direct socket access is denied; the same call under sudo succeeds.
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: (
+            _cp(0) if cmd[:2] == ["sudo", "-n"] else _cp(1, stderr="permission denied")
+        ),
+    )
+
+    results = ops._ensure_docker_engine()
+
+    assert ops._docker_sudo_fallback_active() is True
+    assert results[-1].ok is True
+    assert "sudo docker" in results[-1].message
+    # The real group change is still made -- the sudo hop is only for this run.
+    assert "new login sessions" in results[-1].details
+    assert ops._apply_docker_sudo_fallback(["docker", "ps"]) == ["sudo", "-n", "docker", "ps"]
+    # Already-privileged and non-Docker argv are left exactly as they are.
+    assert ops._apply_docker_sudo_fallback(["sudo", "-n", "docker", "ps"]) == [
+        "sudo",
+        "-n",
+        "docker",
+        "ps",
+    ]
+    assert ops._apply_docker_sudo_fallback(["systemctl", "status"]) == ["systemctl", "status"]
+
+
+def test_docker_sudo_fallback_not_used_when_sudo_cannot_reach_the_daemon(
+    monkeypatch, _no_docker_sudo_fallback
+):
+    monkeypatch.setattr(ops, "_which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(ops, "_running_as_root", lambda: False)
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_docker_daemon_reachable", lambda: False)
+    monkeypatch.setattr(ops, "_privileged_run", lambda cmd, **k: _cp(0))
+    monkeypatch.setattr(ops, "_run", lambda cmd, **k: _cp(1, stderr="sudo: a password is required"))
+
+    results = ops._ensure_docker_engine()
+
+    assert ops._docker_sudo_fallback_active() is False
+    assert results[-1].ok is False
+    assert "loginctl terminate-user" in results[-1].details
+
+
+def test_run_routes_docker_through_sudo_while_the_fallback_is_active(
+    monkeypatch, _no_docker_sudo_fallback
+):
+    """The rewrite lives in `_run` so no Docker call site can forget it."""
+    monkeypatch.setattr(ops, "_DOCKER_SUDO_FALLBACK", True)
+    seen = []
+
+    def _fake_subprocess_run(cmd, **kwargs):
+        seen.append(cmd)
+        return _cp(0)
+
+    monkeypatch.setattr(ops.subprocess, "run", _fake_subprocess_run)
+
+    ops._run(["docker", "ps", "-a"], check=False)
+    ops._run(["systemctl", "is-active", "docker"], check=False)
+
+    assert seen == [["sudo", "-n", "docker", "ps", "-a"], ["systemctl", "is-active", "docker"]]
 
 
 # --- Observability bind-mount ownership (#3632) ---
