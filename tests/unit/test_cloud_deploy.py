@@ -187,6 +187,25 @@ def test_provision_script_fails_fast_when_npm_is_still_missing():
     assert "node/npm could not be installed" in script
     assert script.index("node/npm could not be installed") < script.index("$NYXGPT ops install")
 
+    # The script runs under `set -euo pipefail`, so an install that exits
+    # non-zero would abort before the diagnostic ever printed. Every install
+    # in the Node block has to be non-fatal for the check above to be
+    # reachable at all.
+    assert "set -euo pipefail" in script
+    node_block = script[
+        script.index("NODE_MAJOR=0") : script.index("node/npm could not be installed")
+    ]
+    installs = [
+        line.strip()
+        for line in node_block.splitlines()
+        if ("dnf install" in line or "apt-get install" in line) and not line.strip().startswith("#")
+    ]
+    assert installs, "the Node block installs nothing"
+    # A continued command is only fatal on its last line, where the `|| true` sits.
+    assert all(
+        line.endswith("|| true") or line.endswith("\\") for line in installs
+    ), f"an install can abort before the diagnostic: {installs}"
+
 
 def test_provision_script_skips_observability_when_asked():
     with_obs = cloud_deploy.render_provision_script(cloud_deploy.resolve_plan(_args()))
