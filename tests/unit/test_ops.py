@@ -3754,6 +3754,43 @@ def test_create_dist_tarball_vendors_web_source_excluding_build_artifacts(monkey
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("name", ["nyxgpt-api", "nyxgpt-web"])
+def test_create_dist_tarball_never_vendors_pycache_or_ds_store(monkeypatch, tmp_path, name):
+    """No dist tarball carries interpreter caches or Finder metadata from the
+    checkout it was built from (#3757).
+
+    A used checkout accumulates `__pycache__/*.pyc` from whatever Python last
+    ran in it; vendoring those made api tarballs nondeterministic and, on a
+    checkout in a paused-sync cloud-storage folder, made the copy fail
+    outright (dehydrated `.pyc` placeholder -> `Errno 60`). One shared
+    exclusion in `_vendor_tree` covers every `_create_dist_tarball` caller,
+    so the web tree is held to it too.
+    """
+    if name == "nyxgpt-api":
+        repo_root = _make_fake_api_repo_root(tmp_path)
+        tree, arc_prefix = repo_root / "src" / "nyxgpt", f"{name}-1.2.3/src/nyxgpt"
+    else:
+        repo_root = _make_fake_web_repo_root(tmp_path)
+        tree, arc_prefix = repo_root / "web", f"{name}-1.2.3"
+    (tree / "resources" / "__pycache__").mkdir(parents=True)
+    (tree / "resources" / "__pycache__" / "__init__.cpython-314.pyc").write_bytes(b"\x00")
+    (tree / "stray.pyc").write_bytes(b"\x00")
+    (tree / "stray.pyo").write_bytes(b"\x00")
+    (tree / ".DS_Store").write_bytes(b"\x00")
+    (tree / "resources" / "keep.txt").write_text("keep", encoding="utf-8")
+    monkeypatch.setattr(ops, "REPO_ROOT", repo_root)
+
+    tar_path = ops._create_dist_tarball(tmp_path, name, "1.2.3")
+    with tarfile.open(tar_path, "r:gz") as tf:
+        names = tf.getnames()
+
+    assert f"{arc_prefix}/resources/keep.txt" in names
+    assert not any("__pycache__" in n for n in names)
+    assert not any(n.endswith((".pyc", ".pyo")) for n in names)
+    assert not any(n.endswith(".DS_Store") for n in names)
+
+
+@pytest.mark.unit
 def test_create_dist_tarball_overwrites_existing_tarball_and_tmp(monkeypatch, tmp_path):
     repo_root = _make_fake_api_repo_root(tmp_path)
     monkeypatch.setattr(ops, "REPO_ROOT", repo_root)
@@ -4440,6 +4477,29 @@ def test_vendor_tree_excludes_named_directories(tmp_path):
 
     assert (dst / "keep.txt").exists()
     assert not (dst / "node_modules").exists()
+
+
+@pytest.mark.unit
+def test_vendor_tree_always_excludes_caches_even_without_caller_excludes(tmp_path):
+    """`__pycache__`/`.pyc`/`.pyo`/`.DS_Store` are dropped with no `excludes`
+    argument at all -- the api branch of `_create_dist_tarball` passes none
+    and used to vendor the checkout's bytecode caches (#3757)."""
+    src = tmp_path / "src"
+    (src / "pkg" / "__pycache__").mkdir(parents=True)
+    (src / "pkg" / "__pycache__" / "mod.cpython-314.pyc").write_bytes(b"\x00")
+    (src / "pkg" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+    (src / "loose.pyc").write_bytes(b"\x00")
+    (src / "loose.pyo").write_bytes(b"\x00")
+    (src / ".DS_Store").write_bytes(b"\x00")
+
+    dst = tmp_path / "dst"
+    ops._vendor_tree(src, dst)
+
+    assert (dst / "pkg" / "mod.py").exists()
+    assert not (dst / "pkg" / "__pycache__").exists()
+    assert not (dst / "loose.pyc").exists()
+    assert not (dst / "loose.pyo").exists()
+    assert not (dst / ".DS_Store").exists()
 
 
 # --- _ensure_web_deps ---

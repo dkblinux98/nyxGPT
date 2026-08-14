@@ -58,6 +58,26 @@ _WEB_VENDOR_EXCLUDES = frozenset(
     }
 )
 
+# Names `_vendor_tree` skips in *every* tree it copies -- api and web alike,
+# on top of whatever the caller passes as `excludes` (#3757). Interpreter
+# bytecode caches belong to whatever Python last ran in the checkout, not to
+# a distribution: the formula's keg venv recompiles from source anyway, so
+# vendoring them makes tarballs built from a used checkout nondeterministic
+# and carries version-specific `.pyc` junk (a `cpython-314` cache built by a
+# 3.14 run into a tarball a 3.12 keg installs). It also broke the install
+# outright -- on a checkout inside a paused-sync cloud-storage folder, a
+# dehydrated (online-only) `.pyc` placeholder cannot be materialized, so
+# `shutil.copytree` died with `Errno 60: Operation timed out` and `nyxgpt up`
+# failed at the `native api service` step. `.DS_Store` is Finder metadata
+# with the same "never belongs in a release artifact" status.
+_ALWAYS_VENDOR_EXCLUDES = frozenset({"__pycache__", ".DS_Store"})
+
+# File suffixes excluded everywhere, alongside `_ALWAYS_VENDOR_EXCLUDES`.
+# `shutil.copytree`'s `ignore` callback sees file names as well as directory
+# names, so loose `.pyc`/`.pyo` files outside a `__pycache__` directory are
+# dropped too.
+_ALWAYS_VENDOR_EXCLUDE_SUFFIXES = (".pyc", ".pyo")
+
 
 def _sha256_file(path: Path) -> str:
     """Return the hex-encoded SHA-256 digest of the file at `path`."""
@@ -69,10 +89,23 @@ def _sha256_file(path: Path) -> str:
 
 
 def _vendor_tree(src: Path, dst: Path, *, excludes: frozenset[str] = frozenset()) -> None:
-    """Copy the directory tree `src` to `dst`, skipping any dir named in `excludes`."""
+    """Copy the directory tree `src` to `dst`, minus excluded entries.
+
+    Skips any entry named in `excludes` (the caller's tree-specific list,
+    e.g. `_WEB_VENDOR_EXCLUDES`) *plus* `_ALWAYS_VENDOR_EXCLUDES` /
+    `_ALWAYS_VENDOR_EXCLUDE_SUFFIXES`, which apply to every vendored tree so
+    no caller of `_create_dist_tarball` can ship interpreter caches or
+    Finder metadata (#3757).
+    """
 
     def _ignore(_dir_path: str, names: list[str]) -> set[str]:
-        return {n for n in names if n in excludes}
+        return {
+            n
+            for n in names
+            if n in excludes
+            or n in _ALWAYS_VENDOR_EXCLUDES
+            or n.endswith(_ALWAYS_VENDOR_EXCLUDE_SUFFIXES)
+        }
 
     shutil.copytree(src, dst, ignore=_ignore)
 
@@ -90,7 +123,9 @@ def _create_dist_tarball(
     build` fresh inside the keg), for `nyxgpt-web`. Either way, the
     installed app no longer depends on the repo checkout or an editable
     `.venv` at runtime (#3406) -- replacing the old placeholder tarball that
-    only ever contained a `README.txt`.
+    only ever contained a `README.txt`. Both trees go through `_vendor_tree`,
+    so neither can carry `__pycache__`/`.pyc`/`.DS_Store` leftovers from a
+    used checkout (#3757).
 
     `source_root` is the tree to vendor *from*, defaulting to this checkout
     (`REPO_ROOT`) -- what every local install path wants. Release tooling
