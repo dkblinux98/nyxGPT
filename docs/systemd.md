@@ -218,8 +218,21 @@ hand.
 | Step | Command | Why |
 | --- | --- | --- |
 | Ollama port takeover | `systemctl disable --now ollama.service` | Free 11434 for `nyxgpt-ollama` (above) |
-| Docker engine | `apt-get install -y docker.io docker-compose-v2` (or `dnf`/`yum`), `systemctl enable --now docker`, `usermod -aG docker $USER` | Cassandra and the whole observability stack are containers |
+| Docker engine | `apt-get install -y docker.io` (or `dnf`/`yum install -y docker`), `systemctl enable --now docker`, `usermod -aG docker $USER` | Cassandra and the whole observability stack are containers |
+| Docker Compose plugin | `apt-get install -y docker-compose-v2` (or `docker-compose-plugin`), else the release binary — see below | The observability stack and the Grafana credential reconcile are Compose-driven |
 | Observability data dirs | `chown -R <uid>:<gid> ~/.nyxGPT/volumes/{prometheus,grafana,loki}` | See below (falls back to a rootless POSIX ACL) |
+
+**Engine and Compose plugin are separate transactions.** Not every distro
+packages both: Amazon Linux 2023 carries `docker` and no compose package at
+all, so a combined `dnf install -y docker docker-compose-plugin` fails as a
+unit and takes the engine down with the plugin. Install therefore reconciles
+them independently, and when no package provides the plugin it fetches
+Docker's own static plugin binary to
+`/usr/local/lib/docker/cli-plugins/docker-compose` (system-wide, so it is
+visible to root too) and verifies `docker compose version` actually works
+before reporting success. If even that is unavailable — no `curl`, no root,
+an architecture Docker publishes no build for — the step fails with the exact
+commands to run by hand, per distro, and the rest of install still runs.
 
 **Observability bind-mount ownership.** dockerd runs as root and creates a
 missing bind-mount source directory as `root:root`. Prometheus runs as uid
@@ -253,6 +266,19 @@ whether Cassandra is running. Fix it by recreating the session:
 ```bash
 sudo loginctl terminate-user "$USER"   # kills this SSH session; reconnect after
 ```
+
+Install itself does not stop and wait for that, though. When the group change
+it just made hasn't reached the running session and passwordless sudo is
+available, `nyxgpt ops install` routes its own Docker calls through `sudo -n
+docker` for the remainder of that process and says so in its output, so
+Cassandra, the observability stack and the Grafana credential reconcile all
+complete in the same pass instead of failing with `permission denied while
+trying to connect to the Docker daemon socket`. The group membership is still
+added — the sudo hop only covers the run that created it, and disappears once
+you reconnect. This is a last resort, attempted only after the real group
+change was made and found not to have taken effect; where sudo needs a
+password, install reports the unreachable daemon and the `loginctl` command
+above exactly as before.
 
 ### Commands (nyxgpt-managed Ollama)
 

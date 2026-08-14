@@ -62,9 +62,10 @@ reach from your workstation. It:
    wherever you are; the deploy reports that CIDR and then waits for the
    freshly booted instance to accept SSH.
 3. **Provisions the instance from published artifacts** — installs the OS
-   packages, Docker, Ollama, and a **published** `nyxgpt` release, then runs
-   `nyxgpt ops install` on the box. See
-   [Repo-less by construction](#repo-less-by-construction) below.
+   packages, the Docker engine, Ollama, and a **published** `nyxgpt` release,
+   then runs `nyxgpt ops install` on the box. See
+   [Repo-less by construction](#repo-less-by-construction) below and
+   [Docker on the instance](#docker-on-the-instance).
 4. **Enables self-healing** — a cloud instance is unattended by definition,
    so the deploy turns the watchdog on explicitly once the stack is up (it
    ships disabled). See [self-healing.md](self-healing.md#turning-it-on).
@@ -170,6 +171,23 @@ of this flow touches a checkout:
 
 The instance therefore runs a *published* release, not your working tree. If
 you want a version other than your CLI's, name it with `--version`.
+
+### Docker on the instance
+
+The provisioning script installs only the Docker *engine* from the AMI's
+package manager and leaves the Compose plugin to `nyxgpt ops install`, which
+knows how to get one on distros that package none — Amazon Linux 2023 among
+them. See [Privileged install steps](systemd.md#privileged-install-steps) for
+what install does there and what it falls back to.
+
+Group membership is the other half. `usermod -aG docker` cannot reach the SSH
+session the deploy is already running in, so every nyxGPT command the script
+invokes runs under `sg docker`, which grants the group immediately and without
+a re-login; the script resolves once, up front, whether `sg` works, rather than
+retrying a failed command without the group and turning an unrelated failure
+into a `permission denied ... /var/run/docker.sock` cascade. `ops install` has
+its own belt-and-braces fallback for the same problem
+([Docker group membership](systemd.md#privileged-install-steps)).
 
 ### From the dashboard: status, not controls (P6-15, #3514)
 
