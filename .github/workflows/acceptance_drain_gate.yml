@@ -12,6 +12,12 @@ name: Acceptance Drain Gate
 # accepted. On the opening, every held item moves to `Backlog` and the
 # scrummaster queue is kicked exactly once.
 #
+# "Held" is the OPEN part of the lane. Owner decision 2026-08-14 (#3780):
+# the owner also parks features they have tested and failed in the same
+# lane, and those are CLOSED. This workflow reports them and leaves them
+# alone -- only `promote_accepted_features.sh` moves them, and only once
+# their whole blocked-by closure has reached `For Release`.
+#
 # Detection is event-driven where GitHub gives us an event, and cheaply
 # polled where it does not:
 #   * `workflow_run` on the promotion sweep and the parked-blocked sweep --
