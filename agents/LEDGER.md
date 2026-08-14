@@ -218,6 +218,14 @@ not agent-editable except to add a `Re-verify` result or a supersession pointer.
   Source: #3775; `agents/runbooks/review-runbook.md` §1c;
   `agents/runbooks/developer-runbook.md` §4a; `CLAUDE.md` §Definition of Done.
 
+- **D-007** · 2026-08-14 · owner — The repository's immutable-releases setting
+  stays **enabled**; the owner considered disabling it and decided against. The
+  supply-chain guarantee (a published asset can never be silently swapped) is
+  retained; the companion-release pattern (`<version>-homebrew`, #3763) is the
+  designed answer for adding assets tied to an already-published version. Do not
+  re-propose disabling immutability as a fix for `HTTP 422` asset-upload errors.
+  Source: owner in session, 2026-08-14; #3763.
+
 ## Verifications
 
 - **V-001** · 2026-08-14 — Releases in this repository are immutable: a
@@ -301,6 +309,21 @@ not agent-editable except to add a `Re-verify` result or a supersession pointer.
   Re-verify when: `macos-brew-smoke.yml` stops installing on a macOS runner, or
   GitHub retires hosted macOS runners.
 
+- **V-007** · 2026-08-14 — No agent-reachable path exists to read the
+  repository's immutable-releases setting. The endpoint is
+  `GET /repos/dkblinux98/nyxGPT/immutable-releases`; the remote session's
+  integration token returns `403 Resource not accessible by integration`, and
+  `SCRUMMASTER_AGENT_TOKEN` via `gh_query.yml` returns `404 Not Found` (the
+  classic PAT lacks repository-administration read). Reading it requires the
+  owner: `gh api repos/dkblinux98/nyxGPT/immutable-releases` under their own
+  admin-scoped auth, or the repo Settings UI. V-001 therefore remains the
+  strongest agent-verifiable statement of immutability behaviour.
+  Method: both probes run 2026-08-14 — direct REST call from the assistant
+  session, and a `gh_query.yml` dispatch with
+  `rest_path=repos/dkblinux98/nyxGPT/immutable-releases`.
+  Re-verify when: agent tokens gain repository-administration read scope, or
+  `gh_query.yml` changes its token.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
@@ -332,12 +355,6 @@ not agent-editable except to add a `Re-verify` result or a supersession pointer.
   ceremony.
   Blocks: nothing yet.
 
-- **Q-002** · 2026-08-14 · developer-agent (#3774) — What check can an agent
-  session run, without owner help, to confirm the repository's release
-  immutability setting directly rather than inferring it from the pipeline built
-  around it (V-001)?
-  Needs: owner, or a documented API/CLI path reachable with the agent token.
-  Blocks: nothing; V-001 is honest about the gap in the meantime.
 
 ## Superseded
 
@@ -363,3 +380,9 @@ them.
 - **S-004** — ~~"`Related feature: #N` in the issue body is how issues are
   linked."~~ Superseded 2026-08-12 by **D-002** — native relationships only. Still
   read as a fallback for issues filed before that decision; never written.
+
+- **S-005** — ~~Q-002: "What check can an agent session run, without owner help,
+  to confirm the repository's release immutability setting?"~~ Answered
+  2026-08-14 by **V-007**: none — both agent token paths fail; the setting is
+  owner-readable only. The setting itself is settled by **D-007** (stays
+  enabled).
