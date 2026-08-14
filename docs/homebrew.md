@@ -45,6 +45,11 @@ checkout** (it vendors `pyproject.toml`/`src/nyxgpt/` and `web/` into a
 tarball and points the formula at it via a `file://` URL) -- see
 [Remote tap](#remote-tap) below for the repo-less alternative.
 
+Only source is vendored: gitignored build output (`node_modules`, `.next`,
+...), VCS metadata, interpreter bytecode caches (`__pycache__`, `.pyc`,
+`.pyo`) and `.DS_Store` are excluded from every tarball, so a checkout you
+have been developing in produces the same artifact as a fresh one.
+
 ---
 
 ## Remote tap
