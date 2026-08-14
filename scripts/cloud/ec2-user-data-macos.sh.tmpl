@@ -4,7 +4,8 @@
 # Installs nyxGPT from the published remote Homebrew tap (P6-5, #3622) and
 # brings up the native (Homebrew services + launchd) stack -- exactly the
 # flow docs/homebrew.md documents for local macOS installs
-# (`brew tap`/`brew install nyxgpt-api nyxgpt-web`/`brew services start`).
+# (`brew tap`/`brew tap-trust`/`brew install nyxgpt-api nyxgpt-web`/
+# `brew services start`).
 # Run via EC2 Mac's `ec2-macos-init` first-boot user-data support (AWS's own
 # agent for Mac instances -- there is no cloud-init on macOS).
 #
@@ -51,7 +52,12 @@ if ! sudo -u "$NYXGPT_TARGET_USER" -H bash -lc 'command -v brew' >/dev/null 2>&1
 fi
 BREW_BIN=$(sudo -u "$NYXGPT_TARGET_USER" -H bash -lc 'command -v brew')
 
-sudo -u "$NYXGPT_TARGET_USER" -H "$BREW_BIN" tap dkblinux98/homebrew-nyxgpt
+sudo -u "$NYXGPT_TARGET_USER" -H "$BREW_BIN" tap dkblinux98/nyxgpt
+# Homebrew gates installs from third-party taps, and this script is
+# non-interactive: without the trust step the `brew install` below stops at
+# the prompt and provisioning dead-ends (#3752). Tolerated failure -- a
+# Homebrew old enough not to gate has no `tap-trust` subcommand.
+sudo -u "$NYXGPT_TARGET_USER" -H "$BREW_BIN" tap-trust dkblinux98/nyxgpt || true
 sudo -u "$NYXGPT_TARGET_USER" -H "$BREW_BIN" install nyxgpt-api nyxgpt-web
 
 sudo -u "$NYXGPT_TARGET_USER" -H mkdir -p "$TARGET_HOME/.nyxGPT"

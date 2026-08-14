@@ -274,6 +274,11 @@ jobs:
           RELEASE="${VERSION%%rc*}"
           echo "tapping $TAP for nyxgpt-api@${RELEASE}rc"
           brew tap "$TAP"
+          # The owner's literal path includes the third-party tap trust step
+          # (#3752). The runner's Homebrew does not gate yet, so this is a
+          # no-op today and future-proofing for when the image updates;
+          # tolerated failure covers a Homebrew without the subcommand.
+          brew tap-trust "$TAP" || true
           # The `conflicts_with "nyxgpt-api"` warning is benign (brew warns and
           # installs anyway -- see docs/homebrew.md), but "is the stable
           # counterpart actually in the tap?" kept being answered by guesswork
