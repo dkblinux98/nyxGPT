@@ -1338,7 +1338,11 @@ _autopilot_rc_preflight() {
   # NOT narrowed to successes, because a cut that is still in flight has no
   # conclusion yet and is precisely the run this preflight must not race --
   # dispatching alongside it is how two candidates get cut from one tip.
-  runs="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/actions/workflows/${AUTOPILOT_PUBLISH_WORKFLOW}/runs?event=workflow_dispatch&per_page=30" \
+  # (The pipeline's own guard queues behind the concurrency group instead and
+  # counts successes only; this preflight never queues, so it looks wider.)
+  # A page now holds runs of every status, so it is 100 rather than 30 -- a
+  # busy line would otherwise push the last real candidate off it.
+  runs="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/actions/workflows/${AUTOPILOT_PUBLISH_WORKFLOW}/runs?event=workflow_dispatch&per_page=100" \
     --jq '{workflow_runs: [.workflow_runs[] | {id, event, status, conclusion, head_sha, created_at, display_title, name}]}' 2>/dev/null || echo "")"
   jq -e 'has("workflow_runs")' <<<"${runs:-null}" >/dev/null 2>&1 || runs='{}'
 

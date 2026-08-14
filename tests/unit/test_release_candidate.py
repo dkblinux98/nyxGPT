@@ -573,8 +573,14 @@ def test_select_last_published_sha_rc_ignores_the_callers_own_run():
 #
 # Two rc dispatches 34 seconds apart both published on 2026-08-14: each
 # evaluated the tip guard before the other had registered a candidate, so
-# rc7 and rc8 were cut from one tip and rc7 was burned dead. A run that has
-# started counts as owning its tip, whether or not it has concluded.
+# rc7 and rc8 were cut from one tip and rc7 was burned dead. The pipeline's
+# `concurrency` group is the fix: the second cut queues and re-reads a
+# history that contains the first.
+#
+# `include_in_flight` is the second layer, and applies ONLY to the autopilot
+# preflight, which never queues behind that group. Inside the group every
+# other unfinished run is queued *behind* the caller, so counting it there
+# would have both runs skip and wedge the tip.
 
 
 def _in_flight_run(run_id, sha, created_at, status="in_progress", title="publish rc from v3.0.0"):
@@ -592,25 +598,54 @@ def _in_flight_run(run_id, sha, created_at, status="in_progress", title="publish
 
 
 @pytest.mark.parametrize("status", rc.IN_FLIGHT_RUN_STATUSES)
-def test_select_last_published_sha_counts_a_cut_that_is_still_in_flight(status):
+def test_the_preflight_reader_counts_a_cut_that_is_still_in_flight(status):
     payload = _runs(
         _in_flight_run(9, "racing", "2026-08-14T09:53:07Z", status=status),
         _dispatch_run(7, "older", "2026-08-10T12:00:00Z"),
     )
 
-    assert rc.select_last_published_sha(payload, "rc", exclude_run_id="10") == "racing"
-
-
-def test_a_second_cut_on_the_same_tip_sees_the_first_one_running():
-    """The rc7/rc8 race itself: the second run must not read its own tip as
-    unclaimed just because the first has not finished uploading."""
-    tip = "6f1c2ab"
-    payload = _runs(
-        _in_flight_run(31789936427, tip, "2026-08-14T09:53:07Z"),
-        _dispatch_run(31789000000, tip, "2026-08-13T12:00:00Z", conclusion="failure"),
+    assert (
+        rc.select_last_published_sha(payload, "rc", exclude_run_id="10", include_in_flight=True)
+        == "racing"
     )
 
-    assert rc.select_last_published_sha(payload, "rc", exclude_run_id="31789980538") == tip
+
+@pytest.mark.parametrize("status", rc.IN_FLIGHT_RUN_STATUSES)
+def test_the_in_workflow_guard_never_defers_to_a_run_queued_behind_it(status):
+    """The regression this fix exists for. Under the `concurrency` group the
+    caller is the only run that can be executing, so an unfinished run in its
+    listing is queued *behind* it and has published nothing. Deferring to it
+    is what makes both cuts skip and wedges the tip."""
+    payload = _runs(
+        _in_flight_run(9, "racing", "2026-08-14T09:53:41Z", status=status),
+        _dispatch_run(7, "older", "2026-08-10T12:00:00Z"),
+    )
+
+    assert rc.select_last_published_sha(payload, "rc", exclude_run_id="10") == "older"
+
+
+def test_the_incident_replayed_cuts_exactly_one_candidate():
+    """The rc7/rc8 race end to end, with the concurrency group in place.
+
+    Run A (09:53:07) evaluates the guard after B has been dispatched and is
+    sitting queued behind the group. A must publish -- the tip has no
+    candidate. B then starts, sees A's success, and skips. One candidate for
+    one tip: not two (the incident), and not zero (deferring to a queued
+    run)."""
+    tip = "6f1c2ab"
+    a, b = 31789936427, 31789980538
+
+    queued_behind_a = _runs(
+        _in_flight_run(b, tip, "2026-08-14T09:53:41Z", status="queued"),
+        _dispatch_run(31789000000, "older", "2026-08-13T12:00:00Z"),
+    )
+    assert rc.select_last_published_sha(queued_behind_a, "rc", exclude_run_id=str(a)) == "older"
+
+    after_a_published = _runs(
+        _dispatch_run(a, tip, "2026-08-14T09:53:07Z"),
+        _dispatch_run(31789000000, "older", "2026-08-13T12:00:00Z"),
+    )
+    assert rc.select_last_published_sha(after_a_published, "rc", exclude_run_id=str(b)) == tip
 
 
 def test_select_last_published_sha_ignores_an_in_flight_dry_run():
@@ -620,7 +655,7 @@ def test_select_last_published_sha_ignores_an_in_flight_dry_run():
         _dispatch_run(7, "candidate", "2026-08-10T12:00:00Z"),
     )
 
-    assert rc.select_last_published_sha(payload, "rc") == "candidate"
+    assert rc.select_last_published_sha(payload, "rc", include_in_flight=True) == "candidate"
 
 
 def test_select_last_published_sha_ignores_the_callers_own_in_flight_run():
@@ -631,7 +666,10 @@ def test_select_last_published_sha_ignores_the_callers_own_in_flight_run():
         _dispatch_run(4, "prev", "2026-08-10T12:00:00Z"),
     )
 
-    assert rc.select_last_published_sha(payload, "rc", exclude_run_id="5") == "prev"
+    assert (
+        rc.select_last_published_sha(payload, "rc", exclude_run_id="5", include_in_flight=True)
+        == "prev"
+    )
 
 
 @pytest.mark.parametrize(
@@ -648,7 +686,14 @@ def test_select_last_published_sha_ignores_the_callers_own_in_flight_run():
 def test_run_claims_tip_blocks_on_unfinished_not_on_unsuccessful(run, claims):
     """A failed run used its number for nothing, so a retry on the same tip
     must still publish; an unfinished one may already have uploaded."""
-    assert rc.run_claims_tip(run) is claims
+    assert rc.run_claims_tip(run, include_in_flight=True) is claims
+
+
+@pytest.mark.parametrize("status", rc.IN_FLIGHT_RUN_STATUSES)
+def test_run_claims_tip_ignores_in_flight_runs_unless_asked(status):
+    """Off by default, because the in-workflow guard runs inside the
+    concurrency group where every other unfinished run is behind it."""
+    assert rc.run_claims_tip({"status": status, "conclusion": None}) is False
 
 
 def test_select_last_published_sha_is_empty_before_the_first_candidate():
@@ -701,10 +746,31 @@ def test_fetch_last_published_sha_asks_github_for_rc_dispatches(monkeypatch):
 
     assert rc.fetch_last_published_sha("dkblinux98/nyxGPT", "rc") == "abc123"
     assert "event=workflow_dispatch" in calls[0]
-    # NOT narrowed to successes server-side (#3771): an in-flight cut has no
-    # conclusion, and it is the run a racing dispatch has to see. The
-    # success/failure filtering happens in `run_claims_tip` instead.
+    # NOT narrowed to successes server-side (#3771): `run_claims_tip` is the
+    # one place that decides what counts, because the answer differs by
+    # caller (in-flight counts for the preflight, not inside the workflow).
     assert "status=" not in calls[0]
+    # A page holds runs of every status now, so it has to be deeper or a busy
+    # line pushes the last real candidate off it.
+    assert "per_page=100" in calls[0]
+
+
+def test_fetch_last_published_sha_ignores_in_flight_runs_by_default(monkeypatch):
+    """Its caller is the workflow's own `--skip-if-unchanged` guard, which
+    runs inside the concurrency group (#3771)."""
+    import httpx
+
+    payload = _runs(
+        _in_flight_run(9, "queued-behind-me", "2026-08-14T12:00:00Z", status="queued"),
+        _dispatch_run(1, "abc123", "2026-08-10T12:00:00Z"),
+    )
+    monkeypatch.setattr(httpx, "get", lambda url, **kwargs: _Response(200, payload))
+
+    assert rc.fetch_last_published_sha("dkblinux98/nyxGPT", "rc") == "abc123"
+    assert (
+        rc.fetch_last_published_sha("dkblinux98/nyxGPT", "rc", include_in_flight=True)
+        == "queued-behind-me"
+    )
 
 
 # --- The autopilot's preflight (#3729) ------------------------------------
@@ -771,6 +837,21 @@ def test_autopilot_preflight_agrees_with_the_pipelines_own_guard():
 
     assert decision["dispatch"] is False
     assert rc.select_last_published_sha(runs, "rc") == "samesha"
+
+
+def test_autopilot_preflight_does_not_dispatch_alongside_a_cut_in_progress():
+    """#3771: the preflight decides whether to dispatch at all, so it never
+    queues behind the pipeline's concurrency group -- it is the layer that
+    has to see a cut which has started and not concluded. The pipeline's own
+    guard deliberately does not, and says "publish" for the same history."""
+    tip = "6f1c2ab"
+    runs = _runs(_in_flight_run(31789936427, tip, "2026-08-14T09:53:07Z"))
+
+    decision = rc.autopilot_rc_preflight("v3.0.0", ["3.0.0rc6"], runs, head_sha=tip)
+
+    assert decision["dispatch"] is False
+    assert decision["version"] == "3.0.0rc6"
+    assert rc.select_last_published_sha(runs, "rc") == ""
 
 
 def test_main_autopilot_preflight_prints_the_decision_as_json(monkeypatch, capsys):
@@ -1877,6 +1958,9 @@ def test_the_kick_path_preflight_can_see_a_cut_that_is_still_running():
 
     runs_query = next(line for line in body.splitlines() if "/runs?" in line)
     assert "status=success" not in runs_query
+    # Unfiltered server-side means the page holds runs of every status, so it
+    # has to be deep enough that the last real candidate survives on it.
+    assert "per_page=100" in runs_query
     # The field `run_claims_tip` reads has to survive the jq projection that
     # trims each run down to what the decision uses.
     projection = body[body.index(runs_query) :]

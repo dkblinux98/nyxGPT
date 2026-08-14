@@ -1031,10 +1031,25 @@ resolves its version only once the first run is finished and visible. It is
 never cancelled, because a run killed mid-upload can leave PyPI serving a
 version no successful run records -- the one state the guard cannot see.
 Nothing is lost by waiting: the queued run re-evaluates the guard when it
-starts and resolves to `SKIP` if the tip already has its candidate. The
-autopilot's preflight, which decides whether to dispatch at all and so never
-queues, additionally treats a cut that is still *in flight* as owning its
-tip.
+starts and resolves to `SKIP` if the first run published this tip's
+candidate.
+
+The two layers deliberately read the history differently:
+
+* **inside the pipeline**, the guard counts *finished successes only*. The
+  concurrency group already guarantees the winning cut is finished and
+  visible by the time a queued run looks, so any other unfinished run in the
+  listing is queued *behind* the caller and has published nothing. Deferring
+  to that one would be backwards and mutual -- the running cut would skip for
+  the queued one and the queued one for the first's skip-success, leaving a
+  tip with no candidate looking permanently claimed;
+* **the autopilot's preflight** decides whether to dispatch at all, so it
+  never queues behind the group and nothing else stops it firing alongside a
+  cut in progress. It is the stricter reader: a run that is still *in flight*
+  already owns its tip (`run_claims_tip(..., include_in_flight=True)`).
+
+Neither layer counts a *failed* run: its number went unused, so a retry on
+the same tip stays free to publish.
 
 ### Accepting a candidate on macOS
 

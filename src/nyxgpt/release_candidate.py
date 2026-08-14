@@ -111,8 +111,12 @@ SKIP_SENTINEL = "SKIP"
 STABLE_CONFIRMATION = "ceremony"
 
 #: GitHub run states that mean a publish has started but not concluded. Such
-#: a run has no `conclusion` yet, but it has already claimed its head commit
-#: -- so for the tip guard it counts exactly like a finished one (#3771).
+#: a run has no `conclusion` yet, but it may already be resolving or
+#: uploading its head commit's version -- so an *outside observer* deciding
+#: whether to dispatch must count it (#3771). Only callers that do not queue
+#: behind the pipeline's `concurrency` group opt in, via `include_in_flight`:
+#: to a run inside that group every other unfinished run is queued *behind*
+#: it, and deferring to those deadlocks the cut (see `run_claims_tip`).
 IN_FLIGHT_RUN_STATUSES = ("queued", "in_progress", "waiting", "requested", "pending")
 
 DOCS_ANCHOR = "docs/cloud.md#pypi-publishing-rc-and-stable"
@@ -413,6 +417,7 @@ def select_last_published_sha(
     payload: dict[str, Any],
     channel: str = "rc",
     exclude_run_id: str | int = "",
+    include_in_flight: bool = False,
 ) -> str:
     """The commit the last successful publish of `channel` built.
 
@@ -428,13 +433,16 @@ def select_last_published_sha(
     records which one it was (see `_RC_RUN_TITLE_RE` -- the publish
     workflow's `run-name:` is load-bearing for this and is shape-tested).
 
-    A run that is still *in flight* claims its tip too (`run_claims_tip`,
-    #3771): it has no conclusion yet, but it is already resolving or
-    uploading a version for that commit, so treating it as "nothing published
-    here" is what let two overlapping runs cut rc7 and rc8 from one tip. The
-    publish workflow's `concurrency:` group is the primary fix -- this is the
-    layer that also covers callers which do not queue behind it, such as the
-    autopilot's preflight.
+    Overlapping cuts are stopped by the publish workflow's `concurrency:`
+    group, not here: it makes a second dispatch *queue*, so by the time that
+    run evaluates this the first one has finished and is in the history
+    (#3771). A caller inside that group therefore counts finished successes
+    only -- every other unfinished run in its listing is queued *behind* it.
+
+    `include_in_flight` is for the one caller that is not inside the group:
+    the autopilot's preflight decides whether to dispatch at all, so nothing
+    makes it wait, and it must treat a cut that has started as owning its tip
+    (`run_claims_tip`).
 
     `exclude_run_id` drops the caller's own run, which is already listed as
     in-progress-then-success by the time a later run reads this.
@@ -445,7 +453,7 @@ def select_last_published_sha(
         run
         for run in runs
         if run_published_channel(run, resolved)
-        and run_claims_tip(run)
+        and run_claims_tip(run, include_in_flight=include_in_flight)
         and str(run.get("id", "")) != str(exclude_run_id or "")
         and run.get("head_sha")
     ]
@@ -473,17 +481,23 @@ def run_published_channel(run: dict[str, Any], channel: str) -> bool:
     return bool(title_re.match(title))
 
 
-def run_claims_tip(run: dict[str, Any]) -> bool:
+def run_claims_tip(run: dict[str, Any], include_in_flight: bool = False) -> bool:
     """Whether `run` has taken its head commit's candidate, or is taking it.
 
-    True for a run that succeeded, and for one that is still in flight
-    (#3771): a cut that is mid-resolve or mid-upload owns that tip's version
-    just as firmly as a finished one, and the second run of a race must see
-    it. A run that *failed* is deliberately false -- its number was never
-    used, so a retry on the same tip must be free to publish. That asymmetry
-    is the whole point: unfinished blocks, unsuccessful does not.
+    A run that succeeded always claims its tip. A run that *failed* never
+    does -- its number was never used, so a retry on the same tip must be
+    free to publish.
+
+    `include_in_flight` additionally claims a cut that has started and not
+    concluded. It is off by default because it is only sound for a caller
+    outside the pipeline's `concurrency` group (#3771). Inside the group the
+    caller is the only run that can be executing, so any other unfinished run
+    it sees is queued *behind* it and has not published anything: deferring
+    to that one is backwards, and mutual -- the running cut skips for the
+    queued one, the queued cut then skips for the first one's success, and a
+    tip with no candidate at all is left looking permanently claimed.
     """
-    if str(run.get("status") or "").strip().lower() in IN_FLIGHT_RUN_STATUSES:
+    if include_in_flight and str(run.get("status") or "").strip().lower() in IN_FLIGHT_RUN_STATUSES:
         return True
     return run.get("conclusion") == "success"
 
@@ -495,6 +509,7 @@ def fetch_last_published_sha(
     token: str = "",
     exclude_run_id: str | int = "",
     timeout: float = 30.0,
+    include_in_flight: bool = False,
 ) -> str:
     """Ask GitHub for the commit the last successful `channel` build published.
 
@@ -503,18 +518,23 @@ def fetch_last_published_sha(
     treating an API outage as "nothing published yet" would upload a
     redundant build every time the API is flaky.
 
+    The in-workflow guard calls this from inside the pipeline's `concurrency`
+    group, so it leaves `include_in_flight` off and counts finished successes
+    only -- the group is what guarantees the winning cut is already in this
+    listing (#3771).
+
     The listing is deliberately NOT narrowed to `status=success` server-side:
-    a run that is still in flight has no conclusion, so that filter hid
-    exactly the run a racing cut needs to see (#3771). `run_claims_tip` does
-    the filtering here instead, where in-flight and succeeded both count and
-    failed does not.
+    the filtering happens in `run_claims_tip`, which is the one place that
+    knows in-flight counts for some callers and never counts a failure. A
+    page therefore now holds runs of every status, so it is 100 rather than
+    30 -- a busy line would otherwise push the last real candidate off it.
     """
     import httpx
 
     event = CHANNEL_TRIGGER_EVENT[_check_channel(channel)]
     url = (
         f"https://api.github.com/repos/{repo}/actions/workflows/{workflow_file}"
-        f"/runs?event={event}&per_page=30"
+        f"/runs?event={event}&per_page=100"
     )
     headers = {
         "Accept": "application/vnd.github+json",
@@ -537,7 +557,9 @@ def fetch_last_published_sha(
         payload = response.json()
     except ValueError as exc:
         raise ReleaseCandidateError(f"GitHub returned invalid JSON for {url}: {exc}") from exc
-    return select_last_published_sha(payload, channel, exclude_run_id)
+    return select_last_published_sha(
+        payload, channel, exclude_run_id, include_in_flight=include_in_flight
+    )
 
 
 # --- The sprint autopilot's rc preflight (#3729) --------------------------
@@ -558,7 +580,11 @@ def autopilot_rc_preflight(
     instead of pointing at a run whose version nobody knows yet. The
     decision is the same tip comparison the pipeline itself enforces
     (`select_last_published_sha`), so a preflight that says "dispatch" and a
-    pipeline that then SKIPs cannot disagree about the same tip.
+    pipeline that then SKIPs cannot disagree about the same tip. It is
+    deliberately the *stricter* of the two, counting a cut that is still in
+    flight (#3771): the pipeline can afford to ignore one because a second
+    run queues behind its concurrency group, and this decision happens before
+    there is a run to queue.
 
     Inputs are handed in rather than fetched: the caller (the agent shell
     library) already has `gh`/`curl` authenticated, and this keeps the
@@ -574,7 +600,11 @@ def autopilot_rc_preflight(
             f"Refusing to plan a candidate from {branch!r} -- release branches (v3.0.0) only."
         )
     versions = [str(v) for v in published]
-    last_sha = select_last_published_sha(runs or {}, "rc")
+    # `include_in_flight` (#3771): this is the one caller that decides
+    # whether to dispatch *at all*, so it never queues behind the pipeline's
+    # concurrency group and nothing else stops it firing alongside a cut that
+    # is already resolving a version for this tip.
+    last_sha = select_last_published_sha(runs or {}, "rc", include_in_flight=True)
     head = (head_sha or "").strip()
     numbers = published_rc_numbers(release, versions)
     current = rc_version(release, numbers[-1]) if numbers else ""
