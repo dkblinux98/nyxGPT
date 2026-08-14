@@ -648,10 +648,11 @@ Homebrew's third-party tap gate (#3752), installs
 `nyxgpt-api`/`nyxgpt-web`, seeds `~/.nyxGPT/config.ini`, and starts both
 via `brew services`. This
 follows [the documented local remote-tap flow](homebrew.md#remote-tap)
-exactly -- it deliberately does **not** call `nyxgpt ops install`, whose
-macOS path builds a *local* tap from a repo checkout
-(`_install_homebrew_api` in `src/nyxgpt/ops.py`) that doesn't exist on a
-fresh instance.
+exactly, in the script itself: a fresh EC2 Mac has neither Homebrew nor
+`nyxgpt` on it, so the bootstrap installs the formulas directly rather than
+installing a CLI first only to have it do the same thing. (`nyxgpt ops
+install` reaches the same remote tap when it runs on a machine with no
+checkout -- `_install_homebrew_api` in `src/nyxgpt/ops.py`, #3759.)
 
 **Repo-less (CLAUDE.md, 2026-08-01):** neither script ever runs `git
 clone` -- the PyPI package and the remote Homebrew tap are the only

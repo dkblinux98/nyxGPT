@@ -69,13 +69,24 @@ keg), each Linux service gets a self-contained install root under
 `~/.nyxGPT/opt/<component>`:
 
 - `~/.nyxGPT/opt/nyxgpt-api/venv` -- a plain Python venv, `pip install`ed
-  from a freshly vendored `pyproject.toml` + `src/nyxgpt/` tree (not the
-  repo checkout's own editable `.venv`)
-- `~/.nyxGPT/opt/nyxgpt-web/build/nyxgpt-web-<version>` -- a vendored
-  `web/` tree, built fresh with `npm ci && npm run build`
+  from a `nyxgpt-api-<version>.tar.gz` source tarball (`pyproject.toml` +
+  `src/nyxgpt/` + `example.config.ini`), not from the repo checkout's own
+  editable `.venv`
+- `~/.nyxGPT/opt/nyxgpt-web/build/nyxgpt-web-<version>` -- the matching
+  `nyxgpt-web-<version>.tar.gz` (the `web/` tree), built fresh with
+  `npm ci && npm run build`
 
-Neither depends on the repo checkout existing or staying in place
-afterwards. Each also gets a small wrapper script
+Where those two tarballs come from depends on what the machine has:
+
+| Install | Tarball source |
+| --- | --- |
+| Artifact install (`pip install nyxgpt`) | the published `nyxgpt-api-<version>.tar.gz` / `nyxgpt-web-<version>.tar.gz` assets on that version's GitHub Release -- downloaded at install time, the same artifacts the Homebrew formulas install from |
+| Source checkout (`pip install -e .`) | vendored from the checkout, so a working tree's changes are what gets installed |
+
+The version is the one the running `nyxgpt` reports on an artifact install,
+and the checkout's declared `pyproject.toml` version in a checkout. Neither
+service depends on a repo checkout existing, at install time or afterwards
+(#3759). Each also gets a small wrapper script
 (`~/.nyxGPT/opt/<component>/bin/nyxgpt-<component>`) and a systemd --user
 unit installed to `~/.config/systemd/user/`.
 

@@ -1313,6 +1313,198 @@ def _create_dist_tarball(
     )
 
 
+# --- Artifact install: the same service tarballs, published (#3759) -----
+#
+# The native installers below build each service from a
+# `<name>-<version>.tar.gz` that `_create_dist_tarball` vendors out of the
+# checkout. An artifact install (`pip install nyxgpt`, the repo-less
+# portability requirement -- CLAUDE.md 2026-08-01) has no checkout to vendor
+# from: `REPO_ROOT` resolves *inside* the installed venv
+# (.../venv/lib/python3.11), where `src/nyxgpt`, `web/` and `pyproject.toml`
+# do not exist. That is what broke `nyxgpt cloud deploy` on EC2 (#3759): the
+# api install step died on `FileNotFoundError: .../lib/python3.11/src/nyxgpt`.
+#
+# The fix is not a second install recipe -- it is a second *source* for the
+# very same tarball. Every release and release candidate attaches
+# `nyxgpt-api-<version>.tar.gz` and `nyxgpt-web-<version>.tar.gz` to its
+# GitHub Release (release-artifacts.yml's homebrew-tap job for a release,
+# release-publish-pypi.yml's rc job for a candidate) -- byte-for-byte what
+# `_create_dist_tarball` produces locally, and exactly what the published
+# Homebrew formulas install from. So `_service_source_tarball` vendors from
+# the checkout when there is one and downloads the published asset when
+# there isn't; everything downstream (venv, pip install, npm build, wrapper,
+# unit) is unchanged and shared by both paths.
+RELEASE_ASSET_URL = (
+    "https://github.com/dkblinux98/nyxGPT/releases/download/{version}/{name}-{version}.tar.gz"
+)
+
+# The published Homebrew tap, macOS's artifact channel (docs/homebrew.md).
+# Used when `nyxgpt ops install` runs on macOS from an artifact install: the
+# local `file://` tap is built from a checkout, the remote one isn't.
+REMOTE_TAP = "dkblinux98/nyxgpt"
+
+
+def _has_vendorable_source(name: str) -> bool:
+    """True when `REPO_ROOT` holds the source `_create_dist_tarball` vendors for `name`.
+
+    Per service rather than one repo-wide "is this a checkout" flag,
+    because that is exactly the granularity of the failure: the api tarball
+    needs `pyproject.toml` + `src/nyxgpt/` + `example.config.ini`, the web
+    tarball needs `web/`, and each installer only cares about its own.
+    False means "artifact install" for that service -- see
+    `_service_source_tarball`.
+    """
+    if name == "nyxgpt-web":
+        return (REPO_ROOT / "web" / "package.json").is_file()
+    return (REPO_ROOT / "src" / "nyxgpt").is_dir() and (REPO_ROOT / "pyproject.toml").is_file()
+
+
+def _installed_distribution_version() -> str | None:
+    """Version of the installed `nyxgpt` distribution, or None if it isn't installed."""
+    try:
+        return importlib.metadata.version("nyxgpt")
+    except importlib.metadata.PackageNotFoundError:  # pragma: no cover - source tree only
+        return None
+
+
+def _native_service_version() -> str:
+    """The version the native `api`/`web` services are installed at.
+
+    A dev checkout answers with the checkout's declared `pyproject.toml`
+    version, so a version bump is picked up with no reinstall (the reason
+    `_read_project_version` reads the file rather than package metadata).
+    An artifact install has no `pyproject.toml` above the package -- where
+    `_read_project_version` would answer its deliberately implausible
+    "0.0.0" -- so the installed distribution's metadata version answers
+    instead. That is the release whose published tarballs
+    `_download_release_tarball` fetches, which keeps the services on the
+    same release as the `nyxgpt` that installed them.
+    """
+    if (REPO_ROOT / "pyproject.toml").is_file():
+        return _read_project_version()
+    return _installed_distribution_version() or _read_project_version()
+
+
+def _download_release_tarball(dest_dir: Path, name: str, version: str) -> Path:
+    """Download the published `<name>-<version>.tar.gz` release asset into `dest_dir/dist`.
+
+    Mirrors `_create_dist_tarball`'s contract -- same filename, same
+    `dist/` location, same returned path -- so the callers can't tell which
+    source produced the tarball. Downloads to a temp path and `replace()`s
+    it into position, so an interrupted download can never leave a
+    truncated archive behind for the next run to install from (the same
+    reason `_download_tool_binary` does it).
+
+    Raises RuntimeError with the URL and the underlying error when the
+    asset can't be fetched -- the caller turns that into an OpsResult
+    rather than letting a traceback stand in for a diagnosis.
+    """
+    dist_dir = dest_dir / "dist"
+    _ensure_dir(dist_dir)
+    tar_path = dist_dir / f"{name}-{version}.tar.gz"
+    url = RELEASE_ASSET_URL.format(name=name, version=version)
+    tmp = dist_dir / f".{name}-{version}.download"
+    try:
+        with httpx.stream("GET", url, follow_redirects=True, timeout=300.0) as resp:
+            resp.raise_for_status()
+            with tmp.open("wb") as fh:
+                for chunk in resp.iter_bytes():
+                    fh.write(chunk)
+        tmp.replace(tar_path)
+    except (httpx.HTTPError, OSError) as e:
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"Could not download the published {name} {version} artifact from {url} "
+            f"({type(e).__name__}: {e}). Check network access to github.com, and that "
+            f"{version} is a published release or release candidate."
+        ) from e
+    return tar_path
+
+
+def _service_source_tarball(dest_dir: Path, name: str, version: str) -> Path:
+    """Return the `<name>-<version>.tar.gz` a native installer builds `name` from.
+
+    Vendored from the checkout when one is present (the dev path, byte-for-
+    byte as before), downloaded from the published GitHub Release asset when
+    it isn't (the artifact path, #3759). Raises RuntimeError if the artifact
+    can't be obtained.
+    """
+    if _has_vendorable_source(name):
+        return _create_dist_tarball(dest_dir, name, version)
+    return _download_release_tarball(dest_dir, name, version)
+
+
+def _remote_tap_formula(name: str, version: str) -> str:
+    """The published tap's formula name for `name` at `version`.
+
+    Stable releases keep the plain name (`nyxgpt-api`); a release candidate
+    is published as its release line's candidate formula
+    (`3.0.0rc5` -> `nyxgpt-api@3.0.0rc`), so the two channels can coexist in
+    one tap without `brew install nyxgpt-api` ever resolving to a candidate
+    -- see docs/homebrew.md#candidate-channel and
+    `scripts/build_homebrew_artifacts.py`'s `formula_name`.
+    """
+    line, marker, _candidate = version.partition("rc")
+    return f"{name}@{line}rc" if marker else name
+
+
+def _install_from_remote_tap(name: str) -> list[OpsResult]:
+    """Install `name` from the published Homebrew tap and (re)start its service.
+
+    macOS's artifact-install path (#3759): `_install_homebrew_api`/`_web`
+    build a local `file://` tap out of the checkout, which an artifact
+    install doesn't have. The remote tap carries the same formulas built
+    from the same tarballs, so this is the identical install recipe with a
+    published source -- the documented macOS install
+    (docs/homebrew.md#install), run for the operator instead of handed to
+    them.
+    """
+    if _which("brew") is None:
+        return [OpsResult(False, "Homebrew not found", "")]
+
+    version = _native_service_version()
+    formula = _remote_tap_formula(name, version)
+    spec = f"{REMOTE_TAP}/{formula}"
+
+    cp = _run(["brew", "tap", REMOTE_TAP], check=False)
+    if cp.returncode != 0:
+        return [OpsResult(False, f"Failed to tap {REMOTE_TAP}", _cp_details(cp))]
+    # Homebrew gates formulas from third-party taps: without trust, `brew
+    # install` stops instead of installing (#3752). Tolerated on failure --
+    # Homebrew builds predating `tap-trust` have nothing to trust.
+    _run(["brew", "tap-trust", REMOTE_TAP], check=False, expected=True)
+
+    cp = _run(["brew", "install", spec], check=False)
+    if cp.returncode != 0:
+        # An already-installed formula that the tap has since moved on from
+        # is an upgrade, not an install, and brew says so rather than doing
+        # it -- so try that before reporting a failure.
+        cp_upgrade = _run(["brew", "upgrade", spec], check=False)
+        if cp_upgrade.returncode != 0:
+            return [
+                OpsResult(
+                    False,
+                    f"Failed to install {spec} from the published tap",
+                    f"{_cp_details(cp)}\n{_cp_details(cp_upgrade)}",
+                )
+            ]
+
+    detail = f"version {version}"
+    if formula != name:
+        # brew names a service after its formula, so a candidate keg's
+        # service is `nyxgpt-api@3.0.0rc`, not `nyxgpt-api` -- which is what
+        # `nyxgpt ops status` and the self-heal watchdog look for.
+        detail += (
+            f"\nCandidate channel: the service is named {formula} after its formula, "
+            "so `nyxgpt ops status` (which tracks the stable service names) reports "
+            "this component as not running. See docs/homebrew.md#candidate-channel."
+        )
+    results = [OpsResult(True, f"Installed {formula} from {REMOTE_TAP}", detail)]
+    results.extend(_restart_brew_service(formula))
+    return results
+
+
 def _brew_install_or_reinstall(spec: str, name: str, *, sha256: str, marker_dir: Path) -> str:
     """`brew install`/`reinstall` formula `name`, skipping the work when unchanged.
 
@@ -1492,7 +1684,10 @@ def _install_homebrew_api(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResul
 
     template = REPO_ROOT / "homebrew" / "nyxgpt-api.rb"
     if not template.exists():
-        return [OpsResult(False, "Missing homebrew/nyxgpt-api.rb", str(template))]
+        # No checkout to build a local tap from -- an artifact install
+        # (`pip install nyxgpt`) installs the published formula instead of
+        # failing on a missing template (#3759).
+        return _install_from_remote_tap("nyxgpt-api")
 
     tap_dir = _tap_repo(tap)
     version = _read_project_version()
@@ -1564,7 +1759,8 @@ def _install_homebrew_web(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResul
 
     template = REPO_ROOT / "homebrew" / "nyxgpt-web.rb"
     if not template.exists():
-        return [OpsResult(False, "Missing homebrew/nyxgpt-web.rb", str(template))]
+        # Artifact install -- see `_install_homebrew_api` above (#3759).
+        return _install_from_remote_tap("nyxgpt-web")
 
     tap_dir = _tap_repo(tap)
     version = _read_project_version()
@@ -2157,15 +2353,20 @@ def _install_native_api_systemd() -> list[OpsResult]:
     """Build and install a self-contained venv for `nyxgpt-api` on Linux, then
     (re)start its systemd --user unit.
 
-    Linux twin of `_install_homebrew_api`: vendors `pyproject.toml` +
-    `src/nyxgpt/` into `~/.nyxGPT/opt/nyxgpt-api` (reusing
-    `_create_dist_tarball` -- it isn't brew-specific, just tarball-building),
-    creates a plain venv there, `pip install`s the vendored tarball into it,
-    copies `example.config.ini` next to the installed package
-    (`config_wizard`'s schema-source resolution finds it there with no repo
-    root above the venv, mirroring the brew formula's own fix, #3406), writes
-    the wrapper script the systemd unit execs, then installs/reloads the
-    unit.
+    Linux twin of `_install_homebrew_api`: takes the `nyxgpt-api` source
+    tarball (`pyproject.toml` + `src/nyxgpt/` + `example.config.ini`) into
+    `~/.nyxGPT/opt/nyxgpt-api`, creates a plain venv there, `pip install`s
+    that tarball into it, copies `example.config.ini` next to the installed
+    package (`config_wizard`'s schema-source resolution finds it there with
+    no repo root above the venv, mirroring the brew formula's own fix,
+    #3406 -- an artifact install carries it as package data instead, so
+    there is nothing to copy), writes the wrapper script the systemd unit
+    execs, then installs/reloads the unit.
+
+    The tarball is vendored from the checkout on a dev machine and
+    downloaded from the published release asset on an artifact install
+    (`_service_source_tarball`, #3759) -- the install recipe below is the
+    same either way.
 
     Unlike `_install_homebrew_api`'s sha256-gated skip-if-unchanged
     (`_brew_install_or_reinstall`), this always rebuilds -- a slower but
@@ -2174,8 +2375,11 @@ def _install_native_api_systemd() -> list[OpsResult]:
     """
     results: list[OpsResult] = []
     root = _linux_native_root("nyxgpt-api")
-    version = _read_project_version()
-    tar = _create_dist_tarball(root, "nyxgpt-api", version)
+    version = _native_service_version()
+    try:
+        tar = _service_source_tarball(root, "nyxgpt-api", version)
+    except RuntimeError as e:
+        return [OpsResult(False, "Could not obtain the nyxgpt-api artifact", str(e))]
     venv_dir = root / "venv"
 
     cp = _run(["python3", "-m", "venv", str(venv_dir)], check=False)
@@ -2234,10 +2438,12 @@ def _install_native_web_systemd() -> list[OpsResult]:
     """Build and install a self-contained web build for `nyxgpt-web` on Linux,
     then (re)start its systemd --user unit.
 
-    Linux twin of `_install_homebrew_web`: vendors the `web/` source tree
-    (minus gitignored build artifacts, see `_WEB_VENDOR_EXCLUDES`) into a
-    staging directory (reusing `_create_dist_tarball`), extracts it, runs
-    `npm ci`/`npm run build` inside it, then -- only once that build has
+    Linux twin of `_install_homebrew_web`: takes the `nyxgpt-web` source
+    tarball (the `web/` tree minus its gitignored build artifacts, see
+    `_WEB_VENDOR_EXCLUDES`) -- vendored from the checkout on a dev machine,
+    downloaded from the published release asset on an artifact install
+    (`_service_source_tarball`, #3759) -- extracts it into a staging
+    directory, runs `npm ci`/`npm run build` inside it, then -- only once that build has
     succeeded -- swaps it into `~/.nyxGPT/opt/nyxgpt-web/build` in place of
     the previous one, writes the wrapper script the systemd unit execs, and
     installs/reloads the unit. Always rebuilds -- see
@@ -2258,8 +2464,11 @@ def _install_native_web_systemd() -> list[OpsResult]:
 
     results: list[OpsResult] = []
     root = _linux_native_root("nyxgpt-web")
-    version = _read_project_version()
-    tar = _create_dist_tarball(root, "nyxgpt-web", version)
+    version = _native_service_version()
+    try:
+        tar = _service_source_tarball(root, "nyxgpt-web", version)
+    except RuntimeError as e:
+        return [OpsResult(False, "Could not obtain the nyxgpt-web artifact", str(e))]
 
     build_dir = root / "build"
     staging_dir = root / "build.staging"
@@ -2747,7 +2956,19 @@ def _ensure_web_deps() -> list[OpsResult]:
     results: list[OpsResult] = []
     web_dir = REPO_ROOT / "web"
     if not web_dir.exists():
-        return [OpsResult(True, "Web directory not present (skipped)", str(web_dir))]
+        # Artifact install: there is no checkout, so there is no `web/` npm
+        # project to prime -- and reporting the path REPO_ROOT resolved to
+        # inside the installed venv only reads as a bug (#3759). The
+        # nyxgpt-web service installs its own dependencies from the
+        # published web artifact (`_install_native_web`).
+        return [
+            OpsResult(
+                True,
+                "Web deps: not applicable to an artifact install (no repo checkout)",
+                "The nyxgpt-web service installs its own dependencies from the published "
+                "web artifact; web/node_modules is a dev-checkout concern.",
+            )
+        ]
 
     if _which("node") is None:
         return [
@@ -2906,7 +3127,17 @@ def _ensure_mcp_deps() -> list[OpsResult]:
     pkg_json = root_dir / "package.json"
 
     if not pkg_json.exists():
-        return [OpsResult(True, "No root package.json found (skipped)", str(root_dir))]
+        # Artifact install -- same reasoning as `_ensure_web_deps` (#3759).
+        # The MCP servers are repo-local dev tooling, never part of an
+        # installed deployment.
+        return [
+            OpsResult(
+                True,
+                "MCP deps: not applicable to an artifact install (no repo checkout)",
+                "The Claude Code MCP servers are repo-local dev tooling, not a runtime "
+                "dependency of an installed nyxGPT.",
+            )
+        ]
 
     if _which("npm") is None:
         return [

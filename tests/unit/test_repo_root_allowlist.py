@@ -55,6 +55,15 @@ _ALLOWLIST: dict[str, set[str]] = {
         # for an installed package.
         'pyproject = REPO_ROOT / "pyproject.toml"',
         'pyproject_path = REPO_ROOT / "pyproject.toml"',
+        # _has_vendorable_source / _native_service_version: the *detection*
+        # of whether a checkout is present at all (#3759). These are the
+        # inverse of a REPO_ROOT-relative lookup -- they exist so the
+        # native api/web installers stop assuming one and fall back to the
+        # published release artifact (`_service_source_tarball`) when
+        # REPO_ROOT resolves inside an installed venv instead of a checkout.
+        'return (REPO_ROOT / "web" / "package.json").is_file()',
+        'return (REPO_ROOT / "src" / "nyxgpt").is_dir() and (REPO_ROOT / "pyproject.toml").is_file()',
+        'if (REPO_ROOT / "pyproject.toml").is_file():',
         # `ops._create_dist_tarball`: the builder itself moved to the
         # stdlib-only `release_tarball` module (#3741), but every local
         # install path here calls it expecting "vendor from the checkout
