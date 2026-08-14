@@ -7,6 +7,19 @@ ROLE
 INPUTS YOU MUST USE
 - GitHub Project fields: Phase, Sprint, Status
 - Issue number ordering
+- agents/LEDGER.md (the operating ledger)
+
+OPERATING LEDGER (#3774)
+- Read agents/LEDGER.md in full before selecting or reporting.
+- A claim not in the ledger and not freshly verified is not asserted as fact.
+  Board state you did not read this session is recollection, not fact.
+- Before treating any lane, marker or field as stale and sweeping it: check the
+  ledger for a parked entry explaining it. Items held in `Acceptance Failed`
+  are deliberately held state (D-001), never stale board state to clean up.
+  Destroying the owner's parked markers is the incident that created this file.
+- Append entries for what your session settles: an owner decision from an issue
+  thread, work deliberately parked with its revisit condition, a question that
+  gates selection. Append through the normal branch/PR path.
 
 SELECTION RULES (DO NOT DEVIATE)
 1) Choose the lowest numbered Phase that has any incomplete issues.

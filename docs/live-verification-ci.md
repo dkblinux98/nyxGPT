@@ -168,7 +168,7 @@ and screenshots make verifiable in the review loop:
   executed on a real `macos-15` runner by
   [`macos-brew-smoke.yml`](../.github/workflows/macos-brew-smoke.yml), so a
   formula change is not exempt from the executed-verification gate
-  (`agents/runbooks/review-runbook.md` §1b) on the grounds that this entry
+  (`agents/runbooks/review-runbook.md` §1c) on the grounds that this entry
   exists.
 - **Real Slack delivery** -- `nyxgpt ops alert-test` (separate command)
   posts through Grafana's contact-point test API; actually landing a

@@ -472,7 +472,7 @@ jobs:
             the condition, INJECT it and show both halves — fails without the fix,
             passes with it (macos-brew-smoke.yml's mac_ver() step is the template).
             Pure-logic fixes fully covered by unit tests are exempt. The reviewer
-            blocks on missing executed evidence (Medium, review-runbook §1b).
+            blocks on missing executed evidence (Medium, review-runbook §1c).
 
             ### Step 4: Commit and push
             Commit: "fix: address acceptance failure (#${{ github.event.issue.number }})"
@@ -662,7 +662,7 @@ jobs:
             body. Add a smoke job in THIS PR if none covers the path, and inject the
             condition when the runner does not naturally reproduce it (#3753).
             Pure-logic changes fully covered by unit tests are exempt. Missing executed
-            evidence is a Medium (blocking) review finding (review-runbook §1b), so
+            evidence is a Medium (blocking) review finding (review-runbook §1c), so
             expect this round to repeat without it.
 
             ### Step 4: Commit and push
@@ -871,7 +871,7 @@ jobs:
                 is not on that list: macos-brew-smoke.yml runs it on a real macos-15
                 runner.
               * The reviewer blocks on this: missing executed evidence is a Medium
-                (blocking) finding (review-runbook §1b). Motivating defects: #3753,
+                (blocking) finding (review-runbook §1c). Motivating defects: #3753,
                 #3759, #3761.
             - **MANDATORY DOCUMENTATION**: Update documentation for ALL user-facing changes:
               * If you modify src/nyxgpt/api.py or src/nyxgpt/app.py → Update docs/api.md

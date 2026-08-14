@@ -7,6 +7,40 @@ This is the procedural “how” for implementing issues. Authority is defined i
 - Up to date with remote
 - Services healthy (if applicable)
 - Tests passing before starting
+- **`agents/LEDGER.md` read in full** (see §0a)
+
+## 0a) The operating ledger (#3774)
+
+`agents/LEDGER.md` is the system of record for cross-session memory. Your own
+recollection of "how this project works" is untrusted input wherever the ledger
+or the live system can answer instead.
+
+**Read it before implementing.** Then, for the whole session:
+
+- **A claim that is not in the ledger and not freshly verified is not asserted
+  as fact.** Before writing a project fact into code, a doc, a commit message,
+  a PR body or a review reply: find its entry, or verify it this session and be
+  able to name how, or say plainly that you have not checked.
+- **Check the Superseded section before "correcting" anything.** Re-asserting a
+  retired belief (S-001..S-004) is the exact failure this file exists to stop.
+- **Do not overwrite state you did not create.** A lane, marker or field that
+  looks stale to you may be deliberately parked — check for a `P-` entry first.
+
+**Append in the same PR** when your work establishes any of:
+
+| You did this | Entry kind |
+| --- | --- |
+| The owner settled something in the issue thread | Decision (`D-`) |
+| You established a fact the hard way (a check, a run, a read) | Verification (`V-`) — record the **method** |
+| You deliberately left something undone | Parked (`P-`) — record the **revisit condition** |
+| You hit a question you could not close | Open question (`Q-`) |
+
+Ledger entries ride in whatever PR produced the fact — no separate issue, and
+in scope by definition (the review runbook §1b tells the reviewer the same).
+Keep entries load-bearing: **facts and decisions, never narration**. What you
+did is already recorded by the commits, the PR and the issue thread; what you
+*learned* is not recorded anywhere else. Entry schema and granularity rules are
+in the ledger itself.
 
 ## 1) Pick up work
 - Ensure issue is assigned to developer-agent and status is In Progress.
@@ -464,7 +498,7 @@ deferring to that list. Note what is *not* on it: the Homebrew keg install
 runs on a real `macos-15` runner in `macos-brew-smoke.yml`, so a formula
 change cannot claim macOS is untestable.
 
-The reviewer runs the same gate (`agents/runbooks/review-runbook.md` §1b) and
+The reviewer runs the same gate (`agents/runbooks/review-runbook.md` §1c) and
 missing executed evidence is a Medium (blocking) finding.
 
 ## 5) Documentation

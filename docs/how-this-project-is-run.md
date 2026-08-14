@@ -78,6 +78,43 @@ Each records the problem, the constraints inherited from prior decisions,
 the options considered, and the owner's approval, so a later reader can
 see why a choice was made without reconstructing it from commit history.
 
+## The operating ledger
+
+Decision records explain *why* a lasting choice was made. The **operating
+ledger**, [agents/LEDGER.md](../agents/LEDGER.md), does something narrower and
+more operational: it is the agent system's memory between sessions.
+
+An agent session starts with no recollection of the last one. Left to itself it
+reconstructs project state — what was decided, what is published, what is
+deliberately not being worked — by re-deriving it from artifacts, and when the
+artifacts are incomplete it fills the gaps and states the result with the same
+confidence as something it actually checked. Nothing distinguishes a
+reconstruction from a verified fact, which makes the failure invisible from
+both sides.
+
+The ledger moves that memory into the repository. It records four things:
+
+- **Decisions** — what was settled, when, and by whom.
+- **Verifications** — a fact, the method that established it, and the condition
+  that makes it stale. The method is mandatory and must be repeatable.
+- **Parked items** — work deliberately not being done, with the reason and the
+  condition that would revive it, so nobody re-proposes it every few weeks.
+- **Open questions** — what is unresolved and who can answer it.
+
+Plus a **Superseded** section: beliefs this project genuinely held and has since
+retired. Entries are never deleted, only moved there — a deleted entry becomes
+re-derivable, and gets re-derived wrong.
+
+Every agent reads it at session start, and the binding rule is that **a claim
+not in the ledger and not freshly verified is not asserted as fact**. Agents
+append entries through the normal branch/PR path, riding in whatever PR
+produced the fact.
+
+It stays short on purpose: load-bearing facts and decisions, never narration of
+what a session did (commits, PRs and issue threads already record that). The
+entry schema, granularity rules and pruning rule live in the ledger itself; the
+doctrine behind it is `product_management/AGENTIC_SDLC_DESIGN.md` §9b.
+
 ## Definition of Done, and the acceptance-failure / improvement taxonomy
 
 The

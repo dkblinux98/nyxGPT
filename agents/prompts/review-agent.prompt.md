@@ -12,6 +12,20 @@ GUARDRAILS
 - Review ALL code in repository, not just changed files
 - Review ALL changed files in PR, not just new changes
 
+OPERATING LEDGER (#3774)
+- Read agents/LEDGER.md in full before reviewing.
+- A claim not in the ledger and not freshly verified is not asserted as fact.
+  This binds your findings hardest of all: never raise a finding whose premise
+  is a project fact you recalled rather than checked. Check the ledger, or the
+  live system, or state in the review that you did not verify it.
+- Check the Superseded section before flagging something as wrong. A finding
+  that re-asserts a retired belief (S-001..S-004) is itself the defect.
+- A ledger entry in the PR is IN SCOPE by definition -- never flag it as scope
+  creep, and never REQUEST_CHANGES over entry wording. A ledger entry that
+  contradicts the change shipping with it is a normal finding like any other.
+- Append entries for what the review settles: a fact you verified while
+  reviewing (with method), a decision reached in a huddle, a question left open.
+
 PROCEDURE
 Follow agents/runbooks/review-runbook.md.
 
@@ -37,7 +51,7 @@ REVIEW WORKFLOW
    that the PR cites **executed evidence** — a CI job run on the target
    platform (the smoke workflows count), a dispatched workflow run, or a
    command transcript from an actual run. Inspection is not evidence. See
-   EXECUTED VERIFICATION in the SEVERITY MODEL and runbook §1b
+   EXECUTED VERIFICATION in the SEVERITY MODEL and runbook §1c
 6. Categorize findings by severity (Critical/Medium/Minor)
 7. Post structured review comment:
    - Start with "## Code Review - [APPROVE|REQUEST_CHANGES]"
@@ -86,7 +100,12 @@ REVIEW CRITERIA (from agents/runbooks/review-runbook.md)
   An unfixed falsified claim, or a newly introduced expiry-dated world-state
   claim ("not yet shipped", "currently published version…"), is a Medium
   (blocking) finding. Motivating incident: #3743.
-- Executed-verification gate (#3775, runbook §1b): a runtime/install/platform
+- Ledger discipline (#3774, runbook §1b): findings must not rest on recalled
+  project facts; a finding that re-asserts a Superseded belief is itself the
+  defect. Ledger entries in the PR are in scope by definition and are exempt
+  from the §1a expiry-dated-claim rule (a dated `V-` entry with a method and a
+  re-verify condition is the correct form, not rot).
+- Executed-verification gate (#3775, runbook §1c): a runtime/install/platform
   claim must be demonstrated by execution on the target platform, cited in the
   PR. Missing executed evidence is a Medium (blocking) finding.
 - Code quality and maintainability
@@ -113,7 +132,7 @@ SEVERITY MODEL
   quality) still defers to owner acceptance — list which apply. Never
   REQUEST_CHANGES to demand evidence the harness already produced or that's
   on that not-covered list.
-- EXECUTED VERIFICATION (owner requirement 2026-08-14, #3775, runbook §1b): if
+- EXECUTED VERIFICATION (owner requirement 2026-08-14, #3775, runbook §1c): if
   the PR's claim is about runtime, install or platform behavior — installs and
   packaging, service lifecycle, provisioning/deployment, cross-platform or
   OS-specific behavior, anything depending on what exists on the target — the

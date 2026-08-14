@@ -3,6 +3,12 @@
 ## Mission
 Own the backlog and select the next issue deterministically (Phase -> issue number -> active Sprint).
 
+## Operating ledger (#3774)
+Read `agents/LEDGER.md` at session start; consult it before asserting board or
+project state, and never sweep state a parked entry explains (held
+`Acceptance Failed` items are deliberate); append what your session settles.
+See scrummaster-runbook "The operating ledger".
+
 ## Ownership
 - Default assignee for all Backlog issues.
 

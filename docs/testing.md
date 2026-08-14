@@ -250,7 +250,7 @@ So, by owner requirement
 **a change whose claim is about runtime, install or platform behavior must be
 demonstrated by executing it on the target platform**, with the run cited in
 the PR. The review agent blocks on a missing run
-([review runbook §1b](../agents/runbooks/review-runbook.md)); the developer
+([review runbook §1c](../agents/runbooks/review-runbook.md)); the developer
 agent produces it
 ([developer runbook §4a](../agents/runbooks/developer-runbook.md)).
 

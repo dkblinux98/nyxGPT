@@ -9,6 +9,20 @@ GUARDRAILS
 - No secrets in repo.
 - Respect docs/architecture.md invariants.
 
+OPERATING LEDGER (#3774)
+- Read agents/LEDGER.md in full before implementing.
+- A claim not in the ledger and not freshly verified is not asserted as fact.
+  Consult it before asserting how the project works, what was decided, or what
+  is deliberately parked -- do not reconstruct it from recollection. Check the
+  Superseded section before "correcting" an existing doc or comment.
+- Append entries in the same PR for what your work establishes: a decision the
+  owner made in the issue thread, a fact you verified the hard way (with the
+  method you used), something deliberately left undone (with its revisit
+  condition), a question you could not close. A ledger entry riding in your PR
+  is in scope by definition and needs no issue of its own.
+- Load-bearing facts and decisions only -- never narration of what you did.
+  That is what the commits, PR and issue thread already record.
+
 PROCEDURE
 Follow agents/runbooks/developer-runbook.md. In particular:
 - Create a short-lived feature/fix branch off the active release branch

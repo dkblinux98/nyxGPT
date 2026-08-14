@@ -372,7 +372,7 @@ jobs:
               the PR does not fix it (inverse-claims check, review-runbook §1a)
             - The PR makes a runtime/install/platform behavior claim with NO
               executed evidence on the target platform (executed-verification
-              gate, review-runbook §1b)
+              gate, review-runbook §1c)
 
             Do not APPROVE until all checks pass, tests are updated, AND documentation is complete.
 
@@ -418,7 +418,7 @@ jobs:
             Status` section, so "no falsified claims" is distinguishable from
             "never checked".
 
-            ## Executed-verification gate (REQUIRED, review-runbook.md §1b, #3775)
+            ## Executed-verification gate (REQUIRED, review-runbook.md §1c, #3775)
 
             Your review is an *inspection*. Inspection reads a formula and
             concludes the venv bootstraps; it cannot see `ensurepip` exit 1 on
@@ -527,7 +527,7 @@ jobs:
             - Inverse-claims check (§1a): the change does not leave falsified
               claims elsewhere in the tree — check the change's *consequences*
               for existing prose, not only its own surfaces
-            - Executed-verification gate (§1b): a runtime/install/platform
+            - Executed-verification gate (§1c): a runtime/install/platform
               claim is demonstrated by execution on the target platform and
               cited in the PR — inspection alone is not evidence
             - Reasonable maintainability
@@ -607,7 +607,7 @@ jobs:
             - Not-CI-coverable items deferred to owner acceptance: [NONE, or
               the specific entries from docs/live-verification-ci.md]
             [If a runtime/install/platform claim has no executed evidence on
-            its target, this BLOCKS APPROVE (Medium) — §1b]
+            its target, this BLOCKS APPROVE (Medium) — §1c]
 
             ${{ steps.previous_review.outputs.is_rereview == 'true' && '
             ### Fix Verification (for re-reviews)
@@ -667,7 +667,7 @@ jobs:
               * The change falsifies a claim elsewhere in the tree and the PR
                 does not fix it (inverse-claims check, §1a/#3743)
               * A runtime/install/platform claim has no executed evidence on
-                its target platform (executed-verification gate, §1b/#3775)
+                its target platform (executed-verification gate, §1c/#3775)
             - For re-reviews: MUST verify ALL previous Critical/Medium issues are resolved
             - Be specific with file paths and line numbers for all issues
             - Explain how to fix blocking issues

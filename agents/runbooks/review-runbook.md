@@ -56,7 +56,7 @@ The review-agent OWNS the review process:
 - **End-to-end usability (Definition of Done, CLAUDE.md):** nyxGPT user features must be usable from the web interface; ops/SRE features must be operable from the SRE/admin dashboard. A backend-only implementation is a Medium (blocking) finding unless the issue explicitly scopes it backend-only with owner approval and a linked frontend follow-up issue.
 - **Executed-verification gate (#3775):** a change whose claim is about
   runtime, install or platform behavior must be demonstrated by *execution on
-  the target platform*, not by inspection. See §1b — missing executed evidence
+  the target platform*, not by inspection. See §1c — missing executed evidence
   on an in-scope change is a Medium (blocking) finding.
 - **Workflow actor gates (#3600, going-public hardening):** any new or edited `.github/workflows/*.yml` job triggered by `issues`, `issue_comment`, `pull_request`, or `pull_request_review*` that carries write permissions or a secret-backed `GH_TOKEN` MUST gate its `if:` on the actor's identity (`comment.user.login`/`review.user.login` against `vars.HUMAN_OWNER` or the relevant agent var) — a trigger phrase with no author check is a Medium (blocking) finding. See `agents/runbooks/developer-runbook.md` §3b for the pattern and the fork-PR guard requirement on merge/review paths.
 - **Live verification (#3555/P6-18):** if the PR touches observability, metrics, or a UI surface, run `nyxgpt ops verify` yourself and cite its output/screenshots — see §2's "Live verification" entry below for the full rule.
@@ -118,7 +118,43 @@ pointer form; pre-existing ones are Minor unless *this* PR falsifies them, in
 which case they are Medium under the rule above. See
 `agents/runbooks/developer-runbook.md` §5 for the authoring side.
 
-## 1b) Executed-verification gate: was the claim ever run? (#3775)
+## 1b) The operating ledger (#3774)
+
+Read `agents/LEDGER.md` in full before reviewing. It is the system of record
+for cross-session memory, and it binds your findings harder than anything else
+in this runbook.
+
+**Never raise a finding whose premise is a project fact you recalled rather
+than checked.** A confidently-wrong REQUEST_CHANGES costs a full developer
+cycle. Before asserting that the PR contradicts how this project works: find
+the ledger entry, or verify against the live system this session and cite what
+you ran, or say in the review that you did not verify it.
+
+**Check the Superseded section before flagging something as wrong.** A finding
+that re-asserts a retired belief (S-001..S-004 — e.g. "agents can't write
+workflow files", "improvements don't gate acceptance") is itself the defect,
+not the code.
+
+**Ledger entries in the PR are in scope by definition.** An entry riding along
+in a fix PR needs no issue of its own and is never scope creep. Do not
+REQUEST_CHANGES over entry wording, ID choice or placement. Two things *are*
+normal findings: an entry that contradicts the change shipping with it, and a
+`V-` entry with no usable `Method` (an unrepeatable method is an unverified
+claim wearing a verification's clothes).
+
+**Carve-out from §1a's expiry rule.** `agents/LEDGER.md` is the one file where
+dated world-state facts are correct rather than rot: every `V-` entry carries
+its date, its method and its `Re-verify when` condition, which is precisely the
+pointer-to-living-source discipline §1a asks for, applied to facts no living
+source states. Do not flag a dated ledger verification as an expiry-dated
+claim. Do flag a ledger entry that hardcodes state a living source already
+answers — the current release candidate, an issue's status, what is on PyPI
+right now — since the entry should point at that source instead.
+
+**Append** entries for what the review settles: a fact you verified while
+reviewing (with method), a decision reached in a huddle, a question left open.
+
+## 1c) Executed-verification gate: was the claim ever run? (#3775)
 
 Review in this pipeline means inspection. Inspection reads a formula and
 concludes the venv bootstraps; it cannot see `ensurepip` exit 1 on stock

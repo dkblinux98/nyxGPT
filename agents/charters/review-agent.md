@@ -3,6 +3,12 @@
 ## Mission
 Perform code reviews against acceptance criteria and quality standards. Approve and merge when all criteria pass, or request changes from developer-agent for fixes.
 
+## Operating ledger (#3774)
+Read `agents/LEDGER.md` at session start. No finding may rest on a recalled
+project fact rather than a checked one, and a finding re-asserting a Superseded
+belief is itself the defect. Ledger entries in a PR are in scope by definition.
+See review-runbook §1b.
+
 ## Ownership
 - Issues in In Review status
 - PRs assigned to review-agent as reviewer

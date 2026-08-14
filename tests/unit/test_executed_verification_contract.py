@@ -117,14 +117,14 @@ def test_definition_of_done_requires_executed_verification(claude_md: str) -> No
 
 
 def test_review_runbook_has_executed_verification_section(review_runbook: str) -> None:
-    assert "## 1b) Executed-verification gate" in review_runbook, (
+    assert "## 1c) Executed-verification gate" in review_runbook, (
         "review-runbook.md must carry a dedicated executed-verification "
         "section; inspection cannot see install/runtime failures"
     )
 
 
 def _runbook_gate_section(review_runbook: str) -> str:
-    section = review_runbook.split("## 1b)", 1)[1].split("## 2)", 1)[0]
+    section = review_runbook.split("## 1c)", 1)[1].split("## 2)", 1)[0]
     return _flowed(section)
 
 
