@@ -183,29 +183,84 @@ jobs:
           # The one exception is a release that already carries both tarballs
           # (a historic release, or a re-run of this job): serving from it
           # keeps the formulas pointing where they already point.
-          WANT_API="nyxgpt-api-${VERSION}.tar.gz"
-          WANT_WEB="nyxgpt-web-${VERSION}.tar.gz"
-          HAVE=$(gh release view "$VERSION" -R "$REPO" --json assets \
-            --jq '[.assets[].name] | join(" ")')
+          #
+          # Whether the serving release ALREADY carries the bytes is the other
+          # half of the answer, and it decides how the formulas get their
+          # sha256. Tarball builds are not byte-reproducible (gzip stamps a
+          # timestamp, tar members carry the checkout's mtimes), so stamping a
+          # re-run's fresh build against assets published by an earlier run
+          # would ship formulas that fail `brew install` checksum verification
+          # on every machine -- and immutability means the served bytes can
+          # never be corrected to match. When the assets are already there,
+          # they are downloaded and stamped against instead (#3763).
+          have_both() {
+            case " $1 " in
+              *" nyxgpt-api-${VERSION}.tar.gz "*)
+                case " $1 " in
+                  *" nyxgpt-web-${VERSION}.tar.gz "*) return 0 ;;
+                esac ;;
+            esac
+            return 1
+          }
+          assets_on() {
+            gh release view "$1" -R "$REPO" --json assets \
+              --jq '[.assets[].name] | join(" ")' 2>/dev/null || echo ""
+          }
+
+          HAVE=$(assets_on "$VERSION")
           echo "assets on ${VERSION}: ${HAVE:-(none)}"
-          ASSET_TAG=$(python scripts/build_homebrew_artifacts.py --asset-tag "$VERSION")
-          case " $HAVE " in
-            *" $WANT_API "*)
-              case " $HAVE " in
-                *" $WANT_WEB "*) ASSET_TAG="$VERSION" ;;
-              esac ;;
-          esac
+          if have_both "$HAVE"; then
+            ASSET_TAG="$VERSION"
+            SERVED=true
+          else
+            ASSET_TAG=$(python scripts/build_homebrew_artifacts.py --asset-tag "$VERSION")
+            SIDECAR_HAVE=$(assets_on "$ASSET_TAG")
+            echo "assets on ${ASSET_TAG}: ${SIDECAR_HAVE:-(none)}"
+            if have_both "$SIDECAR_HAVE"; then SERVED=true; else SERVED=false; fi
+          fi
           echo "::notice::${VERSION} tarballs will be served from release ${ASSET_TAG}"
+          if [ "$SERVED" = "true" ]; then
+            echo "::notice::${ASSET_TAG} already carries both tarballs -- the formulas will be"
+            echo "::notice::stamped against those published bytes, not a fresh build"
+          fi
           echo "ASSET_TAG=${ASSET_TAG}" >> "$GITHUB_ENV"
+          echo "SERVED=${SERVED}" >> "$GITHUB_ENV"
+
+      - name: Download the tarballs the serving release already carries
+        if: ${{ env.SERVED == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # The bytes brew will actually download, fetched so the formulas can
+          # be stamped with *their* sha256 (see the resolve step above).
+          rm -rf served-tarballs && mkdir -p served-tarballs
+          for name in nyxgpt-api nyxgpt-web; do
+            gh release download "$ASSET_TAG" -R "$REPO" \
+              --pattern "${name}-${VERSION}.tar.gz" --dir served-tarballs
+          done
+          (cd served-tarballs && sha256sum ./*.tar.gz)
 
       - name: Build tarballs and stamp formulas
         run: |
+          set -euo pipefail
           # BASE_URL is the serving release resolved above -- the formulas'
           # `url` must name the release the assets are actually published on,
           # not the version's own release.
+          #
+          # Where the sha256 comes from is the other half: the tag's source
+          # when the tarballs are still to be published, and the already-served
+          # bytes when they are not (a re-run, or a historic release). A fresh
+          # build cannot stand in for published bytes -- see the resolve step.
+          if [ "${SERVED}" = "true" ]; then
+            SOURCE_ARGS=(--tarballs-from served-tarballs)
+          else
+            SOURCE_ARGS=(--source-root release-source)
+          fi
           python scripts/build_homebrew_artifacts.py "$VERSION" dist/homebrew \
             "https://github.com/${{ github.repository }}/releases/download/${ASSET_TAG}" \
-            --source-root release-source
+            "${SOURCE_ARGS[@]}"
 
       - name: Assert only the stable formulas were stamped
         run: |
@@ -236,20 +291,15 @@ jobs:
             fi
           done
 
+          # Resolved before anything was stamped, because it is what decided
+          # where the formulas' sha256 came from: the served bytes stay served,
+          # and the formulas already agree with them.
+          if [ "${SERVED}" = "true" ]; then
+            echo "::notice::${ASSET_TAG} already carries both tarballs -- reusing it"
+            exit 0
+          fi
+
           if gh release view "$ASSET_TAG" -R "$REPO" >/dev/null 2>&1; then
-            HAVE=$(gh release view "$ASSET_TAG" -R "$REPO" --json assets \
-              --jq '[.assets[].name] | join(" ")')
-            COMPLETE=1
-            for name in "nyxgpt-api-${VERSION}.tar.gz" "nyxgpt-web-${VERSION}.tar.gz"; do
-              case " $HAVE " in
-                *" $name "*) ;;
-                *) COMPLETE=0 ;;
-              esac
-            done
-            if [ "$COMPLETE" = "1" ]; then
-              echo "::notice::${ASSET_TAG} already carries both tarballs -- reusing it"
-              exit 0
-            fi
             if [ "$ASSET_TAG" = "$VERSION" ]; then
               # Unreachable by construction (the resolve step only picks
               # $VERSION when both tarballs are already on it), and a guard
@@ -336,6 +386,30 @@ jobs:
               echo "::error::${formula} is not stamped against ${ASSET_TAG}"
               exit 1; }
           done
+
+          # ...and its `sha256` must be the digest of the bytes that release
+          # actually serves. A formula pointing at the right URL with the wrong
+          # digest fails `brew install` checksum verification on every machine,
+          # and an immutable release can never be corrected to match -- so this
+          # is checked against the downloaded asset, not against what this run
+          # believes it published. Tarball builds are not byte-reproducible, so
+          # "we just built these" is not evidence (#3763).
+          CHECK_DIR="$(mktemp -d)"
+          for name in nyxgpt-api nyxgpt-web; do
+            asset="${name}-${VERSION}.tar.gz"
+            gh release download "$ASSET_TAG" -R "$REPO" --pattern "$asset" --dir "$CHECK_DIR"
+            served=$(sha256sum "${CHECK_DIR}/${asset}" | cut -d ' ' -f 1)
+            stamped=$(sed -n 's/^[[:space:]]*sha256 "\([0-9a-f]\{64\}\)"[[:space:]]*$/\1/p' \
+              "dist/homebrew/${name}.rb" | head -1)
+            echo "${name}: served=${served} stamped=${stamped:-(none)}"
+            if [ "$served" != "$stamped" ]; then
+              echo "::error::${name}.rb is stamped sha256=${stamped:-(none)} but ${ASSET_TAG}"
+              echo "::error::serves ${served} -- every \`brew install ${name}\` would fail"
+              echo "::error::checksum verification, and the released bytes cannot be changed."
+              exit 1
+            fi
+          done
+          rm -rf "$CHECK_DIR"
 
       - uses: actions/upload-artifact@v4
         with:

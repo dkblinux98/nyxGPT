@@ -220,7 +220,9 @@ def build_release_dist_tarball(
     `brew --repo` tap checkout -- one implementation of "what goes in the
     tarball", used both by the local install path and by
     scripts/build_homebrew_artifacts.py to produce the tarballs a *remote*
-    tap's formula points at (attached as GitHub Release assets).
+    tap's formula points at (attached, at creation, to the
+    `<version>-homebrew` sidecar release -- see
+    `homebrew_asset_release_tag`).
 
     `source_root` selects the tree the tarball is vendored from (default:
     this checkout). Publishing a tag whose own tree has no release tooling

@@ -142,6 +142,17 @@ path looks in both places for the same reason (`_release_asset_urls` in
 `src/nyxgpt/ops.py`), and the job refuses to push formulas it has not read
 the assets back for.
 
+When the tarballs are already published -- a re-run, or a release from before
+this machinery -- the formulas are stamped against the **downloaded assets**,
+not against a fresh build (`--tarballs-from`). Tarball builds are not
+byte-reproducible: gzip embeds a build timestamp and the tar members carry the
+checkout's mtimes, so two builds of identical source have different `sha256`s.
+Re-stamping from a rebuild would therefore publish formulas whose checksum
+cannot match the bytes brew downloads, on every machine that taps -- and
+immutability means the served bytes could never be corrected. The verify step
+downloads each asset and hard-fails unless its digest is what the formula was
+stamped with, so this cannot regress silently.
+
 **The tap serves stable releases from v2.1.0 onward.** The tap machinery
 (#3622) postdates 2.1.0, so that release reaches the tap through the
 backfill below (#3737) rather than through its own release run; releases from
@@ -165,7 +176,10 @@ The job therefore takes **two checkouts** rather than one:
 `scripts/build_homebrew_artifacts.py ... --source-root release-source` is
 what joins them, so the published tarballs are the tag's real code while the
 formulas are stamped from templates that tag never contained. For a normal
-release the two checkouts are the same commit and nothing changes.
+release the two checkouts are the same commit and nothing changes. (A run
+whose tarballs are already published stamps `--tarballs-from` those assets
+instead and vendors nothing -- see [above](#where-the-tarballs-are-published);
+the `release-source/` checkout is then unused.)
 
 Both tap jobs (this one and the rc channel's `homebrew-tap-rc`) run the
 script with **no `pip install` step**: a checkout and `setup-python` are the
