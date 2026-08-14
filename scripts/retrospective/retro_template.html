@@ -294,6 +294,31 @@
     </details>
   </section>
 
+  <section class="panel" id="churnSection" hidden>
+    <h2>Churn cost — context vs change</h2>
+    <p class="desc" id="churndesc"></p>
+    <div class="tiles" id="churntiles"></div>
+    <div class="legend">
+      <span><span class="dot" style="background:var(--c2)"></span>Context re-establishment</span>
+      <span><span class="dot" style="background:var(--c1)"></span>Change production</span>
+    </div>
+    <div id="churnchart"></div>
+    <details class="cleanlist">
+      <summary id="churnsummary">Show the issues paying the most onboarding tax</summary>
+      <div class="tablewrap">
+        <table>
+          <thead><tr>
+            <th>Issue</th><th>Sprint</th><th class="num">Rounds</th><th class="num">Tokens</th>
+            <th class="num">Context</th><th class="num">Production</th><th class="num">Context %</th>
+            <th class="num">Repeat-round context</th><th class="num">Cost</th>
+          </tr></thead>
+          <tbody id="churnrows"></tbody>
+        </table>
+      </div>
+    </details>
+    <div id="churnincidents"></div>
+  </section>
+
   <h2 class="divider">Last 7 days in review · Aug 2 – Aug 9</h2>
 
   <div class="tiles" id="tiles"></div>
@@ -401,6 +426,20 @@
     "unattributed" bucket rather than being dropped. Shown only when
     <span class="mono">data/spend.json</span> has been refreshed by the "Retro Dashboard - Dump
     Spend Telemetry" workflow.</p>
+    <p><strong>Churn cost.</strong> Spend telemetry says what a run cost to <em>run</em>; churn cost says what the
+    agent spent <em>thinking</em>, and how much of that was re-onboarding rather than producing change (owner
+    decision 2026-08-14, #3776). One round is one executed <span class="mono">claude-code-action</span> step —
+    initial implement, review-fix, acceptance-fix, self-heal, review or standalone session — attributed to an
+    issue by branch name and numbered per issue in chronological order. Within a round, assistant turns before
+    the first file-modifying tool use count as context re-establishment and the rest as change production; the
+    round's token total is split pro rata by that turn ratio. Usage is reported once per step rather than per
+    turn, so the split is an explicit approximation, and rounds whose logs yield no turn markers are counted in
+    token totals but excluded from the split. Huddle and standalone-session rounds run on the release branch,
+    so they carry no issue attribution; they are counted in the totals as unattributed rather than guessed at.
+    Dollars appear only when a price sheet was configured at dump time — the rates are owner-supplied and never
+    committed to the repository, which ships only a zeroed example. Shown only when
+    <span class="mono">data/churn.json</span> has been refreshed by the
+    "Retro Dashboard - Dump Churn Cost" workflow.</p>
     <p><strong>Last 7 days.</strong> The 57 REQUEST_CHANGES reviews on nyxGPT PRs between 2026-08-02 and
     2026-08-09, parsed from the pull-request reviews themselves (Critical / Medium / Minor findings sections).
     Re-review rejections with no new findings count as a round with zero findings. Of 72 PRs merged in the
@@ -417,6 +456,12 @@ const QDATA = __QDATA__;
 const DATA = __DATA__;
 
 const fmt = n => n.toLocaleString('en-US');
+/* The one HTML-escape helper for text going into innerHTML, declared before
+   its first use. Most data here is machine-derived, but the stale-context
+   incident log is hand-written prose (#3776), so it is escaped rather than
+   trusted -- and coerces, because incident fields are not all strings. */
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c =>
+  ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'})[c]);
 const CVAR = ['var(--c1)','var(--c2)','var(--c3)','var(--c4)','var(--c5)','var(--c6)','var(--c7)','var(--c8)'];
 
 /* ---------- project-wide quality ---------- */
@@ -619,6 +664,76 @@ if (SPEND) {
   </tr>`).join('');
 }
 
+/* churn cost — context vs change production (#3776) */
+const CHURN = QDATA.churn;
+if (CHURN) {
+  document.getElementById('churnSection').hidden = false;
+  const ct = CHURN.totals || {};
+  const tok = (ct.tokens || {}).total || 0;
+  const pct = ct.context_pct;
+  const money = v => '$' + v.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  document.getElementById('churndesc').textContent =
+    `What re-onboarding a zero-memory agent costs, over ${fmt(ct.rounds || 0)} agent round${ct.rounds === 1 ? '' : 's'} across ${fmt(ct.issues || 0)} issue${ct.issues === 1 ? '' : 's'} as of ${CHURN.generatedAt ? new Date(CHURN.generatedAt).toLocaleDateString('en-US', {month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC'}) : 'the last refresh'}. ` +
+    `${CHURN.methodology.split || ''} ${ct.unknown_split_rounds ? `${ct.unknown_split_rounds} round(s) yielded no turn markers and are counted in tokens but excluded from the split.` : ''}` +
+    `${ct.unattributed_rounds ? ` ${fmt(ct.unattributed_rounds)} round(s) ran on the release branch (huddles, standalone sessions) and carry no issue attribution; their ${fmt(ct.unattributed_tokens || 0)} tokens are in these totals but not in the per-issue table below.` : ''}` +
+    `${ct.priced ? '' : ' No price sheet was configured at dump time, so this view reports tokens only.'}`;
+  document.getElementById('churntiles').innerHTML = [
+    {label: 'Total tokens', value: fmt(tok), note: `${fmt(ct.rounds || 0)} rounds, ${fmt(ct.multi_round_issues || 0)} multi-round issues`},
+    {label: 'Context share', value: pct === null || pct === undefined ? '·' : pct + '%', note: 'tokens spent re-establishing context, not producing change'},
+    {label: 'Repeat-round onboarding tax', value: fmt(ct.repeat_context_tokens || 0), note: 'context tokens in every round after the first'},
+    {label: 'Stale-context incidents', value: fmt((CHURN.incidents || {}).total || 0), note: 'acted on a fact a later session had already changed'},
+  ].concat(ct.priced && ct.cost_usd !== null && ct.cost_usd !== undefined
+    ? [{label: 'Token cost', value: money(ct.cost_usd), note: 'at the configured price sheet'}] : [])
+    .map(x => `<div class="tile"><div class="label">${x.label}</div>
+      <div class="value">${x.value}</div><div class="note">${x.note}</div></div>`).join('');
+
+  const rows = CHURN.topIssues || [];
+  const cmax = Math.max(1, ...rows.map(r => r.tokens.total));
+  document.getElementById('churnchart').innerHTML = rows.map(r => {
+    const ctx = r.context_tokens || 0, prod = r.production_tokens || 0, known = ctx + prod;
+    const width = Math.max(r.tokens.total / cmax * 100, r.tokens.total ? 2 : 0);
+    const seg = (v, colour, label) => known && v ? `<div class="seg" style="background:${colour};width:${v / known * 100}%"
+      data-tip="#${r.issue} — ${fmt(v)} ${label} tokens over ${r.rounds} round${r.rounds === 1 ? '' : 's'}"><span class="n">${fmt(Math.round(v / 1000))}k</span></div>` : '';
+    return `<div class="mrow">
+      <div><div class="mname">#${r.issue}</div><div class="mmeta">${r.rounds} round${r.rounds === 1 ? '' : 's'} · ${r.sprint}</div></div>
+      <div class="bar" style="width:${width}%">${seg(ctx, 'var(--c2)', 'context')}${seg(prod, 'var(--c1)', 'production')}</div>
+      <div class="mtot">${r.context_pct === null || r.context_pct === undefined ? '·' : r.context_pct + '%'}</div>
+    </div>`;
+  }).join('');
+
+  document.getElementById('churnsummary').textContent = `Show the ${rows.length} issues paying the most onboarding tax`;
+  document.getElementById('churnrows').innerHTML = rows.map(r => `<tr>
+    <td class="num"><a href="https://github.com/dkblinux98/nyxGPT/issues/${r.issue}" target="_blank" rel="noopener">#${r.issue}</a></td>
+    <td><span class="chipm">${r.sprint}</span></td>
+    <td class="num">${r.rounds}</td>
+    <td class="num">${fmt(r.tokens.total)}</td>
+    <td class="num">${fmt(r.context_tokens)}</td>
+    <td class="num">${fmt(r.production_tokens)}</td>
+    <td class="num">${r.context_pct === null || r.context_pct === undefined ? '·' : r.context_pct + '%'}</td>
+    <td class="num${r.repeat_context_tokens ? '' : ' zero'}">${r.repeat_context_tokens ? fmt(r.repeat_context_tokens) : '·'}</td>
+    <td class="num${r.cost_usd ? '' : ' zero'}">${r.cost_usd ? money(r.cost_usd) : '·'}</td>
+  </tr>`).join('');
+
+  const INC = CHURN.incidents;
+  document.getElementById('churnincidents').innerHTML = INC && INC.total ? `
+    <p class="desc"><strong>Stale-context incidents.</strong> The third part of churn cost — new-hire errors, where an
+    agent acted on a fact that a later session had already changed. Hand-recorded in
+    <span class="mono">data/stale_context_incidents.json</span>.</p>
+    ${Object.entries(INC.byKind).map(([kind, n]) => `<div class="themebar">
+      <span class="tname">${esc(kind)}</span><span class="tbar"><i style="width:${20 + n / INC.total * 160}px"></i><span class="tn">${n}</span></span>
+    </div>`).join('')}
+    <details class="cleanlist"><summary>Show the ${INC.total} recorded incident${INC.total === 1 ? '' : 's'}</summary>
+      <div class="tablewrap"><table>
+        <thead><tr><th>Date</th><th>Kind</th><th>Incident</th><th class="num">Recorded in</th></tr></thead>
+        <tbody>${INC.incidents.map(i => `<tr>
+          <td>${esc(i.date)}</td><td><span class="chipm">${esc(i.kind)}</span></td>
+          <td>${esc(i.title)}<div class="mmeta">${esc(i.summary)}</div></td>
+          <td class="num"><a href="https://github.com/dkblinux98/nyxGPT/issues/${encodeURIComponent(i.recordedIn)}" target="_blank" rel="noopener">#${esc(i.recordedIn)}</a></td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+    </details>` : '';
+}
+
 /* recurring finding themes */
 const TH = QDATA.themes || {top: [], other: 0};
 const tmax = Math.max(1, ...TH.top.map(x => x.n));
@@ -698,7 +813,6 @@ document.getElementById('cleanrows').innerHTML = DATA.cleanPRs.map(p => `<tr>
   <td class="num">${p.merged.slice(5,10)}</td>
 </tr>`).join('');
 
-const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const rowsEl = document.getElementById('rows');
 rowsEl.innerHTML = DATA.issues.map((it, i) => {
   const id = it.issue ? `#${it.issue}` : `PR #${it.pr}`;

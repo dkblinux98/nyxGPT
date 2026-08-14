@@ -205,6 +205,17 @@ in this project is real and routine, not theoretical. It's built from the
 same issue/PR history visible in this repository and refreshed via
 [scripts/retrospective/REFRESH_RUNBOOK.md](../scripts/retrospective/REFRESH_RUNBOOK.md).
 
+It also tracks the cost side of running the project with agents: *spend
+telemetry* (billable runner minutes, Claude-invoking steps and self-heal
+retries per issue) and *churn cost* — the token price of re-onboarding an
+agent that carries no memory between rounds, split into context
+re-establishment vs change production per round, rolled up per issue across
+rounds, and paired with a hand-recorded tally of stale-context incidents
+(acting on a fact a later session had already changed). Both are
+owner-refreshed dumps; the churn view reports dollars only when the owner
+has configured a price sheet for the dump to use, and tokens otherwise. The
+rates themselves are never committed to this repository.
+
 **As part of the v3.0.0 release, the retrospective is made publicly
 reachable** (the share action itself is owner-side, performed at release
 time):

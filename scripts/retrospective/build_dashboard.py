@@ -18,6 +18,12 @@ Inputs (all under scripts/retrospective/data/ unless overridden):
                          cycle count) produced by the "Retro Dashboard - Dump Spend
                          Telemetry" workflow (#3696). When present, adds a per-sprint
                          cost view; omitted entirely from the dashboard otherwise.
+  churn.json           - OPTIONAL: per-round churn-cost telemetry (tokens split into
+                         context re-establishment vs change production, per-issue
+                         onboarding tax across rounds, stale-context incident tally)
+                         produced by the "Retro Dashboard - Dump Churn Cost" workflow
+                         (#3776). Dollars appear only when that dump ran with a price
+                         sheet configured; omitted entirely from the dashboard otherwise.
   relationships.json   - OPTIONAL: native issue relationships (blocked-by/blocks)
                          produced by the "Retro Dashboard - Dump Relationships"
                          workflow (#3731). Failure/improvement attribution is read
@@ -450,6 +456,43 @@ def spend_by_sprint(spend, project_fields):
     }
 
 
+def churn_view(churn, project_fields):
+    """Shape dump_churn.py's data/churn.json into the churn-cost view (#3776).
+
+    The churn cost is what re-onboarding a zero-memory agent costs per round:
+    context re-establishment tokens vs change-production tokens, the repeat
+    onboarding tax paid by multi-round issues, and the tally of stale-context
+    incidents. Dollars appear only when the dump ran with a price sheet
+    configured. Returns None when no churn dump exists, so the dashboard
+    omits the section entirely rather than rendering an empty one."""
+    if not churn:
+        return None
+    sprint_of = sprint_of_map(project_fields) if project_fields else {}
+    per_issue = []
+    for n_str, entry in churn.get("issues", {}).items():
+        n = int(n_str)
+        per_issue.append({**entry, "issue": n, "sprint": sprint_of.get(n) or "(no sprint)"})
+    per_issue.sort(key=lambda r: r["tokens"]["total"], reverse=True)
+
+    by_kind = defaultdict(lambda: {"rounds": 0, "tokens": 0, "context_tokens": 0})
+    for r in churn.get("rounds", []):
+        agg = by_kind[r.get("kind", "session")]
+        agg["rounds"] += 1
+        agg["tokens"] += (r.get("tokens") or {}).get("total", 0)
+        agg["context_tokens"] += (r.get("split") or {}).get("context_tokens") or 0
+    kinds = [{"kind": k, **v} for k, v in sorted(by_kind.items(), key=lambda kv: -kv[1]["tokens"])]
+
+    return {
+        "totals": churn.get("totals", {}),
+        "byKind": kinds,
+        "topIssues": per_issue[:12],
+        "multiRound": [r for r in per_issue if r["rounds"] > 1][:12],
+        "incidents": churn.get("staleContextIncidents"),
+        "methodology": churn.get("methodology", {}),
+        "generatedAt": churn.get("generated_at"),
+    }
+
+
 def takeaways(issues, dashboard, weeks, open_af):
     out = []
     mods = dashboard.get("modules", {})
@@ -607,6 +650,8 @@ def main():
     spend = json.loads(sp_path.read_text()) if sp_path.exists() else None
     rel_path = data / "relationships.json"
     relationships = json.loads(rel_path.read_text()) if rel_path.exists() else None
+    ch_path = data / "churn.json"
+    churn = json.loads(ch_path.read_text()) if ch_path.exists() else None
 
     qdata = build_qdata(issues, project_fields, relationships)
     classified = qdata.pop("issues_classified")
@@ -617,6 +662,7 @@ def main():
     qdata["takeaways"] = takeaways(classified, dashboard, qdata["weeks"], open_af)
     qdata["releases"] = RELEASES
     qdata["spend"] = spend_by_sprint(spend, project_fields)
+    qdata["churn"] = churn_view(churn, project_fields)
     html = Path(args.template).read_text()
     html = re.sub(r"across all \d+ issues", f"across all {qdata['qtotals']['issues']} issues", html)
     html = re.sub(

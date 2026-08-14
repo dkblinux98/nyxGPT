@@ -61,6 +61,56 @@ Artifact URL (republish to this URL, do not mint a new one):
    branch. If dispatch fails or `data/spend.json` doesn't exist yet, skip; the
    builder omits the spend section entirely rather than erroring.
 
+4b. **Refresh churn-cost telemetry** → `data/churn.json` (#3776).
+   Dispatch the workflow `retro_churn_dump.yml` on the default branch
+   (`actions_run_trigger`, method `run_workflow`; optional `window_days`
+   input, default 30), wait for completion (it downloads one job log per
+   Claude round in the window — minutes, not seconds), then `git pull`. If
+   dispatch fails or `data/churn.json` doesn't exist yet, skip; the builder
+   omits the churn section entirely rather than erroring.
+
+   Where spend telemetry says what a run *cost to run*, churn cost says what
+   the agent *spent thinking* and how much of that was re-onboarding. One
+   round = one executed `claude-code-action` step (implement, review-fix,
+   acceptance-fix, self-heal, review, session), attributed to an issue by
+   branch name and numbered per issue in chronological order. Within a round,
+   assistant turns before the first file-modifying tool use are counted as
+   context re-establishment and the rest as change production, and the
+   round's token total is split pro rata by that ratio — an explicit
+   approximation (usage is reported once per step, not per turn), restated in
+   `churn.json`'s `methodology` block and in the dashboard. Rounds whose logs
+   yield no turn markers are counted in token totals but excluded from the
+   split; expired logs are recorded with `tokens: null` rather than a false
+   zero. Each refresh merges into the previously-dumped rounds, so history
+   accumulates instead of being re-fetched.
+
+   **Dollars** appear only when a price sheet is configured, and **the rates
+   are never committed** — the repo ships only the zeroed
+   `data/price_sheet.example.json`, precisely so it asserts no rate (#3744).
+   Take that file's shape, fill in the per-million rates you are actually
+   billed at (read from Anthropic's pricing page at that moment), and store
+   the JSON in the **`CHURN_PRICE_SHEET_JSON` repo variable**
+   (`gh variable set CHURN_PRICE_SHEET_JSON < your-sheet.json`); the workflow
+   passes it to the dump, so nothing lands in the checkout. Do **not** commit
+   a `price_sheet.json` — that path is gitignored. For a local run of
+   `dump_churn.py`, saving the sheet as `data/price_sheet.json` works too.
+   Re-check the rates whenever you refresh, and **re-dispatch this workflow
+   after changing them**: dollars are computed at dump time, so a changed
+   sheet changes nothing until the dump re-runs. With no sheet configured,
+   the view reports tokens only.
+
+   **Recording a stale-context incident** (the third part of churn cost —
+   new-hire errors, where an agent acts on a fact a later session had already
+   changed): add an object to `incidents` in
+   `data/stale_context_incidents.json`. Required fields `id`, `date`,
+   `kind` (one of the documented `kinds`), `title`, `summary`, `recordedIn`;
+   optional `refs`, `rounds`, `notes`. The file's own `howToRecord` field
+   carries the same instructions for whoever edits it. `dump_churn.py`
+   validates it on every refresh and **fails the dump workflow** on a
+   malformed or duplicate entry, so a bad edit surfaces immediately. The file
+   is seeded with the three incidents documented in #3776 (the Acceptance
+   Failed lane sweep, the stale rc4-wheel claims, the rc7 dispatch race).
+
 5. **Refresh review-round detail** → `data/reviews_final.json` and
    `data/dashboard_data.json`.
    a. Dispatch the workflow `retro_review_rounds_dump.yml` on the default

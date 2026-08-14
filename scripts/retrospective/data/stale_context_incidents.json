@@ -1,0 +1,41 @@
+{
+ "schema": 1,
+ "howToRecord": "Add one object to `incidents` when an agent (or an assistant session) acts on a fact that was true in an earlier session but had since changed — the third part of churn cost, 'new-hire errors'. Required: id (kebab-case, date-prefixed, unique), date (YYYY-MM-DD, when it happened), kind (see `kinds`), title (one line), summary (what was believed vs what was true), recordedIn (issue number that documented it). Optional: refs (issue/PR numbers involved), rounds (extra agent rounds it cost), notes. `dump_churn.py` validates this file on every refresh and fails the dump workflow on a malformed entry, so a bad edit is caught at refresh time rather than silently dropped from the dashboard.",
+ "kinds": {
+  "stale-lane-state": "Acted on an out-of-date belief about the project board's lanes, statuses or gating rules.",
+  "stale-artifact-claim": "Asserted something about a published artifact (wheel, formula, tag, release) that a newer publish had already invalidated.",
+  "stale-run-state": "Acted on an out-of-date belief about what a workflow run or dispatch had already done, racing the real state."
+ },
+ "incidents": [
+  {
+   "id": "2026-08-14-acceptance-failed-lane-sweep",
+   "date": "2026-08-14",
+   "kind": "stale-lane-state",
+   "title": "Acceptance Failed lane sweep ran against a stale view of the lane",
+   "summary": "A sweep operated on an out-of-date understanding of the Acceptance Failed lane's contents and hold semantics (items filed there are held until Acceptance Testing drains, per the 2026-08-12 drain-gate decision), so the lane had to be re-established by hand.",
+   "recordedIn": 3776,
+   "refs": [],
+   "notes": "Seeded from the owner's 2026-08-14 churn-cost discussion; see #3776 for the incident list this file was created with."
+  },
+  {
+   "id": "2026-08-14-stale-rc4-wheel-claims",
+   "date": "2026-08-14",
+   "kind": "stale-artifact-claim",
+   "title": "Stale rc4-wheel claims survived past the publish that invalidated them",
+   "summary": "Statements about the rc4 wheel were carried forward from an earlier session after newer release-candidate artifacts had been published, so the claims had to be re-verified and corrected instead of being remembered as current.",
+   "recordedIn": 3776,
+   "refs": [],
+   "notes": "Seeded from the owner's 2026-08-14 churn-cost discussion. This is the failure mode the no-expiry-dated-world-state-claims rule (#3744) exists to prevent."
+  },
+  {
+   "id": "2026-08-14-rc7-dispatch-race",
+   "date": "2026-08-14",
+   "kind": "stale-run-state",
+   "title": "rc7 dispatch race — action taken against a run state that had already moved",
+   "summary": "A dispatch was issued against a believed rc7 state that the real run history had already advanced past, racing the actual state and costing a re-verification round.",
+   "recordedIn": 3776,
+   "refs": [],
+   "notes": "Seeded from the owner's 2026-08-14 churn-cost discussion."
+  }
+ ]
+}
