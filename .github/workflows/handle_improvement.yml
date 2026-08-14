@@ -19,8 +19,14 @@ name: Handle Improvement
 # Owner decision 2026-08-12 (#3730): like acceptance failures, an
 # improvement filed DURING a round lands in the `Acceptance Failed` Status
 # lane and is not worked immediately. acceptance_drain_gate.yml moves the
-# whole holding lane to Backlog once `Acceptance Testing` has drained
+# HELD items in that lane to Backlog once `Acceptance Testing` has drained
 # (empty except the release tracking issue) and kicks the queue once.
+#
+# Held means the OPEN part of the lane. Owner decision 2026-08-14 (#3780):
+# the same lane is also where the owner parks features they have tested and
+# FAILED. Those are CLOSED, the gate never moves them, and they leave the
+# lane only via promote_accepted_features.yml once everything blocking them
+# has reached "For Release".
 #
 # This is the `@improvement` counterpart of handle_acceptance_failure.yml
 # (`@acceptance-failure`). Both are stakeholder-acceptance commands: only

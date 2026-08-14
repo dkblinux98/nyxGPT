@@ -13,8 +13,9 @@ on:
 #   original through GitHub's native blocked-by/blocks relationship — NOT a
 #   sub-issue, and NOT a "Related feature: #N" body marker (that prose
 #   convention is retired; it is only still READ for historical issues).
-#   The original is never reopened or relabeled; it stays closed in
-#   "Acceptance Testing".
+#   The original is never reopened or relabeled; it stays closed, parked in
+#   "Acceptance Testing" or — at the owner's choice, #3780 — in
+#   "Acceptance Failed". Both lanes park identically.
 # - If the failure issue's fix later fails stakeholder re-test, commenting
 #   @acceptance-failure ON THE FAILURE ISSUE reopens THAT SAME issue and
 #   sends it back through dev -> review. No per-round issues are created;
@@ -32,9 +33,15 @@ on:
 # acceptance round is no longer worked immediately. It is placed in the
 # `Acceptance Failed` lane and stays there until `Acceptance Testing` has
 # drained (empty except the release issue) -- acceptance_drain_gate.yml
-# then moves the whole holding lane to Backlog and kicks the queue once.
-# Working failures mid-round floods Acceptance Testing with fresh fixes
-# while the owner is still testing and burns RC cycles.
+# then moves the HELD items to Backlog and kicks the queue once. Working
+# failures mid-round floods Acceptance Testing with fresh fixes while the
+# owner is still testing and burns RC cycles.
+#
+# Held means the OPEN part of that lane. The same lane is also where the
+# owner parks features they have tested and FAILED (owner decision
+# 2026-08-14, #3780); those are CLOSED, and the gate never moves them --
+# they are moved only by promote_accepted_features.yml, once their whole
+# transitive blocked-by closure has reached "For Release".
 #
 # Agent-process work bypasses the gate and is assigned immediately, per
 # the rule encoded in scripts/agents/lib/drain_gate.py: an explicit
