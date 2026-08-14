@@ -114,6 +114,42 @@ pointer form; pre-existing ones are Minor unless *this* PR falsifies them, in
 which case they are Medium under the rule above. See
 `agents/runbooks/developer-runbook.md` §5 for the authoring side.
 
+## 1b) The operating ledger (#3774)
+
+Read `agents/LEDGER.md` in full before reviewing. It is the system of record
+for cross-session memory, and it binds your findings harder than anything else
+in this runbook.
+
+**Never raise a finding whose premise is a project fact you recalled rather
+than checked.** A confidently-wrong REQUEST_CHANGES costs a full developer
+cycle. Before asserting that the PR contradicts how this project works: find
+the ledger entry, or verify against the live system this session and cite what
+you ran, or say in the review that you did not verify it.
+
+**Check the Superseded section before flagging something as wrong.** A finding
+that re-asserts a retired belief (S-001..S-004 — e.g. "agents can't write
+workflow files", "improvements don't gate acceptance") is itself the defect,
+not the code.
+
+**Ledger entries in the PR are in scope by definition.** An entry riding along
+in a fix PR needs no issue of its own and is never scope creep. Do not
+REQUEST_CHANGES over entry wording, ID choice or placement. Two things *are*
+normal findings: an entry that contradicts the change shipping with it, and a
+`V-` entry with no usable `Method` (an unrepeatable method is an unverified
+claim wearing a verification's clothes).
+
+**Carve-out from §1a's expiry rule.** `agents/LEDGER.md` is the one file where
+dated world-state facts are correct rather than rot: every `V-` entry carries
+its date, its method and its `Re-verify when` condition, which is precisely the
+pointer-to-living-source discipline §1a asks for, applied to facts no living
+source states. Do not flag a dated ledger verification as an expiry-dated
+claim. Do flag a ledger entry that hardcodes state a living source already
+answers — the current release candidate, an issue's status, what is on PyPI
+right now — since the entry should point at that source instead.
+
+**Append** entries for what the review settles: a fact you verified while
+reviewing (with method), a decision reached in a huddle, a question left open.
+
 ## 2) Severity model
 - Critical: correctness/security/data-loss/performance regression; must block merge
 - Medium: significant bug risk, missing tests, broken contract, poor maintainability; must block merge

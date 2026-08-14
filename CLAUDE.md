@@ -13,6 +13,7 @@ Claude must not invent workflow, authority, or automation.
 ### 1. Core Operating Instructions (Always read first)
 - `CLAUDE.md` (this file)
 - `AGENTS.md`
+- `agents/LEDGER.md` (the operating ledger — read in full)
 - `docs/architecture.md`
 - `product_management/VISION.md`
 - `README.md`
@@ -36,6 +37,42 @@ Claude must not invent workflow, authority, or automation.
 
 4. **Only then proceed with work**
 
+Throughout the session, treat your own recollection as untrusted input
+wherever `agents/LEDGER.md` or the live system can answer instead. See
+"The Operating Ledger" below.
+
+---
+
+## The Operating Ledger (Owner decision, 2026-08-14, #3774)
+
+**`agents/LEDGER.md` is the system of record for cross-session agent memory.**
+Agent memory is reconstructive — each session re-derives project state from
+artifacts and lossy self-summaries, and asserts stale conclusions confidently
+when the artifacts are incomplete. The ledger moves that memory into the
+repository, where it can be read instead of reconstructed.
+
+- **Read it in full at session start** (it is on the bootstrap list above, and
+  is deliberately kept short enough to read).
+- **A claim that is not in the ledger and not freshly verified is not asserted
+  as fact.** Before stating how the project works, what was decided, what is
+  published, or what is deliberately not being done: find the entry, verify it
+  this session and be able to name how, or say plainly that you have not
+  checked. Recalling it "from earlier in the project" is not one of the three.
+- **Append entries** for decisions made, facts verified (with method and
+  timestamp), items deliberately parked (with reason and revisit condition),
+  and questions left open. Agents append through the normal branch/PR path; an
+  entry may ride along in the PR that produced the fact and needs no issue of
+  its own.
+- **Check the Superseded section before correcting anyone** — it lists beliefs
+  this project already held and retired.
+- **Do not silently overwrite state you did not create.** If a lane, marker or
+  board state looks wrong, look for a parked entry explaining it before
+  "cleaning it up".
+
+Entry granularity, the schema for each entry kind, and the pruning rule are
+defined in the ledger itself. Keep it cheap to read: load-bearing facts and
+decisions, never narration.
+
 ---
 
 ## Commit and Push Policy
@@ -56,7 +93,9 @@ Root holds only the anchored docs (`CLAUDE.md`, `AGENTS.md`, `README.md`,
 `CONTRIBUTING.md`) plus code and infra directories. Everything else has a home:
 
 - **`agents/`** — the agent system's operating docs: `charters/`, `prompts/`,
-  `runbooks/`. (`AGENTS.md` at root is the index into it.)
+  `runbooks/`, plus `LEDGER.md` (the operating ledger — cross-session memory:
+  decisions, verified facts, parked items, open questions). (`AGENTS.md` at
+  root is the index into it.)
 - **`docs/`** — engineering documentation, including `docs/architecture.md`
   (the single source of truth for current architecture and its invariants).
 - **`product_management/`** — product notes, documents, and decisions:
@@ -79,6 +118,7 @@ belongs in `product_management/private/` (gitignored).
 ## Sources of Truth
 
 - AGENTS.md
+- agents/LEDGER.md (decisions, verified facts, parked items, open questions)
 - scripts/agents/*
 - GitHub Issues
 - Release Issues

@@ -354,6 +354,30 @@ the same protection with judgment instead of a constant. Items 2–4 are
 owner-endorsed direction; filing them as issues awaits explicit owner
 go-ahead.
 
+### 9b. Memory must be durable, not reconstructive (owner principle, 2026-08-14)
+
+Judgment (§9a) is only as good as the state it reasons over, and the state an
+agent session holds is *reconstructed*: re-derived each session from artifacts
+and lossy self-summaries. When the artifacts are incomplete the reconstruction
+still completes — confidently — and nothing distinguishes it from something
+actually checked. Three incidents in the week of 2026-08-14 share that root:
+the `Acceptance Failed` lane sweep that reclassified the owner's deliberately
+parked failure markers as stale board state, stale cross-session claims about
+wheel and tap state, and re-derivation of already-settled facts.
+
+**Principle:** the system of record carries the memory, not the agent.
+`agents/LEDGER.md` (#3774) records decisions made, facts verified with method
+and timestamp, items deliberately parked with their revisit conditions, and
+questions left open. Sessions read it at start, append as things happen, and
+treat their own recollection as untrusted input wherever the ledger or the live
+system can answer instead. A claim that is not in the ledger and not freshly
+verified is not asserted as fact.
+
+This bounds churn cost the same way §9's watcher bounds spend: it converts an
+unbounded invisible expense — re-derive everything every session, sometimes
+wrongly — into a bounded visible one, reading a single dense file and
+re-verifying only what is both stale and load-bearing.
+
 ## 10. Non-goals
 
 - No sub-issues — relationships live in the native Relationships field only.

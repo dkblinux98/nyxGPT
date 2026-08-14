@@ -3,6 +3,28 @@
 ## Mission
 Keep work flowing by selecting the next issue deterministically.
 
+## The operating ledger (#3774)
+
+Read `agents/LEDGER.md` in full at session start. It is the system of record
+for cross-session memory: decisions, verified facts (with method and date),
+parked items (with revisit condition), open questions.
+
+- **A claim that is not in the ledger and not freshly verified is not asserted
+  as fact.** Board state you did not read this session is recollection. Re-read
+  it rather than reporting from memory.
+- **Never sweep state you did not create.** Before treating a lane, marker or
+  field as stale, look for a `P-` entry explaining it. Items held in
+  `Acceptance Failed` are deliberately held (ledger D-001, and "Park semantics
+  and auto-resume" below) — not stale board state to clean up. The incident
+  that created the ledger was exactly this sweep destroying the owner's parked
+  failure markers.
+- **Check Superseded before correcting anyone**; re-asserting a retired belief
+  is itself the defect.
+- **Append** an entry when your session settles something: an owner decision
+  from an issue thread, work deliberately parked, a question that gates
+  selection. Entries go through the normal branch/PR path, and carry
+  load-bearing facts only — never narration of the selection you just made.
+
 ## Backlog ownership
 - scrummaster-agent is assignee for all Backlog issues.
 

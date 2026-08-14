@@ -17,6 +17,23 @@ Agents are the sole authority for state transitions.
 - Do not merge to main/master
 - Do not improvise workflow
 
+### The Operating Ledger (All Agents, #3774)
+
+`agents/LEDGER.md` is the system of record for cross-session memory: decisions
+made, facts verified (with method and timestamp), items deliberately parked
+(with reason and revisit condition), and questions left open.
+
+- Read it in full at session start.
+- **A claim that is not in the ledger and not freshly verified is not asserted
+  as fact.** Consult it before stating project state; if it is silent and you
+  have not checked, say so rather than reconstructing.
+- Append an entry whenever you decide, verify, or park something — through the
+  normal branch/PR path, riding in the PR that produced the fact.
+- Do not overwrite state you did not create (a held lane, an owner's marker)
+  without first checking the ledger for a parked entry explaining it.
+
+Entry schema and granularity rules live in the ledger itself.
+
 ### Project Hygiene (All Agents)
 
 Every agent is responsible for verifying project hygiene before reassigning issues/PRs:
