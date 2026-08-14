@@ -305,6 +305,37 @@ Homebrew-managed keg state rather than on the tarball being installed. On a
 stock Homebrew Mac that step exited 1 and took the whole `brew install` with
 it, so it is no longer in the path at all.
 
+### Why the build environment gets a `sitecustomize.py`
+
+Before it creates the venv, the `nyxgpt-api` install block writes a
+`sitecustomize.py` into `buildpath` and puts that directory on `PYTHONPATH`.
+It repairs `platform.mac_ver()` when the OS lookup comes back empty.
+
+That is not defensive decoration. On a stock Homebrew Mac `mac_ver()`
+returned no release during the build, and pip parses that string **unguarded
+in two separate places on every install** — `truststore`, its default TLS
+backend since pip 24.2, and `packaging.tags.mac_platforms()`, which decides
+which wheels are installable. Both do `int("")` and raise
+`ValueError: invalid literal for int() with base 10: ''`, so pip could not
+start at all and `brew install` died with it. There is no pip option that
+avoids this: `InstallCommand.run` builds its session before it looks at
+`--no-index`, and pip's own graceful-degradation guard catches `ImportError`
+only, which a `ValueError` from a module body walks straight past.
+
+A `sitecustomize` is the right shape because `site` imports it at interpreter
+startup, so one file covers every interpreter the build starts — Homebrew's
+python, the venv python that `pip --python` re-execs into, and pip's
+build-isolation subprocesses. It asks `sw_vers` for the real release and only
+falls back to a floor of `11.0` if that fails too; a Mac whose `mac_ver()`
+already works is left completely alone, so the reported version never becomes
+a lie that changes which wheels pip picks. The file lives in `buildpath` and
+is gone once the keg is built — nothing ships it.
+
+The shim is Python nested inside a Ruby heredoc, which no linter or import in
+this repo would otherwise look at, so `build_homebrew_artifacts.py` extracts
+and compiles it while stamping (a syntax error fails the release build), and
+the unit suite executes the real extracted source rather than grepping it.
+
 Both api formulas (the local one and the remote tap's template) carry this
 same recipe, and a unit test asserts they cannot drift apart.
 [`macos-brew-smoke.yml`](../.github/workflows/macos-brew-smoke.yml) installs
@@ -312,6 +343,15 @@ the formulas for real on a hosted `macos-15` runner — the working tree's
 recipe on every formula change, and the published candidate from this tap
 after every rc cut — and checks the keg's venv has a working pip, imports
 `nyxgpt.app` and runs `nyxgpt --version`.
+
+It also **injects** the empty-`mac_ver()` condition rather than waiting to
+encounter it. A hosted runner answers `mac_ver()` normally, so an
+install-only job goes green on the exact candidate that fails on a machine
+that does not — which is what happened to rc5. The job now asserts the
+recipe's pip bootstrap really does fail on the runner with the reported
+`ValueError` when the fault is forced, and only then asserts that the
+formula's own shim (read back out of the shipped formula, never a copy)
+survives it.
 
 ---
 

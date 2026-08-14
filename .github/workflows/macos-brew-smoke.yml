@@ -16,6 +16,11 @@ name: macOS Brew Smoke
 #                the PR that wrote it -- no publish required. The throwaway tap
 #                deliberately carries no stable formula, which also keeps the
 #                absent-`conflicts_with`-counterpart case (#3753) exercised.
+#                It also *injects* the empty-`platform.mac_ver()` condition
+#                the owner's Mac exhibited and this runner does not, because a
+#                job that only runs the install is green on any machine that
+#                fails to reproduce the bug -- which is exactly how the rc5
+#                candidate passed here and failed there.
 #   published-tap  Does what the owner actually types work? `brew tap` +
 #                `brew install` against the real published tap. Needs a
 #                published candidate, so it runs on dispatch and after an rc
@@ -97,6 +102,96 @@ jobs:
           "$PY" --version
           "$PY" -m pip --version
           ls "$("$PY" -c 'import ensurepip, os; print(os.path.dirname(ensurepip.__file__))')/_bundled" || true
+          # What this runner answers for the call that killed the rc5 install,
+          # and whether this keg ships a sitecustomize of its own -- the
+          # formula's shim is a sitecustomize on PYTHONPATH, so it would
+          # shadow one (it chains through, and this says whether that path is
+          # ever taken here).
+          "$PY" -c 'import platform; print("mac_ver:", platform.mac_ver())'
+          "$PY" - <<'PY'
+          import os
+          import sysconfig
+
+          path = os.path.join(sysconfig.get_paths()["purelib"], "sitecustomize.py")
+          print("keg sitecustomize:", path if os.path.exists(path) else "none")
+          PY
+
+      # The gap this closes (#3753, round 2): the rc5 smoke job went green on
+      # this runner while the identical install failed on the owner's Mac,
+      # because the runner's build environment answers
+      # `platform.mac_ver()` and theirs did not. A job that only runs the
+      # install cannot catch that class -- it can only catch it on machines
+      # that happen to reproduce it. So stop hoping the runner reproduces the
+      # condition and inject it: assert pip really dies here without the fix
+      # (so a green result below means something), then assert the formula's
+      # own shim survives it.
+      - name: Reproduce the empty mac_ver() failure, then prove the shim fixes it
+        run: |
+          set -euo pipefail
+
+          PY="$(brew --prefix python@3.12)/bin/python3.12"
+          WORK="$(mktemp -d)"
+          mkdir -p "$WORK/broken" "$WORK/fixed"
+
+          # The observed fault: platform.mac_ver() answering with no release,
+          # which is what the owner's build environment handed pip.
+          cat > "$WORK/fault.py" <<'FAULT'
+          import platform
+
+          platform.mac_ver = lambda *args, **kwargs: ("", ("", "", ""), "")
+          FAULT
+          cp "$WORK/fault.py" "$WORK/broken/sitecustomize.py"
+
+          # The fix, read back out of the formula this checkout ships rather
+          # than copied here, so this can never test a stale spelling of it.
+          PYTHONPATH=scripts python3 - "$WORK" <<'BUILD'
+          import pathlib
+          import sys
+
+          from build_homebrew_artifacts import extract_build_shim
+
+          work = pathlib.Path(sys.argv[1])
+          formula = pathlib.Path("homebrew/nyxgpt-api.rb").read_text(encoding="utf-8")
+          fault = (work / "fault.py").read_text(encoding="utf-8")
+          shim = extract_build_shim(formula)
+          (work / "fixed" / "sitecustomize.py").write_text(fault + "\n" + shim, encoding="utf-8")
+          BUILD
+
+          echo "=== negative control: the recipe's pip bootstrap, mac_ver() empty ==="
+          "$PY" -m venv --without-pip "$WORK/venv-broken"
+          set +e
+          PYTHONPATH="$WORK/broken" "$PY" -m pip --python "$WORK/venv-broken/bin/python" \
+            install --upgrade pip > "$WORK/broken.log" 2>&1
+          broken_rc=$?
+          set -e
+          tail -30 "$WORK/broken.log" || true
+          if [ "$broken_rc" -eq 0 ]; then
+            echo "pip started with an empty platform.mac_ver(), so the check"
+            echo "below would pass whether or not the fix works. Re-derive the"
+            echo "reproduction before trusting this job."
+            echo "::error::this runner no longer reproduces #3753"
+            exit 1
+          fi
+          grep -qF "invalid literal for int() with base 10: ''" "$WORK/broken.log" || {
+            echo "pip failed, but not with #3753's ValueError, so this is no"
+            echo "longer testing the failure the owner reported."
+            echo "::error::the #3753 reproduction has drifted"
+            exit 1
+          }
+          echo "reproduced: pip exits $broken_rc with the owner's ValueError"
+
+          echo "=== the same bootstrap with the formula's shim in place ==="
+          "$PY" -m venv --without-pip "$WORK/venv-fixed"
+          PYTHONPATH="$WORK/fixed" "$PY" -m pip --python "$WORK/venv-fixed/bin/python" \
+            install --upgrade pip 2>&1 | tee "$WORK/fixed.log" | tail -20
+          # `pip --python` re-execs pip in the venv interpreter, so a green run
+          # here also proves the shim reaches that second process -- the
+          # env-inheritance property the whole fix rests on.
+          "$WORK/venv-fixed/bin/pip" --version
+          grep -qF "so pip can start" "$WORK/fixed.log" || {
+            echo "::error::the shim never fired, so a green result here proves nothing about the fix."
+            exit 1
+          }
 
       - name: Stamp the rc formulas from this checkout
         env:
@@ -179,6 +274,22 @@ jobs:
           RELEASE="${VERSION%%rc*}"
           echo "tapping $TAP for nyxgpt-api@${RELEASE}rc"
           brew tap "$TAP"
+          # The `conflicts_with "nyxgpt-api"` warning is benign (brew warns and
+          # installs anyway -- see docs/homebrew.md), but "is the stable
+          # counterpart actually in the tap?" kept being answered by guesswork
+          # after the #3737 backfill. Report it as a fact instead. Never fails
+          # the job: an absent counterpart does not break the install.
+          echo "--- formulas this tap actually carries ---"
+          ls -1 "$(brew --repository "$TAP")"/Formula 2>/dev/null \
+            || ls -1 "$(brew --repository "$TAP")" 2>/dev/null \
+            || true
+          if brew info --formula "${TAP}/nyxgpt-api" >/dev/null 2>&1; then
+            echo "stable counterpart nyxgpt-api: present -- conflicts_with resolves, no warning expected"
+          else
+            echo "conflicts_with names a formula this tap does not carry."
+            echo "Benign: brew warns and installs anyway (docs/homebrew.md)."
+            echo "::warning::no stable nyxgpt-api formula in the tap"
+          fi
           brew install --verbose "${TAP}/nyxgpt-api@${RELEASE}rc" 2>&1 | tail -80
 
       - name: Verify the installed keg

@@ -941,3 +941,213 @@ def test_an_rc_cut_smokes_the_published_tap_and_not_the_checkout():
     assert "inputs.run_keg_install" in condition
     # The caller omits it, so the workflow_call default is what skips the job.
     assert workflow[True]["workflow_call"]["inputs"]["run_keg_install"]["default"] is False
+
+
+# --- The build-environment mac_ver shim (#3753, round 2) -------------------
+#
+# With ensurepip gone the owner's install died one step later, inside pip's
+# own startup: `platform.mac_ver()` answers with no release in that build
+# environment, and pip parses it unguarded both in truststore (its default TLS
+# backend since 24.2) and in `packaging.tags.mac_platforms`, so
+#
+#   ValueError: invalid literal for int() with base 10: ''
+#
+# takes `brew install` down before a single package is resolved.
+#
+# The recipe now writes a `sitecustomize.py` into the build environment that
+# repairs the value. It is Python nested in a Ruby heredoc, which no linter,
+# formatter or import in this repo would otherwise look at -- so these tests
+# pull the real source back out of the formulas and *run* it, rather than
+# grepping for a spelling of it.
+
+
+def _build_shim(which: str) -> str:
+    return build_homebrew_artifacts.extract_build_shim(
+        _API_FORMULAS[which].read_text(encoding="utf-8")
+    )
+
+
+def _shim_namespace(which: str = "local") -> dict:
+    """Exec the shipped shim, with its startup block deliberately not run.
+
+    The shim guards its module-level work behind `__name__ == "sitecustomize"`
+    precisely so it can be exercised here without patching the interpreter
+    running the test suite.
+    """
+    namespace: dict = {"__file__": "/nonexistent/shim/sitecustomize.py", "__name__": "under_test"}
+    exec(compile(_build_shim(which), "<build shim>", "exec"), namespace)
+    return namespace
+
+
+def _truststore_line_22(version: str) -> tuple:
+    """The expression the owner's install died on, verbatim."""
+    return tuple(map(int, version.split(".")))
+
+
+@pytest.mark.parametrize("which", sorted(_API_FORMULAS))
+def test_the_embedded_build_shim_is_valid_python(which):
+    """Nothing else in the repo compiles it: a typo would ship to a Mac."""
+    compile(_build_shim(which), "<build shim>", "exec")
+
+
+def test_both_api_formulas_embed_the_same_build_shim():
+    """One shim in two files, like the recipe around it (#3753 had to be
+    fixed twice for exactly this reason)."""
+    assert _build_shim("local") == _build_shim("tap-template")
+
+
+@pytest.mark.parametrize("which", sorted(_API_FORMULAS))
+def test_the_build_shim_repairs_an_empty_mac_ver(which, monkeypatch):
+    """The whole point: pip's parse of mac_ver() has to stop raising."""
+    import platform
+
+    monkeypatch.setattr(platform, "mac_ver", lambda *a, **k: ("", ("", "", ""), ""))
+    with pytest.raises(ValueError):
+        _truststore_line_22(platform.mac_ver()[0])
+
+    _shim_namespace(which)["_repair_mac_ver"]()
+
+    repaired = platform.mac_ver()[0]
+    # No exception, and a version truststore accepts: it refuses < 10.8, and
+    # only loads Security.framework by absolute path from 10.16 up.
+    assert _truststore_line_22(repaired) >= (10, 16)
+
+
+def test_the_build_shim_leaves_a_healthy_mac_ver_alone(monkeypatch):
+    """It must not invent a version on a Mac whose lookup works.
+
+    mac_ver() also drives `packaging.tags.mac_platforms`, so reporting the
+    wrong release would quietly change which wheels pip considers installable.
+    """
+    import platform
+
+    healthy = ("15.5", ("", "", ""), "arm64")
+    monkeypatch.setattr(platform, "mac_ver", lambda *a, **k: healthy)
+
+    _shim_namespace()["_repair_mac_ver"]()
+
+    assert platform.mac_ver() == healthy
+
+
+def test_the_build_shim_prefers_the_real_release_over_its_floor(monkeypatch):
+    """`sw_vers` is asked first -- the constant is only a last resort."""
+    import platform
+    import subprocess as subprocess_module
+
+    monkeypatch.setattr(platform, "mac_ver", lambda *a, **k: ("", ("", "", ""), ""))
+
+    def fake_run(cmd, **kwargs):
+        assert cmd == ["/usr/bin/sw_vers", "-productVersion"]
+        return subprocess_module.CompletedProcess(cmd, 0, stdout="15.5\n", stderr="")
+
+    monkeypatch.setattr(subprocess_module, "run", fake_run)
+
+    _shim_namespace()["_repair_mac_ver"]()
+
+    assert platform.mac_ver()[0] == "15.5"
+
+
+def test_the_build_shim_falls_back_when_sw_vers_is_unavailable_too(monkeypatch):
+    """A build environment that hides the OS version may hide `sw_vers` too."""
+    import platform
+    import subprocess as subprocess_module
+
+    monkeypatch.setattr(platform, "mac_ver", lambda *a, **k: ("", ("", "", ""), ""))
+
+    def exploding_run(cmd, **kwargs):
+        raise FileNotFoundError(cmd[0])
+
+    monkeypatch.setattr(subprocess_module, "run", exploding_run)
+
+    _shim_namespace()["_repair_mac_ver"]()
+
+    assert _truststore_line_22(platform.mac_ver()[0]) >= (10, 16)
+
+
+@pytest.mark.parametrize("which", sorted(_API_FORMULAS))
+def test_the_shim_is_on_pythonpath_before_any_pip_runs(which):
+    """Written and exported ahead of the bootstrap, or it fixes nothing."""
+    recipe = _venv_recipe(_API_FORMULAS[which].read_text(encoding="utf-8"))
+    export = recipe.index('ENV.prepend_path "PYTHONPATH", shim')
+
+    assert recipe.index("(shim/\"sitecustomize.py\").write <<~'PY'") < export
+    assert export < recipe.index(_PIP_BOOTSTRAP)
+
+
+@pytest.mark.parametrize("which", sorted(_API_FORMULAS))
+def test_the_shim_is_a_single_quoted_heredoc(which):
+    """`<<~PY` would interpolate `#{}` and expand `\\n` inside the Python."""
+    text = _API_FORMULAS[which].read_text(encoding="utf-8")
+
+    assert "<<~'PY'" in text
+    assert "<<~PY" not in text
+
+
+@pytest.mark.parametrize("channel", ["stable", "rc"])
+def test_stamped_formulas_ship_the_build_shim(built_artifacts, built_rc_artifacts, channel):
+    """What is published, not just what is in the templates."""
+    out_dir, filename = {
+        "stable": (built_artifacts, "nyxgpt-api.rb"),
+        "rc": (built_rc_artifacts, "nyxgpt-api@9.9.9rc.rb"),
+    }[channel]
+    stamped = (out_dir / filename).read_text(encoding="utf-8")
+
+    assert build_homebrew_artifacts.has_build_shim(stamped)
+    assert build_homebrew_artifacts.extract_build_shim(stamped) == _build_shim("tap-template")
+
+
+def test_publishing_refuses_a_formula_whose_shim_is_broken():
+    """The release build is the last place a heredoc typo can still be cheap."""
+    broken = (
+        _API_FORMULAS["local"]
+        .read_text(encoding="utf-8")
+        .replace("def _repair_mac_ver():", "def _repair_mac_ver(:")
+    )
+
+    with pytest.raises(ValueError, match="not valid Python"):
+        build_homebrew_artifacts.validate_build_shim(broken, "nyxgpt-api")
+
+
+def test_a_formula_with_no_shim_is_not_forced_to_have_one():
+    """nyxgpt-web builds with npm and never starts a Python interpreter."""
+    web = (REPO_ROOT / "homebrew" / "nyxgpt-web.rb").read_text(encoding="utf-8")
+
+    assert not build_homebrew_artifacts.has_build_shim(web)
+    build_homebrew_artifacts.validate_build_shim(web, "nyxgpt-web")
+
+
+def test_macos_smoke_injects_the_failure_the_runner_does_not_reproduce():
+    """rc5's smoke job was green here while the same install failed on a Mac.
+
+    An install-only job is green on any machine that fails to reproduce the
+    bug, so the job has to force the condition and prove both directions.
+    """
+    script = _job_run_script(_macos_smoke_workflow()["jobs"]["keg-install"])
+
+    # The fault, injected rather than hoped for.
+    assert 'platform.mac_ver = lambda *args, **kwargs: ("", ("", "", ""), "")' in script
+    # The negative control: if pip starts anyway, the run proved nothing.
+    assert "invalid literal for int() with base 10: ''" in script
+    assert "no longer reproduces #3753" in script
+    # And the fix has to visibly fire, not just happen to pass.
+    assert "the shim never fired" in script
+
+
+def test_macos_smoke_reads_the_shim_out_of_the_formula_it_ships():
+    """A copied shim in the workflow could pass while the formula's is broken."""
+    script = _job_run_script(_macos_smoke_workflow()["jobs"]["keg-install"])
+
+    assert "from build_homebrew_artifacts import extract_build_shim" in script
+    assert "homebrew/nyxgpt-api.rb" in script
+
+
+def test_published_tap_reports_whether_the_stable_counterpart_exists():
+    """#3753's secondary finding stopped being answerable by guesswork.
+
+    The 2.1.0 backfill was dispatched and the `conflicts_with` warning still
+    appeared, so the job now states what the tap actually carries.
+    """
+    script = _job_run_script(_macos_smoke_workflow()["jobs"]["published-tap"])
+
+    assert "brew info --formula" in script
+    assert "conflicts_with" in script
