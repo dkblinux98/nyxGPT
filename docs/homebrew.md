@@ -22,7 +22,37 @@ filled in. See [ui.md](ui.md#support-menu).
 
 - macOS
 - Homebrew installed
-- Python environment already set up for nyxGPT
+
+You do **not** need a Python environment of your own, and you must not try to
+`pip install nyxgpt` on macOS: Homebrew's Python is
+[PEP 668](https://peps.python.org/pep-0668/) externally managed, so pip refuses
+the install outright. Each formula ships its own self-contained environment
+(see [How the keg venv is built](#how-the-keg-venv-is-built)), which is the
+whole point of the brew path.
+
+---
+
+## Trusting the tap (one-time, required)
+
+Homebrew gates formulas from third-party taps behind an explicit trust step.
+Until the tap is trusted, `brew install` stops instead of installing, so the
+trust command belongs in every macOS install sequence, right after `brew tap`:
+
+```bash
+brew tap dkblinux98/nyxgpt
+brew tap-trust dkblinux98/nyxgpt
+```
+
+It is per tap and per machine, not per formula or per version: trust
+`dkblinux98/nyxgpt` once and every formula in it — stable, release candidate,
+api, web — installs and upgrades without repeating it. On a Homebrew old
+enough not to gate third-party taps the step is simply unnecessary.
+
+`dkblinux98/nyxgpt` is the tap's name everywhere Homebrew asks for one. The
+repository behind it is `dkblinux98/homebrew-nyxgpt` — Homebrew's naming
+convention is to strip the `homebrew-` prefix, and both spellings resolve to
+the same tap in `brew tap`, so `HOMEBREW_TAP_REPO` naming the repo and the
+commands here naming the tap are the same thing.
 
 ---
 
@@ -63,7 +93,8 @@ and pushes stamped formulas (real `url`/`sha256`/`version`, no placeholders)
 to a separate tap repository the owner provisions once.
 
 ```bash
-brew tap dkblinux98/homebrew-nyxgpt
+brew tap dkblinux98/nyxgpt
+brew tap-trust dkblinux98/nyxgpt   # one-time per machine -- see above
 brew install nyxgpt-api nyxgpt-web
 ```
 
@@ -137,6 +168,7 @@ Verify on a clean Mac:
 
 ```bash
 brew tap dkblinux98/nyxgpt
+brew tap-trust dkblinux98/nyxgpt
 brew install nyxgpt-api nyxgpt-web
 brew services start nyxgpt-api && brew services start nyxgpt-web
 ```
@@ -162,6 +194,7 @@ stamps the tap too (#3727):
 
 ```bash
 brew tap dkblinux98/nyxgpt
+brew tap-trust dkblinux98/nyxgpt   # same one-time step as the stable formulas
 brew install nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc
 
 brew services start nyxgpt-api@3.0.0rc
@@ -278,8 +311,9 @@ and for the equivalent pip/cloud flows.
 Install both service formulas:
 
 ```bash
-# Add the tap (if not already added)
+# Add the tap (if not already added) and trust it once
 brew tap dkblinux98/nyxgpt-local
+brew tap-trust dkblinux98/nyxgpt-local
 
 # Install both services
 brew install nyxgpt-api

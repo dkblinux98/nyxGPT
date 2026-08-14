@@ -45,15 +45,34 @@ and the retrospective that shows those gates firing.
 
 ## Install
 
+Install from a published artifact — no repository checkout, no venv to create
+by hand. Which artifact depends on your platform.
+
+**macOS** — the native services, from the remote Homebrew tap:
+
 ```bash
-pip install nyxgpt   # published wheel; no repository checkout required
-nyxgpt up            # installs and starts every component, then prints the web UI URL
+brew tap dkblinux98/nyxgpt
+brew tap-trust dkblinux98/nyxgpt   # one-time: Homebrew gates third-party taps
+brew install nyxgpt-api nyxgpt-web
+nyxgpt up                          # starts every component, then prints the web UI URL
+```
+
+Do **not** use pip on macOS: Homebrew's Python is
+[PEP 668](https://peps.python.org/pep-0668/) externally managed, so
+`pip3 install nyxgpt` is refused before it starts.
+
+**Linux** — the published wheel from PyPI:
+
+```bash
+pipx install nyxgpt   # or `pip install nyxgpt` where the system Python is not externally managed
+nyxgpt up
 ```
 
 Then chat from the CLI (`nyxgpt chat "Hello"`) or the web UI at the URL
 `nyxgpt up` prints.
 
-- **macOS native services** install from the remote Homebrew tap instead —
+- **The macOS install in full** — the tap, the trust step, the services, and
+  their logs —
   [Homebrew](https://github.com/dkblinux98/nyxGPT/blob/master/docs/homebrew.md).
 - **Every supported target** (macOS, Linux, Docker/Compose, Kubernetes, AWS
   EC2), its exact install command, and its current state —
@@ -66,8 +85,9 @@ Then chat from the CLI (`nyxgpt chat "Hello"`) or the web UI at the URL
 - **Acceptance-testing a build that isn't released yet** — install a pinned
   release candidate rather than the latest stable:
   [PyPI publishing (rc and stable)](https://github.com/dkblinux98/nyxGPT/blob/master/docs/cloud.md#pypi-publishing-rc-and-stable).
-- **Developing nyxGPT** is the only flow that uses a source checkout
-  (`pip install -e .`) —
+- **Developing nyxGPT** is the only flow that uses a source checkout, and the
+  only one where you make a virtualenv yourself (`python3 -m venv .venv`, then
+  `pip install -e .`) —
   [Development](https://github.com/dkblinux98/nyxGPT/blob/master/docs/development.md).
 
 Which versions exist at any given moment is on the

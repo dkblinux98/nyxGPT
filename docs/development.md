@@ -116,6 +116,12 @@ never requires one — see [Installing nyxGPT](ops.md#installing-nyxgpt) and the
 
 ### Local Setup
 ```bash
+# A virtualenv, because this is the developer path: an editable install of a
+# checkout. Homebrew's and Ubuntu's system Pythons are PEP 668 externally
+# managed, so `pip install -e .` against them is refused outright.
+python3 -m venv .venv
+source .venv/bin/activate
+
 # Install in editable mode
 pip install -e .
 
