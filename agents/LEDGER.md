@@ -425,6 +425,59 @@ not agent-editable except to add a `Re-verify` result or a supersession pointer.
   `ops._wait_for_k8s_data_tier` workload list changes (the smoke job and
   `tests/unit/test_k8s_manifests.py` fail loudly if the tier is dropped).
 
+- **V-013** · 2026-08-15 — The rc11 keg install failure (#3788) is **not** an
+  ordering problem in the pip bootstrap. Its cause is that the Homebrew
+  `python@3.12` keg's pip cannot import
+  `pip._internal.operations.install.wheel`; pip 26.2 pre-imports its lazy
+  imports before writing anything, swallows that `ImportError` into
+  `_MISSING_MODULES`, and its audit hook re-raises it from
+  `_prevent_import_hook` when `req_install.py` needs the module for real.
+  Consequence: **any** install routed through that pip dies, whatever is being
+  installed and in whatever order — so the keg's pip is now allowed to
+  `download` only, and the keg venv is bootstrapped by running pip out of the
+  downloaded wheel (`python pip-X.whl/pip install pip-X.whl`).
+  Method: created exactly that machine state on a stand-in keg (pip 26.2.1)
+  on 2026-08-15 by moving `pip/_internal/operations/install/wheel.py` out of
+  it, and reproduced the owner's traceback line-for-line, down to
+  `req_install.py:779` → `install.py:97 in _prevent_import_hook`; the wheel
+  bootstrap survives the same state (`pip download` succeeds, the venv
+  python installs pip out of the wheel). Scope of that method, stated
+  because it misled three rounds: the stand-in keg was a flat tree with no
+  prefix→Cellar symlinks, so it could not show the injection missing the
+  child, and off-workflow execution is evidence about the *recipe*, not
+  about the step. `macos-brew-smoke.yml`'s "Reproduce the #3788 keg-pip
+  failure" step is where both directions have to run on the real keg
+  topology; as of this entry it has not yet been green there — cite the run
+  here once it is.
+  Corollary, verified 2026-08-15 across three red runs of that step: **a
+  condition injected by emulation is tested in an environment the real
+  install does not have, so the emulation becomes the thing under test.**
+  Both earlier spellings emulated this one with a meta-path finder in a
+  `sitecustomize` on `PYTHONPATH`, and both silently never fired: the first
+  scoped the keg by `os.path.abspath`, which cannot match in the
+  symlink-resolved `pip --python` child (`get_runnable_pip()` is
+  `Path(pip_location).resolve().parent`); the second compared realpaths but
+  shadowed the keg's own `sitecustomize` — python imports exactly one — and
+  so moved pip resolution from the prefix copy to the Cellar copy, off the
+  anchor. Chaining to the shadowed file fixed the resolution and the fault
+  still did not fire, which is the point: each fix bought another round
+  about the vehicle. Taking the file away needs no interpreter environment
+  at all; the third round then moved it at the path *this* process imports
+  it by, which on Homebrew is a link into the Cellar, so the self-check
+  fired through the dangling link while `pip --python`'s child — which
+  re-execs through `Path(pip.__file__).resolve()` — imported an untouched
+  Cellar copy and installed successfully. Corollary of the corollary:
+  **remove the file where every route resolves to (its realpath), and assert
+  the condition by every route, not the convenient one.** A `trap` restores
+  the keg on every exit path (executed: a mid-step failure leaves the keg
+  intact). General rule, and the reason the self-check exists at all: **a
+  fault that does not fire is indistinguishable in a log from a bug that is
+  gone**, so the job asserts the condition exists before inferring anything
+  from it.
+  Re-verify when: pip changes `_EAGER_IMPORTS`/`_prevent_import_hook` (the
+  deprecation there is marked `gone_in="26.3"`), or the recipe stops using
+  `pip download`.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
