@@ -3,12 +3,18 @@ name: Linux Native Smoke
 # Two jobs, answering two different questions about the Linux ops path:
 #
 #   linux-native-smoke  Does the Linux-native (systemd --user) install work
-#                       end-to-end? Drives scripts/systemd-native-smoke.sh:
-#                       `nyxgpt ops install` -> every unit active and api/web
-#                       responding -> diagnostics -> `nyxgpt ops down` (#3508).
-#                       This is the review agent's only way to see systemd-path
-#                       regressions -- unit tests mock systemctl; this runs the
-#                       real thing on a real systemd userland.
+#                       end-to-end, from a machine with nothing on it? Drives
+#                       scripts/systemd-native-smoke.sh: `nyxgpt up` -> Ollama
+#                       installed by ops itself -> every unit active and
+#                       api/web responding -> `nyxgpt ops status`/`ops doctor`
+#                       -> `nyxgpt down` (#3508 -- the four commands that
+#                       issue's acceptance names). Preceded by
+#                       scripts/ollama-bootstrap-smoke.py, which injects the
+#                       pre-fix behaviour and proves the run would have failed
+#                       without the Ollama bootstrap. This is the review
+#                       agent's only way to see systemd-path regressions --
+#                       unit tests mock systemctl; this runs the real thing on
+#                       a real systemd userland.
 #   ops-subprocess-output  When an ops subprocess fails, can an operator read
 #                       WHY from the log alone? Runs a real failing `pip
 #                       install` through `ops._run` and asserts pip's own
@@ -34,6 +40,7 @@ on:
       - 'src/nyxgpt/self_heal.py'
       - 'ops/systemd/**'
       - 'scripts/systemd-native-smoke.sh'
+      - 'scripts/ollama-bootstrap-smoke.py'
       - 'scripts/ops-subprocess-output-smoke.py'
       - 'scripts/service-venv-python-smoke.py'
       - '.github/workflows/linux-native-smoke.yml'
@@ -43,6 +50,7 @@ on:
       - 'src/nyxgpt/self_heal.py'
       - 'ops/systemd/**'
       - 'scripts/systemd-native-smoke.sh'
+      - 'scripts/ollama-bootstrap-smoke.py'
       - 'scripts/ops-subprocess-output-smoke.py'
       - 'scripts/service-venv-python-smoke.py'
       - '.github/workflows/linux-native-smoke.yml'
@@ -75,8 +83,17 @@ jobs:
           python -m pip install --upgrade pip setuptools
           pip install -e .
 
-      # Config seeding, Ollama install, and systemd --user session setup
-      # (lingering/DBUS) are all handled inside the script itself.
+      # Both halves of the #3775 evidence, in this order and in one job so the
+      # ~1.4GB Ollama download is paid once. First the pre-fix behaviour --
+      # with the bootstrap disabled, the native Ollama step fails on this
+      # runner, which is what makes the smoke run below evidence rather than
+      # luck. It must run while the runner still has no Ollama on PATH.
+      - name: Reproduce the pre-fix failure (no Ollama bootstrap)
+        run: python3 scripts/ollama-bootstrap-smoke.py
+
+      # Config seeding and systemd --user session setup (lingering/DBUS) are
+      # handled inside the script itself. Ollama deliberately is not: the
+      # script asserts `nyxgpt up` installs it (#3508).
       - name: Run systemd native smoke
         run: ./scripts/systemd-native-smoke.sh
 

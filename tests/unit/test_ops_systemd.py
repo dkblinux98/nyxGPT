@@ -50,6 +50,16 @@ def _cp(returncode=0, stdout="", stderr=""):
     return subprocess.CompletedProcess(["x"], returncode, stdout=stdout, stderr=stderr)
 
 
+class _FakeResponse:
+    """Minimal `httpx.Response` stand-in for the Ollama installer fetch."""
+
+    def __init__(self, text: str):
+        self.text = text
+
+    def raise_for_status(self) -> None:
+        return None
+
+
 # --- _is_macos / _is_linux / _unsupported_os_result ---
 
 
@@ -284,11 +294,205 @@ def test_stop_systemd_service_success(monkeypatch):
 # --- _install_native_ollama_systemd ---
 
 
-def test_install_native_ollama_systemd_missing_binary(monkeypatch):
-    monkeypatch.setattr(ops, "_which", lambda _: None)
+def test_install_native_ollama_systemd_missing_binary_installs_it(monkeypatch, tmp_path):
+    """#3508 acceptance: a missing `ollama` is installed, not handed back.
+
+    macOS's twin (`_ensure_ollama_service`) runs `brew install ollama` for
+    the operator, so stopping here with "install it first: curl ... | sh"
+    meant Linux did not offer the same commands -- the acceptance failure
+    this test pins.
+    """
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    installed: list[str] = []
+
+    def _fake_bootstrap():
+        installed.append("ollama")
+        return [ops.OpsResult(True, "Installed Ollama")]
+
+    monkeypatch.setattr(ops, "_ensure_ollama_installed", _fake_bootstrap)
+    # Missing before the bootstrap runs, present after it -- what a real
+    # install of the binary looks like to the rest of the step.
+    monkeypatch.setattr(ops, "_which", lambda name: "/usr/local/bin/ollama" if installed else None)
+    monkeypatch.setattr(ops, "_migrate_native_ollama_models", lambda models_dir: [])
+    monkeypatch.setattr(ops, "_run", lambda cmd, **k: _cp(0))
+    tpl = tmp_path / "nyxgpt-ollama.service"
+    tpl.write_text("ExecStart=__NYXGPT_OLLAMA_BIN__ serve\n", encoding="utf-8")
+    monkeypatch.setattr(ops, "_find_systemd_unit_template", lambda name: (tpl, [tpl]))
+
     results = ops._install_native_ollama_systemd()
-    assert results[0].ok is False
-    assert "ollama not found on PATH" in results[0].message
+
+    assert installed == ["ollama"]
+    assert all(r.ok for r in results), [r.message for r in results if not r.ok]
+    assert "Installed Ollama" in results[0].message
+    dst = home / ".config" / "systemd" / "user" / "nyxgpt-ollama.service"
+    assert "ExecStart=/usr/local/bin/ollama serve" in dst.read_text(encoding="utf-8")
+
+
+def test_install_native_ollama_systemd_stops_when_bootstrap_fails(monkeypatch):
+    """A bootstrap that couldn't install Ollama ends the step with its own
+    diagnosis -- no unit is installed on a machine with no Ollama to run."""
+    monkeypatch.setattr(
+        ops,
+        "_ensure_ollama_installed",
+        lambda: [ops.OpsResult(False, "Could not install Ollama automatically", "boom")],
+    )
+    templates: list[str] = []
+    monkeypatch.setattr(
+        ops,
+        "_find_systemd_unit_template",
+        lambda name: templates.append(name) or (None, []),
+    )
+
+    results = ops._install_native_ollama_systemd()
+
+    assert [r.ok for r in results] == [False]
+    assert "Could not install Ollama automatically" in results[0].message
+    assert templates == []
+
+
+def test_install_native_ollama_systemd_installs_before_port_takeover(monkeypatch, tmp_path):
+    """Ordering matters: the official installer *creates* the system-wide
+    `ollama.service` whose port this unit has to take over, so a takeover
+    performed first would check a conflict that does not exist yet and miss
+    the one the install introduces (#3632 + #3508)."""
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    order: list[str] = []
+
+    def _fake_bootstrap():
+        order.append("install")
+        return [ops.OpsResult(True, "Installed Ollama")]
+
+    monkeypatch.setattr(ops, "_ensure_ollama_installed", _fake_bootstrap)
+    monkeypatch.setattr(
+        ops,
+        "_system_ollama_service_conflicts",
+        lambda: order.append("conflict-check") or True,
+    )
+    monkeypatch.setattr(
+        ops,
+        "_takeover_system_ollama_service",
+        lambda: (order.append("takeover") or True, [ops.OpsResult(True, "Took over")]),
+    )
+    monkeypatch.setattr(ops, "_which", lambda name: "/usr/local/bin/ollama")
+    monkeypatch.setattr(ops, "_migrate_native_ollama_models", lambda models_dir: [])
+    monkeypatch.setattr(ops, "_run", lambda cmd, **k: _cp(0))
+    tpl = tmp_path / "nyxgpt-ollama.service"
+    tpl.write_text("ExecStart=__NYXGPT_OLLAMA_BIN__ serve\n", encoding="utf-8")
+    monkeypatch.setattr(ops, "_find_systemd_unit_template", lambda name: (tpl, [tpl]))
+
+    results = ops._install_native_ollama_systemd()
+
+    assert all(r.ok for r in results)
+    assert order == ["install", "conflict-check", "takeover"]
+
+
+# --- _ensure_ollama_installed / _install_linux_ollama ---
+
+
+def test_ensure_ollama_installed_is_a_noop_when_present(monkeypatch):
+    """Every re-run of `ops install` hits this: already installed, nothing to
+    report and -- crucially -- nothing downloaded."""
+    monkeypatch.setattr(ops, "_which", lambda name: "/usr/local/bin/ollama")
+    monkeypatch.setattr(
+        ops,
+        "_install_linux_ollama",
+        lambda: pytest.fail("must not attempt an install when ollama is present"),
+    )
+    assert ops._ensure_ollama_installed() == []
+
+
+def test_ensure_ollama_installed_reports_unsupported_os(monkeypatch):
+    """Neither macOS (which installs the formula in its own twin) nor any
+    other OS reaches the Linux installer."""
+    monkeypatch.setattr(ops.platform, "system", lambda: "FreeBSD")
+    monkeypatch.setattr(ops, "_which", lambda name: None)
+    results = ops._ensure_ollama_installed()
+    assert [r.ok for r in results] == [False]
+    assert "FreeBSD" in results[0].details
+
+
+def test_install_linux_ollama_runs_the_official_installer(monkeypatch, tmp_path):
+    """The script is fetched and executed with root, never printed for the
+    operator to paste (CLAUDE.md's Operational Command Wrapping rule)."""
+    monkeypatch.setattr(
+        ops.httpx, "get", lambda url, **k: _FakeResponse("#!/bin/sh\necho installing\n")
+    )
+    ran: list[list[str]] = []
+
+    def _fake_privileged(cmd, **kwargs):
+        ran.append(cmd)
+        # The installer's own script must exist while it runs -- proving the
+        # temp file is not cleaned up before `_privileged_run` sees it.
+        assert Path(cmd[1]).read_text(encoding="utf-8").startswith("#!/bin/sh")
+        return _cp(0, stdout="installing")
+
+    monkeypatch.setattr(ops, "_privileged_run", _fake_privileged)
+    monkeypatch.setattr(ops, "_which", lambda name: "/usr/local/bin/ollama")
+
+    results = ops._install_linux_ollama()
+
+    assert [r.ok for r in results] == [True]
+    assert results[0].message == "Installed Ollama"
+    assert len(ran) == 1 and ran[0][0] == "sh"
+
+
+def test_install_linux_ollama_reports_when_root_is_unavailable(monkeypatch):
+    """`_privileged_run` returns None when root can't be reached at all --
+    reported with the command to run by hand, never a hung sudo prompt."""
+    monkeypatch.setattr(ops.httpx, "get", lambda url, **k: _FakeResponse("#!/bin/sh\n"))
+    monkeypatch.setattr(ops, "_privileged_run", lambda cmd, **k: None)
+
+    results = ops._install_linux_ollama()
+
+    assert [r.ok for r in results] == [False]
+    assert "root is not available without a password" in results[0].message
+    assert "https://ollama.com/install.sh" in results[0].details
+
+
+def test_install_linux_ollama_reports_installer_failure(monkeypatch):
+    monkeypatch.setattr(ops.httpx, "get", lambda url, **k: _FakeResponse("#!/bin/sh\n"))
+    monkeypatch.setattr(
+        ops, "_privileged_run", lambda cmd, **k: _cp(1, stderr="no space left on device")
+    )
+
+    results = ops._install_linux_ollama()
+
+    assert [r.ok for r in results] == [False]
+    assert "Could not install Ollama automatically" in results[0].message
+    assert "no space left on device" in results[0].details
+
+
+def test_install_linux_ollama_reports_a_download_failure(monkeypatch):
+    def _boom(url, **kwargs):
+        raise ops.httpx.ConnectError("network unreachable")
+
+    monkeypatch.setattr(ops.httpx, "get", _boom)
+    monkeypatch.setattr(
+        ops,
+        "_privileged_run",
+        lambda cmd, **k: pytest.fail("must not run anything when the script wasn't fetched"),
+    )
+
+    results = ops._install_linux_ollama()
+
+    assert [r.ok for r in results] == [False]
+    assert "Could not download the Ollama installer" in results[0].message
+    assert "network unreachable" in results[0].details
+
+
+def test_install_linux_ollama_fails_when_binary_still_not_on_path(monkeypatch):
+    """An installer that exits 0 but leaves nothing this process can invoke is
+    not a success -- /usr/local/bin isn't on every non-login shell's PATH."""
+    monkeypatch.setattr(ops.httpx, "get", lambda url, **k: _FakeResponse("#!/bin/sh\n"))
+    monkeypatch.setattr(ops, "_privileged_run", lambda cmd, **k: _cp(0))
+    monkeypatch.setattr(ops, "_which", lambda name: None)
+
+    results = ops._install_linux_ollama()
+
+    assert [r.ok for r in results] == [False]
+    assert "still not on PATH" in results[0].message
 
 
 def test_install_native_ollama_systemd_happy_path(monkeypatch, tmp_path):

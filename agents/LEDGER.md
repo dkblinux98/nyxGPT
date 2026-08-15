@@ -381,6 +381,32 @@ not agent-editable except to add a `Re-verify` result or a supersession pointer.
   Re-verify when: the `requires-python` floor moves, or the candidate list in
   `ops._SERVICE_PYTHON_NAMES` changes.
 
+- **V-011** · 2026-08-15 — A smoke test that satisfies a prerequisite *itself*
+  before invoking the code under test proves nothing about that prerequisite.
+  `scripts/systemd-native-smoke.sh` ran the official Ollama installer before
+  calling `nyxgpt ops install`, so CI never saw that the Linux install step
+  simply stopped with "ollama not found on PATH — install it first: curl … |
+  sh" on a real clean machine, while macOS's twin ran `brew install ollama`
+  for the operator. Two structural lessons, both now encoded: a smoke script
+  must not pre-satisfy what it verifies (the pre-install is gone; the script
+  asserts ops installed it, and hard-fails under `CI` if Ollama is already
+  present), and a smoke script must exercise **the commands the acceptance
+  names** — this one drove `ops install`/`ops down` and never `nyxgpt up`,
+  `nyxgpt down`, `ops status` or `ops doctor`, the four #3508's acceptance is
+  written in terms of.
+  Method: reproduced 2026-08-15 on Linux from the published **rc11 wheel with
+  no repo checkout** (`pip install nyxgpt==3.0.0rc11` into a clean venv) —
+  `nyxgpt up` reported `[FAIL] ollama not found on PATH`. After the fix, the
+  same step ran the installer, `_takeover_system_ollama_service` disabled the
+  system unit the installer had just enabled, `nyxgpt-ollama.service` came up
+  active and served HTTP 200 on 11434. `scripts/ollama-bootstrap-smoke.py`
+  injects the pre-fix behaviour and was executed to confirm it fails without
+  the bootstrap, so the green run is not luck (#3508, #3775).
+  Re-verify when: Ollama changes its Linux distribution channel, or the
+  install-step ordering in `_install_native_ollama_systemd` changes (the
+  install must stay *before* the port takeover — the installer is what
+  creates the conflicting system unit).
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

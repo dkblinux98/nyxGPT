@@ -60,9 +60,27 @@ if ! systemctl --user status >/dev/null 2>&1; then
   systemctl --user status >/dev/null 2>&1 || fail "systemctl --user still unreachable after enabling lingering"
 fi
 
-if ! command -v ollama >/dev/null 2>&1; then
-  log "Installing Ollama (official Linux installer)"
-  curl -fsSL https://ollama.com/install.sh | sh
+# Deliberately NOT pre-installing Ollama (#3508 acceptance). This script used
+# to run the official installer here, before `nyxgpt ops install` -- which
+# pre-satisfied the one prerequisite a real clean Linux machine does not have,
+# so CI could never see that the install step simply stopped and told the
+# operator to run that installer themselves. Installing Ollama is now ops's
+# job (`_ensure_ollama_installed`), the same way `brew install ollama` is on
+# macOS, and this script asserts it happened rather than doing it.
+#
+# On a CI runner this is a hard requirement: a hosted runner that shipped
+# Ollama would turn the assertion below into a tautology, and a green run
+# would stop being evidence. On a developer's own machine it is only a
+# warning -- they legitimately may have Ollama already, and the rest of the
+# script (units, health, status/doctor, teardown) is still worth running.
+OLLAMA_PREINSTALLED=0
+if command -v ollama >/dev/null 2>&1; then
+  if [[ -n "${CI:-}" ]]; then
+    fail "ollama is already on PATH -- in CI this smoke test must start from a machine without it, since what it verifies is that \`nyxgpt up\` installs it"
+  fi
+  OLLAMA_PREINSTALLED=1
+  log "WARNING: ollama is already on PATH, so this run cannot verify that
+  \`nyxgpt up\` installs it. Every other check still applies."
 fi
 
 if [[ ! -f "$HOME/.nyxGPT/config.ini" ]]; then
@@ -73,8 +91,20 @@ if [[ ! -f "$HOME/.nyxGPT/config.ini" ]]; then
   log "Seeded ~/.nyxGPT/config.ini from example.config.ini"
 fi
 
-log "nyxgpt ops install --skip-observability"
-nyxgpt ops install --skip-observability
+# `nyxgpt up`, not `nyxgpt ops install`: the four commands the owner named in
+# #3508's acceptance are `up`, `down`, `ops status` and `ops doctor`, and this
+# script previously exercised none of them -- it drove `ops install`/`ops
+# down`, so the aliases a Linux operator actually types were untested. `up` is
+# a strict superset (it runs the same install, then waits for health).
+log "nyxgpt up --skip-observability"
+nyxgpt up --skip-observability --timeout 300
+
+# The install had to have installed Ollama itself -- the assertion the removed
+# pre-install above used to make impossible.
+if [[ "$OLLAMA_PREINSTALLED" -eq 0 ]]; then
+  command -v ollama >/dev/null 2>&1 || fail "nyxgpt up did not install Ollama"
+  log "ollama installed by nyxgpt up -> $(command -v ollama)"
+fi
 
 # Both checks below wait with a bounded retry window instead of probing once
 # immediately: a unit freshly (re)started by `nyxgpt ops install` -- and
@@ -129,6 +159,32 @@ check "api    /health" http://127.0.0.1:8000/health 200 || { echo "::error::api 
 check "web    /"       http://127.0.0.1:3000/ 200       || { echo "::error::web    / expected 200"; fail_count=1; }
 check "ollama /"       http://127.0.0.1:11434/ 200      || { echo "::error::ollama / expected 200"; fail_count=1; }
 
+# The other two commands #3508's acceptance names. Both are read-only, so
+# they are asserted on a stack that is up: `ops status` has to report the
+# native components as running (a Linux `status` that printed macOS's brew
+# view, or nothing, would still exit 0 -- so grep the output, don't just
+# trust the exit code), and `ops doctor` has to find a healthy install clean.
+log "nyxgpt ops status"
+status_out=$(nyxgpt ops status 2>&1) || { echo "::error::nyxgpt ops status exited non-zero"; fail_count=1; }
+echo "$status_out"
+for line in "native  api: started" "native  web: started" "native  ollama: started"; do
+  grep -qF "$line" <<<"$status_out" || {
+    echo "::error::nyxgpt ops status did not report '$line'"; fail_count=1;
+  }
+done
+grep -qF "systemd --user services:" <<<"$status_out" || {
+  echo "::error::nyxgpt ops status printed no systemd section -- OS dispatch is wrong"; fail_count=1;
+}
+
+log "nyxgpt ops doctor"
+if ! doctor_out=$(nyxgpt ops doctor 2>&1); then
+  echo "$doctor_out"
+  echo "::error::nyxgpt ops doctor reported issues on a freshly-installed stack"
+  fail_count=1
+else
+  echo "$doctor_out"
+fi
+
 if [[ "$fail_count" -ne 0 ]]; then
   log "Dumping diagnostics"
   systemctl --user status nyxgpt-api nyxgpt-web nyxgpt-ollama --no-pager -l || true
@@ -137,8 +193,15 @@ if [[ "$fail_count" -ne 0 ]]; then
 fi
 
 if [[ "$KEEP_UP" -eq 0 ]]; then
-  log "Tearing down: nyxgpt ops down"
-  nyxgpt ops down || true
+  # `nyxgpt down`, the alias, for the same reason `nyxgpt up` is used above.
+  log "Tearing down: nyxgpt down"
+  nyxgpt down || true
+  for unit in nyxgpt-api nyxgpt-web nyxgpt-ollama; do
+    state=$(systemctl --user is-active "$unit.service" 2>/dev/null || echo "inactive")
+    [[ "$state" == "active" ]] && {
+      echo "::error::$unit is still active after nyxgpt down"; fail_count=1;
+    }
+  done
 else
   log "--keep-up set: leaving services running"
 fi
