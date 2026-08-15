@@ -53,6 +53,7 @@ import sys
 import tempfile
 import threading
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -146,15 +147,37 @@ class ArtifactSmokeFailure(CloudCommandError):
 _OLD_PYTHON_RE = re.compile(r"python3\.\d+")
 _NO_NODE_RE = re.compile(r"nodesource\.com|install\s+-y\s+nodejs|setup_\d+\.x")
 
-FAULTS: dict[str, str] = {
-    "old-python": (
-        "Rewrite every versioned interpreter reference back to the system "
-        "`python3` (3.9 on AL2023), reintroducing the #3782 class: the CLI venv "
-        "is built on an interpreter the wheel's requires-python refuses."
+
+@dataclass(frozen=True)
+class Fault:
+    """A fault the smoke can inject, and the failure it must produce.
+
+    `expects` names the defect class (a `_FAILURE_SIGNATURES` key) the injected
+    fault reintroduces. It is what makes `--inject` a real proof: without it
+    *any* failure -- a docker outage, an image-pull flake, a refused preflight
+    -- would satisfy the inverted verdict, and the job would be green while the
+    smoke was as blind to the defect class as before.
+    """
+
+    description: str
+    expects: str
+
+
+FAULTS: dict[str, Fault] = {
+    "old-python": Fault(
+        description=(
+            "Rewrite every versioned interpreter reference back to the system "
+            "`python3` (3.9 on AL2023), reintroducing the #3782 class: the CLI venv "
+            "is built on an interpreter the wheel's requires-python refuses."
+        ),
+        expects="interpreter-selection",
     ),
-    "no-node": (
-        "Drop the Node 20 provisioning, reintroducing the #3761 class: "
-        "`ops install` reaches the web build with no `npm` on the machine."
+    "no-node": Fault(
+        description=(
+            "Drop the Node 20 provisioning, reintroducing the #3761 class: "
+            "`ops install` reaches the web build with no `npm` on the machine."
+        ),
+        expects="node-provisioning",
     ),
 }
 
@@ -185,7 +208,8 @@ def apply_faults(script: str, faults: list[str]) -> tuple[str, list[dict[str, An
         records.append(
             {
                 "fault": name,
-                "description": FAULTS[name],
+                "description": FAULTS[name].description,
+                "expects": FAULTS[name].expects,
                 "changed": script != before,
             }
         )
@@ -430,10 +454,10 @@ def _stage_service_tarballs(version: str) -> dict[str, Any]:
 
     `ops install` on the artifact path downloads these two assets from the
     `<version>` GitHub Release. A wheel built from a branch declares the
-    checkout's version (`3.0.0` on this line), which has no release until the
-    ceremony cuts one -- so without this the container installs the branch's
-    CLI and then dies on a 404 for `nyxgpt-api-3.0.0.tar.gz`, having proved
-    nothing about the install sequence past step 33.
+    checkout's in-development version (e.g. `3.0.0`), which has no release
+    until the ceremony cuts one -- so without this the container installs the
+    branch's CLI and then dies on a 404 for its `nyxgpt-api-<version>.tar.gz`,
+    having proved nothing about the install sequence past step 33.
 
     They are built by the *same* builder the release publishes with
     (`release_tarball._create_dist_tarball`, what release-artifacts.yml
@@ -504,40 +528,86 @@ def stage_artifact(wheel: str | None) -> dict[str, Any]:
 # What the bootstrap's own failure output means, most specific first. Turning
 # a wall of dnf/pip output into "this is the #3782 class" is the difference
 # between one EC2 round-trip per defect and a diagnosis (#3762).
-_FAILURE_SIGNATURES: tuple[tuple[str, str], ...] = (
+#
+# Each entry is (class key, pattern, operator-facing meaning). The key is the
+# stable name -- `FAULTS[...].expects` and the injected-run verdict are written
+# against it, so rewording a meaning cannot silently change what a
+# fault-injected run accepts.
+#
+# Order is precedence, and it is load-bearing: a failed install prints
+# *everything* it did, so a single blob routinely carries more than one
+# signature. The artifact-obtain class sits above the systemd one because that
+# is the exact misdiagnosis this table produced in CI (run 31905652586: a 404
+# for `nyxgpt-api-3.0.0.tar.gz` reported as "systemd --user session", because
+# the ops log tail mentions `systemctl --user` on the way past).
+_FAILURE_SIGNATURES: tuple[tuple[str, str, str], ...] = (
     (
+        "interpreter-selection",
         r"requires-python|Requires-Python|requires a different Python|python_requires",
         "interpreter selection: the venv was built on a Python too old for the nyxGPT "
         "artifact (the #3782 class -- the AMI's system python3 is 3.9)",
     ),
     (
+        "node-provisioning",
         r"npm: command not found|node: command not found|npm ci|Node\.js version",
         "node provisioning: the web build ran without a usable Node 20 (the #3761 class)",
     ),
     (
+        "docker-handling",
         r"Cannot connect to the Docker daemon|docker: command not found|"
         r"permission denied while trying to connect to the Docker daemon",
         "docker handling: the engine was missing, not running, or not reachable by the "
         "target user (the #3760 class)",
     ),
     (
+        "artifact-obtain",
+        # The ops wording, or a 404 within a few lines of the asset it was for
+        # -- urllib reports the status and the URL on separate lines, so a
+        # single-line pattern would miss the shape this actually arrives in.
+        r"Could not obtain the nyxgpt-(?:api|web) artifact|"
+        r"(?:releases/download/|nyxgpt-(?:api|web)-\S*\.tar\.gz)[\s\S]{0,300}?(?:404|Not Found)|"
+        r"(?:404|Not Found)[\s\S]{0,300}?"
+        r"(?:releases/download/|nyxgpt-(?:api|web)-\S*\.tar\.gz)",
+        "artifact download: the service tarball for this version could not be fetched from "
+        "its GitHub Release -- the version is unpublished, or the asset is missing (this is "
+        "what a branch build without staged artifacts looks like)",
+    ),
+    (
+        "artifact-relative-path",
         r"(nyxGPT|docker/|ops/|scripts/)[^\s']*'?: No such file or directory|REPO_ROOT",
         "artifact-relative path resolution: something resolved a runtime path against a "
         "repository that is not on this machine (the #3759 class)",
     ),
     (
-        r"systemctl --user|Failed to connect to bus|user service manager",
+        # Narrowed to failure phrasing: a bare `systemctl --user` mention is in
+        # the normal output of every successful install, so matching it alone
+        # made this class the catch-all that swallowed unrelated failures.
+        "systemd-user-session",
+        r"Failed to connect to bus|Interactive authentication required|"
+        r"(?:[Ff]ailed|[Ee]rror|[Uu]nable)[^\n]*systemctl --user|"
+        r"systemctl --user[^\n]*(?:[Ff]ailed|[Ee]rror|not found|No such file)|"
+        r"(?:lingering|user service manager)[^\n]*(?:not |un|refus|fail)",
         "systemd --user session: lingering or the user bus was not usable for the target user",
     ),
 )
 
 
+def _match_signature(output: str) -> tuple[str, str]:
+    """Return the (class key, meaning) of the first signature `output` carries."""
+    for name, pattern, meaning in _FAILURE_SIGNATURES:
+        if re.search(pattern, output):
+            return name, meaning
+    return "", ""
+
+
 def classify_failure(output: str) -> str:
     """Name the defect class visible in bootstrap/verification output, or `""`."""
-    for pattern, meaning in _FAILURE_SIGNATURES:
-        if re.search(pattern, output):
-            return meaning
-    return ""
+    return _match_signature(output)[1]
+
+
+def failure_class(output: str) -> str:
+    """Return the stable class key for `output` (`interpreter-selection`, ...), or `""`."""
+    return _match_signature(output)[0]
 
 
 def run_bootstrap(
@@ -573,7 +643,12 @@ def run_bootstrap(
     result = _exec(f"{environment}bash {BOOTSTRAP_PATH}", timeout=timeout)
     output = _combined(result)
     if result.returncode != 0:
-        classification = classify_failure(output)
+        # The tail, not the whole blob: a 35-step install prints everything it
+        # did on the way to the failure, and classifying that carries every
+        # earlier step's incidental phrasing into the diagnosis. The lines that
+        # say why it stopped are the last ones.
+        tail = _tail(output)
+        classification = classify_failure(tail) or classify_failure(output)
         raise ArtifactSmokeFailure(
             f"The EC2 bootstrap failed inside the container (exit {result.returncode})"
             + (f" -- {classification}" if classification else "")
@@ -734,6 +809,64 @@ def last_result() -> dict[str, Any]:
 
 # --- The run ------------------------------------------------------------
 
+# Every phase that has to complete before the bootstrap -- the thing an
+# injected fault lives in -- is even reached. A run that stops earlier failed
+# at the smoke's own scaffolding, not at the defect.
+_PRE_BOOTSTRAP_STEPS: tuple[str, ...] = (
+    "docker",
+    "render",
+    "build",
+    "boot",
+    "preflight",
+    "artifact",
+)
+
+
+def _reached_bootstrap(steps: list[dict[str, Any]]) -> bool:
+    """Whether the run got as far as running the bootstrap in the container."""
+    completed = {str(step.get("step", "")) for step in steps}
+    return all(name in completed for name in _PRE_BOOTSTRAP_STEPS)
+
+
+def injection_verdict(
+    faults: list[str], *, failure: str, failure_class_key: str, reached_bootstrap: bool
+) -> tuple[bool, str]:
+    """Decide whether a `--inject` run proved the smoke sees the injected defect.
+
+    "The run failed" is not the pass condition, which is the trap this closes:
+    a docker outage, an image-pull flake, a build failure or a refused
+    preflight all make an injected run fail, and accepting any of them would
+    make the fault-injection job green while proving nothing -- the same
+    "green by luck" shape (D-006/#3753) the job exists to rule out. So a pass
+    requires all three: a failure, at or after the bootstrap step, whose
+    classification is the class the injected fault reintroduces.
+    """
+    names = ", ".join(faults)
+    expected = [FAULTS[name].expects for name in faults if name in FAULTS]
+    wanted = " or ".join(expected) or "a classified failure"
+
+    if not failure:
+        return False, (
+            f"injected {names} but the run still passed -- this smoke cannot see that "
+            "defect class, so a green run proves nothing"
+        )
+    if not reached_bootstrap:
+        return False, (
+            f"injected {names} but the run failed before the bootstrap it was injected into "
+            f"ever ran, so the fault was never exercised: {failure}"
+        )
+    if failure_class_key not in expected:
+        return False, (
+            f"injected {names} and the run failed, but as "
+            f"'{failure_class_key or 'an unclassified failure'}' rather than the expected "
+            f"{wanted} -- something other than the injected defect broke, so this run does "
+            f"not show the smoke sees it: {failure}"
+        )
+    return True, (
+        f"injected {names} and the smoke failed with the expected {failure_class_key} "
+        f"failure: {failure}"
+    )
+
 
 def run_container_smoke(args: argparse.Namespace) -> dict[str, Any]:
     """Build, boot, bootstrap, verify and tear down; return the full record.
@@ -815,8 +948,9 @@ def run_container_smoke(args: argparse.Namespace) -> dict[str, Any]:
     except Exception as exc:  # pragma: no cover - defensive
         failure = f"unexpected error: {exc.__class__.__name__}: {exc}"
 
+    classification_key = ""
     if failure and container_started:
-        classification = classify_failure(failure)
+        classification_key, classification = _match_signature(failure)
         diagnostics = collect_diagnostics()
 
     teardown_result = (
@@ -832,16 +966,15 @@ def run_container_smoke(args: argparse.Namespace) -> dict[str, Any]:
 
     # With --inject the verdict is inverted: the point of the run is to prove
     # the smoke SEES the injected defect, so a bootstrap that succeeds anyway
-    # is the failure (#3753 -- both halves, or the job is green by luck).
+    # is the failure (#3753 -- both halves, or the job is green by luck). It is
+    # inverted, not blind: the failure has to be the injected one
+    # (`injection_verdict`), or any breakage at all would pass the job.
     if faults:
-        passed = bool(failure)
-        detail = (
-            f"injected {', '.join(faults)} and the smoke failed as required: {failure}"
-            if passed
-            else (
-                f"injected {', '.join(faults)} but the run still passed -- this smoke "
-                "cannot see that defect class, so a green run proves nothing"
-            )
+        passed, detail = injection_verdict(
+            faults,
+            failure=failure,
+            failure_class_key=classification_key,
+            reached_bootstrap=_reached_bootstrap(steps),
         )
     else:
         passed = not failure
@@ -939,7 +1072,10 @@ def smoke_status() -> dict[str, Any]:
         "docker_available": available,
         "docker_detail": detail,
         "base_image": DEFAULT_BASE_IMAGE,
-        "faults": [{"fault": name, "description": text} for name, text in sorted(FAULTS.items())],
+        "faults": [
+            {"fault": name, "description": fault.description, "expects": fault.expects}
+            for name, fault in sorted(FAULTS.items())
+        ],
         "coverage_gaps": list(COVERAGE_GAPS),
         "commands": {
             "run": "nyxgpt cloud smoke --container",

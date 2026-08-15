@@ -53,7 +53,7 @@ replaces the first: the `nyxgpt` CLI (from PyPI), and then
 `nyxgpt-api-<version>.tar.gz` and `nyxgpt-web-<version>.tar.gz`, which
 `ops install` downloads from that version's GitHub Release
 (`ops._service_source_tarball`). A wheel built from a branch declares the
-checkout's version — `3.0.0` on this line — and no such release exists until
+checkout's in-development version (e.g. `3.0.0`) and no such release exists until
 the release ceremony cuts one, so a `--wheel` run used to reach step 33 of 35
 and die on a 404 for an asset that will never be there.
 
@@ -95,17 +95,51 @@ A job that only runs the happy path passes on every machine that fails to
 reproduce the bug. `--inject` reintroduces a defect class and **inverts the
 verdict** — the run passes only if the smoke fails:
 
-| Fault | Reintroduces |
-| --- | --- |
-| `old-python` | #3782 — rewrites every versioned interpreter reference back to the system `python3`, so the CLI venv is built on a Python the wheel's `requires-python` refuses |
-| `no-node` | #3761 — drops the Node 20 provisioning, so `ops install` reaches the web build with no `npm` |
+| Fault | Reintroduces | Must fail as |
+| --- | --- | --- |
+| `old-python` | #3782 — rewrites every versioned interpreter reference back to the system `python3`, so the CLI venv is built on a Python the wheel's `requires-python` refuses | `interpreter-selection` |
+| `no-node` | #3761 — drops the Node 20 provisioning, so `ops install` reaches the web build with no `npm` | `node-provisioning` |
 
 ```bash
 nyxgpt cloud smoke --container --inject old-python   # exits 0 only if the smoke failed
 ```
 
+Inverted is not the same as blind. "The run failed" is *not* the pass
+condition: a docker outage, an image-pull flake, a build failure or a refused
+preflight all make an injected run fail, and accepting any of them would make
+the job green while the smoke was as unable to see the defect as before — the
+same green-by-luck shape the injection exists to rule out. So a `--inject` run
+passes only when all three hold (`injection_verdict`):
+
+1. the run failed,
+2. it got as far as the bootstrap the fault was injected into, and
+3. the failure classifies as that fault's own class (the third column above).
+
 Both transforms are written against the *defect*, not against a particular
 line, so they keep reproducing it whatever shape the fix takes.
+
+### Diagnosing a failure
+
+A failed run is classified into a defect class (`_FAILURE_SIGNATURES`) and the
+class is printed with the verdict, recorded in the result and shown on the
+panel — the whole point being that an operator learns *which* of the five rc9
+classes bit without a second EC2 round-trip (#3762).
+
+| Class | Says |
+| --- | --- |
+| `interpreter-selection` | The venv was built on a Python too old for the artifact (#3782) |
+| `node-provisioning` | The web build ran without a usable Node 20 (#3761) |
+| `docker-handling` | The engine was missing, not running, or unreachable by the target user (#3760) |
+| `artifact-obtain` | A service tarball could not be fetched from its GitHub Release — usually an unpublished version, i.e. a `--version` run against a release that was never cut |
+| `artifact-relative-path` | Something resolved a runtime path against a repository that is not on the machine (#3759) |
+| `systemd-user-session` | Lingering or the user bus was not usable for the target user |
+
+Order in the table is precedence, and it matters: a failed install prints
+everything it did, so one blob usually carries more than one signature. Only
+the **tail** of the output is classified, and the classes that name a specific
+cause outrank the systemd one — which was matching any output that so much as
+mentioned `systemctl --user`, and reported a 404 for a missing release asset as
+a broken user session (CI run 31905652586).
 
 ## What a green run does NOT cover
 

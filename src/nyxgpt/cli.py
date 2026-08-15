@@ -2791,7 +2791,10 @@ def cli(argv: list[str] | None = None) -> int:
     cloud_smoke_p.add_argument(
         "--health-timeout",
         type=float,
-        help="Seconds to wait for the deployed stack to answer /health (default: 900)",
+        help=(
+            "Seconds to wait for the stack to answer /health (default: 900 against AWS, "
+            f"{cloud_artifact_smoke_mod.DEFAULT_HEALTH_TIMEOUT:.0f} with --container)"
+        ),
     )
     cloud_smoke_p.add_argument(
         "--ssh-timeout",

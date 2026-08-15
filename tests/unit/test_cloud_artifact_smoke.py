@@ -186,7 +186,8 @@ def test_injected_fault_that_the_smoke_catches_is_a_pass(fake_docker):
 
     assert result["passed"]
     assert result["expected_failure"] is True
-    assert "failed as required" in result["detail"]
+    # The verdict names the class it required, not just "it failed".
+    assert "expected interpreter-selection failure" in result["detail"]
     assert "interpreter selection" in result["failure_class"]
 
 
@@ -196,6 +197,58 @@ def test_injected_fault_the_smoke_misses_is_a_failure(fake_docker):
 
     assert not result["passed"]
     assert "cannot see that defect class" in result["detail"]
+
+
+def test_a_failure_before_the_bootstrap_does_not_pass_an_injected_run(fake_docker):
+    """The inverted verdict is not "anything went wrong".
+
+    A build that fails under `--inject` never runs the injected bootstrap at
+    all, so it says nothing about whether the smoke sees the defect. Accepting
+    it would make the fault-injection job green on a machine whose Docker is
+    merely broken -- the "green by luck" condition the job exists to rule out.
+    """
+    fake_docker.answer(
+        "docker build", _completed(1, "", "failed to solve: no space left on device")
+    )
+
+    result = smoke.run_container_smoke(_args(inject=["old-python"]))
+
+    assert not result["passed"]
+    assert "failed before the bootstrap" in result["detail"]
+
+
+def test_an_injected_run_that_fails_in_another_defect_class_does_not_pass(fake_docker):
+    """A failure of a different class is not evidence the injected one is seen."""
+    fake_docker.answer(
+        "bash /opt/nyxgpt-smoke/nyxgpt-bootstrap.sh",
+        _completed(1, "Cannot connect to the Docker daemon at unix:///var/run/docker.sock"),
+    )
+
+    result = smoke.run_container_smoke(_args(inject=["old-python"]))
+
+    assert not result["passed"]
+    assert "docker-handling" in result["detail"]
+    assert "interpreter-selection" in result["detail"]
+
+
+def test_an_injected_run_that_fails_unclassifiably_does_not_pass(fake_docker):
+    """An unrecognised failure is not the injected defect either."""
+    fake_docker.answer(
+        "bash /opt/nyxgpt-smoke/nyxgpt-bootstrap.sh",
+        _completed(1, "something entirely unremarkable went wrong"),
+    )
+
+    result = smoke.run_container_smoke(_args(inject=["no-node"]))
+
+    assert not result["passed"]
+    assert "an unclassified failure" in result["detail"]
+
+
+def test_every_fault_expects_a_class_the_signature_table_can_produce(fake_docker):
+    """A fault whose expected class no signature names could never pass."""
+    classes = {name for name, _pattern, _meaning in smoke._FAILURE_SIGNATURES}
+
+    assert {fault.expects for fault in smoke.FAULTS.values()} <= classes
 
 
 def test_old_python_fault_rewrites_versioned_interpreters():
@@ -234,11 +287,68 @@ def test_unknown_fault_is_refused():
             "artifact-relative path",
         ),
         ("Failed to connect to bus: No such file or directory", "systemd --user"),
+        (
+            "[ops] install: Could not obtain the nyxgpt-api artifact",
+            "artifact download",
+        ),
+        (
+            "urllib.error.HTTPError: HTTP Error 404: Not Found\n"
+            "  url: https://github.com/dkblinux8/nyxGPT/releases/download/v3.0.0/"
+            "nyxgpt-web-3.0.0.tar.gz",
+            "artifact download",
+        ),
         ("something entirely unremarkable", ""),
     ],
 )
 def test_failures_are_classified_into_defect_classes(output, expected):
     assert expected in smoke.classify_failure(output)
+
+
+# The misdiagnosis this table produced in CI run 31905652586: `ops install`
+# could not fetch `nyxgpt-api-3.0.0.tar.gz` (the branch's version has no
+# release), and the smoke reported "systemd --user session" -- because the
+# ops output on the way past mentions `systemctl --user`, and that pattern
+# used to match any output containing the words. Pinned as a regression: an
+# operator who is told the wrong class spends the round chasing the wrong
+# defect, which is the #3762 cost this smoke exists to remove.
+_ARTIFACT_404_OUTPUT = """\
+[ops] install: step 32/35 nyxgpt-api service unit
+[ops] install: reloading systemctl --user daemon
+[ops] install: step 33/35 nyxgpt-api artifact
+[ops] install: FAILED Could not obtain the nyxgpt-api artifact
+  HTTP Error 404: Not Found
+"""
+
+
+def test_an_artifact_404_is_not_diagnosed_as_a_broken_systemd_session():
+    assert smoke.failure_class(_ARTIFACT_404_OUTPUT) == "artifact-obtain"
+    assert "artifact download" in smoke.classify_failure(_ARTIFACT_404_OUTPUT)
+
+
+def test_a_healthy_mention_of_systemctl_user_is_not_a_defect_class():
+    """The narrowed signature: normal install output names `systemctl --user` constantly."""
+    assert smoke.failure_class("[ops] install: enabled nyxgpt-api via systemctl --user") == ""
+
+
+def test_the_bootstrap_failure_is_classified_from_its_tail_not_the_whole_log(fake_docker):
+    """A 35-step install prints everything it did; only the end says why it stopped."""
+    # An early, *successful* `npm ci` -- 60 lines back, so out of the tail. It
+    # carries the node-provisioning signature, which outranks the artifact one:
+    # classify the whole blob and the diagnosis is the step that worked.
+    noise = "\n".join(
+        ["[ops] install: step 4/35 web dependencies: npm ci"]
+        + [f"[ops] install: step {n}/35 ok" for n in range(5, 60)]
+    )
+    fake_docker.answer(
+        "bash /opt/nyxgpt-smoke/nyxgpt-bootstrap.sh",
+        _completed(1, f"{noise}\nFAILED Could not obtain the nyxgpt-web artifact\n"),
+    )
+
+    result = smoke.run_container_smoke(_args())
+
+    assert not result["passed"]
+    assert "artifact download" in result["failure_class"]
+    assert "node provisioning" not in result["failure_class"]
 
 
 def test_a_failed_run_collects_diagnostics(fake_docker):

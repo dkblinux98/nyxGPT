@@ -1739,9 +1739,9 @@ def _download_release_tarball(dest_dir: Path, name: str, version: str) -> Path:
 #
 #   - `nyxgpt cloud smoke --container --wheel` (#3784), which installs a wheel
 #     built from the tree under test. That wheel's version is the checkout's
-#     (`3.0.0` on this line), which has no GitHub Release and never will until
-#     the release ceremony cuts one -- so the CLI installs and then `ops
-#     install` 404s on `nyxgpt-api-3.0.0.tar.gz`. Staging the two tarballs
+#     in-development one (e.g. `3.0.0`), which has no GitHub Release and never
+#     will until the release ceremony cuts one -- so the CLI installs and then
+#     `ops install` 404s on `nyxgpt-api-<version>.tar.gz`. Staging the tarballs
 #     built from the same tree is what makes a branch's own `ops.py` testable
 #     on the artifact path at all; without it the job can only ever install a
 #     *published* rc, i.e. not the code under review.

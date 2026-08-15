@@ -83,6 +83,25 @@ function hasResult(result: SmokeStatus['last_result']): result is SmokeResult {
   return Boolean(result && Object.keys(result).length > 0);
 }
 
+// The API's error envelope is `{"error": {"code", "message", ...}}` and
+// FastAPI's own refusals are `{"detail": "..."}`; a 409 from this endpoint --
+// "a run is already in flight", "Docker is not usable here" -- arrives in the
+// first shape. Reading `data.error` directly rendered the banner as
+// "[object Object]", i.e. it hid exactly the messages the operator needs.
+function errorText(data: unknown, fallback: string): string {
+  if (data && typeof data === 'object') {
+    const record = data as Record<string, unknown>;
+    const nested = record.error;
+    if (nested && typeof nested === 'object') {
+      const message = (nested as Record<string, unknown>).message;
+      if (typeof message === 'string') return message;
+    }
+    if (typeof nested === 'string') return nested;
+    if (typeof record.detail === 'string') return record.detail;
+  }
+  return fallback;
+}
+
 export default function CloudArtifactSmokePage() {
   const [status, setStatus] = useState<SmokeStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -98,7 +117,7 @@ export default function CloudArtifactSmokePage() {
       const res = await fetch('/api/v1/ops/cloud-artifact-smoke', { cache: 'no-store' });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || data.detail || `HTTP ${res.status}`);
+        throw new Error(errorText(data, `HTTP ${res.status}`));
       }
       setStatus(data);
     } catch (e: unknown) {
@@ -134,7 +153,7 @@ export default function CloudArtifactSmokePage() {
       });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || data.detail || `HTTP ${res.status}`);
+        throw new Error(errorText(data, `HTTP ${res.status}`));
       }
       setNotice(
         `Run started at ${data.started_at}. It takes tens of minutes; this page polls for the verdict.`
