@@ -136,15 +136,25 @@ class NyxgptApi < Formula
     # pip is placed into the venv directly below, by the same Homebrew python
     # that is already a declared dependency.
     system python, "-m", "venv", "--without-pip", venv
-    # `pip --python` (pip 22.3+) installs into *another* interpreter's
-    # environment, so the venv gets a real pip -- with the venv's own shebang
-    # and install scheme -- without ensurepip ever running. PEP 668's
-    # externally-managed marker on the Homebrew keg does not apply: the
-    # install target is the venv, which is not externally managed.
-    # `--python` is a top-level pip option and must precede the subcommand:
-    # placed after `install`, pip exits with "The --python option must be
-    # placed before the pip subcommand name" and takes `brew install` down.
-    system python, "-m", "pip", "--python", venv/"bin/python", "install", "--upgrade", "pip"
+
+    # Round 3 of #3753 (#3788), and the reason the keg's own pip no longer
+    # performs an install for us: on python@3.12 3.12.14 that pip cannot
+    # import `pip._internal.operations.install.wheel`, and pip 26.2's
+    # self-modification guard reports that as
+    # `ImportError: No module named 'pip._internal.operations.install.wheel'`
+    # from `_prevent_import_hook`, killing `brew install`. See
+    # ../nyxgpt-api.rb for the full account. The keg's pip now only
+    # *downloads* a pip wheel -- a path that never touches that module -- and
+    # the venv is populated by running pip out of that wheel under the venv's
+    # own interpreter (`python pip-X.whl/pip install pip-X.whl`, pip's
+    # documented zipimport bootstrap).
+    wheelhouse = buildpath/"pip-bootstrap"
+    system python, "-m", "pip", "download", "--no-deps", "--only-binary", ":all:",
+           "--disable-pip-version-check", "--dest", wheelhouse, "pip"
+    pip_wheel = Dir.glob(wheelhouse/"pip-*.whl").first
+    odie "keg venv bootstrap: `pip download` produced no pip wheel in #{wheelhouse}" if pip_wheel.nil?
+    system venv/"bin/python", "#{pip_wheel}/pip", "install", "--no-index",
+           "--disable-pip-version-check", pip_wheel
     system venv/"bin/pip", "install", buildpath
 
     # config_wizard builds its schema from example.config.ini at import time

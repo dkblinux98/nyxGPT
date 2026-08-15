@@ -1,0 +1,120 @@
+name: Comment token gate
+description: >-
+  Decide whether an issue comment ISSUES a command token or merely names it
+  (#3790). Every comment-driven trigger in this repo uses this gate, so the
+  rule is identical for RETRY_IMPLEMENTATION, READY_FOR_NEXT_ISSUE,
+  @acceptance-failure and @improvement.
+
+# Why this exists (2026-08-15, #3790): the job-level `if:` of a comment
+# trigger can only do a bare `contains()` substring test -- GitHub expressions
+# have no regex and cannot anchor a match to a line. That substring test is
+# what let the developer agent's own stop message ("...comment
+# `RETRY_IMPLEMENTATION` to resume") re-trigger the workflow that had just
+# posted it, ~500 times across #3782/#3784 in under two hours.
+#
+# So the trigger is now two layers:
+#   1. the job `if:` keeps the cheap contains() test plus a negated
+#      informational marker (the #3706 structural guard), and
+#   2. this gate job runs scripts/agents/lib/comment_tokens.py, which matches
+#      the token only where it OPENS A LINE, outside code fences and quotes.
+# The work job `needs:` this one and proceeds only on proceed == 'true'. A
+# gate failure therefore stops work rather than starting it -- fail-safe is
+# the correct direction for a loop guard.
+
+inputs:
+  token:
+    description: The command token to test for, e.g. RETRY_IMPLEMENTATION.
+    required: true
+  comment-body:
+    description: github.event.comment.body (passed via env, never interpolated into shell).
+    required: true
+  author-association:
+    description: github.event.comment.author_association, used for the owner-reset rules.
+    required: false
+    default: ""
+  issue-number:
+    description: Issue the comment was posted on (required when check-stop-loop is true).
+    required: false
+    default: ""
+  repository:
+    description: owner/repo (required when check-stop-loop is true).
+    required: false
+    default: ""
+  github-token:
+    description: Token used to read the comment thread (required when check-stop-loop is true).
+    required: false
+    default: ""
+  check-stop-loop:
+    description: >-
+      Also consult the stop-without-progress loop guard
+      (scripts/agents/lib/stop_loop_guard.py). Only the developer agent's
+      retry trigger needs this.
+    required: false
+    default: "false"
+
+outputs:
+  proceed:
+    description: "'true' when the comment issues the token and no loop halt is active."
+    value: ${{ steps.decide.outputs.proceed }}
+  reason:
+    description: Human-readable explanation of the decision.
+    value: ${{ steps.decide.outputs.reason }}
+
+runs:
+  using: composite
+  steps:
+    - name: Decide whether the comment issues the token
+      id: decide
+      shell: bash
+      env:
+        COMMENT_BODY: ${{ inputs.comment-body }}
+        TOKEN: ${{ inputs.token }}
+        AUTHOR_ASSOCIATION: ${{ inputs.author-association }}
+        ISSUE_NUMBER: ${{ inputs.issue-number }}
+        TARGET_REPO: ${{ inputs.repository }}
+        CHECK_STOP_LOOP: ${{ inputs.check-stop-loop }}
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        set -uo pipefail
+        LIB="$GITHUB_WORKSPACE/scripts/agents/lib"
+
+        emit() {
+          echo "proceed=$1" >> "$GITHUB_OUTPUT"
+          echo "reason=$2" >> "$GITHUB_OUTPUT"
+          echo "::notice::comment-token-gate ($TOKEN): proceed=$1 -- $2"
+        }
+
+        # Layer 2: anchored matching. The token must open a line, outside
+        # code fences and quoted text, on a comment carrying no
+        # informational marker.
+        if ! printf '%s' "$COMMENT_BODY" | python3 "$LIB/comment_tokens.py" is-command "$TOKEN" --quiet; then
+          emit false "comment names $TOKEN but does not issue it as a command (#3790 anchored matching)"
+          exit 0
+        fi
+
+        if [[ "$CHECK_STOP_LOOP" != "true" ]]; then
+          emit true "comment issues $TOKEN"
+          exit 0
+        fi
+
+        # Loop guard: once an issue has burned through its
+        # stop-without-progress budget, agent-authored retries are ignored
+        # until the owner steps in.
+        COMMENTS_JSON=$(gh api "repos/${TARGET_REPO}/issues/${ISSUE_NUMBER}/comments" --paginate \
+          --jq '[.[] | {body: .body, created_at: .created_at, author_association: .author_association}]' \
+          2>/dev/null | jq -s 'add // []')
+        if [[ -z "${COMMENTS_JSON:-}" ]]; then
+          # Reading the thread failed: do not invent a halt, but say so.
+          emit true "comment issues $TOKEN (loop-guard state unavailable)"
+          exit 0
+        fi
+
+        DECISION=$(printf '%s' "$COMMENTS_JSON" \
+          | python3 "$LIB/stop_loop_guard.py" gate --author-association "$AUTHOR_ASSOCIATION")
+        PROCEED=$(printf '%s' "$DECISION" | jq -r '.proceed // true')
+        REASON=$(printf '%s' "$DECISION" | jq -r '.reason // "no loop-guard state"')
+        if [[ "$PROCEED" == "true" ]]; then
+          emit true "comment issues $TOKEN; $REASON"
+        else
+          emit false "$REASON"
+        fi

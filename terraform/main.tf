@@ -19,9 +19,9 @@ resource "docker_network" "nyxgpt" {
 # config's `terraform apply` would otherwise destroy the now-removed
 # docker_volume resources.
 
-# Keep this pin identical to docker-compose.yml's `ollama` service image --
-# see docs/docker-compose.md#image-pinning for the policy and how to bump
-# both together.
+# Keep this pin identical to docker-compose.yml's `ollama` service image and
+# k8s/statefulset-ollama.yaml -- see docs/docker-compose.md#image-pinning for
+# the policy and how to bump them together.
 resource "docker_image" "ollama" {
   name = "ollama/ollama:0.32.4"
 }
@@ -55,10 +55,10 @@ resource "docker_container" "ollama" {
   }
 }
 
-# Keep this pin identical to docker-compose.yml's `cassandra` service image
-# and src/nyxgpt/ops.py's CASSANDRA_IMAGE -- see
-# docs/docker-compose.md#image-pinning for the policy and how to bump all
-# three together.
+# Keep this pin identical to docker-compose.yml's `cassandra` service image,
+# k8s/statefulset-cassandra.yaml and src/nyxgpt/ops.py's CASSANDRA_IMAGE --
+# see docs/docker-compose.md#image-pinning for the policy and how to bump all
+# four together.
 resource "docker_image" "cassandra" {
   name = "cassandra:5.0.8"
 }

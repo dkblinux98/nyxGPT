@@ -1,0 +1,302 @@
+# Self-hosted error tracking (GlitchTip), the `errors` half of the
+# observability layer: Postgres, Redis, the web app, and the Celery worker.
+# Exception data stays inside this cluster -- nothing talks to Sentry SaaS,
+# exactly as in Compose mode.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: glitchtip-postgres
+  namespace: nyxgpt
+  labels:
+    app: glitchtip-postgres
+    tier: observability
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: glitchtip-postgres
+  template:
+    metadata:
+      labels:
+        app: glitchtip-postgres
+        tier: observability
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16.14
+          env:
+            - name: POSTGRES_USER
+              value: glitchtip
+            - name: POSTGRES_DB
+              value: glitchtip
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: nyxgpt-observability-secrets
+                  key: glitchtip-postgres-password
+            # The image refuses to initialise into a non-empty mount root;
+            # a subdirectory keeps it happy on any volume type.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - name: postgres
+              containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "glitchtip"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 30
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+      volumes:
+        # Ephemeral for the same reason as Prometheus/Loki above: `nyxgpt ops
+        # down --kubernetes` deletes the local cluster outright.
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: glitchtip-postgres
+  namespace: nyxgpt
+  labels:
+    app: glitchtip-postgres
+    tier: observability
+spec:
+  selector:
+    app: glitchtip-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: glitchtip-redis
+  namespace: nyxgpt
+  labels:
+    app: glitchtip-redis
+    tier: observability
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: glitchtip-redis
+  template:
+    metadata:
+      labels:
+        app: glitchtip-redis
+        tier: observability
+    spec:
+      containers:
+        - name: redis
+          image: redis:7.4.9-alpine
+          ports:
+            - name: redis
+              containerPort: 6379
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: glitchtip-redis
+  namespace: nyxgpt
+  labels:
+    app: glitchtip-redis
+    tier: observability
+spec:
+  selector:
+    app: glitchtip-redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: glitchtip
+  namespace: nyxgpt
+  labels:
+    app: glitchtip
+    tier: observability
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: glitchtip
+  template:
+    metadata:
+      labels:
+        app: glitchtip
+        tier: observability
+    spec:
+      initContainers:
+        # Compose runs migrations as a one-shot `glitchtip-migrate` service.
+        # A Kubernetes Job would be the literal translation, but a Job's spec
+        # is immutable once created, so re-applying this overlay after an
+        # image bump would fail on it. An initContainer re-runs the same
+        # `manage.py migrate` on every rollout, is idempotent by Django's own
+        # design, and retries on its own until Postgres accepts connections.
+        - name: migrate
+          image: glitchtip/glitchtip:6.2.0
+          command: ["./manage.py", "migrate"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: nyxgpt-observability-secrets
+                  key: glitchtip-database-url
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: nyxgpt-observability-secrets
+                  key: glitchtip-secret-key
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+      containers:
+        - name: glitchtip
+          image: glitchtip/glitchtip:6.2.0
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: nyxgpt-observability-secrets
+                  key: glitchtip-database-url
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: nyxgpt-observability-secrets
+                  key: glitchtip-secret-key
+            - name: REDIS_URL
+              value: redis://glitchtip-redis:6379/0
+            - name: PORT
+              value: "8080"
+            - name: EMAIL_URL
+              value: consolemail://
+            # The operator reaches GlitchTip through `nyxgpt ops
+            # port-forward --target glitchtip`, which publishes it on the
+            # same local port Compose mode does.
+            - name: GLITCHTIP_DOMAIN
+              value: http://localhost:8080
+            - name: DEFAULT_FROM_EMAIL
+              value: errors@nyxgpt.local
+            - name: CELERY_WORKER_AUTOSCALE
+              value: "1,3"
+            - name: CELERY_WORKER_MAX_TASKS_PER_CHILD
+              value: "10000"
+            # Self-registration let anyone reaching the UI mint their own org
+            # and shadow the provisioned project (#3565) -- accounts come
+            # from `nyxgpt ops glitchtip-init` only.
+            - name: ENABLE_USER_REGISTRATION
+              value: "False"
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: glitchtip
+  namespace: nyxgpt
+  labels:
+    app: glitchtip
+    tier: observability
+spec:
+  # Name matches the Compose service: Grafana's GlitchTip (Infinity)
+  # datasource queries `http://glitchtip:8080`.
+  selector:
+    app: glitchtip
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: glitchtip-worker
+  namespace: nyxgpt
+  labels:
+    app: glitchtip-worker
+    tier: observability
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: glitchtip-worker
+  template:
+    metadata:
+      labels:
+        app: glitchtip-worker
+        tier: observability
+    spec:
+      containers:
+        - name: worker
+          image: glitchtip/glitchtip:6.2.0
+          command: ["./bin/run-celery-with-beat.sh"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: nyxgpt-observability-secrets
+                  key: glitchtip-database-url
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: nyxgpt-observability-secrets
+                  key: glitchtip-secret-key
+            - name: REDIS_URL
+              value: redis://glitchtip-redis:6379/0
+            - name: EMAIL_URL
+              value: consolemail://
+            - name: CELERY_WORKER_AUTOSCALE
+              value: "1,3"
+            - name: CELERY_WORKER_MAX_TASKS_PER_CHILD
+              value: "10000"
+            - name: VTASKS_HEALTH_CHECK_FILE
+              value: /tmp/vtasks_health_check
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              memory: 1Gi

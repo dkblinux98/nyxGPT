@@ -1,0 +1,121 @@
+# The deployment's LLM tier (#3786). Before this, k8s/configmap.yaml pointed
+# the api at `host.docker.internal:11434` -- an address that does not resolve
+# from a Pod on Linux clusters at all, and which pointed at a host Ollama that
+# `nyxgpt ops install --kubernetes --local` has stopped anyway. The result was
+# a stack whose Pods all reported Running and which could not answer a single
+# chat message.
+#
+# A StatefulSet rather than a Deployment: `ollama serve` owns a single model
+# blob store that it both reads and writes, so its Pod needs a stable identity
+# and its own durable volume, and two Pods must never be started against the
+# same one (the same storage argument that makes an Ollama *canary* pair
+# infeasible -- see docs/kubernetes.md#ollama-canary-feasibility; this is one
+# instance, not a stable/canary pair).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ollama
+  namespace: nyxgpt
+  labels:
+    app: ollama
+    tier: llm
+spec:
+  serviceName: ollama
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ollama
+  template:
+    metadata:
+      labels:
+        app: ollama
+        tier: llm
+    spec:
+      containers:
+        - name: ollama
+          # Keep this pin identical to docker-compose.yml's `ollama` service
+          # and terraform/main.tf's docker_image.ollama -- see
+          # docs/docker-compose.md#image-pinning for the policy and how to
+          # bump them together.
+          image: ollama/ollama:0.32.4
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 11434
+          env:
+            # The model the api asks for by default. MUST stay identical to
+            # `[nyxgpt] default_model` in k8s/configmap.yaml -- a mismatch
+            # means the pod is Ready with a model nobody requests, and chat
+            # fails with a 404 from Ollama. tests/unit/test_k8s_manifests.py
+            # asserts the two match.
+            - name: NYXGPT_DEFAULT_MODEL
+              value: qwen2.5:0.5b
+          lifecycle:
+            postStart:
+              exec:
+                # Pull the default model once the server is up, so a fresh
+                # install can actually answer a chat message without the
+                # operator pulling a model by hand. `ollama pull` is a no-op
+                # when the blob is already in the volume, which makes this
+                # safe on every restart.
+                #
+                # Trailing `|| true`: a postStart that exits non-zero gets the
+                # container killed, so a transient registry failure -- or an
+                # offline restart of a Pod whose volume ALREADY has the model
+                # -- must not turn into a crash loop. The readiness probe
+                # below, not this hook, is what reports whether the model is
+                # actually there.
+                command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    {
+                      until ollama list >/dev/null 2>&1; do sleep 2; done
+                      ollama show "$NYXGPT_DEFAULT_MODEL" >/dev/null 2>&1 ||
+                        ollama pull "$NYXGPT_DEFAULT_MODEL"
+                    } || true
+          readinessProbe:
+            # Ready means "can serve a chat with the configured model", not
+            # merely "port is open" -- the Service must not get endpoints
+            # while the default model is still downloading, or the first chat
+            # request races the pull and fails.
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - ollama show "$NYXGPT_DEFAULT_MODEL" >/dev/null 2>&1
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 10
+            # A cold pull of the default model over a slow link can take
+            # several minutes; don't give up on it.
+            failureThreshold: 60
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              # CPU inference on the default small model; sized for a
+              # workstation cluster, not a GPU node. Raise both if you point
+              # `[nyxgpt] default_model` at something bigger.
+              cpu: "2"
+              memory: 4Gi
+          volumeMounts:
+            - name: models
+              mountPath: /root/.ollama
+  volumeClaimTemplates:
+    - metadata:
+        name: models
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 20Gi
+        # No storageClassName -- see the note in statefulset-cassandra.yaml.

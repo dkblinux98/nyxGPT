@@ -6,6 +6,15 @@ resources:
   - rbac.yaml
   - configmap.yaml
   - secret.yaml
+  # Data/LLM tier (#3786) -- listed before the app tier it serves. Nothing in
+  # kustomize waits, so ordering here is documentation, not sequencing: the
+  # api Pods tolerate a Cassandra/Ollama that is still starting, and
+  # `nyxgpt ops install --kubernetes --local` is what waits for both to be
+  # Ready before it reports the stack healthy (_wait_for_k8s_data_tier).
+  - service-cassandra.yaml
+  - statefulset-cassandra.yaml
+  - service-ollama.yaml
+  - statefulset-ollama.yaml
   - service.yaml
   - deployment-stable.yaml
   - deployment-canary.yaml

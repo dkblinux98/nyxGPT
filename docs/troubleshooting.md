@@ -250,6 +250,37 @@ until you also enable auth. The relay achieves the same reachability while
 keeping the API loopback-only — see
 [docker-compose.md](docker-compose.md#linux-scraping-the-native-api).
 
+#### Already set `[api] host = 0.0.0.0`? Revert it
+
+If you widened the bind before the relay existed, nothing migrates you back
+automatically — the relay is *deliberately* skipped while `[api] host` is
+non-loopback, so each `nyxgpt ops observability` keeps reconciling the
+widened posture in. `nyxgpt ops doctor` now reports this explicitly rather
+than staying silent (the scrape is up, so the "target is DOWN" finding above
+does not fire):
+
+```
+The API is bound to `0.0.0.0`, publishing it on every interface instead of
+loopback only -- the pre-#3721 workaround for Prometheus not being able to
+reach a native API from a container. ...
+```
+
+To return to the loopback-only posture:
+
+1. Set `[api] host = 127.0.0.1` in `~/.nyxGPT/config.ini`.
+2. Reconcile and restart — this is what actually enables the relay, since the
+   decision is re-made from `config.ini` on every observability bring-up:
+   ```bash
+   nyxgpt ops env-sync
+   nyxgpt ops observability
+   nyxgpt ops restart api
+   ```
+3. Confirm with `nyxgpt ops doctor` — the finding clears, and the
+   `nyxgpt-api` scrape target stays **UP** through the relay.
+
+Auth (`[auth] enabled`) can stay on; the bind-security gate only *requires*
+it for non-loopback binds, it never forbids it on loopback.
+
 ---
 
 ## Configuration Problems

@@ -1,0 +1,203 @@
+name: Kubernetes Observability Smoke
+
+# Least-privilege token: this gate only reads the checked-out code (CodeQL #2).
+permissions:
+  contents: read
+
+# Question this job answers: does a `--kubernetes --local` deployment actually
+# GET an observability layer, on a real cluster?
+#
+# #3787 (owner acceptance, 2026-08-15): the k8s --local round shipped with no
+# prometheus/grafana/loki/jaeger/glitchtip anywhere in the cluster -- the
+# Compose observability profiles cannot apply in that mode, and nothing else
+# did. Inspection could not catch it and did not: only running the deploy and
+# looking at the cluster shows an empty observability tier. So this gate runs
+# both halves on a real kind cluster (D-006 fault injection):
+#
+#   1. the pre-fix state -- apply ONLY the app-tier kustomization, the entire
+#      set of manifests `install --kubernetes` used to apply, and assert the
+#      cluster has ZERO observability workloads (the defect, reproduced);
+#   2. the fix -- `nyxgpt ops observability --kubernetes --local`, then assert
+#      all ten workloads roll out, every UI answers through the wrapped
+#      `nyxgpt ops port-forward`, Grafana has its four provisioned datasources
+#      and the SRE Home dashboard, and promtail is really shipping Pod logs
+#      into Loki.
+#
+# The api/web images are deliberately NOT built here: the claim under test is
+# about the observability tier, the app tier's own bring-up is covered
+# elsewhere, and building both images would triple this job's runtime for no
+# extra coverage of the thing that broke.
+on:
+  pull_request:
+    paths:
+      - 'k8s/**'
+      - 'src/nyxgpt/ops.py'
+      - 'docker/grafana/**'
+      - '.github/workflows/k8s-observability-smoke.yml'
+  push:
+    paths:
+      - 'k8s/**'
+      - 'src/nyxgpt/ops.py'
+      - 'docker/grafana/**'
+      - '.github/workflows/k8s-observability-smoke.yml'
+
+jobs:
+  k8s-observability-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    if: github.event_name == 'pull_request' || github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install nyxgpt (editable)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Seed a native config from the tracked example
+        run: |
+          mkdir -p "$HOME/.nyxGPT"
+          cp example.config.ini "$HOME/.nyxGPT/config.ini"
+
+      - name: Create the local cluster
+        # `nyxgpt ops` provisions this itself when nothing is reachable
+        # (#3596/#3724); creating it up front keeps the two halves below on one
+        # cluster so half 1's "nothing here" is about the same cluster half 2
+        # then fills.
+        run: kind create cluster --name nyxgpt-local --wait 120s
+
+      - name: Reproduce the defect -- app tier only, no observability
+        run: |
+          set -euo pipefail
+          # Exactly what `install --kubernetes` applied before #3787. Raw
+          # kubectl is deliberate HERE and only here: this step reconstructs
+          # the old code path to prove it was broken. Every operator-facing
+          # path is a `nyxgpt` command (see the steps below).
+          cp k8s/secret.example.yaml k8s/secret.yaml
+          kubectl apply -k k8s/
+          found=$(kubectl -n nyxgpt get deploy,daemonset \
+            -l tier=observability --no-headers 2>/dev/null | wc -l | tr -d ' ')
+          echo "observability workloads after the pre-#3787 apply: $found"
+          if [ "$found" != "0" ]; then
+            echo "::error::fault injection failed: the app-tier manifests already ship observability, so this gate proves nothing"
+            exit 1
+          fi
+          # k8s/secret.yaml stays: the wrapped teardown at the end of this job
+          # deletes the app tier through the same kustomization it came from.
+
+          # Same rationale as not building the api/web images: the data/LLM
+          # tier (#3786) is applied above so the injection really is the whole
+          # pre-#3787 kustomization, but its Pods would pull multi-GB Cassandra
+          # and Ollama images (plus a model) onto the kind node's disk and
+          # contribute nothing to a claim about the OBSERVABILITY tier. #3786's
+          # own gate (k8s-local-smoke.yml) is what exercises them. Scale to
+          # zero rather than delete, so the manifests stay applied.
+          kubectl -n nyxgpt scale statefulset/cassandra statefulset/ollama --replicas=0
+
+      - name: nyxgpt ops observability --kubernetes --local
+        run: nyxgpt ops observability --kubernetes --local
+
+      - name: Wait for every observability workload to roll out
+        run: |
+          set -euo pipefail
+          for d in prometheus grafana loki otel-collector jaeger \
+                   glitchtip-postgres glitchtip-redis glitchtip glitchtip-worker; do
+            kubectl -n nyxgpt rollout status "deploy/$d" --timeout=600s
+          done
+          kubectl -n nyxgpt rollout status ds/promtail --timeout=300s
+
+      - name: Verify the UIs answer through the wrapped port-forward
+        run: |
+          set -uo pipefail
+          fail=0
+          # The operator-facing command -- not raw kubectl -- and the ports it
+          # publishes are the ones the admin dashboard's observability links
+          # already use (Grafana 3001, Prometheus 9090, Jaeger 16686,
+          # GlitchTip 8080). If these drift, the dashboard tiles break.
+          nyxgpt ops port-forward --target observability > /tmp/port-forward.log 2>&1 &
+          pf_pid=$!
+          trap 'kill "$pf_pid" 2>/dev/null || true' EXIT
+          sleep 15
+
+          check() { # <label> <url> <expected>
+            code=000
+            for _ in $(seq 1 20); do
+              code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$2" || echo 000)
+              [ "$code" = "$3" ] && break
+              sleep 3
+            done
+            echo "  $1 -> $code (expect $3)"
+            [ "$code" = "$3" ] || { echo "::error::$1 expected $3, got $code"; fail=1; }
+          }
+          check "grafana health" http://127.0.0.1:3001/api/health 200
+          check "prometheus ready" http://127.0.0.1:9090/-/ready 200
+          check "jaeger UI" http://127.0.0.1:16686/ 200
+          check "glitchtip UI" http://127.0.0.1:8080/ 200
+
+          # Grafana's provisioning is generated from docker/grafana at apply
+          # time and only resolves because the overlay's Services carry the
+          # Compose service names -- a rename breaks these silently.
+          pw=$(grep 'grafana-admin-password:' k8s/observability/secret.yaml | sed 's/.*: "//; s/"$//')
+          datasources=$(curl -s -u "admin:$pw" http://127.0.0.1:3001/api/datasources | jq -r '[.[].name] | sort | join(",")')
+          echo "  grafana datasources -> $datasources"
+          [ "$datasources" = "GlitchTip,Jaeger,Loki,Prometheus" ] || {
+            echo "::error::expected the four provisioned datasources, got $datasources"; fail=1; }
+          for uid in prometheus loki jaeger; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -u "admin:$pw" "http://127.0.0.1:3001/api/datasources/uid/$uid/health")
+            echo "  datasource $uid health -> $code"
+            [ "$code" = "200" ] || { echo "::error::datasource $uid is not healthy in-cluster"; fail=1; }
+          done
+          # SRE Home is what the admin dashboard's SRE Overview tile opens.
+          code=$(curl -s -o /dev/null -w '%{http_code}' -u "admin:$pw" http://127.0.0.1:3001/d/nyxgpt-sre-home)
+          echo "  SRE Home dashboard -> $code"
+          [ "$code" = "200" ] || { echo "::error::SRE Home dashboard missing in Kubernetes mode"; fail=1; }
+          exit $fail
+
+      - name: Verify promtail is shipping Pod logs into Loki
+        run: |
+          set -uo pipefail
+          kubectl -n nyxgpt port-forward svc/loki 3100:3100 > /tmp/loki-forward.log 2>&1 &
+          pf_pid=$!
+          trap 'kill "$pf_pid" 2>/dev/null || true' EXIT
+          sleep 10
+          # `job="nyxgpt"` plus a per-service `service_name` is the label
+          # contract every curated Explore link and dashboard query depends on
+          # (docker/promtail-config.yml ships the same one in Compose mode).
+          for _ in $(seq 1 20); do
+            jobs_json=$(curl -s --max-time 20 http://127.0.0.1:3100/loki/api/v1/label/job/values || echo '{}')
+            echo "$jobs_json" | jq -e '.data | index("nyxgpt")' >/dev/null 2>&1 && break
+            sleep 6
+          done
+          echo "  loki job labels -> $jobs_json"
+          echo "$jobs_json" | jq -e '.data | index("nyxgpt")' >/dev/null || {
+            echo "::error::no job=nyxgpt logs reached Loki -- promtail is not shipping"; exit 1; }
+          services=$(curl -s --max-time 20 http://127.0.0.1:3100/loki/api/v1/label/service_name/values | jq -r '.data | join(",")')
+          echo "  loki service_name labels -> $services"
+          case "$services" in *grafana*) ;; *)
+            echo "::error::expected per-service labels in Loki, got $services"; exit 1;; esac
+
+      - name: nyxgpt ops status reports the layer
+        run: nyxgpt ops status | grep -A 12 'Kubernetes observability'
+
+      - name: Dump diagnostics on failure
+        if: failure()
+        run: |
+          kubectl -n nyxgpt get all
+          kubectl -n nyxgpt get events --sort-by=.lastTimestamp | tail -40
+          for d in prometheus grafana loki jaeger promtail glitchtip; do
+            echo "::group::logs $d"
+            kubectl -n nyxgpt logs "deploy/$d" --tail 80 2>&1 || \
+              kubectl -n nyxgpt logs "ds/$d" --tail 80 2>&1 || true
+            echo "::endgroup::"
+          done
+          cat /tmp/port-forward.log 2>/dev/null || true
+
+      - name: Tear down
+        if: always()
+        # The wrapped teardown, including the kind cluster nyxgpt provisioned.
+        run: nyxgpt ops down --kubernetes || kind delete cluster --name nyxgpt-local || true
