@@ -405,6 +405,10 @@ def test_install_kubernetes_steps_records_success():
         patch.object(ops, "_ensure_k8s_secret", return_value=ok),
         patch.object(ops, "_kubectl_apply_kustomization", return_value=ok),
         patch.object(ops, "_k8s_stack_health", return_value=ok),
+        # Observability is applied in this mode too (#3787).
+        patch.object(ops, "_sync_packaged_resources", return_value=ok),
+        patch.object(ops, "_apply_k8s_observability", return_value=ok),
+        patch.object(ops, "_k8s_observability_health", return_value=ok),
     ):
         results = ops.install_kubernetes_local(api_key="k")
     assert all(r.ok for r in results)

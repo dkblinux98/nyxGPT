@@ -11788,9 +11788,14 @@ def test_install_kubernetes_success_runs_all_steps(monkeypatch, capsys):
         patch.object(ops, "_ensure_k8s_secret", return_value=ok) as s,
         patch.object(ops, "_kubectl_apply_kustomization", return_value=ok) as a,
         patch.object(ops, "_k8s_stack_health", return_value=ok) as h,
+        # The observability layer this mode now deploys too (#3787).
+        patch.object(ops, "_sync_packaged_resources", return_value=ok),
+        patch.object(ops, "_apply_k8s_observability", return_value=ok) as o,
+        patch.object(ops, "_k8s_observability_health", return_value=ok),
     ):
         rc = ops._install_kubernetes(args)
     assert rc == 0
+    o.assert_called_once()
     c.assert_called_once()
     b.assert_called_once()
     bw.assert_called_once()
@@ -11814,6 +11819,9 @@ def test_install_kubernetes_clears_intentional_stop_markers_for_api_and_web(monk
         patch.object(ops, "_ensure_k8s_secret", return_value=ok),
         patch.object(ops, "_kubectl_apply_kustomization", return_value=ok),
         patch.object(ops, "_k8s_stack_health", return_value=ok),
+        patch.object(ops, "_sync_packaged_resources", return_value=ok),
+        patch.object(ops, "_apply_k8s_observability", return_value=ok),
+        patch.object(ops, "_k8s_observability_health", return_value=ok),
         patch.object(ops.self_heal, "clear_intentionally_stopped") as clear_stopped,
     ):
         rc = ops._install_kubernetes(args)
@@ -12049,6 +12057,11 @@ def test_install_kubernetes_local_runs_steps_and_returns_results(monkeypatch):
         patch.object(ops, "_ensure_k8s_secret", return_value=ok) as s,
         patch.object(ops, "_kubectl_apply_kustomization", return_value=ok),
         patch.object(ops, "_k8s_stack_health", return_value=ok),
+        # The in-cluster observability layer is part of this bring-up now
+        # (#3787) -- unpatched, these steps would shell out to kubectl.
+        patch.object(ops, "_sync_packaged_resources", return_value=ok),
+        patch.object(ops, "_apply_k8s_observability", return_value=ok),
+        patch.object(ops, "_k8s_observability_health", return_value=ok),
     ):
         results = ops.install_kubernetes_local(api_key="k")
     assert all(r.ok for r in results)

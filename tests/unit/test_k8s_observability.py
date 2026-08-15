@@ -276,6 +276,32 @@ def test_down_kubernetes_deletes_the_observability_layer(monkeypatch) -> None:
     delete.assert_called_once()
 
 
+def test_down_kubernetes_tears_down_an_observability_only_cluster(tmp_path, monkeypatch) -> None:
+    """`ops observability --kubernetes` can deploy the layer with no app tier
+    at all -- and then there is no k8s/secret.yaml, which the app-tier
+    kustomization references, so `kubectl delete -k k8s/` would fail on the
+    missing FILE and never reach the observability delete."""
+    monkeypatch.setattr(ops, "K8S_DIR", tmp_path)  # no secret.yaml in it
+    monkeypatch.setattr(ops, "_ensure_nyxgpt_bin_on_path", lambda: None)
+    monkeypatch.setattr(ops, "_which", lambda name: "/usr/bin/kubectl")
+    monkeypatch.setattr(ops, "_kubectl_context", lambda: "docker-desktop")
+    monkeypatch.setattr(ops, "_record_ops_action", lambda *a, **k: None)
+    ran: list[list[str]] = []
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: ran.append(cmd) or MagicMock(returncode=0, stdout="", stderr=""),
+    )
+    with patch.object(
+        ops, "_delete_k8s_observability", return_value=[ops.OpsResult(True, "deleted")]
+    ) as delete:
+        results = ops._down_kubernetes_steps()
+
+    assert all(r.ok for r in results)
+    assert ran == [], "no app tier means no app-tier delete to run"
+    delete.assert_called_once()
+
+
 def test_workload_state_reports_absent_and_partial_readiness(monkeypatch) -> None:
     def fake_run(cmd, **kwargs):
         if "deploy" in cmd:

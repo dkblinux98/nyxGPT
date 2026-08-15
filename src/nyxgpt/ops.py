@@ -5855,6 +5855,15 @@ def _down_kubernetes_steps() -> list[OpsResult]:
     _ensure_nyxgpt_bin_on_path()
     if _which("kubectl") is None:
         results = [OpsResult(False, "kubectl not found on PATH -- nothing to tear down")]
+    elif not (K8S_DIR / "secret.yaml").exists():
+        # The app-tier kustomization *references* secret.yaml, so `kubectl
+        # delete -k k8s/` on a cluster that never had an app tier fails on
+        # the missing FILE, before it ever reaches the cluster. That is now a
+        # reachable state: `nyxgpt ops observability --kubernetes --local`
+        # deploys the observability layer on its own (#3787), and its
+        # teardown must not be blocked by an app tier that was never
+        # installed.
+        results = [OpsResult(True, "No app tier bootstrapped -- skipped kubectl delete -k k8s/")]
     else:
         cp = _run(["kubectl", "delete", "-k", str(K8S_DIR), "--ignore-not-found"], check=False)
         if cp.returncode == 0:
@@ -5866,17 +5875,16 @@ def _down_kubernetes_steps() -> list[OpsResult]:
         else:
             results = [OpsResult(False, "kubectl delete -k k8s/ failed", _cp_details(cp))]
 
+    if results[-1].ok and _which("kubectl") is not None:
         # After the base delete, not before: the base kustomization owns the
         # namespace, so deleting it already cascades the observability layer
-        # away. This second delete is what covers the cluster where only
-        # `nyxgpt ops observability --kubernetes` ever ran -- there the base
-        # delete removed the namespace too, and this call finds nothing
-        # (`--ignore-not-found`), which is a success.
-        if results[-1].ok:
-            results += _delete_k8s_observability()
+        # away and this call then finds nothing (`--ignore-not-found`), which
+        # is a success. When only the observability layer was ever deployed,
+        # this is the delete that does the work.
+        results += _delete_k8s_observability()
 
-        if results[-1].ok and _kubectl_context() == KIND_CONTEXT and _which("kind") is not None:
-            results += _delete_kind_cluster()
+    if results[-1].ok and _kubectl_context() == KIND_CONTEXT and _which("kind") is not None:
+        results += _delete_kind_cluster()
 
     result, message = _ops_action_outcome(results)
     _record_ops_action("down", "kubernetes", result, message)
