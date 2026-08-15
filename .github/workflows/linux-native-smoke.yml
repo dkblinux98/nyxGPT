@@ -15,6 +15,15 @@ name: Linux Native Smoke
 #                       refusal is in the message -- then injects the pre-fix
 #                       behaviour and asserts the check catches it (#3783,
 #                       fault-injection pattern from macos-brew-smoke.yml).
+#   linux-observability  Does the observability stack actually work on a plain
+#                       Linux docker engine? Drives
+#                       scripts/linux-observability-smoke.py: dockerd's
+#                       root-owned bind mounts (#3632) and the container->host
+#                       loopback gap (#3721) are both engine properties that
+#                       unit tests mock away and that Docker Desktop hides on
+#                       macOS. Injects the pre-fix behaviour first and asserts
+#                       prometheus crash-loops, so the check cannot pass
+#                       vacuously.
 #   service-venv-python  Is the service venv built on a Python that satisfies
 #                       requires-python, even when `python3` on PATH is too
 #                       old? Puts a real 3.9 on PATH as `python3` -- the
@@ -36,6 +45,9 @@ on:
       - 'scripts/systemd-native-smoke.sh'
       - 'scripts/ops-subprocess-output-smoke.py'
       - 'scripts/service-venv-python-smoke.py'
+      - 'scripts/linux-observability-smoke.py'
+      - 'docker-compose.yml'
+      - 'docker/prometheus.yml'
       - '.github/workflows/linux-native-smoke.yml'
   push:
     paths:
@@ -45,6 +57,9 @@ on:
       - 'scripts/systemd-native-smoke.sh'
       - 'scripts/ops-subprocess-output-smoke.py'
       - 'scripts/service-venv-python-smoke.py'
+      - 'scripts/linux-observability-smoke.py'
+      - 'docker-compose.yml'
+      - 'docker/prometheus.yml'
       - '.github/workflows/linux-native-smoke.yml'
 
 # Read-only workflow: the smoke run only checks out the repo and drives the
@@ -113,6 +128,40 @@ jobs:
       # prove the check would have caught the pre-fix behaviour.
       - name: Real failing subprocess must report its own output
         run: python3 scripts/ops-subprocess-output-smoke.py
+
+  # Pulls two images and runs prometheus twice, but starts no application
+  # services -- cheap enough to run on every PR that touches the observability
+  # path rather than only on the release branch.
+  linux-observability:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install nyxgpt (editable)
+        run: |
+          python -m pip install --upgrade pip setuptools
+          pip install -e .
+
+      # The runner's docker is a plain Linux engine -- the exact shape that
+      # reproduces both defects, and the one Docker Desktop hides on macOS.
+      # The script's first half asserts the pre-fix behaviour still fails, so a
+      # runner where it somehow doesn't fails the job instead of passing empty.
+      - name: Observability must come up on a plain Linux docker engine
+        run: python3 scripts/linux-observability-smoke.py
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          docker ps -a || true
+          for c in $(docker ps -aq); do
+            echo "--- docker logs $c ---"
+            docker logs --tail 100 "$c" || true
+          done
 
   # Also cheap (a sdist build and two `pip install --no-deps` runs, no
   # services), so it runs on every PR touching ops.py.

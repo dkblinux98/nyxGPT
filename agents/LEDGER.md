@@ -401,6 +401,30 @@ not agent-editable except to add a `Re-verify` result or a supersession pointer.
   Re-verify when: a new comment token is added, or a trigger's `if:` is
   edited (both tests fail loudly if the gate is dropped).
 
+- **V-012** · 2026-08-15 — Observability on a **plain Linux docker engine**
+  needs two engine-level fixes that Docker Desktop hides on macOS, and both
+  are now reconciled inside `ops._reconcile_grafana_provisioning` — the one
+  function every stack-start path goes through (`nyxgpt ops install`, the
+  standalone `nyxgpt ops observability`, and the dashboard's
+  `reconcile_observability` toggle). (1) dockerd creates a missing bind-mount
+  source `root:root`, so Prometheus (uid 65534), Grafana (472) and Loki
+  (10001) crash-loop unable to write their own data dirs; the #3632 guard for
+  this was wired into `install()`'s step list **only**, so the other two paths
+  brought the stack up broken (#3721). (2) `host.docker.internal:host-gateway`
+  resolves to the bridge gateway, which a loopback-bound native API does not
+  listen on — bridged by the `host-api-relay` Compose service (#3725). With
+  both, `[api] host` stays `127.0.0.1` and no `0.0.0.0` listener is needed.
+  Method: `scripts/linux-observability-smoke.py`, run on a real Linux docker
+  engine (28.0.4) in CI as the `linux-observability` job of
+  `linux-native-smoke.yml`. It fault-injects the pre-fix behaviour first —
+  Prometheus must crash-loop on `open /prometheus/queries.active: permission
+  denied` or the job fails as toothless — then asserts Prometheus runs, its
+  `nyxgpt-api` target reports `up` (a real scrape through the relay), and
+  nothing listens on `0.0.0.0:8000`.
+  Re-verify when: the observability bind-mount set changes, an upstream image
+  changes the uid it runs as, or a new entrypoint starts the stack without
+  going through `_reconcile_grafana_provisioning`.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

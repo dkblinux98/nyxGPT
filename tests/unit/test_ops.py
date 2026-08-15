@@ -7235,6 +7235,89 @@ def test_reconcile_grafana_provisioning_syncs_the_host_relay_before_starting(tmp
 
 
 @pytest.mark.unit
+def test_reconcile_grafana_provisioning_reconciles_volume_ownership_before_starting(
+    tmp_path, monkeypatch
+):
+    """#3721: dockerd creates a missing bind-mount source root-owned, so the
+    ownership reconcile has to happen before the containers first start -- once
+    prometheus has crash-looped there is nothing to un-do, it just stays down."""
+    _write_grafana_fixture(tmp_path, monkeypatch, datasource_yml=_SAMPLE_DATASOURCE_YML)
+    monkeypatch.setattr(ops, "_recreate_grafana_if_provisioning_drifted", lambda: None)
+
+    order = []
+    monkeypatch.setattr(
+        ops,
+        "_ensure_observability_volume_dirs",
+        lambda: order.append("volumes") or [ops.OpsResult(True, "/v/prometheus is owned by 65534")],
+    )
+    monkeypatch.setattr(
+        ops,
+        "_sync_host_relay_env",
+        lambda: order.append("relay") or ops.OpsResult(True, "Host API relay enabled"),
+    )
+    monkeypatch.setattr(
+        ops,
+        "_start_observability_stack",
+        lambda: order.append("start") or [ops.OpsResult(True, "stack up")],
+    )
+
+    results = ops._reconcile_grafana_provisioning()
+
+    assert order == ["volumes", "relay", "start"]
+    assert any("owned by 65534" in r.message for r in results)
+
+
+@pytest.mark.unit
+def test_reconcile_observability_reconciles_volume_ownership(tmp_path, monkeypatch):
+    """The SRE dashboard's observability toggle goes through
+    `reconcile_observability`, never through `install()`. Before #3721 that path
+    had no ownership reconcile at all, so enabling monitoring from the dashboard
+    on Linux brought up a prometheus that could not write /prometheus."""
+    _write_grafana_fixture(tmp_path, monkeypatch, datasource_yml=_SAMPLE_DATASOURCE_YML)
+    monkeypatch.setattr(ops, "_recreate_grafana_if_provisioning_drifted", lambda: None)
+    monkeypatch.setattr(ops, "_sync_host_relay_env", lambda: ops.OpsResult(True, "relay"))
+    monkeypatch.setattr(ops, "_record_ops_action", lambda *a, **k: None)
+
+    called = []
+    monkeypatch.setattr(
+        ops,
+        "_ensure_observability_volume_dirs",
+        lambda: called.append(True) or [ops.OpsResult(True, "volumes ok")],
+    )
+    monkeypatch.setattr(
+        ops, "_start_observability_stack", lambda: [ops.OpsResult(True, "stack up")]
+    )
+
+    ops.reconcile_observability(enable=True)
+
+    assert called == [True]
+
+
+@pytest.mark.unit
+def test_reconcile_grafana_provisioning_surfaces_an_unfixable_volume_dir(tmp_path, monkeypatch):
+    """A directory that could be neither chowned nor ACL-granted must reach the
+    caller as a failure -- the whole point of #3632/#3721 is that this stops
+    presenting as "Grafana panels are empty" with every service reporting OK."""
+    _write_grafana_fixture(tmp_path, monkeypatch, datasource_yml=_SAMPLE_DATASOURCE_YML)
+    monkeypatch.setattr(ops, "_recreate_grafana_if_provisioning_drifted", lambda: None)
+    monkeypatch.setattr(ops, "_sync_host_relay_env", lambda: ops.OpsResult(True, "relay"))
+    monkeypatch.setattr(
+        ops,
+        "_ensure_observability_volume_dirs",
+        lambda: [ops.OpsResult(False, "/v/prometheus is owned by uid 0", "sudo chown -R ...")],
+    )
+    monkeypatch.setattr(
+        ops, "_start_observability_stack", lambda: [ops.OpsResult(True, "stack up")]
+    )
+
+    results = ops._reconcile_grafana_provisioning()
+
+    failures = [r for r in results if not r.ok]
+    assert len(failures) == 1
+    assert "owned by uid 0" in failures[0].message
+
+
+@pytest.mark.unit
 def test_reconcile_grafana_provisioning_writes_the_relay_env_next_to_the_compose_file(
     tmp_path, monkeypatch
 ):
