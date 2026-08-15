@@ -210,6 +210,7 @@ and it points at the wrapped commands below for anything that changes state:
 | Deploy or redeploy the stack | `nyxgpt cloud deploy` |
 | Tear the whole deployment down | `nyxgpt cloud destroy --yes` |
 | Run the end-to-end cloud test (deploys, verifies, tears down) | `nyxgpt cloud smoke` |
+| Test the artifact install path locally, without AWS | `nyxgpt cloud smoke --container` |
 | Show the same state from a terminal | `nyxgpt cloud deploy --status` |
 | Re-allow SSH after your public IP changes | `nyxgpt cloud allow-ip` |
 
@@ -323,6 +324,28 @@ accepted rather than deploying a second, throwaway one — see
 [portability-matrix.md](portability-matrix.md#clean-machine-acceptance-run) for
 the whole sequence, and `nyxgpt ops portability` to print it from the machine
 you are accepting from.
+
+---
+
+## `nyxgpt cloud smoke --container` — the artifact install path, without AWS (#3784)
+
+The same command, pointed at a bare **Amazon Linux 2023 container** instead of
+a real deployment. It answers the other half of the question: not "does the
+deployed stack behave?" but "does installing from a published artifact work on
+the distro the instances run?" — on a machine with the AMI's Python 3.9, no
+node, no docker and no git, executing the same rendered user-data bootstrap a
+real instance runs.
+
+```bash
+nyxgpt cloud smoke --container --version <rc>   # or omit --version for the latest published release
+```
+
+It costs nothing, needs no AWS credentials, and is what CI runs on changes to
+the ops/install layer. It does **not** exercise Terraform, cloud-init, SSH or
+the instance lifecycle — see
+[cloud-artifact-smoke.md](cloud-artifact-smoke.md) for the full command,
+its fault-injection mode, and the complete list of what a green run does not
+cover.
 
 ---
 

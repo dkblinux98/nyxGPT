@@ -60,6 +60,8 @@ Quick reference of all 82 available endpoints:
 | `/api/v1/cloud/deploy` | POST | Provision AWS and deploy the full stack onto it (idempotent) |
 | `/api/v1/cloud/deploy/destroy` | POST | Close the tunnel and tear the deployment down (requires `{"confirm": true}`) |
 | `/api/v1/cloud/deploy/tunnel` | POST | Open or close (`{"action": "stop"}`) the SSH access tunnel |
+| `/api/v1/ops/cloud-artifact-smoke` | GET | Last containerized artifact-install smoke (verdict, defect class, diagnostics), whether one is in flight, and what a green run does not cover |
+| `/api/v1/ops/cloud-artifact-smoke` | POST | Start a containerized artifact-install smoke in the background (optionally pinned to a version, or fault-injected) |
 | `/api/v1/ops/portability` | GET | Repo-less portability matrix per deployment target, its mechanical checks and open gaps, plus the clean-machine acceptance sequence |
 | `/api/v1/ops/release-candidate` | GET | Release-candidate plan for the release branch: published RCs, the next RC version, guardrails, and the pinned commands that point an acceptance install at it |
 | `/api/v1/models` | GET | List Ollama models |
@@ -1620,6 +1622,59 @@ foreground tunnel); an already-running tunnel is reported, not duplicated.
 
 These return `409` when the deploy fails or nothing is provisioned yet, and
 `400` when the teardown confirmation is missing.
+
+---
+
+## Cloud artifact smoke
+
+### `GET /api/v1/ops/cloud-artifact-smoke`
+
+Report the last containerized artifact-install smoke — the dashboard half of
+`nyxgpt cloud smoke --container` (#3784). Reads the recorded run and makes one
+local `docker info` call, so the panel can poll it. See
+[cloud-artifact-smoke.md](cloud-artifact-smoke.md).
+
+```json
+{
+  "running": false,
+  "current": {},
+  "last_result": {
+    "passed": false,
+    "failure_class": "interpreter selection: the venv was built on a Python too old for the nyxGPT artifact",
+    "detail": "The EC2 bootstrap failed inside the container (exit 1) ...",
+    "version": "3.0.0rc11",
+    "base_image": "amazonlinux:2023",
+    "duration_seconds": 47.0,
+    "steps": [{ "step": "preflight" }],
+    "diagnostics": { "ops_status": "..." }
+  },
+  "docker_available": true,
+  "docker_detail": "28.0.4",
+  "faults": [{ "fault": "old-python", "description": "..." }],
+  "coverage_gaps": ["EC2 provisioning: Terraform, the AMI itself ..."],
+  "commands": { "run": "nyxgpt cloud smoke --container" },
+  "docs": "docs/cloud-artifact-smoke.md"
+}
+```
+
+### `POST /api/v1/ops/cloud-artifact-smoke`
+
+Start a run in the background and return immediately — a run builds an image,
+boots systemd, provisions Node/Docker/Ollama and waits for services, which is
+far past any HTTP timeout. Poll the `GET` above for the verdict.
+
+```json
+{ "version": "3.0.0rc11", "inject": ["old-python"], "keep": false }
+```
+
+Every field is optional: no `version` installs the latest published release,
+and `inject` reintroduces a known defect class and inverts the verdict (the run
+passes only if the smoke fails). Returns `409` when Docker is unusable on the
+API's machine, or when a run is already in flight.
+
+Unlike the AWS cloud endpoints this one is a real dashboard action rather than
+a CLI pointer (#3514): it spends nothing and creates nothing outside a
+disposable local container.
 
 ---
 

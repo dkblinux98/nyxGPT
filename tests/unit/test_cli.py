@@ -3816,3 +3816,71 @@ def test_cli_version_is_read_from_package_metadata_not_a_literal(
         cli(["--version"])
 
     assert capsys.readouterr().out.strip() == "nyxgpt 9.9.9-from-metadata"
+
+
+# --- cloud smoke: the AWS smoke and its containerized sibling (#3784) ---
+
+
+def test_cloud_smoke_container_dispatches_to_the_artifact_smoke(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--container` runs the local Amazon Linux 2023 smoke, never AWS.
+
+    The split matters more than most dispatch wiring: the same command name
+    either builds a throwaway container or provisions billed infrastructure.
+    """
+    import nyxgpt.cli as cli_mod
+
+    calls: list[object] = []
+    monkeypatch.setattr(
+        cli_mod.cloud_artifact_smoke_mod,
+        "container_smoke_command",
+        lambda args: (calls.append(args), 0)[1],
+    )
+    monkeypatch.setattr(
+        cli_mod.cloud_smoke_mod,
+        "smoke_command",
+        lambda args: pytest.fail("--container must never reach the AWS smoke"),
+    )
+
+    exit_code = cli(["cloud", "smoke", "--container", "--version", "3.0.0rc9"])
+
+    assert exit_code == 0
+    assert len(calls) == 1
+    assert calls[0].container is True  # type: ignore[attr-defined]
+    assert calls[0].version == "3.0.0rc9"  # type: ignore[attr-defined]
+
+
+def test_cloud_smoke_without_container_still_runs_the_aws_smoke(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import nyxgpt.cli as cli_mod
+
+    calls: list[object] = []
+    monkeypatch.setattr(
+        cli_mod.cloud_smoke_mod, "smoke_command", lambda args: (calls.append(args), 0)[1]
+    )
+
+    exit_code = cli(["cloud", "smoke"])
+
+    assert exit_code == 0
+    assert len(calls) == 1
+    assert calls[0].container is False  # type: ignore[attr-defined]
+
+
+def test_container_only_flags_are_refused_on_the_aws_path(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--inject` without `--container` must not deploy real infrastructure."""
+    import nyxgpt.cli as cli_mod
+
+    monkeypatch.setattr(
+        cli_mod.cloud_smoke_mod,
+        "smoke_command",
+        lambda args: pytest.fail("a container-only flag must not reach the AWS smoke"),
+    )
+
+    exit_code = cli(["cloud", "smoke", "--inject", "old-python"])
+
+    assert exit_code == 2
+    assert "--inject" in capsys.readouterr().err

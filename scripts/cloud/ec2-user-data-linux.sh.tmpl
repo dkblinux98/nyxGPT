@@ -62,12 +62,18 @@ fi
 # stock Amazon Linux 2023 or Canonical Ubuntu AMI, and each missing one is a
 # hard failure inside `ops install`, which exits non-zero and, under `set
 # -e`, aborts this whole bootstrap. Install them before we get there.
+#
+# `zstd` is in the list because Ollama's official installer refuses to run
+# without it ("This version requires zstd for extraction"), which aborts this
+# bootstrap under `set -e` before `ops install` is ever reached. Found by
+# `nyxgpt cloud smoke --container` (#3784) on a bare Amazon Linux 2023
+# machine; installing it is a no-op on an AMI that already has it.
 if command -v dnf >/dev/null 2>&1; then
-  dnf install -y python3 python3-pip docker
+  dnf install -y python3 python3-pip docker zstd
 elif command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
-  apt-get install -y python3 python3-pip python3-venv docker.io
+  apt-get install -y python3 python3-pip python3-venv docker.io zstd
 else
   echo "ec2-user-data-linux: no supported package manager found (need dnf or apt-get)" >&2
   exit 1
@@ -118,6 +124,14 @@ fi
 PIP_SPEC="nyxgpt"
 if [ -n "$NYXGPT_VERSION" ]; then
   PIP_SPEC="nyxgpt==${NYXGPT_VERSION}"
+fi
+# Escape hatch for testing an artifact PyPI does not serve: the containerized
+# artifact smoke (`nyxgpt cloud smoke --container`, #3784) points this at a
+# wheel it built from the tree under test and copied into the machine, so a
+# branch whose version is not published yet still gets its install path
+# exercised. Unset on a real instance, which installs from PyPI.
+if [ -n "${NYXGPT_PIP_SPEC:-}" ]; then
+  PIP_SPEC="$NYXGPT_PIP_SPEC"
 fi
 CLI_VENV="$TARGET_HOME/.nyxGPT/opt/nyxgpt-cli"
 USER_BIN="$CLI_VENV/bin"
