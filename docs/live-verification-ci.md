@@ -169,7 +169,16 @@ and screenshots make verifiable in the review loop:
   [`macos-brew-smoke.yml`](../.github/workflows/macos-brew-smoke.yml), so a
   formula change is not exempt from the executed-verification gate
   (`agents/runbooks/review-runbook.md` §1c) on the grounds that this entry
-  exists.
+  exists. The same boundary applies to the dev install mode's macOS
+  LaunchAgents (`com.nyxgpt.api`/`com.nyxgpt.web`, see
+  [`--dev`](ops.md#--dev-run-the-current-checkout-without-an-artifact-build)):
+  `launchctl bootstrap gui/<uid>` needs a real GUI session, which the hosted
+  macOS runners do not have. Dev mode's *install mechanics* -- editable venv,
+  dev-server wrapper, mode recording, mode switching -- are executed on a
+  real runner by
+  [`linux-native-smoke.yml`](../.github/workflows/linux-native-smoke.yml)'s
+  `linux-native-dev-smoke` job, so only the launchd load itself is owner
+  acceptance.
 - **Real Slack delivery** -- `nyxgpt ops alert-test` (separate command)
   posts through Grafana's contact-point test API; actually landing a
   message in a real Slack workspace still requires a real webhook secret,
