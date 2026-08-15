@@ -49,11 +49,39 @@ on:
     types: [created]
 
 jobs:
-  handle:
+  # Layer 1 of the command trigger (#3790): cheap substring test here, the
+  # anchored "does this comment ISSUE the command?" decision in the gate job.
+  # Mirrors handle_acceptance_failure.yml exactly -- the two commands stay
+  # mirror images of each other.
+  comment_gate:
     if: |
       github.event.issue.pull_request == null &&
       contains(github.event.comment.body, '@improvement') &&
+      !contains(github.event.comment.body, 'nyxgpt-token-mention') &&
       github.event.comment.user.login == vars.HUMAN_OWNER
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      proceed: ${{ steps.gate.outputs.proceed }}
+      reason: ${{ steps.gate.outputs.reason }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.RELEASE_BRANCH }}
+
+      - name: Comment token gate
+        id: gate
+        uses: ./.github/actions/comment-token-gate
+        with:
+          token: "@improvement"
+          comment-body: ${{ github.event.comment.body }}
+          author-association: ${{ github.event.comment.author_association }}
+
+  handle:
+    needs: [comment_gate]
+    if: needs.comment_gate.outputs.proceed == 'true'
     runs-on: ubuntu-latest
 
     permissions:

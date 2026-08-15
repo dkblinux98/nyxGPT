@@ -140,18 +140,15 @@ To start the next issue:
 
 **Option 1: CLI script (recommended)**
 ```bash
-./scripts/trigger_next_issue.sh <release_issue_number>
-```
-
-Example:
-```bash
-./scripts/trigger_next_issue.sh 2843
+./scripts/agents/scrummaster_dispatch_next.sh
 ```
 
 **Option 2: Manual comment**
-Post a comment containing `READY_FOR_NEXT_ISSUE` in the **Release tracking issue**:
+Post a comment on the **Release tracking issue** that *starts a line* with
+`READY_FOR_NEXT_ISSUE` -- since #3790 the token dispatches only where it opens
+a line, so a mid-sentence mention (including one after an `@mention`) is inert:
 ```
-@nyxGPT-scrummaster-agent READY_FOR_NEXT_ISSUE
+READY_FOR_NEXT_ISSUE
 ```
 
 The workflow will:
@@ -238,13 +235,16 @@ a real work boundary, not bookkeeping:
   dispatch work, because only a kick starts selection and agents post kicks
   only after a merge.
 - **Informational notes are inert by construction.**
-  `notify_scrum_ready.yml` dispatches on a bare substring test for the kick
-  token with the agents on its actor allowlist, so a park or `PAUSE_SPRINT`
-  notice that merely *named* the token dispatched work -- a "park" that was
-  really a kick. Such notes now avoid the token entirely and carry
-  `<!-- nyxgpt-autopilot-informational -->` (`AUTOPILOT_INFO_MARKER`), which
-  the workflow's job `if:` negates. When adding any agent-posted status
-  comment, follow the same rule.
+  `notify_scrum_ready.yml`'s job `if:` can only substring-test the kick
+  token, and the agents are on its actor allowlist, so a park or
+  `PAUSE_SPRINT` notice that merely *named* the token dispatched work -- a
+  "park" that was really a kick. Such notes now avoid the token entirely and
+  carry `<!-- nyxgpt-autopilot-informational -->` (`AUTOPILOT_INFO_MARKER`),
+  which the workflow's job `if:` negates. Since #3790 the workflow also has a
+  `comment_gate` job: the token dispatches only where it *opens a line*
+  (`scripts/agents/lib/comment_tokens.py`), so a mid-sentence mention is
+  inert even unmarked. When adding any agent-posted status comment, follow
+  the same rule -- and see `docs/agent-comment-tokens.md`.
 - **Human override stays.** A `READY_FOR_NEXT_ISSUE` posted by the owner
   runs unscoped (`notify_scrum_ready.yml`), so the owner can deliberately
   pull work forward across the sprint boundary. Agent-posted kicks cannot.
