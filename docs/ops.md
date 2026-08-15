@@ -408,6 +408,18 @@ Constraints, by design:
 - Self-heal follows the recorded mode too: in dev mode it restarts the
   LaunchAgents rather than `brew services`, so the watchdog can't start an
   old keg on top of a running dev process.
+- The admin dashboard's **Infrastructure** page carries the same label: its
+  Native card is badged `DEV INSTALL` / `ARTIFACT INSTALL` and, in dev mode,
+  names the checkout being served ([ui.md](ui.md)).
+- On macOS, `nyxgpt ops down`/`stop` unloads the dev LaunchAgents but leaves
+  their plists in `~/Library/LaunchAgents`, so they load again at the next
+  login — switching back with `nyxgpt up` removes them outright.
+
+Which parts of this are proven by CI: the install mechanics (editable venv,
+dev-server wrapper, mode recording, and the switch back to the artifact path)
+are executed on a real runner by `linux-native-smoke.yml`'s
+`linux-native-dev-smoke` job; the macOS launchd load is owner acceptance, for
+the reason in [live-verification-ci.md](live-verification-ci.md#what-ci-cannot-cover-owner-acceptance-only).
 
 ### `--terraform`/`--kubernetes`: the other local deployment paths
 

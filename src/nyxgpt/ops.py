@@ -3235,7 +3235,7 @@ def _install_dev_launchagent(component: str) -> list[OpsResult]:
     domain = f"gui/{os.getuid()}"
     _run(["launchctl", "bootout", domain, str(dst)], check=False, expected=True)
     _run(["launchctl", "bootstrap", domain, str(dst)], check=False)
-    # kickstart -k, not just bootstrap: a agent that was already loaded from
+    # kickstart -k, not just bootstrap: an agent that was already loaded from
     # a previous dev install must actually restart to pick up the rebuilt
     # venv / current working tree, the same reason the artifact path
     # restarts rather than starts its brew service (#3472).
