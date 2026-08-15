@@ -53,7 +53,13 @@ from a mode you've since switched away from).
    `running`) and healed via `docker restart nyxgpt-cassandra` — the same
    mechanisms `nyxgpt ops restart` uses, so the user never needs a raw
    `brew`/`docker` command. See [Native/local-first
-   mode](#nativelocal-first-mode) below for details.
+   mode](#nativelocal-first-mode) below for details. On a **dev-mode**
+   install (`nyxgpt up --dev`, see
+   [`--dev`](ops.md#--dev-run-the-current-checkout-without-an-artifact-build)
+   in ops.md) there are
+   no kegs to attach brew services to, so on macOS `api`/`web` are checked
+   and healed through their launchd agents instead — see [Dev mode
+   healing](#dev-mode-healing).
 3. **Terraform** (`nyxgpt ops install --terraform --local`): `ollama`/
    `cassandra`/`api`/`web` run as the plain (non-Compose) `nyxgpt-tf-*`
    Docker containers `terraform/main.tf` defines. Checked directly via
@@ -219,6 +225,26 @@ reports:
 A component is only reported once it's actually installed/created (a brew
 service never set up via `nyxgpt ops install`, or a not-yet-created
 Cassandra container, is out of scope rather than "down").
+
+### Dev mode healing
+
+The `brew services` rows above describe an **artifact-path** install, which
+is the default and what every machine runs unless it opted into dev mode.
+On macOS, a dev-mode machine (`nyxgpt up --dev`, see
+[`--dev`](ops.md#--dev-run-the-current-checkout-without-an-artifact-build)
+in ops.md) has no api/web keg for `brew services` to attach to, so
+`api`/`web` are checked and healed through the dev LaunchAgents instead:
+
+- `api` → `launchctl kickstart -k gui/<uid>/com.nyxgpt.api`
+- `web` → `launchctl kickstart -k gui/<uid>/com.nyxgpt.web`
+
+`ollama` and `cassandra` are unchanged in either mode. Self-heal reads the
+recorded mode (`~/.nyxGPT/install-mode.json`, written by
+`nyxgpt ops install`) rather than guessing: healing a dev machine with
+`brew services restart` would start the *old keg's* api onto the port the
+dev process is already holding. On Linux both modes drive the same
+`nyxgpt-api`/`nyxgpt-web` systemd --user units -- only the wrapper those
+units exec differs -- so nothing about healing changes there.
 
 **Mode awareness**: if a component is also reported by Compose or Terraform,
 whichever mode has it *actually running* wins the row -- see [Leftover

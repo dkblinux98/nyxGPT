@@ -357,6 +357,77 @@ machine to the intended local topology rather than only adding new state —
 including cleaning up a mixed-mode mess (native services plus a leaked
 Compose app tier) left by an earlier run.
 
+### `--dev`: run the current checkout, without an artifact build
+
+`nyxgpt up --dev` (equivalently `nyxgpt ops install --dev`) installs the
+**same topology** as above — native api/web service wrappers, Ollama, the
+Cassandra container, observability — but builds `api` and `web` from the
+checkout you run it in instead of from an artifact:
+
+| | artifact path (default) | `--dev` |
+| --- | --- | --- |
+| `api` | vendored/published `nyxgpt-api-<version>.tar.gz` installed into a venv (Homebrew keg on macOS) | `pip install -e <checkout>` into `~/.nyxGPT/opt/nyxgpt-api/venv` |
+| `web` | `npm ci && npm run build`, service runs `npm run start` on the built bundle | service runs `npm run dev` in `<checkout>/web` |
+| macOS service manager | `brew services nyxgpt-api` / `nyxgpt-web` | LaunchAgents `com.nyxgpt.api` / `com.nyxgpt.web` |
+| Linux service manager | `nyxgpt-api.service` / `nyxgpt-web.service` | the same units — only the wrapper script they exec changes |
+| Homebrew involvement | tap + formula + keg build | none for api/web |
+
+What it is for: iterating on, and acceptance-testing, the code that is in
+the working tree right now. `git pull && nyxgpt up --dev` brings the stack
+up on that HEAD with no keg or tarball build in between; afterwards, a
+`nyxgpt ops restart api` picks up further edits (the web dev server picks
+them up on its own).
+
+The api venv is built the same way in both modes — through the interpreter
+selection described under [systemd prerequisites](systemd.md#prerequisites),
+never bare `python3` on faith. `pip install -e` enforces `requires-python`
+exactly as installing the tarball does, so a distro whose `python3` is below
+the floor fails a dev install for the same reason it failed a cloud deploy
+(#3782).
+
+```bash
+nyxgpt up --dev                     # install/reconcile in dev mode
+nyxgpt ops restart api              # pick up new api code from the tree
+nyxgpt up                           # switch back to the artifact path
+```
+
+Constraints, by design:
+
+- **Checkout-only.** Dev mode needs `pyproject.toml`, `src/nyxgpt/` and
+  `web/` next to the running `nyxgpt`. Run from an installed package it
+  refuses immediately, naming the path it looked at, rather than
+  half-installing.
+- **Not the default, and not a substitute for artifact testing.** A bare
+  `nyxgpt up` is the artifact path, unchanged; dev mode exercises neither
+  the published tap/wheel nor the production web build, so acceptance of a
+  release still runs the artifact path (see
+  [portability-matrix.md](portability-matrix.md)).
+- **Labelled everywhere.** [`nyxgpt ops status`](#nyxgpt-ops-status) and
+  [`nyxgpt ops doctor`](#nyxgpt-ops-doctor) print `Install mode: dev
+  (editable checkout at …)` and tag `api`/`web` with `[dev]`, so a dev-mode
+  pass can't be read as an artifact-path pass. The mode is recorded in
+  `~/.nyxGPT/install-mode.json`.
+- **Switching modes is reconciled, not layered.** Installing one mode over
+  the other stops the previous mode's services first (dev LaunchAgents are
+  unloaded and removed; the artifact path's brew services are stopped) and
+  rebuilds the shared api venv from empty, so nothing is left holding ports
+  8000/3000 or racing for the `nyxgpt` import.
+- Self-heal follows the recorded mode too: in dev mode it restarts the
+  LaunchAgents rather than `brew services`, so the watchdog can't start an
+  old keg on top of a running dev process.
+- The admin dashboard's **Infrastructure** page carries the same label: its
+  Native card is badged `DEV INSTALL` / `ARTIFACT INSTALL` and, in dev mode,
+  names the checkout being served ([ui.md](ui.md)).
+- On macOS, `nyxgpt ops down`/`stop` unloads the dev LaunchAgents but leaves
+  their plists in `~/Library/LaunchAgents`, so they load again at the next
+  login — switching back with `nyxgpt up` removes them outright.
+
+Which parts of this are proven by CI: the install mechanics (editable venv,
+dev-server wrapper, mode recording, and the switch back to the artifact path)
+are executed on a real runner by `linux-native-smoke.yml`'s
+`linux-native-dev-smoke` job; the macOS launchd load is owner acceptance, for
+the reason in [live-verification-ci.md](live-verification-ci.md#what-ci-cannot-cover-owner-acceptance-only).
+
 ### `--terraform`/`--kubernetes`: the other local deployment paths
 
 `nyxgpt ops install --terraform --local` and
@@ -394,6 +465,11 @@ nyxgpt ops status
 
 Reports:
 
+- **Install mode** — `artifact` (the default: published/vendored builds) or
+  `dev` (the checkout, see [`--dev`](#--dev-run-the-current-checkout-without-an-artifact-build)),
+  printed first and repeated per component as `[artifact]`/`[dev]` next to
+  `api` and `web`. In dev mode it also names the checkout the services are
+  running, and warns if that checkout has since disappeared.
 - **Deployment mode** for each component (`api`, `web`, `ollama`, `cassandra`): whether it's
   running natively (Homebrew / the ops-managed Cassandra container) and whether a Docker
   Compose deployment of the same component is also running. If a component is reported
@@ -632,6 +708,12 @@ nyxgpt ops doctor
 
 Checks include:
 
+- The **install mode** the machine is on (printed before the findings, same
+  vocabulary as `status`). In dev mode it FAILs when the recorded checkout
+  is gone — the api/web services are then running code nothing can rebuild
+  — or when that checkout has no `web/node_modules` for the dev server to
+  start from. Fix: `nyxgpt up --dev` from a checkout, or `nyxgpt up` to
+  return to the artifact path.
 - Required files under `~/.nyxGPT/`
 - Native service-manager availability (`brew` on macOS, `systemctl` on Linux)
 - Running services

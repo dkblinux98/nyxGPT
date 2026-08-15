@@ -8,7 +8,9 @@ documentation are linked out to instead of duplicated here:
 - RAG (`nyxgpt rag ...`) — see [RAG](rag.md)
 - Bring the stack up/down (`nyxgpt up` / `nyxgpt down`) — thin aliases for
   `nyxgpt ops install`/`nyxgpt ops down`, see
-  [Ops helpers](ops.md#nyxgpt-up--nyxgpt-down)
+  [Ops helpers](ops.md#nyxgpt-up--nyxgpt-down). `nyxgpt up --dev` brings the
+  same stack up from the current checkout instead of from artifacts — see
+  [`--dev`](ops.md#--dev-run-the-current-checkout-without-an-artifact-build)
 - Ops (`nyxgpt ops ...`) — see [Ops helpers](ops.md)
 - Cloud/AWS (`nyxgpt cloud ...`) — deploy, tunnel, destroy, the end-to-end
   `nyxgpt cloud smoke` test, Terraform state, and credentials setup; see

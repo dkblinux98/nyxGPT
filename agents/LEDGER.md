@@ -249,6 +249,22 @@ are absent here by design (relocated to the annex; IDs are never reused).
   different things; `scripts/agents/promote_accepted_features.sh`;
   `scripts/agents/lib/drain_gate.py`.
 
+- **D-009** · 2026-08-15 · owner — A **dev install mode** exists alongside the
+  artifact path: `nyxgpt up --dev` / `nyxgpt ops install --dev` installs the api
+  as an editable venv on the current checkout and runs the web UI's Next dev
+  server from `<checkout>/web`, so the stack runs whatever HEAD the last
+  `git pull` produced with no keg, tap or tarball build. It is opt-in and
+  checkout-only; a bare `nyxgpt up` remains the artifact path and the
+  repo-less guarantee (#3504) is unchanged — dev mode is a development and
+  mid-stream-testing path, never an acceptance path. The mode is recorded in
+  `~/.nyxGPT/install-mode.json` (`nyxgpt.install_mode`) and reported by
+  `ops status`/`doctor`, because macOS drives different service managers per
+  mode (dev LaunchAgents `com.nyxgpt.api`/`com.nyxgpt.web` vs. `brew
+  services`) and self-heal must not restart an old keg onto the dev process's
+  port. Installing either mode over the other stops the other's services and
+  rebuilds the shared api venv from empty.
+  Source: #3789; `docs/ops.md` §`--dev`; `src/nyxgpt/install_mode.py`.
+
 ## Verifications
 
 - **V-001** · 2026-08-14 — Releases in this repository are immutable: a
@@ -434,7 +450,48 @@ are absent here by design (relocated to the annex; IDs are never reused).
   deprecation there is marked `gone_in="26.3"`), or the recipe stops using
   `pip download`.
 
-- **V-014** · 2026-08-15 — The EC2 artifact install path on Amazon Linux 2023
+- **V-014** · 2026-08-15 — Next.js compiles `web/src/instrumentation.ts` for the
+  **edge** server runtime as well as the Node.js one, so any node-only module it
+  reaches must be imported *inside* a `process.env.NEXT_RUNTIME === "nodejs"`
+  block, never at the top level. A top-level `import … from "./lib/logger"`
+  (which reaches `node:fs`) failed the edge compile with
+  `UnhandledSchemeError: Reading from "node:fs" is not handled by plugins`, and a
+  failed instrumentation compile makes `next dev` answer **500 to every request**
+  — while `next build`/`next start` are unaffected, so only the dev-server path
+  (`nyxgpt up --dev`, **D-009**) broke and every artifact-path check stayed green.
+  An early `return` is not sufficient: webpack drops an untaken `if` branch and
+  the module graph under it, but statements after a `return` stay live to the
+  bundler.
+  Method: executed on this runner 2026-08-15 — reproduced `GET / 500` with the
+  `⨯ node:fs` compile error, confirmed the failing compiler by logging the
+  webpack context (`{isServer:true,nextRuntime:"edge"}`), then re-ran after the
+  fix for `GET / 200` with zero `UnhandledSchemeError`; `npm run build` +
+  `npm run start` also re-checked at 200 (#3789/#3791). Standing CI guard: the
+  `web / expected 200` check in `linux-native-dev-smoke`.
+  Re-verify when: Next.js changes which runtimes it compiles the instrumentation
+  hook for, or `lib/logger.ts` stops using `node:fs`.
+
+- **V-015** · 2026-08-15 — `ops.install()`'s unit tests patch its steps out **by
+  enumeration**, so every step added to the list afterwards runs for real against
+  the developer's own machine until someone adds it to each `with` block. The
+  install-mode step (**D-009**) landed that way and was not inert: on a machine
+  recording `dev`, running one install unit test deleted the real
+  `~/.nyxGPT/opt/nyxgpt-api/venv`, rewrote the real marker back to `artifact`
+  (and on macOS would `launchctl bootout` the live dev LaunchAgents), then failed
+  — i.e. the suite destroyed the state of the machine `nyxgpt up --dev` had just
+  produced, and passed in CI only because runners start in artifact mode.
+  Method: executed on this runner 2026-08-15 — wrote `{"mode": "dev", …}` to the
+  real `~/.nyxGPT/install-mode.json` plus a sentinel venv, ran
+  `test_ops_install_returns_zero_when_all_ok` on the pre-fix tree (venv
+  DESTROYED, marker rewritten, `assert 2 == 0`), then the same injection on the
+  fixed tree (marker byte-identical, sentinel PRESENT, test passed) (#3789/#3791).
+  Re-verify when: a new step is added to `ops.install()`'s step list — the
+  standing guards are the autouse `_isolate_install_mode_marker` fixture in
+  `tests/unit/conftest.py` and the paired
+  `test_install_tests_patch_the_mode_step_…` / `test_an_unpatched_mode_step_…`
+  fault-injection tests, which close the marker half but not the general pattern.
+
+- **V-016** · 2026-08-15 — The EC2 artifact install path on Amazon Linux 2023
   fails at the CLI venv: the AMI's system `python3` is **3.9.25** and every
   published nyxgpt distribution declares `requires-python >=3.11`, so
   `pip install nyxgpt` inside that venv resolves nothing (the #3782 class,
@@ -451,7 +508,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   Re-verify when: #3782 lands (the unpatched half stops reproducing), or the
   AL2023 AMI's system interpreter changes.
 
-- **V-015** · 2026-08-15 — An artifact install pulls **three** things off the
+- **V-017** · 2026-08-15 — An artifact install pulls **three** things off the
   network, not one: the `nyxgpt` CLI, then `nyxgpt-api-<version>.tar.gz` and
   `nyxgpt-web-<version>.tar.gz` from that version's GitHub Release
   (`ops._service_source_tarball`). So a smoke that swaps in a locally built

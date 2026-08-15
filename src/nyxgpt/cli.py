@@ -1586,6 +1586,16 @@ def _add_install_arguments(parser: argparse.ArgumentParser) -> None:
         help="Don't start the Grafana/Loki/Jaeger/GlitchTip Compose profiles",
     )
     parser.add_argument(
+        "--dev",
+        action="store_true",
+        help=(
+            "Install the api/web services from the current checkout -- an editable venv "
+            "(pip install -e) plus the Next dev server -- instead of building/downloading "
+            "artifacts, so the stack runs the working tree at HEAD (#3789). Requires a "
+            "checkout; without this flag the artifact path is used"
+        ),
+    )
+    parser.add_argument(
         "--terraform",
         action="store_true",
         help=(
