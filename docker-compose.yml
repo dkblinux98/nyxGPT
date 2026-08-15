@@ -33,9 +33,9 @@ networks:
 
 services:
   ollama:
-    # Keep this pin identical to terraform/main.tf's docker_image.ollama --
-    # see docs/docker-compose.md#image-pinning for the policy and how to
-    # bump both together.
+    # Keep this pin identical to terraform/main.tf's docker_image.ollama and
+    # k8s/statefulset-ollama.yaml -- see docs/docker-compose.md#image-pinning
+    # for the policy and how to bump them together.
     image: ollama/ollama:0.32.4
     # Fixed name (rather than Compose's default `nyxgpt-ollama-1`) so the
     # host-side `com.nyxgpt.ollama-logs` LaunchAgent (scripts/follow-ollama-logs.sh)
@@ -58,10 +58,10 @@ services:
       start_period: 30s
 
   cassandra:
-    # Keep this pin identical to terraform/main.tf's docker_image.cassandra
-    # and src/nyxgpt/ops.py's CASSANDRA_IMAGE -- see
-    # docs/docker-compose.md#image-pinning for the policy and how to bump
-    # all three together.
+    # Keep this pin identical to terraform/main.tf's docker_image.cassandra,
+    # k8s/statefulset-cassandra.yaml and src/nyxgpt/ops.py's CASSANDRA_IMAGE --
+    # see docs/docker-compose.md#image-pinning for the policy and how to bump
+    # all four together.
     image: cassandra:5.0.8
     restart: unless-stopped
     networks:

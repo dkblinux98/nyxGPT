@@ -401,7 +401,31 @@ not agent-editable except to add a `Re-verify` result or a supersession pointer.
   Re-verify when: a new comment token is added, or a trigger's `if:` is
   edited (both tests fail loudly if the gate is dropped).
 
-- **V-012** · 2026-08-15 — The rc11 keg install failure (#3788) is **not** an
+- **V-012** · 2026-08-15 — The `--kubernetes --local` deployment is
+  **self-contained and chattable**: `k8s/` now ships the data/LLM tier
+  (single-replica Cassandra and Ollama StatefulSets on PVCs, `cassandra:9042`
+  / `ollama:11434`), the api ConfigMap addresses both by Service name, the
+  session backend is `cassandra` so all four api replicas share one session
+  list, and `ops install --kubernetes --local` waits for both StatefulSets to
+  be Ready before reporting health. Ollama's `postStart` pulls
+  `[nyxgpt] default_model` and its readiness probe requires that model, so
+  the Service gets no endpoints until a chat can be served. Before #3786 this
+  path deployed api+web only, pointed Ollama at `host.docker.internal` and
+  had no session store — Pods Running, no chat possible.
+  Method: executed on a real `kind` cluster on a Linux runner (#3786 PR) —
+  `kubectl apply -k k8s/`, both StatefulSets reached Ready, `ollama list`
+  showed `qwen2.5:0.5b`, and a chat POSTed through the web Service's own
+  proxy route (`/api/chat/stream`, the browser's path) streamed an answer
+  back; `cqlsh -e "SELECT name FROM nyxgpt.chat_sessions"` showed the session
+  row, and 12 consecutive session-list reads across the 4 replicas all
+  returned it. `scripts/k8s-local-smoke.sh` /
+  `.github/workflows/k8s-local-smoke.yml` re-run that end to end and then
+  delete the tier to prove the same check fails without it.
+  Re-verify when: `k8s/kustomization.yaml`, `k8s/configmap.yaml`, or the
+  `ops._wait_for_k8s_data_tier` workload list changes (the smoke job and
+  `tests/unit/test_k8s_manifests.py` fail loudly if the tier is dropped).
+
+- **V-013** · 2026-08-15 — The rc11 keg install failure (#3788) is **not** an
   ordering problem in the pip bootstrap. Its cause is that the Homebrew
   `python@3.12` keg's pip cannot import
   `pip._internal.operations.install.wheel`; pip 26.2 pre-imports its lazy
