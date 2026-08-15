@@ -143,6 +143,6 @@ jobs:
             escalate. Your task is the mediation decision comment (and, for escalate
             only, the escalation command).
           claude_args: >-
-            --model claude-fable-5
+            --model claude-opus-5
             --allowed-tools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr edit:*),Bash(gh issue view:*),Bash(bash -lc*),Read,Grep"
           show_full_output: true
