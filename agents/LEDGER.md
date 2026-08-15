@@ -353,6 +353,18 @@ not agent-editable except to add a `Re-verify` result or a supersession pointer.
   Re-verify when: the lane names change, or either sweep's candidate rule is
   edited.
 
+- **V-009** · 2026-08-15 — The pypi.org `/simple/` and `/pypi/*/json` endpoints,
+  fetched via this remote session's egress proxy, can serve a **stale CDN cache**
+  for hours: they showed rc9 as the newest candidate while rc10/rc11 were
+  published and pip-resolvable. Two owner-facing misstatements resulted ("rc9 is
+  current"; a false PyPI/tap parity alarm). To learn which candidate is current,
+  use `pip index versions nyxgpt --pre` (fresh in practice) or the publish
+  workflow's run history — never the curled pypi.org JSON alone.
+  Method: side-by-side check 2026-08-15 ~03:30Z — curled JSON showed …rc9 while
+  `pip index versions` returned rc11/rc10 and the rc11 publish run's own
+  "Verify PyPI serves the build" step had passed at 22:06Z.
+  Re-verify when: the session egress proxy or PyPI CDN behaviour changes.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
