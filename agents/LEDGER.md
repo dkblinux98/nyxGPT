@@ -365,6 +365,22 @@ not agent-editable except to add a `Re-verify` result or a supersession pointer.
   "Verify PyPI serves the build" step had passed at 22:06Z.
   Re-verify when: the session egress proxy or PyPI CDN behaviour changes.
 
+- **V-010** · 2026-08-15 — The EC2 artifact install path on Amazon Linux 2023
+  fails at the CLI venv: the AMI's system `python3` is **3.9.25** and every
+  published nyxgpt distribution declares `requires-python >=3.11`, so
+  `pip install nyxgpt` inside that venv resolves nothing (#3782's class). Two
+  further facts from the same execution: Ollama's official installer aborts the
+  bootstrap on a bare AL2023 machine with "This version requires zstd for
+  extraction" (fixed in the user-data template by #3784), and with a candidate
+  interpreter fix applied the whole path is green — bare AL2023 -> artifact
+  install -> api/web/ollama serving in 178s.
+  Method: executed `nyxgpt cloud smoke --container` (#3784) three times on the
+  agent runner (docker 28.0.4) on 2026-08-15 — unpatched tree failed in 47s and
+  the harness classified it as the interpreter class; with the fix applied it
+  passed in 178s against published 3.0.0rc11; `--inject old-python` exited 0.
+  Re-verify when: #3782 lands (the unpatched half stops reproducing), or the
+  AL2023 AMI's system interpreter changes.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
