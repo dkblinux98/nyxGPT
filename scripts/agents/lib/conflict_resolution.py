@@ -43,7 +43,7 @@ import argparse
 import json
 import re
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -82,7 +82,7 @@ def _parse_ts(value: str | None) -> datetime | None:
     except ValueError:
         return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
     return parsed
 
 
@@ -185,7 +185,7 @@ def decide(
     #    handler nine times per open PR; without this each one would kick the
     #    same PR again mid-resolution.
     if last_round_at is not None and cooldown_minutes > 0:
-        current = _parse_ts(now) or datetime.now(timezone.utc)
+        current = _parse_ts(now) or datetime.now(UTC)
         if current - last_round_at < timedelta(minutes=cooldown_minutes):
             return _result(
                 ACTION_NOOP,

@@ -123,7 +123,9 @@ class TestEscalationIsTheExceptionNotTheDefault:
 
     def test_a_question_already_followed_by_a_round_is_spent(self):
         comments = [
-            _comment("CONFLICT_REQUIRES_OWNER_DECISION\nWhich behavior wins?", "2026-08-14T08:00:00Z"),
+            _comment(
+                "CONFLICT_REQUIRES_OWNER_DECISION\nWhich behavior wins?", "2026-08-14T08:00:00Z"
+            ),
             _round("2026-08-14T12:00:00Z"),
         ]
         assert cr.decide("CONFLICTING", comments, now=NOW)["action"] == cr.ACTION_DISPATCH
@@ -206,7 +208,5 @@ class TestDispatcherShellBehaviour:
         if shutil.which("jq") is None:
             pytest.skip("jq is required by the shell suite")
         suite = REPO_ROOT / "tests" / "test_conflict_resolution_dispatch.sh"
-        result = subprocess.run(
-            ["bash", str(suite)], capture_output=True, text=True, timeout=180
-        )
+        result = subprocess.run(["bash", str(suite)], capture_output=True, text=True, timeout=180)
         assert result.returncode == 0, result.stdout + result.stderr
