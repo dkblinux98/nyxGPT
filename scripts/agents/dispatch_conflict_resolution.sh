@@ -182,9 +182,9 @@ if [[ "$action" == "dispatch" ]]; then
 PR #${PR} cannot merge into \`${pr_base}\`: the mainline moved while the PR was in review. This is routine and is **not** escalated to @${HUMAN_OWNER} (owner rule, 2026-08-15, #3801).
 
 The developer agent will:
-1. \`git fetch origin\` and **merge \`origin/${pr_base}\` into \`${pr_head}\`** — never rebase (owner standing rule; see \`agents/runbooks/developer-runbook.md\` §2).
+1. \`git fetch origin\` and **MERGE \`origin/${pr_base}\` into \`${pr_head}\`** — **NEVER REBASE** (owner standing rule; see \`agents/runbooks/developer-runbook.md\` §2).
 2. Resolve every conflict with judgment: read both sides' intent, keep this PR's feature content **and** the owner-accepted behavior already merged into \`${pr_base}\`; discard neither wholesale.
-3. For \`agents/LEDGER.md\`: respect the public/annex split (entry IDs absent by design stay absent) and **renumber colliding entry IDs against the mainline** — never reuse an ID mainline already allocated.
+3. For \`agents/LEDGER.md\`: respect the public/annex split (entry IDs absent by design stay absent — never "restore" one) and, when an entry ID collides with one the mainline already allocated, **RENUMBER YOURS** to the next unused number in that class, keeping both entries. IDs are never reused.
 4. Re-run the full verification suite, then push the merge commit (which re-triggers review).
 
 If — and only if — resolving needs a decision only the owner can make (e.g. two owner-accepted behaviors in genuine semantic contradiction), the agent stops and issues the owner-decision token on its own line with the specific question; that is the only route from a conflict to @${HUMAN_OWNER}, other than ${MAX_ROUNDS} non-converging rounds."
