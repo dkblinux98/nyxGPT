@@ -296,192 +296,77 @@ jobs:
       # `_MISSING_MODULES` and its audit hook re-raised it as the owner's
       # ImportError. Reproduce exactly that machine state, prove rc11's
       # bootstrap dies on it, then prove this checkout's does not.
+      #
+      # Injected by taking the module away, not by emulating its absence.
+      # Two earlier spellings put a meta-path finder in a `sitecustomize` on
+      # PYTHONPATH, and both failed on the vehicle rather than on the recipe:
+      # the first scoped itself by `abspath` and never matched in the
+      # symlink-resolved `pip --python` child; the second shadowed the keg's
+      # own `sitecustomize` and moved which pip was under test. The general
+      # fault there is that an emulated condition runs in an interpreter
+      # environment that `brew install` does not have, so the emulation
+      # becomes the thing being tested. Moving the file is the machine state
+      # itself: no PYTHONPATH, no import hooks, every process sees it -- the
+      # keg pip, its `--python` re-exec child, and `brew install`. It is
+      # restored by a trap before anything else runs.
       - name: "Reproduce the #3788 keg-pip failure, then prove the new bootstrap survives it"
         run: |
           set -euo pipefail
 
           PY="$(brew --prefix python@3.12)/bin/python3.12"
           WORK="$(mktemp -d)"
-          mkdir -p "$WORK/fault" "$WORK/wheelhouse"
+          mkdir -p "$WORK/wheelhouse"
 
-          # The fault, stated as the machine state it is: *this* pip
-          # installation cannot import its own wheel installer. Scoped to the
-          # keg's copy on purpose -- a pip unpacked from a wheel is complete,
-          # and the recipe's whole defence is that it installs with that one.
-          #
-          # Scoped by *realpath*, and that is load-bearing: the keg pip
-          # imports as /opt/homebrew/lib/python3.12/site-packages/pip, a path
-          # through two Homebrew symlinks, but `pip --python` re-execs through
-          # `get_runnable_pip()` -- `Path(pip_location).resolve().parent` --
-          # so the child process that actually installs imports pip by its
-          # Cellar realpath. An `abspath` prefix check does not resolve
-          # symlinks, so it matches in the parent and never in the child: the
-          # fault would not fire in the one process under test and the
-          # negative control below would pass having proved nothing. Both
-          # sides are realpathed, which keeps the parent case matching too.
-          #
-          # And realpath scoping is necessary but not sufficient (round 3's
-          # own second red run): the vehicle must not move the pip it is
-          # scoped to. Python imports exactly one `sitecustomize` and
-          # PYTHONPATH precedes site-packages, so this file shadows the one
-          # Homebrew's python@3.12 keg ships -- whose job is to put the
-          # prefix site-packages on sys.path. Shadowing it silently flips pip
-          # resolution from the prefix copy (what an unfaulted process, and
-          # `brew install`, import) to the keg's Cellar copy, a disjoint tree
-          # the scope anchor does not cover: the fault then never fires. So
-          # chain to it, exactly as the formula's own build shim does for the
-          # same reason (`_chain_to_the_real_sitecustomize`,
-          # homebrew/nyxgpt-api.rb).
-          cat > "$WORK/fault/sitecustomize.py" <<'FAULT'
-          import os
-          import sys
+          WHEEL_PY="$("$PY" -c 'import pip._internal.operations.install.wheel as m; print(m.__file__)')"
+          HIDDEN="$WHEEL_PY.3788-hidden"
+          echo "keg pip wheel installer: $WHEEL_PY"
 
-          _TARGET = "pip._internal.operations.install.wheel"
-          _KEG_PIP_DIR = os.environ.get("NYXGPT_FAULT_KEG_PIP_DIR", "")
+          restore_the_keg() {
+            if [ -e "$HIDDEN" ]; then
+              mv -f "$HIDDEN" "$WHEEL_PY"
+            fi
+          }
+          # Every exit path, including the ones that fail below: the steps
+          # after this one install the formulas with this same keg pip.
+          trap restore_the_keg EXIT
 
+          mv "$WHEEL_PY" "$HIDDEN"
+          # Source-based caching means a stale __pycache__ entry is ignored
+          # once the .py is gone, but leave nothing to reason about.
+          rm -f "$(dirname "$WHEEL_PY")"/__pycache__/wheel.*.pyc
 
-          def _chain_to_the_real_sitecustomize():
-              """Run the sitecustomize this file shadows, then keep going.
-
-              Same rule, same reason as the formula's build shim: dropping the
-              interpreter's own sitecustomize changes the environment under
-              test in ways unrelated to the fault being injected.
-              """
-              here = os.path.dirname(os.path.abspath(__file__))
-              for entry in sys.path:
-                  directory = entry or os.curdir
-                  candidate = os.path.join(directory, "sitecustomize.py")
-                  if os.path.abspath(directory) == here or not os.path.isfile(candidate):
-                      continue
-                  with open(candidate, "rb") as handle:
-                      source = handle.read()
-                  exec(
-                      compile(source, candidate, "exec"),
-                      {"__file__": candidate, "__name__": "sitecustomize"},
-                  )
-                  return
-
-
-          class _KegPipCannotImportItsWheelInstaller:
-              def find_spec(self, fullname, path=None, target=None):
-                  if fullname != _TARGET or not _KEG_PIP_DIR:
-                      return None
-                  origin = getattr(sys.modules.get("pip"), "__file__", "") or ""
-                  if not origin:
-                      return None
-                  keg = os.path.realpath(_KEG_PIP_DIR) + os.sep
-                  if os.path.realpath(origin).startswith(keg):
-                      raise ImportError("No module named %r" % (_TARGET,))
-                  return None
-
-
-          try:
-              _chain_to_the_real_sitecustomize()
-          except Exception as exc:  # noqa: BLE001 - a fault injector, not a library
-              print("nyxgpt: fault sitecustomize chain skipped: %r" % (exc,), file=sys.stderr)
-
-          sys.meta_path.insert(0, _KegPipCannotImportItsWheelInstaller())
-          FAULT
-
-          # Measure the scope anchor in the environment the checks actually
-          # run in, not in a cleaner one. The finder is inert while
-          # NYXGPT_FAULT_KEG_PIP_DIR is unset, so this import is the faulted
-          # interpreter answering where *it* gets pip from -- belt and braces
-          # for the failure above, where the anchor was captured without the
-          # fault file and named a pip no faulted process ever imported.
-          KEG_PIP_DIR="$(PYTHONPATH="$WORK/fault" "$PY" -c 'import os, pip; print(os.path.dirname(pip.__file__))')"
-          UNFAULTED_PIP_DIR="$("$PY" -c 'import os, pip; print(os.path.dirname(os.path.realpath(pip.__file__)))')"
-          echo "keg pip (under the fault env): $KEG_PIP_DIR"
-          echo "keg pip (clean env, realpath): $UNFAULTED_PIP_DIR"
-          if [ "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$KEG_PIP_DIR")" \
-               != "$UNFAULTED_PIP_DIR" ]; then
-            # Not fatal -- the anchor is measured under the fault, so the
-            # fault is still scoped to the pip under test -- but it means the
-            # chain above did not fully restore the interpreter's path setup,
-            # and the log should say so rather than let it pass unremarked.
-            echo "::warning::the fault sitecustomize moves pip resolution; the chain did not fully restore it"
-          fi
-
-          export NYXGPT_FAULT_KEG_PIP_DIR="$KEG_PIP_DIR"
-          export PYTHONPATH="$WORK/fault"
-
-          echo "=== self-check: the injected fault fires before anything is inferred from it ==="
-          # This round's own lesson. The first spelling of the finder scoped
-          # itself by abspath, never fired in pip's symlink-resolved
-          # `--python` child, and the only symptom was a negative control that
-          # passed -- indistinguishable, from the log, from "the failure no
-          # longer exists". Assert the fault is real first, and assert it in
-          # *both* forms pip imports itself as here: through Homebrew's
-          # opt/lib symlinks (this process) and by the Cellar realpath (the
-          # `--python` child, the only process where the install happens).
-          # Checking just the first is what would have let the broken scoping
-          # through -- and the round after that, this same check is what
-          # caught the fault file shadowing the keg's sitecustomize. It is the
-          # arbiter: nothing below is believed until it passes.
+          echo "=== self-check: the keg is really in the owner's state before anything is inferred ==="
+          # The arbiter, kept from the previous spelling and for the reason it
+          # was added: a fault that does not fire produces a passing negative
+          # control, which in a log is indistinguishable from "the bug is
+          # gone". Assert the condition exists, in this process and in a
+          # child, before believing anything below.
           "$PY" - <<'CHECK'
-          import os
           import subprocess
           import sys
 
           import pip
 
-          print("keg pip __file__:", pip.__file__)
-          print("keg pip realpath:", os.path.realpath(pip.__file__))
-          try:
-              import sitecustomize
-          except ImportError:  # pragma: no cover - the fault file is on PYTHONPATH
-              print("sitecustomize: none imported")
-          else:
-              print("sitecustomize:", getattr(sitecustomize, "__file__", "?"))
-
-          # What `__pip-runner__.py` puts on sys.path in the re-exec child:
-          # the resolved parent of the pip package.
-          real_parent = os.path.dirname(os.path.dirname(os.path.realpath(pip.__file__)))
+          print("keg pip:", pip.__file__)
           probe = (
               "import pip\n"
               "print('  pip imported from', pip.__file__)\n"
               "import pip._internal.operations.install.wheel\n"
           )
-
-          failed = False
-          for label, prefix in (
-              ("as this process imports pip", None),
-              ("as `pip --python` re-execs it (realpath)", real_parent),
-          ):
-              env = dict(os.environ)
-              if prefix:
-                  # The fault dir stays *first*: python imports exactly one
-                  # sitecustomize, and the pip source root can carry one of
-                  # its own (the Cellar's site-packages does), which would
-                  # shadow the fault and make this probe report a no-fire that
-                  # says nothing about the fault. It is also the faithful
-                  # spelling -- the real re-exec adds the pip source root with
-                  # `sys.path.insert` inside `__pip-runner__.py`, after
-                  # startup, so it never participates in sitecustomize
-                  # selection there either.
-                  env["PYTHONPATH"] = os.pathsep.join(
-                      part for part in (env.get("PYTHONPATH", ""), prefix) if part
-                  )
-              done = subprocess.run(
-                  [sys.executable, "-c", probe],
-                  env=env,
-                  capture_output=True,
-                  text=True,
-              )
-              print(f"{label}:")
-              print(done.stdout.rstrip() or "  (no output)")
-              if done.returncode == 0:
-                  print(f"::error::the injected #3788 fault never fired {label}")
-                  failed = True
-              elif "No module named 'pip._internal.operations.install.wheel'" not in done.stderr:
-                  print(done.stderr.rstrip())
-                  print(f"::error::the fault raised something other than #3788's ImportError {label}")
-                  failed = True
-              else:
-                  print("  fault fires with the owner's ImportError")
-
-          if failed:
+          done = subprocess.run(
+              [sys.executable, "-c", probe],
+              capture_output=True,
+              text=True,
+          )
+          print(done.stdout.rstrip() or "  (no output)")
+          if done.returncode == 0:
+              print("::error::the keg pip can still import its wheel installer; #3788's condition was not created")
               sys.exit(1)
+          if "No module named 'pip._internal.operations.install.wheel'" not in done.stderr:
+              print(done.stderr.rstrip())
+              print("::error::the keg pip failed to import it for some other reason")
+              sys.exit(1)
+          print("  the keg pip cannot import its wheel installer, as on the owner's Mac")
           CHECK
 
           echo "=== negative control: rc11's bootstrap, which installs through the keg's pip ==="
@@ -506,16 +391,21 @@ jobs:
           }
           echo "reproduced: rc11's bootstrap exits $old_rc with the owner's ImportError"
 
-          echo "=== this checkout's bootstrap, same fault in place ==="
+          echo "=== this checkout's bootstrap, same keg state ==="
           "$PY" -m venv --without-pip "$WORK/venv-new"
           # `download` is the only keg-pip subcommand the recipe still uses,
-          # and it never reaches the module the fault removes.
+          # and it never reaches the module that is missing.
           "$PY" -m pip download --no-deps --only-binary :all: \
             --disable-pip-version-check --dest "$WORK/wheelhouse" pip
           WHEEL="$(ls "$WORK"/wheelhouse/pip-*.whl | head -1)"
           "$WORK/venv-new/bin/python" "$WHEEL/pip" install --no-index \
             --disable-pip-version-check "$WHEEL"
           "$WORK/venv-new/bin/pip" --version
+
+          echo "=== restore the keg, and prove it is whole again ==="
+          restore_the_keg
+          trap - EXIT
+          "$PY" -c 'import pip._internal.operations.install.wheel as m; print("restored:", m.__file__)'
 
       - name: Stamp the rc formulas from this checkout
         env:

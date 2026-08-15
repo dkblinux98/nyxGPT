@@ -475,29 +475,29 @@ the runner image already knew about), then injects the owner's machine state
 and requires the retired `pip --python … install` bootstrap to die on it
 before accepting that the current one survives it.
 
-Two details there are load-bearing for anyone editing that step, and both
-were learned the same way — by the fault silently not firing.
+The condition is injected by **taking the module away** — `mv`-ing
+`pip/_internal/operations/install/wheel.py` out of the keg, running both
+controls, and restoring it from a shell `trap` on every exit path (the steps
+that follow install the formulas with that same pip, so it must go back).
 
-**Scope the fault by realpath.** Homebrew's pip imports through `opt`/`lib`
-symlinks, but `pip --python` re-execs via `get_runnable_pip()`, which
-resolves them, so the child process that actually performs the install
-imports pip by its Cellar path. A fault scoped by `abspath` matches in the
-parent and never in the child.
+That is worth stating, because two earlier spellings *emulated* the
+condition instead, with a meta-path finder in a `sitecustomize` on
+`PYTHONPATH`, and both failed on the vehicle rather than on the recipe. The
+first scoped itself to the keg with `abspath`, and `pip --python` re-execs
+via `get_runnable_pip()`, which resolves symlinks — so it matched in the
+parent and never in the child that actually installs. The second compared
+realpaths, but python imports exactly one `sitecustomize` and `PYTHONPATH`
+precedes `site-packages`, so the fault file shadowed the one the keg ships
+and moved which pip was under test.
 
-**Do not let the injection move the pip it is scoped to.** The fault is a
-`sitecustomize` on `PYTHONPATH`, python imports exactly one `sitecustomize`,
-and the `python@3.12` keg ships one whose job is to put the prefix
-`site-packages` on `sys.path`. Shadowing it flips pip resolution from the
-prefix copy — the one an unfaulted process and `brew install` import — to
-the keg's Cellar copy, a disjoint tree the scope anchor does not cover. So
-the fault file chains to the sitecustomize it shadows, the same way and for
-the same reason the formula's build shim does, and the anchor is measured
-under the fault environment rather than in a clean one.
+The general lesson is worth more than either fix: **an emulated condition
+runs in an interpreter environment `brew install` does not have, so the
+emulation becomes the thing being tested.** Removing the file is the machine
+state itself — no `PYTHONPATH`, no import hooks — and every process sees it.
 
-Either mistake produces the same symptom: nothing fires, the negative
-control passes, and the log reads exactly like "the bug is gone". That is
-why the step proves the fault fires — in the direct import *and* in the
-realpath re-exec — before concluding anything from it, and why that
+Both mistakes had the same symptom: nothing fires, the negative control
+passes, and the log reads exactly like "the bug is gone". So the step
+asserts the condition exists before concluding anything from it, and that
 self-check, not a passing control, is the arbiter.
 
 ---

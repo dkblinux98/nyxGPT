@@ -1473,10 +1473,10 @@ def test_macos_smoke_injects_the_keg_pip_failure_from_3788():
         for line in (raw.strip() for raw in script.splitlines())
     )
     assert "brew upgrade python@3.12" in script
-    # The fault, injected rather than hoped for: the keg's pip cannot import
-    # its own wheel installer.
-    assert '_TARGET = "pip._internal.operations.install.wheel"' in script
-    assert "NYXGPT_FAULT_KEG_PIP_DIR" in script
+    # The condition, injected rather than hoped for: the keg's pip cannot
+    # import its own wheel installer, because the module is not there.
+    assert 'WHEEL_PY="$("$PY" -c \'import pip._internal.operations.install.wheel' in script
+    assert 'mv "$WHEEL_PY" "$HIDDEN"' in script
     # The negative control: rc11's bootstrap has to die on it, with the
     # owner's error, or a green result below proves nothing.
     assert "No module named 'pip._internal.operations.install.wheel'" in script
@@ -1486,48 +1486,42 @@ def test_macos_smoke_injects_the_keg_pip_failure_from_3788():
     assert '"$WORK/venv-new/bin/pip" --version' in script
 
 
-def test_the_3788_fault_is_scoped_by_realpath_and_self_checked():
-    """Two spellings of this fault injection never fired, for two reasons.
+def test_the_3788_condition_is_injected_into_the_keg_and_restored():
+    """The condition is created, not emulated -- and put back afterwards.
 
-    The first scoped itself to the keg with `os.path.abspath`, but `pip
-    --python` re-execs through `get_runnable_pip()` --
-    `Path(pip_location).resolve()` -- so the child that actually installs
-    imports pip by its Cellar realpath, and an abspath prefix check against
-    the `opt`/`lib` symlink path cannot match there.
+    Two earlier spellings emulated it with a meta-path finder in a
+    `sitecustomize` on PYTHONPATH, and both failed on the vehicle rather
+    than on the recipe: the first scoped itself with `os.path.abspath` and
+    never matched in the symlink-resolved `pip --python` child; the second
+    shadowed the keg's own `sitecustomize`, which moved which pip was under
+    test. Both times the only symptom was a negative control that passed --
+    in a log, indistinguishable from "the bug is gone".
 
-    The second compared realpaths but *moved the pip it was scoped to*:
-    python imports exactly one `sitecustomize` and PYTHONPATH precedes
-    site-packages, so the fault file shadowed the one Homebrew's python@3.12
-    keg ships, whose job is to put the prefix site-packages on sys.path.
-    Without it pip resolved from the keg's Cellar copy instead -- a tree
-    disjoint from the anchor, which had been captured in a clean
-    environment. Both times the only symptom was a negative control that
-    passed, which reads in the log exactly like "the bug is gone".
-
-    Three rules keep that from recurring: compare realpaths, do not perturb
-    the interpreter's own path setup (chain to the sitecustomize being
-    shadowed, and measure the anchor under the fault env), and assert the
-    fault fires before inferring anything from it.
+    The general fault is that an emulated condition runs in an interpreter
+    environment `brew install` does not have, so the emulation becomes the
+    thing under test. Taking the module away is the machine state itself,
+    and every process sees it. Two rules hold this in place: the keg is
+    restored on every exit path, since the steps that follow install the
+    formulas with that same pip, and the condition is asserted to exist
+    before anything is inferred from it.
     """
-    script = _job_run_script(_macos_smoke_workflow()["jobs"]["keg-install"])
+    steps = _macos_smoke_workflow()["jobs"]["keg-install"]["steps"]
+    script = next(
+        str(step["run"])
+        for step in steps
+        if str(step.get("name", "")).startswith("Reproduce the #3788")
+    )
 
-    assert "os.path.realpath(_KEG_PIP_DIR)" in script
-    assert "os.path.realpath(origin).startswith(keg)" in script
-    # abspath is what silently broke it; it must not come back.
-    assert "os.path.abspath(origin)" not in script
-    # The vehicle must not change which pip is under test: chain to the
-    # sitecustomize this file shadows, exactly as the formula's build shim
-    # does, and take the scope anchor from the faulted interpreter itself.
-    assert "_chain_to_the_real_sitecustomize" in script
-    assert 'KEG_PIP_DIR="$(PYTHONPATH="$WORK/fault"' in script
-    # The self-check, and its failure has to be loud rather than inferred.
-    assert "the injected #3788 fault never fired" in script
-    # Checking only the process that runs the command is what would have let
-    # the broken scoping through: the install happens in the re-exec child.
-    assert "re-execs it (realpath)" in script
-    # ...and that probe has to keep the fault dir ahead of the pip source
-    # root, which carries a sitecustomize of its own that would shadow it.
-    assert 'part for part in (env.get("PYTHONPATH", ""), prefix) if part' in script
+    # No PYTHONPATH emulation: the module is moved aside.
+    assert 'mv "$WHEEL_PY" "$HIDDEN"' in script
+    assert "sitecustomize" not in script
+    assert "PYTHONPATH" not in script
+    # ...and restored, on the failure paths as well as the success one.
+    assert "trap restore_the_keg EXIT" in script
+    assert 'print("restored:", m.__file__)' in script
+    # The self-check that caught both earlier no-fires, kept and pointed at
+    # the machine: its failure has to be loud rather than inferred.
+    assert "#3788's condition was not created" in script
 
 
 def test_macos_smoke_reads_the_shim_out_of_the_formula_it_ships():
