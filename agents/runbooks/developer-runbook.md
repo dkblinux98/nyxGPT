@@ -439,7 +439,10 @@ token):
 - **Loop guard.** Three "stopping — not In Progress" cycles on one issue
   within 30 minutes escalate once and then go silent
   (`scripts/agents/lib/stop_loop_guard.py`); automatic retries on that issue
-  are ignored until the repo owner comments, which clears the halt.
+  are ignored for the rest of the 30-minute window, or until the repo owner
+  comments — whichever comes first. An owner comment clears the halt at once;
+  otherwise it lapses as the cycles age out of the window. The guard bounds
+  spend to ~3 cycles per window, it is not a lockout.
 
 ## 4) Verification loop (MANDATORY - ALL must pass before commit)
 Run ALL of the following checks and fix issues until they pass:

@@ -140,18 +140,15 @@ To start the next issue:
 
 **Option 1: CLI script (recommended)**
 ```bash
-./scripts/trigger_next_issue.sh <release_issue_number>
-```
-
-Example:
-```bash
-./scripts/trigger_next_issue.sh 2843
+./scripts/agents/scrummaster_dispatch_next.sh
 ```
 
 **Option 2: Manual comment**
-Post a comment containing `READY_FOR_NEXT_ISSUE` in the **Release tracking issue**:
+Post a comment on the **Release tracking issue** that *starts a line* with
+`READY_FOR_NEXT_ISSUE` -- since #3790 the token dispatches only where it opens
+a line, so a mid-sentence mention (including one after an `@mention`) is inert:
 ```
-@nyxGPT-scrummaster-agent READY_FOR_NEXT_ISSUE
+READY_FOR_NEXT_ISSUE
 ```
 
 The workflow will:

@@ -9,10 +9,13 @@ path; this module is the backstop for *any* future one.
 
 The rule: N stop-without-progress cycles on the same issue inside M minutes
 halts further automatic retries and posts ONE escalation comment instead of
-an (N+1)th stop message. Only the repo owner clears the halt -- a comment
-from them after the escalation resets the count, exactly like the retry
-budget's owner reset (#3689). Agent comments never reset it, or a chatty
-loop would clear its own guard.
+an (N+1)th stop message. A repo-owner comment after the escalation clears the
+halt immediately, exactly like the retry budget's owner reset (#3689); agent
+comments never reset it, or a chatty loop would clear its own guard. Absent
+that, the halt lapses with the window itself -- every comment older than M
+minutes drops out of the count, escalation marker included. That is
+deliberate: the guard bounds spend to ~N cycles per window, it is not a
+lockout that survives until a human arrives.
 
 Comments are counted through markers, not prose:
 

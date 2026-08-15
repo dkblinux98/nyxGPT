@@ -331,14 +331,17 @@ jobs:
               | python3 "$GITHUB_WORKSPACE/scripts/agents/lib/stop_loop_guard.py" evaluate 2>/dev/null \
               || echo '{"action":"stop-comment","cycle_number":1,"max_cycles":3,"window_minutes":30}')
             LOOP_ACTION=$(printf '%s' "$LOOP_DECISION" | jq -r '.action // "stop-comment"')
-            LOOP_CYCLES=$(printf '%s' "$LOOP_DECISION" | jq -r '.max_cycles // 3')
+            # Report the cycle actually reached, not the threshold: if the
+            # halt marker ages out of the window while stop markers remain,
+            # the guard can escalate again at a higher count.
+            LOOP_CYCLE_NUMBER=$(printf '%s' "$LOOP_DECISION" | jq -r '.cycle_number // .max_cycles // 3')
             LOOP_WINDOW=$(printf '%s' "$LOOP_DECISION" | jq -r '.window_minutes // 30')
             echo "::notice::Stop-loop guard: $LOOP_DECISION"
 
             case "$LOOP_ACTION" in
               escalate)
-                BODY="$(printf '🛑 **Developer Agent**: Auto-retry halted for this issue.\n\nThis run stopped at the In-Progress check for the %sth time within %s minutes without making progress, which is the shape of a retry loop (#3790). No further stop notices will be posted and automatic retries are ignored until the repo owner comments on this issue.\n\n**What to do:** check why the issue keeps leaving In Progress, put it back in In Progress, then comment here as the repo owner -- an owner comment clears the halt and re-enables the normal retry path (the command itself is listed in `agents/runbooks/developer-runbook.md`).\n\n%s\n%s\n' \
-                  "$LOOP_CYCLES" "$LOOP_WINDOW" "<!-- nyxgpt-dev-stop-halted -->" "<!-- nyxgpt-token-mention -->")"
+                BODY="$(printf '🛑 **Developer Agent**: Auto-retry halted for this issue.\n\nThis is stop number %s at the In-Progress check within %s minutes with no progress in between, which is the shape of a retry loop (#3790). No further stop notices will be posted and automatic retries are ignored for the rest of that %s-minute window, or until the repo owner comments on this issue -- whichever comes first. The guard bounds spend per window; it is not a lockout.\n\n**What to do:** check why the issue keeps leaving In Progress, put it back in In Progress, then comment here as the repo owner -- an owner comment clears the halt immediately and re-enables the normal retry path (the command itself is listed in `agents/runbooks/developer-runbook.md`).\n\n%s\n%s\n' \
+                  "$LOOP_CYCLE_NUMBER" "$LOOP_WINDOW" "$LOOP_WINDOW" "<!-- nyxgpt-dev-stop-halted -->" "<!-- nyxgpt-token-mention -->")"
                 gh issue comment "$ISSUE_NUMBER" --body "$BODY" 2>/dev/null || true
                 ;;
               silent)

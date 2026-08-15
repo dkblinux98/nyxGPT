@@ -93,6 +93,20 @@ class TestStopMessageIsTokenFree:
         assert "nyxgpt-dev-stop-cycle" in script
         assert "nyxgpt-dev-stop-halted" in script
 
+    def test_the_escalation_reports_the_cycle_reached_not_the_threshold(self):
+        """The halt can fire above `max_cycles` once the halt marker ages out
+        of the window while stop markers remain, so the count in the prose
+        comes from `.cycle_number`. `%sth` also rendered "the 3th time"."""
+        script = _step_scripts(self._verify_step())
+        assert ".cycle_number" in script
+        assert "%sth" not in script
+
+    def test_the_escalation_does_not_promise_an_owner_only_release(self):
+        """The halt also lapses as cycles age out of the window; the prose
+        must not read as a lockout that waits for a human."""
+        script = _step_scripts(self._verify_step())
+        assert "window, or until the repo owner comments" in script
+
 
 class TestAgentCommentsCannotTriggerThemselves:
     """Any comment this workflow posts that NAMES the retry token must either
