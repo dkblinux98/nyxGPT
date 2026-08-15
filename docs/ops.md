@@ -441,6 +441,13 @@ is required and explicit — see [terraform.md](terraform.md#one-command-bring-u
 / [kubernetes.md](kubernetes.md#one-command-bring-up-nyxgpt-ops) for what
 each one does and why `--cloud` is rejected today.
 
+Both deploy observability with the app tier, and `--skip-observability`
+means the same thing in all three modes. In `--kubernetes` mode that layer
+runs *inside the cluster* (`k8s/observability/`) rather than as Compose
+profiles, which cannot reach a cluster — see [Observability in the
+cluster](kubernetes.md#observability-in-the-cluster) for the workloads it
+deploys and how to reach their UIs.
+
 Torn down the same way, from [`nyxgpt ops down`](#nyxgpt-ops-down) below:
 `nyxgpt ops down --terraform` / `--kubernetes`.
 
@@ -895,13 +902,25 @@ raw `docker compose --profile <name> up` command themselves.
 Usage:
 
 ```bash
-nyxgpt ops observability
+nyxgpt ops observability                        # Compose profiles (default)
+nyxgpt ops observability --kubernetes --local   # the in-cluster layer
 ```
 
 `nyxgpt ops install` already runs this by default (see
 [`nyxgpt ops install`](#nyxgpt-ops-install) above); use this command on its
 own to re-run it later (e.g. after a reboot, or if you first installed with
 `--skip-observability`).
+
+`--kubernetes --local` targets a cluster instead of Compose (#3787): it
+applies `k8s/observability/` -- Prometheus, Grafana, Loki + promtail, the
+OTel collector, Jaeger and GlitchTip as in-cluster workloads -- without
+touching the app tier, and generates Grafana's provisioning ConfigMaps from
+the same `docker/grafana/` files the Compose path uses. The Compose profiles
+are not an option in that mode (they scrape the host and resolve Compose
+service names), which is why this branches rather than reconciling both. See
+[kubernetes.md](kubernetes.md#observability-in-the-cluster); reach the UIs
+with [`nyxgpt ops port-forward --target
+observability`](#nyxgpt-ops-port-forward).
 
 Behavior:
 
@@ -1194,14 +1213,43 @@ Exit codes:
 
 ## `nyxgpt ops port-forward`
 
-Forwards the Kubernetes `nyxgpt-web` Service to `127.0.0.1` so it's reachable
-from the operator's own workstation. `k8s/`'s Services are ClusterIP-only --
-there's no Ingress/LoadBalancer (see
-[kubernetes.md](kubernetes.md#4-verify)) -- so this is the only way to reach
-the web UI after a `--kubernetes` install. It's a thin wrapper around
-`kubectl port-forward` so operators never need to type the raw `kubectl`
-command themselves; `nyxgpt up --kubernetes` prints this command as its next
-step once the stack reports healthy.
+Forwards a Kubernetes Service to `127.0.0.1` so it's reachable from the
+operator's own workstation. `k8s/`'s Services are ClusterIP-only -- there's
+no Ingress/LoadBalancer (see [kubernetes.md](kubernetes.md#4-verify)) -- so
+this is the only way to reach the web UI, or any observability UI, after a
+`--kubernetes` install. It's a thin wrapper around `kubectl port-forward` so
+operators never need to type the raw `kubectl` command themselves; `nyxgpt up
+--kubernetes` prints this command as its next step once the stack reports
+healthy.
+
+`--target` selects what to forward (default `web`): `web`, `api`, `grafana`,
+`prometheus`, `jaeger`, `glitchtip`, or `observability` for all four
+observability UIs at once. Each target's default local port is the one that
+UI is published on in every other mode -- Grafana `3001`, Prometheus `9090`,
+Jaeger `16686`, GlitchTip `8080` -- which is what makes the admin
+dashboard's observability links (built from `[monitoring] grafana_ui_url`
+and friends) work unchanged in Kubernetes mode (#3787). `--port` overrides
+the local port for a single target; it is rejected with `--target
+observability`, where there are four.
+
+Usage:
+
+```bash
+nyxgpt ops port-forward                          # nyxgpt-web on 3000
+nyxgpt ops port-forward --port 3005              # ... on a different local port
+nyxgpt ops port-forward --target grafana         # Grafana on 3001
+nyxgpt ops port-forward --target observability   # Grafana, Prometheus, Jaeger, GlitchTip
+```
+
+Runs in the foreground until interrupted (`Ctrl-C`), same as `kubectl
+port-forward` itself. Exits `2` if `kubectl` isn't on `PATH` or the
+target/port combination is invalid; otherwise returns the exit code of the
+first forward that stops (with `--target observability`, any one of them
+exiting ends the command and tears the rest down, since a half-working set of
+tunnels is worse than an obvious failure).
+
+---
+
 ## `nyxgpt ops verify`
 
 The live smoke harness behind #3555/P6-18: boots the stack, generates known
@@ -1216,13 +1264,6 @@ also works as a one-command local pre-check before owner acceptance testing.
 Usage:
 
 ```bash
-nyxgpt ops port-forward
-nyxgpt ops port-forward --port 3001   # forward to a different local port
-```
-
-Runs in the foreground until interrupted (`Ctrl-C`), same as `kubectl
-port-forward` itself. Exits `2` if `kubectl` isn't on `PATH`; otherwise
-returns `kubectl`'s own exit code once the forward stops.
 nyxgpt ops verify                    # boot, test, tear down (ephemeral -- CI's mode)
 nyxgpt ops verify --keep-up          # leave the stack up afterward to look around
 nyxgpt ops verify --skip-boot        # stack (native or Compose) is already up
@@ -1443,5 +1484,3 @@ Avoid manually invoking `brew services`/`launchctl` (macOS), `systemctl` (Linux)
   same artifacts through the [remote Homebrew tap](homebrew.md#remote-tap).
   So an artifact install installs the services without ever needing a
   checkout-shaped path (#3759) -- see [systemd.md](systemd.md#installing-the-services).
-
-```

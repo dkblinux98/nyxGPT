@@ -233,12 +233,16 @@ TARGETS: tuple[Target, ...] = (
             "nyxgpt ops install --kubernetes --local",
             "nyxgpt ops status",
             "nyxgpt ops port-forward",
+            "nyxgpt ops port-forward --target observability",
         ),
         teardown="nyxgpt ops down --kubernetes",
         status="gap",
         evidence=(
             "docs/kubernetes.md",
             "tests/unit/test_repo_root_allowlist.py",
+            # The observability tier this mode deploys, executed on a real
+            # kind cluster rather than inspected (#3787).
+            ".github/workflows/k8s-observability-smoke.yml",
         ),
         notes=(
             "Fully wrapped (no raw kubectl in any user instruction, and the command "

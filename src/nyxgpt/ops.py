@@ -4509,9 +4509,10 @@ def _docker_access_doctor_issue() -> str | None:
 # Compose "cloud/server" stack, so its lifecycle never requires (or pulls in)
 # the rest of docker-compose.yml.
 CASSANDRA_CONTAINER_NAME = "nyxgpt-cassandra"
-# Keep this pin identical to the `cassandra` image tag in docker-compose.yml
-# and terraform/main.tf (docker_image.cassandra) -- see docs/docker-compose.md
-# for the image-pinning policy and how to bump all three together.
+# Keep this pin identical to the `cassandra` image tag in docker-compose.yml,
+# terraform/main.tf (docker_image.cassandra) and k8s/statefulset-cassandra.yaml
+# -- see docs/docker-compose.md for the image-pinning policy and how to bump
+# all four together.
 CASSANDRA_IMAGE = "cassandra:5.0.8"
 # Must match the cluster name stamped into the Cassandra data directory's
 # system keyspace: Cassandra refuses to start when the saved cluster name
@@ -5327,6 +5328,25 @@ K8S_DIR = REPO_ROOT / "k8s"
 K8S_NAMESPACE = "nyxgpt"
 K8S_IMAGE = "nyxgpt-api:local"
 
+# The deployment's data/LLM tier (#3786): the in-cluster Cassandra that holds
+# chat sessions for every api replica and the in-cluster Ollama that answers
+# them (k8s/statefulset-cassandra.yaml, k8s/statefulset-ollama.yaml). The
+# install waits for both to report Ready, because "the api Pods are Running"
+# is not the same thing as "a chat works" -- without this wait the command
+# returns while Cassandra is still bootstrapping and Ollama is still pulling
+# the default model, and the first thing the operator sees in the web UI is a
+# failed session list.
+#
+# The timeouts are per-workload and generous on purpose: they cover a cold
+# first boot (Cassandra initializing an empty data directory, Ollama pulling
+# the default model over whatever link the workstation has), not a steady-state
+# restart. Exceeding one is reported as a failure with the workload named, not
+# silently ignored.
+K8S_DATA_TIER_WORKLOADS: tuple[tuple[str, str, int], ...] = (
+    ("statefulset/cassandra", "Cassandra (chat session store)", 600),
+    ("statefulset/ollama", "Ollama (LLM, including the first default-model pull)", 900),
+)
+
 # The local cluster `nyxgpt ops install --kubernetes --local` provisions via `kind`
 # when kubectl's current context has no reachable cluster (#3596, owner decision
 # 2026-08-03). The name is reserved for nyxgpt: `nyxgpt ops down --kubernetes` only
@@ -5767,6 +5787,303 @@ def _kubectl_apply_kustomization() -> list[OpsResult]:
     return [OpsResult(True, "kubectl apply -k k8s/", _cp_details(cp))]
 
 
+# --- In-cluster observability layer (#3787) ---
+#
+# Kubernetes mode used to deploy the api/web tier and nothing else: the
+# Compose observability profiles are unreachable from a cluster (they scrape
+# `host.docker.internal` and resolve Compose service names on a Docker
+# network), so a `--kubernetes --local` deployment had no metrics, no logs,
+# no traces and no error tracking, and the admin dashboard's observability
+# tiles pointed at nothing. `k8s/observability/` is the in-cluster answer;
+# everything below applies, inspects and tears it down through `nyxgpt ops`
+# so no operator ever types kubectl.
+
+K8S_OBSERVABILITY_DIR = K8S_DIR / "observability"
+
+# The workloads `k8s/observability/` ships. Listed explicitly rather than
+# discovered with a label selector so a Deployment that failed to apply
+# reports as missing instead of silently dropping out of the report.
+K8S_OBSERVABILITY_DEPLOYMENTS = (
+    "prometheus",
+    "grafana",
+    "loki",
+    "otel-collector",
+    "jaeger",
+    "glitchtip-postgres",
+    "glitchtip-redis",
+    "glitchtip",
+    "glitchtip-worker",
+)
+K8S_OBSERVABILITY_DAEMONSETS = ("promtail",)
+
+# Grafana's provisioning, mounted by k8s/observability/grafana.yaml: ConfigMap
+# name -> path under the synced `docker/grafana` tree it is generated from.
+# Generated here rather than committed as k8s manifests because kustomize
+# cannot read files above its own root, and a second copy of the dashboards
+# would drift from the Compose/native one within a release.
+K8S_GRAFANA_CONFIGMAPS: dict[str, tuple[str, ...]] = {
+    "grafana-datasources": ("provisioning", "datasources"),
+    "grafana-dashboard-providers": ("provisioning", "dashboards"),
+    "grafana-alerting": ("provisioning", "alerting"),
+    "grafana-dashboards": ("dashboards",),
+}
+
+
+def _k8s_observability_secret_values() -> dict[str, str]:
+    """Resolve the values `k8s/observability/secret.yaml` is bootstrapped with.
+
+    Same sources the Compose path uses, so an operator's config.ini drives
+    Grafana identically in either mode: the ops-managed Grafana admin
+    password (`resolve_grafana_admin_password`) and `[monitoring]
+    slack_webhook_url`. An unset webhook resolves to
+    `GRAFANA_SLACK_WEBHOOK_PLACEHOLDER_URL` rather than an empty string for
+    the #3538 reason -- Grafana's alerting validator crash-loops the Pod on
+    an empty contact-point URL, it does not degrade gracefully.
+
+    Reading config is best-effort: a machine with no config.ini yet still
+    gets a bootable Grafana (placeholders), which is what the example file
+    already carries.
+    """
+    values = {
+        "glitchtip-grafana-token": GRAFANA_GLITCHTIP_TOKEN_PLACEHOLDER,
+        "slack-webhook-url": GRAFANA_SLACK_WEBHOOK_PLACEHOLDER_URL,
+    }
+    from nyxgpt.config import load_config
+
+    try:
+        cfg = load_config()
+    except Exception:
+        return values
+    with contextlib.suppress(Exception):
+        values["grafana-admin-password"] = _grafana_admin_password(cfg)
+    with contextlib.suppress(Exception):
+        webhook = get_monitoring_slack_webhook_url(cfg).strip()
+        if webhook:
+            values["slack-webhook-url"] = webhook
+    return values
+
+
+def _ensure_k8s_observability_secret() -> list[OpsResult]:
+    """Bootstrap `k8s/observability/secret.yaml` from its example (never committed).
+
+    Mirrors `_ensure_k8s_secret`: written once, left alone afterwards, so a
+    re-install never rotates GlitchTip's Django SECRET_KEY or its Postgres
+    password out from under the data already stored against them. Delete the
+    file to re-bootstrap it from current config.
+    """
+    secret_path = K8S_OBSERVABILITY_DIR / "secret.yaml"
+    if secret_path.exists():
+        return [OpsResult(True, f"{secret_path} already exists")]
+    example = K8S_OBSERVABILITY_DIR / "secret.example.yaml"
+    if not example.exists():
+        return [OpsResult(False, f"Missing {example} to bootstrap the observability secret from")]
+
+    text = example.read_text(encoding="utf-8")
+    for key, value in _k8s_observability_secret_values().items():
+        # Only the placeholder line for this key is rewritten; the YAML
+        # shape (and every explanatory comment above it) is preserved.
+        text = re.sub(
+            rf'^(\s*{re.escape(key)}:\s*)".*"$',
+            lambda m, v=value: f'{m.group(1)}"{v}"',  # type: ignore[misc]
+            text,
+            flags=re.MULTILINE,
+        )
+    secret_path.write_text(text, encoding="utf-8")
+    os.chmod(secret_path, 0o600)
+    return [OpsResult(True, f"Bootstrapped {secret_path} from secret.example.yaml")]
+
+
+def _kubectl_apply_stdin(manifest: str, what: str) -> OpsResult:
+    """`kubectl apply -f -` a manifest built in-process (no temp files)."""
+    cp = _run(["kubectl", "apply", "-f", "-"], input=manifest, check=False)
+    if cp.returncode != 0:
+        return OpsResult(False, f"kubectl apply {what} failed", _cp_details(cp))
+    return OpsResult(True, f"kubectl apply {what}", _cp_details(cp))
+
+
+def _apply_k8s_grafana_provisioning() -> list[OpsResult]:
+    """Generate Grafana's provisioning ConfigMaps from `~/.nyxGPT/docker/grafana`.
+
+    The datasources, dashboard provider, alerting rules and dashboard JSONs
+    are the SAME files Compose and native mode use -- synced into
+    `NYXGPT_HOME` by `_sync_packaged_resources` (#3621), so this works from
+    an installed package as well as a checkout. `kubectl create configmap
+    --dry-run=client -o yaml` renders each directory, and the result is
+    applied through stdin: server-side create/replace in one idempotent step.
+
+    Restarts Grafana only when an apply actually *changed* something
+    (kubectl says "configured" rather than "unchanged"/"created"). Grafana
+    reads provisioning at startup only, so an edited dashboard or datasource
+    is otherwise invisible until something else restarts the Pod -- and
+    restarting unconditionally would bounce Grafana on every install.
+    """
+    grafana_dir = OPS_DOCKER_DIR / "grafana"
+    if not grafana_dir.is_dir():
+        return [
+            OpsResult(
+                False,
+                f"Missing {grafana_dir} -- cannot provision Grafana in-cluster",
+                "Run `nyxgpt ops install` (or `nyxgpt ops observability`) first: it syncs the "
+                "packaged Grafana provisioning into ~/.nyxGPT/docker.",
+            )
+        ]
+
+    results: list[OpsResult] = []
+    changed = False
+    for name, parts in K8S_GRAFANA_CONFIGMAPS.items():
+        source = grafana_dir.joinpath(*parts)
+        if not source.is_dir():
+            results.append(OpsResult(False, f"Missing {source} for ConfigMap {name}"))
+            continue
+        cp = _run(
+            [
+                "kubectl",
+                "-n",
+                K8S_NAMESPACE,
+                "create",
+                "configmap",
+                name,
+                f"--from-file={source}",
+                "--dry-run=client",
+                "-o",
+                "yaml",
+            ],
+            check=False,
+        )
+        if cp.returncode != 0:
+            results.append(OpsResult(False, f"Could not render ConfigMap {name}", _cp_details(cp)))
+            continue
+        applied = _kubectl_apply_stdin(cp.stdout, f"configmap/{name}")
+        results.append(applied)
+        if applied.ok and "configured" in (applied.details or ""):
+            changed = True
+
+    if changed and all(r.ok for r in results):
+        results.append(_restart_k8s_grafana())
+    return results
+
+
+def _restart_k8s_grafana() -> OpsResult:
+    """Roll the Grafana Deployment so it re-reads changed provisioning."""
+    cp = _run(
+        ["kubectl", "-n", K8S_NAMESPACE, "rollout", "restart", "deployment/grafana"],
+        check=False,
+    )
+    if cp.returncode != 0:
+        return OpsResult(
+            False, "Could not restart Grafana to pick up provisioning", _cp_details(cp)
+        )
+    return OpsResult(True, "Restarted Grafana to pick up changed provisioning", _cp_details(cp))
+
+
+def _apply_k8s_observability() -> list[OpsResult]:
+    """Apply the in-cluster observability layer (`k8s/observability/`).
+
+    Order matters: the overlay creates the namespace and the workloads, then
+    Grafana's provisioning ConfigMaps are applied into that namespace. A
+    Grafana Pod scheduled before its ConfigMaps exist simply waits for them
+    (kubelet retries the mount), so this ordering costs nothing and avoids
+    needing a separate namespace-bootstrap step.
+    """
+    results = _ensure_k8s_observability_secret()
+    if not all(r.ok for r in results):
+        return results
+
+    cp = _run(["kubectl", "apply", "-k", str(K8S_OBSERVABILITY_DIR)], check=False)
+    if cp.returncode != 0:
+        results.append(
+            OpsResult(False, "kubectl apply -k k8s/observability/ failed", _cp_details(cp))
+        )
+        return results
+    results.append(OpsResult(True, "kubectl apply -k k8s/observability/", _cp_details(cp)))
+    results += _apply_k8s_grafana_provisioning()
+    return results
+
+
+def _delete_k8s_observability() -> list[OpsResult]:
+    """Remove the in-cluster observability layer, if it was ever bootstrapped.
+
+    A never-installed cluster has no `k8s/observability/secret.yaml`, which
+    the kustomization references -- `kubectl delete -k` would fail on the
+    missing file rather than on anything about the cluster. Nothing to
+    delete is a success, not an error.
+    """
+    if not (K8S_OBSERVABILITY_DIR / "secret.yaml").exists():
+        return [OpsResult(True, "No observability layer bootstrapped -- nothing to delete")]
+    cp = _run(
+        ["kubectl", "delete", "-k", str(K8S_OBSERVABILITY_DIR), "--ignore-not-found"],
+        check=False,
+    )
+    if cp.returncode != 0:
+        return [OpsResult(False, "kubectl delete -k k8s/observability/ failed", _cp_details(cp))]
+    return [OpsResult(True, "kubectl delete -k k8s/observability/", _cp_details(cp))]
+
+
+def _k8s_observability_workload_state() -> dict[str, str]:
+    """Map every observability workload to `ready/N`-style state, or "absent".
+
+    One `kubectl get` per kind (not per workload) so this stays cheap enough
+    for `ops status` and the admin dashboard's infrastructure poll.
+    """
+    state: dict[str, str] = dict.fromkeys(
+        (*K8S_OBSERVABILITY_DEPLOYMENTS, *K8S_OBSERVABILITY_DAEMONSETS), "absent"
+    )
+    queries = (
+        ("deploy", "{.status.readyReplicas}", "{.spec.replicas}"),
+        ("daemonset", "{.status.numberReady}", "{.status.desiredNumberScheduled}"),
+    )
+    for kind, ready_field, desired_field in queries:
+        cp = _run(
+            [
+                "kubectl",
+                "-n",
+                K8S_NAMESPACE,
+                "get",
+                kind,
+                "-o",
+                f"jsonpath={{range .items[*]}}{{.metadata.name}}={ready_field}/{desired_field};{{end}}",
+            ],
+            check=False,
+            expected=True,
+        )
+        if cp.returncode != 0:
+            continue
+        for entry in (e for e in (cp.stdout or "").split(";") if e):
+            name, _, counts = entry.partition("=")
+            if name not in state:
+                continue
+            # A workload with no ready Pods yet omits the field entirely,
+            # rendering as "/1" -- report that as an explicit 0.
+            ready, _, desired = counts.partition("/")
+            state[name] = f"{ready or '0'}/{desired or '?'} ready"
+    return state
+
+
+def _k8s_observability_health() -> list[OpsResult]:
+    """Snapshot of the observability workloads right after apply.
+
+    A snapshot, not a wait-until-ready loop -- same contract as
+    `_k8s_stack_health`: Pods are still pulling images when this runs, so a
+    not-yet-ready workload is reported, not failed. `nyxgpt ops status`
+    re-reads it.
+    """
+    state = _k8s_observability_workload_state()
+    missing = [name for name, value in state.items() if value == "absent"]
+    results = [
+        OpsResult(name not in missing, f"observability {name}: {value}")
+        for name, value in state.items()
+    ]
+    if missing:
+        results.append(
+            OpsResult(
+                False,
+                f"{len(missing)} observability workload(s) missing from the cluster",
+                "Re-run `nyxgpt ops observability --kubernetes --local`.",
+            )
+        )
+    return results
+
+
 def _k8s_stack_health() -> list[OpsResult]:
     """Snapshot of Pod/Service health in the `nyxgpt` namespace right after apply.
 
@@ -5799,7 +6116,11 @@ def _k8s_stack_health() -> list[OpsResult]:
             name, _, phase = entry.partition("=")
             results.append(OpsResult(phase == "Running", f"pod {name}: {phase}"))
 
-    for svc in ("nyxgpt-api", "nyxgpt-web"):
+    # `cassandra`/`ollama` are the data/LLM tier's Services (#3786) -- the
+    # hostnames k8s/configmap.yaml points the api at. A missing one is the
+    # exact shape of the failure this list exists to catch: api/web Pods
+    # Running, nothing to chat with.
+    for svc in ("nyxgpt-api", "nyxgpt-web", "cassandra", "ollama"):
         cp = _run(
             ["kubectl", "-n", K8S_NAMESPACE, "get", "svc", svc, "--no-headers"],
             check=False,
@@ -5811,6 +6132,52 @@ def _k8s_stack_health() -> list[OpsResult]:
                 f"Service {svc}" + (" found" if cp.returncode == 0 else " not found"),
             )
         )
+    return results
+
+
+def _wait_for_k8s_data_tier() -> list[OpsResult]:
+    """Block until the in-cluster Cassandra and Ollama are Ready (#3786).
+
+    `kubectl apply -k` returns as soon as the objects are accepted, so
+    without this the install reports success while Cassandra is still
+    bootstrapping its keyspace directory and Ollama is still pulling the
+    default model -- and the operator's first chat attempt fails against a
+    stack the command just called healthy. `kubectl rollout status` on each
+    StatefulSet waits for exactly the condition that matters: the Pod passing
+    its readiness probe, which for Cassandra means CQL answers and for Ollama
+    means the configured default model is present (see the probes in
+    k8s/statefulset-*.yaml), not merely that a port is open.
+
+    A timeout is a failure, not a warning: a stack whose data tier never came
+    up cannot chat, and saying otherwise is what produced this issue. The
+    failure names the workload so the operator knows which half to look at.
+    """
+    results: list[OpsResult] = []
+    for ref, label, timeout in K8S_DATA_TIER_WORKLOADS:
+        cp = _run(
+            [
+                "kubectl",
+                "-n",
+                K8S_NAMESPACE,
+                "rollout",
+                "status",
+                ref,
+                f"--timeout={timeout}s",
+            ],
+            check=False,
+        )
+        if cp.returncode != 0:
+            results.append(
+                OpsResult(
+                    False,
+                    f"{label} did not become ready within {timeout}s",
+                    (_cp_details(cp) or "")
+                    + f"\nThe stack cannot serve chat without it. Check `nyxgpt ops status` "
+                    f"for the {ref.split('/')[-1]} Pod's state.",
+                )
+            )
+            return results
+        results.append(OpsResult(True, f"{label} ready", _cp_details(cp)))
     return results
 
 
@@ -5835,15 +6202,22 @@ def _build_and_load_k8s_web_image() -> list[OpsResult]:
     )
 
 
-def _install_kubernetes_steps(api_key: str | None) -> list[OpsResult]:
+def _install_kubernetes_steps(
+    api_key: str | None, *, skip_observability: bool = False
+) -> list[OpsResult]:
     """Run the Kubernetes bring-up steps and return structured results (no printing).
 
     Prereq checks (cluster reachable, kubectl present), builds and loads
     `nyxgpt-api:local` and `nyxgpt-web:local`, bootstraps k8s/secret.yaml
     (prompting for the API key, never committing it), applies the
     kustomization (which now includes the web stable/canary pair -- #3419),
-    and snapshots Pod/Service health. Stops at the first failing step, same
-    rationale as `_install_terraform_steps`.
+    brings up the in-cluster observability layer (#3787), and snapshots
+    Pod/Service health. Stops at the first failing step, same rationale as
+    `_install_terraform_steps`.
+
+    `skip_observability` mirrors the native/Compose install's
+    `--skip-observability`: the same flag now means the same thing in
+    Kubernetes mode instead of being silently ignored there.
 
     Shared by the `nyxgpt ops install --kubernetes --local` CLI entrypoint
     (`_install_kubernetes`) and `install_kubernetes_local`, the SRE/admin
@@ -5866,7 +6240,16 @@ def _install_kubernetes_steps(api_key: str | None) -> list[OpsResult]:
         ("build/load web image", _build_and_load_k8s_web_image),
         ("secret bootstrap", lambda: _ensure_k8s_secret(api_key)),
         ("apply kustomization", _kubectl_apply_kustomization),
+        ("wait for data/LLM tier", _wait_for_k8s_data_tier),
     ]
+    if not skip_observability:
+        # After the app tier: Prometheus's scrape target and promtail's
+        # discovery both point at Pods the kustomization above creates.
+        # `_sync_packaged_resources` is what puts the Grafana provisioning
+        # under ~/.nyxGPT/docker for `_apply_k8s_grafana_provisioning` to
+        # read, so the k8s path must run it too -- it is not install()-only.
+        steps.append(("sync packaged resources", _sync_packaged_resources))
+        steps.append(("observability layer", _apply_k8s_observability))
     for step_name, fn in steps:
         try:
             step_results = fn()
@@ -5880,13 +6263,17 @@ def _install_kubernetes_steps(api_key: str | None) -> list[OpsResult]:
             break
     else:
         results += _k8s_stack_health()
+        if not skip_observability:
+            results += _k8s_observability_health()
 
     result, message = _ops_action_outcome(results)
     _record_ops_action("install", "kubernetes", result, message)
     return results
 
 
-def install_kubernetes_local(api_key: str | None = None) -> list[OpsResult]:
+def install_kubernetes_local(
+    api_key: str | None = None, *, skip_observability: bool = False
+) -> list[OpsResult]:
     """Structured (non-printing) Kubernetes local bring-up, for the SRE/admin dashboard API.
 
     Runs the same steps as `nyxgpt ops install --kubernetes --local` --
@@ -5895,14 +6282,37 @@ def install_kubernetes_local(api_key: str | None = None) -> list[OpsResult]:
     list directly instead of routing it through `_emit_results`, so a
     FastAPI endpoint can translate it straight to JSON.
     """
-    return _install_kubernetes_steps(api_key)
+    return _install_kubernetes_steps(api_key, skip_observability=skip_observability)
+
+
+def observability_kubernetes() -> list[OpsResult]:
+    """Structured (non-printing) in-cluster observability bring-up (#3787).
+
+    The Kubernetes counterpart of `reconcile_observability(True)`: applies
+    `k8s/observability/` on its own, without touching the app tier, for the
+    SRE/admin dashboard's observability controls and for
+    `nyxgpt ops observability --kubernetes --local`.
+    """
+    results = _ensure_kubectl_and_cluster()
+    if not all(r.ok for r in results):
+        return results
+    results += _sync_packaged_resources()
+    if not all(r.ok for r in results):
+        return results
+    results += _apply_k8s_observability()
+    if all(r.ok for r in results):
+        results += _k8s_observability_health()
+    return results
 
 
 def _install_kubernetes(args) -> int:
     """`nyxgpt ops install --kubernetes --local`: the full k8s bring-up in one command."""
     if _resolve_locality(args) is None:
         return 2
-    results = _install_kubernetes_steps(getattr(args, "api_key", None))
+    results = _install_kubernetes_steps(
+        getattr(args, "api_key", None),
+        skip_observability=bool(getattr(args, "skip_observability", False)),
+    )
     ok = _emit_results("install --kubernetes", results)
     return 0 if ok else 2
 
@@ -5927,6 +6337,15 @@ def _down_kubernetes_steps() -> list[OpsResult]:
     _ensure_nyxgpt_bin_on_path()
     if _which("kubectl") is None:
         results = [OpsResult(False, "kubectl not found on PATH -- nothing to tear down")]
+    elif not (K8S_DIR / "secret.yaml").exists():
+        # The app-tier kustomization *references* secret.yaml, so `kubectl
+        # delete -k k8s/` on a cluster that never had an app tier fails on
+        # the missing FILE, before it ever reaches the cluster. That is now a
+        # reachable state: `nyxgpt ops observability --kubernetes --local`
+        # deploys the observability layer on its own (#3787), and its
+        # teardown must not be blocked by an app tier that was never
+        # installed.
+        results = [OpsResult(True, "No app tier bootstrapped -- skipped kubectl delete -k k8s/")]
     else:
         cp = _run(["kubectl", "delete", "-k", str(K8S_DIR), "--ignore-not-found"], check=False)
         if cp.returncode == 0:
@@ -5938,8 +6357,16 @@ def _down_kubernetes_steps() -> list[OpsResult]:
         else:
             results = [OpsResult(False, "kubectl delete -k k8s/ failed", _cp_details(cp))]
 
-        if results[-1].ok and _kubectl_context() == KIND_CONTEXT and _which("kind") is not None:
-            results += _delete_kind_cluster()
+    if results[-1].ok and _which("kubectl") is not None:
+        # After the base delete, not before: the base kustomization owns the
+        # namespace, so deleting it already cascades the observability layer
+        # away and this call then finds nothing (`--ignore-not-found`), which
+        # is a success. When only the observability layer was ever deployed,
+        # this is the delete that does the work.
+        results += _delete_k8s_observability()
+
+    if results[-1].ok and _kubectl_context() == KIND_CONTEXT and _which("kind") is not None:
+        results += _delete_kind_cluster()
 
     result, message = _ops_action_outcome(results)
     _record_ops_action("down", "kubernetes", result, message)
@@ -5958,15 +6385,82 @@ def _down_kubernetes(_args) -> int:
     return 0 if ok else 2
 
 
+# `nyxgpt ops port-forward --target X`: target -> (Service, local port, Service port).
+#
+# The local ports are NOT arbitrary: each one is the port that mode's UI is
+# published on everywhere else (Compose's `GRAFANA_UI_PORT` 3001, Jaeger
+# 16686, GlitchTip 8080, Prometheus 9090). Matching them is what makes the
+# admin dashboard's observability links -- built from `[monitoring]
+# grafana_ui_url` and friends, which default to those same localhost ports --
+# resolve in Kubernetes mode without a second, mode-specific configuration
+# (#3787). kubectl binds these to 127.0.0.1 only, per #3195.
+K8S_PORT_FORWARD_TARGETS: dict[str, tuple[str, int, int]] = {
+    "web": ("nyxgpt-web", 3000, 3000),
+    "api": ("nyxgpt-api", 8000, 8000),
+    "grafana": ("grafana", 3001, 3000),
+    "prometheus": ("prometheus", 9090, 9090),
+    "jaeger": ("jaeger", 16686, 16686),
+    "glitchtip": ("glitchtip", 8080, 8080),
+}
+
+# What `--target observability` expands to: every observability UI at once,
+# so one command makes the whole SRE surface reachable in Kubernetes mode.
+K8S_OBSERVABILITY_PORT_FORWARD_TARGETS = ("grafana", "prometheus", "jaeger", "glitchtip")
+
+
+def _port_forward_plan(args) -> list[tuple[str, str, int, int]] | None:
+    """Resolve `port-forward`'s args into (target, service, local, remote) rows.
+
+    `--port` overrides the local port, but only for a single target -- with
+    `--target observability` there are four of them and one override cannot
+    mean anything sensible, so it is rejected rather than silently ignored.
+    Returns None (after printing why) on a bad combination.
+    """
+    target = getattr(args, "target", "web") or "web"
+    port_override = getattr(args, "port", None)
+
+    if target == "observability":
+        if port_override is not None:
+            print(
+                "ERROR: --port cannot be combined with --target observability "
+                "(it forwards four UIs; pass --target grafana/prometheus/jaeger/glitchtip "
+                "to override one port)",
+                file=sys.stderr,
+            )
+            return None
+        names = list(K8S_OBSERVABILITY_PORT_FORWARD_TARGETS)
+    elif target in K8S_PORT_FORWARD_TARGETS:
+        names = [target]
+    else:
+        known = ", ".join(sorted([*K8S_PORT_FORWARD_TARGETS, "observability"]))
+        print(f"ERROR: unknown --target {target!r} (known targets: {known})", file=sys.stderr)
+        return None
+
+    plan = []
+    for name in names:
+        service, local_port, remote_port = K8S_PORT_FORWARD_TARGETS[name]
+        if port_override is not None:
+            local_port = port_override
+        plan.append((name, service, local_port, remote_port))
+    return plan
+
+
 def port_forward(args) -> int:
-    """`nyxgpt ops port-forward`: forward the Kubernetes web Service to localhost.
+    """`nyxgpt ops port-forward`: forward a Kubernetes Service to localhost.
 
     `k8s/`'s Services are ClusterIP-only -- there's no Ingress/LoadBalancer
     (see docs/kubernetes.md#4-verify) -- so `kubectl port-forward` is the
-    only way to reach `nyxgpt-web` from the operator's own workstation. This
-    wraps that invocation so operators never type the raw `kubectl` command
+    only way to reach them from the operator's own workstation. This wraps
+    that invocation so operators never type the raw `kubectl` command
     themselves, per CLAUDE.md's Operational Command Wrapping requirement;
     `nyxgpt up --kubernetes` points here instead of printing it directly.
+
+    `--target` selects what to forward (default `web`, unchanged). The
+    observability UIs the in-cluster layer adds (#3787) are reachable the
+    same way, and `--target observability` forwards all of them at once on
+    the ports the admin dashboard already expects -- which is what makes the
+    dashboard's Grafana/Prometheus/Jaeger/GlitchTip links work in Kubernetes
+    mode.
 
     Runs in the foreground until interrupted (Ctrl-C), same as `kubectl
     port-forward` itself -- there's no "done" state to return early from.
@@ -5975,29 +6469,68 @@ def port_forward(args) -> int:
         print("[FAIL] kubectl not found on PATH", file=sys.stderr)
         return 2
 
-    local_port = getattr(args, "port", 3000) or 3000
+    plan = _port_forward_plan(args)
+    if plan is None:
+        return 2
+
     logger.info(
         "ops: port-forward starting",
-        extra={"component": "ops", "action": "port-forward", "local_port": local_port},
+        extra={
+            "component": "ops",
+            "action": "port-forward",
+            "targets": ",".join(name for name, _svc, _local, _remote in plan),
+        },
     )
-    print(
-        f"Forwarding http://127.0.0.1:{local_port} -> "
-        f"{K8S_NAMESPACE}/svc/nyxgpt-web:3000 (Ctrl-C to stop)..."
-    )
+
+    procs: list[subprocess.Popen[bytes]] = []
     try:
-        cp = subprocess.run(
-            [
-                "kubectl",
-                "-n",
-                K8S_NAMESPACE,
-                "port-forward",
-                "svc/nyxgpt-web",
-                f"{local_port}:3000",
-            ]
-        )
+        for name, service, local_port, remote_port in plan:
+            # flush: this runs in the foreground indefinitely, so a buffered
+            # stdout (any non-TTY: a log file, a CI step) would hold these
+            # lines back for the entire session.
+            print(
+                f"Forwarding http://127.0.0.1:{local_port} -> "
+                f"{K8S_NAMESPACE}/svc/{service}:{remote_port} ({name})",
+                flush=True,
+            )
+            procs.append(
+                subprocess.Popen(
+                    [
+                        "kubectl",
+                        "-n",
+                        K8S_NAMESPACE,
+                        "port-forward",
+                        f"svc/{service}",
+                        f"{local_port}:{remote_port}",
+                    ]
+                )
+            )
+        print("Ctrl-C to stop.", flush=True)
+        # Any forward exiting on its own (Service deleted, port already
+        # bound) ends the command: a partially-working set of tunnels is
+        # worse than an obvious failure the operator can re-run.
+        returncode = 0
+        while procs:
+            for proc in list(procs):
+                try:
+                    returncode = proc.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    continue
+                procs.remove(proc)
+                break
+            else:
+                continue
+            break
     except KeyboardInterrupt:
-        return 0
-    return cp.returncode
+        returncode = 0
+    finally:
+        for proc in procs:
+            with contextlib.suppress(Exception):
+                proc.terminate()
+        for proc in procs:
+            with contextlib.suppress(Exception):
+                proc.wait(timeout=10)
+    return returncode
 
 
 def infra_status() -> dict[str, Any]:
@@ -6060,6 +6593,14 @@ def infra_status() -> dict[str, Any]:
         kubernetes_probe_available = cp.returncode == 0
         if kubernetes_probe_available:
             pods = [line for line in (cp.stdout or "").splitlines() if line.strip()]
+    # The in-cluster observability layer (#3787), reported per workload so the
+    # Infrastructure page can say *which* piece is missing rather than just
+    # "observability: no". Only probed when the cluster answered at all --
+    # otherwise this would report a confident "absent" for a cluster nobody
+    # could reach, exactly the false-negative #3468 removed elsewhere.
+    observability_workloads: dict[str, str] = {}
+    if kubernetes_configured and kubernetes_probe_available:
+        observability_workloads = _k8s_observability_workload_state()
     kubernetes = {
         "available": kubectl_available,
         "configured": kubernetes_configured,
@@ -6072,6 +6613,14 @@ def infra_status() -> dict[str, Any]:
         # bring-your-own cluster (minikube, Docker Desktop, a remote context, ...).
         "context": kubernetes_context,
         "provisioned": kubernetes_context == KIND_CONTEXT,
+        "observability": {
+            "probe_available": kubernetes_probe_available,
+            "deployed": any(state != "absent" for state in observability_workloads.values()),
+            "workloads": observability_workloads,
+            # How the operator reaches the UIs above from their own machine
+            # -- a `nyxgpt` command, never a raw kubectl invocation.
+            "port_forward_command": "nyxgpt ops port-forward --target observability",
+        },
     }
 
     native_running = any(state in ("started", "running") for state in mode_info.native.values())
@@ -6373,6 +6922,12 @@ def up(args) -> int:
             "`nyxgpt ops port-forward` in another terminal, then open "
             f"{WEB_URL} (see docs/kubernetes.md#4-verify)."
         )
+        if not getattr(args, "skip_observability", False):
+            print(
+                "Observability (Grafana, Prometheus, Jaeger, GlitchTip) runs in the cluster "
+                "too -- `nyxgpt ops port-forward --target observability` publishes all four "
+                "on the ports the admin dashboard links to."
+            )
     else:
         print(f"nyxGPT is up: {WEB_URL}")
     return 0
@@ -6539,6 +7094,20 @@ def status(_args) -> int:
             )
             for line in pod_lines:
                 print(f"  {line}")
+
+            observability_state = _k8s_observability_workload_state()
+            if any(state != "absent" for state in observability_state.values()):
+                print(
+                    "\nKubernetes observability (in-cluster -- reach the UIs with "
+                    "`nyxgpt ops port-forward --target observability`):"
+                )
+                for workload, state in observability_state.items():
+                    print(f"  {workload}: {state}")
+            else:
+                print(
+                    "\nKubernetes observability: not deployed "
+                    "(`nyxgpt ops observability --kubernetes --local` deploys it)"
+                )
 
             serving = _serving_status("kubernetes")
             if serving["supported"]:
@@ -9222,6 +9791,26 @@ def observability(args) -> int:
     logger.info(
         "ops: observability starting", extra={"component": "ops", "action": "observability"}
     )
+
+    # `--kubernetes --local`: the same command, applied to a cluster instead
+    # of Compose (#3787). Kubernetes mode cannot use the Compose profiles at
+    # all -- they scrape `host.docker.internal` and resolve Compose service
+    # names -- so this branches to the in-cluster overlay rather than trying
+    # to reconcile both.
+    if getattr(args, "kubernetes", False):
+        if _resolve_locality(args) is None:
+            return 2
+        results = observability_kubernetes()
+        ok = _emit_results("observability --kubernetes", results)
+        result, message = _ops_action_outcome(results)
+        _record_ops_action("observability", "kubernetes", result, message)
+        logger.info(
+            "ops: observability %s",
+            "succeeded" if ok else "failed",
+            extra={"component": "ops", "action": "observability", "mode": "kubernetes", "ok": ok},
+        )
+        return 0 if ok else 2
+
     sync_results: list[OpsResult] = []
 
     def _observability_sync_step() -> list[OpsResult]:

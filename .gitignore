@@ -38,6 +38,10 @@ coverage/
 
 # Kubernetes (real secrets - copy from k8s/secret.example.yaml)
 /k8s/secret.yaml
+# Observability layer secrets (Grafana admin/Slack/GlitchTip) -- bootstrapped
+# by `nyxgpt ops install/observability --kubernetes` from
+# k8s/observability/secret.example.yaml
+/k8s/observability/secret.yaml
 
 # Docker Compose (real secrets - copy from .env.example)
 /.env

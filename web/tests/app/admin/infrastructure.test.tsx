@@ -5,6 +5,30 @@ import { http, HttpResponse } from 'msw';
 import { server } from '../../mocks/server';
 import InfrastructurePage from '../../../src/app/admin/infrastructure/page';
 
+// The in-cluster observability layer (#3787) the api reports under
+// `kubernetes.observability`. Undeployed by default: most fixtures describe a
+// cluster running the app tier only.
+const observabilityAbsent = {
+  probe_available: true,
+  deployed: false,
+  workloads: {},
+  port_forward_command: 'nyxgpt ops port-forward --target observability',
+};
+
+const observabilityDeployed = {
+  probe_available: true,
+  deployed: true,
+  workloads: {
+    prometheus: '1/1 ready',
+    grafana: '1/1 ready',
+    loki: '1/1 ready',
+    jaeger: '1/1 ready',
+    glitchtip: 'absent',
+    promtail: '1/1 ready',
+  },
+  port_forward_command: 'nyxgpt ops port-forward --target observability',
+};
+
 const mockStatusTerraform = {
   mode: 'terraform',
   native: {},
@@ -25,6 +49,7 @@ const mockStatusTerraform = {
     pods: ['pod/nyxgpt-api-abc123   1/1   Running'],
     context: 'docker-desktop',
     provisioned: false,
+    observability: observabilityAbsent,
   },
   serving: {
     supported: false,
@@ -52,6 +77,7 @@ const mockStatusEmpty = {
     pods: [],
     context: '',
     provisioned: false,
+    observability: observabilityAbsent,
   },
   serving: {
     supported: false,
@@ -79,6 +105,7 @@ const mockStatusKubernetesNotConfigured = {
     pods: [],
     context: '',
     provisioned: false,
+    observability: observabilityAbsent,
   },
   serving: {
     supported: false,
@@ -106,6 +133,7 @@ const mockStatusCannotDetermine = {
     pods: [],
     context: 'kind-nyxgpt-local',
     provisioned: true,
+    observability: observabilityAbsent,
   },
   serving: {
     supported: false,
@@ -133,6 +161,7 @@ const mockStatusComposeCannotDetermine = {
     pods: [],
     context: 'kind-nyxgpt-local',
     provisioned: true,
+    observability: observabilityAbsent,
   },
   serving: {
     supported: false,
@@ -156,6 +185,7 @@ const mockStatusKubernetesServing = {
     pods: ['pod/nyxgpt-api-stable-abc   1/1   Running'],
     context: 'kind-nyxgpt-local',
     provisioned: true,
+    observability: observabilityAbsent,
   },
   serving: {
     supported: true,
@@ -218,9 +248,12 @@ describe('InfrastructurePage', () => {
     await waitFor(() => {
       expect(screen.getByText(/No canary rollout active -- stable serves 100% of traffic\./)).toBeInTheDocument();
     });
-    // Both the terraform card (undeployed in this fixture) and the kubernetes
-    // card carry the badge.
-    expect(screen.getAllByText('NOT DEPLOYED')).toHaveLength(2);
+    // The terraform card (undeployed in this fixture), the kubernetes card,
+    // and the in-cluster observability section. This fixture's `kubernetes`
+    // deliberately omits `observability` altogether -- an api that predates
+    // #3787 -- and the page must degrade that to NOT DEPLOYED rather than
+    // throwing and blanking the whole operator surface (#3468).
+    expect(screen.getAllByText('NOT DEPLOYED')).toHaveLength(3);
     expect(screen.getByText(/No pods in the/)).toBeInTheDocument();
     expect(screen.getByText(/nyxgpt-api-canary not deployed/)).toBeInTheDocument();
   });
@@ -469,6 +502,50 @@ describe('InfrastructurePage', () => {
     await waitFor(() => {
       expect(screen.getByText('ARTIFACT INSTALL')).toBeInTheDocument();
     });
+  });
+
+  it('lists the in-cluster observability workloads and the wrapped port-forward command (#3787)', async () => {
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json({
+          ...mockStatusKubernetesServing,
+          kubernetes: { ...mockStatusKubernetesServing.kubernetes, observability: observabilityDeployed },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    expect(
+      await screen.findByRole('heading', { name: 'In-cluster observability' })
+    ).toBeInTheDocument();
+    // Per-workload state, so the operator sees *which* piece is missing.
+    expect(screen.getByText('grafana')).toBeInTheDocument();
+    expect(screen.getByText('prometheus')).toBeInTheDocument();
+    expect(screen.getByText('absent')).toBeInTheDocument();
+    expect(screen.getAllByText('1/1 ready')).toHaveLength(5);
+    // Reaching the UIs is a `nyxgpt` command, never a raw kubectl one.
+    expect(
+      screen.getByText('nyxgpt ops port-forward --target observability')
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/kubectl/)).not.toBeInTheDocument();
+  });
+
+  it('tells the operator how to deploy the observability layer when the cluster has none (#3787)', async () => {
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusKubernetesServing)));
+
+    render(<InfrastructurePage />);
+
+    expect(
+      await screen.findByRole('heading', { name: 'In-cluster observability' })
+    ).toBeInTheDocument();
+    expect(screen.getByText(/No observability workloads in the/)).toBeInTheDocument();
+    expect(
+      screen.getByText('nyxgpt ops observability --kubernetes --local')
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText('nyxgpt ops port-forward --target observability')
+    ).not.toBeInTheDocument();
   });
 
   it('surfaces a port conflict warning when native and compose collide', async () => {

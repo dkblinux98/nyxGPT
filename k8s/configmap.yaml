@@ -9,13 +9,14 @@ data:
     default_model = qwen2.5:0.5b
     chat_timeout_seconds = 180
     # Chat session storage backend. "file" keeps sessions on each pod's own
-    # filesystem, which forks the session list per pod/replica; set this to
-    # "cassandra" (and point [rag] cassandra_hosts at a reachable Cassandra)
-    # so every replica -- and every other deployment mode -- shares one
-    # session list. Required for stable+canary or multi-replica deployments
-    # to show consistent sessions. See docs/session-storage.md. Can also be
-    # set per-pod via the NYXGPT_SESSION_BACKEND env var.
-    session_backend = file
+    # filesystem, which forks the session list per pod/replica -- with the 4
+    # stable replicas below, consecutive requests from one browser land on
+    # different pods and see different sessions. This deployment therefore
+    # uses "cassandra" (#3786), backed by the in-cluster Cassandra in
+    # k8s/statefulset-cassandra.yaml, so every replica -- and every other
+    # deployment mode -- shares one session list. See docs/session-storage.md.
+    # Can also be overridden per-pod via the NYXGPT_SESSION_BACKEND env var.
+    session_backend = cassandra
     sessions_dir = /root/.nyxGPT/sessions
     vectorstore_dir = /root/.nyxGPT/vectorstore
 
@@ -24,11 +25,13 @@ data:
     dir = /root/.nyxGPT/logs
 
     [ollama]
-    # Ollama runs on the host, not in this cluster. host.docker.internal
-    # resolves out of the box on Docker Desktop (kind/minikube using the
-    # docker driver). On Linux, point this at a reachable ClusterIP or
-    # ExternalName Service instead - see docs/kubernetes.md.
-    base_url = http://host.docker.internal:11434
+    # The in-cluster Ollama (k8s/statefulset-ollama.yaml + service-ollama.yaml,
+    # #3786), reached by its Service name -- the same hostname the Compose and
+    # Terraform deployments use. This replaced `host.docker.internal:11434`,
+    # which does not resolve from a Pod on Linux clusters and pointed at a host
+    # Ollama that `nyxgpt ops install --kubernetes --local` stops anyway: the
+    # stack came up with no reachable LLM and no chat was possible.
+    base_url = http://ollama:11434
 
     [api]
     # 0.0.0.0 here is the pod's network namespace, not the host's -- required
@@ -54,9 +57,12 @@ data:
     enabled = false
 
     [rag]
-    # Disabled by default: this deployment does not include a Cassandra
-    # StatefulSet. Enable and point cassandra_hosts at your own in-cluster
-    # or external Cassandra if you want RAG.
+    # Off by default, matching the native/Compose default in
+    # example.config.ini -- RAG chat context only helps once you have
+    # ingested documents. The Cassandra it needs IS part of this deployment
+    # (k8s/statefulset-cassandra.yaml, #3786) and cassandra_hosts below
+    # already points at it, so turning this on is a one-line change, not a
+    # bring-your-own-database exercise.
     enable_chat_context = false
     cassandra_hosts = cassandra
     cassandra_port = 9042
