@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  nyxGPT web UI (Next.js dev server) -- dev-mode LaunchAgent (#3789).
+
+  Source template: `nyxgpt ops install --dev` copies this into
+  ~/Library/LaunchAgents, substituting __NYXGPT_HOME__ with the installing
+  user's home directory (see _install_dev_launchagent in src/nyxgpt/ops.py).
+
+  Used ONLY by dev mode: it runs the wrapper script the dev install writes to
+  ~/.nyxGPT/opt/nyxgpt-web/bin/nyxgpt-web, which `cd`s into the checkout's
+  web/ directory and runs `npm run dev`, so the served UI is the working
+  tree. The artifact path on macOS is unchanged -- a keg plus
+  `brew services nyxgpt-web` -- and this agent is unloaded and removed when
+  switching back to it.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>KeepAlive</key>
+	<true/>
+	<key>Label</key>
+	<string>com.nyxgpt.web</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>-lc</string>
+		<string>__NYXGPT_HOME__/.nyxGPT/opt/nyxgpt-web/bin/nyxgpt-web</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>__NYXGPT_HOME__/.nyxGPT/logs/nyxgpt-web.err.log</string>
+	<key>StandardOutPath</key>
+	<string>__NYXGPT_HOME__/.nyxGPT/logs/nyxgpt-web.log</string>
+</dict>
+</plist>

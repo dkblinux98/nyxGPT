@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  nyxGPT FastAPI backend (uvicorn) -- dev-mode LaunchAgent (#3789).
+
+  Source template: `nyxgpt ops install --dev` copies this into
+  ~/Library/LaunchAgents, substituting __NYXGPT_HOME__ with the installing
+  user's home directory (see _install_dev_launchagent in src/nyxgpt/ops.py).
+
+  Used ONLY by dev mode, which has no Homebrew keg for `brew services` to
+  attach to: it runs the wrapper script the dev install writes to
+  ~/.nyxGPT/opt/nyxgpt-api/bin/nyxgpt-api, which execs uvicorn from an
+  editable venv pointed at the checkout. The artifact path on macOS is
+  unchanged -- it stays a keg plus `brew services nyxgpt-api`, and this
+  agent is unloaded and removed when switching back to it.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>KeepAlive</key>
+	<true/>
+	<key>Label</key>
+	<string>com.nyxgpt.api</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>-lc</string>
+		<string>__NYXGPT_HOME__/.nyxGPT/opt/nyxgpt-api/bin/nyxgpt-api</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>__NYXGPT_HOME__/.nyxGPT/logs/nyxgpt-api.err.log</string>
+	<key>StandardOutPath</key>
+	<string>__NYXGPT_HOME__/.nyxGPT/logs/nyxgpt-api.log</string>
+</dict>
+</plist>

@@ -724,6 +724,7 @@ def test_install_uses_systemd_steps_on_linux(monkeypatch, capsys):
         "_sync_packaged_resources",
         "_clear_intentional_stops",
         "_install_config",
+        "_reconcile_install_mode",
         "migrate_legacy_volumes",
         "_reconcile_phantom_compose_app_containers",
         "_ensure_web_deps",
