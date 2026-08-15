@@ -445,7 +445,7 @@ def test_observability_cli_records_success_action():
             ops, "_reconcile_grafana_provisioning", return_value=[ops.OpsResult(True, "up")]
         ),
     ):
-        rc = ops.observability(MagicMock())
+        rc = ops.observability(MagicMock(kubernetes=False))
     assert rc == 0
     after = _ops_actions_total("observability", "observability", "success")
     assert after == before + 1

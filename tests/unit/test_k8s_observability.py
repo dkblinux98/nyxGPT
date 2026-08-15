@@ -142,7 +142,9 @@ def test_install_kubernetes_applies_the_observability_layer() -> None:
         patch.object(ops, "_clear_intentional_stops", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_ensure_kubectl_and_cluster", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_build_and_load_k8s_image", return_value=[ops.OpsResult(True, "ok")]),
-        patch.object(ops, "_build_and_load_k8s_web_image", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(
+            ops, "_build_and_load_k8s_web_image", return_value=[ops.OpsResult(True, "ok")]
+        ),
         patch.object(ops, "_ensure_k8s_secret", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_kubectl_apply_kustomization", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_sync_packaged_resources", return_value=[ops.OpsResult(True, "ok")]),
@@ -166,7 +168,9 @@ def test_install_kubernetes_honours_skip_observability() -> None:
         patch.object(ops, "_clear_intentional_stops", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_ensure_kubectl_and_cluster", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_build_and_load_k8s_image", return_value=[ops.OpsResult(True, "ok")]),
-        patch.object(ops, "_build_and_load_k8s_web_image", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(
+            ops, "_build_and_load_k8s_web_image", return_value=[ops.OpsResult(True, "ok")]
+        ),
         patch.object(ops, "_ensure_k8s_secret", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_kubectl_apply_kustomization", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_k8s_stack_health", return_value=[]),
@@ -290,15 +294,17 @@ def test_workload_state_reports_absent_and_partial_readiness(monkeypatch) -> Non
 
 def test_infra_status_reports_the_observability_layer(monkeypatch) -> None:
     """The admin dashboard's Infrastructure page renders straight off this."""
-    monkeypatch.setattr(ops, "detect_deployment_mode", lambda: SimpleNamespace(native={}, compose={}, conflicts=set()))
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: SimpleNamespace(native={}, compose={}, conflicts=set()),
+    )
     monkeypatch.setattr(ops, "terraform_stack_state", dict)
     monkeypatch.setattr(ops, "_which", lambda name: "/usr/bin/kubectl")
     monkeypatch.setattr(ops, "_kubectl_context", lambda: ops.KIND_CONTEXT)
     monkeypatch.setattr(ops, "_run", lambda *a, **k: MagicMock(returncode=0, stdout="", stderr=""))
     monkeypatch.setattr(ops.self_heal, "compose_probe_available", lambda: True)
-    monkeypatch.setattr(
-        ops, "_k8s_observability_workload_state", lambda: {"grafana": "1/1 ready"}
-    )
+    monkeypatch.setattr(ops, "_k8s_observability_workload_state", lambda: {"grafana": "1/1 ready"})
 
     observability = ops.infra_status()["kubernetes"]["observability"]
 
@@ -347,7 +353,9 @@ def test_observability_command_routes_kubernetes_to_the_cluster() -> None:
         patch.object(ops, "_reconcile_grafana_provisioning") as compose_path,
         patch.object(ops, "_record_ops_action"),
     ):
-        rc = ops.observability(SimpleNamespace(kubernetes=True, local=True, cloud=False, quiet=True))
+        rc = ops.observability(
+            SimpleNamespace(kubernetes=True, local=True, cloud=False, quiet=True)
+        )
 
     assert rc == 0
     apply_k8s.assert_called_once()
@@ -359,7 +367,9 @@ def test_observability_kubernetes_requires_local() -> None:
         patch.object(ops, "observability_kubernetes") as apply_k8s,
         patch.object(ops, "_record_ops_action"),
     ):
-        rc = ops.observability(SimpleNamespace(kubernetes=True, local=False, cloud=False, quiet=True))
+        rc = ops.observability(
+            SimpleNamespace(kubernetes=True, local=False, cloud=False, quiet=True)
+        )
 
     assert rc == 2
     apply_k8s.assert_not_called()

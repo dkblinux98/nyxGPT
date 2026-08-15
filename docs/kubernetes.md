@@ -7,8 +7,11 @@ nyxGPT on your own workstation, in line with the project's local-first
 [VISION.md](../product_management/VISION.md) — it is not a guide for deploying to a cloud
 provider.
 
-Scope: this deploys the FastAPI backend (`nyxgpt-api`) and the web UI
-(`nyxgpt-web`) as of #3419. Ollama keeps running on the host (as it already
+Scope: this deploys the FastAPI backend (`nyxgpt-api`), the web UI
+(`nyxgpt-web`) as of #3419, and the observability tier -- Prometheus,
+Grafana, Loki + promtail, the OTel collector, Jaeger and GlitchTip -- as
+in-cluster workloads (#3787, see [Observability in the
+cluster](#observability-in-the-cluster)). Ollama keeps running on the host (as it already
 does today) -- see [Ollama canary feasibility](#ollama-canary-feasibility)
 for why it isn't containerized here -- and Cassandra/RAG stay disabled
 unless you point the manifests at your own Cassandra instance. A bundled
@@ -233,6 +236,14 @@ nyxgpt ops port-forward
 Then open `http://127.0.0.1:3000`. `nyxgpt up --kubernetes` prints this same
 instruction once the stack reports healthy.
 
+The observability UIs are reached the same way, all four at once:
+
+```bash
+nyxgpt ops port-forward --target observability
+```
+
+See [Observability in the cluster](#observability-in-the-cluster) below.
+
 The `nyxgpt-api` Pods deployed here are also watched by the same
 [self-heal watchdog](self-healing.md) as every other deployment path -- see
 [self-healing.md#kubernetes-mode](self-healing.md#kubernetes-mode) for how it
@@ -241,6 +252,83 @@ pod`, on top of (not instead of) the liveness probes and the canary
 mechanism described below. `k8s/rbac.yaml`'s `nyxgpt-api` Role grants the
 `get`/`list`/`delete` on `pods` this needs, alongside what canary already
 used.
+
+## Observability in the cluster
+
+`nyxgpt ops install --kubernetes --local` deploys the observability tier
+into the cluster alongside the app tier (#3787). The Compose observability
+profiles cannot serve this mode -- they scrape `host.docker.internal` and
+resolve Compose service names on a Docker network, neither of which exists
+from inside a cluster -- so `k8s/observability/` ships the same components as
+in-cluster workloads:
+
+| Workload | Role | Service |
+| --- | --- | --- |
+| `prometheus` | scrapes `svc/nyxgpt-api:8000/metrics` | `prometheus:9090` |
+| `grafana` | single pane of glass (dashboards, alerting, Explore) | `grafana:3000` |
+| `loki` | log store | `loki:3100` |
+| `promtail` (DaemonSet) | ships every `nyxgpt` namespace Pod's logs into Loki | — |
+| `otel-collector` | OTLP endpoint for the api's spans | `otel-collector:4317/4318` |
+| `jaeger` | trace storage + query API | `jaeger:16686` |
+| `glitchtip`, `glitchtip-worker`, `glitchtip-postgres`, `glitchtip-redis` | self-hosted error tracking | `glitchtip:8080` |
+
+Grafana's datasources, dashboards and alerting are **not** a second copy:
+`nyxgpt ops` generates ConfigMaps straight from `docker/grafana/` (synced
+under `~/.nyxGPT/docker`) at apply time, and the Services above deliberately
+carry the same names as their Compose counterparts, so provisioning like
+`url: http://prometheus:9090` resolves unchanged. One set of dashboards
+serves every deployment mode.
+
+Commands (all wrapped -- no raw `kubectl`):
+
+```bash
+# Deploy or re-apply the layer on its own, without touching the app tier
+nyxgpt ops observability --kubernetes --local
+
+# Publish Grafana (3001), Prometheus (9090), Jaeger (16686) and GlitchTip
+# (8080) on localhost -- the same ports the admin dashboard links to
+nyxgpt ops port-forward --target observability
+
+# Per-workload readiness, alongside the app tier's Pods
+nyxgpt ops status
+```
+
+`nyxgpt ops install --kubernetes --local --skip-observability` opts out (the
+app tier only), and `nyxgpt ops down --kubernetes` removes the layer with
+everything else in the namespace.
+
+Notes:
+
+- **Storage is ephemeral.** Prometheus, Loki, Grafana and GlitchTip's
+  Postgres use `emptyDir`, not PersistentVolumeClaims: `nyxgpt ops down
+  --kubernetes` deletes the local cluster nyxgpt provisioned, so there is
+  nothing for that data to outlive. Long-lived retention is the native /
+  Compose path's job (see [ops.md](ops.md)).
+- **Secrets.** `k8s/observability/secret.yaml` is bootstrapped from
+  `secret.example.yaml` on first apply and never committed. It carries
+  Grafana's admin password (from `[monitoring] grafana_admin_password` when
+  set), the Slack webhook Grafana's alerting contact point reads via
+  `$__file{}` (from `[monitoring] slack_webhook_url`), the GlitchTip token
+  placeholder, and GlitchTip's own Django/Postgres credentials. Every value
+  is non-empty even when unconfigured -- Grafana's alerting validator
+  refuses to boot on an empty contact-point URL (#3538). Delete the file to
+  re-bootstrap it from current config.
+- **Log labels.** promtail discovers Pods through the Kubernetes API instead
+  of tailing files, but keeps the label contract the dashboards query on:
+  `job="nyxgpt"` plus a per-component `service_name` (`api`, `web`,
+  `grafana`, ...), with the same level/logger extraction as
+  `docker/promtail-config.yml`.
+- **Restarts are Kubernetes' own.** The self-heal watchdog restarts running
+  *Compose* observability containers (see
+  [self-healing.md](self-healing.md)); in-cluster, each of these workloads is
+  a Deployment (or DaemonSet), so the cluster's own controllers restart a
+  failed Pod. The watchdog's Kubernetes mode stays focused on the app tier's
+  Pods.
+- **Evidence.** `.github/workflows/k8s-observability-smoke.yml` runs the
+  whole thing on a real kind cluster: it first proves the pre-#3787 app-tier
+  apply leaves zero observability workloads, then asserts all ten roll out,
+  every UI answers, Grafana has its four provisioned datasources and the SRE
+  Home dashboard, and promtail's logs actually reach Loki.
 
 ## Reaching Ollama (and Cassandra) from inside the cluster
 
@@ -277,6 +365,14 @@ states rather than folding every failure into a single "not deployed":
   deployed."
 - **DEPLOYED** -- the probe succeeded and found Pods in the `nyxgpt`
   namespace.
+
+The same card carries an **In-cluster observability** section (#3787):
+per-workload readiness for the components in [Observability in the
+cluster](#observability-in-the-cluster), plus the `nyxgpt ops port-forward
+--target observability` command that publishes their UIs on the ports the
+dashboard's own observability links use. When the layer isn't deployed it
+names the command that deploys it, rather than leaving the operator to
+discover that this mode has no observability at all.
 
 This mirrors, but is distinct from, the canary status honesty states
 described in [Honest status, mode-aware (#3409)](#honest-status-mode-aware-3409)

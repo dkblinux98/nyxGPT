@@ -7437,7 +7437,7 @@ def test_observability_cli_entrypoint_returns_zero_on_success(capsys):
             ops, "_reconcile_grafana_provisioning", return_value=[ops.OpsResult(True, "up")]
         ),
     ):
-        rc = ops.observability(MagicMock())
+        rc = ops.observability(MagicMock(kubernetes=False))
         assert rc == 0
         assert "[OK]" in capsys.readouterr().out
 
@@ -7452,7 +7452,7 @@ def test_observability_cli_entrypoint_returns_nonzero_on_failure(capsys):
             return_value=[ops.OpsResult(False, "down", "boom")],
         ),
     ):
-        rc = ops.observability(MagicMock())
+        rc = ops.observability(MagicMock(kubernetes=False))
         assert rc == 2
         assert "[FAIL]" in capsys.readouterr().out
 
@@ -7465,7 +7465,7 @@ def test_observability_cli_entrypoint_skips_reconcile_when_sync_fails(capsys):
         ),
         patch.object(ops, "_reconcile_grafana_provisioning") as reconcile,
     ):
-        rc = ops.observability(MagicMock())
+        rc = ops.observability(MagicMock(kubernetes=False))
         assert rc == 2
         reconcile.assert_not_called()
         assert "[FAIL]" in capsys.readouterr().out
@@ -12070,8 +12070,9 @@ def test_down_kubernetes_returns_results_without_printing(monkeypatch, capsys):
         ops, "_run", lambda cmd, check=True, **_k: CP(returncode=0, stdout="deleted")
     )
     results = ops.down_kubernetes()
-    assert len(results) == 1
-    assert results[0].ok is True
+    # The app-tier kustomization, then the observability overlay (#3787).
+    assert [r.ok for r in results] == [True, True]
+    assert "k8s/observability/" in results[1].message
     assert capsys.readouterr().out == ""
 
 
@@ -13366,13 +13367,17 @@ def test_ops_port_forward_invokes_kubectl(monkeypatch, capsys):
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/kubectl")
     calls = []
 
-    def fake_run(cmd):
+    # One forward per target now (#3787's `--target observability` runs four
+    # concurrently), so this spawns Popen rather than blocking in run().
+    def fake_popen(cmd):
         calls.append(cmd)
-        return subprocess.CompletedProcess(cmd, returncode=0)
+        proc = MagicMock()
+        proc.wait.return_value = 0
+        return proc
 
-    monkeypatch.setattr(ops.subprocess, "run", fake_run)
+    monkeypatch.setattr(ops.subprocess, "Popen", fake_popen)
 
-    rc = ops.port_forward(MagicMock(port=3001))
+    rc = ops.port_forward(MagicMock(target="web", port=3001))
 
     assert rc == 0
     assert calls == [
@@ -13390,8 +13395,8 @@ def test_ops_port_forward_keyboard_interrupt_is_clean_exit(monkeypatch):
     def raise_interrupt(cmd):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(ops.subprocess, "run", raise_interrupt)
+    monkeypatch.setattr(ops.subprocess, "Popen", raise_interrupt)
 
-    rc = ops.port_forward(MagicMock(port=3000))
+    rc = ops.port_forward(MagicMock(target="web", port=3000))
 
     assert rc == 0
