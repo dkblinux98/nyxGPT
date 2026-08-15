@@ -208,11 +208,19 @@ fi
 # target user's service manager, so every unit it installs fails to
 # enable/start, `ops install` exits non-zero, and `set -e` aborts this
 # bootstrap. Forward the two variables an interactive login would have set.
+#
+# NYXGPT_ARTIFACT_DIR is forwarded when set, for the same reason
+# NYXGPT_PIP_SPEC exists above: `ops install` downloads the
+# `nyxgpt-{api,web}-<version>.tar.gz` service assets from the version's
+# GitHub Release, and a wheel built from a branch names a version no release
+# serves. The containerized smoke stages both assets and points this at
+# them; unset on a real instance, which downloads the published ones.
 run_as_target() {
   sudo -u "$NYXGPT_TARGET_USER" -H \
     env "PATH=$USER_BIN:$PATH" \
         "XDG_RUNTIME_DIR=$TARGET_RUNTIME_DIR" \
         "DBUS_SESSION_BUS_ADDRESS=unix:path=$TARGET_RUNTIME_DIR/bus" \
+        ${NYXGPT_ARTIFACT_DIR:+"NYXGPT_ARTIFACT_DIR=$NYXGPT_ARTIFACT_DIR"} \
         "$@"
 }
 

@@ -227,6 +227,72 @@ def test_service_source_tarball_downloads_on_an_artifact_install(artifact_root, 
     )
 
 
+# --- Pre-staged assets (NYXGPT_ARTIFACT_DIR) ----------------------------
+#
+# The third source, for a version no release serves: `nyxgpt cloud smoke
+# --container --wheel` (#3784) builds a branch's own service tarballs and
+# stages them, and an air-gapped install has the assets but no github.com.
+
+
+def test_service_source_tarball_prefers_a_staged_asset_over_downloading(
+    artifact_root, monkeypatch, tmp_path
+):
+    staged_dir = tmp_path / "staged"
+    staged_dir.mkdir()
+    (staged_dir / "nyxgpt-api-3.0.0.tar.gz").write_bytes(b"staged bytes")
+    monkeypatch.setenv(ops.LOCAL_ARTIFACT_DIR_ENV, str(staged_dir))
+    monkeypatch.setattr(
+        ops,
+        "_download_release_tarball",
+        lambda *a, **k: pytest.fail("a staged asset must not be downloaded over"),
+    )
+
+    tar = ops._service_source_tarball(artifact_root, "nyxgpt-api", "3.0.0")
+
+    # Same filename and same `dist/` location a download would have produced,
+    # so nothing downstream can tell the two apart.
+    assert tar == artifact_root / "dist" / "nyxgpt-api-3.0.0.tar.gz"
+    assert tar.read_bytes() == b"staged bytes"
+
+
+def test_a_staged_dir_missing_the_asset_says_so_instead_of_downloading(
+    artifact_root, monkeypatch, tmp_path
+):
+    """A staging bug must not read as a network failure against a URL nobody chose."""
+    staged_dir = tmp_path / "staged"
+    staged_dir.mkdir()
+    monkeypatch.setenv(ops.LOCAL_ARTIFACT_DIR_ENV, str(staged_dir))
+    monkeypatch.setattr(
+        ops,
+        "_download_release_tarball",
+        lambda *a, **k: pytest.fail("an explicit staging directory must not be second-guessed"),
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        ops._service_source_tarball(artifact_root, "nyxgpt-web", "3.0.0")
+
+    message = str(excinfo.value)
+    assert "nyxgpt-web-3.0.0.tar.gz" in message
+    assert str(staged_dir) in message
+
+
+def test_an_unset_staging_dir_leaves_the_published_download_path_alone(artifact_root, monkeypatch):
+    monkeypatch.delenv(ops.LOCAL_ARTIFACT_DIR_ENV, raising=False)
+    monkeypatch.setattr(ops, "_download_release_tarball", lambda *a, **k: Path("/published.tar.gz"))
+
+    assert ops._service_source_tarball(artifact_root, "nyxgpt-api", "3.0.0rc11") == Path(
+        "/published.tar.gz"
+    )
+
+
+def test_a_checkout_ignores_the_staging_dir_and_still_vendors(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops, "REPO_ROOT", _checkout(tmp_path))
+    monkeypatch.setenv(ops.LOCAL_ARTIFACT_DIR_ENV, str(tmp_path / "nonexistent"))
+    monkeypatch.setattr(ops, "_create_dist_tarball", lambda *a, **k: Path("/vendored.tar.gz"))
+
+    assert ops._service_source_tarball(tmp_path, "nyxgpt-api", "9.9.9") == Path("/vendored.tar.gz")
+
+
 # --- Linux native api, artifact install --------------------------------
 
 

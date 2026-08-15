@@ -64,10 +64,11 @@ RUN useradd --create-home --shell /bin/bash ec2-user \
     && chmod 0440 /etc/sudoers.d/90-ec2-user \
     && chmod 0644 /etc/shadow
 
-# Where the smoke stages the bootstrap and (optionally) a locally built wheel.
+# Where the smoke stages the bootstrap and (optionally) a locally built wheel
+# plus the matching nyxgpt-{api,web} service tarballs under artifacts/.
 # Deliberately not /tmp: systemd mounts a fresh tmpfs over /tmp as it finishes
 # booting, which silently discards anything copied in before that point.
-RUN mkdir -p /opt/nyxgpt-smoke
+RUN mkdir -p /opt/nyxgpt-smoke/artifacts
 
 # Boot to multi-user like the instance does, and let `docker stop` shut the
 # container down the way systemd expects (SIGRTMIN+3 == poweroff).

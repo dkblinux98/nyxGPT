@@ -36,7 +36,7 @@ prevent (the same shape the macOS smoke had before #3753).
 | `build` | Builds the AMI-parity image from `scripts/cloud/al2023-ami-parity.Dockerfile` on top of `amazonlinux:2023` |
 | `boot` | Runs it privileged with a writable cgroup mount and waits for systemd — the install under test *is* a systemd install |
 | `preflight` | Asserts the machine is genuinely bare (see below). Fails the run if it is not |
-| `artifact` | Stages the artifact: a published PyPI release, or a locally built wheel with `--wheel` |
+| `artifact` | Stages the artifact: a published PyPI release, or a locally built wheel with `--wheel` (plus its matching service tarballs — see below) |
 | `bootstrap` | Runs the **real rendered EC2 user-data script** (`nyxgpt cloud user-data --os linux`) as root, exactly as cloud-init does |
 | `repo-less` | Asserts nyxGPT is answering from `site-packages`, and that no checkout exists in the container |
 | `services` | Requires api (`:8000/health`), web (`:3000/`) and ollama (`:11434/`) to answer |
@@ -45,6 +45,34 @@ prevent (the same shape the macOS smoke had before #3753).
 The bootstrap is not a copy of the install steps: it is the same text a real
 instance runs, rendered from the packaged template. A drift between what CI
 smokes and what an instance executes is therefore impossible.
+
+### `--wheel` stages three artifacts, not one
+
+An artifact install pulls **three** things off the network, and `--wheel` only
+replaces the first: the `nyxgpt` CLI (from PyPI), and then
+`nyxgpt-api-<version>.tar.gz` and `nyxgpt-web-<version>.tar.gz`, which
+`ops install` downloads from that version's GitHub Release
+(`ops._service_source_tarball`). A wheel built from a branch declares the
+checkout's version — `3.0.0` on this line — and no such release exists until
+the release ceremony cuts one, so a `--wheel` run used to reach step 33 of 35
+and die on a 404 for an asset that will never be there.
+
+So `--wheel` also builds those two tarballs from the same checkout, with the
+same builder the release itself publishes with
+(`release_tarball._create_dist_tarball`), copies them into the container under
+`/opt/nyxgpt-smoke/artifacts`, and points `ops install` at them with
+**`NYXGPT_ARTIFACT_DIR`**. That variable is the service-tarball sibling of the
+bootstrap's `NYXGPT_PIP_SPEC`: set, `ops` installs from the staged assets;
+unset — which is every real instance and every `--version` run — it downloads
+the published ones, unchanged. A staging directory that is set but missing the
+asset is an error rather than a silent fall back to the network, so a staging
+bug cannot present itself as a network failure.
+
+What this does *not* weaken: the container still has no checkout and no `git`,
+`_has_vendorable_source` is false inside it, and the tarballs arrive as opaque
+files exactly as a download would leave them. What it buys is the thing the
+job exists for — a PR that changes `ops.py` is smoked against **its own**
+`ops.py`, not against the last published release's.
 
 ### The preflight is the point
 
@@ -127,7 +155,7 @@ for it.
 | --- | --- |
 | `--container` | Run this smoke instead of the live AWS one |
 | `--version <release>` | Install that published release (default: whatever `pip install nyxgpt` resolves to) |
-| `--wheel <path>` | Install a locally built wheel instead — how CI tests a branch whose version is not on PyPI yet |
+| `--wheel <path>` | Install a locally built wheel instead, and stage the matching service tarballs built from the same checkout — how CI tests a branch whose version is not on PyPI yet. Needs the checkout that built the wheel |
 | `--image <ref>` | Base image for the AMI-parity build (default: `amazonlinux:2023`) |
 | `--inject <fault>` | Reintroduce a defect class and require the smoke to fail (repeatable) |
 | `--keep` | Leave the container running for inspection instead of removing it |

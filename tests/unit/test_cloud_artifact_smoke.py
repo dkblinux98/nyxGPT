@@ -293,6 +293,71 @@ def test_an_install_from_a_checkout_fails_the_repo_less_check(fake_docker):
     assert "repo-less portability requirement" in result["failure"]
 
 
+# --- Staging a locally built wheel --------------------------------------
+#
+# `ops install` fetches `nyxgpt-{api,web}-<version>.tar.gz` from the version's
+# GitHub Release. A wheel built from a branch names a version no release
+# serves, so `--wheel` has to stage those two assets as well -- without them
+# the run reaches step 33 of 35 and 404s, which is how this smoke first failed
+# in CI. These tests pin the wiring; that the install then succeeds is the
+# workflow's job.
+
+
+def test_wheel_stages_the_matching_service_tarballs_and_points_ops_at_them(
+    fake_docker, monkeypatch, tmp_path
+):
+    built: list[tuple[str, str]] = []
+
+    def fake_build(tap_dir, name, version, source_root=None):
+        built.append((name, version))
+        dist = tap_dir / "dist"
+        dist.mkdir(parents=True, exist_ok=True)
+        tar = dist / f"{name}-{version}.tar.gz"
+        tar.write_bytes(b"tarball")
+        return tar
+
+    monkeypatch.setattr(smoke.release_tarball, "_create_dist_tarball", fake_build)
+    wheel = tmp_path / "nyxgpt-3.0.0-py3-none-any.whl"
+    wheel.write_bytes(b"wheel")
+
+    result = smoke.run_container_smoke(_args(wheel=str(wheel)))
+
+    assert result["passed"], result["failure"]
+    # Both services, at the wheel's own version -- a mismatch is a 404.
+    assert built == [("nyxgpt-api", "3.0.0"), ("nyxgpt-web", "3.0.0")]
+    artifact = next(step for step in result["steps"] if step["step"] == "artifact")
+    assert artifact["service_tarballs"] == ["nyxgpt-api-3.0.0.tar.gz", "nyxgpt-web-3.0.0.tar.gz"]
+    assert artifact["artifact_dir"] == smoke.ARTIFACT_DIR
+    # The bootstrap is what has to be told, or ops downloads instead.
+    bootstrap = " ".join(
+        " ".join(call) for call in fake_docker.calls if "nyxgpt-bootstrap.sh" in " ".join(call)
+    )
+    assert f"NYXGPT_ARTIFACT_DIR={smoke.ARTIFACT_DIR}" in bootstrap
+    assert f"NYXGPT_PIP_SPEC={smoke.STAGING_DIR}/nyxgpt-3.0.0-py3-none-any.whl" in bootstrap
+
+
+def test_a_published_version_run_stages_nothing_and_downloads_as_an_instance_does(fake_docker):
+    result = smoke.run_container_smoke(_args())
+
+    assert result["passed"], result["failure"]
+    artifact = next(step for step in result["steps"] if step["step"] == "artifact")
+    assert artifact["artifact_dir"] == ""
+    bootstrap = " ".join(
+        " ".join(call) for call in fake_docker.calls if "nyxgpt-bootstrap.sh" in " ".join(call)
+    )
+    assert "NYXGPT_ARTIFACT_DIR" not in bootstrap
+
+
+def test_a_wheel_whose_name_hides_its_version_is_refused(fake_docker, tmp_path):
+    wheel = tmp_path / "nyxgpt.whl"
+    wheel.write_bytes(b"wheel")
+
+    result = smoke.run_container_smoke(_args(wheel=str(wheel)))
+
+    assert not result["passed"]
+    assert "PEP 427 wheel" in result["failure"]
+
+
 # --- Status surface -----------------------------------------------------
 
 

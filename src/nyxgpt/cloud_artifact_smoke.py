@@ -50,13 +50,14 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from nyxgpt import cloud_provision
+from nyxgpt import cloud_provision, release_tarball
 from nyxgpt.cloud import NYXGPT_HOME, CloudCommandError
 
 # The distro the owner's cloud rounds actually run on. Overridable
@@ -84,6 +85,11 @@ RESULT_FILE = NYXGPT_HOME / "cloud" / "artifact-smoke.json"
 # smoke stages can be wiped mid-run.
 STAGING_DIR = "/opt/nyxgpt-smoke"
 BOOTSTRAP_PATH = f"{STAGING_DIR}/nyxgpt-bootstrap.sh"
+# Where `--wheel` stages the two service tarballs `ops install` would
+# otherwise download from the wheel's (unpublished) GitHub Release. Separate
+# from the wheel itself because `NYXGPT_ARTIFACT_DIR` names a directory whose
+# every `<name>-<version>.tar.gz` is an install source.
+ARTIFACT_DIR = f"{STAGING_DIR}/artifacts"
 
 # Default budgets, in seconds. The bootstrap is the long pole by an order of
 # magnitude: dnf, a Node 20 install, an Ollama download, `npm ci` + a Next.js
@@ -408,20 +414,77 @@ def preflight() -> dict[str, Any]:
     return {"checks": checks, "system_python": system_python}
 
 
-def stage_artifact(wheel: str | None) -> dict[str, Any]:
-    """Copy a locally built wheel into the container, if one was given.
+def _wheel_version(wheel: Path) -> str:
+    """The version encoded in a wheel filename (`nyxgpt-3.0.0-py3-none-any.whl` -> `3.0.0`)."""
+    parts = wheel.name.split("-")
+    if len(parts) < 3 or not parts[1]:
+        raise ArtifactSmokeFailure(
+            f"--wheel does not name a PEP 427 wheel ({wheel.name}): its version cannot be "
+            "read, and the service tarballs staged alongside it must carry the same one."
+        )
+    return parts[1]
 
-    Returns the pip spec the bootstrap should install. Without `--wheel` the
-    bootstrap installs from PyPI, which is what an instance does; with it, the
-    smoke tests the packaging of the tree in front of you, which is what CI
-    needs on a branch whose version is not published yet. Neither path uses a
-    checkout at runtime.
+
+def _stage_service_tarballs(version: str) -> dict[str, Any]:
+    """Build `nyxgpt-{api,web}-<version>.tar.gz` from this checkout and copy them in.
+
+    `ops install` on the artifact path downloads these two assets from the
+    `<version>` GitHub Release. A wheel built from a branch declares the
+    checkout's version (`3.0.0` on this line), which has no release until the
+    ceremony cuts one -- so without this the container installs the branch's
+    CLI and then dies on a 404 for `nyxgpt-api-3.0.0.tar.gz`, having proved
+    nothing about the install sequence past step 33.
+
+    They are built by the *same* builder the release publishes with
+    (`release_tarball._create_dist_tarball`, what release-artifacts.yml
+    attaches to a release), so this stages the identical bytes a published
+    version would serve, from the tree under test. `ops` picks them up via
+    `NYXGPT_ARTIFACT_DIR` (`ops._staged_service_tarball`).
+    """
+    if not (release_tarball.REPO_ROOT / "pyproject.toml").is_file():
+        raise ArtifactSmokeFailure(
+            "--wheel needs the checkout that built the wheel, to build the matching "
+            f"service tarballs from; {release_tarball.REPO_ROOT} is not one. Use "
+            "--version <published rc> instead."
+        )
+    staged: list[str] = []
+    with tempfile.TemporaryDirectory(prefix="nyxgpt-smoke-artifacts-") as tmp:
+        for name in ("nyxgpt-api", "nyxgpt-web"):
+            tar = release_tarball._create_dist_tarball(Path(tmp), name, version)
+            completed = _run(
+                ["docker", "cp", str(tar), f"{CONTAINER_NAME}:{ARTIFACT_DIR}/{tar.name}"],
+                timeout=600.0,
+            )
+            if completed.returncode != 0:
+                raise ArtifactSmokeFailure(
+                    f"Failed to copy {tar.name} into the container:"
+                    f"\n{_tail(_combined(completed))}"
+                )
+            staged.append(tar.name)
+    # The bootstrap reads them as the unprivileged target user; `docker cp`
+    # lands them root-owned with the host's mode.
+    _exec(f"chmod -R a+rX {shlex.quote(ARTIFACT_DIR)}", timeout=60.0)
+    return {"artifact_dir": ARTIFACT_DIR, "service_tarballs": staged}
+
+
+def stage_artifact(wheel: str | None) -> dict[str, Any]:
+    """Copy a locally built wheel, and its matching service tarballs, into the container.
+
+    Returns the pip spec the bootstrap should install and the directory the
+    service tarballs were staged in. Without `--wheel` the bootstrap installs
+    from PyPI and `ops install` downloads the published service tarballs,
+    which is what an instance does; with it, the smoke tests the packaging of
+    the tree in front of you, which is what CI needs on a branch whose version
+    is not published yet. Neither path uses a checkout at runtime -- the
+    tarballs are built on the host and land in the container as opaque
+    artifacts, exactly as a download would.
     """
     if not wheel:
-        return {"pip_spec": "", "wheel": ""}
+        return {"pip_spec": "", "wheel": "", "artifact_dir": "", "service_tarballs": []}
     source = Path(wheel).expanduser()
     if not source.is_file():
         raise ArtifactSmokeFailure(f"--wheel does not name a file: {source}")
+    version = _wheel_version(source)
     destination = f"{STAGING_DIR}/{source.name}"
     completed = _run(
         ["docker", "cp", str(source), f"{CONTAINER_NAME}:{destination}"], timeout=300.0
@@ -431,7 +494,11 @@ def stage_artifact(wheel: str | None) -> dict[str, Any]:
             f"Failed to copy {source} into the container:\n{_tail(_combined(completed))}"
         )
     _exec(f"chmod 0644 {shlex.quote(destination)}", timeout=60.0)
-    return {"pip_spec": destination, "wheel": str(source)}
+    return {
+        "pip_spec": destination,
+        "wheel": str(source),
+        **_stage_service_tarballs(version),
+    }
 
 
 # What the bootstrap's own failure output means, most specific first. Turning
@@ -473,12 +540,20 @@ def classify_failure(output: str) -> str:
     return ""
 
 
-def run_bootstrap(script: str, *, timeout: float, pip_spec: str) -> dict[str, Any]:
+def run_bootstrap(
+    script: str, *, timeout: float, pip_spec: str, artifact_dir: str = ""
+) -> dict[str, Any]:
     """Copy the rendered bootstrap into the container and run it as root.
 
     Root because that is what cloud-init does; the bootstrap drops to the
     target user itself for everything after the prerequisites, so running it
     any other way would test a path no instance takes.
+
+    `pip_spec` and `artifact_dir` are the two `--wheel` escape hatches, both
+    unset on a real instance: the first points the CLI install at the staged
+    wheel, the second points `ops install` at the staged service tarballs
+    (`ops.LOCAL_ARTIFACT_DIR_ENV`) instead of the wheel version's GitHub
+    Release, which does not exist for an unpublished branch version.
     """
     completed = _run(
         ["docker", "exec", "-i", CONTAINER_NAME, "tee", BOOTSTRAP_PATH],
@@ -493,6 +568,8 @@ def run_bootstrap(script: str, *, timeout: float, pip_spec: str) -> dict[str, An
 
     started = time.monotonic()
     environment = f"NYXGPT_PIP_SPEC={shlex.quote(pip_spec)} " if pip_spec else ""
+    if artifact_dir:
+        environment += f"NYXGPT_ARTIFACT_DIR={shlex.quote(artifact_dir)} "
     result = _exec(f"{environment}bash {BOOTSTRAP_PATH}", timeout=timeout)
     output = _combined(result)
     if result.returncode != 0:
@@ -719,7 +796,12 @@ def run_container_smoke(args: argparse.Namespace) -> dict[str, Any]:
         steps.append(
             {
                 "step": "bootstrap",
-                **run_bootstrap(script, timeout=bootstrap_timeout, pip_spec=artifact["pip_spec"]),
+                **run_bootstrap(
+                    script,
+                    timeout=bootstrap_timeout,
+                    pip_spec=artifact["pip_spec"],
+                    artifact_dir=artifact.get("artifact_dir", ""),
+                ),
             }
         )
         steps.append({"step": "repo-less", **verify_repo_less()})

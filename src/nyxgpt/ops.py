@@ -1706,16 +1706,69 @@ def _download_release_tarball(dest_dir: Path, name: str, version: str) -> Path:
     ) from last_error
 
 
+# Escape hatch for an artifact install of a version no release serves:
+# `NYXGPT_ARTIFACT_DIR` names a directory already holding the very same
+# `<name>-<version>.tar.gz` assets, and they are used instead of being
+# downloaded. Two callers need it and neither is a real instance:
+#
+#   - `nyxgpt cloud smoke --container --wheel` (#3784), which installs a wheel
+#     built from the tree under test. That wheel's version is the checkout's
+#     (`3.0.0` on this line), which has no GitHub Release and never will until
+#     the release ceremony cuts one -- so the CLI installs and then `ops
+#     install` 404s on `nyxgpt-api-3.0.0.tar.gz`. Staging the two tarballs
+#     built from the same tree is what makes a branch's own `ops.py` testable
+#     on the artifact path at all; without it the job can only ever install a
+#     *published* rc, i.e. not the code under review.
+#   - an air-gapped install, which has the assets but no route to github.com.
+#
+# It is the service-tarball sibling of the bootstrap's `NYXGPT_PIP_SPEC`
+# (scripts/cloud/ec2-user-data-linux.sh.tmpl), and unset on a real instance.
+LOCAL_ARTIFACT_DIR_ENV = "NYXGPT_ARTIFACT_DIR"
+
+
+def _staged_service_tarball(dest_dir: Path, name: str, version: str) -> Path | None:
+    """Copy `<name>-<version>.tar.gz` out of `$NYXGPT_ARTIFACT_DIR`, or None if unset.
+
+    Mirrors `_download_release_tarball`'s contract -- same filename, same
+    `dist/` location, same returned path -- so callers can't tell which of
+    the three sources produced the tarball.
+
+    A directory that is set but does not hold the asset raises rather than
+    falling through to the download: the caller asked for *this* artifact,
+    and silently installing a different one (or 404ing against a URL they
+    never chose) is how a staging bug reads as a network failure.
+    """
+    directory = os.environ.get(LOCAL_ARTIFACT_DIR_ENV, "").strip()
+    if not directory:
+        return None
+    staged = Path(directory).expanduser() / f"{name}-{version}.tar.gz"
+    if not staged.is_file():
+        raise RuntimeError(
+            f"{LOCAL_ARTIFACT_DIR_ENV}={directory} is set, so {staged.name} was expected "
+            f"there, but {staged} does not exist. Stage the asset or unset "
+            f"{LOCAL_ARTIFACT_DIR_ENV} to download it from the {version} release instead."
+        )
+    dist_dir = dest_dir / "dist"
+    _ensure_dir(dist_dir)
+    tar_path = dist_dir / staged.name
+    shutil.copy2(staged, tar_path)
+    return tar_path
+
+
 def _service_source_tarball(dest_dir: Path, name: str, version: str) -> Path:
     """Return the `<name>-<version>.tar.gz` a native installer builds `name` from.
 
     Vendored from the checkout when one is present (the dev path, byte-for-
-    byte as before), downloaded from the published GitHub Release asset when
-    it isn't (the artifact path, #3759). Raises RuntimeError if the artifact
+    byte as before), taken from `$NYXGPT_ARTIFACT_DIR` when the operator
+    staged it, and otherwise downloaded from the published GitHub Release
+    asset (the artifact path, #3759). Raises RuntimeError if the artifact
     can't be obtained.
     """
     if _has_vendorable_source(name):
         return _create_dist_tarball(dest_dir, name, version)
+    staged = _staged_service_tarball(dest_dir, name, version)
+    if staged is not None:
+        return staged
     return _download_release_tarball(dest_dir, name, version)
 
 
