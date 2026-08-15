@@ -407,6 +407,34 @@ not agent-editable except to add a `Re-verify` result or a supersession pointer.
   install must stay *before* the port takeover — the installer is what
   creates the conflicting system unit).
 
+- **V-012** · 2026-08-15 — The pytest suite could not pass on a machine that
+  was *running the stack it tests*, which is now the normal state of a
+  developer machine on Linux as well as macOS (#3508). Two independent
+  environmental couplings, both in `tests/`, neither in product code:
+  the #3443 production-log-dir guard failed the session because the running
+  `nyxgpt-api`/`nyxgpt-web`/`cassandra`/`ollama` supervisors append to
+  `~/.nyxGPT/logs` throughout the run, and the RAG ingest tests treated
+  "Cassandra's port is open" as "the stack is usable" and then hit a live
+  `ollama serve` that answers `501 This server does not support embeddings`
+  because the loaded model is chat-only. Ownership is the discriminator for
+  the first (a file an *external* process holds open was not written by the
+  code under test — `tests/log_guard.py`); probing the real `/api/embed` call
+  is the discriminator for the second (reachability is not usability).
+  Method: reproduced 2026-08-15 on a Linux runner with the native stack up —
+  `pytest tests/unit/` gave 6 failed + 1 error; after the fix, 5073 passed,
+  6 skipped, 0 failed. Both properties proven by execution rather than
+  inspection: a fault-injected test that writes to `~/.nyxGPT/logs` still
+  fails the guard, and `externally_held_log_files` was observed attributing
+  all 9 live service logs to their supervisors. An A/B run of
+  `tests/integration/test_rag_playground.py` and `test_request_id_streaming.py`
+  with the change stashed and applied gave the same 5 pre-existing
+  environmental failures (no `llama3.1:8b`, no embedding model) and dropped
+  the guard error, confirming the fix is not masking product failures.
+  Re-verify when: the guard's attribution moves off `psutil.open_files()`, or
+  a supervisor starts writing service logs as a *different user* than the one
+  running pytest (AccessDenied fails closed, so those files return to the
+  guard's scope and the suite would fail again).
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

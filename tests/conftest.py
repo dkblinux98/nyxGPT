@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import logging
+import os
 import socket
 from configparser import ConfigParser
 from pathlib import Path
 
 import pytest
+from log_guard import externally_held_log_files
 
 from nyxgpt.config import load_config
 from nyxgpt.logging import configure_logging, get_log_dir
@@ -150,6 +152,7 @@ def _isolate_test_log_dir(tmp_path_factory, _ensure_test_config):
         }
 
     before = _snapshot()
+    external_before = externally_held_log_files(prod_log_dir)
 
     tmp_log_dir = tmp_path_factory.mktemp("nyxgpt-test-logs")
     redirected_cfg = ConfigParser()
@@ -175,7 +178,14 @@ def _isolate_test_log_dir(tmp_path_factory, _ensure_test_config):
     backup_path.unlink(missing_ok=True)
 
     after = _snapshot()
-    changed = sorted(p for p in after if before.get(p) != after.get(p))
+
+    # Union the holders seen at both ends of the session, so a service that was
+    # started or stopped mid-run is still attributed to its supervisor.
+    external = external_before | externally_held_log_files(prod_log_dir)
+
+    changed = sorted(
+        p for p in after if before.get(p) != after.get(p) and os.path.realpath(p) not in external
+    )
     assert not changed, (
         f"pytest run wrote to the production log directory {prod_log_dir}: "
         f"{changed} -- tests must never write to the real log dir (see #3443)"
@@ -302,6 +312,44 @@ def cassandra_test_setup():
 
     if not _can_connect(host, port, timeout=2.0):
         pytest.skip(f"Cassandra not reachable at {host}:{port}")
+
+    yield
+
+
+@pytest.fixture(scope="session")
+def embedding_backend_available():
+    """Fixture for tests that ingest documents and so need real embeddings.
+
+    Skips the test if the embedding backend cannot actually produce a vector.
+
+    Reachability is not usability: `ollama serve` accepts connections on 11434
+    as soon as it is up, but `/api/embed` answers `501 This server does not
+    support embeddings` unless an embedding-capable model is loaded -- which is
+    the normal state on a machine running the stack for chat. A test that
+    treats "the port is open" as "embeddings work" fails there for a reason
+    that has nothing to do with the code under test, so the probe issues the
+    real call once per session and skips on anything short of a usable vector.
+
+    The probe posts directly rather than going through `embed_text`, to avoid
+    both the auto-pull of a multi-gigabyte model (`_pull_embedding_model`) and
+    polluting the embedding cache as a side effect of a availability check.
+    """
+    from nyxgpt.rag.embeddings import EmbeddingError, _embedding_cfg, _post_json
+
+    try:
+        ecfg = _embedding_cfg()
+        data = _post_json(
+            f"{ecfg.base_url}/api/embed",
+            {"model": ecfg.model, "input": ["probe"]},
+            timeout=ecfg.timeout,
+        )
+    except EmbeddingError as exc:
+        pytest.skip(f"Embedding backend unusable: {exc}")
+    except Exception as exc:  # noqa: BLE001 - any failure means "cannot embed"
+        pytest.skip(f"Embedding backend unusable: {exc}")
+
+    if not (data.get("embeddings") or data.get("embedding")):
+        pytest.skip(f"Embedding backend returned no vector, got keys: {sorted(data)}")
 
     yield
 
