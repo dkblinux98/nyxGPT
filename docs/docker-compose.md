@@ -71,11 +71,15 @@ break the stack with nothing in git explaining the change. First-party images
 built from this repo (`nyxgpt-api`, `nyxgpt-web`) are out of scope — their
 version is whatever commit they're built from.
 
-`ollama` and `cassandra` also run in [Terraform](terraform.md) and (Cassandra
-only) via `nyxgpt ops` (`CASSANDRA_IMAGE` in `src/nyxgpt/ops.py`) — each of
-those three definitions carries a comment pointing at the other two, and all
-three must be bumped together so the pinned version never diverges between
-deployment paths.
+`ollama` and `cassandra` also run in [Terraform](terraform.md), in the
+[Kubernetes](kubernetes.md#data-and-llm-tier) deployment
+(`k8s/statefulset-ollama.yaml`, `k8s/statefulset-cassandra.yaml`, #3786) and
+— Cassandra only — via `nyxgpt ops` (`CASSANDRA_IMAGE` in
+`src/nyxgpt/ops.py`). Each definition carries a comment pointing at the
+others, and they must all be bumped together so the pinned version never
+diverges between deployment paths;
+`tests/unit/test_k8s_manifests.py::test_data_tier_image_pins_match_the_other_deployment_modes`
+fails the build if the Kubernetes manifests drift from the rest.
 
 To bump a pinned version: pick the new tag, update it in every file listed
 above for that image (cross-reference comments call out the other files),

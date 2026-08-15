@@ -1596,7 +1596,8 @@ def _add_install_arguments(parser: argparse.ArgumentParser) -> None:
         "--kubernetes",
         action="store_true",
         help=(
-            "Deploy nyxgpt-api to a local Kubernetes cluster instead of native/Homebrew "
+            "Deploy the full stack (api, web, Cassandra, Ollama) to a local Kubernetes "
+            "cluster instead of native/Homebrew "
             "reconciliation -- requires --local. Uses an existing reachable cluster if "
             "kubectl is already configured, otherwise provisions a local kind cluster"
         ),

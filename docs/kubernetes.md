@@ -7,19 +7,17 @@ nyxGPT on your own workstation, in line with the project's local-first
 [VISION.md](../product_management/VISION.md) — it is not a guide for deploying to a cloud
 provider.
 
-Scope: this deploys the FastAPI backend (`nyxgpt-api`), the web UI
-(`nyxgpt-web`) as of #3419, and the observability tier -- Prometheus,
-Grafana, Loki + promtail, the OTel collector, Jaeger and GlitchTip -- as
-in-cluster workloads (#3787, see [Observability in the
-cluster](#observability-in-the-cluster)). Ollama keeps running on the host (as it already
-does today) -- see [Ollama canary feasibility](#ollama-canary-feasibility)
-for why it isn't containerized here -- and Cassandra/RAG stay disabled
-unless you point the manifests at your own Cassandra instance. A bundled
-Cassandra StatefulSet is not part of this deployment (explicitly out of
-scope, see [Canary Deployment](#canary-deployment)) — see [ops.md](ops.md) /
-`nyxgpt ops` for running the full local stack including Cassandra, or
-[docker-compose.md](docker-compose.md) for one-command bring-up of every
-component.
+Scope: this deploys a **self-contained, chattable stack** — the FastAPI
+backend (`nyxgpt-api`), the web UI (`nyxgpt-web`), and the data/LLM tier
+they need: an in-cluster **Cassandra** holding the chat sessions every api
+replica shares, and an in-cluster **Ollama** that answers them, pre-loaded
+with the configured default model (#3786). Nothing on the host is required
+once the cluster is up, and nothing has to be pointed at your own database
+by hand. See [Data and LLM tier](#data-and-llm-tier) below. The
+observability tier — Prometheus, Grafana, Loki + promtail, the OTel
+collector, Jaeger and GlitchTip — is deployed as in-cluster workloads too
+(#3787), so the SRE surface works in this mode as well; see [Observability
+in the cluster](#observability-in-the-cluster).
 
 Both `nyxgpt-api` and `nyxgpt-web` are deployed as **stable/canary pairs**
 (`nyxgpt-api-stable`/`nyxgpt-api-canary`, `nyxgpt-web-stable`/
@@ -80,8 +78,11 @@ Desktop's built-in cluster shares the host cache already), bootstraps
 `k8s/secret.yaml` from the example (prompting for the API key interactively,
 or pass `--api-key` — the value is never committed), applies the
 kustomization (which includes both the api and web stable/canary pairs, see
-[Canary Deployment](#canary-deployment)), and snapshots Pod/Service health
-for both.
+[Canary Deployment](#canary-deployment), plus the [data and LLM
+tier](#data-and-llm-tier)), waits for Cassandra and Ollama to report Ready --
+which for Ollama includes the first pull of the default model, so the command
+returns only when a chat can actually be answered -- and snapshots
+Pod/Service health for all of them.
 
 Each image build mirrors the Homebrew reinstall-if-needed behavior (see
 [ops.md](ops.md)): it fingerprints the app source that image is built from
@@ -190,7 +191,9 @@ kubectl apply -k k8s/
 
 This creates the `nyxgpt` namespace, the ConfigMap, Secret, RBAC
 (`k8s/rbac.yaml` — a `nyxgpt-api` ServiceAccount and a Role/RoleBinding
-scoped to just the Deployment/Service operations below), the
+scoped to just the Deployment/Service operations below), the `cassandra` and
+`ollama` StatefulSets and Services that make up the [data and LLM
+tier](#data-and-llm-tier), the
 `nyxgpt-api-stable` Deployment (4 replicas by default) and
 `nyxgpt-api-canary` Deployment (0 replicas — idle until a rollout starts),
 the same stable/canary pair for `nyxgpt-web` (`k8s/deployment-web-stable.yaml`
@@ -330,19 +333,59 @@ Notes:
   every UI answers, Grafana has its four provisioned datasources and the SRE
   Home dashboard, and promtail's logs actually reach Loki.
 
-## Reaching Ollama (and Cassandra) from inside the cluster
+## Data and LLM tier
 
-`k8s/configmap.yaml` defaults `ollama.base_url` to
-`http://host.docker.internal:11434`, which resolves on Docker Desktop-backed
-clusters (kind/minikube using the `docker` driver on macOS/Windows). On Linux
-this hostname does not resolve by default; either:
+Both live **inside the cluster** (#3786), so the deployment is complete on
+its own: no host Ollama, no bring-your-own Cassandra, no `hostAliases`
+pointing back at the workstation. `nyxgpt ops install --kubernetes --local`
+stops the host's own services in this mode, so anything that depended on
+them could not work anyway — the previous configuration pointed the api at
+`host.docker.internal:11434`, which does not resolve from a Pod on a Linux
+cluster and pointed at a stopped Ollama everywhere else. The result was a
+stack whose Pods all reported Running and which could not answer a single
+message.
 
-- Run Ollama itself in the cluster and point `base_url` at its Service, or
-- Add a `hostAliases` entry to `k8s/deployment-stable.yaml`/
-  `k8s/deployment-canary.yaml` mapping a hostname to your host's IP, or
-- Use `minikube ssh -- ...` / the driver's documented host-access method.
+| Component | Manifest | Service | Storage |
+| --- | --- | --- | --- |
+| Cassandra | `k8s/statefulset-cassandra.yaml` | `cassandra:9042` | 10Gi PVC (`data-cassandra-0`) |
+| Ollama | `k8s/statefulset-ollama.yaml` | `ollama:11434` | 20Gi PVC (`models-ollama-0`) |
 
-The same applies to `rag.cassandra_hosts` if you enable RAG.
+- **Both are single-replica StatefulSets.** Cassandra's data directory and
+  Ollama's model blob store are each owned by exactly one process; neither
+  may be shared between two Pods (the same storage argument that rules out
+  an Ollama canary pair — see [Ollama canary
+  feasibility](#ollama-canary-feasibility)).
+- **Readiness means usable, not merely listening.** Cassandra's probe runs a
+  CQL query, and Ollama's probe checks that the configured
+  `[nyxgpt] default_model` is actually present — its `postStart` hook pulls
+  that model on first start, so a fresh install can answer a chat without
+  anyone pulling a model by hand. Neither Service gets endpoints before
+  that's true, and `nyxgpt ops install --kubernetes --local` waits for both
+  Pods to be Ready before it reports the stack healthy.
+- **Sessions are shared.** `k8s/configmap.yaml` sets
+  `[nyxgpt] session_backend = cassandra`, so all four api replicas read and
+  write one session list. With the file backend each replica keeps its own,
+  and consecutive requests from one browser see different sessions (see
+  [session-storage.md](session-storage.md)).
+- **RAG** is off by default (matching the native/Compose default in
+  `example.config.ini`) because it only helps once you have ingested
+  documents — but `[rag] cassandra_hosts` already points at the in-cluster
+  Cassandra, so enabling `enable_chat_context` is a one-line ConfigMap
+  change.
+- **The PVCs live in the cluster.** `nyxgpt ops down --kubernetes` deletes
+  the `nyxgpt` namespace — and, when it provisioned the cluster itself, the
+  `nyxgpt-local` kind cluster too — which discards those volumes along with
+  the chats in them. Unlike the native/Compose/Terraform modes, which share
+  `~/.nyxGPT/volumes/`, Kubernetes-mode data does not survive a teardown;
+  export anything you want to keep first (`/api/v1/sessions/{name}/export`).
+
+Both hostnames (`cassandra`, `ollama`) are the same ones the Compose and
+Terraform deployments use for these components, so the api's config is
+identical across every containerized mode.
+
+To point the deployment at an *external* Cassandra or Ollama instead, change
+`[rag] cassandra_hosts` / `[ollama] base_url` in `k8s/configmap.yaml` and
+drop the corresponding manifest from `k8s/kustomization.yaml`.
 
 ## Infrastructure Status card (#3468)
 
@@ -434,12 +477,15 @@ design rather than by omission. The blocker is storage, not traffic
 splitting:
 
 - **`ollama serve` owns a single model store.** Unlike `nyxgpt-api`/
-  `nyxgpt-web`, which are stateless behind their Deployments (sessions and
-  the vector store are the only state, and neither is shared across
-  replicas today -- see [Scaling behavior](#scaling-behavior)), an Ollama
-  instance's pulled models live in its own local blob directory that it
-  both reads and writes. There is no "read replica" concept for Ollama the
-  way there is for a stateless HTTP service.
+  `nyxgpt-web`, which are stateless behind their Deployments (sessions live
+  in the shared in-cluster Cassandra, and the vector store is the only
+  per-pod state left -- see [Scaling behavior](#scaling-behavior)), an
+  Ollama instance's pulled models live in its own local blob directory that
+  it both reads and writes. There is no "read replica" concept for Ollama
+  the way there is for a stateless HTTP service. This is an argument against
+  a stable/canary *pair*, not against running Ollama in the cluster at all:
+  the deployment runs exactly one Ollama StatefulSet (see [Data and LLM
+  tier](#data-and-llm-tier)), which has no concurrent-writer problem.
 - **A stable/canary pair needs the pair to run genuinely different
   versions** (that's the entire point -- see [The deploy -> gate -> promote
   cycle](#the-deploy---gate---promote-cycle)). For Ollama that means either:
@@ -465,8 +511,9 @@ splitting:
   silently no-opping.
 - This isn't necessarily permanent: if Ollama gains a supported multi-instance
   or shared-storage story (e.g. a documented safe-concurrent-pull mode, or a
-  read-only replica mode), revisit this analysis. Until then, Ollama keeps
-  running on the host outside this deployment, as already documented above.
+  read-only replica mode), revisit this analysis. Until then, the deployment
+  runs exactly one Ollama StatefulSet (see [Data and LLM
+  tier](#data-and-llm-tier)) rather than a stable/canary pair.
 
 ### The deploy -> gate -> promote cycle
 
@@ -647,11 +694,13 @@ changing steady-state replica count yet, so if you need more capacity today,
 raising it is a manual `kubectl` escape hatch pending a wrapper (tracked as
 follow-up work), not a first-class operation -- prefer adjusting `[canary]
 total_replicas` and letting the next rollout apply it where that's
-sufficient. Because `nyxgpt-api` sessions and the vector store default to
-in-container paths (`/root/.nyxGPT/...`), state is **not** shared across
-`api` replicas or persisted across restarts (`nyxgpt-web` itself is fully
-stateless -- it has no server-side storage of its own). If you need shared/
-persisted `api` state, add a `PersistentVolumeClaim`, mount it at
-`/root/.nyxGPT`, and switch the Deployment's access pattern accordingly (not
-included here, since this deployment targets a single-user local workflow
-rather than multi-replica state sharing).
+sufficient. Chat **sessions** are shared across every `api` replica and
+survive Pod restarts: they live in the in-cluster Cassandra
+(`[nyxgpt] session_backend = cassandra`, #3786 -- see [Data and LLM
+tier](#data-and-llm-tier)). The **vector store** still defaults to an
+in-container path (`/root/.nyxGPT/vectorstore`), so it is per-Pod and not
+persisted across restarts (`nyxgpt-web` itself is fully stateless -- it has
+no server-side storage of its own). If you need a shared/persisted vector
+store, add a `PersistentVolumeClaim`, mount it at `/root/.nyxGPT`, and
+switch the Deployment's access pattern accordingly (not included here, since
+this deployment targets a single-user local workflow).

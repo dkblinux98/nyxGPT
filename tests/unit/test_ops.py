@@ -11754,6 +11754,80 @@ def test_k8s_stack_health_reports_web_service_alongside_api(monkeypatch):
     assert any(not r.ok and "Service nyxgpt-web not found" in r.message for r in results)
 
 
+@pytest.mark.unit
+def test_k8s_stack_health_checks_data_and_llm_services(monkeypatch):
+    """#3786: api/web Services present while `cassandra`/`ollama` are missing is
+    exactly the shape of the reported failure (Pods Running, no chat possible),
+    so the snapshot must report each of the four separately."""
+    checked: list[str] = []
+
+    def fake_run(cmd, check=True, **_k):
+        if cmd[4] == "pods":
+            return CP(returncode=0, stdout="nyxgpt-api-stable-abc=Running;")
+        if cmd[4] == "svc":
+            checked.append(cmd[5])
+            return CP(returncode=1) if cmd[5] in ("cassandra", "ollama") else CP(returncode=0)
+        raise AssertionError(f"unexpected: {cmd}")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    results = ops._k8s_stack_health()
+    assert checked == ["nyxgpt-api", "nyxgpt-web", "cassandra", "ollama"]
+    assert any(not r.ok and "Service cassandra not found" in r.message for r in results)
+    assert any(not r.ok and "Service ollama not found" in r.message for r in results)
+
+
+# --- Kubernetes: _wait_for_k8s_data_tier (#3786) ---
+
+
+@pytest.mark.unit
+def test_wait_for_k8s_data_tier_waits_for_both_statefulsets(monkeypatch):
+    """The install must not report a healthy stack while Cassandra is still
+    bootstrapping and Ollama is still pulling the default model."""
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, check=True, **_k):
+        calls.append(cmd)
+        return CP(returncode=0, stdout="rolled out")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    results = ops._wait_for_k8s_data_tier()
+    assert [c[5] for c in calls] == ["statefulset/cassandra", "statefulset/ollama"]
+    assert all(c[1] == "-n" and c[2] == ops.K8S_NAMESPACE for c in calls)
+    assert all(c[3:5] == ["rollout", "status"] for c in calls)
+    assert all(any(a.startswith("--timeout=") for a in c) for c in calls)
+    assert all(r.ok for r in results)
+
+
+@pytest.mark.unit
+def test_wait_for_k8s_data_tier_timeout_is_a_failure(monkeypatch):
+    """A data tier that never came up cannot serve chat -- reporting that as a
+    warning (or not at all) is what produced #3786."""
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, check=True, **_k: CP(returncode=1, stderr="timed out")
+    )
+    results = ops._wait_for_k8s_data_tier()
+    assert len(results) == 1  # stops at the first failing workload
+    assert results[0].ok is False
+    assert "Cassandra" in results[0].message
+    assert "nyxgpt ops status" in (results[0].details or "")
+
+
+@pytest.mark.unit
+def test_wait_for_k8s_data_tier_reports_the_failing_workload(monkeypatch):
+    """Ollama failing must name Ollama, not the tier in general."""
+
+    def fake_run(cmd, check=True, **_k):
+        if cmd[5] == "statefulset/ollama":
+            return CP(returncode=1, stderr="timed out")
+        return CP(returncode=0, stdout="rolled out")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    results = ops._wait_for_k8s_data_tier()
+    assert results[0].ok is True
+    assert results[-1].ok is False
+    assert "Ollama" in results[-1].message
+
+
 # --- Kubernetes: _install_kubernetes / _down_kubernetes ---
 
 
@@ -11787,6 +11861,7 @@ def test_install_kubernetes_success_runs_all_steps(monkeypatch, capsys):
         patch.object(ops, "_build_and_load_k8s_web_image", return_value=ok) as bw,
         patch.object(ops, "_ensure_k8s_secret", return_value=ok) as s,
         patch.object(ops, "_kubectl_apply_kustomization", return_value=ok) as a,
+        patch.object(ops, "_wait_for_k8s_data_tier", return_value=ok) as w,
         patch.object(ops, "_k8s_stack_health", return_value=ok) as h,
         # The observability layer this mode now deploys too (#3787).
         patch.object(ops, "_sync_packaged_resources", return_value=ok),
@@ -11801,6 +11876,7 @@ def test_install_kubernetes_success_runs_all_steps(monkeypatch, capsys):
     bw.assert_called_once()
     s.assert_called_once_with("k")
     a.assert_called_once()
+    w.assert_called_once()
     h.assert_called_once()
     assert "[OK]" in capsys.readouterr().out
 
@@ -11808,7 +11884,9 @@ def test_install_kubernetes_success_runs_all_steps(monkeypatch, capsys):
 @pytest.mark.unit
 def test_install_kubernetes_clears_intentional_stop_markers_for_api_and_web(monkeypatch, capsys):
     """Kubernetes manages both `api` and `web` (#3419) -- both intentional-stop
-    markers must be cleared, and only those two (no manifest for ollama/cassandra)."""
+    markers must be cleared, and only those two: the markers track the *native*
+    host services, and the Kubernetes deployment's Cassandra/Ollama run inside
+    the cluster (#3786), not as host services this install ever started."""
     args = SimpleNamespace(local=True, cloud=False, api_key="k")
     monkeypatch.setattr(ops, "_refuse_port_collision", lambda components: None)
     ok = [ops.OpsResult(True, "ok")]
@@ -11818,6 +11896,7 @@ def test_install_kubernetes_clears_intentional_stop_markers_for_api_and_web(monk
         patch.object(ops, "_build_and_load_k8s_web_image", return_value=ok),
         patch.object(ops, "_ensure_k8s_secret", return_value=ok),
         patch.object(ops, "_kubectl_apply_kustomization", return_value=ok),
+        patch.object(ops, "_wait_for_k8s_data_tier", return_value=ok),
         patch.object(ops, "_k8s_stack_health", return_value=ok),
         patch.object(ops, "_sync_packaged_resources", return_value=ok),
         patch.object(ops, "_apply_k8s_observability", return_value=ok),
@@ -11843,6 +11922,7 @@ def test_install_kubernetes_stops_pipeline_on_step_failure(monkeypatch):
         patch.object(ops, "_build_and_load_k8s_web_image") as bw,
         patch.object(ops, "_ensure_k8s_secret") as s,
         patch.object(ops, "_kubectl_apply_kustomization") as a,
+        patch.object(ops, "_wait_for_k8s_data_tier") as w,
         patch.object(ops, "_k8s_stack_health") as h,
     ):
         rc = ops._install_kubernetes(args)
@@ -11851,6 +11931,7 @@ def test_install_kubernetes_stops_pipeline_on_step_failure(monkeypatch):
     bw.assert_not_called()
     s.assert_not_called()
     a.assert_not_called()
+    w.assert_not_called()
     h.assert_not_called()
 
 
@@ -12054,8 +12135,14 @@ def test_install_kubernetes_local_runs_steps_and_returns_results(monkeypatch):
     with (
         patch.object(ops, "_ensure_kubectl_and_cluster", return_value=ok),
         patch.object(ops, "_build_and_load_k8s_image", return_value=ok),
+        # Patched, not left real: these two shell out to `docker`/`kubectl`,
+        # so an unpatched step makes this unit test pass or fail on what the
+        # machine running it happens to have (and on the state of any cluster
+        # it happens to reach).
+        patch.object(ops, "_build_and_load_k8s_web_image", return_value=ok),
         patch.object(ops, "_ensure_k8s_secret", return_value=ok) as s,
         patch.object(ops, "_kubectl_apply_kustomization", return_value=ok),
+        patch.object(ops, "_wait_for_k8s_data_tier", return_value=ok),
         patch.object(ops, "_k8s_stack_health", return_value=ok),
         # The in-cluster observability layer is part of this bring-up now
         # (#3787) -- unpatched, these steps would shell out to kubectl.
