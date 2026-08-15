@@ -548,6 +548,95 @@ are absent here by design (relocated to the annex; IDs are never reused).
   changes the uid it runs as, or a new entrypoint starts the stack without
   going through `_reconcile_grafana_provisioning`.
 
+- **V-017** · 2026-08-15 — A smoke test that satisfies a prerequisite *itself*
+  before invoking the code under test proves nothing about that prerequisite.
+  `scripts/systemd-native-smoke.sh` ran the official Ollama installer before
+  calling `nyxgpt ops install`, so CI never saw that the Linux install step
+  simply stopped with "ollama not found on PATH — install it first: curl … |
+  sh" on a real clean machine, while macOS's twin ran `brew install ollama`
+  for the operator. Two structural lessons, both now encoded: a smoke script
+  must not pre-satisfy what it verifies (the pre-install is gone; the script
+  asserts ops installed it, and hard-fails under `CI` if Ollama is already
+  present), and a smoke script must exercise **the commands the acceptance
+  names** — this one drove `ops install`/`ops down` and never `nyxgpt up`,
+  `nyxgpt down`, `ops status` or `ops doctor`, the four #3508's acceptance is
+  written in terms of.
+  Method: reproduced 2026-08-15 on Linux from the published **rc11 wheel with
+  no repo checkout** (`pip install nyxgpt==3.0.0rc11` into a clean venv) —
+  `nyxgpt up` reported `[FAIL] ollama not found on PATH`. After the fix, the
+  same step ran the installer, `_takeover_system_ollama_service` disabled the
+  system unit the installer had just enabled, `nyxgpt-ollama.service` came up
+  active and served HTTP 200 on 11434. `scripts/ollama-bootstrap-smoke.py`
+  injects the pre-fix behaviour and was executed to confirm it fails without
+  the bootstrap, so the green run is not luck (#3508, #3775). Re-confirmed in
+  CI rather than only off-CI: `linux-native-smoke` run 31907416812 on
+  `49bbb94f` is green across all its jobs, with the injection step firing
+  first — the standing guard for this entry.
+  Re-verify when: Ollama changes its Linux distribution channel, or the
+  install-step ordering in `_install_native_ollama_systemd` changes (the
+  install must stay *before* the port takeover — the installer is what
+  creates the conflicting system unit).
+
+- **V-018** · 2026-08-15 — The pytest suite could not pass on a machine that
+  was *running the stack it tests*, which is now the normal state of a
+  developer machine on Linux as well as macOS (#3508). Two independent
+  environmental couplings, both in `tests/`, neither in product code:
+  the #3443 production-log-dir guard failed the session because the running
+  `nyxgpt-api`/`nyxgpt-web`/`cassandra`/`ollama` supervisors append to
+  `~/.nyxGPT/logs` throughout the run, and the RAG ingest tests treated
+  "Cassandra's port is open" as "the stack is usable" and then hit a live
+  `ollama serve` that answers `501 This server does not support embeddings`
+  because the loaded model is chat-only. Ownership is the discriminator for
+  the first (a file an *external* process holds open was not written by the
+  code under test — `tests/log_guard.py`); probing the real `/api/embed` call
+  is the discriminator for the second (reachability is not usability).
+  Method: reproduced 2026-08-15 on a Linux runner with the native stack up —
+  `pytest tests/unit/` gave 6 failed + 1 error; after the fix, 5073 passed,
+  6 skipped, 0 failed. Both properties proven by execution rather than
+  inspection: a fault-injected test that writes to `~/.nyxGPT/logs` still
+  fails the guard, and `externally_held_log_files` was observed attributing
+  all 9 live service logs to their supervisors. An A/B run of
+  `tests/integration/test_rag_playground.py` and `test_request_id_streaming.py`
+  with the change stashed and applied gave the same 5 pre-existing
+  environmental failures (no `llama3.1:8b`, no embedding model) and dropped
+  the guard error, confirming the fix is not masking product failures.
+  Re-verify when: the guard's attribution moves off `psutil.open_files()`, or
+  a supervisor starts writing service logs as a *different user* than the one
+  running pytest (AccessDenied fails closed, so those files return to the
+  guard's scope and the suite would fail again).
+
+- **V-019** · 2026-08-15 — `nyxgpt up --skip-observability` could **never**
+  return 0. The flag means "don't start the Grafana/Loki/Jaeger/GlitchTip
+  Compose profiles"; it deliberately leaves their config.ini feature flags
+  on, so self-heal keeps reporting those services `desired=True,
+  state="absent"` — which is the correct answer to "what does the operator
+  want running". `ops._wait_for_stack_healthy` knew nothing about the flag,
+  so `up` waited on containers the same command had just chosen not to
+  start, then exited 2 on a completely healthy stack. The wait now excludes
+  `self_heal.observability_services()` when the flag is set, and the timeout
+  message names what is still pending instead of only saying "not every
+  component" (#3508).
+  Two structural lessons, and the reason this sat undiscovered: (1) a flag
+  that suppresses an *action* must also be honoured by anything that later
+  asserts on that action's *effect*, or the two halves of one command
+  disagree; (2) an alias is not covered by testing what it wraps —
+  `systemd-native-smoke.sh` drove `nyxgpt ops install` for months and was
+  green throughout, because `install()` has no health-wait. The defect
+  existed the whole time and surfaced within one CI run of the smoke script
+  being switched to `nyxgpt up` (**V-017**), i.e. to the command the
+  acceptance is actually written in terms of.
+  Method: observed on the #3798 `linux-native-smoke` run for `f6918b8d` —
+  every systemd unit `active`, `ops status` clean, `jaeger`/`otel-collector`
+  reported absent, and `up` still burned its full 300s timeout and exited 2.
+  Confirmed pre-existing rather than merge-induced by reading
+  `_wait_for_stack_healthy` at the merge base and on `v3.0.0`: identical in
+  both. Standing guard: the `linux-native-smoke` job, which now fails if
+  `nyxgpt up` cannot reach healthy.
+  Re-verify when: a new flag suppresses part of the install (it will need
+  the same treatment in the wait), or `--skip-observability` starts clearing
+  the config.ini flags — at which point the exclusion becomes redundant
+  rather than wrong.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

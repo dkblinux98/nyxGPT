@@ -33,7 +33,7 @@ def test_compute_document_hash():
 
 
 @pytest.mark.integration
-def test_document_ingestion_with_hash(cassandra_test_setup):
+def test_document_ingestion_with_hash(cassandra_test_setup, embedding_backend_available):
     """Test document ingestion includes hash tracking."""
     doc_id = _unique_doc_id("test-doc-hash")
     text = "This is a test document for hash tracking."
@@ -52,7 +52,7 @@ def test_document_ingestion_with_hash(cassandra_test_setup):
 
 
 @pytest.mark.integration
-def test_document_update_detection_unchanged(cassandra_test_setup):
+def test_document_update_detection_unchanged(cassandra_test_setup, embedding_backend_available):
     """Test that unchanged documents are skipped on re-ingestion."""
     doc_id = _unique_doc_id("test-doc-unchanged")
     text = "This document will not change."
@@ -80,7 +80,7 @@ def test_document_update_detection_unchanged(cassandra_test_setup):
 
 
 @pytest.mark.integration
-def test_document_update_detection_changed(cassandra_test_setup):
+def test_document_update_detection_changed(cassandra_test_setup, embedding_backend_available):
     """Test that changed documents are re-ingested."""
     doc_id = _unique_doc_id("test-doc-changed")
     text1 = "This is the original text."
@@ -110,7 +110,7 @@ def test_document_update_detection_changed(cassandra_test_setup):
 
 
 @pytest.mark.integration
-def test_document_update_force_reindex(cassandra_test_setup):
+def test_document_update_force_reindex(cassandra_test_setup, embedding_backend_available):
     """Test force_update flag bypasses hash check."""
     doc_id = _unique_doc_id("test-doc-force")
     text = "This document will be force re-indexed."
@@ -139,7 +139,7 @@ def test_document_update_force_reindex(cassandra_test_setup):
 
 
 @pytest.mark.integration
-def test_document_info_retrieval(cassandra_test_setup):
+def test_document_info_retrieval(cassandra_test_setup, embedding_backend_available):
     """Test retrieving document version information."""
     doc_id = _unique_doc_id("test-doc-info")
     text = "This document has version info."
@@ -179,7 +179,7 @@ def test_document_info_not_found(cassandra_test_setup):
 
 
 @pytest.mark.integration
-def test_stale_chunks_deletion(cassandra_test_setup):
+def test_stale_chunks_deletion(cassandra_test_setup, embedding_backend_available):
     """Test that old chunks are deleted when document is updated."""
     doc_id = _unique_doc_id("test-doc-stale-chunks")
     text1 = "Short text."

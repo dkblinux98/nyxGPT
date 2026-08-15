@@ -1736,6 +1736,43 @@ def test_enabled_observability_profiles_error_tracking_maps_to_errors_profile(mo
 
 
 @pytest.mark.unit
+def test_observability_services_resolves_enabled_profiles(monkeypatch):
+    """`observability_services` is the public composition of the enabled
+    profiles and their Compose services -- what `ops.up(--skip-observability)`
+    excludes from its health-wait (#3508)."""
+    monkeypatch.setattr(self_heal, "_enabled_observability_profiles", lambda: {"tracing"})
+    monkeypatch.setattr(
+        self_heal,
+        "_run",
+        lambda cmd, timeout=30.0, **_k: CP(stdout="jaeger\notel-collector\napi\n"),
+    )
+
+    # `api` is a core app service and must not be excludable as observability.
+    assert self_heal.observability_services() == {"jaeger", "otel-collector"}
+
+
+@pytest.mark.unit
+def test_observability_services_empty_when_no_profile_enabled(monkeypatch):
+    """Nothing enabled -> nothing to exclude, and no Docker call to make it."""
+    monkeypatch.setattr(self_heal, "_enabled_observability_profiles", lambda: set())
+    run_mock = MagicMock()
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    assert self_heal.observability_services() == set()
+    run_mock.assert_not_called()
+
+
+@pytest.mark.unit
+def test_observability_services_empty_when_docker_missing(monkeypatch):
+    """Can't tell -> exclude nothing, so the caller waits on those components
+    rather than silently ignoring what it couldn't account for."""
+    monkeypatch.setattr(self_heal, "_enabled_observability_profiles", lambda: {"monitoring"})
+    monkeypatch.setattr(self_heal, "_which", lambda _: None)
+
+    assert self_heal.observability_services() == set()
+
+
+@pytest.mark.unit
 def test_desired_compose_services_no_profiles_skips_docker_call(monkeypatch):
     run_mock = MagicMock()
     monkeypatch.setattr(self_heal, "_run", run_mock)

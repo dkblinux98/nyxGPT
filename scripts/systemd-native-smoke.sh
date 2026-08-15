@@ -72,9 +72,26 @@ if ! systemctl --user status >/dev/null 2>&1; then
   systemctl --user status >/dev/null 2>&1 || fail "systemctl --user still unreachable after enabling lingering"
 fi
 
-if ! command -v ollama >/dev/null 2>&1; then
-  log "Installing Ollama (official Linux installer)"
-  curl -fsSL https://ollama.com/install.sh | sh
+# Deliberately NOT pre-installing Ollama (#3508 acceptance). This script used
+# to run the official installer here, before `nyxgpt ops install` -- which
+# pre-satisfied the one prerequisite a real clean Linux machine does not have,
+# so CI could never see that the install step simply stopped and told the
+# operator to run that installer themselves. Installing Ollama is now ops's
+# job (`_ensure_ollama_installed`), the same way `brew install ollama` is on
+# macOS, and this script asserts it happened rather than doing it.
+#
+# On a CI runner this is a hard requirement: a hosted runner that shipped
+# Ollama would turn the assertion below into a tautology, and a green run
+# would stop being evidence. On a developer's own machine it is only a
+# warning -- they legitimately may have Ollama already, and the rest of the
+# script (units, health, status/doctor, teardown) is still worth running.
+OLLAMA_PREINSTALLED=0
+if command -v ollama >/dev/null 2>&1; then
+  if [[ -n "${CI:-}" ]]; then
+    fail "ollama is already on PATH -- in CI this smoke test must start from a machine without it, since what it verifies is that \`nyxgpt up\` installs it"
+  fi
+  OLLAMA_PREINSTALLED=1
+  log "WARNING: ollama is already on PATH, so this run cannot verify that \`nyxgpt up\` installs it. Every other check still applies."
 fi
 
 if [[ ! -f "$HOME/.nyxGPT/config.ini" ]]; then
@@ -85,8 +102,22 @@ if [[ ! -f "$HOME/.nyxGPT/config.ini" ]]; then
   log "Seeded ~/.nyxGPT/config.ini from example.config.ini"
 fi
 
-log "nyxgpt ops install ${INSTALL_FLAGS[*]-} --skip-observability"
-nyxgpt ops install ${INSTALL_FLAGS[@]+"${INSTALL_FLAGS[@]}"} --skip-observability
+# `nyxgpt up`, not `nyxgpt ops install`: the four commands the owner named in
+# #3508's acceptance are `up`, `down`, `ops status` and `ops doctor`, and this
+# script previously exercised none of them -- it drove `ops install`/`ops
+# down`, so the aliases a Linux operator actually types were untested. `up` is
+# a strict superset (it runs the same install, then waits for health).
+# INSTALL_FLAGS (--dev, #3789) passes straight through: `up` forwards every
+# mode flag to the same install.
+log "nyxgpt up ${INSTALL_FLAGS[*]-} --skip-observability"
+nyxgpt up ${INSTALL_FLAGS[@]+"${INSTALL_FLAGS[@]}"} --skip-observability --timeout 300
+
+# The install had to have installed Ollama itself -- the assertion the removed
+# pre-install above used to make impossible.
+if [[ "$OLLAMA_PREINSTALLED" -eq 0 ]]; then
+  command -v ollama >/dev/null 2>&1 || fail "nyxgpt up did not install Ollama"
+  log "ollama installed by nyxgpt up -> $(command -v ollama)"
+fi
 
 # Both checks below wait with a bounded retry window instead of probing once
 # immediately: a unit freshly (re)started by `nyxgpt ops install` -- and
@@ -144,6 +175,52 @@ check() { # <label> <url> <expected>
 check "api    /health" http://127.0.0.1:8000/health 200 || { echo "::error::api    /health expected 200"; fail_count=1; }
 check "web    /"       http://127.0.0.1:3000/ 200       || { echo "::error::web    / expected 200"; fail_count=1; }
 check "ollama /"       http://127.0.0.1:11434/ 200      || { echo "::error::ollama / expected 200"; fail_count=1; }
+
+# The other two commands #3508's acceptance names. Both are read-only, so
+# they are asserted on a stack that is up: `ops status` has to report the
+# native components as running (a Linux `status` that printed macOS's brew
+# view, or nothing, would still exit 0 -- so grep the output, don't just
+# trust the exit code), and `ops doctor` has to find a healthy install clean.
+log "nyxgpt ops status"
+status_out=$(nyxgpt ops status 2>&1) || { echo "::error::nyxgpt ops status exited non-zero"; fail_count=1; }
+echo "$status_out"
+for line in "native  api: started" "native  web: started" "native  ollama: started"; do
+  grep -qF "$line" <<<"$status_out" || {
+    echo "::error::nyxgpt ops status did not report '$line'"; fail_count=1;
+  }
+done
+grep -qF "systemd --user services:" <<<"$status_out" || {
+  echo "::error::nyxgpt ops status printed no systemd section -- OS dispatch is wrong"; fail_count=1;
+}
+
+# `doctor` inspects the machine, and this install was deliberately partial:
+# `--skip-observability` skips both the Compose profiles and the step that
+# prepares their volume dirs, while leaving the feature flags on in
+# config.ini. So doctor correctly reports the tracing endpoint with nothing
+# listening and the unprepared prometheus/grafana/loki dirs -- expected
+# consequences of the flag, not install defects.
+#
+# Asserting "doctor is silent" here would therefore be asserting something
+# false, and the two obvious ways out are both worse: disabling observability
+# in the seeded config would make `observability_services()` empty and quietly
+# turn the `nyxgpt up --skip-observability` health-wait coverage into a
+# tautology (the V-017 lesson), and dropping the check would stop testing one
+# of the four commands the acceptance names. Instead: doctor must report
+# nothing *beyond* those consequences, so a real install defect still fails
+# the run.
+OBSERVABILITY_ISSUE_RE='prometheus|grafana|loki|jaeger|otel-collector|glitchtip|[Tt]racing'
+log "nyxgpt ops doctor"
+doctor_out=$(nyxgpt ops doctor 2>&1) || true
+echo "$doctor_out"
+# Issue lines are the "- " bullets doctor prints under its FAIL banner.
+unexpected=$(grep '^- ' <<<"$doctor_out" | grep -Ev "$OBSERVABILITY_ISSUE_RE" || true)
+if [[ -n "$unexpected" ]]; then
+  echo "::error::nyxgpt ops doctor reported non-observability issues on a freshly-installed stack:"
+  echo "$unexpected"
+  fail_count=1
+else
+  log "ops doctor reported no issues outside the deliberately-skipped observability stack"
+fi
 
 # --- Dev mode: prove the running stack IS the checkout, then prove the
 # --- machine switches back to the artifact path cleanly (#3789).
@@ -258,8 +335,15 @@ if [[ "$fail_count" -ne 0 ]]; then
 fi
 
 if [[ "$KEEP_UP" -eq 0 ]]; then
-  log "Tearing down: nyxgpt ops down"
-  nyxgpt ops down || true
+  # `nyxgpt down`, the alias, for the same reason `nyxgpt up` is used above.
+  log "Tearing down: nyxgpt down"
+  nyxgpt down || true
+  for unit in nyxgpt-api nyxgpt-web nyxgpt-ollama; do
+    state=$(systemctl --user is-active "$unit.service" 2>/dev/null || echo "inactive")
+    [[ "$state" == "active" ]] && {
+      echo "::error::$unit is still active after nyxgpt down"; fail_count=1;
+    }
+  done
 else
   log "--keep-up set: leaving services running"
 fi
