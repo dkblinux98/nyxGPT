@@ -1126,6 +1126,136 @@ def test_prometheus_api_scrape_issue_silent_when_prometheus_is_unreachable(tmp_p
     assert ops._prometheus_api_scrape_issue(cfg_path) is None
 
 
+# --- #3509: the pre-#3721 `[api] host` workaround left in place ---
+
+
+def _write_bind_posture_config(
+    cfg_path: Path, api_host: str = "0.0.0.0", monitoring_enabled: bool = True
+) -> None:
+    cfg_path.write_text(
+        f"[api]\nhost = {api_host}\nport = 8000\n"
+        "\n[monitoring]\n"
+        f"enabled = {'true' if monitoring_enabled else 'false'}\n"
+        "prometheus_ui_url = http://localhost:9090\n",
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.unit
+def test_insecure_api_bind_issue_flags_the_leftover_workaround(tmp_path, monkeypatch):
+    """The #3509 acceptance failure's residue: the reporter widened `[api] host`
+    to 0.0.0.0 to make Grafana work before the relay existed. The scrape is now
+    *up*, so _prometheus_api_scrape_issue stays quiet and nothing else notices
+    the API is still published on every interface."""
+    cfg_path = tmp_path / "config.ini"
+    _write_bind_posture_config(cfg_path)
+    monkeypatch.setattr(ops, "_is_linux", lambda: True)
+    monkeypatch.setattr(ops, "_docker_bridge_gateway_ip", lambda: "172.17.0.1")
+
+    issue = ops._insecure_api_bind_issue(cfg_path)
+
+    assert issue is not None
+    assert "0.0.0.0" in issue
+    # Must name the way back, not just the problem.
+    assert "127.0.0.1" in issue
+    assert "nyxgpt ops observability" in issue
+
+
+@pytest.mark.unit
+def test_insecure_api_bind_issue_silent_on_a_loopback_bind(tmp_path, monkeypatch):
+    cfg_path = tmp_path / "config.ini"
+    _write_bind_posture_config(cfg_path, api_host="127.0.0.1")
+    monkeypatch.setattr(ops, "_is_linux", lambda: True)
+    monkeypatch.setattr(ops, "_docker_bridge_gateway_ip", lambda: "172.17.0.1")
+
+    assert ops._insecure_api_bind_issue(cfg_path) is None
+
+
+@pytest.mark.unit
+def test_insecure_api_bind_issue_silent_off_linux(tmp_path, monkeypatch):
+    """Docker Desktop never had the container->host-loopback gap, so a widened
+    bind there is not attributable to this workaround."""
+    cfg_path = tmp_path / "config.ini"
+    _write_bind_posture_config(cfg_path)
+    monkeypatch.setattr(ops, "_is_linux", lambda: False)
+    monkeypatch.setattr(
+        ops,
+        "_docker_bridge_gateway_ip",
+        lambda: pytest.fail("must not probe docker on a non-Linux host"),
+    )
+
+    assert ops._insecure_api_bind_issue(cfg_path) is None
+
+
+@pytest.mark.unit
+def test_insecure_api_bind_issue_silent_when_monitoring_is_disabled(tmp_path, monkeypatch):
+    """Without observability in use the widening can't be blamed on the scrape
+    gap -- doctor must not nag a deliberate, auth-gated LAN bind."""
+    cfg_path = tmp_path / "config.ini"
+    _write_bind_posture_config(cfg_path, monitoring_enabled=False)
+    monkeypatch.setattr(ops, "_is_linux", lambda: True)
+    monkeypatch.setattr(
+        ops,
+        "_docker_bridge_gateway_ip",
+        lambda: pytest.fail("must not probe docker when monitoring is off"),
+    )
+
+    assert ops._insecure_api_bind_issue(cfg_path) is None
+
+
+@pytest.mark.unit
+def test_insecure_api_bind_issue_silent_when_the_relay_could_not_work(tmp_path, monkeypatch):
+    """No resolvable bridge gateway means reverting would trade a bind-posture
+    finding for genuinely empty dashboards. Advising it would be wrong."""
+    cfg_path = tmp_path / "config.ini"
+    _write_bind_posture_config(cfg_path)
+    monkeypatch.setattr(ops, "_is_linux", lambda: True)
+    monkeypatch.setattr(ops, "_docker_bridge_gateway_ip", lambda: None)
+
+    assert ops._insecure_api_bind_issue(cfg_path) is None
+
+
+@pytest.mark.unit
+def test_insecure_api_bind_issue_silent_when_no_config(tmp_path, monkeypatch):
+    monkeypatch.setattr(ops, "_is_linux", lambda: True)
+    assert ops._insecure_api_bind_issue(tmp_path / "missing.ini") is None
+
+
+@pytest.mark.unit
+def test_sync_host_relay_env_explains_how_to_revert_a_widened_bind(tmp_path, monkeypatch):
+    """`Host API relay disabled (... already listens beyond loopback)` read as an
+    approval, so every reconcile silently re-affirmed the insecure posture."""
+    cfg_path = tmp_path / "config.ini"
+    cfg_path.write_text("[api]\nhost = 0.0.0.0\nport = 8000\n", encoding="utf-8")
+    env_path = tmp_path / ".env"
+    env_path.write_text("NYXGPT_HOST_RELAY_PROFILE=monitoring\n", encoding="utf-8")
+    monkeypatch.setattr(ops, "_is_linux", lambda: True)
+    monkeypatch.setattr(ops, "_docker_bridge_gateway_ip", lambda: "172.17.0.1")
+
+    result = ops._sync_host_relay_env(cfg_path=cfg_path, env_path=env_path)
+
+    assert result.ok is True
+    assert "disabled" in result.message
+    assert "127.0.0.1" in result.details
+
+
+@pytest.mark.unit
+def test_sync_host_relay_env_stays_quiet_when_disabled_for_other_reasons(tmp_path, monkeypatch):
+    """A loopback-bound macOS host isn't carrying the workaround -- attaching the
+    revert advice there would be noise pointing at a setting already correct."""
+    cfg_path = tmp_path / "config.ini"
+    cfg_path.write_text("[api]\nhost = 127.0.0.1\nport = 8000\n", encoding="utf-8")
+    env_path = tmp_path / ".env"
+    env_path.write_text("NYXGPT_HOST_RELAY_PROFILE=disabled\n", encoding="utf-8")
+    monkeypatch.setattr(ops, "_is_linux", lambda: False)
+
+    result = ops._sync_host_relay_env(cfg_path=cfg_path, env_path=env_path)
+
+    assert result.ok is True
+    assert "disabled" in result.message
+    assert result.details == ""
+
+
 @pytest.mark.unit
 def test_tracing_packages_doctor_issue_none_when_no_config(tmp_path):
     assert ops._tracing_packages_doctor_issue(tmp_path / "missing.ini") is None

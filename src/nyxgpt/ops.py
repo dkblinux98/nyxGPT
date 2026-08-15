@@ -6790,6 +6790,82 @@ def _prometheus_api_scrape_issue(cfg_path: Path | None = None) -> str | None:
     )
 
 
+# Remediation for a host still carrying the pre-#3721 `[api] host` widening.
+# Shared verbatim by the doctor check and `_sync_host_relay_env`'s disabled
+# outcome so the two surfaces can't drift into telling different stories.
+HOST_RELAY_REVERT_REMEDIATION = (
+    "The host-api-relay service (#3721) now gives Prometheus a route to a "
+    "loopback-bound API, so widening the bind is no longer necessary for "
+    "observability: set `[api] host = 127.0.0.1` in ~/.nyxGPT/config.ini, then run "
+    "`nyxgpt ops env-sync && nyxgpt ops observability && nyxgpt ops restart api`. "
+    "See docs/troubleshooting.md#grafana-dashboards-are-empty-on-linux."
+)
+
+
+def _insecure_api_bind_issue(cfg_path: Path | None = None) -> str | None:
+    """Detect the #3721 *workaround* still in place: `[api] host` past loopback.
+
+    The other half of `_prometheus_api_scrape_issue`. That check catches a host
+    that never got the relay; this one catches a host that worked around the
+    missing relay by hand and was then never migrated back -- the exact state
+    #3509's reporter is in ("I had to enable auth and set host to 0.0.0.0 to get
+    observability working on a linux native installation").
+
+    That state is invisible to every existing check. The scrape is *up*, so
+    `_prometheus_api_scrape_issue` stays quiet; `_host_relay_decision` reads the
+    widened bind and disables the relay with a reason that sounds like an
+    approval; and each `nyxgpt ops observability` faithfully reconciles the
+    insecure posture back in. Nothing ever says the workaround is now
+    unnecessary, so the API keeps listening on every interface -- which is
+    precisely what P6-4 ("no 0.0.0.0/0 ingress anywhere") forbids.
+
+    Deliberately narrow, so it flags the workaround rather than nagging every
+    non-loopback bind. All four must hold:
+
+    * Linux -- Docker Desktop never had the gap, so the workaround isn't a
+      plausible reason for a widened bind on macOS.
+    * `[api] host` is outside `LOOPBACK_API_HOSTS`.
+    * Monitoring is enabled -- the widening is only attributable to the
+      observability gap if observability is actually in use.
+    * The docker bridge gateway resolves -- i.e. the relay would really work
+      here. Without that, reverting would trade a bind-posture finding for
+      genuinely broken dashboards, so this stays silent.
+    """
+    if not _is_linux():
+        return None
+
+    cfg_path = cfg_path or (Path.home() / ".nyxGPT" / "config.ini")
+    if not cfg_path.exists():
+        return None
+
+    api_host = _native_api_host(cfg_path)
+    if api_host.lower() in LOOPBACK_API_HOSTS:
+        return None
+
+    parser = ConfigParser()
+    try:
+        parser.read(cfg_path)
+    except Exception as e:
+        logger.warning(
+            "Failed to parse %s, skipping API bind posture check: %s",
+            cfg_path,
+            e,
+            extra={"component": "ops"},
+        )
+        return None
+    if not get_monitoring_config(parser)["enabled"]:
+        return None
+
+    if _docker_bridge_gateway_ip() is None:
+        return None
+
+    return (
+        f"The API is bound to `{api_host}`, publishing it on every interface "
+        "instead of loopback only -- the pre-#3721 workaround for Prometheus not "
+        f"being able to reach a native API from a container. {HOST_RELAY_REVERT_REMEDIATION}"
+    )
+
+
 def _tracing_packages_doctor_issue(cfg_path: Path | None = None) -> str | None:
     """Detect the #3484 failure mode: a venv predating the #3430 OTel backbone
     (or missing a package `pip uninstall`'d since) is missing an
@@ -7166,6 +7242,12 @@ def doctor(_args) -> int:
     scrape_issue = _prometheus_api_scrape_issue()
     if scrape_issue:
         issues.append(scrape_issue)
+
+    # The mirror image of the check above: not "the scrape is broken" but "the
+    # scrape only works because the bind was widened by hand" (#3509/#3721).
+    insecure_bind_issue = _insecure_api_bind_issue()
+    if insecure_bind_issue:
+        issues.append(insecure_bind_issue)
 
     if _is_macos():
         # Linux has no equivalent drift to check: nyxgpt-ollama.service's
@@ -8838,6 +8920,13 @@ def _sync_host_relay_env(cfg_path: Path | None = None, env_path: Path | None = N
             "Prometheus scrapes the native API through the docker bridge gateway; "
             "`[api] host` stays loopback-only, so the API is not exposed to the LAN.",
         )
+    # A relay disabled *because the bind was already widened* is not a clean
+    # bill of health -- it is the pre-#3721 workaround still in force, and
+    # every reconcile silently re-affirms it (#3509). Say so here rather than
+    # letting "disabled (already listens beyond loopback)" read as approval;
+    # `nyxgpt ops doctor` reports the same thing via _insecure_api_bind_issue.
+    if _is_linux() and _native_api_host(cfg_path).lower() not in LOOPBACK_API_HOSTS:
+        return OpsResult(True, f"Host API relay disabled ({reason})", HOST_RELAY_REVERT_REMEDIATION)
     return OpsResult(True, f"Host API relay disabled ({reason})")
 
 
