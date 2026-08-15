@@ -4916,6 +4916,25 @@ K8S_DIR = REPO_ROOT / "k8s"
 K8S_NAMESPACE = "nyxgpt"
 K8S_IMAGE = "nyxgpt-api:local"
 
+# The deployment's data/LLM tier (#3786): the in-cluster Cassandra that holds
+# chat sessions for every api replica and the in-cluster Ollama that answers
+# them (k8s/statefulset-cassandra.yaml, k8s/statefulset-ollama.yaml). The
+# install waits for both to report Ready, because "the api Pods are Running"
+# is not the same thing as "a chat works" -- without this wait the command
+# returns while Cassandra is still bootstrapping and Ollama is still pulling
+# the default model, and the first thing the operator sees in the web UI is a
+# failed session list.
+#
+# The timeouts are per-workload and generous on purpose: they cover a cold
+# first boot (Cassandra initializing an empty data directory, Ollama pulling
+# the default model over whatever link the workstation has), not a steady-state
+# restart. Exceeding one is reported as a failure with the workload named, not
+# silently ignored.
+K8S_DATA_TIER_WORKLOADS: tuple[tuple[str, str, int], ...] = (
+    ("statefulset/cassandra", "Cassandra (chat session store)", 600),
+    ("statefulset/ollama", "Ollama (LLM, including the first default-model pull)", 900),
+)
+
 # The local cluster `nyxgpt ops install --kubernetes --local` provisions via `kind`
 # when kubectl's current context has no reachable cluster (#3596, owner decision
 # 2026-08-03). The name is reserved for nyxgpt: `nyxgpt ops down --kubernetes` only
@@ -5388,7 +5407,11 @@ def _k8s_stack_health() -> list[OpsResult]:
             name, _, phase = entry.partition("=")
             results.append(OpsResult(phase == "Running", f"pod {name}: {phase}"))
 
-    for svc in ("nyxgpt-api", "nyxgpt-web"):
+    # `cassandra`/`ollama` are the data/LLM tier's Services (#3786) -- the
+    # hostnames k8s/configmap.yaml points the api at. A missing one is the
+    # exact shape of the failure this list exists to catch: api/web Pods
+    # Running, nothing to chat with.
+    for svc in ("nyxgpt-api", "nyxgpt-web", "cassandra", "ollama"):
         cp = _run(
             ["kubectl", "-n", K8S_NAMESPACE, "get", "svc", svc, "--no-headers"],
             check=False,
@@ -5400,6 +5423,52 @@ def _k8s_stack_health() -> list[OpsResult]:
                 f"Service {svc}" + (" found" if cp.returncode == 0 else " not found"),
             )
         )
+    return results
+
+
+def _wait_for_k8s_data_tier() -> list[OpsResult]:
+    """Block until the in-cluster Cassandra and Ollama are Ready (#3786).
+
+    `kubectl apply -k` returns as soon as the objects are accepted, so
+    without this the install reports success while Cassandra is still
+    bootstrapping its keyspace directory and Ollama is still pulling the
+    default model -- and the operator's first chat attempt fails against a
+    stack the command just called healthy. `kubectl rollout status` on each
+    StatefulSet waits for exactly the condition that matters: the Pod passing
+    its readiness probe, which for Cassandra means CQL answers and for Ollama
+    means the configured default model is present (see the probes in
+    k8s/statefulset-*.yaml), not merely that a port is open.
+
+    A timeout is a failure, not a warning: a stack whose data tier never came
+    up cannot chat, and saying otherwise is what produced this issue. The
+    failure names the workload so the operator knows which half to look at.
+    """
+    results: list[OpsResult] = []
+    for ref, label, timeout in K8S_DATA_TIER_WORKLOADS:
+        cp = _run(
+            [
+                "kubectl",
+                "-n",
+                K8S_NAMESPACE,
+                "rollout",
+                "status",
+                ref,
+                f"--timeout={timeout}s",
+            ],
+            check=False,
+        )
+        if cp.returncode != 0:
+            results.append(
+                OpsResult(
+                    False,
+                    f"{label} did not become ready within {timeout}s",
+                    (_cp_details(cp) or "")
+                    + f"\nThe stack cannot serve chat without it. Check `nyxgpt ops status` "
+                    f"for the {ref.split('/')[-1]} Pod's state.",
+                )
+            )
+            return results
+        results.append(OpsResult(True, f"{label} ready", _cp_details(cp)))
     return results
 
 
@@ -5455,6 +5524,7 @@ def _install_kubernetes_steps(api_key: str | None) -> list[OpsResult]:
         ("build/load web image", _build_and_load_k8s_web_image),
         ("secret bootstrap", lambda: _ensure_k8s_secret(api_key)),
         ("apply kustomization", _kubectl_apply_kustomization),
+        ("wait for data/LLM tier", _wait_for_k8s_data_tier),
     ]
     for step_name, fn in steps:
         try:
