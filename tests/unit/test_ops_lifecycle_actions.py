@@ -185,6 +185,7 @@ def test_install_records_success_action():
     ok = [ops.OpsResult(True, "ok")]
     before = _ops_actions_total("install", "all", "success")
     with (
+        patch.object(ops, "_reconcile_install_mode", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_sync_packaged_resources", return_value=ok),
         patch.object(ops, "migrate_legacy_volumes", return_value=ok),
         patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok),
@@ -203,7 +204,9 @@ def test_install_records_success_action():
         patch.object(ops, "_reconcile_grafana_provisioning", return_value=ok),
         patch.object(ops, "_provision_glitchtip", return_value=ok),
     ):
-        rc = ops.install(MagicMock(skip_observability=False, terraform=False, kubernetes=False))
+        rc = ops.install(
+            MagicMock(dev=False, skip_observability=False, terraform=False, kubernetes=False)
+        )
     assert rc == 0
     after = _ops_actions_total("install", "all", "success")
     assert after == before + 1
@@ -214,6 +217,7 @@ def test_install_records_failure_action():
     bad = [ops.OpsResult(False, "bad", "details")]
     before = _ops_actions_total("install", "all", "failure")
     with (
+        patch.object(ops, "_reconcile_install_mode", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_sync_packaged_resources", return_value=bad),
         patch.object(ops, "migrate_legacy_volumes", return_value=ok),
         patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok),
@@ -232,7 +236,9 @@ def test_install_records_failure_action():
         patch.object(ops, "_reconcile_grafana_provisioning", return_value=ok),
         patch.object(ops, "_provision_glitchtip", return_value=ok),
     ):
-        rc = ops.install(MagicMock(skip_observability=False, terraform=False, kubernetes=False))
+        rc = ops.install(
+            MagicMock(dev=False, skip_observability=False, terraform=False, kubernetes=False)
+        )
     assert rc == 2
     after = _ops_actions_total("install", "all", "failure")
     assert after == before + 1

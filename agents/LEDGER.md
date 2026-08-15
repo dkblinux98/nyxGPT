@@ -249,6 +249,22 @@ are absent here by design (relocated to the annex; IDs are never reused).
   different things; `scripts/agents/promote_accepted_features.sh`;
   `scripts/agents/lib/drain_gate.py`.
 
+- **D-009** · 2026-08-15 · owner — A **dev install mode** exists alongside the
+  artifact path: `nyxgpt up --dev` / `nyxgpt ops install --dev` installs the api
+  as an editable venv on the current checkout and runs the web UI's Next dev
+  server from `<checkout>/web`, so the stack runs whatever HEAD the last
+  `git pull` produced with no keg, tap or tarball build. It is opt-in and
+  checkout-only; a bare `nyxgpt up` remains the artifact path and the
+  repo-less guarantee (#3504) is unchanged — dev mode is a development and
+  mid-stream-testing path, never an acceptance path. The mode is recorded in
+  `~/.nyxGPT/install-mode.json` (`nyxgpt.install_mode`) and reported by
+  `ops status`/`doctor`, because macOS drives different service managers per
+  mode (dev LaunchAgents `com.nyxgpt.api`/`com.nyxgpt.web` vs. `brew
+  services`) and self-heal must not restart an old keg onto the dev process's
+  port. Installing either mode over the other stops the other's services and
+  rebuilds the shared api venv from empty.
+  Source: #3789; `docs/ops.md` §`--dev`; `src/nyxgpt/install_mode.py`.
+
 ## Verifications
 
 - **V-001** · 2026-08-14 — Releases in this repository are immutable: a
@@ -434,7 +450,48 @@ are absent here by design (relocated to the annex; IDs are never reused).
   deprecation there is marked `gone_in="26.3"`), or the recipe stops using
   `pip download`.
 
-- **V-014** · 2026-08-15 — A smoke test that satisfies a prerequisite *itself*
+- **V-014** · 2026-08-15 — Next.js compiles `web/src/instrumentation.ts` for the
+  **edge** server runtime as well as the Node.js one, so any node-only module it
+  reaches must be imported *inside* a `process.env.NEXT_RUNTIME === "nodejs"`
+  block, never at the top level. A top-level `import … from "./lib/logger"`
+  (which reaches `node:fs`) failed the edge compile with
+  `UnhandledSchemeError: Reading from "node:fs" is not handled by plugins`, and a
+  failed instrumentation compile makes `next dev` answer **500 to every request**
+  — while `next build`/`next start` are unaffected, so only the dev-server path
+  (`nyxgpt up --dev`, **D-009**) broke and every artifact-path check stayed green.
+  An early `return` is not sufficient: webpack drops an untaken `if` branch and
+  the module graph under it, but statements after a `return` stay live to the
+  bundler.
+  Method: executed on this runner 2026-08-15 — reproduced `GET / 500` with the
+  `⨯ node:fs` compile error, confirmed the failing compiler by logging the
+  webpack context (`{isServer:true,nextRuntime:"edge"}`), then re-ran after the
+  fix for `GET / 200` with zero `UnhandledSchemeError`; `npm run build` +
+  `npm run start` also re-checked at 200 (#3789/#3791). Standing CI guard: the
+  `web / expected 200` check in `linux-native-dev-smoke`.
+  Re-verify when: Next.js changes which runtimes it compiles the instrumentation
+  hook for, or `lib/logger.ts` stops using `node:fs`.
+
+- **V-015** · 2026-08-15 — `ops.install()`'s unit tests patch its steps out **by
+  enumeration**, so every step added to the list afterwards runs for real against
+  the developer's own machine until someone adds it to each `with` block. The
+  install-mode step (**D-009**) landed that way and was not inert: on a machine
+  recording `dev`, running one install unit test deleted the real
+  `~/.nyxGPT/opt/nyxgpt-api/venv`, rewrote the real marker back to `artifact`
+  (and on macOS would `launchctl bootout` the live dev LaunchAgents), then failed
+  — i.e. the suite destroyed the state of the machine `nyxgpt up --dev` had just
+  produced, and passed in CI only because runners start in artifact mode.
+  Method: executed on this runner 2026-08-15 — wrote `{"mode": "dev", …}` to the
+  real `~/.nyxGPT/install-mode.json` plus a sentinel venv, ran
+  `test_ops_install_returns_zero_when_all_ok` on the pre-fix tree (venv
+  DESTROYED, marker rewritten, `assert 2 == 0`), then the same injection on the
+  fixed tree (marker byte-identical, sentinel PRESENT, test passed) (#3789/#3791).
+  Re-verify when: a new step is added to `ops.install()`'s step list — the
+  standing guards are the autouse `_isolate_install_mode_marker` fixture in
+  `tests/unit/conftest.py` and the paired
+  `test_install_tests_patch_the_mode_step_…` / `test_an_unpatched_mode_step_…`
+  fault-injection tests, which close the marker half but not the general pattern.
+
+- **V-016** · 2026-08-15 — A smoke test that satisfies a prerequisite *itself*
   before invoking the code under test proves nothing about that prerequisite.
   `scripts/systemd-native-smoke.sh` ran the official Ollama installer before
   calling `nyxgpt ops install`, so CI never saw that the Linux install step
@@ -460,7 +517,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   install must stay *before* the port takeover — the installer is what
   creates the conflicting system unit).
 
-- **V-015** · 2026-08-15 — The pytest suite could not pass on a machine that
+- **V-017** · 2026-08-15 — The pytest suite could not pass on a machine that
   was *running the stack it tests*, which is now the normal state of a
   developer machine on Linux as well as macOS (#3508). Two independent
   environmental couplings, both in `tests/`, neither in product code:
@@ -487,6 +544,38 @@ are absent here by design (relocated to the annex; IDs are never reused).
   a supervisor starts writing service logs as a *different user* than the one
   running pytest (AccessDenied fails closed, so those files return to the
   guard's scope and the suite would fail again).
+
+- **V-018** · 2026-08-15 — `nyxgpt up --skip-observability` could **never**
+  return 0. The flag means "don't start the Grafana/Loki/Jaeger/GlitchTip
+  Compose profiles"; it deliberately leaves their config.ini feature flags
+  on, so self-heal keeps reporting those services `desired=True,
+  state="absent"` — which is the correct answer to "what does the operator
+  want running". `ops._wait_for_stack_healthy` knew nothing about the flag,
+  so `up` waited on containers the same command had just chosen not to
+  start, then exited 2 on a completely healthy stack. The wait now excludes
+  `self_heal.observability_services()` when the flag is set, and the timeout
+  message names what is still pending instead of only saying "not every
+  component" (#3508).
+  Two structural lessons, and the reason this sat undiscovered: (1) a flag
+  that suppresses an *action* must also be honoured by anything that later
+  asserts on that action's *effect*, or the two halves of one command
+  disagree; (2) an alias is not covered by testing what it wraps —
+  `systemd-native-smoke.sh` drove `nyxgpt ops install` for months and was
+  green throughout, because `install()` has no health-wait. The defect
+  existed the whole time and surfaced within one CI run of the smoke script
+  being switched to `nyxgpt up` (**V-016**), i.e. to the command the
+  acceptance is actually written in terms of.
+  Method: observed on the #3798 `linux-native-smoke` run for `f6918b8d` —
+  every systemd unit `active`, `ops status` clean, `jaeger`/`otel-collector`
+  reported absent, and `up` still burned its full 300s timeout and exited 2.
+  Confirmed pre-existing rather than merge-induced by reading
+  `_wait_for_stack_healthy` at the merge base and on `v3.0.0`: identical in
+  both. Standing guard: the `linux-native-smoke` job, which now fails if
+  `nyxgpt up` cannot reach healthy.
+  Re-verify when: a new flag suppresses part of the install (it will need
+  the same treatment in the wait), or `--skip-observability` starts clearing
+  the config.ini flags — at which point the exclusion becomes redundant
+  rather than wrong.
 
 ## Parked
 

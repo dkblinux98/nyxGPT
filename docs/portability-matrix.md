@@ -5,7 +5,11 @@ the code repository** (CLAUDE.md, *Repo-less Portability*, 2026-08-01).
 Distribution is via published artifacts — the PyPI wheel, the remote Homebrew
 tap, and the `ghcr.io` container images — never `git clone`. A source checkout
 stays supported for development (`pip install -e .`), but no user-facing
-install or operate flow may require one.
+install or operate flow may require one. That includes
+[`nyxgpt up --dev`](ops.md#--dev-run-the-current-checkout-without-an-artifact-build),
+the opt-in mode that runs the api/web services straight out of a checkout:
+it is a development and mid-stream-testing path, never the default, and
+every target below still installs and is accepted from published artifacts.
 
 This page is the matrix of the five in-scope targets and the acceptance run
 that demonstrates them. **Windows is explicitly out of scope.**
