@@ -365,6 +365,26 @@ not agent-editable except to add a `Re-verify` result or a supersession pointer.
   "Verify PyPI serves the build" step had passed at 22:06Z.
   Re-verify when: the session egress proxy or PyPI CDN behaviour changes.
 
+- **V-010** · 2026-08-15 — The rc11 keg install failure (#3788) is **not** an
+  ordering problem in the pip bootstrap. Its cause is that the Homebrew
+  `python@3.12` keg's pip cannot import
+  `pip._internal.operations.install.wheel`; pip 26.2 pre-imports its lazy
+  imports before writing anything, swallows that `ImportError` into
+  `_MISSING_MODULES`, and its audit hook re-raises it from
+  `_prevent_import_hook` when `req_install.py` needs the module for real.
+  Consequence: **any** install routed through that pip dies, whatever is being
+  installed and in whatever order — so the keg's pip is now allowed to
+  `download` only, and the keg venv is bootstrapped by running pip out of the
+  downloaded wheel (`python pip-X.whl/pip install pip-X.whl`).
+  Method: injected exactly that machine state (a meta-path finder that makes
+  the module unimportable for the keg's copy of pip only) against pip 26.2.1
+  on 2026-08-15 and reproduced the owner's traceback line-for-line, down to
+  `install.py:97 in _prevent_import_hook`; the wheel bootstrap survives the
+  same fault. Both directions now run in `macos-brew-smoke.yml`.
+  Re-verify when: pip changes `_EAGER_IMPORTS`/`_prevent_import_hook` (the
+  deprecation there is marked `gone_in="26.3"`), or the recipe stops using
+  `pip download`.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

@@ -1034,12 +1034,15 @@ _API_FORMULAS = {
 
 _WITHOUT_PIP = 'system python, "-m", "venv", "--without-pip", venv'
 _ENSUREPIP_VENV = 'system python, "-m", "venv", venv'
-# `--python` is a top-level pip option: after the subcommand pip refuses with
-# "The --python option must be placed before the pip subcommand name" and the
-# install dies one step past where #3753 originally did. Pinned as the whole
-# line so the *order* is what fails here, in the Linux suite, rather than on a
-# macOS runner.
-_PIP_BOOTSTRAP = (
+# Round 3 (#3788). The keg's pip is now only allowed to *download* -- see
+# `test_the_keg_pip_never_performs_an_install` for why. Pinned as whole lines
+# so a drift in the technique fails here, in the Linux suite, rather than on
+# the owner's Mac.
+_PIP_DOWNLOAD = 'system python, "-m", "pip", "download", "--no-deps", "--only-binary", ":all:",'
+_PIP_FROM_WHEEL = 'system venv/"bin/python", "#{pip_wheel}/pip", "install", "--no-index",'
+# The spelling that shipped in rc11 and died on python@3.12 3.12.14: it hands
+# the keg's own pip an install to perform.
+_PIP_INSTALL_VIA_KEG_PIP = (
     'system python, "-m", "pip", "--python", venv/"bin/python", "install", "--upgrade", "pip"'
 )
 
@@ -1070,15 +1073,48 @@ def test_keg_venv_is_built_without_ensurepip(which):
 
 
 @pytest.mark.parametrize("which", sorted(_API_FORMULAS))
-def test_pip_is_installed_into_the_keg_venv_by_the_homebrew_python(which):
+def test_pip_is_bootstrapped_into_the_keg_venv_from_a_wheel(which):
     """`--without-pip` is only safe because pip is put in deliberately."""
     recipe = _venv_recipe(_API_FORMULAS[which].read_text(encoding="utf-8"))
 
-    bootstrap = [line for line in recipe if '"-m", "pip"' in line]
-    assert len(bootstrap) == 1, recipe
-    assert bootstrap[0] == _PIP_BOOTSTRAP
+    assert _PIP_DOWNLOAD in recipe
+    assert _PIP_FROM_WHEEL in recipe
+    # The wheel has to be found, and a missing one has to stop the install
+    # rather than silently leave the venv without a pip.
+    assert 'pip_wheel = Dir.glob(wheelhouse/"pip-*.whl").first' in recipe
+    assert any(line.startswith("odie ") and "pip_wheel.nil?" in line for line in recipe), recipe
     # Everything downstream still installs through the venv's own pip.
     assert 'system venv/"bin/pip", "install", buildpath' in recipe
+
+
+@pytest.mark.parametrize("which", sorted(_API_FORMULAS))
+def test_the_keg_pip_never_performs_an_install(which):
+    """#3788: the keg's pip may resolve and download, never install.
+
+    On python@3.12 3.12.14 the Homebrew keg's pip cannot import
+    `pip._internal.operations.install.wheel`. pip 26.2 pre-imports its lazy
+    imports before writing anything, swallows that ImportError into
+    `_MISSING_MODULES`, and its audit hook then turns the real import in
+    `req_install.py` into
+
+        ImportError: No module named 'pip._internal.operations.install.wheel'
+
+    So *any* install routed through that pip dies, whatever is being
+    installed and in whatever order -- which is why the fix is not a
+    reordering but a rule: the only keg-pip subcommand this recipe may use is
+    `download`.
+    """
+    recipe = _venv_recipe(_API_FORMULAS[which].read_text(encoding="utf-8"))
+
+    keg_pip = [line for line in recipe if 'system python, "-m", "pip"' in line]
+    assert len(keg_pip) == 1, recipe
+    assert '"download"' in keg_pip[0]
+    assert '"install"' not in keg_pip[0]
+    # The exact rc11 line the owner's install died on.
+    assert _PIP_INSTALL_VIA_KEG_PIP not in recipe
+    # `pip --python` re-execs the keg's pip in another interpreter; it is the
+    # keg's pip either way, so the whole option is out of the recipe.
+    assert not any('"--python"' in line for line in recipe), recipe
 
 
 def test_both_api_formulas_carry_the_same_venv_recipe():
@@ -1109,8 +1145,10 @@ def test_stamped_formulas_ship_the_ensurepip_free_recipe(
 
     assert _WITHOUT_PIP in recipe
     assert _ENSUREPIP_VENV not in recipe
-    # The published formula has to carry the working option order too.
-    assert _PIP_BOOTSTRAP in recipe
+    # The published formula has to carry the working bootstrap too (#3788).
+    assert _PIP_DOWNLOAD in recipe
+    assert _PIP_FROM_WHEEL in recipe
+    assert _PIP_INSTALL_VIA_KEG_PIP not in recipe
 
 
 @pytest.mark.parametrize("name", ["nyxgpt-api", "nyxgpt-web"])
@@ -1351,7 +1389,9 @@ def test_the_shim_is_on_pythonpath_before_any_pip_runs(which):
     export = recipe.index('ENV.prepend_path "PYTHONPATH", shim')
 
     assert recipe.index("(shim/\"sitecustomize.py\").write <<~'PY'") < export
-    assert export < recipe.index(_PIP_BOOTSTRAP)
+    # The first interpreter that must see it is the one `pip download` runs
+    # in -- resolving wheel tags is where mac_ver() is parsed (#3753).
+    assert export < recipe.index(_PIP_DOWNLOAD)
 
 
 @pytest.mark.parametrize("which", sorted(_API_FORMULAS))
@@ -1411,6 +1451,31 @@ def test_macos_smoke_injects_the_failure_the_runner_does_not_reproduce():
     assert "no longer reproduces #3753" in script
     # And the fix has to visibly fire, not just happen to pass.
     assert "the shim never fired" in script
+
+
+def test_macos_smoke_injects_the_keg_pip_failure_from_3788():
+    """rc11 was the third green-by-luck smoke of the version-drift class.
+
+    The runner had python@3.12 3.12.13_4 and the owner had 3.12.14, so the
+    job proved nothing about the pip the owner actually ran. Pulling the keg
+    to current narrows the gap but "current" drifts again tomorrow, so the
+    failure itself has to be injected and both directions proved.
+    """
+    script = _job_run_script(_macos_smoke_workflow()["jobs"]["keg-install"])
+
+    # Stop testing whatever pip the runner image was baked with.
+    assert "brew upgrade python@3.12" in script
+    # The fault, injected rather than hoped for: the keg's pip cannot import
+    # its own wheel installer.
+    assert '_TARGET = "pip._internal.operations.install.wheel"' in script
+    assert "NYXGPT_FAULT_KEG_PIP_DIR" in script
+    # The negative control: rc11's bootstrap has to die on it, with the
+    # owner's error, or a green result below proves nothing.
+    assert "No module named 'pip._internal.operations.install.wheel'" in script
+    assert "no longer reproduces #3788" in script
+    assert "install --upgrade pip \\" in script
+    # And this checkout's bootstrap has to survive the same fault.
+    assert '"$WORK/venv-new/bin/pip" --version' in script
 
 
 def test_macos_smoke_reads_the_shim_out_of_the_formula_it_ships():

@@ -384,14 +384,41 @@ otherwise it reports the existing install is already up to date and just
 
 ### How the keg venv is built
 
-The `nyxgpt-api` keg creates its venv with `python -m venv --without-pip` and
-then has Homebrew's `python@3.12` install pip into it (`pip --python`). That
-is deliberate: a plain `python -m venv` runs `ensurepip --upgrade
---default-pip`, which bootstraps pip from wheels vendored inside the
-`python@3.12` keg — the only part of the install that depends on
-Homebrew-managed keg state rather than on the tarball being installed. On a
-stock Homebrew Mac that step exited 1 and took the whole `brew install` with
-it, so it is no longer in the path at all.
+The `nyxgpt-api` keg creates its venv with `python -m venv --without-pip`,
+then bootstraps pip into it from a wheel:
+
+1. Homebrew's `python@3.12` runs `pip download` to fetch a pip wheel.
+2. The **venv's** interpreter runs pip *out of that wheel* — a wheel is a zip
+   whose root is the `pip` package, so `python pip-X.whl/pip install
+   pip-X.whl` works by zipimport, which is pip's own documented bootstrap.
+3. Everything after that installs through the venv's own pip.
+
+Two separate defects shaped this. `--without-pip` is there because a plain
+`python -m venv` runs `ensurepip --upgrade --default-pip`, which bootstraps
+pip from wheels vendored inside the `python@3.12` keg — the only part of the
+install that depended on Homebrew-managed keg state rather than on the
+tarball being installed. On a stock Homebrew Mac that exited 1 and took the
+whole `brew install` with it.
+
+The wheel bootstrap replaced an earlier spelling that had the keg's own pip
+perform the install (`pip --python <venv-python> install --upgrade pip`).
+That died on `python@3.12` 3.12.14 with
+
+```
+ImportError: No module named 'pip._internal.operations.install.wheel'
+```
+
+raised from `_prevent_import_hook`. pip 26.2 pre-imports its lazily-imported
+modules just before it writes anything, so a distribution it is about to
+install cannot shadow them; when that pre-import fails it records the name
+and its audit hook turns the real import, moments later, into the error
+above. The failure is reported by pip's guard, but what the guard is
+reporting is that *that pip installation* cannot import its own wheel
+installer — which no ordering, option or `--upgrade`-free spelling of an
+install through it can route around. So the keg's pip is no longer allowed
+to install anything; `download` is the only subcommand the recipe uses, and
+it never reaches that module. The venv is populated by a pip freshly
+unpacked from a wheel, which is complete by construction.
 
 ### Why the build environment gets a `sitecustomize.py`
 
@@ -412,8 +439,8 @@ only, which a `ValueError` from a module body walks straight past.
 
 A `sitecustomize` is the right shape because `site` imports it at interpreter
 startup, so one file covers every interpreter the build starts — Homebrew's
-python, the venv python that `pip --python` re-execs into, and pip's
-build-isolation subprocesses. It asks `sw_vers` for the real release and only
+python running `pip download`, the venv python that runs pip out of the
+downloaded wheel, and pip's build-isolation subprocesses. It asks `sw_vers` for the real release and only
 falls back to a floor of `11.0` if that fails too; a Mac whose `mac_ver()`
 already works is left completely alone, so the reported version never becomes
 a lie that changes which wheels pip picks. The file lives in `buildpath` and
