@@ -265,6 +265,39 @@ are absent here by design (relocated to the annex; IDs are never reused).
   rebuilds the shared api venv from empty.
   Source: #3789; `docs/ops.md` §`--dev`; `src/nyxgpt/install_mode.py`.
 
+- **D-010** · 2026-08-15 · owner — Agent model assignment is a **deliberate
+  split**: the **review** agent (`claude-code-review.yml`, the `@claude`
+  entry point and huddle mediation) runs on **`claude-fable-5`**; the
+  **developer** agent's implementation paths run on **`claude-opus-5`**. The
+  Fable pins are a chosen configuration, not an oversight — do not "upgrade"
+  them to Opus on sight.
+  **Override applied and ENDED, both on 2026-08-15** — the split above is the
+  live configuration again; the paragraph below is history, not current state.
+  For ~2 hours every agent invocation was pinned to
+  `claude-opus-5` (commit `e56c3d9b`, reverted once the owner raised the
+  limit) because Fable was refused at the API with
+  a **monthly spend limit**, not a rolling usage window. The evidence is in the
+  Claude step's own result payload (review run 31908249723):
+  `"api_error_status": 429`, `"terminal_reason": "api_error"`,
+  `"result": "You've hit your monthly spend limit. Switch to another model to
+  continue."` — i.e. Anthropic's own guidance is the remedy applied here. Every
+  review run from 20:20 UTC failed this way while the Opus-pinned developer
+  paths ran normally. The owner raised the limit the same evening and the
+  override was reverted in full, restoring the split exactly. The reason the
+  split exists is still not recorded here — ask the owner before changing it.
+  **Diagnostic trap (cost an hour on 2026-08-15):** that 429 is not what the
+  workflow reports. `claude-code-action` surfaced only
+  `--json-schema was provided but Claude did not return structured_output.
+  Result subtype: success` — calling a refused run a success — with the real
+  429 buried in `claude-execution-output.json`. The usage-limit detector missed
+  it too: `count_fast_claude_steps` is called with the step name
+  `Run Claude Code Review`, but the action's step is actually named
+  `Run Claude Code Action`, so it printed "No usage-limit signature detected"
+  and never applied the retry label. Read the result payload's
+  `api_error_status`/`result`, never the action's top-level error text.
+  Source: owner in session, 2026-08-15; commits `54c38faa` (original all-Fable
+  pinning), `e56c3d9b` (this override); run 31908249723 log.
+
 ## Verifications
 
 - **V-001** · 2026-08-14 — Releases in this repository are immutable: a
@@ -491,7 +524,31 @@ are absent here by design (relocated to the annex; IDs are never reused).
   `test_install_tests_patch_the_mode_step_…` / `test_an_unpatched_mode_step_…`
   fault-injection tests, which close the marker half but not the general pattern.
 
-- **V-016** · 2026-08-15 — A smoke test that satisfies a prerequisite *itself*
+- **V-016** · 2026-08-15 — Observability on a **plain Linux docker engine**
+  needs two engine-level fixes that Docker Desktop hides on macOS, and both
+  are now reconciled inside `ops._reconcile_grafana_provisioning` — the one
+  function every stack-start path goes through (`nyxgpt ops install`, the
+  standalone `nyxgpt ops observability`, and the dashboard's
+  `reconcile_observability` toggle). (1) dockerd creates a missing bind-mount
+  source `root:root`, so Prometheus (uid 65534), Grafana (472) and Loki
+  (10001) crash-loop unable to write their own data dirs; the #3632 guard for
+  this was wired into `install()`'s step list **only**, so the other two paths
+  brought the stack up broken (#3721). (2) `host.docker.internal:host-gateway`
+  resolves to the bridge gateway, which a loopback-bound native API does not
+  listen on — bridged by the `host-api-relay` Compose service (#3725). With
+  both, `[api] host` stays `127.0.0.1` and no `0.0.0.0` listener is needed.
+  Method: `scripts/linux-observability-smoke.py`, run on a real Linux docker
+  engine (28.0.4) in CI as the `linux-observability` job of
+  `linux-native-smoke.yml`. It fault-injects the pre-fix behaviour first —
+  Prometheus must crash-loop on `open /prometheus/queries.active: permission
+  denied` or the job fails as toothless — then asserts Prometheus runs, its
+  `nyxgpt-api` target reports `up` (a real scrape through the relay), and
+  nothing listens on `0.0.0.0:8000`.
+  Re-verify when: the observability bind-mount set changes, an upstream image
+  changes the uid it runs as, or a new entrypoint starts the stack without
+  going through `_reconcile_grafana_provisioning`.
+
+- **V-017** · 2026-08-15 — A smoke test that satisfies a prerequisite *itself*
   before invoking the code under test proves nothing about that prerequisite.
   `scripts/systemd-native-smoke.sh` ran the official Ollama installer before
   calling `nyxgpt ops install`, so CI never saw that the Linux install step
@@ -511,13 +568,16 @@ are absent here by design (relocated to the annex; IDs are never reused).
   system unit the installer had just enabled, `nyxgpt-ollama.service` came up
   active and served HTTP 200 on 11434. `scripts/ollama-bootstrap-smoke.py`
   injects the pre-fix behaviour and was executed to confirm it fails without
-  the bootstrap, so the green run is not luck (#3508, #3775).
+  the bootstrap, so the green run is not luck (#3508, #3775). Re-confirmed in
+  CI rather than only off-CI: `linux-native-smoke` run 31907416812 on
+  `49bbb94f` is green across all its jobs, with the injection step firing
+  first — the standing guard for this entry.
   Re-verify when: Ollama changes its Linux distribution channel, or the
   install-step ordering in `_install_native_ollama_systemd` changes (the
   install must stay *before* the port takeover — the installer is what
   creates the conflicting system unit).
 
-- **V-017** · 2026-08-15 — The pytest suite could not pass on a machine that
+- **V-018** · 2026-08-15 — The pytest suite could not pass on a machine that
   was *running the stack it tests*, which is now the normal state of a
   developer machine on Linux as well as macOS (#3508). Two independent
   environmental couplings, both in `tests/`, neither in product code:
@@ -545,7 +605,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   running pytest (AccessDenied fails closed, so those files return to the
   guard's scope and the suite would fail again).
 
-- **V-018** · 2026-08-15 — `nyxgpt up --skip-observability` could **never**
+- **V-019** · 2026-08-15 — `nyxgpt up --skip-observability` could **never**
   return 0. The flag means "don't start the Grafana/Loki/Jaeger/GlitchTip
   Compose profiles"; it deliberately leaves their config.ini feature flags
   on, so self-heal keeps reporting those services `desired=True,
@@ -563,7 +623,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   `systemd-native-smoke.sh` drove `nyxgpt ops install` for months and was
   green throughout, because `install()` has no health-wait. The defect
   existed the whole time and surfaced within one CI run of the smoke script
-  being switched to `nyxgpt up` (**V-016**), i.e. to the command the
+  being switched to `nyxgpt up` (**V-017**), i.e. to the command the
   acceptance is actually written in terms of.
   Method: observed on the #3798 `linux-native-smoke` run for `f6918b8d` —
   every systemd unit `active`, `ops status` clean, `jaeger`/`otel-collector`

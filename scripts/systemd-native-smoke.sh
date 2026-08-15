@@ -91,8 +91,7 @@ if command -v ollama >/dev/null 2>&1; then
     fail "ollama is already on PATH -- in CI this smoke test must start from a machine without it, since what it verifies is that \`nyxgpt up\` installs it"
   fi
   OLLAMA_PREINSTALLED=1
-  log "WARNING: ollama is already on PATH, so this run cannot verify that
-  \`nyxgpt up\` installs it. Every other check still applies."
+  log "WARNING: ollama is already on PATH, so this run cannot verify that \`nyxgpt up\` installs it. Every other check still applies."
 fi
 
 if [[ ! -f "$HOME/.nyxGPT/config.ini" ]]; then
@@ -205,7 +204,7 @@ grep -qF "systemd --user services:" <<<"$status_out" || {
 # false, and the two obvious ways out are both worse: disabling observability
 # in the seeded config would make `observability_services()` empty and quietly
 # turn the `nyxgpt up --skip-observability` health-wait coverage into a
-# tautology (the V-016 lesson), and dropping the check would stop testing one
+# tautology (the V-017 lesson), and dropping the check would stop testing one
 # of the four commands the acceptance names. Instead: doctor must report
 # nothing *beyond* those consequences, so a real install defect still fails
 # the run.

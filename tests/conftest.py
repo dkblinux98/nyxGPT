@@ -332,7 +332,7 @@ def embedding_backend_available():
 
     The probe posts directly rather than going through `embed_text`, to avoid
     both the auto-pull of a multi-gigabyte model (`_pull_embedding_model`) and
-    polluting the embedding cache as a side effect of a availability check.
+    polluting the embedding cache as a side effect of an availability check.
     """
     from nyxgpt.rag.embeddings import EmbeddingError, _embedding_cfg, _post_json
 

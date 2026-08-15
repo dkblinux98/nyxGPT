@@ -1792,9 +1792,14 @@ def test_native_web_wrapper_exports_auth_api_key():
 
 
 def test_install_includes_docker_engine_and_volume_dir_steps():
-    """Both new reconciliation steps must actually be wired into `ops install`,
-    and the volume-dir step must run before the observability stack starts."""
+    """`ops install` still reconciles the docker engine itself, and still
+    reconciles the bind-mount ownership -- the latter now via the shared
+    "observability stack" step (`_reconcile_grafana_provisioning`) rather than
+    a step of its own, so `nyxgpt ops observability` and the dashboard toggle
+    get the same guarantee (#3721)."""
     source = ops.install.__code__.co_consts
     names = [c for c in source if isinstance(c, str)]
     assert "docker engine" in names
-    assert "observability volume dirs" in names
+    assert "observability stack" in names
+    # Deliberately no longer an install-only step -- see #3721.
+    assert "observability volume dirs" not in names

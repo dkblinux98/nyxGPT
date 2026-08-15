@@ -263,9 +263,17 @@ missing bind-mount source directory as `root:root`. Prometheus runs as uid
 65534 inside its container, Grafana as 472, Loki as 10001 -- none of which
 can write to a root-owned directory, so the container panics and Compose
 reports `dependency failed to start: container nyxgpt-prometheus-1 is
-unhealthy`. `nyxgpt ops install` pre-creates those directories before the
-stack starts and gives them an ownership their container can write to (macOS
-never hits this: Docker Desktop's file sharing remaps ownership for you).
+unhealthy`. nyxGPT pre-creates those directories before the stack starts and
+gives them an ownership their container can write to (macOS never hits this:
+Docker Desktop's file sharing remaps ownership for you).
+
+That reconciliation runs on *every* path that starts the stack, not just
+`nyxgpt ops install`: the standalone `nyxgpt ops observability` and the SRE
+dashboard's observability toggle both reach the stack through the same
+reconcile step. Until #3721 it was wired into `install` alone, so bringing
+observability up any other way on Linux produced a Prometheus that could not
+write `/prometheus` -- with Grafana, Prometheus and the API all still
+reporting healthy and every dashboard rendering "No data".
 
 Without passwordless sudo the `chown` isn't available, so install falls back
 to a POSIX ACL instead -- `setfacl -R -m u:<uid>:rwx <dir>`, which only needs

@@ -6955,12 +6955,13 @@ def install(args) -> int:
         ("compose config (derive from native)", _generate_compose_config),
     ]
     if not getattr(args, "skip_observability", False):
-        # Must run before the observability stack starts: dockerd creates a
-        # missing bind-mount source root-owned, which leaves
-        # Prometheus/Grafana/Loki's non-root uids unable to write their own
-        # data dirs (#3632) -- the same failure mode ~/.nyxGPT/secrets hit in
-        # #3432, handled by the glitchtip secrets dir step below.
-        steps.append(("observability volume dirs", _ensure_observability_volume_dirs))
+        # The bind-mount ownership reconcile (#3632) used to be its own step
+        # here. It now runs inside `_reconcile_grafana_provisioning` -- the
+        # "observability stack" step below -- because `install` was never the
+        # only path that starts the stack: `nyxgpt ops observability` and the
+        # dashboard's observability toggle both bypass this list, and so came
+        # up on root-owned volumes (#3721). Its per-directory OK/FAIL lines
+        # still print, under that step.
         steps.append(("glitchtip secrets dir", _ensure_glitchtip_secrets_dir))
         steps.append(("slack webhook secret", _sync_grafana_slack_webhook_secret))
         steps.append(("observability stack", _reconcile_grafana_provisioning))
@@ -9782,11 +9783,22 @@ def _reconcile_grafana_provisioning() -> list[OpsResult]:
     if drift_result is not None and not drift_result.ok:
         return results
 
-    # Must run before the stack starts: it decides whether Compose resolves
-    # the `host-api-relay` service into the monitoring profile at all, which
-    # is what gives prometheus a route to a natively-installed API on Linux
-    # (#3721). `_start_observability_stack` reads `.env` when it enumerates
-    # services, so the write has to land first.
+    # Must run before the stack starts: on Linux dockerd creates a missing
+    # bind-mount source as root:root, and Prometheus (65534) / Grafana (472) /
+    # Loki (10001) then crash-loop unable to write their own data dirs (#3632).
+    # This lives here rather than in `install()`'s step list because `install`
+    # is not the only way the stack starts: `nyxgpt ops observability` is
+    # documented as runnable without an install having gone first, and the SRE
+    # dashboard's observability toggle calls `reconcile_observability` -- both
+    # reach the stack only through this function, so both brought it up on
+    # root-owned volumes (#3721). One entrypoint, one ownership guarantee.
+    results += _ensure_observability_volume_dirs()
+
+    # Also before the stack starts: this decides whether Compose resolves the
+    # `host-api-relay` service into the monitoring profile at all, which is what
+    # gives prometheus a route to a natively-installed API on Linux (#3721).
+    # `_start_observability_stack` reads `.env` when it enumerates services, so
+    # the write has to land first.
     results.append(_sync_host_relay_env())
 
     start_results = _start_observability_stack()
@@ -10660,9 +10672,17 @@ def _ensure_observability_volume_dirs() -> list[OpsResult]:
     macOS never hits this -- Docker Desktop's VirtioFS/gRPC-FUSE sharing
     presents bind mounts as owned by whatever uid the container asks for --
     which is exactly why it went unnoticed until a plain Linux engine was
-    exercised. Runs as an early best-effort install step (same shape as
-    `_ensure_glitchtip_secrets_dir`, which fixed the sibling #3432 case for
-    `~/.nyxGPT/secrets`), so it never raises.
+    exercised. Best-effort (same shape as `_ensure_glitchtip_secrets_dir`,
+    which fixed the sibling #3432 case for `~/.nyxGPT/secrets`), so it never
+    raises: a directory that cannot be reconciled comes back as a failed
+    OpsResult carrying the `sudo chown` to run.
+
+    Called from `_reconcile_grafana_provisioning`, not from `install()`'s step
+    list, so it covers every path that starts the stack -- `nyxgpt ops
+    install`, the standalone `nyxgpt ops observability`, and the SRE
+    dashboard's observability toggle (`reconcile_observability`). Wiring it to
+    `install` alone left the other two starting the stack on root-owned
+    volumes, which is the Linux half of #3721.
     """
     if not _is_linux():
         return [OpsResult(True, "Not Linux; Docker Desktop handles bind-mount ownership")]
