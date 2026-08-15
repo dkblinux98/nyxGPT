@@ -1,0 +1,108 @@
+# The deployment's data tier (#3786). Before this, the k8s deployment shipped
+# only the api/web pairs: Pods ran, the web UI loaded, and nothing worked --
+# there was no Cassandra to hold sessions and no Ollama to answer, and the
+# host's own services are stopped by `nyxgpt ops install --kubernetes --local`.
+# "Pods Running" is not a working nyxGPT (the #2688 lesson).
+#
+# A StatefulSet rather than a Deployment: Cassandra is stateful, needs a
+# stable identity and its own durable volume, and must never be rolled by
+# starting a second Pod against the same data directory.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: cassandra
+  namespace: nyxgpt
+  labels:
+    app: cassandra
+    tier: data
+spec:
+  serviceName: cassandra
+  # Single node, deliberately: this is the local-first workstation deployment
+  # (see docs/kubernetes.md), matching the one-container Cassandra the
+  # native/Compose/Terraform modes run. Multi-node rings are out of scope here.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cassandra
+  template:
+    metadata:
+      labels:
+        app: cassandra
+        tier: data
+    spec:
+      # Cassandra flushes memtables and drains on shutdown; killing it at the
+      # default 30s risks leaving the commit log to be replayed on next start.
+      terminationGracePeriodSeconds: 120
+      containers:
+        - name: cassandra
+          # Keep this pin identical to docker-compose.yml's `cassandra`
+          # service, terraform/main.tf's docker_image.cassandra, and
+          # src/nyxgpt/ops.py's CASSANDRA_IMAGE -- see
+          # docs/docker-compose.md#image-pinning for the policy and how to
+          # bump all of them together.
+          image: cassandra:5.0.8
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: cql
+              containerPort: 9042
+          env:
+            # Must match the cluster name stamped into the data directory by
+            # every other deployment mode (ops.py's CASSANDRA_CLUSTER_NAME,
+            # docker-compose.yml, terraform/main.tf) -- Cassandra refuses to
+            # start against data saved under a different cluster name.
+            - name: CASSANDRA_CLUSTER_NAME
+              value: nyxgpt
+            # The image's default heap sizing is a fraction of the *node's*
+            # memory, which on a workstation cluster is far more than this
+            # Pod's limit -- the JVM would then get OOM-killed by the kubelet.
+            # Pin it under the limit below instead.
+            - name: MAX_HEAP_SIZE
+              value: 1G
+            - name: HEAP_NEWSIZE
+              value: 200M
+          readinessProbe:
+            # CQL-level readiness, not just an open port: the api's session
+            # store issues queries the moment the Service has endpoints, and
+            # 9042 accepts connections before the node can serve them.
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - cqlsh -e 'describe cluster' >/dev/null 2>&1
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 10
+            # First boot on a cold volume can take a couple of minutes on a
+            # workstation; allow for it rather than flapping the endpoint.
+            failureThreshold: 30
+          livenessProbe:
+            tcpSocket:
+              port: cql
+            # Deliberately long: restarting a Cassandra that is still
+            # replaying its commit log only makes the replay start over.
+            initialDelaySeconds: 300
+            periodSeconds: 30
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1536Mi
+            limits:
+              cpu: "2"
+              memory: 3Gi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/cassandra
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 10Gi
+        # No storageClassName: use whatever the cluster's default class is
+        # (kind's `standard`/local-path, Docker Desktop's `hostpath`,
+        # minikube's `standard`), so this applies unmodified on any of the
+        # local clusters docs/kubernetes.md supports.
