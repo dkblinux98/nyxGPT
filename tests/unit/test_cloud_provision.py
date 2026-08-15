@@ -133,8 +133,32 @@ def test_linux_bootstrap_installs_the_cli_into_a_venv_not_pip_user():
     # 668 externally-managed, making `pip install --user` a hard error.
     body = "\n".join(_linux_executable_lines())
 
-    assert "python3 -m venv" in body
+    assert '"$NYXGPT_PYTHON" -m venv "$CLI_VENV"' in body
     assert "pip install --user" not in body
+
+
+def test_linux_bootstrap_builds_the_cli_venv_on_a_python_that_meets_the_floor():
+    # Amazon Linux 2023's `python3` is 3.9 and nyxGPT's requires-python is
+    # ">=3.11", so a venv built from the distro default is one pip refuses to
+    # install nyxGPT into (#3782). Install an explicit 3.11+, then resolve by
+    # asking each candidate its own version.
+    body = "\n".join(_linux_executable_lines())
+
+    assert "for pkg in python3.13 python3.12 python3.11; do" in body
+    assert "for cand in python3.13 python3.12 python3.11 python3; do" in body
+    assert "sys.version_info >= (3, 11)" in body
+    # Bare `python3 -m venv` is exactly the defect; it must not come back.
+    assert "python3 -m venv" not in body
+
+
+def test_linux_bootstrap_fails_loudly_when_no_python_meets_the_floor():
+    # Criterion: a clear failure naming found/required versions, not an
+    # opaque pip error minutes later inside `ops install`.
+    body = "\n".join(_linux_executable_lines())
+
+    assert 'if [ -z "$NYXGPT_PYTHON" ]; then' in body
+    assert "no Python >= 3.11" in body
+    assert "requires-python is '>=3.11'" in body
 
 
 def test_linux_bootstrap_preflights_the_target_user_environment():

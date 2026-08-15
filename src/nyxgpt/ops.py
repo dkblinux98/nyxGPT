@@ -2521,6 +2521,155 @@ def _venv_site_packages(venv_dir: Path) -> Path | None:
     return matches[0] if matches else None
 
 
+# nyxGPT's `requires-python` floor, as a literal: a service venv has to be
+# built *before* anything is installed into it, so ops cannot read the
+# metadata of the package it is about to install.
+# `tests/unit/test_ops_service_python.py` asserts this stays in step with
+# pyproject.toml's `requires-python`.
+_MIN_SERVICE_PYTHON = (3, 11)
+
+# Explicitly-versioned interpreter names to look for on PATH, newest first,
+# when the interpreter ops itself runs under is below the floor. Bare
+# `python3` is tried last and only if it satisfies the floor: on Amazon Linux
+# 2023 it is 3.9, which is exactly how #3782 shipped a service venv that pip
+# then refused ("requires a different Python: 3.9.16 not in '>=3.11'").
+_SERVICE_PYTHON_NAMES = ("python3.13", "python3.12", "python3.11", "python3")
+
+
+def _interpreter_version(exe: str) -> tuple[int, int] | None:
+    """Return `exe`'s `(major, minor)`, or None if it cannot be run.
+
+    Asks the interpreter itself rather than parsing its filename: a
+    `python3.11` on PATH may be a wrapper, a symlink to something else, or
+    not executable at all.
+    """
+    cp = _run(
+        [exe, "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
+        check=False,
+        expected=True,
+    )
+    if cp.returncode != 0:
+        return None
+    parts = (cp.stdout or "").strip().split(".")
+    if len(parts) != 2:
+        return None
+    try:
+        return (int(parts[0]), int(parts[1]))
+    except ValueError:
+        return None
+
+
+def _running_interpreter() -> tuple[str, tuple[int, int]]:
+    """Return the interpreter ops itself runs under, and its `(major, minor)`.
+
+    Read from `sys` rather than by running a subprocess -- and factored out
+    so a smoke/test can stand in a different interpreter for it.
+    """
+    return (sys.executable, (sys.version_info[0], sys.version_info[1]))
+
+
+def _service_python_candidates() -> list[tuple[str, tuple[int, int]]]:
+    """Return the interpreters that could build a service venv, best first.
+
+    Order:
+
+    1. `sys.executable` -- the interpreter ops itself runs under. It is
+       already known to satisfy `requires-python` (it is running nyxGPT), and
+       on a cloud instance it is the one provisioning installed for exactly
+       that reason. Its version is read from `sys.version_info` rather than a
+       subprocess, so selection costs nothing in the common case.
+    2. `python3.13`/`python3.12`/`python3.11` from PATH, newest first.
+    3. Bare `python3`, last -- it is the distro's choice, not nyxGPT's.
+
+    Every entry carries the version actually reported by that interpreter;
+    entries below the floor are kept (the caller names them in its failure
+    message) and duplicates of the same real path are dropped.
+    """
+    candidates: list[tuple[str, tuple[int, int]]] = []
+    seen: set[str] = set()
+
+    def _add(exe: str | None, version: tuple[int, int] | None) -> None:
+        if not exe:
+            return
+        try:
+            key = os.path.realpath(exe)
+        except OSError:  # pragma: no cover - realpath on a live path
+            key = exe
+        if key in seen:
+            return
+        seen.add(key)
+        if version is None:
+            version = _interpreter_version(exe)
+        if version is None:
+            return
+        candidates.append((exe, version))
+
+    _add(*_running_interpreter())
+    for name in _SERVICE_PYTHON_NAMES:
+        _add(_which(name), None)
+    return candidates
+
+
+def _format_python_version(version: tuple[int, int]) -> str:
+    return f"{version[0]}.{version[1]}"
+
+
+def _no_service_python_details(candidates: list[tuple[str, tuple[int, int]]]) -> str:
+    """Explain a failed interpreter search, naming found and required versions."""
+    floor = _format_python_version(_MIN_SERVICE_PYTHON)
+    if candidates:
+        found = "\n".join(f"  {exe} (Python {_format_python_version(v)})" for exe, v in candidates)
+    else:
+        found = "  (no working Python interpreter found on PATH)"
+    return (
+        f"nyxGPT requires Python >= {floor}; none of the interpreters on this machine qualify.\n"
+        f"Found:\n{found}\n"
+        f"Install a Python >= {floor} and re-run `nyxgpt ops install`:\n"
+        "  Amazon Linux / Fedora / RHEL: sudo dnf install -y python3.11 python3.11-pip\n"
+        "  Debian / Ubuntu:              sudo apt-get install -y python3.11 python3.11-venv"
+    )
+
+
+def _create_service_venv(venv_dir: Path, service: str) -> OpsResult:
+    """Create `venv_dir` with an interpreter that satisfies `requires-python`.
+
+    Bare `python3` is never assumed sufficient (#3782): Amazon Linux 2023's
+    is 3.9, so `python3 -m venv` there produced a venv pip then refused to
+    install nyxGPT into -- a failure that surfaced as an opaque `pip install
+    ... (rc=1)` at the end of a cloud deploy.
+
+    Candidates are tried in `_service_python_candidates` order and the first
+    one that both satisfies the floor *and* successfully creates the venv
+    wins -- so a `python3.11` that is present but has no working `venv`/
+    `ensurepip` (Debian's split `python3.11-venv` package) falls through to
+    the next candidate instead of failing the install.
+    """
+    candidates = _service_python_candidates()
+    usable = [(exe, v) for exe, v in candidates if v >= _MIN_SERVICE_PYTHON]
+    if not usable:
+        return OpsResult(
+            False,
+            f"No Python >= {_format_python_version(_MIN_SERVICE_PYTHON)} "
+            f"available to create the {service} venv",
+            _no_service_python_details(candidates),
+        )
+
+    failures: list[str] = []
+    for exe, version in usable:
+        cp = _run([exe, "-m", "venv", str(venv_dir)], check=False)
+        if cp.returncode == 0:
+            return OpsResult(
+                True,
+                f"Created {service} venv with Python {_format_python_version(version)}",
+                f"{exe} -> {venv_dir}",
+            )
+        failures.append(
+            f"{exe} (Python {_format_python_version(version)}):\n{_output_excerpt(cp).strip()}"
+        )
+
+    return OpsResult(False, f"Failed to create {service} venv", "\n".join(failures))
+
+
 def _write_executable(path: Path, content: str) -> None:
     """Write `content` to `path` and mark it executable (0o755)."""
     _ensure_dir(path.parent)
@@ -2633,7 +2782,10 @@ def _install_native_api_systemd() -> list[OpsResult]:
 
     Linux twin of `_install_homebrew_api`: takes the `nyxgpt-api` source
     tarball (`pyproject.toml` + `src/nyxgpt/` + `example.config.ini`) into
-    `~/.nyxGPT/opt/nyxgpt-api`, creates a plain venv there, `pip install`s
+    `~/.nyxGPT/opt/nyxgpt-api`, creates a venv there with an interpreter that
+    satisfies nyxGPT's `requires-python` (`_create_service_venv`, #3782 --
+    the distro's bare `python3` is 3.9 on Amazon Linux 2023 and pip refuses
+    the artifact in a venv built from it), `pip install`s
     that tarball into it, copies `example.config.ini` next to the installed
     package (`config_wizard`'s schema-source resolution finds it there with
     no repo root above the venv, mirroring the brew formula's own fix,
@@ -2660,10 +2812,9 @@ def _install_native_api_systemd() -> list[OpsResult]:
         return [OpsResult(False, "Could not obtain the nyxgpt-api artifact", str(e))]
     venv_dir = root / "venv"
 
-    cp = _run(["python3", "-m", "venv", str(venv_dir)], check=False)
-    if cp.returncode != 0:
-        details = _output_excerpt(cp)
-        results.append(OpsResult(False, "Failed to create nyxgpt-api venv", details.strip()))
+    venv_result = _create_service_venv(venv_dir, "nyxgpt-api")
+    results.append(venv_result)
+    if not venv_result.ok:
         return results
 
     pip = str(venv_dir / "bin" / "pip")

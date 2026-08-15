@@ -156,6 +156,36 @@ def test_provision_script_installs_the_pinned_published_release():
     assert 'pip" install --quiet "nyxgpt==${NYXGPT_VERSION}"' in script
 
 
+def test_provision_script_resolves_a_python_that_meets_the_requires_python_floor():
+    """#3782: Amazon Linux 2023's `python3` is 3.9 -- pip refuses nyxGPT in it.
+
+    The owner's rc9 run got as far as `pip install ...nyxgpt-api-3.0.0rc9.tar.gz
+    (rc=1)` because a 3.9 venv cannot satisfy `requires-python = ">=3.11"`.
+    Provisioning must install and then *resolve* an interpreter that does,
+    asking each candidate its own version rather than trusting its name.
+    """
+    script = cloud_deploy.render_provision_script(cloud_deploy.resolve_plan(_args()))
+
+    assert "for pkg in python3.13 python3.12 python3.11; do" in script
+    assert "for cand in python3.13 python3.12 python3.11 python3; do" in script
+    assert "sys.version_info >= (3, 11)" in script
+    # The venv is built from the resolved interpreter, never from a bare
+    # `python3` assumed to be new enough.
+    assert '"$PY" -m venv "$HOME/.nyxGPT/venv"' in script
+    assert "python3 -m venv" not in script
+    # ...and it is resolved before anything uses it.
+    assert script.index("for cand in python3.13") < script.index('"$PY" -m venv')
+
+
+def test_provision_script_fails_fast_when_no_python_meets_the_floor():
+    """A clear failure naming found/required versions, not an opaque pip rc=1."""
+    script = cloud_deploy.render_provision_script(cloud_deploy.resolve_plan(_args()))
+
+    assert 'if [ -z "$PY" ]; then' in script
+    assert "no Python >= 3.11 is installed or installable" in script
+    assert script.index("no Python >= 3.11") < script.index("run_nyxgpt ops install")
+
+
 def test_provision_script_installs_node_before_ops_install():
     """#3761: without npm, `ops install`'s web step fails and the deploy has no web UI.
 
