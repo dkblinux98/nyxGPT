@@ -414,8 +414,9 @@ splitting:
   silently no-opping.
 - This isn't necessarily permanent: if Ollama gains a supported multi-instance
   or shared-storage story (e.g. a documented safe-concurrent-pull mode, or a
-  read-only replica mode), revisit this analysis. Until then, Ollama keeps
-  running on the host outside this deployment, as already documented above.
+  read-only replica mode), revisit this analysis. Until then, the deployment
+  runs exactly one Ollama StatefulSet (see [Data and LLM
+  tier](#data-and-llm-tier)) rather than a stable/canary pair.
 
 ### The deploy -> gate -> promote cycle
 
