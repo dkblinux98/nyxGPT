@@ -1782,6 +1782,156 @@ def test_run_logs_cmd_rc_stderr_tail_on_nonzero_exit_when_check_true(caplog):
     assert "boom" in records[0].stderr_tail
 
 
+# --- #3783: a failed subprocess's own output must reach the log message ---
+
+
+@pytest.mark.unit
+def test_run_includes_subprocess_stderr_in_failure_message(caplog):
+    # #3783: the rc9 cloud round lost pip's "requires a different Python"
+    # refusal because ops logged only the exit code and the argv.
+    pip_error = "ERROR: Package 'nyxgpt-api' requires a different Python: " "3.9.16 not in '>=3.11'"
+    with patch.object(ops.subprocess, "run") as run:
+        run.return_value = subprocess.CompletedProcess(
+            args=["pip", "install", "nyxgpt-api.tar.gz"],
+            returncode=1,
+            stdout="Processing nyxgpt-api.tar.gz\n",
+            stderr=pip_error + "\n",
+        )
+        with caplog.at_level("DEBUG", logger="nyxgpt.ops"):
+            ops._run(["pip", "install", "nyxgpt-api.tar.gz"], check=False)
+
+    records = [r for r in caplog.records if "Subprocess exited non-zero" in r.getMessage()]
+    assert records, "Expected _run to log the non-zero exit"
+    message = records[0].getMessage()
+    assert pip_error in message, "the diagnostic stderr must be in the message, not only in extra"
+    assert "Processing nyxgpt-api.tar.gz" in message, "stdout belongs in the excerpt too"
+    assert pip_error in records[0].output_excerpt
+
+
+@pytest.mark.unit
+def test_run_failure_message_bounds_long_output_with_head_tail_marker(caplog):
+    # Bounded, not unbounded: head + tail + an explicit elision marker, and
+    # never zero -- the stderr that says why is the last thing emitted.
+    stdout = "\n".join(f"progress line {i}" for i in range(500))
+    with patch.object(ops.subprocess, "run") as run:
+        run.return_value = subprocess.CompletedProcess(
+            args=["npm", "ci"], returncode=1, stdout=stdout, stderr="EBADENGINE unsupported\n"
+        )
+        with caplog.at_level("DEBUG", logger="nyxgpt.ops"):
+            ops._run(["npm", "ci"], check=False)
+
+    message = [r for r in caplog.records if "Subprocess exited non-zero" in r.getMessage()][
+        0
+    ].getMessage()
+    assert "progress line 0" in message, "head of the output is kept"
+    assert "progress line 499" in message, "tail of the output is kept"
+    assert "progress line 250" not in message, "the middle is elided"
+    assert "lines omitted" in message, "the elision is marked, never silent"
+    assert "EBADENGINE unsupported" in message, "stderr is never crowded out by stdout volume"
+    assert message.count("\n") < 60, "the excerpt stays bounded"
+
+
+@pytest.mark.unit
+def test_bounded_output_keeps_short_output_verbatim():
+    assert ops._bounded_output("only line") == "only line"
+    assert ops._bounded_output("a\nb\nc") == "a\nb\nc"
+    assert ops._bounded_output(None) == ""
+    assert ops._bounded_output("   \n  ") == ""
+
+
+@pytest.mark.unit
+def test_bounded_output_clips_a_single_pathological_line():
+    excerpt = ops._bounded_output("x" * 5000)
+    assert len(excerpt) < 5000
+    assert excerpt.endswith("... [line truncated]")
+
+
+@pytest.mark.unit
+def test_output_excerpt_combines_both_streams():
+    cp = subprocess.CompletedProcess(args=["x"], returncode=1, stdout="out\n", stderr="err\n")
+    assert ops._output_excerpt(cp) == "out\nerr"
+    assert (
+        ops._output_excerpt(
+            subprocess.CompletedProcess(args=["x"], returncode=1, stdout="", stderr="err\n")
+        )
+        == "err"
+    )
+
+
+@pytest.mark.unit
+def test_emit_results_inlines_failure_details_into_the_warning_message(caplog):
+    # #3783: "ops: install failed: Failed to pip install nyxgpt-api" named the
+    # step and dropped the reason, which sat unread in the structured extra.
+    pip_error = "ERROR: Package requires a different Python: 3.9.16 not in '>=3.11'"
+    results = [ops.OpsResult(False, "Failed to pip install nyxgpt-api", pip_error)]
+
+    with caplog.at_level("DEBUG", logger="nyxgpt.ops"):
+        ops._emit_results("install", results)
+
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert pip_error in warnings[0].getMessage()
+
+
+@pytest.mark.unit
+def test_emit_results_bounds_a_huge_failure_detail(caplog):
+    results = [
+        ops.OpsResult(
+            False, "Failed to install web deps", "\n".join(f"line {i}" for i in range(400))
+        )
+    ]
+
+    with caplog.at_level("DEBUG", logger="nyxgpt.ops"):
+        ops._emit_results("install", results)
+
+    message = [r for r in caplog.records if r.levelname == "WARNING"][0].getMessage()
+    assert "line 0" in message and "line 399" in message
+    assert "lines omitted" in message
+    assert "line 200" not in message
+
+
+@pytest.mark.unit
+def test_run_steps_step_raising_calledprocesserror_reports_the_output(capsys, caplog):
+    # str(CalledProcessError) is "Command ... returned non-zero exit status 1."
+    # -- on its own it says nothing about what went wrong (#3783).
+    def _boom():
+        raise subprocess.CalledProcessError(
+            1, ["pip", "install", "x"], output="Processing x\n", stderr="ERROR: no such package\n"
+        )
+
+    with caplog.at_level("DEBUG", logger="nyxgpt.ops"):
+        results, _slow = ops._run_steps("install", [("pip step", _boom)], quiet=True)
+
+    assert len(results) == 1 and results[0].ok is False
+    assert "ERROR: no such package" in (results[0].details or "")
+    assert "ERROR: no such package" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_emit_results_leaves_a_successful_result_message_alone(caplog):
+    with caplog.at_level("DEBUG", logger="nyxgpt.ops"):
+        ops._emit_results("install", [ops.OpsResult(True, "installed", "/some/path")])
+
+    info = [r for r in caplog.records if r.levelname == "INFO"][0]
+    assert info.getMessage() == "ops: install ok: installed"
+
+
+@pytest.mark.unit
+def test_run_expected_returncode_message_stays_clean(caplog):
+    # The #3574 "expected exit" wording is a success path -- it must not grow
+    # a subprocess-output block.
+    with patch.object(ops.subprocess, "run") as run:
+        run.return_value = subprocess.CompletedProcess(
+            args=["manage", "createsuperuser"], returncode=1, stdout="", stderr="already exists\n"
+        )
+        with caplog.at_level("DEBUG", logger="nyxgpt.ops"):
+            ops._run(["manage", "createsuperuser"], check=False, expected_returncodes={1})
+
+    records = [r for r in caplog.records if r.levelname == "INFO"]
+    assert records
+    assert "--- subprocess output ---" not in records[0].getMessage()
+
+
 @pytest.mark.unit
 def test_run_expected_true_logs_debug_not_warning_on_nonzero_exit_check_false(caplog):
     with patch.object(ops.subprocess, "run") as run:

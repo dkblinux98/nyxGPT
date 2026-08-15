@@ -587,6 +587,20 @@ All requests have a unique ID for tracing:
 2026-01-03 10:00:00 INFO nyxgpt.app: Health check passed
 ```
 
+**Failed ops subprocesses:**
+
+A `nyxgpt ops` step that fails because a command it ran failed logs that
+command's own output with it, between `--- subprocess output ---` markers, so
+the reason is in the log rather than only on a re-run:
+```
+WARNING nyxgpt.ops: Subprocess exited non-zero (rc=1): .../venv/bin/pip install nyxgpt-api-3.0.0.tar.gz
+--- subprocess output ---
+ERROR: Package 'nyxgpt-api' requires a different Python: 3.9.16 not in '>=3.11'
+--- end subprocess output ---
+```
+Long output is reported head-plus-tail with a `... [N lines omitted] ...`
+marker; see [ops.md](ops.md#live-progress-output).
+
 ### Error Signatures
 
 **Connection errors:**

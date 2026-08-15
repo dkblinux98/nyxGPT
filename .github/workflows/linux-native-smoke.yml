@@ -1,14 +1,24 @@
 name: Linux Native Smoke
 
-# Exercises the Linux-native (systemd --user) install path end-to-end via
-# scripts/systemd-native-smoke.sh: `nyxgpt ops install` -> every unit active
-# and api/web responding -> diagnostics -> `nyxgpt ops down` (#3508). This is
-# the review agent's only way to see systemd-path regressions -- unit tests
-# mock systemctl; this runs the real thing on a real systemd userland.
+# Two jobs, answering two different questions about the Linux ops path:
+#
+#   linux-native-smoke  Does the Linux-native (systemd --user) install work
+#                       end-to-end? Drives scripts/systemd-native-smoke.sh:
+#                       `nyxgpt ops install` -> every unit active and api/web
+#                       responding -> diagnostics -> `nyxgpt ops down` (#3508).
+#                       This is the review agent's only way to see systemd-path
+#                       regressions -- unit tests mock systemctl; this runs the
+#                       real thing on a real systemd userland.
+#   ops-subprocess-output  When an ops subprocess fails, can an operator read
+#                       WHY from the log alone? Runs a real failing `pip
+#                       install` through `ops._run` and asserts pip's own
+#                       refusal is in the message -- then injects the pre-fix
+#                       behaviour and asserts the check catches it (#3783,
+#                       fault-injection pattern from macos-brew-smoke.yml).
 #
 # Scoped like terraform-local-smoke.yml: a full native install is expensive,
 # so it runs only when the ops/self-heal layer, the systemd unit templates,
-# the smoke script, or this workflow change.
+# the smoke scripts, or this workflow change.
 on:
   pull_request:
     paths:
@@ -16,6 +26,7 @@ on:
       - 'src/nyxgpt/self_heal.py'
       - 'ops/systemd/**'
       - 'scripts/systemd-native-smoke.sh'
+      - 'scripts/ops-subprocess-output-smoke.py'
       - '.github/workflows/linux-native-smoke.yml'
   push:
     paths:
@@ -23,6 +34,7 @@ on:
       - 'src/nyxgpt/self_heal.py'
       - 'ops/systemd/**'
       - 'scripts/systemd-native-smoke.sh'
+      - 'scripts/ops-subprocess-output-smoke.py'
       - '.github/workflows/linux-native-smoke.yml'
 
 # Read-only workflow: the smoke run only checks out the repo and drives the
@@ -67,3 +79,27 @@ jobs:
             echo "--- nyxgpt ops logs $svc ---"
             nyxgpt ops logs "$svc" --tail 100 || true
           done
+
+  # Cheap (no install, no services), so it is not gated on the release branch
+  # like the smoke above: every PR touching ops.py should see it.
+  ops-subprocess-output:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install nyxgpt (editable)
+        run: |
+          python -m pip install --upgrade pip setuptools
+          pip install -e .
+
+      # Reproduces the rc9 cloud-round failure for real -- a pip refusal on an
+      # unsatisfiable requires-python -- and fails if its text does not reach
+      # the ops failure log. The script's second half suppresses the excerpt to
+      # prove the check would have caught the pre-fix behaviour.
+      - name: Real failing subprocess must report its own output
+        run: python3 scripts/ops-subprocess-output-smoke.py
