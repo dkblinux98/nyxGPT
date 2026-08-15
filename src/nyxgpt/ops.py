@@ -6527,7 +6527,26 @@ def install(args) -> int:
     return 0 if ok else 2
 
 
-def _wait_for_stack_healthy(timeout: float = 180.0, poll_interval: float = 3.0) -> bool:
+def _pending_components(excluded: set[str]) -> list[str]:
+    """Desired components not yet reporting healthy, minus `excluded`.
+
+    Shared by the health-wait's poll and its timeout message so the two can't
+    disagree about what "pending" means -- the timeout used to name nothing at
+    all, which cost a full CI cycle to work out (#3508).
+    """
+    return sorted(
+        s.service
+        for s in self_heal.list_component_status()
+        if s.desired and not s.healthy and s.service not in excluded
+    )
+
+
+def _wait_for_stack_healthy(
+    timeout: float = 180.0,
+    poll_interval: float = 3.0,
+    *,
+    skip_observability: bool = False,
+) -> bool:
     """Poll every desired component's health until all report healthy, or `timeout` elapses.
 
     Reuses `self_heal.list_component_status()` -- the same cross-mode
@@ -6537,13 +6556,20 @@ def _wait_for_stack_healthy(timeout: float = 180.0, poll_interval: float = 3.0) 
     with `desired=False` (an operator-disabled observability profile, or one
     marked intentionally stopped) is excluded, same as `heal_now`'s automatic
     pass.
+
+    `skip_observability` additionally excludes the observability Compose
+    services, because `--skip-observability` deliberately does not start them
+    while leaving their config.ini feature flags on -- so self-heal keeps
+    reporting them `desired=True, state="absent"` (that's `_absent_desired_
+    statuses`, and it is the correct answer to "what does the operator want
+    running"). Without this, `nyxgpt up --skip-observability` could never
+    return 0: it would wait the full timeout for containers the same command
+    chose not to start, and exit 2 on a perfectly healthy stack (#3508).
     """
+    excluded = self_heal.observability_services() if skip_observability else set()
     deadline = time.monotonic() + timeout
     while True:
-        pending = [
-            s.service for s in self_heal.list_component_status() if s.desired and not s.healthy
-        ]
-        if not pending:
+        if not _pending_components(excluded):
             return True
         if time.monotonic() >= deadline:
             return False
@@ -6562,7 +6588,8 @@ def up(args) -> int:
 
     Pass `--no-wait` to return as soon as `install()` finishes, without
     waiting for component health; `--timeout` controls how long to wait
-    before giving up (default 180s).
+    before giving up (default 180s). `--skip-observability` is honored by the
+    wait as well as the install -- see `_wait_for_stack_healthy`.
 
     Returns whatever `install()` returned if it failed or `--no-wait` was
     passed; 2 if the health-wait times out; 0 once every desired component is
@@ -6572,11 +6599,19 @@ def up(args) -> int:
     if rc != 0 or getattr(args, "no_wait", False):
         return rc
 
+    skip_observability = bool(getattr(args, "skip_observability", False))
     print("\nWaiting for components to report healthy...")
-    if not _wait_for_stack_healthy(timeout=getattr(args, "timeout", 180.0)):
+    if not _wait_for_stack_healthy(
+        timeout=getattr(args, "timeout", 180.0),
+        skip_observability=skip_observability,
+    ):
+        pending = _pending_components(
+            self_heal.observability_services() if skip_observability else set()
+        )
+        still = f" Still unhealthy: {', '.join(pending)}." if pending else ""
         print(
-            "WARNING: not every component reported healthy within the timeout -- "
-            "run `nyxgpt ops status` or `nyxgpt self-heal status` for details.",
+            "WARNING: not every component reported healthy within the timeout --"
+            f"{still} run `nyxgpt ops status` or `nyxgpt self-heal status` for details.",
             file=sys.stderr,
         )
         return 2
@@ -6587,7 +6622,7 @@ def up(args) -> int:
             "`nyxgpt ops port-forward` in another terminal, then open "
             f"{WEB_URL} (see docs/kubernetes.md#4-verify)."
         )
-        if not getattr(args, "skip_observability", False):
+        if not skip_observability:
             print(
                 "Observability (Grafana, Prometheus, Jaeger, GlitchTip) runs in the cluster "
                 "too -- `nyxgpt ops port-forward --target observability` publishes all four "
