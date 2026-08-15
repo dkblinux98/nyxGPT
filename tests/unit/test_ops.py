@@ -78,7 +78,7 @@ def test_ops_install_returns_zero_when_all_ok(capsys):
         patch.object(ops, "_reconcile_grafana_provisioning", return_value=ok_results) as obs,
         patch.object(ops, "_provision_glitchtip", return_value=ok_results),
     ):
-        rc = ops.install(MagicMock(skip_observability=False, terraform=False, kubernetes=False))
+        rc = ops.install(MagicMock(dev=False, skip_observability=False, terraform=False, kubernetes=False))
         assert rc == 0
         out = capsys.readouterr().out
         assert "[OK]" in out
@@ -118,7 +118,7 @@ def test_ops_install_returns_nonzero_when_any_fail(capsys):
         ),
         patch.object(ops, "_provision_glitchtip", return_value=[ops.OpsResult(True, "ok")]),
     ):
-        rc = ops.install(MagicMock(skip_observability=False, terraform=False, kubernetes=False))
+        rc = ops.install(MagicMock(dev=False, skip_observability=False, terraform=False, kubernetes=False))
         assert rc == 2
         out = capsys.readouterr().out
         assert "[FAIL]" in out
@@ -146,7 +146,7 @@ def test_ops_install_skip_observability_flag_skips_the_step(capsys):
         patch.object(ops, "sync_env_from_config", return_value=ok_results),
         patch.object(ops, "_reconcile_grafana_provisioning") as obs,
     ):
-        rc = ops.install(MagicMock(skip_observability=True, terraform=False, kubernetes=False))
+        rc = ops.install(MagicMock(dev=False, skip_observability=True, terraform=False, kubernetes=False))
         assert rc == 0
         obs.assert_not_called()
 
@@ -195,7 +195,7 @@ def test_ops_install_step_order_reconciles_before_creating(capsys):
         ),
         patch.object(ops, "sync_env_from_config", side_effect=_record("env sync")),
     ):
-        rc = ops.install(MagicMock(skip_observability=True, terraform=False, kubernetes=False))
+        rc = ops.install(MagicMock(dev=False, skip_observability=True, terraform=False, kubernetes=False))
         assert rc == 0
 
     # Syncing packaged ops resources comes first (everything else assumes the
@@ -234,7 +234,7 @@ def test_ops_install_clears_intentional_stop_markers_for_core_components():
         patch.object(ops, "sync_env_from_config", return_value=ok_results),
         patch.object(ops.self_heal, "clear_intentionally_stopped") as clear_stopped,
     ):
-        rc = ops.install(MagicMock(skip_observability=True, terraform=False, kubernetes=False))
+        rc = ops.install(MagicMock(dev=False, skip_observability=True, terraform=False, kubernetes=False))
         assert rc == 0
 
     assert clear_stopped.call_args_list == [
@@ -5069,7 +5069,7 @@ def test_ops_install_catches_exception_from_a_step(capsys):
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
         patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok_results),
     ):
-        rc = ops.install(MagicMock(terraform=False, kubernetes=False))
+        rc = ops.install(MagicMock(dev=False, terraform=False, kubernetes=False))
         assert rc == 2
         out = capsys.readouterr().out
         assert "ops install failed: web deps" in out
@@ -5386,7 +5386,7 @@ def test_ops_install_logs_start_and_summary(caplog):
         patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok_results),
         caplog.at_level("INFO", logger="nyxgpt.ops"),
     ):
-        rc = ops.install(MagicMock(terraform=False, kubernetes=False))
+        rc = ops.install(MagicMock(dev=False, terraform=False, kubernetes=False))
 
     assert rc == 0
     messages = [r.getMessage() for r in caplog.records]
@@ -5411,7 +5411,7 @@ def test_ops_install_logs_error_when_step_raises(caplog):
         patch.object(ops, "_cleanup_stale_log_symlinks", return_value=[]),
         caplog.at_level("INFO", logger="nyxgpt.ops"),
     ):
-        rc = ops.install(MagicMock(terraform=False, kubernetes=False))
+        rc = ops.install(MagicMock(dev=False, terraform=False, kubernetes=False))
 
     assert rc == 2
     error_records = [r for r in caplog.records if r.levelname == "ERROR"]
@@ -13055,7 +13055,7 @@ def test_ops_install_default_verbose_prints_step_announcements(capsys):
         )
     assert rc == 0
     out = capsys.readouterr().out
-    assert "[1/18] sync packaged ops resources..." in out
+    assert "[1/19] sync packaged ops resources..." in out
 
 
 @pytest.mark.unit
@@ -13138,7 +13138,7 @@ def test_ops_up_returns_install_failure_without_waiting(monkeypatch):
     waited = []
     monkeypatch.setattr(ops, "_wait_for_stack_healthy", lambda **kw: waited.append(kw) or True)
 
-    rc = ops.up(MagicMock(no_wait=False, timeout=180.0, kubernetes=False))
+    rc = ops.up(MagicMock(dev=False, no_wait=False, timeout=180.0, kubernetes=False))
 
     assert rc == 2
     assert waited == []
@@ -13151,7 +13151,7 @@ def test_ops_up_no_wait_skips_health_wait_and_url(monkeypatch, capsys):
     waited = []
     monkeypatch.setattr(ops, "_wait_for_stack_healthy", lambda **kw: waited.append(kw) or True)
 
-    rc = ops.up(MagicMock(no_wait=True, timeout=180.0, kubernetes=False))
+    rc = ops.up(MagicMock(dev=False, no_wait=True, timeout=180.0, kubernetes=False))
 
     assert rc == 0
     assert waited == []
@@ -13165,7 +13165,7 @@ def test_ops_up_waits_then_prints_web_url(monkeypatch, capsys):
     calls = []
     monkeypatch.setattr(ops, "_wait_for_stack_healthy", lambda **kw: calls.append(kw) or True)
 
-    rc = ops.up(MagicMock(no_wait=False, timeout=42.0, kubernetes=False))
+    rc = ops.up(MagicMock(dev=False, no_wait=False, timeout=42.0, kubernetes=False))
 
     assert rc == 0
     assert calls == [{"timeout": 42.0}]
@@ -13179,7 +13179,7 @@ def test_ops_up_times_out_returns_nonzero(monkeypatch, capsys):
     monkeypatch.setattr(ops, "install", lambda args: 0)
     monkeypatch.setattr(ops, "_wait_for_stack_healthy", lambda **kw: False)
 
-    rc = ops.up(MagicMock(no_wait=False, timeout=180.0, kubernetes=False))
+    rc = ops.up(MagicMock(dev=False, no_wait=False, timeout=180.0, kubernetes=False))
 
     assert rc == 2
     captured = capsys.readouterr()
@@ -13195,7 +13195,7 @@ def test_ops_up_kubernetes_mode_prints_port_forward_instructions(monkeypatch, ca
     monkeypatch.setattr(ops, "install", lambda args: 0)
     monkeypatch.setattr(ops, "_wait_for_stack_healthy", lambda **kw: True)
 
-    rc = ops.up(MagicMock(no_wait=False, timeout=180.0, kubernetes=True))
+    rc = ops.up(MagicMock(dev=False, no_wait=False, timeout=180.0, kubernetes=True))
 
     assert rc == 0
     out = capsys.readouterr().out
@@ -13212,7 +13212,7 @@ def test_ops_up_kubernetes_mode_wraps_kubectl_not_raw(monkeypatch, capsys):
     monkeypatch.setattr(ops, "install", lambda args: 0)
     monkeypatch.setattr(ops, "_wait_for_stack_healthy", lambda **kw: True)
 
-    ops.up(MagicMock(no_wait=False, timeout=180.0, kubernetes=True))
+    ops.up(MagicMock(dev=False, no_wait=False, timeout=180.0, kubernetes=True))
 
     out = capsys.readouterr().out
     assert "nyxgpt ops port-forward" in out

@@ -101,6 +101,16 @@ _ALLOWLIST: dict[str, set[str]] = {
         "REPO_ROOT,",
         'REPO_ROOT / "web",',
         'fingerprint_paths=[REPO_ROOT / "web"],',
+        # _dev_checkout_root and the two messages that explain its answer
+        # (#3789): dev mode is checkout-only by definition -- it installs
+        # the api editable from the working tree -- so this is the same
+        # "is a checkout present at all" detection as
+        # `_has_vendorable_source` above, plus the errors that name the
+        # path that turned out not to be one. The artifact path (the
+        # repo-less default) is unaffected by all three.
+        "return REPO_ROOT",
+        'f"nyxgpt is running from an installed package ({REPO_ROOT} has no "',
+        'f"installed package ({REPO_ROOT} has no pyproject.toml/src/nyxgpt/web).\\n"',
         # Kubernetes local deploy: k8s/*.yaml manifests, same reasoning.
         'K8S_DIR = REPO_ROOT / "k8s"',
         "context: Path = REPO_ROOT,",
