@@ -410,6 +410,10 @@ def test_install_kubernetes_steps_records_success():
         patch.object(ops, "_kubectl_apply_kustomization", return_value=ok),
         patch.object(ops, "_wait_for_k8s_data_tier", return_value=ok),
         patch.object(ops, "_k8s_stack_health", return_value=ok),
+        # Observability is applied in this mode too (#3787).
+        patch.object(ops, "_sync_packaged_resources", return_value=ok),
+        patch.object(ops, "_apply_k8s_observability", return_value=ok),
+        patch.object(ops, "_k8s_observability_health", return_value=ok),
     ):
         results = ops.install_kubernetes_local(api_key="k")
     assert all(r.ok for r in results)
@@ -450,7 +454,7 @@ def test_observability_cli_records_success_action():
             ops, "_reconcile_grafana_provisioning", return_value=[ops.OpsResult(True, "up")]
         ),
     ):
-        rc = ops.observability(MagicMock())
+        rc = ops.observability(MagicMock(kubernetes=False))
     assert rc == 0
     after = _ops_actions_total("observability", "observability", "success")
     assert after == before + 1

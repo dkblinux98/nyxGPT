@@ -1,0 +1,193 @@
+# Promtail as a DaemonSet, shipping container logs to Loki.
+#
+# Compose-mode promtail tails log FILES the host/app containers write
+# (docker/promtail-config.yml's static_configs). In a cluster there are no
+# such files: every process logs to stdout and the kubelet writes those
+# streams under /var/log/pods in CRI format. So this config discovers Pods
+# through the Kubernetes API instead -- but it keeps the same LABEL contract
+# the Grafana dashboards and curated Explore links query on: `job="nyxgpt"`
+# plus a bounded `service_name` (api, web, grafana, loki, ...), and the same
+# level/logger/timestamp extraction (`nyxgpt.logging.DEFAULT_FMT`) as
+# docker/promtail-config.yml. Keep that regex in sync with that file and
+# tests/unit/test_log_aggregation_stack.py.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: promtail
+  namespace: nyxgpt
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nyxgpt-promtail
+rules:
+  # Read-only Pod discovery, the minimum `kubernetes_sd_configs: role: pod`
+  # needs. Cluster-scoped because a DaemonSet Pod must resolve the metadata
+  # of every Pod scheduled on its node, but promtail's own scrape config
+  # keeps only the `nyxgpt` namespace.
+  - apiGroups: [""]
+    resources: ["nodes", "nodes/proxy", "services", "endpoints", "pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nyxgpt-promtail
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nyxgpt-promtail
+subjects:
+  - kind: ServiceAccount
+    name: promtail
+    namespace: nyxgpt
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: promtail-config
+  namespace: nyxgpt
+data:
+  promtail-config.yml: |
+    server:
+      http_listen_port: 9080
+      grpc_listen_port: 0
+
+    positions:
+      filename: /run/promtail/positions.yaml
+
+    clients:
+      - url: http://loki:3100/loki/api/v1/push
+
+    scrape_configs:
+      - job_name: nyxgpt-pods
+        kubernetes_sd_configs:
+          - role: pod
+        pipeline_stages:
+          # Kubelet writes CRI-formatted lines ("<ts> stdout F <content>");
+          # unwrap them before nyxGPT's own format can be parsed out.
+          - cri: {}
+          - regex:
+              expression: '^(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})(?:,\d{3})? (?P<level>\w+) (?:\[(?P<request_id>[^\]]*)\] )?(?P<logger>\S+): (?P<message>.*)$'
+          - labels:
+              level:
+              logger:
+          - timestamp:
+              source: timestamp
+              format: "2006-01-02 15:04:05"
+              # nyxgpt.logging writes UTC (see configure_logging's
+              # `formatter.converter = time.gmtime`) -- must stay UTC or
+              # every line shifts by the node's offset and falls outside
+              # the curated Explore windows (#3349).
+              location: UTC
+        relabel_configs:
+          # Only this node's Pods, and only nyxGPT's namespace.
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            target_label: __host__
+          - action: keep
+            source_labels: [__meta_kubernetes_namespace]
+            regex: nyxgpt
+          - action: replace
+            target_label: job
+            replacement: nyxgpt
+          - action: replace
+            source_labels: [__meta_kubernetes_pod_label_app]
+            target_label: service_name
+          # The api/web Pods carry the canary-pool app label
+          # (`nyxgpt-api-canary-pool`); the dashboards query the bare
+          # component name, same as Compose mode's `service_name: api`.
+          - action: replace
+            source_labels: [service_name]
+            regex: 'nyxgpt-(.+)-canary-pool'
+            target_label: service_name
+            replacement: '$1'
+          - action: replace
+            source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - action: replace
+            source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - action: replace
+            source_labels: [__meta_kubernetes_pod_container_name]
+            target_label: container
+          - action: replace
+            source_labels:
+              - __meta_kubernetes_pod_uid
+              - __meta_kubernetes_pod_container_name
+            separator: /
+            target_label: __path__
+            replacement: /var/log/pods/*$1/*.log
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: promtail
+  namespace: nyxgpt
+  labels:
+    app: promtail
+    tier: observability
+spec:
+  selector:
+    matchLabels:
+      app: promtail
+  template:
+    metadata:
+      labels:
+        app: promtail
+        tier: observability
+    spec:
+      serviceAccountName: promtail
+      containers:
+        - name: promtail
+          image: grafana/promtail:3.6.11
+          args:
+            - -config.file=/etc/promtail/promtail-config.yml
+          env:
+            - name: HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          ports:
+            - name: http
+              containerPort: 9080
+          volumeMounts:
+            - name: config
+              mountPath: /etc/promtail
+              readOnly: true
+            - name: positions
+              mountPath: /run/promtail
+            - name: pod-logs
+              mountPath: /var/log/pods
+              readOnly: true
+            # /var/log/pods entries are symlinks into the container
+            # runtime's own log directory; without this mount the targets
+            # dangle and promtail reads nothing.
+            - name: container-logs
+              mountPath: /var/lib/docker/containers
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 30
+          resources:
+            requests:
+              cpu: 25m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+      volumes:
+        - name: config
+          configMap:
+            name: promtail-config
+        - name: positions
+          emptyDir: {}
+        - name: pod-logs
+          hostPath:
+            path: /var/log/pods
+        - name: container-logs
+          hostPath:
+            path: /var/lib/docker/containers
+            type: DirectoryOrCreate

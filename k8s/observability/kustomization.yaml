@@ -1,0 +1,32 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: nyxgpt
+
+# The in-cluster observability layer for `nyxgpt ops install --kubernetes
+# --local` (#3787). Kubernetes mode used to deploy the api/web tier only:
+# the Compose observability profiles are not reachable from a cluster (they
+# scrape `host.docker.internal` and talk to Compose service names), so a k8s
+# deployment had no metrics, no logs, no traces and no error tracking at all
+# -- the admin dashboard's observability tiles pointed at nothing.
+#
+# Every Service here is named exactly like its Compose counterpart
+# (`prometheus`, `loki`, `jaeger`, `glitchtip`, `otel-collector`) so the
+# SAME Grafana provisioning files the Compose stack uses -- datasource URLs
+# like `http://prometheus:9090` -- resolve in-cluster with no k8s-specific
+# copy to keep in sync. `nyxgpt ops` generates those ConfigMaps directly
+# from `docker/grafana/` at apply time (`_apply_k8s_grafana_provisioning`
+# in src/nyxgpt/ops.py); kustomize cannot read files above its own root, and
+# duplicating the dashboards here would guarantee drift.
+#
+# Applied and torn down only through `nyxgpt ops` (install/observability/
+# down --kubernetes) -- an operator never runs kubectl by hand.
+resources:
+  - namespace.yaml
+  - secret.yaml
+  - prometheus.yaml
+  - grafana.yaml
+  - loki.yaml
+  - promtail.yaml
+  - otel-collector.yaml
+  - jaeger.yaml
+  - glitchtip.yaml

@@ -7437,7 +7437,7 @@ def test_observability_cli_entrypoint_returns_zero_on_success(capsys):
             ops, "_reconcile_grafana_provisioning", return_value=[ops.OpsResult(True, "up")]
         ),
     ):
-        rc = ops.observability(MagicMock())
+        rc = ops.observability(MagicMock(kubernetes=False))
         assert rc == 0
         assert "[OK]" in capsys.readouterr().out
 
@@ -7452,7 +7452,7 @@ def test_observability_cli_entrypoint_returns_nonzero_on_failure(capsys):
             return_value=[ops.OpsResult(False, "down", "boom")],
         ),
     ):
-        rc = ops.observability(MagicMock())
+        rc = ops.observability(MagicMock(kubernetes=False))
         assert rc == 2
         assert "[FAIL]" in capsys.readouterr().out
 
@@ -7465,7 +7465,7 @@ def test_observability_cli_entrypoint_skips_reconcile_when_sync_fails(capsys):
         ),
         patch.object(ops, "_reconcile_grafana_provisioning") as reconcile,
     ):
-        rc = ops.observability(MagicMock())
+        rc = ops.observability(MagicMock(kubernetes=False))
         assert rc == 2
         reconcile.assert_not_called()
         assert "[FAIL]" in capsys.readouterr().out
@@ -11863,9 +11863,14 @@ def test_install_kubernetes_success_runs_all_steps(monkeypatch, capsys):
         patch.object(ops, "_kubectl_apply_kustomization", return_value=ok) as a,
         patch.object(ops, "_wait_for_k8s_data_tier", return_value=ok) as w,
         patch.object(ops, "_k8s_stack_health", return_value=ok) as h,
+        # The observability layer this mode now deploys too (#3787).
+        patch.object(ops, "_sync_packaged_resources", return_value=ok),
+        patch.object(ops, "_apply_k8s_observability", return_value=ok) as o,
+        patch.object(ops, "_k8s_observability_health", return_value=ok),
     ):
         rc = ops._install_kubernetes(args)
     assert rc == 0
+    o.assert_called_once()
     c.assert_called_once()
     b.assert_called_once()
     bw.assert_called_once()
@@ -11893,6 +11898,9 @@ def test_install_kubernetes_clears_intentional_stop_markers_for_api_and_web(monk
         patch.object(ops, "_kubectl_apply_kustomization", return_value=ok),
         patch.object(ops, "_wait_for_k8s_data_tier", return_value=ok),
         patch.object(ops, "_k8s_stack_health", return_value=ok),
+        patch.object(ops, "_sync_packaged_resources", return_value=ok),
+        patch.object(ops, "_apply_k8s_observability", return_value=ok),
+        patch.object(ops, "_k8s_observability_health", return_value=ok),
         patch.object(ops.self_heal, "clear_intentionally_stopped") as clear_stopped,
     ):
         rc = ops._install_kubernetes(args)
@@ -11935,8 +11943,30 @@ def test_down_kubernetes_no_kubectl(monkeypatch, capsys):
     assert "nothing to tear down" in capsys.readouterr().out
 
 
+def _bootstrap_k8s_dirs(monkeypatch, tmp_path):
+    """Point `K8S_DIR`/`K8S_OBSERVABILITY_DIR` at bootstrapped tmp copies.
+
+    Both teardown paths skip their `kubectl delete` when the (gitignored)
+    `secret.yaml` is missing -- a real state since `ops observability
+    --kubernetes` can deploy the layer with no app tier (#3787). A test that
+    wants the delete to actually run therefore has to supply those files, or
+    it silently asserts against the "nothing to do" branch and passes or
+    fails depending on whether the developer's checkout happens to be
+    bootstrapped.
+    """
+    app_dir = tmp_path / "k8s"
+    observability_dir = app_dir / "observability"
+    observability_dir.mkdir(parents=True)
+    (app_dir / "secret.yaml").write_text("stringData: {}\n", encoding="utf-8")
+    (observability_dir / "secret.yaml").write_text("stringData: {}\n", encoding="utf-8")
+    monkeypatch.setattr(ops, "K8S_DIR", app_dir)
+    monkeypatch.setattr(ops, "K8S_OBSERVABILITY_DIR", observability_dir)
+    return app_dir, observability_dir
+
+
 @pytest.mark.unit
-def test_down_kubernetes_delete_success(monkeypatch):
+def test_down_kubernetes_delete_success(monkeypatch, tmp_path):
+    _bootstrap_k8s_dirs(monkeypatch, tmp_path)
     monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/kubectl")
     monkeypatch.setattr(
         ops, "_run", lambda cmd, check=True, **_k: CP(returncode=0, stdout="deleted")
@@ -11946,7 +11976,8 @@ def test_down_kubernetes_delete_success(monkeypatch):
 
 
 @pytest.mark.unit
-def test_down_kubernetes_delete_failure(monkeypatch):
+def test_down_kubernetes_delete_failure(monkeypatch, tmp_path):
+    _bootstrap_k8s_dirs(monkeypatch, tmp_path)
     monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/kubectl")
     monkeypatch.setattr(ops, "_run", lambda cmd, check=True, **_k: CP(returncode=1, stderr="boom"))
     rc = ops._down_kubernetes(SimpleNamespace())
@@ -12136,6 +12167,11 @@ def test_install_kubernetes_local_runs_steps_and_returns_results(monkeypatch):
         patch.object(ops, "_kubectl_apply_kustomization", return_value=ok),
         patch.object(ops, "_wait_for_k8s_data_tier", return_value=ok),
         patch.object(ops, "_k8s_stack_health", return_value=ok),
+        # The in-cluster observability layer is part of this bring-up now
+        # (#3787) -- unpatched, these steps would shell out to kubectl.
+        patch.object(ops, "_sync_packaged_resources", return_value=ok),
+        patch.object(ops, "_apply_k8s_observability", return_value=ok),
+        patch.object(ops, "_k8s_observability_health", return_value=ok),
     ):
         results = ops.install_kubernetes_local(api_key="k")
     assert all(r.ok for r in results)
@@ -12151,14 +12187,16 @@ def test_install_kubernetes_local_reports_port_collision(monkeypatch):
 
 
 @pytest.mark.unit
-def test_down_kubernetes_returns_results_without_printing(monkeypatch, capsys):
+def test_down_kubernetes_returns_results_without_printing(monkeypatch, capsys, tmp_path):
+    _bootstrap_k8s_dirs(monkeypatch, tmp_path)
     monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/kubectl")
     monkeypatch.setattr(
         ops, "_run", lambda cmd, check=True, **_k: CP(returncode=0, stdout="deleted")
     )
     results = ops.down_kubernetes()
-    assert len(results) == 1
-    assert results[0].ok is True
+    # The app-tier kustomization, then the observability overlay (#3787).
+    assert [r.ok for r in results] == [True, True]
+    assert "k8s/observability/" in results[1].message
     assert capsys.readouterr().out == ""
 
 
@@ -13453,13 +13491,17 @@ def test_ops_port_forward_invokes_kubectl(monkeypatch, capsys):
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/kubectl")
     calls = []
 
-    def fake_run(cmd):
+    # One forward per target now (#3787's `--target observability` runs four
+    # concurrently), so this spawns Popen rather than blocking in run().
+    def fake_popen(cmd):
         calls.append(cmd)
-        return subprocess.CompletedProcess(cmd, returncode=0)
+        proc = MagicMock()
+        proc.wait.return_value = 0
+        return proc
 
-    monkeypatch.setattr(ops.subprocess, "run", fake_run)
+    monkeypatch.setattr(ops.subprocess, "Popen", fake_popen)
 
-    rc = ops.port_forward(MagicMock(port=3001))
+    rc = ops.port_forward(MagicMock(target="web", port=3001))
 
     assert rc == 0
     assert calls == [
@@ -13477,8 +13519,8 @@ def test_ops_port_forward_keyboard_interrupt_is_clean_exit(monkeypatch):
     def raise_interrupt(cmd):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(ops.subprocess, "run", raise_interrupt)
+    monkeypatch.setattr(ops.subprocess, "Popen", raise_interrupt)
 
-    rc = ops.port_forward(MagicMock(port=3000))
+    rc = ops.port_forward(MagicMock(target="web", port=3000))
 
     assert rc == 0
