@@ -203,6 +203,27 @@ output names the step, shows the underlying error, and gives a remediation
 hint (run `nyxgpt ops doctor` for diagnostics, or `nyxgpt ops logs
 <service>` for recent logs) instead of a bare `[FAIL]` line.
 
+When the failure came from a subprocess, that subprocess's own output is
+part of the report -- in the console, in the log files, and in `nyxgpt ops
+logs` -- so the reason is readable without re-running the command by hand
+(#3783):
+
+```
+WARNING nyxgpt.ops: Subprocess exited non-zero (rc=1): ~/.nyxGPT/native/nyxgpt-api/venv/bin/pip install nyxgpt-api-3.0.0.tar.gz
+--- subprocess output ---
+Processing nyxgpt-api-3.0.0.tar.gz
+ERROR: Package 'nyxgpt-api' requires a different Python: 3.9.16 not in '>=3.11'
+--- end subprocess output ---
+WARNING nyxgpt.ops: ops: install failed: Failed to pip install nyxgpt-api
+ERROR: Package 'nyxgpt-api' requires a different Python: 3.9.16 not in '>=3.11'
+```
+
+The excerpt is bounded: a command that emits thousands of lines (`npm ci`, a
+long dependency resolution) is reported as its first few and last twenty
+lines with an explicit `... [N lines omitted] ...` marker between them, and
+an over-long single line is clipped with `... [line truncated]`. Nothing is
+dropped silently, and no failure is ever reported with zero output.
+
 A step that checks several things reports one coherent status rather than a
 mix the reader has to reconcile (#3762):
 

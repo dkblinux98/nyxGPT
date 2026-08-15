@@ -1891,6 +1891,23 @@ def test_emit_results_bounds_a_huge_failure_detail(caplog):
 
 
 @pytest.mark.unit
+def test_run_steps_step_raising_calledprocesserror_reports_the_output(capsys, caplog):
+    # str(CalledProcessError) is "Command ... returned non-zero exit status 1."
+    # -- on its own it says nothing about what went wrong (#3783).
+    def _boom():
+        raise subprocess.CalledProcessError(
+            1, ["pip", "install", "x"], output="Processing x\n", stderr="ERROR: no such package\n"
+        )
+
+    with caplog.at_level("DEBUG", logger="nyxgpt.ops"):
+        results, _slow = ops._run_steps("install", [("pip step", _boom)], quiet=True)
+
+    assert len(results) == 1 and results[0].ok is False
+    assert "ERROR: no such package" in (results[0].details or "")
+    assert "ERROR: no such package" in capsys.readouterr().out
+
+
+@pytest.mark.unit
 def test_emit_results_leaves_a_successful_result_message_alone(caplog):
     with caplog.at_level("DEBUG", logger="nyxgpt.ops"):
         ops._emit_results("install", [ops.OpsResult(True, "installed", "/some/path")])

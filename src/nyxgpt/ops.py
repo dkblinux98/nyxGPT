@@ -489,11 +489,21 @@ def _run_steps(
                 extra={"component": "ops", "action": action, "step": step_name},
                 exc_info=True,
             )
+            # `str(CalledProcessError)` is only "Command '...' returned
+            # non-zero exit status 1." -- the output that says *why* is on the
+            # exception, so put it in the step's own failure detail rather
+            # than making the reader go find the preceding `_run` warning
+            # (#3783).
+            cause = f"{type(e).__name__}: {e}"
+            if isinstance(e, subprocess.CalledProcessError):
+                excerpt = _combined_output_excerpt(e.stdout, e.stderr)
+                if excerpt:
+                    cause = f"{cause}\n{excerpt}"
             step_results = [
                 OpsResult(
                     False,
                     f"ops {action} failed: {step_name}",
-                    f"{type(e).__name__}: {e}. {_STEP_FAILURE_HINT}",
+                    f"{cause}. {_STEP_FAILURE_HINT}",
                 )
             ]
         finally:
