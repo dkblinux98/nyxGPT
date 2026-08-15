@@ -357,6 +357,12 @@ def _emit_results(action: str, results: list[OpsResult]) -> bool:
     result (service/action/result plus any subprocess failure detail in
     `details`) so `nyxgpt ops` activity lands in the log files instead of
     only stdout.
+
+    A *failing* result's details are inlined into the WARNING message itself,
+    bounded by `_bounded_output` (#3783). They were previously carried only in
+    the structured `extra`, so the step-failure line an operator actually reads
+    ("ops: install failed: Failed to pip install nyxgpt-api") named the step
+    and dropped the reason.
     """
     ok = True
     for r in results:
@@ -364,11 +370,12 @@ def _emit_results(action: str, results: list[OpsResult]) -> bool:
         if r.details:
             print(f"  {r.details}")
         log = logger.info if r.ok else logger.warning
+        detail_excerpt = "" if r.ok else _bounded_output(r.details)
         log(
             "ops: %s %s: %s",
             action,
             "ok" if r.ok else "failed",
-            r.message,
+            f"{r.message}\n{detail_excerpt}" if detail_excerpt else r.message,
             extra={
                 "component": "ops",
                 "action": action,
@@ -751,14 +758,88 @@ def _run(
         )
     except subprocess.CalledProcessError as e:
         _log_nonzero_exit(
-            cmd, e.returncode, e.stderr, expected, expected_returncodes, expected_message
+            cmd, e.returncode, e.stdout, e.stderr, expected, expected_returncodes, expected_message
         )
         raise
     if result.returncode != 0:
         _log_nonzero_exit(
-            cmd, result.returncode, result.stderr, expected, expected_returncodes, expected_message
+            cmd,
+            result.returncode,
+            result.stdout,
+            result.stderr,
+            expected,
+            expected_returncodes,
+            expected_message,
         )
     return result
+
+
+# --- Bounded subprocess output excerpts (#3783) ---
+#
+# A failed subprocess's *own* output is almost always the whole diagnosis --
+# `pip`'s "requires a different Python: 3.9.x not in '>=3.11'" refusal during
+# the rc9 cloud round said exactly what was wrong, and was thrown away because
+# ops logged only the exit code and the argv. The owner had to SSH to the
+# instance and re-run the command by hand to read it. So every failure path
+# below carries the output with it -- but bounded, because an `npm ci` or a
+# resolver backtrack can emit thousands of lines and unbounded log spam is its
+# own failure of reporting. Head plus tail with an elision marker keeps both
+# ends that matter: what the command was starting to do, and how it died.
+_OUTPUT_EXCERPT_HEAD_LINES = 5
+_OUTPUT_EXCERPT_TAIL_LINES = 20
+_OUTPUT_EXCERPT_MAX_LINE_CHARS = 500
+
+
+def _bounded_output(text: str | None) -> str:
+    """Return `text` reduced to a bounded head+tail excerpt.
+
+    Empty/None input yields `""`. Short output is returned verbatim (stripped),
+    so the common case reads exactly as it did before this bounding existed.
+    Longer output keeps the first `_OUTPUT_EXCERPT_HEAD_LINES` and the last
+    `_OUTPUT_EXCERPT_TAIL_LINES` lines with an explicit `... [N lines omitted]
+    ...` marker between them -- never silently truncated, and never zero. Any
+    single line over `_OUTPUT_EXCERPT_MAX_LINE_CHARS` is clipped too, so one
+    pathological line (a minified stack trace, a base64 blob) can't blow the
+    bound on its own.
+    """
+    if not text or not text.strip():
+        return ""
+    lines = [
+        (
+            line
+            if len(line) <= _OUTPUT_EXCERPT_MAX_LINE_CHARS
+            else line[:_OUTPUT_EXCERPT_MAX_LINE_CHARS] + " ... [line truncated]"
+        )
+        for line in text.strip().splitlines()
+    ]
+    keep = _OUTPUT_EXCERPT_HEAD_LINES + _OUTPUT_EXCERPT_TAIL_LINES
+    if len(lines) <= keep:
+        return "\n".join(lines)
+    omitted = len(lines) - keep
+    return "\n".join(
+        [
+            *lines[:_OUTPUT_EXCERPT_HEAD_LINES],
+            f"... [{omitted} lines omitted] ...",
+            *lines[-_OUTPUT_EXCERPT_TAIL_LINES:],
+        ]
+    )
+
+
+def _combined_output_excerpt(stdout: str | None, stderr: str | None) -> str:
+    """Bounded stdout+stderr of a finished subprocess, in that order.
+
+    Each stream is bounded *separately* rather than concatenated first: `pip`
+    and `npm` write volumes of progress to stdout and the one-line reason for
+    the failure to stderr, so a tail taken over the concatenation could drop
+    the only line worth reading.
+    """
+    parts = [_bounded_output(stdout), _bounded_output(stderr)]
+    return "\n".join(p for p in parts if p)
+
+
+def _output_excerpt(cp: subprocess.CompletedProcess[str]) -> str:
+    """Bounded combined output of `cp`, for an `OpsResult`'s failure details."""
+    return _combined_output_excerpt(cp.stdout, cp.stderr)
 
 
 # Argument names (and inline `--flag=value` forms) whose *value* may carry a
@@ -804,6 +885,7 @@ def _redact_cmd(cmd: list[str]) -> list[str]:
 def _log_nonzero_exit(
     cmd: list[str],
     returncode: int,
+    stdout: str | None,
     stderr: str | None,
     expected: bool,
     expected_returncodes: Container[int] | None,
@@ -815,9 +897,16 @@ def _log_nonzero_exit(
     useful information, not a warning sign -- with wording that explicitly
     says the exit was expected, so it never reads as scary to the user
     (#3574). Everything else keeps the pre-existing WARNING/DEBUG split.
+
+    An unexpected exit carries a bounded excerpt of the subprocess's own
+    combined output *in the log message*, not only in the structured `extra`
+    (#3783): the message is what reaches a terminal, a `journalctl` tail and
+    `nyxgpt ops logs`, and it was the only thing the owner could see when an
+    rc9 install died on a `pip` refusal whose text ops had thrown away.
     """
     safe_cmd = _redact_cmd(cmd)
     safe_cmd_str = " ".join(safe_cmd)
+    output = _combined_output_excerpt(stdout, stderr)
     if expected_returncodes is not None and returncode in expected_returncodes:
         level = logging.INFO
         message = expected_message or (
@@ -827,6 +916,8 @@ def _log_nonzero_exit(
     else:
         level = logging.DEBUG if expected else logging.WARNING
         message = f"Subprocess exited non-zero (rc={returncode}): {safe_cmd_str}"
+        if output:
+            message += f"\n--- subprocess output ---\n{output}\n--- end subprocess output ---"
     # CodeQL alerts #105/#106 (py/clear-text-logging-sensitive-data) flagged
     # `message`/`extra` below, and were REAL twice over: a bare positional
     # secret (`_reset_grafana_admin_password`, fixed in #3644 by piping it
@@ -854,6 +945,7 @@ def _log_nonzero_exit(
             "cmd": safe_cmd,
             "returncode": returncode,
             "stderr_tail": stderr[-2000:] if stderr else "",
+            "output_excerpt": output,
         },
     )
 
@@ -1161,9 +1253,7 @@ def _restart_brew_service(name: str) -> list[OpsResult]:
         cp = _run(["brew", "services", "restart", name], check=False)
         if cp.returncode == 0:
             return [OpsResult(True, f"Restarted brew service: {name}")]
-        details = (cp.stdout or "").strip() + (
-            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
-        )
+        details = _output_excerpt(cp)
         return [OpsResult(False, f"Failed to restart brew service: {name}", details.strip())]
     except Exception as e:
         return [
@@ -1205,9 +1295,7 @@ def _restart_docker_container(name: str) -> list[OpsResult]:
     if cp.returncode == 0:
         return [OpsResult(True, f"Restarted docker container: {name}")]
 
-    details = (cp.stdout or "").strip() + (
-        "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
-    )
+    details = _output_excerpt(cp)
 
     if was_running and _docker_container_state(name) != "running":
         # `docker restart` stops then starts the container -- if the start half fails
@@ -1246,9 +1334,7 @@ def _restart_launchagent(label: str) -> list[OpsResult]:
         cp = _run(["launchctl", "kickstart", "-k", domain], check=False)
         if cp.returncode == 0:
             return [OpsResult(True, f"Restarted LaunchAgent: {label}")]
-        details = (cp.stdout or "").strip() + (
-            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
-        )
+        details = _output_excerpt(cp)
         return [OpsResult(False, f"Failed to restart LaunchAgent: {label}", details.strip())]
     except Exception as e:
         return [
@@ -1740,8 +1826,8 @@ def _brew_install_or_reinstall(spec: str, name: str, *, sha256: str, marker_dir:
         # the next run see a matching checksum and skip, so the broken install
         # would never be retried (the bug that let a failed api keg rebuild
         # report "reinstalled" and then stick as a stale wrapper).
-        detail = (cp.stderr or cp.stdout or "").strip()
-        raise RuntimeError(f"brew {action} {name} failed: {detail[-800:]}")
+        detail = _output_excerpt(cp)
+        raise RuntimeError(f"brew {action} {name} failed: {detail}")
 
     _ensure_dir(marker_dir)
     marker.write_text(sha256, encoding="utf-8")
@@ -1830,8 +1916,8 @@ def _docker_build_if_needed(
         # As with `_brew_install_or_reinstall`: surface the failure and do NOT
         # record the fingerprint, so a broken build doesn't get skipped (and
         # so stick as a stale image) on the next run.
-        detail = (cp.stderr or cp.stdout or "").strip()
-        raise RuntimeError(f"docker build {image} failed: {detail[-800:]}")
+        detail = _output_excerpt(cp)
+        raise RuntimeError(f"docker build {image} failed: {detail}")
 
     _ensure_dir(marker_dir)
     marker.write_text(fingerprint, encoding="utf-8")
@@ -2189,9 +2275,7 @@ def _set_native_ollama_models_env(models_dir: Path) -> OpsResult:
     cp = _run(["launchctl", "setenv", "OLLAMA_MODELS", str(models_dir)], check=False)
     if cp.returncode == 0:
         return OpsResult(True, f"Set OLLAMA_MODELS={models_dir} for native Ollama")
-    details = (cp.stdout or "").strip() + (
-        "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
-    )
+    details = _output_excerpt(cp)
     return OpsResult(False, "Failed to set OLLAMA_MODELS via launchctl setenv", details.strip())
 
 
@@ -2242,9 +2326,7 @@ def _ensure_ollama_service() -> list[OpsResult]:
                 OpsResult(True, "Restarted brew service: ollama (to pick up shared OLLAMA_MODELS)")
             )
         else:
-            details = (cp.stdout or "").strip() + (
-                "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
-            )
+            details = _output_excerpt(cp)
             results.append(
                 OpsResult(False, "Failed to restart brew service: ollama", details.strip())
             )
@@ -2253,9 +2335,7 @@ def _ensure_ollama_service() -> list[OpsResult]:
     if state is None:
         cp = _run(["brew", "install", "ollama"], check=False)
         if cp.returncode != 0:
-            details = (cp.stdout or "").strip() + (
-                "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
-            )
+            details = _output_excerpt(cp)
             results.append(OpsResult(False, "Failed to brew install ollama", details.strip()))
             return results
         results.append(OpsResult(True, "Installed ollama formula"))
@@ -2264,9 +2344,7 @@ def _ensure_ollama_service() -> list[OpsResult]:
     if cp.returncode == 0:
         results.append(OpsResult(True, "Started brew service: ollama"))
     else:
-        details = (cp.stdout or "").strip() + (
-            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
-        )
+        details = _output_excerpt(cp)
         results.append(OpsResult(False, "Failed to start brew service: ollama", details.strip()))
     return results
 
@@ -2346,9 +2424,7 @@ def _reload_and_activate_systemd_unit(unit: str) -> list[OpsResult]:
     results: list[OpsResult] = []
     cp = _run(["systemctl", "--user", "daemon-reload"], check=False)
     if cp.returncode != 0:
-        details = (cp.stdout or "").strip() + (
-            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
-        )
+        details = _output_excerpt(cp)
         results.append(OpsResult(False, "systemctl --user daemon-reload failed", details.strip()))
         return results
 
@@ -2358,9 +2434,7 @@ def _reload_and_activate_systemd_unit(unit: str) -> list[OpsResult]:
     if cp.returncode == 0:
         results.append(OpsResult(True, f"Started/restarted systemd unit: {unit}"))
     else:
-        details = (cp.stdout or "").strip() + (
-            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
-        )
+        details = _output_excerpt(cp)
         results.append(OpsResult(False, f"Failed to start systemd unit: {unit}", details.strip()))
     return results
 
@@ -2578,9 +2652,7 @@ def _install_native_api_systemd() -> list[OpsResult]:
 
     cp = _run(["python3", "-m", "venv", str(venv_dir)], check=False)
     if cp.returncode != 0:
-        details = (cp.stdout or "").strip() + (
-            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
-        )
+        details = _output_excerpt(cp)
         results.append(OpsResult(False, "Failed to create nyxgpt-api venv", details.strip()))
         return results
 
@@ -2588,9 +2660,7 @@ def _install_native_api_systemd() -> list[OpsResult]:
     _run([pip, "install", "--upgrade", "pip"], check=False)
     cp = _run([pip, "install", str(tar)], check=False)
     if cp.returncode != 0:
-        details = (cp.stdout or "").strip() + (
-            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
-        )
+        details = _output_excerpt(cp)
         results.append(OpsResult(False, "Failed to pip install nyxgpt-api", details.strip()))
         return results
     results.append(
@@ -2699,7 +2769,7 @@ def _install_native_web_systemd() -> list[OpsResult]:
                 OpsResult(
                     False,
                     f"{step_name} failed for nyxgpt-web",
-                    (cp.stderr or cp.stdout or "").strip(),
+                    _output_excerpt(cp),
                 )
             )
             return results
@@ -2814,7 +2884,7 @@ def _takeover_system_ollama_service() -> tuple[bool, list[OpsResult]]:
     if cp is None or cp.returncode != 0:
         details = ""
         if cp is not None:
-            details = ((cp.stderr or "") + (cp.stdout or "")).strip()
+            details = _output_excerpt(cp)
         return False, [
             OpsResult(
                 False,
@@ -2993,9 +3063,7 @@ def _restart_systemd_service(unit: str) -> list[OpsResult]:
         cp = _run(["systemctl", "--user", "restart", f"{unit}.service"], check=False)
         if cp.returncode == 0:
             return [OpsResult(True, f"Restarted systemd unit: {unit}")]
-        details = (cp.stdout or "").strip() + (
-            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
-        )
+        details = _output_excerpt(cp)
         return [OpsResult(False, f"Failed to restart systemd unit: {unit}", details.strip())]
     except Exception as e:
         return [
@@ -3015,9 +3083,7 @@ def _stop_systemd_service(unit: str) -> list[OpsResult]:
         cp = _run(["systemctl", "--user", "stop", f"{unit}.service"], check=False)
         if cp.returncode == 0:
             return [OpsResult(True, f"Stopped systemd unit: {unit}")]
-        details = (cp.stdout or "").strip() + (
-            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
-        )
+        details = _output_excerpt(cp)
         return [OpsResult(False, f"Failed to stop systemd unit: {unit}", details.strip())]
     except Exception as e:
         return [
@@ -3225,9 +3291,7 @@ def _ensure_web_deps() -> list[OpsResult]:
                 ):
                     cp2 = _run_npm(["npm", "install"])
                     if cp2.returncode != 0:
-                        details = (cp2.stdout or "").strip() + (
-                            "\n" + (cp2.stderr or "").strip() if (cp2.stderr or "").strip() else ""
-                        )
+                        details = _output_excerpt(cp2)
                         results.append(
                             OpsResult(
                                 False,
@@ -3238,9 +3302,7 @@ def _ensure_web_deps() -> list[OpsResult]:
                         return results
                     # npm install succeeded (and likely updated package-lock.json)
                     if not _can_resolve("undici"):
-                        details = (cp2.stdout or "").strip() + (
-                            "\n" + (cp2.stderr or "").strip() if (cp2.stderr or "").strip() else ""
-                        )
+                        details = _output_excerpt(cp2)
                         results.append(
                             OpsResult(
                                 False,
@@ -3259,9 +3321,7 @@ def _ensure_web_deps() -> list[OpsResult]:
                     return results
 
                 # Other npm ci failure
-                details = (cp.stdout or "").strip() + (
-                    "\n" + stderr.strip() if stderr.strip() else ""
-                )
+                details = _output_excerpt(cp)
                 results.append(
                     OpsResult(False, "Failed to install web deps via npm ci", details.strip())
                 )
@@ -3269,9 +3329,7 @@ def _ensure_web_deps() -> list[OpsResult]:
 
             # npm ci succeeded
             if not _can_resolve("undici"):
-                details = (cp.stdout or "").strip() + (
-                    "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
-                )
+                details = _output_excerpt(cp)
                 results.append(
                     OpsResult(
                         False,
@@ -3287,9 +3345,7 @@ def _ensure_web_deps() -> list[OpsResult]:
         cp = _run_npm(["npm", "install"])
         if cp.returncode == 0:
             if not _can_resolve("undici"):
-                details = (cp.stdout or "").strip() + (
-                    "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
-                )
+                details = _output_excerpt(cp)
                 results.append(
                     OpsResult(
                         False,
@@ -3301,9 +3357,7 @@ def _ensure_web_deps() -> list[OpsResult]:
             results.append(OpsResult(True, "Installed web deps via npm install", str(node_modules)))
             return results
 
-        details = (cp.stdout or "").strip() + (
-            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
-        )
+        details = _output_excerpt(cp)
         results.append(
             OpsResult(False, "Failed to install web deps via npm install", details.strip())
         )
@@ -3364,9 +3418,7 @@ def _ensure_mcp_deps() -> list[OpsResult]:
                 )
             )
         else:
-            details = (cp.stdout or "").strip() + (
-                "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
-            )
+            details = _output_excerpt(cp)
             results.append(OpsResult(False, "Failed to install MCP deps", details.strip()))
     except Exception as e:
         results.append(OpsResult(False, "Failed to install MCP deps", f"{type(e).__name__}: {e}"))
@@ -3945,9 +3997,7 @@ def _ensure_cassandra_container() -> list[OpsResult]:
             return [
                 OpsResult(True, f"Started existing Cassandra container: {CASSANDRA_CONTAINER_NAME}")
             ]
-        details = (cp.stdout or "").strip() + (
-            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
-        )
+        details = _output_excerpt(cp)
         return [
             OpsResult(
                 False,
@@ -3984,9 +4034,7 @@ def _ensure_cassandra_container() -> list[OpsResult]:
                 f"Bound to {bind_addr}:{port}, data persisted in {data_dir}",
             )
         ]
-    details = (cp.stdout or "").strip() + (
-        "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
-    )
+    details = _output_excerpt(cp)
     return [
         OpsResult(
             False,
@@ -4249,9 +4297,7 @@ def _reconcile_phantom_compose_app_containers() -> list[OpsResult]:
                 )
             )
         else:
-            details = (cp.stdout or "").strip() + (
-                "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
-            )
+            details = _output_excerpt(cp)
             results.append(
                 OpsResult(
                     False,
@@ -6670,9 +6716,7 @@ def _stop_brew_service(name: str) -> list[OpsResult]:
         cp = _run(["brew", "services", "stop", name], check=False)
         if cp.returncode == 0:
             return [OpsResult(True, f"Stopped brew service: {name}")]
-        details = (cp.stdout or "").strip() + (
-            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
-        )
+        details = _output_excerpt(cp)
         return [OpsResult(False, f"Failed to stop brew service: {name}", details.strip())]
     except Exception as e:
         return [
@@ -6700,9 +6744,7 @@ def _stop_docker_container(name: str) -> list[OpsResult]:
         ]
     if cp.returncode == 0:
         return [OpsResult(True, f"Stopped docker container: {name}")]
-    details = (cp.stdout or "").strip() + (
-        "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
-    )
+    details = _output_excerpt(cp)
     return [OpsResult(False, f"Failed to stop docker container: {name}", details.strip())]
 
 
@@ -6716,9 +6758,7 @@ def _stop_launchagent(label: str) -> list[OpsResult]:
     domain = f"gui/{os.getuid()}/{label}"
     try:
         cp = _run(["launchctl", "bootout", domain], check=False, expected=True)
-        details = (cp.stdout or "").strip() + (
-            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
-        )
+        details = _output_excerpt(cp)
         if cp.returncode == 0:
             return [OpsResult(True, f"Stopped LaunchAgent: {label}")]
         if "no such process" in details.lower() or "could not find" in details.lower():
@@ -6743,9 +6783,7 @@ def _compose_stop_service(service: str) -> list[OpsResult]:
     )
     if cp.returncode == 0:
         return [OpsResult(True, f"Stopped Compose service: {service}")]
-    details = (cp.stdout or "").strip() + (
-        "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
-    )
+    details = _output_excerpt(cp)
     return [OpsResult(False, f"Failed to stop Compose service: {service}", details.strip())]
 
 
@@ -6765,7 +6803,7 @@ def _resolve_observability_services() -> tuple[list[str] | None, OpsResult | Non
         return None, OpsResult(
             False,
             "Failed to resolve observability services",
-            (cp.stderr or cp.stdout or "").strip(),
+            _output_excerpt(cp),
         )
     services = sorted({s.strip() for s in cp.stdout.splitlines() if s.strip()} - CORE_APP_SERVICES)
     return services, None
@@ -6785,7 +6823,7 @@ def _resolve_app_services() -> tuple[list[str] | None, OpsResult | None]:
         return None, OpsResult(
             False,
             "Failed to resolve app services",
-            (cp.stderr or cp.stdout or "").strip(),
+            _output_excerpt(cp),
         )
     services = sorted({s.strip() for s in cp.stdout.splitlines() if s.strip()} & CORE_APP_SERVICES)
     return services, None
@@ -6809,7 +6847,7 @@ def _stop_observability_stack() -> list[OpsResult]:
             OpsResult(
                 False,
                 "Failed to stop observability stack",
-                (cp.stderr or cp.stdout or "").strip(),
+                _output_excerpt(cp),
             )
         ]
     return [OpsResult(True, "Observability stack stopped (containers and data preserved)")]
@@ -6853,7 +6891,7 @@ def _restart_observability_stack() -> list[OpsResult]:
             OpsResult(
                 False,
                 "Failed to restart observability stack",
-                (cp.stderr or cp.stdout or "").strip(),
+                _output_excerpt(cp),
             )
         )
         return results
@@ -6925,7 +6963,7 @@ def _compose_down(services: list[str], *, volumes: bool) -> list[OpsResult]:
             OpsResult(
                 False,
                 "Failed to tear down Compose services",
-                (cp.stderr or cp.stdout or "").strip(),
+                _output_excerpt(cp),
             )
         ]
     suffix = " and their data directories" if volumes else " (data directories preserved)"
@@ -7574,7 +7612,7 @@ def _reset_grafana_admin_password(password: str) -> OpsResult:
         return OpsResult(
             False,
             "Failed to reset Grafana admin password",
-            (cp.stderr or cp.stdout or "").strip(),
+            _output_excerpt(cp),
         )
     return OpsResult(True, "Reset Grafana admin password to the ops-managed credential")
 
@@ -7921,7 +7959,7 @@ def _recreate_grafana_if_provisioning_drifted() -> OpsResult | None:
         return OpsResult(
             False,
             "Failed to recreate Grafana for provisioning/env drift",
-            (cp.stderr or cp.stdout or "").strip(),
+            _output_excerpt(cp),
         )
     return OpsResult(
         True,
@@ -8216,7 +8254,7 @@ def _start_observability_stack(
             OpsResult(
                 False,
                 "Failed to start observability stack",
-                (cp.stderr or cp.stdout or "").strip(),
+                _output_excerpt(cp),
             )
         ]
 
@@ -9496,9 +9534,7 @@ def _glitchtip_ensure_superuser(email: str, password: str) -> OpsResult:
     if "already" in combined or "unique" in combined:
         return OpsResult(True, f"GlitchTip admin user {email} already exists")
 
-    details = (cp.stdout or "").strip() + (
-        "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
-    )
+    details = _output_excerpt(cp)
     return OpsResult(False, "Failed to ensure GlitchTip admin user", details.strip())
 
 
@@ -10086,7 +10122,7 @@ def _restart_grafana_if_running(reason: str = "the new GlitchTip token") -> OpsR
     cmd = ["docker", "compose", "-f", str(self_heal.COMPOSE_FILE), "restart", "grafana"]
     cp = _run(cmd, check=False)
     if cp.returncode != 0:
-        return OpsResult(False, "Failed to restart Grafana", (cp.stderr or cp.stdout or "").strip())
+        return OpsResult(False, "Failed to restart Grafana", _output_excerpt(cp))
 
     if not _wait_for_grafana_healthy():
         return OpsResult(
