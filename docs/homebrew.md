@@ -475,15 +475,30 @@ the runner image already knew about), then injects the owner's machine state
 and requires the retired `pip --python … install` bootstrap to die on it
 before accepting that the current one survives it.
 
-One detail there is load-bearing for anyone editing that step: the injected
-fault must scope itself to the keg **by realpath**. Homebrew's pip imports
-through `opt`/`lib` symlinks, but `pip --python` re-execs via
-`get_runnable_pip()`, which resolves them, so the child process that
-actually performs the install imports pip by its Cellar path. A fault scoped
-by `abspath` matches in the parent and never in the child — it simply never
-fires, and the negative control then passes and reads like "the bug is
-gone". The step therefore proves the fault fires in both forms before
-concluding anything from it.
+Two details there are load-bearing for anyone editing that step, and both
+were learned the same way — by the fault silently not firing.
+
+**Scope the fault by realpath.** Homebrew's pip imports through `opt`/`lib`
+symlinks, but `pip --python` re-execs via `get_runnable_pip()`, which
+resolves them, so the child process that actually performs the install
+imports pip by its Cellar path. A fault scoped by `abspath` matches in the
+parent and never in the child.
+
+**Do not let the injection move the pip it is scoped to.** The fault is a
+`sitecustomize` on `PYTHONPATH`, python imports exactly one `sitecustomize`,
+and the `python@3.12` keg ships one whose job is to put the prefix
+`site-packages` on `sys.path`. Shadowing it flips pip resolution from the
+prefix copy — the one an unfaulted process and `brew install` import — to
+the keg's Cellar copy, a disjoint tree the scope anchor does not cover. So
+the fault file chains to the sitecustomize it shadows, the same way and for
+the same reason the formula's build shim does, and the anchor is measured
+under the fault environment rather than in a clean one.
+
+Either mistake produces the same symptom: nothing fires, the negative
+control passes, and the log reads exactly like "the bug is gone". That is
+why the step proves the fault fires — in the direct import *and* in the
+realpath re-exec — before concluding anything from it, and why that
+self-check, not a passing control, is the arbiter.
 
 ---
 

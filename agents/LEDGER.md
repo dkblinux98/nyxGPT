@@ -406,9 +406,25 @@ not agent-editable except to add a `Re-verify` result or a supersession pointer.
   symlink path never matches in the one process that installs, and the
   negative control passes without the fault ever firing. Shown by running
   both spellings against a symlinked stand-in keg (pip 26.2.1): abspath
-  installed cleanly, realpath reproduced the owner's traceback. The job now
-  proves the fault fires — in the direct import *and* in the realpath
-  re-exec — before inferring anything from it.
+  installed cleanly, realpath reproduced the owner's traceback.
+  Second corollary, verified 2026-08-15 after the *next* red run: realpath
+  scoping is necessary and not sufficient — **the injection vehicle must not
+  change which pip is under test.** The fault is a `sitecustomize` on
+  `PYTHONPATH`, python imports exactly one, and Homebrew's `python@3.12` keg
+  ships one that puts the prefix `site-packages` on `sys.path`; shadowing it
+  moved pip resolution from the prefix copy (`/opt/homebrew/lib/python3.12/
+  site-packages/pip`, what the runner's clean-env anchor named) to the keg's
+  Cellar copy, a disjoint tree, so the fault could not fire in either import
+  form. Fix: the fault file chains to the sitecustomize it shadows, as the
+  formula's build shim already does for the same reason, and the anchor is
+  captured under the fault env. Shown by running both spellings against a
+  stand-in with Homebrew's two-site-packages shape: non-chaining imported
+  the keg copy and never fired, chaining imported the prefix copy and raised
+  the owner's `ImportError`; the anchor-under-fault capture fires even with
+  the chain removed. General rule, and the reason the self-check exists at
+  all: **a fault that does not fire is indistinguishable in a log from a bug
+  that is gone**, so the job asserts the fault fires — in the direct import
+  *and* in the realpath re-exec — before inferring anything from it.
   Re-verify when: pip changes `_EAGER_IMPORTS`/`_prevent_import_hook` (the
   deprecation there is marked `gone_in="26.3"`), or the recipe stops using
   `pip download`.

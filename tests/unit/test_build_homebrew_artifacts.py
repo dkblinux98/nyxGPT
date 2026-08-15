@@ -1465,8 +1465,13 @@ def test_macos_smoke_injects_the_keg_pip_failure_from_3788():
 
     # Stop testing whatever pip the runner image was baked with -- and refresh
     # the metadata first, or the upgrade can only reach versions the runner
-    # image already knew about and quietly resolves to a no-op.
-    assert "brew update" in script
+    # image already knew about and quietly resolves to a no-op. Anchored on
+    # the command line proper: the words also appear in the comment and the
+    # warning text, so a substring check would survive deleting the command.
+    assert any(
+        line == "brew update" or line.startswith("brew update ")
+        for line in (raw.strip() for raw in script.splitlines())
+    )
     assert "brew upgrade python@3.12" in script
     # The fault, injected rather than hoped for: the keg's pip cannot import
     # its own wheel installer.
@@ -1482,15 +1487,26 @@ def test_macos_smoke_injects_the_keg_pip_failure_from_3788():
 
 
 def test_the_3788_fault_is_scoped_by_realpath_and_self_checked():
-    """The first spelling of this fault injection never fired.
+    """Two spellings of this fault injection never fired, for two reasons.
 
-    It scoped itself to the keg with `os.path.abspath`, but `pip --python`
-    re-execs through `get_runnable_pip()` -- `Path(pip_location).resolve()`
-    -- so the child that actually installs imports pip by its Cellar
-    realpath, and an abspath prefix check against the `opt`/`lib` symlink
-    path cannot match there. The negative control then passed with the fault
-    never firing, which reads in the log exactly like "the bug is gone".
-    Two rules keep that from recurring: compare realpaths, and assert the
+    The first scoped itself to the keg with `os.path.abspath`, but `pip
+    --python` re-execs through `get_runnable_pip()` --
+    `Path(pip_location).resolve()` -- so the child that actually installs
+    imports pip by its Cellar realpath, and an abspath prefix check against
+    the `opt`/`lib` symlink path cannot match there.
+
+    The second compared realpaths but *moved the pip it was scoped to*:
+    python imports exactly one `sitecustomize` and PYTHONPATH precedes
+    site-packages, so the fault file shadowed the one Homebrew's python@3.12
+    keg ships, whose job is to put the prefix site-packages on sys.path.
+    Without it pip resolved from the keg's Cellar copy instead -- a tree
+    disjoint from the anchor, which had been captured in a clean
+    environment. Both times the only symptom was a negative control that
+    passed, which reads in the log exactly like "the bug is gone".
+
+    Three rules keep that from recurring: compare realpaths, do not perturb
+    the interpreter's own path setup (chain to the sitecustomize being
+    shadowed, and measure the anchor under the fault env), and assert the
     fault fires before inferring anything from it.
     """
     script = _job_run_script(_macos_smoke_workflow()["jobs"]["keg-install"])
@@ -1499,11 +1515,19 @@ def test_the_3788_fault_is_scoped_by_realpath_and_self_checked():
     assert "os.path.realpath(origin).startswith(keg)" in script
     # abspath is what silently broke it; it must not come back.
     assert "os.path.abspath(origin)" not in script
+    # The vehicle must not change which pip is under test: chain to the
+    # sitecustomize this file shadows, exactly as the formula's build shim
+    # does, and take the scope anchor from the faulted interpreter itself.
+    assert "_chain_to_the_real_sitecustomize" in script
+    assert 'KEG_PIP_DIR="$(PYTHONPATH="$WORK/fault"' in script
     # The self-check, and its failure has to be loud rather than inferred.
     assert "the injected #3788 fault never fired" in script
     # Checking only the process that runs the command is what would have let
     # the broken scoping through: the install happens in the re-exec child.
     assert "re-execs it (realpath)" in script
+    # ...and that probe has to keep the fault dir ahead of the pip source
+    # root, which carries a sitecustomize of its own that would shadow it.
+    assert 'part for part in (env.get("PYTHONPATH", ""), prefix) if part' in script
 
 
 def test_macos_smoke_reads_the_shim_out_of_the_formula_it_ships():

@@ -144,10 +144,33 @@ jobs:
           "$PY" -c 'import platform; print("mac_ver:", platform.mac_ver())'
           "$PY" - <<'PY'
           import os
+          import sys
           import sysconfig
 
-          path = os.path.join(sysconfig.get_paths()["purelib"], "sitecustomize.py")
-          print("keg sitecustomize:", path if os.path.exists(path) else "none")
+          # Not just purelib: on this keg purelib is the *prefix* copy
+          # (HOMEBREW_PREFIX/lib/python3.12/site-packages) and the
+          # sitecustomize Homebrew ships lives in the keg's own framework
+          # site-packages, so a purelib-only probe answers "none" while the
+          # interpreter is in fact running one (#3788, round 3). State the
+          # machine truth: every sitecustomize on sys.path, and the one that
+          # was actually imported.
+          purelib = sysconfig.get_paths()["purelib"]
+          print("purelib:", purelib)
+          found = [
+              os.path.join(entry or os.curdir, "sitecustomize.py")
+              for entry in sys.path
+              if os.path.isfile(os.path.join(entry or os.curdir, "sitecustomize.py"))
+          ]
+          print("sitecustomize on sys.path:", ", ".join(found) if found else "none")
+          try:
+              import sitecustomize
+          except ImportError:
+              print("imported sitecustomize: none")
+          else:
+              print("imported sitecustomize:", getattr(sitecustomize, "__file__", "?"))
+          import pip
+
+          print("keg pip:", pip.__file__)
           PY
           # #3788's condition, reported as a fact about this runner: the
           # owner's keg pip could not import its own wheel installer, which is
@@ -278,8 +301,6 @@ jobs:
           set -euo pipefail
 
           PY="$(brew --prefix python@3.12)/bin/python3.12"
-          KEG_PIP_DIR="$("$PY" -c 'import os, pip; print(os.path.dirname(pip.__file__))')"
-          echo "keg pip: $KEG_PIP_DIR"
           WORK="$(mktemp -d)"
           mkdir -p "$WORK/fault" "$WORK/wheelhouse"
 
@@ -298,12 +319,47 @@ jobs:
           # fault would not fire in the one process under test and the
           # negative control below would pass having proved nothing. Both
           # sides are realpathed, which keeps the parent case matching too.
+          #
+          # And realpath scoping is necessary but not sufficient (round 3's
+          # own second red run): the vehicle must not move the pip it is
+          # scoped to. Python imports exactly one `sitecustomize` and
+          # PYTHONPATH precedes site-packages, so this file shadows the one
+          # Homebrew's python@3.12 keg ships -- whose job is to put the
+          # prefix site-packages on sys.path. Shadowing it silently flips pip
+          # resolution from the prefix copy (what an unfaulted process, and
+          # `brew install`, import) to the keg's Cellar copy, a disjoint tree
+          # the scope anchor does not cover: the fault then never fires. So
+          # chain to it, exactly as the formula's own build shim does for the
+          # same reason (`_chain_to_the_real_sitecustomize`,
+          # homebrew/nyxgpt-api.rb).
           cat > "$WORK/fault/sitecustomize.py" <<'FAULT'
           import os
           import sys
 
           _TARGET = "pip._internal.operations.install.wheel"
           _KEG_PIP_DIR = os.environ.get("NYXGPT_FAULT_KEG_PIP_DIR", "")
+
+
+          def _chain_to_the_real_sitecustomize():
+              """Run the sitecustomize this file shadows, then keep going.
+
+              Same rule, same reason as the formula's build shim: dropping the
+              interpreter's own sitecustomize changes the environment under
+              test in ways unrelated to the fault being injected.
+              """
+              here = os.path.dirname(os.path.abspath(__file__))
+              for entry in sys.path:
+                  directory = entry or os.curdir
+                  candidate = os.path.join(directory, "sitecustomize.py")
+                  if os.path.abspath(directory) == here or not os.path.isfile(candidate):
+                      continue
+                  with open(candidate, "rb") as handle:
+                      source = handle.read()
+                  exec(
+                      compile(source, candidate, "exec"),
+                      {"__file__": candidate, "__name__": "sitecustomize"},
+                  )
+                  return
 
 
           class _KegPipCannotImportItsWheelInstaller:
@@ -319,8 +375,32 @@ jobs:
                   return None
 
 
+          try:
+              _chain_to_the_real_sitecustomize()
+          except Exception as exc:  # noqa: BLE001 - a fault injector, not a library
+              print("nyxgpt: fault sitecustomize chain skipped: %r" % (exc,), file=sys.stderr)
+
           sys.meta_path.insert(0, _KegPipCannotImportItsWheelInstaller())
           FAULT
+
+          # Measure the scope anchor in the environment the checks actually
+          # run in, not in a cleaner one. The finder is inert while
+          # NYXGPT_FAULT_KEG_PIP_DIR is unset, so this import is the faulted
+          # interpreter answering where *it* gets pip from -- belt and braces
+          # for the failure above, where the anchor was captured without the
+          # fault file and named a pip no faulted process ever imported.
+          KEG_PIP_DIR="$(PYTHONPATH="$WORK/fault" "$PY" -c 'import os, pip; print(os.path.dirname(pip.__file__))')"
+          UNFAULTED_PIP_DIR="$("$PY" -c 'import os, pip; print(os.path.dirname(os.path.realpath(pip.__file__)))')"
+          echo "keg pip (under the fault env): $KEG_PIP_DIR"
+          echo "keg pip (clean env, realpath): $UNFAULTED_PIP_DIR"
+          if [ "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$KEG_PIP_DIR")" \
+               != "$UNFAULTED_PIP_DIR" ]; then
+            # Not fatal -- the anchor is measured under the fault, so the
+            # fault is still scoped to the pip under test -- but it means the
+            # chain above did not fully restore the interpreter's path setup,
+            # and the log should say so rather than let it pass unremarked.
+            echo "::warning::the fault sitecustomize moves pip resolution; the chain did not fully restore it"
+          fi
 
           export NYXGPT_FAULT_KEG_PIP_DIR="$KEG_PIP_DIR"
           export PYTHONPATH="$WORK/fault"
@@ -335,7 +415,9 @@ jobs:
           # opt/lib symlinks (this process) and by the Cellar realpath (the
           # `--python` child, the only process where the install happens).
           # Checking just the first is what would have let the broken scoping
-          # through.
+          # through -- and the round after that, this same check is what
+          # caught the fault file shadowing the keg's sitecustomize. It is the
+          # arbiter: nothing below is believed until it passes.
           "$PY" - <<'CHECK'
           import os
           import subprocess
@@ -345,6 +427,12 @@ jobs:
 
           print("keg pip __file__:", pip.__file__)
           print("keg pip realpath:", os.path.realpath(pip.__file__))
+          try:
+              import sitecustomize
+          except ImportError:  # pragma: no cover - the fault file is on PYTHONPATH
+              print("sitecustomize: none imported")
+          else:
+              print("sitecustomize:", getattr(sitecustomize, "__file__", "?"))
 
           # What `__pip-runner__.py` puts on sys.path in the re-exec child:
           # the resolved parent of the pip package.
@@ -362,7 +450,18 @@ jobs:
           ):
               env = dict(os.environ)
               if prefix:
-                  env["PYTHONPATH"] = prefix + os.pathsep + env.get("PYTHONPATH", "")
+                  # The fault dir stays *first*: python imports exactly one
+                  # sitecustomize, and the pip source root can carry one of
+                  # its own (the Cellar's site-packages does), which would
+                  # shadow the fault and make this probe report a no-fire that
+                  # says nothing about the fault. It is also the faithful
+                  # spelling -- the real re-exec adds the pip source root with
+                  # `sys.path.insert` inside `__pip-runner__.py`, after
+                  # startup, so it never participates in sitecustomize
+                  # selection there either.
+                  env["PYTHONPATH"] = os.pathsep.join(
+                      part for part in (env.get("PYTHONPATH", ""), prefix) if part
+                  )
               done = subprocess.run(
                   [sys.executable, "-c", probe],
                   env=env,
