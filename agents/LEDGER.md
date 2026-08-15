@@ -381,6 +381,26 @@ not agent-editable except to add a `Re-verify` result or a supersession pointer.
   Re-verify when: the `requires-python` floor moves, or the candidate list in
   `ops._SERVICE_PYTHON_NAMES` changes.
 
+- **V-011** · 2026-08-15 — A comment token in this repo starts work **only
+  where it opens a line**, for all four tokens (`RETRY_IMPLEMENTATION`,
+  `READY_FOR_NEXT_ISSUE`, `@acceptance-failure`, `@improvement`). A GitHub
+  Actions `if:` can only substring-match, which is why the same defect fired
+  twice: #3706 (a park note naming the kick token dispatched work) and #3790
+  (the developer agent's stop message named the retry token, so a stop
+  produced a start — ~500 runs and ~500 comments across #3782/#3784 in under
+  two hours). Each trigger now has a `comment_gate` job running
+  `.github/actions/comment-token-gate`; agent prose that must name a token
+  carries `<!-- nyxgpt-token-mention -->`, which makes the whole comment
+  inert. Reference: `docs/agent-comment-tokens.md`.
+  Method: `.github/workflows/comment-token-gate-smoke.yml` executes the gate
+  action on a runner over the incident's real comment bodies and proves both
+  halves — the pre-#3790 substring rule matches the looping message while
+  the gate refuses it, a genuine command still proceeds; plus
+  `tests/unit/test_comment_token_triggers.py`, which asserts the stop message
+  is token-free and every trigger is gated.
+  Re-verify when: a new comment token is added, or a trigger's `if:` is
+  edited (both tests fail loudly if the gate is dropped).
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

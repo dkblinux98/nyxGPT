@@ -59,15 +59,46 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  handle:
-    # Triggers when the human owner comments @acceptance-failure on an issue.
-    # This is the stakeholder acceptance stage (post-merge, issue assigned to human).
-    # It is DISTINCT from the review-loop overrides (@approve-merge, @request-changes,
-    # @send-to-developer) which live in review_agent_auto_review.yml and operate on PRs.
+  # Layer 1 of the command trigger (#3790): cheap substring test here, the
+  # anchored "does this comment ISSUE the command?" decision in the gate job.
+  # Applied to every comment token in the repo, including the owner-only ones:
+  # a bare substring match also fires on prose that merely quotes or discusses
+  # the command ("I filed that as @improvement earlier"), and on an agent
+  # quoting the owner's comment back.
+  comment_gate:
     if: |
       github.event.issue.pull_request == null &&
       contains(github.event.comment.body, '@acceptance-failure') &&
+      !contains(github.event.comment.body, 'nyxgpt-token-mention') &&
       github.event.comment.user.login == vars.HUMAN_OWNER
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      proceed: ${{ steps.gate.outputs.proceed }}
+      reason: ${{ steps.gate.outputs.reason }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.RELEASE_BRANCH }}
+
+      - name: Comment token gate
+        id: gate
+        uses: ./.github/actions/comment-token-gate
+        with:
+          token: "@acceptance-failure"
+          comment-body: ${{ github.event.comment.body }}
+          author-association: ${{ github.event.comment.author_association }}
+
+  handle:
+    # Runs when the human owner ISSUES @acceptance-failure on an issue (the
+    # command opens a line of the comment; see comment_gate above).
+    # This is the stakeholder acceptance stage (post-merge, issue assigned to human).
+    # It is DISTINCT from the review-loop overrides (@approve-merge, @request-changes,
+    # @send-to-developer) which live in review_agent_auto_review.yml and operate on PRs.
+    needs: [comment_gate]
+    if: needs.comment_gate.outputs.proceed == 'true'
     runs-on: ubuntu-latest
 
     permissions:

@@ -80,10 +80,14 @@ def test_command_is_an_owner_only_issue_comment_gate(path, trigger):
     # `on:` parses as the boolean True in YAML 1.1 — hence the lookup dance.
     triggers = workflow.get("on") or workflow.get(True)
     assert "issue_comment" in triggers
-    condition = workflow["jobs"]["handle"]["if"]
+    # #3790 moved the owner/token test onto the `comment_gate` job, which
+    # also runs the anchored "does this comment ISSUE the command?" check
+    # before `handle` does anything. The gate contract itself is unchanged.
+    condition = workflow["jobs"]["comment_gate"]["if"]
     assert f"'{trigger}'" in condition
     assert "vars.HUMAN_OWNER" in condition
     assert "github.event.issue.pull_request == null" in condition
+    assert workflow["jobs"]["handle"]["needs"] == ["comment_gate"]
 
 
 def test_improvement_mirrors_acceptance_failure_structure(failure_wf, improvement_wf):
