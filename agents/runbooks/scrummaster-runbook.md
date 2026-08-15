@@ -238,13 +238,16 @@ a real work boundary, not bookkeeping:
   dispatch work, because only a kick starts selection and agents post kicks
   only after a merge.
 - **Informational notes are inert by construction.**
-  `notify_scrum_ready.yml` dispatches on a bare substring test for the kick
-  token with the agents on its actor allowlist, so a park or `PAUSE_SPRINT`
-  notice that merely *named* the token dispatched work -- a "park" that was
-  really a kick. Such notes now avoid the token entirely and carry
-  `<!-- nyxgpt-autopilot-informational -->` (`AUTOPILOT_INFO_MARKER`), which
-  the workflow's job `if:` negates. When adding any agent-posted status
-  comment, follow the same rule.
+  `notify_scrum_ready.yml`'s job `if:` can only substring-test the kick
+  token, and the agents are on its actor allowlist, so a park or
+  `PAUSE_SPRINT` notice that merely *named* the token dispatched work -- a
+  "park" that was really a kick. Such notes now avoid the token entirely and
+  carry `<!-- nyxgpt-autopilot-informational -->` (`AUTOPILOT_INFO_MARKER`),
+  which the workflow's job `if:` negates. Since #3790 the workflow also has a
+  `comment_gate` job: the token dispatches only where it *opens a line*
+  (`scripts/agents/lib/comment_tokens.py`), so a mid-sentence mention is
+  inert even unmarked. When adding any agent-posted status comment, follow
+  the same rule -- and see `docs/agent-comment-tokens.md`.
 - **Human override stays.** A `READY_FOR_NEXT_ISSUE` posted by the owner
   runs unscoped (`notify_scrum_ready.yml`), so the owner can deliberately
   pull work forward across the sprint boundary. Agent-posted kicks cannot.

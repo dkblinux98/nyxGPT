@@ -157,7 +157,13 @@ never rely on comment/body text alone (#3600, going-public hardening).
   phrase like `contains(comment.body, '@approve-merge')` with no author
   check fires for any commenter on a public repo.
   `handle_acceptance_failure.yml` and `developer_auto_implement.yml`'s
-  `RETRY_IMPLEMENTATION` path are the reference pattern.
+  retry path are the reference pattern (both now carry that gate on their
+  `comment_gate` job — see §3g).
+- **Match a command token at line start, never as a substring.** A
+  `contains(comment.body, '<TOKEN>')` test also matches prose that merely
+  names the token, so an agent's own guidance comment can start the very
+  workflow that posted it (#3706, #3790). Add a `comment_gate` job using
+  `.github/actions/comment-token-gate` and depend on its verdict; see §3g.
 - **Fork-PR guard on merge/review paths.** A job that reviews or merges a
   PR based on an `issue_comment` or `pull_request_review` event has no
   `pull_request.head.repo` in its event payload — add an explicit step
@@ -185,8 +191,8 @@ these triggers is added or edited — the review-runbook checklist entry for
 | `review_agent_auto_review.yml` | `issue_comment`, `pull_request_review` | `contents`/`pull-requests`/`issues: write`, `REVIEW_AGENT_TOKEN` | `comment.user == HUMAN_OWNER` (manual overrides) / `REVIEW_AGENT` (auto+structured) + fork-PR guard | Fixed by #3600 |
 | `notify_scrum_ready.yml` | `issue_comment` | `SCRUMMASTER_AGENT_TOKEN`, dispatches the scrummaster select-and-start loop | commenter ∈ `{HUMAN_OWNER, SCRUM_AGENT, DEV_AGENT, REVIEW_AGENT}` | Fixed by #3600 |
 | `claude-code-review.yml` | `pull_request`(review_requested,synchronize), `issue_comment`, `workflow_dispatch` | Bash/Write/Edit + `CLAUDE_CODE_OAUTH_TOKEN` | `@review` path: commenter ∈ `{HUMAN_OWNER, REVIEW_AGENT, DEV_AGENT}` + fork-PR guard; other triggers already gated on `requested_reviewer`/`assignee==REVIEW_AGENT` | Fixed by #3600 |
-| `handle_acceptance_failure.yml` | `issue_comment` | issues/PR write, `DEV_AGENT_TOKEN` | `comment.user == HUMAN_OWNER` | Reference pattern, unchanged |
-| `developer_auto_implement.yml` | `issues`(assigned), `issue_comment` | `contents`/`issues`/PR write, `DEV_AGENT_TOKEN` | assignee==DEV_AGENT (issues) / `author_association==OWNER` or `user.login` ∈ `{DEV_AGENT, REVIEW_AGENT}` (`RETRY_IMPLEMENTATION`) | #3647: extended to `REVIEW_AGENT` so `assign_and_trigger_developer`'s redispatch-fallback comment (posted whenever it has to unassign-then-reassign an already-assigned dev agent) actually starts a run |
+| `handle_acceptance_failure.yml` | `issue_comment` | issues/PR write, `DEV_AGENT_TOKEN` | `comment.user == HUMAN_OWNER`, on the `comment_gate` job | Reference pattern; gate moved to `comment_gate` by #3790 |
+| `developer_auto_implement.yml` | `issues`(assigned), `issue_comment` | `contents`/`issues`/PR write, `DEV_AGENT_TOKEN` | assignee==DEV_AGENT (issues) / `author_association==OWNER` or `user.login` ∈ `{DEV_AGENT, REVIEW_AGENT}` on the `comment_gate` job (retry path) | #3647: extended to `REVIEW_AGENT` so `assign_and_trigger_developer`'s redispatch-fallback comment (posted whenever it has to unassign-then-reassign an already-assigned dev agent) actually starts a run. #3790: the comment path's actor + token tests moved to `comment_gate`, whose verdict `implement` requires |
 | `scrummaster_sprint_reorg_apply.yml` | `issue_comment` | project field writes | `author_association==OWNER` + release-issue check | Unchanged |
 | `acceptance_plan.yml` | `issues`(edited) | issues write | `github.actor==HUMAN_OWNER` + plan marker in body | Unchanged |
 | `add-to-release-issue-on-milestone.yml` | `issues`(milestoned) | issues write (`GITHUB_TOKEN`) | none, but `milestoned` can only be produced by a user with write access — no public-actor path exists | Unchanged, no gate needed |
@@ -407,6 +413,33 @@ problems, and the pipeline needed a way to see across issues.
 - **Replay criterion.** The 2026-08-09 scenario (5 issues x the same failed
   step within the window) now yields one diagnosis (the origin issue's
   Phase 1-3) and a dispatch pause, not five independent loops.
+
+## 3g) Comment tokens are commands, not substrings (#3790)
+
+Full reference: `docs/agent-comment-tokens.md`. The short version, because
+this defect has now fired twice (#3706 on the kick token, #3790 on the retry
+token):
+
+- **Resuming a stopped developer run.** Move the issue back to `In Progress`
+  and post a comment whose **first line is** `RETRY_IMPLEMENTATION` (nothing
+  else on that line). The stop comment the agent posts deliberately does not
+  spell the token out — an automated comment naming it is exactly what
+  produced ~500 runs across #3782/#3784 on 2026-08-15.
+- **A token counts only where it opens a line.** Fenced code blocks and
+  quoted (`>`) lines are stripped first, so quoting an earlier comment
+  cannot replay its command.
+- **Agent prose that must name a token carries
+  `<!-- nyxgpt-token-mention -->`**, which makes the whole comment inert.
+  Prefer not naming it at all — point at this runbook instead.
+- **Every comment-token workflow has a `comment_gate` job** using
+  `.github/actions/comment-token-gate`; the job that does the work
+  `needs: [comment_gate]` and runs only on `outputs.proceed == 'true'`. When
+  you add a token trigger, add the gate too — `tests/unit/
+  test_comment_token_triggers.py` fails if you don't.
+- **Loop guard.** Three "stopping — not In Progress" cycles on one issue
+  within 30 minutes escalate once and then go silent
+  (`scripts/agents/lib/stop_loop_guard.py`); automatic retries on that issue
+  are ignored until the repo owner comments, which clears the halt.
 
 ## 4) Verification loop (MANDATORY - ALL must pass before commit)
 Run ALL of the following checks and fix issues until they pass:

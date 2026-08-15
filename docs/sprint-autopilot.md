@@ -125,11 +125,11 @@ owner's acceptance window: it only restarts work the sprint already owns.
 
 ### Informational notes must never look like a kick
 
-`notify_scrum_ready.yml` dispatches on a bare
-`contains(github.event.comment.body, 'READY_FOR_NEXT_ISSUE')` with the agent
-accounts on its actor allowlist. Any agent comment that *names* the kick
-token therefore starts the next issue, even one whose whole point is that
-work has stopped. Two rules keep status reports inert:
+`notify_scrum_ready.yml`'s job `if:` can only substring-match the comment
+body, and the agent accounts are on its actor allowlist -- so on its own,
+any agent comment that *named* the kick token started the next issue, even
+one whose whole point was that work had stopped (#3706). Three rules keep
+status reports inert:
 
 1. Informational autopilot comments (the park note, the `PAUSE_SPRINT`
    notice) never spell the token out -- they point here instead.
@@ -138,9 +138,13 @@ work has stopped. Two rules keep status reports inert:
    `scripts/agents/lib/sprint_calc.py`), which the workflow's job `if:`
    negates. This is the structural guard: it holds even if a note's prose
    later drifts back into naming the token.
+3. The `comment_gate` job (#3790) makes the token count only where it
+   *opens a line*, so prose that names it mid-sentence -- in any comment,
+   marked or not -- can never dispatch. See
+   [Comment tokens](agent-comment-tokens.md).
 
-To kick manually, post a comment containing `READY_FOR_NEXT_ISSUE` (and no
-marker) on the release tracking issue.
+To kick manually, post a comment on the release tracking issue that starts a
+line with `READY_FOR_NEXT_ISSUE` (and carries no marker).
 
 ### The sprint boundary is an acceptance gate
 

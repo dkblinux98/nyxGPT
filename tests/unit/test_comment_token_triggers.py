@@ -58,7 +58,9 @@ def _load(path: Path) -> dict:
 
 
 def _step_scripts(step: dict) -> str:
-    return "\n".join([step.get("run", "") or "", ((step.get("with") or {}).get("script", "") or "")])
+    return "\n".join(
+        [step.get("run", "") or "", ((step.get("with") or {}).get("script", "") or "")]
+    )
 
 
 def _steps(workflow: dict, job: str) -> list[dict]:
@@ -125,7 +127,9 @@ class TestEveryTokenTriggerIsGated:
         assert gate, f"{filename} has no comment_gate job"
         uses = [s.get("uses", "") for s in gate.get("steps", [])]
         assert "./.github/actions/comment-token-gate" in uses
-        gate_step = next(s for s in gate["steps"] if s.get("uses", "").endswith("comment-token-gate"))
+        gate_step = next(
+            s for s in gate["steps"] if s.get("uses", "").endswith("comment-token-gate")
+        )
         assert str(gate_step["with"]["token"]) == token
 
     @pytest.mark.parametrize("filename", sorted(TOKEN_TRIGGERS))
