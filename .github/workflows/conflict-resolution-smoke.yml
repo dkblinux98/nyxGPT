@@ -120,8 +120,10 @@ jobs:
           # Both sides present?
           grep -q 'start = lazy'    ops.conf || { echo "::error::PR intent lost"; exit 1; }
           grep -q 'logging = json'  ops.conf || { echo "::error::mainline behavior reverted"; exit 1; }
-          grep -q 'D-009 mainline'  LEDGER.md || { echo "::error::mainline ledger entry lost"; exit 1; }
-          grep -q 'D-010 feature'   LEDGER.md || { echo "::error::renumbered feature entry lost"; exit 1; }
+          grep -q 'mainline entry landed first' LEDGER.md \
+            || { echo "::error::mainline ledger entry lost"; exit 1; }
+          grep -q 'D-010' LEDGER.md \
+            || { echo "::error::renumbered feature entry lost"; exit 1; }
           test "$(grep -c 'D-009' LEDGER.md)" -eq 1 || { echo "::error::duplicate ledger ID survived"; exit 1; }
 
           # The branch is now mergeable, which is the point of the round.
