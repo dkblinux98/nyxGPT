@@ -88,7 +88,41 @@ jobs:
       # declared dependency), NOT from the setup-python above -- that one only
       # runs the stamping script, which is stdlib-only (#3741).
       - name: Install the formula's declared Python dependency
-        run: brew install python@3.12
+        run: |
+          set -euo pipefail
+          brew install python@3.12
+          # #3788: the owner's Mac had python@3.12 3.12.14 and this runner
+          # had 3.12.13_4 at the rc11 cut, whose older bundled pip did not
+          # carry the self-modification guard that killed the install. Testing
+          # whatever pip the runner image was baked with is testing the past,
+          # so pull the keg up to what `brew install` gives a user today.
+          #
+          # `brew update` first, and that is the whole point of the step:
+          # `brew upgrade` can only see versions the local metadata knows
+          # about, and the runner image's metadata predates the owner's
+          # 3.12.14 -- without it the upgrade prints "already installed" and
+          # the job silently keeps testing the image's pip.
+          brew update || echo "::warning::brew update failed; the keg may not reach current"
+          set +e
+          upgrade_log="$(brew upgrade python@3.12 2>&1)"
+          upgrade_rc=$?
+          set -e
+          echo "$upgrade_log"
+          if [ "$upgrade_rc" -ne 0 ]; then
+            # "already installed" is the one non-zero worth tolerating: it
+            # means current is what is already here. Anything else is a real
+            # failure and is not swallowed.
+            if printf '%s' "$upgrade_log" | grep -qF "already installed"; then
+              echo "python@3.12 is already at the newest version Homebrew knows about"
+            else
+              echo "::error::brew upgrade python@3.12 failed"
+              exit "$upgrade_rc"
+            fi
+          fi
+          brew list --versions python@3.12
+          # State in the log which pip is actually under test, so a future
+          # green run says what it tested rather than being taken on trust.
+          "$(brew --prefix python@3.12)/bin/python3.12" -m pip --version
 
       - name: Show the python@3.12 keg's ensurepip state
         # Diagnostics for the failure this job exists to catch: if ensurepip is
@@ -110,10 +144,49 @@ jobs:
           "$PY" -c 'import platform; print("mac_ver:", platform.mac_ver())'
           "$PY" - <<'PY'
           import os
+          import sys
           import sysconfig
 
-          path = os.path.join(sysconfig.get_paths()["purelib"], "sitecustomize.py")
-          print("keg sitecustomize:", path if os.path.exists(path) else "none")
+          # Not just purelib: on this keg purelib is the *prefix* copy
+          # (HOMEBREW_PREFIX/lib/python3.12/site-packages) and the
+          # sitecustomize Homebrew ships lives in the keg's own framework
+          # site-packages, so a purelib-only probe answers "none" while the
+          # interpreter is in fact running one (#3788, round 3). State the
+          # machine truth: every sitecustomize on sys.path, and the one that
+          # was actually imported.
+          purelib = sysconfig.get_paths()["purelib"]
+          print("purelib:", purelib)
+          found = [
+              os.path.join(entry or os.curdir, "sitecustomize.py")
+              for entry in sys.path
+              if os.path.isfile(os.path.join(entry or os.curdir, "sitecustomize.py"))
+          ]
+          print("sitecustomize on sys.path:", ", ".join(found) if found else "none")
+          try:
+              import sitecustomize
+          except ImportError:
+              print("imported sitecustomize: none")
+          else:
+              print("imported sitecustomize:", getattr(sitecustomize, "__file__", "?"))
+          import pip
+
+          print("keg pip:", pip.__file__)
+          PY
+          # #3788's condition, reported as a fact about this runner: the
+          # owner's keg pip could not import its own wheel installer, which is
+          # what pip 26.2's guard reported as an ImportError from
+          # `_prevent_import_hook`. Says outright whether this machine is in
+          # that state -- the injection step below does not depend on it.
+          "$PY" - <<'PY'
+          import importlib.util
+
+          name = "pip._internal.operations.install.wheel"
+          try:
+              spec = importlib.util.find_spec(name)
+          except Exception as exc:  # noqa: BLE001 - diagnostics only
+              spec = None
+              print(f"keg pip wheel installer: lookup raised {exc!r}")
+          print("keg pip wheel installer:", spec.origin if spec else "MISSING (#3788 condition)")
           PY
 
       # The gap this closes (#3753, round 2): the rc5 smoke job went green on
@@ -158,10 +231,22 @@ jobs:
           BUILD
 
           echo "=== negative control: the recipe's pip bootstrap, mac_ver() empty ==="
+          # The whole bootstrap, not one command of it: pip parses mac_ver()
+          # both in truststore (its TLS backend) and in
+          # `packaging.tags.mac_platforms`, so this asserts the recipe dies
+          # somewhere in there without the shim, without betting on which
+          # step gets there first.
           "$PY" -m venv --without-pip "$WORK/venv-broken"
+          mkdir -p "$WORK/wheelhouse-broken"
           set +e
-          PYTHONPATH="$WORK/broken" "$PY" -m pip --python "$WORK/venv-broken/bin/python" \
-            install --upgrade pip > "$WORK/broken.log" 2>&1
+          (
+            set -e
+            PYTHONPATH="$WORK/broken" "$PY" -m pip download --no-deps --only-binary :all: \
+              --disable-pip-version-check --dest "$WORK/wheelhouse-broken" pip
+            broken_wheel="$(ls "$WORK"/wheelhouse-broken/pip-*.whl | head -1)"
+            PYTHONPATH="$WORK/broken" "$WORK/venv-broken/bin/python" "$broken_wheel/pip" \
+              install --no-index --disable-pip-version-check "$broken_wheel"
+          ) > "$WORK/broken.log" 2>&1
           broken_rc=$?
           set -e
           tail -30 "$WORK/broken.log" || true
@@ -182,16 +267,181 @@ jobs:
 
           echo "=== the same bootstrap with the formula's shim in place ==="
           "$PY" -m venv --without-pip "$WORK/venv-fixed"
-          PYTHONPATH="$WORK/fixed" "$PY" -m pip --python "$WORK/venv-fixed/bin/python" \
-            install --upgrade pip 2>&1 | tee "$WORK/fixed.log" | tail -20
-          # `pip --python` re-execs pip in the venv interpreter, so a green run
-          # here also proves the shim reaches that second process -- the
-          # env-inheritance property the whole fix rests on.
+          mkdir -p "$WORK/wheelhouse-fixed"
+          (
+            set -e
+            PYTHONPATH="$WORK/fixed" "$PY" -m pip download --no-deps --only-binary :all: \
+              --disable-pip-version-check --dest "$WORK/wheelhouse-fixed" pip
+            fixed_wheel="$(ls "$WORK"/wheelhouse-fixed/pip-*.whl | head -1)"
+            # The bootstrap's second interpreter is the venv's, running pip
+            # out of the wheel by zipimport -- a green run here also proves
+            # the shim reaches that process, the env-inheritance property the
+            # whole #3753 fix rests on.
+            PYTHONPATH="$WORK/fixed" "$WORK/venv-fixed/bin/python" "$fixed_wheel/pip" \
+              install --no-index --disable-pip-version-check "$fixed_wheel"
+          ) 2>&1 | tee "$WORK/fixed.log" | tail -20
           "$WORK/venv-fixed/bin/pip" --version
           grep -qF "so pip can start" "$WORK/fixed.log" || {
             echo "::error::the shim never fired, so a green result here proves nothing about the fix."
             exit 1
           }
+
+      # Round 3 of the same lesson (#3788, D-006). rc11's smoke passed here on
+      # python@3.12 3.12.13_4 while the identical install died on the owner's
+      # 3.12.14 -- the third green-by-luck result of the runner/user
+      # version-drift class. The step above now pulls the keg to current, but
+      # "current" still drifts, so the failure itself is injected rather than
+      # waited for: the owner's keg pip could not import
+      # `pip._internal.operations.install.wheel`, pip 26.2 swallowed that into
+      # `_MISSING_MODULES` and its audit hook re-raised it as the owner's
+      # ImportError. Reproduce exactly that machine state, prove rc11's
+      # bootstrap dies on it, then prove this checkout's does not.
+      #
+      # Injected by taking the module away, not by emulating its absence.
+      # Two earlier spellings put a meta-path finder in a `sitecustomize` on
+      # PYTHONPATH, and both failed on the vehicle rather than on the recipe:
+      # the first scoped itself by `abspath` and never matched in the
+      # symlink-resolved `pip --python` child; the second shadowed the keg's
+      # own `sitecustomize` and moved which pip was under test. The general
+      # fault there is that an emulated condition runs in an interpreter
+      # environment that `brew install` does not have, so the emulation
+      # becomes the thing being tested. Moving the file is the machine state
+      # itself: no PYTHONPATH, no import hooks -- provided it is moved at its
+      # realpath. Homebrew's prefix tree symlinks into the Cellar and pip's
+      # `--python` child re-execs through `get_runnable_pip()`, which resolves
+      # symlinks, so taking away the prefix entry leaves the file that child
+      # imports in place; that is how run 31870665799 fired the self-check
+      # through a dangling symlink and still passed the negative control.
+      # Removed at its realpath, the hole is the same one for every route:
+      # the keg pip, its `--python` re-exec child, and `brew install`. It is
+      # restored by a trap before anything else runs.
+      - name: "Reproduce the #3788 keg-pip failure, then prove the new bootstrap survives it"
+        run: |
+          set -euo pipefail
+
+          PY="$(brew --prefix python@3.12)/bin/python3.12"
+          WORK="$(mktemp -d)"
+          mkdir -p "$WORK/wheelhouse"
+
+          # The realpath, not the path it was imported by: Homebrew links the
+          # prefix tree into the Cellar, and the copy `pip --python` re-execs
+          # is the resolved one.
+          WHEEL_PY="$("$PY" -c 'import os, pip._internal.operations.install.wheel as m; print(os.path.realpath(m.__file__))')"
+          WHEEL_LINK="$("$PY" -c 'import pip._internal.operations.install.wheel as m; print(m.__file__)')"
+          HIDDEN="$WHEEL_PY.3788-hidden"
+          echo "keg pip wheel installer: $WHEEL_PY"
+          echo "  imported by this python as: $WHEEL_LINK"
+
+          restore_the_keg() {
+            if [ -e "$HIDDEN" ]; then
+              mv -f "$HIDDEN" "$WHEEL_PY"
+            fi
+          }
+          # Every exit path, including the ones that fail below: the steps
+          # after this one install the formulas with this same keg pip.
+          trap restore_the_keg EXIT
+
+          mv "$WHEEL_PY" "$HIDDEN"
+          # Source-based caching means a stale __pycache__ entry is ignored
+          # once the .py is gone, but leave nothing to reason about -- on both
+          # sides of the link, since either may carry one.
+          rm -f "$(dirname "$WHEEL_PY")"/__pycache__/wheel.*.pyc
+          rm -f "$(dirname "$WHEEL_LINK")"/__pycache__/wheel.*.pyc
+
+          echo "=== self-check: the keg is really in the owner's state before anything is inferred ==="
+          # The arbiter, kept from the previous spelling and for the reason it
+          # was added: a fault that does not fire produces a passing negative
+          # control, which in a log is indistinguishable from "the bug is
+          # gone". Assert the condition exists, in this process and in a
+          # child, before believing anything below.
+          "$PY" - <<'CHECK'
+          import os
+          import subprocess
+          import sys
+
+          import pip
+
+          print("keg pip:", pip.__file__)
+
+          # Both routes pip can be imported by here, because they are not the
+          # same directory: this process reaches it through Homebrew's prefix
+          # tree, and `pip --python` re-execs `get_runnable_pip()`, which is
+          # `Path(pip.__file__).resolve().parent` -- the Cellar. Checking only
+          # the first is what let the previous spelling through: it fired
+          # through a dangling prefix symlink while the child imported an
+          # untouched Cellar copy and installed happily. Resolve the *file*,
+          # as `get_runnable_pip()` does -- Homebrew's prefix directory is
+          # usually real with only its files linked, so resolving the
+          # directory would collapse both routes into one and quietly stop
+          # probing the child's.
+          as_imported = os.path.dirname(pip.__file__)
+          resolved = os.path.dirname(os.path.realpath(pip.__file__))
+          routes = [("prefix", os.path.dirname(as_imported))]
+          if resolved != as_imported:
+              routes.append(("resolved (Cellar)", os.path.dirname(resolved)))
+
+          for name, site_packages in routes:
+              probe = (
+                  "import sys\n"
+                  f"sys.path.insert(0, {site_packages!r})\n"
+                  "import pip\n"
+                  "print('  pip imported from', pip.__file__)\n"
+                  "import pip._internal.operations.install.wheel\n"
+              )
+              done = subprocess.run(
+                  [sys.executable, "-c", probe],
+                  capture_output=True,
+                  text=True,
+              )
+              print(f"-- {name} route: {site_packages}")
+              print(done.stdout.rstrip() or "  (no output)")
+              if done.returncode == 0:
+                  print(f"::error::the keg pip can still import its wheel installer by its {name} route; #3788's condition was not created")
+                  sys.exit(1)
+              if "No module named 'pip._internal.operations.install.wheel'" not in done.stderr:
+                  print(done.stderr.rstrip())
+                  print(f"::error::the {name} route failed to import it for some other reason")
+                  sys.exit(1)
+          print("  the keg pip cannot import its wheel installer, as on the owner's Mac")
+          CHECK
+
+          echo "=== negative control: rc11's bootstrap, which installs through the keg's pip ==="
+          "$PY" -m venv --without-pip "$WORK/venv-old"
+          set +e
+          "$PY" -m pip --python "$WORK/venv-old/bin/python" install --upgrade pip \
+            > "$WORK/old.log" 2>&1
+          old_rc=$?
+          set -e
+          tail -25 "$WORK/old.log" || true
+          if [ "$old_rc" -eq 0 ]; then
+            echo "rc11's bootstrap survived a keg pip that cannot import its"
+            echo "wheel installer, so the check below would pass whether or"
+            echo "not the new bootstrap helps. Re-derive the reproduction."
+            echo "::error::this runner no longer reproduces #3788"
+            exit 1
+          fi
+          grep -qF "No module named 'pip._internal.operations.install.wheel'" "$WORK/old.log" || {
+            echo "the old bootstrap failed, but not with the owner's ImportError."
+            echo "::error::the #3788 reproduction has drifted"
+            exit 1
+          }
+          echo "reproduced: rc11's bootstrap exits $old_rc with the owner's ImportError"
+
+          echo "=== this checkout's bootstrap, same keg state ==="
+          "$PY" -m venv --without-pip "$WORK/venv-new"
+          # `download` is the only keg-pip subcommand the recipe still uses,
+          # and it never reaches the module that is missing.
+          "$PY" -m pip download --no-deps --only-binary :all: \
+            --disable-pip-version-check --dest "$WORK/wheelhouse" pip
+          WHEEL="$(ls "$WORK"/wheelhouse/pip-*.whl | head -1)"
+          "$WORK/venv-new/bin/python" "$WHEEL/pip" install --no-index \
+            --disable-pip-version-check "$WHEEL"
+          "$WORK/venv-new/bin/pip" --version
+
+          echo "=== restore the keg, and prove it is whole again ==="
+          restore_the_keg
+          trap - EXIT
+          "$PY" -c 'import pip._internal.operations.install.wheel as m; print("restored:", m.__file__)'
 
       - name: Stamp the rc formulas from this checkout
         env:

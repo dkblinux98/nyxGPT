@@ -1599,16 +1599,25 @@ def test_ops_port_forward_dispatches_to_ops_module(
 
 
 def test_ops_port_forward_default_port(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`nyxgpt ops port-forward` defaults to port 3000 when --port is omitted."""
+    """`nyxgpt ops port-forward` still lands on the web Service at port 3000
+    when --port/--target are omitted.
+
+    The CLI default is now `None`, not `3000` (#3787): each target has its own
+    canonical local port -- Grafana 3001, Jaeger 16686, ... -- so "the operator
+    did not choose one" has to be distinguishable from "the operator asked for
+    3000". `ops._port_forward_plan` is what resolves it."""
     import nyxgpt.cli as cli_mod
 
     calls = []
-    monkeypatch.setattr(cli_mod.ops_mod, "port_forward", lambda args: calls.append(args.port) or 0)
+    monkeypatch.setattr(cli_mod.ops_mod, "port_forward", lambda args: calls.append(args) or 0)
 
     exit_code = cli(["ops", "port-forward"])
 
     assert exit_code == 0
-    assert calls == [3000]
+    assert [(a.target, a.port) for a in calls] == [("web", None)]
+    from nyxgpt import ops as ops_mod
+
+    assert ops_mod._port_forward_plan(calls[0]) == [("web", "nyxgpt-web", 3000, 3000)]
 
 
 def test_ops_install_skip_observability_flag_parses(

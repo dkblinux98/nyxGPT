@@ -158,6 +158,47 @@ but `pip install -e .` is still the fix to actually use the feature again.
 
 ---
 
+### `No Python >= 3.11 available to create the nyxgpt-api venv`
+
+**Symptoms:**
+- `nyxgpt ops install`'s `native api service` step fails with
+  `No Python >= 3.11 available to create the nyxgpt-api venv`, listing every
+  interpreter it found and the version each reported.
+
+**Cause:**
+
+nyxGPT's `requires-python` is `>=3.11`, and no interpreter on the machine
+meets it. The distro's own `python3` is often older -- Amazon Linux 2023
+ships 3.9, Ubuntu 22.04 LTS ships 3.10 -- and it is deliberately not assumed
+to be enough: a venv built from it is one pip refuses to install nyxGPT into,
+which used to surface much later as
+`ERROR: Package 'nyxgpt-api' requires a different Python: 3.9.16 not in '>=3.11'`.
+
+**Solutions:**
+
+1. **Install an interpreter that meets the floor:**
+   ```bash
+   # Amazon Linux / Fedora / RHEL
+   sudo dnf install -y python3.11 python3.11-pip
+   # Debian / Ubuntu
+   sudo apt-get install -y python3.11 python3.11-venv
+   ```
+   Any newer version works too -- `python3.13`/`python3.12` are preferred over
+   `python3.11` when present.
+
+2. **Re-run the install:**
+   ```bash
+   nyxgpt ops install
+   ```
+   ops picks the interpreter itself: the one it is running under first, then
+   an explicitly-versioned `python3.X` from PATH, and bare `python3` last and
+   only if it qualifies.
+
+On a cloud instance this is handled during provisioning -- see
+[cloud.md](cloud.md#python-on-the-instance).
+
+---
+
 ### Grafana Dashboards Are Empty on Linux
 
 **Symptoms:**
@@ -208,6 +249,37 @@ API on every interface the machine has, and the startup
 until you also enable auth. The relay achieves the same reachability while
 keeping the API loopback-only — see
 [docker-compose.md](docker-compose.md#linux-scraping-the-native-api).
+
+#### Already set `[api] host = 0.0.0.0`? Revert it
+
+If you widened the bind before the relay existed, nothing migrates you back
+automatically — the relay is *deliberately* skipped while `[api] host` is
+non-loopback, so each `nyxgpt ops observability` keeps reconciling the
+widened posture in. `nyxgpt ops doctor` now reports this explicitly rather
+than staying silent (the scrape is up, so the "target is DOWN" finding above
+does not fire):
+
+```
+The API is bound to `0.0.0.0`, publishing it on every interface instead of
+loopback only -- the pre-#3721 workaround for Prometheus not being able to
+reach a native API from a container. ...
+```
+
+To return to the loopback-only posture:
+
+1. Set `[api] host = 127.0.0.1` in `~/.nyxGPT/config.ini`.
+2. Reconcile and restart — this is what actually enables the relay, since the
+   decision is re-made from `config.ini` on every observability bring-up:
+   ```bash
+   nyxgpt ops env-sync
+   nyxgpt ops observability
+   nyxgpt ops restart api
+   ```
+3. Confirm with `nyxgpt ops doctor` — the finding clears, and the
+   `nyxgpt-api` scrape target stays **UP** through the relay.
+
+Auth (`[auth] enabled`) can stay on; the bind-security gate only *requires*
+it for non-loopback binds, it never forbids it on loopback.
 
 ---
 

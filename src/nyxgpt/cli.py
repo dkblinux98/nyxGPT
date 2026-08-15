@@ -1597,7 +1597,8 @@ def _add_install_arguments(parser: argparse.ArgumentParser) -> None:
         "--kubernetes",
         action="store_true",
         help=(
-            "Deploy nyxgpt-api to a local Kubernetes cluster instead of native/Homebrew "
+            "Deploy the full stack (api, web, Cassandra, Ollama) to a local Kubernetes "
+            "cluster instead of native/Homebrew "
             "reconciliation -- requires --local. Uses an existing reachable cluster if "
             "kubectl is already configured, otherwise provisions a local kind cluster"
         ),
@@ -2156,9 +2157,23 @@ def cli(argv: list[str] | None = None) -> int:
     ops_observability = ops_sub.add_parser(
         "observability",
         help=(
-            "Start the Grafana/Loki/Jaeger/GlitchTip Compose profiles "
-            "(monitoring/logging/tracing/errors) without a raw docker compose command"
+            "Start the Grafana/Loki/Jaeger/GlitchTip observability stack -- the Compose "
+            "profiles (monitoring/logging/tracing/errors), or the in-cluster layer with "
+            "--kubernetes -- without a raw docker compose/kubectl command"
         ),
+    )
+    ops_observability.add_argument(
+        "--kubernetes",
+        action="store_true",
+        help=(
+            "Deploy the observability layer into the Kubernetes cluster (k8s/observability/) "
+            "instead of the Compose profiles -- requires --local"
+        ),
+    )
+    ops_observability.add_argument(
+        "--local",
+        action="store_true",
+        help="Target the local machine (required with --kubernetes)",
     )
     _add_quiet_flag(ops_observability)
 
@@ -2173,12 +2188,27 @@ def cli(argv: list[str] | None = None) -> int:
     ops_port_forward = ops_sub.add_parser(
         "port-forward",
         help=(
-            "Forward the Kubernetes web Service to localhost "
+            "Forward a Kubernetes Service (web, api, or an observability UI) to localhost "
             "(wraps `kubectl port-forward` -- see `--kubernetes` in docs/kubernetes.md#4-verify)"
         ),
     )
     ops_port_forward.add_argument(
-        "--port", type=int, default=3000, help="Local port to forward to (default: 3000)"
+        "--target",
+        default="web",
+        choices=["web", "api", "grafana", "prometheus", "jaeger", "glitchtip", "observability"],
+        help=(
+            "What to forward (default: web). `observability` forwards Grafana, Prometheus, "
+            "Jaeger and GlitchTip at once, on the same local ports the admin dashboard's "
+            "observability links already use"
+        ),
+    )
+    ops_port_forward.add_argument(
+        "--port",
+        type=int,
+        # No argparse default: `None` is what lets ops.port_forward tell "the
+        # operator chose a port" from "use this target's canonical one"
+        # (3000 for web, 3001 for Grafana, 16686 for Jaeger, ...).
+        help="Local port to forward to (default: the target's usual port, e.g. 3000 for web)",
     )
 
     ops_verify = ops_sub.add_parser(

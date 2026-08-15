@@ -70,12 +70,44 @@ fi
 # machine; installing it is a no-op on an AMI that already has it.
 if command -v dnf >/dev/null 2>&1; then
   dnf install -y python3 python3-pip docker zstd
+  # Amazon Linux 2023's `python3` is 3.9, below nyxGPT's requires-python
+  # floor of 3.11 -- installing an explicit 3.11+ is what makes the CLI venv
+  # below installable at all (#3782). Newest first, stopping at the first
+  # that installs.
+  for pkg in python3.13 python3.12 python3.11; do
+    if dnf install -y "$pkg" "$pkg-pip"; then
+      break
+    fi
+  done
 elif command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
   apt-get install -y python3 python3-pip python3-venv docker.io zstd
+  # Ubuntu 22.04 LTS (in the support matrix) ships 3.10 as `python3`.
+  if ! python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)'; then
+    apt-get install -y python3.11 python3.11-venv || true
+  fi
 else
   echo "ec2-user-data-linux: no supported package manager found (need dnf or apt-get)" >&2
+  exit 1
+fi
+
+# Resolve the interpreter the CLI venv is built from, asking each candidate
+# its own version rather than trusting its name. Bare `python3` is tried last
+# and only if it satisfies the floor: a venv built from a 3.9 `python3` is
+# one pip refuses to install nyxGPT into ("requires a different Python:
+# 3.9.16 not in '>=3.11'"), which is how #3782 failed a cloud deploy several
+# minutes in, with no mention of Python in the error.
+NYXGPT_PYTHON=""
+for cand in python3.13 python3.12 python3.11 python3; do
+  command -v "$cand" >/dev/null 2>&1 || continue
+  if "$cand" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)'; then
+    NYXGPT_PYTHON="$(command -v "$cand")"
+    break
+  fi
+done
+if [ -z "$NYXGPT_PYTHON" ]; then
+  echo "ec2-user-data-linux: no Python >= 3.11 is installed or installable on this AMI -- nyxGPT's requires-python is '>=3.11' (system python3: $(python3 -V 2>&1 || echo none))" >&2
   exit 1
 fi
 
@@ -138,7 +170,7 @@ USER_BIN="$CLI_VENV/bin"
 NYXGPT_CLI="$USER_BIN/nyxgpt"
 
 sudo -u "$NYXGPT_TARGET_USER" -H mkdir -p "$TARGET_HOME/.nyxGPT/opt"
-sudo -u "$NYXGPT_TARGET_USER" -H python3 -m venv "$CLI_VENV"
+sudo -u "$NYXGPT_TARGET_USER" -H "$NYXGPT_PYTHON" -m venv "$CLI_VENV"
 sudo -u "$NYXGPT_TARGET_USER" -H "$CLI_VENV/bin/python" -m pip install --upgrade pip
 sudo -u "$NYXGPT_TARGET_USER" -H "$CLI_VENV/bin/python" -m pip install "$PIP_SPEC"
 

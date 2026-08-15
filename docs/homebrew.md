@@ -384,14 +384,41 @@ otherwise it reports the existing install is already up to date and just
 
 ### How the keg venv is built
 
-The `nyxgpt-api` keg creates its venv with `python -m venv --without-pip` and
-then has Homebrew's `python@3.12` install pip into it (`pip --python`). That
-is deliberate: a plain `python -m venv` runs `ensurepip --upgrade
---default-pip`, which bootstraps pip from wheels vendored inside the
-`python@3.12` keg — the only part of the install that depends on
-Homebrew-managed keg state rather than on the tarball being installed. On a
-stock Homebrew Mac that step exited 1 and took the whole `brew install` with
-it, so it is no longer in the path at all.
+The `nyxgpt-api` keg creates its venv with `python -m venv --without-pip`,
+then bootstraps pip into it from a wheel:
+
+1. Homebrew's `python@3.12` runs `pip download` to fetch a pip wheel.
+2. The **venv's** interpreter runs pip *out of that wheel* — a wheel is a zip
+   whose root is the `pip` package, so `python pip-X.whl/pip install
+   pip-X.whl` works by zipimport, which is pip's own documented bootstrap.
+3. Everything after that installs through the venv's own pip.
+
+Two separate defects shaped this. `--without-pip` is there because a plain
+`python -m venv` runs `ensurepip --upgrade --default-pip`, which bootstraps
+pip from wheels vendored inside the `python@3.12` keg — the only part of the
+install that depended on Homebrew-managed keg state rather than on the
+tarball being installed. On a stock Homebrew Mac that exited 1 and took the
+whole `brew install` with it.
+
+The wheel bootstrap replaced an earlier spelling that had the keg's own pip
+perform the install (`pip --python <venv-python> install --upgrade pip`).
+That died on `python@3.12` 3.12.14 with
+
+```
+ImportError: No module named 'pip._internal.operations.install.wheel'
+```
+
+raised from `_prevent_import_hook`. pip 26.2 pre-imports its lazily-imported
+modules just before it writes anything, so a distribution it is about to
+install cannot shadow them; when that pre-import fails it records the name
+and its audit hook turns the real import, moments later, into the error
+above. The failure is reported by pip's guard, but what the guard is
+reporting is that *that pip installation* cannot import its own wheel
+installer — which no ordering, option or `--upgrade`-free spelling of an
+install through it can route around. So the keg's pip is no longer allowed
+to install anything; `download` is the only subcommand the recipe uses, and
+it never reaches that module. The venv is populated by a pip freshly
+unpacked from a wheel, which is complete by construction.
 
 ### Why the build environment gets a `sitecustomize.py`
 
@@ -412,8 +439,8 @@ only, which a `ValueError` from a module body walks straight past.
 
 A `sitecustomize` is the right shape because `site` imports it at interpreter
 startup, so one file covers every interpreter the build starts — Homebrew's
-python, the venv python that `pip --python` re-execs into, and pip's
-build-isolation subprocesses. It asks `sw_vers` for the real release and only
+python running `pip download`, the venv python that runs pip out of the
+downloaded wheel, and pip's build-isolation subprocesses. It asks `sw_vers` for the real release and only
 falls back to a floor of `11.0` if that fails too; a Mac whose `mac_ver()`
 already works is left completely alone, so the reported version never becomes
 a lie that changes which wheels pip picks. The file lives in `buildpath` and
@@ -440,6 +467,55 @@ recipe's pip bootstrap really does fail on the runner with the reported
 `ValueError` when the fault is forced, and only then asserts that the
 formula's own shim (read back out of the shipped formula, never a copy)
 survives it.
+
+The same treatment covers #3788: the job pulls `python@3.12` up to current
+(after a `brew update`, without which `brew upgrade` can only reach versions
+the runner image already knew about), then injects the owner's machine state
+— a keg pip that cannot import `pip._internal.operations.install.wheel` —
+and requires the retired `pip --python … install` bootstrap to die on it
+before accepting that the current one survives it.
+
+The condition is injected by **taking the module away** — `mv`-ing
+`pip/_internal/operations/install/wheel.py` out of the keg **at its
+realpath**, running both controls, and restoring it from a shell `trap` on
+every exit path (the steps that follow install the formulas with that same
+pip, so it must go back).
+
+The realpath is the load-bearing word. Homebrew's prefix tree
+(`/opt/homebrew/lib/python3.12/...`) links into the Cellar, and pip's
+`--python` child re-execs through `get_runnable_pip()`, which is
+`Path(pip.__file__).resolve().parent` — so moving the *prefix* entry leaves
+the copy that child imports untouched. That is not hypothetical: it is what
+the third red round of this step did, firing the self-check through a
+dangling prefix symlink while the negative control installed successfully
+underneath it. Removed at its realpath, one hole serves every route — the keg
+pip, its `--python` re-exec child, and `brew install`.
+
+That is worth stating, because two earlier spellings *emulated* the
+condition instead, with a meta-path finder in a `sitecustomize` on
+`PYTHONPATH`, and both failed on the vehicle rather than on the recipe. The
+first scoped itself to the keg with `abspath`, and `pip --python` re-execs
+via `get_runnable_pip()`, which resolves symlinks — so it matched in the
+parent and never in the child that actually installs. The second compared
+realpaths, but python imports exactly one `sitecustomize` and `PYTHONPATH`
+precedes `site-packages`, so the fault file shadowed the one the keg ships
+and moved which pip was under test.
+
+The general lesson is worth more than either fix: **an emulated condition
+runs in an interpreter environment `brew install` does not have, so the
+emulation becomes the thing being tested.** Removing the file is the machine
+state itself — no `PYTHONPATH`, no import hooks — and every process that
+resolves to it sees it, which is why it has to be removed where they all
+resolve *to*.
+
+All three mistakes had the same symptom: the fault does not reach the child
+that installs, the negative control passes, and the log reads exactly like
+"the bug is gone". So the step asserts the condition exists before
+concluding anything from it — and asserts it by **both** routes pip can be
+imported here, the prefix one this process uses and the resolved one the
+`--python` child re-execs into. Checking only the first is precisely how a
+moved symlink read as a created condition; that self-check, not a passing
+control, is the arbiter.
 
 ---
 

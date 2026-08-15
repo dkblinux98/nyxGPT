@@ -1,0 +1,9 @@
+# Same namespace as the api/web tier (k8s/namespace.yaml), declared here too
+# so this overlay applies standalone -- `nyxgpt ops observability
+# --kubernetes` brings observability up on a cluster whose app tier is not
+# installed yet, and kustomize may not load a resource file above its own
+# root. Applying both is idempotent: it is the same object.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nyxgpt

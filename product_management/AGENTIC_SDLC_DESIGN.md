@@ -293,6 +293,26 @@ that reads the whole thread and rules.
 
 Floors, never ceilings — same as watching.
 
+**The rc-cut decision, codified (owner, 2026-08-15 — implementation banked
+for Sprint 9 grooming; the pipeline mechanics stay as-is this sprint):**
+
+- A candidate is cut when **the sprint's product backlog — nyxGPT issues,
+  not agent-process issues — has fully cleared into Acceptance Testing**
+  (nothing product in Backlog / In Progress / In Review; held-lane
+  semantics per the drain gate unchanged).
+- **Agent-process issues are invisible to the cut decision in both
+  directions**: their merges never trigger a candidate (rc10/rc11 were cut
+  on process-batch merges with no product change since rc9 — wasted
+  versions under this rule), and their in-flight state never blocks one.
+- The decision is an **agent invocation** reading the board with the
+  product/process distinction, one cut per clearance, reasoning written
+  down; the pipeline's scripted guardrails (serialized cuts, tip-unchanged
+  no-op, channel guards) remain the floors beneath it.
+- **No human hand-dispatches candidates** — the 2026-08-14 rc7 burn was a
+  manual dispatch racing the autopilot; the assistant no longer cuts, and a
+  missed cut is a defect to file, not a gap to fill by hand. An explicit
+  owner order is the only exception.
+
 
 Recorded from the 2026-08-09 incident post-mortem, **binding on the future
 nyxAgent agent-dashboard design**:

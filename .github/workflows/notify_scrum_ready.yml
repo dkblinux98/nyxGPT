@@ -9,23 +9,46 @@ permissions:
   contents: read
 
 jobs:
-  dispatch-next-issue:
-    # The kick test is a bare substring match and the actor allowlist
-    # includes the agents, so ANY agent comment that merely *names* the kick
-    # token dispatches work. That is how the #3706 sprint-boundary park note
-    # became a kick (and how a PAUSE_SPRINT notice could dispatch despite the
-    # pause). Informational autopilot notes are therefore stamped with
-    # AUTOPILOT_INFO_MARKER (lib/gh_project.sh, lib/sprint_calc.py) and
-    # excluded here -- a structural guard that holds even if a note's prose
-    # drifts back into naming the token.
+  # Layer 1 of the kick trigger. The job `if:` can only substring-match, so a
+  # comment that merely *names* the kick token passes it -- that is how the
+  # #3706 sprint-boundary park note became a kick (and how a PAUSE_SPRINT
+  # notice could dispatch despite the pause). Informational autopilot notes
+  # are stamped with AUTOPILOT_INFO_MARKER (lib/gh_project.sh,
+  # lib/sprint_calc.py) and excluded here, and #3790 adds the anchored
+  # decision below: the token must OPEN A LINE to count as a kick.
+  comment_gate:
     if: >
       vars.AGENTS_ENABLED == 'true' &&
       contains(github.event.comment.body, 'READY_FOR_NEXT_ISSUE') &&
       !contains(github.event.comment.body, 'nyxgpt-autopilot-informational') &&
+      !contains(github.event.comment.body, 'nyxgpt-token-mention') &&
       (github.event.comment.user.login == vars.HUMAN_OWNER ||
        github.event.comment.user.login == vars.SCRUM_AGENT ||
        github.event.comment.user.login == vars.DEV_AGENT ||
        github.event.comment.user.login == vars.REVIEW_AGENT)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      proceed: ${{ steps.gate.outputs.proceed }}
+      reason: ${{ steps.gate.outputs.reason }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.RELEASE_BRANCH }}
+
+      - name: Comment token gate
+        id: gate
+        uses: ./.github/actions/comment-token-gate
+        with:
+          token: READY_FOR_NEXT_ISSUE
+          comment-body: ${{ github.event.comment.body }}
+          author-association: ${{ github.event.comment.author_association }}
+
+  dispatch-next-issue:
+    needs: [comment_gate]
+    if: needs.comment_gate.outputs.proceed == 'true'
     runs-on: ubuntu-latest
     # Serialize dispatches: a burst of READY_FOR_NEXT_ISSUE triggers landing
     # within seconds of each other (post-merge autopilot kick + a manual

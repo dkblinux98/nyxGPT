@@ -259,7 +259,7 @@ agent produces it
 | Workflow | Runs on | What it proves | Triggers |
 | --- | --- | --- | --- |
 | [`macos-brew-smoke.yml`](../.github/workflows/macos-brew-smoke.yml) | `macos-15` | The working tree's Homebrew formulas install into a real keg, and the published tap installs what the owner actually types | PR (paths: `homebrew/**`, artifact/tarball scripts), dispatch, called after an rc cut |
-| [`linux-native-smoke.yml`](../.github/workflows/linux-native-smoke.yml) | `ubuntu-latest` | `nyxgpt ops install` on a real systemd userland: every unit active, api/web responding, diagnostics, `nyxgpt ops down`. **Scope boundary:** it installs *editable from the checkout* on a machine whose Python and Node were installed by setup actions, so it cannot see first-boot/artifact-install defects — that is `cloud-artifact-smoke.yml`'s job | PR/push (paths: `src/nyxgpt/ops.py`, `self_heal.py`, `ops/systemd/**`, the smoke script) |
+| [`linux-native-smoke.yml`](../.github/workflows/linux-native-smoke.yml) | `ubuntu-latest` | Three questions about the Linux ops path: `nyxgpt ops install` on a real systemd userland (every unit active, api/web responding, diagnostics, `nyxgpt ops down`); a failed ops subprocess reporting its own output; and a service venv built on a Python that satisfies `requires-python` even when `python3` on PATH is a real 3.9. **Scope boundary:** it installs *editable from the checkout* on a machine whose Python and Node were installed by setup actions, so it cannot see first-boot/artifact-install defects — that is `cloud-artifact-smoke.yml`'s job | PR/push (paths: `src/nyxgpt/ops.py`, `self_heal.py`, `ops/systemd/**`, the smoke scripts) |
 | [`cloud-artifact-smoke.yml`](../.github/workflows/cloud-artifact-smoke.yml) | `ubuntu-latest`, inside a bare `amazonlinux:2023` container | The **artifact** install path on the real target distro: AL2023's Python 3.9, no node, no docker, no git, the real rendered EC2 user-data bootstrap, then api/web/ollama serving. Injects `old-python` in a second job so a green run is not green by luck ([cloud-artifact-smoke.md](cloud-artifact-smoke.md)) | PR/push (paths: `src/nyxgpt/ops.py`, `cloud_provision.py`, `cloud_artifact_smoke.py`, `scripts/cloud/**`), dispatch (pin an rc) |
 | [`terraform-local-smoke.yml`](../.github/workflows/terraform-local-smoke.yml) | `ubuntu-latest` | The Terraform path applies locally end-to-end | PR/push (paths: `terraform/**`) |
 | `nyxgpt ops verify` (see [live verification in CI](live-verification-ci.md)) | review job | The Compose stack boots, chat/RAG traffic lands in Prometheus, every touched Grafana panel's own query re-executes, screenshots captured | Run by the review agent on observability/metrics/UI PRs |
@@ -278,6 +278,14 @@ owner's Mac: the runner answered `platform.mac_ver()` and their machine did
 not. `macos-brew-smoke.yml`'s "Reproduce the empty `mac_ver()` failure, then
 prove the shim fixes it" step is the pattern to copy — assert the failure
 happens **without** the fix, so a green result **with** it means something.
+
+`linux-native-smoke.yml`'s `service-venv-python` job is the same shape for an
+*environment* the runner does not have: the defect (#3782) needed a system
+`python3` below nyxGPT's `requires-python`, and every hosted runner's is
+above it. The job installs a real Python 3.9, puts it on PATH as `python3`,
+and proves both directions with the real sdist — a venv built by resolving
+bare `python3` is one pip refuses the artifact into, and the selection logic
+picks a qualifying interpreter over it and installs cleanly.
 
 ### What still cannot be executed in CI
 

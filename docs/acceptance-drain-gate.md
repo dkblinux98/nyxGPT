@@ -123,6 +123,11 @@ immediately. The rule lives in `scripts/agents/lib/drain_gate.py`:
 The owner's `@acceptance-failure` / `@improvement` comment text is checked
 too, so an exception can be declared at filing time.
 
+Both commands must **open a line** of the comment to file anything (#3790) —
+`@improvement the settings page needs a save button` files; "I already filed
+that as an @improvement on #3731" does not. See
+[Comment tokens](agent-comment-tokens.md).
+
 ### Moving parts
 
 | Path | Role |

@@ -445,18 +445,48 @@ echo "==> nyxGPT ${NYXGPT_VERSION}: provisioning $(hostname) from published arti
 
 # --- OS packages -------------------------------------------------------
 if command -v dnf >/dev/null 2>&1; then
-  sudo dnf install -y python3.11 python3.11-pip docker tar gzip >/dev/null
+  sudo dnf install -y docker tar gzip >/dev/null
+  # Newest first, stopping at the first that installs: Amazon Linux 2023
+  # ships 3.9 as `python3` and offers 3.11+ only as separate packages.
+  for pkg in python3.13 python3.12 python3.11; do
+    if sudo dnf install -y "$pkg" "$pkg-pip" >/dev/null 2>&1; then
+      break
+    fi
+  done
 elif command -v apt-get >/dev/null 2>&1; then
   sudo apt-get update -qq
   sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \\
     python3 python3-venv python3-pip docker.io tar gzip >/dev/null
+  # Ubuntu 22.04 LTS's `python3` is 3.10 -- below the floor; add an explicit
+  # 3.11 when the distro's own is too old. Best-effort: the resolution below
+  # is what decides, and it names the problem if nothing qualifies.
+  if ! python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)'; then
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \\
+      python3.11 python3.11-venv >/dev/null 2>&1 || true
+  fi
 else
   echo "unsupported package manager: need dnf (Amazon Linux/Fedora) or apt-get (Debian/Ubuntu)" >&2
   exit 1
 fi
 
-PY=python3.11
-command -v "$PY" >/dev/null 2>&1 || PY=python3
+# --- Resolve a Python that satisfies nyxGPT's requires-python (>= 3.11) -
+# The distro's bare `python3` is never assumed sufficient (#3782): on Amazon
+# Linux 2023 it is 3.9, and `pip install nyxgpt` into a venv built from it is
+# refused with "requires a different Python: 3.9.x not in '>=3.11'". Ask each
+# candidate its own version rather than trusting its name.
+PY=""
+for cand in python3.13 python3.12 python3.11 python3; do
+  command -v "$cand" >/dev/null 2>&1 || continue
+  if "$cand" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)'; then
+    PY="$cand"
+    break
+  fi
+done
+if [ -z "$PY" ]; then
+  echo "no Python >= 3.11 is installed or installable on this instance; nyxGPT's requires-python is >=3.11 (system python3: $(python3 -V 2>&1 || echo 'none'))" >&2
+  exit 1
+fi
+echo "==> using $PY ($("$PY" -V 2>&1)) for the nyxGPT venv"
 
 # --- Node.js 20 (the web bundle's build and run toolchain) -------------
 # `nyxgpt ops install`'s "native web service" step runs `npm ci`/`npm run

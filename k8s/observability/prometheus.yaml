@@ -1,0 +1,109 @@
+# Prometheus, scraping the in-cluster API Service.
+#
+# The Compose scrape config (docker/prometheus.yml) targets
+# `host.docker.internal:8000` because there the API is a native host
+# process. In a cluster the API is `svc/nyxgpt-api:8000` in this same
+# namespace and there is no host gateway to reach -- that difference is the
+# whole reason this config exists separately rather than being reused like
+# Grafana's provisioning is.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: nyxgpt
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+
+    # No `rule_files:` -- alert rules are provisioned in Grafana's unified
+    # alerting (docker/grafana/provisioning/alerting/rules.yml, #3466) and
+    # evaluated there against this Prometheus, exactly as in Compose mode.
+    scrape_configs:
+      - job_name: nyxgpt-api
+        metrics_path: /metrics
+        static_configs:
+          # Resolves to the stable+canary api Pods behind k8s/service.yaml.
+          # Absent until the app tier is installed; Prometheus simply reports
+          # the target as down until then, which is the honest state.
+          - targets: ["nyxgpt-api:8000"]
+      - job_name: prometheus
+        static_configs:
+          - targets: ["localhost:9090"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: nyxgpt
+  labels:
+    app: prometheus
+    tier: observability
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+        tier: observability
+    spec:
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v3.13.1
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+          ports:
+            - name: http
+              containerPort: 9090
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+              readOnly: true
+            - name: data
+              mountPath: /prometheus
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+        # emptyDir, not a PVC: the local cluster is a workstation substrate
+        # that `nyxgpt ops down --kubernetes` deletes wholesale (kind cluster
+        # included), so metric history has nothing to outlive. Long-lived
+        # retention is the Compose/native path's job.
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: nyxgpt
+  labels:
+    app: prometheus
+    tier: observability
+spec:
+  # Name matches the Compose service so Grafana's shared datasource
+  # provisioning (`url: http://prometheus:9090`) resolves unchanged.
+  selector:
+    app: prometheus
+  ports:
+    - name: http
+      port: 9090
+      targetPort: http
+  type: ClusterIP
