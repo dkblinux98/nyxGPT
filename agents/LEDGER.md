@@ -265,6 +265,24 @@ are absent here by design (relocated to the annex; IDs are never reused).
   rebuilds the shared api venv from empty.
   Source: #3789; `docs/ops.md` §`--dev`; `src/nyxgpt/install_mode.py`.
 
+- **D-010** · 2026-08-15 · owner — Agent model assignment is a **deliberate
+  split**: the **review** agent (`claude-code-review.yml`, the `@claude`
+  entry point and huddle mediation) runs on **`claude-fable-5`**; the
+  **developer** agent's implementation paths run on **`claude-opus-5`**. The
+  Fable pins are a chosen configuration, not an oversight — do not "upgrade"
+  them to Opus on sight.
+  **Temporarily overridden 2026-08-15**: every agent invocation is pinned to
+  `claude-opus-5` (commit `e56c3d9b`) because the account's Fable capacity was
+  exhausted — the review agent's Claude step failed in ~31s on every run from
+  20:20 UTC while the Opus-pinned developer paths ran normally, and two PRs
+  (#3795, #3797) were auto-labelled `usage-limit-retry`. This override is
+  **temporary by owner decision**: restore review (and the `@claude` /
+  huddle-mediation entry points) to `claude-fable-5` once Fable capacity is
+  available again. The reason the split exists is not recorded here — ask the
+  owner before treating the override as permanent.
+  Source: owner in session, 2026-08-15; commits `54c38faa` (original all-Fable
+  pinning), `e56c3d9b` (this override).
+
 ## Verifications
 
 - **V-001** · 2026-08-14 — Releases in this repository are immutable: a
