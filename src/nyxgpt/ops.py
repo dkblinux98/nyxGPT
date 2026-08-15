@@ -4098,9 +4098,10 @@ def _docker_access_doctor_issue() -> str | None:
 # Compose "cloud/server" stack, so its lifecycle never requires (or pulls in)
 # the rest of docker-compose.yml.
 CASSANDRA_CONTAINER_NAME = "nyxgpt-cassandra"
-# Keep this pin identical to the `cassandra` image tag in docker-compose.yml
-# and terraform/main.tf (docker_image.cassandra) -- see docs/docker-compose.md
-# for the image-pinning policy and how to bump all three together.
+# Keep this pin identical to the `cassandra` image tag in docker-compose.yml,
+# terraform/main.tf (docker_image.cassandra) and k8s/statefulset-cassandra.yaml
+# -- see docs/docker-compose.md for the image-pinning policy and how to bump
+# all four together.
 CASSANDRA_IMAGE = "cassandra:5.0.8"
 # Must match the cluster name stamped into the Cassandra data directory's
 # system keyspace: Cassandra refuses to start when the saved cluster name

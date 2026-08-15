@@ -58,8 +58,12 @@ start_port_forward() {
     kubectl -n "$NAMESPACE" port-forward "svc/nyxgpt-web" "${WEB_PORT}:3000" \
         >/tmp/k8s-smoke-portforward.log 2>&1 &
     PF_PID=$!
+    # Readiness of the TUNNEL only -- the UI's own root page, which is served
+    # by the web Pod without touching the api. Probing an api-backed route
+    # here would conflate "the tunnel is up" with "the backend works", and
+    # the fault-injection phase below deliberately breaks the latter.
     for _ in $(seq 1 30); do
-        if curl -fsS -o /dev/null "${BASE}/api/sessions" 2>/dev/null; then return 0; fi
+        if curl -fsS -o /dev/null "${BASE}/" 2>/dev/null; then return 0; fi
         sleep 2
     done
     cat /tmp/k8s-smoke-portforward.log >&2 || true
@@ -131,10 +135,15 @@ stop_port_forward
 kubectl -n "$NAMESPACE" delete statefulset cassandra ollama --wait=true >/dev/null
 kubectl -n "$NAMESPACE" wait --for=delete pod/ollama-0 --timeout=180s >/dev/null 2>&1 || true
 start_port_forward
+if curl -fsS -o /dev/null "${BASE}/api/sessions" 2>/dev/null; then
+    fail "the session list still loaded with no Cassandra in the cluster -- \
+step 3 cannot detect the #3786 regression"
+fi
+ok "without Cassandra the session list fails (the UI's 'Failed to load sessions')"
 if chat_round_trip "${SESSION}-nofix" >/tmp/k8s-smoke-nofix.log 2>&1; then
     cat /tmp/k8s-smoke-nofix.log >&2
     fail "chat still answered with no Ollama and no Cassandra in the cluster -- \
-this check cannot detect the #3786 regression and is worthless as a gate"
+step 4 cannot detect the #3786 regression and is worthless as a gate"
 fi
 ok "without the data/LLM tier the chat round-trip fails, as it must"
 
