@@ -194,13 +194,33 @@ grep -qF "systemd --user services:" <<<"$status_out" || {
   echo "::error::nyxgpt ops status printed no systemd section -- OS dispatch is wrong"; fail_count=1;
 }
 
+# `doctor` inspects the machine, and this install was deliberately partial:
+# `--skip-observability` skips both the Compose profiles and the step that
+# prepares their volume dirs, while leaving the feature flags on in
+# config.ini. So doctor correctly reports the tracing endpoint with nothing
+# listening and the unprepared prometheus/grafana/loki dirs -- expected
+# consequences of the flag, not install defects.
+#
+# Asserting "doctor is silent" here would therefore be asserting something
+# false, and the two obvious ways out are both worse: disabling observability
+# in the seeded config would make `observability_services()` empty and quietly
+# turn the `nyxgpt up --skip-observability` health-wait coverage into a
+# tautology (the V-016 lesson), and dropping the check would stop testing one
+# of the four commands the acceptance names. Instead: doctor must report
+# nothing *beyond* those consequences, so a real install defect still fails
+# the run.
+OBSERVABILITY_ISSUE_RE='prometheus|grafana|loki|jaeger|otel-collector|glitchtip|[Tt]racing'
 log "nyxgpt ops doctor"
-if ! doctor_out=$(nyxgpt ops doctor 2>&1); then
-  echo "$doctor_out"
-  echo "::error::nyxgpt ops doctor reported issues on a freshly-installed stack"
+doctor_out=$(nyxgpt ops doctor 2>&1) || true
+echo "$doctor_out"
+# Issue lines are the "- " bullets doctor prints under its FAIL banner.
+unexpected=$(grep '^- ' <<<"$doctor_out" | grep -Ev "$OBSERVABILITY_ISSUE_RE" || true)
+if [[ -n "$unexpected" ]]; then
+  echo "::error::nyxgpt ops doctor reported non-observability issues on a freshly-installed stack:"
+  echo "$unexpected"
   fail_count=1
 else
-  echo "$doctor_out"
+  log "ops doctor reported no issues outside the deliberately-skipped observability stack"
 fi
 
 # --- Dev mode: prove the running stack IS the checkout, then prove the
