@@ -158,6 +158,47 @@ but `pip install -e .` is still the fix to actually use the feature again.
 
 ---
 
+### `No Python >= 3.11 available to create the nyxgpt-api venv`
+
+**Symptoms:**
+- `nyxgpt ops install`'s `native api service` step fails with
+  `No Python >= 3.11 available to create the nyxgpt-api venv`, listing every
+  interpreter it found and the version each reported.
+
+**Cause:**
+
+nyxGPT's `requires-python` is `>=3.11`, and no interpreter on the machine
+meets it. The distro's own `python3` is often older -- Amazon Linux 2023
+ships 3.9, Ubuntu 22.04 LTS ships 3.10 -- and it is deliberately not assumed
+to be enough: a venv built from it is one pip refuses to install nyxGPT into,
+which used to surface much later as
+`ERROR: Package 'nyxgpt-api' requires a different Python: 3.9.16 not in '>=3.11'`.
+
+**Solutions:**
+
+1. **Install an interpreter that meets the floor:**
+   ```bash
+   # Amazon Linux / Fedora / RHEL
+   sudo dnf install -y python3.11 python3.11-pip
+   # Debian / Ubuntu
+   sudo apt-get install -y python3.11 python3.11-venv
+   ```
+   Any newer version works too -- `python3.13`/`python3.12` are preferred over
+   `python3.11` when present.
+
+2. **Re-run the install:**
+   ```bash
+   nyxgpt ops install
+   ```
+   ops picks the interpreter itself: the one it is running under first, then
+   an explicitly-versioned `python3.X` from PATH, and bare `python3` last and
+   only if it qualifies.
+
+On a cloud instance this is handled during provisioning -- see
+[cloud.md](cloud.md#python-on-the-instance).
+
+---
+
 ### Grafana Dashboards Are Empty on Linux
 
 **Symptoms:**

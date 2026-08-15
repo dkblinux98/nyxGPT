@@ -2611,6 +2611,7 @@ def _service_python_candidates() -> list[tuple[str, tuple[int, int]]]:
 
 
 def _format_python_version(version: tuple[int, int]) -> str:
+    """Render a `(major, minor)` interpreter version for an operator-facing message."""
     return f"{version[0]}.{version[1]}"
 
 

@@ -39,7 +39,14 @@ script itself -- or run it by hand with `./scripts/systemd-native-smoke.sh`.
 - Linux with systemd (`systemctl --user` available -- true for any modern
   desktop or server distro: Ubuntu, Debian, Fedora, Arch, ...)
 - Python 3.11+ and `npm`/`node` on PATH (nyxGPT builds its own venv/web
-  bundle; it doesn't need them pre-installed system-wide beyond that)
+  bundle; it doesn't need them pre-installed system-wide beyond that). It
+  does not have to be the distro's `python3`: `ops install` selects an
+  interpreter that satisfies nyxGPT's `requires-python` — the one it is
+  running under first, then `python3.13`/`python3.12`/`python3.11` from PATH,
+  and bare `python3` last and only if it qualifies. Where none does, the step
+  fails naming what it found and what is required, rather than building a
+  venv pip will refuse the artifact into
+  ([troubleshooting](troubleshooting.md#no-python--311-available-to-create-the-nyxgpt-api-venv)).
 - `ollama` on PATH for the `ollama` component -- nyxGPT doesn't install
   Ollama itself on Linux the way the Homebrew formula does on macOS. Install
   it first:
