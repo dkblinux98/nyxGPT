@@ -1,0 +1,22 @@
+# In-cluster Ollama endpoint for the api Pods (#3786). The name is
+# load-bearing: k8s/configmap.yaml sets `[ollama] base_url =
+# http://ollama:11434`, the same hostname the Compose and Terraform
+# deployments give their Ollama container (see _COMPOSE_CONFIG_OVERRIDES in
+# src/nyxgpt/ops.py), so the derived container config is identical across all
+# three modes.
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama
+  namespace: nyxgpt
+  labels:
+    app: ollama
+    tier: llm
+spec:
+  selector:
+    app: ollama
+  ports:
+    - name: http
+      port: 11434
+      targetPort: http
+  type: ClusterIP

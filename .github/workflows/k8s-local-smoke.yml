@@ -1,0 +1,86 @@
+name: Kubernetes Local Smoke
+
+# The question this job answers: does `nyxgpt ops install --kubernetes --local`
+# produce a stack a user can actually CHAT with?
+#
+# #3786 was an acceptance failure where 4/4 api and 4/4 web Pods reported
+# Running, the web UI loaded, and nothing worked -- the deployment shipped no
+# Cassandra and no Ollama, and the host's own services are stopped in this
+# mode. "Pods Running" is not a working nyxGPT (the #2688 lesson), and no
+# amount of manifest review catches it. scripts/k8s-local-smoke.sh runs the
+# real bring-up on a real kind cluster, drives a real chat through the web
+# Service's own proxy routes, and then DELETES the data/LLM tier and asserts
+# the same chat fails -- so a build that drops the tier again cannot pass this
+# job green (the fault-injection rule from macos-brew-smoke.yml / #3753).
+#
+# Scoped like linux-native-smoke.yml and terraform-local-smoke.yml: a full
+# cluster bring-up with two image builds is expensive, so it runs only when
+# the manifests, the k8s half of the ops layer, the smoke script, or this
+# workflow change.
+on:
+  pull_request:
+    paths:
+      - 'k8s/**'
+      - 'src/nyxgpt/ops.py'
+      - 'Dockerfile'
+      - 'docker/entrypoint.sh'
+      - 'scripts/k8s-local-smoke.sh'
+      - '.github/workflows/k8s-local-smoke.yml'
+  push:
+    paths:
+      - 'k8s/**'
+      - 'src/nyxgpt/ops.py'
+      - 'Dockerfile'
+      - 'docker/entrypoint.sh'
+      - 'scripts/k8s-local-smoke.sh'
+      - '.github/workflows/k8s-local-smoke.yml'
+  workflow_dispatch:
+
+# Read-only workflow: it checks out the repo and drives a local cluster; it
+# never writes to the repository or its APIs (CodeQL #33,
+# actions/missing-workflow-permissions -- same pattern as linux-native-smoke.yml).
+permissions:
+  contents: read
+
+jobs:
+  k8s-local-smoke:
+    runs-on: ubuntu-latest
+    # The bring-up builds the api and web images, provisions a kind cluster,
+    # boots Cassandra, and pulls the default model.
+    timeout-minutes: 60
+    if: github.event_name != 'push' || github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install nyxgpt (editable)
+        run: |
+          python -m pip install --upgrade pip setuptools
+          pip install -e .
+
+      # `nyxgpt ops install --kubernetes --local` reads the native config as
+      # the source of truth for the derived container config, same seeding the
+      # other smoke workflows do.
+      - name: Seed config
+        run: |
+          mkdir -p "$HOME/.nyxGPT"
+          cp example.config.ini "$HOME/.nyxGPT/config.ini"
+
+      - name: Run Kubernetes local smoke
+        run: ./scripts/k8s-local-smoke.sh
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          kubectl -n nyxgpt get pods -o wide || true
+          kubectl -n nyxgpt get statefulsets,deployments,svc,pvc || true
+          kubectl -n nyxgpt describe pod -l tier=data || true
+          kubectl -n nyxgpt describe pod -l tier=llm || true
+          for pod in $(kubectl -n nyxgpt get pods -o name 2>/dev/null); do
+            echo "--- logs $pod ---"
+            kubectl -n nyxgpt logs "$pod" --tail 100 || true
+          done

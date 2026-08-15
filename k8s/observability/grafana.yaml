@@ -1,0 +1,125 @@
+# Grafana: the single pane of glass (#3411) in Kubernetes mode too.
+#
+# Its provisioning is NOT duplicated here. The four ConfigMaps mounted below
+# (`grafana-datasources`, `grafana-dashboard-providers`, `grafana-alerting`,
+# `grafana-dashboards`) are generated straight from `docker/grafana/` by
+# `nyxgpt ops` at apply time -- see `_apply_k8s_grafana_provisioning` in
+# src/nyxgpt/ops.py. That keeps one copy of the dashboards and datasources
+# for every deployment mode; the datasource URLs resolve here because the
+# Services in this overlay carry the same names as the Compose services.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: nyxgpt
+  labels:
+    app: grafana
+    tier: observability
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+        tier: observability
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:13.1.1
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: nyxgpt-observability-secrets
+                  key: grafana-admin-password
+            - name: GF_AUTH_ANONYMOUS_ENABLED
+              value: "false"
+            # Same two plugins the Compose stack guarantees: Logs Drilldown
+            # and the Infinity datasource behind SRE Home's GlitchTip panels.
+            - name: GF_INSTALL_PLUGINS
+              value: "grafana-lokiexplore-app,yesoreyeram-infinity-datasource"
+            - name: GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH
+              value: /var/lib/grafana/dashboards/sre-home.json
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/grafana
+            - name: dashboards
+              mountPath: /var/lib/grafana/dashboards
+              readOnly: true
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+              readOnly: true
+            - name: dashboard-providers
+              mountPath: /etc/grafana/provisioning/dashboards
+              readOnly: true
+            - name: alerting
+              mountPath: /etc/grafana/provisioning/alerting
+              readOnly: true
+            # The `$__file{}` targets in the alerting contact point and the
+            # GlitchTip datasource. Always present, always non-empty --
+            # Grafana's alerting validator crash-loops the Pod on an empty
+            # contact-point URL (#3538).
+            - name: nyxgpt-secrets
+              mountPath: /etc/nyxgpt-secrets
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            # Generous: the first boot installs the two plugins above before
+            # the HTTP server comes up.
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 30
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: dashboards
+          configMap:
+            name: grafana-dashboards
+        - name: datasources
+          configMap:
+            name: grafana-datasources
+        - name: dashboard-providers
+          configMap:
+            name: grafana-dashboard-providers
+        - name: alerting
+          configMap:
+            name: grafana-alerting
+        - name: nyxgpt-secrets
+          secret:
+            secretName: nyxgpt-observability-secrets
+            items:
+              - key: slack-webhook-url
+                path: slack-webhook-url
+              - key: glitchtip-grafana-token
+                path: glitchtip-grafana-token
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: nyxgpt
+  labels:
+    app: grafana
+    tier: observability
+spec:
+  selector:
+    app: grafana
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+  type: ClusterIP

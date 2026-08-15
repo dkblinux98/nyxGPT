@@ -1,0 +1,21 @@
+# In-cluster CQL endpoint for the api Pods (#3786). The name is load-bearing:
+# k8s/configmap.yaml sets `[rag] cassandra_hosts = cassandra`, which is the
+# same hostname the Compose and Terraform deployments give their Cassandra
+# container (see _COMPOSE_CONFIG_OVERRIDES in src/nyxgpt/ops.py), so the
+# derived container config is identical across all three modes.
+apiVersion: v1
+kind: Service
+metadata:
+  name: cassandra
+  namespace: nyxgpt
+  labels:
+    app: cassandra
+    tier: data
+spec:
+  selector:
+    app: cassandra
+  ports:
+    - name: cql
+      port: 9042
+      targetPort: cql
+  type: ClusterIP

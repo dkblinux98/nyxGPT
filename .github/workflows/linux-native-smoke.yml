@@ -32,6 +32,13 @@ name: Linux Native Smoke
 #                       sdist. The runner's own `python3` is new enough, so
 #                       without the injection the job would pass on a build
 #                       that still hard-codes `python3 -m venv`.
+#   host-relay-posture  Can a container reach a loopback-bound native API,
+#                       and does doctor catch a host still carrying the
+#                       manual `[api] host = 0.0.0.0` workaround? Drives
+#                       scripts/host-relay-posture-smoke.py against real
+#                       Docker: reproduces the #3721 gap, proves the relay
+#                       closes it, then injects the pre-fix behaviour and
+#                       asserts the #3509 posture finding catches it.
 #
 # Scoped like terraform-local-smoke.yml: a full native install is expensive,
 # so it runs only when the ops/self-heal layer, the systemd unit templates,
@@ -44,6 +51,7 @@ on:
       - 'ops/systemd/**'
       - 'scripts/systemd-native-smoke.sh'
       - 'scripts/ops-subprocess-output-smoke.py'
+      - 'scripts/host-relay-posture-smoke.py'
       - 'scripts/service-venv-python-smoke.py'
       - 'scripts/linux-observability-smoke.py'
       - 'docker-compose.yml'
@@ -56,6 +64,7 @@ on:
       - 'ops/systemd/**'
       - 'scripts/systemd-native-smoke.sh'
       - 'scripts/ops-subprocess-output-smoke.py'
+      - 'scripts/host-relay-posture-smoke.py'
       - 'scripts/service-venv-python-smoke.py'
       - 'scripts/linux-observability-smoke.py'
       - 'docker-compose.yml'
@@ -200,3 +209,29 @@ jobs:
           python3 scripts/service-venv-python-smoke.py \
             --old-python '${{ steps.old-python.outputs.python-path }}' \
             --sdist "$(ls dist/nyxgpt-*.tar.gz)"
+
+  # Cheap enough for every ops.py PR: two short-lived containers and a local
+  # HTTP server, no stack bring-up. It is the only check that exercises the
+  # container->host-loopback path on a real Linux engine -- the unit tests all
+  # mock `_is_linux` and `_docker_bridge_gateway_ip`, so they cannot see it.
+  host-relay-posture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install nyxgpt (editable)
+        run: |
+          python -m pip install --upgrade pip setuptools
+          pip install -e .
+
+      # ubuntu-latest ships a plain Linux docker engine -- the exact
+      # environment where host.docker.internal resolves to the bridge gateway
+      # and a loopback-bound uvicorn is unreachable. The script fails loudly
+      # (rather than passing vacuously) if this host does NOT reproduce that.
+      - name: Relay bridges container -> host loopback, and doctor catches the workaround
+        run: python3 scripts/host-relay-posture-smoke.py
