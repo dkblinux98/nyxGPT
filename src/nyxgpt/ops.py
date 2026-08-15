@@ -5926,8 +5926,22 @@ def infra_status() -> dict[str, Any]:
     else:
         running_mode = "none"
 
+    # Which *install* mode the native api/web are on -- artifact (published/
+    # vendored builds) or dev (this checkout's working tree, #3789). Reported
+    # alongside the deployment mode for the same reason `ops status` prints
+    # it: a dashboard showing a healthy native stack must not let a dev-mode
+    # install be read as a verdict on the artifact path.
+    install_mode_state = read_install_mode()
+    install_mode = {
+        "mode": install_mode_state.mode,
+        "checkout": install_mode_state.checkout,
+        "label": install_mode_state.label(),
+        "components": sorted(DEV_LAUNCHD_LABELS),
+    }
+
     return {
         "mode": running_mode,
+        "install_mode": install_mode,
         "native": mode_info.native,
         "compose": mode_info.compose,
         "compose_probe_available": self_heal.compose_probe_available(),

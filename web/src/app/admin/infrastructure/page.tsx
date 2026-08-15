@@ -8,6 +8,20 @@ type DeploymentModeName = 'native' | 'compose' | 'terraform' | 'kubernetes' | 'n
 
 type InfraStatus = {
   mode: DeploymentModeName;
+  // Which build the native api/web are running: 'artifact' (published or
+  // vendored builds -- the default) or 'dev' (a checkout's working tree,
+  // `nyxgpt up --dev`, #3789). Surfaced here for the same reason `nyxgpt ops
+  // status` prints it: a healthy-looking native stack must not let a
+  // dev-mode install read as a verdict on the artifact path.
+  // Optional so the page still renders against an api process from before
+  // #3789 (e.g. mid-upgrade, when the web UI restarts first): absent is read
+  // as the artifact default, exactly as the CLI reads a missing marker.
+  install_mode?: {
+    mode: 'artifact' | 'dev';
+    checkout: string | null;
+    label: string;
+    components: string[];
+  };
   native: Record<string, string>;
   compose: Record<string, string>;
   compose_probe_available: boolean;
@@ -251,7 +265,27 @@ export default function InfrastructurePage() {
 
           {/* --- Native --- */}
           <div style={boxStyle}>
-            <h2 style={{ fontSize: '1.1rem', fontWeight: 'bold', marginBottom: '0.75rem' }}>Native</h2>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
+              <h2 style={{ fontSize: '1.1rem', fontWeight: 'bold' }}>Native</h2>
+              <span style={badgeStyle(status.install_mode?.mode !== 'dev', false)}>
+                {status.install_mode?.mode === 'dev' ? 'DEV INSTALL' : 'ARTIFACT INSTALL'}
+              </span>
+            </div>
+            <p style={{ fontSize: '0.85rem', color: 'var(--foreground-muted)', marginBottom: '0.75rem' }}>
+              {status.install_mode?.mode === 'dev' ? (
+                <>
+                  {(status.install_mode.components ?? []).join(' and ')} run the working tree at{' '}
+                  <code>{status.install_mode.checkout ?? 'an unrecorded checkout'}</code> (editable
+                  venv + dev server), not a published build — so this stack is not exercising the
+                  artifact path. Run <code>nyxgpt up</code> to return to it.
+                </>
+              ) : (
+                <>
+                  {status.install_mode?.label ??
+                    'artifact (published/vendored build -- the repo-less default)'}
+                </>
+              )}
+            </p>
             <ComponentList components={status.native} />
           </div>
 

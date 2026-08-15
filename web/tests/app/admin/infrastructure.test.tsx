@@ -378,6 +378,68 @@ describe('InfrastructurePage', () => {
     ).toBeInTheDocument();
   });
 
+  it('labels the native card as a dev install and names the checkout it runs (#3789)', async () => {
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json({
+          ...mockStatusEmpty,
+          mode: 'native',
+          native: { api: 'started', web: 'started', ollama: 'started' },
+          install_mode: {
+            mode: 'dev',
+            checkout: '/Users/owner/src/nyxGPT',
+            label: 'dev (editable checkout at /Users/owner/src/nyxGPT)',
+            components: ['api', 'web'],
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('DEV INSTALL')).toBeInTheDocument();
+    });
+    expect(screen.getByText('/Users/owner/src/nyxGPT')).toBeInTheDocument();
+    expect(screen.getByText(/not exercising the artifact path/)).toBeInTheDocument();
+  });
+
+  it('labels the native card as an artifact install by default (#3789)', async () => {
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json({
+          ...mockStatusEmpty,
+          mode: 'native',
+          native: { api: 'started' },
+          install_mode: {
+            mode: 'artifact',
+            checkout: null,
+            label: 'artifact (published/vendored build -- the repo-less default)',
+            components: ['api', 'web'],
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('ARTIFACT INSTALL')).toBeInTheDocument();
+    });
+    expect(screen.getByText(/repo-less default/)).toBeInTheDocument();
+    expect(screen.queryByText('DEV INSTALL')).not.toBeInTheDocument();
+  });
+
+  it('falls back to artifact wording when an older api omits install_mode (#3789)', async () => {
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('ARTIFACT INSTALL')).toBeInTheDocument();
+    });
+  });
+
   it('surfaces a port conflict warning when native and compose collide', async () => {
     server.use(
       http.get('/api/v1/infra/status', () =>

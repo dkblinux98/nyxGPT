@@ -426,3 +426,35 @@ def test_doctor_flags_a_dev_install_whose_checkout_is_gone(monkeypatch, capsys, 
     assert rc == 2
     assert "Install mode: dev" in out
     assert "its checkout is missing" in out
+
+
+# --- infra_status (the admin dashboard's Infrastructure page) ---
+
+
+def _infra_status_stubs(monkeypatch):
+    """Stub out infra_status's probes so only the install-mode field varies."""
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "absent"})
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: ops.DeploymentMode(native={"api": "started"}, compose={}, conflicts=[]),
+    )
+    monkeypatch.setattr(ops, "_which", lambda prog: None)
+    monkeypatch.setattr(ops.self_heal, "compose_probe_available", lambda: True)
+
+
+def test_infra_status_reports_artifact_mode_by_default(monkeypatch):
+    _infra_status_stubs(monkeypatch)
+    reported = ops.infra_status()["install_mode"]
+    assert reported["mode"] == install_mode.INSTALL_MODE_ARTIFACT
+    assert reported["checkout"] is None
+    assert reported["components"] == ["api", "web"]
+
+
+def test_infra_status_reports_dev_mode_and_its_checkout(monkeypatch, checkout):
+    _infra_status_stubs(monkeypatch)
+    install_mode.write_install_mode(install_mode.INSTALL_MODE_DEV, checkout)
+    reported = ops.infra_status()["install_mode"]
+    assert reported["mode"] == install_mode.INSTALL_MODE_DEV
+    assert reported["checkout"] == str(checkout)
+    assert str(checkout) in reported["label"]
