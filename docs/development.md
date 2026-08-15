@@ -188,11 +188,13 @@ definitions, permissions, and state-transition rules.
 **To trigger the workflow:**
 
 ```bash
-./scripts/trigger_next_issue.sh <release_issue_number>
+./scripts/agents/scrummaster_dispatch_next.sh
 ```
 
-Or manually post a comment containing `READY_FOR_NEXT_ISSUE` in the
-**Release tracking issue**.
+Or manually post a comment on the **Release tracking issue** that *starts a
+line* with `READY_FOR_NEXT_ISSUE`. Since #3790 the token dispatches only where
+it opens a line, so naming it mid-sentence is inert -- see
+[agent-comment-tokens.md](agent-comment-tokens.md).
 
 The workflow will:
 1. Select the next backlog issue (lowest Phase, lowest issue number)

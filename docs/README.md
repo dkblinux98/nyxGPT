@@ -113,4 +113,5 @@ checkout** and no raw orchestrator commands
 - [How this project is run](how-this-project-is-run.md) — agent roles, the project board's status flow, decision records, the Definition of Done, and the retrospective
 - [GitHub tokens](github-tokens.md) — agent identities and required scopes
 - [Agent smoke test](agent-smoke.md) — verifying the scrummaster/developer/review loop
+- [Comment tokens](agent-comment-tokens.md) — which comment starts which workflow, why a token counts only at line start, and the stop-loop guard
 - [Live verification in CI](live-verification-ci.md) — `nyxgpt ops verify`, and how the review agent runs it before APPROVE/REQUEST_CHANGES
