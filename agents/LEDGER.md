@@ -365,7 +365,23 @@ not agent-editable except to add a `Re-verify` result or a supersession pointer.
   "Verify PyPI serves the build" step had passed at 22:06Z.
   Re-verify when: the session egress proxy or PyPI CDN behaviour changes.
 
-- **V-010** · 2026-08-15 — The rc11 keg install failure (#3788) is **not** an
+- **V-010** · 2026-08-15 — A distro's bare `python3` cannot be assumed to
+  satisfy nyxGPT's `requires-python` (`>=3.11`): on Amazon Linux 2023 it is
+  3.9, and a venv built from it is one pip refuses the nyxGPT artifact into
+  ("requires a different Python: 3.9.x not in '>=3.11'"). Both the service
+  venv (`ops._create_service_venv`) and the two cloud provisioning paths now
+  select an interpreter by asking each candidate its own version.
+  Method: `scripts/service-venv-python-smoke.py` run 2026-08-15 on Linux with
+  a real CPython 3.9.25 and the real `nyxgpt-3.0.0` sdist — resolving bare
+  `python3` produced a 3.9 venv pip refused; the selection logic picked a
+  qualifying interpreter and the same `pip install` succeeded. Re-running it
+  against a pre-fix `_create_service_venv` fails at that half, so the check
+  is not green by luck. Wired as `linux-native-smoke.yml`'s
+  `service-venv-python` job (#3782).
+  Re-verify when: the `requires-python` floor moves, or the candidate list in
+  `ops._SERVICE_PYTHON_NAMES` changes.
+
+- **V-011** · 2026-08-15 — The rc11 keg install failure (#3788) is **not** an
   ordering problem in the pip bootstrap. Its cause is that the Homebrew
   `python@3.12` keg's pip cannot import
   `pip._internal.operations.install.wheel`; pip 26.2 pre-imports its lazy
@@ -380,7 +396,19 @@ not agent-editable except to add a `Re-verify` result or a supersession pointer.
   the module unimportable for the keg's copy of pip only) against pip 26.2.1
   on 2026-08-15 and reproduced the owner's traceback line-for-line, down to
   `install.py:97 in _prevent_import_hook`; the wheel bootstrap survives the
-  same fault. Both directions now run in `macos-brew-smoke.yml`.
+  same fault. Both directions run in `macos-brew-smoke.yml`'s "Reproduce the
+  #3788 keg-pip failure" step.
+  Corollary, verified 2026-08-15 after that step's first run went red: an
+  injected fault scoped to a Homebrew keg must compare **realpaths**.
+  `pip --python` re-execs through `get_runnable_pip()`, which is
+  `Path(pip_location).resolve().parent` — the child imports pip by its Cellar
+  realpath, so an `os.path.abspath` prefix check against the `opt`/`lib`
+  symlink path never matches in the one process that installs, and the
+  negative control passes without the fault ever firing. Shown by running
+  both spellings against a symlinked stand-in keg (pip 26.2.1): abspath
+  installed cleanly, realpath reproduced the owner's traceback. The job now
+  proves the fault fires — in the direct import *and* in the realpath
+  re-exec — before inferring anything from it.
   Re-verify when: pip changes `_EAGER_IMPORTS`/`_prevent_import_hook` (the
   deprecation there is marked `gone_in="26.3"`), or the recipe stops using
   `pip download`.

@@ -62,7 +62,10 @@ reach from your workstation. It:
    wherever you are; the deploy reports that CIDR and then waits for the
    freshly booted instance to accept SSH.
 3. **Provisions the instance from published artifacts** — installs the OS
-   packages, Node 20 (from NodeSource, the toolchain `ops install` builds and
+   packages, a Python that satisfies nyxGPT's `requires-python` (the AMI's
+   own `python3` is not assumed to: Amazon Linux 2023's is 3.9, below the
+   floor — see [Python on the instance](#python-on-the-instance)), Node 20
+   (from NodeSource, the toolchain `ops install` builds and
    runs the web bundle with), the Docker engine, Ollama, and a **published**
    `nyxgpt` release, then runs `nyxgpt ops install` on the box **exactly
    once**: one install pass per deploy, no retry pass and no follow-up
@@ -175,6 +178,30 @@ of this flow touches a checkout:
 
 The instance therefore runs a *published* release, not your working tree. If
 you want a version other than your CLI's, name it with `--version`.
+
+### Python on the instance
+
+nyxGPT's `requires-python` is `>=3.11`, and the AMI's own `python3` need not
+satisfy it — on Amazon Linux 2023 it is 3.9. Nothing on the instance assumes
+otherwise:
+
+- **Provisioning** installs an explicit `python3.13`/`python3.12`/`python3.11`
+  package (newest that its package manager has), then *resolves* the
+  interpreter by asking each candidate its own version rather than trusting
+  its name. If nothing on the box qualifies, the deploy stops there and says
+  so, naming the version it found.
+- **`nyxgpt ops install`** picks the interpreter for each service venv the
+  same way: the interpreter ops itself is running under first (it is
+  provably able to run nyxGPT), then an explicitly-versioned `python3.X` from
+  PATH, and bare `python3` last and only if it qualifies. A candidate whose
+  `venv`/`ensurepip` is missing — Debian splits those into `python3.X-venv` —
+  falls through to the next one.
+
+Before that, the venv was built with bare `python3`, so on Amazon Linux 2023
+`ops install` produced a Python 3.9 venv and pip refused the artifact into it
+(`requires a different Python: 3.9.16 not in '>=3.11'`) minutes into a
+deploy. What that failure looks like now, and what to do about it, is in
+[troubleshooting.md](troubleshooting.md#no-python--311-available-to-create-the-nyxgpt-api-venv).
 
 ### Docker on the instance
 
@@ -631,7 +658,11 @@ nyxgpt cloud user-data --os macos
 [support matrix](#target-os-support-matrix) below), in order:
 
 1. **Prerequisites**, via the AMI's own package manager (`dnf`/`apt`):
-   Python 3 + pip (+ `python3-venv` on Ubuntu), a Docker engine
+   Python 3 + pip (+ `python3-venv` on Ubuntu) *plus an explicitly-versioned
+   Python that meets nyxGPT's `>=3.11` floor* — the AMI's `python3` is 3.9 on
+   Amazon Linux 2023 and 3.10 on Ubuntu 22.04, and the CLI venv is built from
+   the resolved interpreter, never from a `python3` assumed new enough (see
+   [Python on the instance](#python-on-the-instance)) — a Docker engine
    (`docker`/`docker.io`), and Node 20 from NodeSource. All three are
    required by `nyxgpt ops install` and none ship on a stock AL2023 or
    Canonical Ubuntu AMI: it builds a Python venv for the API, runs `npm

@@ -468,6 +468,23 @@ recipe's pip bootstrap really does fail on the runner with the reported
 formula's own shim (read back out of the shipped formula, never a copy)
 survives it.
 
+The same treatment covers #3788: the job pulls `python@3.12` up to current
+(after a `brew update`, without which `brew upgrade` can only reach versions
+the runner image already knew about), then injects the owner's machine state
+— a keg pip that cannot import `pip._internal.operations.install.wheel` —
+and requires the retired `pip --python … install` bootstrap to die on it
+before accepting that the current one survives it.
+
+One detail there is load-bearing for anyone editing that step: the injected
+fault must scope itself to the keg **by realpath**. Homebrew's pip imports
+through `opt`/`lib` symlinks, but `pip --python` re-execs via
+`get_runnable_pip()`, which resolves them, so the child process that
+actually performs the install imports pip by its Cellar path. A fault scoped
+by `abspath` matches in the parent and never in the child — it simply never
+fires, and the negative control then passes and reads like "the bug is
+gone". The step therefore proves the fault fires in both forms before
+concluding anything from it.
+
 ---
 
 ## Managing the API service (nyxgpt-api)

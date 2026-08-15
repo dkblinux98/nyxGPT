@@ -96,8 +96,33 @@ jobs:
           # carry the self-modification guard that killed the install. Testing
           # whatever pip the runner image was baked with is testing the past,
           # so pull the keg up to what `brew install` gives a user today.
-          brew upgrade python@3.12 || true
+          #
+          # `brew update` first, and that is the whole point of the step:
+          # `brew upgrade` can only see versions the local metadata knows
+          # about, and the runner image's metadata predates the owner's
+          # 3.12.14 -- without it the upgrade prints "already installed" and
+          # the job silently keeps testing the image's pip.
+          brew update || echo "::warning::brew update failed; the keg may not reach current"
+          set +e
+          upgrade_log="$(brew upgrade python@3.12 2>&1)"
+          upgrade_rc=$?
+          set -e
+          echo "$upgrade_log"
+          if [ "$upgrade_rc" -ne 0 ]; then
+            # "already installed" is the one non-zero worth tolerating: it
+            # means current is what is already here. Anything else is a real
+            # failure and is not swallowed.
+            if printf '%s' "$upgrade_log" | grep -qF "already installed"; then
+              echo "python@3.12 is already at the newest version Homebrew knows about"
+            else
+              echo "::error::brew upgrade python@3.12 failed"
+              exit "$upgrade_rc"
+            fi
+          fi
           brew list --versions python@3.12
+          # State in the log which pip is actually under test, so a future
+          # green run says what it tested rather than being taken on trust.
+          "$(brew --prefix python@3.12)/bin/python3.12" -m pip --version
 
       - name: Show the python@3.12 keg's ensurepip state
         # Diagnostics for the failure this job exists to catch: if ensurepip is
@@ -262,6 +287,17 @@ jobs:
           # installation cannot import its own wheel installer. Scoped to the
           # keg's copy on purpose -- a pip unpacked from a wheel is complete,
           # and the recipe's whole defence is that it installs with that one.
+          #
+          # Scoped by *realpath*, and that is load-bearing: the keg pip
+          # imports as /opt/homebrew/lib/python3.12/site-packages/pip, a path
+          # through two Homebrew symlinks, but `pip --python` re-execs through
+          # `get_runnable_pip()` -- `Path(pip_location).resolve().parent` --
+          # so the child process that actually installs imports pip by its
+          # Cellar realpath. An `abspath` prefix check does not resolve
+          # symlinks, so it matches in the parent and never in the child: the
+          # fault would not fire in the one process under test and the
+          # negative control below would pass having proved nothing. Both
+          # sides are realpathed, which keeps the parent case matching too.
           cat > "$WORK/fault/sitecustomize.py" <<'FAULT'
           import os
           import sys
@@ -275,8 +311,10 @@ jobs:
                   if fullname != _TARGET or not _KEG_PIP_DIR:
                       return None
                   origin = getattr(sys.modules.get("pip"), "__file__", "") or ""
-                  keg = os.path.abspath(_KEG_PIP_DIR) + os.sep
-                  if os.path.abspath(origin).startswith(keg):
+                  if not origin:
+                      return None
+                  keg = os.path.realpath(_KEG_PIP_DIR) + os.sep
+                  if os.path.realpath(origin).startswith(keg):
                       raise ImportError("No module named %r" % (_TARGET,))
                   return None
 
@@ -286,6 +324,66 @@ jobs:
 
           export NYXGPT_FAULT_KEG_PIP_DIR="$KEG_PIP_DIR"
           export PYTHONPATH="$WORK/fault"
+
+          echo "=== self-check: the injected fault fires before anything is inferred from it ==="
+          # This round's own lesson. The first spelling of the finder scoped
+          # itself by abspath, never fired in pip's symlink-resolved
+          # `--python` child, and the only symptom was a negative control that
+          # passed -- indistinguishable, from the log, from "the failure no
+          # longer exists". Assert the fault is real first, and assert it in
+          # *both* forms pip imports itself as here: through Homebrew's
+          # opt/lib symlinks (this process) and by the Cellar realpath (the
+          # `--python` child, the only process where the install happens).
+          # Checking just the first is what would have let the broken scoping
+          # through.
+          "$PY" - <<'CHECK'
+          import os
+          import subprocess
+          import sys
+
+          import pip
+
+          print("keg pip __file__:", pip.__file__)
+          print("keg pip realpath:", os.path.realpath(pip.__file__))
+
+          # What `__pip-runner__.py` puts on sys.path in the re-exec child:
+          # the resolved parent of the pip package.
+          real_parent = os.path.dirname(os.path.dirname(os.path.realpath(pip.__file__)))
+          probe = (
+              "import pip\n"
+              "print('  pip imported from', pip.__file__)\n"
+              "import pip._internal.operations.install.wheel\n"
+          )
+
+          failed = False
+          for label, prefix in (
+              ("as this process imports pip", None),
+              ("as `pip --python` re-execs it (realpath)", real_parent),
+          ):
+              env = dict(os.environ)
+              if prefix:
+                  env["PYTHONPATH"] = prefix + os.pathsep + env.get("PYTHONPATH", "")
+              done = subprocess.run(
+                  [sys.executable, "-c", probe],
+                  env=env,
+                  capture_output=True,
+                  text=True,
+              )
+              print(f"{label}:")
+              print(done.stdout.rstrip() or "  (no output)")
+              if done.returncode == 0:
+                  print(f"::error::the injected #3788 fault never fired {label}")
+                  failed = True
+              elif "No module named 'pip._internal.operations.install.wheel'" not in done.stderr:
+                  print(done.stderr.rstrip())
+                  print(f"::error::the fault raised something other than #3788's ImportError {label}")
+                  failed = True
+              else:
+                  print("  fault fires with the owner's ImportError")
+
+          if failed:
+              sys.exit(1)
+          CHECK
 
           echo "=== negative control: rc11's bootstrap, which installs through the keg's pip ==="
           "$PY" -m venv --without-pip "$WORK/venv-old"
