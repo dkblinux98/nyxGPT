@@ -952,6 +952,24 @@ def _desired_compose_services(profiles: set[str], *, exclude_one_shot: bool = Tr
     return services
 
 
+def observability_services() -> set[str]:
+    """Compose service names owned by the currently-enabled observability profiles.
+
+    The public form of `_desired_compose_services(_enabled_observability_profiles())`,
+    for callers that deliberately did *not* start the observability stack and
+    therefore must not treat it as pending -- `ops.up(--skip-observability)`'s
+    health-wait being the one that needs it. Core app services are already
+    excluded (see `_desired_compose_services`), so a Compose-mode `api`/`web`
+    is never in here and never gets skipped by mistake.
+
+    Returns an empty set when the profiles can't be resolved (no Docker, a
+    Compose failure), which is the module's usual "can't tell, so don't act"
+    fallback: the caller then waits on those components rather than silently
+    ignoring something it can't account for.
+    """
+    return _desired_compose_services(_enabled_observability_profiles())
+
+
 def _absent_desired_statuses(
     present_services: set[str], desired_services: set[str]
 ) -> list[ComponentStatus]:

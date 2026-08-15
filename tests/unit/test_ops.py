@@ -7383,6 +7383,89 @@ def test_reconcile_grafana_provisioning_syncs_the_host_relay_before_starting(tmp
 
 
 @pytest.mark.unit
+def test_reconcile_grafana_provisioning_reconciles_volume_ownership_before_starting(
+    tmp_path, monkeypatch
+):
+    """#3721: dockerd creates a missing bind-mount source root-owned, so the
+    ownership reconcile has to happen before the containers first start -- once
+    prometheus has crash-looped there is nothing to un-do, it just stays down."""
+    _write_grafana_fixture(tmp_path, monkeypatch, datasource_yml=_SAMPLE_DATASOURCE_YML)
+    monkeypatch.setattr(ops, "_recreate_grafana_if_provisioning_drifted", lambda: None)
+
+    order = []
+    monkeypatch.setattr(
+        ops,
+        "_ensure_observability_volume_dirs",
+        lambda: order.append("volumes") or [ops.OpsResult(True, "/v/prometheus is owned by 65534")],
+    )
+    monkeypatch.setattr(
+        ops,
+        "_sync_host_relay_env",
+        lambda: order.append("relay") or ops.OpsResult(True, "Host API relay enabled"),
+    )
+    monkeypatch.setattr(
+        ops,
+        "_start_observability_stack",
+        lambda: order.append("start") or [ops.OpsResult(True, "stack up")],
+    )
+
+    results = ops._reconcile_grafana_provisioning()
+
+    assert order == ["volumes", "relay", "start"]
+    assert any("owned by 65534" in r.message for r in results)
+
+
+@pytest.mark.unit
+def test_reconcile_observability_reconciles_volume_ownership(tmp_path, monkeypatch):
+    """The SRE dashboard's observability toggle goes through
+    `reconcile_observability`, never through `install()`. Before #3721 that path
+    had no ownership reconcile at all, so enabling monitoring from the dashboard
+    on Linux brought up a prometheus that could not write /prometheus."""
+    _write_grafana_fixture(tmp_path, monkeypatch, datasource_yml=_SAMPLE_DATASOURCE_YML)
+    monkeypatch.setattr(ops, "_recreate_grafana_if_provisioning_drifted", lambda: None)
+    monkeypatch.setattr(ops, "_sync_host_relay_env", lambda: ops.OpsResult(True, "relay"))
+    monkeypatch.setattr(ops, "_record_ops_action", lambda *a, **k: None)
+
+    called = []
+    monkeypatch.setattr(
+        ops,
+        "_ensure_observability_volume_dirs",
+        lambda: called.append(True) or [ops.OpsResult(True, "volumes ok")],
+    )
+    monkeypatch.setattr(
+        ops, "_start_observability_stack", lambda: [ops.OpsResult(True, "stack up")]
+    )
+
+    ops.reconcile_observability(enable=True)
+
+    assert called == [True]
+
+
+@pytest.mark.unit
+def test_reconcile_grafana_provisioning_surfaces_an_unfixable_volume_dir(tmp_path, monkeypatch):
+    """A directory that could be neither chowned nor ACL-granted must reach the
+    caller as a failure -- the whole point of #3632/#3721 is that this stops
+    presenting as "Grafana panels are empty" with every service reporting OK."""
+    _write_grafana_fixture(tmp_path, monkeypatch, datasource_yml=_SAMPLE_DATASOURCE_YML)
+    monkeypatch.setattr(ops, "_recreate_grafana_if_provisioning_drifted", lambda: None)
+    monkeypatch.setattr(ops, "_sync_host_relay_env", lambda: ops.OpsResult(True, "relay"))
+    monkeypatch.setattr(
+        ops,
+        "_ensure_observability_volume_dirs",
+        lambda: [ops.OpsResult(False, "/v/prometheus is owned by uid 0", "sudo chown -R ...")],
+    )
+    monkeypatch.setattr(
+        ops, "_start_observability_stack", lambda: [ops.OpsResult(True, "stack up")]
+    )
+
+    results = ops._reconcile_grafana_provisioning()
+
+    failures = [r for r in results if not r.ok]
+    assert len(failures) == 1
+    assert "owned by uid 0" in failures[0].message
+
+
+@pytest.mark.unit
 def test_reconcile_grafana_provisioning_writes_the_relay_env_next_to_the_compose_file(
     tmp_path, monkeypatch
 ):
@@ -13406,6 +13489,195 @@ def test_wait_for_stack_healthy_returns_false_on_timeout(monkeypatch):
     assert ops._wait_for_stack_healthy(timeout=0.0, poll_interval=0.0) is False
 
 
+def _absent_observability_status(service: str) -> "self_heal.ComponentStatus":
+    """The shape `_absent_desired_statuses` produces for an enabled-but-not-running
+    observability profile: desired, absent, never healthy on its own."""
+    return self_heal.ComponentStatus(
+        service=service,
+        container="",
+        state="absent",
+        health="",
+        healthy=False,
+        source="compose",
+        desired=True,
+    )
+
+
+@pytest.mark.unit
+def test_wait_for_stack_healthy_skips_observability_when_requested(monkeypatch):
+    """`--skip-observability` deliberately doesn't start the observability
+    profiles, but leaves their config.ini flags on -- so self-heal keeps
+    reporting them desired-but-absent. The wait must exclude them, or `nyxgpt
+    up --skip-observability` can never return 0 (#3508)."""
+    statuses = [
+        self_heal.ComponentStatus(
+            service="api", container="nyxgpt-api", state="running", health="healthy", healthy=True
+        ),
+        _absent_observability_status("jaeger"),
+        _absent_observability_status("otel-collector"),
+    ]
+    monkeypatch.setattr(self_heal, "list_component_status", lambda: statuses)
+    monkeypatch.setattr(self_heal, "observability_services", lambda: {"jaeger", "otel-collector"})
+    monkeypatch.setattr(time, "sleep", lambda s: pytest.fail("must not poll: nothing is pending"))
+
+    assert ops._wait_for_stack_healthy(timeout=5.0, poll_interval=1.0, skip_observability=True)
+
+
+@pytest.mark.unit
+def test_wait_for_stack_healthy_waits_for_observability_by_default(monkeypatch):
+    """The counter-case that makes the test above meaningful: without the flag,
+    the very same desired-but-absent observability component still blocks."""
+    statuses = [
+        self_heal.ComponentStatus(
+            service="api", container="nyxgpt-api", state="running", health="healthy", healthy=True
+        ),
+        _absent_observability_status("jaeger"),
+    ]
+    monkeypatch.setattr(self_heal, "list_component_status", lambda: statuses)
+    monkeypatch.setattr(
+        self_heal,
+        "observability_services",
+        lambda: pytest.fail("must not be consulted unless skipping"),
+    )
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+
+    assert ops._wait_for_stack_healthy(timeout=0.0, poll_interval=0.0) is False
+
+
+@pytest.mark.unit
+def test_wait_for_stack_healthy_skip_observability_still_waits_for_core(monkeypatch):
+    """Skipping observability must not turn the health-wait off wholesale: an
+    unhealthy core component still blocks."""
+    statuses = [
+        self_heal.ComponentStatus(
+            service="api", container="nyxgpt-api", state="running", health="starting", healthy=False
+        ),
+        _absent_observability_status("jaeger"),
+    ]
+    monkeypatch.setattr(self_heal, "list_component_status", lambda: statuses)
+    monkeypatch.setattr(self_heal, "observability_services", lambda: {"jaeger"})
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+
+    assert (
+        ops._wait_for_stack_healthy(timeout=0.0, poll_interval=0.0, skip_observability=True)
+        is False
+    )
+
+
+@pytest.mark.unit
+def test_wait_for_stack_healthy_resolves_observability_set_once(monkeypatch):
+    """The exclusion set is resolved once, not per poll -- it shells out to
+    `docker compose config` and the poll loop can run for minutes."""
+    calls = []
+    pending = [
+        self_heal.ComponentStatus(
+            service="api", container="nyxgpt-api", state="running", health="starting", healthy=False
+        )
+    ]
+    monkeypatch.setattr(self_heal, "list_component_status", lambda: pending)
+    monkeypatch.setattr(self_heal, "observability_services", lambda: calls.append(1) or set())
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+
+    ops._wait_for_stack_healthy(timeout=0.0, poll_interval=0.0, skip_observability=True)
+
+    assert calls == [1]
+
+
+@pytest.mark.unit
+def test_ops_up_timeout_names_the_pending_components(monkeypatch, capsys):
+    """The timeout message names what is actually still unhealthy. Without
+    this, `up` reported only that "not every component" was healthy, and
+    working out which one meant re-running `ops status` by hand (#3508)."""
+    monkeypatch.setattr(ops, "install", lambda args: 0)
+    monkeypatch.setattr(ops, "_wait_for_stack_healthy", lambda **kw: False)
+    monkeypatch.setattr(ops, "_pending_components", lambda excluded: ["cassandra", "ollama"])
+
+    rc = ops.up(
+        SimpleNamespace(
+            no_wait=False, timeout=1.0, kubernetes=False, skip_observability=False, quiet=False
+        )
+    )
+
+    assert rc == 2
+    assert "Still unhealthy: cassandra, ollama" in capsys.readouterr().err
+
+
+@pytest.mark.unit
+def test_ops_up_timeout_message_survives_an_empty_pending_list(monkeypatch, capsys):
+    """A component that recovered between the last poll and the report leaves
+    nothing to name -- the message must still be well-formed, not dangling."""
+    monkeypatch.setattr(ops, "install", lambda args: 0)
+    monkeypatch.setattr(ops, "_wait_for_stack_healthy", lambda **kw: False)
+    monkeypatch.setattr(ops, "_pending_components", lambda excluded: [])
+
+    rc = ops.up(
+        SimpleNamespace(
+            no_wait=False, timeout=1.0, kubernetes=False, skip_observability=False, quiet=False
+        )
+    )
+
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "Still unhealthy" not in err
+    assert "timeout -- run `nyxgpt ops status`" in err
+
+
+@pytest.mark.unit
+def test_pending_components_excludes_and_sorts(monkeypatch):
+    """`_pending_components` is the single definition of "pending" shared by
+    the poll loop and the timeout message."""
+    statuses = [
+        self_heal.ComponentStatus(
+            service="ollama", container="ollama", state="running", health="starting", healthy=False
+        ),
+        self_heal.ComponentStatus(
+            service="api", container="nyxgpt-api", state="running", health="starting", healthy=False
+        ),
+        self_heal.ComponentStatus(
+            service="web", container="nyxgpt-web", state="running", health="healthy", healthy=True
+        ),
+        _absent_observability_status("jaeger"),
+    ]
+    monkeypatch.setattr(self_heal, "list_component_status", lambda: statuses)
+
+    assert ops._pending_components({"jaeger"}) == ["api", "ollama"]
+    assert ops._pending_components(set()) == ["api", "jaeger", "ollama"]
+
+
+@pytest.mark.unit
+def test_ops_up_passes_skip_observability_to_health_wait(monkeypatch):
+    """`up` threads `--skip-observability` into the wait, not just the install."""
+    monkeypatch.setattr(ops, "install", lambda args: 0)
+    waited: list[dict] = []
+    monkeypatch.setattr(ops, "_wait_for_stack_healthy", lambda **kw: waited.append(kw) or True)
+
+    rc = ops.up(
+        SimpleNamespace(
+            no_wait=False, timeout=180.0, kubernetes=False, skip_observability=True, quiet=False
+        )
+    )
+
+    assert rc == 0
+    assert waited == [{"timeout": 180.0, "skip_observability": True}]
+
+
+@pytest.mark.unit
+def test_ops_up_without_skip_observability_waits_for_it(monkeypatch):
+    """And passes False through when the operator did want observability up."""
+    monkeypatch.setattr(ops, "install", lambda args: 0)
+    waited: list[dict] = []
+    monkeypatch.setattr(ops, "_wait_for_stack_healthy", lambda **kw: waited.append(kw) or True)
+
+    rc = ops.up(
+        SimpleNamespace(
+            no_wait=False, timeout=180.0, kubernetes=False, skip_observability=False, quiet=False
+        )
+    )
+
+    assert rc == 0
+    assert waited == [{"timeout": 180.0, "skip_observability": False}]
+
+
 @pytest.mark.unit
 def test_ops_up_returns_install_failure_without_waiting(monkeypatch):
     """`up` propagates a failing `install()` without ever calling the health-wait."""
@@ -13440,10 +13712,17 @@ def test_ops_up_waits_then_prints_web_url(monkeypatch, capsys):
     calls = []
     monkeypatch.setattr(ops, "_wait_for_stack_healthy", lambda **kw: calls.append(kw) or True)
 
-    rc = ops.up(MagicMock(dev=False, no_wait=False, timeout=42.0, kubernetes=False))
+    # skip_observability is set explicitly: on a bare MagicMock the attribute
+    # would be a truthy Mock, so the assertion below would pin an accident of
+    # the test double rather than what `up` actually forwards.
+    rc = ops.up(
+        MagicMock(
+            dev=False, no_wait=False, timeout=42.0, kubernetes=False, skip_observability=False
+        )
+    )
 
     assert rc == 0
-    assert calls == [{"timeout": 42.0}]
+    assert calls == [{"timeout": 42.0, "skip_observability": False}]
     assert ops.WEB_URL in capsys.readouterr().out
 
 
