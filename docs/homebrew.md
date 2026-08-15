@@ -476,9 +476,20 @@ and requires the retired `pip --python … install` bootstrap to die on it
 before accepting that the current one survives it.
 
 The condition is injected by **taking the module away** — `mv`-ing
-`pip/_internal/operations/install/wheel.py` out of the keg, running both
-controls, and restoring it from a shell `trap` on every exit path (the steps
-that follow install the formulas with that same pip, so it must go back).
+`pip/_internal/operations/install/wheel.py` out of the keg **at its
+realpath**, running both controls, and restoring it from a shell `trap` on
+every exit path (the steps that follow install the formulas with that same
+pip, so it must go back).
+
+The realpath is the load-bearing word. Homebrew's prefix tree
+(`/opt/homebrew/lib/python3.12/...`) links into the Cellar, and pip's
+`--python` child re-execs through `get_runnable_pip()`, which is
+`Path(pip.__file__).resolve().parent` — so moving the *prefix* entry leaves
+the copy that child imports untouched. That is not hypothetical: it is what
+the third red round of this step did, firing the self-check through a
+dangling prefix symlink while the negative control installed successfully
+underneath it. Removed at its realpath, one hole serves every route — the keg
+pip, its `--python` re-exec child, and `brew install`.
 
 That is worth stating, because two earlier spellings *emulated* the
 condition instead, with a meta-path finder in a `sitecustomize` on
@@ -493,12 +504,18 @@ and moved which pip was under test.
 The general lesson is worth more than either fix: **an emulated condition
 runs in an interpreter environment `brew install` does not have, so the
 emulation becomes the thing being tested.** Removing the file is the machine
-state itself — no `PYTHONPATH`, no import hooks — and every process sees it.
+state itself — no `PYTHONPATH`, no import hooks — and every process that
+resolves to it sees it, which is why it has to be removed where they all
+resolve *to*.
 
-Both mistakes had the same symptom: nothing fires, the negative control
-passes, and the log reads exactly like "the bug is gone". So the step
-asserts the condition exists before concluding anything from it, and that
-self-check, not a passing control, is the arbiter.
+All three mistakes had the same symptom: the fault does not reach the child
+that installs, the negative control passes, and the log reads exactly like
+"the bug is gone". So the step asserts the condition exists before
+concluding anything from it — and asserts it by **both** routes pip can be
+imported here, the prefix one this process uses and the resolved one the
+`--python` child re-execs into. Checking only the first is precisely how a
+moved symlink read as a created condition; that self-check, not a passing
+control, is the arbiter.
 
 ---
 

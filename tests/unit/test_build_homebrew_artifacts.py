@@ -1474,8 +1474,14 @@ def test_macos_smoke_injects_the_keg_pip_failure_from_3788():
     )
     assert "brew upgrade python@3.12" in script
     # The condition, injected rather than hoped for: the keg's pip cannot
-    # import its own wheel installer, because the module is not there.
-    assert 'WHEEL_PY="$("$PY" -c \'import pip._internal.operations.install.wheel' in script
+    # import its own wheel installer, because the module is not there. It is
+    # taken away at its realpath -- see the test below for why the path it is
+    # imported by is the wrong one to move.
+    assert (
+        'WHEEL_PY="$("$PY" -c \'import os, '
+        "pip._internal.operations.install.wheel as m; "
+        "print(os.path.realpath(m.__file__))')\"" in script
+    )
     assert 'mv "$WHEEL_PY" "$HIDDEN"' in script
     # The negative control: rc11's bootstrap has to die on it, with the
     # owner's error, or a green result below proves nothing.
@@ -1499,11 +1505,19 @@ def test_the_3788_condition_is_injected_into_the_keg_and_restored():
 
     The general fault is that an emulated condition runs in an interpreter
     environment `brew install` does not have, so the emulation becomes the
-    thing under test. Taking the module away is the machine state itself,
-    and every process sees it. Two rules hold this in place: the keg is
-    restored on every exit path, since the steps that follow install the
-    formulas with that same pip, and the condition is asserted to exist
-    before anything is inferred from it.
+    thing under test. Taking the module away is the machine state itself --
+    provided it is taken away at its *realpath*. Homebrew links the prefix
+    tree into the Cellar, and `pip --python` re-execs through
+    `get_runnable_pip()`, which resolves symlinks, so moving the prefix entry
+    leaves the child's copy in place: the third red round moved the symlink,
+    fired the self-check through the dangling link, and still watched the
+    negative control install successfully.
+
+    Three rules hold this in place: the module is moved at its realpath, the
+    keg is restored on every exit path (the steps that follow install the
+    formulas with that same pip), and the condition is asserted to exist --
+    by both routes pip can be imported here -- before anything is inferred
+    from it.
     """
     steps = _macos_smoke_workflow()["jobs"]["keg-install"]["steps"]
     script = next(
@@ -1516,12 +1530,22 @@ def test_the_3788_condition_is_injected_into_the_keg_and_restored():
     assert 'mv "$WHEEL_PY" "$HIDDEN"' in script
     assert "sitecustomize" not in script
     assert "PYTHONPATH" not in script
+    # ...at the path every route ends at, not the one this process imports by.
+    assert "print(os.path.realpath(m.__file__))" in script
     # ...and restored, on the failure paths as well as the success one.
     assert "trap restore_the_keg EXIT" in script
     assert 'print("restored:", m.__file__)' in script
     # The self-check that caught both earlier no-fires, kept and pointed at
-    # the machine: its failure has to be loud rather than inferred.
+    # the machine: its failure has to be loud rather than inferred. It probes
+    # the resolved route as well as the prefix one, because checking only the
+    # prefix is exactly what let a moved symlink read as a created condition.
     assert "#3788's condition was not created" in script
+    assert '("prefix", os.path.dirname(as_imported))' in script
+    assert '("resolved (Cellar)", os.path.dirname(resolved))' in script
+    # Resolved from the file, like `get_runnable_pip()`. Resolving the
+    # directory collapses both routes into one wherever Homebrew links files
+    # into a real prefix directory -- which is the common shape.
+    assert "resolved = os.path.dirname(os.path.realpath(pip.__file__))" in script
 
 
 def test_macos_smoke_reads_the_shim_out_of_the_formula_it_ships():

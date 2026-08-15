@@ -306,8 +306,14 @@ jobs:
       # fault there is that an emulated condition runs in an interpreter
       # environment that `brew install` does not have, so the emulation
       # becomes the thing being tested. Moving the file is the machine state
-      # itself: no PYTHONPATH, no import hooks, every process sees it -- the
-      # keg pip, its `--python` re-exec child, and `brew install`. It is
+      # itself: no PYTHONPATH, no import hooks -- provided it is moved at its
+      # realpath. Homebrew's prefix tree symlinks into the Cellar and pip's
+      # `--python` child re-execs through `get_runnable_pip()`, which resolves
+      # symlinks, so taking away the prefix entry leaves the file that child
+      # imports in place; that is how run 31870665799 fired the self-check
+      # through a dangling symlink and still passed the negative control.
+      # Removed at its realpath, the hole is the same one for every route:
+      # the keg pip, its `--python` re-exec child, and `brew install`. It is
       # restored by a trap before anything else runs.
       - name: "Reproduce the #3788 keg-pip failure, then prove the new bootstrap survives it"
         run: |
@@ -317,9 +323,14 @@ jobs:
           WORK="$(mktemp -d)"
           mkdir -p "$WORK/wheelhouse"
 
-          WHEEL_PY="$("$PY" -c 'import pip._internal.operations.install.wheel as m; print(m.__file__)')"
+          # The realpath, not the path it was imported by: Homebrew links the
+          # prefix tree into the Cellar, and the copy `pip --python` re-execs
+          # is the resolved one.
+          WHEEL_PY="$("$PY" -c 'import os, pip._internal.operations.install.wheel as m; print(os.path.realpath(m.__file__))')"
+          WHEEL_LINK="$("$PY" -c 'import pip._internal.operations.install.wheel as m; print(m.__file__)')"
           HIDDEN="$WHEEL_PY.3788-hidden"
           echo "keg pip wheel installer: $WHEEL_PY"
+          echo "  imported by this python as: $WHEEL_LINK"
 
           restore_the_keg() {
             if [ -e "$HIDDEN" ]; then
@@ -332,8 +343,10 @@ jobs:
 
           mv "$WHEEL_PY" "$HIDDEN"
           # Source-based caching means a stale __pycache__ entry is ignored
-          # once the .py is gone, but leave nothing to reason about.
+          # once the .py is gone, but leave nothing to reason about -- on both
+          # sides of the link, since either may carry one.
           rm -f "$(dirname "$WHEEL_PY")"/__pycache__/wheel.*.pyc
+          rm -f "$(dirname "$WHEEL_LINK")"/__pycache__/wheel.*.pyc
 
           echo "=== self-check: the keg is really in the owner's state before anything is inferred ==="
           # The arbiter, kept from the previous spelling and for the reason it
@@ -342,30 +355,53 @@ jobs:
           # gone". Assert the condition exists, in this process and in a
           # child, before believing anything below.
           "$PY" - <<'CHECK'
+          import os
           import subprocess
           import sys
 
           import pip
 
           print("keg pip:", pip.__file__)
-          probe = (
-              "import pip\n"
-              "print('  pip imported from', pip.__file__)\n"
-              "import pip._internal.operations.install.wheel\n"
-          )
-          done = subprocess.run(
-              [sys.executable, "-c", probe],
-              capture_output=True,
-              text=True,
-          )
-          print(done.stdout.rstrip() or "  (no output)")
-          if done.returncode == 0:
-              print("::error::the keg pip can still import its wheel installer; #3788's condition was not created")
-              sys.exit(1)
-          if "No module named 'pip._internal.operations.install.wheel'" not in done.stderr:
-              print(done.stderr.rstrip())
-              print("::error::the keg pip failed to import it for some other reason")
-              sys.exit(1)
+
+          # Both routes pip can be imported by here, because they are not the
+          # same directory: this process reaches it through Homebrew's prefix
+          # tree, and `pip --python` re-execs `get_runnable_pip()`, which is
+          # `Path(pip.__file__).resolve().parent` -- the Cellar. Checking only
+          # the first is what let the previous spelling through: it fired
+          # through a dangling prefix symlink while the child imported an
+          # untouched Cellar copy and installed happily. Resolve the *file*,
+          # as `get_runnable_pip()` does -- Homebrew's prefix directory is
+          # usually real with only its files linked, so resolving the
+          # directory would collapse both routes into one and quietly stop
+          # probing the child's.
+          as_imported = os.path.dirname(pip.__file__)
+          resolved = os.path.dirname(os.path.realpath(pip.__file__))
+          routes = [("prefix", os.path.dirname(as_imported))]
+          if resolved != as_imported:
+              routes.append(("resolved (Cellar)", os.path.dirname(resolved)))
+
+          for name, site_packages in routes:
+              probe = (
+                  "import sys\n"
+                  f"sys.path.insert(0, {site_packages!r})\n"
+                  "import pip\n"
+                  "print('  pip imported from', pip.__file__)\n"
+                  "import pip._internal.operations.install.wheel\n"
+              )
+              done = subprocess.run(
+                  [sys.executable, "-c", probe],
+                  capture_output=True,
+                  text=True,
+              )
+              print(f"-- {name} route: {site_packages}")
+              print(done.stdout.rstrip() or "  (no output)")
+              if done.returncode == 0:
+                  print(f"::error::the keg pip can still import its wheel installer by its {name} route; #3788's condition was not created")
+                  sys.exit(1)
+              if "No module named 'pip._internal.operations.install.wheel'" not in done.stderr:
+                  print(done.stderr.rstrip())
+                  print(f"::error::the {name} route failed to import it for some other reason")
+                  sys.exit(1)
           print("  the keg pip cannot import its wheel installer, as on the owner's Mac")
           CHECK
 

@@ -50,9 +50,9 @@ class NyxgptApi < Formula
     # empty is macOS-side and not observable from here, but the recipe only
     # needs it to be answerable. A `sitecustomize` on PYTHONPATH runs at
     # interpreter startup, so one file covers every interpreter that asks --
-    # this python, the venv python `pip --python` re-execs into, and pip's
-    # build-isolation subprocesses. It lives in buildpath, so it is gone once
-    # the keg is built and nothing ships it.
+    # this python running `pip download`, the venv python that runs pip out of
+    # the downloaded wheel, and pip's build-isolation subprocesses. It lives in
+    # buildpath, so it is gone once the keg is built and nothing ships it.
     shim = buildpath/"brew-build-shim"
     shim.mkpath
     (shim/"sitecustomize.py").write <<~'PY'
