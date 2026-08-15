@@ -688,7 +688,7 @@ jobs:
           # which is not in the supported list (opened, synchronize, ready_for_review, reopened)
           # yamllint disable rule:line-length
           claude_args: >-
-            --model claude-opus-5
+            --model claude-fable-5
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
             --mcp-config ${{ runner.temp }}/mcp-config.json
             --json-schema '{"type":"object","properties":{"decision":{"type":"string","enum":["APPROVE","REQUEST_CHANGES"]},"summary":{"type":"string"},"critical_issues":{"type":"array","items":{"type":"string"}},"medium_issues":{"type":"array","items":{"type":"string"}},"disagreement_type":{"type":"string","enum":["a","b","c"],"description":"REQUIRED when decision is REQUEST_CHANGES (#3687 huddle protocol): (a) verifiable defect, (b) judgment call, (c) spec ambiguity. Omit for APPROVE."}},"required":["decision"]}'

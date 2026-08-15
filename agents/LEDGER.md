@@ -271,19 +271,20 @@ are absent here by design (relocated to the annex; IDs are never reused).
   **developer** agent's implementation paths run on **`claude-opus-5`**. The
   Fable pins are a chosen configuration, not an oversight — do not "upgrade"
   them to Opus on sight.
-  **Temporarily overridden 2026-08-15**: every agent invocation is pinned to
-  `claude-opus-5` (commit `e56c3d9b`) because Fable was refused at the API with
+  **Override applied and ENDED, both on 2026-08-15** — the split above is the
+  live configuration again; the paragraph below is history, not current state.
+  For ~2 hours every agent invocation was pinned to
+  `claude-opus-5` (commit `e56c3d9b`, reverted once the owner raised the
+  limit) because Fable was refused at the API with
   a **monthly spend limit**, not a rolling usage window. The evidence is in the
   Claude step's own result payload (review run 31908249723):
   `"api_error_status": 429`, `"terminal_reason": "api_error"`,
   `"result": "You've hit your monthly spend limit. Switch to another model to
   continue."` — i.e. Anthropic's own guidance is the remedy applied here. Every
   review run from 20:20 UTC failed this way while the Opus-pinned developer
-  paths ran normally. This override is **temporary by owner decision**: restore
-  review (and the `@claude` / huddle-mediation entry points) to
-  `claude-fable-5` once the account's Fable spend limit resets or is raised.
-  The reason the split exists is not recorded here — ask the owner before
-  treating the override as permanent.
+  paths ran normally. The owner raised the limit the same evening and the
+  override was reverted in full, restoring the split exactly. The reason the
+  split exists is still not recorded here — ask the owner before changing it.
   **Diagnostic trap (cost an hour on 2026-08-15):** that 429 is not what the
   workflow reports. `claude-code-action` surfaced only
   `--json-schema was provided but Claude did not return structured_output.
