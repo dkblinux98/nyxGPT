@@ -26,6 +26,14 @@ type InfraStatus = {
     pods: string[];
     context: string;
     provisioned: boolean;
+    // The in-cluster observability layer (#3787): Kubernetes mode cannot use
+    // the Compose observability profiles, so it deploys its own.
+    observability: {
+      probe_available: boolean;
+      deployed: boolean;
+      workloads: Record<string, string>;
+      port_forward_command: string;
+    };
   };
   serving:
     | { supported: false; message: string }
@@ -344,6 +352,37 @@ export default function InfrastructurePage() {
                     No pods in the <code>{status.kubernetes.namespace}</code> namespace.
                   </p>
                 )}
+
+                {/* In-cluster observability (#3787). Kubernetes mode runs its own
+                    Grafana/Prometheus/Loki/Jaeger/GlitchTip: the Compose profiles
+                    scrape the host and resolve Compose service names, so they are
+                    unreachable from a cluster. */}
+                <div style={{ marginTop: '1rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border-color)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                    <h3 style={{ fontSize: '0.95rem', fontWeight: 'bold' }}>In-cluster observability</h3>
+                    <span style={badgeStyle(status.kubernetes.observability.deployed)}>
+                      {status.kubernetes.observability.deployed ? 'DEPLOYED' : 'NOT DEPLOYED'}
+                    </span>
+                  </div>
+                  {status.kubernetes.observability.deployed ? (
+                    <>
+                      <ComponentList components={status.kubernetes.observability.workloads} />
+                      <p style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)', marginTop: '0.5rem' }}>
+                        Services are ClusterIP-only. Publish Grafana, Prometheus, Jaeger and
+                        GlitchTip on the ports this dashboard links to with{' '}
+                        <code>{status.kubernetes.observability.port_forward_command}</code>.
+                      </p>
+                    </>
+                  ) : (
+                    <p style={{ fontSize: '0.875rem', color: 'var(--foreground-muted)' }}>
+                      No observability workloads in the <code>{status.kubernetes.namespace}</code>{' '}
+                      namespace — deploy them with{' '}
+                      <code>nyxgpt ops observability --kubernetes --local</code> (
+                      <code>nyxgpt ops install --kubernetes --local</code> includes them unless{' '}
+                      <code>--skip-observability</code> is passed).
+                    </p>
+                  )}
+                </div>
               </>
             )}
           </div>
