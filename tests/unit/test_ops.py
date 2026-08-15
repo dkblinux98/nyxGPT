@@ -59,6 +59,7 @@ def test_ops_install_returns_zero_when_all_ok(capsys):
     # Mock internal steps to all succeed
     ok_results = [ops.OpsResult(True, "ok")]
     with (
+        patch.object(ops, "_reconcile_install_mode", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_install_config", return_value=ok_results),
         patch.object(ops, "migrate_legacy_volumes", return_value=ok_results),
         patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok_results),
@@ -91,6 +92,7 @@ def test_ops_install_returns_zero_when_all_ok(capsys):
 def test_ops_install_returns_nonzero_when_any_fail(capsys):
     mixed = [ops.OpsResult(True, "ok"), ops.OpsResult(False, "bad", "details")]
     with (
+        patch.object(ops, "_reconcile_install_mode", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_install_config", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "migrate_legacy_volumes", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(
@@ -133,6 +135,7 @@ def test_ops_install_returns_nonzero_when_any_fail(capsys):
 def test_ops_install_skip_observability_flag_skips_the_step(capsys):
     ok_results = [ops.OpsResult(True, "ok")]
     with (
+        patch.object(ops, "_reconcile_install_mode", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_install_config", return_value=ok_results),
         patch.object(ops, "migrate_legacy_volumes", return_value=ok_results),
         patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok_results),
@@ -174,6 +177,7 @@ def test_ops_install_step_order_reconciles_before_creating(capsys):
         return _fn
 
     with (
+        patch.object(ops, "_reconcile_install_mode", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(
             ops, "_clear_intentional_stops", side_effect=_record("clear intentional stops")
         ),
@@ -225,6 +229,7 @@ def test_ops_install_step_order_reconciles_before_creating(capsys):
 def test_ops_install_clears_intentional_stop_markers_for_core_components():
     ok_results = [ops.OpsResult(True, "ok")]
     with (
+        patch.object(ops, "_reconcile_install_mode", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_install_config", return_value=ok_results),
         patch.object(ops, "migrate_legacy_volumes", return_value=ok_results),
         patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok_results),
@@ -5066,6 +5071,7 @@ def test_ensure_mcp_deps_uses_npm_install_when_no_lockfile(monkeypatch, tmp_path
 def test_ops_install_catches_exception_from_a_step(capsys):
     ok_results = [ops.OpsResult(True, "ok")]
     with (
+        patch.object(ops, "_reconcile_install_mode", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "migrate_legacy_volumes", return_value=ok_results),
         patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok_results),
         patch.object(ops, "_sync_packaged_resources", return_value=ok_results),
@@ -5381,6 +5387,7 @@ def test_emit_results_logs_ok_at_info_and_failure_at_warning(caplog):
 def test_ops_install_logs_start_and_summary(caplog):
     ok_results = [ops.OpsResult(True, "ok")]
     with (
+        patch.object(ops, "_reconcile_install_mode", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "migrate_legacy_volumes", return_value=ok_results),
         patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok_results),
         patch.object(ops, "_sync_packaged_resources", return_value=ok_results),
@@ -5407,6 +5414,7 @@ def test_ops_install_logs_start_and_summary(caplog):
 @pytest.mark.unit
 def test_ops_install_logs_error_when_step_raises(caplog):
     with (
+        patch.object(ops, "_reconcile_install_mode", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_sync_packaged_resources", side_effect=RuntimeError("boom")),
         patch.object(ops, "migrate_legacy_volumes", return_value=[]),
         patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=[]),
@@ -13015,6 +13023,7 @@ def test_step_heartbeat_prints_still_running_line_while_step_is_in_flight(monkey
 def test_ops_install_quiet_flag_suppresses_step_announcements(capsys):
     ok_results = [ops.OpsResult(True, "ok")]
     with (
+        patch.object(ops, "_reconcile_install_mode", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_sync_packaged_resources", return_value=ok_results),
         patch.object(ops, "_install_config", return_value=ok_results),
         patch.object(ops, "migrate_legacy_volumes", return_value=ok_results),
@@ -13044,6 +13053,7 @@ def test_ops_install_quiet_flag_suppresses_step_announcements(capsys):
 def test_ops_install_default_verbose_prints_step_announcements(capsys):
     ok_results = [ops.OpsResult(True, "ok")]
     with (
+        patch.object(ops, "_reconcile_install_mode", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_sync_packaged_resources", return_value=ok_results),
         patch.object(ops, "_install_config", return_value=ok_results),
         patch.object(ops, "migrate_legacy_volumes", return_value=ok_results),

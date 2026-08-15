@@ -510,3 +510,121 @@ def test_infra_status_reports_dev_mode_and_its_checkout(monkeypatch, checkout):
     assert reported["mode"] == install_mode.INSTALL_MODE_DEV
     assert reported["checkout"] == str(checkout)
     assert str(checkout) in reported["label"]
+
+
+# --- test-isolation guard: the suite must never reconcile the real machine ---
+
+
+# Every step `ops.install()` runs, by the name the step list dispatches
+# through. Stubbing all of them leaves `install()` itself -- and, in the
+# fault-injection half below, the real `_reconcile_install_mode` -- as the
+# only live code.
+_INSTALL_STEPS = (
+    "_sync_packaged_resources",
+    "_clear_intentional_stops",
+    "_install_config",
+    "_ensure_docker_engine",
+    "migrate_legacy_volumes",
+    "_reconcile_phantom_compose_app_containers",
+    "_ensure_web_deps",
+    "_ensure_mcp_deps",
+    "_ensure_cassandra_container",
+    "_install_cassandra_log_follower_service",
+    "_install_ollama_log_follower_service",
+    "_install_ollama_env_agent",
+    "_install_native_api",
+    "_install_native_web",
+    "_ensure_native_ollama_service",
+    "_cleanup_stale_log_symlinks",
+    "sync_env_from_config",
+    "_generate_compose_config",
+)
+
+
+def _dev_machine(monkeypatch, tmp_path):
+    """Stage a tmp_path copy of what a `nyxgpt up --dev` machine looks like.
+
+    Everything `_reconcile_install_mode` can reach on a mode switch is
+    redirected into `tmp_path` first, so the fault-injection test below
+    demonstrates the damage without doing it to the runner: the marker (via
+    the conftest fixture and this file's own), the api venv, the LaunchAgent
+    directory, and `launchctl` itself.
+    """
+    monkeypatch.setattr(ops.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(ops, "_which", lambda tool: f"/usr/bin/{tool}")
+    monkeypatch.setattr(ops, "_native_install_root", lambda c: tmp_path / "opt" / c)
+    monkeypatch.setattr(ops.Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(ops, "_stop_brew_service", lambda name: [ops.OpsResult(True, name)])
+    monkeypatch.setattr(ops, "_emit_results", lambda action, results: True)
+    monkeypatch.setattr(ops, "_ops_action_outcome", lambda results: ("success", ""))
+    monkeypatch.setattr(ops, "_record_ops_action", lambda *a, **k: None)
+    for step in _INSTALL_STEPS:
+        monkeypatch.setattr(ops, step, lambda *a, **k: [ops.OpsResult(True, "ok")])
+
+    booted_out: list[str] = []
+    monkeypatch.setattr(
+        ops,
+        "_stop_launchagent",
+        lambda label: booted_out.append(label) or [ops.OpsResult(True, "")],
+    )
+
+    venv = tmp_path / "opt" / "nyxgpt-api" / "venv"
+    venv.mkdir(parents=True)
+    la_dir = tmp_path / "Library" / "LaunchAgents"
+    la_dir.mkdir(parents=True)
+    for label in install_mode.DEV_LAUNCHD_LABELS.values():
+        (la_dir / f"{label}.plist").write_text("<plist/>", encoding="utf-8")
+    install_mode.write_install_mode(install_mode.INSTALL_MODE_DEV, tmp_path / "checkout")
+
+    return venv, la_dir, booted_out
+
+
+def test_install_tests_patch_the_mode_step_and_so_leave_the_machine_alone(monkeypatch, tmp_path):
+    """The convention every `ops.install(...)` unit test follows must hold.
+
+    `install()`'s tests patch each step out; the install-mode step is patched
+    the same way (`tests/unit/test_ops.py`, `test_ops_lifecycle_actions.py`,
+    `test_ops_systemd.py`). With it patched, running the suite on a dev-mode
+    machine -- the one `nyxgpt up --dev` produces, i.e. the owner's Mac --
+    leaves its recorded mode, its api venv and its running LaunchAgents
+    exactly as they were.
+    """
+    venv, la_dir, booted_out = _dev_machine(monkeypatch, tmp_path)
+    before = install_mode.INSTALL_MODE_FILE.read_bytes()
+
+    with patch.object(ops, "_reconcile_install_mode", return_value=[ops.OpsResult(True, "ok")]):
+        rc = ops.install(
+            Args(dev=False, skip_observability=True, terraform=False, kubernetes=False)
+        )
+
+    assert rc == 0
+    assert install_mode.INSTALL_MODE_FILE.read_bytes() == before
+    assert install_mode.read_install_mode().is_dev is True
+    assert venv.exists()
+    assert sorted(p.name for p in la_dir.iterdir()) == [
+        "com.nyxgpt.api.plist",
+        "com.nyxgpt.web.plist",
+    ]
+    assert booted_out == []
+
+
+def test_an_unpatched_mode_step_really_would_clobber_that_machine(monkeypatch, tmp_path):
+    """Fault injection: prove the guard above is not vacuously true (#3753).
+
+    Same install, same staged dev-mode machine, only the install-mode step
+    left unpatched -- and the mode switch it then decides on is destructive:
+    the marker is rewritten to artifact, the shared api venv is deleted and
+    the dev LaunchAgents are booted out from under the running services.
+    That is the damage the patch in the test above prevents; if this test
+    ever stops failing-by-default it means the step became harmless and the
+    convention can be retired.
+    """
+    venv, la_dir, booted_out = _dev_machine(monkeypatch, tmp_path)
+
+    rc = ops.install(Args(dev=False, skip_observability=True, terraform=False, kubernetes=False))
+
+    assert rc == 0
+    assert install_mode.read_install_mode().is_dev is False
+    assert not venv.exists()
+    assert list(la_dir.iterdir()) == []
+    assert booted_out == list(install_mode.DEV_LAUNCHD_LABELS.values())

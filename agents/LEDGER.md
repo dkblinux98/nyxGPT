@@ -438,6 +438,26 @@ not agent-editable except to add a `Re-verify` result or a supersession pointer.
   Re-verify when: Next.js changes which runtimes it compiles the instrumentation
   hook for, or `lib/logger.ts` stops using `node:fs`.
 
+- **V-013** · 2026-08-15 — `ops.install()`'s unit tests patch its steps out **by
+  enumeration**, so every step added to the list afterwards runs for real against
+  the developer's own machine until someone adds it to each `with` block. The
+  install-mode step (**D-009**) landed that way and was not inert: on a machine
+  recording `dev`, running one install unit test deleted the real
+  `~/.nyxGPT/opt/nyxgpt-api/venv`, rewrote the real marker back to `artifact`
+  (and on macOS would `launchctl bootout` the live dev LaunchAgents), then failed
+  — i.e. the suite destroyed the state of the machine `nyxgpt up --dev` had just
+  produced, and passed in CI only because runners start in artifact mode.
+  Method: executed on this runner 2026-08-15 — wrote `{"mode": "dev", …}` to the
+  real `~/.nyxGPT/install-mode.json` plus a sentinel venv, ran
+  `test_ops_install_returns_zero_when_all_ok` on the pre-fix tree (venv
+  DESTROYED, marker rewritten, `assert 2 == 0`), then the same injection on the
+  fixed tree (marker byte-identical, sentinel PRESENT, test passed) (#3789/#3791).
+  Re-verify when: a new step is added to `ops.install()`'s step list — the
+  standing guards are the autouse `_isolate_install_mode_marker` fixture in
+  `tests/unit/conftest.py` and the paired
+  `test_install_tests_patch_the_mode_step_…` / `test_an_unpatched_mode_step_…`
+  fault-injection tests, which close the marker half but not the general pattern.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
