@@ -204,12 +204,15 @@ if [[ "$DEV_MODE" -eq 1 ]]; then
     fail_count=1
   fi
 
+  # Remove it BEFORE the switch-back: the artifact install vendors
+  # `src/nyxgpt/` from this same checkout into its tarball, so a marker left
+  # in the tree here would be built INTO the artifact venv and the inverse
+  # check below would be testing vendoring, not working-tree pickup.
+  rm -f "$WORKTREE_MARKER"
+
   # 6. Switching back: reinstall without --dev and prove the machine is on
   #    the artifact path again -- services still serving, mode relabelled,
-  #    and the venv no longer importing the checkout. That last assertion is
-  #    the inverse proof for step 5: the marker check above only means
-  #    something because it FAILS on an artifact install (#3753's
-  #    fault-injection rule).
+  #    and the venv no longer importing the checkout.
   log "Switching back to the artifact path: nyxgpt ops install --skip-observability"
   nyxgpt ops install --skip-observability
 
@@ -233,6 +236,11 @@ if [[ "$DEV_MODE" -eq 1 ]]; then
     echo "  artifact-mode venv no longer imports the checkout (dev checks are not vacuous)"
   fi
 
+  # 7. The inverse proof for step 5 (#3753's fault-injection rule): the same
+  #    "add a file to the working tree, then import it from the service's
+  #    venv" check must FAIL on an artifact install. Written only now, after
+  #    that install has vendored the tree, so nothing could have built it in.
+  echo "MARKER = 'artifact mode must NOT pick this up'" > "$WORKTREE_MARKER"
   if "$API_VENV_PY" -c 'import nyxgpt._dev_mode_smoke_marker' 2>/dev/null; then
     echo "::error::the working-tree marker is importable from an ARTIFACT install -- step 5 proves nothing"
     fail_count=1
