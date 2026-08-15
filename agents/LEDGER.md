@@ -381,6 +381,27 @@ not agent-editable except to add a `Re-verify` result or a supersession pointer.
   "Verify PyPI serves the build" step had passed at 22:06Z.
   Re-verify when: the session egress proxy or PyPI CDN behaviour changes.
 
+- **V-010** · 2026-08-15 — Next.js compiles `web/src/instrumentation.ts` for the
+  **edge** server runtime as well as the Node.js one, so any node-only module it
+  reaches must be imported *inside* a `process.env.NEXT_RUNTIME === "nodejs"`
+  block, never at the top level. A top-level `import … from "./lib/logger"`
+  (which reaches `node:fs`) failed the edge compile with
+  `UnhandledSchemeError: Reading from "node:fs" is not handled by plugins`, and a
+  failed instrumentation compile makes `next dev` answer **500 to every request**
+  — while `next build`/`next start` are unaffected, so only the dev-server path
+  (`nyxgpt up --dev`, **D-009**) broke and every artifact-path check stayed green.
+  An early `return` is not sufficient: webpack drops an untaken `if` branch and
+  the module graph under it, but statements after a `return` stay live to the
+  bundler.
+  Method: executed on this runner 2026-08-15 — reproduced `GET / 500` with the
+  `⨯ node:fs` compile error, confirmed the failing compiler by logging the
+  webpack context (`{isServer:true,nextRuntime:"edge"}`), then re-ran after the
+  fix for `GET / 200` with zero `UnhandledSchemeError`; `npm run build` +
+  `npm run start` also re-checked at 200 (#3789/#3791). Standing CI guard: the
+  `web / expected 200` check in `linux-native-dev-smoke`.
+  Re-verify when: Next.js changes which runtimes it compiles the instrumentation
+  hook for, or `lib/logger.ts` stops using `node:fs`.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

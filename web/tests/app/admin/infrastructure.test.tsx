@@ -404,6 +404,37 @@ describe('InfrastructurePage', () => {
     expect(screen.getByText(/not exercising the artifact path/)).toBeInTheDocument();
   });
 
+  it('still labels a dev install when the marker recorded no checkout (#3789)', async () => {
+    // `install_mode.checkout` is nullable end-to-end: `_reconcile_install_mode`
+    // writes `null` when `_dev_checkout_root()` cannot resolve one, and
+    // `read_install_mode` reads any falsy recorded value back as None. The
+    // card must still read as a dev install in that case -- losing the path
+    // must not silently downgrade the warning to the artifact wording.
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json({
+          ...mockStatusEmpty,
+          mode: 'native',
+          native: { api: 'started', web: 'started' },
+          install_mode: {
+            mode: 'dev',
+            checkout: null,
+            label: 'dev (editable checkout at unknown checkout)',
+            components: ['api', 'web'],
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('DEV INSTALL')).toBeInTheDocument();
+    });
+    expect(screen.getByText('an unrecorded checkout')).toBeInTheDocument();
+    expect(screen.getByText(/not exercising the artifact path/)).toBeInTheDocument();
+  });
+
   it('labels the native card as an artifact install by default (#3789)', async () => {
     server.use(
       http.get('/api/v1/infra/status', () =>

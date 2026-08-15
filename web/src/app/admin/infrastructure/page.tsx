@@ -274,7 +274,7 @@ export default function InfrastructurePage() {
             <p style={{ fontSize: '0.85rem', color: 'var(--foreground-muted)', marginBottom: '0.75rem' }}>
               {status.install_mode?.mode === 'dev' ? (
                 <>
-                  {(status.install_mode.components ?? []).join(' and ')} run the working tree at{' '}
+                  {status.install_mode.components.join(' and ')} run the working tree at{' '}
                   <code>{status.install_mode.checkout ?? 'an unrecorded checkout'}</code> (editable
                   venv + dev server), not a published build — so this stack is not exercising the
                   artifact path. Run <code>nyxgpt up</code> to return to it.
