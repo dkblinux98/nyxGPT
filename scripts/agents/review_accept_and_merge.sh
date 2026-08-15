@@ -76,62 +76,32 @@ fi
 if [[ "$pr_mergeable" == "CONFLICTING" ]]; then
   echo "[review] PR #${PR} has merge conflicts with ${pr_base_branch}." >&2
 
-  # One automated conflict-resolution round before escalating to a human:
-  # return the issue to In Progress and reassign the developer agent, whose
-  # fix-round path detects the CONFLICTING state and merges the base branch
-  # into the PR branch (resolving conflicts, re-running gates). The marker
-  # string below is the loop guard -- if a prior automated round already ran
-  # on this PR and it is conflicted again, escalate to the human owner.
-  CONFLICT_ROUND_MARKER="Automated conflict-resolution round"
-  # --jq runs once per fetched page, not once over the combined result set --
-  # stream matching items across all pages first, then slurp+count in a
-  # second jq pass so `length` reflects the true total (see AGENTS.md).
-  prior_rounds=$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${PR}/comments" --paginate \
-    --jq ".[] | select(.body | contains(\"${CONFLICT_ROUND_MARKER}\"))" 2>/dev/null \
-    | jq -s 'length' || echo 0)
-  if [[ "${prior_rounds:-0}" -eq 0 ]]; then
-    echo "[review] Dispatching automated conflict-resolution round to developer agent..." >&2
-    AUTO_MSG="⚠️ **Merge Conflicts Detected** — ${CONFLICT_ROUND_MARKER} dispatched.
+  # Routing lives in one place for every conflict entry point (#3801):
+  # scripts/agents/dispatch_conflict_resolution.sh hands the conflict to the
+  # developer agent (merge `origin/<base>` into the PR branch, never rebase)
+  # and reaches the owner ONLY on an agent-raised owner-only decision or
+  # after the automated rounds stop converging. This script used to run its
+  # own one-round-then-assign-the-owner logic; that second copy is gone so
+  # the two paths cannot drift apart.
+  conflict_out="$(DRY_RUN="$DRY_RUN" bash "$DIR/dispatch_conflict_resolution.sh" "$PR" "$ISSUE" || true)"
+  echo "$conflict_out" >&2
+  conflict_action="$(sed -n 's/^conflict-resolution: \([a-z]*\) .*/\1/p' <<<"$conflict_out" | tail -1)"
 
-PR #${PR} cannot merge into \`${pr_base_branch}\` because the base branch moved while the PR was in review. The developer agent is being reassigned to: merge \`origin/${pr_base_branch}\` into \`${pr_head_branch}\`, resolve the conflicts preserving both sides' intents, re-run all validation gates, and push. The push re-triggers review; if the PR conflicts again after this round, it escalates to @${HUMAN_OWNER}."
-    gh pr comment "$PR" --repo "${REPO_OWNER}/${REPO_NAME}" --body "$AUTO_MSG" || true
-    issue_comment "$ISSUE" "$AUTO_MSG"
-    if set_issue_status "$ISSUE" "In Progress" && assign_and_trigger_developer "$ISSUE"; then
-      echo "[review] Conflict-resolution round dispatched (issue #${ISSUE} -> In Progress, developer reassigned)." >&2
+  case "$conflict_action" in
+    dispatch)
+      echo "[review] Conflict-resolution round dispatched to @${DEV_AGENT}; stopping the merge here." >&2
       exit 0
-    fi
-    _warn "Could not dispatch conflict-resolution round — falling back to human escalation."
-  else
-    echo "[review] A prior automated conflict-resolution round already ran (${prior_rounds}x) — escalating to human." >&2
-  fi
-
-  echo "[review] ERROR: PR #${PR} has merge conflicts and cannot be merged automatically." >&2
-  echo "[review] Assigning to human owner for manual resolution..." >&2
-
-  # Keep issue in "In Review" status and assign to human owner
-  # Note: Status is already "In Review" from previous review workflow, so we only reassign
-  assign_issue_verified "$ISSUE" "$HUMAN_OWNER" \
-    || _warn "Could not verify issue #${ISSUE} assignment to @${HUMAN_OWNER} — check assignee manually."
-
-  # Comment on both PR and issue
-  CONFLICT_MSG="⚠️ **Merge Conflicts Detected**
-
-PR #${PR} has merge conflicts with base branch \`${pr_base_branch}\` and cannot be merged automatically.
-
-**To resolve:**
-1. \`git checkout ${pr_head_branch}\`
-2. \`git pull origin ${pr_base_branch}\`
-3. Resolve conflicts in affected files
-4. \`git add . && git commit\`
-5. \`git push origin ${pr_head_branch}\`
-
-Issue #${ISSUE} has been assigned to @${HUMAN_OWNER} for manual resolution.
-The Slack notification workflow should have alerted about this conflict."
-
-  gh pr comment "$PR" --repo "${REPO_OWNER}/${REPO_NAME}" --body "$CONFLICT_MSG" || true
-  issue_comment "$ISSUE" "$CONFLICT_MSG"
-
-  _die "ERROR: Cannot merge PR #${PR} due to conflicts. Assigned to human owner. Workflow stopped."
+      ;;
+    escalate)
+      _die "ERROR: PR #${PR} conflicts need @${HUMAN_OWNER} (see the escalation comment on the PR). Workflow stopped."
+      ;;
+    *)
+      # noop / unparseable: the conflict was not routed (no linked issue, a
+      # round already in flight, or the dispatcher failed). Do not merge, and
+      # do not silently drop it.
+      _die "ERROR: PR #${PR} has merge conflicts and no resolution round was dispatched (dispatcher said: ${conflict_action:-<no result>}). Workflow stopped."
+      ;;
+  esac
 fi
 
 # Warn if mergeable state is not clean

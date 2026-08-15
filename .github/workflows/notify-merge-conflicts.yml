@@ -1,114 +1,187 @@
 name: Notify Merge Conflicts
 
+# Merge conflicts are routed to the DEVELOPER AGENT, not to the owner (#3801).
+#
+# Owner rule, 2026-08-15: "merge conflicts shouldn't halt progress and
+# shouldn't be escalated to me unless there's truly a decision to be made
+# only I can make." Before this, the only move here was to assign the human
+# owner — for conflicts whose entire content is "the mainline moved". On
+# 2026-08-15 nine merges landed on the release branch in one afternoon and
+# four In Review PRs (#3791/#3795/#3797/#3798) went conflict-stale; the owner
+# was interrupted twice in an hour for conflicts containing no owner judgment.
+#
+# What runs now:
+#   detect   which open PRs are actually CONFLICTING. Two entry points,
+#            because a PR going stale because its BASE moved fires no
+#            pull_request event at all: the PR events themselves, and a push
+#            to a release branch (the event that creates the staleness).
+#   resolve  scripts/agents/dispatch_conflict_resolution.sh per conflicted
+#            PR — developer-agent round by default, owner only on an
+#            agent-raised owner-only decision or non-converging rounds.
+#   notify   the Slack notification, unchanged in destination and shape; the
+#            owner still hears about every conflict, they are just not
+#            assigned it.
+
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  push:
+    # Release branches only. A merge landing here is what makes the open PRs
+    # behind it conflict-stale, and it is the only signal GitHub gives for
+    # that transition.
+    branches:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: 'PR number to route (blank = sweep every open PR)'
+        required: false
+        default: ''
+      dry_run:
+        description: 'true = decide and report only, no dispatch'
+        required: true
+        default: 'true'
+
+concurrency:
+  # Serialize per triggering ref so a burst of merges does not race itself
+  # into duplicate rounds on the same PR (the cooldown guard in
+  # conflict_resolution.py is the second line of defence).
+  group: notify-merge-conflicts-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pull-requests: read
 
 jobs:
-  check-conflicts:
+  detect:
     runs-on: ubuntu-latest
-
-    permissions:
-      pull-requests: read
-      contents: read
-
+    outputs:
+      conflicted: ${{ steps.scan.outputs.conflicted }}
+      count: ${{ steps.scan.outputs.count }}
     steps:
-      - name: Check for merge conflicts
-        id: check
+      - name: Find conflicted PRs
+        id: scan
         uses: actions/github-script@v7
         with:
           script: |
-            const pr = context.payload.pull_request;
+            const { owner, repo } = context.repo;
 
-            // Check if PR is mergeable (null means GitHub is still computing, false means conflicts)
-            console.log(`PR #${pr.number} mergeable status: ${pr.mergeable}`);
-            console.log(`PR #${pr.number} mergeable_state: ${pr.mergeable_state}`);
-
-            // If mergeable is explicitly false, there are conflicts
-            if (pr.mergeable === false) {
-              core.setOutput('has_conflicts', 'true');
-              core.setOutput('pr_number', pr.number);
-              core.setOutput('pr_title', pr.title);
-              core.setOutput('pr_url', pr.html_url);
-              core.setOutput('pr_author', pr.user.login);
-              core.setOutput('base_branch', pr.base.ref);
-              core.setOutput('head_branch', pr.head.ref);
+            // Which PRs to look at:
+            //  * pull_request event  -> that PR
+            //  * workflow_dispatch   -> the given PR, else every open PR
+            //  * push to a release branch -> every open PR targeting it
+            let candidates = [];
+            if (context.eventName === 'pull_request') {
+              candidates = [context.payload.pull_request.number];
             } else {
-              core.setOutput('has_conflicts', 'false');
+              const inputPr = (context.payload.inputs && context.payload.inputs.pr) || '';
+              if (inputPr) {
+                candidates = [parseInt(inputPr, 10)];
+              } else {
+                const base = context.eventName === 'push'
+                  ? context.ref.replace('refs/heads/', '')
+                  : undefined;
+                const open = await github.paginate(github.rest.pulls.list, {
+                  owner, repo, state: 'open', base, per_page: 100,
+                });
+                candidates = open.map(p => p.number);
+              }
+            }
+            core.info(`Candidate PRs: ${candidates.join(', ') || '(none)'}`);
+
+            // `mergeable` is computed asynchronously — the webhook payload is
+            // frequently null, which is precisely how base-moved conflicts
+            // went unnoticed. Re-fetch, and give GitHub a moment when it is
+            // still thinking.
+            const conflicted = [];
+            for (const number of candidates) {
+              let pr = null;
+              for (let attempt = 0; attempt < 4; attempt++) {
+                pr = (await github.rest.pulls.get({ owner, repo, pull_number: number })).data;
+                if (pr.mergeable !== null || pr.state !== 'open') break;
+                await new Promise(r => setTimeout(r, 5000));
+              }
+              if (!pr || pr.state !== 'open' || pr.draft) continue;
+              core.info(`PR #${number}: mergeable=${pr.mergeable} mergeable_state=${pr.mergeable_state}`);
+              if (pr.mergeable === false || pr.mergeable_state === 'dirty') {
+                const match = (pr.body || '').match(/Closes #(\d+)/i);
+                conflicted.push({
+                  number: pr.number,
+                  title: pr.title,
+                  url: pr.html_url,
+                  author: pr.user.login,
+                  head: pr.head.ref,
+                  base: pr.base.ref,
+                  issue: match ? match[1] : '',
+                });
+              }
             }
 
-      - name: Extract issue number from PR
-        if: steps.check.outputs.has_conflicts == 'true'
-        id: get_issue
-        uses: actions/github-script@v7
+            core.setOutput('conflicted', JSON.stringify(conflicted));
+            core.setOutput('count', String(conflicted.length));
+            core.info(`Conflicted PRs: ${conflicted.length}`);
+
+  resolve:
+    needs: detect
+    if: needs.detect.outputs.count != '0'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        pr: ${{ fromJson(needs.detect.outputs.conflicted) }}
+    env:
+      # Needs issue-write + project scope: the routing moves the issue back to
+      # In Progress and reassigns the developer agent.
+      GH_TOKEN: ${{ secrets.REVIEW_AGENT_TOKEN }}
+      # Slack DM secrets for the owner-decision escalation path only; absent
+      # secrets degrade to comment-only (notify_human_escalation).
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_USER_ID: ${{ secrets.SLACK_USER_ID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
-          script: |
-            const pr = context.payload.pull_request;
-            const match = pr.body.match(/Closes #(\d+)/);
-            if (match) {
-              core.setOutput('issue_number', match[1]);
-              return match[1];
-            }
-            core.setOutput('issue_number', '');
-            return '';
+          ref: ${{ vars.RELEASE_BRANCH }}
 
-      - name: Assign issue to human owner
-        if: steps.check.outputs.has_conflicts == 'true' && steps.get_issue.outputs.issue_number != ''
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const issue_number = parseInt('${{ steps.get_issue.outputs.issue_number }}');
-            const human_owner = '${{ vars.HUMAN_OWNER }}';
+      - name: Write config
+        run: |
+          cat > /tmp/nyxgpt-config.ini <<EOF
+          REPO_OWNER=${{ vars.REPO_OWNER }}
+          REPO_NAME=${{ vars.REPO_NAME }}
+          PROJECT_OWNER=${{ vars.PROJECT_OWNER }}
+          PROJECT_NUMBER=${{ vars.PROJECT_NUMBER }}
 
-            // Assign issue to human owner (status remains "In Review")
-            await github.rest.issues.addAssignees({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: issue_number,
-              assignees: [human_owner]
-            });
+          DEV_AGENT=${{ vars.DEV_AGENT }}
+          REVIEW_AGENT=${{ vars.REVIEW_AGENT }}
+          SCRUM_AGENT=${{ vars.SCRUM_AGENT }}
+          HUMAN_OWNER=${{ vars.HUMAN_OWNER }}
 
-            console.log(`Assigned issue #${issue_number} to ${human_owner}`);
+          STATUS_FIELD=${{ vars.STATUS_FIELD }}
+          STATUS_BACKLOG=${{ vars.STATUS_BACKLOG }}
+          STATUS_IN_PROGRESS=${{ vars.STATUS_IN_PROGRESS }}
+          STATUS_IN_REVIEW=${{ vars.STATUS_IN_REVIEW }}
+          STATUS_FOR_RELEASE=${{ vars.STATUS_FOR_RELEASE }}
 
-      - name: Comment on PR
-        if: steps.check.outputs.has_conflicts == 'true'
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const pr_number = ${{ steps.check.outputs.pr_number }};
-            const issue_number = '${{ steps.get_issue.outputs.issue_number }}';
-            const human_owner = '${{ vars.HUMAN_OWNER }}';
-            const base_branch = '${{ steps.check.outputs.base_branch }}';
-            const head_branch = '${{ steps.check.outputs.head_branch }}';
+          RELEASE_BRANCH=${{ vars.RELEASE_BRANCH }}
+          EOF
+          echo "NYXGPT_CONFIG_FILE=/tmp/nyxgpt-config.ini" >> "$GITHUB_ENV"
 
-            let body = '⚠️ **Merge Conflict Detected**\n\n' +
-              'This PR has merge conflicts with base branch `' + base_branch +
-              '` and cannot be merged automatically.\n\n' +
-              '**To resolve:**\n' +
-              '1. `git checkout ' + head_branch + '`\n' +
-              '2. `git pull origin ' + base_branch + '`\n' +
-              '3. Resolve conflicts in affected files\n' +
-              '4. `git add . && git commit`\n' +
-              '5. `git push origin ' + head_branch + '`';
-
-            if (issue_number) {
-              body += '\n\nIssue #' + issue_number + ' has been assigned to @' +
-                human_owner + ' and remains in "In Review" status pending conflict resolution.';
-            } else {
-              body += '\n\n@' + human_owner + ' has been notified via Slack.';
-            }
-
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: pr_number,
-              body: body
-            });
+      - name: Route the conflict (developer agent by default)
+        id: route
+        env:
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == 'true' && '1' || '0' }}
+        run: |
+          set -o pipefail
+          bash scripts/agents/dispatch_conflict_resolution.sh \
+            "${{ matrix.pr.number }}" ${{ matrix.pr.issue }} | tee /tmp/route.out
+          ACTION="$(sed -n 's/^conflict-resolution: \([a-z]*\) .*/\1/p' /tmp/route.out | tail -1)"
+          echo "action=${ACTION:-unknown}" >> "$GITHUB_OUTPUT"
 
       - name: Send Slack notification
-        if: steps.check.outputs.has_conflicts == 'true'
+        if: always() && steps.route.outcome != 'skipped'
+        continue-on-error: true
         uses: slackapi/slack-github-action@v1.26.0
         with:
           method: chat.postMessage
@@ -116,7 +189,7 @@ jobs:
           payload: |
             {
               "channel": "C0ABH478QC8",
-              "text": "⚠️ Merge Conflict Detected in PR #${{ steps.check.outputs.pr_number }}",
+              "text": "⚠️ Merge Conflict Detected in PR #${{ matrix.pr.number }}",
               "blocks": [
                 {
                   "type": "header",
@@ -131,19 +204,18 @@ jobs:
                     {
                       "type": "mrkdwn",
                       "text": >-
-                        *PR:*\n<${{ steps.check.outputs.pr_url }}|#${{
-                        steps.check.outputs.pr_number }} - ${{
-                        steps.check.outputs.pr_title }}>
+                        *PR:*\n<${{ matrix.pr.url }}|#${{ matrix.pr.number }}
+                        - ${{ matrix.pr.title }}>
                     },
                     {
                       "type": "mrkdwn",
-                      "text": "*Author:*\n${{ steps.check.outputs.pr_author }}"
+                      "text": "*Author:*\n${{ matrix.pr.author }}"
                     },
                     {
                       "type": "mrkdwn",
                       "text": >-
-                        *Branches:*\n`${{ steps.check.outputs.head_branch }}`
-                        → `${{ steps.check.outputs.base_branch }}`
+                        *Branches:*\n`${{ matrix.pr.head }}`
+                        → `${{ matrix.pr.base }}`
                     },
                     {
                       "type": "mrkdwn",
@@ -156,10 +228,11 @@ jobs:
                   "text": {
                     "type": "mrkdwn",
                     "text": >-
-                      This PR has merge conflicts with the base branch
-                      and cannot be merged until they are resolved.
-                      Issue has been assigned to @${{ vars.HUMAN_OWNER }}
-                      and remains in 'In Review' status.
+                      Routing decision: *${{ steps.route.outputs.action }}*.
+                      A `dispatch` means the developer agent is resolving it
+                      by merging the base branch in — no action needed from
+                      you. Only `escalate` asks you for something, and says
+                      what (#3801).
                   }
                 },
                 {
@@ -171,7 +244,7 @@ jobs:
                         "type": "plain_text",
                         "text": "View PR"
                       },
-                      "url": "${{ steps.check.outputs.pr_url }}"
+                      "url": "${{ matrix.pr.url }}"
                     }
                   ]
                 }

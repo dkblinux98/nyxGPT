@@ -721,16 +721,50 @@ jobs:
             3. Implement fixes for each issue
 
             ### Step 2.5: Resolve merge conflicts with the release branch (if any)
+            Conflicts are YOUR work, not the owner's (owner rule 2026-08-15,
+            #3801: "merge conflicts shouldn't halt progress and shouldn't be
+            escalated to me unless there's truly a decision to be made only I
+            can make"). A conflict-resolution round may be this run's ONLY job.
+
             Check mergeability: `gh api repos/${{ github.repository }}/pulls/${{ steps.check_pr.outputs.existing_pr }} --jq 'if .mergeable == null then "UNKNOWN" elif .mergeable_state == "dirty" then "CONFLICTING" else "MERGEABLE" end'`
-            If it reports CONFLICTING (or a conflict-resolution comment on the
-            PR/issue requests it):
-            - `git fetch origin` and merge `origin/${{ vars.RELEASE_BRANCH }}` into the PR branch
+            If it reports CONFLICTING (or a conflict-resolution round comment on
+            the PR/issue requests it):
+            - **`git fetch origin`, then MERGE `origin/${{ vars.RELEASE_BRANCH }}` into the PR
+              branch. NEVER REBASE.** Not `git rebase`, not `git pull --rebase`,
+              not "clean up" the history: the owner's standing rule is that this
+              repo's branches are never rebased (developer-runbook §2). Rebasing
+              rewrites commits already pushed and reviewed, and re-resolves every
+              conflict once per commit. One merge commit is the correct shape.
             - Resolve every conflict preserving BOTH sides' intents: this PR's
               feature content AND everything merged into the release branch
-              since (never discard either side wholesale)
+              since (never discard either side wholesale). Read what the mainline
+              side was trying to do before you overwrite it — behavior the owner
+              has already accepted on the release branch survives the merge.
+            - **`agents/LEDGER.md` conflicts** need two specific things: (a) the
+              public ledger is a SPLIT file — some entry IDs are absent by design
+              (relocated to the owner's private annex), so never "restore" a
+              missing ID or renumber to close a gap; and (b) if your new entry ID
+              collides with one the mainline already allocated, RENUMBER YOURS to
+              the next unused number in that class (IDs are never reused) and keep
+              both entries. Same rule for entries in `## Superseded`.
+            - Re-run the full verification suite after resolving (Step 3), then
+              push the merge commit. The push re-triggers review.
             - This can be the round's only work: if the review findings were
               already addressed by earlier commits and only conflicts remain,
-              resolve the conflicts, validate, and push the merge commit
+              resolve the conflicts, validate, and push the merge commit.
+
+            **Escalating a conflict to the owner (rare, and only for this):** if
+            resolution needs a decision only the owner can make — two
+            owner-accepted behaviors in genuine semantic contradiction, where
+            picking either one silently reverses something the owner accepted —
+            do NOT guess and do NOT push a speculative resolution. Post one
+            comment on the PR whose FIRST LINE is exactly
+            `CONFLICT_REQUIRES_OWNER_DECISION`, followed by the specific question
+            (both behaviors, the file/lines, and what each choice costs). That
+            token — issued at line start, nowhere else — is the only route from a
+            conflict to the owner; `conflict_owner_escalation.yml` picks it up,
+            assigns them and DMs the question. "This merge is fiddly" is not an
+            owner decision.
 
             ### Step 3: Validate before committing
             BEFORE committing, run ALL validation checks (ALL must pass):
