@@ -242,6 +242,22 @@ not agent-editable except to add a `Re-verify` result or a supersession pointer.
   different things; `scripts/agents/promote_accepted_features.sh`;
   `scripts/agents/lib/drain_gate.py`.
 
+- **D-009** · 2026-08-15 · owner — A **dev install mode** exists alongside the
+  artifact path: `nyxgpt up --dev` / `nyxgpt ops install --dev` installs the api
+  as an editable venv on the current checkout and runs the web UI's Next dev
+  server from `<checkout>/web`, so the stack runs whatever HEAD the last
+  `git pull` produced with no keg, tap or tarball build. It is opt-in and
+  checkout-only; a bare `nyxgpt up` remains the artifact path and the
+  repo-less guarantee (#3504) is unchanged — dev mode is a development and
+  mid-stream-testing path, never an acceptance path. The mode is recorded in
+  `~/.nyxGPT/install-mode.json` (`nyxgpt.install_mode`) and reported by
+  `ops status`/`doctor`, because macOS drives different service managers per
+  mode (dev LaunchAgents `com.nyxgpt.api`/`com.nyxgpt.web` vs. `brew
+  services`) and self-heal must not restart an old keg onto the dev process's
+  port. Installing either mode over the other stops the other's services and
+  rebuilds the shared api venv from empty.
+  Source: #3789; `docs/ops.md` §`--dev`; `src/nyxgpt/install_mode.py`.
+
 ## Verifications
 
 - **V-001** · 2026-08-14 — Releases in this repository are immutable: a

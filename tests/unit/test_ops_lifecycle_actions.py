@@ -203,7 +203,9 @@ def test_install_records_success_action():
         patch.object(ops, "_reconcile_grafana_provisioning", return_value=ok),
         patch.object(ops, "_provision_glitchtip", return_value=ok),
     ):
-        rc = ops.install(MagicMock(dev=False, skip_observability=False, terraform=False, kubernetes=False))
+        rc = ops.install(
+            MagicMock(dev=False, skip_observability=False, terraform=False, kubernetes=False)
+        )
     assert rc == 0
     after = _ops_actions_total("install", "all", "success")
     assert after == before + 1
@@ -232,7 +234,9 @@ def test_install_records_failure_action():
         patch.object(ops, "_reconcile_grafana_provisioning", return_value=ok),
         patch.object(ops, "_provision_glitchtip", return_value=ok),
     ):
-        rc = ops.install(MagicMock(dev=False, skip_observability=False, terraform=False, kubernetes=False))
+        rc = ops.install(
+            MagicMock(dev=False, skip_observability=False, terraform=False, kubernetes=False)
+        )
     assert rc == 2
     after = _ops_actions_total("install", "all", "failure")
     assert after == before + 1

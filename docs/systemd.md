@@ -83,6 +83,12 @@ Where those two tarballs come from depends on what the machine has:
 | Artifact install (`pip install nyxgpt`) | the published `nyxgpt-api-<version>.tar.gz` / `nyxgpt-web-<version>.tar.gz` assets -- on its own release for a candidate, on its `<version>-homebrew` release for a stable version ([why](homebrew.md#where-the-tarballs-are-published)) -- downloaded at install time, the same artifacts the Homebrew formulas install from |
 | Source checkout (`pip install -e .`) | vendored from the checkout, so a working tree's changes are what gets installed |
 
+`nyxgpt up --dev` builds neither tarball: it installs the api editable from
+the checkout and runs the web UI's dev server out of `<checkout>/web`,
+driving the *same* two systemd --user units (only the wrapper script they
+exec differs). See
+[`--dev`](ops.md#--dev-run-the-current-checkout-without-an-artifact-build).
+
 The version is the one the running `nyxgpt` reports on an artifact install,
 and the checkout's declared `pyproject.toml` version in a checkout. Neither
 service depends on a repo checkout existing, at install time or afterwards

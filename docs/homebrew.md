@@ -357,6 +357,13 @@ and for the equivalent pip/cloud flows.
 
 ## Installing the services
 
+> Homebrew is the **artifact path** on macOS — the default, and what a
+> release is accepted on. If you are iterating on a checkout and want the
+> stack to run the working tree with no keg build at all, use
+> [`nyxgpt up --dev`](ops.md#--dev-run-the-current-checkout-without-an-artifact-build)
+> instead; it bypasses the tap, the formulas and the Cellar entirely and
+> runs api/web under its own LaunchAgents.
+
 Install both service formulas:
 
 ```bash

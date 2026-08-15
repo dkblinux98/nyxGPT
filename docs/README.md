@@ -39,7 +39,11 @@ all driven through `nyxgpt`-wrapped commands, never a raw
 `docker`/`kubectl`/`terraform` invocation ([ops.md](ops.md),
 [homebrew.md](homebrew.md), [systemd.md](systemd.md),
 [docker-compose.md](docker-compose.md), [kubernetes.md](kubernetes.md),
-[terraform.md](terraform.md)). AWS deployments are `nyxgpt cloud`-wrapped, with
+[terraform.md](terraform.md)). Installs come from published artifacts by
+default; `nyxgpt up --dev` brings the same stack up from a checkout's working
+tree instead, for iterating on unreleased code
+([ops.md](ops.md#--dev-run-the-current-checkout-without-an-artifact-build)).
+AWS deployments are `nyxgpt cloud`-wrapped, with
 an SSH-tunnel-only access path ([cloud.md](cloud.md)). Local **canary
 deployment** gates a weighted rollout on live metrics before promotion or
 rollback, and **self-healing** watches components and restarts them

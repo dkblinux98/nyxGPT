@@ -129,12 +129,19 @@ pip install -e .
 mkdir -p ~/.nyxGPT
 cp example.config.ini ~/.nyxGPT/config.ini
 
-# Install services (Ollama, Cassandra, web UI)
-nyxgpt ops install
+# Install services (Ollama, Cassandra, web UI) from this checkout:
+# an editable api venv plus the Next dev server, no keg/tarball build.
+nyxgpt up --dev
 
-# Verify health
+# Verify health (also prints which install mode you are on)
 nyxgpt ops doctor
 ```
+
+`--dev` is the iteration path: after a `git pull`, `nyxgpt up --dev` runs the
+stack on that HEAD, and `nyxgpt ops restart api` picks up further edits to
+the working tree. Dropping `--dev` (`nyxgpt up`) reinstalls the same machine
+from artifacts — which is what a release is accepted on. Both are documented
+in [`--dev`](ops.md#--dev-run-the-current-checkout-without-an-artifact-build).
 
 ### Running Tests
 ```bash

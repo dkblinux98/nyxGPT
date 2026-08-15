@@ -78,7 +78,9 @@ def test_ops_install_returns_zero_when_all_ok(capsys):
         patch.object(ops, "_reconcile_grafana_provisioning", return_value=ok_results) as obs,
         patch.object(ops, "_provision_glitchtip", return_value=ok_results),
     ):
-        rc = ops.install(MagicMock(dev=False, skip_observability=False, terraform=False, kubernetes=False))
+        rc = ops.install(
+            MagicMock(dev=False, skip_observability=False, terraform=False, kubernetes=False)
+        )
         assert rc == 0
         out = capsys.readouterr().out
         assert "[OK]" in out
@@ -118,7 +120,9 @@ def test_ops_install_returns_nonzero_when_any_fail(capsys):
         ),
         patch.object(ops, "_provision_glitchtip", return_value=[ops.OpsResult(True, "ok")]),
     ):
-        rc = ops.install(MagicMock(dev=False, skip_observability=False, terraform=False, kubernetes=False))
+        rc = ops.install(
+            MagicMock(dev=False, skip_observability=False, terraform=False, kubernetes=False)
+        )
         assert rc == 2
         out = capsys.readouterr().out
         assert "[FAIL]" in out
@@ -146,7 +150,9 @@ def test_ops_install_skip_observability_flag_skips_the_step(capsys):
         patch.object(ops, "sync_env_from_config", return_value=ok_results),
         patch.object(ops, "_reconcile_grafana_provisioning") as obs,
     ):
-        rc = ops.install(MagicMock(dev=False, skip_observability=True, terraform=False, kubernetes=False))
+        rc = ops.install(
+            MagicMock(dev=False, skip_observability=True, terraform=False, kubernetes=False)
+        )
         assert rc == 0
         obs.assert_not_called()
 
@@ -195,7 +201,9 @@ def test_ops_install_step_order_reconciles_before_creating(capsys):
         ),
         patch.object(ops, "sync_env_from_config", side_effect=_record("env sync")),
     ):
-        rc = ops.install(MagicMock(dev=False, skip_observability=True, terraform=False, kubernetes=False))
+        rc = ops.install(
+            MagicMock(dev=False, skip_observability=True, terraform=False, kubernetes=False)
+        )
         assert rc == 0
 
     # Syncing packaged ops resources comes first (everything else assumes the
@@ -234,7 +242,9 @@ def test_ops_install_clears_intentional_stop_markers_for_core_components():
         patch.object(ops, "sync_env_from_config", return_value=ok_results),
         patch.object(ops.self_heal, "clear_intentionally_stopped") as clear_stopped,
     ):
-        rc = ops.install(MagicMock(dev=False, skip_observability=True, terraform=False, kubernetes=False))
+        rc = ops.install(
+            MagicMock(dev=False, skip_observability=True, terraform=False, kubernetes=False)
+        )
         assert rc == 0
 
     assert clear_stopped.call_args_list == [
