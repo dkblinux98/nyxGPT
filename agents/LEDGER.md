@@ -249,6 +249,24 @@ are absent here by design (relocated to the annex; IDs are never reused).
   different things; `scripts/agents/promote_accepted_features.sh`;
   `scripts/agents/lib/drain_gate.py`.
 
+- **D-009** · 2026-08-15 · owner — Merge conflicts are the **developer
+  agent's** work, and branches are **never rebased**. Two rules settled
+  together: (a) a conflicted PR is dispatched to the developer agent, which
+  merges `origin/<release-branch>` into the PR branch, resolves preserving both
+  sides, re-runs the gates and pushes — the owner is assigned **only** when the
+  agent issues `CONFLICT_REQUIRES_OWNER_DECISION` with a specific question, or
+  when the automated rounds (default 3) stop converging; Slack still notifies
+  the owner of every conflict. (b) Resolution and freshening are always a
+  forward **merge** — no `git rebase`, no `git pull --rebase`, no force-push or
+  history rewriting on shared branches. The no-rebase half was decided
+  2026-08-08 ("merge, don't rebase") but lived only in
+  `product_management/AGENTIC_SDLC_DESIGN.md`, so agents kept proposing rebases;
+  it is now runbook doctrine and a review finding.
+  Source: #3801; `agents/runbooks/developer-runbook.md` §2 / §8c;
+  `agents/runbooks/review-runbook.md` §3a;
+  `scripts/agents/dispatch_conflict_resolution.sh`;
+  `scripts/agents/lib/conflict_resolution.py`.
+
 ## Verifications
 
 - **V-001** · 2026-08-14 — Releases in this repository are immutable: a

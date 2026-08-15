@@ -297,6 +297,30 @@ If CI fails during review (should not happen if developer phase worked correctly
 
 Note: Pre-commit hooks should prevent CI failures. If they occur, treat as REQUEST_CHANGES.
 
+## 3a) Merge conflicts are developer work (owner rule 2026-08-15, #3801)
+
+A conflicted PR is not an escalation. Owner rule: *"merge conflicts shouldn't
+halt progress and shouldn't be escalated to me unless there's truly a decision
+to be made only I can make."*
+
+- **Do not assign the owner for a conflict, and do not ask them to resolve
+  one.** `review_accept_and_merge.sh` hands a conflicted-but-approved PR to
+  `scripts/agents/dispatch_conflict_resolution.sh`, which returns the issue to
+  In Progress and reassigns the developer agent. That happens automatically;
+  nothing here needs a human.
+- The owner is reached only when the developer agent issues
+  `CONFLICT_REQUIRES_OWNER_DECISION` with a specific question (two
+  owner-accepted behaviors in semantic contradiction), or when the automated
+  rounds stop converging (default 3).
+- **A rebase is a finding.** Resolution in this repo is always *merge the
+  release branch into the PR branch* — branches are never rebased
+  (developer-runbook §2). A PR whose branch was rebased, or a diff/doc that
+  instructs a rebase, is a Medium (blocking) finding.
+- When reviewing a resolution round, check that **both** sides survived: the
+  PR's feature content and the owner-accepted behavior merged into the release
+  branch since. A conflict "resolved" by taking one side wholesale silently
+  reverts merged work — Critical if it reverts release-branch behavior.
+
 ## 4) Review and recommendation
 After completing the review:
 - Post a structured review comment starting with "## Code Review - [APPROVE|REQUEST_CHANGES]"

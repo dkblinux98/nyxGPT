@@ -39,5 +39,9 @@ May NOT:
 Escalate to human owner (HUMAN_OWNER) when:
 - After 3rd REQUEST_CHANGES cycle: Reassign issue to human + send Slack DM
 - CI is persistently unstable
-- Merge conflicts cannot be resolved automatically
+- A merge conflict needs a decision only the owner can make — the developer
+  agent says so by issuing `CONFLICT_REQUIRES_OWNER_DECISION` with the
+  question, or three automated resolution rounds fail to converge. A
+  conflict on its own is **not** an escalation: it is dispatched to the
+  developer agent (owner rule 2026-08-15, #3801; review-runbook §3a)
 - A Phase is complete and ready for stakeholder acceptance
