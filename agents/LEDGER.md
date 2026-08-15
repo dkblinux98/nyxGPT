@@ -381,7 +381,23 @@ not agent-editable except to add a `Re-verify` result or a supersession pointer.
   "Verify PyPI serves the build" step had passed at 22:06Z.
   Re-verify when: the session egress proxy or PyPI CDN behaviour changes.
 
-- **V-010** · 2026-08-15 — Next.js compiles `web/src/instrumentation.ts` for the
+- **V-010** · 2026-08-15 — A distro's bare `python3` cannot be assumed to
+  satisfy nyxGPT's `requires-python` (`>=3.11`): on Amazon Linux 2023 it is
+  3.9, and a venv built from it is one pip refuses the nyxGPT artifact into
+  ("requires a different Python: 3.9.x not in '>=3.11'"). Both the service
+  venv (`ops._create_service_venv`) and the two cloud provisioning paths now
+  select an interpreter by asking each candidate its own version.
+  Method: `scripts/service-venv-python-smoke.py` run 2026-08-15 on Linux with
+  a real CPython 3.9.25 and the real `nyxgpt-3.0.0` sdist — resolving bare
+  `python3` produced a 3.9 venv pip refused; the selection logic picked a
+  qualifying interpreter and the same `pip install` succeeded. Re-running it
+  against a pre-fix `_create_service_venv` fails at that half, so the check
+  is not green by luck. Wired as `linux-native-smoke.yml`'s
+  `service-venv-python` job (#3782).
+  Re-verify when: the `requires-python` floor moves, or the candidate list in
+  `ops._SERVICE_PYTHON_NAMES` changes.
+
+- **V-011** · 2026-08-15 — Next.js compiles `web/src/instrumentation.ts` for the
   **edge** server runtime as well as the Node.js one, so any node-only module it
   reaches must be imported *inside* a `process.env.NEXT_RUNTIME === "nodejs"`
   block, never at the top level. A top-level `import … from "./lib/logger"`

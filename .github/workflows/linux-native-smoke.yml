@@ -27,6 +27,14 @@ name: Linux Native Smoke
 #                       refusal is in the message -- then injects the pre-fix
 #                       behaviour and asserts the check catches it (#3783,
 #                       fault-injection pattern from macos-brew-smoke.yml).
+#   service-venv-python  Is the service venv built on a Python that satisfies
+#                       requires-python, even when `python3` on PATH is too
+#                       old? Puts a real 3.9 on PATH as `python3` -- the
+#                       Amazon Linux 2023 shape of #3782 -- and drives
+#                       scripts/service-venv-python-smoke.py with a real
+#                       sdist. The runner's own `python3` is new enough, so
+#                       without the injection the job would pass on a build
+#                       that still hard-codes `python3 -m venv`.
 #
 # Scoped like terraform-local-smoke.yml: a full native install is expensive,
 # so it runs only when the ops/self-heal layer, the systemd unit templates,
@@ -41,6 +49,7 @@ on:
       - 'ops/launchagents/**'
       - 'scripts/systemd-native-smoke.sh'
       - 'scripts/ops-subprocess-output-smoke.py'
+      - 'scripts/service-venv-python-smoke.py'
       - '.github/workflows/linux-native-smoke.yml'
   push:
     paths:
@@ -51,6 +60,7 @@ on:
       - 'ops/launchagents/**'
       - 'scripts/systemd-native-smoke.sh'
       - 'scripts/ops-subprocess-output-smoke.py'
+      - 'scripts/service-venv-python-smoke.py'
       - '.github/workflows/linux-native-smoke.yml'
 
 # Read-only workflow: the smoke run only checks out the repo and drives the
@@ -164,3 +174,41 @@ jobs:
       # prove the check would have caught the pre-fix behaviour.
       - name: Real failing subprocess must report its own output
         run: python3 scripts/ops-subprocess-output-smoke.py
+
+  # Also cheap (a sdist build and two `pip install --no-deps` runs, no
+  # services), so it runs on every PR touching ops.py.
+  service-venv-python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # A genuinely too-old interpreter, matching Amazon Linux 2023's system
+      # python3 (3.9). Nothing about this check is a stub: it is a real
+      # CPython, it really builds a venv, and pip really refuses the artifact
+      # in it.
+      - name: Set up the too-old Python (Amazon Linux 2023's system python3)
+        id: old-python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      # Set up last, so it is the one on PATH and the one this job runs as --
+      # the instance shape of #3782: ops runs on 3.11 while `python3` is 3.9.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install nyxgpt (editable) and build the sdist
+        run: |
+          python -m pip install --upgrade pip setuptools build
+          pip install -e .
+          python -m build --sdist --outdir dist
+
+      # The artifact is the real one, not a probe package: the whole defect is
+      # that pip refuses *nyxGPT's* requires-python in a 3.9 venv.
+      - name: Service venv must be built on a Python that meets requires-python
+        run: |
+          python3 scripts/service-venv-python-smoke.py \
+            --old-python '${{ steps.old-python.outputs.python-path }}' \
+            --sdist "$(ls dist/nyxgpt-*.tar.gz)"

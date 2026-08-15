@@ -378,6 +378,13 @@ up on that HEAD with no keg or tarball build in between; afterwards, a
 `nyxgpt ops restart api` picks up further edits (the web dev server picks
 them up on its own).
 
+The api venv is built the same way in both modes — through the interpreter
+selection described under [systemd prerequisites](systemd.md#prerequisites),
+never bare `python3` on faith. `pip install -e` enforces `requires-python`
+exactly as installing the tarball does, so a distro whose `python3` is below
+the floor fails a dev install for the same reason it failed a cloud deploy
+(#3782).
+
 ```bash
 nyxgpt up --dev                     # install/reconcile in dev mode
 nyxgpt ops restart api              # pick up new api code from the tree

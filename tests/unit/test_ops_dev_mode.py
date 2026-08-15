@@ -152,8 +152,60 @@ def test_dev_api_install_reports_a_failing_pip(monkeypatch, checkout, tmp_path):
     monkeypatch.setattr(ops, "_run", fake_run)
     monkeypatch.setattr(ops, "_output_excerpt", lambda cp: cp.stderr)
     results = ops._install_native_api_dev()
+    assert [r.ok for r in results] == [True, False]
+    assert "no matching distribution" in results[-1].details
+
+
+def test_dev_api_install_builds_the_venv_on_a_qualifying_interpreter(
+    monkeypatch, checkout, tmp_path
+):
+    """`pip install -e` honours `requires-python` too, so dev mode must not
+    assume bare `python3` clears the floor either (#3782 applied to #3789)."""
+    monkeypatch.setattr(ops, "REPO_ROOT", checkout)
+    monkeypatch.setattr(ops.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(ops, "_native_install_root", lambda c: tmp_path / "opt" / c)
+    monkeypatch.setattr(ops, "_which", lambda name: None)
+    monkeypatch.setattr(ops, "_running_interpreter", lambda: ("/opt/py/bin/python3.12", (3, 12)))
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, *a, **kw):
+        calls.append(list(cmd))
+        return _cp()
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    monkeypatch.setattr(
+        ops,
+        "_install_and_activate_native_systemd_unit",
+        lambda service: [ops.OpsResult(True, f"started {service}")],
+    )
+    results = ops._install_native_api_dev()
+
+    assert all(r.ok for r in results), [r.message for r in results]
+    venv_dir = str(tmp_path / "opt" / "nyxgpt-api" / "venv")
+    assert ["/opt/py/bin/python3.12", "-m", "venv", venv_dir] in calls, calls
+    assert not any(c[:3] == ["python3", "-m", "venv"] for c in calls), calls
+
+
+def test_dev_api_install_stops_when_no_interpreter_meets_the_floor(monkeypatch, checkout, tmp_path):
+    monkeypatch.setattr(ops, "REPO_ROOT", checkout)
+    monkeypatch.setattr(ops, "_native_install_root", lambda c: tmp_path / "opt" / c)
+    monkeypatch.setattr(ops, "_which", lambda name: None)
+    monkeypatch.setattr(ops, "_running_interpreter", lambda: ("/usr/bin/python3.9", (3, 9)))
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, *a, **kw):
+        calls.append(list(cmd))
+        return _cp()
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    results = ops._install_native_api_dev()
+
     assert [r.ok for r in results] == [False]
-    assert "no matching distribution" in results[0].details
+    assert "No Python >= 3.11" in results[0].message
+    # Nothing was attempted with the too-old interpreter.
+    assert calls == []
 
 
 # --- web dev install ---
