@@ -27,8 +27,10 @@ type InfraStatus = {
     context: string;
     provisioned: boolean;
     // The in-cluster observability layer (#3787): Kubernetes mode cannot use
-    // the Compose observability profiles, so it deploys its own.
-    observability: {
+    // the Compose observability profiles, so it deploys its own. Optional on
+    // purpose: an older api that predates this field must degrade to "NOT
+    // DEPLOYED", not take the whole Infrastructure page down with it (#3468).
+    observability?: {
       probe_available: boolean;
       deployed: boolean;
       workloads: Record<string, string>;
@@ -360,11 +362,11 @@ export default function InfrastructurePage() {
                 <div style={{ marginTop: '1rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border-color)' }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
                     <h3 style={{ fontSize: '0.95rem', fontWeight: 'bold' }}>In-cluster observability</h3>
-                    <span style={badgeStyle(status.kubernetes.observability.deployed)}>
-                      {status.kubernetes.observability.deployed ? 'DEPLOYED' : 'NOT DEPLOYED'}
+                    <span style={badgeStyle(Boolean(status.kubernetes.observability?.deployed))}>
+                      {status.kubernetes.observability?.deployed ? 'DEPLOYED' : 'NOT DEPLOYED'}
                     </span>
                   </div>
-                  {status.kubernetes.observability.deployed ? (
+                  {status.kubernetes.observability?.deployed ? (
                     <>
                       <ComponentList components={status.kubernetes.observability.workloads} />
                       <p style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)', marginTop: '0.5rem' }}>

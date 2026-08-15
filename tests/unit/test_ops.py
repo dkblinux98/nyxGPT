@@ -11943,8 +11943,30 @@ def test_down_kubernetes_no_kubectl(monkeypatch, capsys):
     assert "nothing to tear down" in capsys.readouterr().out
 
 
+def _bootstrap_k8s_dirs(monkeypatch, tmp_path):
+    """Point `K8S_DIR`/`K8S_OBSERVABILITY_DIR` at bootstrapped tmp copies.
+
+    Both teardown paths skip their `kubectl delete` when the (gitignored)
+    `secret.yaml` is missing -- a real state since `ops observability
+    --kubernetes` can deploy the layer with no app tier (#3787). A test that
+    wants the delete to actually run therefore has to supply those files, or
+    it silently asserts against the "nothing to do" branch and passes or
+    fails depending on whether the developer's checkout happens to be
+    bootstrapped.
+    """
+    app_dir = tmp_path / "k8s"
+    observability_dir = app_dir / "observability"
+    observability_dir.mkdir(parents=True)
+    (app_dir / "secret.yaml").write_text("stringData: {}\n", encoding="utf-8")
+    (observability_dir / "secret.yaml").write_text("stringData: {}\n", encoding="utf-8")
+    monkeypatch.setattr(ops, "K8S_DIR", app_dir)
+    monkeypatch.setattr(ops, "K8S_OBSERVABILITY_DIR", observability_dir)
+    return app_dir, observability_dir
+
+
 @pytest.mark.unit
-def test_down_kubernetes_delete_success(monkeypatch):
+def test_down_kubernetes_delete_success(monkeypatch, tmp_path):
+    _bootstrap_k8s_dirs(monkeypatch, tmp_path)
     monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/kubectl")
     monkeypatch.setattr(
         ops, "_run", lambda cmd, check=True, **_k: CP(returncode=0, stdout="deleted")
@@ -11954,7 +11976,8 @@ def test_down_kubernetes_delete_success(monkeypatch):
 
 
 @pytest.mark.unit
-def test_down_kubernetes_delete_failure(monkeypatch):
+def test_down_kubernetes_delete_failure(monkeypatch, tmp_path):
+    _bootstrap_k8s_dirs(monkeypatch, tmp_path)
     monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/kubectl")
     monkeypatch.setattr(ops, "_run", lambda cmd, check=True, **_k: CP(returncode=1, stderr="boom"))
     rc = ops._down_kubernetes(SimpleNamespace())
@@ -12164,7 +12187,8 @@ def test_install_kubernetes_local_reports_port_collision(monkeypatch):
 
 
 @pytest.mark.unit
-def test_down_kubernetes_returns_results_without_printing(monkeypatch, capsys):
+def test_down_kubernetes_returns_results_without_printing(monkeypatch, capsys, tmp_path):
+    _bootstrap_k8s_dirs(monkeypatch, tmp_path)
     monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/kubectl")
     monkeypatch.setattr(
         ops, "_run", lambda cmd, check=True, **_k: CP(returncode=0, stdout="deleted")

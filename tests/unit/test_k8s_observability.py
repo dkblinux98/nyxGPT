@@ -147,6 +147,9 @@ def test_install_kubernetes_applies_the_observability_layer() -> None:
         ),
         patch.object(ops, "_ensure_k8s_secret", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_kubectl_apply_kustomization", return_value=[ops.OpsResult(True, "ok")]),
+        # #3786's in-cluster Cassandra/Ollama wait sits between the app tier
+        # and the observability layer, and really polls a cluster.
+        patch.object(ops, "_wait_for_k8s_data_tier", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_sync_packaged_resources", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_k8s_stack_health", return_value=[]),
         patch.object(ops, "_k8s_observability_health", return_value=[]),
@@ -173,12 +176,17 @@ def test_install_kubernetes_honours_skip_observability() -> None:
         ),
         patch.object(ops, "_ensure_k8s_secret", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_kubectl_apply_kustomization", return_value=[ops.OpsResult(True, "ok")]),
+        # Patched for the same reason as above: otherwise the install stops at
+        # the data-tier wait and this would assert nothing.
+        patch.object(ops, "_wait_for_k8s_data_tier", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_k8s_stack_health", return_value=[]),
         patch.object(ops, "_apply_k8s_observability") as apply_observability,
         patch.object(ops, "_k8s_observability_health") as observability_health,
         patch.object(ops, "_record_ops_action"),
     ):
-        ops._install_kubernetes_steps(None, skip_observability=True)
+        results = ops._install_kubernetes_steps(None, skip_observability=True)
+
+    assert all(r.ok for r in results)
 
     apply_observability.assert_not_called()
     observability_health.assert_not_called()

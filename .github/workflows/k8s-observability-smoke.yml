@@ -90,6 +90,15 @@ jobs:
           # k8s/secret.yaml stays: the wrapped teardown at the end of this job
           # deletes the app tier through the same kustomization it came from.
 
+          # Same rationale as not building the api/web images: the data/LLM
+          # tier (#3786) is applied above so the injection really is the whole
+          # pre-#3787 kustomization, but its Pods would pull multi-GB Cassandra
+          # and Ollama images (plus a model) onto the kind node's disk and
+          # contribute nothing to a claim about the OBSERVABILITY tier. #3786's
+          # own gate (k8s-local-smoke.yml) is what exercises them. Scale to
+          # zero rather than delete, so the manifests stay applied.
+          kubectl -n nyxgpt scale statefulset/cassandra statefulset/ollama --replicas=0
+
       - name: nyxgpt ops observability --kubernetes --local
         run: nyxgpt ops observability --kubernetes --local
 

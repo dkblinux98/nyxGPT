@@ -1149,16 +1149,6 @@ dashboard's observability links (built from `[monitoring] grafana_ui_url`
 and friends) work unchanged in Kubernetes mode (#3787). `--port` overrides
 the local port for a single target; it is rejected with `--target
 observability`, where there are four.
-## `nyxgpt ops verify`
-
-The live smoke harness behind #3555/P6-18: boots the stack, generates known
-chat/RAG traffic, and asserts it landed via Prometheus and Grafana --
-deterministic, scriptable live verification instead of "looks right in the
-query syntax." This is what the review agent runs itself in CI on every PR
-touching observability, metrics, or UI surfaces (see
-[live-verification-ci.md](live-verification-ci.md) and
-[review-runbook.md](../agents/runbooks/review-runbook.md)); the same command
-also works as a one-command local pre-check before owner acceptance testing.
 
 Usage:
 
@@ -1175,6 +1165,23 @@ target/port combination is invalid; otherwise returns the exit code of the
 first forward that stops (with `--target observability`, any one of them
 exiting ends the command and tears the rest down, since a half-working set of
 tunnels is worse than an obvious failure).
+
+---
+
+## `nyxgpt ops verify`
+
+The live smoke harness behind #3555/P6-18: boots the stack, generates known
+chat/RAG traffic, and asserts it landed via Prometheus and Grafana --
+deterministic, scriptable live verification instead of "looks right in the
+query syntax." This is what the review agent runs itself in CI on every PR
+touching observability, metrics, or UI surfaces (see
+[live-verification-ci.md](live-verification-ci.md) and
+[review-runbook.md](../agents/runbooks/review-runbook.md)); the same command
+also works as a one-command local pre-check before owner acceptance testing.
+
+Usage:
+
+```bash
 nyxgpt ops verify                    # boot, test, tear down (ephemeral -- CI's mode)
 nyxgpt ops verify --keep-up          # leave the stack up afterward to look around
 nyxgpt ops verify --skip-boot        # stack (native or Compose) is already up
@@ -1395,5 +1402,3 @@ Avoid manually invoking `brew services`/`launchctl` (macOS), `systemctl` (Linux)
   same artifacts through the [remote Homebrew tap](homebrew.md#remote-tap).
   So an artifact install installs the services without ever needing a
   checkout-shaped path (#3759) -- see [systemd.md](systemd.md#installing-the-services).
-
-```
