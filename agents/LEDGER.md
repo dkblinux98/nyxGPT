@@ -53,9 +53,10 @@ knowledge was lost.
 
 **Do not silently overwrite state you did not create.** If the board, a lane, or
 a marker looks wrong to you, check the ledger for a parked item explaining it
-before "cleaning it up". The 2026-08-14 incident that motivated this file was an
-`Acceptance Failed` sweep that reclassified the owner's deliberately parked
-failure markers as stale board state and destroyed them.
+before "cleaning it up". Board placements can be deliberate owner signal even
+when they look stale (see D-001/D-008). Operational incident history is kept in
+the owner's private annex (`product_management/private/LEDGER.md`, not in the
+repository).
 
 ---
 
@@ -160,6 +161,12 @@ finding, like any other wrong statement in a diff.)
 The owner may append directly; owner-authored entries are authoritative and are
 not agent-editable except to add a `Re-verify` result or a supersession pointer.
 
+**This public ledger is machine-facing.** Incident narratives, owner-sensitive
+decisions and product-forward material live in the owner's private annex
+(`product_management/private/LEDGER.md` — gitignored, never in the repository).
+Public entries state mechanics; they do not narrate the owner. Some entry IDs
+are absent here by design (relocated to the annex; IDs are never reused).
+
 ---
 
 ## Decisions
@@ -219,7 +226,7 @@ not agent-editable except to add a `Re-verify` result or a supersession pointer.
   `agents/runbooks/developer-runbook.md` §4a; `CLAUDE.md` §Definition of Done.
 
 - **D-007** · 2026-08-14 · owner — The repository's immutable-releases setting
-  stays **enabled**; the owner considered disabling it and decided against. The
+  stays **enabled** (owner decision, 2026-08-14). The
   supply-chain guarantee (a published asset can never be silently swapped) is
   retained; the companion-release pattern (`<version>-homebrew`, #3763) is the
   designed answer for adding assets tied to an already-published version. Do not
@@ -229,7 +236,7 @@ not agent-editable except to add a `Re-verify` result or a supersession pointer.
 - **D-008** · 2026-08-14 · owner — The `Acceptance Failed` lane holds **two**
   populations, and the cascade machinery reads both. Besides this round's held
   rework (#3730), the owner parks there the *features they have tested and
-  failed*, "so that I don't get lost as to what I've tested that has failed".
+  failed*, keeping tested-failed work visually separate from work still to test.
   The discriminator is issue **state**: **open** = held rework, released to
   `Backlog` when the gate opens; **closed** = a parked feature, which
   `promote_accepted_features.sh` treats exactly like one parked in
@@ -255,7 +262,8 @@ not agent-editable except to add a `Re-verify` result or a supersession pointer.
   `tests/test_supersede_incomplete_rc_releases.sh`, and `docs/homebrew.md`.
   **Weaker than the claim it supports:** this verifies that the pipeline is built
   around immutability and has hit the 422 in practice — it does not read the
-  GitHub repository setting itself (see Q-002).
+  GitHub repository setting itself, which is owner-readable only (no agent
+  token path exists; verified 2026-08-14).
   Re-verify when: the owner changes the repository's release-immutability
   setting, or a release is observed gaining an asset after publish.
 
@@ -274,43 +282,6 @@ not agent-editable except to add a `Re-verify` result or a supersession pointer.
   Re-verify when: Homebrew changes its third-party tap gate, or the tap name
   changes.
 
-- **V-003** · 2026-08-14 — `3.0.0rc7` is burned dead and will never be reused.
-  Two rc dispatches 34 seconds apart on 2026-08-14 cut `3.0.0rc7` and `3.0.0rc8`
-  from an identical tip: the tip-unchanged no-op guard reads the publish
-  workflow's *finished* run history, so two runs overlapping before either had
-  published both read "no candidate for this tip". `release-publish-pypi.yml` now
-  serializes cuts with a non-cancelling concurrency group — a queued cut waits
-  rather than racing, and must never be cancelled mid-upload.
-  Method: read the "ONE CUT AT A TIME" comment block and `concurrency:` stanza in
-  `.github/workflows/release-publish-pypi.yml` (#3771).
-  **Which candidate is current is deliberately not recorded here** — that is
-  live state; read the PyPI project page or the publish workflow's run history.
-  Re-verify when: the publish workflow's concurrency control changes.
-
-- **V-004** · 2026-08-07 — Agents **can** create and modify files under
-  `.github/workflows/`. Every `claude-code-action` invocation in the agent
-  workflows passes `github_token: DEVELOPER_AGENT_TOKEN`, a classic PAT carrying
-  the `workflow` scope, so pushes to workflow files succeed. The refusals
-  observed on #3642 came from the action's built-in App-mode capability text,
-  which the implement prompts now explicitly override — not from a real
-  permissions wall. Do not hand-carry a workflow-file issue on that basis; if a
-  push is genuinely rejected, diagnose the actual error.
-  Method: read the `github_token:` inputs across `.github/workflows/*` and the
-  workflow-files exception paragraph in `developer_auto_implement.yml`.
-  Re-verify when: the agent workflows change their token source, or
-  `DEVELOPER_AGENT_TOKEN` is rotated to a token without `workflow` scope.
-
-- **V-005** · 2026-08-14 — An agent session cannot call the code-scanning API
-  directly. The supported path to code-scanning state is to dispatch
-  `.github/workflows/code_scan_report.yml` (`workflow_dispatch`, optional `ref`)
-  and read its run log, which prints recent analyses, the open-alert list with
-  `TOTAL_OPEN`, and every SARIF codeFlow per open alert. CodeQL default setup
-  scans only the default branch plus PRs, so a non-default branch's alert list is
-  frozen until that branch becomes default and receives a push.
-  Method: read `.github/workflows/code_scan_report.yml`; `CLAUDE.md` §Tooling.
-  Re-verify when: the repository moves off CodeQL default setup, or agent tokens
-  gain `security_events` scope.
-
 - **V-006** · 2026-08-14 — The Homebrew keg **install** path is CI-coverable on
   a real macOS runner: `macos-brew-smoke.yml` runs `brew install` of the working
   tree's formulas and of the published tap candidate on `macos-15`, and injects
@@ -324,21 +295,6 @@ not agent-editable except to add a `Re-verify` result or a supersession pointer.
   `docs/live-verification-ci.md` were corrected to match under #3775.
   Re-verify when: `macos-brew-smoke.yml` stops installing on a macOS runner, or
   GitHub retires hosted macOS runners.
-
-- **V-007** · 2026-08-14 — No agent-reachable path exists to read the
-  repository's immutable-releases setting. The endpoint is
-  `GET /repos/dkblinux98/nyxGPT/immutable-releases`; the remote session's
-  integration token returns `403 Resource not accessible by integration`, and
-  `SCRUMMASTER_AGENT_TOKEN` via `gh_query.yml` returns `404 Not Found` (the
-  classic PAT lacks repository-administration read). Reading it requires the
-  owner: `gh api repos/dkblinux98/nyxGPT/immutable-releases` under their own
-  admin-scoped auth, or the repo Settings UI. V-001 therefore remains the
-  strongest agent-verifiable statement of immutability behaviour.
-  Method: both probes run 2026-08-14 — direct REST call from the assistant
-  session, and a `gh_query.yml` dispatch with
-  `rest_path=repos/dkblinux98/nyxGPT/immutable-releases`.
-  Re-verify when: agent tokens gain repository-administration read scope, or
-  `gh_query.yml` changes its token.
 
 - **V-008** · 2026-08-14 — The dual-lane rule of **D-008** is executed, not
   just written: a CLOSED issue parked in `Acceptance Failed` is promoted to
@@ -356,8 +312,8 @@ not agent-editable except to add a `Re-verify` result or a supersession pointer.
 - **V-009** · 2026-08-15 — The pypi.org `/simple/` and `/pypi/*/json` endpoints,
   fetched via this remote session's egress proxy, can serve a **stale CDN cache**
   for hours: they showed rc9 as the newest candidate while rc10/rc11 were
-  published and pip-resolvable. Two owner-facing misstatements resulted ("rc9 is
-  current"; a false PyPI/tap parity alarm). To learn which candidate is current,
+  published and pip-resolvable, so stale reads produce confidently wrong
+  currency claims. To learn which candidate is current,
   use `pip index versions nyxgpt --pre` (fresh in practice) or the publish
   workflow's run history — never the curled pypi.org JSON alone.
   Method: side-by-side check 2026-08-15 ~03:30Z — curled JSON showed …rc9 while
@@ -499,16 +455,6 @@ not agent-editable except to add a `Re-verify` result or a supersession pointer.
   catch a spend runaway.
   Source: `product_management/AGENTIC_SDLC_DESIGN.md` §9a.
 
-- **P-003** · 2026-08-14 · owner — nyxAgent design discussion, seeded with the
-  AWS article "How frontier teams are reinventing AI-native development"
-  (aws.amazon.com/blogs/machine-learning/how-frontier-teams-are-reinventing-ai-native-development/).
-  Its five practices (invest in agent context; slow down to speed up; feed
-  agents instead of babysitting; make intent explicit; shift testing left) map
-  closely onto this project's #3774/#3775/#3730 decisions; its unpriced gap is
-  churn cost (#3776's subject).
-  Reason: owner wants the discussion held deliberately, not ad hoc.
-  Revisit when: Sprint 9 (nyxAgent) grooming, alongside P-001.
-
 ## Open questions
 
 - **Q-001** · 2026-08-14 · developer-agent (#3774) — Should the ledger be
@@ -518,7 +464,6 @@ not agent-editable except to add a `Re-verify` result or a supersession pointer.
   Needs: owner decision on how much enforcement is wanted before it becomes
   ceremony.
   Blocks: nothing yet.
-
 
 ## Superseded
 
@@ -536,17 +481,7 @@ them.
   does. The `Improvement` label now separates the two only as *statistics* (spec
   gap vs implementation defect); the gating is identical.
 
-- **S-003** — ~~"The developer agent's GitHub App cannot write workflow
-  files."~~ Superseded 2026-08-07 by **V-004** — the agents authenticate with a
-  PAT carrying `workflow` scope. This belief caused workflow-file issues to be
-  hand-carried unnecessarily.
-
 - **S-004** — ~~"`Related feature: #N` in the issue body is how issues are
   linked."~~ Superseded 2026-08-12 by **D-002** — native relationships only. Still
   read as a fallback for issues filed before that decision; never written.
 
-- **S-005** — ~~Q-002: "What check can an agent session run, without owner help,
-  to confirm the repository's release immutability setting?"~~ Answered
-  2026-08-14 by **V-007**: none — both agent token paths fail; the setting is
-  owner-readable only. The setting itself is settled by **D-007** (stays
-  enabled).
