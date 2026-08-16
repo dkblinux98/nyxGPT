@@ -234,6 +234,97 @@ run on, and say which job would have run it. The symmetry from §2 holds —
 never REQUEST_CHANGES demanding evidence that is structurally impossible to
 produce, or that a cited run already produced.
 
+## 1d) Diagnosis gate: was the cause established before the change? (#3821)
+
+The fourth of the agentic first principles — stated in full in `CLAUDE.md`
+§ Agentic First Principles, and nowhere else — forbids taking change action
+without first seeking to understand. This section is the review half of it.
+
+> **Does this PR fix a cause that was actually established, or one that was
+> guessed?**
+
+**Motivating incident.** The broken-`pyexpat` chain: #3753 shipped a fix aimed
+at pip, #3788 shipped another aimed at the same guess, and #3814 was still the
+same defect — the real fault was a Homebrew bottle. Each round was reviewed and
+approved on the strength of the patch, because no one asked what had
+established the cause. Three cycles bought one diagnosis.
+
+**How to run the check.** On any PR that claims to *fix* something:
+
+1. **Find the stated cause.** The PR body or the issue thread must say what the
+   defect's mechanism is — not what the symptom was, and not what the change
+   does. "Install fails on macOS" is a symptom; "`brew`'s python bottle ships a
+   `pyexpat` built against a missing libexpat" is a cause.
+2. **Find what established it.** A log line, a reproduction, a bisect, a run
+   that fails one way and succeeds the other. A cause asserted without any of
+   those is a guess wearing a diagnosis's clothes.
+3. **Check the fix connects to it.** Read the diff against the stated cause and
+   ask how it makes that mechanism stop. A patch whose mechanism has nothing to
+   do with the stated cause is the #3753 pattern even when the stated cause is
+   correct.
+4. **Check the thread does not contradict it.** Evidence posted on the issue —
+   a log, a failing run, an owner's report — that is inconsistent with the
+   stated cause outranks the stated cause.
+
+**Blocking condition.** A fix whose cause was never established — no stated
+cause, no evidence behind the stated cause, or a stated cause the thread's own
+evidence contradicts — is a **Medium (blocking)** finding. Say which of the
+four it is, and ask for the diagnosis rather than a different patch.
+
+**Symmetry, so this does not become a tax.**
+
+- **Only fixes are in scope.** Feature work has no defect and therefore no
+  cause; do not demand a root cause from it.
+- **A cited diagnosis is a satisfied gate.** If the cause is stated with its
+  evidence, this section is done, whether or not you would have diagnosed it
+  the same way. Disagreeing with an established cause is an ordinary finding on
+  its merits, not a §1d finding.
+- **An honest mitigation is not a guess.** A change that says plainly it works
+  around an undiagnosed fault, names what is still unknown, and links the issue
+  that will diagnose it, satisfies this gate — that is understanding the limits
+  of what is understood. What blocks is a mitigation presented as a fix.
+
+## 1e) Generality gate: is the patch as general as the defect? (#3821)
+
+The second of the agentic first principles — again, stated in full only in
+`CLAUDE.md` § Agentic First Principles — weighs harm to the agentic process
+alongside harm to the application. Its commonest form is a general fault
+patched at one instance, which leaves every other instance armed and the next
+session to rediscover it.
+
+> **Is the fault this PR fixes confined to the place it fixes, or is the same
+> fault elsewhere in the tree?**
+
+**Motivating incidents.** The project-hygiene clobber (#3500 → #3816) was fixed
+by exempting a single author while every other author kept racing — the same
+defect, one instance patched. Contrast #3801's escalation bug: the apostrophe
+that broke one `github-script` step turned out to be **47 interpolations across
+6 workflows**, and the sweep found them because someone asked the question
+(ledger **V-027**).
+
+**How to run the check.** On any PR that fixes a defect:
+
+1. **Name the fault as a class**, not as a location: "a GitHub Actions
+   expression interpolated into a `script:` body is JavaScript, not data", not
+   "line 812 breaks on apostrophes".
+2. **Search for the class.** `grep` the tree for the construct, not the
+   symptom — the other call sites, the sibling workflows, the parallel branches
+   of the same `if`, the other subclasses that share the base.
+3. **Require one of three outcomes**: the class is fixed in this PR; the search
+   is reported and shows the instance really is the only one; or the remaining
+   instances are named with a filed issue and a stated reason for deferring.
+
+**Blocking condition.** A narrow patch on a general defect is a **Medium
+(blocking)** finding. Cite the other instances you found as `file:line` — a
+generality finding must name at least one, or it is speculation, which §1b
+forbids.
+
+**Symmetry.** This asks for the sweep and its result, not for unbounded scope.
+A reported search that found nothing satisfies the gate. Scaling the fix down
+after the sweep is the owner's call (principle 3): the reviewer's job is to
+make sure the class was looked for and its extent is on the record, never to
+convert every bug fix into a refactor.
+
 ## 2) Severity model
 - Critical: correctness/security/data-loss/performance regression; must block merge
 - Medium: significant bug risk, missing tests, broken contract, poor maintainability; must block merge

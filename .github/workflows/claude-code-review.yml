@@ -373,6 +373,12 @@ jobs:
             - The PR makes a runtime/install/platform behavior claim with NO
               executed evidence on the target platform (executed-verification
               gate, review-runbook §1c)
+            - The PR fixes a defect whose cause was never established — no
+              stated cause, no evidence behind it, or one the thread's own
+              evidence contradicts (diagnosis gate, review-runbook §1d)
+            - The PR patches one instance of a fault that exists elsewhere in
+              the tree, without fixing the class or reporting the search
+              (generality gate, review-runbook §1e)
 
             Do not APPROVE until all checks pass, tests are updated, AND documentation is complete.
 
