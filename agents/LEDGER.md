@@ -757,7 +757,13 @@ are absent here by design (relocated to the annex; IDs are never reused).
   no-direct-push in a `pre-receive` hook and requires an approving review from
   a second identity, proving the old push fails there and the new
   publish/approve/merge path lands the JSON (standing job:
-  `.github/workflows/retro-data-pipeline-smoke.yml`).
+  `.github/workflows/retro-data-pipeline-smoke.yml`). Executed end to end
+  against the real ruleset on 2026-08-16: dispatched run 31959032954
+  published to `claude/retro-data`, opened PR #3818 as
+  `myGPT-scrummaster-agent`, approved it as `myGPT-review-agent`, merged it
+  into `v3.0.0` and deleted the branch — after which
+  `relationships.json` is present on `v3.0.0` (16447 bytes) for the first
+  time ever, read back through the contents API. All six data files landed.
   Re-verify when: the owner changes the branch ruleset (re-read it — do not
   infer it from behaviour), or an automated PR merge into the release branch
   is refused.
