@@ -20,6 +20,7 @@ from typing import Any, cast
 # (blue/green lived in nyxgpt.deploy; retired in favor of canary -- see #3409.)
 from nyxgpt import canary as canary_mod
 from nyxgpt import cloud as cloud_mod
+from nyxgpt import cloud_artifact_smoke as cloud_artifact_smoke_mod
 from nyxgpt import cloud_deploy as cloud_deploy_mod
 from nyxgpt import cloud_infra as cloud_infra_mod
 from nyxgpt import cloud_provision as cloud_provision_mod
@@ -1585,6 +1586,16 @@ def _add_install_arguments(parser: argparse.ArgumentParser) -> None:
         help="Don't start the Grafana/Loki/Jaeger/GlitchTip Compose profiles",
     )
     parser.add_argument(
+        "--dev",
+        action="store_true",
+        help=(
+            "Install the api/web services from the current checkout -- an editable venv "
+            "(pip install -e) plus the Next dev server -- instead of building/downloading "
+            "artifacts, so the stack runs the working tree at HEAD (#3789). Requires a "
+            "checkout; without this flag the artifact path is used"
+        ),
+    )
+    parser.add_argument(
         "--terraform",
         action="store_true",
         help=(
@@ -2780,7 +2791,10 @@ def cli(argv: list[str] | None = None) -> int:
     cloud_smoke_p.add_argument(
         "--health-timeout",
         type=float,
-        help="Seconds to wait for the deployed stack to answer /health (default: 900)",
+        help=(
+            "Seconds to wait for the stack to answer /health (default: 900 against AWS, "
+            f"{cloud_artifact_smoke_mod.DEFAULT_HEALTH_TIMEOUT:.0f} with --container)"
+        ),
     )
     cloud_smoke_p.add_argument(
         "--ssh-timeout",
@@ -2811,6 +2825,61 @@ def cli(argv: list[str] | None = None) -> int:
         "--json",
         action="store_true",
         help="Print the full machine-readable record of the run instead of a summary",
+    )
+
+    # --container (#3784): the same command, pointed at a containerized bare
+    # Amazon Linux 2023 machine instead of AWS. It verifies the *install* half
+    # -- the one that produced five serial rc9 defects (#3759/#3760/#3761/
+    # #3762/#3782) -- by running the real rendered EC2 user-data bootstrap on a
+    # machine with the AMI's Python 3.9, no node, no docker and no git. Costs
+    # nothing, needs no credentials, and is what CI runs. See
+    # src/nyxgpt/cloud_artifact_smoke.py and docs/cloud-artifact-smoke.md.
+    cloud_smoke_p.add_argument(
+        "--container",
+        action="store_true",
+        help=(
+            "Run the artifact-install smoke locally against a bare Amazon Linux 2023 "
+            "container instead of deploying to AWS (no credentials, no charges)"
+        ),
+    )
+    cloud_smoke_p.add_argument(
+        "--image",
+        help=(
+            "Base image the --container smoke builds its AMI-parity machine from "
+            f"(default: {cloud_artifact_smoke_mod.DEFAULT_BASE_IMAGE})"
+        ),
+    )
+    cloud_smoke_p.add_argument(
+        "--wheel",
+        help=(
+            "With --container: install this locally built wheel instead of the published "
+            "release, so a branch whose version is not on PyPI yet still gets its install "
+            "path exercised"
+        ),
+    )
+    cloud_smoke_p.add_argument(
+        "--inject",
+        action="append",
+        choices=sorted(cloud_artifact_smoke_mod.FAULTS),
+        help=(
+            "With --container: reintroduce a known defect class into the bootstrap and "
+            "require the smoke to FAIL (repeatable) -- proves the run is not green by luck"
+        ),
+    )
+    cloud_smoke_p.add_argument(
+        "--bootstrap-timeout",
+        type=float,
+        help="With --container: seconds to allow for the whole bootstrap (default: 2400)",
+    )
+    cloud_smoke_p.add_argument(
+        "--build-timeout",
+        type=float,
+        help="With --container: seconds to allow for building the AMI-parity image (default: 900)",
+    )
+    cloud_smoke_p.add_argument(
+        "--status",
+        action="store_true",
+        help="With --container: report the last recorded run instead of starting one",
     )
 
     # nyxgpt release publish (#3727): the owner-side wrapper for the single
@@ -3158,6 +3227,35 @@ def cli(argv: list[str] | None = None) -> int:
         return cloud_deploy_mod.deploy_command(args)
 
     if cmd == "cloud" and args.cloud_cmd == "smoke":
+        # Two smokes behind one command, because they answer two halves of the
+        # same question: --container verifies the artifact install path on a
+        # bare Amazon Linux 2023 machine (free, hermetic, no AWS), and the
+        # default verifies a live deployment's behaviour (real EC2, real bill).
+        if getattr(args, "container", False):
+            return cloud_artifact_smoke_mod.container_smoke_command(args)
+        # Silently ignoring a container-only flag on the AWS path would mean
+        # `--inject` quietly deploying real infrastructure instead of injecting
+        # a fault -- refuse instead.
+        container_only = [
+            flag
+            for flag, value in (
+                ("--status", getattr(args, "status", False)),
+                ("--image", getattr(args, "image", None)),
+                ("--wheel", getattr(args, "wheel", None)),
+                ("--inject", getattr(args, "inject", None)),
+                ("--bootstrap-timeout", getattr(args, "bootstrap_timeout", None)),
+                ("--build-timeout", getattr(args, "build_timeout", None)),
+            )
+            if value
+        ]
+        if container_only:
+            print(
+                f"{', '.join(container_only)} only applies to `nyxgpt cloud smoke --container` "
+                "(the local Amazon Linux 2023 artifact-install smoke). Add --container, or "
+                "drop the flag to run the live AWS smoke.",
+                file=sys.stderr,
+            )
+            return 2
         return cloud_smoke_mod.smoke_command(args)
 
     if cmd == "canary":

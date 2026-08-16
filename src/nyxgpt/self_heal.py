@@ -96,6 +96,7 @@ from nyxgpt.config import (
     get_tracing_enabled,
     load_config,
 )
+from nyxgpt.install_mode import DEV_LAUNCHD_LABELS, read_install_mode
 from nyxgpt.logging import get_correlation_id, get_log_dir, mint_correlation_id
 
 logger = logging.getLogger(__name__)
@@ -510,6 +511,57 @@ def _brew_services_snapshot() -> dict[str, str]:
     return snapshot
 
 
+def _dev_mode_active() -> bool:
+    """True if this machine's native api/web were installed in dev mode (#3789)."""
+    return read_install_mode().is_dev
+
+
+def _dev_launchagent_plist(label: str) -> Path:
+    """Where `_install_dev_launchagent` (ops.py) puts the dev-mode plist for `label`."""
+    return Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
+
+
+def _launchd_agent_loaded(label: str) -> bool:
+    """True if LaunchAgent `label` is currently loaded, per `launchctl list`.
+
+    False on any failure (launchctl missing, non-zero exit) -- the same
+    "nothing to see, don't act on a guess" convention
+    `_brew_services_snapshot` uses.
+    """
+    if _which("launchctl") is None:
+        return False
+    try:
+        cp = _run(["launchctl", "list"], expected=True)
+    except Exception as e:
+        logger.warning("self-heal: failed to query launchctl list: %s", e)
+        return False
+    if cp.returncode != 0:
+        return False
+    for line in (cp.stdout or "").splitlines():
+        parts = line.split()
+        if parts and parts[-1] == label:
+            return True
+    return False
+
+
+def _restart_launchagent(label: str) -> HealResult:
+    """Restart LaunchAgent `label` via `launchctl kickstart -k` (dev mode's api/web)."""
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", label):  # inline barrier, CodeQL #4
+        return HealResult(False, f"Refused to act on invalid LaunchAgent label: {label!r}")
+    if _which("launchctl") is None:
+        return HealResult(False, f"launchctl not found; cannot restart {label}")
+    try:
+        cp = _run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"], timeout=60.0)
+    except Exception as e:
+        return HealResult(False, f"Failed to restart {label}", f"{type(e).__name__}: {e}")
+    if cp.returncode != 0:
+        details = (cp.stdout or "").strip() + (
+            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+        )
+        return HealResult(False, f"Failed to restart LaunchAgent: {label}", details.strip())
+    return HealResult(True, f"Restarted LaunchAgent: {label}")
+
+
 def _systemd_user_dir() -> Path:
     """Return `~/.config/systemd/user`, the systemd --user unit search path.
 
@@ -756,7 +808,23 @@ def _list_native_component_status() -> list[ComponentStatus]:
         native_names = NATIVE_SYSTEMD_SERVICES
     else:
         native_snapshot = _brew_services_snapshot()
-        native_names = NATIVE_BREW_SERVICES
+        native_names = dict(NATIVE_BREW_SERVICES)
+        if _dev_mode_active():
+            # A dev install (#3789) runs api/web under their own
+            # LaunchAgents -- there is no keg for `brew services` to attach
+            # to. Reading brew here would report the *keg's* leftover state
+            # (or nothing) for the processes actually serving, and healing
+            # from that would `brew services restart` the old build straight
+            # onto the port the dev process holds.
+            for component, label in DEV_LAUNCHD_LABELS.items():
+                native_names[component] = label
+                if not _dev_launchagent_plist(label).exists():
+                    # Never installed here -- out of scope, exactly as an
+                    # absent brew service is (the loop below skips a
+                    # component with no snapshot entry).
+                    native_snapshot.pop(label, None)
+                    continue
+                native_snapshot[label] = "started" if _launchd_agent_loaded(label) else "stopped"
     for component, native_name in native_names.items():
         if component == "ollama" and _is_linux() and _system_ollama_service_active():
             # A system-wide ollama.service still holding port 11434 (#3632).
@@ -882,6 +950,24 @@ def _desired_compose_services(profiles: set[str], *, exclude_one_shot: bool = Tr
     if exclude_one_shot:
         services -= ONE_SHOT_SERVICES
     return services
+
+
+def observability_services() -> set[str]:
+    """Compose service names owned by the currently-enabled observability profiles.
+
+    The public form of `_desired_compose_services(_enabled_observability_profiles())`,
+    for callers that deliberately did *not* start the observability stack and
+    therefore must not treat it as pending -- `ops.up(--skip-observability)`'s
+    health-wait being the one that needs it. Core app services are already
+    excluded (see `_desired_compose_services`), so a Compose-mode `api`/`web`
+    is never in here and never gets skipped by mistake.
+
+    Returns an empty set when the profiles can't be resolved (no Docker, a
+    Compose failure), which is the module's usual "can't tell, so don't act"
+    fallback: the caller then waits on those components rather than silently
+    ignoring something it can't account for.
+    """
+    return _desired_compose_services(_enabled_observability_profiles())
 
 
 def _absent_desired_statuses(
@@ -1364,6 +1450,11 @@ def restart_native_component(component: str) -> HealResult:
         if unit is None:
             return HealResult(False, f"Unknown native component: {component}")
         return _restart_systemd_service(unit)
+    if component in DEV_LAUNCHD_LABELS and _dev_mode_active():
+        # Dev mode's api/web are LaunchAgents, not brew services (#3789) --
+        # `brew services restart` here would start the old keg's build on the
+        # port the dev process is already serving on.
+        return _restart_launchagent(DEV_LAUNCHD_LABELS[component])
     brew_name = NATIVE_BREW_SERVICES.get(component)
     if brew_name is None:
         return HealResult(False, f"Unknown native component: {component}")

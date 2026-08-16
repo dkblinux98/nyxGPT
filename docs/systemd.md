@@ -47,12 +47,12 @@ script itself -- or run it by hand with `./scripts/systemd-native-smoke.sh`.
   fails naming what it found and what is required, rather than building a
   venv pip will refuse the artifact into
   ([troubleshooting](troubleshooting.md#no-python--311-available-to-create-the-nyxgpt-api-venv)).
-- `ollama` on PATH for the `ollama` component -- nyxGPT doesn't install
-  Ollama itself on Linux the way the Homebrew formula does on macOS. Install
-  it first:
-  ```bash
-  curl -fsSL https://ollama.com/install.sh | sh
-  ```
+- Ollama is **not** a prerequisite: if `ollama` isn't on PATH, `nyxgpt ops
+  install` runs its official Linux installer for you -- the same reconcile
+  the Homebrew formula path performs with `brew install ollama` on macOS. It
+  needs root for that step and takes it with `sudo -n` (never prompts); on a
+  host without passwordless sudo it reports the command to run by hand
+  instead. See [Privileged install steps](#privileged-install-steps).
   (That installer enables a system-wide `ollama.service`; `nyxgpt ops
   install` disables it in favour of `nyxgpt-ollama` -- see
   [System-wide `ollama.service` conflicts](#system-wide-ollamaservice-conflicts).)
@@ -89,6 +89,12 @@ Where those two tarballs come from depends on what the machine has:
 | --- | --- |
 | Artifact install (`pip install nyxgpt`) | the published `nyxgpt-api-<version>.tar.gz` / `nyxgpt-web-<version>.tar.gz` assets -- on its own release for a candidate, on its `<version>-homebrew` release for a stable version ([why](homebrew.md#where-the-tarballs-are-published)) -- downloaded at install time, the same artifacts the Homebrew formulas install from |
 | Source checkout (`pip install -e .`) | vendored from the checkout, so a working tree's changes are what gets installed |
+
+`nyxgpt up --dev` builds neither tarball: it installs the api editable from
+the checkout and runs the web UI's dev server out of `<checkout>/web`,
+driving the *same* two systemd --user units (only the wrapper script they
+exec differs). See
+[`--dev`](ops.md#--dev-run-the-current-checkout-without-an-artifact-build).
 
 The version is the one the running `nyxgpt` reports on an artifact install,
 and the checkout's declared `pyproject.toml` version in a checkout. Neither
@@ -257,9 +263,17 @@ missing bind-mount source directory as `root:root`. Prometheus runs as uid
 65534 inside its container, Grafana as 472, Loki as 10001 -- none of which
 can write to a root-owned directory, so the container panics and Compose
 reports `dependency failed to start: container nyxgpt-prometheus-1 is
-unhealthy`. `nyxgpt ops install` pre-creates those directories before the
-stack starts and gives them an ownership their container can write to (macOS
-never hits this: Docker Desktop's file sharing remaps ownership for you).
+unhealthy`. nyxGPT pre-creates those directories before the stack starts and
+gives them an ownership their container can write to (macOS never hits this:
+Docker Desktop's file sharing remaps ownership for you).
+
+That reconciliation runs on *every* path that starts the stack, not just
+`nyxgpt ops install`: the standalone `nyxgpt ops observability` and the SRE
+dashboard's observability toggle both reach the stack through the same
+reconcile step. Until #3721 it was wired into `install` alone, so bringing
+observability up any other way on Linux produced a Prometheus that could not
+write `/prometheus` -- with Grafana, Prometheus and the API all still
+reporting healthy and every dashboard rendering "No data".
 
 Without passwordless sudo the `chown` isn't available, so install falls back
 to a POSIX ACL instead -- `setfacl -R -m u:<uid>:rwx <dir>`, which only needs
@@ -509,18 +523,29 @@ container that has no active login session.
 
 2. Re-run `nyxgpt ops install` after lingering is enabled.
 
-### ollama not found on PATH
+### Could not install Ollama automatically
 
-**Symptom**: `nyxgpt ops install` reports `ollama not found on PATH`.
+**Symptom**: `nyxgpt ops install` reports `Ollama is not installed and root is
+not available without a password`, or `Could not install Ollama
+automatically`.
+
+`nyxgpt ops install` installs Ollama for you when it is missing, but the
+official installer writes to `/usr/local/bin` and registers a system unit, so
+that step needs root. ops takes root with `sudo -n`, which never prompts — on
+a host without passwordless sudo it reports this instead of hanging on a
+password prompt inside a non-interactive install.
 
 **Solutions**:
 
-1. Install Ollama via its official Linux installer:
+1. Install Ollama by hand with its official Linux installer:
    ```bash
    curl -fsSL https://ollama.com/install.sh | sh
    ```
+   (Other options — rootless tarball, distro packages — are at
+   <https://ollama.com/download/linux>.)
 
-2. Re-run `nyxgpt ops install`.
+2. Re-run `nyxgpt ops install`. It skips the install step once `ollama` is on
+   PATH, then takes port 11434 over for `nyxgpt-ollama.service` as usual.
 
 ### nyxgpt-ollama.service crash-looping / port 11434 already in use
 

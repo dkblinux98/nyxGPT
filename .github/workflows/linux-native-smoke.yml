@@ -3,25 +3,45 @@ name: Linux Native Smoke
 # Two jobs, answering two different questions about the Linux ops path:
 #
 #   linux-native-smoke  Does the Linux-native (systemd --user) install work
-#                       end-to-end? Drives scripts/systemd-native-smoke.sh:
-#                       `nyxgpt ops install` -> every unit active and api/web
-#                       responding -> diagnostics -> `nyxgpt ops down` (#3508).
-#                       This is the review agent's only way to see systemd-path
-#                       regressions -- unit tests mock systemctl; this runs the
-#                       real thing on a real systemd userland.
+#                       end-to-end, from a machine with nothing on it? Drives
+#                       scripts/systemd-native-smoke.sh: `nyxgpt up` -> Ollama
+#                       installed by ops itself -> every unit active and
+#                       api/web responding -> `nyxgpt ops status`/`ops doctor`
+#                       -> `nyxgpt down` (#3508 -- the four commands that
+#                       issue's acceptance names). Preceded by
+#                       scripts/ollama-bootstrap-smoke.py, which injects the
+#                       pre-fix behaviour and proves the run would have failed
+#                       without the Ollama bootstrap. This is the review
+#                       agent's only way to see systemd-path regressions --
+#                       unit tests mock systemctl; this runs the real thing on
+#                       a real systemd userland.
+#   linux-native-dev-smoke  Does the DEV install mode (#3789) actually run the
+#                       checkout, and does switching back to the artifact path
+#                       reconcile cleanly? Drives the same script with `--dev`:
+#                       `nyxgpt ops install --dev` -> units active, api/web
+#                       responding, the api venv importing nyxgpt out of the
+#                       checkout, a file added to the working tree after the
+#                       install already visible to the running service, no dist
+#                       tarball built -> reinstall WITHOUT `--dev` -> artifact
+#                       mode reported, services still serving, and those same
+#                       dev assertions now failing (the inverse proof that they
+#                       are not vacuously true of any install, #3753's
+#                       fault-injection rule).
 #   ops-subprocess-output  When an ops subprocess fails, can an operator read
 #                       WHY from the log alone? Runs a real failing `pip
 #                       install` through `ops._run` and asserts pip's own
 #                       refusal is in the message -- then injects the pre-fix
 #                       behaviour and asserts the check catches it (#3783,
 #                       fault-injection pattern from macos-brew-smoke.yml).
-#   host-relay-posture  Can a container reach a loopback-bound native API,
-#                       and does doctor catch a host still carrying the
-#                       manual `[api] host = 0.0.0.0` workaround? Drives
-#                       scripts/host-relay-posture-smoke.py against real
-#                       Docker: reproduces the #3721 gap, proves the relay
-#                       closes it, then injects the pre-fix behaviour and
-#                       asserts the #3509 posture finding catches it.
+#   linux-observability  Does the observability stack actually work on a plain
+#                       Linux docker engine? Drives
+#                       scripts/linux-observability-smoke.py: dockerd's
+#                       root-owned bind mounts (#3632) and the container->host
+#                       loopback gap (#3721) are both engine properties that
+#                       unit tests mock away and that Docker Desktop hides on
+#                       macOS. Injects the pre-fix behaviour first and asserts
+#                       prometheus crash-loops, so the check cannot pass
+#                       vacuously.
 #   service-venv-python  Is the service venv built on a Python that satisfies
 #                       requires-python, even when `python3` on PATH is too
 #                       old? Puts a real 3.9 on PATH as `python3` -- the
@@ -30,6 +50,13 @@ name: Linux Native Smoke
 #                       sdist. The runner's own `python3` is new enough, so
 #                       without the injection the job would pass on a build
 #                       that still hard-codes `python3 -m venv`.
+#   host-relay-posture  Can a container reach a loopback-bound native API,
+#                       and does doctor catch a host still carrying the
+#                       manual `[api] host = 0.0.0.0` workaround? Drives
+#                       scripts/host-relay-posture-smoke.py against real
+#                       Docker: reproduces the #3721 gap, proves the relay
+#                       closes it, then injects the pre-fix behaviour and
+#                       asserts the #3509 posture finding catches it.
 #
 # Scoped like terraform-local-smoke.yml: a full native install is expensive,
 # so it runs only when the ops/self-heal layer, the systemd unit templates,
@@ -39,21 +66,33 @@ on:
     paths:
       - 'src/nyxgpt/ops.py'
       - 'src/nyxgpt/self_heal.py'
+      - 'src/nyxgpt/install_mode.py'
       - 'ops/systemd/**'
+      - 'ops/launchagents/**'
       - 'scripts/systemd-native-smoke.sh'
+      - 'scripts/ollama-bootstrap-smoke.py'
       - 'scripts/ops-subprocess-output-smoke.py'
       - 'scripts/host-relay-posture-smoke.py'
       - 'scripts/service-venv-python-smoke.py'
+      - 'scripts/linux-observability-smoke.py'
+      - 'docker-compose.yml'
+      - 'docker/prometheus.yml'
       - '.github/workflows/linux-native-smoke.yml'
   push:
     paths:
       - 'src/nyxgpt/ops.py'
       - 'src/nyxgpt/self_heal.py'
+      - 'src/nyxgpt/install_mode.py'
       - 'ops/systemd/**'
+      - 'ops/launchagents/**'
       - 'scripts/systemd-native-smoke.sh'
+      - 'scripts/ollama-bootstrap-smoke.py'
       - 'scripts/ops-subprocess-output-smoke.py'
       - 'scripts/host-relay-posture-smoke.py'
       - 'scripts/service-venv-python-smoke.py'
+      - 'scripts/linux-observability-smoke.py'
+      - 'docker-compose.yml'
+      - 'docker/prometheus.yml'
       - '.github/workflows/linux-native-smoke.yml'
 
 # Read-only workflow: the smoke run only checks out the repo and drives the
@@ -84,8 +123,17 @@ jobs:
           python -m pip install --upgrade pip setuptools
           pip install -e .
 
-      # Config seeding, Ollama install, and systemd --user session setup
-      # (lingering/DBUS) are all handled inside the script itself.
+      # Both halves of the #3775 evidence, in this order and in one job so the
+      # ~1.4GB Ollama download is paid once. First the pre-fix behaviour --
+      # with the bootstrap disabled, the native Ollama step fails on this
+      # runner, which is what makes the smoke run below evidence rather than
+      # luck. It must run while the runner still has no Ollama on PATH.
+      - name: Reproduce the pre-fix failure (no Ollama bootstrap)
+        run: python3 scripts/ollama-bootstrap-smoke.py
+
+      # Config seeding and systemd --user session setup (lingering/DBUS) are
+      # handled inside the script itself. Ollama deliberately is not: the
+      # script asserts `nyxgpt up` installs it (#3508).
       - name: Run systemd native smoke
         run: ./scripts/systemd-native-smoke.sh
 
@@ -95,6 +143,51 @@ jobs:
           systemctl --user list-units 'nyxgpt-*' --all --no-pager || true
           nyxgpt ops status || true
           for svc in api web ollama cassandra; do
+            echo "--- nyxgpt ops logs $svc ---"
+            nyxgpt ops logs "$svc" --tail 100 || true
+          done
+
+  # Dev install mode (#3789). Runs on every PR that touches the paths above --
+  # NOT gated on the release branch like the artifact smoke: dev mode is the
+  # owner's iteration path, so a regression in it has to be visible on the PR
+  # that causes it, and the run is cheaper than the artifact one (no `npm run
+  # build`, no tarball vendoring) up to the deliberate switch-back step.
+  linux-native-dev-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install nyxgpt (editable)
+        run: |
+          python -m pip install --upgrade pip setuptools
+          pip install -e .
+
+      # `--dev`: install from the checkout, prove the running services ARE
+      # the working tree, then reinstall without --dev and prove both that
+      # the switch back is clean and that the dev assertions fail on the
+      # artifact path (so they cannot pass by accident).
+      - name: Run systemd native smoke in dev mode
+        run: ./scripts/systemd-native-smoke.sh --dev
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          systemctl --user list-units 'nyxgpt-*' --all --no-pager || true
+          nyxgpt ops status || true
+          nyxgpt ops doctor || true
+          cat "$HOME/.nyxGPT/opt/nyxgpt-api/bin/nyxgpt-api" || true
+          cat "$HOME/.nyxGPT/opt/nyxgpt-web/bin/nyxgpt-web" || true
+          for svc in api web; do
             echo "--- nyxgpt ops logs $svc ---"
             nyxgpt ops logs "$svc" --tail 100 || true
           done
@@ -122,6 +215,40 @@ jobs:
       # prove the check would have caught the pre-fix behaviour.
       - name: Real failing subprocess must report its own output
         run: python3 scripts/ops-subprocess-output-smoke.py
+
+  # Pulls two images and runs prometheus twice, but starts no application
+  # services -- cheap enough to run on every PR that touches the observability
+  # path rather than only on the release branch.
+  linux-observability:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install nyxgpt (editable)
+        run: |
+          python -m pip install --upgrade pip setuptools
+          pip install -e .
+
+      # The runner's docker is a plain Linux engine -- the exact shape that
+      # reproduces both defects, and the one Docker Desktop hides on macOS.
+      # The script's first half asserts the pre-fix behaviour still fails, so a
+      # runner where it somehow doesn't fails the job instead of passing empty.
+      - name: Observability must come up on a plain Linux docker engine
+        run: python3 scripts/linux-observability-smoke.py
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          docker ps -a || true
+          for c in $(docker ps -aq); do
+            echo "--- docker logs $c ---"
+            docker logs --tail 100 "$c" || true
+          done
 
   # Also cheap (a sdist build and two `pip install --no-deps` runs, no
   # services), so it runs on every PR touching ops.py.

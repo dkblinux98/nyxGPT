@@ -96,6 +96,18 @@ def _template_root() -> Path:
     return Path(str(importlib.resources.files("nyxgpt.resources").joinpath("cloud")))
 
 
+def packaged_cloud_file(filename: str) -> Path:
+    """Return the path of a packaged `scripts/cloud/` file, resolved like the templates.
+
+    The user-data templates are not the only thing that ships from this
+    directory -- the containerized artifact-install smoke (#3784) builds its
+    AMI-parity image from `al2023-ami-parity.Dockerfile` here, and has to find
+    it on a machine with no checkout exactly as `render_user_data` finds a
+    template.
+    """
+    return _template_root() / filename
+
+
 def render_user_data(os_family: str, version: str | None = None) -> str:
     """Render the EC2 user-data bootstrap script for `os_family`.
 

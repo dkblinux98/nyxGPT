@@ -29,6 +29,7 @@ import socket
 import subprocess
 import sys
 import tarfile
+import tempfile
 import threading
 import time
 import tomllib
@@ -55,6 +56,14 @@ from nyxgpt.config import (
     grafana_admin_password_path,
     read_grafana_admin_password,
     resolve_grafana_admin_password,
+)
+from nyxgpt.install_mode import (
+    DEV_LAUNCHD_LABELS,
+    INSTALL_MODE_ARTIFACT,
+    INSTALL_MODE_DEV,
+    InstallModeState,
+    read_install_mode,
+    write_install_mode,
 )
 from nyxgpt.logging import get_correlation_id
 
@@ -189,6 +198,10 @@ OPS_SCRIPTS_SRC_DIR = NYXGPT_HOME / "scripts"
 # ever needs sudo; `_ensure_nyxgpt_bin_on_path` puts it on PATH for the
 # running process so the very same run can use what it just installed.
 NYXGPT_BIN_DIR = NYXGPT_HOME / "bin"
+
+# Install mode (artifact vs dev checkout) lives in `nyxgpt.install_mode` --
+# see that module for what the two modes are and why the choice is recorded
+# rather than re-derived (#3789).
 
 # The container api-config is a derived, per-machine artifact (like .env):
 # it's bind-mounted into the containerized api and gets its DSN filled in at
@@ -1632,6 +1645,20 @@ def _has_vendorable_source(name: str) -> bool:
     return (REPO_ROOT / "src" / "nyxgpt").is_dir() and (REPO_ROOT / "pyproject.toml").is_file()
 
 
+def _dev_checkout_root() -> Path | None:
+    """Return the source checkout dev mode would build from, or None.
+
+    Dev mode is checkout-only by definition: it needs `pyproject.toml` +
+    `src/nyxgpt/` for the editable api install and `web/` for the Next dev
+    server. `REPO_ROOT` points inside the installed package on an artifact
+    install, where neither is present -- so this answers None there and
+    `install()` refuses `--dev` with that fact rather than half-installing.
+    """
+    if _has_vendorable_source("nyxgpt-api") and _has_vendorable_source("nyxgpt-web"):
+        return REPO_ROOT
+    return None
+
+
 def _installed_distribution_version() -> str | None:
     """Version of the installed `nyxgpt` distribution, or None if it isn't installed."""
     try:
@@ -1706,16 +1733,69 @@ def _download_release_tarball(dest_dir: Path, name: str, version: str) -> Path:
     ) from last_error
 
 
+# Escape hatch for an artifact install of a version no release serves:
+# `NYXGPT_ARTIFACT_DIR` names a directory already holding the very same
+# `<name>-<version>.tar.gz` assets, and they are used instead of being
+# downloaded. Two callers need it and neither is a real instance:
+#
+#   - `nyxgpt cloud smoke --container --wheel` (#3784), which installs a wheel
+#     built from the tree under test. That wheel's version is the checkout's
+#     in-development one (e.g. `3.0.0`), which has no GitHub Release and never
+#     will until the release ceremony cuts one -- so the CLI installs and then
+#     `ops install` 404s on `nyxgpt-api-<version>.tar.gz`. Staging the tarballs
+#     built from the same tree is what makes a branch's own `ops.py` testable
+#     on the artifact path at all; without it the job can only ever install a
+#     *published* rc, i.e. not the code under review.
+#   - an air-gapped install, which has the assets but no route to github.com.
+#
+# It is the service-tarball sibling of the bootstrap's `NYXGPT_PIP_SPEC`
+# (scripts/cloud/ec2-user-data-linux.sh.tmpl), and unset on a real instance.
+LOCAL_ARTIFACT_DIR_ENV = "NYXGPT_ARTIFACT_DIR"
+
+
+def _staged_service_tarball(dest_dir: Path, name: str, version: str) -> Path | None:
+    """Copy `<name>-<version>.tar.gz` out of `$NYXGPT_ARTIFACT_DIR`, or None if unset.
+
+    Mirrors `_download_release_tarball`'s contract -- same filename, same
+    `dist/` location, same returned path -- so callers can't tell which of
+    the three sources produced the tarball.
+
+    A directory that is set but does not hold the asset raises rather than
+    falling through to the download: the caller asked for *this* artifact,
+    and silently installing a different one (or 404ing against a URL they
+    never chose) is how a staging bug reads as a network failure.
+    """
+    directory = os.environ.get(LOCAL_ARTIFACT_DIR_ENV, "").strip()
+    if not directory:
+        return None
+    staged = Path(directory).expanduser() / f"{name}-{version}.tar.gz"
+    if not staged.is_file():
+        raise RuntimeError(
+            f"{LOCAL_ARTIFACT_DIR_ENV}={directory} is set, so {staged.name} was expected "
+            f"there, but {staged} does not exist. Stage the asset or unset "
+            f"{LOCAL_ARTIFACT_DIR_ENV} to download it from the {version} release instead."
+        )
+    dist_dir = dest_dir / "dist"
+    _ensure_dir(dist_dir)
+    tar_path = dist_dir / staged.name
+    shutil.copy2(staged, tar_path)
+    return tar_path
+
+
 def _service_source_tarball(dest_dir: Path, name: str, version: str) -> Path:
     """Return the `<name>-<version>.tar.gz` a native installer builds `name` from.
 
     Vendored from the checkout when one is present (the dev path, byte-for-
-    byte as before), downloaded from the published GitHub Release asset when
-    it isn't (the artifact path, #3759). Raises RuntimeError if the artifact
+    byte as before), taken from `$NYXGPT_ARTIFACT_DIR` when the operator
+    staged it, and otherwise downloaded from the published GitHub Release
+    asset (the artifact path, #3759). Raises RuntimeError if the artifact
     can't be obtained.
     """
     if _has_vendorable_source(name):
         return _create_dist_tarball(dest_dir, name, version)
+    staged = _staged_service_tarball(dest_dir, name, version)
+    if staged is not None:
+        return staged
     return _download_release_tarball(dest_dir, name, version)
 
 
@@ -2503,12 +2583,14 @@ def _install_ollama_logs_systemd_unit() -> list[OpsResult]:
     return results
 
 
-def _linux_native_root(component: str) -> Path:
+def _native_install_root(component: str) -> Path:
     """Return `~/.nyxGPT/opt/<component>`, creating it if needed.
 
-    The self-contained install root Linux native mode uses in place of a
-    Homebrew Cellar keg -- holds the component's venv/build plus the wrapper
-    script its systemd unit execs.
+    The install root used in place of a Homebrew Cellar keg -- holds the
+    component's venv/build plus the wrapper script its systemd unit (Linux)
+    or launchd agent (macOS dev mode) execs. Linux native mode uses it for
+    both install modes; macOS uses it only in dev mode, since artifact mode
+    there builds inside a keg (#3789).
     """
     p = Path.home() / ".nyxGPT" / "opt" / component
     _ensure_dir(p)
@@ -2713,7 +2795,7 @@ PY
 )
 fi
 
-echo "nyxgpt-api starting (self-contained venv)" >&2
+echo "nyxgpt-api starting (__NYXGPT_API_MODE__)" >&2
 echo "  host: $HOST" >&2
 echo "  port: $PORT" >&2
 
@@ -2768,13 +2850,88 @@ if [ -n "$AUTH_KEY" ]; then
   export NYXGPT_AUTH_API_KEY="$AUTH_KEY"
 fi
 
-echo "nyxgpt-web starting (self-contained build)" >&2
+echo "nyxgpt-web starting (__NYXGPT_WEB_MODE__)" >&2
 echo "  host: $HOST" >&2
 echo "  port: $PORT" >&2
 
 cd "__NYXGPT_WEB_ROOT__"
-exec npm run start
+exec __NYXGPT_WEB_START_CMD__
 """
+
+# `npm run dev` rather than `npm run start`: dev mode's whole point is that
+# the running web UI is the working tree, so it serves through Next's dev
+# server (which compiles from `<checkout>/web` on demand) instead of a
+# production bundle that would have to be rebuilt to see an edit. Host/port
+# are passed explicitly so the wrapper's config.ini-derived values win --
+# `next dev` doesn't read the HOST env var the artifact wrapper exports.
+_DEV_WEB_START_CMD = 'npm run dev -- --hostname "$HOST" --port "$PORT"'
+
+
+def _write_native_api_wrapper(root: Path, venv_dir: Path, *, dev: bool) -> Path:
+    """Write the `nyxgpt-api` wrapper script the systemd unit / launchd agent execs.
+
+    Same script either way -- it execs uvicorn from `venv_dir` -- since the
+    difference between the modes lives in what that venv contains: a
+    non-editable install of the vendored/published source (artifact mode) or
+    an editable install pointing at the checkout (dev mode). Only the
+    startup banner differs, so `nyxgpt ops logs api` says which one is
+    running. Returns the wrapper path.
+    """
+    wrapper = root / "bin" / "nyxgpt-api"
+    content = _NATIVE_API_WRAPPER_TEMPLATE.replace("__NYXGPT_API_VENV__", str(venv_dir)).replace(
+        "__NYXGPT_API_MODE__",
+        "dev mode: editable venv" if dev else "self-contained venv",
+    )
+    _write_executable(wrapper, content)
+    return wrapper
+
+
+def _write_native_web_wrapper(root: Path, web_root: Path, *, dev: bool) -> Path:
+    """Write the `nyxgpt-web` wrapper script the systemd unit / launchd agent execs.
+
+    `web_root` is the built bundle in artifact mode (`npm run start`) and the
+    checkout's `web/` directory in dev mode (`npm run dev`, see
+    `_DEV_WEB_START_CMD`). Returns the wrapper path.
+    """
+    wrapper = root / "bin" / "nyxgpt-web"
+    content = (
+        _NATIVE_WEB_WRAPPER_TEMPLATE.replace("__NYXGPT_WEB_ROOT__", str(web_root))
+        .replace(
+            "__NYXGPT_WEB_MODE__",
+            "dev mode: Next dev server on the checkout" if dev else "self-contained build",
+        )
+        .replace("__NYXGPT_WEB_START_CMD__", _DEV_WEB_START_CMD if dev else "npm run start")
+    )
+    _write_executable(wrapper, content)
+    return wrapper
+
+
+def _install_and_activate_native_systemd_unit(service: str) -> list[OpsResult]:
+    """Render `<service>.service` into ~/.config/systemd/user, then (re)start it.
+
+    Shared by the artifact and dev install paths (#3789): the unit file is
+    identical in both modes -- it execs
+    `~/.nyxGPT/opt/<service>/bin/<service>`, and only the *contents* of that
+    wrapper differ -- so switching modes on Linux is a wrapper rewrite plus a
+    restart, with no unit churn. Returns a list of OpsResult; the first is a
+    failure if the packaged template hasn't been synced into `NYXGPT_HOME`.
+    """
+    unit_file = f"{service}.service"
+    tpl, checked = _find_systemd_unit_template(unit_file)
+    if tpl is None:
+        details = (
+            "Tried:\n"
+            + "\n".join(str(p) for p in checked)
+            + "\nRun `nyxgpt ops install` first to sync packaged templates into "
+            f"{NYXGPT_HOME}."
+        )
+        return [OpsResult(False, f"Missing {service} systemd unit template", details)]
+    dst = _systemd_user_dir() / tpl.name
+    _ensure_dir(Path.home() / ".nyxGPT" / "logs")
+    _install_systemd_unit_from_template(tpl, dst)
+    results = [OpsResult(True, f"Installed {service} systemd unit", str(dst))]
+    results.extend(_reload_and_activate_systemd_unit(unit_file))
+    return results
 
 
 def _install_native_api_systemd() -> list[OpsResult]:
@@ -2805,7 +2962,7 @@ def _install_native_api_systemd() -> list[OpsResult]:
     path. Returns a list of OpsResult.
     """
     results: list[OpsResult] = []
-    root = _linux_native_root("nyxgpt-api")
+    root = _native_install_root("nyxgpt-api")
     version = _native_service_version()
     try:
         tar = _service_source_tarball(root, "nyxgpt-api", version)
@@ -2836,27 +2993,10 @@ def _install_native_api_systemd() -> list[OpsResult]:
         if nyxgpt_pkg_dir.exists():
             _copy_file(example_config, nyxgpt_pkg_dir / "example.config.ini")
 
-    wrapper = root / "bin" / "nyxgpt-api"
-    _write_executable(
-        wrapper, _NATIVE_API_WRAPPER_TEMPLATE.replace("__NYXGPT_API_VENV__", str(venv_dir))
-    )
+    wrapper = _write_native_api_wrapper(root, venv_dir, dev=False)
     results.append(OpsResult(True, "Installed nyxgpt-api wrapper script", str(wrapper)))
 
-    tpl, checked = _find_systemd_unit_template("nyxgpt-api.service")
-    if tpl is None:
-        details = (
-            "Tried:\n"
-            + "\n".join(str(p) for p in checked)
-            + "\nRun `nyxgpt ops install` first to sync packaged templates into "
-            f"{NYXGPT_HOME}."
-        )
-        results.append(OpsResult(False, "Missing nyxgpt-api systemd unit template", details))
-        return results
-    dst = _systemd_user_dir() / tpl.name
-    _ensure_dir(Path.home() / ".nyxGPT" / "logs")
-    _install_systemd_unit_from_template(tpl, dst)
-    results.append(OpsResult(True, "Installed nyxgpt-api systemd unit", str(dst)))
-    results.extend(_reload_and_activate_systemd_unit("nyxgpt-api.service"))
+    results.extend(_install_and_activate_native_systemd_unit("nyxgpt-api"))
     return results
 
 
@@ -2889,7 +3029,7 @@ def _install_native_web_systemd() -> list[OpsResult]:
         return [OpsResult(False, "npm not found; cannot install nyxgpt-web", "")]
 
     results: list[OpsResult] = []
-    root = _linux_native_root("nyxgpt-web")
+    root = _native_install_root("nyxgpt-web")
     version = _native_service_version()
     try:
         tar = _service_source_tarball(root, "nyxgpt-web", version)
@@ -2950,27 +3090,10 @@ def _install_native_web_systemd() -> list[OpsResult]:
     extracted = build_dir / f"nyxgpt-web-{version}"
     results.append(OpsResult(True, "Built nyxgpt-web production bundle", str(extracted)))
 
-    wrapper = root / "bin" / "nyxgpt-web"
-    _write_executable(
-        wrapper, _NATIVE_WEB_WRAPPER_TEMPLATE.replace("__NYXGPT_WEB_ROOT__", str(extracted))
-    )
+    wrapper = _write_native_web_wrapper(root, extracted, dev=False)
     results.append(OpsResult(True, "Installed nyxgpt-web wrapper script", str(wrapper)))
 
-    tpl, checked = _find_systemd_unit_template("nyxgpt-web.service")
-    if tpl is None:
-        details = (
-            "Tried:\n"
-            + "\n".join(str(p) for p in checked)
-            + "\nRun `nyxgpt ops install` first to sync packaged templates into "
-            f"{NYXGPT_HOME}."
-        )
-        results.append(OpsResult(False, "Missing nyxgpt-web systemd unit template", details))
-        return results
-    dst = _systemd_user_dir() / tpl.name
-    _ensure_dir(Path.home() / ".nyxGPT" / "logs")
-    _install_systemd_unit_from_template(tpl, dst)
-    results.append(OpsResult(True, "Installed nyxgpt-web systemd unit", str(dst)))
-    results.extend(_reload_and_activate_systemd_unit("nyxgpt-web.service"))
+    results.extend(_install_and_activate_native_systemd_unit("nyxgpt-web"))
     return results
 
 
@@ -3099,14 +3222,133 @@ def _wait_for_port_free(host: str, port: int, timeout: float = 15.0) -> bool:
         time.sleep(0.5)
 
 
+# --- Ollama bootstrap (Linux) ---
+#
+# Ollama's only supported Linux distribution channel is the install script it
+# publishes at this URL (the same one docs/systemd.md used to hand the
+# operator to paste). ops fetches and runs it rather than printing it: on
+# macOS `_ensure_ollama_service` already runs `brew install ollama` for the
+# operator, so a Linux path that stops and says "install it first" is not the
+# "same or equivalent commands" the platform is specified to offer (#3508
+# acceptance), and it is the same defect #3724 was filed for on kind.
+OLLAMA_INSTALL_SCRIPT_URL = "https://ollama.com/install.sh"
+
+_OLLAMA_MANUAL_INSTALL_HINT = (
+    "Install Ollama yourself, then re-run `nyxgpt ops install`:\n"
+    "  curl -fsSL https://ollama.com/install.sh | sh\n"
+    "Other options (rootless tarball, distro packages): "
+    "https://ollama.com/download/linux"
+)
+
+
+def _install_linux_ollama() -> list[OpsResult]:
+    """Install Ollama on Linux with its official installer, for the operator.
+
+    The Linux counterpart of the `brew install ollama` that
+    `_ensure_ollama_service` already performs on macOS. Mirrors
+    `_ensure_docker_engine`'s contract for the same reason: a missing
+    prerequisite `nyxgpt ops install` can resolve on its own is ops's job,
+    not a command handed back to the operator (CLAUDE.md's Operational
+    Command Wrapping rule, and #3724's precedent).
+
+    The installer writes to `/usr/local/bin` and registers a system unit, so
+    it needs root -- taken through `_privileged_run`'s never-prompting `sudo
+    -n`, exactly like the Docker engine bootstrap. Root that isn't available
+    without a password is reported with the command to run by hand rather
+    than hung on a TTY prompt.
+
+    The installer also enables a *system-wide* `ollama.service` bound to port
+    11434. That is expected and handled: the caller runs the
+    `_takeover_system_ollama_service` reconciliation afterwards, so nyxGPT's
+    own `nyxgpt-ollama.service` ends up owning the port and the shared model
+    store (#3632).
+
+    Never fatal to the rest of install: a host that genuinely can't have
+    Ollama still gets its api/web/cassandra pieces reconciled.
+    """
+    try:
+        resp = httpx.get(OLLAMA_INSTALL_SCRIPT_URL, follow_redirects=True, timeout=60.0)
+        resp.raise_for_status()
+        script = resp.text
+    except httpx.HTTPError as e:
+        return [
+            OpsResult(
+                False,
+                "Could not download the Ollama installer",
+                f"{OLLAMA_INSTALL_SCRIPT_URL}: {type(e).__name__}: {e}\n"
+                f"{_OLLAMA_MANUAL_INSTALL_HINT}",
+            )
+        ]
+
+    with tempfile.TemporaryDirectory(prefix="nyxgpt-ollama-install-") as tmpdir:
+        script_path = Path(tmpdir) / "install.sh"
+        script_path.write_text(script, encoding="utf-8")
+        cp = _privileged_run(["sh", str(script_path)])
+
+    if cp is None:
+        return [
+            OpsResult(
+                False,
+                "Ollama is not installed and root is not available without a password",
+                _OLLAMA_MANUAL_INSTALL_HINT,
+            )
+        ]
+    if cp.returncode != 0:
+        return [
+            OpsResult(
+                False,
+                "Could not install Ollama automatically",
+                (_output_excerpt(cp) + "\n" + _OLLAMA_MANUAL_INSTALL_HINT).strip(),
+            )
+        ]
+    # The installer puts the binary in /usr/local/bin, which a minimal
+    # non-login shell's PATH does not always carry -- and a successful
+    # install this process still can't invoke is not a success.
+    if _which("ollama") is None:
+        return [
+            OpsResult(
+                False,
+                "Ollama installer succeeded but `ollama` is still not on PATH",
+                "Expected it in /usr/local/bin. Add that directory to PATH and re-run "
+                "`nyxgpt ops install`.",
+            )
+        ]
+    return [OpsResult(True, "Installed Ollama", _cp_details(cp))]
+
+
+def _ensure_ollama_installed() -> list[OpsResult]:
+    """Ensure the `ollama` binary exists before the native Ollama service needs it.
+
+    No-op when it is already on PATH (the common case, and every re-run).
+    Linux installs it (`_install_linux_ollama`); macOS does not reach here at
+    all, since `_ensure_ollama_service` installs the formula as part of its
+    own reconcile.
+    """
+    if _which("ollama") is not None:
+        return []
+    if not _is_linux():
+        return [
+            OpsResult(
+                False,
+                "ollama not found on PATH",
+                "nyxgpt cannot install Ollama automatically on "
+                f"{platform.system()}. See https://ollama.com/download.",
+            )
+        ]
+    return _install_linux_ollama()
+
+
 def _install_native_ollama_systemd() -> list[OpsResult]:
     """Ensure native Ollama is installed as the `nyxgpt-ollama.service` systemd
     --user unit, pointed at the shared model store.
 
-    Linux twin of `_ensure_ollama_service`. Requires the `ollama` binary to
-    already be on PATH -- unlike api/web, nyxgpt doesn't install Ollama
-    itself on Linux (see the Linux install section in the docs for the
-    official installer). Migrates any models already pulled into Ollama's
+    Linux twin of `_ensure_ollama_service`, including its install half: a
+    missing `ollama` binary is installed with the official installer
+    (`_ensure_ollama_installed`) the same way macOS's twin runs `brew install
+    ollama`, rather than stopping to tell the operator to run it themselves
+    (#3508 acceptance). That runs *before* the port-conflict reconciliation
+    below, because the installer itself enables the system-wide
+    `ollama.service` whose port this unit then has to take over. Migrates any models already pulled into Ollama's
     own default store into the shared one (`_migrate_native_ollama_models`,
     OS-agnostic, #3431), then installs/reloads a unit whose `Environment=`
     already bakes in `OLLAMA_MODELS` -- no separate env-refresh unit is
@@ -3121,7 +3363,14 @@ def _install_native_ollama_systemd() -> list[OpsResult]:
     it could only crash-loop against the port -- and the failure is reported
     with the command that frees it.
     """
-    results: list[OpsResult] = []
+    # Install first, take the port over second: the official installer
+    # enables a system-wide `ollama.service` on the very port this unit
+    # needs, so a takeover performed before the install would check a
+    # conflict that does not exist yet and miss the one it creates.
+    results: list[OpsResult] = _ensure_ollama_installed()
+    if any(not r.ok for r in results):
+        return results
+
     if _system_ollama_service_conflicts():
         port_free, takeover_results = _takeover_system_ollama_service()
         results.extend(takeover_results)
@@ -3132,12 +3381,7 @@ def _install_native_ollama_systemd() -> list[OpsResult]:
     if ollama_bin is None:
         return [
             *results,
-            OpsResult(
-                False,
-                "ollama not found on PATH",
-                "Install it first: curl -fsSL https://ollama.com/install.sh | sh "
-                "(see the Linux install section in the docs)",
-            ),
+            OpsResult(False, "ollama not found on PATH", _OLLAMA_MANUAL_INSTALL_HINT),
         ]
 
     models_dir = _shared_ollama_models_dir()
@@ -3200,10 +3444,19 @@ def _native_services_snapshot() -> dict[str, str]:
     """
     if _is_macos():
         brew_snapshot = _brew_services_snapshot()
-        return {
+        snapshot = {
             component: brew_snapshot.get(brew_name, "none")
             for component, brew_name in NATIVE_BREW_SERVICES.items()
         }
+        if read_install_mode().is_dev:
+            # A dev install runs api/web under its own LaunchAgents, not
+            # `brew services` -- reading brew here would report "none" (or,
+            # worse, a leftover keg's state) for the processes actually
+            # serving (#3789). ollama is unchanged: it is a brew service in
+            # both modes.
+            for component, label in DEV_LAUNCHD_LABELS.items():
+                snapshot[component] = "started" if _launchd_agent_loaded(label) else "none"
+        return snapshot
     if _is_linux():
         systemd_snapshot = _systemd_services_snapshot()
         return {
@@ -3253,8 +3506,288 @@ def _stop_systemd_service(unit: str) -> list[OpsResult]:
         ]
 
 
-def _install_native_api() -> list[OpsResult]:
-    """Install/update the native `api` service via the OS-appropriate mechanism."""
+# --- Dev-mode native install (#3789) ---
+#
+# Dev mode installs the same stack topology as the artifact path -- native
+# api/web service wrappers, ollama, the Cassandra container, observability --
+# and differs in exactly two places: what the api venv contains (an editable
+# install of the checkout instead of a vendored/published tarball) and what
+# the web wrapper runs (`npm run dev` in `<checkout>/web` instead of `npm run
+# start` against a built bundle). Everything below is the machinery for
+# those two differences plus the macOS service manager they need, since a
+# dev install has no keg for `brew services` to attach to.
+
+
+def _dev_mode_unavailable(component: str) -> OpsResult:
+    """The failure returned when `--dev` is used without a source checkout."""
+    return OpsResult(
+        False,
+        f"Dev mode needs a source checkout; cannot install {component}",
+        "`--dev` builds the api and web UI from a checkout's working tree, and this "
+        f"nyxgpt is running from an installed package ({REPO_ROOT} has no "
+        "pyproject.toml/src/nyxgpt/web). Run `nyxgpt up --dev` from a clone, or drop "
+        "`--dev` to install the published artifacts.",
+    )
+
+
+def _install_dev_launchagent(component: str) -> list[OpsResult]:
+    """Install and (re)load the dev-mode launchd agent for `api`/`web` on macOS.
+
+    macOS's artifact path runs api/web as `brew services`, which exist only
+    because the keg's formula declares them -- dev mode has no keg, so it
+    runs the wrapper scripts under its own LaunchAgents instead (the same
+    mechanism the Cassandra/Ollama log followers already use). The plists
+    are packaged templates like every other ops resource, so
+    `_sync_packaged_resources` has already put them where
+    `_find_launchagent_template` looks.
+    """
+    label = DEV_LAUNCHD_LABELS[component]
+    results: list[OpsResult] = []
+    tpl, checked = _find_launchagent_template(f"{label}.plist")
+    if tpl is None:
+        details = (
+            "Tried:\n"
+            + "\n".join(str(p) for p in checked)
+            + "\nRun `nyxgpt ops install` first to sync packaged templates into "
+            f"{NYXGPT_HOME}."
+        )
+        return [OpsResult(False, f"Missing {label} LaunchAgent template", details)]
+
+    la_dir = Path.home() / "Library" / "LaunchAgents"
+    _ensure_dir(la_dir)
+    _ensure_dir(NYXGPT_HOME / "logs")
+    dst = la_dir / tpl.name
+    _install_launchagent_from_template(tpl, dst)
+
+    domain = f"gui/{os.getuid()}"
+    _run(["launchctl", "bootout", domain, str(dst)], check=False, expected=True)
+    _run(["launchctl", "bootstrap", domain, str(dst)], check=False)
+    # kickstart -k, not just bootstrap: an agent that was already loaded from
+    # a previous dev install must actually restart to pick up the rebuilt
+    # venv / current working tree, the same reason the artifact path
+    # restarts rather than starts its brew service (#3472).
+    cp = _run(["launchctl", "kickstart", "-k", f"{domain}/{label}"], check=False)
+    if cp.returncode != 0:
+        results.append(
+            OpsResult(False, f"Failed to start LaunchAgent: {label}", _output_excerpt(cp).strip())
+        )
+        return results
+    results.append(OpsResult(True, f"Installed and started LaunchAgent: {label}", str(dst)))
+    return results
+
+
+def _activate_native_dev_service(component: str) -> list[OpsResult]:
+    """(Re)start the dev-mode `api`/`web` service via the OS-appropriate manager."""
+    if _is_macos():
+        return _install_dev_launchagent(component)
+    if _is_linux():
+        return _install_and_activate_native_systemd_unit(NATIVE_SYSTEMD_SERVICES[component])
+    return _unsupported_os_result(f"native {component} dev install")
+
+
+def _install_native_api_dev() -> list[OpsResult]:
+    """Install the `api` service as an editable venv on the checkout, then (re)start it.
+
+    Creates (or reuses) the venv under `~/.nyxGPT/opt/nyxgpt-api/venv` and
+    `pip install -e <checkout>` into it, so the running service imports
+    `nyxgpt` straight out of `src/nyxgpt/` -- a `git pull` plus a restart is
+    the whole update path, with no tarball, no formula and no keg build in
+    between (#3789). The wrapper script and service unit/agent are the same
+    ones the artifact path installs; only the venv's contents differ.
+
+    The venv is built through `_create_service_venv`, the same interpreter
+    selection the artifact path uses (#3782): `pip install -e` honours
+    `requires-python` exactly as installing the tarball does, so a bare
+    `python3` that is below the floor fails a dev install the same way it
+    failed a cloud deploy.
+
+    Returns a list of OpsResult.
+    """
+    checkout = _dev_checkout_root()
+    if checkout is None:
+        return [_dev_mode_unavailable("nyxgpt-api")]
+
+    results: list[OpsResult] = []
+    root = _native_install_root("nyxgpt-api")
+    venv_dir = root / "venv"
+
+    venv_result = _create_service_venv(venv_dir, "nyxgpt-api")
+    results.append(venv_result)
+    if not venv_result.ok:
+        return results
+
+    pip = str(venv_dir / "bin" / "pip")
+    _run([pip, "install", "--upgrade", "pip"], check=False)
+    cp = _run([pip, "install", "-e", str(checkout)], check=False)
+    if cp.returncode != 0:
+        results.append(
+            OpsResult(
+                False,
+                "Failed to pip install -e the nyxgpt checkout",
+                _output_excerpt(cp).strip(),
+            )
+        )
+        return results
+    results.append(
+        OpsResult(True, f"Installed nyxgpt-api (editable) from {checkout}", str(venv_dir))
+    )
+
+    wrapper = _write_native_api_wrapper(root, venv_dir, dev=True)
+    results.append(OpsResult(True, "Installed nyxgpt-api wrapper script (dev mode)", str(wrapper)))
+    results.extend(_activate_native_dev_service("api"))
+    return results
+
+
+def _install_native_web_dev() -> list[OpsResult]:
+    """Point the `web` service at the checkout's Next dev server, then (re)start it.
+
+    No vendoring, no `npm run build`, no keg: the wrapper `cd`s into
+    `<checkout>/web` and runs `npm run dev`, so the served UI is the working
+    tree and an edit shows up without reinstalling anything (#3789).
+    `node_modules` is primed earlier in the same install by
+    `_ensure_web_deps` (which runs `npm ci` in the checkout's `web/`), so a
+    missing one here means that step failed and is reported as such rather
+    than silently starting a dev server that cannot boot.
+
+    Returns a list of OpsResult.
+    """
+    checkout = _dev_checkout_root()
+    if checkout is None:
+        return [_dev_mode_unavailable("nyxgpt-web")]
+    if _which("npm") is None:
+        return [OpsResult(False, "npm not found; cannot install nyxgpt-web", "")]
+
+    web_dir = checkout / "web"
+    if not (web_dir / "node_modules").is_dir():
+        return [
+            OpsResult(
+                False,
+                "Web dependencies are missing; cannot start the dev server",
+                f"{web_dir / 'node_modules'} does not exist -- the `web deps` install step "
+                "(npm ci) must succeed before the dev-mode web service can run.",
+            )
+        ]
+
+    results: list[OpsResult] = []
+    root = _native_install_root("nyxgpt-web")
+    wrapper = _write_native_web_wrapper(root, web_dir, dev=True)
+    results.append(
+        OpsResult(True, f"Installed nyxgpt-web wrapper script (dev mode, {web_dir})", str(wrapper))
+    )
+    results.extend(_activate_native_dev_service("web"))
+    return results
+
+
+def _remove_dev_launchagents() -> list[OpsResult]:
+    """Unload and delete the dev-mode api/web LaunchAgents (macOS).
+
+    Run when switching *away* from dev mode: a still-loaded dev agent would
+    hold ports 8000/3000 against the brew services the artifact install is
+    about to start, and launchd would keep restarting it (KeepAlive) --
+    exactly the "orphaned install breaks the other path" failure the mode
+    switch has to prevent.
+    """
+    results: list[OpsResult] = []
+    la_dir = Path.home() / "Library" / "LaunchAgents"
+    for component, label in DEV_LAUNCHD_LABELS.items():
+        plist = la_dir / f"{label}.plist"
+        results.extend(_stop_launchagent(label))
+        if plist.exists():
+            try:
+                plist.unlink()
+                results.append(
+                    OpsResult(True, f"Removed dev-mode LaunchAgent for {component}", str(plist))
+                )
+            except OSError as e:
+                results.append(
+                    OpsResult(
+                        False,
+                        f"Failed to remove dev-mode LaunchAgent for {component}",
+                        f"{type(e).__name__}: {e}",
+                    )
+                )
+    return results
+
+
+def _stop_artifact_brew_services() -> list[OpsResult]:
+    """Stop the artifact-path brew services for api/web (macOS).
+
+    Run when switching *to* dev mode. The kegs are left installed (switching
+    back is then just another `nyxgpt up`), but their services must not be
+    running: they would hold ports 8000/3000 against the dev LaunchAgents,
+    and `brew services` restarts them at login.
+    """
+    if _which("brew") is None:
+        return []
+    results: list[OpsResult] = []
+    for component in ("api", "web"):
+        results.extend(_stop_brew_service(NATIVE_BREW_SERVICES[component]))
+    return results
+
+
+def _drop_stale_api_venv() -> list[OpsResult]:
+    """Delete `~/.nyxGPT/opt/nyxgpt-api/venv` so the new mode builds it clean.
+
+    Both modes install into the same venv path, and installing one over the
+    other in place leaves the previous mode's `nyxgpt` distribution in
+    site-packages (an editable `.pth`/finder, or a plain copy) racing the new
+    one for the import. Rebuilding from empty is a few seconds and removes
+    the whole class of "which nyxgpt is the service actually running?"
+    ambiguity.
+    """
+    venv_dir = _native_install_root("nyxgpt-api") / "venv"
+    if not venv_dir.exists():
+        return []
+    try:
+        shutil.rmtree(venv_dir)
+    except OSError as e:
+        return [
+            OpsResult(
+                False,
+                "Failed to remove the previous mode's nyxgpt-api venv",
+                f"{venv_dir}: {type(e).__name__}: {e}",
+            )
+        ]
+    return [OpsResult(True, "Removed the previous mode's nyxgpt-api venv", str(venv_dir))]
+
+
+def _reconcile_install_mode(dev: bool) -> list[OpsResult]:
+    """Record the install mode this run targets, clearing the other mode's leftovers.
+
+    Runs before the api/web install steps so those steps -- and every
+    `restart`/`stop`/`status` afterwards -- see the mode the machine is
+    actually being reconciled to. When the mode is unchanged this is just the
+    record plus a status line; when it changed, the previous mode's running
+    services are stopped first (see `_remove_dev_launchagents` /
+    `_stop_artifact_brew_services`) and the shared api venv is rebuilt from
+    empty (`_drop_stale_api_venv`).
+    """
+    previous = read_install_mode()
+    target = INSTALL_MODE_DEV if dev else INSTALL_MODE_ARTIFACT
+    checkout = _dev_checkout_root() if dev else None
+    results: list[OpsResult] = []
+
+    if previous.mode != target:
+        results.append(OpsResult(True, f"Install mode changing: {previous.mode} -> {target}", ""))
+        if _is_macos():
+            results.extend(_stop_artifact_brew_services() if dev else _remove_dev_launchagents())
+        results.extend(_drop_stale_api_venv())
+
+    state = InstallModeState(mode=target, checkout=str(checkout) if checkout else None)
+    marker = write_install_mode(target, checkout)
+    results.append(OpsResult(True, f"Install mode: {state.label()}", str(marker)))
+    return results
+
+
+def _install_native_api(dev: bool = False) -> list[OpsResult]:
+    """Install/update the native `api` service via the OS-appropriate mechanism.
+
+    `dev=True` installs the editable-checkout variant on either OS instead of
+    the artifact path's Homebrew keg (macOS) / tarball venv (Linux) -- see
+    `_install_native_api_dev` (#3789).
+    """
+    if dev:
+        return _install_native_api_dev()
     if _is_macos():
         return _install_homebrew_api()
     if _is_linux():
@@ -3262,8 +3795,14 @@ def _install_native_api() -> list[OpsResult]:
     return _unsupported_os_result("native api install")
 
 
-def _install_native_web() -> list[OpsResult]:
-    """Install/update the native `web` service via the OS-appropriate mechanism."""
+def _install_native_web(dev: bool = False) -> list[OpsResult]:
+    """Install/update the native `web` service via the OS-appropriate mechanism.
+
+    `dev=True` runs the checkout's Next dev server instead of a built bundle
+    -- see `_install_native_web_dev` (#3789).
+    """
+    if dev:
+        return _install_native_web_dev()
     if _is_macos():
         return _install_homebrew_web()
     if _is_linux():
@@ -3321,9 +3860,53 @@ def _install_ollama_env_agent() -> list[OpsResult]:
     return _unsupported_os_result("ollama env agent")
 
 
+def _launchd_agent_loaded(label: str) -> bool:
+    """True if LaunchAgent `label` is currently loaded (`launchctl list`).
+
+    False on any failure (launchctl missing, non-zero exit, or the call
+    itself raising): this feeds `status`/`detect_deployment_mode`, which
+    report state rather than act on it, so an unreadable launchd is "not
+    known to be running", never an exception out of a status command.
+    """
+    if _which("launchctl") is None:
+        return False
+    try:
+        cp = _run(["launchctl", "list"], check=False, expected=True)
+    except Exception as e:
+        logger.warning(
+            "Could not query launchctl list for %s: %s", label, e, extra={"component": "ops"}
+        )
+        return False
+    if cp.returncode != 0:
+        return False
+    for line in (cp.stdout or "").splitlines():
+        parts = line.split()
+        if parts and parts[-1] == label:
+            return True
+    return False
+
+
+def _dev_launchd_label(component: str) -> str | None:
+    """The dev-mode launchd label to drive for `component`, or None.
+
+    None means "use this OS's normal service manager": every component on
+    Linux (both modes drive the same systemd units), `ollama` on macOS (a
+    brew service in both modes), and all of macOS when the machine is on the
+    artifact path.
+    """
+    if not _is_macos() or component not in DEV_LAUNCHD_LABELS:
+        return None
+    if not read_install_mode().is_dev:
+        return None
+    return DEV_LAUNCHD_LABELS[component]
+
+
 def _restart_native_service(component: str) -> list[OpsResult]:
     """Restart the OS-appropriate native service for `component` ("api"/"web"/"ollama")."""
     if _is_macos():
+        label = _dev_launchd_label(component)
+        if label is not None:
+            return _restart_launchagent(label)
         return _restart_brew_service(NATIVE_BREW_SERVICES[component])
     if _is_linux():
         return _restart_systemd_service(NATIVE_SYSTEMD_SERVICES[component])
@@ -3333,6 +3916,9 @@ def _restart_native_service(component: str) -> list[OpsResult]:
 def _stop_native_service(component: str) -> list[OpsResult]:
     """Stop the OS-appropriate native service for `component` ("api"/"web"/"ollama")."""
     if _is_macos():
+        label = _dev_launchd_label(component)
+        if label is not None:
+            return _stop_launchagent(label)
         return _stop_brew_service(NATIVE_BREW_SERVICES[component])
     if _is_linux():
         return _stop_systemd_service(NATIVE_SYSTEMD_SERVICES[component])
@@ -6224,8 +6810,22 @@ def infra_status() -> dict[str, Any]:
     else:
         running_mode = "none"
 
+    # Which *install* mode the native api/web are on -- artifact (published/
+    # vendored builds) or dev (this checkout's working tree, #3789). Reported
+    # alongside the deployment mode for the same reason `ops status` prints
+    # it: a dashboard showing a healthy native stack must not let a dev-mode
+    # install be read as a verdict on the artifact path.
+    install_mode_state = read_install_mode()
+    install_mode = {
+        "mode": install_mode_state.mode,
+        "checkout": install_mode_state.checkout,
+        "label": install_mode_state.label(),
+        "components": sorted(DEV_LAUNCHD_LABELS),
+    }
+
     return {
         "mode": running_mode,
+        "install_mode": install_mode,
         "native": mode_info.native,
         "compose": mode_info.compose,
         "compose_probe_available": self_heal.compose_probe_available(),
@@ -6333,6 +6933,13 @@ def install(args) -> int:
     pass `--skip-observability` to opt out (e.g. on a host with no Docker,
     or to keep those Compose profiles stopped for resource reasons).
 
+    `--dev` installs the api/web services from the current checkout instead
+    of from artifacts (see `nyxgpt.install_mode` and `_install_native_api_dev`
+    /`_install_native_web_dev`, #3789): same topology, same steps, no keg or
+    tarball build. It is checkout-only and returns 2 immediately when run
+    from an installed package; without it the artifact path is unchanged and
+    remains the default.
+
     Returns 0 if every step succeeded, else 2.
     """
     if getattr(args, "terraform", False) and getattr(args, "kubernetes", False):
@@ -6343,7 +6950,28 @@ def install(args) -> int:
     if getattr(args, "kubernetes", False):
         return _install_kubernetes(args)
 
-    logger.info("ops: install starting", extra={"component": "ops", "action": "install"})
+    dev = bool(getattr(args, "dev", False))
+    if dev and _dev_checkout_root() is None:
+        # Checkout-only by definition -- say so up front rather than
+        # reconciling half a stack and failing at the api step (#3789).
+        print(
+            "ERROR: --dev needs a source checkout, and this nyxgpt is running from an "
+            f"installed package ({REPO_ROOT} has no pyproject.toml/src/nyxgpt/web).\n"
+            "       Run `nyxgpt up --dev` from a clone of the repository, or drop --dev "
+            "to install the published artifacts.",
+            file=sys.stderr,
+        )
+        return 2
+
+    logger.info(
+        "ops: install starting (mode=%s)",
+        INSTALL_MODE_DEV if dev else INSTALL_MODE_ARTIFACT,
+        extra={
+            "component": "ops",
+            "action": "install",
+            "install_mode": INSTALL_MODE_DEV if dev else INSTALL_MODE_ARTIFACT,
+        },
+    )
 
     steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
         # Must run first: every step below that reads a Compose file, config
@@ -6355,6 +6983,10 @@ def install(args) -> int:
             lambda: _clear_intentional_stops(["api", "web", "ollama", "cassandra"]),
         ),
         ("config", _install_config),
+        # Must run before the api/web steps: it records the mode they (and
+        # every later restart/stop/status) act in, and clears the other
+        # mode's services/venv when switching between them (#3789).
+        ("install mode", lambda: _reconcile_install_mode(dev)),
         # Everything container-backed below (Cassandra, the observability
         # stack) needs a working engine, and requiring the operator to
         # install Docker by hand first was itself an acceptance failure
@@ -6368,20 +7000,21 @@ def install(args) -> int:
         ("cassandra log follower service", _install_cassandra_log_follower_service),
         ("ollama logs follower service", _install_ollama_log_follower_service),
         ("ollama env agent", _install_ollama_env_agent),
-        ("native api service", _install_native_api),
-        ("native web service", _install_native_web),
+        ("native api service", lambda: _install_native_api(dev=dev)),
+        ("native web service", lambda: _install_native_web(dev=dev)),
         ("ollama service", _ensure_native_ollama_service),
         ("stale log symlink cleanup", _cleanup_stale_log_symlinks),
         ("env sync", sync_env_from_config),
         ("compose config (derive from native)", _generate_compose_config),
     ]
     if not getattr(args, "skip_observability", False):
-        # Must run before the observability stack starts: dockerd creates a
-        # missing bind-mount source root-owned, which leaves
-        # Prometheus/Grafana/Loki's non-root uids unable to write their own
-        # data dirs (#3632) -- the same failure mode ~/.nyxGPT/secrets hit in
-        # #3432, handled by the glitchtip secrets dir step below.
-        steps.append(("observability volume dirs", _ensure_observability_volume_dirs))
+        # The bind-mount ownership reconcile (#3632) used to be its own step
+        # here. It now runs inside `_reconcile_grafana_provisioning` -- the
+        # "observability stack" step below -- because `install` was never the
+        # only path that starts the stack: `nyxgpt ops observability` and the
+        # dashboard's observability toggle both bypass this list, and so came
+        # up on root-owned volumes (#3721). Its per-directory OK/FAIL lines
+        # still print, under that step.
         steps.append(("glitchtip secrets dir", _ensure_glitchtip_secrets_dir))
         steps.append(("slack webhook secret", _sync_grafana_slack_webhook_secret))
         steps.append(("observability stack", _reconcile_grafana_provisioning))
@@ -6405,7 +7038,26 @@ def install(args) -> int:
     return 0 if ok else 2
 
 
-def _wait_for_stack_healthy(timeout: float = 180.0, poll_interval: float = 3.0) -> bool:
+def _pending_components(excluded: set[str]) -> list[str]:
+    """Desired components not yet reporting healthy, minus `excluded`.
+
+    Shared by the health-wait's poll and its timeout message so the two can't
+    disagree about what "pending" means -- the timeout used to name nothing at
+    all, which cost a full CI cycle to work out (#3508).
+    """
+    return sorted(
+        s.service
+        for s in self_heal.list_component_status()
+        if s.desired and not s.healthy and s.service not in excluded
+    )
+
+
+def _wait_for_stack_healthy(
+    timeout: float = 180.0,
+    poll_interval: float = 3.0,
+    *,
+    skip_observability: bool = False,
+) -> bool:
     """Poll every desired component's health until all report healthy, or `timeout` elapses.
 
     Reuses `self_heal.list_component_status()` -- the same cross-mode
@@ -6415,13 +7067,20 @@ def _wait_for_stack_healthy(timeout: float = 180.0, poll_interval: float = 3.0) 
     with `desired=False` (an operator-disabled observability profile, or one
     marked intentionally stopped) is excluded, same as `heal_now`'s automatic
     pass.
+
+    `skip_observability` additionally excludes the observability Compose
+    services, because `--skip-observability` deliberately does not start them
+    while leaving their config.ini feature flags on -- so self-heal keeps
+    reporting them `desired=True, state="absent"` (that's `_absent_desired_
+    statuses`, and it is the correct answer to "what does the operator want
+    running"). Without this, `nyxgpt up --skip-observability` could never
+    return 0: it would wait the full timeout for containers the same command
+    chose not to start, and exit 2 on a perfectly healthy stack (#3508).
     """
+    excluded = self_heal.observability_services() if skip_observability else set()
     deadline = time.monotonic() + timeout
     while True:
-        pending = [
-            s.service for s in self_heal.list_component_status() if s.desired and not s.healthy
-        ]
-        if not pending:
+        if not _pending_components(excluded):
             return True
         if time.monotonic() >= deadline:
             return False
@@ -6440,7 +7099,8 @@ def up(args) -> int:
 
     Pass `--no-wait` to return as soon as `install()` finishes, without
     waiting for component health; `--timeout` controls how long to wait
-    before giving up (default 180s).
+    before giving up (default 180s). `--skip-observability` is honored by the
+    wait as well as the install -- see `_wait_for_stack_healthy`.
 
     Returns whatever `install()` returned if it failed or `--no-wait` was
     passed; 2 if the health-wait times out; 0 once every desired component is
@@ -6450,11 +7110,19 @@ def up(args) -> int:
     if rc != 0 or getattr(args, "no_wait", False):
         return rc
 
+    skip_observability = bool(getattr(args, "skip_observability", False))
     print("\nWaiting for components to report healthy...")
-    if not _wait_for_stack_healthy(timeout=getattr(args, "timeout", 180.0)):
+    if not _wait_for_stack_healthy(
+        timeout=getattr(args, "timeout", 180.0),
+        skip_observability=skip_observability,
+    ):
+        pending = _pending_components(
+            self_heal.observability_services() if skip_observability else set()
+        )
+        still = f" Still unhealthy: {', '.join(pending)}." if pending else ""
         print(
-            "WARNING: not every component reported healthy within the timeout -- "
-            "run `nyxgpt ops status` or `nyxgpt self-heal status` for details.",
+            "WARNING: not every component reported healthy within the timeout --"
+            f"{still} run `nyxgpt ops status` or `nyxgpt self-heal status` for details.",
             file=sys.stderr,
         )
         return 2
@@ -6465,7 +7133,7 @@ def up(args) -> int:
             "`nyxgpt ops port-forward` in another terminal, then open "
             f"{WEB_URL} (see docs/kubernetes.md#4-verify)."
         )
-        if not getattr(args, "skip_observability", False):
+        if not skip_observability:
             print(
                 "Observability (Grafana, Prometheus, Jaeger, GlitchTip) runs in the cluster "
                 "too -- `nyxgpt ops port-forward --target observability` publishes all four "
@@ -6493,9 +7161,30 @@ def status(_args) -> int:
 
     mode = detect_deployment_mode()
 
+    # Printed before the component states, and per component below, so a
+    # dev-mode pass can never be read as an artifact-path pass (#3789).
+    install_mode = read_install_mode()
+    print(f"\nInstall mode: {install_mode.label()}")
+    if install_mode.is_dev:
+        checkout = Path(install_mode.checkout) if install_mode.checkout else None
+        if checkout is not None and not checkout.exists():
+            print(
+                f"  WARNING: that checkout no longer exists ({checkout}) -- api/web are "
+                "running code that may be gone. Re-run `nyxgpt up --dev` from a checkout, "
+                "or `nyxgpt up` to return to the artifact path."
+            )
+        print(
+            "  api/web run the working tree (editable venv + Next dev server); "
+            "restart a service to pick up new code. Artifact-path behavior "
+            "(published tap/tarball) is NOT what is being exercised here."
+        )
+
     print("\nDeployment mode:")
     for component in ("api", "web", "ollama"):
-        print(f"  native  {component}: {mode.native.get(component, 'none')}")
+        suffix = ""
+        if component in DEV_LAUNCHD_LABELS:
+            suffix = f"  [{INSTALL_MODE_DEV if install_mode.is_dev else INSTALL_MODE_ARTIFACT}]"
+        print(f"  native  {component}: {mode.native.get(component, 'none')}{suffix}")
     # Cassandra is the one Docker-managed piece of a local-first install --
     # labeling it "native" here misstated the topology.
     print(f"  docker  cassandra: {mode.native.get('cassandra', 'absent')}")
@@ -6572,13 +7261,19 @@ def status(_args) -> int:
         else:
             print("\nHomebrew services: brew not found")
 
-        label = "com.nyxgpt.cassandra-logs"
+        labels = ["com.nyxgpt.cassandra-logs"]
+        if install_mode.is_dev:
+            # Dev mode's api/web run as LaunchAgents, not brew services --
+            # the "Homebrew services" block above says nothing about them.
+            labels.extend(DEV_LAUNCHD_LABELS[c] for c in ("api", "web"))
         try:
             cp = _run(["launchctl", "list"], check=False, expected=True)
-            loaded = label in (cp.stdout or "")
-            print(f"\nLaunchAgent {label}: {'LOADED' if loaded else 'NOT LOADED'}")
+            listed = cp.stdout or ""
+            for label in labels:
+                print(f"\nLaunchAgent {label}: {'LOADED' if label in listed else 'NOT LOADED'}")
         except Exception as e:
-            print(f"\nLaunchAgent {label}: ERROR ({e})")
+            for label in labels:
+                print(f"\nLaunchAgent {label}: ERROR ({e})")
 
     if _which("docker") is None:
         print("\nDocker: docker not found")
@@ -7188,6 +7883,28 @@ def doctor(_args) -> int:
     """
     logger.info("ops: doctor starting", extra={"component": "ops", "action": "doctor"})
     issues: list[str] = []
+
+    # Stated before the checks below so a dev-mode diagnosis is never read as
+    # a verdict on the artifact path (#3789), and so a dev install whose
+    # checkout has been moved/deleted -- which leaves api/web running code
+    # nothing can rebuild -- is reported rather than silently tolerated.
+    install_mode = read_install_mode()
+    print(f"Install mode: {install_mode.label()}")
+    if install_mode.is_dev:
+        checkout = Path(install_mode.checkout) if install_mode.checkout else None
+        if checkout is None or not checkout.is_dir():
+            issues.append(
+                "Dev-mode install recorded, but its checkout is missing "
+                f"({install_mode.checkout or 'no path recorded'}) -- the api/web services "
+                "point at a tree that is no longer there. Re-run `nyxgpt up --dev` from a "
+                "checkout, or `nyxgpt up` to return to the artifact path."
+            )
+        elif not (checkout / "web" / "node_modules").is_dir():
+            issues.append(
+                f"Dev-mode web service has no dependencies installed ({checkout}/web/"
+                "node_modules is missing) -- the Next dev server cannot start "
+                "(run: nyxgpt up --dev)"
+            )
 
     cfg = Path.home() / ".nyxGPT" / "config.ini"
     if not cfg.exists():
@@ -9119,11 +9836,22 @@ def _reconcile_grafana_provisioning() -> list[OpsResult]:
     if drift_result is not None and not drift_result.ok:
         return results
 
-    # Must run before the stack starts: it decides whether Compose resolves
-    # the `host-api-relay` service into the monitoring profile at all, which
-    # is what gives prometheus a route to a natively-installed API on Linux
-    # (#3721). `_start_observability_stack` reads `.env` when it enumerates
-    # services, so the write has to land first.
+    # Must run before the stack starts: on Linux dockerd creates a missing
+    # bind-mount source as root:root, and Prometheus (65534) / Grafana (472) /
+    # Loki (10001) then crash-loop unable to write their own data dirs (#3632).
+    # This lives here rather than in `install()`'s step list because `install`
+    # is not the only way the stack starts: `nyxgpt ops observability` is
+    # documented as runnable without an install having gone first, and the SRE
+    # dashboard's observability toggle calls `reconcile_observability` -- both
+    # reach the stack only through this function, so both brought it up on
+    # root-owned volumes (#3721). One entrypoint, one ownership guarantee.
+    results += _ensure_observability_volume_dirs()
+
+    # Also before the stack starts: this decides whether Compose resolves the
+    # `host-api-relay` service into the monitoring profile at all, which is what
+    # gives prometheus a route to a natively-installed API on Linux (#3721).
+    # `_start_observability_stack` reads `.env` when it enumerates services, so
+    # the write has to land first.
     results.append(_sync_host_relay_env())
 
     start_results = _start_observability_stack()
@@ -9997,9 +10725,17 @@ def _ensure_observability_volume_dirs() -> list[OpsResult]:
     macOS never hits this -- Docker Desktop's VirtioFS/gRPC-FUSE sharing
     presents bind mounts as owned by whatever uid the container asks for --
     which is exactly why it went unnoticed until a plain Linux engine was
-    exercised. Runs as an early best-effort install step (same shape as
-    `_ensure_glitchtip_secrets_dir`, which fixed the sibling #3432 case for
-    `~/.nyxGPT/secrets`), so it never raises.
+    exercised. Best-effort (same shape as `_ensure_glitchtip_secrets_dir`,
+    which fixed the sibling #3432 case for `~/.nyxGPT/secrets`), so it never
+    raises: a directory that cannot be reconciled comes back as a failed
+    OpsResult carrying the `sudo chown` to run.
+
+    Called from `_reconcile_grafana_provisioning`, not from `install()`'s step
+    list, so it covers every path that starts the stack -- `nyxgpt ops
+    install`, the standalone `nyxgpt ops observability`, and the SRE
+    dashboard's observability toggle (`reconcile_observability`). Wiring it to
+    `install` alone left the other two starting the stack on root-owned
+    volumes, which is the Linux half of #3721.
     """
     if not _is_linux():
         return [OpsResult(True, "Not Linux; Docker Desktop handles bind-mount ownership")]

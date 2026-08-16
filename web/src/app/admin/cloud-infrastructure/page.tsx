@@ -480,7 +480,12 @@ export default function CloudInfrastructurePage() {
         <a href="/admin/infrastructure" style={{ color: '#0066cc' }}>
           Infrastructure Status
         </a>{' '}
-        page.
+        page. To check that the <em>install</em> path still works on the target distro without
+        deploying anything, run the{' '}
+        <a href="/admin/cloud-smoke" style={{ color: '#0066cc' }}>
+          Cloud Artifact Smoke
+        </a>{' '}
+        — a bare Amazon Linux 2023 container, no AWS account and no charges.
       </div>
 
       {error && (

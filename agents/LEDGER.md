@@ -249,7 +249,56 @@ are absent here by design (relocated to the annex; IDs are never reused).
   different things; `scripts/agents/promote_accepted_features.sh`;
   `scripts/agents/lib/drain_gate.py`.
 
-- **D-009** · 2026-08-15 · owner — Merge conflicts are the **developer
+- **D-009** · 2026-08-15 · owner — A **dev install mode** exists alongside the
+  artifact path: `nyxgpt up --dev` / `nyxgpt ops install --dev` installs the api
+  as an editable venv on the current checkout and runs the web UI's Next dev
+  server from `<checkout>/web`, so the stack runs whatever HEAD the last
+  `git pull` produced with no keg, tap or tarball build. It is opt-in and
+  checkout-only; a bare `nyxgpt up` remains the artifact path and the
+  repo-less guarantee (#3504) is unchanged — dev mode is a development and
+  mid-stream-testing path, never an acceptance path. The mode is recorded in
+  `~/.nyxGPT/install-mode.json` (`nyxgpt.install_mode`) and reported by
+  `ops status`/`doctor`, because macOS drives different service managers per
+  mode (dev LaunchAgents `com.nyxgpt.api`/`com.nyxgpt.web` vs. `brew
+  services`) and self-heal must not restart an old keg onto the dev process's
+  port. Installing either mode over the other stops the other's services and
+  rebuilds the shared api venv from empty.
+  Source: #3789; `docs/ops.md` §`--dev`; `src/nyxgpt/install_mode.py`.
+
+- **D-010** · 2026-08-15 · owner — Agent model assignment is a **deliberate
+  split**: the **review** agent (`claude-code-review.yml`, the `@claude`
+  entry point and huddle mediation) runs on **`claude-fable-5`**; the
+  **developer** agent's implementation paths run on **`claude-opus-5`**. The
+  Fable pins are a chosen configuration, not an oversight — do not "upgrade"
+  them to Opus on sight.
+  **Override applied and ENDED, both on 2026-08-15** — the split above is the
+  live configuration again; the paragraph below is history, not current state.
+  For ~2 hours every agent invocation was pinned to
+  `claude-opus-5` (commit `e56c3d9b`, reverted once the owner raised the
+  limit) because Fable was refused at the API with
+  a **monthly spend limit**, not a rolling usage window. The evidence is in the
+  Claude step's own result payload (review run 31908249723):
+  `"api_error_status": 429`, `"terminal_reason": "api_error"`,
+  `"result": "You've hit your monthly spend limit. Switch to another model to
+  continue."` — i.e. Anthropic's own guidance is the remedy applied here. Every
+  review run from 20:20 UTC failed this way while the Opus-pinned developer
+  paths ran normally. The owner raised the limit the same evening and the
+  override was reverted in full, restoring the split exactly. The reason the
+  split exists is still not recorded here — ask the owner before changing it.
+  **Diagnostic trap (cost an hour on 2026-08-15):** that 429 is not what the
+  workflow reports. `claude-code-action` surfaced only
+  `--json-schema was provided but Claude did not return structured_output.
+  Result subtype: success` — calling a refused run a success — with the real
+  429 buried in `claude-execution-output.json`. The usage-limit detector missed
+  it too: `count_fast_claude_steps` is called with the step name
+  `Run Claude Code Review`, but the action's step is actually named
+  `Run Claude Code Action`, so it printed "No usage-limit signature detected"
+  and never applied the retry label. Read the result payload's
+  `api_error_status`/`result`, never the action's top-level error text.
+  Source: owner in session, 2026-08-15; commits `54c38faa` (original all-Fable
+  pinning), `e56c3d9b` (this override); run 31908249723 log.
+
+- **D-011** · 2026-08-15 · owner — Merge conflicts are the **developer
   agent's** work, and branches are **never rebased**. Two rules settled
   together: (a) a conflicted PR is dispatched to the developer agent, which
   merges `origin/<release-branch>` into the PR branch, resolves preserving both
@@ -451,6 +500,230 @@ are absent here by design (relocated to the annex; IDs are never reused).
   Re-verify when: pip changes `_EAGER_IMPORTS`/`_prevent_import_hook` (the
   deprecation there is marked `gone_in="26.3"`), or the recipe stops using
   `pip download`.
+
+- **V-014** · 2026-08-15 — Next.js compiles `web/src/instrumentation.ts` for the
+  **edge** server runtime as well as the Node.js one, so any node-only module it
+  reaches must be imported *inside* a `process.env.NEXT_RUNTIME === "nodejs"`
+  block, never at the top level. A top-level `import … from "./lib/logger"`
+  (which reaches `node:fs`) failed the edge compile with
+  `UnhandledSchemeError: Reading from "node:fs" is not handled by plugins`, and a
+  failed instrumentation compile makes `next dev` answer **500 to every request**
+  — while `next build`/`next start` are unaffected, so only the dev-server path
+  (`nyxgpt up --dev`, **D-009**) broke and every artifact-path check stayed green.
+  An early `return` is not sufficient: webpack drops an untaken `if` branch and
+  the module graph under it, but statements after a `return` stay live to the
+  bundler.
+  Method: executed on this runner 2026-08-15 — reproduced `GET / 500` with the
+  `⨯ node:fs` compile error, confirmed the failing compiler by logging the
+  webpack context (`{isServer:true,nextRuntime:"edge"}`), then re-ran after the
+  fix for `GET / 200` with zero `UnhandledSchemeError`; `npm run build` +
+  `npm run start` also re-checked at 200 (#3789/#3791). Standing CI guard: the
+  `web / expected 200` check in `linux-native-dev-smoke`.
+  Re-verify when: Next.js changes which runtimes it compiles the instrumentation
+  hook for, or `lib/logger.ts` stops using `node:fs`.
+
+- **V-015** · 2026-08-15 — `ops.install()`'s unit tests patch its steps out **by
+  enumeration**, so every step added to the list afterwards runs for real against
+  the developer's own machine until someone adds it to each `with` block. The
+  install-mode step (**D-009**) landed that way and was not inert: on a machine
+  recording `dev`, running one install unit test deleted the real
+  `~/.nyxGPT/opt/nyxgpt-api/venv`, rewrote the real marker back to `artifact`
+  (and on macOS would `launchctl bootout` the live dev LaunchAgents), then failed
+  — i.e. the suite destroyed the state of the machine `nyxgpt up --dev` had just
+  produced, and passed in CI only because runners start in artifact mode.
+  Method: executed on this runner 2026-08-15 — wrote `{"mode": "dev", …}` to the
+  real `~/.nyxGPT/install-mode.json` plus a sentinel venv, ran
+  `test_ops_install_returns_zero_when_all_ok` on the pre-fix tree (venv
+  DESTROYED, marker rewritten, `assert 2 == 0`), then the same injection on the
+  fixed tree (marker byte-identical, sentinel PRESENT, test passed) (#3789/#3791).
+  Re-verify when: a new step is added to `ops.install()`'s step list — the
+  standing guards are the autouse `_isolate_install_mode_marker` fixture in
+  `tests/unit/conftest.py` and the paired
+  `test_install_tests_patch_the_mode_step_…` / `test_an_unpatched_mode_step_…`
+  fault-injection tests, which close the marker half but not the general pattern.
+
+- **V-016** · 2026-08-15 — Observability on a **plain Linux docker engine**
+  needs two engine-level fixes that Docker Desktop hides on macOS, and both
+  are now reconciled inside `ops._reconcile_grafana_provisioning` — the one
+  function every stack-start path goes through (`nyxgpt ops install`, the
+  standalone `nyxgpt ops observability`, and the dashboard's
+  `reconcile_observability` toggle). (1) dockerd creates a missing bind-mount
+  source `root:root`, so Prometheus (uid 65534), Grafana (472) and Loki
+  (10001) crash-loop unable to write their own data dirs; the #3632 guard for
+  this was wired into `install()`'s step list **only**, so the other two paths
+  brought the stack up broken (#3721). (2) `host.docker.internal:host-gateway`
+  resolves to the bridge gateway, which a loopback-bound native API does not
+  listen on — bridged by the `host-api-relay` Compose service (#3725). With
+  both, `[api] host` stays `127.0.0.1` and no `0.0.0.0` listener is needed.
+  Method: `scripts/linux-observability-smoke.py`, run on a real Linux docker
+  engine (28.0.4) in CI as the `linux-observability` job of
+  `linux-native-smoke.yml`. It fault-injects the pre-fix behaviour first —
+  Prometheus must crash-loop on `open /prometheus/queries.active: permission
+  denied` or the job fails as toothless — then asserts Prometheus runs, its
+  `nyxgpt-api` target reports `up` (a real scrape through the relay), and
+  nothing listens on `0.0.0.0:8000`.
+  Re-verify when: the observability bind-mount set changes, an upstream image
+  changes the uid it runs as, or a new entrypoint starts the stack without
+  going through `_reconcile_grafana_provisioning`.
+
+- **V-017** · 2026-08-15 — A smoke test that satisfies a prerequisite *itself*
+  before invoking the code under test proves nothing about that prerequisite.
+  `scripts/systemd-native-smoke.sh` ran the official Ollama installer before
+  calling `nyxgpt ops install`, so CI never saw that the Linux install step
+  simply stopped with "ollama not found on PATH — install it first: curl … |
+  sh" on a real clean machine, while macOS's twin ran `brew install ollama`
+  for the operator. Two structural lessons, both now encoded: a smoke script
+  must not pre-satisfy what it verifies (the pre-install is gone; the script
+  asserts ops installed it, and hard-fails under `CI` if Ollama is already
+  present), and a smoke script must exercise **the commands the acceptance
+  names** — this one drove `ops install`/`ops down` and never `nyxgpt up`,
+  `nyxgpt down`, `ops status` or `ops doctor`, the four #3508's acceptance is
+  written in terms of.
+  Method: reproduced 2026-08-15 on Linux from the published **rc11 wheel with
+  no repo checkout** (`pip install nyxgpt==3.0.0rc11` into a clean venv) —
+  `nyxgpt up` reported `[FAIL] ollama not found on PATH`. After the fix, the
+  same step ran the installer, `_takeover_system_ollama_service` disabled the
+  system unit the installer had just enabled, `nyxgpt-ollama.service` came up
+  active and served HTTP 200 on 11434. `scripts/ollama-bootstrap-smoke.py`
+  injects the pre-fix behaviour and was executed to confirm it fails without
+  the bootstrap, so the green run is not luck (#3508, #3775). Re-confirmed in
+  CI rather than only off-CI: `linux-native-smoke` run 31907416812 on
+  `49bbb94f` is green across all its jobs, with the injection step firing
+  first — the standing guard for this entry.
+  Re-verify when: Ollama changes its Linux distribution channel, or the
+  install-step ordering in `_install_native_ollama_systemd` changes (the
+  install must stay *before* the port takeover — the installer is what
+  creates the conflicting system unit).
+
+- **V-018** · 2026-08-15 — The pytest suite could not pass on a machine that
+  was *running the stack it tests*, which is now the normal state of a
+  developer machine on Linux as well as macOS (#3508). Two independent
+  environmental couplings, both in `tests/`, neither in product code:
+  the #3443 production-log-dir guard failed the session because the running
+  `nyxgpt-api`/`nyxgpt-web`/`cassandra`/`ollama` supervisors append to
+  `~/.nyxGPT/logs` throughout the run, and the RAG ingest tests treated
+  "Cassandra's port is open" as "the stack is usable" and then hit a live
+  `ollama serve` that answers `501 This server does not support embeddings`
+  because the loaded model is chat-only. Ownership is the discriminator for
+  the first (a file an *external* process holds open was not written by the
+  code under test — `tests/log_guard.py`); probing the real `/api/embed` call
+  is the discriminator for the second (reachability is not usability).
+  Method: reproduced 2026-08-15 on a Linux runner with the native stack up —
+  `pytest tests/unit/` gave 6 failed + 1 error; after the fix, 5073 passed,
+  6 skipped, 0 failed. Both properties proven by execution rather than
+  inspection: a fault-injected test that writes to `~/.nyxGPT/logs` still
+  fails the guard, and `externally_held_log_files` was observed attributing
+  all 9 live service logs to their supervisors. An A/B run of
+  `tests/integration/test_rag_playground.py` and `test_request_id_streaming.py`
+  with the change stashed and applied gave the same 5 pre-existing
+  environmental failures (no `llama3.1:8b`, no embedding model) and dropped
+  the guard error, confirming the fix is not masking product failures.
+  Re-verify when: the guard's attribution moves off `psutil.open_files()`, or
+  a supervisor starts writing service logs as a *different user* than the one
+  running pytest (AccessDenied fails closed, so those files return to the
+  guard's scope and the suite would fail again).
+
+- **V-019** · 2026-08-15 — `nyxgpt up --skip-observability` could **never**
+  return 0. The flag means "don't start the Grafana/Loki/Jaeger/GlitchTip
+  Compose profiles"; it deliberately leaves their config.ini feature flags
+  on, so self-heal keeps reporting those services `desired=True,
+  state="absent"` — which is the correct answer to "what does the operator
+  want running". `ops._wait_for_stack_healthy` knew nothing about the flag,
+  so `up` waited on containers the same command had just chosen not to
+  start, then exited 2 on a completely healthy stack. The wait now excludes
+  `self_heal.observability_services()` when the flag is set, and the timeout
+  message names what is still pending instead of only saying "not every
+  component" (#3508).
+  Two structural lessons, and the reason this sat undiscovered: (1) a flag
+  that suppresses an *action* must also be honoured by anything that later
+  asserts on that action's *effect*, or the two halves of one command
+  disagree; (2) an alias is not covered by testing what it wraps —
+  `systemd-native-smoke.sh` drove `nyxgpt ops install` for months and was
+  green throughout, because `install()` has no health-wait. The defect
+  existed the whole time and surfaced within one CI run of the smoke script
+  being switched to `nyxgpt up` (**V-017**), i.e. to the command the
+  acceptance is actually written in terms of.
+  Method: observed on the #3798 `linux-native-smoke` run for `f6918b8d` —
+  every systemd unit `active`, `ops status` clean, `jaeger`/`otel-collector`
+  reported absent, and `up` still burned its full 300s timeout and exited 2.
+  Confirmed pre-existing rather than merge-induced by reading
+  `_wait_for_stack_healthy` at the merge base and on `v3.0.0`: identical in
+  both. Standing guard: the `linux-native-smoke` job, which now fails if
+  `nyxgpt up` cannot reach healthy.
+  Re-verify when: a new flag suppresses part of the install (it will need
+  the same treatment in the wait), or `--skip-observability` starts clearing
+  the config.ini flags — at which point the exclusion becomes redundant
+  rather than wrong.
+
+- **V-020** · 2026-08-15 — The EC2 artifact install path on Amazon Linux 2023
+  fails at the CLI venv: the AMI's system `python3` is **3.9.25** and every
+  published nyxgpt distribution declares `requires-python >=3.11`, so
+  `pip install nyxgpt` inside that venv resolves nothing (the #3782 class,
+  observed independently on the artifact path — see V-010).
+  Two further facts from the same execution: Ollama's official installer aborts
+  the bootstrap on a bare AL2023 machine with "This version requires zstd for
+  extraction" (fixed in the user-data template by #3784), and with a candidate
+  interpreter fix applied the whole path is green — bare AL2023 -> artifact
+  install -> api/web/ollama serving in 178s.
+  Method: executed `nyxgpt cloud smoke --container` (#3784) three times on the
+  agent runner (docker 28.0.4) on 2026-08-15 — unpatched tree failed in 47s and
+  the harness classified it as the interpreter class; with the fix applied it
+  passed in 178s against published 3.0.0rc11; `--inject old-python` exited 0.
+  Re-verify when: #3782 lands (the unpatched half stops reproducing), or the
+  AL2023 AMI's system interpreter changes.
+
+- **V-021** · 2026-08-15 — An artifact install pulls **three** things off the
+  network, not one: the `nyxgpt` CLI, then `nyxgpt-api-<version>.tar.gz` and
+  `nyxgpt-web-<version>.tar.gz` from that version's GitHub Release
+  (`ops._service_source_tarball`). So a smoke that swaps in a locally built
+  wheel has only replaced the first — the wheel declares the checkout's
+  version (`3.0.0`), which has no release until the ceremony cuts one, and
+  `ops install` 404s at step 33 of 35. `nyxgpt cloud smoke --container
+  --wheel` therefore now also builds those two tarballs with the release's own
+  builder and points `ops` at them with `NYXGPT_ARTIFACT_DIR` (set but
+  asset-missing raises, rather than falling back to the network). The general
+  fact, and why this was worth an entry: **"install from an artifact" is not
+  one artifact**, and a fix that covers only the entry point leaves the
+  dependent assets resolving against a release that does not exist.
+  Method: executed on the agent runner (docker 28.0.4) 2026-08-15 on the
+  merged #3784 branch — `nyxgpt cloud smoke --container --wheel
+  dist/nyxgpt-3.0.0-py3-none-any.whl` PASSED in 193s (bare AL2023 -> artifact
+  install -> api/web/ollama serving), where the same command on the same tree
+  before the staging fix failed with `Could not obtain the nyxgpt-api
+  artifact` after 33/35 steps (CI run 31905652586). `--inject old-python`
+  exited 0 on the same tree, so the fault still fires: it neutralizes the
+  merged template's version loop, the bootstrap reaches its own
+  "no Python >= 3.11 … requires-python is '>=3.11'" guard, and the harness
+  still classifies it as the #3782 interpreter class.
+  Re-verify when: `3.0.0` gains a real GitHub Release (the 404 half stops
+  reproducing), or `_service_source_tarball` grows a fourth source.
+
+- **V-022** · 2026-08-15 — A fault-injected smoke that treats *any* failure as
+  its pass condition is still green by luck. `nyxgpt cloud smoke --container
+  --inject <fault>` inverts the verdict, and inverted was implemented as
+  `passed = bool(failure)` — so a docker outage, an image-pull flake, a build
+  failure or a refused preflight all made the injection job exit 0 while
+  proving nothing about whether the smoke can see the defect, which is the
+  D-006 condition the job exists to close. The pass condition now needs three
+  things: a failure, at or after the bootstrap the fault was injected into,
+  whose classification is the class that fault reintroduces (`FAULTS[...]
+  .expects` -> `injection_verdict`). Second fact from the same round: the
+  failure classifier misdiagnosed a release-asset 404 as a broken
+  `systemd --user` session (CI run 31905652586), because its systemd signature
+  matched any output *mentioning* `systemctl --user` — which a successful
+  install prints constantly — and the whole 35-step log was classified rather
+  than its tail. The general form of both: **an assertion written against
+  "something went wrong" is not an assertion about the thing under test.**
+  Method: executed `pytest tests/unit/test_cloud_artifact_smoke.py` on
+  2026-08-15 with each rejection path injected — a failing `docker build`
+  under `--inject`, a bootstrap failing in another defect class, and an
+  unclassifiable failure — each of which passed before this change and fails
+  the run after it; the 404-vs-systemd misdiagnosis is pinned as a regression
+  case from the real CI output. Standing guard: the `fault-injection` job in
+  `cloud-artifact-smoke.yml`.
+  Re-verify when: a fault is added to `FAULTS` (it needs an `expects` class a
+  signature can actually produce — there is a test for that), or the phase
+  list before `bootstrap` changes.
 
 ## Parked
 

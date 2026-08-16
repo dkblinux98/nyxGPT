@@ -53,6 +53,7 @@ from nyxgpt import admin_activity as admin_activity_module
 from nyxgpt import api_models, aws_credentials_setup, config_wizard, models, secrets_setup, sessions
 from nyxgpt import canary as canary_module
 from nyxgpt import chat as chat_module
+from nyxgpt import cloud_artifact_smoke as cloud_artifact_smoke_module
 from nyxgpt import cloud_deploy as cloud_deploy_module
 from nyxgpt import cloud_infra as cloud_infra_module
 from nyxgpt import cloud_state as cloud_state_module
@@ -2685,6 +2686,75 @@ def cloud_deploy_tunnel(payload: dict[str, Any] = Body(default={})) -> dict[str,
     except CloudCommandError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
     admin_activity_module.record("cloud_deploy.tunnel", target.host)
+    return result
+
+
+# --- Containerized cloud artifact-install smoke endpoints (#3784) ---
+#
+# The SRE-surface half of `nyxgpt cloud smoke --container`: start a run of the
+# artifact install path on a bare Amazon Linux 2023 container, and read the
+# last run's verdict. CLAUDE.md's Definition of Done requires ops features to
+# be operable from the dashboard, and both surfaces drive the same
+# `nyxgpt.cloud_artifact_smoke` functions and read the same recorded result,
+# so there is one smoke rather than two implementations of it.
+#
+# Unlike the AWS cloud endpoints above, this one is *not* synchronous: a run
+# builds an image, boots systemd, installs Node, Docker, Ollama and the wheel,
+# and waits for services -- tens of minutes, far past any HTTP timeout. The
+# POST starts a background run and returns immediately; the panel polls the
+# GET. This costs nothing and touches no AWS account, which is why it is a
+# button at all where `cloud deploy` is a CLI pointer.
+
+
+@api.get("/ops/cloud-artifact-smoke")
+def ops_cloud_artifact_smoke_status(_request: Request) -> dict[str, Any]:
+    """Report the last containerized artifact-install smoke, and whether one is running.
+
+    Cheap enough to poll: it reads the recorded result and makes one local
+    `docker info` call, which is what tells the panel whether a run is even
+    possible on this machine.
+    """
+    return cloud_artifact_smoke_module.smoke_status()
+
+
+@api.post("/ops/cloud-artifact-smoke")
+def ops_cloud_artifact_smoke_run(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Start a containerized artifact-install smoke in the background.
+
+    `{"version": "3.0.0rc9"}` pins the release the bootstrap installs;
+    `{"inject": ["old-python"]}` runs the fault-injected variant, which passes
+    only if the smoke fails. A run already in flight is a 409 rather than a
+    second container fighting the first for the same name.
+    """
+    namespace = argparse.Namespace(
+        container=True,
+        version=payload.get("version") or None,
+        wheel=payload.get("wheel") or None,
+        image=payload.get("image") or None,
+        inject=[str(f) for f in (payload.get("inject") or [])],
+        keep=bool(payload.get("keep")),
+        bootstrap_timeout=payload.get("bootstrap_timeout") or None,
+        build_timeout=payload.get("build_timeout") or None,
+        health_timeout=payload.get("health_timeout") or None,
+        json=True,
+        status=False,
+    )
+    available, detail = cloud_artifact_smoke_module.docker_available()
+    if not available:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"A Docker engine is required to run the containerized cloud smoke -- {detail}."
+            ),
+        )
+    try:
+        result = cloud_artifact_smoke_module.start_background_run(namespace)
+    except CloudCommandError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    admin_activity_module.record(
+        "cloud_artifact_smoke.run",
+        f"version={result.get('version', 'latest')} inject={','.join(namespace.inject) or 'none'}",
+    )
     return result
 
 
