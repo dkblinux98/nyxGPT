@@ -24,7 +24,9 @@ set -euo pipefail
 #   DATA_BRANCH      branch to merge                (default: claude/retro-data)
 #   REMOTE           git remote                     (default: origin)
 #   GH_TOKEN         token for gh                   (required by gh)
-#   MERGE_TIMEOUT    seconds to wait for mergeable  (default: 600)
+#   MERGE_TIMEOUT    seconds to wait for mergeable  (default: 1800 — a data
+#                    PR waits on the same required checks as any other, and
+#                    the pytest job alone runs for minutes)
 #   POLL_INTERVAL    seconds between checks         (default: 15)
 #
 # Exits 0 printing "nothing to merge" when the data branch holds nothing the
@@ -40,7 +42,7 @@ REPO="${REPO:-}"
 BASE_REF="${BASE_REF:-}"
 DATA_BRANCH="${DATA_BRANCH:-claude/retro-data}"
 REMOTE="${REMOTE:-origin}"
-MERGE_TIMEOUT="${MERGE_TIMEOUT:-600}"
+MERGE_TIMEOUT="${MERGE_TIMEOUT:-1800}"
 POLL_INTERVAL="${POLL_INTERVAL:-15}"
 
 [[ -n "$REPO" ]] || _die "REPO (owner/name) is required"
