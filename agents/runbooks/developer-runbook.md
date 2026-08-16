@@ -114,6 +114,32 @@ anywhere in this repo instructing one is a bug.
 - Add/extend tests (unit/integration as appropriate).
 - Keep IO behind interfaces; maintain dependency flow.
 
+### Fixing a defect: state the cause, then size the patch to it (#3821)
+
+The authoring side of review-runbook §1d and §1e. The principles behind both
+are stated in full in `CLAUDE.md` § Agentic First Principles — which is loaded
+into your context automatically (ledger **V-028**), so this section is the
+procedure, not a restatement.
+
+Two things belong in the PR body of any change that **fixes** something:
+
+1. **The cause, and what established it.** Not the symptom, not what the patch
+   does — the mechanism, plus the log line, reproduction, bisect or failing run
+   that showed it. If you could not establish it, say so plainly, say what is
+   still unknown, and link the issue that will diagnose it: an honest
+   mitigation passes the gate, a guess dressed as a fix does not. Three cycles
+   (#3753 → #3788 → #3814) went to patching the same defect against a guess.
+2. **The sweep, and its result.** Name the fault as a class — not "line 812
+   breaks on apostrophes" but "an Actions expression interpolated into a
+   `script:` body is JavaScript, not data" — then grep the tree for the
+   construct and fix every instance, or report the search and say why the
+   remainder is deferred (with an issue). #3500 → #3816 was fixed for a single
+   author while every other author kept racing; the same question asked on
+   #3801 turned one broken step into 47 (**V-027**).
+
+The reviewer runs both gates and blocks on either (Medium). Answering them in
+the PR body costs one paragraph; not answering them costs a review cycle.
+
 ## 3a) Instrumentation conventions
 
 RCA, self-heal, and SRE work are only as good as the logging behind them
