@@ -77,11 +77,31 @@ git config user.email >/dev/null 2>&1 || \
 # Stash the generated files outside the work tree: switching branches below
 # overwrites them.
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
 for f in "${FILES[@]}"; do
   mkdir -p "$TMP/$(dirname "$f")"
   cp "$f" "$TMP/$f"
 done
+
+# Publishing switches the work tree to the data branch, which is built on the
+# DEFAULT branch — so every later step in the job would run the default
+# branch's code, not the code of the ref the workflow was dispatched on. That
+# is how a dump dispatched on a feature branch failed with "No such file or
+# directory" on a script that plainly exists there. Put the checkout back
+# before returning, whatever the outcome.
+ORIG_REF="$(git symbolic-ref -q --short HEAD || git rev-parse HEAD)"
+_restore_checkout() {
+  git checkout -f -q "$ORIG_REF" 2>/dev/null || \
+    _log "WARNING: could not return the work tree to $ORIG_REF"
+  # checkout -f drops files tracked on the data branch but not here; the
+  # dump's own output is expected to still be sitting in the tree.
+  for f in "${FILES[@]}"; do
+    if [[ -f "$TMP/$f" ]]; then
+      mkdir -p "$(dirname "$f")"
+      cp "$TMP/$f" "$f"
+    fi
+  done
+}
+trap '_restore_checkout; rm -rf "$TMP"' EXIT
 
 git fetch --quiet "$REMOTE" "$BASE_REF"
 base="$(git rev-parse FETCH_HEAD)"

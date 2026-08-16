@@ -341,6 +341,17 @@ _assert_contains "JSON is present on the data branch" \
 _assert_not_contains "publish never pushed at the protected ref" \
   "$(cat "$LAB/push-attempts.log")" "refs/heads/$PROTECTED"
 
+# 2a. The work tree is handed back on the branch the job was dispatched on.
+#     Publishing checks out the data branch (built on the DEFAULT branch), so
+#     leaving it there makes every later step in the job run the default
+#     branch's code — which is how a dump dispatched on a feature branch died
+#     with "No such file or directory" on merge_data_branch.sh, a file plainly
+#     present on that branch (run 31958891937).
+_assert_eq "publish leaves the work tree on the branch it was called from" \
+  "$PROTECTED" "$(cd "$LAB/work" && git rev-parse --abbrev-ref HEAD)"
+_assert_eq "the dump's own output is still in the work tree afterwards" \
+  "yes" "$([[ -f "$LAB/work/scripts/retrospective/data/relationships.json" ]] && echo yes || echo no)"
+
 # 2b. Re-publishing identical data is a no-op (no empty commit, no push).
 SHA_BEFORE="$(_bare_sha "$LAB" "refs/heads/$DATA_BRANCH")"
 OUT="$(cd "$LAB/work" && BASE_REF="$PROTECTED" DATA_BRANCH="$DATA_BRANCH" \
