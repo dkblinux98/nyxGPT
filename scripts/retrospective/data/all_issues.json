@@ -1303,7 +1303,7 @@
   "labels": [
    "Release Management"
   ],
-  "milestone": null,
+  "milestone": "Phase 3.5: Release Stakeholder Acceptance Failures and Improvements (v1.0.0)",
   "created": "2026-01-03T03:57:50Z",
   "closed": "2026-02-05T21:32:52Z",
   "state": "closed"
@@ -1581,8 +1581,8 @@
   ],
   "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
   "created": "2026-01-06T05:35:17Z",
-  "closed": null,
-  "state": "open"
+  "closed": "2026-08-03T20:42:50Z",
+  "state": "closed"
  },
  {
   "n": 2762,
@@ -4283,10 +4283,10 @@
   "labels": [
    "Feature"
   ],
-  "milestone": "Phase 6 \u2014 Enterprise Deployment & Hardening (v3.0.0)",
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
   "created": "2026-07-31T07:57:20Z",
-  "closed": null,
-  "state": "open"
+  "closed": "2026-08-03T22:43:36Z",
+  "state": "closed"
  },
  {
   "n": 3501,
@@ -4294,10 +4294,10 @@
   "labels": [
    "Feature"
   ],
-  "milestone": "Phase 6 \u2014 Enterprise Deployment & Hardening (v3.0.0)",
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
   "created": "2026-07-31T07:57:43Z",
-  "closed": null,
-  "state": "open"
+  "closed": "2026-08-03T22:54:47Z",
+  "state": "closed"
  },
  {
   "n": 3502,
@@ -4305,10 +4305,10 @@
   "labels": [
    "Feature"
   ],
-  "milestone": "Phase 6 \u2014 Enterprise Deployment & Hardening (v3.0.0)",
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
   "created": "2026-07-31T07:58:05Z",
-  "closed": null,
-  "state": "open"
+  "closed": "2026-08-04T02:54:55Z",
+  "state": "closed"
  },
  {
   "n": 3503,
@@ -4316,10 +4316,10 @@
   "labels": [
    "Feature"
   ],
-  "milestone": "Phase 6 \u2014 Enterprise Deployment & Hardening (v3.0.0)",
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
   "created": "2026-07-31T07:58:27Z",
-  "closed": null,
-  "state": "open"
+  "closed": "2026-08-03T23:05:45Z",
+  "state": "closed"
  },
  {
   "n": 3504,
@@ -4327,10 +4327,10 @@
   "labels": [
    "Feature"
   ],
-  "milestone": "Phase 6 \u2014 Enterprise Deployment & Hardening (v3.0.0)",
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
   "created": "2026-07-31T07:58:49Z",
-  "closed": null,
-  "state": "open"
+  "closed": "2026-08-04T03:25:35Z",
+  "state": "closed"
  },
  {
   "n": 3505,
@@ -4338,10 +4338,10 @@
   "labels": [
    "Feature"
   ],
-  "milestone": "Phase 6 \u2014 Enterprise Deployment & Hardening (v3.0.0)",
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
   "created": "2026-07-31T07:59:11Z",
-  "closed": null,
-  "state": "open"
+  "closed": "2026-08-04T00:22:50Z",
+  "state": "closed"
  },
  {
   "n": 3506,
@@ -4349,10 +4349,10 @@
   "labels": [
    "Feature"
   ],
-  "milestone": "Phase 6 \u2014 Enterprise Deployment & Hardening (v3.0.0)",
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
   "created": "2026-07-31T07:59:34Z",
-  "closed": null,
-  "state": "open"
+  "closed": "2026-08-03T23:25:45Z",
+  "state": "closed"
  },
  {
   "n": 3507,
@@ -4360,10 +4360,10 @@
   "labels": [
    "Feature"
   ],
-  "milestone": "Phase 6 \u2014 Enterprise Deployment & Hardening (v3.0.0)",
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
   "created": "2026-07-31T07:59:57Z",
-  "closed": null,
-  "state": "open"
+  "closed": "2026-08-09T23:31:45Z",
+  "state": "closed"
  },
  {
   "n": 3508,
@@ -4371,10 +4371,10 @@
   "labels": [
    "Feature"
   ],
-  "milestone": "Phase 6 \u2014 Enterprise Deployment & Hardening (v3.0.0)",
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
   "created": "2026-07-31T08:00:22Z",
-  "closed": null,
-  "state": "open"
+  "closed": "2026-08-15T23:32:53Z",
+  "state": "closed"
  },
  {
   "n": 3509,
@@ -4382,10 +4382,10 @@
   "labels": [
    "Feature"
   ],
-  "milestone": "Phase 6 \u2014 Enterprise Deployment & Hardening (v3.0.0)",
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
   "created": "2026-07-31T08:00:47Z",
-  "closed": null,
-  "state": "open"
+  "closed": "2026-08-15T06:25:01Z",
+  "state": "closed"
  },
  {
   "n": 3510,
@@ -4393,10 +4393,10 @@
   "labels": [
    "Feature"
   ],
-  "milestone": "Phase 6 \u2014 Enterprise Deployment & Hardening (v3.0.0)",
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
   "created": "2026-07-31T08:01:10Z",
-  "closed": null,
-  "state": "open"
+  "closed": "2026-08-10T06:51:42Z",
+  "state": "closed"
  },
  {
   "n": 3511,
@@ -4404,10 +4404,10 @@
   "labels": [
    "Feature"
   ],
-  "milestone": "Phase 6 \u2014 Enterprise Deployment & Hardening (v3.0.0)",
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
   "created": "2026-07-31T08:01:37Z",
-  "closed": null,
-  "state": "open"
+  "closed": "2026-08-10T16:23:16Z",
+  "state": "closed"
  },
  {
   "n": 3512,
@@ -4415,10 +4415,10 @@
   "labels": [
    "Feature"
   ],
-  "milestone": "Phase 6 \u2014 Enterprise Deployment & Hardening (v3.0.0)",
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
   "created": "2026-07-31T08:02:00Z",
-  "closed": null,
-  "state": "open"
+  "closed": "2026-08-10T01:03:14Z",
+  "state": "closed"
  },
  {
   "n": 3513,
@@ -4426,10 +4426,10 @@
   "labels": [
    "Feature"
   ],
-  "milestone": "Phase 6 \u2014 Enterprise Deployment & Hardening (v3.0.0)",
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
   "created": "2026-07-31T08:02:24Z",
-  "closed": null,
-  "state": "open"
+  "closed": "2026-08-10T08:19:38Z",
+  "state": "closed"
  },
  {
   "n": 3514,
@@ -4437,10 +4437,10 @@
   "labels": [
    "Feature"
   ],
-  "milestone": "Phase 6 \u2014 Enterprise Deployment & Hardening (v3.0.0)",
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
   "created": "2026-07-31T08:02:47Z",
-  "closed": null,
-  "state": "open"
+  "closed": "2026-08-10T09:37:47Z",
+  "state": "closed"
  },
  {
   "n": 3515,
@@ -4448,10 +4448,10 @@
   "labels": [
    "Feature"
   ],
-  "milestone": "Phase 6 \u2014 Enterprise Deployment & Hardening (v3.0.0)",
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
   "created": "2026-07-31T08:03:09Z",
-  "closed": null,
-  "state": "open"
+  "closed": "2026-08-10T10:13:38Z",
+  "state": "closed"
  },
  {
   "n": 3516,
@@ -4459,10 +4459,10 @@
   "labels": [
    "Feature"
   ],
-  "milestone": "Phase 6 \u2014 Enterprise Deployment & Hardening (v3.0.0)",
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
   "created": "2026-07-31T08:03:36Z",
-  "closed": null,
-  "state": "open"
+  "closed": "2026-08-10T17:44:18Z",
+  "state": "closed"
  },
  {
   "n": 3521,
@@ -4470,7 +4470,7 @@
   "labels": [
    "Release Management"
   ],
-  "milestone": "Phase 6 \u2014 Enterprise Deployment & Hardening (v3.0.0)",
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
   "created": "2026-07-31T17:58:24Z",
   "closed": null,
   "state": "open"
@@ -4525,10 +4525,10 @@
   "labels": [
    "Feature"
   ],
-  "milestone": "Phase 6 \u2014 Enterprise Deployment & Hardening (v3.0.0)",
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
   "created": "2026-08-01T18:11:28Z",
-  "closed": null,
-  "state": "open"
+  "closed": "2026-08-04T01:22:38Z",
+  "state": "closed"
  },
  {
   "n": 3558,
@@ -4536,10 +4536,10 @@
   "labels": [
    "Feature"
   ],
-  "milestone": "Phase 6 \u2014 Enterprise Deployment & Hardening (v3.0.0)",
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
   "created": "2026-08-02T02:31:09Z",
-  "closed": null,
-  "state": "open"
+  "closed": "2026-08-09T22:56:58Z",
+  "state": "closed"
  },
  {
   "n": 3560,
@@ -4622,49 +4622,45 @@
   "n": 3581,
   "title": "bug: admin system health reports incorrect CPU utilization - api",
   "labels": [
-   "Production Defect",
-   "Feature"
+   "Production Defect"
   ],
-  "milestone": "Phase 6 \u2014 Enterprise Deployment & Hardening (v3.0.0)",
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
   "created": "2026-08-02T19:57:19Z",
-  "closed": null,
-  "state": "open"
+  "closed": "2026-08-04T02:19:34Z",
+  "state": "closed"
  },
  {
   "n": 3583,
   "title": "bug: chat RAG filter doc list unscoped and filename search inert - web-ui",
   "labels": [
-   "Production Defect",
-   "Feature"
+   "Production Defect"
   ],
-  "milestone": "Phase 6 \u2014 Enterprise Deployment & Hardening (v3.0.0)",
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
   "created": "2026-08-02T20:02:40Z",
-  "closed": null,
-  "state": "open"
+  "closed": "2026-08-04T02:42:19Z",
+  "state": "closed"
  },
  {
   "n": 3585,
   "title": "bug: chat RAG citations block missing - regression or non-default path",
   "labels": [
-   "Production Defect",
-   "Feature"
+   "Production Defect"
   ],
-  "milestone": "Phase 6 \u2014 Enterprise Deployment & Hardening (v3.0.0)",
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
   "created": "2026-08-02T20:21:59Z",
-  "closed": null,
-  "state": "open"
+  "closed": "2026-08-07T10:10:02Z",
+  "state": "closed"
  },
  {
   "n": 3588,
   "title": "bug: terraform-mode self-heal omits observability services - sre",
   "labels": [
-   "Production Defect",
-   "Feature"
+   "Production Defect"
   ],
-  "milestone": "Phase 6 \u2014 Enterprise Deployment & Hardening (v3.0.0)",
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
   "created": "2026-08-02T20:56:12Z",
-  "closed": null,
-  "state": "open"
+  "closed": "2026-08-08T05:00:13Z",
+  "state": "closed"
  },
  {
   "n": 3590,
@@ -4672,32 +4668,1042 @@
   "labels": [
    "Improvement"
   ],
-  "milestone": "Phase 6 \u2014 Enterprise Deployment & Hardening (v3.0.0)",
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
   "created": "2026-08-02T21:01:21Z",
-  "closed": null,
-  "state": "open"
+  "closed": "2026-08-10T00:38:02Z",
+  "state": "closed"
  },
  {
   "n": 3593,
   "title": "bug: OTel context-detach error floods GlitchTip on streamed chat turns",
   "labels": [
-   "Production Defect",
-   "Feature"
+   "Production Defect"
   ],
-  "milestone": "Phase 6 \u2014 Enterprise Deployment & Hardening (v3.0.0)",
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
   "created": "2026-08-03T03:08:44Z",
-  "closed": null,
-  "state": "open"
+  "closed": "2026-08-08T19:15:05Z",
+  "state": "closed"
  },
  {
   "n": 3596,
   "title": "bug: k8s --local requires a pre-existing cluster - no wrapped provisioning",
   "labels": [
-   "Production Defect",
+   "Production Defect"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-03T03:17:14Z",
+  "closed": "2026-08-09T00:42:31Z",
+  "state": "closed"
+ },
+ {
+  "n": 3600,
+  "title": "feat: actor-gate comment-triggered agent workflows for public repo",
+  "labels": [
+   "Improvement"
+  ],
+  "milestone": "Phase 5.6 GitHub Public Repository Hardening and Security Hardening (v2.1.0)",
+  "created": "2026-08-03T21:29:03Z",
+  "closed": "2026-08-03T22:17:43Z",
+  "state": "closed"
+ },
+ {
+  "n": 3601,
+  "title": "feat: add MIT LICENSE for public release",
+  "labels": [
+   "Improvement"
+  ],
+  "milestone": "Phase 5.6 GitHub Public Repository Hardening and Security Hardening (v2.1.0)",
+  "created": "2026-08-03T21:29:16Z",
+  "closed": "2026-08-03T21:37:18Z",
+  "state": "closed"
+ },
+ {
+  "n": 3614,
+  "title": "fix: no hardcoded release branch in any workflow or script - resolve dynamically",
+  "labels": [
+   "Improvement"
+  ],
+  "milestone": "Phase 5.6 GitHub Public Repository Hardening and Security Hardening (v2.1.0)",
+  "created": "2026-08-04T01:59:22Z",
+  "closed": "2026-08-06T04:14:01Z",
+  "state": "closed"
+ },
+ {
+  "n": 3617,
+  "title": "feat: actor-gate the @claude workflow (claude.yml) for public repo",
+  "labels": [
+   "Improvement"
+  ],
+  "milestone": "Phase 5.6 GitHub Public Repository Hardening and Security Hardening (v2.1.0)",
+  "created": "2026-08-04T02:17:00Z",
+  "closed": "2026-08-04T02:24:56Z",
+  "state": "closed"
+ },
+ {
+  "n": 3621,
+  "title": "feat: retire REPO_ROOT - ship ops runtime data as package data + guard test",
+  "labels": [
    "Feature"
   ],
-  "milestone": "Phase 6 \u2014 Enterprise Deployment & Hardening (v3.0.0)",
-  "created": "2026-08-03T03:17:14Z",
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-04T03:19:54Z",
+  "closed": "2026-08-09T02:09:09Z",
+  "state": "closed"
+ },
+ {
+  "n": 3622,
+  "title": "feat: publish install artifacts - PyPI package, remote Homebrew tap, registry images",
+  "labels": [
+   "Feature"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-04T03:20:08Z",
+  "closed": "2026-08-09T02:45:33Z",
+  "state": "closed"
+ },
+ {
+  "n": 3625,
+  "title": "security: remediate CodeQL code-scanning findings (29 alerts)",
+  "labels": [
+   "Improvement"
+  ],
+  "milestone": "Phase 5.6 GitHub Public Repository Hardening and Security Hardening (v2.1.0)",
+  "created": "2026-08-04T03:44:05Z",
+  "closed": "2026-08-06T03:19:51Z",
+  "state": "closed"
+ },
+ {
+  "n": 3626,
+  "title": "fix: attribute developer-agent commits to myGPT-developer-agent, not claude[bot]",
+  "labels": [
+   "Feature"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-04T04:13:27Z",
+  "closed": "2026-08-04T11:13:51Z",
+  "state": "closed"
+ },
+ {
+  "n": 3629,
+  "title": "bug: ops logs api misses startup refusal stderr in native mode - sre",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-05T01:51:20Z",
+  "closed": "2026-08-09T02:49:33Z",
+  "state": "closed"
+ },
+ {
+  "n": 3630,
+  "title": "feat: nyxgpt cloud allow-ip - refresh owner IP on the SSH security group rule",
+  "labels": [
+   "Feature"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-05T02:13:44Z",
+  "closed": "2026-08-09T03:29:08Z",
+  "state": "closed"
+ },
+ {
+  "n": 3631,
+  "title": "feat: park merged-but-blocked issues in In Review; batch-move to acceptance",
+  "labels": [
+   "Feature"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-05T02:45:22Z",
+  "closed": "2026-08-09T03:30:39Z",
+  "state": "closed"
+ },
+ {
+  "n": 3632,
+  "title": "bug: Linux install - system ollama.service port conflict; web probe race - sre",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-05T02:50:15Z",
+  "closed": "2026-08-11T04:39:29Z",
+  "state": "closed"
+ },
+ {
+  "n": 3634,
+  "title": "bug: ingest_document bootstrap ordering breaks first ingest on fresh Cassandra",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-05T03:02:46Z",
+  "closed": "2026-08-09T03:59:01Z",
+  "state": "closed"
+ },
+ {
+  "n": 3633,
+  "title": "bug: api_base_url fixture skip fix stranded on unmerged branch; 110 CI fails",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-05T03:02:46Z",
+  "closed": "2026-08-09T03:51:26Z",
+  "state": "closed"
+ },
+ {
+  "n": 3635,
+  "title": "bug: test_gpu_detection_shell_false flake - GPU-info cache race in embeddings",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-05T03:02:47Z",
+  "closed": "2026-08-09T14:15:31Z",
+  "state": "closed"
+ },
+ {
+  "n": 3636,
+  "title": "bug: local-stack smoke gates chronically red before services are serving",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-05T04:47:05Z",
+  "closed": "2026-08-09T16:05:35Z",
+  "state": "closed"
+ },
+ {
+  "n": 3637,
+  "title": "Release v2.1.0",
+  "labels": [
+   "Improvement"
+  ],
+  "milestone": "Phase 5.6 GitHub Public Repository Hardening and Security Hardening (v2.1.0)",
+  "created": "2026-08-06T01:35:40Z",
+  "closed": "2026-08-07T02:42:17Z",
+  "state": "closed"
+ },
+ {
+  "n": 3639,
+  "title": "fix: sink-side path validation chokepoint for session files - closes 71 CodeQL alerts",
+  "labels": [
+   "Improvement"
+  ],
+  "milestone": "Phase 5.6 GitHub Public Repository Hardening and Security Hardening (v2.1.0)",
+  "created": "2026-08-06T02:56:14Z",
+  "closed": "2026-08-06T05:02:18Z",
+  "state": "closed"
+ },
+ {
+  "n": 3640,
+  "title": "fix: session export response hardening - CodeQL #14 reflected XSS",
+  "labels": [
+   "Improvement"
+  ],
+  "milestone": "Phase 5.6 GitHub Public Repository Hardening and Security Hardening (v2.1.0)",
+  "created": "2026-08-06T02:56:26Z",
+  "closed": "2026-08-07T00:56:27Z",
+  "state": "closed"
+ },
+ {
+  "n": 3641,
+  "title": "fix: rewrite RAG sentence-splitter regex - CodeQL #29 polynomial ReDoS",
+  "labels": [
+   "Improvement"
+  ],
+  "milestone": "Phase 5.6 GitHub Public Repository Hardening and Security Hardening (v2.1.0)",
+  "created": "2026-08-06T02:56:37Z",
+  "closed": "2026-08-06T04:44:08Z",
+  "state": "closed"
+ },
+ {
+  "n": 3642,
+  "title": "fix: add permissions block to security-scan workflow - CodeQL #30",
+  "labels": [
+   "Improvement"
+  ],
+  "milestone": "Phase 5.6 GitHub Public Repository Hardening and Security Hardening (v2.1.0)",
+  "created": "2026-08-06T02:56:45Z",
+  "closed": "2026-08-06T06:02:34Z",
+  "state": "closed"
+ },
+ {
+  "n": 3643,
+  "title": "fix: guard component_logs service name - CodeQL critical #4 residual flow",
+  "labels": [
+   "Improvement"
+  ],
+  "milestone": "Phase 5.6 GitHub Public Repository Hardening and Security Hardening (v2.1.0)",
+  "created": "2026-08-06T02:57:04Z",
+  "closed": "2026-08-06T05:22:24Z",
+  "state": "closed"
+ },
+ {
+  "n": 3644,
+  "title": "chore(deps): resolve Dependabot vulnerability alerts on v2.1.0",
+  "labels": [
+   "Improvement"
+  ],
+  "milestone": "Phase 5.6 GitHub Public Repository Hardening and Security Hardening (v2.1.0)",
+  "created": "2026-08-06T02:57:20Z",
+  "closed": "2026-08-06T06:36:33Z",
+  "state": "closed"
+ },
+ {
+  "n": 3647,
+  "title": "fix: review-to-developer handoff never stalls - redispatch and AC-capability guard",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 5.6 GitHub Public Repository Hardening and Security Hardening (v2.1.0)",
+  "created": "2026-08-06T04:14:05Z",
+  "closed": "2026-08-07T00:39:39Z",
+  "state": "closed"
+ },
+ {
+  "n": 3652,
+  "title": "docs: README positioning section and 'How this project is run' index",
+  "labels": [
+   "Feature"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-06T04:42:15Z",
+  "closed": "2026-08-09T04:19:22Z",
+  "state": "closed"
+ },
+ {
+  "n": 3663,
+  "title": "perf: distribute GitHub API load - agent reads move from GraphQL to REST",
+  "labels": [
+   "Improvement"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-07T03:08:25Z",
+  "closed": "2026-08-09T05:10:01Z",
+  "state": "closed"
+ },
+ {
+  "n": 3665,
+  "title": "fix: scrummaster start-guard halts queue on stray assignee - loop",
+  "labels": [
+   "Improvement"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-08T19:31:18Z",
+  "closed": "2026-08-09T00:07:51Z",
+  "state": "closed"
+ },
+ {
+  "n": 3666,
+  "title": "fix: project hygiene fills only missing fields on fresh issues - never overwrites",
+  "labels": [
+   "Improvement"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-08T21:48:10Z",
+  "closed": "2026-08-09T04:49:50Z",
+  "state": "closed"
+ },
+ {
+  "n": 3667,
+  "title": "fix: Retro review-round data sourced from Gmail, not GitHub - observability",
+  "labels": [
+   "Feature"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-08T23:46:21Z",
+  "closed": "2026-08-10T03:56:52Z",
+  "state": "closed"
+ },
+ {
+  "n": 3687,
+  "title": "feat: Review huddle protocol + unresolved-escalation pause backstop - api",
+  "labels": [
+   "Feature"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-09T14:18:20Z",
+  "closed": "2026-08-09T15:40:18Z",
+  "state": "closed"
+ },
+ {
+  "n": 3688,
+  "title": "fix: Migrate deprecated top-level ruff settings to [tool.ruff.lint] - testing",
+  "labels": [
+   "Feature"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-09T14:23:20Z",
+  "closed": "2026-08-09T16:00:23Z",
+  "state": "closed"
+ },
+ {
+  "n": 3689,
+  "title": "fix: Unbounded self-heal retry loop in developer auto-implement - api",
+  "labels": [
+   "Feature"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-09T14:51:47Z",
+  "closed": "2026-08-09T17:00:59Z",
+  "state": "closed"
+ },
+ {
+  "n": 3693,
+  "title": "fix: Branch sweeper misses feat/* orphans - cleanup covers claude/* only - api",
+  "labels": [
+   "Feature"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-09T19:28:44Z",
+  "closed": "2026-08-09T23:17:14Z",
+  "state": "closed"
+ },
+ {
+  "n": 3694,
+  "title": "feat: Cross-issue failure anomaly collapse - one diagnosis, not N loops - api",
+  "labels": [
+   "Feature"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-09T22:24:29Z",
+  "closed": "2026-08-10T00:24:15Z",
+  "state": "closed"
+ },
+ {
+  "n": 3695,
+  "title": "feat: Route agent escalations to a human channel, not just thread comments - api",
+  "labels": [
+   "Feature"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-09T22:24:45Z",
+  "closed": "2026-08-09T23:58:14Z",
+  "state": "closed"
+ },
+ {
+  "n": 3696,
+  "title": "feat: Spend telemetry per issue in the retrospective data substrate - observability",
+  "labels": [
+   "Feature"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-09T22:25:02Z",
+  "closed": "2026-08-09T23:59:26Z",
+  "state": "closed"
+ },
+ {
+  "n": 3704,
+  "title": "fix: Dispatched reviews drop the REQUEST_CHANGES handoff to the dev agent - api",
+  "labels": [
+   "Feature"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-10T01:01:26Z",
+  "closed": "2026-08-10T01:54:16Z",
+  "state": "closed"
+ },
+ {
+  "n": 3706,
+  "title": "fix: Sprint autopilot and dispatch bound by current sprint, not release - api",
+  "labels": [
+   "Feature"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-10T03:51:25Z",
+  "closed": "2026-08-10T04:50:34Z",
+  "state": "closed"
+ },
+ {
+  "n": 3709,
+  "title": "fix: Sprint park ignores in-flight work; no auto-resume when blockers merge - api",
+  "labels": [
+   "Feature"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-10T04:55:55Z",
+  "closed": "2026-08-10T05:40:27Z",
+  "state": "closed"
+ },
+ {
+  "n": 3716,
+  "title": "bug: web UI version badge shows config RELEASE_BRANCH, not running version",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-11T02:47:38Z",
+  "closed": "2026-08-11T03:26:21Z",
+  "state": "closed"
+ },
+ {
+  "n": 3718,
+  "title": "bug: Grafana and GlitchTip logins require ssh+cat of secrets - no wrapped retrieval",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-11T03:19:30Z",
+  "closed": "2026-08-11T04:26:29Z",
+  "state": "closed"
+ },
+ {
+  "n": 3719,
+  "title": "bug: acceptance failure 1 for #3634 - ingest_document bootstrap ordering breaks ",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-11T03:34:43Z",
+  "closed": "2026-08-11T04:00:29Z",
+  "state": "closed"
+ },
+ {
+  "n": 3721,
+  "title": "bug: acceptance failure 1 for #3509 - Terraform AWS modules - VPC, subnets, secu",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-11T04:01:41Z",
+  "closed": "2026-08-15T23:08:11Z",
+  "state": "closed"
+ },
+ {
+  "n": 3724,
+  "title": "bug: acceptance failure 1 for #3596 - k8s --local requires a pre-existing cluste",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-11T04:18:16Z",
+  "closed": "2026-08-11T04:58:45Z",
+  "state": "closed"
+ },
+ {
+  "n": 3727,
+  "title": "feat: Release-candidate publish to PyPI - acceptance-test latest code repo-less",
+  "labels": [
+   "Improvement"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-11T16:38:02Z",
+  "closed": "2026-08-12T16:58:42Z",
+  "state": "closed"
+ },
+ {
+  "n": 3729,
+  "title": "feat: Auto-publish an RC when the sprint reaches agentic-work-complete",
+  "labels": [
+   "Improvement"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-12T16:19:28Z",
+  "closed": "2026-08-12T17:45:28Z",
+  "state": "closed"
+ },
+ {
+  "n": 3730,
+  "title": "feat: Drain-gated failure processing and automated release ceremony trigger",
+  "labels": [
+   "Improvement"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-12T16:19:52Z",
+  "closed": "2026-08-12T20:16:10Z",
+  "state": "closed"
+ },
+ {
+  "n": 3731,
+  "title": "feat: @improvement command, native blocking relationships, retro reads fields",
+  "labels": [
+   "Improvement"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-12T16:20:12Z",
+  "closed": "2026-08-12T20:59:09Z",
+  "state": "closed"
+ },
+ {
+  "n": 3735,
+  "title": "bug: publish pipeline deviates from owner decisions - @3.0.0rc naming, nightly removal",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-12T22:45:14Z",
+  "closed": "2026-08-13T00:07:31Z",
+  "state": "closed"
+ },
+ {
+  "n": 3736,
+  "title": "bug: huddle decision vs 3-cycle escalation race - dedupe triggers, escalation defers",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-12T22:45:34Z",
+  "closed": "2026-08-13T01:09:58Z",
+  "state": "closed"
+ },
+ {
+  "n": 3737,
+  "title": "feat: backfill v2.1.0 stable formulas to the public tap for parity",
+  "labels": [
+   "Improvement"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-12T22:47:38Z",
+  "closed": "2026-08-13T00:47:57Z",
+  "state": "closed"
+ },
+ {
+  "n": 3741,
+  "title": "bug: homebrew-tap-rc job missing httpx - tap stamp fails after PyPI publish",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-13T02:14:38Z",
+  "closed": "2026-08-13T03:10:03Z",
+  "state": "closed"
+ },
+ {
+  "n": 3742,
+  "title": "bug: merged/closed PRs strand in In Review - merge flow must set PR item Closed",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-13T02:15:35Z",
+  "closed": "2026-08-13T03:41:00Z",
+  "state": "closed"
+ },
+ {
+  "n": 3743,
+  "title": "bug: README asserts no PyPI release exists - false as of 3.0.0rc1, clone instructions stale",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-13T02:33:42Z",
+  "closed": "2026-08-13T04:05:44Z",
+  "state": "closed"
+ },
+ {
+  "n": 3744,
+  "title": "fix: review contract misses claims falsified outside the diff - add inverse-claims check",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-13T02:33:57Z",
+  "closed": "2026-08-13T04:33:06Z",
+  "state": "closed"
+ },
+ {
+  "n": 3745,
+  "title": "feat: web UI Support menu - packaged Docs viewer and File an Issue template",
+  "labels": [
+   "Improvement"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-13T02:48:23Z",
+  "closed": "2026-08-13T19:08:03Z",
+  "state": "closed"
+ },
+ {
+  "n": 3747,
+  "title": "bug: tap job uploads assets after release creation - immutable releases reject them",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-13T03:13:47Z",
+  "closed": "2026-08-13T05:08:38Z",
+  "state": "closed"
+ },
+ {
+  "n": 3752,
+  "title": "bug: README install path fails user-style macOS install - documentation",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-13T17:14:42Z",
+  "closed": "2026-08-14T05:51:39Z",
+  "state": "closed"
+ },
+ {
+  "n": 3753,
+  "title": "bug: rc formula install fails at keg venv ensurepip on stock Homebrew macOS",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-13T18:05:49Z",
+  "closed": "2026-08-14T03:38:05Z",
+  "state": "closed"
+ },
+ {
+  "n": 3757,
+  "title": "bug: api dist tarball vendors __pycache__ from the checkout - release_tarball",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-14T03:51:21Z",
+  "closed": "2026-08-14T04:16:15Z",
+  "state": "closed"
+ },
+ {
+  "n": 3759,
+  "title": "bug: artifact install resolves repo-relative paths - cloud native api service",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-14T04:22:47Z",
+  "closed": "2026-08-14T06:33:19Z",
+  "state": "closed"
+ },
+ {
+  "n": 3760,
+  "title": "bug: docker provisioning fails on amazon linux - cloud deploy",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-14T04:22:58Z",
+  "closed": "2026-08-14T07:19:59Z",
+  "state": "closed"
+ },
+ {
+  "n": 3761,
+  "title": "bug: node/npm not provisioned for web service - cloud deploy",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-14T04:23:04Z",
+  "closed": "2026-08-14T07:39:55Z",
+  "state": "closed"
+ },
+ {
+  "n": 3762,
+  "title": "bug: cloud deploy runs install twice and mangles its error output",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-14T04:23:13Z",
+  "closed": "2026-08-14T08:26:57Z",
+  "state": "closed"
+ },
+ {
+  "n": 3763,
+  "title": "bug: 2.1.0 homebrew backfill 422s on immutable release - release-artifacts",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-14T04:23:23Z",
+  "closed": "2026-08-14T09:52:34Z",
+  "state": "closed"
+ },
+ {
+  "n": 3770,
+  "title": "bug: rc smoke per-formula tap trust breaks once stable formulas exist",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-14T09:57:51Z",
+  "closed": "2026-08-14T10:55:06Z",
+  "state": "closed"
+ },
+ {
+  "n": 3771,
+  "title": "bug: concurrent rc cuts race past the tip-unchanged guard - burned rc7",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-14T09:57:59Z",
+  "closed": "2026-08-14T10:51:26Z",
+  "state": "closed"
+ },
+ {
+  "n": 3774,
+  "title": "feat: operating ledger - durable cross-session agent memory in agents/",
+  "labels": [
+   "Feature"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-14T15:06:56Z",
+  "closed": "2026-08-14T15:39:43Z",
+  "state": "closed"
+ },
+ {
+  "n": 3775,
+  "title": "feat: executed-verification review gate - fixes must run on a real target",
+  "labels": [
+   "Feature"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-14T15:07:09Z",
+  "closed": "2026-08-14T16:03:14Z",
+  "state": "closed"
+ },
+ {
+  "n": 3776,
+  "title": "feat: retro churn-cost metrics - context tokens vs change tokens per issue",
+  "labels": [
+   "Feature"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-14T15:07:20Z",
+  "closed": "2026-08-14T16:11:10Z",
+  "state": "closed"
+ },
+ {
+  "n": 3780,
+  "title": "feat: promotion sweep and drain gate read features parked in Acceptance Failed",
+  "labels": [
+   "Feature"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-14T21:09:16Z",
+  "closed": "2026-08-14T22:06:16Z",
+  "state": "closed"
+ },
+ {
+  "n": 3782,
+  "title": "bug: cloud api service venv built with system python3 (3.9) despite >=3.11 floor",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-15T02:31:23Z",
+  "closed": "2026-08-15T05:52:49Z",
+  "state": "closed"
+ },
+ {
+  "n": 3783,
+  "title": "bug: ops runner swallows subprocess stderr on failure - pip error invisible",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-15T02:31:32Z",
+  "closed": "2026-08-15T03:04:44Z",
+  "state": "closed"
+ },
+ {
+  "n": 3784,
+  "title": "feat: nyxgpt cloud smoke - artifact install path end-to-end on amazonlinux 2023",
+  "labels": [
+   "Improvement"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-15T02:35:24Z",
+  "closed": "2026-08-16T00:16:00Z",
+  "state": "closed"
+ },
+ {
+  "n": 3786,
+  "title": "bug: k8s --local stack has no data/LLM tier - web up but no chat possible",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-15T03:02:26Z",
+  "closed": "2026-08-15T07:20:32Z",
+  "state": "closed"
+ },
+ {
+  "n": 3787,
+  "title": "bug: k8s --local deploys no observability layer",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-15T03:10:14Z",
+  "closed": "2026-08-15T08:11:17Z",
+  "state": "closed"
+ },
+ {
+  "n": 3788,
+  "title": "bug: keg pip bootstrap fails under python@3.12 3.12.14 pip import guard",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-15T03:34:32Z",
+  "closed": "2026-08-15T07:42:00Z",
+  "state": "closed"
+ },
+ {
+  "n": 3789,
+  "title": "feat: dev install mode - run current checkout HEAD without the keg build",
+  "labels": [
+   "Improvement"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-15T04:23:50Z",
+  "closed": "2026-08-15T20:08:40Z",
+  "state": "closed"
+ },
+ {
+  "n": 3790,
+  "title": "bug: retry token in dev agent stop message self-triggers an infinite loop",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-15T05:10:00Z",
+  "closed": "2026-08-15T06:13:50Z",
+  "state": "closed"
+ },
+ {
+  "n": 3801,
+  "title": "bug: merge conflicts escalate to owner instead of dev-agent resolution",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-15T19:54:29Z",
+  "closed": "2026-08-16T01:13:07Z",
+  "state": "closed"
+ },
+ {
+  "n": 3803,
+  "title": "improvement: remove the Portability and Acceptance dashboard screen",
+  "labels": [
+   "Improvement"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-16T03:44:59Z",
+  "closed": null,
+  "state": "open"
+ },
+ {
+  "n": 3804,
+  "title": "improvement: AWS cloud infrastructure becomes information-only on the Infrastructure page",
+  "labels": [
+   "Improvement"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-16T03:46:16Z",
+  "closed": null,
+  "state": "open"
+ },
+ {
+  "n": 3805,
+  "title": "improvement: secrets and AWS credential setup screens move out of the web UI to CLI only",
+  "labels": [
+   "Improvement"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-16T03:50:29Z",
+  "closed": null,
+  "state": "open"
+ },
+ {
+  "n": 3806,
+  "title": "bug: restart-required config changes apply silently or not at all - need pending-restart notice and restart control",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-16T03:53:51Z",
+  "closed": null,
+  "state": "open"
+ },
+ {
+  "n": 3807,
+  "title": "improvement: retro dashboard has no build timestamp or per-source as-of times",
+  "labels": [
+   "Improvement"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-16T04:08:27Z",
+  "closed": null,
+  "state": "open"
+ },
+ {
+  "n": 3808,
+  "title": "bug: churn dump crashes on paginated JSON - churn section never rendered",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-16T04:10:16Z",
+  "closed": null,
+  "state": "open"
+ },
+ {
+  "n": 3809,
+  "title": "bug: Support Docs viewer ships agent and CI process docs to end users",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-16T04:17:35Z",
+  "closed": null,
+  "state": "open"
+ },
+ {
+  "n": 3810,
+  "title": "support: Docs are a mess",
+  "labels": [
+   "Support"
+  ],
+  "milestone": null,
+  "created": "2026-08-16T04:28:40Z",
+  "closed": null,
+  "state": "open"
+ },
+ {
+  "n": 3811,
+  "title": "bug: Support tickets file unlabeled and leak into the agent loop",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-16T04:36:19Z",
+  "closed": null,
+  "state": "open"
+ },
+ {
+  "n": 3812,
+  "title": "bug: self-heal reports observability absent when the docker probe cannot run",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-16T05:20:56Z",
+  "closed": null,
+  "state": "open"
+ },
+ {
+  "n": 3813,
+  "title": "feat: nyxgpt cloud status \u2014 operator-readable deployment info incl. SSH target",
+  "labels": [
+   "Improvement"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-16T05:27:50Z",
+  "closed": null,
+  "state": "open"
+ },
+ {
+  "n": 3814,
+  "title": "bug: brew install dies opaquely on a python@3.12 keg with a broken pyexpat (root cause of #3753 and #3788)",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-16T05:43:52Z",
   "closed": null,
   "state": "open"
  }
