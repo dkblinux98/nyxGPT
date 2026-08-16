@@ -3503,5 +3503,926 @@
   "minor": [
    "None \u2014 the extensive inline comments explaining the fill-if-missing design and race rationale are a good addition and match the codebase's existing commenting style in this file."
   ]
+ },
+ {
+  "issue": 3667,
+  "pr": 3683,
+  "title": "[dkblinux98/nyxGPT] Feature: fix: Retro review-round data sourced from Gmail, not GitHub - observability (#3667) (PR #3683)",
+  "module": "observability",
+  "date": "2026-08-09T05:29:39Z",
+  "critical": [],
+  "medium": [
+   "Committed `retro.html` is stale relative to the PR's own committed data",
+   "`retro_template.html`'s hard-coded \"Last 7 days\" window copy was not updated",
+   "Missing test coverage for `gate_series()`'s new GitHub-dump-based rejected count"
+  ],
+  "minor": [
+   "`month_of()` (reused by the new `gate_series` reviews-counting) matches on month-of-year only, not year, so once `reviews_final.json` spans more than one calendar year, \"current month\" rejected counts would silently include same-month rounds from a prior year. Not urgent given the project's current age, but worth a comment or guard if this dashboard is still in use a year from now.",
+   "`dump_all_rounds()` in `dump_review_rounds.py` fetches every PR (`state=all`) and then issues one additional `gh api` call per PR for its reviews \u2014 fine for a manual `workflow_dispatch` (the runbook already sets the ~5 min expectation), just flagging for awareness as PR count grows."
+  ]
+ },
+ {
+  "issue": 3511,
+  "pr": 3684,
+  "title": "[dkblinux98/nyxGPT] Feature: feat: target-OS provisioning for Linux and macOS AWS instances (#3511) (PR #3684)",
+  "module": "api",
+  "date": "2026-08-09T05:33:53Z",
+  "critical": [
+   "`ec2-user-data-linux.sh.tmpl` fails to bring up any systemd --user service on a real fresh EC2 instance (`XDG_RUNTIME_DIR`/D-Bus not set across the `sudo -u` boundary)",
+   "The new `ec2-linux-user-data-smoke` CI job does not actually catch the bug above (or the Docker gap below) because it overrides the target user to an account that already has an active session and Docker preinstalled",
+   "`ec2-user-data-linux.sh.tmpl` never installs Docker, but `nyxgpt ops install` requires it for the Cassandra container"
+  ],
+  "medium": [],
+  "minor": [
+   "`scripts/cloud/ec2-user-data-macos.sh.tmpl`'s `sudo -u \"$NYXGPT_TARGET_USER\" -H \"$BREW_BIN\" services start nyxgpt-api`/`nyxgpt-web` may hit an analogous launchd-user-session issue on EC2 Mac (launchd Aqua/user-agent session vs. a fresh non-interactive login), but this path is explicitly documentation-verified only (no CI runner available), so I'm not blocking on it \u2014 worth a follow-up owner/manual verification note when an EC2 Mac Dedicated Host is actually exercised.",
+   "`docs/cloud.md`'s CI coverage section should be updated once the above is fixed to accurately describe what the smoke job does and does not validate (target-user session state, Docker presence)."
+  ]
+ },
+ {
+  "issue": 3687,
+  "pr": 3690,
+  "title": "[dkblinux98/nyxGPT] Feature: feat: Review huddle protocol + unresolved-escalation pause backstop - api (#3687) (PR #3690)",
+  "module": "api",
+  "date": "2026-08-09T15:25:44Z",
+  "critical": [
+   "`_escalation_pause_comment_id` always fails silently, breaking \"update in place\" and the resume notice"
+  ],
+  "medium": [
+   "No test exercises the real `_escalation_pause_comment_id` implementation"
+  ],
+  "minor": [
+   "`escalation_pause_gate` (`gh_project.sh:872-921`) recomputes the unresolved count inline (`printf '%s\\n' \"$issues\" | grep -c .`) instead of calling `count_unresolved_escalations`, duplicating the same `grep -c .` counting logic already defined a few lines above. Not a bug today, but a maintenance hazard if the counting logic ever changes in only one place.",
+   "`scrummaster_huddle_mediation.yml`'s \"Get PR and issue number\" step does not validate that `ISSUE` was actually parsed from the PR body (unlike the equivalent step in `review_agent_auto_review.yml:255-269`, which errors out on an empty match). If a huddle is ever triggered on a PR whose body doesn't match `Closes #N`, this silently proceeds with an empty issue number baked into the mediation prompt."
+  ]
+ },
+ {
+  "issue": 3636,
+  "pr": 3679,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: local-stack smoke gates chronically red before services are serving (#3636) (PR #3679)",
+  "module": "observability",
+  "date": "2026-08-09T15:49:15Z",
+  "critical": [
+   "Unresolved merge conflict blocks merge and blocks CI validation"
+  ],
+  "medium": [
+   "None beyond the above, which is blocking at Critical severity."
+  ],
+  "minor": [
+   "None."
+  ]
+ },
+ {
+  "issue": 3689,
+  "pr": 3692,
+  "title": "[dkblinux98/nyxGPT] Feature: fix: Unbounded self-heal retry loop in developer auto-implement - api (#3689) (PR #3692)",
+  "module": "observability",
+  "date": "2026-08-09T16:45:44Z",
+  "critical": [],
+  "medium": [
+   "\"Verify issue is In Progress\" gate fails open on any error other than its own explicit signal"
+  ],
+  "minor": [
+   "None beyond the above \u2014 the `retry_budget.py` module, its CLI, and the `sprint_autopilot_kick`/`FIXED_REQUIRES_MERGE` wiring elsewhere in the workflow look correct and are consistent with the design described in the runbook update."
+  ]
+ },
+ {
+  "issue": 3511,
+  "pr": 3684,
+  "title": "[dkblinux98/nyxGPT] Feature: feat: target-OS provisioning for Linux and macOS AWS instances (#3511) (PR #3684)",
+  "module": "api",
+  "date": "2026-08-09T19:39:16Z",
+  "critical": [
+   "`XDG_RUNTIME_DIR`/D-Bus not set for `sudo -u ... ops install`",
+   "CI smoke job masks the above bug by using an already-session-active, Docker-preinstalled `runner` account",
+   "No Docker install step, but `ops install` requires Docker for Cassandra"
+  ],
+  "medium": [],
+  "minor": [
+   "`scripts/cloud/ec2-user-data-macos.sh.tmpl`'s `brew services start` calls may hit an analogous launchd-session issue on EC2 Mac, but this path has no CI runner available and is documentation-verified only \u2014 not blocking, but worth an owner/manual verification note."
+  ]
+ },
+ {
+  "issue": 3667,
+  "pr": 3683,
+  "title": "[dkblinux98/nyxGPT] Feature: fix: Retro review-round data sourced from Gmail, not GitHub - observability (#3667) (PR #3683)",
+  "module": "observability",
+  "date": "2026-08-09T19:39:34Z",
+  "critical": [],
+  "medium": [
+   "Committed `retro.html` is stale relative to the PR's own committed data",
+   "`retro_template.html`'s hard-coded \"Last 7 days\" window copy was not updated",
+   "Missing test coverage for `gate_series()`"
+  ],
+  "minor": []
+ },
+ {
+  "issue": 3502,
+  "pr": 3606,
+  "title": "[dkblinux98/nyxGPT] Feature: feat: standalone push/PR CI gate - full pytest suite plus blocking mypy (#3502) (PR #3606)",
+  "module": "testing",
+  "date": "2026-08-09T22:30:05Z",
+  "critical": [],
+  "medium": [
+   "Regression test silently skips instead of failing when its target bug is reintroduced"
+  ],
+  "minor": [
+   "None new."
+  ]
+ },
+ {
+  "issue": 3507,
+  "pr": 3697,
+  "title": "[dkblinux98/nyxGPT] Feature: feat: cloud secrets via SSM Parameter Store or Secrets Manager (#3507) (PR #3697)",
+  "module": "security",
+  "date": "2026-08-09T23:01:20Z",
+  "critical": [
+   "Blocking synchronous AWS calls inside the async request hot path"
+  ],
+  "medium": [
+   "Admin \"rotate API key\" UI silently becomes a no-op (and misreports success) on cloud deploys"
+  ],
+  "minor": [
+   "`cloud_secrets._cache` is a bare module-level `dict` with no lock. Not a correctness bug under CPython's GIL for these get/set patterns, but worth a one-line comment if multi-threaded workers are ever added, since a `threading.Lock` would be cheap insurance."
+  ]
+ },
+ {
+  "issue": 3507,
+  "pr": 3697,
+  "title": "[dkblinux98/nyxGPT] Feature: feat: cloud secrets via SSM Parameter Store or Secrets Manager (#3507) (PR #3697)",
+  "module": "security",
+  "date": "2026-08-09T23:26:07Z",
+  "critical": [
+   "CodeQL check is failing on this PR's head commit with 3 new high-severity `py/clear-text-logging-sensitive-data` alerts"
+  ],
+  "medium": [
+   "`docs/cloud.md` documents rotate-button behavior that isn't implemented"
+  ],
+  "minor": [
+   "(carried from previous review, still true, non-blocking) `cloud_secrets._cache`/`_failure_cache` are bare module-level `dict`s with no lock -- fine under CPython's GIL for these get/set patterns, but worth a one-line comment if multi-threaded workers are ever added."
+  ]
+ },
+ {
+  "issue": 3694,
+  "pr": 3699,
+  "title": "[dkblinux98/nyxGPT] Feature: feat: Cross-issue failure anomaly collapse - one diagnosis, not N loops - api (#3694) (PR #3699)",
+  "module": "api",
+  "date": "2026-08-09T23:46:32Z",
+  "critical": [],
+  "medium": [
+   "Dangling citation to a nonexistent postmortem document",
+   "Misleading owner-facing message on the cross-issue-anomaly path"
+  ],
+  "minor": [
+   "The open-marker race (two issues both observing \"no existing marker\" near-simultaneously and both becoming an \"origin\") is explicitly acknowledged in code comments as an accepted best-effort tradeoff; worst case is 2 diagnoses instead of 1, still a large improvement over 5. Not a blocker, just noting it was deliberately reviewed and not overlooked.",
+   "`_is_open`'s `RESOLVE_ANOMALY` check treats any OWNER `RESOLVE_ANOMALY` comment as closing every marker that precedes it, regardless of which step it was for. This appears intentional (a single global \"all clear\" keyword) rather than a bug, but is worth the owner's awareness if multiple distinct anomalies are ever open concurrently."
+  ]
+ },
+ {
+  "issue": 3512,
+  "pr": 3702,
+  "title": "[dkblinux98/nyxGPT] Feature: feat: guided AWS credential collection for cloud deploy (#3512) (PR #3702)",
+  "module": "rag",
+  "date": "2026-08-10T00:36:08Z",
+  "critical": [],
+  "medium": [
+   "Web coverage gate fails (100% threshold) \u2014 missing tests for `page.tsx`"
+  ],
+  "minor": [
+   "Region defaulting parity",
+   "`write_profile_credentials` drops comments in `~/.aws/credentials`"
+  ]
+ },
+ {
+  "issue": 3704,
+  "pr": 3705,
+  "title": "[dkblinux98/nyxGPT] Feature: fix: Dispatched reviews drop the REQUEST_CHANGES handoff to the dev agent - api (#3704) (PR #3705)",
+  "module": "api",
+  "date": "2026-08-10T01:37:41Z",
+  "critical": [],
+  "medium": [
+   "`handoff_recorded` false-positives on the run's own structured-review comment, silently disabling the backstop"
+  ],
+  "minor": [
+   "`disagreement_type` can inherit an earlier cycle's classification",
+   "`_DTYPE_BODY_RE` matches anywhere in the review body",
+   "AC \"Verified by dispatching a review against a test PR\" is unchecked",
+   "`git checkout FETCH_HEAD -- scripts/agents` leaves release-branch scripts in the workspace"
+  ]
+ },
+ {
+  "issue": 3706,
+  "pr": 3707,
+  "title": "[dkblinux98/nyxGPT] Feature: fix: Sprint autopilot and dispatch bound by current sprint, not release - api (#3706) (PR #3707)",
+  "module": "api",
+  "date": "2026-08-10T04:29:43Z",
+  "critical": [
+   "Park note self-triggers the dispatch workflow and can cross the sprint boundary"
+  ],
+  "medium": [
+   "`--sprint-scoped` with no active iteration falls back to unscoped selection, contradicting the conservative-stop policy this PR documents",
+   "Park note drops the no-sprint bucket in the no-active-sprint variant"
+  ],
+  "minor": [
+   "`notify_scrum_ready.yml` compares `KICK_ACTOR != KICK_OWNER` case-sensitively in bash while the job-level `if:` comparison is case-insensitive; if `vars.HUMAN_OWNER` ever differs in case from the actual login, an owner kick would silently run scoped. Not blocking.",
+   "Test 8's `_assert_not_contains` needle includes a trailing newline (`\"READY_FOR_NEXT_ISSUE\\n\"`), which the kick body would not match anyway (no trailing newline after the token); harmless because the content asserts carry the test, but the needle is misleading. Not blocking."
+  ]
+ },
+ {
+  "issue": 3509,
+  "pr": 3708,
+  "title": "[dkblinux98/nyxGPT] Feature: feat: Terraform AWS modules - VPC, subnets, security groups, compute (#3509) (PR #3708)",
+  "module": "security",
+  "date": "2026-08-10T05:08:30Z",
+  "critical": [],
+  "medium": [
+   "Missing tests for the four new web proxy routes (0% coverage \u2014 fails the vitest coverage gate)",
+   "Uncovered branches in `web/src/app/admin/cloud-infrastructure/page.tsx` (82.43% stmts / 72.04% branch / 75% funcs)"
+  ],
+  "minor": [
+   "`docs/api.md:15` still says \"Quick reference of all 77 available endpoints\" \u2014 the table now lists 79+ rows after this PR adds 4. Update the count while you're in there.",
+   "`terraform_init` (src/nyxgpt/cloud_infra.py) passes `-upgrade` on every init, re-resolving provider versions on each plan/apply; consider dropping it or only upgrading when the synced config changed. Purely a speed nit."
+  ]
+ },
+ {
+  "issue": 3510,
+  "pr": 3711,
+  "title": "[dkblinux98/nyxGPT] Feature: feat: Terraform remote state - S3 backend with DynamoDB locking (#3510) (PR #3711)",
+  "module": "cli",
+  "date": "2026-08-10T06:22:08Z",
+  "critical": [],
+  "medium": [
+   "Vitest gate fails: new mount-time fetch breaks two existing page tests",
+   "Missing web tests for all new web code (100% coverage gate)",
+   "One-click Restore bypasses the API's confirmation guard"
+  ],
+  "minor": [
+   "Stale symbol reference in `terraform/aws/backend.tf:7`",
+   "`list_state_versions` reads only the first page of `list_object_versions`"
+  ]
+ },
+ {
+  "issue": 3513,
+  "pr": 3712,
+  "title": "[dkblinux98/nyxGPT] Feature: feat: nyxgpt cloud deploy - provision AWS and deploy the full stack (#3513) (PR #3712)",
+  "module": "cli",
+  "date": "2026-08-10T07:37:37Z",
+  "critical": [],
+  "medium": [
+   "Web coverage gate fails: the three new API proxy routes are untested (0% coverage) and two page error branches are uncovered"
+  ],
+  "minor": [
+   "Wrong command in the health-timeout error message",
+   "Background tunnel keeps a never-drained stderr pipe",
+   "Unquoted substitution into the provisioning script",
+   "Small test/consistency nits"
+  ]
+ },
+ {
+  "issue": 3514,
+  "pr": 3713,
+  "title": "[dkblinux98/nyxGPT] Feature: feat: cloud deploy lifecycle from the SRE dashboard (#3514) (PR #3713)",
+  "module": "web-ui",
+  "date": "2026-08-10T09:12:32Z",
+  "critical": [],
+  "medium": [
+   "Web coverage gate fails: 4 uncovered branches in `web/src/app/admin/cloud-infrastructure/page.tsx` (branches 99.86% < 100%)"
+  ],
+  "minor": [
+   "Failed teardowns are never recorded in the history",
+   "`docs/api.md` browser-reachability note omits one deleted proxy",
+   "Pre-existing pytest flake worth a follow-up issue"
+  ]
+ },
+ {
+  "issue": 3516,
+  "pr": 3715,
+  "title": "[dkblinux98/nyxGPT] Feature: feat: Phase 6 capstone - clean machine to monitored AWS deploy in one command (#3516) (PR #3715)",
+  "module": "observability",
+  "date": "2026-08-10T17:13:07Z",
+  "critical": [],
+  "medium": [
+   "Web coverage gate fails: new proxy route is entirely untested",
+   "Web coverage gate fails: uncovered branches in the portability page"
+  ],
+  "minor": [
+   "Owner-acceptance note (not a defect in this PR)",
+   "`_first_word` in `src/nyxgpt/portability.py` won't catch prefixed invocations (e.g. `sudo docker \u2026`) in the wrapped check. No current row uses a prefix, so this is a latent checker limitation only.",
+   "`web/src/app/api/v1/ops/portability/route.ts:15` uses a template literal with no interpolation for the URL \u2014 a plain string would do."
+  ]
+ },
+ {
+  "issue": 3632,
+  "pr": 3722,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: Linux install - system ollama.service port conflict; web probe race - sre (#3632) (PR #3722)",
+  "module": "web-ui",
+  "date": "2026-08-11T04:18:42Z",
+  "critical": [
+   "Failing security-scan gate: bandit B103 (High/High) on the new world-writable chmod"
+  ],
+  "medium": [
+   "None beyond the Critical above."
+  ],
+  "minor": [
+   "`scripts/run-web.sh:62`",
+   "`src/nyxgpt/ops.py` (`_ensure_observability_volume_dir`)",
+   "`src/nyxgpt/ops.py` (`install()` steps)",
+   "`_system_ollama_service_enabled` treats `static` as a conflict"
+  ]
+ },
+ {
+  "issue": 3724,
+  "pr": 3726,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: acceptance failure 1 for #3596 - k8s --local requires a pre-existing cluste (#3724) (PR #3726)",
+  "module": "cli",
+  "date": "2026-08-11T04:44:59Z",
+  "critical": [],
+  "medium": [
+   "Failing CodeQL check: incomplete URL substring sanitization at `tests/unit/test_ops.py:10388`"
+  ],
+  "minor": [
+   "No checksum verification of downloaded binaries"
+  ]
+ },
+ {
+  "issue": 3727,
+  "pr": 3728,
+  "title": "[dkblinux98/nyxGPT] Improvement: feat: Release-candidate publish to PyPI - acceptance-test latest code repo-less (#3727) (PR #3728)",
+  "module": "testing",
+  "date": "2026-08-11T17:22:20Z",
+  "critical": [],
+  "medium": [
+   "Web coverage gate fails: new proxy route is entirely untested",
+   "Uncovered branches in the portability page"
+  ],
+  "minor": [
+   "`nyxgpt release rc --publish --rc-number 0` dispatches a doomed run and misreports the target",
+   "The web proxy drops the `branch` query parameter"
+  ]
+ },
+ {
+  "issue": 3727,
+  "pr": 3728,
+  "title": "[dkblinux98/nyxGPT] Improvement: feat: Release-candidate publish to PyPI - acceptance-test latest code repo-less (#3727) (PR #3728)",
+  "module": "testing",
+  "date": "2026-08-11T18:07:05Z",
+  "critical": [],
+  "medium": [
+   "The `rc` channel does not stamp the Homebrew tap (unmet acceptance criterion, owner decision 2026-08-11 17:44)"
+  ],
+  "minor": [
+   "The stable-channel confirmation token is a public constant",
+   "The panel error message can render `[object Object]`",
+   "Nightly on a non-release default branch fails red instead of no-oping",
+   "(Pre-existing, not introduced here: docs/api.md's \"82 available endpoints\" count was already stale before this PR.)"
+  ]
+ },
+ {
+  "issue": 3727,
+  "pr": 3728,
+  "title": "[dkblinux98/nyxGPT] Improvement: feat: Release-candidate publish to PyPI - acceptance-test latest code repo-less (#3727) (PR #3728)",
+  "module": "testing",
+  "date": "2026-08-11T18:15:51Z",
+  "critical": [],
+  "medium": [
+   "Unimplemented acceptance criterion: rc channel does not stamp the Homebrew tap (@rc formulas) or cut a GitHub prerelease",
+   "Missing documentation for the macOS RC acceptance flow"
+  ],
+  "minor": [
+   "The stable channel's plan renders a command the CLI refuses",
+   "`--number` is silently ignored on the stable channel",
+   "An explicit `nyxgpt release publish --channel dev --publish` can silently no-op"
+  ]
+ },
+ {
+  "issue": 3727,
+  "pr": 3728,
+  "title": "[dkblinux98/nyxGPT] Improvement: feat: Release-candidate publish to PyPI - acceptance-test latest code repo-less (#3727) (PR #3728)",
+  "module": "testing",
+  "date": "2026-08-11T20:19:48Z",
+  "critical": [
+   "The `@rc` formulas are structurally uninstallable \u2014 Homebrew cannot load a formula whose `@`-tag does not start with a digit"
+  ],
+  "medium": [],
+  "minor": [
+   "docs/homebrew.md overstates \"same service names\""
+  ]
+ },
+ {
+  "issue": 3727,
+  "pr": 3728,
+  "title": "[dkblinux98/nyxGPT] Improvement: feat: Release-candidate publish to PyPI - acceptance-test latest code repo-less (#3727) (PR #3728)",
+  "module": "testing",
+  "date": "2026-08-11T20:25:23Z",
+  "critical": [
+   "`brew install nyxgpt-api@rc` cannot work: Homebrew is unable to load a formula named `<name>@rc`"
+  ],
+  "medium": [],
+  "minor": [
+   "Stable-channel confirmation is a fixed literal",
+   "The `homebrew-tap-rc` tap-push step's `git status --porcelain -- Formula/nyxgpt-api.rb` check can never fire given the job only ever `cp`s `@rc` files \u2014 harmless defense-in-depth against future edits."
+  ]
+ },
+ {
+  "issue": 3730,
+  "pr": 3733,
+  "title": "[dkblinux98/nyxGPT] Improvement: feat: Drain-gated failure processing and automated release ceremony trigger (#3730) (PR #3733)",
+  "module": "api",
+  "date": "2026-08-12T18:31:42Z",
+  "critical": [
+   "Drain gate deadlocks whenever an acceptance failure is filed against a feature in Acceptance Testing"
+  ],
+  "medium": [
+   "`acceptance_drain_gate.yml` `issues: [closed]` trigger carries a secret-backed `GH_TOKEN` with no actor gate (#3600 rule)"
+  ],
+  "minor": [
+   "`acceptance_lane_snapshot` (`scripts/agents/lib/gh_project.sh:857-880`) creates two `mktemp` files with no trap; under the sourced `set -e`, a mid-loop `graphql` failure leaks them. A `trap`/local cleanup would tidy this.",
+   "`release_ceremony_watch.sh:141-151`: if the marker comment fails to post, the ceremony proceeds anyway; a later poll then re-fires, fails at the Phase 0 gate (tag taken), and DMs the owner a false alarm. Acknowledged in a code comment; consider aborting (safe \u2014 nothing irreversible has happened yet) instead of continuing when the claim can't be recorded.",
+   "`handle_acceptance_failure.yml` / `handle_improvement.yml`: the `drain_gate_hold` fallback warning asserts a specific cause \u2014 \"(it is already filed in the lane)\" \u2014 but `drain_gate_hold` also fails when `set_issue_status` fails for any other reason (e.g. the `Acceptance Failed` option missing from the project). Word it as uncertain.",
+   "`release_ceremony.yml`: an unset `RELEASE_CEREMONY_TOKEN` silently falls back to the scrummaster token and only fails mid-ceremony at the Phase 1 master push. A fail-fast check at trigger time (\"ceremony token not configured\") would fail before the marker is posted rather than after."
+  ]
+ },
+ {
+  "issue": 3730,
+  "pr": 3733,
+  "title": "[dkblinux98/nyxGPT] Improvement: feat: Drain-gated failure processing and automated release ceremony trigger (#3730) (PR #3733)",
+  "module": "api",
+  "date": "2026-08-12T18:57:44Z",
+  "critical": [],
+  "medium": [
+   "Rework exemption over-includes held Improvements \u2014 the gate can open while a feature is still genuinely under test"
+  ],
+  "minor": [
+   "`drain_gate_rework_features` rebuilds its JSON accumulator with a full `jq` re-parse per held issue (O(n\u00b2)); harmless at realistic lane sizes, tidy only if convenient while touching the function for the Medium fix."
+  ]
+ },
+ {
+  "issue": 3730,
+  "pr": 3733,
+  "title": "[dkblinux98/nyxGPT] Improvement: feat: Drain-gated failure processing and automated release ceremony trigger (#3730) (PR #3733)",
+  "module": "api",
+  "date": "2026-08-12T19:10:38Z",
+  "critical": [],
+  "medium": [
+   "Rework exemption over-includes held Improvements (carried over, unaddressed)"
+  ],
+  "minor": [
+   "8a9b10ef's commit message notes a remaining follow-up it could not apply itself: pre-commit's mypy hook should get `--cache-dir=.mypy_cache_precommit` so the isolated mirrors-mypy venv stops poisoning the shared `.mypy_cache` at the source (the `.pre-commit-config.yaml` edit was blocked as a sensitive file). Worth an owner-applied change or a small follow-up issue; the `--no-incremental` pins make the gate safe regardless.",
+   "(Carried over) `drain_gate_rework_features` rebuilds its JSON accumulator with a full `jq` re-parse per held issue (O(n\u00b2)); tidy only if convenient while touching the function for the Medium fix."
+  ]
+ },
+ {
+  "issue": 3730,
+  "pr": 3733,
+  "title": "[dkblinux98/nyxGPT] Improvement: feat: Drain-gated failure processing and automated release ceremony trigger (#3730) (PR #3733)",
+  "module": "api",
+  "date": "2026-08-12T19:13:55Z",
+  "critical": [],
+  "medium": [
+   "Rework exemption over-includes held Improvements (carried over, second round unaddressed)"
+  ],
+  "minor": [
+   "(Carried over) pre-commit's mypy hook should eventually get `--cache-dir=.mypy_cache_precommit` to stop poisoning the shared `.mypy_cache` at the source; the `--no-incremental` pins keep the gate safe meanwhile. Suitable as an owner-applied change or small follow-up issue.",
+   "(Carried over) `drain_gate_rework_features` rebuilds its JSON accumulator with a full `jq` re-parse per held issue (O(n\u00b2)); tidy only while touching the function for the Medium fix."
+  ]
+ },
+ {
+  "issue": 3735,
+  "pr": 3738,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: publish pipeline deviates from owner decisions - @3.0.0rc naming, nightly removal (#3735) (PR #3738)",
+  "module": "api",
+  "date": "2026-08-12T23:40:13Z",
+  "critical": [],
+  "medium": [
+   "Web coverage gate fails: uncovered `'none'` fallback branch"
+  ],
+  "minor": [
+   "Four spellings of \"strip the rc suffix\""
+  ]
+ },
+ {
+  "issue": 3736,
+  "pr": 3739,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: huddle decision vs 3-cycle escalation race - dedupe triggers, escalation defers (#3736) (PR #3739)",
+  "module": "api",
+  "date": "2026-08-13T00:48:08Z",
+  "critical": [],
+  "medium": [
+   "`jq -n --argjson` passes the whole PR thread as one exec argument and hard-fails above ~128KB, killing verdict execution on exactly the long threads this fix targets"
+  ],
+  "minor": [
+   "Workflow activation latency",
+   "`parse_decision` prefix-matches \"change\"",
+   "Hand-posted decision with no trigger re-dispatches on manual re-run"
+  ]
+ },
+ {
+  "issue": 3745,
+  "pr": 3754,
+  "title": "[dkblinux98/nyxGPT] Improvement: feat: web UI Support menu - packaged Docs viewer and File an Issue template (#3745) (PR #3754)",
+  "module": "web-ui",
+  "date": "2026-08-13T18:28:14Z",
+  "critical": [],
+  "medium": [
+   "Vitest coverage gate fails \u2014 no web tests for any new web code",
+   "`_rewrite_link` mangles dotfile-directory links (`src/nyxgpt/support.py:203`)",
+   "`docs/ui.md` Settings Menu enumeration falsified (inverse-claims \u00a71a)"
+  ],
+  "minor": [
+   "Support issues still count in `open_issues`",
+   "`test_render_rewrites_links_between_docs_to_in_app_routes` allows any absolute URL"
+  ]
+ },
+ {
+  "issue": 3753,
+  "pr": 3755,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: rc formula install fails at keg venv ensurepip on stock Homebrew macOS (#3753) (PR #3755)",
+  "module": "cli",
+  "date": "2026-08-13T18:50:47Z",
+  "critical": [
+   "pip `--python` is misplaced \u2014 the fixed install path still fails"
+  ],
+  "medium": [
+   "Ineffective unit pin for the pip bootstrap",
+   "Falsified claim left unfixed (inverse-claims \u00a71a)"
+  ],
+  "minor": [
+   "security-scan failure is not this PR's",
+   "The developer's own PR comment honestly flagged the smoke job as the real verification gate before it ran \u2014 good process; this round is that gate doing its job."
+  ]
+ },
+ {
+  "issue": 3753,
+  "pr": 3755,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: rc formula install fails at keg venv ensurepip on stock Homebrew macOS (#3753) (PR #3755)",
+  "module": "cli",
+  "date": "2026-08-13T19:10:14Z",
+  "critical": [
+   "`nyxgpt --version` does not exist \u2014 the smoke job fails its own verify step"
+  ],
+  "medium": [
+   "None beyond the Critical (the ineffective pin at tests/unit/test_build_homebrew_artifacts.py:898 and the docs/homebrew.md:307 sentence describing the `--version` check are consequences of the Critical and must move with whatever fix is chosen)."
+  ],
+  "minor": [
+   "Pre-existing false claims about `nyxgpt --version`",
+   "security-scan / nanoid npm advisory"
+  ]
+ },
+ {
+  "issue": 3752,
+  "pr": 3764,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: README install path fails user-style macOS install - documentation (#3752) (PR #3764)",
+  "module": "documentation",
+  "date": "2026-08-14T05:01:52Z",
+  "critical": [],
+  "medium": [
+   "Generated rc install command still omits the trust step",
+   "EC2 macOS user-data script taps and installs without trusting"
+  ],
+  "minor": [
+   "`.github/workflows/macos-brew-smoke.yml:276` (published-tap job) taps + installs without the trust step. CI currently passes (runner Homebrew does not gate yet \u2014 last two runs green), but the job will break when runner images update; a pre-emptive `brew tap-trust \"$TAP\" || true` would future-proof it.",
+   "`tests/unit/test_portability.py:77` still uses the `dkblinux98/homebrew-nyxgpt` spelling in a checker fixture \u2014 harmless (both spellings resolve to the same tap, and it only exercises the repo-less checker), but aligning it with the canonical name avoids the old spelling lingering as a copy-paste source.",
+   "References to `dkblinux98/homebrew-nyxgpt` as a *repository* name (`docs/homebrew.md:52,109-111`, `docs/cloud.md:645`, `scripts/retire_rc_formulas.sh:29`, `release-artifacts.yml`) are correct as-is \u2014 that is the repo behind the tap; no change needed. Noted so the next sweep doesn't \"fix\" them."
+  ]
+ },
+ {
+  "issue": 3752,
+  "pr": 3764,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: README install path fails user-style macOS install - documentation (#3752) (PR #3764)",
+  "module": "documentation",
+  "date": "2026-08-14T05:21:27Z",
+  "critical": [],
+  "medium": [
+   "rc publish workflow still hands the owner untrusted macOS acceptance sequences",
+   "Acceptance-round note posts the untrusted sequence on the release tracking issue"
+  ],
+  "minor": [
+   "Web test fixtures now drift from the real API contract: `web/tests/mocks/handlers.ts:474` and `web/tests/app/admin/portability.test.tsx:402` still mock `commands.brew` as the old untrusted string. No runtime bug (the panel renders the string verbatim), but the fixture no longer represents what the API produces; update alongside the Medium fixes so the front-end test keeps testifying to the real contract.",
+   "`_untrusted_taps`'s line-wise scan cannot flag a one-line `tap && install` chain (see first Medium) \u2014 worth a regression case in `test_the_untrusted_tap_scan_would_catch_a_regression` when fixed."
+  ]
+ },
+ {
+  "issue": 3752,
+  "pr": 3764,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: README install path fails user-style macOS install - documentation (#3752) (PR #3764)",
+  "module": "documentation",
+  "date": "2026-08-14T05:26:57Z",
+  "critical": [],
+  "medium": [
+   "rc publish workflow still hands the owner untrusted macOS acceptance sequences",
+   "Acceptance-round note posts the untrusted sequence on the release tracking issue"
+  ],
+  "minor": []
+ },
+ {
+  "issue": 3760,
+  "pr": 3766,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: docker provisioning fails on amazon linux - cloud deploy (#3760) (PR #3766)",
+  "module": "cli",
+  "date": "2026-08-14T06:37:56Z",
+  "critical": [
+   "`sudo -n docker compose` interpolates `${HOME}` as `/root`, relocating every bind mount"
+  ],
+  "medium": [
+   "`_run(env=...)`-passed secrets are stripped by the sudo hop, breaking the GlitchTip superuser step"
+  ],
+  "minor": [
+   "No checksum on the Compose plugin download",
+   "Duplicate failing transaction on AL2023",
+   "No-root path in `_install_compose_plugin_binary` reports the generic message"
+  ]
+ },
+ {
+  "issue": 3761,
+  "pr": 3767,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: node/npm not provisioned for web service - cloud deploy (#3761) (PR #3767)",
+  "module": "web-ui",
+  "date": "2026-08-14T07:01:35Z",
+  "critical": [],
+  "medium": [
+   "CI security-scan failing \u2014 npm audit: nanoid < 3.3.18 (high)"
+  ],
+  "minor": [
+   "Fail-fast message can be preempted by `set -euo pipefail`",
+   "`curl | sudo -E bash` from nodesource.com"
+  ]
+ },
+ {
+  "issue": 3763,
+  "pr": 3769,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: 2.1.0 homebrew backfill 422s on immutable release - release-artifacts (#3763) (PR #3769)",
+  "module": "cli",
+  "date": "2026-08-14T09:02:18Z",
+  "critical": [],
+  "medium": [
+   "Sidecar-reuse path ships formulas whose sha256 cannot match the served assets",
+   "Inverse-claims (\u00a71a): `docs/systemd.md:83` falsified and left unfixed"
+  ],
+  "minor": [
+   "`src/nyxgpt/release_tarball.py:223`"
+  ]
+ },
+ {
+  "issue": 3763,
+  "pr": 3769,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: 2.1.0 homebrew backfill 422s on immutable release - release-artifacts (#3763) (PR #3769)",
+  "module": "cli",
+  "date": "2026-08-14T09:26:13Z",
+  "critical": [],
+  "medium": [
+   "Inverse-claims (\u00a71a): `src/nyxgpt/portability.py:174` falsified and left unfixed, and it renders on the SRE dashboard"
+  ],
+  "minor": [
+   "Resolve step swallows API errors when listing assets",
+   "Wording nit"
+  ]
+ },
+ {
+  "issue": 3763,
+  "pr": 3769,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: 2.1.0 homebrew backfill 422s on immutable release - release-artifacts (#3763) (PR #3769)",
+  "module": "cli",
+  "date": "2026-08-14T09:29:43Z",
+  "critical": [],
+  "medium": [
+   "Inverse-claims (\u00a71a): `src/nyxgpt/portability.py:173-174` falsified and left unfixed (STILL PRESENT from previous review)"
+  ],
+  "minor": [
+   "Previously reported, still open, still non-blocking: (1) the resolve step's `assets_on()` suppresses API errors (`2>/dev/null || echo \"\"`), so a transient API failure can misclassify a serving sidecar as `SERVED=false` and churn its assets \u2014 suggest the retirement branch re-list without suppression; (2) `docs/portability-matrix.md:69` \"the release's `<version>-homebrew` release\" reads doubled."
+  ]
+ },
+ {
+  "issue": 3771,
+  "pr": 3772,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: concurrent rc cuts race past the tip-unchanged guard - burned rc7 (#3771) (PR #3772)",
+  "module": "api",
+  "date": "2026-08-14T10:30:02Z",
+  "critical": [
+   "A queued cut suppresses the running cut, whose spurious \"success\" then permanently claims the unpublished tip"
+  ],
+  "medium": [
+   "None beyond what the Critical subsumes (its missing-test component is folded into the fix above)."
+  ],
+  "minor": [
+   "`per_page=30` window now shared with non-success runs"
+  ]
+ },
+ {
+  "issue": 3770,
+  "pr": 3773,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: rc smoke per-formula tap trust breaks once stable formulas exist (#3770) (PR #3773)",
+  "module": "observability",
+  "date": "2026-08-14T10:32:10Z",
+  "critical": [],
+  "medium": [
+   "Stale copies of the old `commands.brew` string left in API docs and web test layer (inverse-claims, \u00a71a)"
+  ],
+  "minor": [
+   "Interactive docs keep the single spelling",
+   "Test robustness nit"
+  ]
+ },
+ {
+  "issue": 3776,
+  "pr": 3779,
+  "title": "[dkblinux98/nyxGPT] Feature: feat: retro churn-cost metrics - context tokens vs change tokens per issue (#3776) (PR #3779)",
+  "module": "observability",
+  "date": "2026-08-14T15:45:54Z",
+  "critical": [],
+  "medium": [
+   "Huddle workflows are listed in `CHURN_WORKFLOWS` but can never produce a round",
+   "Three contradictory stories about how the price sheet reaches the dump; two of them can never produce dollars"
+  ],
+  "minor": [
+   "`retro_template.html` interpolates incident `title`/`summary`/`kind` into `innerHTML` unescaped (churnincidents block). The data is repo-committed and owner-authored, and the rest of the template does the same, so acceptable \u2014 but worth remembering if incident recording ever opens to other writers.",
+   "`split_tokens` with turn markers but no usage (`tokens: None`, `turns > 0`) reports a \"known\" split of 0/0 with source `no-change`/`turns` rather than `unknown`; the round is still counted in `unknown_token_rounds`, so totals stay honest, but per-issue `unknown_split_rounds` misses it.",
+   "`split_log_by_steps` segments and `merge_rounds` are keyed by step *name*; two identically-named Claude steps in one job would collide. No current workflow has that, so a comment would suffice.",
+   "`rollup_issues`: if an issue's first-seen round has `started_at: None`, `first_round_at`/`last_round_at` stay None even when later rounds carry timestamps (guard `entry[key]` is falsy). Cosmetic \u2014 rounds virtually always have timestamps."
+  ]
+ },
+ {
+  "issue": 3780,
+  "pr": 3781,
+  "title": "[dkblinux98/nyxGPT] Feature: feat: promotion sweep and drain gate read features parked in Acceptance Failed (#3780) (PR #3781)",
+  "module": "api",
+  "date": "2026-08-14T21:48:24Z",
+  "critical": [],
+  "medium": [
+   "Falsified pre-#3780 claims left in three workflow headers (\u00a71a inverse-claims)"
+  ],
+  "minor": [
+   "`agents/prompts/scrummaster-agent.prompt.md:17-18` still describes the lane via D-001 only (\"Items held in `Acceptance Failed` are deliberately held state\"). Not falsified \u2014 both populations are deliberate, so the \"never sweep\" instruction stays true \u2014 but the scrummaster runbook was updated to the D-001+D-008 dual wording and the prompt could match. Does not block merge."
+  ]
+ },
+ {
+  "issue": 3789,
+  "pr": 3791,
+  "title": "[dkblinux98/nyxGPT] Improvement: feat: dev install mode - run current checkout HEAD without the keg build (#3789) (PR #3791)",
+  "module": "cli",
+  "date": "2026-08-15T05:29:02Z",
+  "critical": [
+   "Dev-mode web UI returns 500 on every request \u2014 the feature does not work end-to-end"
+  ],
+  "medium": [
+   "Web coverage gate fails: branches 99.93% < 100% threshold"
+  ],
+  "minor": [
+   "`_launchd_agent_loaded` is implemented twice (`src/nyxgpt/ops.py` and `src/nyxgpt/self_heal.py`); the import-cycle rationale is documented in `install_mode.py`'s docstring, so this is acceptable, but if a third copy ever appears it belongs in `install_mode.py`. Does not block merge."
+  ]
+ },
+ {
+  "issue": 3790,
+  "pr": 3792,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: retry token in dev agent stop message self-triggers an infinite loop (#3790) (PR #3792)",
+  "module": "security",
+  "date": "2026-08-15T05:51:16Z",
+  "critical": [],
+  "medium": [
+   "Falsified manual-kick instructions left in the tree (\u00a71a)"
+  ],
+  "minor": [
+   "Escalation message slightly overpromises",
+   "`%sth` ordinal",
+   "Stale script reference (pre-existing)",
+   "Owner ergonomics note (deliberate per AC)"
+  ]
+ },
+ {
+  "issue": 3788,
+  "pr": 3794,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: keg pip bootstrap fails under python@3.12 3.12.14 pip import guard (#3788) (PR #3794)",
+  "module": "api",
+  "date": "2026-08-15T05:54:44Z",
+  "critical": [],
+  "medium": [
+   "#3788 fault injection never fires: symlink-blind path scoping in the fault finder",
+   "Missing executed verification for the formula change on macOS",
+   "`brew upgrade python@3.12` without `brew update` is a no-op"
+  ],
+  "minor": [
+   "`brew upgrade python@3.12 || true` swallows genuine upgrade failures, not just \"already installed\" no-ops; after adding `brew update`, consider letting a real upgrade failure be visible (the injection step keeps version drift non-fatal either way).",
+   "`test_macos_smoke_injects_the_keg_pip_failure_from_3788` could additionally assert `\"brew update\"` once that lands, so the drift-mitigation contract is pinned by the Linux suite like the rest."
+  ]
+ },
+ {
+  "issue": 3788,
+  "pr": 3794,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: keg pip bootstrap fails under python@3.12 3.12.14 pip import guard (#3788) (PR #3794)",
+  "module": "api",
+  "date": "2026-08-15T06:22:27Z",
+  "critical": [],
+  "medium": [
+   "#3788 fault injection still never fires: the fault sitecustomize shadows the keg's own sitecustomize and de-scopes itself",
+   "Missing executed verification for the formula change on macOS"
+  ],
+  "minor": [
+   "The \"keg sitecustomize\" diagnostic (`.github/workflows/macos-brew-smoke.yml:145-151`) only checks `sysconfig.get_paths()[\"purelib\"]` and printed `none`, while the run demonstrates pip resolution is governed by path setup the fault can shadow \u2014 extend it to also check the prefix site-packages (`/opt/homebrew/lib/python3.12/site-packages/sitecustomize.py`) so the log states the machine truth.",
+   "`test_macos_smoke_injects_the_keg_pip_failure_from_3788` asserts `\"brew update\" in script` \u2014 trivially true since the string also appears in a comment/warning; anchoring on the command line proper would make the pin sturdier."
+  ]
+ },
+ {
+  "issue": 3789,
+  "pr": 3791,
+  "title": "[dkblinux98/nyxGPT] Improvement: feat: dev install mode - run current checkout HEAD without the keg build (#3789) (PR #3791)",
+  "module": "cli",
+  "date": "2026-08-15T06:38:18Z",
+  "critical": [],
+  "medium": [
+   "`ops.install` unit tests execute the real `_reconcile_install_mode` against the developer's actual `~/.nyxGPT` \u2014 destructive on a dev-mode machine"
+  ],
+  "minor": [
+   "`src/nyxgpt/cli.py:1591` `--dev` help text ends \"Requires a checkout; without it the artifact path is used\" \u2014 \"it\" reads most naturally as \"a checkout\", but `--dev` without a checkout errors (exit 2) rather than falling back to the artifact path. Suggest \"without this flag the artifact path is used\".",
+   "`docs/self-healing.md:50-52` and `214-216` still describe native api/web healing as unconditionally `brew services restart`; after this PR that is mode-dependent (dev mode heals via `launchctl kickstart`). The behavior is documented in `docs/ops.md`'s `--dev` section and the prose was already OS-approximate, but a one-line pointer would keep the two pages from disagreeing.",
+   "Carried from last round: `_launchd_agent_loaded` is implemented in both `ops.py` and `self_heal.py`; acceptable given the documented import-cycle rationale \u2014 a third copy should move to `install_mode.py`."
+  ]
+ },
+ {
+  "issue": 3789,
+  "pr": 3791,
+  "title": "[dkblinux98/nyxGPT] Improvement: feat: dev install mode - run current checkout HEAD without the keg build (#3789) (PR #3791)",
+  "module": "cli",
+  "date": "2026-08-15T06:43:10Z",
+  "critical": [],
+  "medium": [
+   "[UNRESOLVED FROM PREVIOUS REVIEW] `ops.install` unit tests execute the real `_reconcile_install_mode` against the developer's actual `~/.nyxGPT`"
+  ],
+  "minor": [
+   "`src/nyxgpt/cli.py:1591` `--dev` help text: \"Requires a checkout; without it the artifact path is used\" \u2014 \"it\" reads as \"a checkout\", but `--dev` without a checkout errors (exit 2). Suggest \"without this flag the artifact path is used\".",
+   "`docs/self-healing.md:50-52,214-216` still describe native api/web healing as unconditionally `brew services restart`; now mode-dependent (dev heals via `launchctl kickstart`). A one-line pointer to `docs/ops.md`'s `--dev` section would keep the pages from disagreeing.",
+   "`_launchd_agent_loaded` duplicated in `ops.py` and `self_heal.py` (documented import-cycle rationale; a third copy should move to `install_mode.py`)."
+  ]
+ },
+ {
+  "issue": 3788,
+  "pr": 3794,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: keg pip bootstrap fails under python@3.12 3.12.14 pip import guard (#3788) (PR #3794)",
+  "module": "api",
+  "date": "2026-08-15T06:56:44Z",
+  "critical": [],
+  "medium": [
+   "#3788 fault injection still never fires: the scope anchor must be the realpath of the pip module *file*, not of its directory",
+   "Missing executed verification for the formula change on macOS"
+  ],
+  "minor": [
+   "The :396-403 warning prints \"the chain did not fully restore it\" for what is actually symlink topology, which misdirected this round's log reading; with the Medium 1 fix the comparison becomes truthful, but consider making its message state both values it compared."
+  ]
+ },
+ {
+  "issue": 3786,
+  "pr": 3799,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: k8s --local stack has no data/LLM tier - web up but no chat possible (#3786) (PR #3799)",
+  "module": "web-ui",
+  "date": "2026-08-15T07:05:23Z",
+  "critical": [],
+  "medium": [
+   "Falsified claim left in `docs/kubernetes.md` (\u00a71a, #3744)"
+  ],
+  "minor": []
+ },
+ {
+  "issue": 3788,
+  "pr": 3794,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: keg pip bootstrap fails under python@3.12 3.12.14 pip import guard (#3788) (PR #3794)",
+  "module": "api",
+  "date": "2026-08-15T07:07:21Z",
+  "critical": [],
+  "medium": [
+   "#3788 injection removes the symlink, not the file: capture `WHEEL_PY` as the realpath",
+   "Missing executed verification for the formula change on macOS"
+  ],
+  "minor": [
+   "The self-check's probe child (`[sys.executable, \"-c\", probe]`) exercises the same prefix `sys.path` route as the parent, so its two checks are nearly redundant; probing the resolved (Cellar) route instead would have caught this round's defect before the negative control did. Advisory \u2014 covered by the note in Medium 1."
+  ]
+ },
+ {
+  "issue": 3788,
+  "pr": 3794,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: keg pip bootstrap fails under python@3.12 3.12.14 pip import guard (#3788) (PR #3794)",
+  "module": "api",
+  "date": "2026-08-15T07:12:22Z",
+  "critical": [],
+  "medium": [
+   "#3788 injection removes the symlink, not the file: capture `WHEEL_PY` as the realpath",
+   "Missing executed verification for the formula change on macOS"
+  ],
+  "minor": [
+   "(Carried over, advisory) The self-check's probe child exercises the same prefix `sys.path` route as the parent; probing the resolved (Cellar) route as well would catch symlink-vs-realpath divergence before the negative control does. Does not block merge."
+  ]
+ },
+ {
+  "issue": 3787,
+  "pr": 3800,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: k8s --local deploys no observability layer (#3787) (PR #3800)",
+  "module": "observability",
+  "date": "2026-08-15T07:34:44Z",
+  "critical": [],
+  "medium": [
+   "Pytest failures: `down_kubernetes` tests depend on gitignored files existing in the working tree",
+   "Vitest failures: Infrastructure page fixtures missing the new required `observability` field, and the page crashes on its absence"
+  ],
+  "minor": [
+   "`docs/ops.md` port-forward/verify section interleaving (pre-existing, but this PR edits those exact lines)",
+   "Orphaned cluster-scoped RBAC on manual secret deletion",
+   "Repo-relative `K8S_DIR`"
+  ]
  }
 ]

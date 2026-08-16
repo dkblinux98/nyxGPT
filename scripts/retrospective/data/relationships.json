@@ -1,0 +1,1177 @@
+{
+ "generated_at": "2026-08-15T10:14:19Z",
+ "repo": "dkblinux98/nyxGPT",
+ "issues": {
+  "2587": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2592": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2594": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2606": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2611": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2612": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2711": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2713": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2714": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2715": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2716": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2717": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2718": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2725": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2726": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2727": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2728": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2735": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2736": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2737": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2738": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2743": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2744": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2745": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2748": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2749": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2753": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2757": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2766": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2769": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2770": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2772": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2773": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2774": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2775": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2776": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2778": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2780": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2781": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2782": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2783": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2785": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2787": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2788": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2793": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2795": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2796": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2800": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2801": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2802": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2803": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2804": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2805": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2807": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2823": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2824": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2825": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2826": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2827": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2828": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2829": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2830": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2831": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2834": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2836": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2837": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2838": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2839": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2847": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2848": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2849": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2852": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2853": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2854": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2858": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2859": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2860": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2861": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2864": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2867": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2872": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "2878": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3009": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3010": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3011": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3012": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3016": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3046": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3112": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3117": {
+   "blocks": [
+    2676
+   ],
+   "blocked_by": []
+  },
+  "2676": {
+   "blocks": [],
+   "blocked_by": [
+    3117,
+    3118
+   ]
+  },
+  "3118": {
+   "blocks": [
+    2676
+   ],
+   "blocked_by": []
+  },
+  "3130": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3149": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3177": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3178": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3179": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3180": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3181": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3182": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3183": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3184": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3185": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3186": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3187": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3188": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3189": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3190": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3191": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3192": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3193": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3194": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3195": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3196": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3217": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3258": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3270": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3271": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3277": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3278": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3285": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3316": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3317": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3320": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3322": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3324": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3326": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3328": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3332": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3333": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3344": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3345": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3346": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3348": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3349": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3350": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3351": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3352": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3353": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3354": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3355": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3356": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3357": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3358": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3359": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3360": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3370": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3381": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3383": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3384": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3385": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3387": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3388": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3390": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3391": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3392": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3396": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3397": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3406": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3407": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3409": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3410": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3411": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3412": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3413": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3424": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3428": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3429": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3432": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3434": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3436": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3438": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3439": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3440": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3441": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3442": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3443": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3444": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3445": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3457": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3458": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3459": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3460": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3461": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3463": {
+   "blocks": [],
+   "blocked_by": [
+    3566,
+    3573
+   ]
+  },
+  "3464": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3465": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3466": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3467": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3468": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3469": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3470": {
+   "blocks": [],
+   "blocked_by": [
+    3565
+   ]
+  },
+  "3471": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3472": {
+   "blocks": [],
+   "blocked_by": [
+    3564
+   ]
+  },
+  "3473": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3484": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3487": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3489": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3538": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3541": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3544": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3545": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3560": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3564": {
+   "blocks": [
+    3472
+   ],
+   "blocked_by": []
+  },
+  "3565": {
+   "blocks": [
+    3470
+   ],
+   "blocked_by": []
+  },
+  "3566": {
+   "blocks": [
+    3463
+   ],
+   "blocked_by": []
+  },
+  "3573": {
+   "blocks": [
+    3463
+   ],
+   "blocked_by": []
+  },
+  "3574": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3575": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3590": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3600": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3601": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3614": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3617": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3625": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3629": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3632": {
+   "blocks": [
+    3508
+   ],
+   "blocked_by": []
+  },
+  "3508": {
+   "blocks": [],
+   "blocked_by": [
+    3632,
+    3759,
+    3760,
+    3761
+   ]
+  },
+  "3633": {
+   "blocks": [
+    3502
+   ],
+   "blocked_by": []
+  },
+  "3502": {
+   "blocks": [],
+   "blocked_by": [
+    3633
+   ]
+  },
+  "3634": {
+   "blocks": [],
+   "blocked_by": [
+    3719
+   ]
+  },
+  "3635": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3636": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3637": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3639": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3640": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3641": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3642": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3643": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3644": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3647": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3663": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3665": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3666": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3716": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3718": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3719": {
+   "blocks": [
+    3634
+   ],
+   "blocked_by": []
+  },
+  "3721": {
+   "blocks": [
+    3509
+   ],
+   "blocked_by": []
+  },
+  "3509": {
+   "blocks": [],
+   "blocked_by": [
+    3721,
+    3760,
+    3762
+   ]
+  },
+  "3724": {
+   "blocks": [
+    3596
+   ],
+   "blocked_by": []
+  },
+  "3596": {
+   "blocks": [],
+   "blocked_by": [
+    3724
+   ]
+  },
+  "3727": {
+   "blocks": [
+    3516
+   ],
+   "blocked_by": []
+  },
+  "3516": {
+   "blocks": [],
+   "blocked_by": [
+    3727
+   ]
+  },
+  "3729": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3730": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3731": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3735": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3736": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3737": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3741": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3742": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3743": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3744": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3745": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3747": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3752": {
+   "blocks": [
+    3622
+   ],
+   "blocked_by": []
+  },
+  "3622": {
+   "blocks": [],
+   "blocked_by": [
+    3752
+   ]
+  },
+  "3753": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3757": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3759": {
+   "blocks": [
+    3508
+   ],
+   "blocked_by": []
+  },
+  "3760": {
+   "blocks": [
+    3508,
+    3509
+   ],
+   "blocked_by": []
+  },
+  "3761": {
+   "blocks": [
+    3508
+   ],
+   "blocked_by": []
+  },
+  "3762": {
+   "blocks": [
+    3509
+   ],
+   "blocked_by": []
+  },
+  "3763": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3770": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3771": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3782": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3783": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3784": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3786": {
+   "blocks": [
+    2688
+   ],
+   "blocked_by": []
+  },
+  "2688": {
+   "blocks": [],
+   "blocked_by": [
+    3786,
+    3787
+   ]
+  },
+  "3787": {
+   "blocks": [
+    2688
+   ],
+   "blocked_by": []
+  },
+  "3788": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3789": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3790": {
+   "blocks": [],
+   "blocked_by": []
+  }
+ }
+}
