@@ -316,6 +316,24 @@ are absent here by design (relocated to the annex; IDs are never reused).
   `scripts/agents/dispatch_conflict_resolution.sh`;
   `scripts/agents/lib/conflict_resolution.py`.
 
+- **D-012** · 2026-08-16 · owner — **Agentic first principles**, binding on all
+  agentic work wherever it occurs and prior to every role's permissions:
+  (1) consider cost — every run and re-check spends real money; (2) consider
+  future harm, to the agentic process as much as to the application;
+  (3) minimize both **without compromising quality or completeness** — these
+  constrain how the work is done, never how much is delivered, and scaling
+  scope down remains the owner's call; (4) **never take change action without
+  first seeking to understand** — diagnose before fixing. Occasioned by two
+  defects each patched narrowly against a guessed cause and each recurring:
+  the broken-`pyexpat` chain (#3753 → #3788 → #3814, where the real fault was
+  a Homebrew bottle, not pip) and the project-hygiene clobber (#3500 → #3816,
+  fixed once by exempting a single author while every other author kept
+  racing). Not yet propagated into the agent prompts in
+  `.github/workflows/*_auto_*.yml`, which is what would make it bind the
+  dev/review agents at runtime rather than only the docs.
+  Source: owner directive 2026-08-16; `CLAUDE.md` § Agentic First Principles;
+  `AGENTS.md` § First Principles.
+
 ## Verifications
 
 - **V-001** · 2026-08-14 — Releases in this repository are immutable: a

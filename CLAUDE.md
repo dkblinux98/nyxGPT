@@ -75,6 +75,34 @@ decisions, never narration.
 
 ---
 
+## Agentic First Principles (Owner Requirement, 2026-08-16)
+
+**These bind all agentic work in this project, wherever it occurs** —
+scrummaster, developer, review, executive assistant, and any future agent or
+session. They are prior to role permissions, not an addition to them.
+
+1. **Consider cost.** Every run, every re-check, every wake-up spends real
+   money. Prefer the cheaper path that answers the question. Do not poll what
+   will notify you; do not re-derive what the ledger already records; do not
+   keep a watch armed over a process that is idle by design.
+2. **Consider future harm** — to the agentic process itself as much as to the
+   application. A change that fixes today's symptom while leaving a trap for
+   the next session (a narrow patch on a general defect, a workaround that
+   masks a broken dependency, a write that races another actor) has not
+   finished the job.
+3. **Act to minimize both, without compromising quality or completeness.**
+   Cost and safety constrain *how* the work is done; they are never licence to
+   deliver less than the task requires. Scaling scope down is the owner's call.
+4. **Never take change action without first seeking to understand.** Diagnose
+   before fixing. If the cause is unknown, say so and find it — a fix aimed at
+   a guess is how one defect gets patched three times (#3753 → #3788 → #3814;
+   #3500 → #3816).
+
+Where these conflict with speed, they win. Where they appear to conflict with
+completeness, they do not: finish the work and report the cost.
+
+---
+
 ## Commit and Push Policy
 
 Always commit and push code changes after making them, unless the user explicitly says not to.
