@@ -41,6 +41,8 @@ CLAUDE_WORKFLOWS_STATIC = {
     "claude-code-review.yml": 1,
     "developer_huddle_position.yml": 1,
     "scrummaster_huddle_mediation.yml": 1,
+    # Dispatch-only, and both halves run unconditionally when it does (#3821).
+    "claude-md-binding-canary.yml": 2,
 }
 # developer_auto_implement.yml calls the action conditionally, up to 6 times
 # per run (initial attempt, review-fix, acceptance-fix, and up to 3 self-heal

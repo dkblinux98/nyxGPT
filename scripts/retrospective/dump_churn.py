@@ -85,6 +85,7 @@ CHURN_WORKFLOWS = [
     "claude-code-review.yml",
     "developer_huddle_position.yml",
     "scrummaster_huddle_mediation.yml",
+    "claude-md-binding-canary.yml",
 ]
 
 # Step names that ARE a Claude invocation. Deliberately stricter than

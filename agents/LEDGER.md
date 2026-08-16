@@ -328,11 +328,14 @@ are absent here by design (relocated to the annex; IDs are never reused).
   the broken-`pyexpat` chain (#3753 → #3788 → #3814, where the real fault was
   a Homebrew bottle, not pip) and the project-hygiene clobber (#3500 → #3816,
   fixed once by exempting a single author while every other author kept
-  racing). Not yet propagated into the agent prompts in
-  `.github/workflows/*_auto_*.yml`, which is what would make it bind the
-  dev/review agents at runtime rather than only the docs.
+  racing). **Binding at runtime is `CLAUDE.md` itself** — the agent action
+  loads it as project instructions in every agent run (**V-028**), so the
+  principles are deliberately *not* copied into the prompts: a copy would be
+  paid for on every run and would drift out of step with the source. Enforced
+  at the review checkpoint by `review-runbook.md` §1d (principle 4, diagnosis)
+  and §1e (principle 2, generality), both by citation (#3821).
   Source: owner directive 2026-08-16; `CLAUDE.md` § Agentic First Principles;
-  `AGENTS.md` § First Principles.
+  `AGENTS.md` § First Principles; #3821.
 
 ## Verifications
 
@@ -888,6 +891,48 @@ are absent here by design (relocated to the annex; IDs are never reused).
   scanner that silently stops scanning fails too.
   Re-verify when: a new `actions/github-script` step is added, or GitHub
   changes how `env:` values are delivered to the script sandbox.
+
+- **V-028** · 2026-08-16 — **`anthropics/claude-code-action@v1` loads the
+  repo-root `CLAUDE.md` into the agent's context as project instructions.**
+  `CLAUDE.md` is therefore the runtime binding path for every agent in this
+  repository — scrummaster, developer, review, huddle and `@claude` — and
+  anything written there binds without being copied into a prompt. Two
+  qualifications, both load-bearing:
+  (a) it binds only where the job **checks the repo out** — the action reads
+  project configuration from the working directory, so a `claude-code-action`
+  step with no preceding `actions/checkout` in its job would be unbound (all
+  10 invocations across 5 workflows currently have one);
+  (b) on a **PR-context** run the action *restores* `CLAUDE.md` from the PR's
+  **base branch** before starting Claude, parking the PR's version under
+  `.claude-pr/`. A PR that edits `CLAUDE.md` therefore does not bind its own
+  review — the change binds from the merge onward, never retroactively.
+  Method: three independent lines, run/read 2026-08-16 on the runner —
+  (1) **executed** — developer-agent run 31966671380 (`developer_auto_implement.yml`,
+  `claude-code-action@v1`) opened with a system-reminder headed "Contents of
+  /home/runner/work/nyxGPT/nyxGPT/CLAUDE.md (project instructions, checked into
+  the codebase)" carrying the whole file, including text present in no prompt
+  (the drain-gate rules, the `nyxgpt ops` inventory, the
+  `web/src/app/admin/self-heal/page.tsx:366` violation note);
+  (2) **source**, read at `/home/runner/work/_actions/anthropics/claude-code-action/v1`
+  — `base-action/src/parse-sdk-options.ts:334-340` defaults `settingSources` to
+  `["user", "project", "local"]` unless `--setting-sources` is passed, and
+  `project` is the source that loads `CLAUDE.md`; `src/entrypoints/run.ts:261-272`
+  calls `restoreConfigFromBase()` only when the context is a PR, with
+  `src/github/operations/restore-config.ts:25-34` listing `CLAUDE.md` among the
+  restored paths;
+  (3) **configuration** — no workflow passes `--setting-sources`,
+  `--system-prompt` or `--append-system-prompt` (tree-wide grep, 0 hits), so
+  none opts out of the default.
+  Repeatable: `.github/workflows/claude-md-binding-canary.yml`
+  (`workflow_dispatch`) re-answers the question on demand. It injects a
+  run-unique token into the checked-out `CLAUDE.md`, then proves both halves per
+  **D-006** — the default run must return the token, and a control run pinned to
+  `--setting-sources user` must not (a canary that cannot fail proves nothing,
+  and a model that read the file instead of loading it would return the token in
+  both).
+  Re-verify when: the action is bumped past `v1` or its `settingSources` default
+  changes, any workflow starts passing `--setting-sources`, or a
+  `claude-code-action` step is added to a job with no `actions/checkout`.
 
 ## Parked
 
