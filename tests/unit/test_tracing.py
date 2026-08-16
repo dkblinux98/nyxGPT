@@ -17,7 +17,7 @@ from opentelemetry.trace import StatusCode
 
 from nyxgpt import tracing
 from nyxgpt.app import app
-from nyxgpt.config import get_tracing_config, get_tracing_enabled
+from nyxgpt.config import get_tracing_config, get_tracing_enabled, load_config
 
 pytestmark = pytest.mark.unit
 
@@ -125,9 +125,22 @@ def test_init_tracing_is_noop_when_disabled(monkeypatch: pytest.MonkeyPatch) -> 
     assert tracing.is_tracing_enabled() is False
 
 
+def test_session_config_keeps_tracing_disabled() -> None:
+    """Guard for the isolation the tests below depend on.
+
+    Production defaults tracing to *enabled* (2026-07-28), so on any machine
+    where an install has already written ~/.nyxGPT/config.ini the suite runs
+    against a config that switches the OTel SDK on for real -- process-wide
+    and sticky. `_isolate_test_log_dir` in tests/conftest.py rewrites the
+    section off for the session; if that ever stops happening, fail here with
+    the cause rather than in the four downstream tests that only see the
+    symptom."""
+    assert get_tracing_enabled(load_config(None)) is False
+
+
 def test_tracing_status_endpoint_reports_disabled_by_default() -> None:
-    """The test config fixture has no [tracing] section, so the endpoint
-    must report the safe default: disabled, not active."""
+    """The session config has tracing disabled (see the test above), so the
+    endpoint must report the safe default: disabled, not active."""
     client = TestClient(app)
 
     response = client.get("/api/v1/tracing")
@@ -379,7 +392,9 @@ def test_context_detach_race_is_suppressed_end_to_end(
     assert caplog.records == []
 
 
-def test_fastapi_app_is_instrumented_before_lifespan_runs() -> None:
+def test_fastapi_app_is_instrumented_before_lifespan_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Regression test for the bug this issue fixes: FastAPIInstrumentor
     used to be wired up from inside app.py's `lifespan` startup handler.
     Starlette caches `app.middleware_stack` on the very first ASGI message
@@ -399,10 +414,27 @@ def test_fastapi_app_is_instrumented_before_lifespan_runs() -> None:
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
         InMemorySpanExporter,
     )
+    from opentelemetry.util._once import Once
 
     exporter = InMemorySpanExporter()
     provider = SDKTracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+    # OTel's global TracerProvider is set-once and process-wide: a bare
+    # `set_tracer_provider` is silently ignored (a warning, no exception) if
+    # anything already installed one -- a real production config, or another
+    # test -- and this test then records zero spans and fails for a reason
+    # that has nothing to do with the middleware ordering it guards.
+    # Resetting both halves of the set-once guard through monkeypatch makes
+    # the install deterministic and hands the global back at teardown.
+    # Note it does NOT fully un-leak the provider: OTel's ProxyTracer caches
+    # the real tracer the first time it resolves one, and the instrumentation
+    # middleware holds such a proxy for the life of the process. Tests that
+    # need "no active trace" must say so themselves rather than rely on
+    # ordering -- see test_request_id.py's
+    # `test_api_response_includes_request_id_header`.
+    monkeypatch.setattr(tracing.trace, "_TRACER_PROVIDER", None)
+    monkeypatch.setattr(tracing.trace, "_TRACER_PROVIDER_SET_ONCE", Once())
     tracing.trace.set_tracer_provider(provider)
 
     with TestClient(app) as client:

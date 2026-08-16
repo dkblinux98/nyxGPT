@@ -769,6 +769,68 @@ are absent here by design (relocated to the annex; IDs are never reused).
   is refused.
   Source: #3815.
 
+- **V-024** · 2026-08-16 — This repository's **default branch is the release
+  branch `v3.0.0`, not `master`**, so every workflow triggered by an `issues`
+  event (hygiene, drain gate, the comment-command handlers) runs the copy on
+  `v3.0.0`. `master` lags the release line by hundreds of commits and its copy
+  of those workflow files is inert. A session reading `master` to explain live
+  agent-loop behavior will describe code that is not running — #3816 was filed
+  against `master`'s pre-#3666 version of `ensure_project_hygiene.yml`.
+  Method: `git ls-remote --symref origin HEAD` on 2026-08-16 →
+  `ref: refs/heads/v3.0.0`; `git diff origin/master origin/v3.0.0 --
+  .github/workflows/ensure_project_hygiene.yml` shows `master` still carrying
+  the single-gate version, while the hygiene comment posted on #3816 at
+  15:53Z used the "filled missing fields" wording that exists only on
+  `v3.0.0` (introduced by 840225f4, #3666).
+  Re-verify when: Phase 4 of a release ceremony repoints the default branch to
+  the next release line, or `master` is fast-forwarded.
+
+- **V-025** · 2026-08-16 — Fill-if-missing (**#3666**) is not by itself
+  enough to stop hygiene clobbering a deliberate write: the defect is the
+  *window* between a field's check and its write, not the absence of a check.
+  Two runs minutes apart on 2026-08-16 took opposite outcomes on the same
+  code — #3814's Status was overwritten with `Backlog`, #3813's survived. The
+  window is now closed by re-reading each field inside
+  `fill_project_field_if_empty` immediately before the mutation (plus a
+  settle wait before any write, and a re-read before the Milestone edit,
+  which is an issue attribute with no project-field guard available).
+  Method: `bash tests/test_issue_hygiene.sh` on 2026-08-16 — the stub injects
+  the concurrent write into that exact window; case R0 runs a guard-stripped
+  copy of the script and the deliberate `Acceptance Failed` is overwritten
+  with `Backlog` (the defect reproduces on demand), cases R1–R3 run the
+  shipped script in the same scenario and Status, Priority and Milestone all
+  survive, while case 2 shows a genuinely empty issue still fully populated.
+  Standing guards: `project-hygiene-smoke.yml` and
+  `tests/unit/test_issue_hygiene.py`.
+  Re-verify when: the read sequence in `ensure_issue_hygiene.sh` changes (the
+  injection thresholds are expressed in stub reads), or a field is added to
+  the job.
+
+- **V-026** · 2026-08-16 — The pytest suite was **not hermetic against an
+  installed `~/.nyxGPT/config.ini`**. `_ensure_test_config` wrote its
+  tracing-off config only when that file was *absent*, so on any machine (or
+  CI job) where an install ran first, the suite inherited the production
+  default `[tracing] enabled = true` (2026-07-28) and initialized the OTel SDK
+  for real: `/api/v1/tracing` reported enabled and `X-Request-Id` became a
+  32-char trace id instead of a 36-char UUID4. A second, independent leak sat
+  behind it — OTel's global TracerProvider is set-once *and* its `ProxyTracer`
+  caches the resolved tracer for the life of the process, so the SDK provider
+  one tracing test installs can never be fully handed back, and any later test
+  needing "no active trace" must pin `current_trace_id` itself rather than
+  rely on ordering. This is why five failures unrelated to #3816's change
+  appeared in its verification run.
+  Method: on 2026-08-16, `pytest tests/unit/test_tracing.py
+  tests/unit/test_request_id.py` on an **unmodified** checkout of `v3.0.0`
+  reproduced the failures, while `pytest tests/unit/test_request_id.py` alone
+  passed — isolating them to config leakage plus test order, not to any code
+  change. Fixed by forcing the section off in `_isolate_test_log_dir`'s
+  existing session-scoped config rewrite (which already has the crash-safe
+  backup/restore).
+  Standing guard: `test_session_config_keeps_tracing_disabled` fails at the
+  cause instead of at the four downstream symptoms.
+  Re-verify when: the tracing production default changes, or `conftest.py`'s
+  config-rewrite fixtures are restructured.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
