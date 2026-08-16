@@ -1,0 +1,176 @@
+name: CLAUDE.md Binding Canary
+
+# Which question does this job answer? (#3775 executed verification, #3821)
+#
+#   "Does anthropics/claude-code-action@v1 load the repo-root CLAUDE.md into
+#    the agent's context — i.e. is CLAUDE.md the runtime binding path for
+#    every agent in this repository, or only a document humans read?"
+#
+# The answer today is yes (ledger V-028), which is why the agentic first
+# principles live in exactly one file and are cited, never copied, everywhere
+# else. That whole design rests on this one behavior of a third-party action,
+# so it needs a way to be re-answered by running it rather than re-argued from
+# memory. Dispatch this workflow; it costs one small model call per half.
+#
+# Fault injection, per the macos-brew-smoke.yml template: both halves are
+# proved. The canary token is generated per run and injected into the
+# checked-out CLAUDE.md, so no model could have memorised it and no committed
+# file carries it:
+#
+#   * default run  -- no --setting-sources, exactly as every agent workflow
+#                     runs. MUST return the token.
+#   * control run  -- identical but pinned to `--setting-sources user`, which
+#                     excludes the `project` source that loads CLAUDE.md.
+#                     MUST NOT return the token.
+#
+# The control is what makes the positive result mean anything. It fails the
+# same way if the model read the file with a tool instead of receiving it as
+# project instructions (both runs would return the token), and it fails if the
+# assertion is vacuous (neither run returns it).
+#
+# Deliberately workflow_dispatch-only: every run spends real money, and this
+# fact changes only when the action is upgraded or a workflow starts passing
+# --setting-sources -- not on any push of ours (first principle 1, cost).
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Ref to check out (defaults to the release branch)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    name: Is repo-root CLAUDE.md loaded into agent context?
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || vars.RELEASE_BRANCH }}
+
+      - name: Mint a run-unique canary token and inject it into CLAUDE.md
+        id: canary
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Unique per run AND unguessable: the run id alone is derivable from
+          # the prompt's context, which would let a model bluff the answer.
+          TOKEN="nyxgpt-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$(openssl rand -hex 8)"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+          # Working tree only -- never committed. The action reads project
+          # configuration off the working directory, so this is enough.
+          {
+            echo ""
+            echo "## Canary (injected by claude-md-binding-canary.yml, not committed)"
+            echo ""
+            echo "NYXGPT-CANARY-TOKEN: ${TOKEN}"
+          } >> CLAUDE.md
+
+          # A silently-failed injection would make the negative half pass
+          # vacuously, so prove the precondition before spending a model call.
+          grep -q "NYXGPT-CANARY-TOKEN: ${TOKEN}" CLAUDE.md
+          echo "::notice::Canary token injected into CLAUDE.md"
+
+      # Step names start with "Run Claude" on purpose: the retrospective's
+      # churn walker only counts steps its CLAUDE_STEP_RE matches, so a
+      # differently-named invocation spends tokens that never appear in the
+      # spend data (scripts/retrospective/dump_churn.py).
+      - name: Run Claude with the default setting sources (must return the token)
+        id: default_run
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          # yamllint disable rule:line-length
+          claude_args: >-
+            --model ${{ vars.AGENT_MODEL_CANARY || 'claude-haiku-4-5-20251001' }}
+            --disallowed-tools "Bash,Read,Write,Edit,Glob,Grep,Task,WebFetch,WebSearch,NotebookEdit"
+            --json-schema '{"type":"object","properties":{"canary":{"type":"string"},"instructions_loaded":{"type":"boolean"}},"required":["canary","instructions_loaded"]}'
+          # yamllint enable rule:line-length
+          prompt: |
+            Answer from the context you were started with. Do not use any
+            tools and do not read any files -- if you cannot answer without
+            reading a file, the correct answer is the "not loaded" one below.
+
+            If project instructions were loaded into your context, they
+            contain a line of the form `NYXGPT-CANARY-TOKEN: <value>`.
+
+            Return `canary` = that value verbatim and `instructions_loaded` =
+            true. If no project instructions were loaded, or they contain no
+            such line, return `canary` = "NOT-LOADED" and
+            `instructions_loaded` = false. Never guess a value.
+
+      - name: Run Claude with --setting-sources user (control, must NOT return it)
+        id: control_run
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          # `user` excludes the `project` setting source, which is what loads
+          # CLAUDE.md (base-action/src/parse-sdk-options.ts). Same prompt,
+          # same file on disk -- only the opt-out differs.
+          # yamllint disable rule:line-length
+          claude_args: >-
+            --model ${{ vars.AGENT_MODEL_CANARY || 'claude-haiku-4-5-20251001' }}
+            --setting-sources user
+            --disallowed-tools "Bash,Read,Write,Edit,Glob,Grep,Task,WebFetch,WebSearch,NotebookEdit"
+            --json-schema '{"type":"object","properties":{"canary":{"type":"string"},"instructions_loaded":{"type":"boolean"}},"required":["canary","instructions_loaded"]}'
+          # yamllint enable rule:line-length
+          prompt: |
+            Answer from the context you were started with. Do not use any
+            tools and do not read any files -- if you cannot answer without
+            reading a file, the correct answer is the "not loaded" one below.
+
+            If project instructions were loaded into your context, they
+            contain a line of the form `NYXGPT-CANARY-TOKEN: <value>`.
+
+            Return `canary` = that value verbatim and `instructions_loaded` =
+            true. If no project instructions were loaded, or they contain no
+            such line, return `canary` = "NOT-LOADED" and
+            `instructions_loaded` = false. Never guess a value.
+
+      - name: Assert both halves
+        shell: bash
+        env:
+          EXPECTED: ${{ steps.canary.outputs.token }}
+          DEFAULT_OUT: ${{ steps.default_run.outputs.structured_output }}
+          CONTROL_OUT: ${{ steps.control_run.outputs.structured_output }}
+        run: |
+          set -euo pipefail
+
+          fail() { echo "::error::$1"; exit 1; }
+
+          [[ -n "$DEFAULT_OUT" && "$DEFAULT_OUT" != "null" ]] \
+            || fail "default run produced no structured output"
+          [[ -n "$CONTROL_OUT" && "$CONTROL_OUT" != "null" ]] \
+            || fail "control run produced no structured output"
+
+          DEFAULT_TOKEN="$(jq -r '.canary // ""' <<<"$DEFAULT_OUT")"
+          CONTROL_TOKEN="$(jq -r '.canary // ""' <<<"$CONTROL_OUT")"
+
+          if [[ "$DEFAULT_TOKEN" != "$EXPECTED" ]]; then
+            fail "CLAUDE.md was NOT loaded into the agent context: the default \
+          run returned '${DEFAULT_TOKEN}' instead of the injected token. Ledger \
+          V-028 is stale and every 'cite CLAUDE.md instead of copying it' \
+          decision that rests on it must be revisited (#3821)."
+          fi
+
+          if [[ "$CONTROL_TOKEN" == "$EXPECTED" ]]; then
+            fail "control run returned the token with --setting-sources user, \
+          which excludes the project source. The token is reaching the model by \
+          some path other than project instructions (a tool read, or the prompt \
+          itself), so the positive half proves nothing. Fix the canary before \
+          trusting V-028."
+          fi
+
+          echo "::notice::CLAUDE.md IS loaded as project instructions \
+          (default run returned the injected token; control run did not). \
+          Ledger V-028 holds."

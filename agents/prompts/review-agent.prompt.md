@@ -108,6 +108,12 @@ REVIEW CRITERIA (from agents/runbooks/review-runbook.md)
 - Executed-verification gate (#3775, runbook §1c): a runtime/install/platform
   claim must be demonstrated by execution on the target platform, cited in the
   PR. Missing executed evidence is a Medium (blocking) finding.
+- Diagnosis gate (#3821, runbook §1d): a fix must name the cause and what
+  established it. No stated cause, no evidence behind it, or a cause the
+  thread's evidence contradicts, is a Medium (blocking) finding.
+- Generality gate (#3821, runbook §1e): where a fix patches one instance of a
+  fault, ask whether the same fault is elsewhere. A narrow patch on a general
+  defect is a Medium (blocking) finding; cite the other instances found.
 - Code quality and maintainability
 - Performance and security considerations
 

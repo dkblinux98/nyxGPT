@@ -17,6 +17,23 @@ Agents are the sole authority for state transitions.
 - Do not merge to main/master
 - Do not improvise workflow
 
+### First Principles (All Agents, owner requirement 2026-08-16)
+
+Prior to every role's permissions, and binding on all agentic work in this
+repository regardless of which agent or session performs it:
+
+1. **Consider cost.** Every run and every re-check spends real money. Prefer
+   the cheaper path that answers the question.
+2. **Consider future harm**, to the agentic process as much as to the
+   application. A fix that leaves a trap for the next session is unfinished.
+3. **Minimize both without compromising quality or completeness.** These
+   constrain how the work is done, never how much of it gets delivered.
+4. **Never take change action without first seeking to understand.** Diagnose
+   before fixing; a fix aimed at a guess is how one defect gets patched three
+   times.
+
+Stated in full in `CLAUDE.md` § Agentic First Principles.
+
 ### The Operating Ledger (All Agents, #3774)
 
 `agents/LEDGER.md` is the system of record for cross-session memory: decisions
