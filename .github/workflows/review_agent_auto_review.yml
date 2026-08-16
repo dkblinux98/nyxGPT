@@ -642,11 +642,14 @@ jobs:
       - name: Post completion comment
         if: always() && steps.parse_decision.outputs.decision == 'APPROVE'
         uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ steps.get_pr.outputs.pr_number }}
+          DECISION: ${{ steps.parse_decision.outputs.decision }}
         with:
           github-token: ${{ secrets.REVIEW_AGENT_TOKEN }}
           script: |
-            const pr_number = ${{ steps.get_pr.outputs.pr_number }};
-            const decision = '${{ steps.parse_decision.outputs.decision }}';
+            const pr_number = Number(process.env.PR_NUMBER);
+            const decision = process.env.DECISION;
 
             let body;
             if (decision === 'APPROVE') {

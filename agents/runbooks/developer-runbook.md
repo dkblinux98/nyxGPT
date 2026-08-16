@@ -206,6 +206,34 @@ never rely on comment/body text alone (#3600, going-public hardening).
   status comment gated on `vars.AGENTS_ENABLED`) don't need an actor gate;
   the requirement is scoped to jobs that write `contents`, `issues`, or
   `pull-requests`, or that hold a write-scoped secret token.
+- **Never interpolate an expression into a `script:` body (#3820).** In an
+  `actions/github-script` step, `${{ }}` is substituted *before* the script
+  is parsed, so the value becomes JavaScript **source**. Pass it through
+  `env:` and read `process.env.NAME`, where it is data:
+
+  ```yaml
+  env:
+    PHASE3_DIAGNOSIS: ${{ steps.claude_result.outputs.diagnosis }}
+  with:
+    script: |
+      const diagnosis = process.env.PHASE3_DIAGNOSIS || '';
+  ```
+
+  This is not a style preference. The escalation step that reports fatal
+  errors held `const d = '${{ ...outputs.diagnosis }}';`; an apostrophe in
+  that prose — the norm, not an edge case — closed the literal and the step
+  died with `SyntaxError: Unexpected identifier`, so the run's real failure
+  went unreported (run 31959968196). It is also an injection surface: these
+  steps carry an agent token, and the substituted text executes as whatever
+  it parses as. Multi-line and free-form values (a diagnosis, a
+  recommendation, a list of issue titles) are the dangerous ones, and a
+  template literal is no safer than a quoted one — a backtick or `${` breaks
+  out of it just the same.
+
+  `scripts/agents/lib/workflow_script_guard.py` fails on any remaining
+  instance tree-wide (run by `tests/unit/test_workflow_script_injection.py`
+  and by `github-script-injection-smoke.yml`), so a reintroduction is caught
+  at verification rather than at the next fatal error.
 
 ## 3c) Workflow actor-gate audit (#3600, 2026-08-03)
 

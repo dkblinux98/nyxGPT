@@ -831,6 +831,46 @@ are absent here by design (relocated to the annex; IDs are never reused).
   Re-verify when: the tracing production default changes, or `conftest.py`'s
   config-rewrite fixtures are restructured.
 
+- **V-027** · 2026-08-16 — A GitHub Actions expression interpolated into an
+  `actions/github-script` `script:` body is **JavaScript source, not data**.
+  Substitution happens before the script is parsed, so ordinary prose breaks
+  it: the developer agent's fatal-error escalation step held
+  `const phase3Diagnosis = '${{ steps.claude_result.outputs.diagnosis }}';`
+  and an apostrophe in that free-form diagnosis terminated the literal, dying
+  with `SyntaxError: Unexpected identifier 'issues'` (run 31959968196). The
+  pipeline's own failure alarm was therefore silently disabled — two steps
+  failed on #3815 and neither failure was reported anywhere. The same
+  construct is an **injection surface**, not just a quoting bug: these steps
+  carry `DEVELOPER_AGENT_TOKEN` / `SCRUMMASTER_AGENT_TOKEN` /
+  `REVIEW_AGENT_TOKEN`, and whatever the substituted text parses as executes
+  with that token. The audit found it was never confined to one step: **47
+  interpolations across 6 workflows** — `developer_auto_implement.yml` (26),
+  `handle_acceptance_failure.yml` (6), `notify_scrum_ready.yml` (6),
+  `handle_improvement.yml` (4), `link_revert_pr_to_issue.yml` (3),
+  `review_agent_auto_review.yml` (2) — including two other free-form-prose
+  carriers — Phase 3's `recommendation`, and the scrummaster's multi-line
+  `tried` list interpolated into a *template* literal, where a backtick or
+  `${` in an issue title breaks out. Values now pass through `env:` and are
+  read with `process.env.NAME`.
+  Method: `scripts/agents/lib/escalation_script_probe.py` extracts the real
+  `script:` body out of the workflow YAML and runs it under Node with
+  `context`/`github`/`core` stubbed, so the JavaScript executed is the
+  JavaScript Actions executes. Both halves, per **D-006**: the pre-fix form
+  (env reads rewritten back into interpolated literals) dies with
+  `SyntaxError: Unexpected identifier 's'`, and the current form escalates
+  with an apostrophe, double quote, backtick, `${`, newline and backslash all
+  intact in the posted body. Run 2026-08-16 on Linux and in
+  `github-script-injection-smoke.yml`, which additionally proves the `env:`
+  hand-off itself delivers hostile text to `process.env` uninterpreted, in a
+  genuine github-script step on a runner.
+  Standing guards: `scripts/agents/lib/workflow_script_guard.py` (fails on any
+  `${{` in any `script:` body, tree-wide),
+  `tests/unit/test_workflow_script_injection.py`, and the smoke workflow's
+  planted-violation step — the guard must reject a seeded instance, so a
+  scanner that silently stops scanning fails too.
+  Re-verify when: a new `actions/github-script` step is added, or GitHub
+  changes how `env:` values are delivered to the script sandbox.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
