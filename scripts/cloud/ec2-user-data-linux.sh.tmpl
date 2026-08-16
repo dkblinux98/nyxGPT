@@ -62,8 +62,14 @@ fi
 # stock Amazon Linux 2023 or Canonical Ubuntu AMI, and each missing one is a
 # hard failure inside `ops install`, which exits non-zero and, under `set
 # -e`, aborts this whole bootstrap. Install them before we get there.
+#
+# `zstd` is in the list because Ollama's official installer refuses to run
+# without it ("This version requires zstd for extraction"), which aborts this
+# bootstrap under `set -e` before `ops install` is ever reached. Found by
+# `nyxgpt cloud smoke --container` (#3784) on a bare Amazon Linux 2023
+# machine; installing it is a no-op on an AMI that already has it.
 if command -v dnf >/dev/null 2>&1; then
-  dnf install -y python3 python3-pip docker
+  dnf install -y python3 python3-pip docker zstd
   # Amazon Linux 2023's `python3` is 3.9, below nyxGPT's requires-python
   # floor of 3.11 -- installing an explicit 3.11+ is what makes the CLI venv
   # below installable at all (#3782). Newest first, stopping at the first
@@ -76,7 +82,7 @@ if command -v dnf >/dev/null 2>&1; then
 elif command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
-  apt-get install -y python3 python3-pip python3-venv docker.io
+  apt-get install -y python3 python3-pip python3-venv docker.io zstd
   # Ubuntu 22.04 LTS (in the support matrix) ships 3.10 as `python3`.
   if ! python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)'; then
     apt-get install -y python3.11 python3.11-venv || true
@@ -151,6 +157,14 @@ PIP_SPEC="nyxgpt"
 if [ -n "$NYXGPT_VERSION" ]; then
   PIP_SPEC="nyxgpt==${NYXGPT_VERSION}"
 fi
+# Escape hatch for testing an artifact PyPI does not serve: the containerized
+# artifact smoke (`nyxgpt cloud smoke --container`, #3784) points this at a
+# wheel it built from the tree under test and copied into the machine, so a
+# branch whose version is not published yet still gets its install path
+# exercised. Unset on a real instance, which installs from PyPI.
+if [ -n "${NYXGPT_PIP_SPEC:-}" ]; then
+  PIP_SPEC="$NYXGPT_PIP_SPEC"
+fi
 CLI_VENV="$TARGET_HOME/.nyxGPT/opt/nyxgpt-cli"
 USER_BIN="$CLI_VENV/bin"
 NYXGPT_CLI="$USER_BIN/nyxgpt"
@@ -194,11 +208,19 @@ fi
 # target user's service manager, so every unit it installs fails to
 # enable/start, `ops install` exits non-zero, and `set -e` aborts this
 # bootstrap. Forward the two variables an interactive login would have set.
+#
+# NYXGPT_ARTIFACT_DIR is forwarded when set, for the same reason
+# NYXGPT_PIP_SPEC exists above: `ops install` downloads the
+# `nyxgpt-{api,web}-<version>.tar.gz` service assets from the version's
+# GitHub Release, and a wheel built from a branch names a version no release
+# serves. The containerized smoke stages both assets and points this at
+# them; unset on a real instance, which downloads the published ones.
 run_as_target() {
   sudo -u "$NYXGPT_TARGET_USER" -H \
     env "PATH=$USER_BIN:$PATH" \
         "XDG_RUNTIME_DIR=$TARGET_RUNTIME_DIR" \
         "DBUS_SESSION_BUS_ADDRESS=unix:path=$TARGET_RUNTIME_DIR/bus" \
+        ${NYXGPT_ARTIFACT_DIR:+"NYXGPT_ARTIFACT_DIR=$NYXGPT_ARTIFACT_DIR"} \
         "$@"
 }
 

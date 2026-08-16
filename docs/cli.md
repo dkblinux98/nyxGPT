@@ -15,6 +15,9 @@ documentation are linked out to instead of duplicated here:
 - Cloud/AWS (`nyxgpt cloud ...`) — deploy, tunnel, destroy, the end-to-end
   `nyxgpt cloud smoke` test, Terraform state, and credentials setup; see
   [Cloud (AWS)](cloud.md)
+- Cloud artifact smoke (`nyxgpt cloud smoke --container`) — the artifact
+  install path on a bare Amazon Linux 2023 container, no AWS account and no
+  charges; see [Cloud artifact smoke](cloud-artifact-smoke.md)
 - Canary (`nyxgpt canary ...`) — see [Kubernetes](kubernetes.md)
 - Configuration wizard (`nyxgpt wizard`) — see [Configuration](configuration.md)
 - Guided secrets setup (`nyxgpt secrets setup`) — see [Configuration: Guided secrets setup](configuration.md#option-4-guided-secrets-setup)

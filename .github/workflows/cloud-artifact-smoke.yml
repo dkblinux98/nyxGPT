@@ -1,0 +1,130 @@
+name: Cloud Artifact Smoke
+
+# Does the *artifact install path* work on a bare Amazon Linux 2023 machine?
+#
+# `linux-native-smoke.yml` cannot answer that, by construction: it runs on
+# ubuntu-latest with Python 3.11 and Node 20 installed by setup actions, and
+# installs nyxGPT editable from the checkout. Every one of the five serial rc9
+# cloud defects (#3759 artifact-relative paths, #3760 docker, #3761 npm, #3762
+# subprocess output, #3782 the 3.9 venv) was invisible to it for that reason --
+# the D-006 "green by luck" condition.
+#
+# Two jobs:
+#
+#   fault-injection  Can this smoke SEE the defect class it claims to cover?
+#                    Runs `--inject old-python`, which rewrites the bootstrap's
+#                    interpreter selection back to the AMI's system python3;
+#                    the run passes only if the smoke FAILS. Cheap (it dies at
+#                    the pip refusal), so it is the first signal and it gates
+#                    nothing else being trusted. Same both-halves pattern as
+#                    macos-brew-smoke.yml's fault-injection job (#3753).
+#   artifact-install The full run: build the AMI-parity image, boot systemd,
+#                    execute the real rendered EC2 user-data bootstrap against
+#                    a wheel built from this checkout, and require api, web and
+#                    ollama to answer. No repo checkout exists inside the
+#                    container -- `git` is not even installed.
+#
+# Path-scoped like the other expensive smokes: the ops/install layer, the
+# user-data templates, the smoke itself, and this workflow.
+#
+# What it does NOT cover is documented in docs/cloud-artifact-smoke.md and
+# printed by the command: Terraform, cloud-init, SSH/tunnel access and the EC2
+# instance lifecycle are outside the container. Green here is not a verified
+# cloud deployment.
+on:
+  pull_request:
+    paths:
+      - 'src/nyxgpt/cloud_artifact_smoke.py'
+      - 'src/nyxgpt/cloud_provision.py'
+      - 'src/nyxgpt/ops.py'
+      - 'scripts/cloud/**'
+      - 'ops/systemd/**'
+      - 'pyproject.toml'
+      - '.github/workflows/cloud-artifact-smoke.yml'
+  push:
+    paths:
+      - 'src/nyxgpt/cloud_artifact_smoke.py'
+      - 'src/nyxgpt/cloud_provision.py'
+      - 'src/nyxgpt/ops.py'
+      - 'scripts/cloud/**'
+      - 'ops/systemd/**'
+      - 'pyproject.toml'
+      - '.github/workflows/cloud-artifact-smoke.yml'
+  # Dispatchable so a release candidate can be smoked on demand: the owner (or
+  # the rc cut) runs it with the published version instead of a local wheel,
+  # which is the acceptance path -- install exactly what PyPI serves.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Published nyxGPT version to install (blank = build a wheel from this ref)'
+        required: false
+        type: string
+
+# Read-only: the smoke builds and destroys a local container and never writes
+# to the repository or its APIs (CodeQL actions/missing-workflow-permissions).
+permissions:
+  contents: read
+
+jobs:
+  # Fast, and the one that makes the other job's green mean anything.
+  fault-injection:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install nyxgpt (editable -- the driver, not the artifact under test)
+        run: |
+          python -m pip install --upgrade pip setuptools build
+          pip install -e .
+
+      # `--inject old-python` reintroduces #3782 (the CLI venv built on the
+      # AMI's Python 3.9, which the wheel's requires-python refuses). The
+      # command exits 0 only when the smoke caught it, so a harness that
+      # stopped noticing turns this job red.
+      - name: The smoke must fail when the interpreter selection is broken
+        run: nyxgpt cloud smoke --container --inject old-python
+
+  artifact-install:
+    runs-on: ubuntu-latest
+    # A full bring-up inside the container: dnf, Node 20, the Docker engine,
+    # Ollama, `npm ci` + a Next.js build, and Cassandra.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install nyxgpt (editable -- the driver, not the artifact under test)
+        run: |
+          python -m pip install --upgrade pip setuptools build
+          pip install -e .
+
+      # The artifact under test. On a dispatch with a version we install what
+      # PyPI serves; otherwise we build a wheel from this ref, so a branch
+      # whose version is not published yet still gets its install path
+      # exercised. Either way the container installs an artifact -- it has no
+      # checkout and no git.
+      - name: Build the wheel under test
+        if: inputs.version == ''
+        run: python -m build --wheel --outdir dist/
+
+      - name: Artifact install on bare Amazon Linux 2023
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            nyxgpt cloud smoke --container --version "${{ inputs.version }}"
+          else
+            nyxgpt cloud smoke --container --wheel "$(ls dist/*.whl | head -1)"
+          fi
+
+      - name: Recorded result
+        if: always()
+        run: nyxgpt cloud smoke --container --status

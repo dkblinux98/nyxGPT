@@ -637,6 +637,76 @@ are absent here by design (relocated to the annex; IDs are never reused).
   the config.ini flags — at which point the exclusion becomes redundant
   rather than wrong.
 
+- **V-020** · 2026-08-15 — The EC2 artifact install path on Amazon Linux 2023
+  fails at the CLI venv: the AMI's system `python3` is **3.9.25** and every
+  published nyxgpt distribution declares `requires-python >=3.11`, so
+  `pip install nyxgpt` inside that venv resolves nothing (the #3782 class,
+  observed independently on the artifact path — see V-010).
+  Two further facts from the same execution: Ollama's official installer aborts
+  the bootstrap on a bare AL2023 machine with "This version requires zstd for
+  extraction" (fixed in the user-data template by #3784), and with a candidate
+  interpreter fix applied the whole path is green — bare AL2023 -> artifact
+  install -> api/web/ollama serving in 178s.
+  Method: executed `nyxgpt cloud smoke --container` (#3784) three times on the
+  agent runner (docker 28.0.4) on 2026-08-15 — unpatched tree failed in 47s and
+  the harness classified it as the interpreter class; with the fix applied it
+  passed in 178s against published 3.0.0rc11; `--inject old-python` exited 0.
+  Re-verify when: #3782 lands (the unpatched half stops reproducing), or the
+  AL2023 AMI's system interpreter changes.
+
+- **V-021** · 2026-08-15 — An artifact install pulls **three** things off the
+  network, not one: the `nyxgpt` CLI, then `nyxgpt-api-<version>.tar.gz` and
+  `nyxgpt-web-<version>.tar.gz` from that version's GitHub Release
+  (`ops._service_source_tarball`). So a smoke that swaps in a locally built
+  wheel has only replaced the first — the wheel declares the checkout's
+  version (`3.0.0`), which has no release until the ceremony cuts one, and
+  `ops install` 404s at step 33 of 35. `nyxgpt cloud smoke --container
+  --wheel` therefore now also builds those two tarballs with the release's own
+  builder and points `ops` at them with `NYXGPT_ARTIFACT_DIR` (set but
+  asset-missing raises, rather than falling back to the network). The general
+  fact, and why this was worth an entry: **"install from an artifact" is not
+  one artifact**, and a fix that covers only the entry point leaves the
+  dependent assets resolving against a release that does not exist.
+  Method: executed on the agent runner (docker 28.0.4) 2026-08-15 on the
+  merged #3784 branch — `nyxgpt cloud smoke --container --wheel
+  dist/nyxgpt-3.0.0-py3-none-any.whl` PASSED in 193s (bare AL2023 -> artifact
+  install -> api/web/ollama serving), where the same command on the same tree
+  before the staging fix failed with `Could not obtain the nyxgpt-api
+  artifact` after 33/35 steps (CI run 31905652586). `--inject old-python`
+  exited 0 on the same tree, so the fault still fires: it neutralizes the
+  merged template's version loop, the bootstrap reaches its own
+  "no Python >= 3.11 … requires-python is '>=3.11'" guard, and the harness
+  still classifies it as the #3782 interpreter class.
+  Re-verify when: `3.0.0` gains a real GitHub Release (the 404 half stops
+  reproducing), or `_service_source_tarball` grows a fourth source.
+
+- **V-022** · 2026-08-15 — A fault-injected smoke that treats *any* failure as
+  its pass condition is still green by luck. `nyxgpt cloud smoke --container
+  --inject <fault>` inverts the verdict, and inverted was implemented as
+  `passed = bool(failure)` — so a docker outage, an image-pull flake, a build
+  failure or a refused preflight all made the injection job exit 0 while
+  proving nothing about whether the smoke can see the defect, which is the
+  D-006 condition the job exists to close. The pass condition now needs three
+  things: a failure, at or after the bootstrap the fault was injected into,
+  whose classification is the class that fault reintroduces (`FAULTS[...]
+  .expects` -> `injection_verdict`). Second fact from the same round: the
+  failure classifier misdiagnosed a release-asset 404 as a broken
+  `systemd --user` session (CI run 31905652586), because its systemd signature
+  matched any output *mentioning* `systemctl --user` — which a successful
+  install prints constantly — and the whole 35-step log was classified rather
+  than its tail. The general form of both: **an assertion written against
+  "something went wrong" is not an assertion about the thing under test.**
+  Method: executed `pytest tests/unit/test_cloud_artifact_smoke.py` on
+  2026-08-15 with each rejection path injected — a failing `docker build`
+  under `--inject`, a bootstrap failing in another defect class, and an
+  unclassifiable failure — each of which passed before this change and fails
+  the run after it; the 404-vs-systemd misdiagnosis is pinned as a regression
+  case from the real CI output. Standing guard: the `fault-injection` job in
+  `cloud-artifact-smoke.yml`.
+  Re-verify when: a fault is added to `FAULTS` (it needs an `expects` class a
+  signature can actually produce — there is a test for that), or the phase
+  list before `bootstrap` changes.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
