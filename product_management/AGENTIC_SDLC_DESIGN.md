@@ -153,7 +153,10 @@ conflicts should be rare by construction rather than resolved after the fact.
 
 - **Single substrate: repo-committed JSON** under
   `scripts/retrospective/data/`, produced by dispatchable workflows that
-  commit their output (pattern: `retro_project_fields_dump.yml`). The groomer
+  publish their output to `claude/retro-data`, which an auto-merged pull
+  request lands on the default branch — a direct push is rejected by the
+  branch ruleset (#3815). Pattern: `retro_project_fields_dump.yml` plus
+  `scripts/retrospective/publish_data_branch.sh`. The groomer
   and the retro dashboard read the **same files**; no parallel pipeline.
 - **#3667** (filed 2026-08-08, owner decision: workflow-dump approach) removes
   the Gmail dependency by deriving review-round detail from GitHub PR reviews
