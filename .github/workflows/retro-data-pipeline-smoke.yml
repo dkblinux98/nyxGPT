@@ -1,0 +1,82 @@
+name: Retro Data Pipeline Smoke
+
+# Which question does this job answer? (#3775 executed verification)
+#
+#   "Against a git remote that enforces the same rule the v3.0.0 ruleset does
+#    — no direct push to the protected branch — does a retro dump's JSON
+#    actually land, and did the old direct push really fail?"
+#
+# #3815 was a green dump whose push was rejected server-side (GH013,
+# "Changes must be made through a pull request"), so every refresh was
+# discarded while the workflow reported success. A job that only runs the
+# dump would have been just as green. This one builds a bare repository whose
+# pre-receive hook rejects updates to the protected ref, proves the OLD
+# `git push origin HEAD:<branch>` is rejected there (fault injection — a lab
+# where it succeeds proves nothing), then proves the new path lands the data:
+# publish_data_branch.sh onto claude/retro-data, merge_data_branch.sh onto the
+# protected branch through a pull request, with the guard refusing anything
+# outside scripts/retrospective/.
+#
+# What it does NOT cover: GitHub's own ruleset evaluation and the real
+# `gh pr merge` against it. That is exercised by the live pipeline — the
+# review agent merges pull requests into the release branch with an agent PAT
+# on every issue — and by the first real dispatch of a dump workflow after
+# this lands.
+
+on:
+  push:
+    paths:
+      - "scripts/retrospective/publish_data_branch.sh"
+      - "scripts/retrospective/merge_data_branch.sh"
+      - "tests/test_retro_data_pipeline.sh"
+      - ".github/workflows/retro_*.yml"
+      - ".github/workflows/retro-data-pipeline-smoke.yml"
+  pull_request:
+    paths:
+      - "scripts/retrospective/publish_data_branch.sh"
+      - "scripts/retrospective/merge_data_branch.sh"
+      - "tests/test_retro_data_pipeline.sh"
+      - ".github/workflows/retro_*.yml"
+      - ".github/workflows/retro-data-pipeline-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Publish and merge under a pull-request-only receiver
+        run: bash tests/test_retro_data_pipeline.sh
+
+      - name: Every dump workflow publishes instead of pushing at its branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          rc=0
+          # Comment lines are allowed to mention the old command; executable
+          # lines are not.
+          _code() { grep -v '^[[:space:]]*#' "$1"; }
+          for wf in .github/workflows/retro_*_dump.yml; do
+            if _code "$wf" | grep -q 'git push'; then
+              echo "::error file=$wf::still pushes directly at a branch (#3815)"
+              rc=1
+            fi
+            if ! grep -q 'publish_data_branch.sh' "$wf"; then
+              echo "::error file=$wf::does not publish through publish_data_branch.sh (#3815)"
+              rc=1
+            fi
+          done
+          if _code .github/workflows/retro_data_merge.yml | grep -q 'git push'; then
+            echo "::error file=.github/workflows/retro_data_merge.yml::still pushes directly at the default branch (#3815)"
+            rc=1
+          fi
+          if ! grep -q 'merge_data_branch.sh' .github/workflows/retro_data_merge.yml; then
+            echo "::error file=.github/workflows/retro_data_merge.yml::does not merge through merge_data_branch.sh (#3815)"
+            rc=1
+          fi
+          exit "$rc"

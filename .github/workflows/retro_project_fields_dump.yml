@@ -2,8 +2,13 @@ name: Retro Dashboard - Dump Project Fields
 
 # Dumps per-issue Project v2 field assignments (Sprint, Module, Status) plus the
 # Sprint iteration calendar to scripts/retrospective/data/project_fields.json and
-# commits the file back to the dispatching branch. Read-only against the Project;
+# publishes the file to the retro data branch. Read-only against the Project;
 # writes only the JSON snapshot. Used by the owner's retrospective dashboard.
+#
+# The snapshot does NOT get pushed at the dispatching branch: the default
+# branch's ruleset requires a pull request, and the direct push was rejected
+# with GH013 (#3815). publish_data_branch.sh puts it on claude/retro-data and
+# retro_data_merge.yml lands it through an auto-merged PR.
 
 on:
   workflow_dispatch:
@@ -19,6 +24,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.ref_name }}
+          fetch-depth: 0
 
       - name: Dump project fields
         env:
@@ -85,15 +91,10 @@ jobs:
           jq '{items: (.items | length), sprints: (.sprints | length)}' \
             scripts/retrospective/data/project_fields.json
 
-      - name: Commit snapshot
+      - name: Publish snapshot to the retro data branch
+        env:
+          BASE_REF: ${{ github.event.repository.default_branch }}
         run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add scripts/retrospective/data/project_fields.json
-          if git diff --cached --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "chore(retro): refresh project fields snapshot"
-            git push origin "HEAD:${{ github.ref_name }}"
-          fi
+          scripts/retrospective/publish_data_branch.sh \
+            "chore(retro): refresh project fields snapshot" \
+            scripts/retrospective/data/project_fields.json
