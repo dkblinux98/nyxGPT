@@ -208,7 +208,7 @@
 <div class="wrap">
   <header>
     <div class="eyebrow">
-      <span>dkblinux98/nyxGPT</span><span>·</span><span>agent loop</span><span>·</span><span>Jan 1 – Aug 15, 2026</span>
+      <span>dkblinux98/nyxGPT</span><span>·</span><span>agent loop</span><span>·</span><span>Jan 1 – Aug 16, 2026</span>
     </div>
     <h1>nyxGPT Project Retrospective</h1>
     <p class="sub">The overall quality picture across all 500 issues, from the perspective of final
@@ -319,7 +319,7 @@
     <div id="churnincidents"></div>
   </section>
 
-  <h2 class="divider">Last 7 days in review · Aug 8 – Aug 15</h2>
+  <h2 class="divider">Last 7 days in review · Aug 9 – Aug 16</h2>
 
   <div class="tiles" id="tiles"></div>
 
@@ -344,7 +344,7 @@
 
   <section class="panel">
     <h2>First-pass outcome by module</h2>
-    <p class="desc">Of the 81 pull requests the review-agent reviewed this window, 38 were approved on
+    <p class="desc">Of the 84 pull requests the review-agent reviewed this window, 38 were approved on
     the first pass with zero review failures. Bars count PRs, not findings. (Every merge in the
     window went through agent review, so none are excluded.)</p>
     <div class="legend">
@@ -440,11 +440,11 @@
     committed to the repository, which ships only a zeroed example. Shown only when
     <span class="mono">data/churn.json</span> has been refreshed by the
     "Retro Dashboard - Dump Churn Cost" workflow.</p>
-    <p><strong>Last 7 days.</strong> The 67 REQUEST_CHANGES reviews on nyxGPT PRs between 2026-08-08 and
-    2026-08-15, parsed from the pull-request reviews themselves (Critical / Medium / Minor findings sections).
-    Re-review rejections with no new findings count as a round with zero findings. Of 81 PRs merged in the
+    <p><strong>Last 7 days.</strong> The 71 REQUEST_CHANGES reviews on nyxGPT PRs between 2026-08-09 and
+    2026-08-16, parsed from the pull-request reviews themselves (Critical / Medium / Minor findings sections).
+    Re-review rejections with no new findings count as a round with zero findings. Of 84 PRs merged in the
     window, none were owner-carried workflow merges bypassing agent review, so all are included in
-    first-pass stats; of the 81 reviewed PRs, 38 were approved first-pass — verified
+    first-pass stats; of the 84 reviewed PRs, 38 were approved first-pass — verified
     against each PR's review history. <strong>Module attribution</strong> follows the repo's module taxonomy,
     inferred from issue titles (the Project's Module field is not API-readable here).</p>
   </footer>
@@ -467,7 +467,7 @@ const CVAR = ['var(--c1)','var(--c2)','var(--c3)','var(--c4)','var(--c5)','var(-
 /* ---------- project-wide quality ---------- */
 const qt = QDATA.qtotals;
 document.getElementById('qtiles').innerHTML = [
-  {label:'Issues total', value:qt.issues, note:'Jan 1 – Aug 15'},
+  {label:'Issues total', value:qt.issues, note:'Jan 1 – Aug 16'},
   {label:'Acceptance failures', value:qt.af, note:`${Math.round(qt.af/qt.issues*100)}% of all issues`},
   {label:'Escaped defects', value:qt.defect, note:'review misses', color:'var(--c1)'},
   {label:'Spec gaps', value:qt.spec, note:'bad or incomplete spec', color:'var(--c2)'},
