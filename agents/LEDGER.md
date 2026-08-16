@@ -733,22 +733,34 @@ are absent here by design (relocated to the annex; IDs are never reused).
   every retro dump had been silently discarded since it was written —
   `relationships.json` had never existed on the branch at all (`create mode
   100644` in a run that "succeeded"). Merging a pull request is **not**
-  blocked: the review agent merges into the release branch with an agent PAT
-  on every issue, so no ruleset bypass is needed to land automated data —
-  only a PR. Generalisation for any future automation that writes to the
-  release branch: **push to a side branch, land it through a PR**; and a
-  green workflow run is not evidence its output landed — read the ref.
-  Method: run 31941019009 (`Retro Dashboard - Dump Relationships`) rejected
-  at the push with that exact GH013 text; the fix is reproduced on a runner
-  by `tests/test_retro_data_pipeline.sh`, whose lab remote enforces the same
-  rule in a `pre-receive` hook and proves the old push fails there and the
-  new publish/merge path lands the JSON (standing job:
-  `.github/workflows/retro-data-pipeline-smoke.yml`). The ruleset's own
-  configuration is owner-readable only and was **not** read — the fact is
-  established from the server's rejection, which is weaker than reading the
-  rule but is the behaviour that matters.
-  Re-verify when: the owner changes the branch ruleset, or an automated PR
-  merge into the release branch is refused.
+  blocked, **but it is not free either**: the ruleset is `PR Rules`
+  (id 20347138, active), it covers `~DEFAULT_BRANCH` and `refs/heads/master`,
+  and its rules are `deletion`, `non_fast_forward`, and `pull_request` with
+  **`required_approving_review_count: 1`**, `allowed_merge_methods: ["merge"]`
+  and **no bypass actors** (`bypass_actors: null`). There is **no**
+  required-status-check rule. So automation that opens its own pull request
+  must also get it **approved by a second identity** — GitHub refuses
+  self-approval — or the PR sits at `mergeable_state: blocked` forever. Every
+  agent PR clears this only because the review agent approves it; that does
+  not transfer to a PR nobody reviews. Generalisation for any future
+  automation that writes to the release branch: **push to a side branch, land
+  it through a PR, and have a second agent identity approve it**; and a green
+  workflow run is not evidence its output landed — read the ref.
+  Method: `gh api repos/dkblinux98/nyxGPT/rulesets/20347138` read in full with
+  the developer agent token on 2026-08-16 (the earlier claim in this entry
+  that the configuration is owner-readable only was wrong — it is readable by
+  the agents, and reading it turned up the approval requirement that the
+  behavioural evidence alone had missed). Run 31941019009 (`Retro Dashboard -
+  Dump Relationships`) is the rejection with that exact GH013 text; both
+  halves of the rule are reproduced on a runner by
+  `tests/test_retro_data_pipeline.sh`, whose lab remote enforces
+  no-direct-push in a `pre-receive` hook and requires an approving review from
+  a second identity, proving the old push fails there and the new
+  publish/approve/merge path lands the JSON (standing job:
+  `.github/workflows/retro-data-pipeline-smoke.yml`).
+  Re-verify when: the owner changes the branch ruleset (re-read it — do not
+  infer it from behaviour), or an automated PR merge into the release branch
+  is refused.
   Source: #3815.
 
 ## Parked

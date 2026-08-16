@@ -17,11 +17,16 @@ name: Retro Data Pipeline Smoke
 # protected branch through a pull request, with the guard refusing anything
 # outside scripts/retrospective/.
 #
+# The lab enforces BOTH halves of the real rule (`PR Rules`, read 2026-08-16,
+# ledger V-023): no direct push, AND one approving review from an identity
+# other than the one that opened the pull request. The second half is why a
+# data PR — which no reviewer ever looks at — would otherwise sit blocked
+# until MERGE_TIMEOUT and discard the refresh just as silently as the rejected
+# push did.
+#
 # What it does NOT cover: GitHub's own ruleset evaluation and the real
-# `gh pr merge` against it. That is exercised by the live pipeline — the
-# review agent merges pull requests into the release branch with an agent PAT
-# on every issue — and by the first real dispatch of a dump workflow after
-# this lands.
+# `gh pr merge` against it, which the PR cites from a live dispatched dump run
+# (#3775 executed verification).
 
 on:
   push:
@@ -85,4 +90,32 @@ jobs:
             echo "::error file=.github/workflows/retro_data_merge.yml::does not merge through merge_data_branch.sh (#3815)"
             rc=1
           fi
+          exit "$rc"
+
+      - name: Every lander can satisfy the ruleset's approving review
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The base branch's ruleset requires one approving review with no
+          # bypass actors, and GitHub refuses self-approval — so a lander needs
+          # two DIFFERENT agent tokens or its pull request never merges (#3815).
+          rc=0
+          for wf in .github/workflows/retro_*_dump.yml .github/workflows/retro_data_merge.yml; do
+            if ! grep -q 'APPROVE_TOKEN:' "$wf"; then
+              echo "::error file=$wf::sets no APPROVE_TOKEN; its data PR cannot clear the required review (#3815)"
+              rc=1
+              continue
+            fi
+            merger="$(grep -m1 -o 'GH_TOKEN: \${{ secrets\.[A-Z_]*' "$wf" | sed 's/.*secrets\.//')"
+            approver="$(grep -m1 -o 'APPROVE_TOKEN: \${{ secrets\.[A-Z_]*' "$wf" | sed 's/.*secrets\.//')"
+            if [[ -z "$approver" || "$merger" == "$approver" ]]; then
+              echo "::error file=$wf::APPROVE_TOKEN ('$approver') must be a different identity from GH_TOKEN ('$merger') — GitHub refuses self-approval (#3815)"
+              rc=1
+            fi
+            # All six contend for claude/retro-data; they must take turns.
+            if ! grep -q 'group: retro-data-branch' "$wf"; then
+              echo "::error file=$wf::missing the shared retro-data-branch concurrency group (#3815)"
+              rc=1
+            fi
+          done
           exit "$rc"

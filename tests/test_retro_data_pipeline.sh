@@ -24,7 +24,13 @@ set -uo pipefail
 #      request (stubbed `gh`, merged server-side exactly as the API does) and
 #      never attempts a push at the protected ref;
 #   4. both guards refuse a branch carrying anything outside
-#      scripts/retrospective/, which is what bounds this review-skipping path.
+#      scripts/retrospective/, which is what bounds this review-skipping path;
+#   5. the receiver's pull-request rule also demands an approving review, as
+#      the real "PR Rules" ruleset does (required_approving_review_count=1,
+#      no bypass actors, read 2026-08-16). A data pull request has no
+#      reviewer, so this reproduces the second half of the same silent
+#      discard: without an approval from a second identity the refresh never
+#      lands, and the script must say so immediately rather than time out.
 #
 # Usage: bash tests/test_retro_data_pipeline.sh
 
@@ -122,11 +128,17 @@ _bare_has_path() {  # _bare_has_path <lab> <ref> <path> -> yes|no
 # ref, then a ref update on the bare repo) — never a client push at the
 # protected ref, which is exactly how GitHub merges a PR.
 # --------------------------------------------------------------------------
-_make_gh_stub() {  # _make_gh_stub <lab> <first_state>
-  local lab="$1" first_state="${2:-clean}"
+#
+# It also models the ruleset's approving-review requirement: with
+# <requires_approval> set, a pull request reports mergeable_state=blocked and
+# reviewDecision=REVIEW_REQUIRED until a DIFFERENT identity approves it, and
+# self-approval is refused exactly as GitHub refuses it.
+_make_gh_stub() {  # _make_gh_stub <lab> <first_state> [requires_approval]
+  local lab="$1" first_state="${2:-clean}" requires="${3:-}"
   mkdir -p "$lab/bin" "$lab/gh"
   echo "0" > "$lab/gh/calls"
   echo "$first_state" > "$lab/gh/first_state"
+  [[ -n "$requires" ]] && : > "$lab/gh/requires_approval"
   cat > "$lab/bin/gh" <<EOF
 #!/usr/bin/env bash
 set -uo pipefail
@@ -141,6 +153,17 @@ sub="${1:-}"; shift || true
 
 _pr_number() { cat "$LAB/gh/pr" 2>/dev/null || true; }
 
+# "" when no review is on the pull request, as the API reports it.
+_review_decision() {
+  if [[ -f "$LAB/gh/approved" ]]; then
+    echo "APPROVED"
+  elif [[ -f "$LAB/gh/requires_approval" ]]; then
+    echo "REVIEW_REQUIRED"
+  else
+    echo ""
+  fi
+}
+
 case "$sub" in
   pr)
     action="${1:-}"; shift || true
@@ -151,9 +174,31 @@ case "$sub" in
       create)
         echo "42" > "$LAB/gh/pr"
         echo "false" > "$LAB/gh/merged"
+        # Remember who opened it: GitHub refuses to let that identity
+        # approve it, which is why APPROVE_TOKEN must be a second agent.
+        echo "${GH_TOKEN:-}" > "$LAB/gh/creator"
         echo "https://github.com/o/r/pull/42"
         ;;
+      view)
+        # Only ever asked for .reviewDecision; the script reads a bare string.
+        _review_decision
+        ;;
+      review)
+        if [[ "${GH_TOKEN:-}" == "$(cat "$LAB/gh/creator" 2>/dev/null)" ]]; then
+          echo "GraphQL: Can not approve your own pull request" >&2
+          exit 1
+        fi
+        echo "${GH_TOKEN:-}" > "$LAB/gh/approver"
+        : > "$LAB/gh/approved"
+        echo "Approved pull request #$(_pr_number)"
+        ;;
       merge)
+        # The receiver enforces the rule, not the caller: an unapproved pull
+        # request cannot be merged, however the client asks.
+        if [[ -f "$LAB/gh/requires_approval" && ! -f "$LAB/gh/approved" ]]; then
+          echo "GraphQL: At least 1 approving review is required by reviewers with write access." >&2
+          exit 1
+        fi
         # Server-side merge: the objects reach the remote over a ref the rule
         # permits, then the protected ref is moved by the "API", not pushed.
         tmp="$(mktemp -d)"
@@ -169,10 +214,31 @@ case "$sub" in
           sha="$(git rev-parse HEAD)"
           git --git-dir="$LAB/origin.git" update-ref "refs/heads/$PROTECTED" "$sha"
           git --git-dir="$LAB/origin.git" update-ref -d "refs/heads/_api_merge_tmp"
-          git --git-dir="$LAB/origin.git" update-ref -d "refs/heads/$DATA_BRANCH"
+          # The data branch is NOT deleted here: merging and deleting are
+          # separate calls now, so the script can decline to delete a branch
+          # that moved in between.
         ) || { echo "merge failed" >&2; rm -rf "$tmp"; exit 1; }
         rm -rf "$tmp"
         echo "true" > "$LAB/gh/merged"
+        if [[ -f "$LAB/gh/push_during_merge" ]]; then
+          # A concurrent dump publishes a newer refresh in the window between
+          # the merge and the branch cleanup — the window --delete-branch
+          # cannot see.
+          tmp2="$(mktemp -d)"
+          git clone -q "$LAB/origin.git" "$tmp2/c" 2>/dev/null
+          (
+            cd "$tmp2/c"
+            git config user.email other@example.com
+            git config user.name other
+            git checkout -q -B "$DATA_BRANCH" "origin/$DATA_BRANCH"
+            mkdir -p scripts/retrospective/data
+            echo '{"spend": true}' > scripts/retrospective/data/spend.json
+            git add -A >/dev/null
+            git commit -q -m "chore(retro): refresh spend telemetry snapshot"
+            git push -q origin "HEAD:refs/heads/$DATA_BRANCH" 2>/dev/null
+          )
+          rm -rf "$tmp2"
+        fi
         if [[ -f "$LAB/gh/merge_loses_race" ]]; then
           # Another lander got there first: gh reports failure on an already
           # merged pull request.
@@ -186,15 +252,38 @@ case "$sub" in
     ;;
   api)
     jqexpr=""
+    method="GET"
+    path=""
     prev=""
     for a in "$@"; do
-      [[ "$prev" == "--jq" ]] && jqexpr="$a"
+      case "$prev" in
+        --jq)          jqexpr="$a" ;;
+        -X|--method)   method="$a" ;;
+        *)             [[ "$a" == -* || -n "$path" ]] || path="$a" ;;
+      esac
       prev="$a"
     done
+
+    case "$method:$path" in
+      DELETE:*/git/refs/heads/*)
+        ref="refs/heads/${path#*/git/refs/heads/}"
+        git --git-dir="$LAB/origin.git" update-ref -d "$ref" || exit 1
+        exit 0
+        ;;
+    esac
+    if [[ "$path" == */update-branch ]]; then
+      exit 0
+    fi
+
     n="$(cat "$LAB/gh/calls")"
     echo "$((n + 1))" > "$LAB/gh/calls"
     state="clean"
     [[ "$n" -eq 0 ]] && state="$(cat "$LAB/gh/first_state")"
+    # An unapproved pull request is blocked, exactly as the ruleset's
+    # required_approving_review_count=1 renders it.
+    if [[ -f "$LAB/gh/requires_approval" && ! -f "$LAB/gh/approved" ]]; then
+      state="blocked"
+    fi
     merged="$(cat "$LAB/gh/merged" 2>/dev/null || echo false)"
     payload="{\"merged\": $merged, \"mergeable_state\": \"$state\"}"
     if [[ -n "$jqexpr" ]]; then
@@ -296,14 +385,14 @@ rm -rf "$LAB"
 # 4. merge_data_branch.sh lands the data branch through a pull request.
 # ==========================================================================
 LAB="$(_make_lab)"
-_make_gh_stub "$LAB" blocked        # first poll: checks pending, then clean
+_make_gh_stub "$LAB" unknown        # first poll: not mergeable yet, then clean
 _write_dump "$LAB" relationships.json '{"issues": 290}'
 (cd "$LAB/work" && BASE_REF="$PROTECTED" DATA_BRANCH="$DATA_BRANCH" \
   bash "$PUBLISH" "chore(retro): refresh" scripts/retrospective/data/relationships.json) >/dev/null 2>&1
 : > "$LAB/push-attempts.log"
 
 OUT="$(cd "$LAB/work" && PATH="$LAB/bin:$PATH" REPO="o/r" BASE_REF="$PROTECTED" \
-  DATA_BRANCH="$DATA_BRANCH" POLL_INTERVAL=0 MERGE_TIMEOUT=30 \
+  DATA_BRANCH="$DATA_BRANCH" POLL_INTERVAL=0 MERGE_TIMEOUT=30 GH_TOKEN="opener-token" \
   bash "$MERGE" 2>&1; echo "exit=$?")"
 _assert_contains "merge reports the branch merged" "$OUT" "merged"
 _assert_contains "merge exited cleanly" "$OUT" "exit=0"
@@ -315,10 +404,12 @@ _assert_contains "the JSON is now on the protected branch" \
   "$(_bare_show "$LAB" "$PROTECTED" scripts/retrospective/data/relationships.json)" '"issues": 290'
 _assert_not_contains "merge never pushed at the protected ref" \
   "$(cat "$LAB/push-attempts.log")" "refs/heads/$PROTECTED"
+_assert_eq "the landed data branch is cleaned up" \
+  "MISSING" "$(_bare_sha "$LAB" "refs/heads/$DATA_BRANCH")"
 
 # 4b. Nothing left to merge once it has landed.
 OUT="$(cd "$LAB/work" && PATH="$LAB/bin:$PATH" REPO="o/r" BASE_REF="$PROTECTED" \
-  DATA_BRANCH="$DATA_BRANCH" POLL_INTERVAL=0 bash "$MERGE" 2>&1; echo "exit=$?")"
+  DATA_BRANCH="$DATA_BRANCH" POLL_INTERVAL=0 GH_TOKEN="opener-token" bash "$MERGE" 2>&1; echo "exit=$?")"
 _assert_contains "an already-landed refresh is a no-op" "$OUT" "nothing to merge"
 _assert_contains "the no-op exits cleanly" "$OUT" "exit=0"
 rm -rf "$LAB"
@@ -335,7 +426,7 @@ _write_dump "$LAB" relationships.json '{"issues": 7}'
 (cd "$LAB/work" && BASE_REF="$PROTECTED" DATA_BRANCH="$DATA_BRANCH" \
   bash "$PUBLISH" "chore(retro): refresh" scripts/retrospective/data/relationships.json) >/dev/null 2>&1
 OUT="$(cd "$LAB/work" && PATH="$LAB/bin:$PATH" REPO="o/r" BASE_REF="$PROTECTED" \
-  DATA_BRANCH="$DATA_BRANCH" POLL_INTERVAL=0 MERGE_TIMEOUT=30 \
+  DATA_BRANCH="$DATA_BRANCH" POLL_INTERVAL=0 MERGE_TIMEOUT=30 GH_TOKEN="opener-token" \
   bash "$MERGE" 2>&1; echo "exit=$?")"
 _assert_contains "a lost merge race is reported as merged" "$OUT" "merged by another run"
 _assert_contains "a lost merge race exits cleanly" "$OUT" "exit=0"
@@ -358,7 +449,7 @@ _make_gh_stub "$LAB" clean
 )
 PROTECTED_BEFORE="$(_bare_sha "$LAB" "refs/heads/$PROTECTED")"
 OUT="$(cd "$LAB/work" && PATH="$LAB/bin:$PATH" REPO="o/r" BASE_REF="$PROTECTED" \
-  DATA_BRANCH="$DATA_BRANCH" POLL_INTERVAL=0 bash "$MERGE" 2>&1; echo "exit=$?")"
+  DATA_BRANCH="$DATA_BRANCH" POLL_INTERVAL=0 GH_TOKEN="opener-token" bash "$MERGE" 2>&1; echo "exit=$?")"
 _assert_contains "merge refuses a branch touching files outside scripts/retrospective/" \
   "$OUT" "Refusing to merge"
 _assert_contains "the refusal names the offending file" "$OUT" "src/app.py"
@@ -382,6 +473,141 @@ _assert_contains "publish resolves the default branch when BASE_REF is unset" \
   "$OUT" "base: $PROTECTED"
 _assert_contains "resolved-base publish still lands the JSON" \
   "$(_bare_show "$LAB" "$DATA_BRANCH" scripts/retrospective/data/churn.json)" '"churn": 1'
+rm -rf "$LAB"
+
+# ==========================================================================
+# 7. The other half of the rule: the receiver requires an approving review
+#    (required_approving_review_count=1, no bypass actors — the real "PR
+#    Rules" ruleset). A data pull request has no reviewer, so this is the
+#    second way the refresh can be silently discarded.
+# ==========================================================================
+_seed_unmerged() {  # _seed_unmerged <lab> — a data branch waiting to land
+  _write_dump "$1" relationships.json '{"issues": 290}'
+  (cd "$1/work" && BASE_REF="$PROTECTED" DATA_BRANCH="$DATA_BRANCH" \
+    bash "$PUBLISH" "chore(retro): refresh" \
+    scripts/retrospective/data/relationships.json) >/dev/null 2>&1
+}
+
+# 7a. Fault injection: with no approving identity the merge must fail FAST and
+#     name the cause, not burn MERGE_TIMEOUT reporting a timeout.
+LAB="$(_make_lab)"
+_make_gh_stub "$LAB" clean requires_approval
+_seed_unmerged "$LAB"
+START=$SECONDS
+OUT="$(cd "$LAB/work" && PATH="$LAB/bin:$PATH" REPO="o/r" BASE_REF="$PROTECTED" \
+  DATA_BRANCH="$DATA_BRANCH" POLL_INTERVAL=1 MERGE_TIMEOUT=60 GH_TOKEN="opener-token" \
+  bash "$MERGE" 2>&1; echo "exit=$?")"
+ELAPSED=$((SECONDS - START))
+_assert_contains "an unapprovable pull request fails" "$OUT" "blocked awaiting an approving review"
+_assert_contains "the failure names the fix" "$OUT" "APPROVE_TOKEN"
+_assert_contains "the failure says the refresh is not lost" "$OUT" "safe on $DATA_BRANCH"
+_assert_not_contains "the unapprovable merge exits non-zero" "$OUT" "exit=0"
+if [[ "$ELAPSED" -lt 30 ]]; then
+  _ok "it fails fast (${ELAPSED}s) instead of waiting out MERGE_TIMEOUT"
+else
+  _fail "it waited ${ELAPSED}s; should fail as soon as the review requirement is seen"
+fi
+_assert_eq "the protected branch did not get the data" \
+  "no" "$(_bare_has_path "$LAB" "$PROTECTED" scripts/retrospective/data/relationships.json)"
+_assert_contains "the refresh is still on the data branch" \
+  "$(_bare_show "$LAB" "$DATA_BRANCH" scripts/retrospective/data/relationships.json)" '"issues": 290'
+rm -rf "$LAB"
+
+# 7b. With a second identity's token, the same pull request is approved and
+#     lands — the path the dump workflows take.
+LAB="$(_make_lab)"
+_make_gh_stub "$LAB" clean requires_approval
+_seed_unmerged "$LAB"
+: > "$LAB/push-attempts.log"
+OUT="$(cd "$LAB/work" && PATH="$LAB/bin:$PATH" REPO="o/r" BASE_REF="$PROTECTED" \
+  DATA_BRANCH="$DATA_BRANCH" POLL_INTERVAL=0 MERGE_TIMEOUT=30 \
+  GH_TOKEN="opener-token" APPROVE_TOKEN="reviewer-token" \
+  bash "$MERGE" 2>&1; echo "exit=$?")"
+_assert_contains "the pull request is approved" "$OUT" "approved PR"
+_assert_contains "an approved pull request merges" "$OUT" "exit=0"
+_assert_eq "the approval came from the second identity" \
+  "reviewer-token" "$(cat "$LAB/gh/approver" 2>/dev/null || echo NONE)"
+_assert_contains "the JSON reaches the protected branch once approved" \
+  "$(_bare_show "$LAB" "$PROTECTED" scripts/retrospective/data/relationships.json)" '"issues": 290'
+_assert_not_contains "approving and merging never pushed at the protected ref" \
+  "$(cat "$LAB/push-attempts.log")" "refs/heads/$PROTECTED"
+rm -rf "$LAB"
+
+# 7c. Approving with the identity that opened it is what GitHub refuses; the
+#     run must fail with the actionable message, not merge unapproved.
+LAB="$(_make_lab)"
+_make_gh_stub "$LAB" clean requires_approval
+_seed_unmerged "$LAB"
+OUT="$(cd "$LAB/work" && PATH="$LAB/bin:$PATH" REPO="o/r" BASE_REF="$PROTECTED" \
+  DATA_BRANCH="$DATA_BRANCH" POLL_INTERVAL=1 MERGE_TIMEOUT=60 \
+  GH_TOKEN="opener-token" APPROVE_TOKEN="opener-token" \
+  bash "$MERGE" 2>&1; echo "exit=$?")"
+_assert_contains "self-approval is reported" "$OUT" "different identity"
+_assert_not_contains "self-approval does not merge" "$OUT" "exit=0"
+_assert_eq "nothing reached the protected branch on a self-approval" \
+  "no" "$(_bare_has_path "$LAB" "$PROTECTED" scripts/retrospective/data/relationships.json)"
+rm -rf "$LAB"
+
+# ==========================================================================
+# 8. Deleting the data branch after the merge must not take a refresh that
+#    arrived in between (what `gh pr merge --delete-branch` would do).
+# ==========================================================================
+LAB="$(_make_lab)"
+_make_gh_stub "$LAB" clean
+touch "$LAB/gh/push_during_merge"   # a dump publishes while the merge is in flight
+_seed_unmerged "$LAB"
+MERGED_TIP="$(_bare_sha "$LAB" "refs/heads/$DATA_BRANCH")"
+OUT="$(cd "$LAB/work" && PATH="$LAB/bin:$PATH" REPO="o/r" BASE_REF="$PROTECTED" \
+  DATA_BRANCH="$DATA_BRANCH" POLL_INTERVAL=0 MERGE_TIMEOUT=30 GH_TOKEN="opener-token" \
+  bash "$MERGE" 2>&1; echo "exit=$?")"
+_assert_contains "the merge still succeeds" "$OUT" "exit=0"
+_assert_contains "the newer refresh is kept, not deleted" "$OUT" "keeping $DATA_BRANCH"
+_assert_not_contains "the branch is not at what was merged" \
+  "$(_bare_sha "$LAB" "refs/heads/$DATA_BRANCH")" "$MERGED_TIP"
+_assert_contains "the newer refresh survives to be landed next" \
+  "$(_bare_show "$LAB" "$DATA_BRANCH" scripts/retrospective/data/spend.json)" '"spend": true'
+rm -rf "$LAB"
+
+# ==========================================================================
+# 9. Publishing must not force away a refresh that landed on the data branch
+#    between this dump's fetch and its push (--force-with-lease).
+# ==========================================================================
+LAB="$(_make_lab)"
+_write_dump "$LAB" relationships.json '{"issues": 1}'
+(cd "$LAB/work" && BASE_REF="$PROTECTED" DATA_BRANCH="$DATA_BRANCH" \
+  bash "$PUBLISH" "chore(retro): refresh" \
+  scripts/retrospective/data/relationships.json) >/dev/null 2>&1
+
+# Inject the race: a competing dump publishes from its own clone in the
+# window between our fetch and our push. A pre-push hook is the only place
+# that window is reachable deterministically.
+git clone -q "$LAB/origin.git" "$LAB/other" 2>/dev/null
+cat > "$LAB/work/.git/hooks/pre-push" <<EOF
+#!/bin/sh
+[ -f "$LAB/raced" ] && exit 0
+touch "$LAB/raced"
+cd "$LAB/other" || exit 0
+git config user.email other@example.com
+git config user.name other
+git fetch -q origin "$DATA_BRANCH" >/dev/null 2>&1
+git checkout -q -B "$DATA_BRANCH" FETCH_HEAD >/dev/null 2>&1
+mkdir -p scripts/retrospective/data
+echo '{"churn": 99}' > scripts/retrospective/data/churn.json
+git add -A >/dev/null 2>&1
+git commit -q -m "chore(retro): competing refresh" >/dev/null 2>&1
+git push -q origin "HEAD:refs/heads/$DATA_BRANCH" >/dev/null 2>&1
+exit 0
+EOF
+chmod +x "$LAB/work/.git/hooks/pre-push"
+
+_write_dump "$LAB" relationships.json '{"issues": 2}'
+OUT="$(cd "$LAB/work" && BASE_REF="$PROTECTED" DATA_BRANCH="$DATA_BRANCH" \
+  bash "$PUBLISH" "chore(retro): refresh" \
+  scripts/retrospective/data/relationships.json 2>&1; echo "exit=$?")"
+_assert_contains "a lost publish race is reported" "$OUT" "lost a race"
+_assert_not_contains "a lost publish race exits non-zero" "$OUT" "exit=0"
+_assert_contains "the competing refresh was not force-pushed away" \
+  "$(_bare_show "$LAB" "$DATA_BRANCH" scripts/retrospective/data/churn.json)" '"churn": 99'
 rm -rf "$LAB"
 
 echo

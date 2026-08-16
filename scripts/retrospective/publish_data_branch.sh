@@ -36,7 +36,10 @@ _die() { echo "[publish-retro-data] ERROR: $*" >&2; exit 1; }
 _log() { echo "[publish-retro-data] $*" >&2; }
 
 usage() {
-  sed -n '3,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  # Print the whole leading comment block, however long it grows — a fixed
+  # line range silently truncates the env list when the header changes.
+  awk 'NR <= 2 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' \
+    "${BASH_SOURCE[0]}"
 }
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then usage; exit 0; fi
@@ -87,6 +90,7 @@ base="$(git rev-parse FETCH_HEAD)"
 # produces contains exactly one refresh. If a previous refresh is still
 # waiting to merge, build on top of it instead — force-pushing over it would
 # throw away a dump that has not landed yet.
+data_head=""
 if git ls-remote --exit-code --heads "$REMOTE" "$DATA_BRANCH" >/dev/null 2>&1; then
   git fetch --quiet "$REMOTE" "$DATA_BRANCH"
   data_head="$(git rev-parse FETCH_HEAD)"
@@ -111,6 +115,23 @@ if git diff --cached --quiet; then
 fi
 
 git commit -q -m "$MSG"
-git push --force "$REMOTE" "HEAD:refs/heads/$DATA_BRANCH"
+
+# A blind --force would drop a refresh another dump published between the
+# fetch above and this push. The lease pins the tip we actually read, so a
+# concurrent publish makes this fail loudly with the refresh still in hand
+# rather than disappearing someone else's. (The dump workflows also share one
+# `concurrency:` group, so this is the backstop, not the first line.)
+if [[ -n "$data_head" ]]; then
+  push_args=(--force-with-lease="refs/heads/$DATA_BRANCH:$data_head")
+else
+  # The branch does not exist: a plain push creates it and is rejected if
+  # another dump created it first.
+  push_args=()
+fi
+
+if ! git push "${push_args[@]}" "$REMOTE" "HEAD:refs/heads/$DATA_BRANCH"; then
+  _die "publishing to $DATA_BRANCH lost a race with another dump (its tip moved${data_head:+ since ${data_head:0:7}}); re-run this dump"
+fi
+
 _log "published $(git rev-parse --short HEAD) to $DATA_BRANCH (base: $BASE_REF)"
 echo "published"
