@@ -4424,5 +4424,94 @@
    "Orphaned cluster-scoped RBAC on manual secret deletion",
    "Repo-relative `K8S_DIR`"
   ]
+ },
+ {
+  "issue": 3508,
+  "pr": 3798,
+  "title": "[dkblinux98/nyxGPT] Feature: feat: Linux-native install path - systemd units with OS dispatch (#3508) (PR #3798)",
+  "module": "cli",
+  "date": "2026-08-15T20:17:34Z",
+  "critical": [
+   "`nyxgpt up --skip-observability` can never succeed on a default config, and the PR's evidence job is red because of it"
+  ],
+  "medium": [
+   "Missing executed verification on Linux (\u00a71c, consequence of the above)"
+  ],
+  "minor": [
+   "`tests/conftest.py` `embedding_backend_available` docstring: \"a availability check\" \u2192 \"an availability check\". Does not block.",
+   "`scripts/systemd-native-smoke.sh:313`: the multi-line `log \"WARNING: \u2026\"` string prints with embedded leading whitespace on its second line. Cosmetic; does not block."
+  ]
+ },
+ {
+  "issue": 3789,
+  "pr": 3791,
+  "title": "[dkblinux98/nyxGPT] Improvement: feat: dev install mode - run current checkout HEAD without the keg build (#3789) (PR #3791)",
+  "module": "cli",
+  "date": "2026-08-15T20:17:53Z",
+  "critical": [],
+  "medium": [
+   "Gate pytest failure: `test_install_terraform_steps_records_success` executes three real machine-mutating steps and passes/fails by environment"
+  ],
+  "minor": [
+   "`_launchd_agent_loaded` duplicated in `ops.py:3688` and `self_heal.py:524` (carried; documented import-cycle rationale \u2014 a third copy should trigger the move into `install_mode.py`)."
+  ]
+ },
+ {
+  "issue": 3784,
+  "pr": 3795,
+  "title": "[dkblinux98/nyxGPT] Improvement: feat: nyxgpt cloud smoke - artifact install path end-to-end on amazonlinux 2023 (#3784) (PR #3795)",
+  "module": "observability",
+  "date": "2026-08-15T20:19:06Z",
+  "critical": [
+   "The blocking `artifact-install` job cannot pass: the `--wheel` escape hatch does not cover the api/web runtime artifacts"
+  ],
+  "medium": [
+   "Vitest coverage gate fails: no tests for the two new web files",
+   "`classify_failure` misdiagnosed the first real failure \u2014 over-broad signatures matched incidental log lines",
+   "Fault-injection verdict inversion accepts ANY failure as \"the smoke saw the fault\""
+  ],
+  "minor": [
+   "Error banner renders \"[object Object]\" on backend 409s",
+   "Concurrent CLI runs silently destroy each other",
+   "`--health-timeout` help text says \"default: 900\""
+  ]
+ },
+ {
+  "issue": 3784,
+  "pr": 3795,
+  "title": "[dkblinux98/nyxGPT] Improvement: feat: nyxgpt cloud smoke - artifact install path end-to-end on amazonlinux 2023 (#3784) (PR #3795)",
+  "module": "observability",
+  "date": "2026-08-15T23:15:39Z",
+  "critical": [],
+  "medium": [
+   "Vitest coverage gate fails: no tests for the two new web files",
+   "`classify_failure`: add the artifact-obtain signature and narrow the systemd one",
+   "Fault-injection inversion must require the *injected* failure, not any failure"
+  ],
+  "minor": [
+   "\"[object Object]\" error banner",
+   "Concurrent CLI runs silently destroy each other",
+   "`--health-timeout` help says \"default: 900\"",
+   "New this round \u2014 \"`3.0.0` on this line\" literals",
+   "New this round \u2014 cross-module use of the private `release_tarball._create_dist_tarball`"
+  ]
+ },
+ {
+  "issue": 3801,
+  "pr": 3802,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: merge conflicts escalate to owner instead of dev-agent resolution (#3801) (PR #3802)",
+  "module": "api",
+  "date": "2026-08-16T00:42:14Z",
+  "critical": [],
+  "medium": [
+   "Ungated trust of conflict-control comments in the polling path (public repo)",
+   "\u00a73c actor-gate audit table falsified and not extended"
+  ],
+  "minor": [
+   "Repeated escalation on every subsequent event",
+   "Slack channel message fires on `noop` decisions too",
+   "Empty routing decision in Slack on dispatcher failure",
+   "Unlinked-PR escalation edge"
+  ]
  }
 ]

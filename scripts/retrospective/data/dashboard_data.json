@@ -1,12 +1,5 @@
 {
  "modules": {
-  "observability": {
-   "C": 2,
-   "M": 16,
-   "m": 18,
-   "rounds": 9,
-   "issues": 8
-  },
   "testing": {
    "C": 2,
    "M": 7,
@@ -23,10 +16,10 @@
   },
   "api": {
    "C": 11,
-   "M": 28,
-   "m": 40,
-   "rounds": 22,
-   "issues": 14
+   "M": 30,
+   "m": 44,
+   "rounds": 23,
+   "issues": 15
   },
   "rag": {
    "C": 3,
@@ -35,12 +28,19 @@
    "rounds": 4,
    "issues": 2
   },
+  "observability": {
+   "C": 2,
+   "M": 21,
+   "m": 24,
+   "rounds": 10,
+   "issues": 8
+  },
   "cli": {
-   "C": 4,
-   "M": 16,
-   "m": 25,
-   "rounds": 12,
-   "issues": 7
+   "C": 5,
+   "M": 18,
+   "m": 28,
+   "rounds": 14,
+   "issues": 8
   },
   "web-ui": {
    "C": 1,
@@ -58,12 +58,6 @@
   }
  },
  "days": {
-  "2026-08-08": {
-   "C": 1,
-   "M": 1,
-   "m": 2,
-   "rounds": 1
-  },
   "2026-08-09": {
    "C": 15,
    "M": 18,
@@ -101,10 +95,16 @@
    "rounds": 12
   },
   "2026-08-15": {
-   "C": 1,
-   "M": 18,
-   "m": 21,
-   "rounds": 11
+   "C": 3,
+   "M": 26,
+   "m": 32,
+   "rounds": 15
+  },
+  "2026-08-16": {
+   "C": 0,
+   "M": 2,
+   "m": 4,
+   "rounds": 1
   }
  },
  "issues": [
@@ -352,6 +352,71 @@
    ]
   },
   {
+   "issue": 3789,
+   "pr": 3791,
+   "title": "[dkblinux98/nyxGPT] Improvement: feat: dev install mode - run current checkout HEAD without the keg build (#3789) (PR #3791)",
+   "module": "cli",
+   "rounds": 4,
+   "C": 1,
+   "M": 4,
+   "m": 8,
+   "last": "2026-08-15T20:17:53Z",
+   "findings": [
+    [
+     "Critical",
+     "Dev-mode web UI returns 500 on every request \u2014 the feature does not work end-to-end"
+    ],
+    [
+     "Medium",
+     "Web coverage gate fails: branches 99.93% < 100% threshold"
+    ],
+    [
+     "Minor",
+     "`_launchd_agent_loaded` is implemented twice (`src/nyxgpt/ops.py` and `src/nyxgpt/self_heal.py`); the import-cycle rationale is documented in `install_mode.py`'s docstring, so this is acceptable, but if a third copy ever appears it belongs in `install_mode.py`. Does not block merge."
+    ],
+    [
+     "Medium",
+     "`ops.install` unit tests execute the real `_reconcile_install_mode` against the developer's actual `~/.nyxGPT` \u2014 destructive on a dev-mode machine"
+    ],
+    [
+     "Minor",
+     "`src/nyxgpt/cli.py:1591` `--dev` help text ends \"Requires a checkout; without it the artifact path is used\" \u2014 \"it\" reads most naturally as \"a checkout\", but `--dev` without a checkout errors (exit 2) rather than falling back to the artifact path. Suggest \"without this flag the artifact path is used\"."
+    ],
+    [
+     "Minor",
+     "`docs/self-healing.md:50-52` and `214-216` still describe native api/web healing as unconditionally `brew services restart`; after this PR that is mode-dependent (dev mode heals via `launchctl kickstart`). The behavior is documented in `docs/ops.md`'s `--dev` section and the prose was already OS-approximate, but a one-line pointer would keep the two pages from disagreeing."
+    ],
+    [
+     "Minor",
+     "Carried from last round: `_launchd_agent_loaded` is implemented in both `ops.py` and `self_heal.py`; acceptable given the documented import-cycle rationale \u2014 a third copy should move to `install_mode.py`."
+    ],
+    [
+     "Medium",
+     "[UNRESOLVED FROM PREVIOUS REVIEW] `ops.install` unit tests execute the real `_reconcile_install_mode` against the developer's actual `~/.nyxGPT`"
+    ],
+    [
+     "Minor",
+     "`src/nyxgpt/cli.py:1591` `--dev` help text: \"Requires a checkout; without it the artifact path is used\" \u2014 \"it\" reads as \"a checkout\", but `--dev` without a checkout errors (exit 2). Suggest \"without this flag the artifact path is used\"."
+    ],
+    [
+     "Minor",
+     "`docs/self-healing.md:50-52,214-216` still describe native api/web healing as unconditionally `brew services restart`; now mode-dependent (dev heals via `launchctl kickstart`). A one-line pointer to `docs/ops.md`'s `--dev` section would keep the pages from disagreeing."
+    ],
+    [
+     "Minor",
+     "`_launchd_agent_loaded` duplicated in `ops.py` and `self_heal.py` (documented import-cycle rationale; a third copy should move to `install_mode.py`)."
+    ],
+    [
+     "Medium",
+     "Gate pytest failure: `test_install_terraform_steps_records_success` executes three real machine-mutating steps and passes/fails by environment"
+    ],
+    [
+     "Minor",
+     "`_launchd_agent_loaded` duplicated in `ops.py:3688` and `self_heal.py:524` (carried; documented import-cycle rationale \u2014 a third copy should trigger the move into `install_mode.py`)."
+    ]
+   ]
+  },
+  {
    "issue": 3635,
    "pr": 3678,
    "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: test_gpu_detection_shell_false flake - GPU-info cache race in embeddings (#3635) (PR #3678)",
@@ -499,63 +564,6 @@
     [
      "Minor",
      "Previously reported, still open, still non-blocking: (1) the resolve step's `assets_on()` suppresses API errors (`2>/dev/null || echo \"\"`), so a transient API failure can misclassify a serving sidecar as `SERVED=false` and churn its assets \u2014 suggest the retirement branch re-list without suppression; (2) `docs/portability-matrix.md:69` \"the release's `<version>-homebrew` release\" reads doubled."
-    ]
-   ]
-  },
-  {
-   "issue": 3789,
-   "pr": 3791,
-   "title": "[dkblinux98/nyxGPT] Improvement: feat: dev install mode - run current checkout HEAD without the keg build (#3789) (PR #3791)",
-   "module": "cli",
-   "rounds": 3,
-   "C": 1,
-   "M": 3,
-   "m": 7,
-   "last": "2026-08-15T06:43:10Z",
-   "findings": [
-    [
-     "Critical",
-     "Dev-mode web UI returns 500 on every request \u2014 the feature does not work end-to-end"
-    ],
-    [
-     "Medium",
-     "Web coverage gate fails: branches 99.93% < 100% threshold"
-    ],
-    [
-     "Minor",
-     "`_launchd_agent_loaded` is implemented twice (`src/nyxgpt/ops.py` and `src/nyxgpt/self_heal.py`); the import-cycle rationale is documented in `install_mode.py`'s docstring, so this is acceptable, but if a third copy ever appears it belongs in `install_mode.py`. Does not block merge."
-    ],
-    [
-     "Medium",
-     "`ops.install` unit tests execute the real `_reconcile_install_mode` against the developer's actual `~/.nyxGPT` \u2014 destructive on a dev-mode machine"
-    ],
-    [
-     "Minor",
-     "`src/nyxgpt/cli.py:1591` `--dev` help text ends \"Requires a checkout; without it the artifact path is used\" \u2014 \"it\" reads most naturally as \"a checkout\", but `--dev` without a checkout errors (exit 2) rather than falling back to the artifact path. Suggest \"without this flag the artifact path is used\"."
-    ],
-    [
-     "Minor",
-     "`docs/self-healing.md:50-52` and `214-216` still describe native api/web healing as unconditionally `brew services restart`; after this PR that is mode-dependent (dev mode heals via `launchctl kickstart`). The behavior is documented in `docs/ops.md`'s `--dev` section and the prose was already OS-approximate, but a one-line pointer would keep the two pages from disagreeing."
-    ],
-    [
-     "Minor",
-     "Carried from last round: `_launchd_agent_loaded` is implemented in both `ops.py` and `self_heal.py`; acceptable given the documented import-cycle rationale \u2014 a third copy should move to `install_mode.py`."
-    ],
-    [
-     "Medium",
-     "[UNRESOLVED FROM PREVIOUS REVIEW] `ops.install` unit tests execute the real `_reconcile_install_mode` against the developer's actual `~/.nyxGPT`"
-    ],
-    [
-     "Minor",
-     "`src/nyxgpt/cli.py:1591` `--dev` help text: \"Requires a checkout; without it the artifact path is used\" \u2014 \"it\" reads as \"a checkout\", but `--dev` without a checkout errors (exit 2). Suggest \"without this flag the artifact path is used\"."
-    ],
-    [
-     "Minor",
-     "`docs/self-healing.md:50-52,214-216` still describe native api/web healing as unconditionally `brew services restart`; now mode-dependent (dev heals via `launchctl kickstart`). A one-line pointer to `docs/ops.md`'s `--dev` section would keep the pages from disagreeing."
-    ],
-    [
-     "Minor",
-     "`_launchd_agent_loaded` duplicated in `ops.py` and `self_heal.py` (documented import-cycle rationale; a third copy should move to `install_mode.py`)."
     ]
    ]
   },
@@ -740,31 +748,75 @@
    ]
   },
   {
-   "issue": 3588,
-   "pr": 3619,
-   "title": "[dkblinux98/nyxGPT] Production Defect: bug: terraform-mode self-heal omits observability services - sre (#3588) (PR #3619)",
+   "issue": 3784,
+   "pr": 3795,
+   "title": "[dkblinux98/nyxGPT] Improvement: feat: nyxgpt cloud smoke - artifact install path end-to-end on amazonlinux 2023 (#3784) (PR #3795)",
    "module": "observability",
-   "rounds": 1,
+   "rounds": 2,
    "C": 1,
-   "M": 1,
-   "m": 2,
-   "last": "2026-08-08T04:55:55Z",
+   "M": 6,
+   "m": 8,
+   "last": "2026-08-15T23:15:39Z",
    "findings": [
     [
      "Critical",
-     "The 0600\u21920644 / 0700\u21920755 permission widening never applies to secret files that already exist with an unchanged value, so upgrading installs \u2014 the actual population Grafana was crash-looping for \u2014 are not fixed by this PR"
+     "The blocking `artifact-install` job cannot pass: the `--wheel` escape hatch does not cover the api/web runtime artifacts"
     ],
     [
      "Medium",
-     "Missing test coverage for the new `compose_probe_available` note on the Self-Heal page"
+     "Vitest coverage gate fails: no tests for the two new web files"
+    ],
+    [
+     "Medium",
+     "`classify_failure` misdiagnosed the first real failure \u2014 over-broad signatures matched incidental log lines"
+    ],
+    [
+     "Medium",
+     "Fault-injection verdict inversion accepts ANY failure as \"the smoke saw the fault\""
     ],
     [
      "Minor",
-     "The chmod widening (`0600`\u2192`0644`, `0700`\u2192`0755`) makes these locally-scoped secrets (GlitchTip API token, Slack webhook URL) world-readable on the host filesystem rather than just owner-readable. The tradeoff is clearly documented and reasoned about in the docstrings (Grafana's fixed non-root uid 472 needs to traverse/read across a native Linux bind mount with no uid remap), and these are described as low-value, locally-scoped tokens \u2014 I don't think this alone should block, but it's worth the human owner being aware this is a deliberate security/functionality tradeoff, not an oversight."
+     "Error banner renders \"[object Object]\" on backend 409s"
     ],
     [
      "Minor",
-     "`terraform/main.tf`'s new `docker-compose.yml` bind mount uses `var.repo_path`, continuing the existing repo-relative resolution pattern this file already uses for `config.docker.ini`. This is consistent with the already-tracked \"Repo-less Portability\" debt in CLAUDE.md (Phase 6, separate issues) rather than a new violation introduced by this PR \u2014 not a blocking finding here, just noting it's not new debt."
+     "Concurrent CLI runs silently destroy each other"
+    ],
+    [
+     "Minor",
+     "`--health-timeout` help text says \"default: 900\""
+    ],
+    [
+     "Medium",
+     "Vitest coverage gate fails: no tests for the two new web files"
+    ],
+    [
+     "Medium",
+     "`classify_failure`: add the artifact-obtain signature and narrow the systemd one"
+    ],
+    [
+     "Medium",
+     "Fault-injection inversion must require the *injected* failure, not any failure"
+    ],
+    [
+     "Minor",
+     "\"[object Object]\" error banner"
+    ],
+    [
+     "Minor",
+     "Concurrent CLI runs silently destroy each other"
+    ],
+    [
+     "Minor",
+     "`--health-timeout` help says \"default: 900\""
+    ],
+    [
+     "Minor",
+     "New this round \u2014 \"`3.0.0` on this line\" literals"
+    ],
+    [
+     "Minor",
+     "New this round \u2014 cross-module use of the private `release_tarball._create_dist_tarball`"
     ]
    ]
   },
@@ -1659,15 +1711,75 @@
      "Repo-relative `K8S_DIR`"
     ]
    ]
+  },
+  {
+   "issue": 3508,
+   "pr": 3798,
+   "title": "[dkblinux98/nyxGPT] Feature: feat: Linux-native install path - systemd units with OS dispatch (#3508) (PR #3798)",
+   "module": "cli",
+   "rounds": 1,
+   "C": 1,
+   "M": 1,
+   "m": 2,
+   "last": "2026-08-15T20:17:34Z",
+   "findings": [
+    [
+     "Critical",
+     "`nyxgpt up --skip-observability` can never succeed on a default config, and the PR's evidence job is red because of it"
+    ],
+    [
+     "Medium",
+     "Missing executed verification on Linux (\u00a71c, consequence of the above)"
+    ],
+    [
+     "Minor",
+     "`tests/conftest.py` `embedding_backend_available` docstring: \"a availability check\" \u2192 \"an availability check\". Does not block."
+    ],
+    [
+     "Minor",
+     "`scripts/systemd-native-smoke.sh:313`: the multi-line `log \"WARNING: \u2026\"` string prints with embedded leading whitespace on its second line. Cosmetic; does not block."
+    ]
+   ]
+  },
+  {
+   "issue": 3801,
+   "pr": 3802,
+   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: merge conflicts escalate to owner instead of dev-agent resolution (#3801) (PR #3802)",
+   "module": "api",
+   "rounds": 1,
+   "C": 0,
+   "M": 2,
+   "m": 4,
+   "last": "2026-08-16T00:42:14Z",
+   "findings": [
+    [
+     "Medium",
+     "Ungated trust of conflict-control comments in the polling path (public repo)"
+    ],
+    [
+     "Medium",
+     "\u00a73c actor-gate audit table falsified and not extended"
+    ],
+    [
+     "Minor",
+     "Repeated escalation on every subsequent event"
+    ],
+    [
+     "Minor",
+     "Slack channel message fires on `noop` decisions too"
+    ],
+    [
+     "Minor",
+     "Empty routing decision in Slack on dispatcher failure"
+    ],
+    [
+     "Minor",
+     "Unlinked-PR escalation edge"
+    ]
+   ]
   }
  ],
  "cleanPRs": [
-  {
-   "pr": 3664,
-   "merged": "2026-08-08",
-   "title": "Production Defect: bug: OTel context-detach error floods GlitchTip on streamed chat turns (#3593)",
-   "module": "observability"
-  },
   {
    "pr": 3701,
    "merged": "2026-08-09",
@@ -1873,6 +1985,12 @@
    "module": "cli"
   },
   {
+   "pr": 3797,
+   "merged": "2026-08-15",
+   "title": "Acceptance Failure: bug: acceptance failure 1 for #3509 - Terraform AWS modules - VPC, subnets, secu (#3721)",
+   "module": "cli"
+  },
+  {
    "pr": 3796,
    "merged": "2026-08-15",
    "title": "Feature: feat: Terraform AWS modules - VPC, subnets, security groups, compute (#3509)",
@@ -1892,23 +2010,23 @@
   }
  ],
  "cleanByModule": {
-  "observability": 5,
+  "observability": 4,
   "api": 15,
   "web-ui": 3,
   "documentation": 2,
   "rag": 2,
-  "cli": 10,
+  "cli": 11,
   "security": 1
  },
  "totals": {
-  "rounds": 67,
-  "C": 26,
-  "M": 86,
-  "m": 133,
-  "items": 44,
+  "rounds": 71,
+  "C": 27,
+  "M": 95,
+  "m": 146,
+  "items": 46,
   "clean": 38,
-  "reviewed": 81,
-  "merged": 81,
+  "reviewed": 84,
+  "merged": 84,
   "unreviewed": 0
  }
 }
