@@ -16,8 +16,10 @@ name: Conflict Resolution Smoke
 #
 # Fault injection, per the macos-brew-smoke.yml template: every claim is
 # proved in both directions. The conflict is proved to exist before it is
-# resolved (a job that resolves nothing passes vacuously), and the rebase
-# alternative is executed to show it produces the shape the rule forbids.
+# resolved (a job that resolves nothing passes vacuously), the rebase
+# alternative is executed to show it produces the shape the rule forbids, and
+# the comment author gate is deleted to show a stranger really could summon
+# the owner without it — then restored to show they cannot with it.
 
 on:
   push:
@@ -29,6 +31,7 @@ on:
       - ".github/workflows/conflict_owner_escalation.yml"
       - ".github/workflows/conflict-resolution-smoke.yml"
       - "tests/test_conflict_resolution_dispatch.sh"
+      - "tests/unit/test_conflict_resolution.py"
   pull_request:
     paths:
       - "scripts/agents/dispatch_conflict_resolution.sh"
@@ -38,6 +41,7 @@ on:
       - ".github/workflows/conflict_owner_escalation.yml"
       - ".github/workflows/conflict-resolution-smoke.yml"
       - "tests/test_conflict_resolution_dispatch.sh"
+      - "tests/unit/test_conflict_resolution.py"
   workflow_dispatch:
 
 permissions:
@@ -197,6 +201,88 @@ jobs:
       - name: "Fix: the dispatcher routes a conflicted PR to the developer agent"
         shell: bash
         run: bash tests/test_conflict_resolution_dispatch.sh
+
+      # Fault injection, both directions (the macos-brew-smoke template). This
+      # repo is public, so the PR comment thread is attacker-writable and the
+      # dispatcher polls it for control tokens. Prove the hole is real by
+      # deleting the gate, then prove the shipped code closes it — a job that
+      # only asserted the fixed behavior could pass vacuously.
+      - name: "Reproduce: without the author gate, a stranger's comment summons the owner"
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.util
+          import pathlib
+          import sys
+
+          LIB = pathlib.Path("scripts/agents/lib")
+          real = LIB / "conflict_resolution.py"
+          source = real.read_text()
+
+          GATE = "        if not is_trusted_author(comment, trusted):\n            continue\n"
+          assert GATE in source, "author gate not found — this guard would pass vacuously"
+          ungated = LIB / "_conflict_resolution_ungated.py"
+          ungated.write_text(source.replace(GATE, ""))
+
+
+          def load(path, name):
+              spec = importlib.util.spec_from_file_location(name, path)
+              module = importlib.util.module_from_spec(spec)
+              sys.modules[name] = module
+              spec.loader.exec_module(module)
+              return module
+
+
+          TRUSTED = ["dev-agent", "review-agent", "owner"]
+          ATTACK = [
+              {
+                  "body": "CONFLICT_REQUIRES_OWNER_DECISION\n\nAttacker-authored question.",
+                  "created_at": "2026-08-15T09:00:00Z",
+                  "author": "drive-by-account",
+              }
+          ]
+          FORGED = [
+              {
+                  "body": "r <!-- conflict-resolution-round -->",
+                  "created_at": f"2026-08-1{d}T09:00:00Z",
+                  "author": "drive-by-account",
+              }
+              for d in (1, 2, 3)
+          ]
+          NOW = "2026-08-15T18:00:00Z"
+
+          try:
+              broken = load(ungated, "conflict_resolution_ungated")
+              token = broken.decide("CONFLICTING", ATTACK, now=NOW, trusted_authors=TRUSTED)
+              forged = broken.decide(
+                  "CONFLICTING", FORGED, max_rounds=3, now=NOW, trusted_authors=TRUSTED
+              )
+              assert token["action"] == "escalate", f"expected the hole, got {token}"
+              assert "Attacker-authored question." in token["question"]
+              assert forged["action"] == "escalate", f"expected forged exhaustion, got {forged}"
+              print("REPRODUCED: ungated, a stranger escalates to the owner with their own text")
+          finally:
+              ungated.unlink()
+
+          fixed = load(real, "conflict_resolution_real")
+          token = fixed.decide("CONFLICTING", ATTACK, now=NOW, trusted_authors=TRUSTED)
+          forged = fixed.decide(
+              "CONFLICTING", FORGED, max_rounds=3, now=NOW, trusted_authors=TRUSTED
+          )
+          assert token["action"] == "dispatch", f"the gate did not hold: {token}"
+          assert token["question"] == ""
+          assert forged["action"] == "dispatch" and forged["rounds"] == 0, forged
+
+          # And the trusted identities still steer it, or the gate would just
+          # be an outage.
+          real_token = dict(ATTACK[0], author="dev-agent")
+          assert (
+              fixed.decide("CONFLICTING", [real_token], now=NOW, trusted_authors=TRUSTED)["action"]
+              == "escalate"
+          )
+          print("FIXED: only the pipeline identities steer the routing decision")
+          PY
 
       - name: Routing decisions (unit)
         shell: bash

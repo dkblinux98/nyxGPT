@@ -39,12 +39,15 @@ PR opened / synchronized / reopened          push lands on a release branch
         │  escalate → owner assigned + Slack DM, only on an   │
         │             agent-raised owner-only decision or     │
         │             non-converging rounds                   │
-        │  noop     → clean, still computing, not open, or a  │
-        │             round already in flight (burst guard)   │
+        │  noop     → clean, still computing, not open, a     │
+        │             round already in flight (burst guard),  │
+        │             or an escalation already with the owner │
         └─────────────────────────────────────────────────────┘
               ↓
-        Slack notification to the team channel (every conflict,
-        stating which of the three decisions was taken)
+        Slack notification to the team channel on dispatch and
+        escalate, stating which decision was taken (`noop` is
+        silent — nothing changed for the reader, and nine merges
+        in an afternoon would otherwise send nine of them)
 ```
 
 ### Trigger Events
@@ -67,12 +70,24 @@ PR opened / synchronized / reopened          push lands on a release branch
    `noop` from the PR's mergeable state and its comment thread. Rounds are
    counted from a marker comment; a round newer than the cooldown window
    (default 45 min) suppresses a second dispatch, so a burst of merges
-   produces one round per PR, not one per push.
+   produces one round per PR, not one per push. An escalation already posted
+   and not yet answered suppresses the repeat too, so a later merge does not
+   re-interrupt the owner about a question already on their plate.
 3. **Act**: the script posts the resolution context on the PR and the issue,
    moves the issue to In Progress and reassigns the developer agent — or, on
    an escalation, assigns the owner with the specific question and DMs them.
 4. **Notify**: the Slack message goes to the same channel as before, with the
-   routing decision included. The owner still hears about every conflict.
+   routing decision included. The owner still hears about every conflict that
+   changes something; `noop` rounds are silent.
+
+**Author gate (public repo).** This thread is writable by anyone, and the
+router reads control tokens out of it, so a comment steers the decision only
+when its author is one of `DEV_AGENT` / `REVIEW_AGENT` / `HUMAN_OWNER` — the
+same trio `conflict_owner_escalation.yml` gates its commenter on. Without it,
+a stranger could force an owner escalation carrying text they wrote, forge
+round exhaustion, or hold a PR in permanent cooldown and suppress resolution
+entirely. The gate is fail-closed: the routing CLI refuses to decide anything
+if no trusted set is supplied.
 
 ### Escalating to the owner
 
@@ -109,7 +124,8 @@ rebase — in a comment, a doc or a PR — is a defect.
   end against a stubbed `gh`.
 - `.github/workflows/conflict-resolution-smoke.yml` — executed evidence on a
   real conflicted branch pair: proves the merge resolution works and that a
-  rebase is not what happened.
+  rebase is not what happened, and fault-injects the author gate in both
+  directions (a stranger escalates without it; a stranger cannot with it).
 
 ### Limitations
 

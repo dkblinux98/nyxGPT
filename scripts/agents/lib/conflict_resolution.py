@@ -35,6 +35,18 @@ GitHub:
 
 The shell side (`scripts/agents/dispatch_conflict_resolution.sh`) does the
 GitHub I/O; every branch above is decided here.
+
+**Author gate.** This repository is public, so the comment thread is an
+attacker-writable channel: without a gate, any account could open a comment
+with the escalation token (forcing an owner assignment plus a Slack DM whose
+question text they wrote), forge round markers to fake exhaustion, or post a
+fresh forged marker every few minutes to hold a PR in permanent cooldown and
+suppress resolution entirely. `conflict_owner_escalation.yml` gates its
+commenter; this polling path must too, or the gate is bypassable by simply
+waiting for the sweep. So every *control* comment -- round marker, owner
+token, escalation marker -- counts only when its author is one of the
+pipeline identities (developer-runbook §3b/#3600). Comments from anyone else
+are ordinary conversation and are ignored for routing.
 """
 
 from __future__ import annotations
@@ -43,6 +55,7 @@ import argparse
 import json
 import re
 import sys
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -65,12 +78,57 @@ LEGACY_ROUND_MARKER = "Automated conflict-resolution round"
 # follows the marker in the same comment.
 OWNER_DECISION_MARKER = "CONFLICT_REQUIRES_OWNER_DECISION"
 
+# Stamped on the escalation comment this module's caller posts. Without it the
+# escalation branch has no memory: every later push to the release branch
+# re-fires the handler, finds the same still-conflicted PR, and re-posts the
+# escalation plus a fresh owner assignment -- exactly the "interrupted twice in
+# an hour" behaviour #3801 exists to end.
+ESCALATION_MARKER = "<!-- conflict-resolution-escalated -->"
+
 DEFAULT_MAX_ROUNDS = 3
 DEFAULT_COOLDOWN_MINUTES = 45
 
 ACTION_DISPATCH = "dispatch"
 ACTION_ESCALATE = "escalate"
 ACTION_NOOP = "noop"
+
+
+def _normalise_authors(authors: Iterable[str] | None) -> set[str] | None:
+    """Lower-cased login set, or None meaning "no author gate".
+
+    GitHub logins are case-insensitive, and the config file and the API can
+    disagree on case; compare folded. An empty iterable is treated the same as
+    `None` so a caller that passes an unpopulated list does not silently get a
+    gate that rejects everything (which would freeze routing rather than fail
+    loudly). Production callers must supply a non-empty set -- the CLI below
+    refuses to run without one.
+    """
+    if authors is None:
+        return None
+    folded = {a.strip().lower() for a in authors if a and a.strip()}
+    return folded or None
+
+
+def comment_author(comment: dict[str, Any]) -> str:
+    """The commenter's login, from either the flat or the REST-nested shape."""
+    author = comment.get("author")
+    if not author:
+        user = comment.get("user")
+        if isinstance(user, dict):
+            author = user.get("login")
+    return str(author or "").strip().lower()
+
+
+def is_trusted_author(comment: dict[str, Any], trusted: set[str] | None) -> bool:
+    """True if this comment may influence routing.
+
+    `trusted is None` disables the gate (unit tests, and callers that have
+    already filtered the thread themselves). Otherwise an unattributed comment
+    is untrusted: a missing login is not a pass.
+    """
+    if trusted is None:
+        return True
+    return comment_author(comment) in trusted
 
 
 def _parse_ts(value: str | None) -> datetime | None:
@@ -89,6 +147,11 @@ def _parse_ts(value: str | None) -> datetime | None:
 def is_round_comment(body: str) -> bool:
     """True if `body` is an automated conflict-resolution round dispatch."""
     return ROUND_MARKER in body or LEGACY_ROUND_MARKER in body
+
+
+def is_escalation_comment(body: str) -> bool:
+    """True if `body` is an escalation this handler already posted."""
+    return ESCALATION_MARKER in body
 
 
 def is_owner_decision_comment(body: str) -> bool:
@@ -129,17 +192,25 @@ def decide(
     max_rounds: int = DEFAULT_MAX_ROUNDS,
     cooldown_minutes: int = DEFAULT_COOLDOWN_MINUTES,
     now: str | None = None,
+    trusted_authors: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """Route one PR's conflict state.
 
     `mergeable` is the three-value enum this repo re-derives from REST
     (MERGEABLE / CONFLICTING / UNKNOWN -- see review_accept_and_merge.sh).
     `comments` are the PR's comments in chronological order, each with a
-    `body` and optionally a `created_at`.
+    `body`, optionally a `created_at`, and an `author` (or nested
+    `user.login`).
+
+    `trusted_authors` are the logins whose comments may steer routing -- the
+    pipeline identities, i.e. the same set `conflict_owner_escalation.yml`
+    gates its commenter on. Passing None disables the gate and is for tests
+    only; production goes through the CLI, which requires the set.
 
     Returns {action, reason, rounds, question}.
     """
     comments = comments or []
+    trusted = _normalise_authors(trusted_authors)
 
     if pr_state.upper() != "OPEN":
         return _result(ACTION_NOOP, f"PR is {pr_state.upper()}, not open")
@@ -156,14 +227,22 @@ def decide(
     last_round_at: datetime | None = None
     last_owner_idx: int | None = None
     last_owner_body = ""
+    last_escalation_idx: int | None = None
     rounds = 0
 
     for idx, comment in enumerate(comments):
         body = comment.get("body") or ""
+        # Public repo: only the pipeline's own identities steer this. A
+        # stranger's comment containing the token or a forged round marker is
+        # conversation, not a control instruction.
+        if not is_trusted_author(comment, trusted):
+            continue
         if is_round_comment(body):
             rounds += 1
             last_round_idx = idx
             last_round_at = _parse_ts(comment.get("created_at"))
+        if is_escalation_comment(body):
+            last_escalation_idx = idx
         if is_owner_decision_comment(body):
             last_owner_idx = idx
             last_owner_body = body
@@ -172,6 +251,14 @@ def decide(
     #    to a human, and it is only honoured when it is the newest word on the
     #    conflict -- a question already answered by a later round is spent.
     if last_owner_idx is not None and (last_round_idx is None or last_owner_idx > last_round_idx):
+        if last_escalation_idx is not None and last_escalation_idx > last_owner_idx:
+            # Already handed to the owner and not yet answered. Re-posting it
+            # on every subsequent push is the interruption this issue removes.
+            return _result(
+                ACTION_NOOP,
+                "the owner-only question was already escalated and is awaiting an answer",
+                rounds=rounds,
+            )
         question = extract_owner_question(last_owner_body)
         return _result(
             ACTION_ESCALATE,
@@ -194,8 +281,19 @@ def decide(
                 rounds=rounds,
             )
 
-    # 3. Rounds exhausted: the agent is not converging, so a human looks.
+    # 3. Rounds exhausted: the agent is not converging, so a human looks --
+    #    once. A later push to the release branch re-fires this handler on the
+    #    same still-conflicted PR; without the marker check the owner would be
+    #    re-assigned and re-notified every time.
     if rounds >= max_rounds:
+        if last_escalation_idx is not None and (
+            last_round_idx is None or last_escalation_idx > last_round_idx
+        ):
+            return _result(
+                ACTION_NOOP,
+                f"already escalated after {rounds} non-converging round(s); waiting on the owner",
+                rounds=rounds,
+            )
         return _result(
             ACTION_ESCALATE,
             f"{rounds} automated conflict-resolution round(s) already ran and the PR is still "
@@ -217,6 +315,17 @@ def _result(action: str, reason: str, rounds: int = 0, question: str = "") -> di
 
 def _cmd_decide(args: argparse.Namespace) -> int:
     payload = json.load(sys.stdin)
+    # Fail closed. The author gate is only a gate if the production entry
+    # point cannot run without it; a caller that forgets `trusted_authors`
+    # must get an error, never a silently ungated routing decision.
+    trusted = _normalise_authors(payload.get("trusted_authors"))
+    if trusted is None:
+        print(
+            "conflict_resolution: refusing to route without `trusted_authors` "
+            "(comment thread is attacker-writable on a public repo)",
+            file=sys.stderr,
+        )
+        return 2
     result = decide(
         payload.get("mergeable", "UNKNOWN"),
         payload.get("comments") or [],
@@ -224,6 +333,7 @@ def _cmd_decide(args: argparse.Namespace) -> int:
         max_rounds=int(payload.get("max_rounds", args.max_rounds)),
         cooldown_minutes=int(payload.get("cooldown_minutes", args.cooldown_minutes)),
         now=payload.get("now"),
+        trusted_authors=trusted,
     )
     print(json.dumps(result))
     return 0

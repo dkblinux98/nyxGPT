@@ -179,8 +179,14 @@ jobs:
           ACTION="$(sed -n 's/^conflict-resolution: \([a-z]*\) .*/\1/p' /tmp/route.out | tail -1)"
           echo "action=${ACTION:-unknown}" >> "$GITHUB_OUTPUT"
 
+      # `noop` means nothing changed for the owner: a round dispatched minutes
+      # ago is still in flight, or an escalation is already sitting with them.
+      # Nine merges in an afternoon would otherwise send nine "noop" messages
+      # per conflicted PR — the notification-fatigue half of this issue.
+      # A failed route step leaves the output empty, which is not 'noop', so
+      # breakage still gets announced.
       - name: Send Slack notification
-        if: always() && steps.route.outcome != 'skipped'
+        if: always() && steps.route.outcome != 'skipped' && steps.route.outputs.action != 'noop'
         continue-on-error: true
         uses: slackapi/slack-github-action@v1.26.0
         with:
@@ -228,7 +234,8 @@ jobs:
                   "text": {
                     "type": "mrkdwn",
                     "text": >-
-                      Routing decision: *${{ steps.route.outputs.action }}*.
+                      Routing decision:
+                      *${{ steps.route.outputs.action || 'unknown (the router failed — see the run log)' }}*.
                       A `dispatch` means the developer agent is resolving it
                       by merging the base branch in — no action needed from
                       you. Only `escalate` asks you for something, and says

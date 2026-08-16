@@ -128,19 +128,34 @@ if [[ "$ESCALATE_FROM_COMMENT" == "1" ]]; then
   decision="$(jq -n --arg q "$question" \
     '{action: "escalate", reason: "developer agent reported an owner-only decision", rounds: 0, question: $q}')"
 else
+  # This repo is public, so the comment thread is writable by anyone. The
+  # round markers and the owner-decision token are *control* input to the
+  # routing decision, so carry each comment's author and let only the
+  # pipeline identities steer — the same trio conflict_owner_escalation.yml
+  # gates its commenter on (developer-runbook §3b). Without this, a stranger's
+  # comment could force an owner escalation carrying text they wrote, forge
+  # round exhaustion, or hold the PR in permanent cooldown.
+  TRUSTED_AUTHORS="$(jq -n \
+    --arg dev "${DEV_AGENT:-}" --arg rev "${REVIEW_AGENT:-}" --arg own "${HUMAN_OWNER:-}" \
+    '[$dev, $rev, $own] | map(select(. != "")) | unique')"
+  [[ "$(jq 'length' <<<"$TRUSTED_AUTHORS")" -gt 0 ]] \
+    || _die "ERROR: none of DEV_AGENT/REVIEW_AGENT/HUMAN_OWNER is configured — refusing to route a conflict with no author gate."
+
   # --jq runs once per fetched page, not once over the combined result set —
   # stream the comments across all pages, then slurp in a second jq pass
   # (see AGENTS.md).
   comments="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${PR}/comments" --paginate \
-    --jq '.[] | {body: (.body // ""), created_at: .created_at}' 2>/dev/null | jq -s '.' || echo '[]')"
+    --jq '.[] | {body: (.body // ""), created_at: .created_at, author: (.user.login // "")}' \
+    2>/dev/null | jq -s '.' || echo '[]')"
   decision="$(jq -n \
       --argjson comments "${comments:-[]}" \
+      --argjson trusted "$TRUSTED_AUTHORS" \
       --arg mergeable "$pr_mergeable" \
       --arg state "$pr_state" \
       --argjson max_rounds "$MAX_ROUNDS" \
       --argjson cooldown "$COOLDOWN_MINUTES" \
-      '{mergeable: $mergeable, state: $state, comments: $comments, max_rounds: $max_rounds, cooldown_minutes: $cooldown}' \
-    | python3 "$LIB_PY" decide)"
+      '{mergeable: $mergeable, state: $state, comments: $comments, trusted_authors: $trusted, max_rounds: $max_rounds, cooldown_minutes: $cooldown}' \
+    | python3 "$LIB_PY" decide)" || _die "ERROR: routing decision failed for PR #${PR}."
 fi
 
 action="$(jq -r '.action' <<<"$decision")"
@@ -161,8 +176,15 @@ if [[ -z "$ISSUE" ]]; then
   # dropping the conflict.
   _warn "PR #${PR} has no 'Closes #N' issue link — cannot dispatch a resolution round."
   if [[ "${DRY_RUN:-0}" != "1" ]]; then
-    gh pr comment "$PR" --repo "${REPO_OWNER}/${REPO_NAME}" --body \
-      "⚠️ **Merge conflict** with \`${pr_base}\`, and this PR has no \`Closes #N\` link, so no developer-agent round can be dispatched. Add the link (or resolve by merging \`origin/${pr_base}\` into \`${pr_head}\` — never rebase)." || true
+    UNLINKED_MSG="⚠️ **Merge conflict** with \`${pr_base}\`, and this PR has no \`Closes #N\` link, so no developer-agent round can be dispatched. Add the link (or resolve by merging \`origin/${pr_base}\` into \`${pr_head}\` — never rebase)."
+    # An escalation still has to carry its question somewhere, or the one
+    # thing the owner is actually being asked is dropped on the floor.
+    if [[ "$action" == "escalate" && -n "$question" && "$question" != "null" ]]; then
+      UNLINKED_MSG+="
+
+@${HUMAN_OWNER}, the developer agent raised an owner-only decision here: **${question}**"
+    fi
+    gh pr comment "$PR" --repo "${REPO_OWNER}/${REPO_NAME}" --body "$UNLINKED_MSG" || true
   fi
   _result_line "noop" "no linked issue"
   exit 0
@@ -202,7 +224,12 @@ If — and only if — resolving needs a decision only the owner can make (e.g. 
 fi
 
 # ---- escalate: only when a human genuinely must decide --------------------
-ESCALATION_MSG="🚨 **Merge conflict escalated to @${HUMAN_OWNER}**
+# The marker is what makes this escalation idempotent: every later push to the
+# release branch re-fires the handler on the same still-conflicted PR, and
+# conflict_resolution.decide() reads the marker to route those repeats to noop
+# instead of re-assigning and re-DMing the owner each time.
+ESCALATION_MARKER="<!-- conflict-resolution-escalated -->"
+ESCALATION_MSG="🚨 **Merge conflict escalated to @${HUMAN_OWNER}** ${ESCALATION_MARKER}
 
 PR #${PR} conflicts with \`${pr_base}\` and the automated path stopped: ${reason}."
 if [[ -n "$question" && "$question" != "null" ]]; then
