@@ -1,0 +1,94 @@
+name: Project Hygiene Smoke
+
+# Which question does this job answer? (#3775 executed verification)
+#
+#   "When a deliberate project-field write lands WHILE the hygiene job is
+#    running, does the value the owner (or an agent) wrote survive — and does
+#    hygiene still populate a genuinely empty issue?"
+#
+# Inspection cannot answer that. This defect's signature is a *successful*
+# hygiene run that overwrote a good value (#3814 lost its Status on
+# 2026-08-16 by about a second; #3813, same code, survived), so a green run of
+# the job itself is not evidence of anything.
+#
+# The suite this job runs executes scripts/agents/ensure_issue_hygiene.sh —
+# the actual body of ensure_project_hygiene.yml's add-to-project job — against
+# a stateful `gh` stub that INJECTS the concurrent write into the exact window
+# between hygiene's check of a field and its write of that field. Both
+# directions are proved, per the macos-brew-smoke.yml template:
+#
+#   * a copy of the script with the guard removed clobbers the deliberate
+#     value (the defect reproduces on demand, so the pass is not luck), and
+#   * the shipped script leaves it alone, while still filling every field of
+#     an issue that really is empty.
+#
+# The one thing CI cannot do here is create a real issue on the live project
+# board while the live workflow runs: agents have no way to drive the owner's
+# board without mutating production state. The stub reproduces the ordering
+# that live race depends on, which is the part that was untestable before.
+
+on:
+  push:
+    paths:
+      - "scripts/agents/ensure_issue_hygiene.sh"
+      - "scripts/agents/lib/gh_project.sh"
+      - ".github/workflows/ensure_project_hygiene.yml"
+      - ".github/workflows/project-hygiene-smoke.yml"
+      - "tests/test_issue_hygiene.sh"
+      - "tests/gh_stub_issue_hygiene.py"
+  pull_request:
+    paths:
+      - "scripts/agents/ensure_issue_hygiene.sh"
+      - "scripts/agents/lib/gh_project.sh"
+      - ".github/workflows/ensure_project_hygiene.yml"
+      - ".github/workflows/project-hygiene-smoke.yml"
+      - "tests/test_issue_hygiene.sh"
+      - "tests/gh_stub_issue_hygiene.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  no-clobber:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # The workflow must actually call the script this suite exercises. If
+      # the logic is ever inlined back into the YAML, everything below still
+      # passes while testing nothing that runs in production.
+      - name: "Wiring: the hygiene job runs the script under test"
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! grep -q 'scripts/agents/ensure_issue_hygiene.sh' \
+               .github/workflows/ensure_project_hygiene.yml; then
+            echo "::error::ensure_project_hygiene.yml no longer calls the tested script (#3816)."
+            exit 1
+          fi
+          echo "OK: the add-to-project job delegates to the tested script."
+
+      - name: "Guard: no unconditional project-field write in the hygiene path"
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Every field write in the hygiene script must go through the
+          # re-read guard. A bare set_project_field_value / set_issue_status
+          # there is the pre-#3816 shape that clobbered #3814.
+          if grep -nE '^[^#]*\b(set_project_field_value|set_issue_status)\b' \
+             scripts/agents/ensure_issue_hygiene.sh; then
+            echo "::error::ensure_issue_hygiene.sh writes a field without the re-read guard (#3816)."
+            exit 1
+          fi
+          echo "OK: all field writes go through fill_project_field_if_empty."
+
+      - name: "Both directions: the race clobbers without the guard, survives with it"
+        shell: bash
+        run: bash tests/test_issue_hygiene.sh

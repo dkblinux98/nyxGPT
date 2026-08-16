@@ -378,7 +378,13 @@ iteration_id_by_title() {
 # -------------------------
 # Project item helpers
 # -------------------------
-ensure_issue_in_project() {
+# Lookup-only: the issue's project item id, or empty output if the issue is
+# not on the board at all. Split out of ensure_issue_in_project (#3816) so a
+# caller can tell "not in the project yet" apart from "in the project with an
+# empty Status" -- reading Status alone collapses those two into the same
+# empty string, and hygiene must not treat a deliberately-unset field on an
+# existing card the way it treats a brand-new card.
+find_issue_project_item() {
   require_cmd jq
   local issue_number="$1"
   local project_id
@@ -418,6 +424,22 @@ ensure_issue_in_project() {
     [[ "$has_next" == "true" && -n "$cursor" ]] || break
     after="$cursor"
   done
+
+  return 0
+}
+
+ensure_issue_in_project() {
+  require_cmd jq
+  local issue_number="$1"
+  local project_id
+  project_id="$(get_project_id)"
+
+  local existing
+  existing="$(find_issue_project_item "$issue_number")"
+  if [[ -n "$existing" ]]; then
+    echo "$existing"
+    return 0
+  fi
 
   local content_id
   content_id="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue_number}" --jq '.node_id')"
@@ -546,6 +568,39 @@ set_project_field_value() {
     }){ projectV2Item { id } }
   }"
   graphql "$q" -F project="$project_id" -F item="$item_id" -F field="$field_id" >/dev/null
+}
+
+# Writes `value` to `field_name` ONLY if the field is empty at the instant of
+# writing (#3816). The read is taken here, immediately before the mutation, so
+# that a value written by somebody else after the caller's own earlier check
+# is still seen and still wins: hygiene's defaults must never land on top of a
+# deliberate write.
+#
+# The window cannot be closed completely -- Projects v2 has no compare-and-set
+# mutation -- but it shrinks from "however long the rest of the job takes"
+# (Milestone's check used to run ~170 lines and several API calls before its
+# write) to a single round trip. Callers that also want to REPORT the existing
+# value read it themselves first; this guard is the one that decides.
+#
+# Exit codes: 0 written, 2 skipped because the field already had a value,
+# non-zero otherwise (a failed write). Call it in an `if` or with `|| rc=$?`
+# -- a bare call under `set -e` would abort the caller on the skip.
+fill_project_field_if_empty() {
+  local item_id="$1" field_name="$2" value="$3"
+
+  local current
+  # A failed read must NOT read as "the field is empty" -- that is the clobber
+  # this guard exists to prevent, arrived at from the other direction.
+  if ! current="$(project_field_value "$item_id" "$field_name")"; then
+    _warn "Could not re-read ${field_name} before writing it — not writing '${value}'"
+    return 1
+  fi
+  if [[ -n "$current" ]]; then
+    _debug "fill_project_field_if_empty: ${field_name} already '${current}' — not writing '${value}'"
+    return 2
+  fi
+
+  set_project_field_value "$item_id" "$field_name" "$value"
 }
 
 set_issue_status() {
