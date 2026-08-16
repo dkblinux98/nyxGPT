@@ -22,9 +22,13 @@ checkpoint costs nothing per run, catches a violation whether or not the agent
 read the principle, and lives in one file.
 """
 
+import json
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -221,6 +225,86 @@ def test_binding_canary_proves_both_halves() -> None:
         "and the fact it checks changes only when the action changes"
     )
     assert "V-028" in text, "the canary must point at the ledger entry it maintains"
+
+
+class TestCanaryAssertion:
+    """Run the canary's verdict step, so the workflow does not ship unexecuted.
+
+    The canary itself costs two model calls and is dispatch-only, so it is not
+    run on every PR. Its *assertion* is the part that decides what a run means,
+    and it is ordinary bash: extracted from the real workflow YAML and executed
+    here against synthetic outputs, exactly as
+    `scripts/agents/lib/escalation_script_probe.py` does for the escalation
+    step (**V-027**). A verdict that cannot fail would turn the canary into a
+    green light that means nothing.
+    """
+
+    STEP_NAME = "Assert both halves"
+    TOKEN = "nyxgpt-1234-1-deadbeefdeadbeef"
+
+    @staticmethod
+    def _assert_step_body() -> str:
+        workflow = yaml.safe_load(CANARY_WORKFLOW.read_text(encoding="utf-8"))
+        steps = workflow["jobs"]["canary"]["steps"]
+        for step in steps:
+            if step.get("name") == TestCanaryAssertion.STEP_NAME:
+                return str(step["run"])
+        raise AssertionError(
+            f"{CANARY_WORKFLOW.name} has no {TestCanaryAssertion.STEP_NAME!r} step; "
+            "this test extracts the real body so a rename cannot silently skip it"
+        )
+
+    def _run(self, tmp_path: Path, expected: str, default: str, control: str):
+        script = tmp_path / "assert.sh"
+        script.write_text(self._assert_step_body(), encoding="utf-8")
+        return subprocess.run(
+            ["bash", str(script)],
+            capture_output=True,
+            text=True,
+            env={
+                "PATH": "/usr/bin:/bin",
+                "EXPECTED": expected,
+                "DEFAULT_OUT": default,
+                "CONTROL_OUT": control,
+            },
+        )
+
+    @staticmethod
+    def _out(canary: str) -> str:
+        return json.dumps({"canary": canary, "instructions_loaded": canary != "NOT-LOADED"})
+
+    @pytest.fixture(autouse=True)
+    def _needs_jq(self) -> None:
+        if shutil.which("jq") is None:  # pragma: no cover - present on CI runners
+            pytest.skip("jq is required to execute the canary's assertion body")
+
+    def test_passes_when_default_loads_and_control_does_not(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, self.TOKEN, self._out(self.TOKEN), self._out("NOT-LOADED"))
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "CLAUDE.md IS loaded" in result.stdout
+
+    def test_fails_when_the_default_run_does_not_return_the_token(self, tmp_path: Path) -> None:
+        """The finding the canary exists to make: V-028 has gone stale."""
+        result = self._run(tmp_path, self.TOKEN, self._out("NOT-LOADED"), self._out("NOT-LOADED"))
+        assert result.returncode != 0
+        assert "NOT loaded" in result.stdout + result.stderr
+
+    def test_fails_when_the_control_run_also_returns_the_token(self, tmp_path: Path) -> None:
+        """Token arriving by some path other than project instructions."""
+        result = self._run(tmp_path, self.TOKEN, self._out(self.TOKEN), self._out(self.TOKEN))
+        assert result.returncode != 0
+        assert "control run returned the token" in result.stdout + result.stderr
+
+    @pytest.mark.parametrize("empty", ["", "null"])
+    def test_fails_when_a_run_produced_no_structured_output(
+        self, tmp_path: Path, empty: str
+    ) -> None:
+        """A model call that died must not read as a verdict."""
+        missing_default = self._run(tmp_path, self.TOKEN, empty, self._out("NOT-LOADED"))
+        assert missing_default.returncode != 0
+
+        missing_control = self._run(tmp_path, self.TOKEN, self._out(self.TOKEN), empty)
+        assert missing_control.returncode != 0
 
 
 def test_ledger_records_the_verification_and_its_qualifications() -> None:
