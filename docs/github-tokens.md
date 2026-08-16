@@ -59,6 +59,23 @@ Configure these in: **Settings → Secrets and variables → Actions → Variabl
 | `STATUS_ACCEPTANCE_FAILED` | `Acceptance Failed` | Drain-gate holding lane (#3730); optional, defaults to the literal name — see `docs/acceptance-drain-gate.md` |
 | `STATUS_CLOSED` | `Closed` | Terminal lane for a merged/closed PR's own project card (#3742); optional, defaults to the literal name — the merge flow, the `pull_request: closed` handler and the daily sweep all stamp it |
 | `DRAIN_GATE_BYPASS_LABELS` | *(empty)* | Comma-separated labels that mark an issue as agent-process work, exempt from the drain gate (#3730); optional |
+| `AGENT_MODEL_DEV` | `claude-opus-5` | Model for the developer agent's implementation and huddle-position runs; optional, defaults to `claude-opus-5` |
+| `AGENT_MODEL_REVIEW` | `claude-fable-5` | Model for the review agent, the `@claude` entry point, huddle mediation and the developer's failure-analysis step; optional, defaults to `claude-fable-5` |
+
+### Switching agent models without a commit
+
+The two `AGENT_MODEL_*` variables exist so a model change is a setting, not a
+code change — when a model is refused (see the ledger's D-010 for the
+monthly-spend-limit signature), flip the variable and the next workflow run
+picks it up:
+
+```bash
+gh variable set AGENT_MODEL_REVIEW --body claude-opus-5 --repo dkblinux98/nyxGPT
+gh variable set AGENT_MODEL_REVIEW --body claude-fable-5 --repo dkblinux98/nyxGPT  # switch back
+```
+
+Unset means the default in the table above, so the workflows keep the intended
+review/dev split with no variables configured at all.
 
 ### Release ceremony secrets (#3730)
 
