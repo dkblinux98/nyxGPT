@@ -56,6 +56,11 @@ COMMAND_TOKENS = (
     "PAUSE_SPRINT",
     "@acceptance-failure",
     "@improvement",
+    # Issued by the developer agent when a merge conflict genuinely needs an
+    # owner-only decision (#3801) -- the single route from a conflict to the
+    # owner. It stops automated work rather than starting it, but it is a
+    # command like any other and gets the same anchored matching.
+    "CONFLICT_REQUIRES_OWNER_DECISION",
 )
 
 _FENCE_RE = re.compile(r"^\s*(```+|~~~+)")

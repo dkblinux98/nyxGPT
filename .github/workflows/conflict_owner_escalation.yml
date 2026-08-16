@@ -1,0 +1,110 @@
+name: Conflict Owner Escalation
+
+# The ONE route from a merge conflict to the human owner (#3801).
+#
+# Conflicts are the developer agent's work by default (owner rule,
+# 2026-08-15: "merge conflicts shouldn't halt progress and shouldn't be
+# escalated to me unless there's truly a decision to be made only I can
+# make"). When the agent finds a conflict it genuinely cannot resolve —
+# two owner-accepted behaviors in semantic contradiction, not "the mainline
+# moved" — it issues `CONFLICT_REQUIRES_OWNER_DECISION` on its own line on
+# the PR, followed by the specific question. This workflow turns that, and
+# only that, into an owner assignment plus a Slack DM carrying the question.
+#
+# The token is matched by the shared anchored gate (#3790/V-011), so a
+# comment that merely NAMES the token — including this pipeline's own
+# guidance text — never escalates anything.
+#
+# NOTE: issue_comment workflows execute from the repository DEFAULT branch.
+
+concurrency:
+  group: conflict-escalation-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  # Layer 1 of the command trigger (#3790): cheap substring test here, the
+  # anchored "does this comment ISSUE the command?" decision in the gate job.
+  comment_gate:
+    if: |
+      github.event.issue.pull_request != null &&
+      contains(github.event.comment.body, 'CONFLICT_REQUIRES_OWNER_DECISION') &&
+      !contains(github.event.comment.body, 'nyxgpt-token-mention') &&
+      (github.event.comment.user.login == vars.DEV_AGENT ||
+       github.event.comment.user.login == vars.REVIEW_AGENT ||
+       github.event.comment.user.login == vars.HUMAN_OWNER)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      proceed: ${{ steps.gate.outputs.proceed }}
+      reason: ${{ steps.gate.outputs.reason }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.RELEASE_BRANCH }}
+
+      - name: Comment token gate
+        id: gate
+        uses: ./.github/actions/comment-token-gate
+        with:
+          token: CONFLICT_REQUIRES_OWNER_DECISION
+          comment-body: ${{ github.event.comment.body }}
+          author-association: ${{ github.event.comment.author_association }}
+
+  escalate:
+    needs: [comment_gate]
+    if: needs.comment_gate.outputs.proceed == 'true'
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      issues: write
+
+    env:
+      GH_TOKEN: ${{ secrets.REVIEW_AGENT_TOKEN }}
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_USER_ID: ${{ secrets.SLACK_USER_ID }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.RELEASE_BRANCH }}
+
+      - name: Write ephemeral config
+        run: |
+          CFG="$RUNNER_TEMP/nyxgpt-config.ini"
+          cat > "$CFG" <<EOF
+          REPO_OWNER=${{ vars.REPO_OWNER }}
+          REPO_NAME=${{ vars.REPO_NAME }}
+          PROJECT_OWNER=${{ vars.PROJECT_OWNER }}
+          PROJECT_NUMBER=${{ vars.PROJECT_NUMBER }}
+
+          DEV_AGENT=${{ vars.DEV_AGENT }}
+          REVIEW_AGENT=${{ vars.REVIEW_AGENT }}
+          SCRUM_AGENT=${{ vars.SCRUM_AGENT }}
+          HUMAN_OWNER=${{ vars.HUMAN_OWNER }}
+
+          STATUS_FIELD=${{ vars.STATUS_FIELD }}
+          STATUS_BACKLOG=${{ vars.STATUS_BACKLOG }}
+          STATUS_IN_PROGRESS=${{ vars.STATUS_IN_PROGRESS }}
+          STATUS_IN_REVIEW=${{ vars.STATUS_IN_REVIEW }}
+          STATUS_FOR_RELEASE=${{ vars.STATUS_FOR_RELEASE }}
+
+          RELEASE_BRANCH=${{ vars.RELEASE_BRANCH }}
+          EOF
+          echo "NYXGPT_CONFIG_FILE=$CFG" >> "$GITHUB_ENV"
+
+      - name: Assign the owner with the stated question
+        env:
+          # Agent-authored comment text: passed via env, never interpolated
+          # into the shell.
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          bash scripts/agents/dispatch_conflict_resolution.sh \
+            "${{ github.event.issue.number }}" --escalate-from-comment

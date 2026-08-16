@@ -48,6 +48,7 @@ TOKEN_TRIGGERS = {
     "notify_scrum_ready.yml": ("READY_FOR_NEXT_ISSUE", "dispatch-next-issue"),
     "handle_acceptance_failure.yml": ("@acceptance-failure", "handle"),
     "handle_improvement.yml": ("@improvement", "handle"),
+    "conflict_owner_escalation.yml": ("CONFLICT_REQUIRES_OWNER_DECISION", "escalate"),
 }
 
 VERIFY_STEP = "Verify issue is In Progress in ProjectV2 (otherwise exit)"

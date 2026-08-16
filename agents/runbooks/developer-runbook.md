@@ -79,6 +79,36 @@ one but a human/EA can perform, with no signal that it's stuck.
   - `feat/<issue-id>-<slug>` or `fix/<issue-id>-<slug>`
 - Base off the current active release branch.
 
+### Never rebase (owner rule 2026-08-08, into the runbook 2026-08-15, #3801)
+
+**Branches in this repository are never rebased.** Not `git rebase`, not
+`git pull --rebase`, not `git rebase -i` to tidy history, not "just a quick
+rebase onto the release branch". When your branch is behind or conflicted,
+you **merge the release branch into your branch**:
+
+```
+git fetch origin
+git merge origin/<release-branch>     # e.g. origin/v3.0.0
+```
+
+Why: a rebase rewrites commits that have already been pushed, reviewed and
+commented on — review threads detach, the PR's own history stops matching
+what the reviewer read, and every conflict is re-resolved once per commit
+instead of once. One merge commit is the correct shape, and the merge commit
+is what the review agent re-reviews.
+
+Also: no force-push and no history rewriting on shared branches, and no
+branch *stacking* (stacking is only ergonomic with rebase). Dependent work is
+sequenced, not stacked.
+
+The owner settled this on 2026-08-08 ("merge, don't rebase") and it was
+recorded only in `product_management/AGENTIC_SDLC_DESIGN.md` — a forward-looking
+design doc, not the runbook an agent actually follows. So agents kept
+proposing rebases and the owner kept correcting them by hand ("I've said over
+and over again not to rebase", 2026-08-15, #3801). It is operating doctrine
+here now: a rebase in a PR is a review finding (review-runbook §3a), and prose
+anywhere in this repo instructing one is a bug.
+
 ## 3) Implement
 - Make smallest coherent change set that satisfies acceptance criteria.
 - Add/extend tests (unit/integration as appropriate).
@@ -200,7 +230,8 @@ these triggers is added or edited — the review-runbook checklist entry for
 | `ensure_project_hygiene.yml` | `issues`(opened), `pull_request`(opened,reopened) | issues/PR write (`SCRUMMASTER_AGENT_TOKEN`) | none besides `event_name` checks | Unchanged — writes only project fields/labels/milestone on the same issue/PR that triggered it; no cross-resource write |
 | `auto-check-tasklist.yml` | `issues`(closed), `repository_dispatch` | issues write | none besides `AGENTS_ENABLED` | Unchanged — only checks a box on a tracking issue that already contains an unchecked `- [ ] #<closed-issue-number>` line placed there by scrummaster automation beforehand; an attacker can close only issues they already have permission to close, and gains no reference in a tracking issue they don't already appear in |
 | `link_revert_pr_to_issue.yml` | `pull_request`(opened) | pull-requests write (`github.token`) | gated on `body` `startsWith('Reverts')` (attacker-controlled string) | Unchanged — re-verified during this audit: every write (`gh pr edit`, the informational comment) targets `github.event.pull_request.number`, i.e. the PR the attacker themselves just opened. Crafting a "Reverts owner/repo#N" body lets an attacker rewrite the body of *their own* PR to include a `Closes #ISSUE` line (extracted read-only from a real PR's linked issue) — this writes no resource the attacker doesn't already control, and any downstream merge/close of that PR is independently gated elsewhere. No actor gate added. |
-| `notify-merge-conflicts.yml` | `pull_request`(opened,synchronize,reopened) | issues write (comment only) | none | Unchanged — notification only, no merge/code-exec |
+| `notify-merge-conflicts.yml` | `pull_request`(opened,synchronize,reopened), `push`(release branches), `workflow_dispatch` | `REVIEW_AGENT_TOKEN` on the `resolve` job: issue/PR comments, issue **Status** writes, developer-agent reassignment (which starts a developer run), owner assignment on the escalation path | none on the trigger; **comment-content gate**: only comments authored by `{DEV_AGENT, REVIEW_AGENT, HUMAN_OWNER}` steer the routing decision | **Rewritten by #3801** — the old row ("notification only, no merge/code-exec", "issues write (comment only)", gate "none") is false for every cell since #3801. Why no trigger actor gate is needed: `push` to a release branch and `workflow_dispatch` both require write access, and the `pull_request` path only *reads* the PR (the job checks out `RELEASE_BRANCH`, never the PR head, so no attacker-authored code executes; fork PRs receive no secrets; workflow-level `GITHUB_TOKEN` is read-only). The real public-actor surface is comment **content**, not the trigger — `dispatch_conflict_resolution.sh` polls the thread, so a stranger's comment could otherwise forge round exhaustion, force an owner escalation carrying their text, or hold a PR in permanent cooldown. That is closed by the author gate in `conflict_resolution.decide()`, which is fail-closed (the CLI refuses to route without a trusted set) |
+| `conflict_owner_escalation.yml` | `issue_comment`(created) | issues write, `REVIEW_AGENT_TOKEN`; assigns the owner + Slack DM | commenter ∈ `{DEV_AGENT, REVIEW_AGENT, HUMAN_OWNER}` on the `comment_gate` job + the shared anchored comment-token gate (#3790/V-011) | Added by #3801 — the single route from a merge conflict to the owner; follows the `handle_acceptance_failure.yml` reference pattern (actor + token tests both on `comment_gate`, whose verdict the privileged job requires) |
 | `delete_branch_on_pr_close.yml` | `pull_request`(closed) | contents write (branch delete) | none, but explicitly skips fork-head PRs + branch allow-pattern + deny-list | Unchanged — already scoped safely by construction |
 | `claude.yml` | `issue_comment`, `pull_request_review_comment`, `issues`(opened,assigned), `pull_request_review` | Bash/Read/Write/Edit, `CLAUDE_CODE_OAUTH_TOKEN`; job-level `GITHUB_TOKEN` is read-only | **none** — any `@claude` mention triggers a full agentic session | **Known gap, out of #3600's scope.** The read-only job token can't push/merge directly, but on a public repo any user can trigger a costly agent session that posts comments under the bot's identity. Flagged for an owner decision (gate to `HUMAN_OWNER`/agent identities, or accept the risk for public Q&A). No fast-follow issue has been filed for this yet — file one before relying on this row as a tracked follow-up. |
 | `admin_label_rename.yml`, `bulk_set_issue_status.yml`, `promote_accepted_features.yml`, `reconcile_closed_backlog_status.yml`, `scrummaster_sprint_report.yml`, `usage_limit_retry.yml`, `terraform-local-smoke.yml`, `validate-web-routes.yml`, `security-scan.yml` | `workflow_dispatch`/`schedule`/path-filtered CI | varies | N/A | No comment/issue-content-driven public-actor path. `security-scan.yml` (#3501, pending owner hand-carry per `docs/security-scanning-ci.md`) has no write permissions block and calls no `gh`/write APIs -- `pull_request`/`push` triggered but out of scope for this table's actor-gate requirement per §3b's "read-only automation is exempt." |
@@ -647,3 +678,50 @@ another fix cycle:
 The existing 3-cycle outer breaker (§8, review-runbook §6) is unchanged —
 the huddle changes what happens *between* cycles 2 and 3, not the limit
 itself.
+
+## 8c) Merge-conflict resolution rounds (owner rule 2026-08-15, #3801)
+
+A PR that goes CONFLICTING because the mainline moved under it is **your**
+work, not the owner's. Owner rule: *"merge conflicts shouldn't halt progress
+and shouldn't be escalated to me unless there's truly a decision to be made
+only I can make."* (Before this, the handler's only move was to assign the
+owner — on 2026-08-15 nine merges landed on the release branch in one
+afternoon, four In Review PRs went stale, and the owner was interrupted
+twice in an hour for conflicts containing no owner judgment at all.)
+
+**How a round reaches you.** Every conflict entry point — the PR events, a
+push landing on the release branch, and the merge script finding a
+conflicted-but-approved PR — routes through
+`scripts/agents/dispatch_conflict_resolution.sh`. It returns the issue to
+**In Progress**, reassigns you, and posts the resolution context on both the
+PR and the issue. The Slack notification still fires: the owner hears about
+the conflict, they are simply not assigned it.
+
+**What you do:**
+
+1. `git fetch origin` and **merge `origin/<release-branch>` into the PR
+   branch. Never rebase** (§2).
+2. Resolve with judgment, not mechanically. Read what each side was trying to
+   do: keep this PR's feature content **and** the behavior the owner has
+   already accepted on the release branch. Neither side is discarded
+   wholesale.
+3. **`agents/LEDGER.md` needs two specific things.** It is a *split* file:
+   some entry IDs are absent by design (relocated to the owner's private
+   annex), so never "restore" a missing ID or renumber to close a gap. And if
+   your entry ID collides with one the mainline allocated while you were in
+   review, **renumber yours** to the next unused number in that class and keep
+   both entries — IDs are never reused.
+4. Re-run the full verification suite (§4) and push the merge commit. That
+   push re-triggers review. A conflict round can be the *whole* job of a run:
+   if the review findings were already fixed and only the conflict remains,
+   resolve, validate, push.
+
+**Escalating (rare).** Only when resolution needs a decision only the owner
+can make — two owner-accepted behaviors in genuine semantic contradiction,
+where either choice silently reverses something they accepted. Then post one
+PR comment whose **first line is exactly** `CONFLICT_REQUIRES_OWNER_DECISION`,
+followed by the specific question: both behaviors, the file and lines, and
+what each choice costs. `conflict_owner_escalation.yml` assigns the owner and
+DMs them that question. Never issue the token to buy time on a fiddly merge;
+"this is hard" is not an owner decision. The only other route to the owner is
+automatic: `CONFLICT_MAX_ROUNDS` (default 3) rounds that fail to converge.
