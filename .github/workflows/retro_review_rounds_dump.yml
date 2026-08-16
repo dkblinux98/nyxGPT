@@ -11,8 +11,9 @@ name: Retro Dashboard - Dump Review Rounds
 #
 # The snapshots do NOT get pushed at the dispatching branch: the default
 # branch's ruleset requires a pull request, and the direct push was rejected
-# with GH013 (#3815). publish_data_branch.sh puts them on claude/retro-data
-# and retro_data_merge.yml lands them through an auto-merged PR.
+# with GH013 (#3815). publish_data_branch.sh puts them on claude/retro-data and
+# merge_data_branch.sh lands them on the default branch through a pull request
+# it opens and merges, so a green run of this workflow means the data landed.
 
 on:
   workflow_dispatch:
@@ -44,3 +45,18 @@ jobs:
             "chore(retro): refresh review-rounds snapshot" \
             scripts/retrospective/data/reviews_final.json \
             scripts/retrospective/data/dashboard_data.json
+
+      - name: Land it on the default branch
+        env:
+          # The publish above pushes with GITHUB_TOKEN, and a GITHUB_TOKEN push
+          # deliberately does NOT trigger other workflows -- so this job lands
+          # the refresh itself rather than relying on retro_data_merge.yml
+          # firing. That also makes a green dump mean the data landed, which
+          # #3815 was precisely the absence of. retro_data_merge.yml still
+          # covers the runbook's manual step 8 (an operator's PAT push does
+          # trigger it); the merge is idempotent either way.
+          GH_TOKEN: ${{ secrets.REVIEW_AGENT_TOKEN || secrets.SCRUMMASTER_AGENT_TOKEN || github.token }}
+          REPO: ${{ github.repository }}
+          BASE_REF: ${{ github.event.repository.default_branch }}
+          DATA_BRANCH: claude/retro-data
+        run: scripts/retrospective/merge_data_branch.sh

@@ -70,6 +70,12 @@ jobs:
               echo "::error file=$wf::does not publish through publish_data_branch.sh (#3815)"
               rc=1
             fi
+            # A GITHUB_TOKEN push triggers no workflow, so a dump that only
+            # publishes would leave its refresh sitting on the data branch.
+            if ! grep -q 'merge_data_branch.sh' "$wf"; then
+              echo "::error file=$wf::publishes but never lands it (#3815)"
+              rc=1
+            fi
           done
           if _code .github/workflows/retro_data_merge.yml | grep -q 'git push'; then
             echo "::error file=.github/workflows/retro_data_merge.yml::still pushes directly at the default branch (#3815)"

@@ -14,17 +14,20 @@ Every dump workflow below publishes its JSON to the **`claude/retro-data`**
 branch (`scripts/retrospective/publish_data_branch.sh`), never straight at the
 branch it was dispatched on: a repository ruleset requires changes to the
 default branch to arrive through a pull request, and a direct push is rejected
-with `GH013 - Changes must be made through a pull request`. Pushing
-`claude/retro-data` triggers `retro_data_merge.yml`, which opens a pull request
-and merges it (`scripts/retrospective/merge_data_branch.sh`) — the
-owner-approved review exception for this tooling (2026-07-31), bounded by the
-guard that refuses any branch touching files outside `scripts/retrospective/`.
+with `GH013 - Changes must be made through a pull request`. The same run then
+opens that pull request and merges it
+(`scripts/retrospective/merge_data_branch.sh`) — the owner-approved review
+exception for this tooling (2026-07-31), bounded by the guard that refuses any
+branch touching files outside `scripts/retrospective/`.
 
 So each "dispatch then `git pull`" step below is really: dispatch → dump →
 `claude/retro-data` → auto-merged pull request → default branch → `git pull`.
-Allow the merge workflow (~1 min) to finish before pulling; if the JSON is not
-there, look at the most recent **Retro Dashboard - Merge Data Branch** run
-rather than re-dispatching the dump.
+**A green dump run therefore means the data landed** — the whole failure of
+#3815 was that it did not. If a `git pull` still shows nothing, read that
+run's "Land it on the default branch" step rather than re-dispatching.
+
+`retro_data_merge.yml` does the same landing for a branch pushed by hand
+(step 8), so the manual path needs no extra step either.
 
 ## Steps
 
@@ -180,7 +183,8 @@ rather than re-dispatching the dump.
      "chore(retro): refresh retrospective data" scripts/retrospective/data/*.json
    ```
 
-   The `retro_data_merge.yml` workflow then opens a pull request from that
+   Pushing the branch with your own credentials triggers the
+   `retro_data_merge.yml` workflow, which opens a pull request from that
    branch and merges it into the default branch immediately (owner-approved
    exception to the review loop for this tooling, 2026-07-31; it goes through a
    pull request because the default branch's ruleset requires one — #3815).

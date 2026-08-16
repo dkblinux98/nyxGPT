@@ -136,6 +136,12 @@ done
 
 # ---- Merge ----
 if ! gh pr merge "$pr" --repo "$REPO" --merge --delete-branch; then
+  # Losing a race with another lander is not a failure — only an unmerged PR is.
+  if [[ "$(gh api "repos/${REPO}/pulls/${pr}" --jq '.merged|tostring')" == "true" ]]; then
+    _log "PR #$pr was merged by another run"
+    echo "merged"
+    exit 0
+  fi
   _die "merging PR #$pr failed — the refresh is still on $DATA_BRANCH, nothing is lost"
 fi
 

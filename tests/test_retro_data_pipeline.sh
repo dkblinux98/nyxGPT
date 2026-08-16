@@ -173,6 +173,12 @@ case "$sub" in
         ) || { echo "merge failed" >&2; rm -rf "$tmp"; exit 1; }
         rm -rf "$tmp"
         echo "true" > "$LAB/gh/merged"
+        if [[ -f "$LAB/gh/merge_loses_race" ]]; then
+          # Another lander got there first: gh reports failure on an already
+          # merged pull request.
+          echo "not mergeable: pull request already merged" >&2
+          exit 1
+        fi
         echo "Merged pull request #$(_pr_number)"
         ;;
       *) echo "unstubbed: gh pr $action" >&2; exit 90 ;;
@@ -315,6 +321,24 @@ OUT="$(cd "$LAB/work" && PATH="$LAB/bin:$PATH" REPO="o/r" BASE_REF="$PROTECTED" 
   DATA_BRANCH="$DATA_BRANCH" POLL_INTERVAL=0 bash "$MERGE" 2>&1; echo "exit=$?")"
 _assert_contains "an already-landed refresh is a no-op" "$OUT" "nothing to merge"
 _assert_contains "the no-op exits cleanly" "$OUT" "exit=0"
+rm -rf "$LAB"
+
+# ==========================================================================
+# 4c. Two landers (the dump's own step and a manual push that triggered
+#     retro_data_merge.yml) must not turn into a failed run: losing the race
+#     is success, because the data landed.
+# ==========================================================================
+LAB="$(_make_lab)"
+_make_gh_stub "$LAB" clean
+touch "$LAB/gh/merge_loses_race"
+_write_dump "$LAB" relationships.json '{"issues": 7}'
+(cd "$LAB/work" && BASE_REF="$PROTECTED" DATA_BRANCH="$DATA_BRANCH" \
+  bash "$PUBLISH" "chore(retro): refresh" scripts/retrospective/data/relationships.json) >/dev/null 2>&1
+OUT="$(cd "$LAB/work" && PATH="$LAB/bin:$PATH" REPO="o/r" BASE_REF="$PROTECTED" \
+  DATA_BRANCH="$DATA_BRANCH" POLL_INTERVAL=0 MERGE_TIMEOUT=30 \
+  bash "$MERGE" 2>&1; echo "exit=$?")"
+_assert_contains "a lost merge race is reported as merged" "$OUT" "merged by another run"
+_assert_contains "a lost merge race exits cleanly" "$OUT" "exit=0"
 rm -rf "$LAB"
 
 # ==========================================================================

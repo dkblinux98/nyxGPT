@@ -6,13 +6,20 @@ name: Retro Dashboard - Merge Data Branch
 # scripts/retrospective/REFRESH_RUNBOOK.md); the merge without human review is
 # the owner-approved exception to the review loop for this tooling
 # (2026-07-31). Guard: refuses if the branch changes anything outside
-# scripts/retrospective/.
+# scripts/retrospective/ — that guard lives in merge_data_branch.sh, which the
+# dump workflows call too, so both entry points are bounded identically.
 #
 # It goes through a pull request because the default branch's ruleset requires
 # one — the previous `git push origin HEAD:$DEFAULT` was rejected with GH013
 # ("Changes must be made through a pull request"), which silently discarded
 # every refresh (#3815). No ruleset bypass is needed: the PR path satisfies
 # the rule by construction.
+#
+# This workflow serves the runbook's manual step 8 (an operator pushes the
+# branch with their own credentials, which does trigger it). The dump
+# workflows do NOT rely on it: they push with GITHUB_TOKEN, which by design
+# triggers no workflow, and call merge_data_branch.sh themselves. The script
+# is idempotent — a second lander finds nothing to merge.
 
 on:
   push:
