@@ -725,6 +725,32 @@ are absent here by design (relocated to the annex; IDs are never reused).
   signature can actually produce — there is a test for that), or the phase
   list before `bootstrap` changes.
 
+- **V-023** · 2026-08-16 — A repository ruleset on the release/default branch
+  requires changes to arrive **through a pull request**: a direct
+  `git push` at that ref from an Actions job is rejected with
+  `GH013 ... - Changes must be made through a pull request`, and the job's
+  own commit step reports success right up to the rejected push. This is why
+  every retro dump had been silently discarded since it was written —
+  `relationships.json` had never existed on the branch at all (`create mode
+  100644` in a run that "succeeded"). Merging a pull request is **not**
+  blocked: the review agent merges into the release branch with an agent PAT
+  on every issue, so no ruleset bypass is needed to land automated data —
+  only a PR. Generalisation for any future automation that writes to the
+  release branch: **push to a side branch, land it through a PR**; and a
+  green workflow run is not evidence its output landed — read the ref.
+  Method: run 31941019009 (`Retro Dashboard - Dump Relationships`) rejected
+  at the push with that exact GH013 text; the fix is reproduced on a runner
+  by `tests/test_retro_data_pipeline.sh`, whose lab remote enforces the same
+  rule in a `pre-receive` hook and proves the old push fails there and the
+  new publish/merge path lands the JSON (standing job:
+  `.github/workflows/retro-data-pipeline-smoke.yml`). The ruleset's own
+  configuration is owner-readable only and was **not** read — the fact is
+  established from the server's rejection, which is weaker than reading the
+  rule but is the behaviour that matters.
+  Re-verify when: the owner changes the branch ruleset, or an automated PR
+  merge into the release branch is refused.
+  Source: #3815.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
