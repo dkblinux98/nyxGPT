@@ -161,6 +161,22 @@ def _isolate_test_log_dir(tmp_path_factory, _ensure_test_config):
         redirected_cfg.add_section("logging")
     redirected_cfg.set("logging", "dir", str(tmp_log_dir))
 
+    # Force tracing off for the session, for the same reason and by the same
+    # mechanism. `_ensure_test_config` above already keeps it off -- but only
+    # in the minimal config it writes when ~/.nyxGPT/config.ini is *absent*.
+    # On a machine (or a CI runner) where an install has already produced a
+    # real config, that file wins and carries `[tracing] enabled = true` (the
+    # 2026-07-28 production default), so the OTel SDK initializes for real and
+    # tests that assert the safe default invert: `X-Request-Id` becomes a
+    # 32-char trace id instead of a 36-char UUID, and `/api/v1/tracing`
+    # reports enabled. Rewriting the section here covers both cases, and the
+    # opt-in tests are unaffected -- they enable tracing by monkeypatching
+    # `tracing._enabled` or by passing their own ConfigParser, never through
+    # this file.
+    if not redirected_cfg.has_section("tracing"):
+        redirected_cfg.add_section("tracing")
+    redirected_cfg.set("tracing", "enabled", "false")
+
     # Persist the pre-redirect content as a recovery backup *before*
     # overwriting config.ini, so a hard-killed process leaves behind
     # something the next session can recover from.

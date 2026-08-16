@@ -89,8 +89,21 @@ def test_request_id_filter_preserves_existing_request_id():
     assert record.request_id == existing_id
 
 
-def test_api_response_includes_request_id_header():
-    """API responses should include X-Request-Id header."""
+def test_api_response_includes_request_id_header(monkeypatch):
+    """API responses should include X-Request-Id header.
+
+    The precondition is stated rather than assumed: with no client-supplied
+    header the middleware prefers the active trace id and only falls back to
+    a UUID4 when there is none (#3430). `app` is instrumented at import
+    unconditionally, and OTel's ProxyTracer caches the real tracer for the
+    life of the process the first time any test installs an SDK
+    TracerProvider globally -- after which this endpoint legitimately answers
+    with a 32-char trace id, and the assertion below would fail on test
+    ordering alone. Pinning `current_trace_id` to None keeps this test about
+    the fallback it is actually asserting."""
+    import nyxgpt.app as app_module
+
+    monkeypatch.setattr(app_module, "current_trace_id", lambda: None)
     client = TestClient(app)
 
     # Make request without providing request ID

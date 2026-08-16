@@ -762,6 +762,31 @@ are absent here by design (relocated to the annex; IDs are never reused).
   injection thresholds are expressed in stub reads), or a field is added to
   the job.
 
+- **V-025** · 2026-08-16 — The pytest suite was **not hermetic against an
+  installed `~/.nyxGPT/config.ini`**. `_ensure_test_config` wrote its
+  tracing-off config only when that file was *absent*, so on any machine (or
+  CI job) where an install ran first, the suite inherited the production
+  default `[tracing] enabled = true` (2026-07-28) and initialized the OTel SDK
+  for real: `/api/v1/tracing` reported enabled and `X-Request-Id` became a
+  32-char trace id instead of a 36-char UUID4. A second, independent leak sat
+  behind it — OTel's global TracerProvider is set-once *and* its `ProxyTracer`
+  caches the resolved tracer for the life of the process, so the SDK provider
+  one tracing test installs can never be fully handed back, and any later test
+  needing "no active trace" must pin `current_trace_id` itself rather than
+  rely on ordering. This is why five failures unrelated to #3816's change
+  appeared in its verification run.
+  Method: on 2026-08-16, `pytest tests/unit/test_tracing.py
+  tests/unit/test_request_id.py` on an **unmodified** checkout of `v3.0.0`
+  reproduced the failures, while `pytest tests/unit/test_request_id.py` alone
+  passed — isolating them to config leakage plus test order, not to any code
+  change. Fixed by forcing the section off in `_isolate_test_log_dir`'s
+  existing session-scoped config rewrite (which already has the crash-safe
+  backup/restore).
+  Standing guard: `test_session_config_keeps_tracing_disabled` fails at the
+  cause instead of at the four downstream symptoms.
+  Re-verify when: the tracing production default changes, or `conftest.py`'s
+  config-rewrite fixtures are restructured.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
