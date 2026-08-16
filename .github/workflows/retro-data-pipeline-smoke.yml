@@ -106,8 +106,10 @@ jobs:
               rc=1
               continue
             fi
-            merger="$(grep -m1 -o 'GH_TOKEN: \${{ secrets\.[A-Z_]*' "$wf" | sed 's/.*secrets\.//')"
-            approver="$(grep -m1 -o 'APPROVE_TOKEN: \${{ secrets\.[A-Z_]*' "$wf" | sed 's/.*secrets\.//')"
+            # No literal dollar-brace-brace in this run block: Actions parses
+            # it as an expression and the workflow fails to start.
+            merger="$(grep -m1 -o 'GH_TOKEN:.*secrets\.[A-Z_]*' "$wf" | sed 's/.*secrets\.//')"
+            approver="$(grep -m1 -o 'APPROVE_TOKEN:.*secrets\.[A-Z_]*' "$wf" | sed 's/.*secrets\.//')"
             if [[ -z "$approver" || "$merger" == "$approver" ]]; then
               echo "::error file=$wf::APPROVE_TOKEN ('$approver') must be a different identity from GH_TOKEN ('$merger') — GitHub refuses self-approval (#3815)"
               rc=1
