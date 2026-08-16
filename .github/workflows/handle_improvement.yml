@@ -228,13 +228,17 @@ jobs:
 
       - name: Post acknowledgement comment
         uses: actions/github-script@v7
+        env:
+          ISSUE: ${{ steps.handle.outputs.issue }}
+          FEATURE: ${{ steps.handle.outputs.feature }}
+          GATED: ${{ steps.handle.outputs.gated }}
         with:
           github-token: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
           script: |
-            const commented = ${{ github.event.issue.number }};
-            const issue = Number('${{ steps.handle.outputs.issue }}');
-            const feature = '${{ steps.handle.outputs.feature }}';
-            const gated = '${{ steps.handle.outputs.gated }}' === '1';
+            const commented = context.payload.issue.number;
+            const issue = Number(process.env.ISSUE);
+            const feature = process.env.FEATURE;
+            const gated = process.env.GATED === '1';
             const repoUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}`;
 
             const startLine = gated

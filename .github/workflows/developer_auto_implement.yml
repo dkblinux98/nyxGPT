@@ -208,6 +208,8 @@ jobs:
         if: github.event_name == 'issue_comment'
         id: verify_assignment
         uses: actions/github-script@v7
+        env:
+          DEV_AGENT: ${{ vars.DEV_AGENT }}
         with:
           github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           script: |
@@ -216,7 +218,7 @@ jobs:
               repo: context.repo.repo,
               issue_number: context.payload.issue.number
             });
-            const devAgent = '${{ vars.DEV_AGENT }}';
+            const devAgent = process.env.DEV_AGENT;
             const isAssigned = issue.data.assignees.some(a => a.login === devAgent);
             // #3689: this is a policy gate, not an infra/implementation
             // failure -- gate_stopped lets the Phase 0 self-heal entry
@@ -238,13 +240,17 @@ jobs:
 
       - name: Post workflow start comment
         uses: actions/github-script@v7
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
         with:
           github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           script: |
             const issue_number = context.payload.issue.number;
-            const isRetry = '${{ github.event_name }}' === 'issue_comment';
-            const repo = '${{ github.repository }}';
-            const runId = '${{ github.run_id }}';
+            const isRetry = process.env.EVENT_NAME === 'issue_comment';
+            const repo = process.env.REPO;
+            const runId = process.env.RUN_ID;
             const message = isRetry
               ? `🔄 **Developer Agent**: Retry requested. Restarting implementation...\n\n` +
                 `Verifying issue status...\n\n[View workflow run](https://github.com/${repo}/actions/runs/${runId})`
@@ -475,11 +481,13 @@ jobs:
       - name: Post acceptance failure start comment
         if: steps.acceptance_failure.conclusion == 'success'
         uses: actions/github-script@v7
+        env:
+          EXISTING_PR: ${{ steps.check_pr.outputs.existing_pr }}
         with:
           github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           script: |
             const issue_number = context.payload.issue.number;
-            const merged_pr = '${{ steps.check_pr.outputs.existing_pr }}';
+            const merged_pr = process.env.EXISTING_PR;
             const repoUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}`;
             await github.rest.issues.createComment({
               owner: context.repo.owner,
@@ -612,11 +620,13 @@ jobs:
       - name: Post review fix start comment (if review issues found)
         if: steps.check_pr.outputs.pr_exists == 'true' && steps.check_review.outputs.has_review_issues == 'true'
         uses: actions/github-script@v7
+        env:
+          EXISTING_PR: ${{ steps.check_pr.outputs.existing_pr }}
         with:
           github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           script: |
             const issue_number = context.payload.issue.number;
-            const pr_number = '${{ steps.check_pr.outputs.existing_pr }}';
+            const pr_number = process.env.EXISTING_PR;
             const repoUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}`;
             await github.rest.issues.createComment({
               owner: context.repo.owner,
@@ -638,11 +648,13 @@ jobs:
           steps.check_pr.outputs.pr_state == 'OPEN' &&
           steps.check_review.outputs.has_review_issues == 'false'
         uses: actions/github-script@v7
+        env:
+          EXISTING_PR: ${{ steps.check_pr.outputs.existing_pr }}
         with:
           github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           script: |
             const issue_number = context.payload.issue.number;
-            const pr_number = '${{ steps.check_pr.outputs.existing_pr }}';
+            const pr_number = process.env.EXISTING_PR;
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -1095,13 +1107,17 @@ jobs:
 
       - name: Post implementation complete comment
         uses: actions/github-script@v7
+        env:
+          PROGRESS_COMPLETE: ${{ steps.check_progress.outputs.progress_complete }}
+          PROGRESS_DONE: ${{ steps.check_progress.outputs.progress_done }}
+          PROGRESS_TOTAL: ${{ steps.check_progress.outputs.progress_total }}
         with:
           github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           script: |
             const issue_number = context.payload.issue.number;
-            const progressComplete = '${{ steps.check_progress.outputs.progress_complete }}';
-            const progressDone = '${{ steps.check_progress.outputs.progress_done }}';
-            const progressTotal = '${{ steps.check_progress.outputs.progress_total }}';
+            const progressComplete = process.env.PROGRESS_COMPLETE;
+            const progressDone = process.env.PROGRESS_DONE;
+            const progressTotal = process.env.PROGRESS_TOTAL;
             const progressSuffix = progressTotal
               ? ` (${progressDone}/${progressTotal} tasks completed)`
               : '';
@@ -1473,17 +1489,23 @@ jobs:
           steps.verify_assignment.outputs.gate_stopped != 'true' &&
           steps.verify_status.outputs.gate_stopped != 'true'
         uses: actions/github-script@v7
+        env:
+          SNAPSHOT_CONCLUSION: ${{ steps.snapshot.conclusion }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
         with:
           github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           script: |
             const issue_number = context.payload.issue.number;
-            const snapshotFailed = '${{ steps.snapshot.conclusion }}' === 'failure';
+            const snapshotFailed = process.env.SNAPSHOT_CONCLUSION === 'failure';
+            const runUrl =
+              `https://github.com/${process.env.REPO}/actions/runs/${process.env.RUN_ID}`;
             const body = snapshotFailed
               ? `❌ **Developer Agent**: Snapshot size guard tripped
 
             The "Snapshot uncommitted implementation work" step found an uncommitted
             delta too large to be a plausible agent-authored change (see the
-            [workflow logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            [workflow logs](${runUrl})
             for the offending paths) and refused to commit it. Verification never ran.
 
             Any work already committed before this step was still pushed to the branch.
@@ -1508,7 +1530,7 @@ jobs:
             - Attempt 3: Agent attempted more fixes, verification STILL failed
 
             **Next steps:**
-            1. Review the [workflow logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            1. Review the [workflow logs](${runUrl})
                to see what's failing
             2. Check the commit history on the branch to see what the agent tried
             3. Manual debugging may be required - the agent may not have enough context
@@ -1563,11 +1585,13 @@ jobs:
           steps.check_review.outputs.has_review_issues == 'false' &&
           success()
         uses: actions/github-script@v7
+        env:
+          EXISTING_PR: ${{ steps.check_pr.outputs.existing_pr }}
         with:
           github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           script: |
             const issue_number = context.payload.issue.number;
-            const pr_number = '${{ steps.check_pr.outputs.existing_pr }}';
+            const pr_number = process.env.EXISTING_PR;
             const repoUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}`;
             const body = `✅ **Developer Agent**: Verification passed ` +
               `for existing PR #${pr_number}\n\n` +
@@ -1672,13 +1696,17 @@ jobs:
       - name: Post PR created comment
         if: steps.pr.conclusion == 'success' && steps.pr.outputs.pr_number != ''
         uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
+          REVIEW_AGENT: ${{ vars.REVIEW_AGENT }}
+          PR_STATE: ${{ steps.check_pr.outputs.pr_state }}
         with:
           github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           script: |
             const issue_number = context.payload.issue.number;
-            const pr_number = '${{ steps.pr.outputs.pr_number }}';
-            const review_agent = '${{ vars.REVIEW_AGENT }}';
-            const is_acceptance = '${{ steps.check_pr.outputs.pr_state }}' === 'MERGED';
+            const pr_number = process.env.PR_NUMBER;
+            const review_agent = process.env.REVIEW_AGENT;
+            const is_acceptance = process.env.PR_STATE === 'MERGED';
             const prefix = is_acceptance
               ? '🔧 **Developer Agent**: Acceptance failure fix complete!'
               : '🎉 **Developer Agent**: Implementation complete!';
@@ -2269,15 +2297,23 @@ jobs:
         if: failure() && steps.claude_result.outputs.status == 'FIXED_REQUIRES_MERGE'
         id: escalate_requires_merge
         uses: actions/github-script@v7
+        # #3820: every value below is read from the environment, never
+        # interpolated into this script body. `recommendation` in particular
+        # is free-form Claude prose -- as source text a single apostrophe
+        # breaks the script, and worse parses as code under this token.
+        env:
+          COMMIT_SHA: ${{ steps.claude_result.outputs.commit_sha }}
+          RECOMMENDATION: ${{ steps.claude_result.outputs.recommendation }}
+          HUMAN_OWNER: ${{ vars.HUMAN_OWNER }}
         with:
           github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           script: |
             const issue_number = context.payload.issue.number;
             const repo = context.repo.owner + '/' + context.repo.repo;
             const runId = context.runId;
-            const commitSha = '${{ steps.claude_result.outputs.commit_sha }}';
-            const recommendation = '${{ steps.claude_result.outputs.recommendation }}';
-            const humanOwner = '${{ vars.HUMAN_OWNER }}';
+            const commitSha = process.env.COMMIT_SHA || '';
+            const recommendation = process.env.RECOMMENDATION || '';
+            const humanOwner = process.env.HUMAN_OWNER || '';
 
             await github.rest.issues.createComment({
               owner: context.repo.owner,
@@ -2321,12 +2357,15 @@ jobs:
             steps.claude_result.outputs.status == 'FIXED'
           )
         uses: actions/github-script@v7
+        env:
+          PHASE2_ACTION: ${{ steps.intelligent_fix.outputs.action }}
+          PHASE3_ACTION: ${{ steps.claude_result.outputs.action }}
         with:
           github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           script: |
             const issue_number = context.payload.issue.number;
-            const phase2Action = '${{ steps.intelligent_fix.outputs.action }}';
-            const phase3Action = '${{ steps.claude_result.outputs.action }}';
+            const phase2Action = process.env.PHASE2_ACTION || '';
+            const phase3Action = process.env.PHASE3_ACTION || '';
             const action = phase3Action || phase2Action;
             const phase = phase3Action ? 'Phase 3 (Claude reasoning)' : 'Phase 2 (Script analysis)';
             const repo = context.repo.owner + '/' + context.repo.repo;
@@ -2463,16 +2502,28 @@ jobs:
           )
         id: escalate_fatal
         uses: actions/github-script@v7
+        # #3820: this step is the pipeline's own failure alarm, and it used
+        # to interpolate these outputs into the script body. `diagnosis` is
+        # free-form prose about a failure, so an apostrophe -- the norm, not
+        # an edge case -- terminated the JS string literal and the step died
+        # with `SyntaxError: Unexpected identifier` before reporting
+        # anything (run 31959968196). Read from the environment: there the
+        # text is data, never source, whatever it contains.
+        env:
+          ERROR_CLASS: ${{ steps.classify_error.outputs.error_class }}
+          PHASE2_STATUS: ${{ steps.intelligent_fix.outputs.fix_status }}
+          PHASE3_STATUS: ${{ steps.claude_result.outputs.status }}
+          PHASE3_DIAGNOSIS: ${{ steps.claude_result.outputs.diagnosis }}
         with:
           github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           script: |
             const issue_number = context.payload.issue.number;
             const repo = context.repo.owner + '/' + context.repo.repo;
             const runId = context.runId;
-            const errorClass = '${{ steps.classify_error.outputs.error_class }}';
-            const phase2Status = '${{ steps.intelligent_fix.outputs.fix_status }}';
-            const phase3Status = '${{ steps.claude_result.outputs.status }}';
-            const phase3Diagnosis = '${{ steps.claude_result.outputs.diagnosis }}';
+            const errorClass = process.env.ERROR_CLASS || '';
+            const phase2Status = process.env.PHASE2_STATUS || '';
+            const phase3Status = process.env.PHASE3_STATUS || '';
+            const phase3Diagnosis = process.env.PHASE3_DIAGNOSIS || '';
 
             // Read diagnosis from Phase 2 if available
             const fs = require('fs');

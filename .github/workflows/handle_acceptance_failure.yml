@@ -322,13 +322,13 @@ jobs:
         with:
           github-token: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
           script: |
-            const commented = ${{ github.event.issue.number }};
-            const mode = '${{ steps.handle.outputs.mode }}';
-            const issue = Number('${{ steps.handle.outputs.issue }}');
-            const feature = '${{ steps.handle.outputs.feature }}';
-            const num = '${{ steps.handle.outputs.num }}';
+            const commented = context.payload.issue.number;
+            const mode = process.env.MODE;
+            const issue = Number(process.env.ISSUE);
+            const feature = process.env.FEATURE;
+            const num = process.env.NUM;
             const dev_agent = process.env.DEV_AGENT;
-            const gated = '${{ steps.handle.outputs.gated }}' === '1';
+            const gated = process.env.GATED === '1';
             const repoUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}`;
 
             // Drain gate (#3730): a gated failure waits in Acceptance
@@ -376,3 +376,8 @@ jobs:
             });
         env:
           DEV_AGENT: ${{ vars.DEV_AGENT }}
+          MODE: ${{ steps.handle.outputs.mode }}
+          ISSUE: ${{ steps.handle.outputs.issue }}
+          FEATURE: ${{ steps.handle.outputs.feature }}
+          NUM: ${{ steps.handle.outputs.num }}
+          GATED: ${{ steps.handle.outputs.gated }}

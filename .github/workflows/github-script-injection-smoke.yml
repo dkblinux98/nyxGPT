@@ -1,0 +1,154 @@
+name: GitHub-Script Injection Smoke
+
+# Which question does this job answer? (#3775 executed verification)
+#
+#   "When the developer agent escalates a fatal error whose diagnosis
+#    contains an apostrophe, does the escalation step actually run and post
+#    the diagnosis intact -- and did the construct it replaced actually
+#    fail?"
+#
+# The defect (#3820, run 31959968196): the escalation step built its
+# JavaScript by interpolating the Phase 3 `diagnosis` output into a
+# single-quoted JS literal. Expression substitution happens before the script
+# is parsed, so an apostrophe in the prose terminated the literal and the
+# step died with `SyntaxError: Unexpected identifier 'issues'` -- the
+# pipeline's own failure alarm crashed before reporting anything. It is also
+# an injection surface: the step carries DEVELOPER_AGENT_TOKEN, and generated
+# text can quote issue/PR content an outside contributor influences.
+#
+# Unit tests cannot see this. Expression substitution is a property of the
+# Actions runner, and the failure lives in the *script body inside the YAML*
+# -- text no Python import ever executes. This job extracts that body from
+# the workflow file and runs it under Node on a runner.
+#
+# Both halves are proved, per the macos-brew-smoke.yml fault-injection
+# template. A diagnosis with no quote character passes either way, which is
+# exactly why this shipped:
+#
+#   1. FAULT INJECTED -- the pre-fix form (env reads rewritten back into
+#      interpolated literals) must still die with a SyntaxError.
+#   2. FIXED -- the current form must escalate, with every hostile character
+#      (apostrophe, double quote, backtick, dollar-brace, newline,
+#      backslash) present verbatim in the posted comment body.
+#
+# The second job fails if any `script:` body anywhere in .github/workflows/
+# regrows an expression interpolation.
+
+on:
+  push:
+    paths:
+      - ".github/workflows/**"
+      - "scripts/agents/lib/workflow_script_guard.py"
+      - "scripts/agents/lib/escalation_script_probe.py"
+      - "tests/unit/test_workflow_script_injection.py"
+  pull_request:
+    paths:
+      - ".github/workflows/**"
+      - "scripts/agents/lib/workflow_script_guard.py"
+      - "scripts/agents/lib/escalation_script_probe.py"
+      - "tests/unit/test_workflow_script_injection.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  escalation-survives-quotes:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyYAML
+        run: python -m pip install --quiet pyyaml
+
+      # --- fault injection + fix, both halves, on the real script body ----
+      - name: Escalation script probe (pre-fix must fail, current must escalate)
+        run: python scripts/agents/lib/escalation_script_probe.py
+
+      # --- the same values arriving through a real Actions env: hand-off --
+      #
+      # The probe sets the environment itself. These two steps prove the
+      # other half of the contract, in the real shape: a step output holding
+      # hostile prose, carried into a github-script step through `env:`. If
+      # the runner ever mangled or re-interpreted that text, the fix would be
+      # unsound and the probe alone would not notice.
+      - name: Emit a hostile diagnosis as a step output
+        id: payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          VAL='it'"'"'s the branch'"'"'s fault: "x" `y` \ ${injected}'
+          printf 'diagnosis=%s\n' "$VAL" >> "$GITHUB_OUTPUT"
+          printf 'Payload: %s\n' "$VAL"
+
+      - name: Hostile text survives the env hand-off intact
+        uses: actions/github-script@v7
+        env:
+          PHASE3_DIAGNOSIS: ${{ steps.payload.outputs.diagnosis }}
+        with:
+          script: |
+            const diagnosis = process.env.PHASE3_DIAGNOSIS || '';
+            const expected = 'it\'s the branch\'s fault: "x" `y` \\ ${injected}';
+            if (diagnosis !== expected) {
+              core.setFailed(
+                'env hand-off altered the text.\n' +
+                'expected: ' + expected + '\n' +
+                'actual:   ' + diagnosis
+              );
+            } else {
+              core.notice('Hostile diagnosis reached process.env intact.');
+            }
+
+  no-interpolation-in-script-bodies:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyYAML
+        run: python -m pip install --quiet pyyaml
+
+      - name: No expression interpolated into any github-script body
+        run: python scripts/agents/lib/workflow_script_guard.py
+
+      # A guard that cannot fail is not a guard: plant the #3820 construct
+      # and require the scanner to reject it. The opening delimiter is
+      # assembled from a variable so this workflow does not contain the
+      # literal construct (the runner would substitute it away before bash
+      # ever saw it).
+      - name: Guard rejects a planted violation
+        shell: bash
+        run: |
+          set -euo pipefail
+          TMP="$(mktemp -d)"
+          D='$'
+          {
+            echo "name: planted"
+            echo "on: push"
+            echo "jobs:"
+            echo "  planted:"
+            echo "    runs-on: ubuntu-latest"
+            echo "    steps:"
+            echo "      - name: Planted step"
+            echo "        uses: actions/github-script@v7"
+            echo "        with:"
+            echo "          script: |"
+            echo "            const d = '${D}{{ steps.x.outputs.diagnosis }}';"
+          } > "$TMP/planted.yml"
+          cat "$TMP/planted.yml"
+          if python scripts/agents/lib/workflow_script_guard.py "$TMP/planted.yml"; then
+            echo "::error::guard accepted a planted expression interpolation"
+            exit 1
+          fi
+          echo "Guard correctly rejected the planted violation."
