@@ -4828,17 +4828,6 @@
   "state": "closed"
  },
  {
-  "n": 3634,
-  "title": "bug: ingest_document bootstrap ordering breaks first ingest on fresh Cassandra",
-  "labels": [
-   "Acceptance Failure"
-  ],
-  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
-  "created": "2026-08-05T03:02:46Z",
-  "closed": "2026-08-09T03:59:01Z",
-  "state": "closed"
- },
- {
   "n": 3633,
   "title": "bug: api_base_url fixture skip fix stranded on unmerged branch; 110 CI fails",
   "labels": [
@@ -4847,6 +4836,17 @@
   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
   "created": "2026-08-05T03:02:46Z",
   "closed": "2026-08-09T03:51:26Z",
+  "state": "closed"
+ },
+ {
+  "n": 3634,
+  "title": "bug: ingest_document bootstrap ordering breaks first ingest on fresh Cassandra",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-05T03:02:46Z",
+  "closed": "2026-08-09T03:59:01Z",
   "state": "closed"
  },
  {
@@ -5653,17 +5653,6 @@
   "state": "open"
  },
  {
-  "n": 3810,
-  "title": "support: Docs are a mess",
-  "labels": [
-   "Support"
-  ],
-  "milestone": null,
-  "created": "2026-08-16T04:28:40Z",
-  "closed": null,
-  "state": "open"
- },
- {
   "n": 3811,
   "title": "bug: Support tickets file unlabeled and leak into the agent loop",
   "labels": [
@@ -5706,5 +5695,203 @@
   "created": "2026-08-16T05:43:52Z",
   "closed": null,
   "state": "open"
+ },
+ {
+  "n": 3815,
+  "title": "bug: retrospective dump workflows cannot push \u2014 v3.0.0 ruleset requires pull requests",
+  "labels": [
+   "Feature"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-16T10:17:46Z",
+  "state": "closed",
+  "closed": "2026-08-16T16:45:31Z"
+ },
+ {
+  "n": 3816,
+  "title": "bug: project hygiene overwrites already-populated fields \u2014 must never clobber on first run",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-16T15:52:54Z",
+  "state": "closed",
+  "closed": "2026-08-16T17:45:46Z"
+ },
+ {
+  "n": 3820,
+  "title": "bug: dev agent fatal-error escalation crashes on quotes \u2014 script injection into github-script",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-16T17:27:15Z",
+  "state": "closed",
+  "closed": "2026-08-16T19:06:21Z"
+ },
+ {
+  "n": 3821,
+  "title": "feat: make the agentic first principles binding at runtime \u2014 one source, enforced at review",
+  "labels": [
+   "Feature"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-16T17:28:07Z",
+  "state": "closed",
+  "closed": "2026-08-16T20:02:59Z"
+ },
+ {
+  "n": 3824,
+  "title": "feat: first chat works on every run mode without a manual model pull",
+  "labels": [
+   "Feature"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-17T04:13:04Z",
+  "state": "open",
+  "closed": null
+ },
+ {
+  "n": 3825,
+  "title": "bug: k8s local install oversubscribes the kind node - prometheus cannot schedule",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-17T04:57:02Z",
+  "state": "open",
+  "closed": null
+ },
+ {
+  "n": 3826,
+  "title": "bug: k8s local smoke skips observability, leaving the default path untested",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-17T04:58:49Z",
+  "state": "open",
+  "closed": null
+ },
+ {
+  "n": 3827,
+  "title": "bug: k8s install reports FAIL for pods that are merely Pending",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-17T04:59:19Z",
+  "state": "open",
+  "closed": null
+ },
+ {
+  "n": 3828,
+  "title": "bug: self-heal reports nothing running in k8s mode, watches api tier only",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-17T04:59:49Z",
+  "state": "open",
+  "closed": null
+ },
+ {
+  "n": 3829,
+  "title": "bug: canary evaluate gates on the serving pod's metrics, not canary track",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-17T05:00:23Z",
+  "state": "open",
+  "closed": null
+ },
+ {
+  "n": 3830,
+  "title": "bug: canary evaluate gates on the serving pod's metrics, not canary track",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-17T05:01:00Z",
+  "state": "closed",
+  "closed": "2026-08-17T05:05:41Z"
+ },
+ {
+  "n": 3831,
+  "title": "bug: canary dashboard renders errors as [object Object]",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-17T05:01:32Z",
+  "state": "open",
+  "closed": null
+ },
+ {
+  "n": 3832,
+  "title": "bug: self-heal infinitely deletes unschedulable Pods",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-17T05:02:05Z",
+  "state": "open",
+  "closed": null
+ },
+ {
+  "n": 3833,
+  "title": "feat: canary must not require a standing inflated replica pool",
+  "labels": [
+   "Improvement"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-17T05:02:44Z",
+  "state": "open",
+  "closed": null
+ },
+ {
+  "n": 3834,
+  "title": "feat: dev mode and artifact path for the Kubernetes install mode",
+  "labels": [
+   "Improvement"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-17T05:03:14Z",
+  "state": "open",
+  "closed": null
+ },
+ {
+  "n": 3835,
+  "title": "feat: dev mode and artifact path for the Terraform install mode",
+  "labels": [
+   "Improvement"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-17T05:03:50Z",
+  "state": "open",
+  "closed": null
+ },
+ {
+  "n": 3836,
+  "title": "fix: remove create_issue.sh --blocks, the retired prose relationship path",
+  "labels": [
+   "Improvement"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-17T05:07:00Z",
+  "state": "open",
+  "closed": null
+ },
+ {
+  "n": 3837,
+  "title": "fix: close 8 open CodeQL alerts and gate code scanning in review",
+  "labels": [
+   "Acceptance Failure"
+  ],
+  "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+  "created": "2026-08-17T05:31:07Z",
+  "state": "open",
+  "closed": null
  }
 ]
