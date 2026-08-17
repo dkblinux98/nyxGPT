@@ -64,7 +64,7 @@ from pathlib import Path
 
 HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE))
-from dump_spend import gh, issue_of, iter_json_objects  # noqa: E402
+from dump_spend import gh, gh_optional, issue_of, iter_json_objects  # noqa: E402
 
 DATA_DIR = HERE / "data"
 DEFAULT_WINDOW_DAYS = 30
@@ -195,7 +195,14 @@ def list_runs(repo, workflow_file):
 
 
 def list_jobs(repo, run_id):
-    out = gh(
+    """Jobs for one run; [] when the call fails.
+
+    Per-run call inside a walk over thousands of runs, so it degrades rather
+    than aborting -- a transient failure here threw away a whole churn dump
+    (run 32010934175, on an endpoint that returned 200 on retry). See
+    dump_spend.gh_optional.
+    """
+    out = gh_optional(
         "api",
         "-X",
         "GET",
@@ -203,7 +210,10 @@ def list_jobs(repo, run_id):
         "--paginate",
         "-f",
         "per_page=100",
+        what="churn_jobs",
     )
+    if out is None:
+        return []
     jobs = []
     for page in iter_json_objects(out):
         jobs.extend(page.get("jobs", []))

@@ -160,10 +160,38 @@ def list_runs(repo, workflow_file, since=None):
     return runs
 
 
-# Per-run API calls that failed and were counted as zero. Surfaced in the
+# Per-item API calls that failed and were counted as zero. Surfaced in the
 # snapshot rather than swallowed: a dump that quietly under-reports is the
 # failure mode this whole issue is about.
 DEGRADED = {"timing": 0, "claude_steps": 0}
+
+
+def gh_optional(*args, what="call"):
+    """`gh` that records the miss and returns None instead of raising.
+
+    Any call made once per item inside a walk over thousands of runs must go
+    through this. `gh(check=True)` raising discards the entire walk over one
+    transient failure -- which happened twice on #3808, in two different call
+    sites (dump_spend's /timing and dump_churn's list_jobs), each time on an
+    endpoint that returned 200 on retry. Fixing them one at a time is how the
+    same defect gets patched repeatedly, so this is the shared form: the
+    per-item call sites in both dumps use it, and the miss is counted rather
+    than hidden.
+
+    Whole-list calls deliberately still raise -- losing an entire workflow's
+    run list is not a degraded result, it is a wrong one.
+    """
+    try:
+        return gh(*args)
+    except subprocess.CalledProcessError as exc:
+        DEGRADED[what] = DEGRADED.get(what, 0) + 1
+        print(
+            f"[dump_spend] {what} call failed (gh exit {exc.returncode}); "
+            f"counted as empty: {' '.join(str(a) for a in args[-1:])}",
+            flush=True,
+        )
+        return None
+
 
 # Which measure each runner-minutes figure came from. A public repository
 # reports zero billable minutes, so the numbers are wall-clock duration; the
@@ -193,15 +221,10 @@ def run_minutes(repo, run_id):
     must not abort a walk over thousands of them -- `gh(check=True)` raising
     here is what killed run 32001662234 after 22 minutes of work.
     """
-    try:
-        out = gh("api", "-X", "GET", f"repos/{repo}/actions/runs/{run_id}/timing")
-    except subprocess.CalledProcessError as exc:
-        DEGRADED["timing"] += 1
-        print(
-            f"[dump_spend] timing unavailable for run {run_id} "
-            f"(gh exit {exc.returncode}); counted as 0 minutes",
-            flush=True,
-        )
+    out = gh_optional(
+        "api", "-X", "GET", f"repos/{repo}/actions/runs/{run_id}/timing", what="timing"
+    )
+    if out is None:
         return 0.0
     payload = json.loads(out)
     billable_ms = sum(v.get("total_ms", 0) for v in payload.get("billable", {}).values())
@@ -220,23 +243,17 @@ def claude_steps_dynamic(repo, run_id):
     Returns 0 and records the miss if the call fails, for the same reason as
     run_minutes: one unavailable run must not abort the whole walk.
     """
-    try:
-        out = gh(
-            "api",
-            "-X",
-            "GET",
-            f"repos/{repo}/actions/runs/{run_id}/jobs",
-            "--paginate",
-            "-f",
-            "per_page=100",
-        )
-    except subprocess.CalledProcessError as exc:
-        DEGRADED["claude_steps"] += 1
-        print(
-            f"[dump_spend] jobs unavailable for run {run_id} "
-            f"(gh exit {exc.returncode}); counted as 0 steps",
-            flush=True,
-        )
+    out = gh_optional(
+        "api",
+        "-X",
+        "GET",
+        f"repos/{repo}/actions/runs/{run_id}/jobs",
+        "--paginate",
+        "-f",
+        "per_page=100",
+        what="claude_steps",
+    )
+    if out is None:
         return 0
     count = 0
     for page in iter_json_objects(out):
