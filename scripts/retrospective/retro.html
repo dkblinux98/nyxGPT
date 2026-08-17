@@ -344,16 +344,14 @@
 
   <section class="panel">
     <h2>First-pass outcome by module</h2>
-    <p class="desc">Of the 84 pull requests the review-agent reviewed this window, 38 were approved on
-    the first pass with zero review failures. Bars count PRs, not findings. (Every merge in the
-    window went through agent review, so none are excluded.)</p>
+    <p class="desc" id="firstpassdesc"></p>
     <div class="legend">
       <span><span class="dot good"></span>Clean pass (approved first review)</span>
       <span><span class="dot minor"></span>Needed rework (≥1 REQUEST_CHANGES)</span>
     </div>
     <div id="outcome"></div>
     <details class="cleanlist">
-      <summary>Show the 38 zero-failure merges</summary>
+      <summary id="cleansummary">Show the zero-failure merges</summary>
       <div class="tablewrap">
         <table>
           <thead><tr><th>PR</th><th>Title</th><th>Module</th><th>Merged</th></tr></thead>
@@ -374,7 +372,7 @@
     <h2>Issues behind the failures</h2>
     <p class="desc">Sorted by blocking findings. Click a row to see its Critical and Medium finding titles.</p>
     <details class="cleanlist">
-      <summary>Show the 34 work items with review failures</summary>
+      <summary id="itemssummary">Show the work items with review failures</summary>
       <div class="tablewrap">
         <table>
           <thead><tr>
@@ -421,7 +419,8 @@
     reviews. Merged-PR counts come from the GitHub API. Feb shows more rejected than merged because
     rejected PRs often merged in a later month or were superseded.</p>
     <p><strong>Spend telemetry.</strong> Per-issue Claude-invoking workflow steps, total workflow
-    runs, billable Actions runner minutes, and retry/self-heal cycle count, derived from GitHub
+    runs, Actions runner minutes (billed where the repository is billed, wall-clock run
+    duration otherwise -- the tile says which), and retry/self-heal cycle count, derived from GitHub
     workflow-run history and attributed to an issue via its branch name (owner-endorsed direction
     from the 2026-08-09 cost post-mortem, #3696). This is the raw signal an anomaly-watching
     process reads to judge whether spend on an issue looks unusual — deliberately not a fixed cap.
@@ -814,6 +813,19 @@ const maxDay = Math.max(1, ...WINDOW.map(d => (DATA.days[d]||{rounds:0}).rounds)
   set('wUnreviewed', t.unreviewed ?? '—');
   set('wReviewed', t.reviewed ?? '—');
   set('wClean', t.clean ?? '—');
+
+  // These three read off the same totals. They were hand-maintained numbers
+  // ("Of the 84 pull requests… 38 were approved", "Show the 38 zero-failure
+  // merges") that nobody updated on a refresh, so they drifted away from the
+  // chart directly beneath them (#3808).
+  const fp = document.getElementById('firstpassdesc');
+  if (fp) fp.textContent =
+    `Of the ${t.reviewed ?? '—'} pull requests the review agent reviewed this window, ` +
+    `${t.clean ?? '—'} were approved on the first pass with zero review failures. Bars count PRs, ` +
+    `not findings.` + (t.unreviewed ? ` ${t.unreviewed} merge(s) bypassed agent review and are excluded.` :
+    ` Every merge in the window went through agent review, so none are excluded.`);
+  set('cleansummary', `Show the ${t.clean ?? ''} zero-failure merges`.replace('  ', ' '));
+  set('itemssummary', `Show the ${(DATA.issues || []).length} work items with review failures`);
 }
 document.getElementById('days').innerHTML = WINDOW.map(d => {
   const v = (DATA.days[d]||{rounds:0,C:0,M:0,m:0});
