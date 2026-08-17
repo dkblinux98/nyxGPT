@@ -27,11 +27,13 @@ import os
 import re
 import subprocess
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 HERE = Path(__file__).parent
 DATA_DIR = HERE / "data"
+# Days of run history to walk. See window_start(); 0 = all history.
+DEFAULT_WINDOW_DAYS = 30
 
 # Workflows that invoke Claude directly (anthropics/claude-code-action) with
 # a single, unconditional step -- a static count of 1 Claude step per
@@ -105,8 +107,39 @@ def issue_of(branch):
     return int(m.group(1) or m.group(2))
 
 
-def list_runs(repo, workflow_file):
-    out = gh(
+def window_start():
+    """Oldest run date to walk, as YYYY-MM-DD, or None to walk all history.
+
+    The walk costs one `/timing` API call per completed run, so its size is
+    the token's hourly REST budget divided by roughly one. This repository
+    holds ~36k workflow runs; unbounded, the dump exhausts the agent token
+    mid-walk and dies (#3808 round two). It only ever appeared bounded because
+    the paginated-JSON defect silently stopped it after two pages.
+
+    `SPEND_WINDOW_DAYS=0` restores the full walk deliberately, for a one-off
+    backfill run with a fresh budget.
+    """
+    raw = (os.environ.get("SPEND_WINDOW_DAYS") or str(DEFAULT_WINDOW_DAYS)).strip()
+    try:
+        days = int(raw)
+    except ValueError:
+        print(
+            f"[dump_spend] bad SPEND_WINDOW_DAYS {raw!r}; using {DEFAULT_WINDOW_DAYS}", flush=True
+        )
+        days = DEFAULT_WINDOW_DAYS
+    if days <= 0:
+        return None
+    return (datetime.now(UTC) - timedelta(days=days)).strftime("%Y-%m-%d")
+
+
+def list_runs(repo, workflow_file, since=None):
+    """Runs for one workflow, bounded to `since` (YYYY-MM-DD) when given.
+
+    The date bound is applied server-side via the runs API's `created` filter,
+    so it cuts pages fetched rather than filtering after the fact.
+    """
+    since = window_start() if since is None else since
+    args = [
         "api",
         "-X",
         "GET",
@@ -114,32 +147,67 @@ def list_runs(repo, workflow_file):
         "--paginate",
         "-f",
         "per_page=100",
-    )
+    ]
+    if since:
+        args += ["-f", f"created=>={since}"]
     runs = []
-    for page in iter_json_objects(out):
+    for page in iter_json_objects(gh(*args)):
         runs.extend(page.get("workflow_runs", []))
     return runs
 
 
+# Per-run API calls that failed and were counted as zero. Surfaced in the
+# snapshot rather than swallowed: a dump that quietly under-reports is the
+# failure mode this whole issue is about.
+DEGRADED = {"timing": 0, "claude_steps": 0}
+
+
 def run_minutes(repo, run_id):
-    """Billable runner-minutes for a run, summed across OS/runner types."""
-    out = gh("api", "-X", "GET", f"repos/{repo}/actions/runs/{run_id}/timing")
+    """Billable runner-minutes for a run, summed across OS/runner types.
+
+    Returns 0.0 and records the miss if the call fails. One unavailable run
+    must not abort a walk over thousands of them -- `gh(check=True)` raising
+    here is what killed run 32001662234 after 22 minutes of work.
+    """
+    try:
+        out = gh("api", "-X", "GET", f"repos/{repo}/actions/runs/{run_id}/timing")
+    except subprocess.CalledProcessError as exc:
+        DEGRADED["timing"] += 1
+        print(
+            f"[dump_spend] timing unavailable for run {run_id} "
+            f"(gh exit {exc.returncode}); counted as 0 minutes",
+            flush=True,
+        )
+        return 0.0
     billable = json.loads(out).get("billable", {})
     total_ms = sum(v.get("total_ms", 0) for v in billable.values())
     return total_ms / 60000
 
 
 def claude_steps_dynamic(repo, run_id):
-    """Executed (non-skipped) Claude-named steps for one workflow run."""
-    out = gh(
-        "api",
-        "-X",
-        "GET",
-        f"repos/{repo}/actions/runs/{run_id}/jobs",
-        "--paginate",
-        "-f",
-        "per_page=100",
-    )
+    """Executed (non-skipped) Claude-named steps for one workflow run.
+
+    Returns 0 and records the miss if the call fails, for the same reason as
+    run_minutes: one unavailable run must not abort the whole walk.
+    """
+    try:
+        out = gh(
+            "api",
+            "-X",
+            "GET",
+            f"repos/{repo}/actions/runs/{run_id}/jobs",
+            "--paginate",
+            "-f",
+            "per_page=100",
+        )
+    except subprocess.CalledProcessError as exc:
+        DEGRADED["claude_steps"] += 1
+        print(
+            f"[dump_spend] jobs unavailable for run {run_id} "
+            f"(gh exit {exc.returncode}); counted as 0 steps",
+            flush=True,
+        )
+        return 0
     count = 0
     for page in iter_json_objects(out):
         for job in page.get("jobs", []):
@@ -194,8 +262,18 @@ def finalize_bucket(bucket):
 
 
 def build_snapshot(issues, unattributed):
+    since = window_start()
     return {
         "generated_at": datetime.now(UTC).isoformat(),
+        # What the walk covered, so a consumer can tell a real zero from an
+        # out-of-window one, and a clean dump from a degraded one.
+        "window_start": since,
+        "window_days": (
+            None
+            if since is None
+            else int(os.environ.get("SPEND_WINDOW_DAYS") or DEFAULT_WINDOW_DAYS)
+        ),
+        "degraded": dict(DEGRADED),
         "issues": {str(n): finalize_bucket(b) for n, b in sorted(issues.items())},
         "unattributed": finalize_bucket(unattributed),
     }

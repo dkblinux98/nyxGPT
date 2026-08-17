@@ -181,7 +181,17 @@ class TestBuildSnapshot:
         }
         unattributed = dump_spend.empty_bucket()
         snapshot = dump_spend.build_snapshot(issues, unattributed)
-        assert set(snapshot) == {"generated_at", "issues", "unattributed"}
+        # window_start/window_days/degraded added by #3808: a consumer must be
+        # able to tell a real zero from an out-of-window one, and a clean dump
+        # from one that counted failed calls as zero.
+        assert set(snapshot) == {
+            "generated_at",
+            "window_start",
+            "window_days",
+            "degraded",
+            "issues",
+            "unattributed",
+        }
         assert snapshot["issues"] == {
             "3696": {
                 "claude_steps": 2,
@@ -192,3 +202,83 @@ class TestBuildSnapshot:
             }
         }
         assert snapshot["unattributed"]["runs"] == 0
+
+
+class TestWindowAndDegradation:
+    """#3808 round two: fixing the pagination bug exposed an unbounded walk.
+
+    `collect()` makes one `/timing` call per completed run. This repo holds
+    ~36k runs, so unbounded the dump exhausts the agent token's hourly REST
+    budget mid-walk; `gh(check=True)` then raised and threw away 22 minutes of
+    work (run 32001662234). The walk is now date-bounded, and a single failed
+    per-run call degrades to zero and is counted rather than aborting.
+    """
+
+    def test_window_start_defaults_to_thirty_days(self, dump_spend, monkeypatch):
+        monkeypatch.delenv("SPEND_WINDOW_DAYS", raising=False)
+        since = dump_spend.window_start()
+        assert since is not None
+        expected = (
+            dump_spend.datetime.now(dump_spend.UTC) - dump_spend.timedelta(days=30)
+        ).strftime("%Y-%m-%d")
+        assert since == expected
+
+    def test_zero_means_all_history(self, dump_spend, monkeypatch):
+        monkeypatch.setenv("SPEND_WINDOW_DAYS", "0")
+        assert dump_spend.window_start() is None
+
+    def test_bad_value_falls_back_to_default(self, dump_spend, monkeypatch):
+        monkeypatch.setenv("SPEND_WINDOW_DAYS", "not-a-number")
+        assert dump_spend.window_start() is not None
+
+    def test_list_runs_sends_the_created_filter(self, dump_spend, monkeypatch):
+        seen = {}
+
+        def fake_gh(*args):
+            seen["args"] = args
+            return '{"workflow_runs": []}'
+
+        monkeypatch.setattr(dump_spend, "gh", fake_gh)
+        dump_spend.list_runs("o/r", "ci-tests.yml", since="2026-07-18")
+        assert "created=>=2026-07-18" in seen["args"]
+
+    def test_list_runs_omits_the_filter_for_full_history(self, dump_spend, monkeypatch):
+        seen = {}
+
+        def fake_gh(*args):
+            seen["args"] = args
+            return '{"workflow_runs": []}'
+
+        monkeypatch.setattr(dump_spend, "gh", fake_gh)
+        dump_spend.list_runs("o/r", "ci-tests.yml", since="")
+        assert not any(str(a).startswith("created=") for a in seen["args"])
+
+    def test_failed_timing_call_is_counted_not_fatal(self, dump_spend, monkeypatch):
+        import subprocess as sp
+
+        def boom(*args):
+            raise sp.CalledProcessError(1, ["gh", *args])
+
+        monkeypatch.setattr(dump_spend, "gh", boom)
+        dump_spend.DEGRADED["timing"] = 0
+        assert dump_spend.run_minutes("o/r", 123) == 0.0
+        assert dump_spend.DEGRADED["timing"] == 1
+
+    def test_failed_jobs_call_is_counted_not_fatal(self, dump_spend, monkeypatch):
+        import subprocess as sp
+
+        def boom(*args):
+            raise sp.CalledProcessError(1, ["gh", *args])
+
+        monkeypatch.setattr(dump_spend, "gh", boom)
+        dump_spend.DEGRADED["claude_steps"] = 0
+        assert dump_spend.claude_steps_dynamic("o/r", 123) == 0
+        assert dump_spend.DEGRADED["claude_steps"] == 1
+
+    def test_snapshot_reports_window_and_degradation(self, dump_spend, monkeypatch):
+        monkeypatch.setenv("SPEND_WINDOW_DAYS", "30")
+        dump_spend.DEGRADED["timing"] = 2
+        snap = dump_spend.build_snapshot({}, dump_spend.empty_bucket())
+        assert snap["window_start"] is not None
+        assert snap["window_days"] == 30
+        assert snap["degraded"]["timing"] == 2, "a degraded dump must say so in its own output"
