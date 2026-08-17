@@ -786,6 +786,9 @@ class TestBuildSnapshot:
             "issues",
             "totals",
             "staleContextIncidents",
+            # Fetch diagnostics: how the run logs were obtained, so a consumer
+            # can tell a real zero from an unreadable log.
+            "logFetch",
         }
         assert set(snapshot["issues"]) == {"42"}
         assert snapshot["rounds"][0]["round"] == 1
