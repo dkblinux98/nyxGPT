@@ -144,27 +144,26 @@ if [[ -z "$body_file" ]]; then
   tmp_body="$(mktemp)"
   body_file="$tmp_body"
 
-  # Check if this is an Acceptance Failure issue that blocks another issue
-  BLOCKED_ISSUE=$(gh api "repos/${REPO}/issues/${ISSUE}/comments" --paginate \
-    --jq '.[] | select(.user.login == env.GITHUB_USER or .user.login == "github-actions[bot]" or .user.login == env.DEV_AGENT) | .body' \
-    | grep -oP "Blocks #\K\d+" | head -1 || echo "")
+  # What this issue blocks, read from the native relationship -- the sole
+  # storage since #3731 (ledger D-002). Reported as context only: an
+  # acceptance failure NEVER closes the issue it blocks. That issue stays
+  # closed and parked (handle_acceptance_failure.yml), and
+  # promote_accepted_features.sh moves it to For Release once its whole
+  # blocked-by closure is accepted. Adding `Closes #N` here would close it on
+  # merge and bypass that gate.
+  BLOCKED_ISSUES="$(blocking_issues "$ISSUE" | paste -sd ',' - | sed 's/,/, #/g')"
+  [[ -z "$BLOCKED_ISSUES" ]] || BLOCKED_ISSUES="#${BLOCKED_ISSUES}"
 
   {
-    # Include Closes for both issues if this is an Acceptance Failure
     echo "Closes #${ISSUE}"
-    if [[ -n "$BLOCKED_ISSUE" ]]; then
-      echo "Closes #${BLOCKED_ISSUE}"
-      echo
-      echo "> **Note:** This PR completes both issue #${ISSUE} (Acceptance Failure) and the original issue #${BLOCKED_ISSUE}."
-    fi
     echo
     echo "## Summary"
     echo "$summary"
     echo
     echo "## Context"
     echo "- Issue: ${issue_url}"
-    if [[ -n "$BLOCKED_ISSUE" ]]; then
-      echo "- Completes original issue: #${BLOCKED_ISSUE} (this is an Acceptance Failure)"
+    if [[ -n "$BLOCKED_ISSUES" ]]; then
+      echo "- Blocks acceptance of: ${BLOCKED_ISSUES} (promoted by the acceptance sweep, not closed by this PR)"
     fi
     [[ -n "$milestone_title" ]] && echo "- Milestone: ${milestone_title}" || echo "- Milestone: (none)"
     echo "- Label:"
@@ -198,6 +197,11 @@ echo "[dev] body_file=$body_file" >&2
 if [[ "$DRY_RUN" == "1" ]]; then
   echo "[dry-run] would run: gh pr create --repo \"$REPO\" --base \"$BASE_BRANCH\" --head \"$CURRENT_BRANCH\" --title \"$PR_TITLE\" --body-file \"$body_file\"" >&2
   echo "[dry-run] would set issue status -> \"$STATUS_IN_REVIEW\", assign -> \"$REVIEW_AGENT\", comment PR link" >&2
+  # The generated body is the thing worth inspecting in a dry run -- and the
+  # temp file holding it is deleted on the next line.
+  echo "[dry-run] --- PR body ---" >&2
+  cat "$body_file" >&2
+  echo "[dry-run] --- end PR body ---" >&2
   [[ -n "$tmp_body" ]] && rm -f "$tmp_body"
   echo "0"
   exit 0
