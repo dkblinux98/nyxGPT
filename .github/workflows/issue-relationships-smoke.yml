@@ -1,0 +1,86 @@
+name: Issue Relationships Smoke
+
+# Which question does this job answer? (#3775 executed verification)
+#
+#   "When an agent script links two issues, does a NATIVE blocked-by edge
+#    actually get written — and does the target issue survive untouched?"
+#
+# Inspection has already failed at this once: D-002 (#3731) made native
+# relationships the only storage for issue links, and nobody noticed that
+# `create_issue.sh --blocks` still reopened the target issue, labelled the
+# new one `blocks` and posted `Blocks #N` / `Blocked by #N` comments — a link
+# nothing downstream reads (#3836). The decision was recorded; the script
+# contradicting it was not caught for five days.
+#
+# tests/test_create_issue_blocks.sh runs the real scripts against a stub `gh`
+# that records every call, so the assertions are about the API calls actually
+# issued, not about what the source looks like. It proves both halves per the
+# macos-brew-smoke.yml template: a copy of create_issue.sh carrying the
+# retired Step 4 (embedded in the test as a fixture) reopens the target and
+# posts the prose markers, while the shipped script writes the native edge
+# and leaves the target's state alone.
+#
+# What this does NOT cover: GitHub's real dependency API. Agents cannot write
+# relationships on the live board from CI without mutating production state,
+# so the endpoint contract itself is exercised in production by
+# handle_acceptance_failure.yml, which calls the same primitive.
+
+on:
+  push:
+    paths:
+      - "scripts/agents/create_issue.sh"
+      - "scripts/agents/developer_submit_for_review.sh"
+      - "scripts/agents/lib/gh_project.sh"
+      - "tests/test_create_issue_blocks.sh"
+      - ".github/workflows/issue-relationships-smoke.yml"
+  pull_request:
+    paths:
+      - "scripts/agents/create_issue.sh"
+      - "scripts/agents/developer_submit_for_review.sh"
+      - "scripts/agents/lib/gh_project.sh"
+      - "tests/test_create_issue_blocks.sh"
+      - ".github/workflows/issue-relationships-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-edges-only:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: "Both directions: the retired path fails these assertions, the shipped one passes"
+        run: bash tests/test_create_issue_blocks.sh
+
+      - name: "Guard: no agent script writes a prose or label relationship"
+        shell: bash
+        run: |
+          set -euo pipefail
+          rc=0
+          # Executable lines only — comments are allowed to name the retired
+          # markers, and parked_resume.py still READS prose bodies filed
+          # before #3731 (D-002 keeps that fallback deliberately).
+          for f in scripts/agents/*.sh scripts/agents/lib/*.sh; do
+            code="$(grep -vE '^[[:space:]]*#' "$f" || true)"
+            if grep -qE -- '--body "(Blocks|Blocked by) #' <<< "$code"; then
+              echo "::error file=$f::posts a prose relationship comment; use mark_issue_blocked_by (#3731, #3836)"
+              rc=1
+            fi
+            if grep -qE -- '--add-label "?blocks"?' <<< "$code"; then
+              echo "::error file=$f::applies the retired 'blocks' label (#3836)"
+              rc=1
+            fi
+            if grep -qE -- 'Blocks #\\K' <<< "$code"; then
+              echo "::error file=$f::reads the retired 'Blocks #N' comment marker (#3836)"
+              rc=1
+            fi
+          done
+          exit "$rc"

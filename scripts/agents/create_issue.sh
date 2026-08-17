@@ -34,7 +34,9 @@ Options:
 
   Relationships:
   --copy-from-issue NUM  Copy Module/Phase/Priority/Effort/Sprint/Milestone from issue
-  --blocks NUM           Mark this issue as blocking issue NUM
+  --blocks NUM           Record the native blocked-by edge "NUM is blocked by
+                         this issue" (#3731). Writes the relationship only:
+                         issue NUM is not reopened, relabeled or commented on.
   --pr NUM               Link to PR number (sets Development field)
 
   Assignment:
@@ -353,7 +355,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "  Assignee: ${ASSIGNEE:-not set}" >&2
   echo "  Milestone: ${MILESTONE:-not set}" >&2
   [[ -n "$COPY_FROM_ISSUE" ]] && echo "  Copy from: #$COPY_FROM_ISSUE" >&2
-  [[ -n "$BLOCKS" ]] && echo "  Blocks: #$BLOCKS" >&2
+  [[ -n "$BLOCKS" ]] && echo "  Blocks (native edge): #$BLOCKS" >&2
   [[ -n "$PR_LINK" ]] && echo "  Linked PR: #$PR_LINK" >&2
   exit 0
 fi
@@ -437,46 +439,23 @@ if [[ -n "$EFFORT" ]]; then
 fi
 
 # --- Step 4: Set relationships ---
+# The ONLY storage for a link between two issues is GitHub's native
+# blocked-by/blocks relationship (owner decision 2026-08-12, #3731; ledger
+# D-002) -- never body prose, never comment markers, never a label. This
+# writes exactly the edge handle_acceptance_failure.yml writes and nothing
+# else: the target issue's state, labels and lane are not touched (a closed
+# issue parked in Acceptance Testing stays closed and parked).
 if [[ -n "$BLOCKS" ]]; then
-  echo "[create-issue] Setting blocking relationship..." >&2
+  echo "[create-issue] Recording native relationship: #${ISSUE_NUMBER} blocks #${BLOCKS}..." >&2
 
-  # Check if blocked issue is closed
-  BLOCKED_STATE=$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${BLOCKS}" --jq '.state | ascii_upcase')
-
-  if [[ "$BLOCKED_STATE" == "CLOSED" ]]; then
-    echo "[create-issue]   Blocked issue #${BLOCKS} is closed - reopening..." >&2
-
-    # Reopen the blocked issue
-    gh issue reopen "$BLOCKS" --repo "${REPO_OWNER}/${REPO_NAME}"
-
-    # Post comment explaining why it was reopened
-    gh issue comment "$BLOCKS" --repo "${REPO_OWNER}/${REPO_NAME}" --body "$(cat <<EOF
-⚠️ **Reopened due to Acceptance Failure**
-
-This issue was reopened because issue #${ISSUE_NUMBER} was created to address acceptance failures from the previous implementation.
-
-**Acceptance Failure Issue:** #${ISSUE_NUMBER}
-**Reason:** Unresolved issues from code review that must be completed before this work can be considered done.
-
-**Next Steps:**
-- Issue #${ISSUE_NUMBER} will be implemented
-- When #${ISSUE_NUMBER} is complete and merged, both issues will close together
-- The PR for #${ISSUE_NUMBER} will include: \`Closes #${ISSUE_NUMBER}\` and \`Closes #${BLOCKS}\`
-EOF
-)"
-    echo "[create-issue]   ✓ Reopened issue #${BLOCKS}" >&2
+  # Best-effort, exactly as in the handlers: promote_accepted_features.sh
+  # heals a missing link on its next sweep, so a transient API failure must
+  # not fail issue creation that has already succeeded.
+  if mark_issue_blocked_by "$BLOCKS" "$ISSUE_NUMBER"; then
+    echo "[create-issue]   ✓ #${BLOCKS} is now blocked by #${ISSUE_NUMBER}" >&2
+  else
+    echo "[warning] Could not mark #${ISSUE_NUMBER} as blocking #${BLOCKS} (promotion sweep will retry)" >&2
   fi
-
-  # Add "Blocks #N" to issue body via edit
-  gh issue edit "$ISSUE_NUMBER" --add-label "blocks" --repo "${REPO_OWNER}/${REPO_NAME}" 2>/dev/null || true
-
-  # Post comment to create blocking relationship
-  gh issue comment "$ISSUE_NUMBER" --body "Blocks #${BLOCKS}" --repo "${REPO_OWNER}/${REPO_NAME}"
-
-  # Post comment to blocked issue
-  gh issue comment "$BLOCKS" --repo "${REPO_OWNER}/${REPO_NAME}" --body "Blocked by #${ISSUE_NUMBER} (Acceptance Failure)"
-
-  echo "[create-issue]   Blocks: #$BLOCKS" >&2
 fi
 
 # --- Step 5: Link PR (Development field) ---
@@ -499,7 +478,7 @@ echo "   Status: $STATUS" >&2
 [[ -n "$EFFORT" ]] && echo "   Effort: $EFFORT" >&2
 [[ -n "$ASSIGNEE" ]] && echo "   Assignee: @$ASSIGNEE" >&2
 [[ -n "$MILESTONE" ]] && echo "   Milestone: $MILESTONE" >&2
-[[ -n "$BLOCKS" ]] && echo "   Blocks: #$BLOCKS" >&2
+[[ -n "$BLOCKS" ]] && echo "   Blocks (native edge): #$BLOCKS" >&2
 [[ -n "$PR_LINK" ]] && echo "   Linked PR: #$PR_LINK" >&2
 
 # Output just the issue number for scripting

@@ -181,7 +181,17 @@ class TestBuildSnapshot:
         }
         unattributed = dump_spend.empty_bucket()
         snapshot = dump_spend.build_snapshot(issues, unattributed)
-        assert set(snapshot) == {"generated_at", "issues", "unattributed"}
+        assert set(snapshot) == {
+            "generated_at",
+            "issues",
+            "unattributed",
+            # Provenance of the walk, so a consumer can tell a real zero from
+            # an out-of-window one and a clean dump from a degraded one.
+            "window_start",
+            "window_days",
+            "degraded",
+            "minutes_source",
+        }
         assert snapshot["issues"] == {
             "3696": {
                 "claude_steps": 2,
