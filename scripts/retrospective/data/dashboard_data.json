@@ -1,39 +1,25 @@
 {
  "modules": {
-  "testing": {
-   "C": 2,
-   "M": 7,
-   "m": 16,
-   "rounds": 7,
-   "issues": 3
-  },
-  "security": {
-   "C": 3,
-   "M": 5,
-   "m": 10,
-   "rounds": 5,
-   "issues": 4
+  "rag": {
+   "C": 0,
+   "M": 1,
+   "m": 2,
+   "rounds": 1,
+   "issues": 1
   },
   "api": {
-   "C": 11,
-   "M": 30,
-   "m": 44,
-   "rounds": 23,
-   "issues": 15
-  },
-  "rag": {
    "C": 3,
-   "M": 1,
-   "m": 8,
-   "rounds": 4,
-   "issues": 2
+   "M": 26,
+   "m": 36,
+   "rounds": 18,
+   "issues": 10
   },
-  "observability": {
-   "C": 2,
-   "M": 21,
-   "m": 24,
-   "rounds": 10,
-   "issues": 8
+  "security": {
+   "C": 0,
+   "M": 3,
+   "m": 6,
+   "rounds": 2,
+   "issues": 2
   },
   "cli": {
    "C": 5,
@@ -49,6 +35,20 @@
    "rounds": 5,
    "issues": 5
   },
+  "observability": {
+   "C": 1,
+   "M": 13,
+   "m": 20,
+   "rounds": 6,
+   "issues": 5
+  },
+  "testing": {
+   "C": 2,
+   "M": 5,
+   "m": 12,
+   "rounds": 5,
+   "issues": 1
+  },
   "documentation": {
    "C": 0,
    "M": 6,
@@ -58,12 +58,6 @@
   }
  },
  "days": {
-  "2026-08-09": {
-   "C": 15,
-   "M": 18,
-   "m": 30,
-   "rounds": 19
-  },
   "2026-08-10": {
    "C": 1,
    "M": 13,
@@ -102,9 +96,9 @@
   },
   "2026-08-16": {
    "C": 0,
-   "M": 2,
-   "m": 4,
-   "rounds": 1
+   "M": 4,
+   "m": 8,
+   "rounds": 3
   }
  },
  "issues": [
@@ -417,55 +411,6 @@
    ]
   },
   {
-   "issue": 3635,
-   "pr": 3678,
-   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: test_gpu_detection_shell_false flake - GPU-info cache race in embeddings (#3635) (PR #3678)",
-   "module": "rag",
-   "rounds": 3,
-   "C": 3,
-   "M": 0,
-   "m": 6,
-   "last": "2026-08-09T04:32:16Z",
-   "findings": [
-    [
-     "Critical",
-     "New regression test `test_concurrent_detect_gpu_calls_are_serialized` is itself flaky in full-suite runs, failing more often than the bug it's supposed to fix"
-    ],
-    [
-     "Minor",
-     "The lock itself (`_gpu_info_lock`, `src/nyxgpt/rag/embeddings.py:110`, and its use in `_detect_gpu` at :231-291) is a correct and reasonable fix for true concurrent-call corruption and can likely be kept as-is once the test above is made reliable."
-    ],
-    [
-     "Minor",
-     "`tests/unit/test_embedding_optimization.py:717-740` (`TestEmbedTextsAsyncFallback`, pre-existing, not introduced by this PR) emits `RuntimeWarning: coroutine '_embed_texts_parallel' was never awaited` because `asyncio.run(...)` evaluates its coroutine argument before discovering a loop is already running. Not blocking since it's outside this PR's diff, but worth a follow-up issue since warnings-as-noise in CI output erode the same \"trust in red/yellow runs\" this issue is trying to restore."
-    ],
-    [
-     "Critical",
-     "New regression test causes deterministic (5/5) full-suite failure, and destabilizes an unrelated test"
-    ],
-    [
-     "Minor",
-     "The `_gpu_info_lock` fix itself (`src/nyxgpt/rag/embeddings.py:110`, used in `_detect_gpu` at ~231-291) remains a correct and reasonable fix for genuine concurrent-call corruption and can likely be kept once the test above is redesigned to not depend on a process-global mock."
-    ],
-    [
-     "Minor",
-     "`tests/unit/test_embedding_optimization.py` (pre-existing, not introduced by this PR) still emits `RuntimeWarning: coroutine '_embed_texts_parallel' was never awaited` in `TestEmbedTextsAsyncFallback`. Not blocking, but noted again as a candidate follow-up since it's one more source of full-suite noise/interference in this same file."
-    ],
-    [
-     "Critical",
-     "`test_concurrent_detect_gpu_calls_are_serialized` remains flaky under full-suite runs"
-    ],
-    [
-     "Minor",
-     "The `_gpu_info_lock` fix itself (`src/nyxgpt/rag/embeddings.py:106-111`, `:237-291`) is a correct, reasonable fix for genuine concurrent-call corruption of the module-global cache and can likely be kept as-is once the test is made reliable."
-    ],
-    [
-     "Minor",
-     "`tests/unit/test_embedding_optimization.py:757-780` (`TestEmbedTextsAsyncFallback`, pre-existing, not introduced by this PR) still emits `RuntimeWarning: coroutine '_embed_texts_parallel' was never awaited`. Not blocking, carried over from the previous review as a suggested follow-up."
-    ]
-   ]
-  },
-  {
    "issue": 3752,
    "pr": 3764,
    "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: README install path fails user-style macOS install - documentation (#3752) (PR #3764)",
@@ -564,137 +509,6 @@
     [
      "Minor",
      "Previously reported, still open, still non-blocking: (1) the resolve step's `assets_on()` suppresses API errors (`2>/dev/null || echo \"\"`), so a transient API failure can misclassify a serving sidecar as `SERVED=false` and churn its assets \u2014 suggest the retirement branch re-list without suppression; (2) `docs/portability-matrix.md:69` \"the release's `<version>-homebrew` release\" reads doubled."
-    ]
-   ]
-  },
-  {
-   "issue": 3667,
-   "pr": 3683,
-   "title": "[dkblinux98/nyxGPT] Feature: fix: Retro review-round data sourced from Gmail, not GitHub - observability (#3667) (PR #3683)",
-   "module": "observability",
-   "rounds": 2,
-   "C": 0,
-   "M": 6,
-   "m": 2,
-   "last": "2026-08-09T19:39:34Z",
-   "findings": [
-    [
-     "Medium",
-     "Committed `retro.html` is stale relative to the PR's own committed data"
-    ],
-    [
-     "Medium",
-     "`retro_template.html`'s hard-coded \"Last 7 days\" window copy was not updated"
-    ],
-    [
-     "Medium",
-     "Missing test coverage for `gate_series()`'s new GitHub-dump-based rejected count"
-    ],
-    [
-     "Minor",
-     "`month_of()` (reused by the new `gate_series` reviews-counting) matches on month-of-year only, not year, so once `reviews_final.json` spans more than one calendar year, \"current month\" rejected counts would silently include same-month rounds from a prior year. Not urgent given the project's current age, but worth a comment or guard if this dashboard is still in use a year from now."
-    ],
-    [
-     "Minor",
-     "`dump_all_rounds()` in `dump_review_rounds.py` fetches every PR (`state=all`) and then issues one additional `gh api` call per PR for its reviews \u2014 fine for a manual `workflow_dispatch` (the runbook already sets the ~5 min expectation), just flagging for awareness as PR count grows."
-    ],
-    [
-     "Medium",
-     "Committed `retro.html` is stale relative to the PR's own committed data"
-    ],
-    [
-     "Medium",
-     "`retro_template.html`'s hard-coded \"Last 7 days\" window copy was not updated"
-    ],
-    [
-     "Medium",
-     "Missing test coverage for `gate_series()`"
-    ]
-   ]
-  },
-  {
-   "issue": 3511,
-   "pr": 3684,
-   "title": "[dkblinux98/nyxGPT] Feature: feat: target-OS provisioning for Linux and macOS AWS instances (#3511) (PR #3684)",
-   "module": "api",
-   "rounds": 2,
-   "C": 6,
-   "M": 0,
-   "m": 3,
-   "last": "2026-08-09T19:39:16Z",
-   "findings": [
-    [
-     "Critical",
-     "`ec2-user-data-linux.sh.tmpl` fails to bring up any systemd --user service on a real fresh EC2 instance (`XDG_RUNTIME_DIR`/D-Bus not set across the `sudo -u` boundary)"
-    ],
-    [
-     "Critical",
-     "The new `ec2-linux-user-data-smoke` CI job does not actually catch the bug above (or the Docker gap below) because it overrides the target user to an account that already has an active session and Docker preinstalled"
-    ],
-    [
-     "Critical",
-     "`ec2-user-data-linux.sh.tmpl` never installs Docker, but `nyxgpt ops install` requires it for the Cassandra container"
-    ],
-    [
-     "Minor",
-     "`scripts/cloud/ec2-user-data-macos.sh.tmpl`'s `sudo -u \"$NYXGPT_TARGET_USER\" -H \"$BREW_BIN\" services start nyxgpt-api`/`nyxgpt-web` may hit an analogous launchd-user-session issue on EC2 Mac (launchd Aqua/user-agent session vs. a fresh non-interactive login), but this path is explicitly documentation-verified only (no CI runner available), so I'm not blocking on it \u2014 worth a follow-up owner/manual verification note when an EC2 Mac Dedicated Host is actually exercised."
-    ],
-    [
-     "Minor",
-     "`docs/cloud.md`'s CI coverage section should be updated once the above is fixed to accurately describe what the smoke job does and does not validate (target-user session state, Docker presence)."
-    ],
-    [
-     "Critical",
-     "`XDG_RUNTIME_DIR`/D-Bus not set for `sudo -u ... ops install`"
-    ],
-    [
-     "Critical",
-     "CI smoke job masks the above bug by using an already-session-active, Docker-preinstalled `runner` account"
-    ],
-    [
-     "Critical",
-     "No Docker install step, but `ops install` requires Docker for Cassandra"
-    ],
-    [
-     "Minor",
-     "`scripts/cloud/ec2-user-data-macos.sh.tmpl`'s `brew services start` calls may hit an analogous launchd-session issue on EC2 Mac, but this path has no CI runner available and is documentation-verified only \u2014 not blocking, but worth an owner/manual verification note."
-    ]
-   ]
-  },
-  {
-   "issue": 3507,
-   "pr": 3697,
-   "title": "[dkblinux98/nyxGPT] Feature: feat: cloud secrets via SSM Parameter Store or Secrets Manager (#3507) (PR #3697)",
-   "module": "security",
-   "rounds": 2,
-   "C": 2,
-   "M": 2,
-   "m": 2,
-   "last": "2026-08-09T23:26:07Z",
-   "findings": [
-    [
-     "Critical",
-     "Blocking synchronous AWS calls inside the async request hot path"
-    ],
-    [
-     "Medium",
-     "Admin \"rotate API key\" UI silently becomes a no-op (and misreports success) on cloud deploys"
-    ],
-    [
-     "Minor",
-     "`cloud_secrets._cache` is a bare module-level `dict` with no lock. Not a correctness bug under CPython's GIL for these get/set patterns, but worth a one-line comment if multi-threaded workers are ever added, since a `threading.Lock` would be cheap insurance."
-    ],
-    [
-     "Critical",
-     "CodeQL check is failing on this PR's head commit with 3 new high-severity `py/clear-text-logging-sensitive-data` alerts"
-    ],
-    [
-     "Medium",
-     "`docs/cloud.md` documents rotate-button behavior that isn't implemented"
-    ],
-    [
-     "Minor",
-     "(carried from previous review, still true, non-blocking) `cloud_secrets._cache`/`_failure_cache` are bare module-level `dict`s with no lock -- fine under CPython's GIL for these get/set patterns, but worth a one-line comment if multi-threaded workers are ever added."
     ]
    ]
   },
@@ -821,256 +635,39 @@
    ]
   },
   {
-   "issue": 3621,
-   "pr": 3670,
-   "title": "[dkblinux98/nyxGPT] Feature: feat: retire REPO_ROOT - ship ops runtime data as package data + guard test (#3621) (PR #3670)",
-   "module": "testing",
-   "rounds": 1,
-   "C": 0,
-   "M": 1,
-   "m": 3,
-   "last": "2026-08-09T01:51:44Z",
-   "findings": [
-    [
-     "Medium",
-     "`nyxgpt ops env-sync` silently drops `.env.example` defaults when run before `nyxgpt ops install`"
-    ],
-    [
-     "Minor",
-     "`pyproject.toml`'s `[tool.setuptools.package-data]` entry (`\"nyxgpt.resources\" = [\"**/*\", \".env.example\"]`) globs the `docker/`/`ops/`/`scripts/` symlinked directories without any exclusion list. `docker/config.docker.ini` (gitignored, written pre-#3621 directly into `REPO_ROOT/docker/`, containing `[auth] api_key`/`[monitoring] grafana_admin_password`/an error-tracking DSN \u2014 see `_generate_compose_config`, `ops.py:1543`) is not tracked in git so a clean checkout won't pick it up, but a dev machine that ran pre-#3621 `nyxgpt ops install` and still has that stale artifact sitting in its checkout would have it silently swept into any wheel built from that tree (e.g. via `nyxgpt ops package` or `test_resources_packaging.py`). Worth an explicit exclude for defense-in-depth given this PR is explicit groundwork for publishing installable artifacts (CLAUDE.md's \"Repo-less Portability\" requirement)."
-    ],
-    [
-     "Minor",
-     "`test_sync_env_from_config_creates_env_from_example` (`tests/unit/test_ops.py:1412`) still has `monkeypatch.setattr(ops, \"REPO_ROOT\", tmp_path)`, which is now a no-op leftover from before this PR's `env_path.parent`-relative resolution \u2014 harmless but worth cleaning up since it no longer does anything."
-    ],
-    [
-     "Minor",
-     "The new `test_repo_root_allowlist.py` guard matches on exact stripped source lines, so any unrelated `black` reformat of an allowlisted line will fail the test until the allowlist string is updated too \u2014 intentional per the docstring, but worth being aware of as a source of \"unrelated\" CI friction going forward."
-    ]
-   ]
-  },
-  {
-   "issue": 3630,
-   "pr": 3673,
-   "title": "[dkblinux98/nyxGPT] Feature: feat: nyxgpt cloud allow-ip - refresh owner IP on the SSH security group rule (#3630) (PR #3673)",
-   "module": "security",
-   "rounds": 1,
-   "C": 1,
-   "M": 0,
-   "m": 2,
-   "last": "2026-08-09T03:16:14Z",
-   "findings": [
-    [
-     "Critical",
-     "Revoke-before-authorize ordering can cause a total SSH lockout"
-    ],
-    [
-     "Minor",
-     "`detect_current_public_ip`'s hard-coded 5s timeout (`src/nyxgpt/cloud.py`) could be flaky on slower connections; not blocking, could be made configurable later."
-    ],
-    [
-     "Minor",
-     "Only IPv4 is supported (`ipaddress.IPv4Network`/`IPv4Address`); reasonable given the scope (owner's public IP is virtually always IPv4 for this use case), but worth a one-line docs note if IPv6-only networks are ever a consideration."
-    ]
-   ]
-  },
-  {
-   "issue": 3631,
-   "pr": 3674,
-   "title": "[dkblinux98/nyxGPT] Feature: feat: park merged-but-blocked issues in In Review; batch-move to acceptance (#3631) (PR #3674)",
+   "issue": 3815,
+   "pr": 3817,
+   "title": "[dkblinux98/nyxGPT] Feature: bug: retrospective dump workflows cannot push \u2014 v3.0.0 ruleset requires pull requests (#3815) (PR #3817)",
    "module": "api",
-   "rounds": 1,
-   "C": 0,
-   "M": 1,
-   "m": 2,
-   "last": "2026-08-09T03:20:30Z",
-   "findings": [
-    [
-     "Medium",
-     "Sweep promotion comment misattributes the acting agent"
-    ],
-    [
-     "Minor",
-     "`review_accept_and_merge.sh`'s new PARKED branch (the open-blockers check, park comment, and early `exit 0`) has no dedicated unit test \u2014 it's exercised only indirectly via the smoke test in `tests/agent-smoke-test.sh`. This matches the file's pre-existing test posture (it had zero unit tests before this PR either), so it isn't a regression, but since this PR adds meaningful new branching logic there, a stubbed unit test analogous to the `sweep_parked_blocked_issues` tests (mocking `open_blocked_by_issues`, `set_issue_status`, `issue_comment`) would have caught regressions in that branch specifically."
-    ],
-    [
-     "Minor",
-     "`blocked_by_issues()` and `open_blocked_by_issues()` in `gh_project.sh` both call the identical `gh api .../dependencies/blocked_by` endpoint independently (one unfiltered, one filtered by `state==\"open\"`); minor duplication, not worth a shared helper given how thin each is."
-    ]
-   ]
-  },
-  {
-   "issue": 3663,
-   "pr": 3681,
-   "title": "[dkblinux98/nyxGPT] Improvement: perf: distribute GitHub API load - agent reads move from GraphQL to REST (#3663) (PR #3681)",
-   "module": "api",
-   "rounds": 1,
-   "C": 1,
-   "M": 1,
-   "m": 2,
-   "last": "2026-08-09T04:34:47Z",
-   "findings": [
-    [
-     "Critical",
-     "`--paginate` + `--jq` does not aggregate across pages \u2014 `last`/`length` results are silently wrong once a PR/issue crosses the default 30-item page"
-    ],
-    [
-     "Medium",
-     "`developer_auto_implement.yml:288-291` (\"Check if PR already exists\") now depends on the eventually-consistent Search API instead of a direct list call."
-    ],
-    [
-     "Minor",
-     "`AGENTS.md`'s new section is a good addition and documents the intended boundary well, but as noted above should be extended to call out the `--paginate`+`--jq`-per-page pitfall so it isn't reintroduced by future scripts."
-    ],
-    [
-     "Minor",
-     "`scripts/agents/scrummaster_sprint_report.sh:168-171`'s batch `--jq '[.[] | {number, body}]'` + `--paginate` combination happens to still work correctly across multiple pages only because the outer `jq -r '.[].number'`/`select(.number == $n)` calls applied afterward don't use `last`/`length` \u2014 but the intermediate `pr_bodies_json` variable ends up holding multiple concatenated top-level JSON arrays (one per page) rather than a single array, which is fragile and easy to break with a future edit. Worth normalizing with the same fix pattern as the Critical issue above for consistency."
-    ]
-   ]
-  },
-  {
-   "issue": 3666,
-   "pr": 3682,
-   "title": "[dkblinux98/nyxGPT] Improvement: fix: project hygiene fills only missing fields on fresh issues - never overwrites (#3666) (PR #3682)",
-   "module": "api",
-   "rounds": 1,
-   "C": 0,
-   "M": 1,
-   "m": 1,
-   "last": "2026-08-09T04:41:40Z",
-   "findings": [
-    [
-     "Medium",
-     "Stale trigger entry in the workflow actor-gate audit table"
-    ],
-    [
-     "Minor",
-     "None \u2014 the extensive inline comments explaining the fill-if-missing design and race rationale are a good addition and match the codebase's existing commenting style in this file."
-    ]
-   ]
-  },
-  {
-   "issue": 3687,
-   "pr": 3690,
-   "title": "[dkblinux98/nyxGPT] Feature: feat: Review huddle protocol + unresolved-escalation pause backstop - api (#3687) (PR #3690)",
-   "module": "api",
-   "rounds": 1,
-   "C": 1,
-   "M": 1,
-   "m": 2,
-   "last": "2026-08-09T15:25:44Z",
-   "findings": [
-    [
-     "Critical",
-     "`_escalation_pause_comment_id` always fails silently, breaking \"update in place\" and the resume notice"
-    ],
-    [
-     "Medium",
-     "No test exercises the real `_escalation_pause_comment_id` implementation"
-    ],
-    [
-     "Minor",
-     "`escalation_pause_gate` (`gh_project.sh:872-921`) recomputes the unresolved count inline (`printf '%s\\n' \"$issues\" | grep -c .`) instead of calling `count_unresolved_escalations`, duplicating the same `grep -c .` counting logic already defined a few lines above. Not a bug today, but a maintenance hazard if the counting logic ever changes in only one place."
-    ],
-    [
-     "Minor",
-     "`scrummaster_huddle_mediation.yml`'s \"Get PR and issue number\" step does not validate that `ISSUE` was actually parsed from the PR body (unlike the equivalent step in `review_agent_auto_review.yml:255-269`, which errors out on an empty match). If a huddle is ever triggered on a PR whose body doesn't match `Closes #N`, this silently proceeds with an empty issue number baked into the mediation prompt."
-    ]
-   ]
-  },
-  {
-   "issue": 3636,
-   "pr": 3679,
-   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: local-stack smoke gates chronically red before services are serving (#3636) (PR #3679)",
-   "module": "observability",
-   "rounds": 1,
-   "C": 1,
-   "M": 1,
-   "m": 1,
-   "last": "2026-08-09T15:49:15Z",
-   "findings": [
-    [
-     "Critical",
-     "Unresolved merge conflict blocks merge and blocks CI validation"
-    ],
-    [
-     "Medium",
-     "None beyond the above, which is blocking at Critical severity."
-    ],
-    [
-     "Minor",
-     "None."
-    ]
-   ]
-  },
-  {
-   "issue": 3689,
-   "pr": 3692,
-   "title": "[dkblinux98/nyxGPT] Feature: fix: Unbounded self-heal retry loop in developer auto-implement - api (#3689) (PR #3692)",
-   "module": "observability",
-   "rounds": 1,
-   "C": 0,
-   "M": 1,
-   "m": 1,
-   "last": "2026-08-09T16:45:44Z",
-   "findings": [
-    [
-     "Medium",
-     "\"Verify issue is In Progress\" gate fails open on any error other than its own explicit signal"
-    ],
-    [
-     "Minor",
-     "None beyond the above \u2014 the `retry_budget.py` module, its CLI, and the `sprint_autopilot_kick`/`FIXED_REQUIRES_MERGE` wiring elsewhere in the workflow look correct and are consistent with the design described in the runbook update."
-    ]
-   ]
-  },
-  {
-   "issue": 3502,
-   "pr": 3606,
-   "title": "[dkblinux98/nyxGPT] Feature: feat: standalone push/PR CI gate - full pytest suite plus blocking mypy (#3502) (PR #3606)",
-   "module": "testing",
-   "rounds": 1,
-   "C": 0,
-   "M": 1,
-   "m": 1,
-   "last": "2026-08-09T22:30:05Z",
-   "findings": [
-    [
-     "Medium",
-     "Regression test silently skips instead of failing when its target bug is reintroduced"
-    ],
-    [
-     "Minor",
-     "None new."
-    ]
-   ]
-  },
-  {
-   "issue": 3694,
-   "pr": 3699,
-   "title": "[dkblinux98/nyxGPT] Feature: feat: Cross-issue failure anomaly collapse - one diagnosis, not N loops - api (#3694) (PR #3699)",
-   "module": "api",
-   "rounds": 1,
+   "rounds": 2,
    "C": 0,
    "M": 2,
-   "m": 2,
-   "last": "2026-08-09T23:46:32Z",
+   "m": 4,
+   "last": "2026-08-16T16:47:23Z",
    "findings": [
     [
      "Medium",
-     "Dangling citation to a nonexistent postmortem document"
+     "Missing executed verification on the real GitHub ruleset (\u00a71c; #3815 acceptance criterion 4)"
+    ],
+    [
+     "Minor",
+     "Concurrent-dump publish race"
+    ],
+    [
+     "Minor",
+     "`usage()` truncates the merge script's header"
     ],
     [
      "Medium",
-     "Misleading owner-facing message on the cross-issue-anomaly path"
+     "Guard is bypassable in the check-to-merge window: merge does not pin the verified head (`scripts/retrospective/merge_data_branch.sh:250` approx, the `gh pr merge \"$pr\" --repo \"$REPO\" --merge` call)"
     ],
     [
      "Minor",
-     "The open-marker race (two issues both observing \"no existing marker\" near-simultaneously and both becoming an \"origin\") is explicitly acknowledged in code comments as an accepted best-effort tradeoff; worst case is 2 diagnoses instead of 1, still a large improvement over 5. Not a blocker, just noting it was deliberately reviewed and not overlooked."
+     "Runbook still offers the guard-free manual push"
     ],
     [
      "Minor",
-     "`_is_open`'s `RESOLVE_ANOMALY` check treats any OWNER `RESOLVE_ANOMALY` comment as closing every marker that precedes it, regardless of which step it was for. This appears intentional (a single global \"all clear\" keyword) rather than a bug, but is worth the owner's awareness if multiple distinct anomalies are ever open concurrently."
+     "`APPROVAL_GRACE` is read mid-script rather than declared with the other tunables"
     ]
    ]
   },
@@ -1781,84 +1378,6 @@
  ],
  "cleanPRs": [
   {
-   "pr": 3701,
-   "merged": "2026-08-09",
-   "title": "Feature: feat: Spend telemetry per issue in the retrospective data substrate - observability (#3696)",
-   "module": "observability"
-  },
-  {
-   "pr": 3700,
-   "merged": "2026-08-09",
-   "title": "Feature: feat: Route agent escalations to a human channel, not just thread comments - api (#3695)",
-   "module": "api"
-  },
-  {
-   "pr": 3698,
-   "merged": "2026-08-09",
-   "title": "Feature: fix: Branch sweeper misses feat/* orphans - cleanup covers claude/* only - api (#3693)",
-   "module": "api"
-  },
-  {
-   "pr": 3691,
-   "merged": "2026-08-09",
-   "title": "Feature: fix: Migrate deprecated top-level ruff settings to [tool.ruff.lint] - testing (#3688)",
-   "module": "web-ui"
-  },
-  {
-   "pr": 3680,
-   "merged": "2026-08-09",
-   "title": "Feature: docs: README positioning section and 'How this project is run' index (#3652)",
-   "module": "documentation"
-  },
-  {
-   "pr": 3677,
-   "merged": "2026-08-09",
-   "title": "Acceptance Failure: bug: Linux install - system ollama.service port conflict; web probe race - sre (#3632)",
-   "module": "web-ui"
-  },
-  {
-   "pr": 3676,
-   "merged": "2026-08-09",
-   "title": "Acceptance Failure: bug: ingest_document bootstrap ordering breaks first ingest on fresh Cassandra (#3634)",
-   "module": "rag"
-  },
-  {
-   "pr": 3675,
-   "merged": "2026-08-09",
-   "title": "Acceptance Failure: bug: api_base_url fixture skip fix stranded on unmerged branch; 110 CI fails (#3633)",
-   "module": "api"
-  },
-  {
-   "pr": 3672,
-   "merged": "2026-08-09",
-   "title": "Acceptance Failure: bug: ops logs api misses startup refusal stderr in native mode - sre (#3629)",
-   "module": "observability"
-  },
-  {
-   "pr": 3671,
-   "merged": "2026-08-09",
-   "title": "Feature: feat: publish install artifacts - PyPI package, remote Homebrew tap, registry images (#3622)",
-   "module": "cli"
-  },
-  {
-   "pr": 3669,
-   "merged": "2026-08-09",
-   "title": "Production Defect: bug: k8s --local requires a pre-existing cluster - no wrapped provisioning (#3596)",
-   "module": "cli"
-  },
-  {
-   "pr": 3668,
-   "merged": "2026-08-09",
-   "title": "Improvement: fix: scrummaster start-guard halts queue on stray assignee - loop (#3665)",
-   "module": "api"
-  },
-  {
-   "pr": 3613,
-   "merged": "2026-08-09",
-   "title": "Feature: feat: live progress output for nyxgpt ops commands - no black-box runs (#3558)",
-   "module": "cli"
-  },
-  {
    "pr": 3714,
    "merged": "2026-08-10",
    "title": "Feature: feat: cloud smoke test - provision, verify chat and RAG, teardown (#3515)",
@@ -2007,26 +1526,56 @@
    "merged": "2026-08-15",
    "title": "Acceptance Failure: bug: ops runner swallows subprocess stderr on failure - pip error invisible (#3783)",
    "module": "cli"
+  },
+  {
+   "pr": 3823,
+   "merged": "2026-08-16",
+   "title": "Feature: feat: make the agentic first principles binding at runtime \u2014 one source, enforced at review (#3821)",
+   "module": "api"
+  },
+  {
+   "pr": 3822,
+   "merged": "2026-08-16",
+   "title": "Acceptance Failure: bug: dev agent fatal-error escalation crashes on quotes \u2014 script injection into github-script (#3820)",
+   "module": "api"
+  },
+  {
+   "pr": 3819,
+   "merged": "2026-08-16",
+   "title": "Acceptance Failure: bug: project hygiene overwrites already-populated fields \u2014 must never clobber on first run (#3816)",
+   "module": "api"
+  },
+  {
+   "pr": 3818,
+   "merged": "2026-08-16",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
+  },
+  {
+   "pr": 3838,
+   "merged": "2026-08-17",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
   }
  ],
  "cleanByModule": {
-  "observability": 4,
-  "api": 15,
-  "web-ui": 3,
-  "documentation": 2,
-  "rag": 2,
-  "cli": 11,
+  "observability": 2,
+  "api": 16,
+  "cli": 8,
+  "rag": 1,
+  "web-ui": 1,
+  "documentation": 1,
   "security": 1
  },
  "totals": {
-  "rounds": 71,
-  "C": 27,
-  "M": 95,
-  "m": 146,
-  "items": 46,
-  "clean": 38,
-  "reviewed": 84,
-  "merged": 84,
+  "rounds": 54,
+  "C": 12,
+  "M": 79,
+  "m": 120,
+  "items": 33,
+  "clean": 30,
+  "reviewed": 67,
+  "merged": 67,
   "unreviewed": 0
  }
 }
