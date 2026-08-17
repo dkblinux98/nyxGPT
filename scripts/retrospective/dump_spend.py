@@ -165,9 +165,29 @@ def list_runs(repo, workflow_file, since=None):
 # failure mode this whole issue is about.
 DEGRADED = {"timing": 0, "claude_steps": 0}
 
+# Which measure each runner-minutes figure came from. A public repository
+# reports zero billable minutes, so the numbers are wall-clock duration; the
+# snapshot says so rather than labelling unbilled time as billed.
+MINUTES_SOURCE = {"billable": 0, "duration": 0}
+
 
 def run_minutes(repo, run_id):
-    """Billable runner-minutes for a run, summed across OS/runner types.
+    """Runner-minutes for a run: billable where billed, wall-clock otherwise.
+
+    **This repository is public, so Actions minutes are free and the API's
+    `billable` block is all zeros** -- reading only `billable`, as this did,
+    produced a spend panel of zeros no matter what else was fixed (#3808).
+    `run_duration_ms` carries the real elapsed time and is populated either
+    way, so it is the fallback.
+
+    The two are not the same measure and are deliberately not blended
+    silently: `billable` sums per-OS job minutes and can exceed wall clock
+    when jobs run in parallel, while `run_duration_ms` is the run's own
+    elapsed time. Which one each figure came from is recorded in
+    MINUTES_SOURCE and reported in the snapshot, so a reader is never told
+    "billed minutes" when they are looking at unbilled duration. If the
+    repository ever goes private, `billable` becomes non-zero and takes over
+    with no code change.
 
     Returns 0.0 and records the miss if the call fails. One unavailable run
     must not abort a walk over thousands of them -- `gh(check=True)` raising
@@ -183,9 +203,15 @@ def run_minutes(repo, run_id):
             flush=True,
         )
         return 0.0
-    billable = json.loads(out).get("billable", {})
-    total_ms = sum(v.get("total_ms", 0) for v in billable.values())
-    return total_ms / 60000
+    payload = json.loads(out)
+    billable_ms = sum(v.get("total_ms", 0) for v in payload.get("billable", {}).values())
+    if billable_ms > 0:
+        MINUTES_SOURCE["billable"] += 1
+        return billable_ms / 60000
+    duration_ms = payload.get("run_duration_ms") or 0
+    if duration_ms:
+        MINUTES_SOURCE["duration"] += 1
+    return duration_ms / 60000
 
 
 def claude_steps_dynamic(repo, run_id):
@@ -288,6 +314,7 @@ def build_snapshot(issues, unattributed):
             else int(os.environ.get("SPEND_WINDOW_DAYS") or DEFAULT_WINDOW_DAYS)
         ),
         "degraded": dict(DEGRADED),
+        "minutes_source": dict(MINUTES_SOURCE),
         "issues": {str(n): finalize_bucket(b) for n, b in sorted(issues.items())},
         "unattributed": finalize_bucket(unattributed),
     }

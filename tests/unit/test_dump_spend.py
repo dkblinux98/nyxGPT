@@ -189,6 +189,7 @@ class TestBuildSnapshot:
             "window_start",
             "window_days",
             "degraded",
+            "minutes_source",
             "issues",
             "unattributed",
         }
@@ -347,3 +348,38 @@ class TestSkippedRunsAreExcluded:
         )
         assert issues[3696]["runs"] == 2, "a failed run still burned runner minutes"
         assert issues[3696]["runner_minutes"] == 4.0
+
+
+class TestMinutesSource:
+    """#3808: nyxGPT is a public repo, so Actions minutes are free and the
+    API's `billable` block is all zeros. Reading only `billable` produced a
+    spend panel of zeros. `run_duration_ms` is the populated fallback, and
+    the snapshot records which measure each figure came from."""
+
+    def _timing(self, dump_spend, monkeypatch, payload):
+        monkeypatch.setattr(dump_spend, "gh", lambda *a: __import__("json").dumps(payload))
+
+    def test_falls_back_to_run_duration_when_unbilled(self, dump_spend, monkeypatch):
+        dump_spend.MINUTES_SOURCE.update(billable=0, duration=0)
+        self._timing(
+            dump_spend,
+            monkeypatch,
+            {"billable": {"UBUNTU": {"total_ms": 0}}, "run_duration_ms": 120000},
+        )
+        assert dump_spend.run_minutes("o/r", 1) == 2.0
+        assert dump_spend.MINUTES_SOURCE["duration"] == 1
+        assert dump_spend.MINUTES_SOURCE["billable"] == 0
+
+    def test_prefers_billable_when_the_repo_is_billed(self, dump_spend, monkeypatch):
+        dump_spend.MINUTES_SOURCE.update(billable=0, duration=0)
+        self._timing(
+            dump_spend,
+            monkeypatch,
+            {"billable": {"UBUNTU": {"total_ms": 60000}}, "run_duration_ms": 999999},
+        )
+        assert dump_spend.run_minutes("o/r", 1) == 1.0
+        assert dump_spend.MINUTES_SOURCE["billable"] == 1
+
+    def test_zero_everywhere_is_still_zero(self, dump_spend, monkeypatch):
+        self._timing(dump_spend, monkeypatch, {"billable": {}, "run_duration_ms": 0})
+        assert dump_spend.run_minutes("o/r", 1) == 0.0
