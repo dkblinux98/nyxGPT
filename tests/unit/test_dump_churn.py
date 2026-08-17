@@ -841,3 +841,23 @@ class TestLogFetchAccounting:
             "a dump must say why its tokens are missing, or an all-null result "
             "is indistinguishable from a correctly-empty one"
         )
+
+
+class TestJobLogFlags:
+    def test_passes_allow_escape_sequences(self, dump_churn, monkeypatch):
+        """Workflow logs carry ANSI colour codes and gh refuses to emit a
+        response containing escape sequences without this flag, exit 1. Its
+        absence made every log fetch fail (0 ok / 89 failed, run 32023282331)
+        while the dump still reported success (#3808)."""
+        seen = {}
+
+        def fake_gh(*args):
+            seen["args"] = args
+            return "body"
+
+        monkeypatch.setattr(dump_churn, "gh", fake_gh)
+        dump_churn.job_log("o/r", 7)
+        assert "--allow-escape-sequences" in seen["args"], (
+            "without this flag gh refuses the logs endpoint and every round "
+            "silently records tokens: null"
+        )

@@ -241,7 +241,21 @@ def job_log(repo, job_id):
     not look alike.
     """
     try:
-        out = gh("api", "-X", "GET", f"repos/{repo}/actions/jobs/{job_id}/logs")
+        # --allow-escape-sequences is REQUIRED for this endpoint. Workflow logs
+        # are full of ANSI colour codes, and gh refuses to emit a response
+        # containing terminal escape sequences without it: "the response
+        # contains terminal escape sequences; pass --allow-escape-sequences to
+        # output it anyway", exit 1. That guard arrived in a gh release under
+        # this script, so every log fetch failed and every round recorded
+        # tokens: null -- 0 ok / 89 failed on run 32023282331 -- while the
+        # dump itself reported success (#3808).
+        out = gh(
+            "api",
+            "-X",
+            "GET",
+            "--allow-escape-sequences",
+            f"repos/{repo}/actions/jobs/{job_id}/logs",
+        )
     except subprocess.CalledProcessError as exc:
         stderr = (exc.stderr or "") if hasattr(exc, "stderr") else ""
         if "410" in stderr or "Gone" in stderr:
