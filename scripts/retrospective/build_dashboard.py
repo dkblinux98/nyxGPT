@@ -453,6 +453,12 @@ def spend_by_sprint(spend, project_fields):
         "unattributed": unattributed,
         "outliers": outliers,
         "generatedAt": spend.get("generated_at"),
+        # Whether these minutes are billed or wall-clock. A public repository
+        # gets free Actions, so the API reports zero billable and the dump
+        # falls back to run duration -- the view must say which it is showing
+        # rather than labelling unbilled time "billable" (#3808).
+        "minutesSource": spend.get("minutes_source") or {},
+        "degraded": spend.get("degraded") or {},
     }
 
 

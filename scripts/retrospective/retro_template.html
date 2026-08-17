@@ -637,13 +637,25 @@ document.getElementById('aging').innerHTML = QDATA.aging.map(a => `<div class="m
 
 /* spend telemetry (#3696) */
 const SPEND = QDATA.spend;
+// A public repository gets free Actions, so the API reports zero billable
+// minutes and the dump falls back to run duration. Say which is on screen --
+// calling unbilled wall-clock "billable" was true until the dump started
+// filling it, and false afterwards (#3808).
+function minutesNote() {
+  const src = (SPEND && SPEND.minutesSource) || {};
+  const billed = src.billable || 0, wall = src.duration || 0;
+  if (billed && !wall) return 'billable Actions minutes, attributed + unattributed';
+  if (wall && !billed) return 'wall-clock run duration — this repo is public, so Actions are unbilled';
+  if (wall && billed) return `mixed: ${billed} billed, ${wall} wall-clock runs`;
+  return 'attributed + unattributed';
+}
 if (SPEND) {
   document.getElementById('spendSection').hidden = false;
   const unattrPct = SPEND.totals.runs ? Math.round(SPEND.unattributed.runs / SPEND.totals.runs * 100) : 0;
   document.getElementById('spenddesc').textContent =
     `Agent workflow runs as of ${SPEND.generatedAt ? new Date(SPEND.generatedAt).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',timeZone:'UTC'}) : 'the last refresh'} — the cost signal an anomaly-watching process reads to judge whether spend on an issue looks unusual, not a fixed cap. ${unattrPct}% of runs (${SPEND.unattributed.runs}) couldn't be attributed to an issue branch.`;
   document.getElementById('spendtiles').innerHTML = [
-    {label:'Runner minutes', value: SPEND.totals.runner_minutes, note:'billable Actions minutes, attributed + unattributed'},
+    {label:'Runner minutes', value: SPEND.totals.runner_minutes, note: minutesNote()},
     {label:'Claude-invoking steps', value: SPEND.totals.claude_steps, note:'across all tracked workflows'},
     {label:'Retry / self-heal cycles', value: SPEND.totals.retry_cycles, note:'developer_auto_implement.yml self-heal phases'},
     {label:'Workflow runs', value: SPEND.totals.runs, note:`${SPEND.totals.issues} issues touched`},
