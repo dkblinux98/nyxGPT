@@ -319,7 +319,7 @@
     <div id="churnincidents"></div>
   </section>
 
-  <h2 class="divider">Last 7 days in review · Aug 9 – Aug 16</h2>
+  <h2 class="divider" id="windowdivider">Last 7 days in review</h2>
 
   <div class="tiles" id="tiles"></div>
 
@@ -398,12 +398,15 @@
     <p><strong>Product management failures.</strong> The 27 issues labeled <span class="mono">Improvement</span>
     are counted as a separate failure statistic: an Improvement filed during acceptance testing means the
     spec itself was incomplete — a product-management (planning) failure, distinct from an Acceptance
-    Failure (implementation defect). Improvements never gate a feature's move to release.</p>
-    <p><strong>Failure-issue model (since 2026-08-02).</strong> A unique acceptance failure becomes a
-    <em>new</em> issue labeled Acceptance Failure, related to the original feature via a
-    <span class="mono">Related feature: #N</span> body line and a blocking dependency; the original stays
-    closed. A fix that later fails stakeholder re-test <em>reopens the same failure issue</em> rather than
-    filing a new one — so failure-issue counts understate total failure rounds.</p>
+    Failure (implementation defect). Since 2026-08-12 (#3731) an Improvement gates a feature's move to
+    release exactly as a failure does; the label separates the two as a <em>statistic</em>, not as a gate.</p>
+    <p><strong>Failure-issue model (since 2026-08-02; storage changed 2026-08-12, #3731).</strong> A unique
+    acceptance failure becomes a <em>new</em> issue labeled Acceptance Failure that <em>blocks</em> the
+    original feature through GitHub's native blocked-by/blocks relationship — the only place the link is
+    stored. The <span class="mono">Related feature: #N</span> body convention is retired, still read as a
+    fallback for issues filed before that date. The original feature stays closed. A fix that later fails
+    stakeholder re-test <em>reopens the same failure issue</em> rather than filing a new one — so
+    failure-issue counts understate total failure rounds.</p>
     <p><strong>Sprints.</strong> Sprint buckets are the Project's real Sprint iterations, read from the
     snapshot committed by the "Retro Dashboard - Dump Project Fields" workflow
     (scripts/retrospective/data/project_fields.json) — each issue lands in the sprint it was actually
@@ -440,12 +443,14 @@
     committed to the repository, which ships only a zeroed example. Shown only when
     <span class="mono">data/churn.json</span> has been refreshed by the
     "Retro Dashboard - Dump Churn Cost" workflow.</p>
-    <p><strong>Last 7 days.</strong> The 71 REQUEST_CHANGES reviews on nyxGPT PRs between 2026-08-09 and
-    2026-08-16, parsed from the pull-request reviews themselves (Critical / Medium / Minor findings sections).
-    Re-review rejections with no new findings count as a round with zero findings. Of 84 PRs merged in the
-    window, none were owner-carried workflow merges bypassing agent review, so all are included in
-    first-pass stats; of the 84 reviewed PRs, 38 were approved first-pass — verified
-    against each PR's review history. <strong>Module attribution</strong> follows the repo's module taxonomy,
+    <p><strong>Last 7 days.</strong> The <span id="wRounds"></span> REQUEST_CHANGES reviews on nyxGPT PRs
+    between <span id="wFrom"></span> and <span id="wTo"></span>, parsed from the pull-request reviews
+    themselves (Critical / Medium / Minor findings sections).
+    Re-review rejections with no new findings count as a round with zero findings. Of
+    <span id="wMerged"></span> PRs merged in the window, <span id="wUnreviewed"></span> were
+    owner-carried workflow merges bypassing agent review; of the <span id="wReviewed"></span> reviewed
+    PRs, <span id="wClean"></span> were approved first-pass — derived from each PR's review history.
+    <strong>Module attribution</strong> follows the repo's module taxonomy,
     inferred from issue titles (the Project's Module field is not API-readable here).</p>
   </footer>
 </div>
@@ -773,8 +778,31 @@ document.getElementById('modules').innerHTML = mods.map(([name, v]) => {
   </div>`;
 }).join('');
 
-const WINDOW = ['2026-07-26','2026-07-27','2026-07-28','2026-07-29','2026-07-30','2026-07-31','2026-08-01'];
-const maxDay = Math.max(...WINDOW.map(d => (DATA.days[d]||{rounds:0}).rounds));
+// Derived from the dump, never hand-maintained: a hard-coded array silently
+// renders every bar at zero once the dump's window moves past it, which is
+// what it had been doing since 2026-08-01.
+const WINDOW = Object.keys(DATA.days).sort();
+const _fmtDay = d => new Date(d + 'T00:00:00Z')
+  .toLocaleDateString('en-US', {month:'short', day:'numeric', timeZone:'UTC'});
+if (WINDOW.length) {
+  document.getElementById('windowdivider').textContent =
+    `Last ${WINDOW.length} days in review · ${_fmtDay(WINDOW[0])} – ${_fmtDay(WINDOW[WINDOW.length-1])}`;
+}
+const maxDay = Math.max(1, ...WINDOW.map(d => (DATA.days[d]||{rounds:0}).rounds));
+
+// Same rule for the footnote's figures — read them from the dump's totals
+// rather than restating them by hand on every refresh.
+{
+  const t = DATA.totals || {};
+  const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+  set('wRounds', t.rounds ?? '—');
+  set('wFrom', WINDOW[0] ?? '—');
+  set('wTo', WINDOW[WINDOW.length-1] ?? '—');
+  set('wMerged', t.merged ?? '—');
+  set('wUnreviewed', t.unreviewed ?? '—');
+  set('wReviewed', t.reviewed ?? '—');
+  set('wClean', t.clean ?? '—');
+}
 document.getElementById('days').innerHTML = WINDOW.map(d => {
   const v = (DATA.days[d]||{rounds:0,C:0,M:0,m:0});
   const h = v.rounds / maxDay * 100;
