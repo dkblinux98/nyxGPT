@@ -28,6 +28,7 @@ from pathlib import Path
 HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE))
 from build_dashboard import detect_module  # noqa: E402
+from dump_spend import iter_json_objects  # noqa: E402  (one implementation, #3808)
 
 WINDOW_DAYS = 7
 DATA_DIR = HERE / "data"
@@ -39,19 +40,6 @@ BOLD_RE = re.compile(r"^\*\*(.+?)\*\*")
 
 def gh(*args):
     return subprocess.run(["gh", *args], check=True, capture_output=True, text=True).stdout
-
-
-def iter_json_objects(text):
-    dec = json.JSONDecoder()
-    idx, n = 0, len(text)
-    while idx < n:
-        while idx < n and text[idx].isspace():
-            idx += 1
-        if idx >= n:
-            break
-        obj, offset = dec.raw_decode(text, idx)
-        yield obj
-        idx += offset
 
 
 def search_issues(query):

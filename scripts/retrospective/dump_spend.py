@@ -85,9 +85,16 @@ def iter_json_objects(text):
             idx += 1
         if idx >= n:
             break
-        obj, offset = dec.raw_decode(text, idx)
+        # raw_decode returns the ABSOLUTE index in `text` where the document
+        # ended, not a length relative to `idx`. `idx += end` therefore
+        # double-counts everything already consumed: correct for the first
+        # document (which starts at 0) and wrong for every one after it. The
+        # overshoot either runs past the end -- exiting this loop and silently
+        # discarding the remaining pages -- or lands mid-document and raises
+        # "Expecting value" (#3808).
+        obj, end = dec.raw_decode(text, idx)
         yield obj
-        idx += offset
+        idx = end
 
 
 def issue_of(branch):

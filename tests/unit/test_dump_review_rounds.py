@@ -8,6 +8,7 @@ replace the Gmail notification-email parse with the GitHub PR-review API.
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -123,6 +124,51 @@ class TestIterJsonObjects:
 
     def test_empty_text_yields_nothing(self, dump_review_rounds):
         assert list(dump_review_rounds.iter_json_objects("   ")) == []
+
+    # --- #3808 regression ---------------------------------------------------
+    # `raw_decode` returns the ABSOLUTE index where a document ended, not a
+    # length. The old `idx += end` was therefore right only for the first
+    # document and overshot for every one after it, either running past the
+    # end (silently dropping the rest, exit 0) or landing mid-document and
+    # raising "Expecting value". THREE pages is the minimum that detects it:
+    # with two, the overshoot lands exactly at len(text) and the loop exits
+    # having yielded both, so a 2-page fixture passes against the bug -- which
+    # is why the two cases above did not catch it.
+
+    def test_three_pages_are_all_yielded(self, dump_review_rounds):
+        text = "".join(f'[{{"a": {i}}}]' for i in range(1, 4))
+        pages = list(dump_review_rounds.iter_json_objects(text))
+        assert pages == [[{"a": 1}], [{"a": 2}], [{"a": 3}]], (
+            "pages after the second were dropped -- raw_decode's return value "
+            "is an absolute index, not a length (#3808)"
+        )
+
+    def test_many_pages_of_differing_length_are_all_yielded(self, dump_review_rounds):
+        # Uneven page sizes: an overshoot lands mid-document rather than past
+        # the end, which is the variant that raised in the spend dump.
+        payloads = [
+            [{"id": 1}],
+            [{"id": 2}, {"id": 3}, {"id": 4}],
+            [{"id": 5}],
+            [{"id": 6}, {"id": 7}],
+        ]
+        text = "".join(json.dumps(p) for p in payloads)
+        assert list(dump_review_rounds.iter_json_objects(text)) == payloads
+
+    def test_whitespace_between_pages_is_tolerated(self, dump_review_rounds):
+        text = '[{"a": 1}]\n [{"a": 2}]\n\t[{"a": 3}]\n'
+        assert list(dump_review_rounds.iter_json_objects(text)) == [
+            [{"a": 1}],
+            [{"a": 2}],
+            [{"a": 3}],
+        ]
+
+    def test_single_implementation_shared_across_dumps(self, dump_review_rounds):
+        """The helper is defined once (#3808) -- three copies is how one of
+        them kept a bug the others had fixed."""
+        import dump_spend
+
+        assert dump_review_rounds.iter_json_objects is dump_spend.iter_json_objects
 
 
 class TestBuildDashboardSnapshot:
