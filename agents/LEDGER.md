@@ -934,6 +934,21 @@ are absent here by design (relocated to the annex; IDs are never reused).
   changes, any workflow starts passing `--setting-sources`, or a
   `claude-code-action` step is added to a job with no `actions/checkout`.
 
+- **V-029** · 2026-08-17 — A GitHub code-scanning **alert dismissal comment is
+  capped at 280 characters**; a longer body is refused. Dismissal rationales
+  must be written to that budget: name the sink, the reason the taint does not
+  reach it, and the `file:line` that proves it — not the full argument. Six
+  rationales drafted at 250–500 characters were all over the limit and had to
+  be rewritten.
+  Method: **owner-reported, not independently verified** (owner in session,
+  2026-08-17, while dismissing alerts #115–#120). Weaker than the claim by
+  necessity: dismissing an alert is a code-scanning *write*, and no agent token
+  in this repo has that access — the supported agent path
+  (`code_scan_report.yml`, `CLAUDE.md` § Tooling) is read-only, so the boundary
+  cannot be tested from an agent session.
+  Re-verify when: GitHub changes the dismissal form, or an agent gains
+  code-scanning write access and can test the limit directly.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
