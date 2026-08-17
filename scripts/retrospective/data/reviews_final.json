@@ -4513,5 +4513,35 @@
    "Empty routing decision in Slack on dispatcher failure",
    "Unlinked-PR escalation edge"
   ]
+ },
+ {
+  "issue": 3815,
+  "pr": 3817,
+  "title": "[dkblinux98/nyxGPT] Feature: bug: retrospective dump workflows cannot push \u2014 v3.0.0 ruleset requires pull requests (#3815) (PR #3817)",
+  "module": "api",
+  "date": "2026-08-16T16:13:55Z",
+  "critical": [],
+  "medium": [
+   "Missing executed verification on the real GitHub ruleset (\u00a71c; #3815 acceptance criterion 4)"
+  ],
+  "minor": [
+   "Concurrent-dump publish race",
+   "`usage()` truncates the merge script's header"
+  ]
+ },
+ {
+  "issue": 3815,
+  "pr": 3817,
+  "title": "[dkblinux98/nyxGPT] Feature: bug: retrospective dump workflows cannot push \u2014 v3.0.0 ruleset requires pull requests (#3815) (PR #3817)",
+  "module": "api",
+  "date": "2026-08-16T16:47:23Z",
+  "critical": [],
+  "medium": [
+   "Guard is bypassable in the check-to-merge window: merge does not pin the verified head (`scripts/retrospective/merge_data_branch.sh:250` approx, the `gh pr merge \"$pr\" --repo \"$REPO\" --merge` call)"
+  ],
+  "minor": [
+   "Runbook still offers the guard-free manual push",
+   "`APPROVAL_GRACE` is read mid-script rather than declared with the other tunables"
+  ]
  }
 ]
