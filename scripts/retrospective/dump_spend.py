@@ -27,11 +27,17 @@ import os
 import re
 import subprocess
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 HERE = Path(__file__).parent
 DATA_DIR = HERE / "data"
+# Days of run history to walk. See window_start(); 0 = all history.
+DEFAULT_WINDOW_DAYS = 30
+
+# Conclusions meaning "this run did nothing": no billable minutes, no executed
+# step. Excluded from the walk entirely -- see collect().
+SKIPPED_CONCLUSIONS = frozenset({"skipped", "cancelled"})
 
 # Workflows that invoke Claude directly (anthropics/claude-code-action) with
 # a single, unconditional step -- a static count of 1 Claude step per
@@ -105,8 +111,39 @@ def issue_of(branch):
     return int(m.group(1) or m.group(2))
 
 
-def list_runs(repo, workflow_file):
-    out = gh(
+def window_start():
+    """Oldest run date to walk, as YYYY-MM-DD, or None to walk all history.
+
+    The walk costs one `/timing` API call per completed run, so its size is
+    the token's hourly REST budget divided by roughly one. This repository
+    holds ~36k workflow runs; unbounded, the dump exhausts the agent token
+    mid-walk and dies (#3808 round two). It only ever appeared bounded because
+    the paginated-JSON defect silently stopped it after two pages.
+
+    `SPEND_WINDOW_DAYS=0` restores the full walk deliberately, for a one-off
+    backfill run with a fresh budget.
+    """
+    raw = (os.environ.get("SPEND_WINDOW_DAYS") or str(DEFAULT_WINDOW_DAYS)).strip()
+    try:
+        days = int(raw)
+    except ValueError:
+        print(
+            f"[dump_spend] bad SPEND_WINDOW_DAYS {raw!r}; using {DEFAULT_WINDOW_DAYS}", flush=True
+        )
+        days = DEFAULT_WINDOW_DAYS
+    if days <= 0:
+        return None
+    return (datetime.now(UTC) - timedelta(days=days)).strftime("%Y-%m-%d")
+
+
+def list_runs(repo, workflow_file, since=None):
+    """Runs for one workflow, bounded to `since` (YYYY-MM-DD) when given.
+
+    The date bound is applied server-side via the runs API's `created` filter,
+    so it cuts pages fetched rather than filtering after the fact.
+    """
+    since = window_start() if since is None else since
+    args = [
         "api",
         "-X",
         "GET",
@@ -114,24 +151,99 @@ def list_runs(repo, workflow_file):
         "--paginate",
         "-f",
         "per_page=100",
-    )
+    ]
+    if since:
+        args += ["-f", f"created=>={since}"]
     runs = []
-    for page in iter_json_objects(out):
+    for page in iter_json_objects(gh(*args)):
         runs.extend(page.get("workflow_runs", []))
     return runs
 
 
+# Per-item API calls that failed and were counted as zero. Surfaced in the
+# snapshot rather than swallowed: a dump that quietly under-reports is the
+# failure mode this whole issue is about.
+DEGRADED = {"timing": 0, "claude_steps": 0}
+
+
+def gh_optional(*args, what="call"):
+    """`gh` that records the miss and returns None instead of raising.
+
+    Any call made once per item inside a walk over thousands of runs must go
+    through this. `gh(check=True)` raising discards the entire walk over one
+    transient failure -- which happened twice on #3808, in two different call
+    sites (dump_spend's /timing and dump_churn's list_jobs), each time on an
+    endpoint that returned 200 on retry. Fixing them one at a time is how the
+    same defect gets patched repeatedly, so this is the shared form: the
+    per-item call sites in both dumps use it, and the miss is counted rather
+    than hidden.
+
+    Whole-list calls deliberately still raise -- losing an entire workflow's
+    run list is not a degraded result, it is a wrong one.
+    """
+    try:
+        return gh(*args)
+    except subprocess.CalledProcessError as exc:
+        DEGRADED[what] = DEGRADED.get(what, 0) + 1
+        print(
+            f"[dump_spend] {what} call failed (gh exit {exc.returncode}); "
+            f"counted as empty: {' '.join(str(a) for a in args[-1:])}",
+            flush=True,
+        )
+        return None
+
+
+# Which measure each runner-minutes figure came from. A public repository
+# reports zero billable minutes, so the numbers are wall-clock duration; the
+# snapshot says so rather than labelling unbilled time as billed.
+MINUTES_SOURCE = {"billable": 0, "duration": 0}
+
+
 def run_minutes(repo, run_id):
-    """Billable runner-minutes for a run, summed across OS/runner types."""
-    out = gh("api", "-X", "GET", f"repos/{repo}/actions/runs/{run_id}/timing")
-    billable = json.loads(out).get("billable", {})
-    total_ms = sum(v.get("total_ms", 0) for v in billable.values())
-    return total_ms / 60000
+    """Runner-minutes for a run: billable where billed, wall-clock otherwise.
+
+    **This repository is public, so Actions minutes are free and the API's
+    `billable` block is all zeros** -- reading only `billable`, as this did,
+    produced a spend panel of zeros no matter what else was fixed (#3808).
+    `run_duration_ms` carries the real elapsed time and is populated either
+    way, so it is the fallback.
+
+    The two are not the same measure and are deliberately not blended
+    silently: `billable` sums per-OS job minutes and can exceed wall clock
+    when jobs run in parallel, while `run_duration_ms` is the run's own
+    elapsed time. Which one each figure came from is recorded in
+    MINUTES_SOURCE and reported in the snapshot, so a reader is never told
+    "billed minutes" when they are looking at unbilled duration. If the
+    repository ever goes private, `billable` becomes non-zero and takes over
+    with no code change.
+
+    Returns 0.0 and records the miss if the call fails. One unavailable run
+    must not abort a walk over thousands of them -- `gh(check=True)` raising
+    here is what killed run 32001662234 after 22 minutes of work.
+    """
+    out = gh_optional(
+        "api", "-X", "GET", f"repos/{repo}/actions/runs/{run_id}/timing", what="timing"
+    )
+    if out is None:
+        return 0.0
+    payload = json.loads(out)
+    billable_ms = sum(v.get("total_ms", 0) for v in payload.get("billable", {}).values())
+    if billable_ms > 0:
+        MINUTES_SOURCE["billable"] += 1
+        return billable_ms / 60000
+    duration_ms = payload.get("run_duration_ms") or 0
+    if duration_ms:
+        MINUTES_SOURCE["duration"] += 1
+    return duration_ms / 60000
 
 
 def claude_steps_dynamic(repo, run_id):
-    """Executed (non-skipped) Claude-named steps for one workflow run."""
-    out = gh(
+    """Executed (non-skipped) Claude-named steps for one workflow run.
+
+    Returns 0 and records the miss if the call fails, for the same reason as
+    run_minutes: one unavailable run must not abort the whole walk.
+    """
+    out = gh_optional(
         "api",
         "-X",
         "GET",
@@ -139,7 +251,10 @@ def claude_steps_dynamic(repo, run_id):
         "--paginate",
         "-f",
         "per_page=100",
+        what="claude_steps",
     )
+    if out is None:
+        return 0
     count = 0
     for page in iter_json_objects(out):
         for job in page.get("jobs", []):
@@ -172,6 +287,16 @@ def collect(
         for run in list_runs_fn(repo, wf):
             if run.get("status") != "completed":
                 continue
+            # A skipped or cancelled run did no work: it burned no billable
+            # minutes and executed no Claude step. Counting it was wrong twice
+            # over -- it inflated `runs` and, for the static workflows, credited
+            # a Claude step that never ran (claude.yml is 3,969 runs of which
+            # 3,969 are skipped), and it spent a /timing call to learn zero.
+            # 21,637 of this repo's 23,963 tracked runs are skipped, so the
+            # filter is also what keeps the walk inside one token's hourly
+            # REST budget (#3808).
+            if run.get("conclusion") in SKIPPED_CONCLUSIONS:
+                continue
             issue = issue_of(run.get("head_branch"))
             bucket = issues[issue] if issue is not None else unattributed
             bucket["runs"] += 1
@@ -194,8 +319,19 @@ def finalize_bucket(bucket):
 
 
 def build_snapshot(issues, unattributed):
+    since = window_start()
     return {
         "generated_at": datetime.now(UTC).isoformat(),
+        # What the walk covered, so a consumer can tell a real zero from an
+        # out-of-window one, and a clean dump from a degraded one.
+        "window_start": since,
+        "window_days": (
+            None
+            if since is None
+            else int(os.environ.get("SPEND_WINDOW_DAYS") or DEFAULT_WINDOW_DAYS)
+        ),
+        "degraded": dict(DEGRADED),
+        "minutes_source": dict(MINUTES_SOURCE),
         "issues": {str(n): finalize_bucket(b) for n, b in sorted(issues.items())},
         "unattributed": finalize_bucket(unattributed),
     }

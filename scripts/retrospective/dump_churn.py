@@ -64,7 +64,7 @@ from pathlib import Path
 
 HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE))
-from dump_spend import gh, issue_of, iter_json_objects  # noqa: E402
+from dump_spend import gh, gh_optional, issue_of, iter_json_objects  # noqa: E402
 
 DATA_DIR = HERE / "data"
 DEFAULT_WINDOW_DAYS = 30
@@ -195,7 +195,14 @@ def list_runs(repo, workflow_file):
 
 
 def list_jobs(repo, run_id):
-    out = gh(
+    """Jobs for one run; [] when the call fails.
+
+    Per-run call inside a walk over thousands of runs, so it degrades rather
+    than aborting -- a transient failure here threw away a whole churn dump
+    (run 32010934175, on an endpoint that returned 200 on retry). See
+    dump_spend.gh_optional.
+    """
+    out = gh_optional(
         "api",
         "-X",
         "GET",
@@ -203,19 +210,66 @@ def list_jobs(repo, run_id):
         "--paginate",
         "-f",
         "per_page=100",
+        what="churn_jobs",
     )
+    if out is None:
+        return []
     jobs = []
     for page in iter_json_objects(out):
         jobs.extend(page.get("jobs", []))
     return jobs
 
 
+# Why each log fetch produced nothing. An expired log, a rate-limited or
+# refused download, and a log that genuinely carries no usage all used to
+# return the same "" -- so a dump where EVERY fetch failed was indistinguishable
+# from one where every log was simply token-free, and both rendered as an empty
+# churn panel with no explanation. The 2026-08-17 dump recorded tokens: null for
+# all 304 rounds while the newest round's log was fetchable and contained 90
+# `input_tokens` markers, and nothing in the output said which had happened.
+LOG_FETCH = {"ok": 0, "expired": 0, "failed": 0}
+
+
 def job_log(repo, job_id):
-    """Plain-text log for one job; '' when GitHub has expired or hidden it."""
+    """Plain-text log for one job; '' when GitHub has expired or refused it.
+
+    Records the outcome in LOG_FETCH so the snapshot can say why tokens are
+    missing. GitHub returns 410 Gone for an expired log -- this repository's
+    retention is short (a 2026-08-09 log was already gone on 2026-08-17, while
+    2026-08-16 was still served), so most of a 30-day window is expected to be
+    expired and that is not a defect. A non-410 failure is, and the two must
+    not look alike.
+    """
     try:
-        return gh("api", "-X", "GET", f"repos/{repo}/actions/jobs/{job_id}/logs")
-    except subprocess.CalledProcessError:
+        # --allow-escape-sequences is REQUIRED for this endpoint. Workflow logs
+        # are full of ANSI colour codes, and gh refuses to emit a response
+        # containing terminal escape sequences without it: "the response
+        # contains terminal escape sequences; pass --allow-escape-sequences to
+        # output it anyway", exit 1. That guard arrived in a gh release under
+        # this script, so every log fetch failed and every round recorded
+        # tokens: null -- 0 ok / 89 failed on run 32023282331 -- while the
+        # dump itself reported success (#3808).
+        out = gh(
+            "api",
+            "-X",
+            "GET",
+            "--allow-escape-sequences",
+            f"repos/{repo}/actions/jobs/{job_id}/logs",
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "") if hasattr(exc, "stderr") else ""
+        if "410" in stderr or "Gone" in stderr:
+            LOG_FETCH["expired"] += 1
+        else:
+            LOG_FETCH["failed"] += 1
+            print(
+                f"[dump_churn] log fetch failed for job {job_id} "
+                f"(gh exit {exc.returncode}): {stderr.strip()[:200]}",
+                flush=True,
+            )
         return ""
+    LOG_FETCH["ok"] += 1
+    return out
 
 
 def step_key(step):
@@ -653,6 +707,11 @@ def build_snapshot(rounds, sheet=None, incidents=None):
     issues = rollup_issues(rounds, sheet)
     return {
         "generated_at": datetime.now(UTC).isoformat(),
+        # Why tokens are missing where they are missing: "expired" is the
+        # normal cost of a window longer than GitHub's log retention;
+        # "failed" is a real problem. Without this, an all-null dump and a
+        # correctly-empty one are the same output (#3808).
+        "logFetch": dict(LOG_FETCH),
         "methodology": METHODOLOGY,
         "rounds": rounds,
         "issues": {str(n): entry for n, entry in sorted(issues.items())},
