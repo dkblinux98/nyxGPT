@@ -220,12 +220,42 @@ def list_jobs(repo, run_id):
     return jobs
 
 
+# Why each log fetch produced nothing. An expired log, a rate-limited or
+# refused download, and a log that genuinely carries no usage all used to
+# return the same "" -- so a dump where EVERY fetch failed was indistinguishable
+# from one where every log was simply token-free, and both rendered as an empty
+# churn panel with no explanation. The 2026-08-17 dump recorded tokens: null for
+# all 304 rounds while the newest round's log was fetchable and contained 90
+# `input_tokens` markers, and nothing in the output said which had happened.
+LOG_FETCH = {"ok": 0, "expired": 0, "failed": 0}
+
+
 def job_log(repo, job_id):
-    """Plain-text log for one job; '' when GitHub has expired or hidden it."""
+    """Plain-text log for one job; '' when GitHub has expired or refused it.
+
+    Records the outcome in LOG_FETCH so the snapshot can say why tokens are
+    missing. GitHub returns 410 Gone for an expired log -- this repository's
+    retention is short (a 2026-08-09 log was already gone on 2026-08-17, while
+    2026-08-16 was still served), so most of a 30-day window is expected to be
+    expired and that is not a defect. A non-410 failure is, and the two must
+    not look alike.
+    """
     try:
-        return gh("api", "-X", "GET", f"repos/{repo}/actions/jobs/{job_id}/logs")
-    except subprocess.CalledProcessError:
+        out = gh("api", "-X", "GET", f"repos/{repo}/actions/jobs/{job_id}/logs")
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "") if hasattr(exc, "stderr") else ""
+        if "410" in stderr or "Gone" in stderr:
+            LOG_FETCH["expired"] += 1
+        else:
+            LOG_FETCH["failed"] += 1
+            print(
+                f"[dump_churn] log fetch failed for job {job_id} "
+                f"(gh exit {exc.returncode}): {stderr.strip()[:200]}",
+                flush=True,
+            )
         return ""
+    LOG_FETCH["ok"] += 1
+    return out
 
 
 def step_key(step):
@@ -663,6 +693,11 @@ def build_snapshot(rounds, sheet=None, incidents=None):
     issues = rollup_issues(rounds, sheet)
     return {
         "generated_at": datetime.now(UTC).isoformat(),
+        # Why tokens are missing where they are missing: "expired" is the
+        # normal cost of a window longer than GitHub's log retention;
+        # "failed" is a real problem. Without this, an all-null dump and a
+        # correctly-empty one are the same output (#3808).
+        "logFetch": dict(LOG_FETCH),
         "methodology": METHODOLOGY,
         "rounds": rounds,
         "issues": {str(n): entry for n, entry in sorted(issues.items())},
