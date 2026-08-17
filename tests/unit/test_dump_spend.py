@@ -282,3 +282,68 @@ class TestWindowAndDegradation:
         assert snap["window_start"] is not None
         assert snap["window_days"] == 30
         assert snap["degraded"]["timing"] == 2, "a degraded dump must say so in its own output"
+
+
+class TestSkippedRunsAreExcluded:
+    """A skipped run did nothing: no billable minutes, no executed step.
+
+    Counting them was wrong twice over -- it inflated `runs`, and for the
+    static workflows it credited a Claude step that never executed
+    (claude.yml: 3,969 runs, all 3,969 skipped). It also spent one /timing
+    call per no-op run, which is what put the walk beyond the token's hourly
+    REST budget: 21,637 of 23,963 tracked runs in this repo are skipped.
+    """
+
+    def _run(self, rid, branch, conclusion="success"):
+        return {
+            "id": rid,
+            "status": "completed",
+            "conclusion": conclusion,
+            "head_branch": branch,
+        }
+
+    def test_skipped_run_is_not_counted_at_all(self, dump_spend):
+        runs = [self._run(1, "feat/3696-x", "skipped")]
+        called = []
+        issues, unattributed = dump_spend.collect(
+            "o/r",
+            list_runs_fn=lambda repo, wf: runs if wf == "claude.yml" else [],
+            run_minutes_fn=lambda repo, rid: called.append(rid) or 5.0,
+            claude_steps_fn=lambda repo, rid: 1,
+        )
+        assert issues == {}, "a skipped run must not create an issue bucket"
+        assert called == [], "no /timing call may be spent on a skipped run"
+
+    def test_cancelled_run_is_not_counted(self, dump_spend):
+        runs = [self._run(1, "feat/3696-x", "cancelled")]
+        issues, _ = dump_spend.collect(
+            "o/r",
+            list_runs_fn=lambda repo, wf: runs if wf == "claude.yml" else [],
+            run_minutes_fn=lambda repo, rid: 5.0,
+            claude_steps_fn=lambda repo, rid: 1,
+        )
+        assert issues == {}
+
+    def test_skipped_static_run_credits_no_claude_step(self, dump_spend):
+        # The correctness half: claude.yml is CLAUDE_WORKFLOWS_STATIC, so a
+        # counted skipped run would add a phantom Claude step.
+        runs = [self._run(1, "feat/3696-x", "skipped"), self._run(2, "feat/3696-x", "success")]
+        issues, _ = dump_spend.collect(
+            "o/r",
+            list_runs_fn=lambda repo, wf: runs if wf == "claude.yml" else [],
+            run_minutes_fn=lambda repo, rid: 1.0,
+            claude_steps_fn=lambda repo, rid: 0,
+        )
+        assert issues[3696]["claude_steps"] == 1, "only the executed run counts"
+        assert issues[3696]["runs"] == 1
+
+    def test_successful_and_failed_runs_still_count(self, dump_spend):
+        runs = [self._run(1, "feat/3696-x", "success"), self._run(2, "feat/3696-x", "failure")]
+        issues, _ = dump_spend.collect(
+            "o/r",
+            list_runs_fn=lambda repo, wf: runs if wf == "ci-tests.yml" else [],
+            run_minutes_fn=lambda repo, rid: 2.0,
+            claude_steps_fn=lambda repo, rid: 0,
+        )
+        assert issues[3696]["runs"] == 2, "a failed run still burned runner minutes"
+        assert issues[3696]["runner_minutes"] == 4.0

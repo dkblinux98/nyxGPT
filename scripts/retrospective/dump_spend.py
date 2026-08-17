@@ -35,6 +35,10 @@ DATA_DIR = HERE / "data"
 # Days of run history to walk. See window_start(); 0 = all history.
 DEFAULT_WINDOW_DAYS = 30
 
+# Conclusions meaning "this run did nothing": no billable minutes, no executed
+# step. Excluded from the walk entirely -- see collect().
+SKIPPED_CONCLUSIONS = frozenset({"skipped", "cancelled"})
+
 # Workflows that invoke Claude directly (anthropics/claude-code-action) with
 # a single, unconditional step -- a static count of 1 Claude step per
 # completed run is accurate without an extra API call.
@@ -239,6 +243,16 @@ def collect(
     for wf in ALL_WORKFLOWS:
         for run in list_runs_fn(repo, wf):
             if run.get("status") != "completed":
+                continue
+            # A skipped or cancelled run did no work: it burned no billable
+            # minutes and executed no Claude step. Counting it was wrong twice
+            # over -- it inflated `runs` and, for the static workflows, credited
+            # a Claude step that never ran (claude.yml is 3,969 runs of which
+            # 3,969 are skipped), and it spent a /timing call to learn zero.
+            # 21,637 of this repo's 23,963 tracked runs are skipped, so the
+            # filter is also what keeps the walk inside one token's hourly
+            # REST budget (#3808).
+            if run.get("conclusion") in SKIPPED_CONCLUSIONS:
                 continue
             issue = issue_of(run.get("head_branch"))
             bucket = issues[issue] if issue is not None else unattributed
