@@ -24,8 +24,10 @@ intelligence (owner's framing, 2026-08-08):
    awareness of conflicts it is about to create.
 4. **Issue relationships guide nothing.** The owner's explicit convention is
    the **native Relationships project field** (2026-08-02 decision, reaffirmed
-   2026-08-08 — *not* sub-issues), but `create_issue.sh --blocks` posts prose
-   comments that nothing traverses.
+   2026-08-08 — *not* sub-issues), but `create_issue.sh --blocks` posted prose
+   comments that nothing traversed. Closed by #3836: the flag now writes the
+   native blocked-by edge via `mark_issue_blocked_by`, the same primitive the
+   acceptance handlers use, and touches nothing else on the target issue.
 5. **Sprint scope has no statistical basis.** Sprints are labels, not
    commitments derived from velocity, failure-arrival rate, or effort
    calibration; retrospectives exist as an owner dashboard but feed nothing
@@ -205,12 +207,17 @@ W5 ──▶ W6 (charters/runbooks/docs)
 ### Stage 2 — graph and merge hygiene
 
 - **W1 — `feat: create_issue.sh --blocks writes native Relationships - api`**
-  (Module: api · P1 · Effort: S · blocked by: none)
+  (Module: api · P1 · Effort: S · blocked by: none) — **delivered by #3836.**
   Replace the prose-comment implementation of `--blocks` with the native
   Relationships project field. AC: `--blocks N` produces a visible
   Relationships panel edge; no relationship comments are posted; field
   verified by re-query after creation (house rule); existing prose
   "Related to #N" bodies are unaffected (no backfill in this issue).
+  As shipped, `--blocks N` calls `mark_issue_blocked_by` — the same
+  primitive `handle_acceptance_failure.yml` uses — and the edge is asserted
+  against a recording `gh` stub by `tests/test_create_issue_blocks.sh`
+  (`issue-relationships-smoke.yml`), which also proves the retired
+  implementation fails those assertions.
 
 - **W2 — `feat: Relationships eligibility library for agent scripts - api`**
   (Module: api · P1 · Effort: S · blocked by: W1)
