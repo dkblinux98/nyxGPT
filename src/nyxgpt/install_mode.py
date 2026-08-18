@@ -46,6 +46,15 @@ logger = logging.getLogger(__name__)
 INSTALL_MODE_ARTIFACT = "artifact"
 INSTALL_MODE_DEV = "dev"
 
+# Display-only third state (#3835): a deployment that is *running* but whose
+# marker is absent. It is never a value of `mode` and is never written to a
+# marker file -- it is precisely the absence of one. It exists because
+# "nothing was recorded" and "artifact was recorded" are different facts, and
+# for a Terraform deployment the artifact default is not merely unproven, it
+# is the wrong way round: every deployment made before #3835 was built from
+# the working tree.
+INSTALL_MODE_UNRECORDED = "unrecorded"
+
 # Which deployment a marker describes. The native services and a Terraform
 # deployment each keep their own file (see the module docstring).
 DEPLOYMENT_NATIVE = "native"
@@ -81,6 +90,11 @@ class InstallModeState:
     # `ops status`/`doctor` can name them instead of leaving the operator to
     # infer which build is serving (#3835).
     images: dict[str, str] = field(default_factory=dict)
+    # Whether a marker was actually read, as opposed to `mode` being this
+    # dataclass's default. Callers that also know the deployment is *running*
+    # need the difference: an unreadable or absent marker under a live
+    # Terraform stack means the build is unknown, not artifact (#3835).
+    recorded: bool = False
 
     @property
     def is_dev(self) -> bool:
@@ -92,18 +106,49 @@ class InstallModeState:
         """True when this state describes the Terraform deployment, not the native services."""
         return self.deployment == DEPLOYMENT_TERRAFORM
 
-    def label(self) -> str:
-        """One-line human label for `ops status`/`doctor`."""
+    def label(self, *, deployed: bool = False) -> str:
+        """One-line human label for `ops status`/`doctor`.
+
+        `deployed` says whether the deployment this state describes is
+        actually running, and only changes the answer for an unrecorded
+        Terraform deployment: a live stack with no marker predates #3835 or
+        was brought up some other way, and calling that "artifact" asserts
+        the opposite of the truth (every pre-#3835 deployment was built from
+        the working tree). The native default needs no such care -- artifact
+        really was the only mode before #3789.
+        """
         if self.is_terraform:
-            return self._terraform_label()
+            return self._terraform_label(deployed=deployed)
         if self.is_dev:
             return f"dev (editable checkout at {self.checkout or 'unknown checkout'})"
         return "artifact (published/vendored build -- the repo-less default)"
 
-    def _terraform_label(self) -> str:
+    def short_label(self, *, deployed: bool = False) -> str:
+        """One word for a per-component tag: dev, artifact, or unrecorded.
+
+        Same tri-state as `label`, so a status line's per-component tags can
+        never disagree with the deployment line above them.
+        """
+        if self._is_unrecorded_deployment(deployed):
+            return INSTALL_MODE_UNRECORDED
+        return INSTALL_MODE_DEV if self.is_dev else INSTALL_MODE_ARTIFACT
+
+    def _is_unrecorded_deployment(self, deployed: bool) -> bool:
+        """True for a running Terraform deployment whose mode nothing recorded."""
+        return self.is_terraform and deployed and not self.recorded
+
+    def _terraform_label(self, *, deployed: bool = False) -> str:
         """Label for a Terraform deployment, naming the images it is running."""
         images = ", ".join(f"{component}={ref}" for component, ref in sorted(self.images.items()))
         suffix = f" [{images}]" if images else ""
+        if self._is_unrecorded_deployment(deployed):
+            return (
+                "not recorded (a Terraform deployment is running that no `nyxgpt ops install "
+                "--terraform` recorded -- it predates #3835 or was brought up another way, so "
+                "whether its api/web images were built from a checkout or pulled is unknown). "
+                "Re-run `nyxgpt up --terraform --local` (add `--dev` for a working-tree build) "
+                f"to redeploy it and record the mode.{suffix}"
+            )
         if self.is_dev:
             checkout = self.checkout or "unknown checkout"
             return f"dev (images built from the working tree at {checkout}){suffix}"
@@ -114,9 +159,16 @@ def _read_marker(marker: Path, deployment: str) -> InstallModeState:
     """Read one deployment's marker file, defaulting to artifact mode.
 
     Never raises: a missing, unreadable or malformed marker means "nothing
-    recorded a dev install for this deployment", and artifact mode is both
-    the default and the safe answer -- it is what every machine installed
-    before #3789 (natively) / #3835 (Terraform) is actually running.
+    recorded an install for this deployment", and the returned state says so
+    -- `recorded` is False and `mode` falls back to artifact.
+
+    That fallback is a *safe default*, not a claim about the machine, and the
+    two deployments differ on how safe it is. Natively it is also true of
+    what is running: artifact was the only mode that existed before #3789.
+    For Terraform it is the reverse -- every deployment made before #3835 was
+    built from the working tree, because that path had no other mode -- so a
+    caller that also knows a Terraform stack is *running* must report the
+    unrecorded state rather than this default (`label(deployed=True)`).
     """
     default = InstallModeState(deployment=deployment)
     try:
@@ -135,13 +187,14 @@ def _read_marker(marker: Path, deployment: str) -> InstallModeState:
     raw_images = raw.get("images")
     images = {str(k): str(v) for k, v in raw_images.items()} if isinstance(raw_images, dict) else {}
     if raw.get("mode") != INSTALL_MODE_DEV:
-        return InstallModeState(deployment=deployment, images=images)
+        return InstallModeState(deployment=deployment, images=images, recorded=True)
     checkout = raw.get("checkout")
     return InstallModeState(
         mode=INSTALL_MODE_DEV,
         checkout=str(checkout) if checkout else None,
         deployment=deployment,
         images=images,
+        recorded=True,
     )
 
 

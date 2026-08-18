@@ -61,7 +61,8 @@ type InfraStatus = {
     // mode. Optional so the page still renders against an api process from
     // before #3835; `recorded` is false when no Terraform install has ever
     // written the marker, so the page can stay silent instead of asserting a
-    // default.
+    // default -- and when something IS deployed with no marker, say so
+    // instead (see `terraformImageMode`).
     install_mode?: {
       mode: 'artifact' | 'dev';
       checkout: string | null;
@@ -306,6 +307,27 @@ function ComponentList({ components }: { components: Record<string, string> }) {
       ))}
     </ul>
   );
+}
+
+/** Which build the Terraform containers are running -- the card's tri-state (#3835).
+ *
+ * `unrecorded` is the one that has to exist: a deployment that is *running*
+ * with no marker is not the artifact default, it is a deployment whose build
+ * nobody wrote down. Every Terraform deployment made before #3835 was built
+ * from a working tree, so badging that "ARTIFACT IMAGES" asserts the exact
+ * opposite of the truth -- the dev-read-as-artifact misreading this issue
+ * exists to remove. Mirrors `InstallModeState.short_label(deployed=...)`.
+ */
+function terraformImageMode(
+  terraform: InfraStatus['terraform'],
+): 'dev' | 'artifact' | 'unrecorded' {
+  if (terraform.install_mode?.mode === 'dev') {
+    return 'dev';
+  }
+  if (terraform.deployed && !terraform.install_mode?.recorded) {
+    return 'unrecorded';
+  }
+  return 'artifact';
 }
 
 export default function InfrastructurePage() {
@@ -563,10 +585,17 @@ export default function InfrastructurePage() {
               <h2 style={{ fontSize: '1.1rem', fontWeight: 'bold' }}>Terraform (local containers)</h2>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 {(status.terraform.deployed || status.terraform.install_mode?.recorded) && (
-                  <span style={badgeStyle(status.terraform.install_mode?.mode !== 'dev', false)}>
+                  <span
+                    style={badgeStyle(
+                      terraformImageMode(status.terraform) === 'artifact',
+                      terraformImageMode(status.terraform) === 'unrecorded',
+                    )}
+                  >
                     {status.terraform.install_mode?.mode === 'dev'
                       ? 'DEV IMAGES'
-                      : 'ARTIFACT IMAGES'}
+                      : terraformImageMode(status.terraform) === 'unrecorded'
+                        ? 'IMAGES NOT RECORDED'
+                        : 'ARTIFACT IMAGES'}
                   </span>
                 )}
                 <span style={badgeStyle(status.terraform.deployed, !status.terraform.probe_available)}>
@@ -597,11 +626,23 @@ export default function InfrastructurePage() {
                     path. Re-run <code>nyxgpt up --terraform --local</code> without{' '}
                     <code>--dev</code> to return to it.
                   </>
-                ) : (
+                ) : !status.terraform.install_mode?.recorded ? (
+                  // Equivalent to `terraformImageMode(...) === 'unrecorded'`
+                  // under the guard above: this paragraph only renders when
+                  // something is deployed or a marker exists, so "not
+                  // recorded" here always means containers are running.
+                  // Written this way so the last branch has a label to show
+                  // rather than a fallback that can never be reached.
                   <>
-                    {status.terraform.install_mode?.label ??
-                      'artifact (published container images -- the repo-less default)'}
+                    Containers are running, but no install recorded what they were built from — this
+                    deployment predates the per-deployment install-mode marker, or was brought up
+                    outside <code>nyxgpt ops</code>. Whether its api and web images came from a
+                    checkout or from the published images is unknown, so neither is claimed here.
+                    Re-run <code>nyxgpt up --terraform --local</code> (add <code>--dev</code> for a
+                    working-tree build) to redeploy it and record the mode.
                   </>
+                ) : (
+                  <>{status.terraform.install_mode.label}</>
                 )}
               </p>
             )}

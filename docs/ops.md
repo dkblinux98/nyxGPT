@@ -484,7 +484,11 @@ Reports:
   `api` and `web`. One line per deployment: `native services:` always, and
   `terraform deployment:` when there is one — the latter also naming the
   images it is running. In dev mode it names the checkout the services are
-  running, and warns if that checkout has since disappeared.
+  running, and warns if that checkout has since disappeared. A Terraform
+  deployment that is running with nothing recorded is reported as `not
+  recorded` (tagged `[unrecorded]` per component) rather than defaulting to
+  `artifact`, which for that path would be backwards — see
+  [terraform.md](terraform.md).
 - **Deployment mode** for each component (`api`, `web`, `ollama`, `cassandra`): whether it's
   running natively (Homebrew / the ops-managed Cassandra container) and whether a Docker
   Compose deployment of the same component is also running. If a component is reported

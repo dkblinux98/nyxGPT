@@ -3799,7 +3799,9 @@ def _reconcile_install_mode(dev: bool) -> list[OpsResult]:
             results.extend(_stop_artifact_brew_services() if dev else _remove_dev_launchagents())
         results.extend(_drop_stale_api_venv())
 
-    state = InstallModeState(mode=target, checkout=str(checkout) if checkout else None)
+    state = InstallModeState(
+        mode=target, checkout=str(checkout) if checkout else None, recorded=True
+    )
     marker = write_install_mode(target, checkout)
     results.append(OpsResult(True, f"Install mode: {state.label()}", str(marker)))
     return results
@@ -5677,6 +5679,9 @@ def _record_terraform_install_mode(dev: bool, images: dict[str, str]) -> list[Op
         checkout=str(checkout) if checkout else None,
         deployment=DEPLOYMENT_TERRAFORM,
         images=images,
+        # The marker was just written, so this state is recorded by
+        # construction -- not the artifact default (#3835).
+        recorded=True,
     )
     return [OpsResult(True, f"Terraform install mode: {state.label()}", str(marker))]
 
@@ -8102,16 +8107,20 @@ def infra_status() -> dict[str, Any]:
     # marker, which describes a different deployment that may well be in the
     # other mode.
     tf_install_mode_state = read_terraform_install_mode()
+    tf_deployed = docker_available and any(state != "absent" for state in tf_state.values())
     terraform = {
         "probe_available": docker_available,
-        "deployed": docker_available and any(state != "absent" for state in tf_state.values()),
+        "deployed": tf_deployed,
         "containers": tf_state,
         "install_mode": {
             "mode": tf_install_mode_state.mode,
             "checkout": tf_install_mode_state.checkout,
-            "label": tf_install_mode_state.label(),
+            # The label is the deployment-aware one: a running stack with no
+            # marker is reported as unrecorded, never as the artifact default
+            # it did not earn (#3835).
+            "label": tf_install_mode_state.label(deployed=tf_deployed),
             "images": tf_install_mode_state.images,
-            "recorded": TERRAFORM_INSTALL_MODE_FILE.exists(),
+            "recorded": tf_install_mode_state.recorded,
         },
     }
 
@@ -8580,7 +8589,12 @@ def status(_args) -> int:
     terraform_deployed = any(state != "absent" for state in mode.terraform.values())
     terraform_install_mode = read_terraform_install_mode()
     if terraform_deployed or TERRAFORM_INSTALL_MODE_FILE.exists():
-        print(f"  terraform deployment: {terraform_install_mode.label()}")
+        # `deployed` matters here: a running stack with no marker is reported
+        # as not recorded rather than as the artifact default, which for
+        # Terraform would assert the opposite of the truth (#3835).
+        print(
+            f"  terraform deployment: {terraform_install_mode.label(deployed=terraform_deployed)}"
+        )
         if terraform_install_mode.is_dev:
             print(
                 "    the api/web containers were built from that working tree, not from "
@@ -8604,7 +8618,9 @@ def status(_args) -> int:
         print("  compose: not detected (no Docker Compose stack running)")
     running_terraform = {c: s for c, s in mode.terraform.items() if s != "absent"}
     if running_terraform:
-        tf_mode_label = INSTALL_MODE_DEV if terraform_install_mode.is_dev else INSTALL_MODE_ARTIFACT
+        # Tri-state, matching the deployment line above: dev, artifact, or
+        # unrecorded when something is running that no install recorded.
+        tf_mode_label = terraform_install_mode.short_label(deployed=True)
         for component, state in sorted(running_terraform.items()):
             # Only api/web have an install mode -- ollama/cassandra are
             # pinned third-party images in both modes.
@@ -9270,6 +9286,14 @@ def _terraform_install_mode_issues() -> list[str]:
     defect this marker was added to fix. Says nothing at all on a machine
     that has never deployed Terraform.
 
+    A deployment that is running with no marker is reported as *unrecorded*
+    rather than defaulted to artifact, which for Terraform states the reverse
+    of the truth (every pre-#3835 deployment was built from a working tree).
+    That is printed, not raised as an issue: an unrecorded build is an
+    unknown, not a fault -- the stack is serving, and failing `doctor` (and
+    with it `ops verify`) on every machine that deployed before the marker
+    existed would report a healthy stack as broken.
+
     The one issue raised here is the Terraform twin of the native dev-mode
     check: a running dev-mode deployment whose checkout is gone is running
     images nothing can rebuild.
@@ -9278,7 +9302,14 @@ def _terraform_install_mode_issues() -> list[str]:
     if not (deployed or TERRAFORM_INSTALL_MODE_FILE.exists()):
         return []
     state = read_terraform_install_mode()
-    print(f"Install mode (terraform deployment): {state.label()}")
+    print(f"Install mode (terraform deployment): {state.label(deployed=deployed)}")
+    if deployed and not state.recorded:
+        print(
+            "  (nothing recorded what these containers were built from -- redeploy with "
+            "`nyxgpt up --terraform --local`, or `--dev` for a working-tree build, to "
+            "record it)"
+        )
+        return []
     if not (state.is_dev and deployed):
         return []
     checkout = Path(state.checkout) if state.checkout else None

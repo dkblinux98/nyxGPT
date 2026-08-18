@@ -119,6 +119,19 @@ Install mode:
   terraform deployment: dev (images built from the working tree at /Users/you/nyxGPT)
 ```
 
+A deployment that is *running* with no marker is reported as **not
+recorded** — not as the artifact default. Every Terraform deployment made
+before this marker existed was built from a working tree (that path had no
+other mode), so calling an unrecorded live stack "artifact" would state the
+opposite of what it is running. `ops status` prints the deployment as `not
+recorded (...)` and tags its `api`/`web` `[unrecorded]`, `ops doctor` prints
+it with the way to record it (an unknown build is not a fault, so it does
+not fail the check), and the Infrastructure page badges it `IMAGES NOT
+RECORDED`.
+Redeploying with `nyxgpt up --terraform --local` (or `--dev`) records it. A
+machine with the marker and *nothing deployed* keeps the artifact default:
+there is no live stack for it to misdescribe.
+
 `--local` is required and explicit — it's the only locality implemented
 today, and is the precursor to a future cloud deployment target. `--cloud`
 is accepted by the CLI surface but rejected with a "not yet implemented"

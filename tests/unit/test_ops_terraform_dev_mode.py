@@ -63,7 +63,67 @@ def test_terraform_marker_defaults_to_artifact_when_nothing_recorded():
     assert state.mode == install_mode.INSTALL_MODE_ARTIFACT
     assert state.is_dev is False
     assert state.is_terraform is True
+    assert state.recorded is False
+    # Nothing is deployed, so the artifact default is the whole truth.
     assert "artifact" in state.label()
+
+
+def test_nothing_recorded_under_a_running_stack_is_reported_as_unknown():
+    """The default is a safe fallback, not a claim about the machine.
+
+    For Terraform it is the *wrong* claim under a live stack: every
+    deployment made before #3835 was built from the working tree, because
+    that path had no other mode. `deployed=True` must therefore report the
+    build as unrecorded rather than as artifact.
+    """
+    state = install_mode.read_terraform_install_mode()
+
+    label = state.label(deployed=True)
+    assert "not recorded" in label
+    assert not label.startswith("artifact")
+    assert state.short_label(deployed=True) == install_mode.INSTALL_MODE_UNRECORDED
+    assert state.short_label(deployed=False) == install_mode.INSTALL_MODE_ARTIFACT
+    # The way out is named, and it is a wrapped command (never raw terraform).
+    assert "nyxgpt up --terraform --local" in label
+
+
+def test_a_recorded_artifact_deployment_is_still_reported_as_artifact():
+    """`deployed` only reclassifies the *unrecorded* case."""
+    install_mode.write_terraform_install_mode(install_mode.INSTALL_MODE_ARTIFACT, None, {})
+    state = install_mode.read_terraform_install_mode()
+
+    assert state.recorded is True
+    assert state.label(deployed=True).startswith("artifact")
+    assert state.short_label(deployed=True) == install_mode.INSTALL_MODE_ARTIFACT
+
+
+def test_a_dev_deployment_is_reported_as_dev_whether_or_not_it_is_running():
+    install_mode.write_terraform_install_mode(install_mode.INSTALL_MODE_DEV, "/src/nyxGPT", {})
+    state = install_mode.read_terraform_install_mode()
+
+    assert state.short_label(deployed=True) == install_mode.INSTALL_MODE_DEV
+    assert "/src/nyxGPT" in state.label(deployed=True)
+
+
+def test_an_unreadable_marker_is_not_read_as_a_recorded_mode():
+    """A corrupt marker recorded nothing legible, so it recorded nothing."""
+    install_mode.TERRAFORM_INSTALL_MODE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    install_mode.TERRAFORM_INSTALL_MODE_FILE.write_text("{not json", encoding="utf-8")
+
+    state = install_mode.read_terraform_install_mode()
+
+    assert state.recorded is False
+    assert "not recorded" in state.label(deployed=True)
+
+
+def test_the_native_default_is_unaffected_by_the_terraform_rule():
+    """Artifact really was the only native mode before #3789, so the native
+    default stays a true statement even under running services."""
+    state = install_mode.read_install_mode()
+
+    assert state.recorded is False
+    assert state.label(deployed=True).startswith("artifact")
+    assert state.short_label(deployed=True) == install_mode.INSTALL_MODE_ARTIFACT
 
 
 def test_terraform_marker_records_mode_and_the_images_it_runs(tmp_path):
@@ -501,6 +561,88 @@ def test_infra_status_reports_the_terraform_deployment_s_install_mode(monkeypatc
     assert status["terraform"]["install_mode"]["mode"] == "artifact"
     assert status["terraform"]["install_mode"]["images"] == {"api": "ghcr.io/x/nyxgpt-api:1"}
     assert status["terraform"]["install_mode"]["recorded"] is True
+
+
+def test_status_never_calls_an_unrecorded_running_deployment_artifact(monkeypatch, capsys):
+    """A stack deployed before #3835 has containers up and no marker. It was
+    built from a checkout -- so the one thing status must not print is the
+    artifact default."""
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: ops.DeploymentMode(
+            native={"api": "none", "web": "none", "ollama": "none", "cassandra": "absent"},
+            compose={},
+            conflicts=set(),
+            terraform={"api": "running", "web": "running", "ollama": "running"},
+            terraform_conflicts=[],
+        ),
+    )
+    monkeypatch.setattr(ops, "_is_linux", lambda: False)
+    monkeypatch.setattr(ops, "_is_macos", lambda: False)
+    monkeypatch.setattr(ops, "_which", lambda tool: None)
+    monkeypatch.setattr(ops, "_serving_status", lambda mode: {})
+
+    ops.status(Args())
+    out = capsys.readouterr().out
+
+    tf_line = next(ln for ln in out.splitlines() if "terraform deployment:" in ln)
+    assert "not recorded" in tf_line
+    assert "artifact (" not in tf_line
+    # The per-component tags agree with the line above them.
+    assert "terraform api: running  [unrecorded]" in out
+    assert "[artifact]" not in out.split("terraform api")[1]
+
+
+def test_infra_status_reports_an_unrecorded_terraform_deployment_as_such(monkeypatch):
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: ops.DeploymentMode(
+            native={}, compose={}, conflicts=set(), terraform={}, terraform_conflicts=[]
+        ),
+    )
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "running"})
+    monkeypatch.setattr(ops, "_which", lambda tool: "/usr/bin/docker" if tool == "docker" else None)
+    monkeypatch.setattr(
+        ops.self_heal, "compose_probe", lambda: ops.self_heal.ComposeProbe(True, "")
+    )
+    monkeypatch.setattr(ops, "_serving_status", lambda mode: {})
+
+    status = ops.infra_status()
+
+    # The page keys its badge off `recorded`; the label it renders as a
+    # fallback must not contradict it.
+    assert status["terraform"]["deployed"] is True
+    assert status["terraform"]["install_mode"]["recorded"] is False
+    assert "not recorded" in status["terraform"]["install_mode"]["label"]
+
+
+def test_doctor_reports_a_running_terraform_deployment_that_recorded_nothing(monkeypatch, capsys):
+    """Reported, and reported as unknown -- but not as a fault.
+
+    The stack is serving; nobody wrote down what it was built from. Raising
+    that as a `doctor` issue would fail every machine that deployed before
+    the marker existed, calling a healthy stack broken.
+    """
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "running"})
+
+    issues = ops._terraform_install_mode_issues()
+    out = capsys.readouterr().out
+
+    assert issues == []
+    assert "not recorded" in out
+    assert "nothing recorded what these containers were built from" in out
+    assert "nyxgpt up --terraform --local" in out
+
+
+def test_doctor_says_nothing_about_an_undeployed_machine_with_no_marker(monkeypatch, capsys):
+    """No deployment, no marker, nothing to report -- the unrecorded state is
+    only a finding when something is actually running."""
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "absent"})
+
+    assert ops._terraform_install_mode_issues() == []
+    assert capsys.readouterr().out == ""
 
 
 def test_doctor_reports_a_dev_terraform_deployment_whose_checkout_is_gone(monkeypatch, capsys):
