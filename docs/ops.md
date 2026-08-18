@@ -941,7 +941,9 @@ own to re-run it later (e.g. after a reboot, or if you first installed with
 applies `k8s/observability/` -- Prometheus, Grafana, Loki + promtail, the
 OTel collector, Jaeger and GlitchTip as in-cluster workloads -- without
 touching the app tier, and generates Grafana's provisioning ConfigMaps from
-the same `docker/grafana/` files the Compose path uses. The Compose profiles
+the same `docker/grafana/` files the Compose path uses. It returns when those
+workloads have rolled out, not when the objects were accepted (#3826), so a
+first run pulling their images can take several minutes. The Compose profiles
 are not an option in that mode (they scrape the host and resolve Compose
 service names), which is why this branches rather than reconciling both. See
 [kubernetes.md](kubernetes.md#observability-in-the-cluster); reach the UIs

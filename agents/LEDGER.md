@@ -1350,7 +1350,32 @@ are absent here by design (relocated to the annex; IDs are never reused).
   reporting a definite state from an unqueryable source — the pattern, not just
   this call site, is what the entry stands for.
 
-- **V-041** · 2026-08-18 — **Every run mode now pulls both required models
+- **V-041** · 2026-08-18 — **The default `--kubernetes --local` stack (app +
+  data/LLM + observability) fits a single 4-vCPU/16GB node**, and the reason
+  the k8s smoke had been opting out of observability was not footprint but a
+  missing wait. Measured on a kind cluster on the agent runner: with
+  kube-system included the node carries **3825m of CPU requests (95% of
+  allocatable)** and **8162Mi of memory requests (51%)**, every Pod scheduled,
+  zero `FailedScheduling`. So CPU — not memory — is the binding dimension, and
+  the margin is ~175m: a new workload requesting more than that leaves Pods
+  Pending. The separate defect: `ops._k8s_stack_health` scores a Pod's *phase*,
+  and observability Pods land in the same namespace still pulling images, so
+  the default install reported failure on a healthy cluster until
+  `_wait_for_k8s_observability` was added (#3826) — the same shape as **V-019**
+  (an action's flag/effect halves disagreeing), and the reason a smoke that
+  passes `--skip-observability` can be green while the real command is not.
+  Method: executed on 2026-08-18 — `kind create cluster`, `kubectl apply -k
+  k8s/` + `k8s/observability/`, then `kubectl describe node` (the numbers
+  above), `--field-selector=status.phase=Pending` with `.spec.nodeName`
+  populated on every Pod (scheduled, merely pulling), and no
+  `FailedScheduling` event in any namespace. Standing guard:
+  `scripts/k8s-local-smoke.sh` now runs the default install, asserts all ten
+  observability workloads Ready, fails on any Pending Pod, and prints the
+  allocatable-vs-requests arithmetic every run.
+  Re-verify when: any `k8s/**` manifest changes a `resources.requests`, a
+  replica count, or adds a workload — the 175m CPU margin is what absorbs it.
+
+- **V-042** · 2026-08-18 — **Every run mode now pulls both required models
   before it reports the stack up, and each one gates on them.** Native
   (macOS/Linux, `--dev`) and `--terraform` run a `required models` step in
   `ops.install`/`_install_terraform_steps` (`nyxgpt.model_bootstrap`
