@@ -19,6 +19,10 @@ type Component = {
   // from here at all (the Compose probe could not run). Never rendered as a
   // state -- "unknown" is its own third case alongside present and absent.
   known?: boolean;
+  // #3832: false when no heal action would converge this component, so none
+  // is taken -- an unschedulable Pod cannot be fixed by deleting it (deleting
+  // does not create capacity). `note` carries the cluster's own reason.
+  healable?: boolean;
   restart_count?: number;
   giving_up?: boolean;
 };
@@ -517,6 +521,21 @@ export default function SelfHealPage() {
                               ? 'enabled in config, no container running'
                               : `state=${c.state}${c.health ? ` health=${c.health}` : ''}`}
                       </span>
+                      {c.healable === false && (
+                        <span
+                          style={{
+                            marginLeft: '0.5rem',
+                            fontSize: '0.7rem',
+                            padding: '1px 6px',
+                            borderRadius: 999,
+                            background: '#f59e0b',
+                            color: 'white',
+                          }}
+                          title="No heal action would converge this component, so self-heal takes none: deleting an unschedulable Pod cannot create capacity, and its replacement would be Pending for the same reason. The cause is shown below -- fix it in the cluster, not from here."
+                        >
+                          not auto-healable
+                        </span>
+                      )}
                       {c.giving_up && (
                         <span
                           style={{
@@ -547,13 +566,21 @@ export default function SelfHealPage() {
                     </div>
                     <button
                       onClick={() => handleHealNow(c.service)}
-                      disabled={healingService !== null}
+                      disabled={healingService !== null || c.healable === false}
+                      title={
+                        c.healable === false
+                          ? 'Nothing to heal from here -- see the reason on this row'
+                          : undefined
+                      }
                       style={{
                         padding: '0.35rem 0.75rem',
                         backgroundColor: 'var(--background)',
                         border: '1px solid var(--border-color)',
                         borderRadius: '0.375rem',
-                        cursor: healingService !== null ? 'not-allowed' : 'pointer',
+                        cursor:
+                          healingService !== null || c.healable === false
+                            ? 'not-allowed'
+                            : 'pointer',
                         fontSize: '0.8rem',
                       }}
                     >

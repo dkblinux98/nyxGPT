@@ -1261,9 +1261,18 @@ a core component an operator deliberately stopped via `nyxgpt ops down`/
 [self-healing.md#desired-state-for-observability-profiles](self-healing.md#desired-state-for-observability-profiles);
 [self-healing.md#intentional-stops-nyxgpt-ops-downstop-vs-self-heal](self-healing.md#intentional-stops-nyxgpt-ops-downstop-vs-self-heal)
 for the latter). Each component also carries `restart_count` (consecutive
-automatic restart attempts since it last recovered) and `giving_up` (`true`
+automatic restart attempts since it last recovered), `giving_up` (`true`
 once that count has hit `max_consecutive_restarts` and the automatic loop
-has stopped retrying it). `compose_probe_available: false` means the
+has stopped retrying it), `healable` and `heal_key`. `healable: false` means
+no heal action would converge this component, so none is taken -- by the
+automatic pass *or* by an explicit `POST /self-heal/heal` on it -- and `note`
+carries the reason; today this is a `Pending` Kubernetes Pod, e.g. one the
+scheduler refused, which deleting cannot fix (#3832, see
+[self-healing.md#pending-pods-are-reported-not-deleted](self-healing.md#pending-pods-are-reported-not-deleted)).
+Such a row is never `giving_up`: nothing was tried. `heal_key` is the
+identity the restart budget is kept under -- the service name for most
+components, the owning ReplicaSet (`kubernetes/replicaset/<name>`) for a Pod,
+because healing a Pod replaces it. `compose_probe_available: false` means the
 `docker compose ps` survey couldn't be run from this vantage point at all --
 no `docker`, an unreachable daemon, or a compose file that isn't there. It is
 answered by *running* the survey, not by checking that a binary and a file
@@ -1295,11 +1304,12 @@ missing/`false` `known` as "do not report this component as down".
     { "service": "api", "container": "nyxgpt-api", "state": "started", "health": "", "healthy": true, "source": "native", "desired": true, "known": true, "restart_count": 0, "giving_up": false },
     { "service": "web", "container": "nyxgpt-web-1", "state": "running", "health": "healthy", "healthy": true, "source": "compose", "desired": true, "known": true, "restart_count": 0, "giving_up": false },
     { "service": "cassandra", "container": "nyxgpt-tf-cassandra", "state": "running", "health": "healthy", "healthy": true, "source": "terraform", "desired": true, "known": true, "restart_count": 0, "giving_up": false },
-    { "service": "nyxgpt-api-stable-7f8b9c-abcde", "container": "nyxgpt-api-stable-7f8b9c-abcde", "state": "Running", "health": "ready", "healthy": true, "source": "kubernetes", "desired": true, "known": true, "restart_count": 0, "giving_up": false },
+    { "service": "nyxgpt-api-stable-7f8b9c-abcde", "container": "nyxgpt-api-stable-7f8b9c-abcde", "state": "Running", "health": "ready", "healthy": true, "source": "kubernetes", "desired": true, "known": true, "healable": true, "heal_key": "kubernetes/replicaset/nyxgpt-api-stable-7f8b9c", "restart_count": 0, "giving_up": false },
+    { "service": "nyxgpt-api-canary-1a2b3c-r56wb", "container": "nyxgpt-api-canary-1a2b3c-r56wb", "state": "Pending", "health": "unschedulable", "healthy": false, "source": "kubernetes", "desired": true, "known": true, "healable": false, "heal_key": "kubernetes/replicaset/nyxgpt-api-canary-1a2b3c", "note": "Pending (Unschedulable): 0/1 nodes are available: 1 Insufficient memory. -- not healed: deleting a Pod cannot create capacity, and its replacement would be unschedulable for the same reason. Add node capacity or lower the workload's resource requests.", "restart_count": 0, "giving_up": false },
     { "service": "grafana", "container": "", "state": "absent", "health": "", "healthy": false, "source": "compose", "desired": true, "known": true, "restart_count": 5, "giving_up": true },
     { "service": "loki", "container": "nyxgpt-loki-1", "state": "exited", "health": "", "healthy": false, "source": "compose", "desired": false, "known": true, "restart_count": 0, "giving_up": false }
   ],
-  "unhealthy_count": 1,
+  "unhealthy_count": 2,
   "unknown_count": 0,
   "events": [
     { "ts": 1730000000.0, "service": "web", "reason": "state=exited health=n/a", "action": "restart", "ok": true, "restart_count": 1, "message": "Restarted web" }
@@ -1336,8 +1346,12 @@ currently *disabled* in config (`desired: false`) -- see
 With `{"service": "<name>"}`, restarts that one component immediately
 regardless of its current health *or* its `desired` flag — the dashboard's
 per-component "Heal now" button, which can force a disabled component back
-up the same way it bypasses backoff. Returns `404` if `service` isn't a
-currently-known container.
+up the same way it bypasses backoff. The one thing it does not override is
+`healable: false`: a component no action would converge (a `Pending`
+Kubernetes Pod) is refused with the reason, recorded as a non-ok event with
+`"action": "refused"`, because the action would not be a repair for an
+operator either (#3832). Returns `404` if `service` isn't a currently-known
+container.
 
 **Request:**
 
