@@ -376,6 +376,30 @@ def max_collection_name_length(base_table: str | None = None) -> int:
     return max(0, CASSANDRA_IDENTIFIER_MAX_LEN - len(base_table) - 1)
 
 
+def driver_object_is_shutdown(obj: object) -> bool:
+    """Return whether a driver `Cluster`/`Session` reports itself shut down.
+
+    Both driver types expose `is_shutdown` as a plain `bool`, flipped to True
+    by their `shutdown()`. Once that has happened the object can never serve
+    another request -- `Cluster.connect()` raises "Cluster is already shut
+    down" and `Session.execute()` raises a shutdown error -- so callers must
+    rebuild rather than retry (#3851).
+
+    Only a real `True` counts as shut down: a missing attribute or any other
+    value is read as "usable". The asymmetry is deliberate -- a false negative
+    leaves today's behavior (the caller sees the driver's own error), while a
+    false positive would tear down and rebuild a healthy cluster on every
+    call, leaking connections and creating an outage of its own.
+
+    Args:
+        obj: A driver `Cluster` or `Session` (or a stand-in for one).
+
+    Returns:
+        True when the object is a driver object that has been shut down.
+    """
+    return getattr(obj, "is_shutdown", False) is True
+
+
 class CassandraConnectionPool:
     """Shared connection pool for Cassandra.
 
@@ -440,12 +464,47 @@ class CassandraConnectionPool:
         return Cluster(self.cfg.hosts, **kwargs)
 
     def _connect(self) -> Session:
-        """Connect to Cassandra and return a session."""
-        if self._cluster is None:
+        """Connect to Cassandra and return a session.
+
+        A cluster that the driver has shut down is treated exactly like an
+        absent one and rebuilt: calling ``connect()`` on a shut-down
+        ``Cluster`` raises ``Cluster is already shut down`` forever, which
+        turned any transient Cassandra outage into a permanent API-side
+        failure that only an API restart cleared (#3851).
+        """
+        if self._cluster is None or driver_object_is_shutdown(self._cluster):
             self._cluster = self._make_cluster()
         session = self._cluster.connect()
         self._connected = True
         return session
+
+    def _discard_dead_connections_locked(self) -> None:
+        """Drop cached driver objects the driver has shut down.
+
+        Caller must hold ``self._lock``.  A shut-down cluster invalidates
+        every session opened from it, so both are cleared together; sessions
+        shut down individually (while their cluster is still live) are
+        dropped on their own and reopened from the existing cluster.
+        """
+        if self._cluster is not None and driver_object_is_shutdown(self._cluster):
+            log.warning(
+                "Cassandra cluster object is shut down; rebuilding it and discarding "
+                "%d cached session(s)",
+                len(self._sessions),
+            )
+            self._sessions.clear()
+            self._cluster = None
+            self._connected = False
+            return
+
+        dead = [
+            key for key, session in self._sessions.items() if driver_object_is_shutdown(session)
+        ]
+        for key in dead:
+            log.warning("Discarding shut-down Cassandra session for keyspace %r", key)
+            del self._sessions[key]
+        if dead and not self._sessions:
+            self._connected = False
 
     def get_session(self, keyspace: str | None = None) -> Session:
         """Return a cached session, creating one if needed.
@@ -462,6 +521,10 @@ class CassandraConnectionPool:
         session is still returned; call :meth:`reconnect` explicitly when
         stricter error handling is required.
 
+        Driver objects the driver itself has shut down are the one exception
+        to that "return the cached session anyway" rule: they can never
+        recover, so they are discarded and rebuilt here (#3851).
+
         Args:
             keyspace: Optional keyspace to cache the session under.
 
@@ -475,6 +538,7 @@ class CassandraConnectionPool:
             self.health_check()
 
         with self._lock:
+            self._discard_dead_connections_locked()
             if keyspace not in self._sessions:
                 try:
                     self._sessions[keyspace] = self._connect()

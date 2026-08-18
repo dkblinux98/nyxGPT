@@ -30,6 +30,13 @@
 #      build that never shipped the data tier, which is how a green CI run
 #      and a broken stack coexist.
 #
+# Since #3825 it also asserts every Pod was SCHEDULED before it goes on to ask
+# whether chat works, on a node ballasted down to the 7936Mi a stock 8GiB
+# Docker Desktop VM offers. That defect shipped a stack whose memory requests
+# exceeded the node: chat worked, `install` reported success, and prometheus
+# was Pending forever. A gate that installs with --skip-observability, or that
+# only asks "can I chat?", passes on exactly that stack.
+#
 # It also runs scripts/k8s-self-heal-coverage-smoke.py against the same live
 # cluster (#3828): whether self-heal names this deployment, watches all four
 # core tiers plus the in-cluster observability tier rather than the api pool
@@ -44,9 +51,13 @@
 #
 # Prerequisites: Docker, and a `nyxgpt` on PATH (`pip install -e .`). kubectl
 # and kind are installed by `nyxgpt ops install --kubernetes --local` itself
-# when missing (#3724), so this script does not install them.
+# when missing (#3724), so this script does not install them. To reproduce the
+# capacity claim on a machine larger than a stock 8GiB Docker Desktop VM,
+# create the cluster first and run `scripts/k8s-node-ballast.sh` against it --
+# which is what .github/workflows/k8s-local-smoke.yml does.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NAMESPACE="nyxgpt"
 API_KEY="${NYXGPT_SMOKE_API_KEY:-k8s-smoke-key}"
 WEB_PORT="${NYXGPT_SMOKE_WEB_PORT:-3000}"
@@ -114,10 +125,38 @@ chat_round_trip() {
 
 step "1/9 Bring the stack up: nyxgpt ops install --kubernetes --local"
 # No --skip-observability: this is the command as a user types it (#3826).
+# The layer that flag used to hide is also the one that did not fit the node
+# (#3825), so a gate that installs less than the default cannot see either.
 nyxgpt ops install --kubernetes --local --api-key "$API_KEY"
 ok "install --kubernetes --local completed"
 
-step "2/9 The data/LLM tier exists and is Ready"
+step "2/9 Every Pod of the default stack was scheduled"
+# #3825: `install` reported success on a node whose memory was 99% reserved,
+# with prometheus left Pending / FailedScheduling for good. Nothing in the
+# steps below would have noticed -- chat worked fine. An unscheduled Pod has
+# an empty .spec.nodeName, which is what this checks; "Pending" on its own is
+# also what a Pod that IS scheduled and pulling its image looks like.
+#
+# Checked here, before the rollout waits below, so an unschedulable Pod reads
+# as its own failure rather than as one of those waits timing out. Report the
+# arithmetic either way (#3826), so a future footprint increase shows up as a
+# number in the log rather than as a mysterious timeout.
+echo "--- node allocatable ---"
+kubectl get nodes -o custom-columns=\
+'NAME:.metadata.name,CPU:.status.allocatable.cpu,MEM:.status.allocatable.memory'
+echo "--- requests by Pod ---"
+kubectl -n "$NAMESPACE" get pods -o custom-columns=\
+'NAME:.metadata.name,PHASE:.status.phase,REQ_MEM:.spec.containers[*].resources.requests.memory'
+unscheduled=$("${SCRIPT_DIR}/k8s-unscheduled-pods.sh" "$NAMESPACE")
+if [ -n "$unscheduled" ]; then
+    kubectl -n "$NAMESPACE" get pods -o wide >&2
+    kubectl -n "$NAMESPACE" get events --field-selector reason=FailedScheduling | tail -20 >&2
+    fail "these Pods could not be scheduled: $(echo "$unscheduled" | tr '\n' ' ')-- the node \
+cannot fit the default stack (size the cluster VM, do not drop observability)"
+fi
+ok "every Pod in the default stack has a node"
+
+step "3/9 The data/LLM tier exists and is Ready"
 # `install` already waits for these (ops._wait_for_k8s_data_tier); asserting
 # again here is what makes the *absence* of the tier a test failure rather
 # than a silently degraded stack.
@@ -142,7 +181,7 @@ ok "embedding model ${EMBEDDING_MODEL} present in the in-cluster Ollama"
 # the rollout-status wait above only returned because both were there -- this
 # assertion names which model, so a probe regression fails with the reason.
 
-step "3/9 The observability layer came up with the app tier"
+step "4/9 The observability layer came up with the app tier"
 # Every workload k8s/observability/ ships, prometheus first: it is the one the
 # SRE dashboard's metrics tiles and every Grafana panel read from, and it is
 # the workload #3787 found missing. `install` already waits for these
@@ -160,26 +199,10 @@ kubectl -n "$NAMESPACE" rollout status ds/promtail --timeout=300s ||
     fail "promtail never became Ready in the default install"
 ok "all ten observability workloads are Ready alongside the app tier"
 
-step "4/9 Nothing is left Pending -- the whole default stack fits on the node"
-# The failure mode this exists for: the node cannot fit the default stack's
-# requests, so Pods sit Pending forever and every other assertion below either
-# hangs or passes on a partial stack. Report the arithmetic either way, so a
-# future footprint increase shows up as a number in the log rather than as a
-# mysterious timeout.
-echo "--- node allocatable ---"
-kubectl get nodes -o custom-columns=\
-'NAME:.metadata.name,CPU:.status.allocatable.cpu,MEM:.status.allocatable.memory'
-echo "--- requests by Pod ---"
-kubectl -n "$NAMESPACE" get pods -o custom-columns=\
-'NAME:.metadata.name,PHASE:.status.phase,REQ_MEM:.spec.containers[*].resources.requests.memory'
-pending=$(kubectl -n "$NAMESPACE" get pods \
-    --field-selector=status.phase=Pending -o name 2>/dev/null | tr '\n' ' ')
-if [ -n "${pending// /}" ]; then
-    kubectl -n "$NAMESPACE" describe pods --field-selector=status.phase=Pending | tail -60 >&2
-    fail "Pods still Pending after the default install: ${pending}-- the node cannot fit the \
-default stack (size the runner or the kind node, do not drop observability)"
-fi
-ok "no Pending Pods: the default stack (app + data/LLM + observability) fits"
+# Nothing is left Pending once every rollout above has landed either -- a Pod
+# that was scheduled but never became Ready fails its own rollout wait, and
+# step 2 already ruled out the unschedulable case with the node arithmetic
+# printed alongside it (#3826, #3825).
 
 step "5/9 The user path works: sessions list, via the web Service"
 start_port_forward
