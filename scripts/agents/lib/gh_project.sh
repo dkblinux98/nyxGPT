@@ -1798,6 +1798,11 @@ _ESCALATION_PAUSE_MARKER="<!-- escalation-pause-backstop:3687 -->"
 
 # One line per open issue assigned to `owner` (default HUMAN_OWNER):
 # "#<number> <title>". Empty output if none, or if no owner is configured.
+# The release tracking issue (RELEASE_ISSUE_NUMBER) is excluded: it is
+# owner-assigned by design for the whole life of a release, so counting it
+# would permanently inflate the escalation count by one and drop the pause
+# gate's effective threshold from 2 to 1 (#3868) -- the same exemption the
+# drain gate applies (drain_gate_release's release_issue_exempt).
 unresolved_escalation_issues() {
   local owner="${1:-${HUMAN_OWNER:-}}"
   require_cmd jq
@@ -1809,7 +1814,10 @@ unresolved_escalation_issues() {
   # own --jq) so tests can stub the `gh` call with canned JSON and let the
   # real jq filter run -- same split as real_label_names above.
   _open_issues_assigned_to "$owner" \
-    | jq -r '.[] | select(.pull_request == null) | "#\(.number) \(.title)"'
+    | jq -r --arg release "${RELEASE_ISSUE_NUMBER:-}" \
+      '.[] | select(.pull_request == null)
+           | select(($release == "") or ((.number | tostring) != $release))
+           | "#\(.number) \(.title)"'
 }
 
 # Raw (unfiltered) JSON array of open issues/PRs assigned to `owner`. Split
