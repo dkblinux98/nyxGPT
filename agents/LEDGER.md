@@ -467,7 +467,11 @@ are absent here by design (relocated to the annex; IDs are never reused).
   PAT-signed reviewer request still produced a `claude[bot]`-actored run).
   The #3706/#3790 runaway-loop protection lives in the anchored-token gate
   and informational markers, **not in identity exclusion** — removing the
-  identity wholesale was a ceiling, not a floor (D-004). The owner's earlier
+  identity wholesale was a ceiling, not a floor (D-004). Scope note: that
+  anchored gate covers the *kick* only; `@review` has no layer-2 gate (author
+  list + bare `contains`), and is bounded instead by being convergent and
+  one-shot with its own output posting as the already-allowed REVIEW_AGENT.
+  The owner's earlier
   same-day "fine as is" close of #3870 was a misunderstanding (they believed
   the restriction already lifted) and was reversed within hours — a session
   reading only the close comment will get this wrong.

@@ -299,9 +299,23 @@ representative actors:
   body content, including a fork contributor.
 - `notify_scrum_ready.yml`: the commenter-in-set check evaluates `true` for
   HUMAN_OWNER/SCRUM_AGENT/DEV_AGENT/REVIEW_AGENT comments containing
-  `READY_FOR_NEXT_ISSUE`; `false` otherwise.
-- `claude-code-review.yml`: the `@review` path evaluates `true` only for
-  HUMAN_OWNER/REVIEW_AGENT/DEV_AGENT; the `review_requested`/`synchronize`/
+  `READY_FOR_NEXT_ISSUE`; `false` otherwise. **Widened by #3870 (D-020):**
+  `claude[bot]` — the identity every Claude remote session's GitHub writes
+  carry — now also evaluates `true`. The loop protection this set was once
+  credited with is not weakened by that: it lives in layer 2, the anchored
+  `comment_gate`, which has no author filter, so a `claude[bot]` comment
+  that merely *mentions* the token (or carries an informational marker)
+  still does not dispatch.
+- `claude-code-review.yml`: the `@review` path evaluates `true` for
+  HUMAN_OWNER/REVIEW_AGENT/DEV_AGENT and — **since #3870 (D-020)** —
+  `claude[bot]`; `false` for any other commenter. The job additionally
+  passes `allowed_bots: "claude"` to `claude-code-action`, which otherwise
+  refuses any bot-actored run outright. Unlike the kick, this path has **no
+  layer-2 anchored gate** — the author list plus a bare
+  `contains(body, '@review')` is the whole test; the exposure is bounded
+  because a triggered review is convergent and its own output posts as
+  REVIEW_AGENT, already an allowed author before #3870, so no new
+  self-trigger path opens. The `review_requested`/`synchronize`/
   `workflow_dispatch` paths are unchanged and were not touched.
 - Fork-PR guard: `gh pr view <PR> --json headRepositoryOwner,headRepository`
   compared against `github.repository` — traced against this repo's own PR
