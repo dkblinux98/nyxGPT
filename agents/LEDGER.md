@@ -1190,7 +1190,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   Re-verify when: the retro template's panel structure changes, or a new
   optional data source is added without a source stamp.
 
-- **V-034** · 2026-08-18 — nyxGPT has **two config-reading tiers with different
+- **V-036** · 2026-08-18 — nyxGPT has **two config-reading tiers with different
   activation semantics**, and the difference is now data rather than folklore.
   The `api` tier re-reads `config.ini` per request through the hot-reload cache;
   the `web` tier is a Node process whose settings are read **once**, by the
@@ -1229,7 +1229,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   (e.g. if the proxy is ever made to resolve the key per request), or a third
   tier with its own activation semantics is added.
 
-- **V-035** · 2026-08-18 — Two tests in
+- **V-037** · 2026-08-18 — Two tests in
   `tests/unit/test_config_sections_endpoint.py` left a **live `threading.Timer`
   armed past their `patch` block**: they asserted the restart endpoints defer
   their work and then returned, so the timer fired seconds later, inside whatever
