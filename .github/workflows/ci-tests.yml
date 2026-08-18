@@ -15,6 +15,8 @@ jobs:
     if: github.event_name == 'pull_request' || github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # the selector diffs against the base ref
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -30,5 +32,28 @@ jobs:
       - name: mypy src/ (blocking)
         run: mypy src/
 
+      # #3896: a docs-only diff used to pay exactly what a src/ rewrite paid.
+      # Pull requests run the suites their diff can actually reach; pushes to
+      # the release branch stay unscoped, so the merge boundary is still
+      # protected by the whole tree.
+      - name: Select test suites for this diff
+        id: select
+        env:
+          # Never interpolated into the body: expressions in a `run:` block are
+          # source, not data (V-027, and the run:-block extension of it).
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" != "pull_request" ]]; then
+            echo "push to $GITHUB_REF -- merge boundary, running the full suite"
+            echo "pytest_args=tests/unit/" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch --no-tags --depth=1 origin "$BASE_SHA" 2>/dev/null || true
+          python3 scripts/ci/select_tests.py --base "$BASE_SHA" --github-output \
+            >> "$GITHUB_OUTPUT"
+
       - name: pytest - unit tests (integration tests skipped in CI, no live services)
-        run: pytest tests/unit/ -v
+        env:
+          PYTEST_ARGS: ${{ steps.select.outputs.pytest_args }}
+        run: pytest $PYTEST_ARGS -v

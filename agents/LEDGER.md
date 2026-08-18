@@ -1609,6 +1609,34 @@ are absent here by design (relocated to the annex; IDs are never reused).
   does not cover, or `SAFE_IN_RUN` gains an entry.
 
 
+- **V-050** · 2026-08-18 — **Test selection is now scoped to a change's
+  blast radius, and the scoping is deterministic** (`scripts/ci/select_tests.py`,
+  #3896, unparking **P-001**). Measured cause: 2,243 runner-minutes over 30
+  days, led by `security-scan.yml` (187 runs) and `ci-tests.yml` (173) — the
+  whole tree on every push, every review round and every developer fix attempt,
+  so a docs-only diff paid what a `src/nyxgpt/ops.py` rewrite paid. Selection
+  is path plus import-closure analysis, never a model call, and is wrong in
+  exactly one direction: a floor of process guards runs for every change, an
+  unclassifiable path selects everything, `conftest.py`/`pyproject.toml`
+  select everything, and the merge boundary (push to the release branch) is
+  never scoped. Measured selection on this tree (179 unit files): docs-only 5,
+  web-only 5 + vitest, workflow/script-only 26, a leaf module 88, widely
+  imported `config` 137.
+  Two facts worth keeping, both of which cost a round to find: `from nyxgpt
+  import cloud` binds a module while naming only the package, and reading it as
+  a bare `nyxgpt` left 32 of 179 files unmappable and therefore always-run; and
+  a bare `import nyxgpt` must **not** be honoured as a wildcard, or a leaf
+  module selects most of the suite and the scoping buys nothing.
+  Method: executed 2026-08-18 on this runner — `pytest
+  tests/unit/test_select_tests.py` (19 passed) pins the properties, including
+  that a changed module still selects the file that covers it
+  (`canary.py` -> `test_canary.py`, and four more pairs), that process tests do
+  not run for application changes and vice versa, and that an empty or
+  unclassified diff escalates to the full suite.
+  Re-verify when: a new top-level directory appears (it will select the full
+  suite until classified — that is the intended default, but it is also the
+  signal to classify it), or the always-on floor list changes.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
