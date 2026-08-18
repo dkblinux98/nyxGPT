@@ -2963,6 +2963,303 @@ def test_heal_now_dispatches_kubernetes_heal_for_kubernetes_source(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# #3832: self-heal deleted an unschedulable Pod every 15 seconds forever --
+# seven Pods in 4.5 minutes on the owner's local k8s round, each
+# `FailedScheduling: Insufficient memory`. Deleting a Pending Pod is never a
+# remedy (there is no stuck container to recover and deletion cannot create
+# capacity), and every deletion reset the Pod age the operator needed to see
+# the real cause. The loop erased its own evidence.
+# ---------------------------------------------------------------------------
+
+
+def _k8s_only_run(pods_json, recorder):
+    """`_run` stub for a full `heal_now` pass in Kubernetes mode.
+
+    Answers `kubectl get pods` with `pods_json`, `kubectl get pod` with the
+    matching single Pod, and records every command so a test can assert on
+    what self-heal actually *ran* -- "zero delete calls" is a claim about
+    commands, not about return values. Everything else (the Compose probe)
+    answers empty.
+    """
+
+    def _run(cmd, timeout=30.0, **_k):
+        recorder.append(cmd)
+        if cmd[0] != "kubectl":
+            return CP(stdout="")
+        if cmd[1] == "get" and cmd[2] == "pod":
+            wanted = cmd[3]
+            for pod in json.loads(pods_json)["items"]:
+                if pod["metadata"]["name"] == wanted:
+                    return CP(stdout=json.dumps(pod))
+            return CP(returncode=1)
+        if cmd[1] == "get":
+            return CP(stdout=pods_json)
+        return CP(returncode=0)
+
+    return _run
+
+
+@pytest.fixture
+def k8s_live(monkeypatch):
+    """Run the real Kubernetes probe (the autouse fixture stubs it out)."""
+    monkeypatch.setattr(
+        self_heal, "_list_kubernetes_component_status", _real_list_kubernetes_component_status
+    )
+
+
+@pytest.mark.unit
+def test_unschedulable_pod_is_reported_with_its_scheduling_reason(monkeypatch, k8s_live):
+    """The operator must be able to read WHY, from the status row itself."""
+    pods = _k8s_pods_json(
+        _k8s_pod("nyxgpt-api-stable-r56wb", phase="Pending", ready=False, unschedulable=True)
+    )
+    monkeypatch.setattr(self_heal, "_run", _k8s_only_run(pods, []))
+
+    status = _real_list_kubernetes_component_status(set())[0]
+
+    assert status.healthy is False
+    assert status.state == "Pending"
+    assert status.health == "unschedulable"
+    assert status.healable is False
+    assert "Insufficient memory" in status.note
+    assert "deleting a Pod cannot create capacity" in status.note
+
+
+@pytest.mark.unit
+def test_unschedulable_pod_produces_zero_delete_calls(monkeypatch, k8s_live):
+    """The regression test #3832 asks for: no `kubectl delete pod`, ever.
+
+    Twenty automatic passes -- more than the watchdog ran in the 4.5 minutes
+    that destroyed seven Pods -- against a Pod the scheduler refused.
+    """
+    pods = _k8s_pods_json(
+        _k8s_pod(
+            "nyxgpt-api-stable-r56wb",
+            phase="Pending",
+            ready=False,
+            unschedulable=True,
+            owner="nyxgpt-api-stable-7d9c",
+        )
+    )
+    commands: list[list[str]] = []
+    monkeypatch.setattr(self_heal, "_run", _k8s_only_run(pods, commands))
+
+    for _ in range(20):
+        result = self_heal.heal_now(backoff_seconds=0.0)
+
+    assert result["healed"] == []
+    assert not any("delete" in cmd for cmd in commands), commands
+
+
+@pytest.mark.unit
+def test_pending_pod_that_is_merely_starting_is_not_deleted_either(monkeypatch, k8s_live):
+    """A Pod pulling its image resolves itself; acting on it only restarts the clock."""
+    pods = _k8s_pods_json(
+        _k8s_pod("nyxgpt-api-canary-xyz", phase="Pending", ready=False, waiting="ContainerCreating")
+    )
+    commands: list[list[str]] = []
+    monkeypatch.setattr(self_heal, "_run", _k8s_only_run(pods, commands))
+
+    status = _real_list_kubernetes_component_status(set())[0]
+    result = self_heal.heal_now(backoff_seconds=0.0)
+
+    assert status.health == "starting"
+    assert status.healable is False
+    assert "still starting" in status.note
+    assert result["healed"] == []
+    assert not any("delete" in cmd for cmd in commands), commands
+
+
+@pytest.mark.unit
+def test_manual_heal_of_an_unschedulable_pod_is_refused_and_recorded(monkeypatch, k8s_live):
+    """An operator clicking "Heal now" gets the reason back, not a deletion.
+
+    This guard is the one exception to "manual overrides everything": the
+    action is not a repair for an operator either, and taking it would reset
+    the Pod age they are looking at.
+    """
+    pods = _k8s_pods_json(
+        _k8s_pod("nyxgpt-api-stable-r56wb", phase="Pending", ready=False, unschedulable=True)
+    )
+    commands: list[list[str]] = []
+    monkeypatch.setattr(self_heal, "_run", _k8s_only_run(pods, commands))
+
+    result = self_heal.heal_now(service="nyxgpt-api-stable-r56wb")
+
+    assert not any("delete" in cmd for cmd in commands), commands
+    assert len(result["healed"]) == 1
+    event = result["healed"][0]
+    assert event["ok"] is False
+    assert event["action"] == "refused"
+    assert "Insufficient memory" in event["message"]
+
+
+@pytest.mark.unit
+def test_running_but_not_ready_pod_is_still_deleted(monkeypatch, k8s_live):
+    """The one state deletion repairs must keep working (no over-correction)."""
+    pods = _k8s_pods_json(_k8s_pod("nyxgpt-api-stable-abc", ready=False))
+    commands: list[list[str]] = []
+    monkeypatch.setattr(self_heal, "_run", _k8s_only_run(pods, commands))
+
+    result = self_heal.heal_now(backoff_seconds=0.0)
+
+    assert ["kubectl", "delete", "pod", "nyxgpt-api-stable-abc", "-n", "nyxgpt"] in commands
+    assert result["healed"][0]["ok"] is True
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "pod",
+    [
+        _k8s_pod("nyxgpt-api-stable-r56wb", phase="Pending", ready=False, unschedulable=True),
+        _k8s_pod("nyxgpt-api-stable-r56wb", phase="Pending", ready=False),
+        _k8s_pod("nyxgpt-api-stable-r56wb", phase="Failed", ready=False),
+    ],
+)
+def test_heal_kubernetes_pod_refuses_anything_not_running(monkeypatch, pod):
+    """The guard lives at the destructive action, not only at its caller.
+
+    `heal_kubernetes_pod` is public and reachable from the dashboard, so a
+    future caller that has not consulted a survey must not be able to
+    reintroduce the loop.
+    """
+    commands: list[list[str]] = []
+    monkeypatch.setattr(self_heal, "_run", _k8s_only_run(json.dumps({"items": [pod]}), commands))
+
+    result = self_heal.heal_kubernetes_pod("nyxgpt-api-stable-r56wb")
+
+    assert result.ok is False
+    assert "Refused to delete" in result.message
+    assert not any("delete" in cmd for cmd in commands), commands
+
+
+@pytest.mark.unit
+def test_heal_kubernetes_pod_refuses_when_the_state_cannot_be_read(monkeypatch):
+    """An unread state is not a reason to destroy a Pod (#3812's rule, applied to a delete)."""
+    commands: list[list[str]] = []
+
+    def _run(cmd, timeout=30.0, **_k):
+        commands.append(cmd)
+        return CP(returncode=1, stderr="the server could not find the requested resource")
+
+    monkeypatch.setattr(self_heal, "_run", _run)
+
+    result = self_heal.heal_kubernetes_pod("nyxgpt-api-stable-r56wb")
+
+    assert result.ok is False
+    assert "refusing to delete it blind" in result.message
+    assert not any("delete" in cmd for cmd in commands), commands
+
+
+@pytest.mark.unit
+def test_heal_budget_is_keyed_on_the_owning_replicaset_not_the_pod_name(monkeypatch, k8s_live):
+    """Healing REPLACES a Pod, so a per-name budget is a budget that never runs out.
+
+    The Pod is Running-but-not-ready (so deletion is a legitimate remedy) and
+    comes back under a new name each pass, exactly as a ReplicaSet recreates
+    it. Keyed by name, the consecutive-restart cap of 3 could never fire --
+    that is why #3832's cap of 5 did not stop seven deletions.
+    """
+    names = iter(f"nyxgpt-api-stable-{suffix}" for suffix in ("r56wb", "r9sw9", "znhm9", "jlhh8"))
+    current = {"name": next(names)}
+
+    def _run(cmd, timeout=30.0, **_k):
+        if cmd[0] != "kubectl":
+            return CP(stdout="")
+        pod = _k8s_pod(current["name"], ready=False, owner="nyxgpt-api-stable-7d9c")
+        if cmd[1] == "get" and cmd[2] == "pod":
+            return CP(stdout=json.dumps(pod))
+        if cmd[1] == "get":
+            return CP(stdout=json.dumps({"items": [pod]}))
+        current["name"] = next(names, current["name"])  # the ReplicaSet recreates it
+        return CP(returncode=0)
+
+    monkeypatch.setattr(self_heal, "_run", _run)
+
+    deletes = 0
+    for _ in range(6):
+        deletes += len(
+            self_heal.heal_now(max_consecutive_restarts=3, backoff_seconds=0.0)["healed"]
+        )
+
+    assert deletes == 3
+
+
+@pytest.mark.unit
+def test_rolling_attempt_cap_survives_a_health_flicker(monkeypatch):
+    """The consecutive counter resets on any glimpse of health; the window cap does not.
+
+    A component that comes up healthy just long enough to zero the counter and
+    then fails again would otherwise be restarted forever. Two heals per
+    window is the cap here, and the flicker in between must not buy a third.
+    """
+    healthy = {"value": False}
+
+    def _components():
+        return [
+            self_heal.ComponentStatus(
+                "flapper", "nyxgpt-flapper-1", "running", "", healthy["value"]
+            )
+        ]
+
+    monkeypatch.setattr(self_heal, "list_component_status", _components)
+    monkeypatch.setattr(
+        self_heal, "restart_component", lambda service: self_heal.HealResult(True, "restarted")
+    )
+
+    attempts = 0
+    for i in range(6):
+        healthy["value"] = i == 2  # one healthy pass in the middle
+        attempts += len(
+            self_heal.heal_now(
+                max_consecutive_restarts=5, backoff_seconds=0.0, max_attempts_per_window=2
+            )["healed"]
+        )
+
+    assert attempts == 2
+
+
+@pytest.mark.unit
+def test_expired_heal_attempts_leave_the_state_file(monkeypatch):
+    """The window is rolling, and its bookkeeping does not accumulate forever."""
+    now = time.time()
+    state = {"heal_attempts": {"old": [now - 5000.0], "recent": [now - 10.0], "junk": "nope"}}
+
+    pruned = self_heal._prune_heal_attempts(state, now, 900.0)
+
+    assert pruned == {"recent": [now - 10.0]}
+    assert state["heal_attempts"] == pruned
+
+
+@pytest.mark.unit
+def test_status_does_not_claim_to_have_given_up_on_a_pod_it_never_touched(monkeypatch):
+    """ "Gave up after N restarts" is false for a component nothing was tried on."""
+    _patch_survey(
+        monkeypatch,
+        [
+            self_heal.ComponentStatus(
+                "nyxgpt-api-stable-r56wb",
+                "nyxgpt-api-stable-r56wb",
+                "Pending",
+                "unschedulable",
+                False,
+                source="kubernetes",
+                healable=False,
+                heal_key="kubernetes/replicaset/nyxgpt-api-stable-7d9c",
+                note="Pending (Unschedulable): 0/1 nodes are available",
+            )
+        ],
+    )
+
+    component = self_heal.status()["components"][0]
+
+    assert component["giving_up"] is False
+    assert component["healable"] is False
+    assert component["heal_key"] == "kubernetes/replicaset/nyxgpt-api-stable-7d9c"
+    assert "Unschedulable" in component["note"]
+
+
+# ---------------------------------------------------------------------------
 # #3812: an unqueryable Compose probe must never be rendered as a definite
 # negative. Owner acceptance on the rc12 cloud install saw the Self-Heal panel
 # report "11 unhealthy" with every observability component `absent` while all
