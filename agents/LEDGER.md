@@ -1263,7 +1263,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   cross-file failure; the failure disappears with the fixture in place.
   Re-verify when: a new test asserts a `threading.Timer`-deferred endpoint —
   use `captured_timers`, never a bare "assert not called inline".
-- **V-038** · 2026-08-18 — **An operator can now recover a cloud deployment's
+- **V-039** · 2026-08-18 — **An operator can now recover a cloud deployment's
   address and SSH target after the deploy's scrollback is gone, and read the
   instance's container state without a hand-rolled `ssh`.** `nyxgpt cloud
   status` is a first-class subcommand: human-readable by default (`--json` for
@@ -1311,6 +1311,34 @@ are absent here by design (relocated to the annex; IDs are never reused).
   log. The check run `test` on `78c0e5cf` reads `completed / failure`.
   Re-verify when: a check-status gate is added to the merge path — this entry
   then describes history rather than the present. See **Q-005**.
+
+- **V-040** · 2026-08-18 — **The `--kubernetes --local` stack is sized
+  against the node it actually lands on, and the install measures that node
+  before it applies anything.** The default deployment (app tier + data/LLM
+  tier + the #3787 observability layer) reserves **6976Mi** of memory
+  requests, down from 7872Mi, against the **7936Mi** allocatable a stock 8GiB
+  Docker Desktop VM reports; a canary rollout asks for a further 448Mi and
+  fits. Sizing alone is not the fix — an operator's VM is whatever they gave
+  it — so `_preflight_k8s_capacity` (`src/nyxgpt/ops.py`) totals the rendered
+  manifests against allocatable minus other namespaces' requests and refuses
+  *before* the first `kubectl apply`, warns when only the canary headroom is
+  missing, and skips rather than blocks when it cannot measure (and warns
+  rather than refuses on multi-node, where summed allocatable can disprove a
+  placement but never prove one). Before #3825 the stack requested 8162Mi:
+  every apply succeeded, the install reported success, prometheus was left
+  `Pending / FailedScheduling: Insufficient memory`, and the later canary
+  failure presented as "canary is broken".
+  Method: executed on a real kind cluster ballasted to 7936Mi allocatable
+  (`scripts/k8s-node-ballast.sh` — a `pause` Pod reserving the runner's
+  surplus, since a GitHub runner has ~16GiB and would be green by luck).
+  `.github/workflows/k8s-capacity-smoke.yml` runs both halves: the pre-#3825
+  sizing leaves Pods unschedulable and the preflight refuses it; the shipped
+  sizing schedules every Pod including prometheus, and both canary
+  Deployments scale to 1 and land. `k8s-local-smoke.yml` now runs the
+  **default** install (no `--skip-observability`) on the same ballasted node.
+  Re-verify when: a memory request/limit in `k8s/**` changes, or a workload is
+  added to either kustomization — both gates and
+  `tests/unit/test_k8s_capacity_preflight.py` fail loudly.
 
 ## Parked
 

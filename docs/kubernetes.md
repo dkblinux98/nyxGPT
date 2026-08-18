@@ -127,6 +127,10 @@ expected to type by hand.
 
 - Docker (to build the image, and to run `kind`'s cluster nodes as
   containers) -- the one prerequisite you install yourself
+- A cluster VM with **8GiB of memory** -- the default Docker Desktop
+  allocation. See [Node memory: what the stack reserves](#node-memory-what-the-stack-reserves)
+  for what the deployment asks for and what the install does when it doesn't
+  fit
 - `kubectl` (with `kustomize` support, built in since 1.14) -- installed for
   you by `nyxgpt ops install --kubernetes --local` if it's missing (#3724)
 - [kind](https://kind.sigs.k8s.io/#installation) -- also installed for you,
@@ -138,6 +142,48 @@ expected to type by hand.
 - The [metrics-server](https://github.com/kubernetes-sigs/metrics-server) addon, required for the HorizontalPodAutoscaler to read CPU usage
   - minikube: `minikube addons enable metrics-server`
   - kind: `kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml` (add `--kubelet-insecure-tls` to the container args for local clusters without valid kubelet certs)
+
+## Node memory: what the stack reserves
+
+The default deployment — app tier, data/LLM tier and the
+[in-cluster observability layer](#observability-in-the-cluster) — reserves
+about **6.9GiB of memory requests** on a single-node cluster, and a canary
+rollout asks for a further ~448Mi when you start one. A stock 8GiB Docker
+Desktop VM offers 7936Mi of *allocatable* memory (the kubelet's reserved
+slice is already out of that number), of which kube-system holds a few
+hundred MiB — so the default stack fits, with room for the canary.
+
+Two things are worth knowing about those figures:
+
+- A Pod's **request** reserves capacity when the scheduler places it; its
+  **limit** caps what it may then use. The api requests 256Mi and is capped
+  at 1Gi, so a RAG or concurrent-chat burst has headroom without four
+  replicas reserving a quarter of the node between them. Sizing the request
+  like a limit is what left prometheus unschedulable in #3825.
+- Requests are compared against **allocatable**, not against free memory. A
+  node with plenty of RAM idle will still refuse a Pod whose request does
+  not fit the unreserved remainder.
+
+`nyxgpt ops install --kubernetes --local` measures this before it applies
+anything: it totals what the manifests will reserve, compares that against
+the node's allocatable memory minus what other namespaces already hold, and
+
+- **refuses**, naming the shortfall, if the stack cannot fit — rather than
+  applying it and leaving a Pod `Pending / FailedScheduling: Insufficient
+  memory` for you to find. Give the cluster VM more memory (Docker Desktop:
+  Settings → Resources → Memory), or install without the observability
+  layer:
+
+  ```bash
+  nyxgpt ops install --kubernetes --local --skip-observability
+  ```
+
+- **warns** if it fits but a canary rollout would not, so
+  `nyxgpt canary start` failing later is a known constraint rather than a
+  surprise;
+- **skips** itself, never blocking, if it cannot read the node — and on a
+  multi-node cluster reports rather than refuses, since summed allocatable
+  memory can disprove a placement but never prove one.
 
 ## 0. Create a cluster (if you don't have one)
 
