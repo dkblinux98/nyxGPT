@@ -1061,6 +1061,10 @@ are absent here by design (relocated to the annex; IDs are never reused).
   `tests/unit/test_workflow_script_injection.py`, and the smoke workflow's
   planted-violation step — the guard must reject a seeded instance, so a
   scanner that silently stops scanning fails too.
+  **Extended by V-046 (2026-08-18):** naming the fault as a `script:` fault
+  was itself too narrow. The class is *any executable body*; the guard was
+  `script:`-only and the same injection was still live in `run:` blocks,
+  found by CodeQL #124 rather than by this entry. Read V-046 with this one.
   Re-verify when: a new `actions/github-script` step is added, or GitHub
   changes how `env:` values are delivered to the script sandbox.
 
@@ -1563,6 +1567,140 @@ are absent here by design (relocated to the annex; IDs are never reused).
   on the full default install and re-injects the api-only survey each run.
   Re-verify when: a `k8s/**` manifest changes a Pod's `app`/`tier` labels —
   the classification is keyed on exactly those.
+- **V-046** · 2026-08-18 — **Every API error this app returns is
+  object-shaped, so a UI that interpolates `data.error` renders
+  `[object Object]`.** `http_exception_handler` (`src/nyxgpt/app.py`) wraps
+  *every* `HTTPException` as `{"error": {"code", "message", "details",
+  "request_id"}}` — `data.error` is therefore always truthy and never a
+  string, and `data.detail` reaches the browser only for refusals raised
+  before that handler (where it may still be a list or a dict). The
+  `data.error || data.detail || \`HTTP ${status}\`` idiom is a defect
+  wherever it appears, not a style choice: it hid a Pod scheduling failure
+  from the operator during acceptance (#3831) and a 409 "a run is already in
+  flight" before that (cloud-smoke). One unwrapping lives in
+  `web/src/lib/apiError.ts` (`apiErrorText` / `errorMessage`); pages import
+  it rather than re-deriving it, and `docs/adding-api-endpoints.md` states
+  the rule for new pages.
+  Method: read the handler and every `new Error(` call site in `web/src`
+  (2026-08-18, #3831); the five near-duplicate local helpers found there were
+  replaced. `web/tests/lib/apiError.test.ts` pins each payload shape and
+  `web/tests/app/admin/canary.test.tsx` asserts the rendered card never says
+  `[object Object]` — the pre-existing page tests passed because they only
+  ever returned *string*-shaped payloads, which is why the defect survived
+  them.
+  Re-verify when: the error envelope's shape changes, or a page starts
+  reading a failed response without `apiErrorText`.
+- **V-047** · 2026-08-18 — **A Deployment's own status cannot say why a Pod
+  is not serving; the reason has to be read off the Pods.** `kubectl get
+  deployment -o json` gives only `readyReplicas`, so canary reported
+  "0/1 ready" and `kubectl rollout status` reported "timed out waiting for
+  the condition" while the real cause — `Unschedulable: 0/1 nodes are
+  available: 1 Insufficient memory` — sat on the Pod's `PodScheduled`
+  condition. `canary.py` now reads the Pods behind the Deployment's own
+  `spec.selector.matchLabels` and folds that sentence into the track health,
+  the rollout-failure message and the API's 409 detail (which also stopped
+  dropping `OpsResult.details`).
+  Method: `scripts/canary-pod-reason-smoke.sh`, run 2026-08-18 on a real kind
+  cluster — a Deployment requesting 900Gi produced
+  `nyxgpt-api-canary not healthy (0/1 ready) -- <pod>: Unschedulable: 0/1
+  nodes are available: 1 Insufficient memory. ...` from `deployment_health`,
+  the same reason from `_wait_rollout`, and both halves of D-006 (the same
+  Deployment at 16Mi comes back healthy with no reason appended). Wired as
+  `canary-pod-reason-smoke.yml`.
+  Re-verify when: the canary Deployments' labels change, or Kubernetes
+  changes the `PodScheduled`/`containerStatuses` shape these reasons are read
+  from.
+
+- **V-046** · 2026-08-18 — **The #3820 guard was `script:`-only; the same fault
+  class was still live in `run:` blocks.** V-027 named the fault as "an
+  expression interpolated into an `actions/github-script` `script:` body is
+  JavaScript, not data", swept 47 interpolations on that construct, and
+  installed `workflow_script_guard.py` — which inspected `script:` bodies and
+  nothing else. The true class is **any executable body**: a `run:` block is
+  *shell* source substituted by the same pre-parse pass. CodeQL alert **#124
+  (critical)** found the identical injection in
+  `huddle_decision_dispatch.yml`'s "Restart the fix cycle" step, where
+  `DECISION="${{ steps.decide.outputs.decision }}"` and the issue number were
+  substituted as shell source and the issue number was substituted a *second*
+  time into a nested `bash -lc "..."` command string — two shells parse it, in
+  a job carrying `REVIEW_AGENT_TOKEN` on an `issue_comment` trigger.
+  **Extent, measured:** 593 `${{ }}` interpolations live in `run:` bodies
+  tree-wide. 522 are repo-controlled or shape-constrained (`vars.*`, generated
+  run identity, numeric event ids — the documented `SAFE_IN_RUN` allowlist);
+  **71 across 15 workflows were not, and all 71 were fixed** (#3837), with 0
+  deferred. Among them the same free-form-prose carriers V-027 found on the
+  `script:` side (`classify_error`'s `failed_step` / `signature` /
+  `error_class`, `escalate_reason`, `disagreement_type`), plus one arithmetic
+  context (`LOOP_NUM=$((<output> + 1))`) and four `secrets.*` reads.
+  **The live exploitability of #124 itself was bounded** by a constraint two
+  files away — `huddle_state.py`'s `decision()` returns a closed enum and the
+  issue number is `sed`-extracted digits — so it was a construct one edit from
+  exploitable, not a live exploit. Nothing at the interpolation site said so,
+  which is why it is removed rather than annotated.
+  Method: executed both halves per **D-006**, 2026-08-18 on Linux, via
+  `scripts/agents/lib/run_block_injection_probe.py` — it takes the step's real
+  `run:` body out of the YAML (so it cannot drift) and runs it under `bash`
+  with the step's collaborators stubbed in a throwaway `GITHUB_WORKSPACE`.
+  Fault injected: the pre-fix body (kept verbatim in the probe as a fixture,
+  since the fix deleted it) fed a hostile decision executed the injected
+  command in **both** the outer shell and the nested `bash -lc`. Fixed: the
+  current body, same payload arriving through `env:`, executed neither and
+  carried the text intact into the comment it posts.
+  Standing guards: `workflow_script_guard.py` now inspects `run:` bodies
+  against `SAFE_IN_RUN` (`script:` keeps the absolute no-`${{` rule — a JS body
+  never needs one); `tests/unit/test_workflow_script_injection.py` (35 tests,
+  including a planted `run:` violation and an assertion that the allowlist has
+  not widened to permit everything); and a third
+  `github-script-injection-smoke.yml` job running the probe and a planted-
+  violation step on a runner.
+  Re-verify when: a new `run:` block interpolates an expression the allowlist
+  does not cover, or `SAFE_IN_RUN` gains an entry.
+
+
+- **V-046** · 2026-08-18 — **`nyxgpt ops` has one three-state vocabulary for
+  Kubernetes workloads — ready / pending / failed — and `Pending` is not a
+  failure.** `_classify_k8s_pod` (`src/nyxgpt/ops.py`) is the single
+  classifier behind `_k8s_stack_health`, `_k8s_observability_health`, the
+  rollout waits and `infra_status()`'s `pod_states` (which is what lets the
+  admin Infrastructure page badge the difference, since a raw `kubectl get
+  pods` line reads `Pending` for both cases); `OpsResult.status` carries the
+  `[PENDING]` label without
+  touching `ok`, so a Pod that is scheduling, pulling or creating containers
+  never changes an install's exit status, while `Unschedulable`,
+  `ImagePullBackOff`, `CrashLoopBackOff`, a container-config error or a
+  `Failed` phase does — with the scheduler's/kubelet's own reason attached.
+  The waits share it: `_wait_for_k8s_rollouts` polls in 30s slices and ends as
+  soon as a blocked Pod *of the workload it is waiting on* (label-scoped —
+  every tier shares the `nyxgpt` namespace, and an api Pod restarting against
+  its liveness probe must not fail Cassandra's wait) is confirmed over two
+  slices, instead of spending a 900s budget and then blaming whichever
+  workload it was on. The app tier now
+  has a wait of its own (`_wait_for_k8s_app_tier`), so **every** tier is
+  settled before health is snapshotted — this supersedes the part of **V-041**
+  that reads `_k8s_stack_health` as a Pod-*phase* scorer.
+  (Filed as `V-042` under #3827, renumbered to `V-045` on the first merge of
+  `v3.0.0` and to `V-046` on the second: #3811 allocated `V-042`/`V-043`,
+  #3828 `V-044` and #3825 `V-045`, all on concurrently-open branches. IDs are
+  never reused. #3825's entry is the sizing one above; this one is the
+  vocabulary, and `infra_status`'s `kubernetes.unschedulable` — which #3825
+  added from a separate `.spec.nodeName` probe — is read from
+  `_classify_k8s_pod` as of that merge, so the Infrastructure page's badges
+  and its "could not be scheduled" list cannot disagree.)
+  Method: executed on 2026-08-18 — `scripts/k8s-pod-state-smoke.py` on a real
+  kind cluster: a Pod blocked on a not-yet-created ConfigMap classified
+  `[PENDING] Pending: ContainerCreating` and then reached Ready once the
+  ConfigMap was created (so the pending verdict was true, not merely kinder);
+  a `cpu: 1000` Pod classified `[FAIL] Pending: unschedulable` carrying
+  `0/1 nodes are available: 1 Insufficient cpu`; a bad image classified
+  `[FAIL] ... ImagePullBackOff`; and the wait over an unschedulable Deployment
+  failed naming that Pod after 60s of a 900s budget. The same run asserts the
+  pre-fix rule (`ok = phase == "Running"`) calls the transient and the
+  unschedulable Pod the *same* thing, so it cannot pass on a build without the
+  fix. Standing guard: the `k8s-pod-state` job in `k8s-local-smoke.yml`.
+  Re-verify when: another `nyxgpt ops` readout starts deriving a verdict from
+  a Pod's `.status.phase` directly instead of going through
+  `_classify_k8s_pod` — the shared vocabulary, not this one call site, is what
+  the entry stands for.
 
 ## Parked
 

@@ -59,6 +59,10 @@ The review-agent OWNS the review process:
   the target platform*, not by inspection. See §1c — missing executed evidence
   on an in-scope change is a Medium (blocking) finding.
 - **Workflow actor gates (#3600, going-public hardening):** any new or edited `.github/workflows/*.yml` job triggered by `issues`, `issue_comment`, `pull_request`, or `pull_request_review*` that carries write permissions or a secret-backed `GH_TOKEN` MUST gate its `if:` on the actor's identity (`comment.user.login`/`review.user.login` against `vars.HUMAN_OWNER` or the relevant agent var) — a trigger phrase with no author check is a Medium (blocking) finding. See `agents/runbooks/developer-runbook.md` §3b for the pattern and the fork-PR guard requirement on merge/review paths.
+- **Code-scanning gate (#3837):** dispatch `code_scan_report.yml` and read the
+  open-alert list before deciding. Report `TOTAL_OPEN` and any alert this PR's
+  files appear in, in the review body. See §1f — an unread alert list, or an
+  alert introduced by the diff, is a Medium (blocking) finding.
 - **Live verification (#3555/P6-18):** if the PR touches observability, metrics, or a UI surface, run `nyxgpt ops verify` yourself and cite its output/screenshots — see §2's "Live verification" entry below for the full rule.
 
 ### Additional Quality Checks (comprehensive review)
@@ -325,6 +329,57 @@ after the sweep is the owner's call (principle 3): the reviewer's job is to
 make sure the class was looked for and its extent is on the record, never to
 convert every bug fix into a refactor.
 
+## 1f) Code-scanning gate: has anyone read the alerts? (#3837)
+
+CodeQL runs on this repository and files alerts. Until now **no step of the
+review process read them.** §1's checklist named no code-scanning check, and
+`security-scan.yml` runs bandit / pip-audit / `npm audit` — none of which is
+the CodeQL alert list. So alerts landed on the release branch and sat there.
+
+**Motivating incident.** Eight alerts were open on `v3.0.0` at `2a64b53`,
+accumulated 2026-08-05 → 2026-08-13, none caught by a review. One was
+**critical** (#124): a step output substituted into a `run:` block that then
+built a nested `bash -lc "..."` command string, in a job carrying
+`REVIEW_AGENT_TOKEN` on an `issue_comment` trigger. It was also the #3820 fault
+class one construct wider — see §1e and ledger **V-027**/**V-032**.
+
+> **Read the open-alert list before deciding, and put what you found in the
+> review body.**
+
+**How to run the check.**
+
+1. **Dispatch** [`code_scan_report.yml`](../../.github/workflows/code_scan_report.yml)
+   (`workflow_dispatch`, optional `ref` input) and read its run log. This is
+   the supported agent path — agent sessions cannot call the code-scanning API
+   directly (`CLAUDE.md` § Tooling). The log prints recent analyses, the open
+   alert list with `TOTAL_OPEN`, and every SARIF `codeFlow` per open alert.
+2. **Report `TOTAL_OPEN`** in the review body, in a `### Code Scanning`
+   section, so an empty result is distinguishable from a check never run.
+3. **Cross-reference the diff.** For each open alert, check whether its
+   `file:line` is in a file this PR touches.
+4. **Read the alert before classifying it.** A dismissal is a claim about the
+   whole flow to the sink, not about the line — trace it. Note the 280-character
+   cap on dismissal rationales (ledger **V-029**) and that dismissal itself is
+   a code-scanning *write* no agent token here holds: the reviewer names the
+   verdict, the owner performs it.
+
+**Blocking conditions.** Both are Medium:
+
+- an alert whose `file:line` lies in the diff, unless the review states why it
+  is a false positive and traces the flow that makes it one;
+- a review that never read the list — the whole failure mode this gate exists
+  to close.
+
+**Not blocking.** Pre-existing alerts in files the PR does not touch are
+*reported*, not fixed here: converting every PR into an alert-backlog sweep is
+the scope inflation §1e's symmetry rule warns against. File them, name them,
+move on.
+
+**Note on branch coverage.** CodeQL default setup scans only the default branch
+plus PRs, so a non-default branch's alert list is frozen until it becomes
+default again and receives a push (`CLAUDE.md` § Tooling). A stale list is
+still worth reading; say in the review that it is the default branch's list.
+
 ## 2) Severity model
 - Critical: correctness/security/data-loss/performance regression; must block merge
 - Medium: significant bug risk, missing tests, broken contract, poor maintainability; must block merge
@@ -416,6 +471,8 @@ to be made only I can make."*
 After completing the review:
 - Post a structured review comment starting with "## Code Review - [APPROVE|REQUEST_CHANGES]"
 - Include findings organized by severity (Critical/Medium/Minor)
+- Include a `### Code Scanning` section reporting `TOTAL_OPEN` from the
+  `code_scan_report.yml` run and any alert in a file this PR touches (§1f)
 - Provide clear recommendation with rationale
 
 ## 5) Automatic execution

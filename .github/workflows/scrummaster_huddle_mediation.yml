@@ -50,12 +50,17 @@ jobs:
         run: gh auth status
 
       - name: Validate required secrets
+        env:
+          # #3837: a secret interpolated here is substituted as shell source;
+          # read it as data instead. Presence is all this step checks.
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          SCRUMMASTER_AGENT_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
         run: |
-          if [[ -z "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}" ]]; then
+          if [[ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]]; then
             echo "::error::CLAUDE_CODE_OAUTH_TOKEN secret is not configured"
             exit 1
           fi
-          if [[ -z "${{ secrets.SCRUMMASTER_AGENT_TOKEN }}" ]]; then
+          if [[ -z "$SCRUMMASTER_AGENT_TOKEN" ]]; then
             echo "::error::SCRUMMASTER_AGENT_TOKEN secret is not configured"
             exit 1
           fi
@@ -82,14 +87,19 @@ jobs:
       # HUDDLE_MEDIATION_REQUESTED marker mediates; a later one stands down.
       - name: Mediation dedupe guard
         id: guard
+        env:
+          # #3837: step outputs reach the shell as data, never as source.
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.get_pr.outputs.pr_number }}
+          COMMENT_ID: ${{ github.event.comment.id }}
         run: |
           set -euo pipefail
-          PRIMARY=$(gh api "repos/${{ github.repository }}/issues/${{ steps.get_pr.outputs.pr_number }}/comments" \
+          PRIMARY=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" \
             --paginate --jq '.[]' | jq -s '{comments: .}' \
-            | python3 scripts/agents/lib/huddle_state.py guard HUDDLE_MEDIATION_REQUESTED "${{ github.event.comment.id }}")
+            | python3 scripts/agents/lib/huddle_state.py guard HUDDLE_MEDIATION_REQUESTED "$COMMENT_ID")
           echo "primary=$PRIMARY" >> "$GITHUB_OUTPUT"
           if [[ "$PRIMARY" != "true" ]]; then
-            echo "::notice::Comment ${{ github.event.comment.id }} is a duplicate mediation request for this review round -- standing down"
+            echo "::notice::Comment $COMMENT_ID is a duplicate mediation request for this review round -- standing down"
           fi
 
       - name: Run mediation

@@ -35,6 +35,10 @@ name: Kubernetes Local Smoke
 # cluster bring-up with two image builds is expensive, so it runs only when
 # the manifests, the k8s half of the ops layer, the smoke script, or this
 # workflow change.
+#
+# A second, cheap job (`k8s-pod-state`) answers the narrower question #3827
+# asked: does the install tell a Pod that is merely starting apart from one
+# that will never start? See scripts/k8s-pod-state-smoke.py.
 on:
   pull_request:
     paths:
@@ -46,6 +50,7 @@ on:
       - 'Dockerfile'
       - 'docker/entrypoint.sh'
       - 'scripts/k8s-local-smoke.sh'
+      - 'scripts/k8s-pod-state-smoke.py'
       - 'scripts/k8s-self-heal-coverage-smoke.py'
       - '.github/workflows/k8s-local-smoke.yml'
   push:
@@ -58,6 +63,7 @@ on:
       - 'Dockerfile'
       - 'docker/entrypoint.sh'
       - 'scripts/k8s-local-smoke.sh'
+      - 'scripts/k8s-pod-state-smoke.py'
       - 'scripts/k8s-self-heal-coverage-smoke.py'
       - '.github/workflows/k8s-local-smoke.yml'
   workflow_dispatch:
@@ -146,3 +152,40 @@ jobs:
             echo "--- logs $pod ---"
             kubectl -n nyxgpt logs "$pod" --tail 100 || true
           done
+
+  # The question this job answers (#3827): on a real cluster, does ops report a
+  # Pod that is merely starting differently from one that will never start?
+  #
+  # The acceptance run that filed the issue printed ten `[FAIL] pod ...:
+  # Pending` lines for Pods that were all Running minutes later, and the wall of
+  # false failures hid the one Pod that really was broken (`Insufficient
+  # memory`). The classifier reads what a real kubelet and a real scheduler
+  # write into `.status`, so a unit test over hand-written JSON cannot settle
+  # it. The script injects all three conditions for real and also runs the
+  # PRE-FIX rule over the same Pods, so it fails on a build without the fix
+  # instead of passing vacuously.
+  #
+  # Cheap by design: one kind node, three Pods and a busybox image -- no nyxGPT
+  # image builds, no Cassandra, no model pull. Minutes, not the hour above.
+  k8s-pod-state:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install nyxgpt (editable)
+        run: |
+          python -m pip install --upgrade pip setuptools
+          pip install -e .
+
+      - name: Pending is pending, unschedulable is a failure
+        run: python3 scripts/k8s-pod-state-smoke.py
+
+      - name: Tear down the smoke cluster
+        if: always()
+        run: kind delete cluster --name nyxgpt-local || true

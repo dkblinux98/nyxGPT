@@ -1533,3 +1533,314 @@ def test_web_component_status_uses_component_labeled_metrics_only(monkeypatch):
         )
         == 1
     )
+
+
+# --- #3831: the Kubernetes reason must reach the operator, not "0/1 ready" ---
+
+
+def _pending_pod_json(
+    *,
+    name="nyxgpt-api-canary-7f9c8b6d4-2xk9p",
+    reason="Unschedulable",
+    message="0/1 nodes are available: 1 Insufficient memory. preemption: 0/1 nodes are available.",
+):
+    """A real-shaped `kubectl get pods -o json` for a Pod the scheduler refused."""
+    return json.dumps(
+        {
+            "items": [
+                {
+                    "metadata": {"name": name},
+                    "status": {
+                        "phase": "Pending",
+                        "conditions": [
+                            {
+                                "type": "PodScheduled",
+                                "status": "False",
+                                "reason": reason,
+                                "message": message,
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+    )
+
+
+def _route(deployment_json, pods_json):
+    """Stub `_run` that answers `get deployment` and `get pods` differently."""
+
+    def _fn(cmd, **_k):
+        if "pods" in cmd:
+            return CP(stdout=pods_json)
+        return CP(stdout=deployment_json)
+
+    return _fn
+
+
+def _deployment_with_selector(**kwargs):
+    data = json.loads(_deployment_json(**kwargs))
+    data["spec"]["selector"] = {"matchLabels": {"app": "nyxgpt-api-canary-pool", "track": "canary"}}
+    return json.dumps(data)
+
+
+@pytest.mark.unit
+def test_unhealthy_deployment_surfaces_the_scheduling_reason(monkeypatch):
+    """#3831: "not healthy (0/1 ready)" alone made a full cluster look like a broken canary."""
+    monkeypatch.setattr(
+        canary, "_run", _route(_deployment_with_selector(ready=0), _pending_pod_json())
+    )
+
+    result = canary.deployment_health("nyxgpt-api-canary", "nyxgpt")
+
+    assert result.state == "unhealthy"
+    assert "not healthy (0/1 ready)" in result.message
+    assert "Unschedulable" in result.message
+    assert "Insufficient memory" in result.message
+    assert "nyxgpt-api-canary-7f9c8b6d4-2xk9p" in result.message
+    # The version field stays a version -- the reason belongs in the message.
+    assert result.version == "local"
+
+
+@pytest.mark.unit
+def test_pod_selector_is_read_from_the_deployment_not_guessed(monkeypatch):
+    seen: list[list[str]] = []
+
+    def _fn(cmd, **_k):
+        seen.append(cmd)
+        if "pods" in cmd:
+            return CP(stdout=_pending_pod_json())
+        return CP(stdout=_deployment_with_selector(ready=0))
+
+    monkeypatch.setattr(canary, "_run", _fn)
+    canary.deployment_health("nyxgpt-api-canary", "nyxgpt")
+
+    pod_cmd = next(cmd for cmd in seen if "pods" in cmd)
+    assert pod_cmd == [
+        "kubectl",
+        "get",
+        "pods",
+        "-n",
+        "nyxgpt",
+        "-l",
+        "app=nyxgpt-api-canary-pool,track=canary",
+        "-o",
+        "json",
+    ]
+
+
+@pytest.mark.unit
+def test_healthy_deployment_does_not_query_pods(monkeypatch):
+    """A healthy track costs no extra kubectl call (agentic first principle 1: cost)."""
+    seen: list[list[str]] = []
+
+    def _fn(cmd, **_k):
+        seen.append(cmd)
+        return CP(stdout=_deployment_with_selector(ready=1))
+
+    monkeypatch.setattr(canary, "_run", _fn)
+    result = canary.deployment_health("nyxgpt-api-stable", "nyxgpt")
+
+    assert result.state == "healthy"
+    assert not any("pods" in cmd for cmd in seen)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "pod_status, expected",
+    [
+        (
+            {
+                "phase": "Pending",
+                "containerStatuses": [
+                    {
+                        "ready": False,
+                        "state": {
+                            "waiting": {
+                                "reason": "ImagePullBackOff",
+                                "message": 'Back-off pulling image "nyxgpt-api:3.0.0-deadbee"',
+                            }
+                        },
+                    }
+                ],
+            },
+            "ImagePullBackOff: Back-off pulling image",
+        ),
+        (
+            {
+                "phase": "Running",
+                "containerStatuses": [
+                    {
+                        "ready": False,
+                        "state": {
+                            "terminated": {"reason": "Error", "message": "boom", "exitCode": 137}
+                        },
+                    }
+                ],
+            },
+            "Error: boom (exit 137)",
+        ),
+        (
+            {
+                "phase": "Running",
+                "conditions": [
+                    {
+                        "type": "Ready",
+                        "status": "False",
+                        "reason": "ContainersNotReady",
+                        "message": "containers with unready status: [nyxgpt-api]",
+                    }
+                ],
+            },
+            "ContainersNotReady: containers with unready status",
+        ),
+        ({"phase": "Pending"}, "Pending"),
+        ({"phase": "Running"}, ""),
+    ],
+)
+def test_pod_reason_reads_every_kubernetes_failure_shape(pod_status, expected):
+    reason = canary._pod_reason({"metadata": {"name": "p"}, "status": pod_status})
+    assert expected in reason
+    if not expected:
+        assert reason == ""
+
+
+@pytest.mark.unit
+def test_pod_reason_truncates_a_runaway_message():
+    long_message = "x" * 900
+    reason = canary._pod_reason(
+        {
+            "status": {
+                "conditions": [
+                    {
+                        "type": "PodScheduled",
+                        "status": "False",
+                        "reason": "Unschedulable",
+                        "message": long_message,
+                    }
+                ]
+            }
+        }
+    )
+    assert len(reason) < canary.POD_REASON_MESSAGE_LIMIT + 40
+    assert reason.endswith("…")
+
+
+@pytest.mark.unit
+def test_pod_failure_reasons_caps_the_list(monkeypatch):
+    pods = {
+        "items": [
+            {
+                "metadata": {"name": f"pod-{i}"},
+                "status": {
+                    "conditions": [
+                        {
+                            "type": "PodScheduled",
+                            "status": "False",
+                            "reason": "Unschedulable",
+                            "message": "Insufficient memory",
+                        }
+                    ]
+                },
+            }
+            for i in range(10)
+        ]
+    }
+    monkeypatch.setattr(canary, "_run", lambda cmd, **_k: CP(stdout=json.dumps(pods)))
+
+    reasons = canary.pod_failure_reasons("app=x", "nyxgpt")
+
+    assert len(reasons) == canary.POD_REASON_LIMIT
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "stub",
+    [
+        lambda cmd, **_k: CP(returncode=1, stderr="Error from server (Forbidden)"),
+        lambda cmd, **_k: CP(stdout="not json"),
+        lambda cmd, **_k: CP(stdout=json.dumps({"items": [{"status": {"phase": "Running"}}]})),
+    ],
+)
+def test_pod_failure_reasons_degrades_quietly(monkeypatch, stub):
+    """An RBAC denial or junk response must never break the health read it enriches."""
+    monkeypatch.setattr(canary, "_run", stub)
+    assert canary.pod_failure_reasons("app=x", "nyxgpt") == []
+
+
+@pytest.mark.unit
+def test_pod_failure_reasons_without_selector_or_kubectl(monkeypatch):
+    monkeypatch.setattr(canary, "_run", lambda cmd, **_k: pytest.fail("must not shell out"))
+    assert canary.pod_failure_reasons("", "nyxgpt") == []
+    monkeypatch.setattr(canary, "_which", lambda _: None)
+    assert canary.pod_failure_reasons("app=x", "nyxgpt") == []
+
+
+@pytest.mark.unit
+def test_wait_rollout_failure_names_the_pod_reason(monkeypatch):
+    """A rollout timeout used to say only "did not become healthy" (#3831)."""
+
+    def _fn(cmd, **_k):
+        if "rollout" in cmd:
+            return CP(returncode=1, stderr="error: timed out waiting for the condition")
+        if "pods" in cmd:
+            return CP(stdout=_pending_pod_json())
+        return CP(stdout=_deployment_with_selector(ready=0))
+
+    monkeypatch.setattr(canary, "_run", _fn)
+    result = canary._wait_rollout("nyxgpt-api-canary", "nyxgpt", timeout_seconds=5)
+
+    assert not result.ok
+    assert "did not become healthy within 5s" in result.message
+    assert "Insufficient memory" in result.message
+    assert "timed out waiting for the condition" in result.details
+
+
+@pytest.mark.unit
+def test_wait_rollout_failure_without_a_readable_selector(monkeypatch):
+    """Unreadable Deployment -> no reason to add, and still an honest failure."""
+
+    def _fn(cmd, **_k):
+        if "rollout" in cmd:
+            return CP(returncode=1, stderr="error: timed out")
+        return CP(returncode=1, stderr="Error from server (Forbidden)")
+
+    monkeypatch.setattr(canary, "_run", _fn)
+    result = canary._wait_rollout("nyxgpt-api-canary", "nyxgpt", timeout_seconds=5)
+
+    assert not result.ok
+    assert result.message == "Rollout of nyxgpt-api-canary did not become healthy within 5s"
+
+
+@pytest.mark.unit
+def test_unreadable_deployment_puts_kubectl_stderr_in_the_message(monkeypatch):
+    """The stderr used to be passed as the track's `version` and rendered as one."""
+    monkeypatch.setattr(
+        canary,
+        "_run",
+        lambda cmd, **_k: CP(returncode=1, stderr="Error from server (Forbidden): access denied"),
+    )
+
+    result = canary.deployment_health("nyxgpt-api-stable", "nyxgpt")
+
+    assert result.state == "error"
+    assert "Could not read deployment" in result.message
+    assert "Forbidden" in result.message
+    assert result.version == ""
+
+
+@pytest.mark.unit
+def test_unparseable_deployment_puts_the_parse_error_in_the_message(monkeypatch):
+    monkeypatch.setattr(canary, "_run", lambda cmd, **_k: CP(stdout="not json"))
+
+    result = canary.deployment_health("nyxgpt-api-stable", "nyxgpt")
+
+    assert result.state == "error"
+    assert "Could not parse status" in result.message
+    assert result.version == ""
+
+
+@pytest.mark.unit
+def test_selector_from_deployment_tolerates_a_missing_selector():
+    assert canary._selector_from_deployment({"spec": {}}) == ""
+    assert canary._selector_from_deployment({"spec": {"selector": {"matchLabels": "nope"}}}) == ""
