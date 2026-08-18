@@ -69,6 +69,11 @@ services:
       - |
         /bin/ollama serve &
         server=$$!
+        # PID 1 here is this shell, so `docker stop` / `nyxgpt ops stop ollama`
+        # delivers SIGTERM to it and not to the server. Forward it, or every
+        # stop would be a 10s wait followed by SIGKILL on a server holding an
+        # open model store.
+        trap 'kill -TERM $$server 2>/dev/null' TERM INT
         until ollama list >/dev/null 2>&1; do sleep 2; done
         for model in "$$NYXGPT_DEFAULT_MODEL" "$$NYXGPT_EMBEDDING_MODEL"; do
           [ -n "$$model" ] || continue
