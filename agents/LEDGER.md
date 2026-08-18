@@ -1519,7 +1519,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   on the full default install and re-injects the api-only survey each run.
   Re-verify when: a `k8s/**` manifest changes a Pod's `app`/`tier` labels —
   the classification is keyed on exactly those.
-- **V-046** · 2026-08-18 — **Every API error this app returns is
+- **V-049** · 2026-08-18 — **Every API error this app returns is
   object-shaped, so a UI that interpolates `data.error` renders
   `[object Object]`.** `http_exception_handler` (`src/nyxgpt/app.py`) wraps
   *every* `HTTPException` as `{"error": {"code", "message", "details",
@@ -1608,6 +1608,30 @@ are absent here by design (relocated to the annex; IDs are never reused).
   Re-verify when: a new `run:` block interpolates an expression the allowlist
   does not cover, or `SAFE_IN_RUN` gains an entry.
 
+
+- **V-048** · 2026-08-18 — **A repository-wide `rglob` scan reads the runner's
+  workspace, not the repository.** `test_the_source_stays_single` walked
+  `REPO_ROOT.rglob("*.md")` to assert the first principles are stated in full
+  only in `CLAUDE.md`. On a review run that walk also finds
+  `.claude-pr/CLAUDE.md` -- the copy `claude-code-action` itself parks there
+  when it restores the base branch's `CLAUDE.md` on a PR-context run
+  (**V-028**(b)) -- so the contract failed on a workspace artifact, inside the
+  review gate, on whatever PR happened to be under review, while passing on
+  every developer machine. The scan now enumerates tracked files
+  (`git ls-files -- '*.md'`): a committed duplicate anywhere still fails, a
+  scratch file cannot. General form: **a test whose claim is about the
+  repository must ask git what the repository contains**; a working directory
+  is not a checkout, and the difference only shows up where the extra files
+  are, which is CI.
+  Method: executed 2026-08-18 on this runner, both directions. With
+  `.claude-pr/CLAUDE.md` present, the pre-fix scan fails
+  (`test_the_source_stays_single`, 1 failed / 13 passed); the tracked-files
+  scan passes with the same artifact present, and the paired
+  `test_an_untracked_workspace_copy_is_not_a_duplicate` injects that exact
+  artifact so the fault cannot silently stop firing.
+  Re-verify when: `claude-code-action` changes where it parks the restored
+  config, or another contract test starts walking the filesystem instead of
+  the index.
 
 ## Parked
 
