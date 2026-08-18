@@ -89,6 +89,27 @@ type LogAggregationStatus = {
 const CANARY_LOKI_QUERY =
   '{job="nyxgpt"} |= `canary:` |~ `deploying|Deployed|starting|started|promoting|Promoted|rolling back|rolled back|regression`';
 
+// A rolling upgrade can leave this page (new build) talking to an api still
+// serving the pre-#3829 status shape, where the per-track objects are absent
+// or carry only the old process-wide counters. Reading those blind throws on
+// `undefined` and blanks the entire page -- so anything that is not a measured
+// TrackMetrics degrades to a placeholder that says so, which is the same
+// "unknown, not measured zero" contract `attributable: false` already carries.
+function trackPanel(track: string, metrics: TrackMetrics | undefined): TrackMetrics {
+  if (metrics && typeof metrics.attributable === 'boolean') return metrics;
+  return {
+    track,
+    attributable: false,
+    reason: 'not reported by this version of the API',
+    source: '',
+    pods_ready: 0,
+    pods_scraped: 0,
+    total_requests: 0,
+    error_rate_percent: 0,
+    p95_latency_ms: 0,
+  };
+}
+
 export default function CanaryPage() {
   const [component, setComponent] = useState<Component>('api');
   const [status, setStatus] = useState<CanaryStatus | null>(null);
@@ -234,6 +255,9 @@ export default function CanaryPage() {
       </div>
     );
   }
+
+  const canaryMetrics = trackPanel('canary', status?.metrics);
+  const stableMetrics = trackPanel('stable', status?.stable_metrics);
 
   return (
     <div style={{ padding: '2rem', maxWidth: '900px', margin: '0 auto' }}>
@@ -503,7 +527,7 @@ export default function CanaryPage() {
             counters belong to whichever Pod that is and describe neither track
             (#3829). The canary row is the exact input "Evaluate metrics" gates on.
           */}
-          {[status.metrics, status.stable_metrics].map((metrics) => (
+          {[canaryMetrics, stableMetrics].map((metrics) => (
             <div
               key={metrics.track}
               style={{
@@ -685,7 +709,7 @@ export default function CanaryPage() {
                   nothing can reach, so the override is offered here -- off by
                   default, and only shown once traffic is measurable at all.
                 */}
-                {status.metrics.attributable && status.metrics.total_requests === 0 && (
+                {canaryMetrics.attributable && canaryMetrics.total_requests === 0 && (
                   <label
                     style={{
                       display: 'flex',
