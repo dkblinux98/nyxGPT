@@ -15,6 +15,10 @@ type Component = {
   source: string;
   desired?: boolean;
   note?: string;
+  // #3812: false when this component's real state could not be determined
+  // from here at all (the Compose probe could not run). Never rendered as a
+  // state -- "unknown" is its own third case alongside present and absent.
+  known?: boolean;
   restart_count?: number;
   giving_up?: boolean;
 };
@@ -36,8 +40,13 @@ type SelfHealStatus = {
   enabled: boolean;
   mode: DetectedMode;
   compose_probe_available: boolean;
+  // Why the Compose survey could not run, when it could not (#3812), e.g.
+  // "`docker compose ps` exited 125: permission denied while trying to
+  // connect to the Docker daemon socket ...".
+  compose_probe_reason?: string;
   components: Component[];
   unhealthy_count: number;
+  unknown_count?: number;
   events: HealEvent[];
 };
 
@@ -298,10 +307,20 @@ export default function SelfHealPage() {
                 border: '1px solid var(--border-color)',
               }}
             >
-              Observability tier: cannot determine from this deployment mode — the Compose file
-              isn&apos;t reachable from wherever this API process is running, so a missing
-              Grafana/Loki/Jaeger/GlitchTip row here means &quot;can&apos;t check&quot;, not
-              &quot;not running&quot;.
+              Observability tier: <strong>cannot determine from here</strong>. The Compose
+              survey could not be run from wherever this API process lives, so the
+              Grafana/Loki/Jaeger/GlitchTip rows below mean &quot;can&apos;t check&quot;, not
+              &quot;not running&quot; — they are excluded from the unhealthy count and are not
+              auto-healed.
+              {status.compose_probe_reason && (
+                <>
+                  {' '}
+                  Reason: <code>{status.compose_probe_reason}</code>. Check it yourself with{' '}
+                  <code>nyxgpt ops status</code>; a permission-denied/daemon-unreachable error
+                  usually means the service&apos;s session predates its <code>docker</code> group
+                  membership, which <code>nyxgpt ops restart all</code> re-establishes.
+                </>
+              )}
             </p>
           )}
 
@@ -339,6 +358,26 @@ export default function SelfHealPage() {
                 }}
               >
                 {status.unhealthy_count} unhealthy
+              </span>
+            )}
+            {/* Counted and coloured apart from "unhealthy" on purpose (#3812):
+                a component nobody could query is not evidence that anything is
+                broken, and showing it in red is how eleven healthy services
+                got reported as an outage. */}
+            {(status.unknown_count ?? 0) > 0 && (
+              <span
+                style={{
+                  fontSize: '0.75rem',
+                  fontWeight: 600,
+                  padding: '2px 10px',
+                  borderRadius: 999,
+                  background: 'var(--background-secondary)',
+                  color: 'var(--foreground-muted)',
+                  border: '1px solid var(--border-color)',
+                }}
+                title="These components could not be queried from here, so their state is unknown -- not down. See the banner above for why."
+              >
+                {status.unknown_count} unknown
               </span>
             )}
             <button
@@ -442,22 +481,26 @@ export default function SelfHealPage() {
                           marginLeft: '0.75rem',
                           fontSize: '0.8rem',
                           color:
-                            c.desired === false
+                            c.known === false
                               ? 'var(--foreground-muted)'
-                              : c.state === 'absent'
-                                ? '#f59e0b'
-                                : c.healthy
-                                  ? '#22c55e'
-                                  : '#ef4444',
+                              : c.desired === false
+                                ? 'var(--foreground-muted)'
+                                : c.state === 'absent'
+                                  ? '#f59e0b'
+                                  : c.healthy
+                                    ? '#22c55e'
+                                    : '#ef4444',
                         }}
                       >
-                        {c.desired === false
-                          ? 'Disabled'
-                          : c.state === 'absent'
-                            ? 'Absent'
-                            : c.healthy
-                              ? 'Healthy'
-                              : 'Unhealthy'}
+                        {c.known === false
+                          ? 'Unknown'
+                          : c.desired === false
+                            ? 'Disabled'
+                            : c.state === 'absent'
+                              ? 'Absent'
+                              : c.healthy
+                                ? 'Healthy'
+                                : 'Unhealthy'}
                       </span>
                       <span
                         style={{
@@ -466,11 +509,13 @@ export default function SelfHealPage() {
                           color: 'var(--foreground-muted)',
                         }}
                       >
-                        {c.desired === false
-                          ? 'profile disabled in config, not auto-healed'
-                          : c.state === 'absent'
-                            ? 'enabled in config, no container running'
-                            : `state=${c.state}${c.health ? ` health=${c.health}` : ''}`}
+                        {c.known === false
+                          ? 'state could not be determined from here — not counted unhealthy'
+                          : c.desired === false
+                            ? 'profile disabled in config, not auto-healed'
+                            : c.state === 'absent'
+                              ? 'enabled in config, no container running'
+                              : `state=${c.state}${c.health ? ` health=${c.health}` : ''}`}
                       </span>
                       {c.giving_up && (
                         <span

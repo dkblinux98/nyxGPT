@@ -1263,7 +1263,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   cross-file failure; the failure disappears with the fixture in place.
   Re-verify when: a new test asserts a `threading.Timer`-deferred endpoint —
   use `captured_timers`, never a bare "assert not called inline".
-- **V-038** · 2026-08-18 — **An operator can now recover a cloud deployment's
+- **V-040** · 2026-08-18 — **An operator can now recover a cloud deployment's
   address and SSH target after the deploy's scrollback is gone, and read the
   instance's container state without a hand-rolled `ssh`.** `nyxgpt cloud
   status` is a first-class subcommand: human-readable by default (`--json` for
@@ -1311,6 +1311,30 @@ are absent here by design (relocated to the annex; IDs are never reused).
   log. The check run `test` on `78c0e5cf` reads `completed / failure`.
   Re-verify when: a check-status gate is added to the merge path — this entry
   then describes history rather than the present. See **Q-005**.
+
+- **V-039** · 2026-08-18 — **A self-heal/infra probe reports "unknown" when it
+  cannot run, and unknown is never counted as unhealthy.** `compose_probe()`
+  answers availability by *running* `docker compose ps`, not by checking that
+  `docker` and the compose file exist; a component whose state could not be
+  determined carries `known=False`/`state="unknown"` plus the reason, is
+  excluded from `unhealthy_count` and from the automatic heal pass, and is
+  rendered as its own third state by the Self-Heal, Infrastructure and System
+  Health pages — the last one because a zero `unhealthy_count` over an
+  unqueryable probe is a green "all healthy" nothing established, which is the
+  same defect pointing the other way.
+  The pre-#3812 check (`_which("docker") is not None and COMPOSE_FILE.exists()`)
+  is retired: it reported "available" for the condition it existed to catch.
+  Method: ran `scripts/self-heal-probe-honesty-smoke.py` on a Linux docker
+  engine, 2026-08-18 — it injects a root-owned mode-000 unix socket as
+  `DOCKER_HOST`, asserts the pre-fix path really renders every desired service
+  absent-and-unhealthy under that condition, then asserts the shipped path
+  reports unknown-with-reason and heals nothing; the restored half starts a
+  real prometheus container and asserts the same survey reports it running and
+  the untouched services absent. Reverting the fix fails the injected half.
+  Wired into `linux-native-smoke.yml` as the `self-heal-probe-honesty` job.
+  Re-verify when: another probe (native/terraform/kubernetes/canary) starts
+  reporting a definite state from an unqueryable source — the pattern, not just
+  this call site, is what the entry stands for.
 
 ## Parked
 
