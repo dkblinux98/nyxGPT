@@ -5,6 +5,7 @@ import LoadingSpinner from '../../../components/LoadingSpinner';
 import ErrorMessage from '../../../components/ErrorMessage';
 import ObservabilityCredentialsHint from '../../../components/ObservabilityCredentialsHint';
 import { exploreQueryUrl } from '../../../lib/grafanaExplore';
+import { apiErrorText, errorMessage } from '../../../lib/apiError';
 
 type Component = {
   service: string;
@@ -98,12 +99,12 @@ export default function SelfHealPage() {
       const res = await fetch('/api/v1/self-heal/status', { cache: 'no-store' });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || data.detail || `HTTP ${res.status}`);
+        throw new Error(apiErrorText(data, `HTTP ${res.status}`));
       }
       setStatus(data);
       setLastUpdated(Date.now());
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -148,12 +149,12 @@ export default function SelfHealPage() {
       });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || data.detail || `HTTP ${res.status}`);
+        throw new Error(apiErrorText(data, `HTTP ${res.status}`));
       }
       setActionMessage(data.enabled ? 'Self-heal enabled' : 'Self-heal disabled');
       await loadStatus();
     } catch (e: unknown) {
-      setActionError(e instanceof Error ? e.message : String(e));
+      setActionError(errorMessage(e));
     } finally {
       setToggling(false);
     }
@@ -177,7 +178,7 @@ export default function SelfHealPage() {
       });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || data.detail || `HTTP ${res.status}`);
+        throw new Error(apiErrorText(data, `HTTP ${res.status}`));
       }
       const healed = data.healed as HealEvent[];
       setActionMessage(
@@ -187,7 +188,7 @@ export default function SelfHealPage() {
       );
       await loadStatus();
     } catch (e: unknown) {
-      setActionError(e instanceof Error ? e.message : String(e));
+      setActionError(errorMessage(e));
     } finally {
       setHealingService(null);
     }

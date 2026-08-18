@@ -137,18 +137,33 @@ nyxgpt ops restart web
 **File**: `web/src/app/components/YourComponent.tsx`
 
 ```typescript
+import { apiErrorText, errorMessage } from '@/lib/apiError';
+
 async function fetchData() {
   try {
     const res = await fetch('/api/v1/your-feature/action');
-    if (res.ok) {
-      const data = await res.json();
-      // Use data
+    const data = await res.json();
+    if (!res.ok) {
+      // Never `data.error` / `data.detail` directly -- both can be objects.
+      throw new Error(apiErrorText(data, `HTTP ${res.status}`));
     }
+    // Use data
   } catch (err) {
-    console.error('Failed to fetch:', err);
+    setError(errorMessage(err));
   }
 }
 ```
+
+**Always read a failed response through `web/src/lib/apiError.ts`.** Every
+`HTTPException` leaves the backend in the envelope
+`{"error": {"code", "message", "details", "request_id"}}` (see
+`http_exception_handler` in `src/nyxgpt/app.py`), and FastAPI's own refusals
+use `{"detail": ...}` where `detail` may be a string, a list of validation
+errors, or a dict. Interpolating any of those into `new Error()` renders the
+UI as `[object Object]` and hides the actual failure — that was #3831, where
+it hid a Pod scheduling failure from the operator. `apiErrorText` unwraps
+every one of those shapes and falls back to the status line; `errorMessage`
+does the same for a value caught in a `catch`.
 
 ## Validation
 

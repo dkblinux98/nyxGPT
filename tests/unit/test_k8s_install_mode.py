@@ -322,14 +322,21 @@ def _stub_install_steps(monkeypatch, calls):
     """Stub every k8s install step but the two whose dev/artifact choice we assert."""
     monkeypatch.setattr(ops, "_refuse_port_collision", lambda _c: None)
     monkeypatch.setattr(ops, "_record_ops_action", lambda *a, **k: None)
+    # Kwarg-tolerant on purpose: `_preflight_k8s_capacity` takes
+    # `skip_observability`, and a step gaining a keyword should not turn this
+    # helper into a silent unstubbed call that shells out to `kubectl`.
     for name in (
         "_sync_packaged_resources",
         "_ensure_kubectl_and_cluster",
+        # #3825 and #3827 added these two to the step list after this test was
+        # written; unstubbed they reach a cluster that does not exist here.
+        "_preflight_k8s_capacity",
         "_kubectl_apply_kustomization",
         "_wait_for_k8s_data_tier",
+        "_wait_for_k8s_app_tier",
         "_k8s_stack_health",
     ):
-        monkeypatch.setattr(ops, name, lambda name=name: [ops.OpsResult(True, name)])
+        monkeypatch.setattr(ops, name, lambda *_a, name=name, **_k: [ops.OpsResult(True, name)])
     monkeypatch.setattr(ops, "_clear_intentional_stops", lambda _c: [ops.OpsResult(True, "stops")])
     monkeypatch.setattr(ops, "_ensure_k8s_secret", lambda _k: [ops.OpsResult(True, "secret")])
 
