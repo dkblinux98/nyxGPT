@@ -492,6 +492,23 @@ are absent here by design (relocated to the annex; IDs are never reused).
   reading only the close comment will get this wrong.
   Source: #3870; owner in session, 2026-08-18.
 
+- **D-021** · 2026-08-18 · owner — **Context loading is scoped, not
+  exhaustive.** The bootstrap no longer tells agents to read
+  `.github/workflows/*`, `scripts/agents/*`, every charter and every runbook:
+  it loads `AGENTS.md`, this ledger and `agents/CONTEXT_INDEX.md` (one line per
+  workflow and script), plus the one charter and one runbook for the role being
+  acted in; everything else is opened on demand through the index. Measured
+  cause, 2026-08-18: the old list was ~137k words (~180k tokens) per run and
+  the churn data put **97.3% of all tokens in context rather than production**
+  (2.26B tokens / 30 days, 84.6M of it repeat context), with workflows and
+  scripts alone 70% of the corpus. Two standing rules follow: reading is a cost
+  decision like any other (first principle 1), and **ledger entries are
+  appended at the end, never reflowed mid-file** — an edit high in a stable
+  prompt invalidates every cached token after it, and cache reads were 2.16B of
+  that 2.26B.
+  Source: owner directive 2026-08-18; `CLAUDE.md` § Bootstrap;
+  `scripts/build_context_index.py`.
+
 ## Verifications
 
 - **V-001** · 2026-08-14 — Releases in this repository are immutable: a
@@ -1311,6 +1328,50 @@ are absent here by design (relocated to the annex; IDs are never reused).
   Re-verify when: a check-status gate is added to the merge path — this entry
   then describes history rather than the present. See **Q-005**.
 
+- **V-045** · 2026-08-18 — **The `--kubernetes --local` stack is sized
+  against the node it actually lands on — in BOTH memory and cpu — and the
+  install measures that node before it applies anything.** The default
+  deployment (app tier + data/LLM tier + the #3787 observability layer)
+  reserves **6976Mi and 2075m**, down from 7872Mi and 2875m, against the
+  **7936Mi / 4000m** allocatable a stock Docker Desktop VM reports; a canary
+  rollout asks for a further 448Mi/150m and fits. **Memory was only the
+  reported half:** with the memory right-sized, `nyxgpt-api-canary` still
+  would not schedule on a 4-core node — `0/1 nodes are available: 1
+  Insufficient cpu` — because four api replicas reserved 250m each. Fixing
+  the named resource alone would have left the canary broken. Sizing is also
+  not the whole fix, since an operator's VM is whatever they gave it, so
+  `_preflight_k8s_capacity` (`src/nyxgpt/ops.py`) totals the rendered
+  manifests per resource against allocatable minus other namespaces'
+  requests and refuses *before* the first `kubectl apply`, warns when only
+  the canary headroom is missing, and skips rather than blocks when it cannot
+  measure (and warns rather than refuses on multi-node, where summed
+  allocatable can disprove a placement but never prove one). Before #3825 the
+  stack requested 8162Mi: every apply succeeded, the install reported
+  success, prometheus was left `Pending / FailedScheduling: Insufficient
+  memory`, and the later canary failure presented as "canary is broken".
+  Method: executed on a real kind cluster on 2026-08-18, ballasted to 7936Mi
+  allocatable (`scripts/k8s-node-ballast.sh` — a `pause` Pod reserving the
+  surplus, since the runner has ~16GiB and would be green by luck; its 4 CPUs
+  already match a Docker Desktop VM, so cpu needs no ballast). Observed, in
+  order: the pre-#3825 memory sizing left `prometheus`, `loki` and
+  `otel-collector` with no node and `Insufficient memory` events, and the
+  preflight refused it ("requests 8256Mi but only 7646Mi is free … at least
+  609Mi more"); the pre-fix cpu sizing with the memory fixed stranded
+  `nyxgpt-api-canary` on `Insufficient cpu`; the shipped sizing scheduled all
+  20 Pods and both canary Pods, and the preflight passed both resources
+  (6976Mi/7646Mi free, 2075m/3050m free). `k8s-capacity-smoke.yml` runs all
+  three phases; `k8s-local-smoke.yml` now runs the **default** install (no
+  `--skip-observability`) on the same ballasted node. After the fact the state
+  is observable: `infra_status()` reports `kubernetes.unschedulable` (Pods
+  with an empty `.spec.nodeName`) and the Infrastructure page names them — the
+  Pod list alone could not, since an unschedulable Pod and one pulling its
+  image both read `Pending`.
+  Re-verify when: a request/limit in `k8s/**` changes, or a workload is added
+  to either kustomization — both gates and
+  `tests/unit/test_k8s_capacity_preflight.py` fail loudly. Supersedes the
+  measured footprint in **V-041**, which was taken on the runner's own
+  16GB node before this right-sizing.
+
 - **V-039** · 2026-08-18 — **A self-heal/infra probe reports "unknown" when it
   cannot run, and unknown is never counted as unhealthy.** `compose_probe()`
   answers availability by *running* `docker compose ps`, not by checking that
@@ -1355,10 +1416,15 @@ are absent here by design (relocated to the annex; IDs are never reused).
   populated on every Pod (scheduled, merely pulling), and no
   `FailedScheduling` event in any namespace. Standing guard:
   `scripts/k8s-local-smoke.sh` now runs the default install, asserts all ten
-  observability workloads Ready, fails on any Pending Pod, and prints the
-  allocatable-vs-requests arithmetic every run.
+  observability workloads Ready, fails on any Pod the scheduler could not
+  place, and prints the allocatable-vs-requests arithmetic every run.
   Re-verify when: any `k8s/**` manifest changes a `resources.requests`, a
   replica count, or adds a workload — the 175m CPU margin is what absorbs it.
+  **Superseded in part by V-045** (#3825): the measured numbers above are the
+  pre-right-sizing footprint, and they were taken on the agent runner's own
+  ~16GB node, not on the 8GiB Docker Desktop VM an operator installs onto —
+  where the same stack did *not* fit. The finding this entry stands for (the
+  `_k8s_stack_health` phase/wait disagreement) is unaffected.
 
 - **V-042** · 2026-08-18 — **A support ticket's entire protection is one
   label, and the label is now guaranteed rather than assumed.** Every guard —
@@ -1422,8 +1488,8 @@ are absent here by design (relocated to the annex; IDs are never reused).
   deliberately write `|| echo ""` and still treat a failed read as "no
   Status".
 
-- **V-045** · 2026-08-18 — **The canary replica pool is borrowed for a
-  rollout, not standing — and `V-041`'s footprint numbers moved with it.**
+- **V-046** · 2026-08-18 — **The canary replica pool is borrowed for a
+  rollout, not standing — and `V-045`'s footprint numbers moved with it.**
   The stable Deployments shipped `replicas: 4` deliberately (#2692): traffic
   is split by replica ratio, so a 4-wide pool is what makes a 25% step
   expressible. Every install paid for it standing, including single-node
@@ -1437,13 +1503,21 @@ are absent here by design (relocated to the annex; IDs are never reused).
   it: `_split_replicas` returned `stable = 0` for any weight below 100% in a
   1-replica pool (a full cutover, not a canary), and `DEFAULT_TOTAL_REPLICAS`
   hardcoded the width the next rollout would restore.
-  **Footprint (supersedes the standing figure in V-041):** removing the six
-  standing replicas (3 api at 250m/512Mi, 3 web at 100m/256Mi) takes the
-  default `--kubernetes --local` stack from 3825m/8162Mi of requests to
-  **~2775m CPU and ~5858Mi**, so the ~175m CPU margin V-041 measured is now
-  ~1 CPU — which is exactly the headroom a rollout borrows back. V-041's
-  other halves (CPU is the binding dimension; the `--skip-observability`
-  smoke was hiding a missing wait, not a footprint problem) still stand.
+  **Footprint (supersedes the standing figure in V-045):** removing the six
+  standing replicas — at V-045's right-sized requests, 3 api at 100m/256Mi
+  and 3 web at 50m/192Mi — takes the default `--kubernetes --local` stack
+  from 2075m/6976Mi of requests to **1625m CPU and 5632Mi**, against the
+  4000m/7936Mi a stock Docker Desktop VM allocates. The 450m/1344Mi that
+  leaves free is exactly what a rollout borrows back when both tracks grow
+  to the default 4-replica ceiling, so the *peak* is unchanged and only the
+  *resting* reservation fell. V-045's other halves (CPU is the wall right
+  behind memory; `_preflight_k8s_capacity` refuses a node that cannot hold
+  the stack) still stand — with one correction that had to land with this
+  change: the preflight's canary headroom was one parked Pod per track,
+  which is what a rollout cost while the pool was standing. It now counts
+  the whole borrow, `[canary] total_replicas` minus the stable Deployment's
+  resting count, so an elastic pool cannot re-create V-045's defect one
+  rollout later.
   Method: executed on 2026-08-18 — `scripts/canary-rollout-smoke.sh` on a
   real kind cluster running the shipped manifests: stable applied at 1
   replica, `nyxgpt canary start --weight 25` grew the pool to 4 (asserted
@@ -1451,13 +1525,44 @@ are absent here by design (relocated to the annex; IDs are never reused).
   endpoints), `promote` re-planned it to 2 for 50%, `rollback` returned it to
   1, and a stable the operator had scaled to 2 came back to 2. A second run
   with `NYXGPT_CANARY_SMOKE_INJECT_STANDING_POOL=1` failed at the resting
-  check as required. The footprint figures are arithmetic on V-041's measured
+  check as required. The footprint figures are arithmetic on V-045's measured
   total minus the six removed Pods' declared requests, not a fresh
   measurement; `scripts/k8s-local-smoke.sh` prints the live
-  allocatable-vs-requests numbers on every run.
-  Standing guard: `.github/workflows/canary-rollout-smoke.yml` (both jobs).
+  allocatable-vs-requests numbers on every run, and
+  `tests/unit/test_k8s_capacity_preflight.py` asserts the same arithmetic
+  against the shipped manifests.
+  Standing guard: `.github/workflows/canary-rollout-smoke.yml` (both jobs),
+  plus `k8s-capacity-smoke.yml` for the headroom half.
   Re-verify when: a `k8s/**` manifest changes a `resources.requests` or a
   replica count, or the pool-planning rule in `canary._plan_rollout` changes.
+
+- **V-044** · 2026-08-18 — **Self-heal watched the api pool alone in
+  Kubernetes mode, and could not name the mode at all.** The Pod survey
+  selected `app=nyxgpt-api-canary-pool`, so web, Cassandra, Ollama and the
+  entire in-cluster observability tier (#3787) were observed and healed by
+  nothing; and because every Kubernetes row is named after a *Pod*, never
+  after a component, `detected_mode()`'s `service in CORE_APP_SERVICES` test
+  matched nothing and the page printed "Nothing detected running" above the
+  list of running Pods. Fixed by surveying the whole namespace once and
+  classifying Pods by label into a `core`/`observability` tier
+  (`ComponentStatus.tier`), which mode detection and the in-cluster
+  observability reporting both key off.
+  Method: real kind cluster, `nyxgpt` namespace carrying the manifests' own
+  labels (api/web pool Deployments, cassandra/ollama StatefulSets, ten
+  `tier: observability` workloads, plus one foreign workload). Shipped code:
+  `mode=kubernetes observability_source=kubernetes`, 6 core + 10
+  observability Pods watched, foreign Pod excluded, and
+  `heal_now(service=<web pod>)` deleted that Pod and the Deployment replaced
+  it. Fault injection with the **actual pre-fix module** (`git show
+  581b4911:src/nyxgpt/self_heal.py`) against the same live cluster: 2
+  Kubernetes rows (both api), `detected_mode` → `none` — the reported defect,
+  reproduced. 2026-08-18, while implementing #3828.
+  Standing guard: `scripts/k8s-self-heal-coverage-smoke.py`, run as step 8 of
+  `scripts/k8s-local-smoke.sh` (`.github/workflows/k8s-local-smoke.yml`,
+  path-filtered on `src/nyxgpt/self_heal.py`), which re-runs those assertions
+  on the full default install and re-injects the api-only survey each run.
+  Re-verify when: a `k8s/**` manifest changes a Pod's `app`/`tier` labels —
+  the classification is keyed on exactly those.
 
 ## Parked
 
@@ -1467,8 +1572,14 @@ are absent here by design (relocated to the annex; IDs are never reused).
   Reason: it is the largest recurring runner-spend multiplier in the pipeline —
   the dev workflow repeats both full suites on up to three fix attempts for every
   issue — but it is not v3.0.0 scope.
-  Revisit when: Sprint 9 (nyxAgent-focused) grooming — file it there.
-  Source: `product_management/AGENTIC_SDLC_DESIGN.md` §9a.
+  Revisit when: ~~Sprint 9 (nyxAgent-focused) grooming~~ — **UNPARKED by the
+  owner 2026-08-18**, ahead of Sprint 9, on the runner-spend evidence below.
+  Filed as its own issue; this entry stays as the record of why it was parked.
+  Evidence at unpark: 2,243 runner-minutes over 30 days, led by
+  `security-scan.yml` (187 runs) and `ci-tests.yml` (173) — the full tree on
+  every push, every review and every dev fix attempt.
+  Source: `product_management/AGENTIC_SDLC_DESIGN.md` §9a; owner directive
+  2026-08-18.
 
 - **P-002** · 2026-08-09 · owner — A global hard budget circuit breaker (fixed
   caps on expensive invocations per unit time) is **rejected, not pending**. Do
@@ -1486,8 +1597,12 @@ are absent here by design (relocated to the annex; IDs are never reused).
   enforced beyond the structural test shipped with #3774 — e.g. CI warning on
   verifications whose `Re-verify when` condition names a file that has since
   changed, or on an entry count that has outgrown "cheap to read"?
-  Needs: owner decision on how much enforcement is wanted before it becomes
-  ceremony.
+  Needs: ~~owner decision on how much enforcement is wanted~~ — **ANSWERED
+  2026-08-18**: the owner directed that ledger size be actively managed, not
+  merely advised. The ledger is read in full on every agent run, so its growth
+  is a per-run cost; it is to be split into a hot ledger (decisions binding on
+  current work) and an on-demand archive, filed as its own issue. The
+  `Re-verify when` staleness half of this question remains open.
   Blocks: nothing yet.
 
 - **Q-002** · 2026-08-18 · owner acceptance (#3853) — Why did

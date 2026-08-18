@@ -57,9 +57,13 @@ spec:
             initialDelaySeconds: 15
             periodSeconds: 20
           resources:
+            # Reserve twice the ~96Mi a Next.js production server actually
+            # holds, not the 256Mi four replicas used to reserve: that Gi of
+            # reservation is part of what oversubscribed an 8Gi node (#3825).
+            # The 512Mi limit is unchanged, so a render burst is unaffected.
             requests:
-              cpu: 100m
-              memory: 256Mi
+              cpu: 50m
+              memory: 192Mi
             limits:
               cpu: 500m
               memory: 512Mi

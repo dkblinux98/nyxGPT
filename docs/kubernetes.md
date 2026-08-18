@@ -133,6 +133,10 @@ expected to type by hand.
 
 - Docker (to build the image, and to run `kind`'s cluster nodes as
   containers) -- the one prerequisite you install yourself
+- A cluster VM with **8GiB of memory and 4 CPUs** -- the default Docker
+  Desktop allocation. See [Node capacity: what the stack reserves](#node-capacity-what-the-stack-reserves)
+  for what the deployment asks for and what the install does when it doesn't
+  fit
 - `kubectl` (with `kustomize` support, built in since 1.14) -- installed for
   you by `nyxgpt ops install --kubernetes --local` if it's missing (#3724)
 - [kind](https://kind.sigs.k8s.io/#installation) -- also installed for you,
@@ -144,6 +148,67 @@ expected to type by hand.
 - The [metrics-server](https://github.com/kubernetes-sigs/metrics-server) addon, required for the HorizontalPodAutoscaler to read CPU usage
   - minikube: `minikube addons enable metrics-server`
   - kind: `kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml` (add `--kubelet-insecure-tls` to the container args for local clusters without valid kubelet certs)
+
+## Node capacity: what the stack reserves
+
+The default deployment — app tier, data/LLM tier and the
+[in-cluster observability layer](#observability-in-the-cluster) — reserves
+about **5.5GiB of memory and 1.6 CPUs** in requests on a single-node cluster,
+and a canary rollout **borrows** a further ~1344Mi and ~450m for as long as it
+runs. That borrowing is the whole of [the elastic
+pool](#the-replica-pool-is-borrowed-not-standing-3833): the stable
+Deployments rest at 1 replica and `nyxgpt canary start` grows each track to at
+most `[canary] total_replicas` (4 by default) Pods, so the peak is the same
+figure the pool used to reserve standing — it is just no longer held by an
+install nobody is rolling out.
+A stock Docker Desktop VM (8GiB, 4 CPUs) offers 7936Mi of *allocatable*
+memory and 4 CPUs — the kubelet's reserved slice is already out of those
+numbers — of which kube-system holds a few hundred MiB and ~950m. So the
+default stack fits both, with room for the rollout.
+
+Two things are worth knowing about those figures:
+
+- A Pod's **request** reserves capacity when the scheduler places it; its
+  **limit** caps what it may then use. The api requests 256Mi and is capped
+  at 1Gi, so a RAG or concurrent-chat burst has headroom without four
+  replicas reserving a quarter of the node between them. Sizing the request
+  like a limit is what left prometheus unschedulable in #3825.
+- Requests are compared against **allocatable**, not against free memory. A
+  node with plenty of RAM idle will still refuse a Pod whose request does
+  not fit the unreserved remainder.
+- **CPU is checked the same way, and it is the wall right behind memory.**
+  With the memory right-sized, four api replicas reserving 250m each still
+  stranded the canary Pod on a 4-CPU VM (`Insufficient cpu`) — the same
+  failure with a different word in it. The api requests 100m and is capped
+  at a full core; the web tier requests 50m and is capped at 500m.
+
+`nyxgpt ops install --kubernetes --local` measures this before it applies
+anything: it totals what the manifests will reserve, memory and CPU alike,
+compares each against the node's allocatable capacity minus what other
+namespaces already hold, and — per resource —
+
+- **refuses**, naming the shortfall and the resource, if the stack cannot
+  fit — rather than applying it and leaving a Pod `Pending /
+  FailedScheduling: Insufficient memory` for you to find. Give the cluster VM
+  more of whichever it named (Docker Desktop: Settings → Resources), or
+  install without the observability layer:
+
+  ```bash
+  nyxgpt ops install --kubernetes --local --skip-observability
+  ```
+
+- **warns** if it fits but a canary rollout would not, so
+  `nyxgpt canary start` failing later is a known constraint rather than a
+  surprise;
+- **skips** itself, never blocking, if it cannot read the node — and on a
+  multi-node cluster reports rather than refuses, since summed allocatable
+  capacity can disprove a placement but never prove one.
+
+After the fact, the [Infrastructure page](#infrastructure-status-card-3468)
+names any Pod no node would take, separately from the Pod list: an
+unschedulable Pod reads as `Pending` there, which is also what a Pod that is
+placed and pulling its image reads as — so the stranded prometheus of #3825
+looked, on that page, exactly like a stack still starting up.
 
 ## 0. Create a cluster (if you don't have one)
 
@@ -253,7 +318,8 @@ nyxgpt ops port-forward --target observability
 
 See [Observability in the cluster](#observability-in-the-cluster) below.
 
-The `nyxgpt-api` Pods deployed here are also watched by the same
+Every Pod deployed here -- api, web, Cassandra, Ollama and the observability
+overlay -- is also watched by the same
 [self-heal watchdog](self-healing.md) as every other deployment path -- see
 [self-healing.md#kubernetes-mode](self-healing.md#kubernetes-mode) for how it
 checks Pod readiness via `kubectl get pods` and heals via `kubectl delete
@@ -327,28 +393,33 @@ Notes:
   `job="nyxgpt"` plus a per-component `service_name` (`api`, `web`,
   `grafana`, ...), with the same level/logger extraction as
   `docker/promtail-config.yml`.
-- **Restarts are Kubernetes' own.** The self-heal watchdog restarts running
-  *Compose* observability containers (see
-  [self-healing.md](self-healing.md)); in-cluster, each of these workloads is
-  a Deployment (or DaemonSet), so the cluster's own controllers restart a
-  failed Pod. The watchdog's Kubernetes mode stays focused on the app tier's
-  Pods.
+- **Restarts are Kubernetes' own, with the watchdog on top.** Each of these
+  workloads is a Deployment (or DaemonSet), so the cluster's own controllers
+  restart a failed Pod. The [self-heal watchdog](self-healing.md) watches
+  these Pods too (#3828 -- it reports them under `tier: observability` and
+  heals a stuck one by deleting it, the same action it takes on an app-tier
+  Pod), which is what makes the tier visible on the Self-Heal page in this
+  mode rather than surveyed through a Compose stack the deployment does not
+  have.
 - **Evidence.** `.github/workflows/k8s-observability-smoke.yml` runs the
   whole thing on a real kind cluster: it first proves the pre-#3787 app-tier
   apply leaves zero observability workloads, then asserts all ten roll out,
   every UI answers, Grafana has its four provisioned datasources and the SRE
   Home dashboard, and promtail's logs actually reach Loki.
   `.github/workflows/k8s-local-smoke.yml` covers the other half -- that the
-  layer comes up *with* the app tier in the **default** install, on one node,
-  with no Pod left Pending (#3826).
-- **Footprint.** The default stack (app + data/LLM + observability) requests
-  ~2.8 CPU and ~5.7Gi of memory including kube-system, so it fits a single
-  4-vCPU/16GB node — with roughly a CPU of headroom, which is what a canary
-  rollout borrows when it grows the pool (#3833 took ~1 CPU and ~2.2Gi off
-  the standing figure by resting the stable Deployments at 1 replica).
-  `--skip-observability` drops roughly 0.5 CPU and 2.4Gi more; the k8s smoke
-  prints the node's allocatable-versus-requests arithmetic on every run, so
-  the numbers stay observed rather than remembered.
+  layer comes up *with* the app tier in the **default** install, on one node
+  the size of a stock Docker Desktop VM, with no Pod the scheduler could not
+  place (#3826, #3825).
+- **Footprint.** After the #3825 right-sizing and #3833's elastic canary
+  pool, the default stack (app + data/LLM + observability) requests
+  **~1.6 CPU and ~5.5GiB** of memory standing, so it fits the
+  4-vCPU/7936Mi a stock Docker Desktop VM offers with room for a rollout to
+  borrow — see [Node capacity: what the stack
+  reserves](#node-capacity-what-the-stack-reserves) for the per-tier numbers
+  and the preflight that checks them. `--skip-observability` drops roughly
+  0.5 CPU and 2.4GiB of that; the k8s smoke runs on a node ballasted down to
+  that VM's size and prints the allocatable-versus-requests arithmetic on
+  every run, so the numbers stay observed rather than remembered.
 
 ## Data and LLM tier
 
@@ -427,6 +498,16 @@ states rather than folding every failure into a single "not deployed":
   deployed."
 - **DEPLOYED** -- the probe succeeded and found Pods in the `nyxgpt`
   namespace.
+
+Below the Pod list, the card names any Pod **no node would take** (#3825).
+That state is otherwise invisible here: an unschedulable Pod reads as
+`Pending`, exactly like a Pod that is placed and pulling its image, so a
+deployment silently missing prometheus looked the same as one still starting
+up. Reporting only, as with everything else on this page -- the cure is more
+memory or CPU on the cluster VM and a re-run of `nyxgpt ops install
+--kubernetes --local`, which checks the node's capacity against the stack
+before it applies anything (see [Node capacity: what the stack
+reserves](#node-capacity-what-the-stack-reserves)).
 
 The same card carries an **In-cluster observability** section (#3787):
 per-workload readiness for the components in [Observability in the

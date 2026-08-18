@@ -30,6 +30,20 @@
 #      build that never shipped the data tier, which is how a green CI run
 #      and a broken stack coexist.
 #
+# Since #3825 it also asserts every Pod was SCHEDULED before it goes on to ask
+# whether chat works, on a node ballasted down to the 7936Mi a stock 8GiB
+# Docker Desktop VM offers. That defect shipped a stack whose memory requests
+# exceeded the node: chat worked, `install` reported success, and prometheus
+# was Pending forever. A gate that installs with --skip-observability, or that
+# only asks "can I chat?", passes on exactly that stack.
+#
+# It also runs scripts/k8s-self-heal-coverage-smoke.py against the same live
+# cluster (#3828): whether self-heal names this deployment, watches all four
+# core tiers plus the in-cluster observability tier rather than the api pool
+# alone, and can heal a non-api Pod. That script carries its own
+# fault-injection half -- it reconstructs the pre-#3828 (api-only) survey from
+# the same cluster and asserts its checks fail against it.
+#
 # The observability layer's own behaviour (UIs answering, Grafana datasources,
 # promtail shipping into Loki) is k8s-observability-smoke.yml's job and is not
 # duplicated here -- what this script adds is that the layer comes up *with*
@@ -37,9 +51,13 @@
 #
 # Prerequisites: Docker, and a `nyxgpt` on PATH (`pip install -e .`). kubectl
 # and kind are installed by `nyxgpt ops install --kubernetes --local` itself
-# when missing (#3724), so this script does not install them.
+# when missing (#3724), so this script does not install them. To reproduce the
+# capacity claim on a machine larger than a stock 8GiB Docker Desktop VM,
+# create the cluster first and run `scripts/k8s-node-ballast.sh` against it --
+# which is what .github/workflows/k8s-local-smoke.yml does.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NAMESPACE="nyxgpt"
 API_KEY="${NYXGPT_SMOKE_API_KEY:-k8s-smoke-key}"
 WEB_PORT="${NYXGPT_SMOKE_WEB_PORT:-3000}"
@@ -101,12 +119,40 @@ chat_round_trip() {
     echo "$out" | grep -q '"content"' || return 1
 }
 
-step "1/8 Bring the stack up: nyxgpt ops install --kubernetes --local"
+step "1/9 Bring the stack up: nyxgpt ops install --kubernetes --local"
 # No --skip-observability: this is the command as a user types it (#3826).
+# The layer that flag used to hide is also the one that did not fit the node
+# (#3825), so a gate that installs less than the default cannot see either.
 nyxgpt ops install --kubernetes --local --api-key "$API_KEY"
 ok "install --kubernetes --local completed"
 
-step "2/8 The data/LLM tier exists and is Ready"
+step "2/9 Every Pod of the default stack was scheduled"
+# #3825: `install` reported success on a node whose memory was 99% reserved,
+# with prometheus left Pending / FailedScheduling for good. Nothing in the
+# steps below would have noticed -- chat worked fine. An unscheduled Pod has
+# an empty .spec.nodeName, which is what this checks; "Pending" on its own is
+# also what a Pod that IS scheduled and pulling its image looks like.
+#
+# Checked here, before the rollout waits below, so an unschedulable Pod reads
+# as its own failure rather than as one of those waits timing out. Report the
+# arithmetic either way (#3826), so a future footprint increase shows up as a
+# number in the log rather than as a mysterious timeout.
+echo "--- node allocatable ---"
+kubectl get nodes -o custom-columns=\
+'NAME:.metadata.name,CPU:.status.allocatable.cpu,MEM:.status.allocatable.memory'
+echo "--- requests by Pod ---"
+kubectl -n "$NAMESPACE" get pods -o custom-columns=\
+'NAME:.metadata.name,PHASE:.status.phase,REQ_MEM:.spec.containers[*].resources.requests.memory'
+unscheduled=$("${SCRIPT_DIR}/k8s-unscheduled-pods.sh" "$NAMESPACE")
+if [ -n "$unscheduled" ]; then
+    kubectl -n "$NAMESPACE" get pods -o wide >&2
+    kubectl -n "$NAMESPACE" get events --field-selector reason=FailedScheduling | tail -20 >&2
+    fail "these Pods could not be scheduled: $(echo "$unscheduled" | tr '\n' ' ')-- the node \
+cannot fit the default stack (size the cluster VM, do not drop observability)"
+fi
+ok "every Pod in the default stack has a node"
+
+step "3/9 The data/LLM tier exists and is Ready"
 # `install` already waits for these (ops._wait_for_k8s_data_tier); asserting
 # again here is what makes the *absence* of the tier a test failure rather
 # than a silently degraded stack.
@@ -121,7 +167,7 @@ kubectl -n "$NAMESPACE" exec ollama-0 -- ollama list | grep -q "$MODEL" ||
     fail "Ollama is Ready but the default model ${MODEL} was never pulled -- chat would 404"
 ok "default model ${MODEL} present in the in-cluster Ollama"
 
-step "3/8 The observability layer came up with the app tier"
+step "4/9 The observability layer came up with the app tier"
 # Every workload k8s/observability/ ships, prometheus first: it is the one the
 # SRE dashboard's metrics tiles and every Grafana panel read from, and it is
 # the workload #3787 found missing. `install` already waits for these
@@ -139,46 +185,32 @@ kubectl -n "$NAMESPACE" rollout status ds/promtail --timeout=300s ||
     fail "promtail never became Ready in the default install"
 ok "all ten observability workloads are Ready alongside the app tier"
 
-step "4/8 Nothing is left Pending -- the whole default stack fits on the node"
-# The failure mode this exists for: the node cannot fit the default stack's
-# requests, so Pods sit Pending forever and every other assertion below either
-# hangs or passes on a partial stack. Report the arithmetic either way, so a
-# future footprint increase shows up as a number in the log rather than as a
-# mysterious timeout.
-echo "--- node allocatable ---"
-kubectl get nodes -o custom-columns=\
-'NAME:.metadata.name,CPU:.status.allocatable.cpu,MEM:.status.allocatable.memory'
-echo "--- requests by Pod ---"
-kubectl -n "$NAMESPACE" get pods -o custom-columns=\
-'NAME:.metadata.name,PHASE:.status.phase,REQ_MEM:.spec.containers[*].resources.requests.memory'
-pending=$(kubectl -n "$NAMESPACE" get pods \
-    --field-selector=status.phase=Pending -o name 2>/dev/null | tr '\n' ' ')
-if [ -n "${pending// /}" ]; then
-    kubectl -n "$NAMESPACE" describe pods --field-selector=status.phase=Pending | tail -60 >&2
-    fail "Pods still Pending after the default install: ${pending}-- the node cannot fit the \
-default stack (size the runner or the kind node, do not drop observability)"
-fi
-ok "no Pending Pods: the default stack (app + data/LLM + observability) fits"
+# Nothing is left Pending once every rollout above has landed either -- a Pod
+# that was scheduled but never became Ready fails its own rollout wait, and
+# step 2 already ruled out the unschedulable case with the node arithmetic
+# printed alongside it (#3826, #3825).
 
-step "5/8 The user path works: sessions list, via the web Service"
+step "5/9 The user path works: sessions list, via the web Service"
 start_port_forward
 curl -fsS "${BASE}/api/sessions" >/dev/null ||
     fail "GET /api/sessions failed -- this is the UI's 'Failed to load sessions'"
 ok "session list loads through the web UI's own proxy route"
 
-step "6/8 A real chat round-trip"
+step "6/9 A real chat round-trip"
 curl -fsS -X POST "${BASE}/api/sessions/init" -H 'Content-Type: application/json' \
     -d "{\"name\":\"${SESSION}\"}" >/dev/null || fail "could not create a chat session"
 chat_round_trip "$SESSION" || fail "chat round-trip produced no answer -- no chat is possible"
 ok "chat answered through web -> api -> in-cluster Ollama"
 
-step "7/8 Sessions are shared by every api replica (Cassandra-backed)"
+step "7/9 Sessions are shared by every api replica (Cassandra-backed)"
 # With the file backend each api replica keeps its own session list, so
-# consecutive requests from one browser see different sessions. The stable
-# Deployment rests at 1 replica since #3833, so the poll below no longer
-# spreads across a standing pool by itself -- scale up for the duration of
-# this check, exactly as a canary rollout would, so the assertion still has
-# more than one replica to disagree.
+# consecutive requests from one browser see different sessions; the poll below
+# runs enough times to land on every replica. The stable Deployment rests at 1
+# replica since #3833, so the poll no longer spreads across a standing pool by
+# itself -- scale up for the duration of this check, exactly as a canary
+# rollout would, so the assertion still has more than one replica to disagree.
+# Two extra api Pods is 200m/512Mi against the ballasted node (#3825), which
+# step 2 has already shown has room for a rollout's worth of borrowing.
 kubectl -n "$NAMESPACE" scale deployment/nyxgpt-api-stable --replicas=3 >/dev/null
 kubectl -n "$NAMESPACE" rollout status deployment/nyxgpt-api-stable --timeout=300s >/dev/null ||
     fail "nyxgpt-api-stable did not reach 3 replicas for the shared-session check"
@@ -192,7 +224,15 @@ kubectl -n "$NAMESPACE" exec cassandra-0 -- \
 ok "session is stored in the in-cluster Cassandra and visible from every replica"
 kubectl -n "$NAMESPACE" scale deployment/nyxgpt-api-stable --replicas=1 >/dev/null
 
-step "8/8 Fault injection: the pre-#3786 topology must FAIL this same check"
+step "8/9 Self-heal sees the whole cluster, not just the api pool (#3828)"
+# Deletes a web Pod for real (the heal action), which is why it runs after the
+# user-path steps and why the tunnel is dropped first -- step 9 reopens it.
+stop_port_forward
+python3 scripts/k8s-self-heal-coverage-smoke.py ||
+    fail "self-heal does not cover this deployment -- see the output above (#3828)"
+ok "self-heal names the mode, watches every tier, and heals a non-api Pod"
+
+step "9/9 Fault injection: the pre-#3786 topology must FAIL this same check"
 stop_port_forward
 kubectl -n "$NAMESPACE" delete statefulset cassandra ollama --wait=true >/dev/null
 kubectl -n "$NAMESPACE" wait --for=delete pod/ollama-0 --timeout=180s >/dev/null 2>&1 || true
