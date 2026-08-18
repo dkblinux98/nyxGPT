@@ -22,14 +22,17 @@ Four deployment modes are covered:
   Docker containers defined in `terraform/main.tf`. Checked/healed directly
   via `docker ps`/`docker restart <container>`, the same way native mode's
   `nyxgpt-cassandra` is -- see `_list_terraform_component_status`.
-- **Kubernetes** (`nyxgpt ops install --kubernetes --local`): the `nyxgpt-api`
-  Deployments' Pods (stable/canary, see `k8s/`), checked via
-  `kubectl get pods` and healed via `kubectl delete pod` (the Deployment's
-  controller recreates it) -- see `_list_kubernetes_component_status`. This
-  is on top of, not instead of, Kubernetes' own kubelet liveness-probe
-  restarts and `canary.py`'s metrics-gated rollout + auto-rollback; it adds
-  the same "torn-down/stuck" recovery + unified dashboard visibility the
-  other three modes get.
+- **Kubernetes** (`nyxgpt ops install --kubernetes --local`): every Pod the
+  install deploys -- the api and web Deployments (stable/canary), the
+  Cassandra and Ollama StatefulSets, and the in-cluster observability overlay
+  (`k8s/observability/`, #3787) -- checked via `kubectl get pods` and healed
+  via `kubectl delete pod` (the owning controller recreates it) -- see
+  `_list_kubernetes_component_status`. This is on top of, not instead of,
+  Kubernetes' own kubelet liveness-probe restarts and `canary.py`'s
+  metrics-gated rollout + auto-rollback; it adds the same "torn-down/stuck"
+  recovery + unified dashboard visibility the other three modes get. In this
+  mode the observability tier is read from the cluster, and the Compose
+  survey below has no bearing on it (#3828).
 
 A component reported by more than one mode at once -- e.g. a stopped native
 `nyxgpt-cassandra` container deliberately left in place after switching to
@@ -191,11 +194,28 @@ TERRAFORM_CONTAINERS: dict[str, str] = {
     "web": "nyxgpt-tf-web",
 }
 
-# Namespace and label selector for the Kubernetes-managed `nyxgpt-api` Pods
-# (stable/canary both use `app=nyxgpt-api-canary-pool` -- see
-# k8s/deployment-stable.yaml / deployment-canary.yaml). Mirrors ops.K8S_NAMESPACE.
+# Namespace the Kubernetes deployment lives in. Mirrors ops.K8S_NAMESPACE.
 K8S_NAMESPACE = "nyxgpt"
-K8S_POD_LABEL_SELECTOR = "app=nyxgpt-api-canary-pool"
+
+# Which core component a Pod belongs to, keyed by its `app` label (see
+# k8s/deployment-{stable,canary}.yaml, deployment-web-{stable,canary}.yaml,
+# statefulset-cassandra.yaml, statefulset-ollama.yaml).
+#
+# All four core tiers, not just the api pool (#3828): the probe used to select
+# `app=nyxgpt-api-canary-pool` alone, so in Kubernetes mode web, Cassandra and
+# Ollama were watched by nothing at all -- the same "Pods Running is not a
+# working nyxGPT" gap #3786 found in the installer, on the observability side.
+K8S_CORE_POD_APPS: dict[str, str] = {
+    "nyxgpt-api-canary-pool": "api",
+    "nyxgpt-web-canary-pool": "web",
+    "cassandra": "cassandra",
+    "ollama": "ollama",
+}
+
+# Pod-template label every workload in `k8s/observability/` carries (#3787).
+# Keyed on rather than an explicit workload list so a workload added to that
+# overlay is watched without a matching edit here.
+K8S_OBSERVABILITY_TIER_LABEL = "observability"
 
 # Docker Compose profiles that make up the opt-in observability suite.
 # Mirrors ops.OBSERVABILITY_PROFILES -- kept as a separate copy (rather than
@@ -255,6 +275,16 @@ class ComponentStatus:
     `absent`, and counted as "11 unhealthy", purely because the API process's
     session could not reach the Docker daemon.
 
+    `tier` is populated for Kubernetes rows only, where the row is named
+    after a Pod rather than after a component: `"core"` for the api/web/
+    cassandra/ollama Pods and `"observability"` for a `k8s/observability/`
+    workload's Pod. It is what lets `detected_mode` recognize a Kubernetes
+    deployment (a Pod name is never in `CORE_APP_SERVICES`, which is why the
+    Self-Heal page used to print "Nothing detected running" above a list of
+    running Pods -- #3828) and what keeps an observability-only cluster from
+    being read as a core deployment. Empty for every other source, whose rows
+    are already named by component.
+
     `note` is an informational annotation, empty unless another mode's
     entry for this same component was shadowed by this one (see
     `_resolve_core_component_conflicts` / #3428) -- e.g. a stopped native
@@ -274,6 +304,7 @@ class ComponentStatus:
     desired: bool = True
     note: str = ""
     known: bool = True
+    tier: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a plain dict suitable for JSON responses."""
@@ -287,6 +318,7 @@ class ComponentStatus:
             "desired": self.desired,
             "note": self.note,
             "known": self.known,
+            "tier": self.tier,
         }
 
 
@@ -761,17 +793,44 @@ def _list_terraform_component_status() -> list[ComponentStatus]:
     return statuses
 
 
-def _list_kubernetes_component_status(already_managed: set[str]) -> list[ComponentStatus]:
-    """Health-check the Kubernetes-managed `nyxgpt-api` Pods via `kubectl get pods`.
+def _kubernetes_pod_tier(labels: dict[str, Any]) -> str:
+    """Classify one Pod from its labels: `"core"`, `"observability"` or `""`.
 
-    Covers `nyxgpt ops install --kubernetes --local` (see `k8s/`): the
-    stable/canary Deployments' Pods, one `ComponentStatus` per Pod (not per
-    Deployment -- `stable` alone can run several replicas, and each needs
-    its own backoff/restart-count bookkeeping in `heal_now`). Healed via
-    `kubectl delete pod`, which the Pod's Deployment/ReplicaSet then
-    recreates -- on top of, not instead of, kubelet's own liveness-probe
-    restarts and `canary.py`'s metrics-gated rollout + auto-rollback (see
-    the module docstring).
+    `""` means "not ours" -- a Pod in the `nyxgpt` namespace that belongs to
+    neither the core tiers nor the observability overlay (someone else's
+    workload, a one-shot Job) is not something this watchdog may delete.
+    """
+    if labels.get("tier") == K8S_OBSERVABILITY_TIER_LABEL:
+        return "observability"
+    if labels.get("app") in K8S_CORE_POD_APPS:
+        return "core"
+    return ""
+
+
+def _list_kubernetes_component_status(already_managed: set[str]) -> list[ComponentStatus]:
+    """Health-check every Kubernetes-managed nyxGPT Pod via `kubectl get pods`.
+
+    Covers `nyxgpt ops install --kubernetes --local` (see `k8s/`): the api and
+    web stable/canary Deployments, the Cassandra and Ollama StatefulSets, and
+    the in-cluster observability overlay (`k8s/observability/`, #3787) --
+    every tier the install deploys, keyed by Pod label
+    (`_kubernetes_pod_tier`). It used to select `app=nyxgpt-api-canary-pool`
+    alone, which left everything but the api pool unobserved in Kubernetes
+    mode (#3828).
+
+    One `ComponentStatus` per Pod, not per Deployment -- `stable` alone can
+    run several replicas, and each needs its own backoff/restart-count
+    bookkeeping in `heal_now`. Healed via `kubectl delete pod`, which the
+    Pod's Deployment/ReplicaSet/StatefulSet/DaemonSet then recreates -- on top
+    of, not instead of, kubelet's own liveness-probe restarts and
+    `canary.py`'s metrics-gated rollout + auto-rollback (see the module
+    docstring). One `kubectl get pods` for the whole namespace, so widening
+    the coverage costs no extra calls per pass.
+
+    A Pod that is already terminating (`metadata.deletionTimestamp` set) is
+    skipped: its replacement is on the way, and a Pod on its way out reads as
+    "Running but not Ready" -- healing it again would spend a restart-budget
+    attempt on a deletion that has already happened.
 
     Returns an empty list (never raises) if `kubectl` isn't on PATH, there's
     no reachable cluster, or the namespace/Pods don't exist yet -- the same
@@ -785,17 +844,7 @@ def _list_kubernetes_component_status(already_managed: set[str]) -> list[Compone
         return []
     try:
         cp = _run(
-            [
-                "kubectl",
-                "get",
-                "pods",
-                "-n",
-                K8S_NAMESPACE,
-                "-l",
-                K8S_POD_LABEL_SELECTOR,
-                "-o",
-                "json",
-            ],
+            ["kubectl", "get", "pods", "-n", K8S_NAMESPACE, "-o", "json"],
             timeout=15.0,
             expected=True,
         )
@@ -812,8 +861,12 @@ def _list_kubernetes_component_status(already_managed: set[str]) -> list[Compone
 
     statuses: list[ComponentStatus] = []
     for pod in data.get("items", []):
-        name = pod.get("metadata", {}).get("name", "")
-        if not name or name in already_managed:
+        metadata = pod.get("metadata", {})
+        name = metadata.get("name", "")
+        if not name or name in already_managed or metadata.get("deletionTimestamp"):
+            continue
+        tier = _kubernetes_pod_tier(metadata.get("labels") or {})
+        if not tier:
             continue
         status = pod.get("status", {})
         phase = status.get("phase", "")
@@ -828,9 +881,24 @@ def _list_kubernetes_component_status(already_managed: set[str]) -> list[Compone
                 health="ready" if ready else "not-ready",
                 healthy=healthy,
                 source="kubernetes",
+                tier=tier,
             )
         )
     return statuses
+
+
+def kubernetes_mode_active(components: list[ComponentStatus]) -> bool:
+    """True if `components` shows a core tier running as Kubernetes Pods.
+
+    The single condition behind everything that has to behave differently in
+    Kubernetes mode: the deployment mode the Self-Heal page prints, and
+    whether the observability tier is read from the cluster or from Compose
+    (`component_survey`/`status`). Observability Pods alone do not make it
+    true -- `nyxgpt ops observability --kubernetes` can put that tier on a
+    cluster while the core stack runs natively, and that deployment's core
+    components are still native ones.
+    """
+    return any(c.source == "kubernetes" and c.tier == "core" for c in components)
 
 
 def _list_native_component_status() -> list[ComponentStatus]:
@@ -1240,6 +1308,15 @@ def component_survey() -> ComponentSurvey:
     )
     core_managed = {s.service for s in core_statuses}
     kubernetes_statuses = _list_kubernetes_component_status(core_managed)
+
+    if kubernetes_mode_active(kubernetes_statuses):
+        # Kubernetes mode: the observability tier runs *in-cluster* (#3787)
+        # and is already reported above, Pod by Pod, by the same survey. The
+        # Compose placeholders assert that the enabled profiles ought to be
+        # running as Compose services here, which is false in this mode --
+        # they rendered as a screen of "can't check"/"absent" rows for
+        # workloads that were up and queryable all along (#3828).
+        undetermined_statuses = []
 
     all_statuses = core_statuses + kubernetes_statuses + undetermined_statuses
 
@@ -2334,6 +2411,18 @@ def get_watchdog() -> Watchdog:
     return _watchdog
 
 
+def _is_core_component(c: ComponentStatus) -> bool:
+    """Whether `c` is one of the core app tiers (api/web/ollama/cassandra).
+
+    Two naming conventions, one question: a Compose/native/Terraform row is
+    named after the component itself, while a Kubernetes row is named after a
+    Pod and carries its tier in `tier` instead (see `ComponentStatus`).
+    """
+    if c.source == "kubernetes":
+        return c.tier == "core"
+    return c.service in CORE_APP_SERVICES
+
+
 def detected_mode(components: list[ComponentStatus]) -> str:
     """Best-guess deployment mode from which source the core app components report from.
 
@@ -2345,8 +2434,13 @@ def detected_mode(components: list[ComponentStatus]) -> str:
     is exactly what `list_component_status`'s `_resolve_core_component_
     conflicts` prevents, see #3428), so the first source found among the
     core services below is reported.
+
+    A Kubernetes row is named after its Pod, never after a component, so it
+    is recognized by `tier == "core"` instead of by name (#3828): matching on
+    `CORE_APP_SERVICES` alone, a cluster running four core tiers reported
+    "Nothing detected running" directly above the list of its own Pods.
     """
-    core_sources = {c.source for c in components if c.service in CORE_APP_SERVICES}
+    core_sources = {c.source for c in components if _is_core_component(c)}
     for source in ("terraform", "kubernetes", "compose", "native"):
         if source in core_sources:
             return source
@@ -2363,6 +2457,13 @@ def status() -> dict[str, Any]:
     this, a component stuck unhealthy looks identical whether self-heal is
     still actively retrying it or has already given up and is waiting on an
     operator (#3575).
+
+    `observability_source` names where the observability tier's rows came
+    from: `"kubernetes"` when it was read in-cluster (see
+    `kubernetes_mode_active`), `"compose"` otherwise. The page keys the
+    Compose "cannot determine from here" banner off it, so a Kubernetes
+    deployment is never told its in-cluster tier is unreadable because a
+    `docker compose ps` it does not use could not run (#3828).
 
     Components come in three states, not two (#3812): present, absent, and
     unknown (`known=False`, `state="unknown"`). `unhealthy_count` counts only
@@ -2388,6 +2489,12 @@ def status() -> dict[str, Any]:
     return {
         "enabled": is_enabled(),
         "mode": detected_mode(components),
+        # Where the observability tier is read from this pass (#3828).
+        # "kubernetes" means it was queried in-cluster and the Compose probe
+        # says nothing about it -- the page must not then explain its
+        # absence with the Compose "cannot determine from here" banner, which
+        # is about a survey that has no bearing on this deployment.
+        "observability_source": ("kubernetes" if kubernetes_mode_active(components) else "compose"),
         "compose_probe_available": survey.compose_probe.available,
         "compose_probe_reason": survey.compose_probe.reason,
         "components": component_dicts,
@@ -2414,6 +2521,7 @@ __all__ = [
     "list_intentionally_stopped",
     "recent_events",
     "detected_mode",
+    "kubernetes_mode_active",
     "compose_probe",
     "compose_probe_available",
     "component_survey",
