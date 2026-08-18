@@ -99,9 +99,24 @@ re-derived wrong — which is the whole problem.
 
 ## Entry schema
 
-Four kinds. Each has a stable ID (`D`/`V`/`P`/`Q` + zero-padded number),
-allocated by taking the next unused number in that class. **IDs are never
-reused**, including after supersession.
+Four kinds. Each has a stable ID (`D`/`V`/`P`/`Q` + zero-padded number).
+**IDs are never reused**, including after supersession.
+
+**Allocate with the helper, not by eye** (#3806):
+
+```
+git fetch origin <release branch>
+python3 scripts/agents/lib/ledger_ids.py next V --base origin/<release branch>
+```
+
+It applies the two rules that are easy to get wrong by hand. It takes
+**max + 1, not the lowest unused number** — the gaps below are entries
+relocated to the private annex, and those IDs are still taken. And it reads
+the **live release branch** as well as your working copy — two PRs open at
+once each see a base without the other's entries, so a branch-only scan hands
+both of them the same number and the collision is created at merge, by neither
+branch alone. That is how `V-034`/`V-035` came to be defined twice, failing
+`test_ledger_entry_ids_are_unique` for every review on the branch afterwards.
 
 **Decision** — something was settled, and by whom.
 
@@ -438,6 +453,25 @@ are absent here by design (relocated to the annex; IDs are never reused).
   error, and answers are cached both ways so the polled endpoints never pay
   the link-local timeout.
   Source: #3804; owner observation 2026-08-16 (rc12 cloud deploy).
+
+- **D-019** · 2026-08-18 · owner — **The artifact ships product documentation
+  only; how this repository builds itself stays in the repository.** `docs/`
+  held both, and packaging the directory wholesale put the agent loop, CI
+  process, contributor setup and this project's own GitHub token setup in
+  front of a user opening Support → Docs. The split is an allow-list, not a UI
+  filter: `src/nyxgpt/resources/docs/` holds one symlink per product document,
+  so an unlisted doc is absent from the wheel rather than shipped and hidden.
+  The selection is named and *grouped* in `nyxgpt.support.DOC_SECTIONS`
+  (Getting started → Using nyxGPT → Configuration → Operating → Reference →
+  Help) — the index is grouped by that data, never a flat alphabetical list —
+  and `tests/unit/test_support_docs.py` fails if the packaged set and the
+  grouping ever diverge in either direction. Excluded docs stay in `docs/`,
+  where the agent loop and `CLAUDE.md`'s bootstrap read them; links to them
+  from packaged docs resolve to the hosted copy on GitHub instead of a dead
+  in-app route. Also excluded, beyond the owner's list of 12: `development.md`,
+  `adding-api-endpoints.md`, `file-lock-audit.md` — contributor docs the owner
+  named in the issue body and left out of every proposed group.
+  Source: #3809; owner acceptance round 2026-08-16 (testing #3745).
 
 ## Verifications
 
@@ -1155,7 +1189,82 @@ are absent here by design (relocated to the annex; IDs are never reused).
   the same conditions.
   Re-verify when: the retro template's panel structure changes, or a new
   optional data source is added without a source stamp.
-- **V-036** · 2026-08-18 — **A support ticket's entire protection is one
+- **V-036** · 2026-08-18 — nyxGPT has **two config-reading tiers with different
+  activation semantics**, and the difference is now data rather than folklore.
+  The `api` tier re-reads `config.ini` per request through the hot-reload cache;
+  the `web` tier is a Node process whose settings are read **once**, by the
+  service wrapper (`_NATIVE_WEB_WRAPPER_TEMPLATE` in `ops.py`), and exported into
+  its environment. Every key that wrapper reads is therefore frozen for that
+  process's life: `[auth] api_key`, `[auth] enabled`, `[web] host`/`port`/
+  `api_base_url`. Rotating `[auth] api_key` used to leave the web tier sending
+  the old key into a silent 401 wall on every proxied call — including in the
+  wizard session doing the rotating.
+  Each config key now carries an **activation classification**
+  (`FieldSpec.restart_components` in `config_wizard.py`): empty = hot-reloadable,
+  otherwise the `nyxgpt ops restart` targets that stay stale. It drives the
+  wizard's per-field hints, the persistent pending-restart notice on the wizard
+  and Admin Dashboard, the `nyxgpt secrets setup` message, and
+  `example.config.ini`'s `# Activation:` annotations — which are generated from
+  it, with `tests/unit/test_restart_activation.py` failing on any drift.
+  Pending state lives in `~/.nyxGPT/pending-restart.json`, not process memory,
+  so the CLI writer and the API reader share one set and the notice survives an
+  api restart. It retires on a real restart **or** on the value being reverted to
+  what the service is still running.
+  There are **three** writers of a restart-required key, not two — the
+  Configuration Wizard (`POST /config/sections`), the Admin Dashboard's Access
+  Management panel (`POST /admin/access` → `_apply_auth_config_updates`), and
+  `nyxgpt secrets setup`. The dashboard one was missed on the first pass and
+  rotated the key silently; all three now classify through
+  `config_wizard.field_restart_components`/`restart_required_detail` and write
+  the same `restart_state`, so a new writer that skips it is the failure mode to
+  look for.
+  Method: executed — `scripts/restart-activation-smoke.py` (run 2026-08-18, and
+  wired into `.github/workflows/restart-activation-smoke.yml`) starts uvicorn and
+  the web tier through the real generated wrapper, reproduces the 401 wall,
+  asserts the notice/deferral/CLI-parity/dashboard-parity/restart/revert path,
+  and includes the #3753 fault injection: with the classification stripped, no
+  notice is raised.
+  Re-verify when: the web wrapper stops reading a key from config.ini at start
+  (e.g. if the proxy is ever made to resolve the key per request), or a third
+  tier with its own activation semantics is added.
+
+- **V-037** · 2026-08-18 — Two tests in
+  `tests/unit/test_config_sections_endpoint.py` left a **live `threading.Timer`
+  armed past their `patch` block**: they asserted the restart endpoints defer
+  their work and then returned, so the timer fired seconds later, inside whatever
+  test was running by then, calling the *real* `ops.restart` /
+  `self_heal.heal_now`. On a developer machine that restarts actual services; in
+  CI it silently corrupted an unrelated test's mock call counts
+  (`test_ops_restart_all_ok` saw `_restart_launchagent` called twice). Fixed by a
+  `captured_timers` fixture that records the scheduled timer instead of starting
+  it.
+  Method: executed — reproduced by running
+  `test_config_sections_endpoint.py` before `test_ops.py` and observing the
+  cross-file failure; the failure disappears with the fixture in place.
+  Re-verify when: a new test asserts a `threading.Timer`-deferred endpoint —
+  use `captured_timers`, never a bare "assert not called inline".
+
+- **V-038** · 2026-08-18 — **A PR can be merged while the CI for its head
+  commit is still running, and nothing re-examines the result.**
+  `review_accept_and_merge.sh` validates state/mergeability/base-existence and
+  then merges; it never reads the head SHA's check status, and no review
+  workflow does either — "run CI checks on ALL code in the repository" is
+  prose in `review-runbook.md`, evaluated by the reviewing model against
+  whatever run it happened to see. Worked example: PR #3876 pushed `78c0e5cf` at 10:59:33Z,
+  its `ci-tests` run was created at 10:59:37Z, and the PR merged at 10:59:38Z
+  — one second later. That run finished **failing** at 11:05:49Z. The APPROVE
+  had been computed against the previous push (`de50798d`), so the merge was
+  green-by-staleness. This is what put a failing `pytest` on `v3.0.0`, and it
+  is independent of *what* was failing.
+  Method: read `scripts/agents/review_accept_and_merge.sh` end to end
+  (2026-08-18) — no `statusCheckRollup`/check-runs call exists in it or in
+  `review_agent_auto_review.yml`; timings from
+  `gh api repos/.../actions/runs/32129497068` (created/updated) against
+  `gh api repos/.../pulls/3876` (`merged_at`); failure text from that run's
+  log. The check run `test` on `78c0e5cf` reads `completed / failure`.
+  Re-verify when: a check-status gate is added to the merge path — this entry
+  then describes history rather than the present. See **Q-005**.
+- **V-039** · 2026-08-18 — **A support ticket's entire protection is one
   label, and the label is now guaranteed rather than assumed.** Every guard —
   `assign_backlog.yml`, `ensure_project_hygiene.yml`,
   `summarize_backlog_page.py`, and the owner's Support project auto-add
@@ -1176,7 +1285,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   The live `gh label list` half runs in CI, not here.
   Re-verify when: the routing key changes name, or the Support project's
   auto-add filter is edited (owner-side; agents cannot read it).
-- **V-037** · 2026-08-18 — **`_die` does not reliably abort a sourced
+- **V-040** · 2026-08-18 — **`_die` does not reliably abort a sourced
   `gh_project.sh` helper, and a piped `graphql` call swallowed failures
   entirely.** `_die` `return`s rather than `exit`s when the library is
   sourced, relying on `set -e` — but `set -e` is suppressed inside a command
@@ -1258,6 +1367,23 @@ are absent here by design (relocated to the annex; IDs are never reused).
   from the known `file://`-tarball violation.
   Needs: inspection of a keg built from the local `nyxgpt-local` tap.
   Blocks: nothing yet; would warrant its own issue if confirmed.
+
+- **Q-005** · 2026-08-18 · developer-agent (#3806) — How should the merge path
+  gate on the head SHA's check status (**V-038**) without deadlocking on the
+  review's *own* in-flight check runs? On `78c0e5cf` the checks include
+  `claude-review` and `execute-review-decision`, which cannot be complete at
+  the moment the reviewer merges, so a naive "no check may be queued or
+  in_progress" rule blocks every merge forever; a failures-only rule would not
+  have caught #3876, whose check had not failed *yet* at merge time. The
+  discriminator (allowlist of quality gates, denylist of review-side runs, or
+  a bounded wait) is a design decision on the pipeline's core merge path, and
+  a wrong one jams every merge in the project.
+  Needs: an owner-approved approach, then its own agent-process issue. Not
+  taken inside #3806's fix branch: that branch exists to unpoison the release
+  branch, and rebuilding the merge gate under it would put an unreviewed
+  change to every merge behind an unrelated issue number.
+  Blocks: nothing today — but every merge is exposed to **V-038** until it is
+  answered.
 
 ## Superseded
 

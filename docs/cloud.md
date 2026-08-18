@@ -23,7 +23,7 @@ deployments, not the local stack every other `nyxgpt` command drives.
 A cloud instance provisions from published artifacts and never clones this
 repository, so the documentation on it is the copy inside the installed
 package: reach it in the tunneled web UI under **Support → Docs**, which
-renders the tree that shipped with the deployed version. **File an Issue**
+renders the product documentation that shipped with the deployed version. **File an Issue**
 sits beside it in the same menu. See [ui.md](ui.md#support-menu).
 
 ---

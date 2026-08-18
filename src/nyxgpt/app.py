@@ -983,8 +983,19 @@ def _apply_auth_config_updates(updates: dict[str, Any]) -> dict[str, Any]:
     - header (str)   -> [auth] header
     - api_key (str)  -> [auth] api_key
 
-    Auth config is read fresh on every request (see `_auth_cfg`), so
-    changes take effect immediately without a service restart.
+    The **api** tier reads auth config fresh on every request (see
+    `_auth_cfg`), so it honours a change here immediately. The **web** tier
+    does not: its service wrapper reads `[auth]` once at process start and
+    exports `NYXGPT_AUTH_API_KEY` into a Node process that cannot observe a
+    later edit, so rotating the key from this endpoint 401s every proxied
+    call until `web` restarts (#3806).
+
+    That divergence is recorded, not left to be discovered: this is the third
+    writer of a restart-required key (with the Configuration Wizard's
+    `POST /config/sections` and `nyxgpt secrets setup`), and all three go
+    through the same `config_wizard` classification and the same on-disk
+    `restart_state`, so all three raise the same persistent notice and offer
+    the same restart.
     """
 
     cfg_path = _config_file_path()
@@ -995,28 +1006,48 @@ def _apply_auth_config_updates(updates: dict[str, Any]) -> dict[str, Any]:
     if cfg_path.exists():
         parser.read(cfg_path)
 
-    if not parser.has_section("auth"):
-        parser.add_section("auth")
-
     out: dict[str, Any] = {}
 
     if "enabled" in updates:
-        val = bool(updates["enabled"])
-        parser.set("auth", "enabled", "true" if val else "false")
-        out["enabled"] = val
+        out["enabled"] = bool(updates["enabled"])
 
     if "header" in updates and isinstance(updates.get("header"), str):
-        header = updates["header"].strip()
-        parser.set("auth", "header", header)
-        out["header"] = header
+        out["header"] = updates["header"].strip()
 
     if "api_key" in updates and isinstance(updates.get("api_key"), str):
-        parser.set("auth", "api_key", updates["api_key"])
         out["api_key"] = updates["api_key"]
+
+    # Computed against the *pre-write* parser: `restart_required_detail` needs
+    # the value the still-running service loaded, which is what is on disk
+    # right now. Keys the wizard schema does not declare are skipped rather
+    # than assumed hot -- an undeclared key has no classification to consult.
+    classified = config_wizard.activation_classification()
+    tracked = {key: value for key, value in out.items() if f"auth.{key}" in classified}
+    restart_detail = config_wizard.restart_required_detail({"auth": tracked}, parser)
+
+    if not parser.has_section("auth"):
+        parser.add_section("auth")
+
+    if "enabled" in out:
+        parser.set("auth", "enabled", "true" if out["enabled"] else "false")
+    if "header" in out:
+        parser.set("auth", "header", out["header"])
+    if "api_key" in out:
+        parser.set("auth", "api_key", out["api_key"])
 
     with cfg_path.open("w", encoding="utf-8") as f:
         parser.write(f)
     os.chmod(cfg_path, 0o600)
+
+    # Mark first, reconcile second -- the same load-bearing order as
+    # `config_sections_update`: putting a key back to the value the running
+    # service still holds arrives here as a change, and only the reconcile
+    # pass (comparing against the originally recorded running value) can
+    # retire it without a restart.
+    for component, changes in restart_detail.items():
+        restart_state_module.mark_pending(component, changes)
+    for component, saved in config_wizard.restart_activation_saved({"auth": tracked}).items():
+        restart_state_module.reconcile_saved(component, saved)
 
     nyxgpt.config._CACHED_CFG = None
     nyxgpt.config._CACHED_PATH = None
@@ -1630,8 +1661,17 @@ def config_sections_update(request: Request, payload: dict[str, Any] = Body(...)
 
     applied = config_wizard.apply_updates(_config_file_path(), validated)
 
-    for component, keys in restart_detail.items():
-        restart_state_module.mark_pending(component, keys)
+    # Mark first, reconcile second, and the order is load-bearing (#3806).
+    # Reverting key K to the value the running service still holds arrives
+    # here as a *change* (disk B -> A), so `restart_detail` lists it and
+    # `mark_pending` would re-add it; `mark_pending` keeps the originally
+    # recorded running value (A), and `reconcile_saved` then sees the newly
+    # saved A match it and retires the entry. Reconciling first would leave
+    # the stale flag standing forever.
+    for component, changes in restart_detail.items():
+        restart_state_module.mark_pending(component, changes)
+    for component, saved in config_wizard.restart_activation_saved(validated).items():
+        restart_state_module.reconcile_saved(component, saved)
 
     nyxgpt.config._CACHED_CFG = None
     nyxgpt.config._CACHED_PATH = None
@@ -1655,6 +1695,11 @@ def config_sections_update(request: Request, payload: dict[str, Any] = Body(...)
         "sections": config_wizard.read_sections(cfg),
         "field_defaults": config_wizard.field_defaults(cfg),
         "restart_required": restart_needed,
+        # The full pending set, not just what this save added: the wizard's
+        # notice must show everything still awaiting a restart (including a
+        # key rotated earlier from the CLI), and must *disappear* when this
+        # save reverted the last pending key (#3806).
+        "restart_pending": restart_state_module.snapshot(),
         "observability_reconciled": needs_observability,
         "observability_result": observability_result,
     }
@@ -1736,14 +1781,37 @@ def config_restart(_request: Request, payload: dict[str, Any] = Body(default={})
 
 @api.get("/infra/restart-status")
 def infra_restart_status() -> dict[str, Any]:
-    """Components a wizard save flagged as needing a restart, and why (#3407).
+    """Config changes saved but not yet in effect, and what has to restart (#3407, #3806).
 
-    Backs the Admin Dashboard's restart-required button: `pending` maps each
-    `nyxgpt ops restart` target to the `section.key` fields that triggered
-    it and when. Empty once every flagged component has actually been
-    restarted via `POST /infra/restart-required`.
+    Backs the persistent pending-restart notice shown on both the Admin
+    Dashboard and the Configuration Wizard: `pending` maps each `nyxgpt ops
+    restart` target to the `section.key` fields whose saved value differs from
+    the value that service is still running with, and when that divergence
+    started. Empty once every flagged component has actually been restarted --
+    via `POST /infra/restart-required`, via `nyxgpt ops restart`, or because
+    the value was reverted to what the service already had.
+
+    The state is read from disk (`restart_state`), so it is the same set the
+    CLI reports and it survives this process restarting -- which matters
+    precisely for the `web` entries, whose restart does not touch this
+    process.
+
+    `restart_command` is the wrapped command that clears the whole set, so the
+    UI can show the user the CLI equivalent of its own button rather than a
+    raw `brew services`/`docker` invocation.
     """
-    return {"pending": restart_state_module.snapshot()}
+    pending = restart_state_module.snapshot()
+    return {
+        "pending": pending,
+        "restart_command": (
+            restart_state_module.restart_command(sorted(pending)) if pending else None
+        ),
+        # Restarting `web` from a page served by `web` drops the browser's
+        # connection to the very server rendering it. The UI states this
+        # before it happens (IntelliJ-style) instead of appearing to hang, so
+        # the backend is the one place that decides when it applies.
+        "session_disrupting": sorted(c for c in pending if c == "web"),
+    }
 
 
 def _do_restart_required(targets: list[str]) -> None:
@@ -2556,7 +2624,9 @@ def ops_release_candidate(
 #
 # The web UI's Support menu, which is the only documentation surface a user
 # who installed from PyPI or Homebrew has: they never checked the repo out,
-# so `docs/*.md` ships in the wheel and is served from the package here.
+# so the product docs ship in the wheel and are served from the package here.
+# Only product documentation ships -- the agent/CI process and contributor
+# docs are not in the artifact at all (#3809, `support.DOC_SECTIONS`).
 #
 # All three are read-only. "File an Issue" is deliberately a *link* the UI
 # opens, not an endpoint that posts on the user's behalf -- see
@@ -2565,8 +2635,17 @@ def ops_release_candidate(
 
 @api.get("/support/docs")
 def support_docs_index(_request: Request) -> dict[str, Any]:
-    """List the packaged documentation as `{documents: [{slug, title, summary}]}`."""
-    return {"documents": support_module.list_documents()}
+    """List the packaged documentation, grouped and flat.
+
+    `{sections: [{title, documents: [...]}], documents: [{slug, title,
+    summary}]}` -- the viewer renders `sections` (#3809); `documents` is the
+    same set flattened, in the same order.
+    """
+    sections = support_module.list_sections()
+    return {
+        "sections": sections,
+        "documents": [doc for section in sections for doc in section["documents"]],
+    }
 
 
 @api.get("/support/docs/{slug}")

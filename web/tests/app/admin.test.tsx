@@ -1628,22 +1628,159 @@ describe('AdminPage Component', () => {
    * (see `KNOWN_FIELDS` in page.tsx) renders generically here, grouped by
    * topic. Also covers the drift-reconciliation stale-key banner.
    */
+  describe('pending-restart notice (#3806)', () => {
+    it('shows nothing on entry when every saved value is already running', async () => {
+      render(<AdminPage />);
+      await waitFor(() => {
+        expect(screen.getByRole('heading', { name: /configuration wizard/i })).toBeInTheDocument();
+      });
+      expect(screen.queryByRole('alert', { name: /restart required/i })).not.toBeInTheDocument();
+    });
+
+    it('shows a restart owed from an earlier visit or from `nyxgpt secrets setup`', async () => {
+      // The state is the backend's, shared with the CLI -- so a key rotated
+      // outside the browser must announce itself the moment the wizard opens.
+      server.use(
+        http.get('/api/v1/infra/restart-status', () =>
+          HttpResponse.json({
+            pending: { web: { keys: ['auth.api_key'], since: 1 } },
+            restart_command: 'nyxgpt ops restart web',
+            session_disrupting: ['web'],
+          })
+        )
+      );
+
+      render(<AdminPage />);
+      await waitFor(() => {
+        expect(screen.getByRole('alert', { name: /restart required/i })).toBeInTheDocument();
+      });
+      expect(screen.getByText(/not yet in effect/i)).toBeInTheDocument();
+      expect(screen.getByText(/auth\.api_key/)).toBeInTheDocument();
+    });
+
+    it('raises the notice when a save reports a restart-required key as pending', async () => {
+      // The wizard reconciles with GET /infra/restart-status after every save,
+      // so the notice reflects the backend's own view rather than a
+      // client-side guess about what the payload implied.
+      server.use(
+        http.get('/api/v1/infra/restart-status', () =>
+          HttpResponse.json({
+            pending: { web: { keys: ['auth.api_key'], since: 1 } },
+            restart_command: 'nyxgpt ops restart web',
+            session_disrupting: ['web'],
+          })
+        )
+      );
+
+      render(<AdminPage />);
+      await selectModelAndClickNext(1);
+      await waitFor(() => {
+        fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByRole('alert', { name: /restart required/i })).toBeInTheDocument();
+      });
+      // ...and it names the tier that is still running the old value, rather
+      // than leaving the user to discover a 401 wall (#3806).
+      expect(screen.getByText(/drop this browser session/i)).toBeInTheDocument();
+    });
+
+    it('shows the save response\'s own pending set when the reconcile fetch fails', async () => {
+      // Two things at once, both of which the earlier tests left untested:
+      // the notice is derived from the save response *before* the reconcile
+      // round trip lands (so it never flickers absent), and a reconcile that
+      // fails leaves that derived state standing rather than blanking the
+      // notice on a transient error. `session_disrupting` is computed
+      // client-side here, so this is also what proves the wizard names the
+      // session-dropping tier without waiting for the backend to say so.
+      server.use(
+        http.post('/api/v1/config/sections', async () =>
+          HttpResponse.json({
+            applied: {},
+            sections: {
+              nyxgpt: {
+                default_model: 'llama3.1:8b',
+                chat_timeout_seconds: '120',
+                sessions_dir: '',
+                vectorstore_dir: '',
+              },
+              logging: { level: 'INFO', dir: '' },
+              ollama: { base_url: 'http://127.0.0.1:11434' },
+              api: { host: '127.0.0.1', port: '8000' },
+              auth: { enabled: 'false', header: 'X-API-Key', api_key: { set: false, masked: null } },
+              rate_limit: { enabled: 'false' },
+              rag: {
+                enable_chat_context: 'false',
+                cassandra_hosts: '127.0.0.1',
+                cassandra_port: '9042',
+                cassandra_keyspace: 'nyxgpt',
+                cassandra_table: 'rag_chunks',
+                embedding_model: 'nomic-embed-text',
+              },
+              tracing: { enabled: 'false', service_name: '', otlp_endpoint: '' },
+              error_tracking: { enabled: 'false', dsn: { set: false, masked: null }, environment: '' },
+              monitoring: { enabled: 'false' },
+              log_aggregation: { enabled: 'false' },
+            },
+            restart_required: ['api', 'web'],
+            restart_pending: {
+              web: { keys: ['auth.api_key'], since: Math.floor(Date.now() / 1000) },
+              api: { keys: ['api.port'], since: Math.floor(Date.now() / 1000) },
+            },
+            observability_reconciled: false,
+            observability_result: null,
+          })
+        ),
+        http.get('/api/v1/infra/restart-status', () =>
+          HttpResponse.json({}, { status: 502 })
+        )
+      );
+
+      render(<AdminPage />);
+      await selectModelAndClickNext(1);
+      await waitFor(() => {
+        fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByRole('alert', { name: /restart required/i })).toBeInTheDocument();
+      });
+      expect(screen.getByText(/auth\.api_key/)).toBeInTheDocument();
+      expect(screen.getByText(/api\.port/)).toBeInTheDocument();
+      // Only `web` drops the session -- `api` is in the same pending set and
+      // must not be described that way.
+      expect(screen.getByText(/drop this browser session/i)).toBeInTheDocument();
+    });
+
+    it('renders a per-field activation hint before the save, not only after', async () => {
+      render(<AdminPage />);
+      await selectModelAndClickNext(2);
+      await waitFor(() => {
+        expect(screen.getByLabelText('API Host')).toBeInTheDocument();
+      });
+      expect(
+        screen.getAllByText(/not in effect until you restart: api/i).length
+      ).toBeGreaterThan(0);
+    });
+  });
+
   describe('Additional Settings step (#3388)', () => {
     const SCHEMA_WITH_EXTRAS = [
       {
         section: 'cache',
         label: 'Caching',
         fields: [
-          { key: 'embedding_cache_enabled', secret: false, restart_component: 'api', observability: false },
-          { key: 'embedding_cache_dir', secret: false, restart_component: 'api', observability: false },
+          { key: 'embedding_cache_enabled', secret: false, restart_components: ['api'], observability: false },
+          { key: 'embedding_cache_dir', secret: false, restart_components: ['api'], observability: false },
         ],
       },
       {
         section: 'monitoring',
         label: 'Monitoring',
         fields: [
-          { key: 'enabled', secret: false, restart_component: null, observability: true },
-          { key: 'grafana_admin_password', secret: true, restart_component: null, observability: false },
+          { key: 'enabled', secret: false, restart_components: [], observability: true },
+          { key: 'grafana_admin_password', secret: true, restart_components: [], observability: false },
         ],
       },
     ];
@@ -1705,6 +1842,42 @@ describe('AdminPage Component', () => {
         'placeholder',
         'Set (sekr****xxxx) -- leave blank to keep'
       );
+    });
+
+    it('names every service a field goes stale on, not just the first (#3806)', async () => {
+      // Nothing in the shipped classification is restart-required for two
+      // tiers at once today, but the classification is data the backend owns
+      // and the mechanism is general by design -- the hint has to read
+      // correctly the first time a key is classified for both, rather than
+      // silently dropping one.
+      server.use(
+        http.get('/api/v1/config/sections', () =>
+          HttpResponse.json({
+            sections: SECTIONS_WITH_EXTRAS,
+            schema: [
+              {
+                ...SCHEMA_WITH_EXTRAS[0],
+                fields: [
+                  {
+                    key: 'embedding_cache_dir',
+                    secret: false,
+                    restart_components: ['api', 'web'],
+                    observability: false,
+                  },
+                ],
+              },
+            ],
+            field_defaults: {},
+            stale_keys: {},
+          })
+        )
+      );
+
+      await goToMoreStep();
+
+      expect(
+        screen.getByText(/not in effect until you restart: api and web\./i)
+      ).toBeInTheDocument();
     });
 
     it('does not re-render fields the hand-typed sections already cover', async () => {
@@ -1876,9 +2049,9 @@ describe('AdminPage Component', () => {
           section: 'auth',
           label: 'Auth',
           fields: [
-            { key: 'enabled', secret: false, restart_component: 'api', observability: false },
-            { key: 'header', secret: false, restart_component: 'api', observability: false },
-            { key: 'api_key', secret: true, restart_component: 'api', observability: false },
+            { key: 'enabled', secret: false, restart_components: ['api'], observability: false },
+            { key: 'header', secret: false, restart_components: ['api'], observability: false },
+            { key: 'api_key', secret: true, restart_components: ['api'], observability: false },
           ],
         },
       ];
@@ -1908,8 +2081,8 @@ describe('AdminPage Component', () => {
           label: 'Caching',
           fields: [
             ...SCHEMA_WITH_EXTRAS[0].fields,
-            { key: 'embedding_cache_max_size', secret: false, restart_component: 'api', observability: false },
-            { key: 'example__setting', secret: false, restart_component: null, observability: false },
+            { key: 'embedding_cache_max_size', secret: false, restart_components: ['api'], observability: false },
+            { key: 'example__setting', secret: false, restart_components: [], observability: false },
           ],
         },
         SCHEMA_WITH_EXTRAS[1],
@@ -1954,7 +2127,7 @@ describe('AdminPage Component', () => {
           label: 'Caching',
           fields: [
             ...SCHEMA_WITH_EXTRAS[0].fields,
-            { key: 'embedding_cache_ttl_seconds', secret: false, restart_component: 'api', observability: false },
+            { key: 'embedding_cache_ttl_seconds', secret: false, restart_components: ['api'], observability: false },
           ],
         },
         SCHEMA_WITH_EXTRAS[1],
@@ -2029,17 +2202,17 @@ describe('AdminPage Component', () => {
           section: 'cache',
           label: 'Caching',
           fields: [
-            { key: 'embedding_cache_enabled', secret: false, restart_component: null, observability: false },
-            { key: 'missing_from_config', secret: false, restart_component: null, observability: true },
+            { key: 'embedding_cache_enabled', secret: false, restart_components: [], observability: false },
+            { key: 'missing_from_config', secret: false, restart_components: [], observability: true },
           ],
         },
         {
           section: 'monitoring',
           label: 'Monitoring',
           fields: [
-            { key: 'enabled', secret: false, restart_component: null, observability: true },
-            { key: 'grafana_admin_password', secret: true, restart_component: null, observability: false },
-            { key: 'admin_email_secret', secret: true, restart_component: null, observability: false },
+            { key: 'enabled', secret: false, restart_components: [], observability: true },
+            { key: 'grafana_admin_password', secret: true, restart_components: [], observability: false },
+            { key: 'admin_email_secret', secret: true, restart_components: [], observability: false },
           ],
         },
       ];

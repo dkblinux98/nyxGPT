@@ -344,7 +344,7 @@ it for non-loopback binds, it never forbids it on loopback.
 - `nyxgpt.default_model`
 - `logging.level`
 - `rag.enabled`
-- `auth.enabled`, `auth.api_key`, `auth.header`
+- `auth.header`
 
 **If changes don't take effect:**
 
@@ -358,6 +358,16 @@ it for non-loopback binds, it never forbids it on loopback.
 - `ollama.base_url`
 - `rag.cassandra_*` connection settings
 - `rag.embedding_model`, `rag.embedding_dim` (requires re-ingestion)
+- `auth.enabled`, `auth.api_key` (restart `web`) -- the API honours both
+  immediately, but the web UI reads `[auth]` once at process start, so it
+  keeps sending the old key until `nyxgpt ops restart web` runs
+- `web.host`, `web.port`, `web.api_base_url` (restart `web`)
+
+Each restart-required key is annotated in `example.config.ini` with an
+`# Activation: restart required (<service>)` line, and saving one from the
+Configuration Wizard, the Admin Dashboard or `nyxgpt secrets setup` raises a
+persistent "saved, but not yet in effect" notice naming the service and
+offering the restart (#3806).
 
 ---
 

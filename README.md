@@ -101,11 +101,10 @@ restate it.
 Everything else — features, commands, deployment paths, architecture, and the
 agent system — lives under `docs/`. Start at the
 **[documentation index](https://github.com/dkblinux98/nyxGPT/blob/master/docs/README.md)**,
-which is the complete, grouped list (Feature overview · User guides ·
-Operations & deployment · Developer · Agent system).
+which is the complete, grouped list.
 
-**If you have nyxGPT installed, you already have these docs.** The same tree
-ships inside the package, so the web UI serves it under **Support → Docs** —
+**If you have nyxGPT installed, you already have the product docs.** They ship
+inside the package, so the web UI serves them under **Support → Docs** —
 no checkout, no internet. The Support menu's **File an Issue** entries open a
 report form with the ticket type, your version and your platform filled in
 (those need internet and a GitHub account).

@@ -1,12 +1,18 @@
 """Packaged documentation and the support-report link behind the web UI's Support menu (#3745).
 
-An install from PyPI or Homebrew never has a repo checkout, so `docs/*.md`
-ships inside the wheel as package data (`nyxgpt.resources/docs`, the same
-mechanism #3621 gave the ops layer's runtime data) and is resolved here via
-`importlib.resources` -- never relative to a source tree. The packaged
-snapshot therefore matches the installed version by construction: the docs
-a user reads under Support -> Docs are the docs that shipped with the code
-that is running.
+An install from PyPI or Homebrew never has a repo checkout, so the product
+documentation ships inside the wheel as package data
+(`nyxgpt.resources/docs`, the same mechanism #3621 gave the ops layer's
+runtime data) and is resolved here via `importlib.resources` -- never
+relative to a source tree. The packaged snapshot therefore matches the
+installed version by construction: the docs a user reads under Support ->
+Docs are the docs that shipped with the code that is running.
+
+What ships is a named selection, not the whole `docs/` tree: `DOC_SECTIONS`
+below lists the product documents, grouped as the viewer presents them.
+Everything about how *this repository* builds itself -- the agent loop, CI
+process, contributor setup -- stays in the repository and out of the
+artifact (#3809).
 
 Two surfaces live here:
 
@@ -35,16 +41,55 @@ from bs4 import BeautifulSoup
 
 from nyxgpt.version import running_version
 
-#: Where the docs tree lives inside the installed package. `nyxgpt.resources`
-#: holds a `docs` symlink back to the canonical top-level `docs/`, which
-#: setuptools dereferences when it builds the wheel -- one place to edit each
-#: document, real file content in the artifact.
+#: Where the docs tree lives inside the installed package.
+#: `nyxgpt/resources/docs/` holds one symlink per *product* document back to
+#: the canonical top-level `docs/`, which setuptools dereferences when it
+#: builds the wheel -- one place to edit each document, real file content in
+#: the artifact, and the directory listing is itself the selection (#3809).
 DOCS_RESOURCE_PACKAGE = "nyxgpt.resources"
 DOCS_SUBDIR = "docs"
 
 #: `docs/README.md` is the index into the rest of the tree, so it leads the
 #: list and is where the root README's pointer lands.
 INDEX_SLUG = "README"
+
+#: The product documentation, grouped for the Support -> Docs index (#3809).
+#:
+#: This is the selection, expressed as data rather than inferred from
+#: filenames: `docs/` also holds the documents about how *this repository*
+#: builds itself -- the agent loop, CI process, contributor setup, this
+#: project's own GitHub tokens -- and none of that is product help. Those
+#: documents stay in the repository (the agent loop and `CLAUDE.md`'s
+#: bootstrap read them from there); they are simply not symlinked into
+#: `nyxgpt/resources/docs/`, so they are absent from the wheel rather than
+#: shipped and filtered.
+#:
+#: Two invariants, both pinned by `tests/unit/test_support_docs.py`:
+#:
+#: * this list and the packaged directory hold exactly the same slugs, so a
+#:   newly added process document cannot appear in the viewer, and a newly
+#:   added product document cannot appear ungrouped;
+#: * section order is deliberate -- install, then use, then configure,
+#:   operate, and look things up -- not alphabetical.
+DOC_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "Getting started",
+        (INDEX_SLUG, "homebrew", "systemd", "docker-compose", "kubernetes", "terraform", "cloud"),
+    ),
+    ("Using nyxGPT", ("sessions", "rag", "ui", "service-worker-pwa")),
+    ("Configuration", ("configuration", "session-storage", "security")),
+    ("Operating", ("ops", "self-healing", "alerting", "performance", "deployment-checklist")),
+    ("Reference", ("cli", "api", "architecture")),
+    ("Help", ("troubleshooting",)),
+)
+
+#: Every packaged slug, in the order the index presents them.
+PACKAGED_SLUGS: tuple[str, ...] = tuple(slug for _title, slugs in DOC_SECTIONS for slug in slugs)
+
+#: Membership test for link rewriting. Static (from the manifest) rather than
+#: a directory read, so rendering one document does not stat the docs tree
+#: once per link.
+_PACKAGED_SLUG_SET = frozenset(PACKAGED_SLUGS)
 
 ISSUE_REPO_URL = "https://github.com/dkblinux98/nyxGPT"
 ISSUE_FORM_TEMPLATE = "support.yml"
@@ -150,23 +195,52 @@ def _summary_of(text: str) -> str:
     return " ".join(paragraph)
 
 
-def list_documents() -> list[dict[str, str]]:
-    """Return every packaged document as `{slug, title, summary}`.
+def packaged_slugs() -> set[str]:
+    """Return the slugs actually present in the packaged docs directory.
 
-    The docs index (`README`) sorts first -- it is the map into the rest --
-    and the remainder sort by title so the menu reads alphabetically.
+    The manifest says what *should* ship; this says what did. They are
+    asserted equal by the packaging test -- reading the directory here keeps
+    the runtime honest if a build ever drops a file.
     """
-    documents = []
-    for entry in docs_dir().iterdir():
-        if not entry.is_file() or not entry.name.endswith(".md"):
-            continue
-        slug = entry.name[: -len(".md")]
-        text = entry.read_text(encoding="utf-8")
-        documents.append(
-            {"slug": slug, "title": _title_of(text, slug), "summary": _summary_of(text)}
-        )
-    documents.sort(key=lambda doc: (doc["slug"] != INDEX_SLUG, doc["title"].lower()))
-    return documents
+    return {
+        entry.name[: -len(".md")]
+        for entry in docs_dir().iterdir()
+        if entry.is_file() and entry.name.endswith(".md")
+    }
+
+
+def _summarize(slug: str) -> dict[str, str] | None:
+    """Return `{slug, title, summary}` for one packaged document, or None."""
+    path = docs_dir() / f"{slug}.md"
+    if not path.is_file():
+        return None
+    text = path.read_text(encoding="utf-8")
+    return {"slug": slug, "title": _title_of(text, slug), "summary": _summary_of(text)}
+
+
+def list_sections() -> list[dict[str, Any]]:
+    """Return the packaged documents grouped into `DOC_SECTIONS` order.
+
+    `[{title, documents: [{slug, title, summary}, ...]}, ...]`. A section
+    whose documents are all missing from the package is dropped rather than
+    rendered empty.
+    """
+    sections: list[dict[str, Any]] = []
+    for title, slugs in DOC_SECTIONS:
+        documents = [doc for doc in (_summarize(slug) for slug in slugs) if doc is not None]
+        if documents:
+            sections.append({"title": title, "documents": documents})
+    return sections
+
+
+def list_documents() -> list[dict[str, str]]:
+    """Return every packaged document as `{slug, title, summary}`, flat.
+
+    Manifest order, so the docs index (`README`) still leads. `list_sections`
+    is what the viewer renders; this stays for callers that just want the
+    set of documents.
+    """
+    return [doc for section in list_sections() for doc in section["documents"]]
 
 
 def _rewrite_link(href: str) -> str:
@@ -174,8 +248,13 @@ def _rewrite_link(href: str) -> str:
 
     Three cases:
 
-    * a sibling document (`configuration.md#tls`) becomes the in-app route
-      `/support/docs/configuration#tls`, so the tree browses as a unit;
+    * a sibling *packaged* document (`configuration.md#tls`) becomes the
+      in-app route `/support/docs/configuration#tls`, so the tree browses as
+      a unit;
+    * a sibling document that is **not** packaged -- the process and
+      contributor docs #3809 kept out of the artifact -- goes to the hosted
+      copy under `docs/`, which is where it still lives. An in-app route
+      would be a 404 for the reader;
     * the root README (`../README.md`) becomes the docs index -- it is not
       part of the packaged docs tree, and the index is what it points into;
     * anything else (absolute URL, in-page anchor, or a path pointing at
@@ -189,7 +268,12 @@ def _rewrite_link(href: str) -> str:
         return f"{DOCS_ROUTE_PREFIX}/{INDEX_SLUG}"
     match = _RELATIVE_DOC_LINK_RE.match(href)
     if match:
-        return f"{DOCS_ROUTE_PREFIX}/{match.group('slug')}{match.group('anchor') or ''}"
+        slug = match.group("slug")
+        anchor = match.group("anchor") or ""
+        if slug in _PACKAGED_SLUG_SET:
+            return f"{DOCS_ROUTE_PREFIX}/{slug}{anchor}"
+        blob = f"{ISSUE_REPO_URL}/blob/{REPO_DEFAULT_BRANCH}/{DOCS_SUBDIR}/{slug}.md"
+        return f"{blob}{anchor}"
     if re.match(r"^\w+:", href) or href.startswith("//"):
         return href
     # A repo-relative path to something that isn't a packaged doc

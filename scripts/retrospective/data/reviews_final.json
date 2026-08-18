@@ -4543,5 +4543,84 @@
    "Runbook still offers the guard-free manual push",
    "`APPROVAL_GRACE` is read mid-script rather than declared with the other tunables"
   ]
+ },
+ {
+  "issue": 3868,
+  "pr": 3869,
+  "title": "[dkblinux98/nyxGPT] fix: exclude the release tracking issue from the escalation pause count (PR #3869)",
+  "module": "api",
+  "date": "2026-08-18T05:53:17Z",
+  "critical": [],
+  "medium": [
+   "Ruff gate failure (pre-existing B033) \u2014 `tests/unit/test_dump_churn.py:787,795`",
+   "Inverse-claims (\u00a71a): `docs/github-tokens.md` falsified by the D-014 commit",
+   "Inverse-claims (\u00a71a): runbook definition of \"unresolved escalation\" falsified"
+  ],
+  "minor": [
+   "Pause-message wording",
+   "The new test block restores `RELEASE_ISSUE_NUMBER=\"3521\"` after the unset-fallback fixture (`tests/test_gh_project_lib.sh:660`) \u2014 correct and consistent with the suite's existing convention at lines 719/944; noting only that I verified it."
+  ]
+ },
+ {
+  "issue": 3803,
+  "pr": 3872,
+  "title": "[dkblinux98/nyxGPT] Improvement: improvement: remove the Portability and Acceptance dashboard screen (#3803) (PR #3872)",
+  "module": "web-ui",
+  "date": "2026-08-18T07:02:50Z",
+  "critical": [],
+  "medium": [
+   "Falsified claim left in docs/portability-matrix.md (inverse-claims check \u00a71a)"
+  ],
+  "minor": [
+   "`docs/ui.md:310` says the `ADMIN_NAV` list is exported from `web/src/app/admin/dashboard/page.tsx`; it lives in `web/src/app/admin/dashboard/nav.ts`. Pre-existing inaccuracy, not falsified by this PR \u2014 does not block, fine to fix opportunistically while editing docs for the Medium above."
+  ]
+ },
+ {
+  "issue": 3805,
+  "pr": 3873,
+  "title": "[dkblinux98/nyxGPT] Improvement: improvement: secrets and AWS credential setup screens move out of the web UI to CLI only (#3805) (PR #3873)",
+  "module": "web-ui",
+  "date": "2026-08-18T08:21:23Z",
+  "critical": [],
+  "medium": [
+   "Falsified claim left in `example.config.ini` (\u00a71a inverse-claims, #3744)"
+  ],
+  "minor": [
+   "`docs/cloud.md:858` \u2014 \"\\`GET /api/v1/config/aws-credentials\\` remains as the read-only status **the dashboard** and tooling can query\": with this PR the dashboard has no proxy route to that path and displays nothing from it (the Next.js proxy GETs were deleted along with their only consumers \u2014 correct as dead-code removal). \"tooling can query\" alone would be accurate. Doesn't block.",
+   "`product_management/PHASE_6_PLAN.md:135` \u2014 the P6-6 heading still reads \"CLI + admin wizard\". It is the historical issue title and the superseded note sits directly under it in the ACs, so this is acceptable as a record; a strike-through on the heading's \"+ admin wizard\" would be tidier. Doesn't block."
+  ]
+ },
+ {
+  "issue": 3807,
+  "pr": 3875,
+  "title": "[dkblinux98/nyxGPT] Improvement: improvement: retro dashboard has no build timestamp or per-source as-of times (#3807) (PR #3875)",
+  "module": "web-ui",
+  "date": "2026-08-18T09:32:23Z",
+  "critical": [],
+  "medium": [
+   "CodeQL check failing: new high-severity alert in `tests/retro_render_check.mjs:28`"
+  ],
+  "minor": [
+   "Greedy script extraction",
+   "Committed `scripts/retrospective/retro.html` predates this template change"
+  ]
+ },
+ {
+  "issue": 3806,
+  "pr": 3876,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: restart-required config changes apply silently or not at all - need pending-restart notice and restart control (#3806) (PR #3876)",
+  "module": "api",
+  "date": "2026-08-18T09:49:02Z",
+  "critical": [],
+  "medium": [
+   "Web coverage gate fails (blocks merge mechanically)",
+   "Third writer of `[auth]` left silent \u2014 the #3806 defect is still reachable from the Admin Dashboard's Access Management panel",
+   "Falsified claim left in tree (\u00a71a)",
+   "CodeQL check red on the PR \u2014 1 new high-severity alert"
+  ],
+  "minor": [
+   "`web/tests/mocks/handlers.ts:8`: the file-header comment still says \"secret/restart_component/\" \u2014 the field is now `restart_components`. Doesn't block.",
+   "`tests/unit/test_restart_activation.py::test_no_key_is_annotated_both_hot_and_restart_required` is nearly vacuous: its inner assertion checks `blocks[i - 1]` (the line before the prose) and can't fail against realistic drift. The exact-match test above it is the real guard, so this doesn't block \u2014 consider deleting or tightening it in passing."
+  ]
  }
 ]

@@ -8,6 +8,7 @@ so they never touch the real `~/.nyxGPT/config.ini`.
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -23,13 +24,45 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.fixture(autouse=True)
-def _reset_restart_state():
-    """`restart_state` is process-global, in-memory state (#3407) -- reset it
-    around every test so one test's pending-restart flag can't leak into the
-    next."""
+def _reset_restart_state(tmp_path, monkeypatch):
+    """Isolate the pending-restart state file and reset it around every test.
+
+    Since #3806 this state is persisted to `~/.nyxGPT/pending-restart.json`
+    (so the CLI writer and the API reader share one set), which means an
+    un-redirected test would read and *delete* the developer's real file.
+    `$NYXGPT_PENDING_RESTART_PATH` points it at `tmp_path` instead.
+    """
+    monkeypatch.setenv("NYXGPT_PENDING_RESTART_PATH", str(tmp_path / "pending-restart.json"))
     restart_state_module.reset()
     yield
     restart_state_module.reset()
+
+
+@pytest.fixture
+def captured_timers(monkeypatch):
+    """Capture `threading.Timer`s scheduled by app.py instead of letting them fire.
+
+    The restart endpoints defer their work onto a timer because the target may
+    be this very process. A test that merely asserts "not called inline" and
+    then exits its `patch` block leaves a *live* timer armed: when it fires,
+    seconds later and in whatever test is running by then, it calls the real
+    `ops.restart` -- which on a developer machine restarts actual services,
+    and in CI silently corrupted an unrelated test's mock call counts. Capture
+    them, assert the deferral, and never start them.
+    """
+    scheduled: list[tuple[float, Any]] = []
+
+    class _FakeTimer:
+        def __init__(self, interval, function, args=None, kwargs=None):
+            self.interval = interval
+            self.function = function
+            self.args = args or ()
+
+        def start(self):
+            scheduled.append((self.interval, self.function, self.args))
+
+    monkeypatch.setattr(app_module.threading, "Timer", _FakeTimer)
+    return scheduled
 
 
 @pytest.fixture(autouse=True)
@@ -189,7 +222,7 @@ def test_post_sections_no_reconciliation_when_observability_field_unchanged(_iso
     mock_reconcile.assert_not_called()
 
 
-def test_restart_endpoint_schedules_and_returns_immediately(_isolated_config):
+def test_restart_endpoint_schedules_and_returns_immediately(_isolated_config, captured_timers):
     client = TestClient(app)
     with patch("nyxgpt.app.ops_module.restart") as mock_restart:
         resp = client.post("/api/v1/config/restart", json={"target": "api"})
@@ -197,6 +230,9 @@ def test_restart_endpoint_schedules_and_returns_immediately(_isolated_config):
         assert resp.json() == {"target": "api", "status": "scheduled"}
         # The restart call itself is deferred via threading.Timer, not called inline.
         mock_restart.assert_not_called()
+    # Deferred, but genuinely scheduled -- and captured rather than armed.
+    assert len(captured_timers) == 1
+    assert captured_timers[0][0] > 0
 
 
 def test_restart_endpoint_rejects_unknown_target(_isolated_config):
@@ -205,12 +241,12 @@ def test_restart_endpoint_rejects_unknown_target(_isolated_config):
     assert resp.status_code == 400
 
 
-def test_restart_endpoint_defaults_to_all(_isolated_config):
+def test_restart_endpoint_defaults_to_all(_isolated_config, captured_timers):
     client = TestClient(app)
-    with patch("nyxgpt.app.ops_module.restart"):
-        resp = client.post("/api/v1/config/restart", json={})
+    resp = client.post("/api/v1/config/restart", json={})
     assert resp.status_code == 200
     assert resp.json()["target"] == "all"
+    assert len(captured_timers) == 1
 
 
 # --- Restart-pending tracking + mode-aware restart-required (#3407) ---
@@ -242,7 +278,39 @@ def test_restart_status_empty_with_no_pending_restart(_isolated_config):
     client = TestClient(app)
     resp = client.get("/api/v1/infra/restart-status")
     assert resp.status_code == 200
-    assert resp.json() == {"pending": {}}
+    assert resp.json() == {"pending": {}, "restart_command": None, "session_disrupting": []}
+
+
+def test_restart_status_reports_the_wrapped_command_and_session_impact(_isolated_config):
+    """The notice tells the user the CLI equivalent and warns before dropping their session (#3806)."""
+    client = TestClient(app)
+    client.post("/api/v1/config/sections", json={"auth": {"api_key": "rotated-key"}})
+
+    data = client.get("/api/v1/infra/restart-status").json()
+    assert data["pending"]["web"]["keys"] == ["auth.api_key"]
+    assert data["restart_command"] == "nyxgpt ops restart web"
+    # Restarting `web` from a page served by `web` drops that page's session.
+    assert data["session_disrupting"] == ["web"]
+
+
+def test_rotating_the_auth_key_flags_web_not_api(_isolated_config):
+    """#3806's worked example: the api tier is live, the web tier is frozen at start."""
+    client = TestClient(app)
+    resp = client.post("/api/v1/config/sections", json={"auth": {"api_key": "rotated-key"}})
+    assert resp.status_code == 200
+    assert resp.json()["restart_required"] == ["web"]
+    assert resp.json()["restart_pending"]["web"]["keys"] == ["auth.api_key"]
+
+
+def test_reverting_a_restart_required_value_retires_the_notice(_isolated_config):
+    """ "...until the restart happens or the value is reverted" -- no stuck banner (#3806)."""
+    client = TestClient(app)
+    client.post("/api/v1/config/sections", json={"api": {"port": 9500}})
+    assert "api" in client.get("/api/v1/infra/restart-status").json()["pending"]
+
+    resp = client.post("/api/v1/config/sections", json={"api": {"port": 8000}})
+    assert resp.json()["restart_pending"] == {}
+    assert client.get("/api/v1/infra/restart-status").json()["pending"] == {}
 
 
 def test_restart_required_endpoint_rejects_when_nothing_pending(_isolated_config):
@@ -258,7 +326,9 @@ def test_restart_required_endpoint_rejects_unknown_target(_isolated_config):
     assert resp.status_code == 400
 
 
-def test_restart_required_endpoint_schedules_and_returns_immediately(_isolated_config):
+def test_restart_required_endpoint_schedules_and_returns_immediately(
+    _isolated_config, captured_timers
+):
     client = TestClient(app)
     client.post("/api/v1/config/sections", json={"api": {"port": 9500}})
 
@@ -266,12 +336,15 @@ def test_restart_required_endpoint_schedules_and_returns_immediately(_isolated_c
         resp = client.post("/api/v1/infra/restart-required", json={})
         assert resp.status_code == 200
         assert resp.json() == {"targets": ["api"], "status": "running"}
-        # Deferred via threading.Timer, not called inline.
+        # Deferred via threading.Timer, not called inline -- and captured, so
+        # it can't fire live against a real self-heal later (see captured_timers).
         mock_heal_now.assert_not_called()
+
+    assert captured_timers == [(0.5, app_module._do_restart_required, (["api"],))]
 
 
 def test_do_restart_required_clears_pending_on_success(_isolated_config):
-    restart_state_module.mark_pending("api", ["api.port"])
+    restart_state_module.mark_pending("api", {"api.port": "8000"})
     with (
         patch(
             "nyxgpt.app.self_heal_module.heal_now",
@@ -289,7 +362,7 @@ def test_do_restart_required_clears_pending_on_success(_isolated_config):
 
 
 def test_do_restart_required_keeps_pending_on_failure(_isolated_config):
-    restart_state_module.mark_pending("api", ["api.port"])
+    restart_state_module.mark_pending("api", {"api.port": "8000"})
     with patch(
         "nyxgpt.app.self_heal_module.heal_now",
         return_value={

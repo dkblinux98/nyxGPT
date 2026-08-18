@@ -3,6 +3,10 @@
 import { useEffect, useState, type MouseEvent } from 'react';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import ErrorMessage from '../../components/ErrorMessage';
+import PendingRestartNotice, {
+  fetchRestartStatus,
+  type RestartStatus,
+} from '../../components/PendingRestartNotice';
 
 type SecretField = { set: boolean; masked: string | null };
 
@@ -56,8 +60,26 @@ interface FormValues {
 interface SchemaField {
   key: string;
   secret: boolean;
-  restart_component: string | null;
+  /**
+   * This field's activation classification (#3806): the services that keep
+   * running with the old value until restarted. Empty means hot-reloadable --
+   * saving applies it immediately. Rendered as a per-field hint so the user
+   * knows *before* saving that a restart will be owed.
+   */
+  restart_components: string[];
   observability: boolean;
+}
+
+/** "api" -> "an api restart", ["api","web"] -> "an api and web restart". */
+function restartHint(components: string[] | undefined): string | null {
+  // Tolerates a schema payload from an older backend that predates the
+  // classification: no hint rather than a crashed admin page.
+  if (!components || components.length === 0) return null;
+  const list =
+    components.length === 1
+      ? components[0]
+      : `${components.slice(0, -1).join(', ')} and ${components[components.length - 1]}`;
+  return `Saved immediately, but not in effect until you restart: ${list}.`;
 }
 
 interface SchemaSection {
@@ -742,6 +764,13 @@ export default function AdminPage() {
   const [staleKeys, setStaleKeys] = useState<Record<string, string[]>>({});
   const [removingStaleKey, setRemovingStaleKey] = useState<string | null>(null);
 
+  /**
+   * Config saved but not yet running (#3806). Server-side state, not a toast:
+   * loaded on mount so a restart-required change made in an earlier visit (or
+   * from `nyxgpt secrets setup`) is still announced when the user comes back.
+   */
+  const [restartStatus, setRestartStatus] = useState<RestartStatus | null>(null);
+
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
   const [modelsError, setModelsError] = useState<string | null>(null);
@@ -830,6 +859,9 @@ export default function AdminPage() {
   useEffect(() => {
     loadSections();
     loadModels();
+    fetchRestartStatus().then((status) => {
+      if (status) setRestartStatus(status);
+    });
   }, []);
 
   // Re-fetch the models list whenever the tab regains focus/visibility, so a
@@ -1032,6 +1064,19 @@ export default function AdminPage() {
       setFormValues(toFormValues(data.sections));
       setRawSections(data.sections);
       setExtraValues(toExtraValues(data.sections, schemaSections));
+      // The save response carries the *whole* pending set, so the notice
+      // appears the moment a restart-required key is saved and disappears the
+      // moment the last one is reverted -- no extra round trip, and no
+      // disagreement with what the dashboard would show (#3806).
+      setRestartStatus({
+        pending: data.restart_pending || {},
+        restart_command: null,
+        session_disrupting: Object.keys(data.restart_pending || {}).filter((c) => c === 'web'),
+      });
+      // Then reconcile with the backend's own rendering of the command text.
+      fetchRestartStatus().then((status) => {
+        if (status) setRestartStatus(status);
+      });
       advanceAfterSave();
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -1074,6 +1119,15 @@ export default function AdminPage() {
         <a href="/admin/dashboard" style={{ color: '#0066cc', textDecoration: 'none' }}>
           ← Back to Admin Dashboard
         </a>
+      </div>
+
+      {/*
+        Saved-but-not-running notice (#3806). Mounted above the progress
+        indicator so it is visible on every step, not just the one where the
+        change was made -- and it renders nothing when nothing is pending.
+      */}
+      <div style={{ marginBottom: '1.5rem' }}>
+        <PendingRestartNotice status={restartStatus} onStatusChange={setRestartStatus} />
       </div>
 
       {/* Progress Indicator */}
@@ -1367,8 +1421,9 @@ export default function AdminPage() {
               style={{ padding: '1rem', background: 'var(--info-bg)', borderRadius: 6, fontSize: 14 }}
             >
               <strong>ℹ️ Note:</strong> RAG requires Apache Cassandra to be running. Changing the
-              Cassandra connection or embedding model needs an API restart to take effect --
-              offered on the Summary step after saving.
+              Cassandra connection or embedding model is saved immediately but is not in effect
+              until the api service restarts -- after saving, a notice at the top of this page
+              says so and offers to restart for you.
             </div>
           </div>
         )}
@@ -1386,7 +1441,7 @@ export default function AdminPage() {
               value={formValues.api.host}
               onChange={(v) => updateSection('api', 'host', v)}
               disabled={saving}
-              hint="Requires an API restart to take effect."
+              hint="Saved immediately, but not in effect until you restart: api."
               isDefault={isDefaultField(fieldDefaults, 'api', 'host')}
             />
 
@@ -1397,7 +1452,7 @@ export default function AdminPage() {
               onChange={(v) => updateSection('api', 'port', v)}
               disabled={saving}
               type="number"
-              hint="Requires an API restart to take effect."
+              hint="Saved immediately, but not in effect until you restart: api."
               isDefault={isDefaultField(fieldDefaults, 'api', 'port')}
             />
 
@@ -1428,7 +1483,7 @@ export default function AdminPage() {
               disabled={saving}
               set={sections.auth.api_key.set}
               masked={sections.auth.api_key.masked}
-              hint="Never displayed in full. Type a new value to rotate it, or leave blank to keep the current key."
+              hint="Never displayed in full. Type a new value to rotate it, or leave blank to keep the current key. The API honours a new key at once, but the web UI reads it at startup -- so it stays saved-but-not-running, and every page here keeps working on the old key, until you restart web."
             />
 
             <CheckboxInput
@@ -1626,9 +1681,7 @@ export default function AdminPage() {
                         const label = humanizeKey(f.key);
                         const isDefault = isDefaultField(fieldDefaults, spec.section, f.key);
                         const hintParts = [
-                          f.restart_component
-                            ? `Requires a ${f.restart_component} restart to take effect.`
-                            : null,
+                          restartHint(f.restart_components),
                           f.observability ? 'Reconciles the observability stack on save.' : null,
                         ].filter(Boolean);
                         const hint = hintParts.length ? hintParts.join(' ') : undefined;
@@ -1766,11 +1819,13 @@ export default function AdminPage() {
                   <a href="/admin/health" style={{ color: '#0066cc' }}>
                     System Health
                   </a>
-                  . Settings that need a restart to take effect show a restart button on the{' '}
+                  . Settings that cannot be applied to a running service are still saved; a
+                  notice at the top of this page (and on the{' '}
                   <a href="/admin/dashboard" style={{ color: '#0066cc' }}>
                     Admin Dashboard
-                  </a>{' '}
-                  once saved.
+                  </a>
+                  ) then says which services are still running the old value, and offers to
+                  restart them. Restarting is optional -- the notice persists until you do.
                 </div>
               </div>
             );

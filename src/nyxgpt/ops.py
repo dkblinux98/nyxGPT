@@ -43,7 +43,7 @@ import httpx
 from nacl import public as nacl_public
 
 from nyxgpt import metrics as prom_metrics
-from nyxgpt import release_tarball, self_heal, tracing
+from nyxgpt import release_tarball, restart_state, self_heal, tracing
 from nyxgpt import verify as verify_mod
 from nyxgpt.config import (
     get_error_tracking_config,
@@ -8227,6 +8227,16 @@ def restart(args) -> int:
     )
     result, message = _ops_action_outcome(results)
     _record_ops_action("restart", target, result, message)
+
+    # A component that actually restarted has picked up whatever config.ini
+    # says now, so its pending-restart notice is answered and must stop being
+    # shown (#3806). Doing it here rather than only in the API's restart
+    # endpoint is what makes `nyxgpt ops restart web` and the dashboard button
+    # equivalent: either one clears the flag the other raised.
+    if ok:
+        cleared = ("api", "web", "ollama", "cassandra") if target == "all" else (target,)
+        for component in cleared:
+            restart_state.clear_pending(component)
 
     return 0 if ok else 2
 

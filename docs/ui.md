@@ -312,9 +312,13 @@ Access the dashboard at `http://127.0.0.1:3000/admin/dashboard` for an at-a-glan
   - **Configuration** shows the operation tiles — **Canary Operations** and **Self-heal Operations** — alongside the **Configuration Wizard**, all in the same tile grid. The guided **Secrets** and **AWS Credentials** setup screens were removed (#3805): credential *entry* does not belong in a browser (the value crosses an HTTP request and the page's process, and over a cloud access tunnel it would cross that path too), and by the time this dashboard is running, reaching it already required the secrets those screens collected. Below the tiles the card now names the wrapped commands as text, not controls — `nyxgpt secrets setup`, `nyxgpt ops secrets-sync`, `nyxgpt cloud credentials-setup` — the same pointer pattern as the cloud surface (#3514). The Configuration Wizard is unaffected, including its `[auth] api_key` rotation field: it remains the in-product configuration surface for a *running* system. These screens change something (deploy/gate/promote/roll back a canary, toggle or trigger self-heal), so they live under Configuration rather than System Status. (The **Deployment Operations** blue/green tile was retired -- canary is the sole deployment model, see #3409.) The "Operations" suffix on these tiles disambiguates them from the same-named Grafana dashboard links reachable from the SRE Home dashboard, which observe the same subsystems rather than act on them. **Canary Operations** (`/admin/canary`) has an `api`/`web` tab (#3419) that switches which component's stable/canary pair the page shows and controls -- the deploy/start/evaluate/promote/rollback actions and the stable/canary health cards apply to whichever component tab is selected.
 
   Every tile shows the destination name plus a one-line description of what that screen is for, with the same description as a hover tooltip. Tiles navigate in the same tab, carry no arrow decoration, and hover/highlight using the theme CSS variables so light and dark modes both work -- except the SRE Overview tile, described above.
-- **Restart-required banner** (#3407) — stacked directly above the Configuration card, same width, outside it, shown only when a Configuration Wizard save left one or more components (currently only `api`) pending a restart. Lists which component(s) and which `section.key` fields triggered it (from `GET /api/v1/infra/restart-status`). Clicking **Restart now** calls `POST /api/v1/infra/restart-required`, which restarts every pending component mode-aware (native/Compose/Terraform/Kubernetes, reusing the same dispatcher as self-heal's manual "Heal Now" — see [Self-Healing](self-healing.md)) — the wrapper rule: no raw command is ever shown. The button then polls restart-status every 2s (up to 10 attempts) and reports **Restarting…** → the banner disappearing on success, or a "did not complete in time" message (banner stays, retryable) if it times out.
+- **Pending-restart notice** (#3407, #3806) — stacked directly above the Configuration card, same width, outside it, and rendered by the same component the Configuration Wizard mounts, so the two always say the same thing. Shown whenever a saved config value differs from the value a service is still running with — whether it was changed in the wizard or from the CLI (`nyxgpt secrets setup`), because the state is shared (`~/.nyxGPT/pending-restart.json`, read via `GET /api/v1/infra/restart-status`). It states that the value **is saved but not yet in effect**, lists the component(s) and the `section.key` fields waiting, and how long they have been waiting.
+
+  It is deliberately **not** a toast: it survives a reload, navigating away and back, and an API restart, and disappears only when the restart happens or the value is changed back to what the service is running. Restarting is explicitly optional and can be deferred indefinitely; the equivalent `nyxgpt ops restart <service>` is shown for reference (the wrapper rule — no raw `docker`/`brew`/`kubectl` command is ever shown).
+
+  Clicking **Restart now** calls `POST /api/v1/infra/restart-required`, which restarts every pending component mode-aware (native/Compose/Terraform/Kubernetes, reusing the same dispatcher as self-heal's manual "Heal Now" — see [Self-Healing](self-healing.md)). When `web` is among the pending components, the notice says up front that restarting drops this browser session — and confirms before doing it — because the page is served by the service about to go down; without that it looks like a hang. The button then polls restart-status every second (up to 30 attempts) and reports **Restarting…** → the notice disappearing on success, or a "did not complete in time" message (notice stays, retryable) if it times out.
 - **Query Cache panel** (`QueryCacheStatsPanel`) — hit rate, hits, misses, size, backend, and TTL for the RAG query result cache (`GET /api/v1/rag/cache/stats`), plus a Clear Cache action. When the cache is disabled (`[cache] query_cache_enabled = false`), the panel shows a **Disabled** message instead of a zero-value stat grid and hides the Clear Cache button — an all-zeros grid would be indistinguishable from "enabled but unused," and Clear Cache has nothing to act on (#3412). The message links to the [Configuration Wizard](#configuration-wizard)'s cache settings (Additional Settings → RAG, retrieval & caching) to enable it.
-- **Access Management** — Masked API keys wrap within their pane instead of overflowing it; revealing a key shows the full value, also wrapped.
+- **Access Management** — Masked API keys wrap within their pane instead of overflowing it; revealing a key shows the full value, also wrapped. Toggling auth or rotating the key here is restart-required for the `web` tier, so it raises the same **pending-restart notice** the Configuration Wizard does — on this same page, with the Restart control (#3806).
 - **Back to Chat link** — "← Back to Chat" uses an underlined inline-link style (`inlineLinkStyle`) for clear affordance. The Activity Log's former "View logs in Log Aggregation →" link was removed (#3411): it only pointed at the SRE Overview page, never at an actual log view -- use the SRE Overview tile to reach Grafana's Logs Drilldown instead.
 
 #### Configuration Wizard
@@ -380,13 +384,15 @@ Keyboard shortcuts:
 the keys you changed are updated or added at the line level, so comments,
 key order, and anything the wizard doesn't manage (the excluded sections,
 hand-added keys) survive untouched (#3388). The save applies immediately —
-hot-reloadable settings (model, RAG, logging, auth) take effect on the next
+hot-reloadable settings (model, RAG, logging) take effect on the next
 request with no restart. Settings that need a process bounce (API
 host/port, the RAG Cassandra connection/embedding model, cache backends,
-tracing/error-tracking/rate-limit config read only at startup) are tracked
-server-side and surfaced by the **Admin Dashboard's restart-required
-banner** instead of an in-wizard restart button (#3407) — see [Admin
-Dashboard](#admin-dashboard) above (`GET`/`POST /api/v1/config/sections`,
+tracing/error-tracking/rate-limit config, the web UI's own host/port/API
+base URL, and `[auth] enabled`/`api_key` for the web tier) carry an
+explicit **activation classification** (#3806): each field shows it as a
+hint *before* you save, and after saving the **pending-restart notice**
+appears at the top of the wizard and on the [Admin
+Dashboard](#admin-dashboard) (`GET`/`POST /api/v1/config/sections`,
 `GET /api/v1/infra/restart-status`, `POST /api/v1/infra/restart-required` —
 see [`docs/api.md`](api.md#config-wizard)). Enabling an observability toggle
 also reconciles the matching Compose stack the same way `nyxgpt ops
@@ -667,7 +673,7 @@ PyPI or Homebrew has no repository checkout, so neither the docs nor an
 issue-reporting path would otherwise be reachable from the product.
 
 **Docs** (`/support/docs`) renders the documentation that shipped with the
-installed package. The whole `docs/*.md` tree is package data inside the wheel
+installed package. The product documents are package data inside the wheel
 (`nyxgpt.resources/docs`, the mechanism #3621 introduced for the ops layer's
 runtime data), resolved through `importlib.resources` and never relative to a
 source tree — so the documents shown match the version that is running by
@@ -677,6 +683,19 @@ browses as a unit; links to files that only a checkout has resolve to the
 hosted copy on GitHub. The Markdown is rendered to HTML by the API
 (`/api/v1/support/docs`, `/api/v1/support/docs/{slug}`) with active content
 stripped before the page injects it.
+
+**What ships, and how it is ordered (#3809).** Not everything under `docs/`:
+the repository also documents how it builds itself — the agent loop, CI
+process, contributor setup, this project's own GitHub tokens — and none of
+that is help for using nyxGPT. Those documents stay in the repository and are
+never symlinked into `nyxgpt/resources/docs/`, so they are absent from the
+wheel rather than shipped and hidden. The selection is named, grouped and
+ordered in `nyxgpt.support.DOC_SECTIONS` (Getting started → Using nyxGPT →
+Configuration → Operating → Reference → Help) and the index page renders those
+groups; `/api/v1/support/docs` returns them as `sections`. Because the
+grouping is data and not inferred from filenames, a newly added packaged
+document that no section lists fails `tests/unit/test_support_docs.py` instead
+of quietly appearing at the end of a flat list.
 
 **File an Issue** is three entries, one per ticket type. Each opens
 [`.github/ISSUE_TEMPLATE/support.yml`](https://github.com/dkblinux98/nyxGPT/blob/master/.github/ISSUE_TEMPLATE/support.yml)

@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from nyxgpt import config_wizard
+from nyxgpt import config_wizard, restart_state
 from nyxgpt.config import DEFAULT_CONFIG_PATH
 
 
@@ -216,10 +216,50 @@ def write_secret(cfg_path: Path, spec: GuidedSecret, value: str) -> str:
     every other config.ini write path. Returns the validated value written
     (never logged or echoed back -- callers must mask before it leaves the
     process boundary).
+
+    Also records the pending restart the write implies (#3806). `[auth]
+    api_key` is classified restart-required for `web`, so rotating it here
+    raises exactly the same notice the Configuration Wizard would have
+    raised -- one behavior, two surfaces. `restart_notice` renders it for
+    this process's own output; the persisted state is what lets the running
+    Admin Dashboard show it too.
     """
     validated = validate_secret_value(spec, value)
+    previous = _read_config(cfg_path).get(spec.section, spec.key, fallback="")
     config_wizard.apply_updates(cfg_path, {spec.section: {spec.key: validated}})
+    for component in config_wizard.field_restart_components(spec.section, spec.key):
+        restart_state.mark_pending(component, {spec.full_key: previous})
+        restart_state.reconcile_saved(component, {spec.full_key: validated})
     return validated
+
+
+def restart_notice(spec: GuidedSecret) -> str | None:
+    """Return the plain-language "not yet in effect" notice for `spec`, or None.
+
+    None when `spec` is hot-reloadable (every consumer re-reads it), which is
+    the case for the `[openai]`/`[github]` tokens -- they have no long-lived
+    process holding a stale copy. Non-None text names the affected service(s)
+    and the wrapped command that applies the value, never a raw
+    `brew services`/`docker` command.
+    """
+    components = config_wizard.field_restart_components(spec.section, spec.key)
+    if not components:
+        return None
+    services = ", ".join(components)
+    return (
+        f"Saved, but NOT YET IN EFFECT: {spec.full_key} is read once at start by: {services}.\n"
+        f"  Until you restart, the saved value and the running value differ.\n"
+        f"  Apply it with: {restart_state.restart_command(list(components))}\n"
+        "  (You can defer -- the Admin Dashboard and Configuration Wizard keep showing this\n"
+        "   notice until the restart happens.)"
+    )
+
+
+def _print_restart_notice(spec: GuidedSecret) -> None:
+    """Print `restart_notice(spec)` right after a save, if the key is restart-required."""
+    notice = restart_notice(spec)
+    if notice:
+        print(f"\n! {notice}\n")
 
 
 def _prompt_masked(prompt: str) -> str:
@@ -277,6 +317,7 @@ def run_secrets_setup(cfg_path: Path | None = None, reconfigure: bool = False) -
                 value = spec.generate()
                 write_secret(cfg_path, spec, value)
                 print(f"Generated and saved ({mask_secret(value)}).")
+                _print_restart_notice(spec)
                 cfg = _read_config(cfg_path)
                 continue
 
@@ -297,6 +338,7 @@ def run_secrets_setup(cfg_path: Path | None = None, reconfigure: bool = False) -
                 print(f"Invalid value: {e}")
                 continue
             print(f"Saved ({mask_secret(value.strip())}).")
+            _print_restart_notice(spec)
             cfg = _read_config(cfg_path)
             break
         else:
@@ -309,6 +351,21 @@ def run_secrets_setup(cfg_path: Path | None = None, reconfigure: bool = False) -
         "config.ini is now their canonical copy. Docker Compose/CI copies derived from it "
         "(`nyxgpt ops env-sync`, `nyxgpt ops secrets-sync`) must be re-run after any change here."
     )
+
+    # The closing summary repeats the pending set from disk rather than from
+    # what this run happened to write: a restart deferred during an earlier
+    # run (or raised by the Configuration Wizard) is still owed, and this is
+    # the last moment the CLI has the user's attention (#3806).
+    pending = restart_state.snapshot()
+    if pending:
+        print("\n" + "!" * 60)
+        print("RESTART REQUIRED -- saved values are not yet in effect:")
+        for component in sorted(pending):
+            keys = ", ".join(pending[component]["keys"])
+            print(f"  {component}: {keys}")
+        print(f"\nApply them with: {restart_state.restart_command(sorted(pending))}")
+        print("You can defer -- this notice persists until the restart happens.")
+        print("!" * 60)
     return 0
 
 
@@ -318,6 +375,7 @@ __all__ = [
     "SecretValidationError",
     "find_guided_secret",
     "mask_secret",
+    "restart_notice",
     "secret_status",
     "validate_secret_value",
     "write_secret",

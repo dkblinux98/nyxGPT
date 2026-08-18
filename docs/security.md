@@ -210,8 +210,15 @@ When enabled:
   ID for auditing.
 - Keys are compared with `secrets.compare_digest` (constant-time comparison)
   to prevent timing attacks (`src/nyxgpt/app.py`).
-- Auth settings are **hot-reloadable** — edits to `config.ini` take effect on
-  the next request, no restart required.
+- Auth settings are **hot-reloadable on the API** — edits to `config.ini`
+  take effect on its next request, no API restart required. The **web UI is a
+  separate tier** that reads the key once at process start, so rotating
+  `api_key` (or flipping `enabled`) leaves it sending the old value and
+  401-ing on every proxied call until `nyxgpt ops restart web` runs. Both
+  keys are classified restart-required for `web`, so the Configuration
+  Wizard, the Admin Dashboard and `nyxgpt secrets setup` all say so when you
+  change them and offer the restart — see
+  [`docs/configuration.md`](configuration.md#configuration-methods) (#3806).
 
 **Enable authentication whenever the API is reachable from anything other
 than your own local machine** — a shared network, a container, a VPN with

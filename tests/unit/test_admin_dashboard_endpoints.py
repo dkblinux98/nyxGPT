@@ -15,6 +15,9 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
+import nyxgpt.app as app_module
+import nyxgpt.config as config_module
+import nyxgpt.restart_state as restart_state_module
 from nyxgpt.app import app
 
 pytestmark = pytest.mark.unit
@@ -230,3 +233,147 @@ def test_admin_access_update_records_activity_event():
     mock_record.assert_called_once()
     args, _ = mock_record.call_args
     assert args[0] == "access.updated"
+
+
+# --- POST /admin/access and the pending-restart notice (#3806) ---
+#
+# The Access Management panel is the *third* writer of `[auth] api_key`,
+# alongside the Configuration Wizard (`POST /config/sections`) and the CLI
+# (`nyxgpt secrets setup`). All three write a key the `web` tier read once at
+# process start, so all three must raise the same notice -- a rotation here
+# that stayed silent would rebuild the exact 401 wall #3806 exists to close,
+# on the very page that hosts the notice. These tests exercise the real
+# `_apply_auth_config_updates` (no mock) against a real temp config.
+
+
+@pytest.fixture
+def isolated_auth_config(tmp_path, monkeypatch):
+    """Redirect config.ini *and* the pending-restart state file into `tmp_path`.
+
+    Both are needed together: the endpoint's classification is read from the
+    config it just wrote, and the notice it raises is persisted to
+    `~/.nyxGPT/pending-restart.json` -- which an un-redirected test would read
+    and then delete from the developer's own machine.
+    """
+    cfg_path = tmp_path / "config.ini"
+    cfg_path.write_text(
+        "[ollama]\nbase_url = http://localhost:11434\n\n"
+        "[auth]\nenabled = true\napi_key = original-key\nheader = X-API-Key\n"
+    )
+    monkeypatch.setattr(app_module, "_config_file_path", lambda: cfg_path)
+    monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", cfg_path)
+    monkeypatch.setenv("NYXGPT_PENDING_RESTART_PATH", str(tmp_path / "pending-restart.json"))
+    config_module._CACHED_CFG = None
+    config_module._CACHED_PATH = None
+    config_module._CACHED_MTIME_NS = None
+    restart_state_module.reset()
+    yield cfg_path
+    restart_state_module.reset()
+    config_module._CACHED_CFG = None
+    config_module._CACHED_PATH = None
+    config_module._CACHED_MTIME_NS = None
+
+
+def test_dashboard_rotation_flags_web_not_api(isolated_auth_config):
+    """#3806's worked example, reached from the dashboard instead of the wizard."""
+    client = TestClient(app)
+    resp = client.post(
+        "/api/v1/admin/access",
+        json={"rotate": True},
+        headers={"X-API-Key": "original-key"},
+    )
+    assert resp.status_code == 200
+    new_key = resp.json()["api_key"]
+
+    # The api tier honours the rotation immediately -- the old key is already
+    # rejected, which is precisely why the frozen web tier now 401s.
+    assert (
+        client.get(
+            "/api/v1/infra/restart-status", headers={"X-API-Key": "original-key"}
+        ).status_code
+        == 401
+    )
+
+    status = client.get("/api/v1/infra/restart-status", headers={"X-API-Key": new_key}).json()
+    assert status["pending"]["web"]["keys"] == ["auth.api_key"]
+    assert status["restart_command"] == "nyxgpt ops restart web"
+    assert status["session_disrupting"] == ["web"]
+
+
+def test_dashboard_toggle_of_auth_enabled_flags_web(isolated_auth_config):
+    """`[auth] enabled` is restart-required for `web` too -- the wrapper only
+    exports the key at all when it reads `enabled = true`."""
+    client = TestClient(app)
+    resp = client.post(
+        "/api/v1/admin/access",
+        json={"enabled": False},
+        headers={"X-API-Key": "original-key"},
+    )
+    assert resp.status_code == 200
+
+    status = client.get("/api/v1/infra/restart-status").json()
+    assert status["pending"]["web"]["keys"] == ["auth.enabled"]
+
+
+def test_dashboard_header_change_raises_no_notice(isolated_auth_config):
+    """`[auth] header` is not classified restart-required, so it must stay quiet.
+
+    A writer that flagged every key it touched would make the notice
+    meaningless; only the classification decides.
+    """
+    client = TestClient(app)
+    resp = client.post(
+        "/api/v1/admin/access",
+        json={"header": "X-Other-Key"},
+        headers={"X-API-Key": "original-key"},
+    )
+    assert resp.status_code == 200
+    # The api tier reads the header name live, so the follow-up call already
+    # has to use the new one.
+    status = client.get("/api/v1/infra/restart-status", headers={"X-Other-Key": "original-key"})
+    assert status.json()["pending"] == {}
+
+
+def test_dashboard_revert_retires_the_notice(isolated_auth_config):
+    """Putting the key back to the value `web` is still running clears the
+    notice with no restart -- the same self-resolving revert the wizard has."""
+    client = TestClient(app)
+    rotated = client.post(
+        "/api/v1/admin/access",
+        json={"rotate": True},
+        headers={"X-API-Key": "original-key"},
+    ).json()["api_key"]
+    assert (
+        "web"
+        in client.get("/api/v1/infra/restart-status", headers={"X-API-Key": rotated}).json()[
+            "pending"
+        ]
+    )
+
+    # `POST /admin/access` only ever *generates* a key, so the revert arrives
+    # through the wizard writer -- which is the point: the two writers share
+    # one state file, so either can retire what the other raised.
+    resp = client.post(
+        "/api/v1/config/sections",
+        json={"auth": {"api_key": "original-key"}},
+        headers={"X-API-Key": rotated},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["restart_pending"] == {}
+    assert (
+        client.get("/api/v1/infra/restart-status", headers={"X-API-Key": "original-key"}).json()[
+            "pending"
+        ]
+        == {}
+    )
+
+
+def test_dashboard_rotation_preserves_unrelated_config(isolated_auth_config):
+    """The auth writer rewrites config.ini wholesale; other sections must survive."""
+    client = TestClient(app)
+    client.post(
+        "/api/v1/admin/access",
+        json={"rotate": True},
+        headers={"X-API-Key": "original-key"},
+    )
+    assert "base_url = http://localhost:11434" in isolated_auth_config.read_text()
