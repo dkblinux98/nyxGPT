@@ -41,6 +41,10 @@ NAMESPACE="nyxgpt"
 STAND_IN_IMAGE="${NYXGPT_CANARY_SMOKE_IMAGE:-traefik/whoami:v1.10.1}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATE_FILE="$HOME/.nyxGPT/canary_state.json"
+STATE_BACKUP="${TMPDIR:-/tmp}/nyxgpt-canary-smoke-state-backup.$$"
+STATE_BACKED_UP=0
+CONFIG_FILE="$HOME/.nyxGPT/config.ini"
+CONFIG_SEEDED=0
 
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 ok() { echo "[OK] $*"; }
@@ -56,8 +60,30 @@ cleanup() {
     if [ "${NYXGPT_CANARY_SMOKE_KEEP_UP:-0}" != "1" ]; then
         kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true
     fi
+    # Leave the invoking machine's own nyxGPT state as it was found. This
+    # script drives the REAL `nyxgpt canary`, whose state file is a fixed path
+    # under $HOME, and each phase has to start from a clean one -- but on a
+    # developer machine that file may describe a rollout actually in flight,
+    # and deleting it would strand a real cluster mid-rollout (the V-015/V-037
+    # pattern of a test eating live state).
+    rm -f "$STATE_FILE"
+    if [ "$STATE_BACKED_UP" = "1" ]; then
+        mkdir -p "$(dirname "$STATE_FILE")"
+        mv -f "$STATE_BACKUP" "$STATE_FILE" &&
+            echo "[INFO] restored your $STATE_FILE"
+    fi
+    if [ "$CONFIG_SEEDED" = "1" ]; then
+        rm -f "$CONFIG_FILE"
+    fi
 }
 trap cleanup EXIT
+
+# Moved aside up front, before any phase clears it -- see cleanup() above.
+if [ -f "$STATE_FILE" ]; then
+    mv "$STATE_FILE" "$STATE_BACKUP"
+    STATE_BACKED_UP=1
+    echo "[INFO] moved your existing $STATE_FILE aside; restored on exit"
+fi
 
 # Desired (not ready) replica count of a Deployment -- what `nyxgpt canary`
 # asked the cluster for, which is the thing under test.
@@ -97,7 +123,12 @@ step "1/7 A cluster, and the api half of the shipped manifests"
 # same way every other command does, so seed the shipped example if the
 # machine running this has none.
 mkdir -p "$HOME/.nyxGPT"
-[ -f "$HOME/.nyxGPT/config.ini" ] || cp "${REPO_ROOT}/example.config.ini" "$HOME/.nyxGPT/config.ini"
+if [ ! -f "$CONFIG_FILE" ]; then
+    cp "${REPO_ROOT}/example.config.ini" "$CONFIG_FILE"
+    # Ours, so cleanup() takes it away again; an existing config is never
+    # touched.
+    CONFIG_SEEDED=1
+fi
 kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true
 kind create cluster --name "$CLUSTER" >/dev/null
 kubectl apply -f "${REPO_ROOT}/k8s/namespace.yaml" >/dev/null

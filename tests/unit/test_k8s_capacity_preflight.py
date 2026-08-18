@@ -979,3 +979,47 @@ def test_infra_status_surfaces_unschedulable_pods(monkeypatch) -> None:
         "loki-2": "pending",
         "prometheus-abc": "failed",
     }
+
+
+# --- the fault injections in CI reconstruct BOTH pre-fix conditions ---------
+#
+# `k8s-capacity-smoke.yml` is where the arithmetic above is checked against a
+# real node, and its two injection phases are only gates if they reconstruct
+# the sizing #3825 was filed against: the old requests AND the four-wide
+# standing pool they were paid for. The requests alone, applied to the elastic
+# pool this repo ships since #3833, are a fraction of the defect and fit the
+# node -- the injection then passes while proving nothing, which is how the
+# first version of that workflow behaved on this branch's own head. These
+# tests pin the coupling so the pair cannot come apart again, and so one
+# injection cannot be fixed with its twin left behind.
+
+CAPACITY_SMOKE = REPO_ROOT / ".github" / "workflows" / "k8s-capacity-smoke.yml"
+INJECT_SCRIPT = REPO_ROOT / "scripts" / "k8s-inject-pre-fix-sizing.sh"
+
+
+def test_both_capacity_injections_restore_the_pre_3833_pool() -> None:
+    workflow = CAPACITY_SMOKE.read_text()
+    calls = [
+        line.strip() for line in workflow.splitlines() if "k8s-inject-pre-fix-sizing.sh" in line
+    ]
+    modes = sorted(line.rsplit(" ", 1)[-1] for line in calls)
+    assert modes == ["cpu", "memory"], (
+        "both injection phases must reconstruct the pre-fix sizing through "
+        f"the shared script; found {calls}"
+    )
+    # An inline `sed` on a manifest's requests is how the two phases drifted
+    # apart: it restores the requests and silently leaves the pool at 1.
+    assert "sed -i 's/memory:" not in workflow
+    assert "sed -i 's/cpu:" not in workflow
+
+
+def test_the_injection_script_restores_pool_and_requests_together() -> None:
+    script = INJECT_SCRIPT.read_text()
+    assert f"PRE_3833_POOL_REPLICAS={PRE_3833_POOL_REPLICAS}" in script, (
+        "the script's standing-pool width must be the one these tests measure "
+        "the pre-#3833 stack with"
+    )
+    # Both modes go through the same restore, so neither can ship without it.
+    assert script.count("restore_standing_pool\n") == 2
+    # A no-op substitution is the silent failure this whole comment is about.
+    assert "injection no-op" in script

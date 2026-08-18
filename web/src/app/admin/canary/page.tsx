@@ -375,11 +375,14 @@ export default function CanaryPage() {
             </span>
             {/* A rollout borrows replicas rather than living off a standing
                 pool (#3833) -- show what it borrowed and what it gives back,
-                so an inflated pool is never a mystery on the cluster. */}
-            {status.active && !!status.pool_replicas && (
+                so an inflated pool is never a mystery on the cluster. Both
+                numbers come from the server together or not at all (a
+                pre-#3833 server sends neither), so the badge is gated on
+                both rather than inventing a resting count the server never
+                reported. */}
+            {status.active && !!status.pool_replicas && !!status.resting_replicas && (
               <span style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)' }}>
-                pool: {status.pool_replicas} replicas (stable rests at{' '}
-                {status.resting_replicas ?? 1})
+                pool: {status.pool_replicas} replicas (stable rests at {status.resting_replicas})
               </span>
             )}
           </div>

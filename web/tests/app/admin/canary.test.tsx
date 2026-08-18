@@ -335,6 +335,25 @@ describe('CanaryPage', () => {
     expect(screen.getByText(/deploy.*\(nyxgpt-api:1\.1\.0-def5678\)/)).toBeInTheDocument();
   });
 
+  it('omits the pool badge when the server does not report the pool (#3833)', async () => {
+    // A pre-#3833 server sends neither `pool_replicas` nor
+    // `resting_replicas`. The badge must stay away rather than assert a
+    // resting count nobody reported -- the rest of the active view is
+    // unaffected.
+    const { pool_replicas: _pool, resting_replicas: _resting, ...preElasticPool } =
+      mockActiveStatus;
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+    server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(preElasticPool)));
+
+    render(<CanaryPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('ROLLOUT IN PROGRESS — 25%')).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/pool: .* replicas/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/stable rests at/)).not.toBeInTheDocument();
+  });
+
   it('deploys the current version to canary only', async () => {
     mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
     server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(mockStatus)));

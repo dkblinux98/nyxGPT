@@ -1492,7 +1492,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   deliberately write `|| echo ""` and still treat a failed read as "no
   Status".
 
-- **V-046** · 2026-08-18 — **The canary replica pool is borrowed for a
+- **V-048** · 2026-08-18 — **The canary replica pool is borrowed for a
   rollout, not standing — and `V-045`'s footprint numbers moved with it.**
   The stable Deployments shipped `replicas: 4` deliberately (#2692): traffic
   is split by replica ratio, so a 4-wide pool is what makes a 25% step
@@ -1536,9 +1536,27 @@ are absent here by design (relocated to the annex; IDs are never reused).
   `tests/unit/test_k8s_capacity_preflight.py` asserts the same arithmetic
   against the shipped manifests.
   Standing guard: `.github/workflows/canary-rollout-smoke.yml` (both jobs),
-  plus `k8s-capacity-smoke.yml` for the headroom half.
+  plus `k8s-capacity-smoke.yml` for the headroom half. **A capacity fault
+  injection must restore the pre-#3833 standing pool as well as the
+  pre-#3825 requests**: measured 2026-08-18 by totalling the rendered
+  manifests through `ops._workload_resource_requests`, the old requests
+  against the elastic pool schedule 5952Mi (memory tree) and 1825m (cpu
+  tree) — inside the 7936Mi/4000m node, so every Pod places, the injection
+  "passes" and the gate asserts nothing; with the pool restored they are
+  8256Mi and 2875m and both walls reproduce. The
+  reconstruction therefore lives in one place,
+  `scripts/k8s-inject-pre-fix-sizing.sh`, which fails on a substitution that
+  matched nothing, and `tests/unit/test_k8s_capacity_preflight.py` fails if
+  either injection phase stops going through it.
   Re-verify when: a `k8s/**` manifest changes a `resources.requests` or a
   replica count, or the pool-planning rule in `canary._plan_rollout` changes.
+  (Filed as `V-045` under #3833, renumbered to `V-046` when #3825 landed
+  `V-045` on `v3.0.0`, and to `V-048` on the next merge: #3831 allocated
+  `V-046`/`V-047` there. IDs are never reused. Note the three surviving
+  `V-046` entries above are `v3.0.0`'s own — #3831, #3837 and #3827 each
+  allocated that number on concurrently-open branches and all three merged
+  before this one; not renumbered here because they are not this branch's to
+  rewrite.)
 
 - **V-044** · 2026-08-18 — **Self-heal watched the api pool alone in
   Kubernetes mode, and could not name the mode at all.** The Pod survey
