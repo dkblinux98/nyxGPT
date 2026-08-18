@@ -72,11 +72,12 @@ directly outside of `nyxgpt ops`. Only when neither path can supply the tool
 (an unsupported platform, or no network) does the command fail, and then with
 a link to the installer.
 
-It then builds `nyxgpt-api:local` and `nyxgpt-web:local` and loads each into
-the cluster's image cache (kind/minikube get an explicit load step; Docker
-Desktop's built-in cluster shares the host cache already), bootstraps
-`k8s/secret.yaml` from the example (prompting for the API key interactively,
-or pass `--api-key` — the value is never committed), applies the
+It then builds `nyxgpt-api:local` and `nyxgpt-web:local` **from the published
+artifacts** (see [Install modes](#install-modes-artifact-and---dev)) and loads
+each into the cluster's image cache (kind/minikube get an explicit load step;
+Docker Desktop's built-in cluster shares the host cache already), bootstraps
+`~/.nyxGPT/k8s/secret.yaml` from the example (prompting for the API key
+interactively, or pass `--api-key` — the value is never committed), applies the
 kustomization (which includes both the api and web stable/canary pairs, see
 [Canary Deployment](#canary-deployment), plus the [data and LLM
 tier](#data-and-llm-tier)), waits for Cassandra and Ollama to report Ready --
@@ -92,15 +93,59 @@ scores a still-pulling Pod as a failure (#3826).
 
 Each image build mirrors the Homebrew reinstall-if-needed behavior (see
 [ops.md](ops.md)): it fingerprints the app source that image is built from
-(`src/nyxgpt/` + `pyproject.toml` for `nyxgpt-api`; `web/` for `nyxgpt-web`)
-and only re-runs `docker build` when that source changed since the image was
-last built, reporting `<image>: built` / `rebuilt (source changed since last
+(`src/nyxgpt/` + `pyproject.toml` for `nyxgpt-api`; the web tree for
+`nyxgpt-web`) and only re-runs `docker build` when that source changed since
+the image was last built, reporting `<image>: built` / `rebuilt (source changed since last
 build)` / `already up to date (skipped rebuild)` instead of always
 rebuilding. `nyxgpt-web:local`'s build bakes `NEXT_PUBLIC_API_BASE_URL` into
 the browser bundle at build time (see [web/Dockerfile](../web/Dockerfile));
 since the api/web Services here are `ClusterIP`-only (no NodePort/Ingress),
 this defaults to the same host-local address the [Verify](#4-verify) section
 below reaches through `kubectl port-forward`.
+
+## Install modes: artifact (default) and `--dev`
+
+`nyxgpt ops install --kubernetes --local` has the same two install modes the
+native install has (#3789, #3834), and records which one this deployment is
+running so nothing has to guess:
+
+| | Where the two images come from | Needs a checkout? |
+|---|---|---|
+| **artifact** (default) | the published `nyxgpt-api-<version>.tar.gz` / `nyxgpt-web-<version>.tar.gz` release artifacts — the same ones the Homebrew formulas install — staged into their own build context under `~/.nyxGPT/build/kubernetes` | no |
+| **dev** (`--dev`) | the working tree of the checkout you run the command in | yes — refused without one |
+
+The artifact path is what makes this mode satisfy the project's [Repo-less
+Portability](../CLAUDE.md) requirement: the manifests ship inside the package
+(`nyxgpt.resources.k8s`, synced to `~/.nyxGPT/k8s` — which is why the
+kustomization and `secret.yaml` live there and not in a repository), and the
+images are built from published artifacts, so `pip install nyxgpt` followed by
+this one command is a working deployment on a machine that has never seen this
+repository. `.github/workflows/k8s-artifact-smoke.yml` runs exactly that, with
+no checkout in reach, and requires a real chat to answer.
+
+The artifacts are the *source* tarballs rather than the `ghcr.io` images on
+purpose: a release publishes images, but a **release candidate** publishes only
+the tarballs — and a candidate is what acceptance testing installs. One
+artifact channel serves every local install mode, so the command behaves the
+same on both.
+
+`--dev` builds the working tree instead. The Pods then run images built from
+that tree **as it was at install time** — re-run the command to pick new code
+up; there is no live reload, unlike the native dev mode's Next dev server. It
+is refused up front (exit 2) when there is no checkout to build, rather than
+half-installing.
+
+Switching between the modes re-rolls the app tier: both modes produce the same
+`:local` tags, so the Deployment specs are identical across a switch and
+`kubectl apply` alone would leave the Pods on the previous mode's image while
+every report claimed the new one.
+
+`nyxgpt ops status` prints the mode under the Kubernetes section (and
+`nyxgpt ops doctor` as `Install mode (kubernetes): …`), separately from the
+native api/web install mode — one machine can run a native dev install and a
+Kubernetes artifact deployment at the same time. The Infrastructure page in
+the admin dashboard shows the same thing. `nyxgpt ops down --kubernetes`
+clears the record along with the deployment.
 
 `--local` is required and explicit — it's the only locality implemented
 today, and is the precursor to a future cloud deployment target. `--cloud`
@@ -218,6 +263,11 @@ kind create cluster --name nyxgpt-local
 
 If you'd rather bring your own cluster (minikube, Docker Desktop, a remote
 context, ...), create/select it yourself and the wrapper will use it as-is.
+
+> The steps below are the **manual** equivalent of the wrapped command, run
+> from a source checkout. They are reference material for troubleshooting; the
+> wrapped command reads its manifests from the synced copy under
+> `~/.nyxGPT/k8s` instead of from a checkout.
 
 ## 1. Build the image
 

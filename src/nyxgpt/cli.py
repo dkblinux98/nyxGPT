@@ -1608,8 +1608,10 @@ def _add_install_arguments(parser: argparse.ArgumentParser) -> None:
         help=(
             "Install the api/web services from the current checkout -- an editable venv "
             "(pip install -e) plus the Next dev server -- instead of building/downloading "
-            "artifacts, so the stack runs the working tree at HEAD (#3789). Requires a "
-            "checkout; without this flag the artifact path is used"
+            "artifacts, so the stack runs the working tree at HEAD (#3789). With "
+            "--kubernetes it builds the two container images from the working tree "
+            "instead of from the published artifacts (#3834). Requires a checkout; "
+            "without this flag the artifact path is used"
         ),
     )
     parser.add_argument(

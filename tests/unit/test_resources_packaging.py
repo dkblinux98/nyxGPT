@@ -117,6 +117,28 @@ leaked = [
 ]
 assert not leaked, f"local Terraform working files leaked into the wheel: {leaked}"
 
+# #3834: `nyxgpt ops install --kubernetes --local` applies these manifests
+# (synced to ~/.nyxGPT/k8s) and builds the api image from this Dockerfile.
+# They were the last runtime data the Kubernetes path read from REPO_ROOT,
+# which is why that mode could not run on a machine with no checkout at all.
+for k8s_file in (
+    "k8s/kustomization.yaml",
+    "k8s/namespace.yaml",
+    "k8s/secret.example.yaml",
+    "k8s/deployment-stable.yaml",
+    "k8s/deployment-web-stable.yaml",
+    "k8s/statefulset-cassandra.yaml",
+    "k8s/statefulset-ollama.yaml",
+    "k8s/observability/kustomization.yaml",
+    "docker/nyxgpt-api.Dockerfile",
+):
+    assert root.joinpath(k8s_file).is_file(), f"missing {k8s_file}"
+
+# ...and never the operator's real API key: `_ensure_k8s_secret` generates
+# k8s/secret.yaml next to the kustomization, and a wheel built from a tree
+# where someone ran the install in-place must not carry it.
+assert not root.joinpath("k8s/secret.yaml").is_file(), "a generated k8s secret leaked into the wheel"
+
 # #3622: a bare `pip install nyxgpt` (no Homebrew/systemd installer step)
 # must still resolve example.config.ini -- config_wizard.WIZARD_SCHEMA
 # (which `nyxgpt.app` builds at import time) derives from this file, and
