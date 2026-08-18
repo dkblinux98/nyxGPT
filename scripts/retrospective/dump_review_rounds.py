@@ -12,8 +12,8 @@ library for build_dashboard.py — that script must stay free of live API
 calls and only reads the two files this writes:
 
   data/reviews_final.json  - every REQUEST_CHANGES review round, all time
-  data/dashboard_data.json - last-WINDOW_DAYS-days rollup (modules/days/
-                              issues/cleanPRs/cleanByModule/totals)
+  data/dashboard_data.json - last-WINDOW_DAYS-days rollup (generated_at plus
+                              modules/days/issues/cleanPRs/cleanByModule/totals)
 """
 
 import json
@@ -161,7 +161,9 @@ def window_unreviewed_numbers(repo, start, end):
     return {item["number"] for item in search_issues(query)}
 
 
-def build_dashboard_snapshot(all_rounds, window_start, window_end, merged_prs, unreviewed_numbers):
+def build_dashboard_snapshot(
+    all_rounds, window_start, window_end, merged_prs, unreviewed_numbers, generated_at=None
+):
     rounds_in_window = [r for r in all_rounds if window_start <= r["date"] < window_end]
     rejected_ever = {r["pr"] for r in all_rounds}
 
@@ -250,6 +252,10 @@ def build_dashboard_snapshot(all_rounds, window_start, window_end, merged_prs, u
         "unreviewed": len(unreviewed_numbers),
     }
     return {
+        # Both files this script writes come from the same run, and
+        # reviews_final.json is a bare list with nowhere to put a stamp, so
+        # this one stands for the review-round data's as-of time (#3807).
+        "generated_at": generated_at or datetime.now(UTC).isoformat(),
         "modules": modules_out,
         "days": dict(days),
         "issues": issues_out,
@@ -277,7 +283,12 @@ def main():
         repo, start_date.isoformat(), end_date.isoformat()
     )
     snapshot = build_dashboard_snapshot(
-        all_rounds, window_start, window_end, merged_prs, unreviewed_numbers
+        all_rounds,
+        window_start,
+        window_end,
+        merged_prs,
+        unreviewed_numbers,
+        generated_at=now.isoformat(),
     )
     (DATA_DIR / "dashboard_data.json").write_text(json.dumps(snapshot, indent=1) + "\n")
     print(f"wrote {WINDOW_DAYS}-day snapshot to data/dashboard_data.json: {snapshot['totals']}")

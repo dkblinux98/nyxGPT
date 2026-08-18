@@ -54,6 +54,14 @@ run's "Land it on the default branch" step rather than re-dispatching.
    (title), `created` (created_at), `state`, `closed` (closed_at or null).
    Overwrite the file.
 
+   **Write it stamped** (#3807):
+   `{"generated_at": "<UTC ISO-8601, e.g. 2026-08-18T09:04:10+00:00>", "issues": [...]}`.
+   Unlike every other input, this file is written by hand from a session rather
+   than by a dump workflow, so nothing stamps it for you — and the dashboard
+   reports an unstamped corpus as **"as of unknown"** on every panel it feeds.
+   The historical bare-list shape is still read, so an old file does not break
+   the build; it just cannot say how old it is.
+
    Do **not** parse `Related feature: #N` out of bodies any more — that
    convention is retired (owner decision 2026-08-12, #3731) and attribution now
    comes from native relationships in step 2b. The `related` field is still
@@ -178,8 +186,23 @@ run's "Land it on the default branch" step rather than re-dispatching.
 6. **Build**: `python3 scripts/retrospective/build_dashboard.py`
    → `scripts/retrospective/retro.html`.
 
+   The builder prints the build time and, under it, which inputs are **stale**
+   (a day or more behind the build) or **unstamped** (#3807). Read those two
+   lines before publishing: a source listed there is one whose dump did not
+   actually land in this pass, and the page will say so to the reader.
+
 7. **Publish** the built file with the Artifact tool to the URL above
    (`url` parameter — same URL, do not create a new artifact). Favicon stays 🔍.
+
+   **The build stamp in the page header is the check that a refresh landed**
+   (#3807). After republishing, reload the artifact URL and read the header: it
+   shows `built <date> <time> UTC`, so a page still showing the previous run's
+   time means the publish did not take — the same class of silent failure as
+   #3815, where green dumps were discarded server-side. The header also counts
+   sources that are stale or unstamped, and the footer's **Data provenance**
+   table lists every input with its own as-of time; each panel repeats the
+   as-of time of the data behind it. Those are the lines to sanity-check
+   before telling the owner the dashboard is current.
 
 8. **Commit** refreshed `data/*.json` (and GATE/template edits) via the
    `claude/retro-data` branch: force-reset `claude/retro-data` to the current

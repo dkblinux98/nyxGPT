@@ -227,6 +227,12 @@ owner-refreshed dumps; the churn view reports dollars only when the owner
 has configured a price sheet for the dump to use, and tokens otherwise. The
 rates themselves are never committed to this repository.
 
+Because it is a static artifact rebuilt on demand rather than a live view, the
+page dates itself: the header carries the UTC time it was built, each panel
+carries the as-of time of the dump behind it, and a dump materially older than
+the build is called out as stale (a dump that carries no timestamp at all is
+reported as unknown rather than passing for fresh).
+
 **As part of the v3.0.0 release, the retrospective is made publicly
 reachable** (the share action itself is owner-side, performed at release
 time):
