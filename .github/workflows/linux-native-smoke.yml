@@ -50,6 +50,19 @@ name: Linux Native Smoke
 #                       sdist. The runner's own `python3` is new enough, so
 #                       without the injection the job would pass on a build
 #                       that still hard-codes `python3 -m venv`.
+#   self-heal-probe-honesty  When the API process cannot reach the Docker
+#                       daemon, does the panel say "cannot determine" or does
+#                       it assert eleven healthy containers are gone? Drives
+#                       scripts/self-heal-probe-honesty-smoke.py: a real
+#                       root-owned mode-000 socket reproduces the owner's
+#                       permission-denied condition (#3812), the script proves
+#                       the pre-fix path renders every desired service absent
+#                       and unhealthy under it, then asserts the shipped code
+#                       reports unknown-with-reason and heals nothing -- and
+#                       finally, with the daemon reachable and a real container
+#                       up, that the same survey still reports real states.
+#                       Unit tests mock the subprocess; only a real denied
+#                       socket shows what `docker compose ps` actually does.
 #   host-relay-posture  Can a container reach a loopback-bound native API,
 #                       and does doctor catch a host still carrying the
 #                       manual `[api] host = 0.0.0.0` workaround? Drives
@@ -75,6 +88,7 @@ on:
       - 'scripts/host-relay-posture-smoke.py'
       - 'scripts/service-venv-python-smoke.py'
       - 'scripts/linux-observability-smoke.py'
+      - 'scripts/self-heal-probe-honesty-smoke.py'
       - 'docker-compose.yml'
       - 'docker/prometheus.yml'
       - '.github/workflows/linux-native-smoke.yml'
@@ -91,6 +105,7 @@ on:
       - 'scripts/host-relay-posture-smoke.py'
       - 'scripts/service-venv-python-smoke.py'
       - 'scripts/linux-observability-smoke.py'
+      - 'scripts/self-heal-probe-honesty-smoke.py'
       - 'docker-compose.yml'
       - 'docker/prometheus.yml'
       - '.github/workflows/linux-native-smoke.yml'
@@ -313,3 +328,32 @@ jobs:
       # (rather than passing vacuously) if this host does NOT reproduce that.
       - name: Relay bridges container -> host loopback, and doctor catches the workaround
         run: python3 scripts/host-relay-posture-smoke.py
+
+  # Cheap: one denied socket and one prometheus container, no install. Runs on
+  # every PR touching the probe, because this defect reached owner acceptance
+  # looking exactly like a real outage (#3812).
+  self-heal-probe-honesty:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install nyxgpt (editable)
+        run: |
+          python -m pip install --upgrade pip setuptools
+          pip install -e .
+
+      # Both halves, and the script fails loudly rather than passing vacuously
+      # if this runner does NOT reproduce the daemon-unreachable condition.
+      - name: An unqueryable probe must report unknown, never absent
+        run: python3 scripts/self-heal-probe-honesty-smoke.py
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          docker ps -a || true
+          docker version || true
