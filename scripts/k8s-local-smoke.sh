@@ -139,7 +139,7 @@ kubectl -n "$NAMESPACE" get pods -o custom-columns=\
 unscheduled=$("${SCRIPT_DIR}/k8s-unscheduled-pods.sh" "$NAMESPACE")
 if [ -n "$unscheduled" ]; then
     kubectl -n "$NAMESPACE" get pods -o wide >&2
-    kubectl -n "$NAMESPACE" get events --field-selector reason=FailedScheduling >&2 | tail -20
+    kubectl -n "$NAMESPACE" get events --field-selector reason=FailedScheduling | tail -20 >&2
     fail "these Pods could not be scheduled: $(echo "$unscheduled" | tr '\n' ' ')-- the node \
 cannot fit the default stack (size the cluster VM, do not drop observability)"
 fi
