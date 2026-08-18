@@ -384,6 +384,25 @@ existing or staying in place afterwards. Each install also gets:
 - A small wrapper script
 - A Homebrew launch agent plist
 
+### What the kegs put on your PATH
+
+| Command | Comes from | What it is |
+|---|---|---|
+| `nyxgpt` | `nyxgpt-api` | The CLI — `nyxgpt up`, `nyxgpt down`, `nyxgpt ops …`. Linked from the keg venv's console script, so it is the version you installed. |
+| `nyxgpt-api` | `nyxgpt-api` | The service wrapper `brew services` runs; it execs uvicorn. Not something you normally type. |
+| `nyxgpt-web` | `nyxgpt-web` | The service wrapper `brew services` runs; it execs `npm run start`. Not something you normally type. |
+
+`nyxgpt` is what makes the install operable: every documented operation is a
+`nyxgpt` command, so a keg that omitted it left an operator with nothing to
+run (#3850). `nyxgpt-web` deliberately exposes no other command — the CLI it
+would need is the one `nyxgpt-api` installs.
+
+If you also have a development checkout with `pip install -e .`, both
+`nyxgpt` commands exist and your shell picks whichever comes first on PATH.
+An activated dev venv wins, which is the intended behavior; `nyxgpt ops
+status` prints the install mode it is operating in, so you can always see
+which one you are talking to.
+
 `nyxgpt ops install` only re-runs `brew install`/`reinstall` when the
 vendored source actually changed since the last install (checksum-compared);
 otherwise it reports the existing install is already up to date and just
@@ -800,6 +819,37 @@ After starting both services:
 ---
 
 ## Troubleshooting
+
+### `command not found: nyxgpt`
+
+**Symptom**: `brew install` succeeded, the services start, and `nyxgpt up`
+answers `zsh: command not found: nyxgpt`.
+
+**Cause**: a keg built before the CLI was linked into `bin/` (#3850). The
+console script was installed inside the keg's venv, where nothing on your
+PATH reaches it.
+
+**Solutions**:
+
+1. Upgrade to a keg that exposes it, then confirm:
+   ```bash
+   brew update && brew upgrade nyxgpt-api
+   command -v nyxgpt && nyxgpt --version
+   ```
+   For a release candidate, name its formula instead:
+   `brew upgrade nyxgpt-api@3.0.0rc`.
+
+2. If `command -v nyxgpt` still finds nothing, the keg may simply be
+   unlinked (another formula owns the name, or a link step was skipped):
+   ```bash
+   brew link --overwrite nyxgpt-api
+   ```
+
+3. Until either lands, the CLI is still runnable by its full path -- it is
+   reachable, just not on PATH:
+   ```bash
+   "$(brew --prefix nyxgpt-api)/libexec/venv/bin/nyxgpt" ops status
+   ```
 
 ### Web UI can't connect to API
 

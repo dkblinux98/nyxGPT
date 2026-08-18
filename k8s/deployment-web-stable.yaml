@@ -10,7 +10,12 @@ spec:
   # Managed by `nyxgpt canary start/promote/rollback --component web` (see
   # docs/kubernetes.md). Do not attach an HPA to this Deployment -- autoscaling
   # would fight the canary tool's replica-count-based traffic split.
-  replicas: 4
+  #
+  # RESTS AT 1 (#3833), for the same reason as k8s/deployment-stable.yaml: the
+  # canary pool is grown for a rollout and returned to this count afterwards,
+  # so no install carries a standing inflated pool just to make canary
+  # possible.
+  replicas: 1
   selector:
     matchLabels:
       app: nyxgpt-web-canary-pool
