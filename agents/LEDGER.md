@@ -1519,7 +1519,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   on the full default install and re-injects the api-only survey each run.
   Re-verify when: a `k8s/**` manifest changes a Pod's `app`/`tier` labels —
   the classification is keyed on exactly those.
-- **V-048** · 2026-08-18 — **Every API error this app returns is
+- **V-049** · 2026-08-18 — **Every API error this app returns is
   object-shaped, so a UI that interpolates `data.error` renders
   `[object Object]`.** `http_exception_handler` (`src/nyxgpt/app.py`) wraps
   *every* `HTTPException` as `{"error": {"code", "message", "details",
@@ -1612,7 +1612,30 @@ are absent here by design (relocated to the annex; IDs are never reused).
   does not cover, or `SAFE_IN_RUN` gains an entry.
 
 
-- **V-049** · 2026-08-18 — **`nyxgpt ops` has one three-state vocabulary for
+- **V-048** · 2026-08-18 — **A repository-wide `rglob` scan reads the runner's
+  workspace, not the repository.** `test_the_source_stays_single` walked
+  `REPO_ROOT.rglob("*.md")` to assert the first principles are stated in full
+  only in `CLAUDE.md`. On a review run that walk also finds
+  `.claude-pr/CLAUDE.md` -- the copy `claude-code-action` itself parks there
+  when it restores the base branch's `CLAUDE.md` on a PR-context run
+  (**V-028**(b)) -- so the contract failed on a workspace artifact, inside the
+  review gate, on whatever PR happened to be under review, while passing on
+  every developer machine. The scan now enumerates tracked files
+  (`git ls-files -- '*.md'`): a committed duplicate anywhere still fails, a
+  scratch file cannot. General form: **a test whose claim is about the
+  repository must ask git what the repository contains**; a working directory
+  is not a checkout, and the difference only shows up where the extra files
+  are, which is CI.
+  Method: executed 2026-08-18 on this runner, both directions. With
+  `.claude-pr/CLAUDE.md` present, the pre-fix scan fails
+  (`test_the_source_stays_single`, 1 failed / 13 passed); the tracked-files
+  scan passes with the same artifact present, and the paired
+  `test_an_untracked_workspace_copy_is_not_a_duplicate` injects that exact
+  artifact so the fault cannot silently stop firing.
+  Re-verify when: `claude-code-action` changes where it parks the restored
+  config, or another contract test starts walking the filesystem instead of
+  the index.
+- **V-050** · 2026-08-18 — **`nyxgpt ops` has one three-state vocabulary for
   Kubernetes workloads — ready / pending / failed — and `Pending` is not a
   failure.** `_classify_k8s_pod` (`src/nyxgpt/ops.py`) is the single
   classifier behind `_k8s_stack_health`, `_k8s_observability_health`, the
@@ -1634,9 +1657,13 @@ are absent here by design (relocated to the annex; IDs are never reused).
   settled before health is snapshotted — this supersedes the part of **V-041**
   that reads `_k8s_stack_health` as a Pod-*phase* scorer.
   (Filed as `V-042` under #3827, renumbered to `V-045` on the first merge of
-  `v3.0.0`, to `V-046` on the second and to `V-049` on the #3835 merge: #3811
-  allocated `V-042`/`V-043`, #3828 `V-044`, #3825 `V-045` and #3837 `V-046`,
-  all on concurrently-open branches. IDs are never reused. #3825's entry is the sizing one above; this one is the
+  `v3.0.0`, to `V-046` on the second, and to `V-050` on the third (#3904):
+  #3811 allocated `V-042`/`V-043`, #3828 `V-044` and #3825 `V-045`, all on
+  concurrently-open branches, and the `V-046` it landed on was already taken
+  by the `run:`-injection entry above — the one `V-027`,
+  `developer-runbook.md` and `workflow_script_guard.py` cross-reference, so
+  that entry keeps the number and this one moves. IDs are never reused.
+  #3825's entry is the sizing one above; this one is the
   vocabulary, and `infra_status`'s `kubernetes.unschedulable` — which #3825
   added from a separate `.spec.nodeName` probe — is read from
   `_classify_k8s_pod` as of that merge, so the Infrastructure page's badges
@@ -1657,7 +1684,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   `_classify_k8s_pod` — the shared vocabulary, not this one call site, is what
   the entry stands for.
 
-- **V-050** · 2026-08-18 — **Container images are published for stable
+- **V-051** · 2026-08-18 — **Container images are published for stable
   releases only, and the `ghcr.io/dkblinux98/nyxgpt-*` packages are
   anonymously pullable.** `release-artifacts.yml`'s `container-images` job
   runs on `release: [released]`, which an rc prerelease does not fire, and
@@ -1672,10 +1699,14 @@ are absent here by design (relocated to the annex; IDs are never reused).
   then `/v2/dkblinux98/nyxgpt-api/tags/list` returned `["2.1.0","latest"]`
   (no 3.0.0, no rc tags), and `docker pull ghcr.io/dkblinux98/nyxgpt-api:latest`
   succeeded with no credentials. 2026-08-18, while implementing #3835.
+  (Filed as `V-045` under #3835, renumbered to `V-050` on the first merge of
+  `v3.0.0` — #3825 had allocated `V-045` — and to `V-051` on the second, where
+  #3904's renumber of the Pod-vocabulary entry had taken `V-050`. IDs are
+  never reused.)
   Re-verify when: a stable release ships (the tag list grows), or rc image
   publishing is added to `release-publish-pypi.yml`.
 
-- **V-051** · 2026-08-18 — **The Terraform local deployment no longer needs
+- **V-052** · 2026-08-18 — **The Terraform local deployment no longer needs
   a checkout, and its `--dev` mode is now opt-in rather than permanent.**
   The `.tf` sources ship as package data
   (`nyxgpt.resources/terraform/local`, per-file symlinks so a dev checkout's
@@ -1690,10 +1721,13 @@ are absent here by design (relocated to the annex; IDs are never reused).
   (`ops._dev_checkout_root()` → `None`), ran
   `_sync_local_terraform_config()` (materialized five files from package
   data) and `_pull_terraform_published_images()` (pulled the two ghcr
-  images, reporting the V-050 fallback), then `terraform plan` in that
+  images, reporting the **V-051** fallback), then `terraform plan` in that
   directory: 9 to add, no build blocks. The dev plan
   (`-var=build_from_source=true`) still plans its two `build {}` blocks.
   2026-08-18, while implementing #3835.
+  (Filed as `V-046` under #3835, renumbered to `V-051` on the first merge of
+  `v3.0.0` — #3837 had allocated `V-046` — and to `V-052` on the second,
+  behind the entry above. IDs are never reused.)
   Re-verify when: `terraform/*.tf` gains a file (it must also be symlinked
   into `nyxgpt.resources/terraform/local` — `test_terraform_stack.py` fails
   otherwise), or the packaged-resource sync changes.

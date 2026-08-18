@@ -85,6 +85,30 @@ def _agent_surface_files() -> list[Path]:
     return files
 
 
+def _tracked_markdown_files() -> list[Path]:
+    """Every `*.md` file the repository actually contains.
+
+    Deliberately `git ls-files` and not `rglob`: the claim under test is about
+    the *repository*, and a checkout is not the same thing as a working
+    directory. Agent runners drop untracked copies of `CLAUDE.md` beside the
+    checkout (`.claude-pr/CLAUDE.md` is written by the review workflow), which
+    an unfiltered walk read as a second committed statement of the principles
+    -- so the test failed on a workspace artifact, in the review gate, on
+    whatever PR happened to be under review. A committed duplicate anywhere in
+    the tree still fails; a scratch file no longer can.
+    """
+    result = subprocess.run(
+        ["git", "ls-files", "-z", "--", "*.md"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    files = [REPO_ROOT / name for name in result.stdout.split("\0") if name]
+    assert files, "no tracked markdown files found -- the scan would pass vacuously"
+    return files
+
+
 def _copied_sentence_count(text: str) -> int:
     return sum(1 for sentence in PRINCIPLE_SENTENCES if sentence in text)
 
@@ -120,11 +144,8 @@ def test_the_source_stays_single(claude_md: str) -> None:
 
     duplicates = [
         path.relative_to(REPO_ROOT)
-        for path in sorted(REPO_ROOT.rglob("*.md"))
-        if ".git" not in path.parts
-        and "node_modules" not in path.parts
-        and path != CLAUDE_MD
-        and marker in path.read_text(encoding="utf-8", errors="ignore")
+        for path in sorted(_tracked_markdown_files())
+        if path != CLAUDE_MD and marker in path.read_text(encoding="utf-8", errors="ignore")
     ]
     assert not duplicates, (
         "the principles are stated in full outside CLAUDE.md: "
@@ -132,6 +153,39 @@ def test_the_source_stays_single(claude_md: str) -> None:
         "of step with the source -- cite CLAUDE.md § Agentic First Principles "
         "instead (#3821)"
     )
+
+
+def test_an_untracked_workspace_copy_is_not_a_duplicate(claude_md: str) -> None:
+    """The scan reads the checkout, not whatever the runner left lying beside it.
+
+    Injects the exact artifact that made this contract fail in the review gate:
+    `.claude-pr/CLAUDE.md`, an untracked copy of the source. Before the scan was
+    narrowed to tracked files this reported a duplicate and failed every review
+    round run in such a workspace, on PRs that had touched nothing.
+    """
+    artifact_dir = REPO_ROOT / ".claude-pr"
+    artifact = artifact_dir / "CLAUDE.md"
+
+    # The review gate creates this artifact itself, so on the runner it is
+    # usually already here. Refusing to run in that case would fail the test in
+    # the one environment the fix is about; instead, assert the property against
+    # the real artifact and never delete what this test did not create.
+    dir_preexisted = artifact_dir.exists()
+    file_preexisted = artifact.exists()
+
+    if not dir_preexisted:
+        artifact_dir.mkdir()
+    try:
+        if not file_preexisted:
+            artifact.write_text(claude_md, encoding="utf-8")
+        assert artifact.exists(), "the injected artifact is missing -- nothing was tested"
+        assert artifact not in _tracked_markdown_files()
+        test_the_source_stays_single(claude_md)
+    finally:
+        if not file_preexisted and artifact.exists():
+            artifact.unlink()
+        if not dir_preexisted and artifact_dir.exists():
+            shutil.rmtree(artifact_dir)
 
 
 def test_agent_surfaces_cite_rather_than_restate() -> None:
