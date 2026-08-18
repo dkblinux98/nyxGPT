@@ -492,6 +492,19 @@ are absent here by design (relocated to the annex; IDs are never reused).
   reading only the close comment will get this wrong.
   Source: #3870; owner in session, 2026-08-18.
 
+- **D-021** · 2026-08-18 · developer agent (#3832) — **Self-heal never
+  deletes a `Pending` Kubernetes Pod.** `kubectl delete pod` is a repair for
+  exactly one state, `Running`-but-not-`Ready`; an unschedulable Pod cannot be
+  fixed by deleting it (the ReplicaSet recreates it Pending for the identical
+  reason, and the reset Pod age destroys the operator's evidence), and a
+  starting one converges on its own. The rule is not overridable by a manual
+  "Heal now", and is enforced at the destructive action itself
+  (`heal_kubernetes_pod` re-reads the Pod before deleting), not only at the
+  caller that decided to call it. Pod state is read in one shared place,
+  `src/nyxgpt/k8s_pod_state.py`, by both `self_heal.py` and `ops.py`, so the
+  watchdog and the install report cannot diverge again.
+  Source: #3832; `docs/self-healing.md` §Pending Pods are reported, not deleted.
+
 ## Verifications
 
 - **V-001** · 2026-08-14 — Releases in this repository are immutable: a
@@ -1421,6 +1434,25 @@ are absent here by design (relocated to the annex; IDs are never reused).
   it: `release_ceremony_watch.sh` and `classify_backlog_claim_state`
   deliberately write `|| echo ""` and still treat a failed read as "no
   Status".
+
+- **V-045** · 2026-08-18 — Self-heal takes **zero** `kubectl delete` calls
+  against a genuinely unschedulable Pod, and the pre-#3832 code takes one on
+  its first pass. Heal budgets survive the Pod recreation that healing causes:
+  keyed on the owning ReplicaSet, a Running-but-not-ready Pod is healed twice
+  under a `max_consecutive_restarts=2` cap across 10 passes, though every heal
+  renames it.
+  Method: ran `scripts/self-heal-unschedulable-smoke.sh` on a real single-node
+  kind cluster (2026-08-18) — three raw deletions produced three new Pod names,
+  all `Unschedulable: 0/1 nodes are available: 1 Insufficient memory`, age reset
+  each time; then 10 `heal_now()` passes plus one manual heal through a
+  recording `kubectl` shim logged no delete and left the Pod UID unchanged.
+  Fault injection: with `src/nyxgpt/self_heal.py` restored from 581b4911 (the
+  pre-fix module) one pass logged `delete pod
+  nyxgpt-api-unschedulable-55599869fc-2878l` and the Pod came back under a new
+  name. `.github/workflows/self-heal-unschedulable-smoke.yml` runs the same
+  script in CI.
+  Re-verify when: `heal_kubernetes_pod`'s pre-delete guard, the
+  `k8s_pod_state` classification, or the heal-budget keying changes.
 
 ## Parked
 
