@@ -44,33 +44,148 @@ def test_the_issue_form_template_applies_the_support_label():
     )
     assert template["labels"] == [SUPPORT_LABEL]
 
-    # The form stays minimal, and ticket-type classification is the owner's
-    # triage act on the Support project -- never a field the reporter picks.
+    # `Support` is the ONLY label the form applies: it is the routing key the
+    # Support project's auto-add matches and the agent loop skips on. The
+    # ticket TYPE is not a label (#3811) -- see the next test.
     field_ids = {field.get("id") for field in template["body"] if field.get("id")}
-    assert field_ids == {"what_happened", "version", "platform"}
-    assert not any(
-        "ticket" in str(field.get("id", "")).lower() or "type" in str(field.get("id", "")).lower()
-        for field in template["body"]
-    )
+    assert field_ids == {"ticket_type", "what_happened", "version", "platform"}
 
 
-def test_the_support_label_has_a_creation_path():
-    """A template naming a nonexistent label silently applies nothing.
+def test_the_form_collects_the_ticket_type_as_a_field():
+    """Every ticket must arrive classified, and only a form field can do it.
 
-    So the label cannot be a remembered manual step: an owner-dispatchable
-    workflow creates it (idempotently), which is also the record of the
-    owner's authorization to create it at all (CLAUDE.md forbids agents
-    creating labels otherwise).
+    The Support project types tickets with a `Ticket Type` project FIELD, and
+    GitHub offers no mechanism that maps a form answer onto either a label or
+    a project field: `labels:` is a static template-level list and a dropdown
+    answer lands in the issue body. So the type is asked as a field, rendered
+    into the body, and set on the project at triage (#3811). Before this,
+    nothing asked at all and every ticket arrived needing the owner to infer
+    it.
     """
-    spec = yaml.safe_load(
-        (_WORKFLOWS / "admin_ensure_support_label.yml").read_text(encoding="utf-8")
+    template = yaml.safe_load(
+        (_REPO_ROOT / ".github" / "ISSUE_TEMPLATE" / "support.yml").read_text(encoding="utf-8")
     )
-    # `on:` parses as the YAML boolean True -- 1.1 semantics.
-    assert "workflow_dispatch" in (spec.get("on") or spec.get(True))
+    (field,) = [f for f in template["body"] if f.get("id") == "ticket_type"]
+    assert field["type"] == "dropdown"
+    assert field["validations"]["required"] is True
+
+    # The options are the product's own list, so a link built by
+    # `nyxgpt.support` prefills a value the form actually offers -- GitHub
+    # ignores a prefill that matches no option, which would silently demote
+    # this to "unanswered required field".
+    from nyxgpt.support import TICKET_TYPES
+
+    assert tuple(field["attributes"]["options"]) == TICKET_TYPES
+
+    # A type is never a label: adding one here would put a second label on
+    # every ticket and split the routing key.
+    assert template["labels"] == [SUPPORT_LABEL]
+
+
+def test_the_support_label_creation_path_actually_runs():
+    """A creation path nobody ever invokes is not a guarantee (#3811).
+
+    This workflow existed from #3745 and was dispatch-only. It had ZERO runs
+    in its entire history, so the label did not exist, so the template
+    applied nothing -- silently -- and #3810 was filed unlabeled and assigned
+    to the scrummaster seven seconds later. Being dispatchable is therefore
+    not what this test asserts: being *invoked without anyone remembering to*
+    is.
+    """
     body = (_WORKFLOWS / "admin_ensure_support_label.yml").read_text(encoding="utf-8")
+    spec = yaml.safe_load(body)
+    # `on:` parses as the YAML boolean True -- 1.1 semantics.
+    triggers = spec.get("on") or spec.get(True)
+
+    assert "workflow_dispatch" in triggers, "the owner must still be able to run it on demand"
+    assert (
+        "schedule" in triggers
+    ), "the label can be deleted at any time; re-assert it on a schedule"
+    assert "push" in triggers, "and immediately when the form that declares the label changes"
+    assert ".github/ISSUE_TEMPLATE/support.yml" in triggers["push"]["paths"]
+
     assert "gh label create" in body
     assert "--force" in body, "label creation must be idempotent"
     assert SUPPORT_LABEL in body
+
+
+def test_a_missing_support_label_fails_the_run_rather_than_degrading():
+    """The check that fails if the label is absent from the repository (#3811).
+
+    `gh label create` exiting 0 is not evidence the label is there, and the
+    whole defect class here is silence: a label that does not exist produces
+    no error anywhere, just tickets that route nowhere. So creation is
+    followed by a verification that reads the label list back and exits
+    non-zero when the name is absent.
+    """
+    body = (_WORKFLOWS / "admin_ensure_support_label.yml").read_text(encoding="utf-8")
+    spec = yaml.safe_load(body)
+    steps = spec["jobs"]["ensure-label"]["steps"]
+    verify = [s for s in steps if "verify" in s.get("name", "").lower()]
+    assert verify, "creation must be followed by a verification step"
+
+    run = verify[0]["run"]
+    assert "gh label list" in run
+    # Exact-match, not `--search`: `gh label list --search` is fuzzy, and a
+    # substring hit on some other label would be exactly the false assurance
+    # that let #3810 through.
+    assert "grep -Fxq" in run
+    assert "--search" not in run
+    assert "exit 1" in run
+    assert "::error::" in run
+
+
+def test_an_unlabeled_support_ticket_is_repaired_and_goes_red():
+    """The backstop for a ticket filed while the label is missing (#3811).
+
+    Every guard around a support ticket keys on the label, so an unlabeled
+    one is invisible to all of them at once -- which is why #3810 needed a
+    human to notice at 04:33. This workflow fires on exactly that shape,
+    repairs the ticket, and then fails ON PURPOSE: the ticket is fixable
+    automatically, the silence is not.
+    """
+    path = _WORKFLOWS / "support_intake_guard.yml"
+    body = path.read_text(encoding="utf-8")
+    spec = yaml.safe_load(body)
+
+    assert "issues" in (spec.get("on") or spec.get(True))
+
+    condition = _job_conditions("support_intake_guard.yml")["repair-and-alert"]
+    # Fires only on a support-shaped issue that arrived WITHOUT the label --
+    # the degraded case by construction. A correctly-labeled ticket, and any
+    # agent-filed issue, start no runner at all.
+    assert f"!contains(github.event.issue.labels.*.name, '{SUPPORT_LABEL}')" in condition
+    assert "startsWith(github.event.issue.title, 'support:')" in condition
+    assert "### Installed version" in condition
+
+    steps = spec["jobs"]["repair-and-alert"]["steps"]
+    runs = "\n".join(step.get("run", "") for step in steps)
+    # Repair: the label back on, and the agent loop off.
+    assert '--add-label "$LABEL"' in runs
+    assert "--remove-assignee" in runs
+    # And the alert. A green run here would restore the silence.
+    assert steps[-1]["run"].rstrip().endswith("exit 1")
+    assert "::error::" in steps[-1]["run"]
+
+
+def test_the_live_label_check_reads_and_never_writes():
+    """The label's existence is checked against the real repository (#3811).
+
+    A unit test cannot see the repository's labels, and that is exactly where
+    #3810's cause lived: every file in the tree was correct and the label was
+    simply not there. So the check runs in CI against the live repo -- and it
+    must stay read-only, because a check that creates what it is checking for
+    always passes.
+    """
+    spec = yaml.safe_load((_WORKFLOWS / "support-intake-smoke.yml").read_text(encoding="utf-8"))
+    job = spec["jobs"]["label-exists"]
+    assert job["env"]["LABEL"] == SUPPORT_LABEL
+
+    runs = "\n".join(step.get("run", "") for step in job["steps"])
+    assert "gh label list" in runs
+    assert "gh label create" not in runs, "the check must not create what it checks for"
+    assert "gh issue" not in runs, "the smoke job files nothing"
+    assert spec["permissions"] == {"contents": "read"}
 
 
 def test_blank_issues_stay_enabled_for_the_agent_loop():
@@ -109,6 +224,36 @@ def test_issue_workflows_skip_support_labeled_issues(workflow, job):
     assert "github.event.issue.labels.*.name" in condition
     assert SUPPORT_LABEL in condition
     assert "!contains" in condition.replace(" ", "")
+
+
+def test_the_agent_skip_is_keyed_on_the_guaranteed_label():
+    """One name, guaranteed to exist, on every ticket, in every guard (#3811).
+
+    The skip is only as good as the label being present, and the label is
+    only present because something guarantees it. This asserts the two ends
+    are the same string end to end -- the name the template declares, the
+    name the ensure-label workflow creates and verifies, the name the intake
+    guard restores, and the name every agent-side guard tests for.
+
+    It is deliberately literal. #3810 leaked because the routing key was
+    assumed present rather than guaranteed, and a later well-meant rename of
+    any one of these would reproduce it exactly.
+    """
+    template = yaml.safe_load(
+        (_REPO_ROOT / ".github" / "ISSUE_TEMPLATE" / "support.yml").read_text(encoding="utf-8")
+    )
+    assert template["labels"] == [SUPPORT_LABEL]
+
+    ensure = yaml.safe_load(
+        (_WORKFLOWS / "admin_ensure_support_label.yml").read_text(encoding="utf-8")
+    )
+    assert ensure["jobs"]["ensure-label"]["env"]["LABEL"] == SUPPORT_LABEL
+
+    guard = yaml.safe_load((_WORKFLOWS / "support_intake_guard.yml").read_text(encoding="utf-8"))
+    assert guard["jobs"]["repair-and-alert"]["env"]["LABEL"] == SUPPORT_LABEL
+
+    # And the Python the selector/hygiene helpers share.
+    assert is_support_issue([{"name": template["labels"][0]}])
 
 
 def _page(labels: list[str], number: int = 4242) -> dict:

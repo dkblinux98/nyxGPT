@@ -297,7 +297,7 @@ Back-nav follows two conventions depending on how a page is reached, not on its 
 Click **⚙️ Settings** at the bottom of the sidebar to open the navigation menu that gates every admin/ops destination:
 
 - **Admin** — a collapsible group. Clicking it expands in place (chevron rotates) to reveal: Dashboard, Manage Models, RAG Collections, and RAG Playground — the dashboard as the single admin entry point, plus the three day-to-day user tools. The Configuration Wizard, Resource Usage, Usage Analytics, Observability, Deployment, and Canary Rollout shortcuts were removed from this submenu (#3396); those destinations remain reachable from the [Admin Dashboard](#admin-dashboard)'s Configuration and System Status sections. The group stays open until you click a link, click outside the menu, or press `Escape` — clicking **Admin** itself only toggles the submenu and never closes the menu.
-- **Support** — a collapsible group (#3745), sitting between Admin and Theme, with exactly two items: **Docs** (`/support/docs`, the documentation packaged with this install — renders offline) and **File an Issue** (GitHub's support issue form, prefilled with the running version and platform; needs internet and a GitHub account, which its tooltip says). Like Admin, it expands in place and toggling it never closes the menu; unlike Admin, opening it lazily fetches `/api/v1/support/context`, and File an Issue stays disabled until that link resolves. See [Support menu](#support-menu).
+- **Support** — a collapsible group (#3745), sitting between Admin and Theme: **Docs** (`/support/docs`, the documentation packaged with this install — renders offline), then **File an Issue** as one entry per ticket type (**Bug Found**, **Feature Request**, **Question**), each opening GitHub's support issue form with that type, the running version and the platform prefilled; filing needs internet and a GitHub account, which the tooltips say. Choosing the type here rather than on GitHub is what gets it recorded at all (#3811). Like Admin, it expands in place and toggling it never closes the menu; unlike Admin, opening it lazily fetches `/api/v1/support/context`, and the filing entries show a disabled placeholder until that resolves. See [Support menu](#support-menu).
 - **Theme** — Light/Dark toggle, same state as the [Settings page](#settings) appearance setting.
 
 Clicking any link navigates and closes the menu. Clicking anywhere outside the menu (tracked via a ref on the menu container, not `stopPropagation`) or pressing `Escape` closes it without navigating.
@@ -667,10 +667,10 @@ new dependency or page to catch regressions.
 
 ## Support menu
 
-The sidebar's **Settings → Support** group has exactly two items, and both
-exist for the same reason: someone who installed nyxGPT from PyPI or Homebrew
-has no repository checkout, so neither the docs nor an issue-reporting path
-would otherwise be reachable from the product.
+The sidebar's **Settings → Support** group holds **Docs** and **File an
+Issue**, and both exist for the same reason: someone who installed nyxGPT from
+PyPI or Homebrew has no repository checkout, so neither the docs nor an
+issue-reporting path would otherwise be reachable from the product.
 
 **Docs** (`/support/docs`) renders the documentation that shipped with the
 installed package. The product documents are package data inside the wheel
@@ -697,14 +697,33 @@ grouping is data and not inferred from filenames, a newly added packaged
 document that no section lists fails `tests/unit/test_support_docs.py` instead
 of quietly appearing at the end of a flat list.
 
-**File an Issue** opens
+**File an Issue** is three entries, one per ticket type. Each opens
 [`.github/ISSUE_TEMPLATE/support.yml`](https://github.com/dkblinux98/nyxGPT/blob/master/.github/ISSUE_TEMPLATE/support.yml)
-on GitHub with the running version and platform prefilled from
+on GitHub with that type, the running version and the platform prefilled from
 `/api/v1/support/context`. This is a link, not an API call — nyxGPT never
 files an issue on a user's behalf, and there is no POST endpoint under
 `/support` to do it with. Unlike Docs, it needs internet access and a GitHub
-account, which the menu says in its tooltip rather than letting the link fail
+account, which the menu says in its tooltips rather than letting the link fail
 silently offline.
+
+Handing the filer to GitHub's compose page is where this stands today, not
+where it is going. The intended surface is an intake that captures the ticket
+in nyxGPT and files it from a background process, so the filer never leaves
+the chat and gets a confirmation there. That needs a GitHub credential, and
+who supplies one for a filer who is not the repository owner is an open
+decision (ledger `Q-006`) — a hosted intake, a configured token with this
+handoff as the fallback, or requiring a token. Until it is answered the
+compose page is what a filer sees, and the sidebar and post-submit landing on
+it are GitHub's rather than nyxGPT's.
+
+The type is asked in nyxGPT rather than on GitHub because nothing would
+otherwise record it (#3811): the Support project types tickets with a
+`Ticket Type` project field, and GitHub maps a form answer to neither a label
+nor a project field — `labels:` is a static template-level list and a dropdown
+answer lands in the issue body. So the answer travels as a form prefill,
+renders into the body under its own heading, and the owner sets the project
+field (and `Priority`, which is a judgement about the queue that the filer
+cannot make) at triage.
 
 Reports filed this way carry the `Support` label, which the template declares
 itself (a `labels=` URL parameter is silently dropped for a filer without
@@ -712,6 +731,17 @@ write access — exactly the filer this form is for). That label routes the
 report onto the separate **nyxGPT Support** project and keeps it out of the
 agent delivery loop entirely: no code-project item, no field stamping, no
 sprint, no selection. See `scripts/agents/lib/support_label.py`.
+
+All of which holds only while the label EXISTS — GitHub drops a
+template-declared label that does not, without erroring, and the form goes on
+accepting tickets that route nowhere and read to every guard as ordinary work.
+That is how #3810 was assigned to the scrummaster seven seconds after a user
+filed it. Two mechanisms now stand behind the label:
+`admin_ensure_support_label.yml` re-asserts it on a schedule and on any push
+touching the form, then verifies it by reading the label list back; and
+`support_intake_guard.yml` catches a support-shaped issue that arrives without
+it, relabels the ticket, removes any agent assignee, and fails the run on
+purpose so the degraded path is never quiet.
 
 ---
 

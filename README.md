@@ -105,9 +105,9 @@ which is the complete, grouped list.
 
 **If you have nyxGPT installed, you already have the product docs.** They ship
 inside the package, so the web UI serves them under **Support → Docs** —
-no checkout, no internet. The Support menu's other item, **File an Issue**,
-opens a report form with your version and platform filled in (that one needs
-internet and a GitHub account).
+no checkout, no internet. The Support menu's **File an Issue** entries open a
+report form with the ticket type, your version and your platform filled in
+(those need internet and a GitHub account).
 
 Common starting points:
 
