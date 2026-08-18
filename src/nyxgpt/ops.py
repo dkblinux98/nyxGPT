@@ -6416,7 +6416,7 @@ def _classify_k8s_pod(pod: dict[str, Any]) -> K8sWorkloadState:
 
 
 def _k8s_pod_states(
-    namespace: str = "", *, expected: bool = False
+    namespace: str = "", *, selector: str = "", expected: bool = False
 ) -> tuple[list[K8sWorkloadState], OpsResult | None]:
     """Classify every Pod in the namespace; returns `(states, read_failure)`.
 
@@ -6424,11 +6424,13 @@ def _k8s_pod_states(
     all -- which is a real failure (an unreachable cluster is not "pending"),
     kept separate so callers do not have to invent a fake state for it.
 
+    `selector` narrows the read to one workload's Pods (`-l app=x,track=y`).
     `expected=True` for the read-only probes (`infra_status`) where an
     unreachable cluster is a normal answer rather than something to warn about.
     """
     cp = _run(
-        ["kubectl", "-n", namespace or K8S_NAMESPACE, "get", "pods", "-o", "json"],
+        ["kubectl", "-n", namespace or K8S_NAMESPACE, "get", "pods", "-o", "json"]
+        + (["-l", selector] if selector else []),
         check=False,
         expected=expected,
     )
@@ -6442,13 +6444,46 @@ def _k8s_pod_states(
     return [_classify_k8s_pod(p) for p in items if isinstance(p, dict)], None
 
 
-def _k8s_blocked_pods(namespace: str = "") -> list[K8sWorkloadState]:
+def _k8s_workload_selector(ref: str) -> str:
+    """`app=x,track=y` for a `deploy/…`-style ref -- how to find *its* Pods.
+
+    Read from the workload's own `.spec.selector.matchLabels` rather than
+    guessed from the name, so it stays correct if a manifest relabels. An
+    unreadable or selector-less workload returns "", and the caller then
+    declines to attribute any Pod to it (see `_k8s_blocked_pods`) -- a wait
+    must never invent a failure out of a Pod belonging to something else.
+    """
+    cp = _run(
+        [
+            "kubectl",
+            "-n",
+            K8S_NAMESPACE,
+            "get",
+            ref,
+            "-o",
+            "jsonpath={.spec.selector.matchLabels}",
+        ],
+        check=False,
+        expected=True,
+    )
+    if cp.returncode != 0:
+        return ""
+    try:
+        labels = json.loads(cp.stdout or "{}")
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(labels, dict) or not labels:
+        return ""
+    return ",".join(f"{k}={v}" for k, v in sorted(labels.items()))
+
+
+def _k8s_blocked_pods(namespace: str = "", *, selector: str = "") -> list[K8sWorkloadState]:
     """The Pods that are FAILED right now -- what a wait fast-fails on (#3827).
 
     A read that itself fails returns nothing: an unreachable cluster is a
     reason to keep waiting for the rollout, not to declare a Pod broken.
     """
-    states, _ = _k8s_pod_states(namespace)
+    states, _ = _k8s_pod_states(namespace, selector=selector)
     return [s for s in states if s.state == K8S_STATE_FAILED]
 
 
@@ -6579,19 +6614,32 @@ def _wait_for_k8s_rollouts(
     distinguished:
 
     * the workload rolled out -> `[OK] <label> ready`;
-    * a Pod is in a state waiting does not fix (`_k8s_blocked_pods`,
-      confirmed over `K8S_BLOCKED_CONFIRMATIONS` slices) -> a failure that
-      names *that* Pod and its reason, raised immediately rather than after
-      the whole budget drains;
+    * one of *this workload's own* Pods is in a state waiting does not fix
+      (`_k8s_blocked_pods` under the workload's label selector, confirmed over
+      `K8S_BLOCKED_CONFIRMATIONS` slices) -> a failure that names that Pod and
+      its reason, raised immediately rather than after the whole budget
+      drains;
     * the deadline passed -> a failure naming the workload still being waited
       on.
+
+    The selector matters: every tier shares the `nyxgpt` namespace, and the api
+    Pods restart against their liveness probe while Cassandra is still
+    bootstrapping. Scanning the whole namespace would let that transient
+    CrashLoopBackOff abort the *data tier's* wait and report Cassandra as
+    broken -- a false failure of exactly the kind this issue is about. A
+    workload whose selector cannot be read simply gets no fast-fail (it waits
+    out its budget); the wait never invents a failure from a Pod it cannot
+    attribute.
 
     Stops at the first failure: the remaining workloads' verdicts would be
     about a cluster that is already known to be broken.
     """
     results: list[OpsResult] = []
-    blocked_seen: dict[str, int] = {}
     for ref, label, deadline in workloads:
+        selector = _k8s_workload_selector(ref)
+        # Per workload, not per wait: a Pod confirmed blocked for one workload
+        # says nothing about the next one's Pods.
+        blocked_seen: dict[str, int] = {}
         while True:
             remaining = int(deadline - time.monotonic())
             if remaining <= 0:
@@ -6623,7 +6671,7 @@ def _wait_for_k8s_rollouts(
                     )
                 )
                 return results
-            blocked = _k8s_blocked_pods()
+            blocked = _k8s_blocked_pods(selector=selector) if selector else []
             names = {s.name for s in blocked}
             blocked_seen = {n: c + 1 for n, c in blocked_seen.items() if n in names}
             for name in names - set(blocked_seen):

@@ -11941,10 +11941,13 @@ def test_wait_for_k8s_data_tier_waits_for_both_statefulsets(monkeypatch):
 
     monkeypatch.setattr(ops, "_run", fake_run)
     results = ops._wait_for_k8s_data_tier()
-    assert [c[5] for c in calls] == ["statefulset/cassandra", "statefulset/ollama"]
-    assert all(c[1] == "-n" and c[2] == ops.K8S_NAMESPACE for c in calls)
-    assert all(c[3:5] == ["rollout", "status"] for c in calls)
-    assert all(any(a.startswith("--timeout=") for a in c) for c in calls)
+    # The wait also reads each workload's label selector (#3827), so filter to
+    # the `rollout status` calls this test is about.
+    rollouts = [c for c in calls if "rollout" in c]
+    assert [c[5] for c in rollouts] == ["statefulset/cassandra", "statefulset/ollama"]
+    assert all(c[1] == "-n" and c[2] == ops.K8S_NAMESPACE for c in rollouts)
+    assert all(c[3:5] == ["rollout", "status"] for c in rollouts)
+    assert all(any(a.startswith("--timeout=") for a in c) for c in rollouts)
     assert all(r.ok for r in results)
 
 
@@ -11994,7 +11997,8 @@ def test_wait_for_k8s_app_tier_waits_for_the_stable_deployments(monkeypatch):
     monkeypatch.setattr(ops, "_run", fake_run)
     results = ops._wait_for_k8s_app_tier()
 
-    assert [c[5] for c in calls] == ["deploy/nyxgpt-api-stable", "deploy/nyxgpt-web-stable"]
+    rollouts = [c for c in calls if "rollout" in c]
+    assert [c[5] for c in rollouts] == ["deploy/nyxgpt-api-stable", "deploy/nyxgpt-web-stable"]
     assert all(r.ok for r in results)
 
 
@@ -12008,7 +12012,7 @@ def test_wait_for_k8s_app_tier_skips_the_zero_replica_canaries(monkeypatch):
     )
     ops._wait_for_k8s_app_tier()
 
-    assert not any("canary" in c[5] for c in calls)
+    assert calls and not any("canary" in arg for c in calls for arg in c)
 
 
 @pytest.mark.unit

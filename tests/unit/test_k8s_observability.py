@@ -538,6 +538,10 @@ def test_wait_for_k8s_observability_fails_fast_on_an_unschedulable_pod(monkeypat
             return MagicMock(
                 returncode=1, stdout="", stderr="error: timed out waiting for the condition"
             )
+        if any("jsonpath" in arg for arg in cmd):
+            # The workload's own label selector -- the wait only fast-fails on
+            # Pods it can attribute to the workload it is waiting for.
+            return MagicMock(returncode=0, stdout='{"app": "prometheus"}', stderr="")
         return MagicMock(
             returncode=0,
             stdout=json.dumps(
@@ -589,6 +593,8 @@ def test_wait_for_k8s_observability_tolerates_a_one_off_blocked_reading(monkeypa
                     returncode=1, stdout="", stderr="error: timed out waiting for the condition"
                 )
             return MagicMock(returncode=0, stdout="rolled out", stderr="")
+        if any("jsonpath" in arg for arg in cmd):
+            return MagicMock(returncode=0, stdout='{"app": "prometheus"}', stderr="")
         return MagicMock(
             returncode=0,
             stdout=json.dumps(
@@ -614,6 +620,61 @@ def test_wait_for_k8s_observability_tolerates_a_one_off_blocked_reading(monkeypa
     results = ops._wait_for_k8s_observability()
 
     assert all(r.ok for r in results)
+
+
+def test_wait_only_fast_fails_on_its_own_workloads_pods(monkeypatch) -> None:
+    """Every tier shares the `nyxgpt` namespace, and the api Pods restart
+    against their liveness probe while Cassandra is still bootstrapping. A
+    wait that scanned the whole namespace would abort the *data tier's* wait
+    over that and report Cassandra broken -- a false failure of exactly the
+    kind #3827 is about. So the blocked-Pod scan is label-scoped."""
+    _advancing_clock(monkeypatch)
+    selectors: list[str] = []
+
+    def fake_run(cmd, **kwargs):
+        if "rollout" in cmd:
+            return MagicMock(
+                returncode=1, stdout="", stderr="error: timed out waiting for the condition"
+            )
+        if any("jsonpath" in arg for arg in cmd):
+            return MagicMock(returncode=0, stdout='{"app": "cassandra"}', stderr="")
+        # The scan is filtered, and the (foreign, crash-looping) api Pod is
+        # not in the filtered answer -- which is what a real cluster returns.
+        selectors.append(cmd[cmd.index("-l") + 1] if "-l" in cmd else "")
+        return MagicMock(returncode=0, stdout=json.dumps({"items": []}), stderr="")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+
+    results = ops._wait_for_k8s_data_tier()
+
+    assert selectors and all(s == "app=cassandra" for s in selectors)
+    # It ran out of budget rather than blaming a Pod belonging to another tier.
+    assert "did not become ready in time" in results[-1].message
+
+
+def test_wait_declines_to_fast_fail_when_the_selector_is_unreadable(monkeypatch) -> None:
+    """No selector means no Pod can be attributed to this workload, and a wait
+    must never invent a failure out of a Pod that may belong to something
+    else -- it waits its budget out instead."""
+    _advancing_clock(monkeypatch)
+    scanned: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        if "rollout" in cmd:
+            return MagicMock(
+                returncode=1, stdout="", stderr="error: timed out waiting for the condition"
+            )
+        if any("jsonpath" in arg for arg in cmd):
+            return MagicMock(returncode=1, stdout="", stderr="NotFound")
+        scanned.append(cmd)
+        return MagicMock(returncode=0, stdout=json.dumps({"items": []}), stderr="")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+
+    results = ops._wait_for_k8s_observability(budget_s=900)
+
+    assert not scanned, "no selector -- no Pod scan at all, rather than an unscoped one"
+    assert "did not become ready in time" in results[-1].message
 
 
 def test_install_waits_for_observability_before_reading_pod_phases() -> None:

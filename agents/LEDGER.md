@@ -1374,8 +1374,11 @@ are absent here by design (relocated to the annex; IDs are never reused).
   `ImagePullBackOff`, `CrashLoopBackOff`, a container-config error or a
   `Failed` phase does — with the scheduler's/kubelet's own reason attached.
   The waits share it: `_wait_for_k8s_rollouts` polls in 30s slices and ends as
-  soon as a blocked Pod is confirmed over two slices, instead of spending a
-  900s budget and then blaming whichever workload it was on. The app tier now
+  soon as a blocked Pod *of the workload it is waiting on* (label-scoped —
+  every tier shares the `nyxgpt` namespace, and an api Pod restarting against
+  its liveness probe must not fail Cassandra's wait) is confirmed over two
+  slices, instead of spending a 900s budget and then blaming whichever
+  workload it was on. The app tier now
   has a wait of its own (`_wait_for_k8s_app_tier`), so **every** tier is
   settled before health is snapshotted — this supersedes the part of **V-041**
   that reads `_k8s_stack_health` as a Pod-*phase* scorer.

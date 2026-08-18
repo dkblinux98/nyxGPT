@@ -261,7 +261,13 @@ def check_transient_pod_really_was_transient() -> None:
 
 
 def check_the_wait_fails_fast_on_a_blocked_pod() -> None:
-    """A Pod that will never start must end the wait in slices, not budgets."""
+    """A Pod that will never start must end the wait in slices, not budgets.
+
+    And it must name *this workload's* Pod: the namespace also holds the two
+    standalone broken Pods above, which belong to nothing being waited on.
+    Attributing those to this Deployment is the false-failure pattern the
+    whole issue is about, one level up.
+    """
     started = time.monotonic()
     results = ops._wait_for_k8s_rollouts(
         [("deploy/unschedulable-deploy", "unschedulable workload", time.monotonic() + 900)],
@@ -272,6 +278,14 @@ def check_the_wait_fails_fast_on_a_blocked_pod() -> None:
         die("the wait reported success for a workload whose Pod can never be scheduled")
     if "cannot start" not in results[-1].message:
         die(f"the wait must name the blocking Pod, got {results[-1].message!r}")
+    if "unschedulable-deploy-" not in results[-1].message:
+        die(f"the wait must name the Deployment's OWN Pod, got {results[-1].message!r}")
+    for foreign in ("pod bad-image:", "pod unschedulable:"):
+        if foreign in results[-1].message:
+            die(
+                f"the wait blamed a Pod belonging to nothing it was waiting on "
+                f"({foreign.strip(':')}): {results[-1].message!r}"
+            )
     budget_fraction = elapsed / 900
     if budget_fraction > 0.25:
         die(f"the wait took {elapsed:.0f}s of a 900s budget to notice a permanent failure")
