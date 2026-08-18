@@ -1,0 +1,106 @@
+name: Kubernetes Artifact Smoke
+
+# The question this job answers: does `nyxgpt ops install --kubernetes --local`
+# work on a machine with NO source checkout?
+#
+# k8s-local-smoke.yml cannot answer it, by construction: it runs `pip install
+# -e .` in the checkout, so every repo-relative path the install touches
+# resolves. That is the "green by luck" condition -- until #3834 the Kubernetes
+# path built both images from `REPO_ROOT` and applied `REPO_ROOT/k8s`, none of
+# which exists on the machine the Repo-less Portability requirement (CLAUDE.md,
+# 2026-08-01) names as the target, and no job in this repository would have
+# noticed.
+#
+# So this one installs a wheel into a venv outside the workspace, runs every
+# product command from a directory with no repository in it, asserts the
+# pre-fix build context and manifests are genuinely absent (and that building
+# them fails -- the fault-injection half, #3753), and then requires a real chat
+# through the web Service's own proxy routes.
+#
+# It runs with `--skip-observability`: whether the in-cluster observability
+# layer comes up alongside the app tier is k8s-local-smoke.yml's question,
+# asked there on the default command (#3826). This job's question needs none of
+# it, and duplicating a ten-workload rollout would double an hour-long run to
+# re-answer something already covered. Both jobs together are the coverage:
+# default command with a checkout there, checkout-free command here.
+#
+# Scoped like the other expensive smokes: the ops layer, the manifests, the
+# Dockerfiles the images are built from, the packaging metadata, the script and
+# this workflow.
+on:
+  pull_request:
+    paths:
+      - 'k8s/**'
+      - 'src/nyxgpt/ops.py'
+      - 'src/nyxgpt/install_mode.py'
+      - 'src/nyxgpt/release_tarball.py'
+      - 'Dockerfile'
+      - 'web/Dockerfile'
+      - 'docker/entrypoint.sh'
+      - 'pyproject.toml'
+      - 'scripts/k8s-artifact-smoke.sh'
+      - '.github/workflows/k8s-artifact-smoke.yml'
+  push:
+    paths:
+      - 'k8s/**'
+      - 'src/nyxgpt/ops.py'
+      - 'src/nyxgpt/install_mode.py'
+      - 'src/nyxgpt/release_tarball.py'
+      - 'Dockerfile'
+      - 'web/Dockerfile'
+      - 'docker/entrypoint.sh'
+      - 'pyproject.toml'
+      - 'scripts/k8s-artifact-smoke.sh'
+      - '.github/workflows/k8s-artifact-smoke.yml'
+  workflow_dispatch:
+
+# Read-only workflow: it builds artifacts locally and drives a local cluster;
+# it never writes to the repository or its APIs (CodeQL
+# actions/missing-workflow-permissions -- same pattern as k8s-local-smoke.yml).
+permissions:
+  contents: read
+
+jobs:
+  k8s-artifact-smoke:
+    runs-on: ubuntu-latest
+    # A wheel build, two image builds, a kind cluster, Cassandra's first boot
+    # and Ollama's first model pull.
+    timeout-minutes: 75
+    if: github.event_name != 'push' || github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Deliberately NO `pip install -e .`: the product under test is the
+      # wheel the script builds and installs into its own venv. An editable
+      # install in the job's Python would put a checkout back within reach of
+      # `REPO_ROOT` and quietly restore the condition this job exists to
+      # remove -- the script asserts it hasn't, and fails if it has.
+      - name: Preflight -- the runner can fit the app tier
+        run: |
+          set -euo pipefail
+          cpus=$(nproc)
+          mem_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
+          echo "runner: ${cpus} vCPU, $((mem_kb / 1024))Mi RAM, $(df -h --output=avail / | tail -1) free on /"
+          [ "$cpus" -ge 2 ] || { echo "::error::need >= 2 vCPU, have ${cpus}"; exit 1; }
+
+      - name: Run the checkout-free Kubernetes smoke
+        run: ./scripts/k8s-artifact-smoke.sh
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          kubectl -n nyxgpt get pods -o wide || true
+          kubectl -n nyxgpt get statefulsets,deployments,svc,pvc || true
+          kubectl describe node | sed -n '/Allocated resources/,/Events/p' || true
+          kubectl -n nyxgpt get events --sort-by=.lastTimestamp | tail -40 || true
+          for pod in $(kubectl -n nyxgpt get pods -o name 2>/dev/null); do
+            echo "--- logs $pod ---"
+            kubectl -n nyxgpt logs "$pod" --tail 100 || true
+          done
+          ls -la "$HOME/.nyxGPT" || true
+          ls -la "$HOME/.nyxGPT/k8s" || true

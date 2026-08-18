@@ -18,7 +18,9 @@ install-mode marker is redirected into `tmp_path` so nothing reads or writes
 the developer's real ~/.nyxGPT.
 """
 
+import re
 import subprocess
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -441,7 +443,9 @@ def test_status_labels_dev_mode_and_its_checkout(monkeypatch, capsys, checkout):
     monkeypatch.setattr(ops, "terraform_stack_state", lambda: {})
     assert ops.status(Args()) == 0
     out = capsys.readouterr().out
-    assert f"Install mode: dev (editable checkout at {checkout})" in out
+    # Attributed to the native api/web (#3834), with a sibling line per
+    # Terraform/Kubernetes deployment (#3835) -- never one unqualified line.
+    assert f"Install mode (native api/web): dev (editable checkout at {checkout})" in out
     assert "native  api: started  [dev]" in out
     assert "native  web: started  [dev]" in out
 
@@ -463,8 +467,92 @@ def test_status_labels_artifact_mode_by_default(monkeypatch, capsys):
     monkeypatch.setattr(ops, "terraform_stack_state", lambda: {})
     assert ops.status(Args()) == 0
     out = capsys.readouterr().out
-    assert "Install mode: artifact" in out
+    assert "Install mode (native api/web): artifact" in out
     assert "native  api: started  [artifact]" in out
+
+
+def _render_status(monkeypatch, capsys, *, dev_checkout=None):
+    """`ops status` output for a machine whose only deployment is native."""
+    if dev_checkout is not None:
+        install_mode.write_install_mode(install_mode.INSTALL_MODE_DEV, dev_checkout)
+    else:
+        install_mode.INSTALL_MODE_FILE.unlink(missing_ok=True)
+    monkeypatch.setattr(ops.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(ops, "_which", lambda tool: None)
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: ops.DeploymentMode(
+            native={"api": "started", "web": "started", "ollama": "started"},
+            compose={},
+            terraform={},
+            conflicts=[],
+            terraform_conflicts=[],
+        ),
+    )
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {})
+    assert ops.status(Args()) == 0
+    return capsys.readouterr().out
+
+
+def _smoke_status_greps():
+    """Every install-mode pattern the systemd smoke greps `ops status` for.
+
+    Matched on the pattern rather than on the pipeline, because the script
+    reads the output both ways: piped straight into `grep -q`, and captured
+    into `dev_status_out` first so a failure can print it.
+    """
+    script = Path(__file__).resolve().parents[2] / "scripts" / "systemd-native-smoke.sh"
+    return re.findall(r'grep -q "(Install mode[^"]+)"', script.read_text(encoding="utf-8"))
+
+
+def _greps(pattern, text):
+    """Run the real `grep -q` -- the smoke script's own matcher, not `re`."""
+    return (
+        subprocess.run(  # noqa: S603,S607 - fixed argv, test-only
+            ["grep", "-q", pattern], input=text, text=True, check=False
+        ).returncode
+        == 0
+    )
+
+
+def test_the_systemd_smoke_scripts_status_greps_match_what_status_prints(
+    monkeypatch, capsys, checkout
+):
+    """The smoke script's assertions are a contract on `ops status`'s text.
+
+    `scripts/systemd-native-smoke.sh` is the executed evidence for dev mode,
+    and it reads the mode out of `ops status` with `grep`. Two issues in a row
+    changed that text -- #3834 attributed the line to the native api/web,
+    #3835 added a sibling line per Terraform deployment -- and each time the
+    script's greps could stop matching a correctly-behaving stack, which is
+    how `linux-native-dev-smoke` failed on this branch. This pins the two
+    together in a unit test, so the next format change fails here in seconds
+    rather than in a Linux smoke job -- and fails whichever side moves.
+    """
+    dev_out = _render_status(monkeypatch, capsys, dev_checkout=checkout)
+    artifact_out = _render_status(monkeypatch, capsys)
+
+    patterns = [p.replace("$CHECKOUT", str(checkout)) for p in _smoke_status_greps()]
+    assert patterns, "the smoke script no longer greps `ops status` -- is dev mode still proven?"
+
+    for pattern in patterns:
+        assert _greps(pattern, dev_out) or _greps(
+            pattern, artifact_out
+        ), f"smoke script greps for {pattern!r}, which `ops status` never prints"
+
+    dev_patterns = [p for p in patterns if "dev (" in p]
+    artifact_patterns = [p for p in patterns if "artifact" in p]
+    assert dev_patterns and artifact_patterns
+
+    # Non-vacuity: each pattern must reject the other mode's output, or the
+    # smoke's "switched back to the artifact path" check proves nothing.
+    for pattern in dev_patterns:
+        assert _greps(pattern, dev_out)
+        assert not _greps(pattern, artifact_out)
+    for pattern in artifact_patterns:
+        assert _greps(pattern, artifact_out)
+        assert not _greps(pattern, dev_out)
 
 
 def test_doctor_flags_a_dev_install_whose_checkout_is_gone(monkeypatch, capsys, tmp_path):
@@ -476,7 +564,7 @@ def test_doctor_flags_a_dev_install_whose_checkout_is_gone(monkeypatch, capsys, 
     rc = ops.doctor(Args())
     out = capsys.readouterr().out
     assert rc == 2
-    assert "Install mode: dev" in out
+    assert "Install mode (native api/web): dev" in out
     assert "its checkout is missing" in out
 
 

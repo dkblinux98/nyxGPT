@@ -10,10 +10,11 @@ Two kinds of assertion live here, and the distinction matters:
   mechanical invariants, cites evidence that exists, and covers exactly the
   five targets CLAUDE.md's Repo-less Portability requirement names.
 
-Deliberately NOT asserted: that every row is acceptance-ready. Two rows have
-open gaps today (Compose and Kubernetes both build their core images from a
-checkout), and a test that demanded otherwise would either fail on merge or
-force the matrix to lie. `test_gaps_are_reported_not_hidden` pins the honest
+Deliberately NOT asserted: that every row is acceptance-ready. Compose still
+has an open gap today (it builds its core images from a checkout rather than
+pulling the published ones; Kubernetes closed the equivalent gap in #3834),
+and a test that demanded otherwise would either fail on merge or force the
+matrix to lie. `test_gaps_are_reported_not_hidden` pins the honest
 behaviour instead: while a gap is recorded, `acceptance_ready` is false and
 `--strict` exits non-zero.
 """
@@ -80,7 +81,8 @@ def test_repo_less_check_passes_for_published_artifacts():
 
 def test_repo_less_check_looks_at_operate_and_teardown_too():
     # A row could plausibly install from PyPI and then tell the operator to
-    # clone for the manifests -- which is exactly the Kubernetes gap.
+    # clone for the manifests -- which is what the Kubernetes row would have
+    # had to say before #3834 made those manifests package data.
     target = _target(operate=("nyxgpt up", "git clone https://github.com/dkblinux98/nyxGPT"))
 
     assert not _check(target, "repo_less")["passed"]

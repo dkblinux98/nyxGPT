@@ -6,10 +6,12 @@ Distribution is via published artifacts — the PyPI wheel, the remote Homebrew
 tap, and the `ghcr.io` container images — never `git clone`. A source checkout
 stays supported for development (`pip install -e .`), but no user-facing
 install or operate flow may require one. That includes
-[`nyxgpt up --dev`](ops.md#--dev-run-the-current-checkout-without-an-artifact-build),
-the opt-in mode that runs the api/web services straight out of a checkout:
-it is a development and mid-stream-testing path, never the default, and
-every target below still installs and is accepted from published artifacts.
+[`nyxgpt up --dev`](ops.md#--dev-run-the-current-checkout-without-an-artifact-build)
+and its Kubernetes
+[equivalent](kubernetes.md#install-modes-artifact-and---dev), the opt-in mode
+that builds from a checkout's working tree: it is a development and
+mid-stream-testing path, never the default, and every target below still
+installs and is accepted from published artifacts.
 
 This page is the matrix of the five in-scope targets and the acceptance run
 that demonstrates them. **Windows is explicitly out of scope.**
@@ -49,7 +51,7 @@ A row is **acceptance-ready** when its checks pass *and* it has no open gap.
 | macOS native (Homebrew + launchd) | Remote tap `dkblinux98/nyxgpt` | `brew tap dkblinux98/nyxgpt`<br>`brew tap-trust dkblinux98/nyxgpt`<br>`brew install nyxgpt-api nyxgpt-web` | `nyxgpt up` | `nyxgpt down` | Install **verified in CI** (`macos-brew-smoke.yml`); operate half owner acceptance |
 | Linux native (systemd `--user`) | PyPI wheel | `pip install nyxgpt` | `nyxgpt up` | `nyxgpt down` | **Verified in CI** on every release |
 | Docker / Compose | `ghcr.io/dkblinux98/nyxgpt-api`, `…/nyxgpt-web` | `pip install nyxgpt` | `nyxgpt up`, `nyxgpt ops observability` | `nyxgpt down` | **Gap** — see below |
-| Kubernetes | the same two images | `pip install nyxgpt` | `nyxgpt ops install --kubernetes --local` | `nyxgpt ops down --kubernetes` | **Gap** — see below |
+| Kubernetes | PyPI wheel + the `nyxgpt-api`/`nyxgpt-web` release tarballs | `pip install nyxgpt` | `nyxgpt ops install --kubernetes --local` | `nyxgpt ops down --kubernetes` | **Verified in CI** (`k8s-artifact-smoke.yml`) |
 | AWS EC2 (private access path) | PyPI wheel, workstation and instance | `pip install nyxgpt`<br>`nyxgpt cloud credentials-setup` | `nyxgpt cloud deploy`, `nyxgpt cloud tunnel` | `nyxgpt cloud destroy --yes` | Owner acceptance — CI has no billable AWS account |
 
 ### Evidence
@@ -79,8 +81,14 @@ A row is **acceptance-ready** when its checks pass *and* it has no open gap.
   the formulas on a hosted `macos-15` runner — the working tree's own recipe on
   every formula change, and the published candidate from the real tap after
   every rc cut — so an install-breaking recipe fails in CI rather than on a
-  clean Mac. The **operate** half (brew services / launchd reconciliation,
-  `nyxgpt up`) stays owner-verified on the owner's workstation.
+  clean Mac. That job also asserts the keg is **operable**, not just built:
+  `nyxgpt` has to be on PATH by name after `brew install`, and
+  `nyxgpt ops status` has to run on a machine with no stack, no Docker and no
+  checkout (#3850 — the keg installed cleanly and answered
+  `command not found`, because every check reached into the keg's venv
+  instead of asking what the operator can type). The rest of the **operate**
+  half — brew services / launchd reconciliation and a real `nyxgpt up` —
+  stays owner-verified on the owner's workstation.
 - **EC2 Mac** targets (`mac2.metal`, `mac1.metal`) are documentation-verified
   only: hosted macOS runners cover a brew install but are not EC2 instances,
   and a Dedicated Host bills a 24-hour minimum. See [cloud.md](cloud.md)'s
@@ -88,9 +96,9 @@ A row is **acceptance-ready** when its checks pass *and* it has no open gap.
 
 ### Open gaps
 
-Both remaining gaps are the same shape, and both are product gaps rather than
-documentation ones: the images **are** published on every release, but no
-wrapped command consumes them from the registry yet.
+One gap remains, and it is a product gap rather than a documentation one: the
+images **are** published on every release, but no wrapped command consumes them
+from the registry yet.
 
 1. **Docker / Compose** — `docker-compose.yml`'s `api` and `web` services
    carry a `build:` context (`.` and `./web`), so Compose builds them from a
@@ -99,18 +107,34 @@ wrapped command consumes them from the registry yet.
    ship as package data (`nyxgpt.resources`, #3621) and
    `nyxgpt ops observability` starts the monitoring/logging/tracing/errors
    profiles from public images with no checkout.
-2. **Kubernetes** — `k8s/*.yaml` is not package data (`ops.K8S_DIR` resolves
-   under `REPO_ROOT`, allowlisted in
-   [`tests/unit/test_repo_root_allowlist.py`](../tests/unit/test_repo_root_allowlist.py)),
-   so the kustomization an install applies only exists in a checkout; and
-   `nyxgpt ops install --kubernetes --local` builds `nyxgpt-api:local` /
-   `nyxgpt-web:local` from the checkout rather than loading the published
-   images. The path is otherwise fully wrapped, and provisions its own `kind`
-   cluster.
 
-While either gap is open, `nyxgpt ops portability --strict` exits non-zero. That
-is deliberate: closing them is what turns the strict gate green, and the gate
-then keeps them closed. (There is no dashboard surface for this — the matrix
+**Terraform closed its gap in #3835.** The `.tf` configuration ships as package
+data (`nyxgpt.resources.terraform.local`, materialized into `~/.nyxGPT/terraform`)
+instead of being read from `REPO_ROOT`, and `nyxgpt ops install --terraform
+--local` pulls the published `ghcr.io/dkblinux98/nyxgpt-api`/`-web` images rather
+than building the working tree. `--dev` still builds it, records that it did, and
+is refused where there is no checkout. The proof is executed, not inspected: the
+`terraform-artifact-smoke` job in
+[`terraform-local-smoke.yml`](../.github/workflows/terraform-local-smoke.yml)
+installs the wheel into a venv with no repository in reach, resolves and pulls the
+real published images, deploys, and requires the stack to serve.
+
+**Kubernetes closed its gap in #3834.** The manifests ship as package data
+(`nyxgpt.resources.k8s`, synced to `~/.nyxGPT/k8s`) instead of being read from
+`REPO_ROOT`, and `nyxgpt ops install --kubernetes --local` builds both images
+from the published `nyxgpt-api`/`nyxgpt-web` release tarballs — the same
+artifacts the Homebrew formulas install, and the ones a *release candidate*
+publishes, which a container image is not. `--dev` still builds the working
+tree, records that it did, and is refused where there is no checkout. The
+proof is executed, not inspected:
+[`k8s-artifact-smoke.yml`](../.github/workflows/k8s-artifact-smoke.yml)
+installs the wheel into a venv with no repository in reach, asserts the pre-fix
+build context and manifests are genuinely absent, brings the cluster up and
+requires a real chat to answer.
+
+While the Compose gap is open, `nyxgpt ops portability --strict` exits
+non-zero. That is deliberate: closing it is what turns the strict gate green,
+and the gate then keeps it closed. (There is no dashboard surface for this — the matrix
 describes the product's portability claims, not the state of any one machine, so
 the CLI and `GET /api/v1/ops/portability` are its only readers, see #3803.)
 
@@ -215,11 +239,15 @@ nyxgpt up && nyxgpt ops status && nyxgpt down
 # Linux native (systemd --user)
 pip install nyxgpt
 nyxgpt up && nyxgpt ops status && nyxgpt down
+
+# Kubernetes (local cluster -- provisioned by the command if there isn't one)
+pip install nyxgpt
+nyxgpt ops install --kubernetes --local
+nyxgpt ops status && nyxgpt ops down --kubernetes
 ```
 
-Compose and Kubernetes cannot be accepted from a clean machine until the two
-gaps above close; `nyxgpt ops portability` is the check that says whether they
-have.
+Compose cannot be accepted from a clean machine until the gap above closes;
+`nyxgpt ops portability` is the check that says whether it has.
 
 ## Related
 
