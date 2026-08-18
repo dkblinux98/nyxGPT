@@ -38,17 +38,25 @@ on:
     paths:
       - 'k8s/**'
       - 'src/nyxgpt/ops.py'
+      # The Kubernetes half of self-heal is asserted against the live cluster
+      # in step 8 (#3828), so a change to it must re-run this job.
+      - 'src/nyxgpt/self_heal.py'
       - 'Dockerfile'
       - 'docker/entrypoint.sh'
       - 'scripts/k8s-local-smoke.sh'
+      - 'scripts/k8s-self-heal-coverage-smoke.py'
       - '.github/workflows/k8s-local-smoke.yml'
   push:
     paths:
       - 'k8s/**'
       - 'src/nyxgpt/ops.py'
+      # The Kubernetes half of self-heal is asserted against the live cluster
+      # in step 8 (#3828), so a change to it must re-run this job.
+      - 'src/nyxgpt/self_heal.py'
       - 'Dockerfile'
       - 'docker/entrypoint.sh'
       - 'scripts/k8s-local-smoke.sh'
+      - 'scripts/k8s-self-heal-coverage-smoke.py'
       - '.github/workflows/k8s-local-smoke.yml'
   workflow_dispatch:
 

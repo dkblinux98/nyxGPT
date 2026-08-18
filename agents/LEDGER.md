@@ -1311,7 +1311,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   Re-verify when: a check-status gate is added to the merge path — this entry
   then describes history rather than the present. See **Q-005**.
 
-- **V-044** · 2026-08-18 — **The `--kubernetes --local` stack is sized
+- **V-045** · 2026-08-18 — **The `--kubernetes --local` stack is sized
   against the node it actually lands on — in BOTH memory and cpu — and the
   install measures that node before it applies anything.** The default
   deployment (app tier + data/LLM tier + the #3787 observability layer)
@@ -1403,7 +1403,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   place, and prints the allocatable-vs-requests arithmetic every run.
   Re-verify when: any `k8s/**` manifest changes a `resources.requests`, a
   replica count, or adds a workload — the 175m CPU margin is what absorbs it.
-  **Superseded in part by V-044** (#3825): the measured numbers above are the
+  **Superseded in part by V-045** (#3825): the measured numbers above are the
   pre-right-sizing footprint, and they were taken on the agent runner's own
   ~16GB node, not on the 8GiB Docker Desktop VM an operator installs onto —
   where the same stack did *not* fit. The finding this entry stands for (the
@@ -1470,6 +1470,34 @@ are absent here by design (relocated to the annex; IDs are never reused).
   it: `release_ceremony_watch.sh` and `classify_backlog_claim_state`
   deliberately write `|| echo ""` and still treat a failed read as "no
   Status".
+
+- **V-044** · 2026-08-18 — **Self-heal watched the api pool alone in
+  Kubernetes mode, and could not name the mode at all.** The Pod survey
+  selected `app=nyxgpt-api-canary-pool`, so web, Cassandra, Ollama and the
+  entire in-cluster observability tier (#3787) were observed and healed by
+  nothing; and because every Kubernetes row is named after a *Pod*, never
+  after a component, `detected_mode()`'s `service in CORE_APP_SERVICES` test
+  matched nothing and the page printed "Nothing detected running" above the
+  list of running Pods. Fixed by surveying the whole namespace once and
+  classifying Pods by label into a `core`/`observability` tier
+  (`ComponentStatus.tier`), which mode detection and the in-cluster
+  observability reporting both key off.
+  Method: real kind cluster, `nyxgpt` namespace carrying the manifests' own
+  labels (api/web pool Deployments, cassandra/ollama StatefulSets, ten
+  `tier: observability` workloads, plus one foreign workload). Shipped code:
+  `mode=kubernetes observability_source=kubernetes`, 6 core + 10
+  observability Pods watched, foreign Pod excluded, and
+  `heal_now(service=<web pod>)` deleted that Pod and the Deployment replaced
+  it. Fault injection with the **actual pre-fix module** (`git show
+  581b4911:src/nyxgpt/self_heal.py`) against the same live cluster: 2
+  Kubernetes rows (both api), `detected_mode` → `none` — the reported defect,
+  reproduced. 2026-08-18, while implementing #3828.
+  Standing guard: `scripts/k8s-self-heal-coverage-smoke.py`, run as step 8 of
+  `scripts/k8s-local-smoke.sh` (`.github/workflows/k8s-local-smoke.yml`,
+  path-filtered on `src/nyxgpt/self_heal.py`), which re-runs those assertions
+  on the full default install and re-injects the api-only survey each run.
+  Re-verify when: a `k8s/**` manifest changes a Pod's `app`/`tier` labels —
+  the classification is keyed on exactly those.
 
 ## Parked
 
