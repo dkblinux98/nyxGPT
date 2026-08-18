@@ -75,9 +75,11 @@ OBSERVABILITY_HEALTH_PATHS: dict[str, str] = {
     "glitchtip": "/",
 }
 
-# Default per-phase budgets, in seconds. The model pull is the long pole on a
-# first deploy (a multi-gigabyte download onto a fresh instance); GlitchTip is
-# the slow starter among the observability containers.
+# Default per-phase budgets, in seconds. The model-readiness read is quick --
+# the instance's own `nyxgpt ops install` does the pulling (#3824) -- but the
+# budget stays generous because it is answered by an api that may still be
+# working through its first requests. GlitchTip is the slow starter among the
+# observability containers.
 DEFAULT_MODEL_TIMEOUT = 1800.0
 DEFAULT_CHAT_TIMEOUT = 300.0
 DEFAULT_RAG_TIMEOUT = 120.0
@@ -199,25 +201,46 @@ def ensure_access(
     }
 
 
-def ensure_model(api_key: str, model: str, timeout: float) -> dict[str, Any]:
-    """Make sure `model` is pulled on the instance, pulling it if it is not.
+def verify_required_models(api_key: str, timeout: float) -> dict[str, Any]:
+    """Assert the instance already holds every model a first chat needs (#3824).
 
-    Mirrors the local script's pre-chat step: on a fresh instance the model is
-    a multi-gigabyte download, and a chat that times out waiting for it looks
-    like a broken deployment rather than a slow one.
+    This step used to *pull* the default model before the chat check, which
+    made the smoke green on an instance whose provisioning never pulled
+    anything -- the smoke pre-satisfying the very thing it verifies (ledger
+    V-017). The instance's own bootstrap (`nyxgpt ops install`, run by the
+    user-data script) is what pulls both the chat and the embedding model
+    now, so the smoke's job is to check that it did.
+
+    Asks `/models/required`, the same readiness view `nyxgpt ops status` and
+    the admin dashboard read, so all three agree on what "ready" means.
     """
-    if not model:
-        return {"model": "", "skipped": True, "reason": "the instance reported no default model"}
-    status, body = _http("/models", api_key=api_key, timeout=60.0)
-    if status == 200 and model in (_json_body(body).get("models") or []):
-        return {"model": model, "pulled": False, "already_present": True}
-    status, body = _http("/models/pull", payload={"model": model}, api_key=api_key, timeout=timeout)
+    status, body = _http("/models/required", api_key=api_key, timeout=timeout)
     if status != 200:
         raise SmokeFailure(
-            f"could not pull the default model {model!r} on the instance "
+            f"could not read required-model readiness from the instance "
             f"(HTTP {status or 'unreachable'}): {body[:400]}"
         )
-    return {"model": model, "pulled": True, "already_present": False}
+    data = _json_body(body)
+    models = data.get("models") or []
+    if not models:
+        return {"models": [], "skipped": True, "reason": "the instance reported no models"}
+    if not data.get("reachable"):
+        raise SmokeFailure(
+            "the instance's Ollama did not answer, so no chat can be served "
+            f"({data.get('error') or 'no detail'})"
+        )
+    missing = [str(m.get("model")) for m in models if m.get("present") is False]
+    if missing:
+        raise SmokeFailure(
+            f"the instance is missing required model(s) {', '.join(missing)} -- its "
+            "`nyxgpt ops install` did not pull them, so the first chat message would "
+            f"fail. {data.get('remediation') or ''}".strip()
+        )
+    return {
+        "models": [str(m.get("model")) for m in models],
+        "pulled": False,
+        "already_present": True,
+    }
 
 
 def verify_chat(api_key: str, timeout: float) -> dict[str, Any]:
@@ -407,12 +430,7 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
             or os.environ.get("NYXGPT_AUTH_API_KEY", "")
             or settings.get("api_key", "")
         )
-        steps.append(
-            {
-                "step": "model",
-                **ensure_model(api_key, settings.get("default_model", ""), model_timeout),
-            }
-        )
+        steps.append({"step": "model", **verify_required_models(api_key, model_timeout)})
         steps.append({"step": "chat", **verify_chat(api_key, chat_timeout)})
         steps.append(
             {
