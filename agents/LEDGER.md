@@ -492,6 +492,20 @@ are absent here by design (relocated to the annex; IDs are never reused).
   reading only the close comment will get this wrong.
   Source: #3870; owner in session, 2026-08-18.
 
+- **D-021** · 2026-08-18 · developer-agent — **A canary rollout gate reads
+  the canary track's own Pods, never the serving process's counters.** The
+  metrics behind `evaluate`/`promote`/`status` come from the Pods labelled
+  `track=canary`, read through the API server's Pod proxy, with `/health`
+  and `/metrics` requests excluded — kubelet probes alone would otherwise
+  carry an idle canary past `min_requests_for_evaluation` within minutes.
+  Two consequences that look like restrictions and are the point: `promote`
+  refuses a canary track measurably at zero traffic (`--force` for an idle
+  cluster), and `--component web` is reported as *not measurable* rather
+  than being given a number belonging to something else, because Next.js
+  Pods export no `/metrics`. Do not "restore" a process-wide metrics
+  snapshot here: it is the defect, not a fallback.
+  Source: #3829; `src/nyxgpt/canary.py`; `docs/kubernetes.md` §Metrics source.
+
 ## Verifications
 
 - **V-001** · 2026-08-14 — Releases in this repository are immutable: a
@@ -1421,6 +1435,27 @@ are absent here by design (relocated to the annex; IDs are never reused).
   it: `release_ceremony_watch.sh` and `classify_backlog_claim_state`
   deliberately write `|| echo ""` and still treat a failed read as "no
   Status".
+
+- **V-044** · 2026-08-18 — **The canary gate's verdict now describes the
+  canary track, demonstrated on a real cluster.** On a kind cluster with
+  `nyxgpt-api-canary` at 0 replicas and one stable Pod driven to 42
+  requests, the stable Pod's own `/api/v1/metrics` still reported those 42
+  requests at a 0.00% error rate — the exact pre-fix input that produced
+  #3829's "safe to promote" — while `POST /api/v1/canary/evaluate` served by
+  that same Pod answered "the canary track has no ready Pods". With the
+  canary scaled to 1 and Ready but unserved it reported `0/20 canary-track
+  requests` (proving probes and scrapes are excluded on a live cluster, since
+  the kubelet had already probed it), and `promote` refused. After 25
+  requests were driven at the canary Pod, the verdict from the *stable* Pod
+  became "within thresholds over 25 requests; safe to promote".
+  Method: ran `scripts/canary-track-metrics-smoke.sh` end to end on
+  Linux/kind, 2026-08-18, while implementing #3829; it is
+  `.github/workflows/canary-track-metrics-smoke.yml` in CI. The same run
+  surfaced that a one-replica stable track read three Pods' metrics — a
+  draining ReplicaSet — which is why Pods with a `deletionTimestamp` are
+  excluded.
+  Re-verify when: the Pod `track=` labels, the api container port, or the
+  `pods/proxy` RBAC rule change.
 
 ## Parked
 

@@ -1160,8 +1160,14 @@ total_replicas = 4
 step_percent = 25                       # traffic increment per step
 error_rate_threshold_percent = 5        # auto-rollback threshold
 latency_p95_threshold_ms = 2000.0       # auto-rollback threshold
-min_requests_for_evaluation = 20
+min_requests_for_evaluation = 20        # canary-track requests, probes excluded
 ```
+
+The thresholds are applied to the **canary track's own** metrics -- the
+Pods labelled `track=canary`, not the counters of whichever `nyxgpt-api`
+process serves the request (#3829), and not `/health` probe or `/metrics`
+scrape traffic. See
+[kubernetes.md](kubernetes.md#metrics-source-the-canary-tracks-own-pods-3829).
 
 ---
 
