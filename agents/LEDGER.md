@@ -1552,11 +1552,17 @@ are absent here by design (relocated to the annex; IDs are never reused).
   replica count, or the pool-planning rule in `canary._plan_rollout` changes.
   (Filed as `V-045` under #3833, renumbered to `V-046` when #3825 landed
   `V-045` on `v3.0.0`, and to `V-048` on the next merge: #3831 allocated
-  `V-046`/`V-047` there. IDs are never reused. Note the three surviving
-  `V-046` entries above are `v3.0.0`'s own — #3831, #3837 and #3827 each
-  allocated that number on concurrently-open branches and all three merged
-  before this one; not renumbered here because they are not this branch's to
-  rewrite.)
+  `V-046`/`V-047` there. IDs are never reused. `v3.0.0` also arrived carrying
+  **three** entries numbered `V-046` — #3831, #3837 and #3827 each allocated
+  it on a concurrently-open branch and all three merged within ten minutes,
+  so no one of them saw the others. An earlier round of this branch left them
+  alone as "not this branch's to rewrite"; that was wrong, because uniqueness
+  is a CI-enforced invariant — `test_ledger_entry_ids_are_unique` — so the
+  collision was failing *every* PR's verification, not just recording an
+  untidy ledger. Healed here: #3837's copy keeps `V-046` (earliest merge, and
+  the only one cited by number outside the ledger — `developer-runbook.md`
+  §"run:" and `workflow_script_guard.py`'s module docstring), #3831's became
+  `V-049` and #3827's `V-050`.)
 
 - **V-044** · 2026-08-18 — **Self-heal watched the api pool alone in
   Kubernetes mode, and could not name the mode at all.** The Pod survey
@@ -1585,7 +1591,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   on the full default install and re-injects the api-only survey each run.
   Re-verify when: a `k8s/**` manifest changes a Pod's `app`/`tier` labels —
   the classification is keyed on exactly those.
-- **V-046** · 2026-08-18 — **Every API error this app returns is
+- **V-049** · 2026-08-18 — **Every API error this app returns is
   object-shaped, so a UI that interpolates `data.error` renders
   `[object Object]`.** `http_exception_handler` (`src/nyxgpt/app.py`) wraps
   *every* `HTTPException` as `{"error": {"code", "message", "details",
@@ -1608,6 +1614,13 @@ are absent here by design (relocated to the annex; IDs are never reused).
   them.
   Re-verify when: the error envelope's shape changes, or a page starts
   reading a failed response without `apiErrorText`.
+  (Filed as `V-046` under #3831, renumbered to `V-049` on #3833's merge:
+  #3831, #3837 and #3827 each allocated `V-046` on concurrently-open branches
+  and all three merged into `v3.0.0` within ten minutes, so the mainline
+  itself carried three. #3837's copy — the earliest merge, and the one
+  `developer-runbook.md` and `workflow_script_guard.py` cite by number —
+  keeps `V-046`; this one and #3827's took the next unused IDs. IDs are never
+  reused.)
 - **V-047** · 2026-08-18 — **A Deployment's own status cannot say why a Pod
   is not serving; the reason has to be read off the Pods.** `kubectl get
   deployment -o json` gives only `readyReplicas`, so canary reported
@@ -1675,7 +1688,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   does not cover, or `SAFE_IN_RUN` gains an entry.
 
 
-- **V-046** · 2026-08-18 — **`nyxgpt ops` has one three-state vocabulary for
+- **V-050** · 2026-08-18 — **`nyxgpt ops` has one three-state vocabulary for
   Kubernetes workloads — ready / pending / failed — and `Pending` is not a
   failure.** `_classify_k8s_pod` (`src/nyxgpt/ops.py`) is the single
   classifier behind `_k8s_stack_health`, `_k8s_observability_health`, the
@@ -1697,8 +1710,11 @@ are absent here by design (relocated to the annex; IDs are never reused).
   settled before health is snapshotted — this supersedes the part of **V-041**
   that reads `_k8s_stack_health` as a Pod-*phase* scorer.
   (Filed as `V-042` under #3827, renumbered to `V-045` on the first merge of
-  `v3.0.0` and to `V-046` on the second: #3811 allocated `V-042`/`V-043`,
-  #3828 `V-044` and #3825 `V-045`, all on concurrently-open branches. IDs are
+  `v3.0.0`, to `V-046` on the second, and to `V-050` on #3833's merge: #3811
+  allocated `V-042`/`V-043`, #3828 `V-044` and #3825 `V-045`, all on
+  concurrently-open branches, and #3831/#3837 had both landed `V-046` in the
+  ten minutes around this entry's own merge — #3837's copy, the earliest of
+  the three and the one cited by number outside the ledger, keeps it. IDs are
   never reused. #3825's entry is the sizing one above; this one is the
   vocabulary, and `infra_status`'s `kubernetes.unschedulable` — which #3825
   added from a separate `.spec.nodeName` probe — is read from
