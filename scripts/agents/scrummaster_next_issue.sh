@@ -29,8 +29,8 @@ Options:
                     release-wide fall-through, and no active iteration means
                     a conservative stop (exit 1). Without this flag, behavior
                     is unchanged from before #3480 (Sprint is not considered
-                    at all), which is what a human `READY_FOR_NEXT_ISSUE`
-                    kick uses to pull work forward deliberately.
+                    at all), which is what an owner-initiated dispatch
+                    uses to pull work forward deliberately.
   -h, --help       Show this help
 
 Environment:

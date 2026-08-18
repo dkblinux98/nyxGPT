@@ -14,7 +14,7 @@ just posted it, once every ~20 seconds: ~500 runs and ~500 comments across
 token.
 
 Two independent guards live here, and both are applied to *every* comment
-token (RETRY_IMPLEMENTATION, READY_FOR_NEXT_ISSUE, PAUSE_SPRINT,
+token (RETRY_IMPLEMENTATION, PAUSE_SPRINT,
 @acceptance-failure, @improvement):
 
 1. **Anchored matching.** A token counts as a command only when it *opens a
@@ -52,7 +52,6 @@ INFORMATIONAL_MARKERS = ("nyxgpt-token-mention", "nyxgpt-autopilot-informational
 #: Every comment token that starts work in this repo.
 COMMAND_TOKENS = (
     "RETRY_IMPLEMENTATION",
-    "READY_FOR_NEXT_ISSUE",
     "PAUSE_SPRINT",
     "@acceptance-failure",
     "@improvement",

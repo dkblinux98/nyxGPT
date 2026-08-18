@@ -5,23 +5,29 @@ Several agent workflows are started by a token in an issue comment:
 | Token | Started by | Starts |
 |---|---|---|
 | `RETRY_IMPLEMENTATION` | owner, developer agent, review agent | `developer_auto_implement.yml` |
-| `READY_FOR_NEXT_ISSUE` | owner, all three agents, `claude[bot]` | `notify_scrum_ready.yml` (select and start the next issue) |
 | `@acceptance-failure` | owner only | `handle_acceptance_failure.yml` |
 | `@improvement` | owner only | `handle_improvement.yml` |
 
+**The queue kick is gone (#3882).** `READY_FOR_NEXT_ISSUE` no longer exists:
+`notify_scrum_ready.yml` runs on a `repository_dispatch` of type
+`dispatch-next-issue`, sent by `dispatch_next_issue` in
+`scripts/agents/lib/gh_project.sh`. The comment was never a message to a
+human -- it was one workflow asking another to run, written as text a job
+`if:` then had to pattern-match, which is exactly how #3706 and #3790
+happened. An event cannot be fired by prose that mentions it.
+
+Starting work by hand is now an **assignment**: assign the developer agent to
+an open Backlog issue and the developer workflow claims it, setting Status to
+In Progress itself. The worker owns the transition.
+
 `claude[bot]` is the identity every Claude remote session's GitHub writes
 carry (the session proxy rewrites all credentials to the Claude GitHub App,
-so no PAT can change it). It is an allowed author for the queue kick and for
-`@review` on `claude-code-review.yml` (owner decision 2026-08-18, #3870);
+so no PAT can change it). It is an allowed author for `@review` on
+`claude-code-review.yml` (owner decision 2026-08-18, #3870);
 `claude-code-review.yml` also passes `allowed_bots: "claude"`, without which
 `claude-code-action` refuses bot-actored runs outright. Excluding identities
-is not what stopped #3706/#3790, and the two widened triggers are protected
-differently:
+is not what stopped #3706/#3790:
 
-* **`READY_FOR_NEXT_ISSUE`** keeps its full protection. The anchored-token
-  gate and the informational markers below have no author filter, so
-  widening the author list cannot weaken them — a `claude[bot]` comment
-  that mentions the token, or carries a marker, is as inert as anyone's.
 * **`@review`** has no anchored gate; its author list plus a bare
   `contains(body, '@review')` is the whole test. The exposure is bounded
   rather than gated: a triggered review is convergent and one-shot, and its

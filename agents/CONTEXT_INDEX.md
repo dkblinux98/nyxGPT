@@ -55,7 +55,7 @@ fails if it drifts. Do not hand-edit.
 | `list_issues_by_status.yml` | workflow_dispatch | List Issues By Status |
 | `macos-brew-smoke.yml` | pull_request, workflow_dispatch, workflow_call | macOS Brew Smoke |
 | `notify-merge-conflicts.yml` | pull_request, push, workflow_dispatch | Notify Merge Conflicts |
-| `notify_scrum_ready.yml` | issue_comment | Scrummaster Agent - Select and Start Next Issue |
+| `notify_scrum_ready.yml` | repository_dispatch | Scrummaster Agent - Select and Start Next Issue |
 | `pr_project_status_on_close.yml` | pull_request | PR Project Status on Close |
 | `project-hygiene-smoke.yml` | push, pull_request, workflow_dispatch | Project Hygiene Smoke |
 | `project_workflows_dump.yml` | workflow_dispatch | Project Workflows Dump |

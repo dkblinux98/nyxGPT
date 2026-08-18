@@ -263,12 +263,29 @@ jobs:
               body: message
             });
 
-      - name: Verify issue is In Progress in ProjectV2 (otherwise exit)
+      # Assignment IS the dispatch (#3882). The worker owns the transition:
+      # a developer picking work up puts it In Progress, exactly as a person
+      # would, instead of requiring a second actor to stage the board first and
+      # then announce it in a comment.
+      #
+      # What this step still refuses, because assignment must not override a
+      # deliberate placement:
+      #   * a lane that means "held" -- Acceptance Failed is owner signal
+      #     (D-001/D-008), and being assigned does not release it;
+      #   * an issue that is not on the board at all;
+      #   * an assigner who is not a permitted identity.
+      - name: Claim the issue (assignment is the dispatch)
         id: verify_status
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ASSIGNER: ${{ github.event.sender.login }}
+          EVENT_NAME: ${{ github.event_name }}
+          OWNER_LOGIN: ${{ vars.HUMAN_OWNER }}
+          SCRUM_LOGIN: ${{ vars.SCRUM_AGENT }}
+          REVIEW_LOGIN: ${{ vars.REVIEW_AGENT }}
+          DEV_LOGIN: ${{ vars.DEV_AGENT }}
         run: |
           # #3689: the previous version of this check ran inside a nested
           # `bash -lc '...'` subshell and called `exit 0` from there to stop
@@ -302,11 +319,39 @@ jobs:
               exit 3
             fi
             echo "::notice::Issue #$ISSUE_NUMBER status=$status" >&2
-            if [[ "$status" != "$STATUS_IN_PROGRESS" ]]; then
-              echo "::warning::Not In Progress (status=$status)." >&2
+
+            if [[ "$status" == "$STATUS_IN_PROGRESS" ]]; then
+              echo "$status"
+              exit 0
+            fi
+
+            # Held and finished lanes are never claimable by assignment.
+            case "$status" in
+              "$STATUS_BACKLOG")
+                ;;
+              *)
+                echo "::warning::Status '$status' is not claimable by assignment." >&2
+                exit 3
+                ;;
+            esac
+
+            if [[ "$EVENT_NAME" != "issues" ]]; then
+              echo "::warning::Backlog issue reached a non-assignment trigger." >&2
               exit 3
             fi
-            echo "$status"
+
+            case "$ASSIGNER" in
+              "$OWNER_LOGIN"|"$SCRUM_LOGIN"|"$REVIEW_LOGIN"|"$DEV_LOGIN"|"claude[bot]")
+                ;;
+              *)
+                echo "::warning::Assigner '$ASSIGNER' is not a permitted dispatcher." >&2
+                exit 3
+                ;;
+            esac
+
+            set_issue_status "$ISSUE_NUMBER" "$STATUS_IN_PROGRESS"
+            echo "::notice::Claimed #$ISSUE_NUMBER: ${status} -> ${STATUS_IN_PROGRESS} (assigned by ${ASSIGNER})" >&2
+            echo "$STATUS_IN_PROGRESS"
           )"
           RC=$?
           set -e

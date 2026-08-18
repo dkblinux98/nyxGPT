@@ -89,10 +89,12 @@ EOF
 # than shell variables -- same pitfall documented in test_gh_project_lib.sh.
 STATUS_FILE="$(mktemp)"
 COMMENT_FILE="$(mktemp)"
-trap 'rm -f "$STATUS_FILE" "$COMMENT_FILE"' EXIT
+trap 'rm -f "$STATUS_FILE" "$COMMENT_FILE" "$DISPATCH_FILE"' EXIT
 
 set_issue_status() { echo "$1 -> $2" >>"$STATUS_FILE"; }
 issue_comment() { printf '%s :: %s\n' "$1" "$2" >>"$COMMENT_FILE"; }
+DISPATCH_FILE="$(mktemp)"
+dispatch_next_issue() { printf '%s\n' "${1:-}" >>"$DISPATCH_FILE"; }
 sprint_autopilot_paused() { return 1; }
 
 # Bodies and labels of the held issues, for the related-feature ("rework")
@@ -167,6 +169,7 @@ _assert_eq "an unrelated feature earns no rework exemption" "[]" "$(jq -c '.rewo
 
 : >"$STATUS_FILE"
 : >"$COMMENT_FILE"
+: >"$DISPATCH_FILE"
 result="$(drain_gate_release 2>/dev/null)"
 _assert_eq "a closed gate releases nothing" "none" "$(jq -r '.action' <<<"$result")"
 _assert_eq "a closed gate moves no issue" "" "$(cat "$STATUS_FILE")"
@@ -188,6 +191,7 @@ _assert_eq "the awaiting-rework feature is reported as exempt" "[3600]" "$(jq -c
 
 : >"$STATUS_FILE"
 : >"$COMMENT_FILE"
+: >"$DISPATCH_FILE"
 result="$(drain_gate_release 2>/dev/null)"
 _assert_eq "the deadlocked round releases the failure AND the improvement" "[3700,3701]" "$(jq -c '.released' <<<"$result")"
 _assert_not_contains "the parked feature itself is never moved" "$(cat "$STATUS_FILE")" "3600 ->"
@@ -209,6 +213,7 @@ _assert_eq "an improvement earns its issue a rework exemption" "[3600]" "$(jq -c
 
 : >"$STATUS_FILE"
 : >"$COMMENT_FILE"
+: >"$DISPATCH_FILE"
 result="$(drain_gate_release 2>/dev/null)"
 _assert_eq "improvements-only: the deadlocked round drains" "released" "$(jq -r '.action' <<<"$result")"
 _assert_contains "improvements-only: the held improvement moves" "$(cat "$STATUS_FILE")" "3700 -> Backlog"
@@ -248,6 +253,7 @@ _assert_eq "the release issue is reported as exempt" "[3521]" "$(jq -c '.release
 
 : >"$STATUS_FILE"
 : >"$COMMENT_FILE"
+: >"$DISPATCH_FILE"
 result="$(drain_gate_release 2>/dev/null)"
 _assert_eq "the open gate releases the held lane" "released" "$(jq -r '.action' <<<"$result")"
 _assert_eq "both held issues moved" "[3700,3701]" "$(jq -c '.released' <<<"$result")"
@@ -255,8 +261,8 @@ _assert_contains "held issue #3700 moved to Backlog" "$(cat "$STATUS_FILE")" "37
 _assert_contains "held issue #3701 moved to Backlog" "$(cat "$STATUS_FILE")" "3701 -> Backlog"
 _assert_not_contains "the exempt release issue is never moved" "$(cat "$STATUS_FILE")" "3521 -> Backlog"
 _assert_eq "the queue was kicked" "true" "$(jq -r '.kicked' <<<"$result")"
-kicks="$(grep -c "READY_FOR_NEXT_ISSUE" "$COMMENT_FILE")"
-_assert_eq "the queue is kicked exactly once for the whole batch" "1" "$kicks"
+kicks="$(grep -c . "$DISPATCH_FILE" || true)"
+_assert_eq "the queue is dispatched exactly once for the whole batch" "1" "$kicks"
 _assert_contains "the kick lands on the release tracking issue" "$(cat "$COMMENT_FILE")" "3521 ::"
 
 # --- Test 3b: a feature the owner parked in the holding lane (#3780) ---
@@ -287,6 +293,7 @@ _assert_eq "the parked feature is reported, not held" "[3508]" "$(jq -c '.parked
 
 : >"$STATUS_FILE"
 : >"$COMMENT_FILE"
+: >"$DISPATCH_FILE"
 result="$(drain_gate_release 2>/dev/null)"
 _assert_eq "the release moves the held rework" "[3700]" "$(jq -c '.released' <<<"$result")"
 _assert_not_contains "the parked feature is never moved by the gate" \
@@ -303,6 +310,7 @@ graphql() {
 }
 : >"$STATUS_FILE"
 : >"$COMMENT_FILE"
+: >"$DISPATCH_FILE"
 result="$(drain_gate_release 2>/dev/null)"
 _assert_eq "a lane of parked features has nothing to release" "none" "$(jq -r '.action' <<<"$result")"
 _assert_eq "and nothing moves" "" "$(cat "$STATUS_FILE")"
@@ -315,6 +323,7 @@ graphql() {
 }
 : >"$STATUS_FILE"
 : >"$COMMENT_FILE"
+: >"$DISPATCH_FILE"
 result="$(drain_gate_release 2>/dev/null)"
 _assert_eq "nothing held -> no action" "none" "$(jq -r '.action' <<<"$result")"
 _assert_eq "nothing held -> no kick (idempotent polling)" "" "$(cat "$COMMENT_FILE")"
@@ -328,11 +337,12 @@ graphql() {
 sprint_autopilot_paused() { return 0; }
 : >"$STATUS_FILE"
 : >"$COMMENT_FILE"
+: >"$DISPATCH_FILE"
 result="$(drain_gate_release 2>/dev/null)"
 _assert_eq "a paused sprint still moves the held issue" "[3700]" "$(jq -c '.released' <<<"$result")"
 _assert_eq "a paused sprint posts no kick" "false" "$(jq -r '.kicked' <<<"$result")"
 _assert_not_contains "the paused notice never names the kick token" \
-  "$(grep 3521 "$COMMENT_FILE")" "READY_FOR_NEXT_ISSUE"
+  "$(cat "$DISPATCH_FILE")" "drain gate"
 _assert_contains "the paused notice carries the informational marker" \
   "$(cat "$COMMENT_FILE")" "nyxgpt-autopilot-informational"
 sprint_autopilot_paused() { return 1; }
@@ -340,6 +350,7 @@ sprint_autopilot_paused() { return 1; }
 # --- Test 6: DRY_RUN reports without mutating ---
 : >"$STATUS_FILE"
 : >"$COMMENT_FILE"
+: >"$DISPATCH_FILE"
 result="$(DRY_RUN=1 drain_gate_release 2>/dev/null)"
 _assert_eq "DRY_RUN still reports what it would release" "[3700]" "$(jq -c '.released' <<<"$result")"
 _assert_eq "DRY_RUN moves nothing" "" "$(cat "$STATUS_FILE")"
@@ -348,10 +359,11 @@ _assert_eq "DRY_RUN posts nothing" "" "$(cat "$COMMENT_FILE")"
 # --- Test 7: drain_gate_hold parks an issue in the holding lane ---
 : >"$STATUS_FILE"
 : >"$COMMENT_FILE"
+: >"$DISPATCH_FILE"
 drain_gate_hold 3702 "acceptance failure" >/dev/null 2>&1
 _assert_contains "hold puts the issue in Acceptance Failed" "$(cat "$STATUS_FILE")" "3702 -> Acceptance Failed"
 _assert_contains "hold explains the wait on the issue" "$(cat "$COMMENT_FILE")" "held in **Acceptance Failed**"
-_assert_not_contains "holding an issue never kicks the queue" "$(cat "$COMMENT_FILE")" "READY_FOR_NEXT_ISSUE"
+_assert_not_contains "holding an issue never kicks the queue" "$(cat "$DISPATCH_FILE")" "drain gate"
 
 # --- Test 8: process issues bypass the gate; acceptance work does not ---
 gh() { echo "$MOCK_ISSUE_JSON"; }
@@ -385,6 +397,7 @@ _assert_eq "an issue in the holding lane classifies as drain_gate_held" \
 
 : >"$STATUS_FILE"
 : >"$COMMENT_FILE"
+: >"$DISPATCH_FILE"
 # `|| rc=$?` rather than a bare call: sourcing gh_project.sh turns on
 # `set -e`, so an unguarded non-zero return would end the test run here.
 rc=0
