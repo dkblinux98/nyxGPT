@@ -124,6 +124,25 @@ start (`Insufficient memory`) was indistinguishable among them.
 The waits use the same vocabulary, so a Pod in a state waiting cannot fix ends
 the wait as soon as it is confirmed — naming that Pod and the scheduler's or
 kubelet's own reason — instead of consuming the whole rollout budget first.
+`CrashLoopBackOff` is the exception that gets a longer confirmation: it is the
+one blocked reason a healthy bring-up passes through, because kubelet
+escalates the restart delay up to five minutes and leaves the reason visible
+long after the attempt that will succeed has been scheduled.
+
+**Each workload's rollout budget is its own**, stamped when that workload's
+wait begins. The waits run one after another, so a single deadline computed
+up front spends the slow workloads' budgets on the ones before them — Ollama's
+larger allowance exists precisely because a cold default-model pull is the
+slowest thing the install does, and charging it for Cassandra's bootstrap
+reinstated this issue's own false failure. The one deliberate exception is the
+observability layer, whose dozen small workloads share a single pooled budget
+and are passed one explicitly.
+
+Both readouts the operator actually looks at carry these labels, not raw
+`kubectl` output: `nyxgpt ops status` prints `[OK]`/`[PENDING]`/`[FAIL]` per
+Pod (with the reason for a failed one) and per observability workload, and the
+Infrastructure page in the admin dashboard badges both lists READY / PENDING
+(amber) / FAILED from the same classification.
 
 Each image build mirrors the Homebrew reinstall-if-needed behavior (see
 [ops.md](ops.md)): it fingerprints the app source that image is built from

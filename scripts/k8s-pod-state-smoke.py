@@ -34,6 +34,13 @@ unschedulable Pod exactly the same thing -- i.e. that this cluster really does
 reproduce the reported defect, and that the check would fail on a build
 without the fix rather than passing vacuously.
 
+It then drives `nyxgpt ops status` against those same three Pods. That is the
+command every install failure message points the operator at, and it used to
+answer by echoing `kubectl get pods --no-headers` -- so the readout sent to
+resolve the ambiguity reproduced it. Its own pre-fix half runs first (the raw
+table, fetched from this cluster, giving both Pending Pods the same word), so
+this check cannot pass on a build without the fix either.
+
 Finally it exercises the wait itself: `_wait_for_k8s_rollouts` against an
 unschedulable Deployment must give up in a couple of poll slices naming that
 Pod, not burn its whole budget and then blame the workload it happened to be
@@ -48,10 +55,13 @@ workflow's cleanup step tears it down).
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
 from nyxgpt import ops
 
@@ -270,7 +280,9 @@ def check_the_wait_fails_fast_on_a_blocked_pod() -> None:
     """
     started = time.monotonic()
     results = ops._wait_for_k8s_rollouts(
-        [("deploy/unschedulable-deploy", "unschedulable workload", time.monotonic() + 900)],
+        # A budget, not a deadline: each workload's deadline is stamped when
+        # its own wait starts, so a slow predecessor cannot spend it (#3827).
+        [("deploy/unschedulable-deploy", "unschedulable workload", 900)],
         remedy="(smoke)",
     )
     elapsed = time.monotonic() - started
@@ -290,6 +302,66 @@ def check_the_wait_fails_fast_on_a_blocked_pod() -> None:
     if budget_fraction > 0.25:
         die(f"the wait took {elapsed:.0f}s of a 900s budget to notice a permanent failure")
     log(f"wait       -> [FAIL] {results[-1].message} (after {elapsed:.0f}s, not 900s)")
+
+
+def check_ops_status_classifies_the_same_pods() -> None:
+    """`nyxgpt ops status` is where the operator looks next -- it must classify too.
+
+    Every failure message the install prints points at this command, and it
+    used to answer by echoing `kubectl get pods --no-headers`: a table in
+    which a Pod pulling an image and a Pod no node will ever take are both
+    just the word `Pending`. So the command sent to resolve the ambiguity
+    reproduced it. Driven here against the same three real Pods the
+    classification checks above used, so the two readouts are proven to agree
+    on one cluster rather than by inspection.
+
+    Both halves: the raw table is fetched from this same cluster first and
+    asserted to be the undifferentiated thing it was, so this check cannot
+    pass on a build that never fixed it.
+    """
+    raw = kubectl("-n", NAMESPACE, "get", "pods", "--no-headers")
+    raw_by_pod = {
+        line.split()[0]: line for line in raw.splitlines() if line.strip() and line.split()
+    }
+    for probe in ("transient-pending", "unschedulable", "bad-image"):
+        if probe not in raw_by_pod:
+            die(f"the raw kubectl table is missing {probe} -- this check would pass vacuously")
+    # What the pre-fix `ops status` printed, verbatim. It carries a bare
+    # kubelet/scheduler status word and NO verdict: nothing says whether a
+    # given line is fine, whether the operator should wait, or why. That is
+    # what made it useless as the command an install failure points at.
+    if any(label in raw for label in ("[OK]", "[PENDING]", "[FAIL]")):
+        die(f"the raw kubectl table already carries verdicts; injection is wrong:\n{raw}")
+    if "Insufficient cpu" in raw:
+        die(f"the raw kubectl table already carries the scheduler's reason:\n{raw}")
+    log(
+        "pre-fix `ops status` output (`kubectl get pods --no-headers`) carries no verdict "
+        "for any Pod and no reason for the stuck one -- the defect reproduces here"
+    )
+
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        rc = ops.status(SimpleNamespace())
+    out = buffer.getvalue()
+    if rc != 0:
+        die(f"`ops status` exited {rc}")
+
+    expected = [
+        ("transient-pending", "PENDING"),
+        ("unschedulable", "FAIL"),
+        ("bad-image", "FAIL"),
+    ]
+    for name, label in expected:
+        if f"[{label}] pod {name}:" not in out:
+            die(f"`ops status` did not report pod {name} as [{label}]:\n{out}")
+    # ...and it is a real distinction, not one label for everything: the two
+    # Pods the raw table rendered identically now differ.
+    if "[PENDING] pod unschedulable:" in out or "[FAIL] pod transient-pending:" in out:
+        die(f"`ops status` still conflates the two Pending Pods:\n{out}")
+    # The scheduler's own words, which is what names the remedy.
+    if "Insufficient cpu" not in out:
+        die(f"`ops status` dropped the scheduler's reason for the unschedulable Pod:\n{out}")
+    log("ops status -> classifies the same three Pods, with the cluster's own reasons")
 
 
 def main() -> int:
@@ -313,6 +385,8 @@ def main() -> int:
     )
     check_pre_fix_rule_reproduces_the_defect()
     check_classification()
+    # Before the transient Pod is cured below, while all three states are live.
+    check_ops_status_classifies_the_same_pods()
     check_transient_pod_really_was_transient()
     check_the_wait_fails_fast_on_a_blocked_pod()
     kubectl("delete", "namespace", NAMESPACE, "--ignore-not-found", "--wait=false", check=False)
