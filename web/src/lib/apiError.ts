@@ -67,8 +67,10 @@ function itemText(item: unknown): string {
 /** `JSON.stringify` that never throws (cyclic payloads) and never yields "[object Object]". */
 function safeJson(value: unknown): string {
   try {
+    // Only ever called with an object, so `stringify` returns a string here;
+    // "{}" means the payload said nothing, which is the fallback's job.
     const json = JSON.stringify(value);
-    return json && json !== '{}' ? json : '';
+    return json === '{}' ? '' : json;
   } catch {
     return '';
   }
@@ -92,15 +94,20 @@ function envelopeText(error: unknown): string {
  * at all -- never `[object Object]`, and never a bare `undefined`.
  */
 export function apiErrorText(data: unknown, fallback: string): string {
-  if (typeof data === 'string' && data.trim()) return data.trim();
+  // A body that is not an object carries no error field to read: the API
+  // never answers that way, so the status line is the honest thing to show.
   if (data && typeof data === 'object') {
     const record = data as Record<string, unknown>;
     const fromError = envelopeText(record.error);
     if (fromError) return fromError;
     const detail = record.detail;
     if (typeof detail === 'string' && detail.trim()) return detail.trim();
+    // A dict `detail` is the app's own shape when it is one (`message` plus
+    // `details`), and an arbitrary payload otherwise -- try both readings.
     const fromDetail = Array.isArray(detail) ? detailsText(detail) : envelopeText(detail);
     if (fromDetail) return fromDetail;
+    const rawDetail = detailsText(detail);
+    if (rawDetail) return rawDetail;
     if (typeof record.message === 'string' && record.message.trim()) return record.message.trim();
   }
   return fallback;
