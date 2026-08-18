@@ -1422,6 +1422,43 @@ are absent here by design (relocated to the annex; IDs are never reused).
   deliberately write `|| echo ""` and still treat a failed read as "no
   Status".
 
+- **V-045** · 2026-08-18 — **The canary replica pool is borrowed for a
+  rollout, not standing — and `V-041`'s footprint numbers moved with it.**
+  The stable Deployments shipped `replicas: 4` deliberately (#2692): traffic
+  is split by replica ratio, so a 4-wide pool is what makes a 25% step
+  expressible. Every install paid for it standing, including single-node
+  local ones where 4 replicas buy no HA. #3833 made the pool elastic:
+  `canary start` reads the stable Deployment's live replica count, plans the
+  smallest pool that can express the requested weight (capped by `[canary]
+  total_replicas`), and promote/rollback return stable to the count they
+  found. So `[canary] total_replicas` is now a **ceiling on borrowing**, not
+  a steady-state size, and an operator-set replica count survives a rollout
+  instead of being re-inflated to a constant. Two traps that had to go with
+  it: `_split_replicas` returned `stable = 0` for any weight below 100% in a
+  1-replica pool (a full cutover, not a canary), and `DEFAULT_TOTAL_REPLICAS`
+  hardcoded the width the next rollout would restore.
+  **Footprint (supersedes the standing figure in V-041):** removing the six
+  standing replicas (3 api at 250m/512Mi, 3 web at 100m/256Mi) takes the
+  default `--kubernetes --local` stack from 3825m/8162Mi of requests to
+  **~2775m CPU and ~5858Mi**, so the ~175m CPU margin V-041 measured is now
+  ~1 CPU — which is exactly the headroom a rollout borrows back. V-041's
+  other halves (CPU is the binding dimension; the `--skip-observability`
+  smoke was hiding a missing wait, not a footprint problem) still stand.
+  Method: executed on 2026-08-18 — `scripts/canary-rollout-smoke.sh` on a
+  real kind cluster running the shipped manifests: stable applied at 1
+  replica, `nyxgpt canary start --weight 25` grew the pool to 4 (asserted
+  from the Service's own EndpointSlices: 3 stable + 1 canary Ready
+  endpoints), `promote` re-planned it to 2 for 50%, `rollback` returned it to
+  1, and a stable the operator had scaled to 2 came back to 2. A second run
+  with `NYXGPT_CANARY_SMOKE_INJECT_STANDING_POOL=1` failed at the resting
+  check as required. The footprint figures are arithmetic on V-041's measured
+  total minus the six removed Pods' declared requests, not a fresh
+  measurement; `scripts/k8s-local-smoke.sh` prints the live
+  allocatable-vs-requests numbers on every run.
+  Standing guard: `.github/workflows/canary-rollout-smoke.yml` (both jobs).
+  Re-verify when: a `k8s/**` manifest changes a `resources.requests` or a
+  replica count, or the pool-planning rule in `canary._plan_rollout` changes.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
