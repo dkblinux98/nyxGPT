@@ -62,6 +62,20 @@ type InfraStatus = {
     pods: string[];
     context: string;
     provisioned: boolean;
+    // What the two images in this cluster were built from (#3834): the
+    // published nyxgpt-api/nyxgpt-web artifacts, or a checkout's working tree
+    // (`nyxgpt ops install --kubernetes --local --dev`). `recorded: false`
+    // means no marker -- deployed before nyxGPT recorded one, or from another
+    // machine -- which must read as UNRECORDED, never as the artifact
+    // default: here that default would be a guess about someone else's
+    // deployment. Optional so the page still renders against an api process
+    // from before #3834.
+    install_mode?: {
+      mode: 'artifact' | 'dev';
+      checkout: string | null;
+      label: string;
+      recorded: boolean;
+    };
     // The in-cluster observability layer (#3787): Kubernetes mode cannot use
     // the Compose observability profiles, so it deploys its own. Optional on
     // purpose: an older api that predates this field must degrade to "NOT
@@ -570,6 +584,35 @@ export default function InfrastructurePage() {
                   {status.kubernetes.provisioned
                     ? ' — local kind cluster provisioned by nyxgpt (torn down together on `nyxgpt ops down --kubernetes`).'
                     : ' — bring-your-own cluster (never destroyed by `nyxgpt ops down --kubernetes`).'}
+                </p>
+                {/* The deployment's own install mode (#3834) -- what the images in
+                    THIS cluster were built from. Never the native marker: a host
+                    can run a native dev install and a Kubernetes artifact
+                    deployment at once, and reporting one for the other is the
+                    defect this section exists to prevent. */}
+                <p style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)', marginBottom: '0.5rem' }}>
+                  Install mode:{' '}
+                  {!status.kubernetes.install_mode?.recorded ? (
+                    <>
+                      <strong>unrecorded</strong> — no marker for this deployment on the machine
+                      this dashboard runs on. It was deployed before nyxGPT recorded one, or from
+                      another machine.
+                    </>
+                  ) : status.kubernetes.install_mode.mode === 'dev' ? (
+                    <>
+                      <strong>dev</strong> — the Pods run images built from the working tree at{' '}
+                      <code>{status.kubernetes.install_mode.checkout ?? 'an unrecorded checkout'}</code>{' '}
+                      as it was at install time, not from published artifacts. Re-run{' '}
+                      <code>nyxgpt ops install --kubernetes --local</code> without{' '}
+                      <code>--dev</code> to deploy the artifacts.
+                    </>
+                  ) : (
+                    <>
+                      <strong>artifact</strong> — images built from the published{' '}
+                      <code>nyxgpt-api</code>/<code>nyxgpt-web</code> artifacts (no checkout
+                      involved).
+                    </>
+                  )}
                 </p>
                 {status.kubernetes.pods.length > 0 ? (
                   <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: '0.8rem', fontFamily: 'monospace' }}>
