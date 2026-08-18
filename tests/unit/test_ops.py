@@ -11967,6 +11967,8 @@ def test_install_kubernetes_success_runs_all_steps(monkeypatch, capsys):
         # The observability layer this mode now deploys too (#3787).
         patch.object(ops, "_sync_packaged_resources", return_value=ok),
         patch.object(ops, "_apply_k8s_observability", return_value=ok) as o,
+        # Its rollout wait (#3826) shells out to kubectl for real otherwise.
+        patch.object(ops, "_wait_for_k8s_observability", return_value=ok),
         patch.object(ops, "_k8s_observability_health", return_value=ok),
     ):
         rc = ops._install_kubernetes(args)
@@ -12001,6 +12003,8 @@ def test_install_kubernetes_clears_intentional_stop_markers_for_api_and_web(monk
         patch.object(ops, "_k8s_stack_health", return_value=ok),
         patch.object(ops, "_sync_packaged_resources", return_value=ok),
         patch.object(ops, "_apply_k8s_observability", return_value=ok),
+        # Its rollout wait (#3826) shells out to kubectl for real otherwise.
+        patch.object(ops, "_wait_for_k8s_observability", return_value=ok),
         patch.object(ops, "_k8s_observability_health", return_value=ok),
         patch.object(ops.self_heal, "clear_intentionally_stopped") as clear_stopped,
     ):
@@ -12272,6 +12276,8 @@ def test_install_kubernetes_local_runs_steps_and_returns_results(monkeypatch):
         # (#3787) -- unpatched, these steps would shell out to kubectl.
         patch.object(ops, "_sync_packaged_resources", return_value=ok),
         patch.object(ops, "_apply_k8s_observability", return_value=ok),
+        # Its rollout wait (#3826) shells out to kubectl for real otherwise.
+        patch.object(ops, "_wait_for_k8s_observability", return_value=ok),
         patch.object(ops, "_k8s_observability_health", return_value=ok),
     ):
         results = ops.install_kubernetes_local(api_key="k")
