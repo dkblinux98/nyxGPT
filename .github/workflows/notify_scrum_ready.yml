@@ -211,7 +211,8 @@ jobs:
                 'Dispatch resumes once the anomaly is resolved (an owner `RESOLVE_ANOMALY` ' +
                 'comment) or its detection window elapses.'
               : '⏸️ **Scrummaster Agent**: Dispatch paused -- 2 or more unresolved ' +
-                'escalations (open issues assigned to the owner). See the loud report on ' +
+                'escalations (open issues assigned to the owner, excluding the release ' +
+                'tracking issue). See the loud report on ' +
                 'the release tracking issue (#3687 unresolved-escalation pause backstop). ' +
                 'Dispatch resumes automatically once the count drops below 2.';
             await github.rest.issues.createComment({

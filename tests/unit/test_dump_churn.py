@@ -781,18 +781,17 @@ class TestBuildSnapshot:
         snapshot = dump_churn.build_snapshot(rounds)
         assert set(snapshot) == {
             "generated_at",
-            # logFetch added by #3808: distinguishes expired logs (normal, the
-            # window outruns GitHub's retention) from failed fetches (a real
-            # problem) so an all-null dump is not mistaken for an empty one.
+            # logFetch added by #3808: fetch diagnostics recording how the run
+            # logs were obtained, so a consumer can distinguish expired logs
+            # (normal, the window outruns GitHub's retention) from failed
+            # fetches (a real problem) and tell a real zero from an unreadable
+            # log -- an all-null dump is not mistaken for an empty one.
             "logFetch",
             "methodology",
             "rounds",
             "issues",
             "totals",
             "staleContextIncidents",
-            # Fetch diagnostics: how the run logs were obtained, so a consumer
-            # can tell a real zero from an unreadable log.
-            "logFetch",
         }
         assert set(snapshot["issues"]) == {"42"}
         assert snapshot["rounds"][0]["round"] == 1

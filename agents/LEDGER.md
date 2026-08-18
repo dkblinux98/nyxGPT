@@ -337,6 +337,30 @@ are absent here by design (relocated to the annex; IDs are never reused).
   Source: owner directive 2026-08-16; `CLAUDE.md` § Agentic First Principles;
   `AGENTS.md` § First Principles; #3821.
 
+- **D-013** · 2026-08-18 · owner — **Branch cleanup is event-driven, never
+  scheduled.** A scheduled sweep is rejected on cost (first principle 1: do not
+  keep a watch armed over a process that is idle by design). The developer
+  agent cleans up her own branches at the moments work changes state: the
+  merge flow deletes the PR branch (exists — `delete_branch_on_merge`), and
+  any path that abandons or supersedes a branch (retry onto a fresh branch,
+  rebase, escalation abort) deletes the branch it replaced — after the
+  blob-level content check in #3862, never on ancestry, commit count, PR
+  existence, or mergeability, each of which was disproven against a real
+  branch set on 2026-08-18. Do not re-propose a scheduled sweep as a fix for
+  branch accumulation.
+  Source: owner in session, 2026-08-18; #3862.
+
+- **D-014** · 2026-08-18 · owner — **Model assignment per work type: review
+  work runs Fable 5, dev work runs Opus 5, huddle work runs Fable 5.** The
+  knobs are the repo Actions variables `AGENT_MODEL_REVIEW`,
+  `AGENT_MODEL_DEV` and `AGENT_MODEL_HUDDLE`; the workflow fallbacks encode
+  the policy (`claude-fable-5` / `claude-opus-5` / `claude-fable-5`), so with
+  no variables set the policy holds by default. Before this decision the
+  developer's huddle-position leg rode `AGENT_MODEL_DEV` (Opus 5) and the
+  scrummaster mediation leg rode `AGENT_MODEL_REVIEW`; both huddle legs now
+  use `AGENT_MODEL_HUDDLE`.
+  Source: owner in session, 2026-08-18.
+
 ## Verifications
 
 - **V-001** · 2026-08-14 — Releases in this repository are immutable: a

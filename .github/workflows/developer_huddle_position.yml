@@ -120,6 +120,6 @@ jobs:
             Do NOT write, edit, or commit any code in this run. Do NOT change issue
             status or assignments. Your only task is the two comments above.
           claude_args: >-
-            --model ${{ vars.AGENT_MODEL_DEV || 'claude-opus-5' }}
+            --model ${{ vars.AGENT_MODEL_HUDDLE || 'claude-fable-5' }}
             --allowed-tools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh issue view:*),Read,Grep"
           show_full_output: true

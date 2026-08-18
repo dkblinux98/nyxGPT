@@ -97,7 +97,7 @@ scrummaster_dispatch_next() {
     echo "next_issue="
     printf 'tried<<NYXGPT_TRIED_EOF\n%sNYXGPT_TRIED_EOF\n' ""
     _notify_dispatch_block "dispatch-paused" \
-      "Scrummaster dispatch paused -- 2 or more unresolved escalations (open issues assigned to the owner)." \
+      "Scrummaster dispatch paused -- 2 or more unresolved escalations (open issues assigned to the owner, excluding the release tracking issue)." \
       "Resolve the unresolved escalations reported on the release tracking issue; dispatch resumes automatically once the count drops below 2."
     return 0
   fi

@@ -637,6 +637,28 @@ _open_issues_assigned_to() { echo "[]"; }
 _assert_eq "unresolved_escalation_issues is empty when nothing is assigned to the owner" \
   "" "$(unresolved_escalation_issues)"
 
+# The release tracking issue is owner-assigned for the whole life of a
+# release; counting it would permanently drop the pause gate's effective
+# threshold from 2 to 1 (#3868 -- exactly how the 2026-08-18 post-acceptance
+# drain deadlocked on one real parked issue plus the tracker).
+_open_issues_assigned_to() {
+  cat <<'JSON'
+[
+  {"number": 3521, "title": "Release v3.0.0", "pull_request": null},
+  {"number": 201, "title": "spec ambiguity on auth flow", "pull_request": null}
+]
+JSON
+}
+RELEASE_ISSUE_NUMBER="3521"
+_assert_eq "unresolved_escalation_issues excludes the release tracking issue" \
+  "#201 spec ambiguity on auth flow" "$(unresolved_escalation_issues)"
+
+RELEASE_ISSUE_NUMBER=""
+_assert_eq "unresolved_escalation_issues keeps every issue when no release issue is configured" \
+  "#3521 Release v3.0.0
+#201 spec ambiguity on auth flow" "$(unresolved_escalation_issues)"
+RELEASE_ISSUE_NUMBER="3521"
+
 # --- Test 14: count_unresolved_escalations (#3687) -- always echoes a ---
 # --- number, including zero (grep -c's exit-1-on-no-match must not leak) ---
 unresolved_escalation_issues() { echo ""; }
