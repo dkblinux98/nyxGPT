@@ -28,6 +28,8 @@ const mockActiveStatus = {
   namespace: 'nyxgpt',
   active: true,
   weight_percent: 25,
+  pool_replicas: 4,
+  resting_replicas: 1,
   stable: { state: 'healthy', message: 'ok', version: '1.0.0-abc1234' },
   canary: { state: 'unhealthy', message: 'elevated errors', version: '1.1.0-def5678' },
   metrics: { total_requests: 120, error_rate_percent: 1.234, p95_latency_ms: 456.7 },
@@ -297,7 +299,15 @@ describe('CanaryPage', () => {
     server.use(
       http.post('/api/v1/canary/start', async ({ request }) => {
         capturedBody = await request.json();
-        return HttpResponse.json({});
+        // The pool is elastic (#3833) and 15% is not expressible in it, so
+        // the server reports the weight it actually rounded to -- the page
+        // must show THAT, not the number that was typed into the box.
+        return HttpResponse.json({
+          ok: true,
+          message:
+            'Started canary rollout at 25% (1/4 replicas); 15% is not expressible in a pool ' +
+            'of at most 4 replicas, so it rounded to 25%',
+        });
       }),
       http.get('/api/v1/canary/status', () => HttpResponse.json(mockActiveStatus))
     );
@@ -305,12 +315,15 @@ describe('CanaryPage', () => {
     await user.click(screen.getByRole('button', { name: /^start canary$/i }));
 
     await waitFor(() => {
-      expect(screen.getByText('Started canary rollout at 15%')).toBeInTheDocument();
+      expect(screen.getByText(/rounded to 25%/)).toBeInTheDocument();
     });
+    expect(screen.queryByText(/Started canary rollout at 15%/)).not.toBeInTheDocument();
     expect(capturedBody).toEqual({ weight_percent: 15, component: 'api' });
 
-    // Active state: rollout badge, metrics, and history entries (with and without from_weight_percent)
+    // Active state: rollout badge, the borrowed pool, metrics, and history
+    // entries (with and without from_weight_percent)
     expect(screen.getByText('ROLLOUT IN PROGRESS — 25%')).toBeInTheDocument();
+    expect(screen.getByText(/pool: 4 replicas \(stable rests at\s*1\)/)).toBeInTheDocument();
     expect(screen.getByText('120')).toBeInTheDocument();
     expect(screen.getByText('1.23%')).toBeInTheDocument();
     expect(screen.getByText('457ms')).toBeInTheDocument();
