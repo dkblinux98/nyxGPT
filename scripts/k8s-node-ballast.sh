@@ -7,10 +7,14 @@
 # node is therefore green by luck -- exactly the failure mode the
 # fault-injection rule exists to prevent (CLAUDE.md, #3753).
 #
+# Memory only: a GitHub runner already has the 4 CPUs a stock Docker Desktop
+# VM gets, so the cpu dimension of the same check is realistic without any
+# ballast (it is what caught the canary's `Insufficient cpu`).
+#
 # So: place one `pause` Pod, in its own namespace, that REQUESTS the surplus
-# and uses none of it. The scheduler then has the operator's node, and so does
-# `nyxgpt ops install`'s capacity preflight (it counts every other namespace's
-# requests against allocatable). The runner keeps all its real memory, so
+# memory and uses none of it. The scheduler then has the operator's node, and
+# so does `nyxgpt ops install`'s capacity preflight (it counts every other
+# namespace's requests against allocatable). The runner keeps all its real memory, so
 # nothing in the stack gets OOM-killed for the sake of the simulation.
 #
 # Usage: scripts/k8s-node-ballast.sh [target-allocatable-Mi]   (default 7936)

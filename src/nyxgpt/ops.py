@@ -6379,23 +6379,31 @@ def _build_and_load_k8s_web_image() -> list[OpsResult]:
 
 # --- Node capacity preflight (#3825) ---
 #
-# A Pod's memory REQUEST reserves node capacity at schedule time; its LIMIT
-# caps the peak. Apply a stack whose requests exceed the node and kubectl
-# still succeeds -- the objects are accepted, the Deployments report
-# progressing, and one Pod simply sits `Pending / FailedScheduling:
-# Insufficient memory` forever. That is how #3825 presented: the install said
-# it was done, prometheus was never scheduled, and the operator's later
-# `nyxgpt canary start` failed the same way and looked like a broken canary.
+# A Pod's REQUEST reserves node capacity at schedule time; its LIMIT caps the
+# peak. Apply a stack whose requests exceed the node and kubectl still
+# succeeds -- the objects are accepted, the Deployments report progressing,
+# and one Pod simply sits `Pending / FailedScheduling: Insufficient memory`
+# forever. That is how #3825 presented: the install said it was done,
+# prometheus was never scheduled, and the operator's later `nyxgpt canary
+# start` failed the same way and looked like a broken canary.
+#
+# Checked for BOTH memory and cpu, not just the resource the issue named:
+# right-sizing the memory alone moved the wall rather than removing it -- on
+# a 4-core VM the canary Pod then failed with `Insufficient cpu` instead, an
+# identical failure with a different word in it.
 #
 # The manifests were right-sized in the same change, but sizing alone is not
 # a fix: the operator's node is whatever their Docker Desktop VM was given,
-# and a stack that fits 8Gi does not fit 4Gi. So the install measures the
-# node it is about to fill and says so BEFORE applying anything, instead of
-# leaving Pods Pending for the operator to diagnose.
+# and a stack that fits 8Gi/4 cores does not fit 4Gi/2. So the install
+# measures the node it is about to fill and says so BEFORE applying anything,
+# instead of leaving Pods Pending for the operator to diagnose.
+
+# The two resources the scheduler will refuse a Pod over here. (Ephemeral
+# storage is a third in principle; nothing in this stack requests any.)
+_K8S_PREFLIGHT_RESOURCES = ("memory", "cpu")
 
 # Kubernetes resource-quantity suffixes (binary and decimal), per
-# k8s.io/apimachinery/pkg/api/resource. "m" (milli) is legal on memory too
-# and is handled separately below.
+# k8s.io/apimachinery/pkg/api/resource.
 _K8S_QUANTITY_MULTIPLIERS: dict[str, float] = {
     "": 1,
     "k": 1000,
@@ -6411,7 +6419,11 @@ _K8S_QUANTITY_MULTIPLIERS: dict[str, float] = {
     "Pi": 1024**5,
     "Ei": 1024**6,
 }
-_K8S_QUANTITY_RE = re.compile(r"^(\d+(?:\.\d+)?)([kMGTPE]i?|m)?$")
+# `K` is matched as well as `k` because the binary suffixes capitalise it
+# ("Ki" is what a node reports its allocatable memory in) while the decimal
+# kilo is lower-case. A bare "K" is not a legal suffix and falls out as
+# unparseable at the lookup below.
+_K8S_QUANTITY_RE = re.compile(r"^(\d+(?:\.\d+)?)([kKMGTPE]i?|m)?$")
 
 _MIB = 1024**2
 
@@ -6433,11 +6445,57 @@ def _parse_k8s_quantity(value: object) -> int | None:
     suffix = match.group(2) or ""
     if suffix == "m":
         return int(amount / 1000)
-    return int(amount * _K8S_QUANTITY_MULTIPLIERS[suffix])
+    multiplier = _K8S_QUANTITY_MULTIPLIERS.get(suffix)
+    if multiplier is None:
+        return None
+    return int(amount * multiplier)
 
 
-def _pod_memory_request(pod_spec: dict[str, Any]) -> int:
-    """Effective memory request of one Pod, in bytes.
+def _parse_k8s_cpu(value: object) -> int | None:
+    """Parse a Kubernetes CPU quantity ("250m", "2", "1.5") into millicores.
+
+    A separate unit from memory on purpose: CPU's "m" suffix is the normal
+    way to write it, and rounding 250m to "0 bytes" the way the memory
+    parser would makes every comparison meaningless.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    match = _K8S_QUANTITY_RE.match(text)
+    if match is None:
+        return None
+    amount = float(match.group(1))
+    suffix = match.group(2) or ""
+    if suffix == "m":
+        return int(amount)
+    if suffix != "":
+        return None
+    return int(amount * 1000)
+
+
+def _parse_k8s_resource(value: object, resource: str) -> int | None:
+    """Parse a quantity in the unit that resource is compared in."""
+    if resource == "cpu":
+        return _parse_k8s_cpu(value)
+    return _parse_k8s_quantity(value)
+
+
+def _format_k8s_resource(value: int, resource: str) -> str:
+    """Render a parsed figure back in the unit the manifests are written in."""
+    if resource == "cpu":
+        return f"{value}m"
+    return f"{value // _MIB}Mi"
+
+
+def _container_resource_request(container: dict[str, Any], resource: str) -> object:
+    """`resources.requests.<resource>` of one container, or None if it sets none."""
+    resources = container.get("resources") or {}
+    requests = resources.get("requests") or {}
+    return requests.get(resource)
+
+
+def _pod_resource_request(pod_spec: dict[str, Any], resource: str = "memory") -> int:
+    """Effective request of one Pod for `resource`, in that resource's unit.
 
     The scheduler charges `max(sum of the regular containers, the largest
     initContainer)`: init containers run to completion one at a time before
@@ -6448,9 +6506,11 @@ def _pod_memory_request(pod_spec: dict[str, Any]) -> int:
     total = 0
     floor = 0
     for container in pod_spec.get("containers") or []:
-        total += _parse_k8s_quantity(_container_memory_request(container)) or 0
+        total += (
+            _parse_k8s_resource(_container_resource_request(container, resource), resource) or 0
+        )
     for init in pod_spec.get("initContainers") or []:
-        request = _parse_k8s_quantity(_container_memory_request(init)) or 0
+        request = _parse_k8s_resource(_container_resource_request(init, resource), resource) or 0
         if init.get("restartPolicy") == "Always":
             total += request
         else:
@@ -6458,17 +6518,10 @@ def _pod_memory_request(pod_spec: dict[str, Any]) -> int:
     return max(total, floor)
 
 
-def _container_memory_request(container: dict[str, Any]) -> object:
-    """`resources.requests.memory` of one container, or None if it sets none."""
-    resources = container.get("resources") or {}
-    requests = resources.get("requests") or {}
-    return requests.get("memory")
-
-
-def _workload_memory_requests(
-    objects: list[dict[str, Any]], *, node_count: int
+def _workload_resource_requests(
+    objects: list[dict[str, Any]], *, node_count: int, resource: str = "memory"
 ) -> tuple[int, int, list[tuple[str, int]]]:
-    """Total the memory a set of rendered manifests will reserve, in bytes.
+    """Total what a set of rendered manifests will reserve of `resource`.
 
     Returns `(scheduled, standby, breakdown)`:
 
@@ -6481,7 +6534,7 @@ def _workload_memory_requests(
       and the reason a 99%-full node reads as "installed fine" right up
       until the operator starts a canary (#3825). Derived from the manifests
       rather than hardcoded, so a new parked workload is counted for free.
-    * `breakdown` -- `(name, bytes)` per workload, largest first, for the
+    * `breakdown` -- `(name, amount)` per workload, largest first, for the
       operator-facing detail.
     """
     scheduled = 0
@@ -6493,7 +6546,7 @@ def _workload_memory_requests(
             continue
         spec = obj.get("spec") or {}
         pod_spec = ((spec.get("template") or {}).get("spec")) or {}
-        per_pod = _pod_memory_request(pod_spec)
+        per_pod = _pod_resource_request(pod_spec, resource)
         if kind == "DaemonSet":
             replicas = max(node_count, 1)
         else:
@@ -6540,55 +6593,59 @@ def _k8s_render_kustomization(directory: Path) -> tuple[list[dict[str, Any]], st
     return [rendered], None
 
 
-def _k8s_node_memory() -> tuple[int, int, str | None]:
-    """Total allocatable memory across schedulable nodes: `(bytes, node_count, error)`.
+def _k8s_node_allocatable() -> tuple[dict[str, int], int, str | None]:
+    """Allocatable capacity across schedulable nodes: `(per-resource, count, error)`.
 
     Allocatable, not capacity: the kubelet's reserved slice is already
     subtracted there, and it is what the scheduler actually compares
     requests against. Cordoned nodes are excluded -- nothing new will land
-    on them.
+    on them. One `kubectl get` for both resources.
     """
     cp = _run(["kubectl", "get", "nodes", "-o", "json"], check=False)
     if cp.returncode != 0:
-        return 0, 0, f"could not read node capacity: {(cp.stderr or '').strip()[:200]}"
+        return {}, 0, f"could not read node capacity: {(cp.stderr or '').strip()[:200]}"
     try:
         payload = json.loads(cp.stdout)
     except json.JSONDecodeError as e:
-        return 0, 0, f"could not parse node capacity: {e}"
-    total = 0
+        return {}, 0, f"could not parse node capacity: {e}"
+    totals = dict.fromkeys(_K8S_PREFLIGHT_RESOURCES, 0)
     count = 0
     for node in payload.get("items") or []:
         if ((node.get("spec") or {}).get("unschedulable")) is True:
             continue
         allocatable = ((node.get("status") or {}).get("allocatable")) or {}
-        memory = _parse_k8s_quantity(allocatable.get("memory"))
-        if memory is None:
+        parsed = {
+            resource: _parse_k8s_resource(allocatable.get(resource), resource)
+            for resource in _K8S_PREFLIGHT_RESOURCES
+        }
+        if any(value is None for value in parsed.values()):
             continue
-        total += memory
+        for resource, value in parsed.items():
+            totals[resource] += value or 0
         count += 1
     if count == 0:
-        return 0, 0, "no schedulable node reported allocatable memory"
-    return total, count, None
+        return {}, 0, "no schedulable node reported allocatable capacity"
+    return totals, count, None
 
 
-def _k8s_committed_memory(exclude_namespace: str) -> tuple[int, str | None]:
-    """Memory already reserved on the nodes by Pods outside `exclude_namespace`.
+def _k8s_committed_requests(exclude_namespace: str) -> tuple[dict[str, int], str | None]:
+    """What Pods outside `exclude_namespace` have already reserved on the nodes.
 
-    kube-system alone accounts for a few hundred MiB on a kind node, and it
-    is charged against the same allocatable pool the stack is about to draw
-    from -- comparing the stack against raw allocatable would overstate what
-    is free by exactly that much. Our own namespace is excluded because this
-    install is what defines its contents: counting the previous revision's
-    Pods would double-charge a re-install.
+    kube-system alone accounts for a few hundred MiB and most of a core on a
+    kind node, and it is charged against the same allocatable pool the stack
+    is about to draw from -- comparing the stack against raw allocatable
+    would overstate what is free by exactly that much. Our own namespace is
+    excluded because this install is what defines its contents: counting the
+    previous revision's Pods would double-charge a re-install.
     """
     cp = _run(["kubectl", "get", "pods", "--all-namespaces", "-o", "json"], check=False)
     if cp.returncode != 0:
-        return 0, f"could not read scheduled Pods: {(cp.stderr or '').strip()[:200]}"
+        return {}, f"could not read scheduled Pods: {(cp.stderr or '').strip()[:200]}"
     try:
         payload = json.loads(cp.stdout)
     except json.JSONDecodeError as e:
-        return 0, f"could not parse scheduled Pods: {e}"
-    total = 0
+        return {}, f"could not parse scheduled Pods: {e}"
+    totals = dict.fromkeys(_K8S_PREFLIGHT_RESOURCES, 0)
     for pod in payload.get("items") or []:
         metadata = pod.get("metadata") or {}
         if metadata.get("namespace") == exclude_namespace:
@@ -6599,52 +6656,116 @@ def _k8s_committed_memory(exclude_namespace: str) -> tuple[int, str | None]:
             continue
         if ((pod.get("status") or {}).get("phase")) in ("Succeeded", "Failed"):
             continue
-        total += _pod_memory_request(spec)
-    return total, None
+        for resource in _K8S_PREFLIGHT_RESOURCES:
+            totals[resource] += _pod_resource_request(spec, resource)
+    return totals, None
 
 
-def _mib(value: int) -> str:
-    """Render a byte count as whole MiB, the unit the manifests are written in."""
-    return f"{value // _MIB}Mi"
+def _evaluate_k8s_capacity(
+    objects: list[dict[str, Any]],
+    *,
+    resource: str,
+    allocatable: int,
+    node_count: int,
+    committed: int,
+    skip_observability: bool,
+) -> OpsResult:
+    """Compare one resource's requests against what the cluster has left.
 
-
-def _preflight_k8s_capacity(*, skip_observability: bool = False) -> list[OpsResult]:
-    """Refuse to fill a node the stack does not fit on, before applying anything (#3825).
-
-    Sums what the manifests about to be applied will RESERVE and compares it
-    against what the cluster has left. Three outcomes:
+    Three outcomes, all of them reported rather than left for the operator
+    to find in `kubectl describe`:
 
     * does not fit -> a failing result naming the shortfall and what to do
-      about it. The install stops here, which is strictly better than the
-      pre-#3825 behaviour of applying anyway and leaving a Pod Pending with
-      the reason buried in `kubectl describe`.
+      about it. The install stops there, which is strictly better than the
+      pre-#3825 behaviour of applying anyway and leaving a Pod Pending.
     * fits, but not with the canary pair's headroom -> a passing result that
       says so, so "start a canary later" is a known constraint rather than a
       surprise failure.
     * fits with headroom -> a passing result with the figures.
-
-    Anything it cannot measure (a render that fails, a node that reports no
-    allocatable memory) is a skip, never a block: the preflight exists to
-    catch a known-bad arithmetic result, not to become a new way for the
-    install to refuse.
 
     On a multi-node cluster the comparison is against the SUM of the nodes,
     which no single Pod can draw on, so a shortfall there is reported as a
     warning rather than a refusal -- summed capacity proves a stack cannot
     fit, but never that it can.
     """
+    requested, standby, breakdown = _workload_resource_requests(
+        objects, node_count=node_count, resource=resource
+    )
+    free = allocatable - committed
+
+    def show(value: int) -> str:
+        return _format_k8s_resource(value, resource)
+
+    detail = (
+        f"node allocatable {show(allocatable)}, already reserved by other namespaces "
+        f"{show(committed)}, free {show(free)}; this stack requests {show(requested)}"
+        f" across {node_count} node(s).\n"
+        + "\n".join(f"  {name}: {show(size)}" for name, size in breakdown)
+    )
+
+    if requested > free:
+        shortfall = show(requested - free)
+        knob = "Memory" if resource == "memory" else "CPUs"
+        remedy = (
+            f"Give the cluster VM at least {shortfall} more {resource} (Docker Desktop: "
+            f"Settings -> Resources -> {knob}, then `nyxgpt ops down --kubernetes` and "
+            "re-run this install)"
+        )
+        if not skip_observability:
+            remedy += (
+                ", or install without the observability layer: "
+                "`nyxgpt ops install --kubernetes --local --skip-observability`"
+            )
+        message = (
+            f"Not enough node {resource}: the stack requests {show(requested)} but only "
+            f"{show(free)} is free"
+        )
+        if node_count > 1:
+            # Summed capacity cannot prove a per-node placement is possible,
+            # so it must not be used to refuse one.
+            return OpsResult(True, f"Warning: {message}", f"{detail}\n{remedy}")
+        return OpsResult(False, message, f"{detail}\n{remedy}\nNothing was applied.")
+
+    if requested + standby > free:
+        return OpsResult(
+            True,
+            f"{resource.capitalize()} is tight: {show(free - requested)} free after install, "
+            f"and a canary rollout needs {show(standby)}",
+            f"{detail}\n`nyxgpt canary start` will leave its Pod Pending until the "
+            f"cluster VM has more {resource}.",
+        )
+
+    return OpsResult(
+        True,
+        f"Node {resource} is sufficient: {show(requested)} requested, {show(free)} free "
+        f"({show(standby)} of that reserved for a canary rollout)",
+        detail,
+    )
+
+
+def _preflight_k8s_capacity(*, skip_observability: bool = False) -> list[OpsResult]:
+    """Refuse to fill a node the stack does not fit on, before applying anything (#3825).
+
+    Renders the manifests that are about to be applied and evaluates their
+    memory and cpu requests against the cluster (see
+    `_evaluate_k8s_capacity` for what each outcome means). Anything it cannot
+    measure -- a render that fails, a node that reports no allocatable
+    capacity -- is a skip, never a block: the preflight exists to catch a
+    known-bad arithmetic result, not to become a new way for the install to
+    refuse.
+    """
+    # Read the node first: a preflight that is about to skip itself must not
+    # leave a bootstrapped Secret behind as a side effect.
+    allocatable, node_count, error = _k8s_node_allocatable()
+    if error is not None:
+        return [OpsResult(True, "Skipped capacity preflight", error)]
+
     # Both tiers land in the same namespace and draw on the same node, so
     # the figure that matters is their union. The app tier is included only
     # once its Secret exists, which is also the marker for "an app tier was
     # bootstrapped at all" (`_down_kubernetes_steps` uses the same one) --
     # `nyxgpt ops observability --kubernetes --local` on a cluster that has
     # never had one must not be measured as though it did.
-    # Read the node first: a preflight that is about to skip itself must not
-    # leave a bootstrapped Secret behind as a side effect.
-    allocatable, node_count, error = _k8s_node_memory()
-    if error is not None:
-        return [OpsResult(True, "Skipped capacity preflight", error)]
-
     directories = [K8S_DIR] if (K8S_DIR / "secret.yaml").exists() else []
     if not skip_observability:
         # The observability kustomization references its Secret, so it can
@@ -6662,59 +6783,20 @@ def _preflight_k8s_capacity(*, skip_observability: bool = False) -> list[OpsResu
             return [OpsResult(True, "Skipped capacity preflight", error)]
         objects += rendered
 
-    requested, standby, breakdown = _workload_memory_requests(objects, node_count=node_count)
-    committed, error = _k8s_committed_memory(K8S_NAMESPACE)
+    committed, error = _k8s_committed_requests(K8S_NAMESPACE)
     if error is not None:
         return [OpsResult(True, "Skipped capacity preflight", error)]
 
-    free = allocatable - committed
-    detail = (
-        f"node allocatable {_mib(allocatable)}, already reserved by other namespaces "
-        f"{_mib(committed)}, free {_mib(free)}; this stack requests {_mib(requested)}"
-        f" across {node_count} node(s).\n"
-        + "\n".join(f"  {name}: {_mib(size)}" for name, size in breakdown)
-    )
-
-    if requested > free:
-        shortfall = requested - free
-        remedy = (
-            f"Give the cluster VM at least {_mib(shortfall)} more memory (Docker Desktop: "
-            "Settings -> Resources -> Memory, then `nyxgpt ops down --kubernetes` and "
-            "re-run this install)"
-        )
-        if not skip_observability:
-            remedy += (
-                ", or install without the observability layer: "
-                "`nyxgpt ops install --kubernetes --local --skip-observability`"
-            )
-        message = (
-            f"Not enough node memory: the stack requests {_mib(requested)} but only "
-            f"{_mib(free)} is free"
-        )
-        if node_count > 1:
-            # Summed capacity cannot prove a per-node placement is possible,
-            # so it must not be used to refuse one.
-            return [OpsResult(True, f"Warning: {message}", f"{detail}\n{remedy}")]
-        return [OpsResult(False, message, f"{detail}\n{remedy}\nNothing was applied.")]
-
-    if requested + standby > free:
-        return [
-            OpsResult(
-                True,
-                f"Capacity is tight: {_mib(free - requested)} free after install, and a "
-                f"canary rollout needs {_mib(standby)}",
-                f"{detail}\n`nyxgpt canary start` will leave its Pod Pending until the "
-                "cluster VM has more memory.",
-            )
-        ]
-
     return [
-        OpsResult(
-            True,
-            f"Node capacity is sufficient: {_mib(requested)} requested, {_mib(free)} free "
-            f"({_mib(standby)} of that reserved for a canary rollout)",
-            detail,
+        _evaluate_k8s_capacity(
+            objects,
+            resource=resource,
+            allocatable=allocatable.get(resource, 0),
+            node_count=node_count,
+            committed=committed.get(resource, 0),
+            skip_observability=skip_observability,
         )
+        for resource in _K8S_PREFLIGHT_RESOURCES
     ]
 
 

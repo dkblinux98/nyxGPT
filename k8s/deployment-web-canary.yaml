@@ -55,7 +55,7 @@ spec:
             # deployment-canary.yaml: the canary Pod schedules last, so it is
             # the first casualty of an over-reserved node (#3825).
             requests:
-              cpu: 100m
+              cpu: 50m
               memory: 192Mi
             limits:
               cpu: 500m

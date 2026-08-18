@@ -14,7 +14,11 @@ Two halves, matching the two halves of the defect:
   4Gi one, so the install measures the node before applying anything and
   refuses instead of leaving Pods Pending.
 
-The arithmetic here mirrors `ops._workload_memory_requests`; it is spelled
+Both resources are covered, not just the memory the issue named: with the
+memory right-sized, the canary Pod on a 4-core VM failed with `Insufficient
+cpu` instead -- the same defect one resource over.
+
+The arithmetic here mirrors `ops._workload_resource_requests`; it is spelled
 out again from the YAML rather than reusing it, so a bug in the production
 summation cannot make these assertions vacuously pass.
 """
@@ -219,6 +223,94 @@ def test_api_keeps_its_burst_ceiling() -> None:
     assert _mem_mi(limits["memory"]) == 1024
 
 
+# --- the manifests fit the node's CPUs too ---------------------------------
+
+# A stock Docker Desktop VM gets 4 CPUs, and kube-system on a kind node holds
+# ~950m of that before nyxGPT asks for any.
+DOCKER_DESKTOP_ALLOCATABLE_CPU_M = 4000
+KUBE_SYSTEM_RESERVED_CPU_M = 950
+
+
+def _cpu_m(quantity: str) -> int:
+    parsed = ops._parse_k8s_cpu(quantity)
+    assert parsed is not None, f"unparseable cpu quantity in a manifest: {quantity!r}"
+    return parsed
+
+
+def _pod_request_cpu_m(doc: dict) -> int:
+    spec = doc["spec"]["template"]["spec"]
+    containers = sum(
+        _cpu_m(c["resources"]["requests"]["cpu"])
+        for c in spec.get("containers", [])
+        if c.get("resources", {}).get("requests", {}).get("cpu")
+    )
+    inits = [
+        _cpu_m(c["resources"]["requests"]["cpu"])
+        for c in spec.get("initContainers", [])
+        if c.get("resources", {}).get("requests", {}).get("cpu")
+    ]
+    return max([containers, *inits])
+
+
+def _totals_cpu_m() -> tuple[int, int]:
+    scheduled = 0
+    standby = 0
+    for doc in _workloads().values():
+        per_pod = _pod_request_cpu_m(doc)
+        replicas = 1 if doc["kind"] == "DaemonSet" else doc["spec"].get("replicas", 1)
+        if replicas == 0:
+            standby += per_pod
+        else:
+            scheduled += per_pod * replicas
+    return scheduled, standby
+
+
+def test_the_default_stack_and_a_canary_fit_four_cpus() -> None:
+    """Memory was the reported symptom; CPU was the next wall behind it.
+
+    With the memory right-sized, `nyxgpt-api-canary` still would not schedule
+    on a 4-core node -- `0/1 nodes are available: 1 Insufficient cpu`. Fixing
+    only the resource the issue named would have left the canary broken and
+    the next session diagnosing it from scratch.
+    """
+    scheduled, standby = _totals_cpu_m()
+    budget = DOCKER_DESKTOP_ALLOCATABLE_CPU_M - KUBE_SYSTEM_RESERVED_CPU_M
+    assert scheduled + standby <= budget, (
+        f"steady state {scheduled}m + a canary rollout {standby}m exceeds the {budget}m a "
+        "4-CPU Docker Desktop VM leaves -- the canary Pod would be Pending on cpu"
+    )
+
+
+def test_the_pre_fix_cpu_sizing_would_still_be_caught() -> None:
+    """Fault injection for the test above, in the cpu dimension."""
+    pre_fix = {"nyxgpt-api-stable": 250, "nyxgpt-web-stable": 100}
+    scheduled, standby = _totals_cpu_m()
+    for name, old_request in pre_fix.items():
+        doc = _workloads()[name]
+        scheduled += (old_request - _pod_request_cpu_m(doc)) * doc["spec"].get("replicas", 1)
+    # The canary pair tracked stable, so its request moved with it.
+    standby += (250 - _pod_request_cpu_m(_workloads()["nyxgpt-api-canary"])) + (
+        100 - _pod_request_cpu_m(_workloads()["nyxgpt-web-canary"])
+    )
+    budget = DOCKER_DESKTOP_ALLOCATABLE_CPU_M - KUBE_SYSTEM_RESERVED_CPU_M
+    assert scheduled + standby > budget, (
+        "the pre-fix cpu requests now fit, so this pair of tests no longer proves the "
+        "canary's Insufficient cpu failure is fixed"
+    )
+
+
+@pytest.mark.parametrize(
+    ("stable", "canary"),
+    [
+        ("nyxgpt-api-stable", "nyxgpt-api-canary"),
+        ("nyxgpt-web-stable", "nyxgpt-web-canary"),
+    ],
+)
+def test_canary_cpu_requests_track_their_stable_pool(stable: str, canary: str) -> None:
+    workloads = _workloads()
+    assert _pod_request_cpu_m(workloads[canary]) == _pod_request_cpu_m(workloads[stable])
+
+
 # --- the preflight arithmetic ---------------------------------------------
 
 
@@ -231,20 +323,24 @@ def test_api_keeps_its_burst_ceiling() -> None:
         ("1024", 1024),
         ("7936Mi", 7936 * MIB),
         ("1.5Gi", int(1.5 * 1024**3)),
+        # What a node actually reports its allocatable memory in -- capital
+        # K, which the first cut of the regex did not match, so the preflight
+        # skipped itself on every real cluster.
+        ("16373452Ki", 16373452 * 1024),
     ],
 )
 def test_parse_k8s_quantity(quantity: str, expected: int) -> None:
     assert ops._parse_k8s_quantity(quantity) == expected
 
 
-@pytest.mark.parametrize("quantity", ["", "lots", None, "512MB", "-1Mi"])
+@pytest.mark.parametrize("quantity", ["", "lots", None, "512MB", "-1Mi", "512K"])
 def test_parse_k8s_quantity_rejects_what_it_cannot_read(quantity: object) -> None:
     """Unreadable means skip the preflight, never guess a number and block."""
     assert ops._parse_k8s_quantity(quantity) is None
 
 
-def _container(memory: str, **extra: Any) -> dict[str, Any]:
-    return {"resources": {"requests": {"memory": memory}}, **extra}
+def _container(memory: str, cpu: str = "0", **extra: Any) -> dict[str, Any]:
+    return {"resources": {"requests": {"memory": memory, "cpu": cpu}}, **extra}
 
 
 def test_pod_request_sums_containers_and_floors_on_init_containers() -> None:
@@ -253,10 +349,10 @@ def test_pod_request_sums_containers_and_floors_on_init_containers() -> None:
         "containers": [_container("100Mi"), _container("150Mi")],
         "initContainers": [_container("256Mi")],
     }
-    assert ops._pod_memory_request(spec) == 256 * MIB
+    assert ops._pod_resource_request(spec) == 256 * MIB
 
     spec["initContainers"] = [_container("64Mi")]
-    assert ops._pod_memory_request(spec) == 250 * MIB
+    assert ops._pod_resource_request(spec) == 250 * MIB
 
 
 def test_pod_request_adds_native_sidecars() -> None:
@@ -265,16 +361,18 @@ def test_pod_request_adds_native_sidecars() -> None:
         "containers": [_container("100Mi")],
         "initContainers": [_container("50Mi", restartPolicy="Always")],
     }
-    assert ops._pod_memory_request(spec) == 150 * MIB
+    assert ops._pod_resource_request(spec) == 150 * MIB
 
 
 def test_pod_request_tolerates_containers_with_no_requests() -> None:
     spec = {"containers": [{"name": "no-resources"}, _container("64Mi")]}
-    assert ops._pod_memory_request(spec) == 64 * MIB
+    assert ops._pod_resource_request(spec) == 64 * MIB
 
 
-def _workload(kind: str, name: str, memory: str, replicas: int | None = None) -> dict[str, Any]:
-    spec: dict[str, Any] = {"template": {"spec": {"containers": [_container(memory)]}}}
+def _workload(
+    kind: str, name: str, memory: str, replicas: int | None = None, cpu: str = "0"
+) -> dict[str, Any]:
+    spec: dict[str, Any] = {"template": {"spec": {"containers": [_container(memory, cpu)]}}}
     if replicas is not None:
         spec["replicas"] = replicas
     return {"kind": kind, "metadata": {"name": name}, "spec": spec}
@@ -288,7 +386,7 @@ def test_workload_totals_multiply_by_replicas_and_park_zero_replica_workloads() 
         _workload("DaemonSet", "promtail", "128Mi"),
         {"kind": "Service", "metadata": {"name": "api"}, "spec": {}},
     ]
-    scheduled, standby, breakdown = ops._workload_memory_requests(objects, node_count=3)
+    scheduled, standby, breakdown = ops._workload_resource_requests(objects, node_count=3)
 
     # 4x256 + 2048 + (128 x 3 nodes) = 3456Mi; the canary is standby, and the
     # Service contributes nothing.
@@ -302,7 +400,7 @@ def test_committed_memory_excludes_our_namespace_and_unscheduled_pods() -> None:
         "items": [
             {
                 "metadata": {"namespace": "kube-system"},
-                "spec": {"nodeName": "node", "containers": [_container("100Mi")]},
+                "spec": {"nodeName": "node", "containers": [_container("100Mi", "250m")]},
                 "status": {"phase": "Running"},
             },
             {
@@ -327,27 +425,30 @@ def test_committed_memory_excludes_our_namespace_and_unscheduled_pods() -> None:
     with patch.object(
         ops, "_run", return_value=subprocess.CompletedProcess([], 0, json.dumps(pods), "")
     ):
-        committed, error = ops._k8s_committed_memory(ops.K8S_NAMESPACE)
+        committed, error = ops._k8s_committed_requests(ops.K8S_NAMESPACE)
 
     assert error is None
-    assert committed == 100 * MIB
+    assert committed == {"memory": 100 * MIB, "cpu": 250}
 
 
-def test_node_memory_ignores_cordoned_nodes() -> None:
+def test_node_allocatable_ignores_cordoned_nodes() -> None:
     nodes = {
         "items": [
-            {"spec": {}, "status": {"allocatable": {"memory": "7936Mi"}}},
-            {"spec": {"unschedulable": True}, "status": {"allocatable": {"memory": "8Gi"}}},
+            {"spec": {}, "status": {"allocatable": {"memory": "7936Mi", "cpu": "4"}}},
+            {
+                "spec": {"unschedulable": True},
+                "status": {"allocatable": {"memory": "8Gi", "cpu": "8"}},
+            },
         ]
     }
     with patch.object(
         ops, "_run", return_value=subprocess.CompletedProcess([], 0, json.dumps(nodes), "")
     ):
-        allocatable, count, error = ops._k8s_node_memory()
+        allocatable, count, error = ops._k8s_node_allocatable()
 
     assert error is None
     assert count == 1
-    assert allocatable == 7936 * MIB
+    assert allocatable == {"memory": 7936 * MIB, "cpu": 4000}
 
 
 # --- the preflight decision ------------------------------------------------
@@ -360,23 +461,46 @@ def _preflight(
     requests_mi: list[int],
     standby_mi: int = 0,
     committed_mi: int = 0,
+    allocatable_cpu_m: int = 100_000,
+    requests_cpu_m: int = 0,
+    standby_cpu_m: int = 0,
+    committed_cpu_m: int = 0,
 ) -> list[ops.OpsResult]:
     """Run the preflight against a synthetic cluster and manifest set.
+
+    CPU defaults to a node with far more than anything asked of it, so a test
+    about memory stays a test about memory; the cpu-dimension tests set it
+    explicitly.
 
     `K8S_DIR` is pointed at a path with no bootstrapped Secret so exactly one
     kustomization (the observability one) is rendered, whatever a previous
     real install left in the checkout.
     """
-    objects = [_workload("Deployment", f"w{i}", f"{mi}Mi", 1) for i, mi in enumerate(requests_mi)]
-    if standby_mi:
-        objects.append(_workload("Deployment", "canary", f"{standby_mi}Mi", 0))
+    objects = [
+        _workload("Deployment", f"w{i}", f"{mi}Mi", 1, cpu=f"{requests_cpu_m if i == 0 else 0}m")
+        for i, mi in enumerate(requests_mi)
+    ]
+    if standby_mi or standby_cpu_m:
+        objects.append(
+            _workload("Deployment", "canary", f"{standby_mi}Mi", 0, cpu=f"{standby_cpu_m}m")
+        )
     with (
         patch.object(ops, "K8S_DIR", Path("/nonexistent-k8s-dir")),
         patch.object(
-            ops, "_k8s_node_memory", return_value=(allocatable_mi * MIB, node_count, None)
+            ops,
+            "_k8s_node_allocatable",
+            return_value=(
+                {"memory": allocatable_mi * MIB, "cpu": allocatable_cpu_m},
+                node_count,
+                None,
+            ),
         ),
         patch.object(ops, "_k8s_render_kustomization", return_value=(objects, None)),
-        patch.object(ops, "_k8s_committed_memory", return_value=(committed_mi * MIB, None)),
+        patch.object(
+            ops,
+            "_k8s_committed_requests",
+            return_value=({"memory": committed_mi * MIB, "cpu": committed_cpu_m}, None),
+        ),
         patch.object(
             ops, "_ensure_k8s_observability_secret", return_value=[ops.OpsResult(True, "ok")]
         ),
@@ -384,27 +508,69 @@ def _preflight(
         return ops._preflight_k8s_capacity()
 
 
+def _for(results: list[ops.OpsResult], resource: str) -> ops.OpsResult:
+    """The result the preflight produced for one resource."""
+    matches = [r for r in results if resource in r.message.lower()]
+    assert matches, f"no {resource} result in {[r.message for r in results]}"
+    return matches[0]
+
+
 def test_preflight_refuses_a_node_the_stack_does_not_fit() -> None:
     """The #3825 arithmetic: refuse before applying, not Pending afterwards."""
     results = _preflight(allocatable_mi=7936, requests_mi=[7872], committed_mi=290)
 
     assert not all(r.ok for r in results)
-    assert "Not enough node memory" in results[0].message
-    detail = results[0].details
-    assert "226Mi more memory" in detail  # 7872 - (7936 - 290)
-    assert "Nothing was applied." in detail
+    memory = _for(results, "memory")
+    assert "Not enough node memory" in memory.message
+    assert "226Mi more memory" in memory.details  # 7872 - (7936 - 290)
+    assert "Nothing was applied." in memory.details
+
+
+def test_preflight_refuses_a_node_short_of_cpu() -> None:
+    """Right-sizing memory alone just moves the wall.
+
+    On a 4-core VM the canary Pod failed with `Insufficient cpu` once the
+    memory fitted -- the same defect, a different word in the event.
+    """
+    results = _preflight(
+        allocatable_mi=7936,
+        requests_mi=[1024],
+        allocatable_cpu_m=4000,
+        requests_cpu_m=3500,
+        committed_cpu_m=950,
+    )
+
+    assert not all(r.ok for r in results)
+    cpu = _for(results, "cpu")
+    assert "Not enough node cpu" in cpu.message
+    assert "450m more cpu" in cpu.details  # 3500 - (4000 - 950)
+    assert "Settings -> Resources -> CPUs" in cpu.details
+
+
+def test_preflight_reports_both_resources() -> None:
+    """One result per resource, so a pass says what it actually checked."""
+    results = _preflight(allocatable_mi=7936, requests_mi=[1024], requests_cpu_m=500)
+
+    assert len(results) == 2
+    assert {"memory", "cpu"} == {
+        word for r in results for word in ("memory", "cpu") if word in r.message.lower()
+    }
 
 
 def test_preflight_refusal_names_the_skip_observability_escape_hatch() -> None:
     """A refusal an operator cannot act on is just a different dead end."""
     with (
-        patch.object(ops, "_k8s_node_memory", return_value=(2 * 1024**3, 1, None)),
+        patch.object(
+            ops,
+            "_k8s_node_allocatable",
+            return_value=({"memory": 2 * 1024**3, "cpu": 8000}, 1, None),
+        ),
         patch.object(
             ops,
             "_k8s_render_kustomization",
             return_value=([_workload("Deployment", "api", "4Gi", 1)], None),
         ),
-        patch.object(ops, "_k8s_committed_memory", return_value=(0, None)),
+        patch.object(ops, "_k8s_committed_requests", return_value=({"memory": 0, "cpu": 0}, None)),
         patch.object(
             ops, "_ensure_k8s_observability_secret", return_value=[ops.OpsResult(True, "ok")]
         ),
@@ -412,15 +578,26 @@ def test_preflight_refusal_names_the_skip_observability_escape_hatch() -> None:
         results = ops._preflight_k8s_capacity(skip_observability=False)
 
     assert not all(r.ok for r in results)
-    assert "--skip-observability" in results[0].details
-    assert "Docker Desktop" in results[0].details
+    memory = _for(results, "memory")
+    assert "--skip-observability" in memory.details
+    assert "Docker Desktop" in memory.details
 
 
 def test_preflight_passes_with_canary_headroom() -> None:
-    results = _preflight(allocatable_mi=7936, requests_mi=[6976], standby_mi=448, committed_mi=290)
+    results = _preflight(
+        allocatable_mi=7936,
+        requests_mi=[6976],
+        standby_mi=448,
+        committed_mi=290,
+        allocatable_cpu_m=4000,
+        requests_cpu_m=2075,
+        standby_cpu_m=150,
+        committed_cpu_m=950,
+    )
 
     assert all(r.ok for r in results)
-    assert "Node capacity is sufficient" in results[0].message
+    assert "Node memory is sufficient" in _for(results, "memory").message
+    assert "Node cpu is sufficient" in _for(results, "cpu").message
 
 
 def test_preflight_warns_when_only_the_canary_headroom_is_missing() -> None:
@@ -428,8 +605,9 @@ def test_preflight_warns_when_only_the_canary_headroom_is_missing() -> None:
     results = _preflight(allocatable_mi=7936, requests_mi=[7600], standby_mi=448)
 
     assert all(r.ok for r in results)
-    assert "Capacity is tight" in results[0].message
-    assert "canary" in results[0].message
+    memory = _for(results, "memory")
+    assert "Memory is tight" in memory.message
+    assert "canary" in memory.message
 
 
 def test_preflight_on_a_multi_node_cluster_warns_instead_of_refusing() -> None:
@@ -442,12 +620,12 @@ def test_preflight_on_a_multi_node_cluster_warns_instead_of_refusing() -> None:
     results = _preflight(allocatable_mi=4096, node_count=3, requests_mi=[6000])
 
     assert all(r.ok for r in results)
-    assert results[0].message.startswith("Warning: Not enough node memory")
+    assert _for(results, "memory").message.startswith("Warning: Not enough node memory")
 
 
 def test_preflight_skips_rather_than_blocks_when_it_cannot_measure() -> None:
     with (
-        patch.object(ops, "_k8s_node_memory", return_value=(0, 0, "no nodes")),
+        patch.object(ops, "_k8s_node_allocatable", return_value=({}, 0, "no nodes")),
         patch.object(ops, "_ensure_k8s_observability_secret") as bootstrap_secret,
     ):
         results = ops._preflight_k8s_capacity()
@@ -460,7 +638,11 @@ def test_preflight_skips_rather_than_blocks_when_it_cannot_measure() -> None:
 
 def test_preflight_skips_when_the_manifests_cannot_be_rendered() -> None:
     with (
-        patch.object(ops, "_k8s_node_memory", return_value=(8 * 1024**3, 1, None)),
+        patch.object(
+            ops,
+            "_k8s_node_allocatable",
+            return_value=({"memory": 8 * 1024**3, "cpu": 8000}, 1, None),
+        ),
         patch.object(ops, "_k8s_render_kustomization", return_value=([], "kustomize blew up")),
         patch.object(
             ops, "_ensure_k8s_observability_secret", return_value=[ops.OpsResult(True, "ok")]

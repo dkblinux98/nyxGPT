@@ -60,8 +60,13 @@ spec:
             # api's steady state with room above the ~75Mi measured at light
             # load; the 1Gi limit below is unchanged, so a RAG or concurrent
             # chat burst still has the same ceiling it always had.
+            #
+            # Same reasoning for cpu: four replicas at 250m reserved a whole
+            # core of a 4-core VM to serve an idle stack, and CPU is what
+            # actually blocked the canary Pod once the memory was right. The
+            # 1-core limit is unchanged.
             requests:
-              cpu: 250m
+              cpu: 100m
               memory: 256Mi
             limits:
               cpu: "1"

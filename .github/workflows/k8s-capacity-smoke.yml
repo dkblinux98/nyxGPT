@@ -17,11 +17,15 @@ name: Kubernetes Capacity Smoke
 # RESERVES the surplus without using it), then runs both halves of the
 # fault-injection rule (CLAUDE.md, #3753):
 #
-#   1. the pre-fix sizing (api 512Mi, web 256Mi) -- assert Pods are left
-#      unschedulable, i.e. the defect reproduces on this node;
-#   2. the shipped sizing -- assert EVERY Pod is scheduled, that a canary
-#      rollout's Pod schedules too, and that the #3825 preflight refuses the
-#      pre-fix sizing and passes the shipped one.
+#   1. the pre-fix memory sizing (api 512Mi, web 256Mi) -- assert Pods are
+#      left unschedulable, i.e. the defect reproduces on this node, and that
+#      the #3825 preflight refuses it;
+#   2. the pre-fix CPU sizing with the memory fixed (api 250m, web 100m) --
+#      assert a Pod is stranded on `Insufficient cpu`. Right-sizing only the
+#      resource the issue named moved the wall instead of removing it: the
+#      canary Pod failed on cpu once the memory fitted;
+#   3. the shipped sizing -- assert EVERY Pod is scheduled, that both canary
+#      Deployments scale up and land, and that the preflight passes.
 #
 # Deliberately no image builds: scheduling is decided from the Pod spec's
 # requests before an image is ever pulled, so building api/web here would add
@@ -84,13 +88,13 @@ jobs:
       - name: Shrink the node to a stock Docker Desktop VM
         run: ./scripts/k8s-node-ballast.sh "$TARGET_ALLOCATABLE_MI"
 
-      - name: Reproduce the defect -- the pre-#3825 requests do not fit
+      - name: Reproduce the defect -- the pre-#3825 memory requests do not fit
         run: |
           set -euo pipefail
-          # Raw kubectl is deliberate HERE and only here: this step
-          # reconstructs the sizing the defect was filed against, on a copy of
-          # the tree, to prove it really was unschedulable. Every
-          # operator-facing path below is a `nyxgpt` command.
+          # Raw kubectl is deliberate in the injection steps and only there:
+          # they reconstruct the sizing the defect was filed against, on a
+          # copy of the tree, to prove it really was unschedulable. Every
+          # operator-facing path is a `nyxgpt` command.
           cp -r k8s /tmp/prefix-k8s
           cp /tmp/prefix-k8s/secret.example.yaml /tmp/prefix-k8s/secret.yaml
           cp /tmp/prefix-k8s/observability/secret.example.yaml /tmp/prefix-k8s/observability/secret.yaml
@@ -140,6 +144,41 @@ jobs:
           # The namespace is deleted by the app-tier kustomization, and a
           # re-apply into a Terminating namespace is rejected -- wait it out
           # rather than racing the next step against it.
+          kubectl wait --for=delete namespace/nyxgpt --timeout=300s || true
+
+      - name: Reproduce the second wall -- the pre-fix cpu requests strand the canary
+        run: |
+          set -euo pipefail
+          # Right-sizing only the resource the issue named would have moved
+          # the wall rather than removed it: with the memory fixed, the api
+          # canary Pod on a 4-core node failed with `Insufficient cpu`
+          # instead. Memory here is the SHIPPED sizing; only the cpu requests
+          # go back, so a failure in this step is unambiguously about cpu.
+          cp -r k8s /tmp/prefix-cpu-k8s
+          cp /tmp/prefix-cpu-k8s/secret.example.yaml /tmp/prefix-cpu-k8s/secret.yaml
+          cp /tmp/prefix-cpu-k8s/observability/secret.example.yaml /tmp/prefix-cpu-k8s/observability/secret.yaml
+          sed -i 's/cpu: 100m/cpu: 250m/' /tmp/prefix-cpu-k8s/deployment-stable.yaml
+          sed -i 's/cpu: 100m/cpu: 250m/' /tmp/prefix-cpu-k8s/deployment-canary.yaml
+          sed -i 's/cpu: 50m/cpu: 100m/' /tmp/prefix-cpu-k8s/deployment-web-stable.yaml
+          sed -i 's/cpu: 50m/cpu: 100m/' /tmp/prefix-cpu-k8s/deployment-web-canary.yaml
+          kubectl apply -k /tmp/prefix-cpu-k8s/
+          kubectl apply -k /tmp/prefix-cpu-k8s/observability/
+          kubectl -n nyxgpt scale deployment/nyxgpt-api-canary deployment/nyxgpt-web-canary --replicas=1
+          sleep 45
+          ./scripts/k8s-unscheduled-pods.sh nyxgpt
+          if ! kubectl -n nyxgpt get events --field-selector reason=FailedScheduling \
+               -o jsonpath='{range .items[*]}{.message}{"\n"}{end}' | grep -q 'Insufficient cpu'; then
+            echo "::error::injection failed: the pre-fix cpu requests fit, so the cpu half is untested"
+            kubectl -n nyxgpt get pods -o wide
+            kubectl describe node | sed -n '/Allocated resources/,/Events/p'
+            exit 1
+          fi
+          echo "a Pod was stranded on Insufficient cpu -- the second wall reproduced"
+
+      - name: Remove the pre-fix-cpu deployment
+        run: |
+          kubectl delete -k /tmp/prefix-cpu-k8s/observability/ --ignore-not-found
+          kubectl delete -k /tmp/prefix-cpu-k8s/ --ignore-not-found
           kubectl wait --for=delete namespace/nyxgpt --timeout=300s || true
 
       - name: The shipped sizing schedules every Pod

@@ -57,7 +57,7 @@ spec:
             # reservation is part of what oversubscribed an 8Gi node (#3825).
             # The 512Mi limit is unchanged, so a render burst is unaffected.
             requests:
-              cpu: 100m
+              cpu: 50m
               memory: 192Mi
             limits:
               cpu: 500m
