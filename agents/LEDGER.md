@@ -1364,8 +1364,11 @@ are absent here by design (relocated to the annex; IDs are never reused).
 - **V-042** · 2026-08-18 — **`nyxgpt ops` has one three-state vocabulary for
   Kubernetes workloads — ready / pending / failed — and `Pending` is not a
   failure.** `_classify_k8s_pod` (`src/nyxgpt/ops.py`) is the single
-  classifier behind `_k8s_stack_health`, `_k8s_observability_health` and the
-  rollout waits; `OpsResult.status` carries the `[PENDING]` label without
+  classifier behind `_k8s_stack_health`, `_k8s_observability_health`, the
+  rollout waits and `infra_status()`'s `pod_states` (which is what lets the
+  admin Infrastructure page badge the difference, since a raw `kubectl get
+  pods` line reads `Pending` for both cases); `OpsResult.status` carries the
+  `[PENDING]` label without
   touching `ok`, so a Pod that is scheduling, pulling or creating containers
   never changes an install's exit status, while `Unschedulable`,
   `ImagePullBackOff`, `CrashLoopBackOff`, a container-config error or a

@@ -12534,7 +12534,40 @@ def test_infra_status_reports_terraform_and_kubernetes(monkeypatch):
         return "/usr/local/bin/x" if prog in ("kubectl", "docker") else None
 
     def fake_run(cmd, check=True, **_k):
-        return CP(returncode=0, stdout="nyxgpt-api-abc   1/1   Running\n")
+        if "pods" in cmd:
+            return CP(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "items": [
+                            {
+                                "metadata": {"name": "nyxgpt-api-abc"},
+                                "status": {
+                                    "phase": "Running",
+                                    "conditions": [{"type": "Ready", "status": "True"}],
+                                },
+                            },
+                            {
+                                "metadata": {"name": "grafana-def"},
+                                "status": {
+                                    "phase": "Pending",
+                                    "conditions": [
+                                        {
+                                            "type": "PodScheduled",
+                                            "status": "False",
+                                            "reason": "Unschedulable",
+                                            "message": "0/1 nodes are available.",
+                                        }
+                                    ],
+                                },
+                            },
+                        ]
+                    }
+                ),
+            )
+        # `_kubectl_context()` reads the current context; anything else is a
+        # probe this test does not care about.
+        return CP(returncode=0, stdout="kind-nyxgpt-local\n" if "config" in cmd else "")
 
     monkeypatch.setattr(ops, "_which", fake_which)
     monkeypatch.setattr(ops, "_run", fake_run)
@@ -12549,7 +12582,22 @@ def test_infra_status_reports_terraform_and_kubernetes(monkeypatch):
     assert result["kubernetes"]["probe_available"] is True
     assert result["kubernetes"]["deployed"] is True
     assert result["kubernetes"]["namespace"] == "nyxgpt"
-    assert result["kubernetes"]["pods"] == ["nyxgpt-api-abc   1/1   Running"]
+    assert result["kubernetes"]["pods"] == [
+        "nyxgpt-api-abc   Running",
+        "grafana-def   Pending: unschedulable",
+    ]
+    # #3827: the Infrastructure page must be able to badge a Pod that will never
+    # start differently from one that is merely starting -- the raw `kubectl get
+    # pods` line says "Pending" for both.
+    assert result["kubernetes"]["pod_states"] == [
+        {"name": "nyxgpt-api-abc", "state": "ready", "summary": "Running", "details": ""},
+        {
+            "name": "grafana-def",
+            "state": "failed",
+            "summary": "Pending: unschedulable",
+            "details": "0/1 nodes are available.",
+        },
+    ]
 
 
 @pytest.mark.unit
@@ -12797,10 +12845,25 @@ def test_infra_status_serving_delegates_to_canary_status_in_kubernetes_mode(monk
         return "/usr/local/bin/kubectl" if prog == "kubectl" else None
 
     monkeypatch.setattr(ops, "_which", fake_which)
+    pods = json.dumps(
+        {
+            "items": [
+                {
+                    "metadata": {"name": "nyxgpt-api-abc"},
+                    "status": {
+                        "phase": "Running",
+                        "conditions": [{"type": "Ready", "status": "True"}],
+                    },
+                }
+            ]
+        }
+    )
     monkeypatch.setattr(
         ops,
         "_run",
-        lambda cmd, check=True, **_k: CP(returncode=0, stdout="nyxgpt-api-abc   1/1   Running\n"),
+        lambda cmd, check=True, **_k: CP(
+            returncode=0, stdout=pods if "pods" in cmd else "kind-nyxgpt-local\n"
+        ),
     )
 
     fake_statuses = {

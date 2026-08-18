@@ -6415,16 +6415,22 @@ def _classify_k8s_pod(pod: dict[str, Any]) -> K8sWorkloadState:
     return K8sWorkloadState(name, K8S_STATE_FAILED, phase, str(status.get("message") or "").strip())
 
 
-def _k8s_pod_states(namespace: str = "") -> tuple[list[K8sWorkloadState], OpsResult | None]:
+def _k8s_pod_states(
+    namespace: str = "", *, expected: bool = False
+) -> tuple[list[K8sWorkloadState], OpsResult | None]:
     """Classify every Pod in the namespace; returns `(states, read_failure)`.
 
     `read_failure` is non-None only when the Pod list could not be read at
     all -- which is a real failure (an unreachable cluster is not "pending"),
     kept separate so callers do not have to invent a fake state for it.
+
+    `expected=True` for the read-only probes (`infra_status`) where an
+    unreachable cluster is a normal answer rather than something to warn about.
     """
     cp = _run(
         ["kubectl", "-n", namespace or K8S_NAMESPACE, "get", "pods", "-o", "json"],
         check=False,
+        expected=expected,
     )
     if cp.returncode != 0:
         return [], OpsResult(False, "Could not read pod status", _cp_details(cp))
@@ -7192,6 +7198,7 @@ def infra_status() -> dict[str, Any]:
     kubernetes_context = _kubectl_context() if kubectl_available else ""
     kubernetes_configured = bool(kubernetes_context)
     pods: list[str] = []
+    pod_states: list[dict[str, str]] = []
     # No kubeconfig/current-context means no cluster was ever configured here --
     # that's a confidently-determined NOT DEPLOYED (#3468), not the CANNOT
     # DETERMINE state reserved for a *configured* cluster the probe couldn't
@@ -7199,14 +7206,20 @@ def infra_status() -> dict[str, Any]:
     # since there's no context to read either way).
     kubernetes_probe_available = not kubernetes_configured
     if kubernetes_configured:
-        cp = _run(
-            ["kubectl", "-n", K8S_NAMESPACE, "get", "pods", "--no-headers"],
-            check=False,
-            expected=True,
-        )
-        kubernetes_probe_available = cp.returncode == 0
+        # Classified rather than dumped (#3827): the raw `kubectl get pods`
+        # line says `Pending` for a Pod pulling an image and for one the node
+        # cannot fit, and an operator reading this page cannot tell which is
+        # which -- the same conflation the install used to print. One read
+        # answers both `pods` (the display lines) and `pod_states` (the
+        # states the page badges each line with).
+        states, read_failure = _k8s_pod_states(expected=True)
+        kubernetes_probe_available = read_failure is None
         if kubernetes_probe_available:
-            pods = [line for line in (cp.stdout or "").splitlines() if line.strip()]
+            pods = [f"{s.name}   {s.summary}" for s in states]
+            pod_states = [
+                {"name": s.name, "state": s.state, "summary": s.summary, "details": s.details}
+                for s in states
+            ]
     # The in-cluster observability layer (#3787), reported per workload so the
     # Infrastructure page can say *which* piece is missing rather than just
     # "observability: no". Only probed when the cluster answered at all --
@@ -7222,6 +7235,10 @@ def infra_status() -> dict[str, Any]:
         "deployed": bool(pods),
         "namespace": K8S_NAMESPACE,
         "pods": pods,
+        # Per-Pod ready/pending/failed, so the page can badge a Pod that is
+        # still starting differently from one that will never start, and show
+        # the scheduler's reason for the latter (#3827).
+        "pod_states": pod_states,
         # (#3596) which cluster is configured, and whether it's the local `kind`
         # cluster nyxgpt provisions when nothing else is reachable, vs. a
         # bring-your-own cluster (minikube, Docker Desktop, a remote context, ...).
