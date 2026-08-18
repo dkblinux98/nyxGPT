@@ -706,6 +706,16 @@ files an issue on a user's behalf, and there is no POST endpoint under
 account, which the menu says in its tooltips rather than letting the link fail
 silently offline.
 
+Handing the filer to GitHub's compose page is where this stands today, not
+where it is going. The intended surface is an intake that captures the ticket
+in nyxGPT and files it from a background process, so the filer never leaves
+the chat and gets a confirmation there. That needs a GitHub credential, and
+who supplies one for a filer who is not the repository owner is an open
+decision (ledger `Q-006`) — a hosted intake, a configured token with this
+handoff as the fallback, or requiring a token. Until it is answered the
+compose page is what a filer sees, and the sidebar and post-submit landing on
+it are GitHub's rather than nyxGPT's.
+
 The type is asked in nyxGPT rather than on GitHub because nothing would
 otherwise record it (#3811): the Support project types tickets with a
 `Ticket Type` project field, and GitHub maps a form answer to neither a label

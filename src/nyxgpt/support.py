@@ -25,6 +25,15 @@ Two surfaces live here:
   classification without the user having to look either up. This is a link,
   not an API call: nyxGPT never files an issue on the user's behalf, and the
   form itself needs internet and a GitHub account.
+
+**The handoff is deliberate-for-now, not the intended end state.** The owner's
+settled intent for #3811 is an intake that captures the ticket in nyxGPT and
+files it from a background process, so the filer never leaves the chat and is
+returned to it with a confirmation. That rework is not built here because it
+needs a GitHub credential and the owner has not yet chosen where one comes
+from for a filer who is not them (ledger **Q-006**). Until that is answered
+this module stays a link-builder: it classifies and prefills, and GitHub's
+compose page is still what the filer sees.
 """
 
 from __future__ import annotations

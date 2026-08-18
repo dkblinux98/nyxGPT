@@ -1290,8 +1290,12 @@ are absent here by design (relocated to the annex; IDs are never reused).
   `identity_file`, `host`), or a new `cloud ops` inspection is added — it must
   go in the `REMOTE_OPS_COMMANDS` read-only allowlist, not become a write path.
 
-- **V-038** · 2026-08-18 — **A PR can be merged while the CI for its head
+- **V-041** · 2026-08-18 — **A PR can be merged while the CI for its head
   commit is still running, and nothing re-examines the result.**
+  (Filed as `V-038` under #3806; renumbered here because #3813 allocated the
+  same ID on a concurrently-open branch and the two collided on `v3.0.0` —
+  the mechanism this ledger's own ID-allocation note describes. IDs are never
+  reused; the cloud-status `V-038` above keeps the number.)
   `review_accept_and_merge.sh` validates state/mergeability/base-existence and
   then merges; it never reads the head SHA's check status, and no review
   workflow does either — "run CI checks on ALL code in the repository" is
@@ -1310,6 +1314,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   log. The check run `test` on `78c0e5cf` reads `completed / failure`.
   Re-verify when: a check-status gate is added to the merge path — this entry
   then describes history rather than the present. See **Q-005**.
+
 - **V-039** · 2026-08-18 — **A support ticket's entire protection is one
   label, and the label is now guaranteed rather than assumed.** Every guard —
   `assign_backlog.yml`, `ensure_project_hygiene.yml`,
@@ -1342,12 +1347,28 @@ are absent here by design (relocated to the annex; IDs are never reused).
   rate-limited read would have had hygiene write its defaults over every
   populated field. Both fixed (explicit `return 1`; response into a variable
   first).
+  **The pipeline defect was a class, not one site.** The same shape existed
+  in `issue_status` (a swallowed read reads as "no Status", which is how
+  `promote_accepted_features.sh` and the parked-blocked sweep decide whether
+  a blocker is accepted), in `pr_status` (lane reconciliation), twice in
+  `pr_project_item_id` (a swallowed find sends the PR down the add path), and
+  in `admin_set_fields.sh`'s `item_id_for_content`, where it reads as "not on
+  the board" and the owner's batch reports a clean run having written
+  nothing. All five were converted to the response-into-a-variable form in
+  the same PR, so no call site pipes `graphql` today.
   Method: ran `tests/test_issue_hygiene.sh` with a `gh` stub whose field
   reads fail while its existence probe answers "present" — before the fix
   hygiene populated every field and exited 0; after it, the run fails loud.
+  The sweep for the remaining sites: `grep -n graphql
+  scripts/agents/lib/*.sh scripts/agents/*.sh`, every hit read for a pipe;
+  `tests/unit/test_gh_project_pipelines.py` now re-runs that sweep in CI.
   2026-08-18, while implementing #3811.
-  Re-verify when: another helper is added that calls `graphql` in a pipeline,
-  or `_die` is changed.
+  Re-verify when: `_die` is changed. A new piped `graphql` call no longer
+  needs re-verification by hand — it fails `test_no_graphql_call_is_piped`.
+  Note the propagated `return 1` reaches a caller only if that caller checks
+  it: `release_ceremony_watch.sh` and `classify_backlog_claim_state`
+  deliberately write `|| echo ""` and still treat a failed read as "no
+  Status".
 
 ## Parked
 
@@ -1415,7 +1436,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   Blocks: nothing yet; would warrant its own issue if confirmed.
 
 - **Q-005** · 2026-08-18 · developer-agent (#3806) — How should the merge path
-  gate on the head SHA's check status (**V-038**) without deadlocking on the
+  gate on the head SHA's check status (**V-041**) without deadlocking on the
   review's *own* in-flight check runs? On `78c0e5cf` the checks include
   `claude-review` and `execute-review-decision`, which cannot be complete at
   the moment the reviewer merges, so a naive "no check may be queued or
@@ -1428,8 +1449,32 @@ are absent here by design (relocated to the annex; IDs are never reused).
   taken inside #3806's fix branch: that branch exists to unpoison the release
   branch, and rebuilding the merge gate under it would put an unreviewed
   change to every merge behind an unrelated issue number.
-  Blocks: nothing today — but every merge is exposed to **V-038** until it is
+  Blocks: nothing today — but every merge is exposed to **V-041** until it is
   answered.
+
+- **Q-006** · 2026-08-18 · owner acceptance (#3811) — What credential files a
+  support ticket for a filer who is not the owner? The owner's settled intent
+  (#3811, 2026-08-16) is that the web UI captures the ticket and a background
+  process creates the issue, so **the filer never leaves the nyxGPT chat**.
+  Creating an issue server-side needs a GitHub credential: the owner's install
+  has one (`[github] pat`); a stranger's does not, and a stranger is precisely
+  the population support exists for. The owner named three options and left
+  the choice open — a hosted intake the owner runs, backend creation when a
+  token is configured with the GitHub handoff as fallback, or requiring a
+  configured token. They are not variations on one design: the first needs
+  hosting and abuse controls, the second is two permanent code paths, the
+  third excludes the tokenless filer.
+  Needs: the owner's choice, then its own issue for the intake rework.
+  Blocks: three acceptance criteria on #3811 that this PR does **not** meet
+  and does not claim to — the filer not seeing GitHub's compose page, being
+  returned to the chat with a confirmation after submitting, and the ticket
+  type being applied by the product rather than answered on a form. Everything
+  in #3811 that does not depend on the answer shipped instead: the `Support`
+  label is guaranteed (**V-039**), the type is collected in nyxGPT and carried
+  into the body, and hygiene survives a vanished project item (**V-040**).
+  Not taken inside this PR: an intake path built on a guessed credential model
+  is one that gets rebuilt, and the two paths it would have to hedge across
+  differ in where the product is hosted, not in a detail.
 
 ## Superseded
 

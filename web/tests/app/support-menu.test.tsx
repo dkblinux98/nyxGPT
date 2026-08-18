@@ -231,12 +231,58 @@ describe('Chat page Support menu', () => {
     );
     renderHome();
 
-    await openSupportGroup();
+    const { user } = await openSupportGroup();
 
     const issueItem = await screen.findByRole('link', { name: /file an issue/i });
     await waitFor(() => expect(issueItem).toHaveAttribute('href', ISSUE_URL));
     expect(issueItem).toHaveAttribute('aria-disabled', 'false');
     expect(screen.queryByRole('link', { name: /bug found/i })).not.toBeInTheDocument();
+
+    // The fallback is a real menu item, not a decoration: it has to highlight
+    // and dismiss the menu exactly like a typed entry. Asserting only its href
+    // would leave its handlers unexecuted, which is how a degraded-install
+    // path rots without anyone noticing.
+    fireEvent.mouseEnter(issueItem);
+    expect(issueItem.style.background).toBe('var(--button-hover)');
+    // happy-dom refuses to overwrite a `var()` background shorthand with a
+    // keyword -- same workaround as the hover test above.
+    issueItem.style.background = '';
+    fireEvent.mouseLeave(issueItem);
+    expect(issueItem.style.background).toBe('transparent');
+
+    // The href is a real off-box URL; stop the test environment from
+    // following it while still letting React's own click handler run.
+    const stopNavigation = (event: Event) => event.preventDefault();
+    document.addEventListener('click', stopNavigation);
+    try {
+      await user.click(issueItem);
+    } finally {
+      document.removeEventListener('click', stopNavigation);
+    }
+
+    await waitFor(() => {
+      expect(screen.queryByText('Theme')).not.toBeInTheDocument();
+    });
+  });
+
+  it('titles a typed entry with its description alone when the backend sends no network note', async () => {
+    // The `.trim()` on the title exists for exactly this: the note is the
+    // second sentence, so an install whose API omits it must get
+    // "Something is broken or behaving wrongly." and not a dangling space or
+    // the word "undefined" hanging off the tooltip.
+    stubFetch(() =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ issue_form_url: ISSUE_URL, ticket_types: TICKET_TYPES }),
+      })
+    );
+    renderHome();
+
+    await openSupportGroup();
+
+    const bugFound = await screen.findByRole('link', { name: /bug found/i });
+    expect(bugFound).toHaveAttribute('title', `${TICKET_TYPES[0].description}.`);
   });
 
   it('leaves the item disabled rather than opening a dead link when the context request fails', async () => {

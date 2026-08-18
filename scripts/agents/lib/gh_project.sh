@@ -680,7 +680,14 @@ set_issue_status() {
 # both need to read another issue's Status field without mutating it.
 issue_status() {
   local num="$1"
-  graphql "query(\$owner:String!, \$name:String!, \$num:Int!) {
+  # Response into a variable, NOT `graphql ... | jq ...` (#3811) -- see the
+  # note in project_field_value: in a pipeline the wrapper's failure is the
+  # first segment's status, which the pipeline discards, so a failed read
+  # became empty output and exit 0. Here that reads as "this issue has no
+  # Status", which is a promotion/resume decision: a rate-limited read would
+  # have looked exactly like a blocker that is not yet accepted.
+  local resp
+  resp="$(graphql "query(\$owner:String!, \$name:String!, \$num:Int!) {
     repository(owner:\$owner, name:\$name) {
       issue(number:\$num) {
         projectItems(first:5) {
@@ -694,7 +701,8 @@ issue_status() {
         }
       }
     }
-  }" -F owner="$REPO_OWNER" -F name="$REPO_NAME" -F num="$num" \
+  }" -F owner="$REPO_OWNER" -F name="$REPO_NAME" -F num="$num")" || return 1
+  echo "$resp" \
     | jq -r --arg field "$STATUS_FIELD" '.data.repository.issue.projectItems.nodes[0].fieldValues.nodes[]? | select(.field.name==$field) | .name' \
     | head -1
 }
@@ -2688,7 +2696,13 @@ pr_project_item_id() {
       }
     }
   }'
-  item_id="$(graphql "$q_find" -F owner="$REPO_OWNER" -F name="$REPO_NAME" -F num="$pr_number" \
+  # Response into a variable, not a pipeline (#3811, same class as
+  # project_field_value): a swallowed read reads as "this PR is not on the
+  # board yet" and sends the function down the add path, so a failed lookup
+  # would answer a question it never got an answer to.
+  local find_resp
+  find_resp="$(graphql "$q_find" -F owner="$REPO_OWNER" -F name="$REPO_NAME" -F num="$pr_number")" || return 1
+  item_id="$(echo "$find_resp" \
     | jq -r --arg p "$project_id" '
         .data.repository.pullRequest.projectItems.nodes[]?
         | select(.project.id == $p)
@@ -2708,8 +2722,9 @@ pr_project_item_id() {
       item { id }
     }
   }'
-  item_id="$(graphql "$q_add" -F project="$project_id" -F content="$content_id" \
-    | jq -r '.data.addProjectV2ItemById.item.id // empty')"
+  local add_resp
+  add_resp="$(graphql "$q_add" -F project="$project_id" -F content="$content_id")" || return 1
+  item_id="$(echo "$add_resp" | jq -r '.data.addProjectV2ItemById.item.id // empty')"
   [[ -n "$item_id" ]] || return 1
   echo "$item_id"
 }
@@ -2741,7 +2756,13 @@ pr_status() {
       }
     }
   }'
-  graphql "$q" -F owner="$REPO_OWNER" -F name="$REPO_NAME" -F num="$pr_number" \
+  # Response into a variable, not a pipeline (#3811, same class as
+  # project_field_value): a swallowed read reads as "this PR has no Status",
+  # and the lane sweep would then stamp a lane the PR may already be in --
+  # or move a card off a correct one -- on the strength of a failed API call.
+  local resp
+  resp="$(graphql "$q" -F owner="$REPO_OWNER" -F name="$REPO_NAME" -F num="$pr_number")" || return 1
+  echo "$resp" \
     | jq -r --arg p "$project_id" --arg f "$STATUS_FIELD" '
         .data.repository.pullRequest.projectItems.nodes[]?
         | select(.project.id == $p)
