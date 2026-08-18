@@ -62,10 +62,15 @@ This command verifies:
    ollama list
    ```
 
-   If your configured model is missing:
+   If your configured model is missing, re-run the install -- it pulls the
+   configured chat and embedding models and fails if it cannot:
    ```bash
-   ollama pull llama3.1:8b  # Or your preferred model
+   nyxgpt ops install
    ```
+
+   `nyxgpt ops status` lists both required models and whether Ollama has
+   them, and `nyxgpt ops doctor` reports a missing one as a problem. To fetch
+   a single model directly: `nyxgpt models pull <model>`.
 
 4. **Check network/firewall:**
    - Ensure localhost connections are allowed

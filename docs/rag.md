@@ -1743,7 +1743,9 @@ This can happen when:
 
 Check logs for reranking errors. Common causes:
 - Ollama timeout (increase `reranker_timeout_seconds`)
-- Ollama model not loaded (pull model first: `nyxgpt models pull qwen2.5:0.5b`)
+- Ollama model not loaded. `nyxgpt ops install` pulls the configured chat and
+  embedding models, and `nyxgpt ops doctor` reports one that is missing; pull a
+  model for a *different* collection with `nyxgpt models pull <model>`
 - Invalid JSON response from LLM (model needs better instruction following)
 
 Reranking failures are non-fatal - failed results keep their original scores and ranking.

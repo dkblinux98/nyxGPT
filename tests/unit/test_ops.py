@@ -73,6 +73,7 @@ def test_ops_install_returns_zero_when_all_ok(capsys):
         patch.object(ops, "_install_homebrew_api", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
         patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
+        patch.object(ops, "_ensure_required_models", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok_results),
         patch.object(ops, "sync_env_from_config", return_value=ok_results),
         patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok_results),
@@ -112,6 +113,7 @@ def test_ops_install_returns_nonzero_when_any_fail(capsys):
         patch.object(ops, "_install_homebrew_api", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_install_homebrew_web", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_ensure_ollama_service", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_ensure_required_models", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_cleanup_stale_log_symlinks", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "sync_env_from_config", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(
@@ -149,6 +151,7 @@ def test_ops_install_skip_observability_flag_skips_the_step(capsys):
         patch.object(ops, "_install_homebrew_api", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
         patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
+        patch.object(ops, "_ensure_required_models", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok_results),
         patch.object(ops, "sync_env_from_config", return_value=ok_results),
         patch.object(ops, "_reconcile_grafana_provisioning") as obs,
@@ -243,6 +246,7 @@ def test_ops_install_clears_intentional_stop_markers_for_core_components():
         patch.object(ops, "_install_homebrew_api", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
         patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
+        patch.object(ops, "_ensure_required_models", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok_results),
         patch.object(ops, "sync_env_from_config", return_value=ok_results),
         patch.object(ops.self_heal, "clear_intentionally_stopped") as clear_stopped,
@@ -5213,6 +5217,7 @@ def test_ops_install_catches_exception_from_a_step(capsys):
         patch.object(ops, "_install_ollama_env_launchagent", return_value=ok_results),
         patch.object(ops, "_install_homebrew_api", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
+        patch.object(ops, "_ensure_required_models", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok_results),
     ):
         rc = ops.install(MagicMock(dev=False, terraform=False, kubernetes=False))
@@ -5530,6 +5535,7 @@ def test_ops_install_logs_start_and_summary(caplog):
         patch.object(ops, "_install_homebrew_api", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
         patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
+        patch.object(ops, "_ensure_required_models", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok_results),
         caplog.at_level("INFO", logger="nyxgpt.ops"),
     ):
@@ -5556,6 +5562,7 @@ def test_ops_install_logs_error_when_step_raises(caplog):
         patch.object(ops, "_install_ollama_env_launchagent", return_value=[]),
         patch.object(ops, "_install_homebrew_api", return_value=[]),
         patch.object(ops, "_install_homebrew_web", return_value=[]),
+        patch.object(ops, "_ensure_required_models", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_cleanup_stale_log_symlinks", return_value=[]),
         caplog.at_level("INFO", logger="nyxgpt.ops"),
     ):
@@ -10944,6 +10951,7 @@ def test_install_terraform_success_runs_all_steps(monkeypatch, capsys):
         patch.object(ops, "_ensure_terraform_tfvars", return_value=ok) as t,
         patch.object(ops, "_generate_compose_config", return_value=ok) as c,
         patch.object(ops, "_build_terraform_docker_images", return_value=ok),
+        patch.object(ops, "_ensure_required_models", return_value=ok),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok) as a,
         patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
         patch.object(ops, "_sync_grafana_slack_webhook_secret", return_value=ok) as s,
@@ -10992,6 +11000,7 @@ def test_install_terraform_syncs_slack_webhook_before_observability_starts(monke
         patch.object(ops, "_ensure_terraform_tfvars", return_value=ok),
         patch.object(ops, "_generate_compose_config", return_value=ok),
         patch.object(ops, "_build_terraform_docker_images", return_value=ok),
+        patch.object(ops, "_ensure_required_models", return_value=ok),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok),
         patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
         patch.object(
@@ -11023,12 +11032,14 @@ def test_install_terraform_stops_pipeline_on_step_failure(monkeypatch):
             ops, "_ensure_terraform_binary", return_value=[ops.OpsResult(False, "no terraform")]
         ),
         patch.object(ops, "_ensure_terraform_tfvars") as t,
+        patch.object(ops, "_ensure_required_models") as m,
         patch.object(ops, "_terraform_init_plan_apply") as a,
         patch.object(ops, "_terraform_stack_health") as h,
     ):
         rc = ops._install_terraform(args)
     assert rc == 2
     t.assert_not_called()
+    m.assert_not_called()
     a.assert_not_called()
     h.assert_not_called()
 
@@ -11048,6 +11059,7 @@ def test_install_terraform_clears_intentional_stop_markers(monkeypatch, capsys):
         patch.object(ops, "_ensure_terraform_tfvars", return_value=ok),
         patch.object(ops, "_generate_compose_config", return_value=ok),
         patch.object(ops, "_build_terraform_docker_images", return_value=ok),
+        patch.object(ops, "_ensure_required_models", return_value=ok),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok),
         patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
         patch.object(ops, "_sync_grafana_slack_webhook_secret", return_value=ok),
@@ -12192,6 +12204,7 @@ def test_install_terraform_local_runs_steps_and_returns_results(monkeypatch):
         patch.object(ops, "_ensure_terraform_tfvars", return_value=ok) as t,
         patch.object(ops, "_generate_compose_config", return_value=ok),
         patch.object(ops, "_build_terraform_docker_images", return_value=ok),
+        patch.object(ops, "_ensure_required_models", return_value=ok),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok),
         patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
         patch.object(ops, "_sync_grafana_slack_webhook_secret", return_value=ok),
@@ -13389,6 +13402,7 @@ def test_ops_install_quiet_flag_suppresses_step_announcements(capsys):
         patch.object(ops, "_install_homebrew_api", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
         patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
+        patch.object(ops, "_ensure_required_models", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok_results),
         patch.object(ops, "sync_env_from_config", return_value=ok_results),
     ):
@@ -13419,6 +13433,7 @@ def test_ops_install_default_verbose_prints_step_announcements(capsys):
         patch.object(ops, "_install_homebrew_api", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
         patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
+        patch.object(ops, "_ensure_required_models", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok_results),
         patch.object(ops, "sync_env_from_config", return_value=ok_results),
     ):
