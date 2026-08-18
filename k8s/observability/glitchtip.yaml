@@ -225,9 +225,14 @@ spec:
             periodSeconds: 10
             failureThreshold: 30
           resources:
+            # 256Mi, not the old 512Mi (#3825): the web tier measures ~146Mi
+            # in steady state, and the Pod's effective request is already
+            # floored at the 256Mi its migrate initContainer above asks for,
+            # so reserving more bought nothing but an unschedulable
+            # prometheus. Limit unchanged for the ingest bursts.
             requests:
               cpu: 100m
-              memory: 512Mi
+              memory: 256Mi
             limits:
               memory: 2Gi
 ---

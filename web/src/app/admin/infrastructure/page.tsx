@@ -60,6 +60,9 @@ type InfraStatus = {
     deployed: boolean;
     namespace: string;
     pods: string[];
+    // Pods no node would take (#3825). Optional so an api that predates the
+    // field degrades to "none reported" instead of breaking the page.
+    unschedulable?: string[];
     context: string;
     provisioned: boolean;
     // The in-cluster observability layer (#3787): Kubernetes mode cannot use
@@ -583,6 +586,40 @@ export default function InfrastructurePage() {
                   <p style={{ fontSize: '0.875rem', color: 'var(--foreground-muted)' }}>
                     No pods in the <code>{status.kubernetes.namespace}</code> namespace.
                   </p>
+                )}
+
+                {/* #3825: an unschedulable Pod reads as `Pending` in the list
+                    above, indistinguishable from one that is starting -- so a
+                    deployment missing prometheus for want of node memory
+                    looked healthy here. Named explicitly, with the wrapped
+                    command that diagnoses and refuses it up front. Reporting
+                    only: the cure is more memory or CPU on the cluster VM,
+                    which no page served by that cluster can grant itself. */}
+                {(status.kubernetes.unschedulable?.length ?? 0) > 0 && (
+                  <div
+                    style={{
+                      marginTop: '0.75rem',
+                      padding: '0.75rem',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '4px',
+                      fontSize: '0.8rem',
+                    }}
+                  >
+                    <strong>
+                      {status.kubernetes.unschedulable?.length} Pod(s) could not be scheduled
+                    </strong>
+                    <ul style={{ margin: '0.35rem 0', paddingLeft: '1.1rem', fontFamily: 'monospace' }}>
+                      {status.kubernetes.unschedulable?.map((name) => (
+                        <li key={name}>{name}</li>
+                      ))}
+                    </ul>
+                    <span style={{ color: 'var(--foreground-muted)' }}>
+                      No node had enough unreserved memory or CPU for them. Give the cluster VM
+                      more of either (Docker Desktop: Settings &rarr; Resources), then re-run{' '}
+                      <code>nyxgpt ops install --kubernetes --local</code> — it checks the node&apos;s
+                      capacity against the stack before applying anything.
+                    </span>
+                  </div>
                 )}
 
                 {/* In-cluster observability (#3787). Kubernetes mode runs its own

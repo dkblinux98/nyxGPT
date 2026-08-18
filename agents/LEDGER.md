@@ -1328,6 +1328,50 @@ are absent here by design (relocated to the annex; IDs are never reused).
   Re-verify when: a check-status gate is added to the merge path — this entry
   then describes history rather than the present. See **Q-005**.
 
+- **V-045** · 2026-08-18 — **The `--kubernetes --local` stack is sized
+  against the node it actually lands on — in BOTH memory and cpu — and the
+  install measures that node before it applies anything.** The default
+  deployment (app tier + data/LLM tier + the #3787 observability layer)
+  reserves **6976Mi and 2075m**, down from 7872Mi and 2875m, against the
+  **7936Mi / 4000m** allocatable a stock Docker Desktop VM reports; a canary
+  rollout asks for a further 448Mi/150m and fits. **Memory was only the
+  reported half:** with the memory right-sized, `nyxgpt-api-canary` still
+  would not schedule on a 4-core node — `0/1 nodes are available: 1
+  Insufficient cpu` — because four api replicas reserved 250m each. Fixing
+  the named resource alone would have left the canary broken. Sizing is also
+  not the whole fix, since an operator's VM is whatever they gave it, so
+  `_preflight_k8s_capacity` (`src/nyxgpt/ops.py`) totals the rendered
+  manifests per resource against allocatable minus other namespaces'
+  requests and refuses *before* the first `kubectl apply`, warns when only
+  the canary headroom is missing, and skips rather than blocks when it cannot
+  measure (and warns rather than refuses on multi-node, where summed
+  allocatable can disprove a placement but never prove one). Before #3825 the
+  stack requested 8162Mi: every apply succeeded, the install reported
+  success, prometheus was left `Pending / FailedScheduling: Insufficient
+  memory`, and the later canary failure presented as "canary is broken".
+  Method: executed on a real kind cluster on 2026-08-18, ballasted to 7936Mi
+  allocatable (`scripts/k8s-node-ballast.sh` — a `pause` Pod reserving the
+  surplus, since the runner has ~16GiB and would be green by luck; its 4 CPUs
+  already match a Docker Desktop VM, so cpu needs no ballast). Observed, in
+  order: the pre-#3825 memory sizing left `prometheus`, `loki` and
+  `otel-collector` with no node and `Insufficient memory` events, and the
+  preflight refused it ("requests 8256Mi but only 7646Mi is free … at least
+  609Mi more"); the pre-fix cpu sizing with the memory fixed stranded
+  `nyxgpt-api-canary` on `Insufficient cpu`; the shipped sizing scheduled all
+  20 Pods and both canary Pods, and the preflight passed both resources
+  (6976Mi/7646Mi free, 2075m/3050m free). `k8s-capacity-smoke.yml` runs all
+  three phases; `k8s-local-smoke.yml` now runs the **default** install (no
+  `--skip-observability`) on the same ballasted node. After the fact the state
+  is observable: `infra_status()` reports `kubernetes.unschedulable` (Pods
+  with an empty `.spec.nodeName`) and the Infrastructure page names them — the
+  Pod list alone could not, since an unschedulable Pod and one pulling its
+  image both read `Pending`.
+  Re-verify when: a request/limit in `k8s/**` changes, or a workload is added
+  to either kustomization — both gates and
+  `tests/unit/test_k8s_capacity_preflight.py` fail loudly. Supersedes the
+  measured footprint in **V-041**, which was taken on the runner's own
+  16GB node before this right-sizing.
+
 - **V-039** · 2026-08-18 — **A self-heal/infra probe reports "unknown" when it
   cannot run, and unknown is never counted as unhealthy.** `compose_probe()`
   answers availability by *running* `docker compose ps`, not by checking that
@@ -1372,10 +1416,15 @@ are absent here by design (relocated to the annex; IDs are never reused).
   populated on every Pod (scheduled, merely pulling), and no
   `FailedScheduling` event in any namespace. Standing guard:
   `scripts/k8s-local-smoke.sh` now runs the default install, asserts all ten
-  observability workloads Ready, fails on any Pending Pod, and prints the
-  allocatable-vs-requests arithmetic every run.
+  observability workloads Ready, fails on any Pod the scheduler could not
+  place, and prints the allocatable-vs-requests arithmetic every run.
   Re-verify when: any `k8s/**` manifest changes a `resources.requests`, a
   replica count, or adds a workload — the 175m CPU margin is what absorbs it.
+  **Superseded in part by V-045** (#3825): the measured numbers above are the
+  pre-right-sizing footprint, and they were taken on the agent runner's own
+  ~16GB node, not on the 8GiB Docker Desktop VM an operator installs onto —
+  where the same stack did *not* fit. The finding this entry stands for (the
+  `_k8s_stack_health` phase/wait disagreement) is unaffected.
 
 - **V-042** · 2026-08-18 — **A support ticket's entire protection is one
   label, and the label is now guaranteed rather than assumed.** Every guard —
