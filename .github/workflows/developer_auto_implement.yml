@@ -1216,6 +1216,8 @@ jobs:
       - name: Run Verification (Attempt 1)
         id: verify1
         continue-on-error: true
+        env:
+          RELEASE_BRANCH: ${{ vars.RELEASE_BRANCH }}
         # Comparable runs finish in ~75s; a pathological tree (e.g. #3370,
         # where an untracked venv got committed) ran 30+ minutes and was on
         # track to burn the 6-hour job timeout silently. Fail fast instead.
@@ -1239,7 +1241,20 @@ jobs:
 
           echo "::group::Running pytest (unit tests - integration tests skipped in CI)"
           # Integration tests require running API server (not available in CI)
-          python -m pytest tests/unit/ -v --cov=src/nyxgpt --cov-report=term-missing 2>&1 | tee /tmp/pytest_attempt1.log
+          #
+          # Scoped to this branch's blast radius (#3896). This is the gate that
+          # matters -- the reviewer no longer re-runs anything and PR-time CI is
+          # gone -- and it runs up to three times per issue, so it is also where
+          # scoping pays. The selector escalates to the whole suite whenever it
+          # cannot classify a path, and the post-merge tripwire on the release
+          # branch is unscoped, so a wrong scope costs a late alarm, not a
+          # silent pass.
+          PYTEST_TARGETS=$(python3 scripts/ci/select_tests.py \
+            --base "origin/$RELEASE_BRANCH" --github-output 2>/dev/null \
+            | sed -n 's/^pytest_args=//p')
+          PYTEST_TARGETS=${PYTEST_TARGETS:-tests/unit/}
+          echo "pytest scope: $PYTEST_TARGETS"
+          python -m pytest $PYTEST_TARGETS -v --cov=src/nyxgpt --cov-report=term-missing 2>&1 | tee /tmp/pytest_attempt1.log
           [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           echo "::endgroup::"
 
@@ -1340,6 +1355,8 @@ jobs:
         if: steps.claude_fix2.conclusion == 'success'
         id: verify2
         continue-on-error: true
+        env:
+          RELEASE_BRANCH: ${{ vars.RELEASE_BRANCH }}
         timeout-minutes: 15
         run: |
           set +e
@@ -1359,7 +1376,20 @@ jobs:
 
           echo "::group::Running pytest (unit tests - integration tests skipped in CI)"
           # Integration tests require running API server (not available in CI)
-          python -m pytest tests/unit/ -v --cov=src/nyxgpt --cov-report=term-missing 2>&1 | tee /tmp/pytest_attempt2.log
+          #
+          # Scoped to this branch's blast radius (#3896). This is the gate that
+          # matters -- the reviewer no longer re-runs anything and PR-time CI is
+          # gone -- and it runs up to three times per issue, so it is also where
+          # scoping pays. The selector escalates to the whole suite whenever it
+          # cannot classify a path, and the post-merge tripwire on the release
+          # branch is unscoped, so a wrong scope costs a late alarm, not a
+          # silent pass.
+          PYTEST_TARGETS=$(python3 scripts/ci/select_tests.py \
+            --base "origin/$RELEASE_BRANCH" --github-output 2>/dev/null \
+            | sed -n 's/^pytest_args=//p')
+          PYTEST_TARGETS=${PYTEST_TARGETS:-tests/unit/}
+          echo "pytest scope: $PYTEST_TARGETS"
+          python -m pytest $PYTEST_TARGETS -v --cov=src/nyxgpt --cov-report=term-missing 2>&1 | tee /tmp/pytest_attempt2.log
           [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           echo "::endgroup::"
 

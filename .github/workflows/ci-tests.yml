@@ -1,8 +1,16 @@
 name: CI - Tests & Type Check
 
+# Post-merge integration tripwire (owner decision, 2026-08-18). The developer
+# runs the gates before cutting the PR and green is green for that diff, so
+# re-running them at PR time answers a question already answered. What a
+# developer's run cannot see is a change that did not exist when it ran: two
+# PRs with no overlapping lines, each green, that break each other once both
+# land. That happened twice on 2026-08-18 -- a new workflow merging against a
+# new index guard, and three branches each allocating ledger id V-046 -- and
+# both left the release branch red for hours before anyone noticed. So the
+# suite runs once, here, after the merge, as the alarm.
 on:
   push:
-  pull_request:
 
 permissions:
   contents: read
@@ -10,9 +18,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # Same push/PR scoping as terraform-local-smoke.yml: run on every PR, but
-    # only on pushes that land on the release branch (not every feature branch).
-    if: github.event_name == 'pull_request' || github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
+    if: github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
     steps:
       - uses: actions/checkout@v4
         with:
@@ -29,6 +35,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
+      - name: ruff check . (blocking)
+        run: ruff check .
+
+      - name: black --check . (blocking)
+        run: black --check .
+
       - name: mypy src/ (blocking)
         run: mypy src/
 
@@ -36,24 +48,57 @@ jobs:
       # Pull requests run the suites their diff can actually reach; pushes to
       # the release branch stay unscoped, so the merge boundary is still
       # protected by the whole tree.
-      - name: Select test suites for this diff
-        id: select
+      - name: pytest - unit tests (integration tests skipped in CI, no live services)
+        run: pytest tests/unit/ -v
+
+  # The web gates (tsc / eslint / vitest) also lived only in the review workflow.
+  # Self-gating on the diff rather than a workflow-level `paths:` filter, so the
+  # job reports a definite conclusion on every PR instead of vanishing -- a check
+  # that disappears is indistinguishable from one that has not run yet.
+  web:
+    runs-on: ubuntu-latest
+    if: github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Does this diff touch web/
+        id: touched
         env:
-          # Never interpolated into the body: expressions in a `run:` block are
-          # source, not data (V-027, and the run:-block extension of it).
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
           if [[ "$GITHUB_EVENT_NAME" != "pull_request" ]]; then
-            echo "push to $GITHUB_REF -- merge boundary, running the full suite"
-            echo "pytest_args=tests/unit/" >> "$GITHUB_OUTPUT"
+            echo "web=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           git fetch --no-tags --depth=1 origin "$BASE_SHA" 2>/dev/null || true
-          python3 scripts/ci/select_tests.py --base "$BASE_SHA" --github-output \
-            >> "$GITHUB_OUTPUT"
+          if git diff --name-only "$BASE_SHA...HEAD" | grep -q '^web/'; then
+            echo "web=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "web=false" >> "$GITHUB_OUTPUT"
+            echo "no web/ changes -- skipping web gates"
+          fi
 
-      - name: pytest - unit tests (integration tests skipped in CI, no live services)
-        env:
-          PYTEST_ARGS: ${{ steps.select.outputs.pytest_args }}
-        run: pytest $PYTEST_ARGS -v
+      - name: Set up Node.js
+        if: steps.touched.outputs.web == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install web dependencies
+        if: steps.touched.outputs.web == 'true'
+        run: cd web && npm ci
+
+      - name: tsc --noEmit (blocking)
+        if: steps.touched.outputs.web == 'true'
+        run: cd web && npx tsc --noEmit
+
+      - name: eslint (blocking)
+        if: steps.touched.outputs.web == 'true'
+        run: cd web && npx eslint .
+
+      - name: vitest (blocking)
+        if: steps.touched.outputs.web == 'true'
+        run: cd web && npx vitest run --coverage
