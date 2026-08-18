@@ -1035,6 +1035,48 @@ describe('InfrastructurePage', () => {
     expect(screen.getByText('nyxgpt cloud status')).toBeInTheDocument();
   });
 
+  it('names ssh’s own defaults when the deploy recorded no identity file (#3813)', async () => {
+    // A deploy made with an agent-held key records an empty `identity_file`,
+    // and `connection_status` reports that as a real answer rather than a
+    // missing one. The page has to say which key ssh will use, not leave the
+    // row blank -- an operator reading a blank there cannot tell "defaults"
+    // from "the dashboard failed to report it".
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({
+          ...CLOUD_DEPLOY_UNKNOWN,
+          source: 'deploy-record',
+          known: true,
+          deployed: true,
+          version: '3.0.0',
+          host: '203.0.113.10',
+          instance_id: 'i-0abc123',
+          region: 'us-east-1',
+          connection: {
+            known: true,
+            host: '203.0.113.10',
+            user: 'ec2-user',
+            identity_file: '',
+            target: 'ec2-user@203.0.113.10',
+            // No `-i` in the invocation either: ssh_argv omits it when the
+            // deploy recorded no key.
+            tunnel_invocation: 'ssh -N -L 8000:127.0.0.1:8000 ec2-user@203.0.113.10',
+            command: 'nyxgpt cloud tunnel',
+            reason: '',
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('ec2-user@203.0.113.10')).toBeInTheDocument();
+    });
+    expect(screen.getByText('(ssh’s own ~/.ssh defaults and agent)')).toBeInTheDocument();
+  });
+
   it('says why there is no connection target rather than rendering a blank one (#3813)', async () => {
     server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
     server.use(
