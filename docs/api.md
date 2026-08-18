@@ -1824,6 +1824,13 @@ outbound call, to PyPI's JSON API, to learn which versions already exist; a
 failed lookup is reported in `pypi_lookup_error` and clears `publishable`
 rather than failing the request.
 
+Anything else that stops the plan being computable is a `502` whose message
+names the branch, the channel and where to read the cause — not the cause
+itself. Those messages are built from caught exceptions (an unreadable
+`pyproject.toml` carries the API host's filesystem path and the OS error
+string), so the full text goes to the API log instead: `nyxgpt ops logs api`,
+or `nyxgpt release plan` on the host to see it directly.
+
 ```json
 {
   "branch": "v3.0.0",

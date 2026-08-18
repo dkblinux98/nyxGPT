@@ -2622,7 +2622,25 @@ def ops_release_candidate(
     try:
         return release_candidate_module.plan(target, requested_channel)
     except release_candidate_module.ReleaseCandidateError as e:
-        raise HTTPException(status_code=502, detail=str(e)) from e
+        # #3837 (CodeQL #123). `ReleaseCandidateError` is typed, but its
+        # *message* is not always host-independent: `plan` reaches
+        # `declared_version`, which raises `Cannot read {path}: {exc}` from a
+        # caught `OSError` -- so a failed pyproject read would print the API
+        # host's absolute filesystem path into the dashboard. Log the real
+        # message where the operator's logs are, and hand the client a
+        # message that says what failed and where to look.
+        log.warning(
+            "Release plan failed for branch %r on channel %r: %s", target, requested_channel, e
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"Could not compute the release plan for '{target}' on the "
+                f"'{requested_channel}' channel. The underlying error is in the "
+                "API logs (`nyxgpt ops logs api`); `nyxgpt release plan` on the "
+                "host reports it directly."
+            ),
+        ) from e
 
 
 # --- Support endpoints (#3745) ---

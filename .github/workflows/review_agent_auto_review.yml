@@ -61,14 +61,19 @@ jobs:
         run: gh auth status
 
       - name: Validate required secrets
+        env:
+          # #3837: a secret interpolated here is substituted as shell source;
+          # read it as data instead. Presence is all this step checks.
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          REVIEW_AGENT_TOKEN: ${{ secrets.REVIEW_AGENT_TOKEN }}
         run: |
-          if [[ -z "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}" ]]; then
+          if [[ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]]; then
             echo "::error::CLAUDE_CODE_OAUTH_TOKEN secret is not configured"
             echo "::error::Configure it at: Settings → Secrets and variables → Actions → Secrets"
             exit 1
           fi
 
-          if [[ -z "${{ secrets.REVIEW_AGENT_TOKEN }}" ]]; then
+          if [[ -z "$REVIEW_AGENT_TOKEN" ]]; then
             echo "::error::REVIEW_AGENT_TOKEN secret is not configured"
             exit 1
           fi
@@ -141,9 +146,10 @@ jobs:
 
       - name: Verify PR head repo (fork guard)
         shell: bash
+        env:
+          PR: ${{ steps.get_pr.outputs.pr_number }}
         run: |
           set -euo pipefail
-          PR="${{ steps.get_pr.outputs.pr_number }}"
 
           # A merge decision (auto or manual) must never execute against a
           # fork PR: this job runs with contents/pull-requests/issues write
@@ -163,6 +169,9 @@ jobs:
         id: parse_decision
         shell: bash
         env:
+          REVIEW_STATE: ${{ github.event.review.state }}
+          PR: ${{ steps.get_pr.outputs.pr_number }}
+          COMMENT_CREATED: ${{ github.event.comment.created_at }}
           # Untrusted comment body passed via env, never interpolated into the
           # script body, so a crafted comment cannot break out of the heredoc
           # and inject shell (CodeQL alert #1: code injection).
@@ -177,7 +186,6 @@ jobs:
           # Manual triggers: @approve-merge, @request-changes, @send-to-developer in issue comments
           if [[ "${{ github.event_name }}" == "pull_request_review" ]]; then
             # Use structured review state instead of brittle text matching
-            REVIEW_STATE="${{ github.event.review.state }}"
             if [[ "$REVIEW_STATE" == "approved" ]]; then
               DECISION="APPROVE"
               TRIGGER_TYPE="auto"
@@ -211,8 +219,6 @@ jobs:
               # its footprint; if found, no-op (ALREADY_HANDLED matches no
               # downstream step condition).
               sleep 75
-              PR="${{ steps.get_pr.outputs.pr_number }}"
-              COMMENT_CREATED="${{ github.event.comment.created_at }}"
               if [[ "$DECISION" == "APPROVE" ]]; then
                 STATE=$(gh api "repos/${{ github.repository }}/pulls/$PR" \
                   --jq 'if .merged then "MERGED" else (.state | ascii_upcase) end' || echo "")
@@ -273,9 +279,10 @@ jobs:
       - name: Extract issue number from PR
         id: get_issue
         shell: bash
+        env:
+          PR: ${{ steps.get_pr.outputs.pr_number }}
         run: |
           set -euo pipefail
-          PR="${{ steps.get_pr.outputs.pr_number }}"
 
           ISSUE=$(gh api "repos/${{ github.repository }}/pulls/$PR" --jq '.body // ""' | sed -n 's/.*Closes #\([0-9]*\).*/\1/p' | head -1)
 
@@ -290,10 +297,11 @@ jobs:
       - name: Execute merge (if approved)
         if: steps.parse_decision.outputs.decision == 'APPROVE'
         shell: bash
+        env:
+          PR: ${{ steps.get_pr.outputs.pr_number }}
+          ISSUE: ${{ steps.get_issue.outputs.issue_number }}
         run: |
           set -euo pipefail
-          PR="${{ steps.get_pr.outputs.pr_number }}"
-          ISSUE="${{ steps.get_issue.outputs.issue_number }}"
 
           echo "::notice::Approved - executing merge"
           bash -lc "cd '$GITHUB_WORKSPACE' && \
@@ -305,9 +313,10 @@ jobs:
         if: steps.parse_decision.outputs.decision == 'REQUEST_CHANGES'
         id: count
         shell: bash
+        env:
+          PR: ${{ steps.get_pr.outputs.pr_number }}
         run: |
           set -euo pipefail
-          PR="${{ steps.get_pr.outputs.pr_number }}"
 
           # Routing is not computed here: lib/review_handoff.py's plan_round
           # is the single decision for both this workflow and the
@@ -389,11 +398,12 @@ jobs:
       - name: Escalate to human (if 3+ loops, or immediately on spec ambiguity)
         if: steps.parse_decision.outputs.decision == 'REQUEST_CHANGES' && steps.count.outputs.escalate == 'true'
         shell: bash
+        env:
+          PR: ${{ steps.get_pr.outputs.pr_number }}
+          ISSUE: ${{ steps.get_issue.outputs.issue_number }}
+          REASON: ${{ steps.count.outputs.escalate_reason }}
         run: |
           set -euo pipefail
-          PR="${{ steps.get_pr.outputs.pr_number }}"
-          ISSUE="${{ steps.get_issue.outputs.issue_number }}"
-          REASON="${{ steps.count.outputs.escalate_reason }}"
 
           echo "::group::Escalating to human ($REASON)"
 
@@ -508,10 +518,12 @@ jobs:
       - name: Return to developer (if changes requested and not escalated or huddling)
         if: steps.parse_decision.outputs.decision == 'REQUEST_CHANGES' && steps.count.outputs.escalate == 'false' && steps.count.outputs.huddle == 'false' && steps.count.outputs.defer != 'true'
         shell: bash
+        env:
+          PR: ${{ steps.get_pr.outputs.pr_number }}
+          ISSUE: ${{ steps.get_issue.outputs.issue_number }}
+          LOOP_COUNT: ${{ steps.count.outputs.loop_count }}
         run: |
           set -euo pipefail
-          PR="${{ steps.get_pr.outputs.pr_number }}"
-          ISSUE="${{ steps.get_issue.outputs.issue_number }}"
 
           echo "::group::Returning issue #$ISSUE to developer"
 
@@ -523,7 +535,10 @@ jobs:
             set_issue_status '$ISSUE' \"\$STATUS_IN_PROGRESS\" && \
             assign_and_trigger_developer '$ISSUE'"
 
-          LOOP_NUM=$((${{ steps.count.outputs.loop_count }} + 1))
+          # #3837: substituting the output straight into $(( )) made it
+          # arithmetic *source* -- non-numeric text is evaluated there, and
+          # bash arithmetic expansion recurses into variable names.
+          LOOP_NUM=$((LOOP_COUNT + 1))
 
           # Post comment to PR explaining what needs to be fixed
           DEV_AGENT="${{ vars.DEV_AGENT }}"
@@ -547,11 +562,12 @@ jobs:
       - name: Trigger huddle (judgment call, or 2nd failed verifiable-defect cycle)
         if: steps.parse_decision.outputs.decision == 'REQUEST_CHANGES' && steps.count.outputs.huddle == 'true'
         shell: bash
+        env:
+          PR: ${{ steps.get_pr.outputs.pr_number }}
+          ISSUE: ${{ steps.get_issue.outputs.issue_number }}
+          DTYPE: ${{ steps.count.outputs.disagreement_type }}
         run: |
           set -euo pipefail
-          PR="${{ steps.get_pr.outputs.pr_number }}"
-          ISSUE="${{ steps.get_issue.outputs.issue_number }}"
-          DTYPE="${{ steps.count.outputs.disagreement_type }}"
           DEV_AGENT="${{ vars.DEV_AGENT }}"
 
           echo "::group::Triggering huddle for issue #$ISSUE (type $DTYPE)"
@@ -601,10 +617,12 @@ jobs:
       - name: Send to developer (human override after escalation)
         if: steps.parse_decision.outputs.decision == 'SEND_TO_DEVELOPER'
         shell: bash
+        env:
+          PR: ${{ steps.get_pr.outputs.pr_number }}
+          ISSUE: ${{ steps.get_issue.outputs.issue_number }}
+          COMMENTER: ${{ github.event.comment.user.login }}
         run: |
           set -euo pipefail
-          PR="${{ steps.get_pr.outputs.pr_number }}"
-          ISSUE="${{ steps.get_issue.outputs.issue_number }}"
 
           echo "::group::Human override: sending issue #$ISSUE back to developer"
 
@@ -619,7 +637,6 @@ jobs:
           # Post comment to PR explaining human override
           DEV_AGENT="${{ vars.DEV_AGENT }}"
           HUMAN_OWNER="${{ vars.HUMAN_OWNER }}"
-          COMMENTER="${{ github.event.comment.user.login }}"
           BODY=$(printf '%s\n\n%s\n\n%s\n%s\n%s\n%s\n%s\n%s' \
             "👤 **Human Override by @${COMMENTER}**: Sent back to developer" \
             "Issue #${ISSUE} has been returned to **In Progress** and assigned to @${DEV_AGENT}." \

@@ -118,9 +118,12 @@ jobs:
         run: python -m build --wheel --outdir dist/
 
       - name: Artifact install on bare Amazon Linux 2023
+        env:
+          # #3837: dispatch inputs reach the shell as data, never as source.
+          VERSION: ${{ inputs.version }}
         run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            nyxgpt cloud smoke --container --version "${{ inputs.version }}"
+          if [ -n "$VERSION" ]; then
+            nyxgpt cloud smoke --container --version "$VERSION"
           else
             nyxgpt cloud smoke --container --wheel "$(ls dist/*.whl | head -1)"
           fi

@@ -172,10 +172,15 @@ jobs:
         id: route
         env:
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == 'true' && '1' || '0' }}
+          # #3837: the matrix is built by `fromJSON` over a generated step
+          # output, so its values are not visible at this site -- they reach
+          # the shell as data, never as substituted source.
+          PR_NUMBER: ${{ matrix.pr.number }}
+          PR_ISSUE: ${{ matrix.pr.issue }}
         run: |
           set -o pipefail
           bash scripts/agents/dispatch_conflict_resolution.sh \
-            "${{ matrix.pr.number }}" ${{ matrix.pr.issue }} | tee /tmp/route.out
+            "$PR_NUMBER" "$PR_ISSUE" | tee /tmp/route.out
           ACTION="$(sed -n 's/^conflict-resolution: \([a-z]*\) .*/\1/p' /tmp/route.out | tail -1)"
           echo "action=${ACTION:-unknown}" >> "$GITHUB_OUTPUT"
 
