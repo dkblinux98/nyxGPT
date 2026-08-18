@@ -473,6 +473,25 @@ are absent here by design (relocated to the annex; IDs are never reused).
   named in the issue body and left out of every proposed group.
   Source: #3809; owner acceptance round 2026-08-16 (testing #3745).
 
+- **D-020** · 2026-08-18 · owner — **`claude[bot]` is an allowed author for
+  the sanctioned comment triggers** (`READY_FOR_NEXT_ISSUE` on
+  `notify_scrum_ready.yml`, `@review` on `claude-code-review.yml`, which also
+  passes `allowed_bots: "claude"` to the review action). Every GitHub write
+  from a Claude remote session carries that App identity — the session proxy
+  rewrites all credentials, so no PAT changes it (verified 2026-08-18: a
+  PAT-signed reviewer request still produced a `claude[bot]`-actored run).
+  The #3706/#3790 runaway-loop protection lives in the anchored-token gate
+  and informational markers, **not in identity exclusion** — removing the
+  identity wholesale was a ceiling, not a floor (D-004). Scope note: that
+  anchored gate covers the *kick* only; `@review` has no layer-2 gate (author
+  list + bare `contains`), and is bounded instead by being convergent and
+  one-shot with its own output posting as the already-allowed REVIEW_AGENT.
+  The owner's earlier
+  same-day "fine as is" close of #3870 was a misunderstanding (they believed
+  the restriction already lifted) and was reversed within hours — a session
+  reading only the close comment will get this wrong.
+  Source: #3870; owner in session, 2026-08-18.
+
 ## Verifications
 
 - **V-001** · 2026-08-14 — Releases in this repository are immutable: a
@@ -1244,6 +1263,33 @@ are absent here by design (relocated to the annex; IDs are never reused).
   cross-file failure; the failure disappears with the fixture in place.
   Re-verify when: a new test asserts a `threading.Timer`-deferred endpoint —
   use `captured_timers`, never a bare "assert not called inline".
+- **V-038** · 2026-08-18 — **An operator can now recover a cloud deployment's
+  address and SSH target after the deploy's scrollback is gone, and read the
+  instance's container state without a hand-rolled `ssh`.** `nyxgpt cloud
+  status` is a first-class subcommand: human-readable by default (`--json` for
+  the payload `nyxgpt cloud deploy --status` used to emit, which still works
+  for anything scripted against it), and it prints `user@host` plus the
+  identity file the deploy actually recorded — `tunnel_invocation()`, which had
+  zero callers since it was written, now carries the raw `ssh` under a
+  "diagnostics … run the wrapped command, not this" heading rather than as an
+  instruction. `nyxgpt cloud ops {status,doctor,self-heal}` runs the instance's
+  own read-only `nyxgpt` over the same wrapped SSH path `nyxgpt cloud
+  credentials` uses. The SSH user/identity resolution for those read-only
+  commands, and for `cloud tunnel`, is `resolve_access_target` — it fills from
+  the deploy record what flags did not give, so a deployment made with a
+  non-default key no longer needs `--identity-file` re-typed on every
+  inspection.
+  Method: executed — `scripts/cloud-status-smoke.sh` run 2026-08-18 against the
+  installed console script and real files under `$HOME/.nyxGPT`, and wired into
+  `.github/workflows/cloud-status-smoke.yml`. Three phases so a pass cannot be
+  vacuous: no record → `UNKNOWN` and explicitly *not* "nothing is deployed"
+  (the #3804 distinction); a record → the SSH target, identity file, URLs and
+  the wrapped container-state command all printed, with no `docker compose`
+  string anywhere in the output; an unroutable TEST-NET-3 host → `cloud ops`
+  exits 1 naming `nyxgpt cloud allow-ip`, never a raw ssh/docker instruction.
+  Re-verify when: the deploy record's field names change (`ssh_user`,
+  `identity_file`, `host`), or a new `cloud ops` inspection is added — it must
+  go in the `REMOTE_OPS_COMMANDS` read-only allowlist, not become a write path.
 
 - **V-038** · 2026-08-18 — **A PR can be merged while the CI for its head
   commit is still running, and nothing re-examines the result.**

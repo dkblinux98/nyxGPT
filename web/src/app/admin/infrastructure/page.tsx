@@ -133,6 +133,23 @@ type DeployHistoryEntry = {
   detail?: string;
 };
 
+// How this machine reaches the deployment (#3813). `known` is false on the
+// instance itself and on a machine with no deploy record: the SSH user and
+// identity file live in the record the deploy wrote on the operator's
+// workstation, so `reason` says why there is nothing to show rather than
+// rendering a blank target. `tunnel_invocation` is the raw ssh the wrapped
+// tunnel executes -- shown as diagnostics, never as the instruction.
+type CloudConnection = {
+  known: boolean;
+  host: string;
+  user: string;
+  identity_file: string;
+  target: string;
+  tunnel_invocation: string;
+  command: string;
+  reason: string;
+};
+
 type CloudDeployStatus = {
   source: 'deploy-record' | 'local-instance' | 'none';
   known: boolean;
@@ -140,8 +157,11 @@ type CloudDeployStatus = {
   deployed: boolean;
   version: string;
   host: string;
+  instance_id: string;
+  instance_type: string;
   region: string;
   profiles: string[];
+  connection: CloudConnection;
   infra: CloudInfraStatus;
   tunnel: { running: boolean; pid: number };
   health: DeployHealth;
@@ -695,7 +715,7 @@ export default function InfrastructurePage() {
           {!cloud?.known ? (
             <p style={{ fontSize: '0.875rem' }}>
               Unknown from this machine — no deploy has been recorded here and this is not the
-              instance. Run <code>{cloud?.commands?.status ?? 'nyxgpt cloud deploy --status'}</code>{' '}
+              instance. Run <code>{cloud?.commands?.status ?? 'nyxgpt cloud status'}</code>{' '}
               where the deploy was run.
             </p>
           ) : (
@@ -708,6 +728,14 @@ export default function InfrastructurePage() {
               <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: '0.875rem' }}>
                 <Row label="Installed version" value={cloud.version} />
                 <Row label="Host" value={cloud.host} />
+                <Row
+                  label="Instance"
+                  value={
+                    cloud.instance_type
+                      ? `${cloud.instance_id} (${cloud.instance_type})`
+                      : cloud.instance_id
+                  }
+                />
                 <Row label="Region" value={cloud.region} />
                 <Row label="Observability profiles" value={cloud.profiles.join(', ')} />
                 <Row
@@ -722,6 +750,50 @@ export default function InfrastructurePage() {
                 />
                 <Row label="Stack health" value={healthLabel(cloud.health)} />
               </ul>
+
+              {/* The connection target (#3813). Reported, not offered: this
+                  page never opens an SSH session, it says what the wrapped
+                  command connects to so an operator does not have to
+                  reconstruct it from a deploy's scrollback. */}
+              <div style={{ marginTop: '1rem' }}>
+                <h3 style={{ fontSize: '0.95rem', fontWeight: 600, marginBottom: '0.35rem' }}>
+                  Connection target
+                </h3>
+                {cloud.connection?.known ? (
+                  <>
+                    <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: '0.875rem' }}>
+                      <Row label="SSH target" value={cloud.connection.target} />
+                      <Row
+                        label="Identity file"
+                        value={
+                          cloud.connection.identity_file ||
+                          '(ssh’s own ~/.ssh defaults and agent)'
+                        }
+                      />
+                    </ul>
+                    {cloud.connection.tunnel_invocation && (
+                      <p
+                        style={{
+                          fontSize: '0.75rem',
+                          color: 'var(--foreground-muted)',
+                          marginTop: '0.5rem',
+                        }}
+                      >
+                        Diagnostics — what <code>{cloud.connection.command}</code> executes on your
+                        behalf. Run the wrapped command, not this:
+                        <br />
+                        <code style={{ wordBreak: 'break-all' }}>
+                          {cloud.connection.tunnel_invocation}
+                        </code>
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <p style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)' }}>
+                    Not reportable from here — {cloud.connection?.reason}.
+                  </p>
+                )}
+              </div>
 
               {Object.keys(cloud.urls).length > 0 && !cloud.on_instance && (
                 <div style={{ marginTop: '1rem' }}>
@@ -858,9 +930,18 @@ export default function InfrastructurePage() {
                 'Run the end-to-end cloud test (deploys, verifies chat/RAG/observability, then tears down)',
                 cloud?.commands?.smoke ?? 'nyxgpt cloud smoke',
               ],
-              ['Show this state from a terminal', cloud?.commands?.status ?? 'nyxgpt cloud deploy --status'],
+              ['Show this state from a terminal', cloud?.commands?.status ?? 'nyxgpt cloud status'],
               ['Open the access tunnel', cloud?.commands?.tunnel ?? 'nyxgpt cloud tunnel'],
               ['Close it again', cloud?.commands?.tunnel_stop ?? 'nyxgpt cloud tunnel --stop'],
+              [
+                'Inspect the containers running on the instance',
+                cloud?.commands?.ops_status ?? 'nyxgpt cloud ops status',
+              ],
+              ['Diagnose the instance', cloud?.commands?.doctor ?? 'nyxgpt cloud ops doctor'],
+              [
+                'Read the observability logins',
+                cloud?.commands?.credentials ?? 'nyxgpt cloud credentials',
+              ],
               ['Re-allow SSH after your public IP changes', cloud?.commands?.allow_ip ?? 'nyxgpt cloud allow-ip'],
               ['Preview a substrate change without creating anything', 'nyxgpt cloud infra plan'],
               ['Move Terraform state to S3 with a DynamoDB lock', 'nyxgpt cloud state migrate'],

@@ -2689,8 +2689,60 @@ def cli(argv: list[str] | None = None) -> int:
     cloud_deploy_p.add_argument(
         "--status",
         action="store_true",
-        help="Report the deployment's state as JSON instead of deploying (touches nothing)",
+        help=(
+            "Superseded by `nyxgpt cloud status` (#3813) -- still emits the same JSON, "
+            "for anything already scripted against it"
+        ),
     )
+
+    # `cloud status` (#3813): the command an operator runs after the deploy's
+    # scrollback is gone. Human-readable by default -- the address, the SSH
+    # target, the tunnel state and the URLs -- with `--json` for the machine
+    # form. Reads recorded state only; it touches neither AWS nor the instance
+    # (beyond one optional health request through an already-open tunnel).
+    cloud_status_p = cloud_sub.add_parser(
+        "status",
+        help=(
+            "Show what is deployed and how to reach it: version, instance, public IP, "
+            "SSH target, tunnel state and the localhost URLs"
+        ),
+    )
+    cloud_status_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the machine-readable payload instead of the operator summary",
+    )
+    cloud_status_p.add_argument(
+        "--no-probe",
+        action="store_true",
+        help=(
+            "Do not health-check the deployment through an open tunnel "
+            "(the probe is skipped anyway when no tunnel is open)"
+        ),
+    )
+
+    # `cloud ops` (#3813): read-only inspections run *on* the instance over the
+    # same wrapped SSH path `cloud credentials` uses, so checking container
+    # state never means a hand-rolled `ssh` plus a raw `docker compose ps`
+    # (CLAUDE.md's wrapper requirement).
+    cloud_ops_p = cloud_sub.add_parser(
+        "ops",
+        help=(
+            "Run a read-only inspection on the deployed instance (container state, "
+            "doctor, self-heal) over the wrapped SSH access path"
+        ),
+    )
+    cloud_ops_p.add_argument(
+        "inspection",
+        nargs="?",
+        default="status",
+        choices=sorted(cloud_deploy_mod.REMOTE_OPS_COMMANDS),
+        help=(
+            "Which inspection to run on the instance (default: status -- the instance's "
+            "own `nyxgpt ops status`, which reports its containers)"
+        ),
+    )
+    _add_ssh_access_flags(cloud_ops_p)
 
     cloud_destroy_p = cloud_sub.add_parser(
         "destroy",
@@ -3240,7 +3292,14 @@ def cli(argv: list[str] | None = None) -> int:
     if cmd == "cloud" and args.cloud_cmd == "state":
         return cloud_state_mod.state_command(args)
 
-    if cmd == "cloud" and args.cloud_cmd in ("deploy", "destroy", "tunnel", "credentials"):
+    if cmd == "cloud" and args.cloud_cmd in (
+        "deploy",
+        "destroy",
+        "tunnel",
+        "credentials",
+        "status",
+        "ops",
+    ):
         return cloud_deploy_mod.deploy_command(args)
 
     if cmd == "cloud" and args.cloud_cmd == "smoke":

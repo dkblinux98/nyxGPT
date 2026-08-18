@@ -1,0 +1,90 @@
+name: Cloud Status Smoke
+
+# One job, answering one question about `nyxgpt cloud status` /
+# `nyxgpt cloud ops` (#3813):
+#
+#   cloud-status-smoke  Does an operator who has lost the deploy's scrollback
+#                       actually get their instance back from a wrapped
+#                       command -- the public IP, the SSH user@host and the
+#                       identity file -- when the command is run the way they
+#                       run it: the installed console script, reading the real
+#                       files under ~/.nyxGPT/cloud?
+#
+#                       Unit tests import the module and monkeypatch the state
+#                       paths, so they cannot see whether the subcommands are
+#                       wired into the CLI's argparse tree at all, whether the
+#                       entry point dispatches them, or whether they read the
+#                       paths `nyxgpt cloud deploy` really writes. This
+#                       installs the built wheel into a clean venv -- no
+#                       editable install, no checkout on PATH -- and runs
+#                       them.
+#
+#                       Injects the condition rather than hoping for it
+#                       (#3753's rule): phase 1 asserts UNKNOWN with no deploy
+#                       record, phase 2 writes one and asserts the connection
+#                       target appears, phase 3 points `cloud ops` at an
+#                       unroutable TEST-NET-3 address and asserts the real ssh
+#                       failure is reported with the wrapped fix. A pass in
+#                       phase 2 therefore cannot come from a command that
+#                       prints the same thing regardless.
+#
+# What it does NOT cover: a real EC2 instance answering `nyxgpt cloud ops`
+# (that needs a billed deployment -- `nyxgpt cloud smoke` is the command that
+# does it), and the React rendering of the cloud page (covered by
+# web/tests/app/admin/infrastructure.test.tsx).
+
+on:
+  pull_request:
+    paths:
+      - 'src/nyxgpt/cloud_deploy.py'
+      - 'src/nyxgpt/cli.py'
+      - 'scripts/cloud-status-smoke.sh'
+      - '.github/workflows/cloud-status-smoke.yml'
+  push:
+    paths:
+      - 'src/nyxgpt/cloud_deploy.py'
+      - 'src/nyxgpt/cli.py'
+      - 'scripts/cloud-status-smoke.sh'
+      - '.github/workflows/cloud-status-smoke.yml'
+  workflow_dispatch:
+
+# Read-only workflow: it checks out the repo and drives a local smoke; it
+# never writes to the repository or its APIs, and it never touches AWS.
+permissions:
+  contents: read
+
+jobs:
+  cloud-status-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # From the wheel, not `pip install -e .`: the question is whether an
+      # operator's installed `nyxgpt` resolves these subcommands, and an
+      # editable install answers it from the checkout instead.
+      - name: Build and install the wheel into a clean venv
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel
+          python -m venv /tmp/cloud-status-venv
+          /tmp/cloud-status-venv/bin/pip install --upgrade pip
+          /tmp/cloud-status-venv/bin/pip install dist/*.whl
+
+      # A HOME of its own, so the smoke's state files cannot collide with
+      # anything else on the runner and the phases start from a known-empty
+      # ~/.nyxGPT/cloud.
+      - name: Run the cloud status smoke
+        run: |
+          mkdir -p /tmp/cloud-status-home
+          HOME=/tmp/cloud-status-home \
+            PATH="/tmp/cloud-status-venv/bin:$PATH" \
+            bash scripts/cloud-status-smoke.sh
+
+      - name: Show the state files the smoke left behind
+        if: always()
+        run: ls -la /tmp/cloud-status-home/.nyxGPT/cloud || true

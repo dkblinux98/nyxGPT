@@ -1018,6 +1018,124 @@ describe('InfrastructurePage', () => {
     });
   });
 
+  it('shows the connection target and the wrapped tunnel it executes, plus the instance type (#3813)', async () => {
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({
+          ...CLOUD_DEPLOY_UNKNOWN,
+          source: 'deploy-record',
+          known: true,
+          deployed: true,
+          version: '3.0.0',
+          host: '203.0.113.10',
+          instance_id: 'i-0abc123',
+          instance_type: 't3.large',
+          region: 'us-east-1',
+          connection: {
+            known: true,
+            host: '203.0.113.10',
+            user: 'ec2-user',
+            identity_file: '/home/op/.ssh/nyxgpt.pem',
+            target: 'ec2-user@203.0.113.10',
+            tunnel_invocation: 'ssh -N -L 8000:127.0.0.1:8000 ec2-user@203.0.113.10',
+            command: 'nyxgpt cloud tunnel',
+            reason: '',
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('ec2-user@203.0.113.10')).toBeInTheDocument();
+    });
+    expect(screen.getByText('/home/op/.ssh/nyxgpt.pem')).toBeInTheDocument();
+    expect(screen.getByText('i-0abc123 (t3.large)')).toBeInTheDocument();
+    // The raw ssh is shown as diagnostics only -- the sentence around it must
+    // point at the wrapped command (CLAUDE.md's wrapper requirement).
+    expect(
+      screen.getByText('ssh -N -L 8000:127.0.0.1:8000 ec2-user@203.0.113.10')
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Run the wrapped command, not this/)).toBeInTheDocument();
+    // And the wrapped way to see the instance's containers is named, so an
+    // operator never needs a hand-rolled ssh plus a raw `docker compose ps`.
+    expect(screen.getByText('nyxgpt cloud ops status')).toBeInTheDocument();
+    expect(screen.getByText('nyxgpt cloud status')).toBeInTheDocument();
+  });
+
+  it('names ssh’s own defaults when the deploy recorded no identity file (#3813)', async () => {
+    // A deploy made with an agent-held key records an empty `identity_file`,
+    // and `connection_status` reports that as a real answer rather than a
+    // missing one. The page has to say which key ssh will use, not leave the
+    // row blank -- an operator reading a blank there cannot tell "defaults"
+    // from "the dashboard failed to report it".
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({
+          ...CLOUD_DEPLOY_UNKNOWN,
+          source: 'deploy-record',
+          known: true,
+          deployed: true,
+          version: '3.0.0',
+          host: '203.0.113.10',
+          instance_id: 'i-0abc123',
+          region: 'us-east-1',
+          connection: {
+            known: true,
+            host: '203.0.113.10',
+            user: 'ec2-user',
+            identity_file: '',
+            target: 'ec2-user@203.0.113.10',
+            // No `-i` in the invocation either: ssh_argv omits it when the
+            // deploy recorded no key.
+            tunnel_invocation: 'ssh -N -L 8000:127.0.0.1:8000 ec2-user@203.0.113.10',
+            command: 'nyxgpt cloud tunnel',
+            reason: '',
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('ec2-user@203.0.113.10')).toBeInTheDocument();
+    });
+    expect(screen.getByText('(ssh’s own ~/.ssh defaults and agent)')).toBeInTheDocument();
+  });
+
+  it('says why there is no connection target rather than rendering a blank one (#3813)', async () => {
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({
+          ...CLOUD_DEPLOY_UNKNOWN,
+          source: 'local-instance',
+          known: true,
+          deployed: true,
+          on_instance: true,
+          version: '3.0.0',
+          connection: {
+            ...CLOUD_DEPLOY_UNKNOWN.connection,
+            reason:
+              'this dashboard is served by the instance itself -- the SSH user and identity file are the operator workstation’s, and are recorded there',
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Not reportable from here/)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/served by the instance itself/)).toBeInTheDocument();
+    expect(screen.queryByText(/Run the wrapped command, not this/)).not.toBeInTheDocument();
+  });
+
   it('distinguishes the two Terraforms: local containers here, AWS provisioning below (#3804)', async () => {
     server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
 

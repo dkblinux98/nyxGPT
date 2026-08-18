@@ -25,7 +25,8 @@ jobs:
       (github.event.comment.user.login == vars.HUMAN_OWNER ||
        github.event.comment.user.login == vars.SCRUM_AGENT ||
        github.event.comment.user.login == vars.DEV_AGENT ||
-       github.event.comment.user.login == vars.REVIEW_AGENT)
+       github.event.comment.user.login == vars.REVIEW_AGENT ||
+       github.event.comment.user.login == 'claude[bot]')
     runs-on: ubuntu-latest
     permissions:
       contents: read

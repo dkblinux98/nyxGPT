@@ -324,10 +324,18 @@ ACCEPTANCE_SEQUENCE: tuple[dict[str, str], ...] = (
     },
     {
         "step": "reachability",
-        "command": "nyxgpt cloud deploy --status",
+        "command": "nyxgpt cloud status",
         "expect": (
-            "access_model reports SSH-only ingress from the owner CIDR -- every app "
-            "and observability URL is a localhost one through the tunnel"
+            "the SSH target, the public IP and SSH-only ingress from the owner CIDR are "
+            "printed -- every app and observability URL is a localhost one through the tunnel"
+        ),
+    },
+    {
+        "step": "containers",
+        "command": "nyxgpt cloud ops status",
+        "expect": (
+            "the instance's own `nyxgpt ops status` answers over the wrapped SSH path -- "
+            "container state without a hand-rolled ssh or a raw docker compose"
         ),
     },
     {
