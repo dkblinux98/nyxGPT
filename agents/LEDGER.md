@@ -948,7 +948,6 @@ are absent here by design (relocated to the annex; IDs are never reused).
   cannot be tested from an agent session.
   Re-verify when: GitHub changes the dismissal form, or an agent gains
   code-scanning write access and can test the limit directly.
-
 - **V-030** · 2026-08-17 — **Every agent script now stores an issue-to-issue
   link the way D-002 requires, and none of them writes the retired prose
   form.** `create_issue.sh --blocks N` calls `mark_issue_blocked_by` and does
@@ -974,6 +973,36 @@ are absent here by design (relocated to the annex; IDs are never reused).
   Re-verify when: a new script or workflow links two issues, or `--blocks`
   grows a second write.
 
+- **V-031** · 2026-08-18 — Native issue relationships (`blocked_by`) **are
+  writable from a remote Claude Code session over REST**, even though GraphQL
+  is restricted here to a pinned set of PR-review operations. The endpoint is
+  `POST /repos/{owner}/{repo}/issues/{number}/dependencies/blocked_by` with a
+  `{"issue_id": <numeric id>}` body — the same call `mark_issue_blocked_by`
+  makes (`scripts/agents/lib/gh_project.sh:2125-2135`). GraphQL being blocked
+  is therefore **not** a reason to fall back to body prose for issue links.
+  Method: executed 2026-08-18 from a remote session. `POST .../graphql`
+  returned 403 with "only the pinned set of PR-review operations is served";
+  six `blocked_by` edges were then written over REST (all 201) and confirmed by
+  re-querying `GET .../dependencies/blocked_by` on each issue (#3853←#3861,
+  #3854←#3850, #3857←#3853, #3859←#3850,#3854, #3861←#3860).
+  Re-verify when: the session proxy's allowed-operation list changes, or GitHub
+  moves issue dependencies off this REST route.
+
+- **V-032** · 2026-08-18 — **`macos-brew-smoke.yml` does not exercise the user
+  path.** Neither install job invokes `nyxgpt`, starts the stack, or issues an
+  HTTP request. `keg-install` checks that `bin/nyxgpt-api` exists and runs
+  `brew test`, whose `test do` block asserts only that the venv exists and
+  `import nyxgpt.app` succeeds; `published-tap` verifies the keg version and
+  wrapper file. A keg with no `nyxgpt` CLI passes both. **A green run on this
+  workflow is not evidence that an install works** — it is evidence that a keg
+  builds. This is how #3850 shipped and how the #3516 capstone closed green
+  over an install path no user could complete.
+  Method: read `.github/workflows/macos-brew-smoke.yml` (jobs at :70-506 and
+  :508-586) and the `test do` blocks in `homebrew/nyxgpt-{api,web}.rb`,
+  2026-08-18, against the owner's rc12 acceptance findings (#3850, #3853,
+  #3854, #3857, #3859).
+  Re-verify when: #3860 lands the end-to-end assertions, at which point this
+  entry is superseded rather than re-verified.
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
@@ -1005,6 +1034,40 @@ are absent here by design (relocated to the annex; IDs are never reused).
   ceremony.
   Blocks: nothing yet.
 
+- **Q-002** · 2026-08-18 · owner acceptance (#3853) — Why did
+  `conflicts_with` not prevent `nyxgpt-api@3.0.0rc` from installing alongside
+  `nyxgpt-api` 2.1.0? The declaration is present — injected into candidate
+  formulas by `scripts/build_homebrew_artifacts.py:377-380` — yet both kegs
+  were installed simultaneously on the owner's Mac and only surfaced at
+  teardown. `macos-brew-smoke.yml:546-550` asserts the conflict warning "is
+  benign (brew warns and installs anyway)", written about the *absent
+  counterpart* case; if that reading has been generalised to the
+  *installed counterpart* case, the guard was never load-bearing.
+  Needs: a runner reproduction — install the stable formula, attempt the
+  candidate, capture what Homebrew actually does. Prior context in #3753,
+  #3763, #3770.
+  Blocks: #3853's fix direction (packaging-level guard vs `ops.py` reconcile).
+
+- **Q-003** · 2026-08-18 · owner acceptance (#3857) — What stops the web UI's
+  client JS from loading: the two builds racing for port 3000 (#3853), or a
+  stale PWA service worker (`web/next.config.ts:62-65`)? Every endpoint was
+  measured responsive while the UI showed permanent `next/dynamic` loading
+  fallbacks, so the fault is client-side.
+  Needs: DevTools → Application → Service Workers on a reproducing machine.
+  The owner's machine was torn down before this was captured, so it must be
+  reproduced from scratch.
+  Blocks: #3857 — one branch of its fix is conditional on the answer.
+
+- **Q-004** · 2026-08-18 · owner acceptance (#3853) — What produced
+  `Unknown system error -11` opening
+  `/Users/.../Dropbox/repositories/nyxGPT/web/.next/dev/...` from a **brew**
+  service? The dev-mode attribution was retired (see **S-005**) and nothing has
+  replaced it. If a locally-generated tap can produce kegs whose runtime files
+  resolve into a live checkout, that is a repo-less portability defect distinct
+  from the known `file://`-tarball violation.
+  Needs: inspection of a keg built from the local `nyxgpt-local` tap.
+  Blocks: nothing yet; would warrant its own issue if confirmed.
+
 ## Superseded
 
 Retired beliefs. Listed because this project asserted each of them, and a
@@ -1025,3 +1088,14 @@ them.
   linked."~~ Superseded 2026-08-12 by **D-002** — native relationships only. Still
   read as a fallback for issues filed before that decision; never written.
 
+- **S-005** — ~~"The stale `nyxgpt-web` service on the owner's Mac was a
+  **dev-mode** service pointing at a Dropbox-backed checkout."~~ Asserted in
+  #3853's body and retired 2026-08-18 by the teardown evidence: dev mode runs
+  api/web as `com.nyxgpt.api`/`com.nyxgpt.web` LaunchAgents
+  (`install_mode.py:48-51`), and neither plist ever existed on that machine —
+  `ls ~/Library/LaunchAgents` showed only the log/env agents and the two
+  `homebrew.mxcl.*` plists. The service was listed under `Homebrew services:`
+  throughout. The stale pair were `nyxgpt-api`/`nyxgpt-web` **2.1.0 kegs**, a
+  prior release never uninstalled; `_remove_dev_launchagents` was never invoked
+  on that machine at all, since `_reconcile_install_mode` gates on a mode
+  change that never occurred. Replacement explanation is open — see **Q-004**.

@@ -781,6 +781,10 @@ class TestBuildSnapshot:
         snapshot = dump_churn.build_snapshot(rounds)
         assert set(snapshot) == {
             "generated_at",
+            # logFetch added by #3808: distinguishes expired logs (normal, the
+            # window outruns GitHub's retention) from failed fetches (a real
+            # problem) so an all-null dump is not mistaken for an empty one.
+            "logFetch",
             "methodology",
             "rounds",
             "issues",
@@ -794,3 +798,69 @@ class TestBuildSnapshot:
         assert snapshot["rounds"][0]["round"] == 1
         assert "first file-modifying tool use" in snapshot["methodology"]["split"]
         assert snapshot["staleContextIncidents"] is None
+
+
+class TestLogFetchAccounting:
+    """#3808: an expired log, a refused download and a genuinely token-free
+    log all returned "" identically, so a dump where every fetch failed looked
+    exactly like one where every log was token-free. Both rendered an empty
+    churn panel with no explanation. The 2026-08-17 dump recorded tokens=null
+    for all 304 rounds while the newest round's log was fetchable and held 90
+    input_tokens markers -- and nothing in the output said which had happened.
+    """
+
+    def _boom(self, dump_churn, monkeypatch, stderr):
+        import subprocess as sp
+
+        def raise_it(*args):
+            raise sp.CalledProcessError(1, ["gh", *args], stderr=stderr)
+
+        monkeypatch.setattr(dump_churn, "gh", raise_it)
+
+    def test_expired_log_is_counted_as_expired(self, dump_churn, monkeypatch):
+        dump_churn.LOG_FETCH.update(ok=0, expired=0, failed=0)
+        self._boom(dump_churn, monkeypatch, "gh: Gone (HTTP 410)")
+        assert dump_churn.job_log("o/r", 1) == ""
+        assert dump_churn.LOG_FETCH["expired"] == 1
+        assert dump_churn.LOG_FETCH["failed"] == 0
+
+    def test_other_failure_is_counted_as_failed(self, dump_churn, monkeypatch):
+        dump_churn.LOG_FETCH.update(ok=0, expired=0, failed=0)
+        self._boom(dump_churn, monkeypatch, "gh: API rate limit exceeded (HTTP 403)")
+        assert dump_churn.job_log("o/r", 1) == ""
+        assert dump_churn.LOG_FETCH["failed"] == 1
+        assert dump_churn.LOG_FETCH["expired"] == 0
+
+    def test_success_is_counted(self, dump_churn, monkeypatch):
+        dump_churn.LOG_FETCH.update(ok=0, expired=0, failed=0)
+        monkeypatch.setattr(dump_churn, "gh", lambda *a: "log body")
+        assert dump_churn.job_log("o/r", 1) == "log body"
+        assert dump_churn.LOG_FETCH["ok"] == 1
+
+    def test_snapshot_reports_log_fetch_outcomes(self, dump_churn):
+        dump_churn.LOG_FETCH.update(ok=3, expired=300, failed=1)
+        snap = dump_churn.build_snapshot([])
+        assert snap["logFetch"] == {"ok": 3, "expired": 300, "failed": 1}, (
+            "a dump must say why its tokens are missing, or an all-null result "
+            "is indistinguishable from a correctly-empty one"
+        )
+
+
+class TestJobLogFlags:
+    def test_passes_allow_escape_sequences(self, dump_churn, monkeypatch):
+        """Workflow logs carry ANSI colour codes and gh refuses to emit a
+        response containing escape sequences without this flag, exit 1. Its
+        absence made every log fetch fail (0 ok / 89 failed, run 32023282331)
+        while the dump still reported success (#3808)."""
+        seen = {}
+
+        def fake_gh(*args):
+            seen["args"] = args
+            return "body"
+
+        monkeypatch.setattr(dump_churn, "gh", fake_gh)
+        dump_churn.job_log("o/r", 7)
+        assert "--allow-escape-sequences" in seen["args"], (
+            "without this flag gh refuses the logs endpoint and every round "
+            "silently records tokens: null"
+        )

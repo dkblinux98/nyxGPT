@@ -202,3 +202,183 @@ class TestBuildSnapshot:
             }
         }
         assert snapshot["unattributed"]["runs"] == 0
+
+
+class TestWindowAndDegradation:
+    """#3808 round two: fixing the pagination bug exposed an unbounded walk.
+
+    `collect()` makes one `/timing` call per completed run. This repo holds
+    ~36k runs, so unbounded the dump exhausts the agent token's hourly REST
+    budget mid-walk; `gh(check=True)` then raised and threw away 22 minutes of
+    work (run 32001662234). The walk is now date-bounded, and a single failed
+    per-run call degrades to zero and is counted rather than aborting.
+    """
+
+    def test_window_start_defaults_to_thirty_days(self, dump_spend, monkeypatch):
+        monkeypatch.delenv("SPEND_WINDOW_DAYS", raising=False)
+        since = dump_spend.window_start()
+        assert since is not None
+        expected = (
+            dump_spend.datetime.now(dump_spend.UTC) - dump_spend.timedelta(days=30)
+        ).strftime("%Y-%m-%d")
+        assert since == expected
+
+    def test_zero_means_all_history(self, dump_spend, monkeypatch):
+        monkeypatch.setenv("SPEND_WINDOW_DAYS", "0")
+        assert dump_spend.window_start() is None
+
+    def test_bad_value_falls_back_to_default(self, dump_spend, monkeypatch):
+        monkeypatch.setenv("SPEND_WINDOW_DAYS", "not-a-number")
+        assert dump_spend.window_start() is not None
+
+    def test_list_runs_sends_the_created_filter(self, dump_spend, monkeypatch):
+        seen = {}
+
+        def fake_gh(*args):
+            seen["args"] = args
+            return '{"workflow_runs": []}'
+
+        monkeypatch.setattr(dump_spend, "gh", fake_gh)
+        dump_spend.list_runs("o/r", "ci-tests.yml", since="2026-07-18")
+        assert "created=>=2026-07-18" in seen["args"]
+
+    def test_list_runs_omits_the_filter_for_full_history(self, dump_spend, monkeypatch):
+        seen = {}
+
+        def fake_gh(*args):
+            seen["args"] = args
+            return '{"workflow_runs": []}'
+
+        monkeypatch.setattr(dump_spend, "gh", fake_gh)
+        dump_spend.list_runs("o/r", "ci-tests.yml", since="")
+        assert not any(str(a).startswith("created=") for a in seen["args"])
+
+    def test_failed_timing_call_is_counted_not_fatal(self, dump_spend, monkeypatch):
+        import subprocess as sp
+
+        def boom(*args):
+            raise sp.CalledProcessError(1, ["gh", *args])
+
+        monkeypatch.setattr(dump_spend, "gh", boom)
+        dump_spend.DEGRADED["timing"] = 0
+        assert dump_spend.run_minutes("o/r", 123) == 0.0
+        assert dump_spend.DEGRADED["timing"] == 1
+
+    def test_failed_jobs_call_is_counted_not_fatal(self, dump_spend, monkeypatch):
+        import subprocess as sp
+
+        def boom(*args):
+            raise sp.CalledProcessError(1, ["gh", *args])
+
+        monkeypatch.setattr(dump_spend, "gh", boom)
+        dump_spend.DEGRADED["claude_steps"] = 0
+        assert dump_spend.claude_steps_dynamic("o/r", 123) == 0
+        assert dump_spend.DEGRADED["claude_steps"] == 1
+
+    def test_snapshot_reports_window_and_degradation(self, dump_spend, monkeypatch):
+        monkeypatch.setenv("SPEND_WINDOW_DAYS", "30")
+        dump_spend.DEGRADED["timing"] = 2
+        snap = dump_spend.build_snapshot({}, dump_spend.empty_bucket())
+        assert snap["window_start"] is not None
+        assert snap["window_days"] == 30
+        assert snap["degraded"]["timing"] == 2, "a degraded dump must say so in its own output"
+
+
+class TestSkippedRunsAreExcluded:
+    """A skipped run did nothing: no billable minutes, no executed step.
+
+    Counting them was wrong twice over -- it inflated `runs`, and for the
+    static workflows it credited a Claude step that never executed
+    (claude.yml: 3,969 runs, all 3,969 skipped). It also spent one /timing
+    call per no-op run, which is what put the walk beyond the token's hourly
+    REST budget: 21,637 of 23,963 tracked runs in this repo are skipped.
+    """
+
+    def _run(self, rid, branch, conclusion="success"):
+        return {
+            "id": rid,
+            "status": "completed",
+            "conclusion": conclusion,
+            "head_branch": branch,
+        }
+
+    def test_skipped_run_is_not_counted_at_all(self, dump_spend):
+        runs = [self._run(1, "feat/3696-x", "skipped")]
+        called = []
+        issues, unattributed = dump_spend.collect(
+            "o/r",
+            list_runs_fn=lambda repo, wf: runs if wf == "claude.yml" else [],
+            run_minutes_fn=lambda repo, rid: called.append(rid) or 5.0,
+            claude_steps_fn=lambda repo, rid: 1,
+        )
+        assert issues == {}, "a skipped run must not create an issue bucket"
+        assert called == [], "no /timing call may be spent on a skipped run"
+
+    def test_cancelled_run_is_not_counted(self, dump_spend):
+        runs = [self._run(1, "feat/3696-x", "cancelled")]
+        issues, _ = dump_spend.collect(
+            "o/r",
+            list_runs_fn=lambda repo, wf: runs if wf == "claude.yml" else [],
+            run_minutes_fn=lambda repo, rid: 5.0,
+            claude_steps_fn=lambda repo, rid: 1,
+        )
+        assert issues == {}
+
+    def test_skipped_static_run_credits_no_claude_step(self, dump_spend):
+        # The correctness half: claude.yml is CLAUDE_WORKFLOWS_STATIC, so a
+        # counted skipped run would add a phantom Claude step.
+        runs = [self._run(1, "feat/3696-x", "skipped"), self._run(2, "feat/3696-x", "success")]
+        issues, _ = dump_spend.collect(
+            "o/r",
+            list_runs_fn=lambda repo, wf: runs if wf == "claude.yml" else [],
+            run_minutes_fn=lambda repo, rid: 1.0,
+            claude_steps_fn=lambda repo, rid: 0,
+        )
+        assert issues[3696]["claude_steps"] == 1, "only the executed run counts"
+        assert issues[3696]["runs"] == 1
+
+    def test_successful_and_failed_runs_still_count(self, dump_spend):
+        runs = [self._run(1, "feat/3696-x", "success"), self._run(2, "feat/3696-x", "failure")]
+        issues, _ = dump_spend.collect(
+            "o/r",
+            list_runs_fn=lambda repo, wf: runs if wf == "ci-tests.yml" else [],
+            run_minutes_fn=lambda repo, rid: 2.0,
+            claude_steps_fn=lambda repo, rid: 0,
+        )
+        assert issues[3696]["runs"] == 2, "a failed run still burned runner minutes"
+        assert issues[3696]["runner_minutes"] == 4.0
+
+
+class TestMinutesSource:
+    """#3808: nyxGPT is a public repo, so Actions minutes are free and the
+    API's `billable` block is all zeros. Reading only `billable` produced a
+    spend panel of zeros. `run_duration_ms` is the populated fallback, and
+    the snapshot records which measure each figure came from."""
+
+    def _timing(self, dump_spend, monkeypatch, payload):
+        monkeypatch.setattr(dump_spend, "gh", lambda *a: __import__("json").dumps(payload))
+
+    def test_falls_back_to_run_duration_when_unbilled(self, dump_spend, monkeypatch):
+        dump_spend.MINUTES_SOURCE.update(billable=0, duration=0)
+        self._timing(
+            dump_spend,
+            monkeypatch,
+            {"billable": {"UBUNTU": {"total_ms": 0}}, "run_duration_ms": 120000},
+        )
+        assert dump_spend.run_minutes("o/r", 1) == 2.0
+        assert dump_spend.MINUTES_SOURCE["duration"] == 1
+        assert dump_spend.MINUTES_SOURCE["billable"] == 0
+
+    def test_prefers_billable_when_the_repo_is_billed(self, dump_spend, monkeypatch):
+        dump_spend.MINUTES_SOURCE.update(billable=0, duration=0)
+        self._timing(
+            dump_spend,
+            monkeypatch,
+            {"billable": {"UBUNTU": {"total_ms": 60000}}, "run_duration_ms": 999999},
+        )
+        assert dump_spend.run_minutes("o/r", 1) == 1.0
+        assert dump_spend.MINUTES_SOURCE["billable"] == 1
+
+    def test_zero_everywhere_is_still_zero(self, dump_spend, monkeypatch):
+        self._timing(dump_spend, monkeypatch, {"billable": {}, "run_duration_ms": 0})
+        assert dump_spend.run_minutes("o/r", 1) == 0.0

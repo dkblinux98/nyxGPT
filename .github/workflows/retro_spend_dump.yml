@@ -19,6 +19,11 @@ name: Retro Dashboard - Dump Spend Telemetry
 
 on:
   workflow_dispatch:
+    inputs:
+      window_days:
+        description: "Days of run history to walk (each completed run costs a /timing API call; 0 = all history, which needs a fresh token budget)"
+        required: false
+        default: "30"
 
 # All six retro workflows publish to and merge the same claude/retro-data
 # branch, so they take turns rather than racing each other over it.
@@ -44,6 +49,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
           REPO: ${{ github.repository }}
+          SPEND_WINDOW_DAYS: ${{ inputs.window_days }}
         run: python3 scripts/retrospective/dump_spend.py
 
       - name: Publish snapshot to the retro data branch
