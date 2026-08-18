@@ -81,14 +81,40 @@ kustomization (which includes both the api and web stable/canary pairs, see
 [Canary Deployment](#canary-deployment), plus the [data and LLM
 tier](#data-and-llm-tier)), waits for Cassandra and Ollama to report Ready --
 which for Ollama includes the first pull of the default model, so the command
-returns only when a chat can actually be answered -- brings up the
-[observability tier](#observability-in-the-cluster) and waits for its ten
-workloads to roll out too, and snapshots Pod/Service health for all of them.
+returns only when a chat can actually be answered -- waits for the api and web
+Deployments, brings up the [observability tier](#observability-in-the-cluster)
+and waits for its ten workloads to roll out too, and only then snapshots
+Pod/Service health for all of them.
 
-Both waits exist for the same reason: `kubectl apply` returns when the
+All three waits exist for the same reason: `kubectl apply` returns when the
 objects are accepted, not when they work, so without them the command reports
-health for Pods that are still pulling images -- and the Pod-phase snapshot
-scores a still-pulling Pod as a failure (#3826).
+on Pods that are still pulling images and its exit status describes a
+mid-rollout snapshot rather than the stack the operator is handed (#3826,
+#3827).
+
+### Ready, pending, failed
+
+Every Kubernetes readout `nyxgpt ops` prints — the install's health snapshot,
+the observability workload list, `nyxgpt ops status` — classifies a workload
+into one of three states, and the same way in each (#3827):
+
+| Label | Meaning | Counts as a failure? |
+| --- | --- | --- |
+| `[OK]` | Running and passing its readiness probe (or `Succeeded`) | no |
+| `[PENDING]` | Still starting: being scheduled, pulling images, creating containers, or ready on some replicas but not all | **no** |
+| `[FAIL]` | Will not start without intervention: `Unschedulable` (the node cannot fit it), `ImagePullBackOff`, `CrashLoopBackOff`, a container config error, or a `Failed` Pod | yes |
+
+A Pod pulling a multi-hundred-megabyte image is doing what it is supposed to,
+so `Pending` is reported as pending and never fails the command; what decides
+whether the stack settled is the wait, which fails when its budget runs out.
+The distinction is load-bearing rather than cosmetic: the acceptance run that
+produced #3827 printed ten `[FAIL] pod …: Pending` lines for Pods that were
+all Running three minutes later, and the one Pod that genuinely could not
+start (`Insufficient memory`) was indistinguishable among them.
+
+The waits use the same vocabulary, so a Pod in a state waiting cannot fix ends
+the wait as soon as it is confirmed — naming that Pod and the scheduler's or
+kubelet's own reason — instead of consuming the whole rollout budget first.
 
 Each image build mirrors the Homebrew reinstall-if-needed behavior (see
 [ops.md](ops.md)): it fingerprints the app source that image is built from
@@ -403,7 +429,11 @@ Notes:
   `.github/workflows/k8s-local-smoke.yml` covers the other half -- that the
   layer comes up *with* the app tier in the **default** install, on one node
   the size of a stock Docker Desktop VM, with no Pod the scheduler could not
-  place (#3826, #3825).
+  place (#3826, #3825) -- and its `k8s-pod-state` job
+  (`scripts/k8s-pod-state-smoke.py`) proves on a real cluster that a Pod which
+  is merely starting is reported as pending while an unschedulable or
+  unpullable one is a named failure (#3827), including that the pre-fix rule
+  called both of them the same thing.
 - **Footprint.** Since the #3825 right-sizing the default stack (app +
   data/LLM + observability) requests ~2.1 CPU and ~6.9GiB of memory including
   kube-system, so it fits the 4-vCPU/7936Mi a stock Docker Desktop VM offers
@@ -490,15 +520,27 @@ states rather than folding every failure into a single "not deployed":
 - **DEPLOYED** -- the probe succeeded and found Pods in the `nyxgpt`
   namespace.
 
-Below the Pod list, the card names any Pod **no node would take** (#3825).
-That state is otherwise invisible here: an unschedulable Pod reads as
-`Pending`, exactly like a Pod that is placed and pulling its image, so a
-deployment silently missing prometheus looked the same as one still starting
-up. Reporting only, as with everything else on this page -- the cure is more
-memory or CPU on the cluster VM and a re-run of `nyxgpt ops install
---kubernetes --local`, which checks the node's capacity against the stack
-before it applies anything (see [Node capacity: what the stack
-reserves](#node-capacity-what-the-stack-reserves)).
+Each Pod on that card is badged with the same three states the CLI prints,
+from `kubernetes.pod_states` in the JSON (#3827): **READY**, **PENDING** (still
+scheduling, pulling or creating containers -- amber, because that is a normal
+stage of a rollout and not a fault) and **FAILED**, which carries the
+scheduler's or kubelet's own reason. The raw `kubectl get pods` line the card
+used to echo says `Pending` for both of the last two, which is the same
+conflation the install used to print — see [Ready, pending,
+failed](#ready-pending-failed).
+
+Below that list, the card also names any Pod **no node would take** (#3825),
+and says what to do about it: the badge tells the operator the Pod will not
+start, but not that the remedy is a bigger cluster rather than a fix to the
+workload. `kubernetes.unschedulable` in the JSON is the FAILED subset of
+`kubernetes.pod_states` whose reason is `unschedulable`, read from the same
+classification as the badges rather than from a second probe, so the two
+halves of the card cannot disagree about a Pod -- and one that has simply not
+been placed *yet* is PENDING and is not named here. Reporting only, as with
+everything else on this page -- the cure is more memory or CPU on the cluster
+VM and a re-run of `nyxgpt ops install --kubernetes --local`, which checks the
+node's capacity against the stack before it applies anything (see [Node
+capacity: what the stack reserves](#node-capacity-what-the-stack-reserves)).
 
 The same card carries an **In-cluster observability** section (#3787):
 per-workload readiness for the components in [Observability in the

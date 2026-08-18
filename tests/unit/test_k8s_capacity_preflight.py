@@ -690,6 +690,11 @@ def test_install_runs_the_preflight_before_applying_anything() -> None:
         patch.object(ops, "_preflight_k8s_capacity", side_effect=_record("preflight")),
         patch.object(ops, "_kubectl_apply_kustomization", side_effect=_record("apply")),
         patch.object(ops, "_wait_for_k8s_data_tier", return_value=[ops.OpsResult(True, "ok")]),
+        # The app-tier and observability waits (#3827/#3826) sit between the
+        # applies; stubbed like the data-tier one so this stays a test about
+        # ordering rather than about rollouts.
+        patch.object(ops, "_wait_for_k8s_app_tier", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_wait_for_k8s_observability", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_sync_packaged_resources", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_apply_k8s_observability", side_effect=_record("apply-observability")),
         patch.object(ops, "_k8s_stack_health", return_value=[]),
@@ -749,31 +754,104 @@ def test_standalone_observability_install_is_preflighted_too() -> None:
 # --- the operator can SEE an unschedulable Pod (#3825) ---------------------
 
 
-def _pods_jsonpath(lines: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.CompletedProcess([], 0, "\n".join(lines) + "\n", "")
+def _running_pod(name: str) -> dict[str, object]:
+    return {
+        "metadata": {"name": name},
+        "status": {"phase": "Running", "conditions": [{"type": "Ready", "status": "True"}]},
+    }
 
 
-def test_unschedulable_pods_are_the_ones_with_no_node() -> None:
-    """A placed Pod pulling its image is Pending too -- nodeName is the tell."""
+def _starting_pod(name: str) -> dict[str, object]:
+    """Placed, and pulling its image: `Pending`, exactly like the one below."""
+    return {
+        "metadata": {"name": name},
+        "spec": {"nodeName": "kind-control-plane"},
+        "status": {
+            "phase": "Pending",
+            "conditions": [{"type": "PodScheduled", "status": "True"}],
+            "containerStatuses": [{"state": {"waiting": {"reason": "ContainerCreating"}}}],
+        },
+    }
+
+
+def _unschedulable_pod(name: str) -> dict[str, object]:
+    return {
+        "metadata": {"name": name},
+        "status": {
+            "phase": "Pending",
+            "conditions": [
+                {
+                    "type": "PodScheduled",
+                    "status": "False",
+                    "reason": "Unschedulable",
+                    "message": "0/1 nodes are available: 1 Insufficient memory.",
+                }
+            ],
+        },
+    }
+
+
+def _pods_json(items: list[dict[str, object]]) -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess([], 0, json.dumps({"items": items}), "")
+
+
+def test_unschedulable_pods_are_told_apart_from_ones_still_starting() -> None:
+    """A placed Pod pulling its image is Pending too -- the tell is the
+    scheduler's own `Unschedulable` condition, not the phase.
+
+    Read from `_classify_k8s_pod` since the #3827 merge (it used to be an
+    empty `.spec.nodeName`, a second probe that could disagree with the badge
+    the same page drew from the classifier -- and did, for the moment between
+    a Pod being accepted by the scheduler and being bound to its node).
+    """
     with patch.object(
         ops,
         "_run",
-        return_value=_pods_jsonpath(
+        return_value=_pods_json(
             [
-                "kind-control-plane|nyxgpt-api-stable-1",
-                "|prometheus-abc",
-                "kind-control-plane|grafana-xyz",
-                "|nyxgpt-api-canary-9",
+                _running_pod("nyxgpt-api-stable-1"),
+                _unschedulable_pod("prometheus-abc"),
+                _starting_pod("grafana-xyz"),
+                _unschedulable_pod("nyxgpt-api-canary-9"),
             ]
         ),
     ):
-        assert ops._k8s_unschedulable_pods() == ["prometheus-abc", "nyxgpt-api-canary-9"]
+        states, read_failure = ops._k8s_pod_states()
+
+    assert read_failure is None
+    named = [s.name for s in states if s.summary == ops.K8S_SUMMARY_UNSCHEDULABLE]
+    assert named == ["prometheus-abc", "nyxgpt-api-canary-9"]
+    # ...and the one that is merely starting is pending, not named:
+    by_name = {s.name: s for s in states}
+    assert by_name["grafana-xyz"].state == ops.K8S_STATE_PENDING
+    assert by_name["prometheus-abc"].state == ops.K8S_STATE_FAILED
 
 
-def test_unschedulable_probe_reports_nothing_when_kubectl_fails() -> None:
+def test_unschedulable_probe_reports_nothing_when_kubectl_fails(monkeypatch) -> None:
     """This feeds a status page, so a failed probe must not invent a problem."""
-    with patch.object(ops, "_run", return_value=subprocess.CompletedProcess([], 1, "", "boom")):
-        assert ops._k8s_unschedulable_pods() == []
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "absent"})
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: ops.DeploymentMode(native={}, compose={}, conflicts=[]),
+    )
+    monkeypatch.setattr(
+        ops, "_which", lambda prog: "/usr/local/bin/x" if prog == "kubectl" else None
+    )
+    monkeypatch.setattr(ops, "_k8s_observability_workload_state", dict)
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        if "get" in cmd and "pods" in cmd:
+            return subprocess.CompletedProcess([], 1, "", "boom")
+        return subprocess.CompletedProcess([], 0, "kind-nyxgpt-local\n", "")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+
+    result = ops.infra_status()
+
+    # Nothing claimed in either direction: the page says CANNOT DETERMINE.
+    assert result["kubernetes"]["probe_available"] is False
+    assert result["kubernetes"]["unschedulable"] == []
 
 
 def test_infra_status_surfaces_unschedulable_pods(monkeypatch) -> None:
@@ -791,12 +869,27 @@ def test_infra_status_surfaces_unschedulable_pods(monkeypatch) -> None:
     monkeypatch.setattr(ops, "_k8s_observability_workload_state", dict)
 
     def fake_run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        if "jsonpath" in " ".join(cmd):
-            return _pods_jsonpath(["node-a|nyxgpt-api-1", "|prometheus-abc"])
-        return subprocess.CompletedProcess([], 0, "nyxgpt-api-1   1/1   Running\n", "")
+        if "get" in cmd and "pods" in cmd:
+            return _pods_json(
+                [
+                    _running_pod("nyxgpt-api-1"),
+                    _starting_pod("loki-2"),
+                    _unschedulable_pod("prometheus-abc"),
+                ]
+            )
+        return subprocess.CompletedProcess([], 0, "kind-nyxgpt-local\n", "")
 
     monkeypatch.setattr(ops, "_run", fake_run)
 
     result = ops.infra_status()
 
     assert result["kubernetes"]["unschedulable"] == ["prometheus-abc"]
+    # The card's two halves read the same classification (#3827 merge), so the
+    # Pod named here is exactly the one badged FAILED, and the one still
+    # starting is badged PENDING rather than being named unschedulable too.
+    badged = {p["name"]: p["state"] for p in result["kubernetes"]["pod_states"]}
+    assert badged == {
+        "nyxgpt-api-1": "ready",
+        "loki-2": "pending",
+        "prometheus-abc": "failed",
+    }

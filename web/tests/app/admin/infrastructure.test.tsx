@@ -1182,6 +1182,59 @@ describe('InfrastructurePage', () => {
     expect(screen.queryByText(/Run the wrapped command, not this/)).not.toBeInTheDocument();
   });
 
+  it('badges a Pod that is merely starting as PENDING, not as a failure (#3827)', async () => {
+    // The raw `kubectl get pods` line says "Pending" for a Pod pulling its
+    // image AND for one the node cannot fit. The page must not repeat the
+    // install's old mistake of calling both of them broken.
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json({
+          ...mockStatusTerraform,
+          kubernetes: {
+            ...mockStatusTerraform.kubernetes,
+            pod_states: [
+              { name: 'nyxgpt-api-stable-1', state: 'ready', summary: 'Running', details: '' },
+              {
+                name: 'grafana-2',
+                state: 'pending',
+                summary: 'Pending: ContainerCreating',
+                details: '',
+              },
+              {
+                name: 'prometheus-3',
+                state: 'failed',
+                summary: 'Pending: unschedulable',
+                details: '0/1 nodes are available: 1 Insufficient memory.',
+              },
+            ],
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('grafana-2')).toBeInTheDocument();
+    });
+    expect(screen.getByText('PENDING')).toBeInTheDocument();
+    expect(screen.getByText('Pending: ContainerCreating')).toBeInTheDocument();
+    // ...and the one that will never start is distinct, with its reason.
+    expect(screen.getByText('FAILED')).toBeInTheDocument();
+    expect(screen.getByText(/Insufficient memory/)).toBeInTheDocument();
+  });
+
+  it('falls back to the plain pod lines when the api predates pod_states', async () => {
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusTerraform)));
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/pod\/nyxgpt-api-abc123/)).toBeInTheDocument();
+    });
+    expect(screen.queryByText('PENDING')).not.toBeInTheDocument();
+  });
+
   it('distinguishes the two Terraforms: local containers here, AWS provisioning below (#3804)', async () => {
     server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
 
