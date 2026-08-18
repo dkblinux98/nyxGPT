@@ -131,69 +131,41 @@ jobs:
             echo "python_changed=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-
-      - name: Install dependencies
+      # The review no longer re-runs the gates (owner decision, 2026-08-18).
+      # AGENTS.md already required the developer to land black/ruff/mypy/pytest
+      # green before submitting; the review workflow re-ran all of them anyway,
+      # on every round, so an N-round issue paid N times for the same answer --
+      # and a whole-tree lint failed PRs over pre-existing errors they never
+      # touched (#3869 lost a cycle to a B033 in a file it did not open).
+      # CI owns the gates now. The reviewer reads the verdict and reviews code.
+      - name: Read CI verdict for this PR
+        id: ci
+        env:
+          PR: ${{ steps.pr_number.outputs.pr }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          set -euo pipefail
+          HEAD_SHA=$(gh api "repos/${{ github.repository }}/pulls/$PR" --jq '.head.sha')
 
-      - name: Run linters
-        id: lint
-        run: |
-          echo "Running code quality checks..."
+          # Own results only: the review's own check is in this list and would
+          # otherwise report itself as pending forever.
+          gh api "repos/${{ github.repository }}/commits/$HEAD_SHA/check-runs" \
+            --paginate --jq '.check_runs[] | select(.name != "claude-review")
+              | "\(.name)=\(.conclusion // "pending")"' \
+            | sort -u > /tmp/ci-checks.txt
 
-          # Run ruff (if configured)
-          if command -v ruff &> /dev/null; then
-            echo "Running ruff..."
-            python -m ruff check . || echo "ruff_failed=true" >> "$GITHUB_OUTPUT"
-          fi
+          FAILED=$(grep -cE "=(failure|timed_out|cancelled)$" /tmp/ci-checks.txt || true)
+          PENDING=$(grep -cE "=pending$" /tmp/ci-checks.txt || true)
 
-          # Run mypy (if configured)
-          if [ -f "pyproject.toml" ] && grep -q "mypy" pyproject.toml; then
-            echo "Running mypy..."
-            python -m mypy src/ || echo "mypy_failed=true" >> "$GITHUB_OUTPUT"
-          fi
+          {
+            echo "failed=$FAILED"
+            echo "pending=$PENDING"
+            echo "summary<<NYXGPT_CI_EOF"
+            sed 's/=/: /' /tmp/ci-checks.txt
+            echo "NYXGPT_CI_EOF"
+          } >> "$GITHUB_OUTPUT"
 
-          # Run black --check (if configured)
-          if command -v black &> /dev/null; then
-            echo "Running black --check..."
-            python -m black --check . || echo "black_failed=true" >> "$GITHUB_OUTPUT"
-          fi
-
-          echo "Linter checks complete"
-
-      - name: Run tests
-        id: test
-        run: |
-          echo "Running pytest (unit tests only)..."
-          python -m pytest tests/unit/ -v \
-            --cov=src/nyxgpt --cov-report=term-missing \
-            || echo "pytest_failed=true" >> "$GITHUB_OUTPUT"
-
-      - name: Set up Node.js
-        if: steps.changed.outputs.web_changed == 'true'
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install web dependencies
-        if: steps.changed.outputs.web_changed == 'true'
-        run: cd web && npm ci
-
-      - name: Run web checks
-        id: web_lint
-        if: steps.changed.outputs.web_changed == 'true'
-        run: |
-          echo "Running tsc --noEmit..."
-          (cd web && npx tsc --noEmit) || echo "tsc_failed=true" >> "$GITHUB_OUTPUT"
-
-          echo "Running vitest..."
-          (cd web && npx vitest run --coverage) || echo "vitest_failed=true" >> "$GITHUB_OUTPUT"
+          echo "CI: $FAILED failing, $PENDING pending"
 
       - name: Check test coverage
         id: test_coverage
@@ -340,43 +312,34 @@ jobs:
 
             ## Test and Linter Results (REQUIRED for APPROVE)
 
-            **Linter Status:**
-            - Ruff: ${{ steps.lint.outputs.ruff_failed == 'true' && '❌ FAILED' || '✅ PASSED' }}
-            - Mypy: ${{ steps.lint.outputs.mypy_failed == 'true' && '❌ FAILED' || '✅ PASSED' }}
-            - Black: ${{ steps.lint.outputs.black_failed == 'true' && '❌ FAILED' || '✅ PASSED' }}
+            **CI verdict for this PR head** (${{ steps.ci.outputs.failed }} failing,
+            ${{ steps.ci.outputs.pending }} pending):
 
-            **Test Status:**
-            - Pytest: ${{ steps.test.outputs.pytest_failed == 'true' && '❌ FAILED' || '✅ PASSED' }}
-            - Code changed: ${{ steps.test_coverage.outputs.code_changed }}
-            - Tests updated: ${{ steps.test_coverage.outputs.tests_updated }}
-            - Code changed without test updates: >-
-              ${{ steps.test_coverage.outputs.code_changed == 'true' &&
-                 steps.test_coverage.outputs.tests_updated == 'false' &&
-                 '❌ YES (BLOCKS APPROVE)' || '✅ NO' }}
+            ```
+            ${{ steps.ci.outputs.summary }}
+            ```
 
-            **Web Status (PR touches `web/**`: ${{ steps.changed.outputs.web_changed }}):**
-            - TypeScript (tsc --noEmit): >-
-              ${{ steps.changed.outputs.web_changed != 'true' && 'N/A' ||
-                 steps.web_lint.outputs.tsc_failed == 'true' && '❌ FAILED' || '✅ PASSED' }}
-            - Vitest: >-
-              ${{ steps.changed.outputs.web_changed != 'true' && 'N/A' ||
-                 steps.web_lint.outputs.vitest_failed == 'true' && '❌ FAILED' || '✅ PASSED' }}
+            You did NOT run these yourself, and you must not: the developer is
+            required to land them green before submitting (AGENTS.md), and CI
+            runs each gate once per push. Judge them from the verdict above.
 
-            **Documentation Status:**
-            - Code changed: ${{ steps.docs.outputs.code_changed }}
-            - Docs updated: ${{ steps.docs.outputs.docs_updated }}
-            - User-facing changes without docs: >-
-              ${{ steps.docs.outputs.user_facing_undocumented == 'true' &&
-                 '❌ YES (BLOCKS APPROVE)' || '✅ NO' }}
+            - If any check is **failing**, that is a blocking finding on its own
+              and the decision is REQUEST_CHANGES -- name the failing check.
+            - If checks are still **pending**, say so and do not APPROVE on the
+              assumption they will pass.
+            - A check failing for a reason the diff did not cause is still
+              reported, but it belongs to whoever owns that breakage; do not
+              demand this PR carry an unrelated fix unless it blocks the merge.
 
-            Note: the signals above are diff-scoped. They cannot detect prose
-            this change *falsifies* elsewhere in the tree — you must run the
-            inverse-claims check below yourself.
+            Your job is the code: correctness, security, maintainability, the
+            acceptance criteria, and whether the tests that exist are the right
+            ones. Re-running them tells you nothing you cannot read above.
 
             MANDATORY: You MUST REQUEST_CHANGES if:
-            - ANY linter or test failed (including TypeScript/Vitest when web/** changed)
+            - Any CI check on this PR head is failing (name it)
             - Source code changed WITHOUT test updates (tests_updated=false)
-            - User-facing code changed WITHOUT documentation updates (user_facing_undocumented=true)
+            - User-facing code changed WITHOUT documentation updates
+              (user_facing_undocumented=true)
             - This change falsifies a claim written elsewhere in the tree and
               the PR does not fix it (inverse-claims check, review-runbook §1a)
             - The PR makes a runtime/install/platform behavior claim with NO
@@ -389,7 +352,8 @@ jobs:
               the tree, without fixing the class or reporting the search
               (generality gate, review-runbook §1e)
 
-            Do not APPROVE until all checks pass, tests are updated, AND documentation is complete.
+            Do not APPROVE until CI is green, tests are updated, AND
+            documentation is complete.
 
             ## Inverse-claims check (REQUIRED, review-runbook.md §1a, #3744)
 

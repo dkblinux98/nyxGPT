@@ -82,9 +82,11 @@ repository, where it can be read instead of reconstructed.
   published, or what is deliberately not being done: find the entry, verify it
   this session and be able to name how, or say plainly that you have not
   checked. Recalling it "from earlier in the project" is not one of the three.
-- **Append entries** for decisions made, facts verified (with method and
-  timestamp), items deliberately parked (with reason and revisit condition),
-  and questions left open. Agents append through the normal branch/PR path; an
+- **Append entries** for decisions made, items deliberately parked (with
+  reason and revisit condition), and questions left open. **Not** facts about
+  behavior: the verification log was retired 2026-08-18 because it cost every
+  run to read and reddened the build on its own. A fact worth keeping goes in
+  the guard that enforces it, with the reasoning in that guard's docstring. Agents append through the normal branch/PR path; an
   entry may ride along in the PR that produced the fact and needs no issue of
   its own.
 - **Check the Superseded section before correcting anyone** — it lists beliefs

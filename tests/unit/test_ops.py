@@ -1767,6 +1767,7 @@ def test_env_sync_cli_wrapper_seeds_env_from_packaged_example_without_prior_inst
     (src_root / "docker").mkdir(parents=True)
     (src_root / "ops").mkdir(parents=True)
     (src_root / "scripts").mkdir(parents=True)
+    (src_root / "k8s").mkdir(parents=True)
     (src_root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
     (src_root / ".env.example").write_text(
         "NYXGPT_API_PORT=8000\nNYXGPT_AUTH_API_KEY=change-me\n", encoding="utf-8"
@@ -2747,6 +2748,10 @@ def test_sync_packaged_resources_copies_compose_env_docker_ops_scripts(monkeypat
     )
     (src_root / "scripts").mkdir(parents=True)
     (src_root / "scripts" / "run-web.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    # The Kubernetes manifests are packaged resources too (#3834) -- without
+    # this sync a machine with no checkout has nothing to `kubectl apply -k`.
+    (src_root / "k8s").mkdir(parents=True)
+    (src_root / "k8s" / "kustomization.yaml").write_text("resources: []\n", encoding="utf-8")
     (src_root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
     (src_root / ".env.example").write_text("FOO=bar\n", encoding="utf-8")
 
@@ -2762,6 +2767,7 @@ def test_sync_packaged_resources_copies_compose_env_docker_ops_scripts(monkeypat
     assert (home / ".nyxGPT" / ".env.example").read_text(encoding="utf-8") == "FOO=bar\n"
     assert (home / ".nyxGPT" / "docker" / "grafana" / "x.yml").exists()
     assert (home / ".nyxGPT" / "ops" / "launchagents" / "com.nyxgpt.cassandra-logs.plist").exists()
+    assert (home / ".nyxGPT" / "k8s" / "kustomization.yaml").exists()
     script = home / ".nyxGPT" / "scripts" / "run-web.sh"
     assert script.exists()
     assert script.stat().st_mode & 0o777 == 0o755
@@ -2778,6 +2784,7 @@ def test_sync_packaged_resources_is_idempotent_and_additive(monkeypatch, tmp_pat
     (src_root / "docker" / "prometheus.yml").write_text("v1", encoding="utf-8")
     (src_root / "ops").mkdir(parents=True)
     (src_root / "scripts").mkdir(parents=True)
+    (src_root / "k8s").mkdir(parents=True)
     (src_root / "docker-compose.yml").write_text("v1", encoding="utf-8")
     (src_root / ".env.example").write_text("v1", encoding="utf-8")
 
@@ -10830,8 +10837,11 @@ def test_ensure_terraform_tfvars_bootstraps_from_example(monkeypatch, tmp_path):
     assert results[0].ok is True
     tfvars = tf_dir / "terraform.tfvars"
     content = tfvars.read_text(encoding="utf-8")
-    assert str(repo_root) in content
     assert 'auth_api_key = "my-key"' in content  # pragma: allowlist secret
+    # The checkout path is NOT written here (#3835): repo_path is a dev-mode
+    # `-var` on the apply, so the bootstrapped tfvars carries nothing that
+    # ties the deployment to a repository.
+    assert str(repo_root) not in content
 
 
 # --- Terraform: _terraform_init_plan_apply ---
@@ -11756,7 +11766,9 @@ def test_build_and_load_k8s_web_image_builds_web_context_with_build_arg(monkeypa
         raise AssertionError(f"unexpected: {cmd}")
 
     monkeypatch.setattr(ops, "_run", fake_run)
-    results = ops._build_and_load_k8s_web_image()
+    # dev=True is the working-tree build -- what every k8s install did before
+    # #3834, and what `--dev` now asks for explicitly.
+    results = ops._build_and_load_k8s_web_image(dev=True)
 
     assert all(r.ok for r in results)
     build_cmd = next(c for c in run_calls if c[:2] == ["docker", "build"])
@@ -11851,6 +11863,52 @@ def test_k8s_stack_health_reports_pods_service(monkeypatch):
     assert pod_results[1].ok is False
     assert not any("HPA" in r.message for r in results)
     assert any("Service nyxgpt-api found" in r.message for r in results)
+
+
+@pytest.mark.unit
+def test_k8s_stack_health_names_why_a_pod_is_pending(monkeypatch):
+    """#3832: `pod x: Pending` told the operator nothing actionable.
+
+    A Pod the scheduler refused must fail the snapshot *and* carry the
+    scheduler's own message (via #3827's `_classify_k8s_pod` vocabulary), so
+    the operator reads the cause instead of a bare phase.
+    """
+
+    def fake_run(cmd, check=True, **_k):
+        if cmd[4] == "pods":
+            return CP(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "items": [
+                            {
+                                "metadata": {"name": "prometheus-abc"},
+                                "status": {
+                                    "phase": "Pending",
+                                    "conditions": [
+                                        {
+                                            "type": "PodScheduled",
+                                            "status": "False",
+                                            "reason": "Unschedulable",
+                                            "message": "0/1 nodes are available: 1 "
+                                            "Insufficient memory.",
+                                        }
+                                    ],
+                                },
+                            }
+                        ]
+                    }
+                ),
+            )
+        return CP(returncode=0, stdout="")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    results = ops._k8s_stack_health()
+    pod_result = next(r for r in results if r.message.startswith("pod "))
+
+    assert pod_result.ok is False
+    assert "unschedulable" in pod_result.message.lower()
+    assert "Insufficient memory" in pod_result.details
 
 
 @pytest.mark.unit
@@ -12122,7 +12180,7 @@ def test_install_kubernetes_success_runs_all_steps(monkeypatch, capsys):
     ok = [ops.OpsResult(True, "ok")]
     with (
         patch.object(ops, "_ensure_kubectl_and_cluster", return_value=ok) as c,
-        patch.object(ops, "_build_and_load_k8s_image", return_value=ok) as b,
+        patch.object(ops, "_build_and_load_k8s_api_image", return_value=ok) as b,
         patch.object(ops, "_build_and_load_k8s_web_image", return_value=ok) as bw,
         patch.object(ops, "_ensure_k8s_secret", return_value=ok) as s,
         patch.object(ops, "_kubectl_apply_kustomization", return_value=ok) as a,
@@ -12160,7 +12218,7 @@ def test_install_kubernetes_clears_intentional_stop_markers_for_api_and_web(monk
     ok = [ops.OpsResult(True, "ok")]
     with (
         patch.object(ops, "_ensure_kubectl_and_cluster", return_value=ok),
-        patch.object(ops, "_build_and_load_k8s_image", return_value=ok),
+        patch.object(ops, "_build_and_load_k8s_api_image", return_value=ok),
         patch.object(ops, "_build_and_load_k8s_web_image", return_value=ok),
         patch.object(ops, "_ensure_k8s_secret", return_value=ok),
         patch.object(ops, "_kubectl_apply_kustomization", return_value=ok),
@@ -12189,7 +12247,7 @@ def test_install_kubernetes_stops_pipeline_on_step_failure(monkeypatch):
             "_ensure_kubectl_and_cluster",
             return_value=[ops.OpsResult(False, "no cluster")],
         ),
-        patch.object(ops, "_build_and_load_k8s_image") as b,
+        patch.object(ops, "_build_and_load_k8s_api_image") as b,
         patch.object(ops, "_build_and_load_k8s_web_image") as bw,
         patch.object(ops, "_ensure_k8s_secret") as s,
         patch.object(ops, "_kubectl_apply_kustomization") as a,
@@ -12360,9 +12418,14 @@ def test_install_terraform_local_runs_steps_and_returns_results(monkeypatch):
         patch.object(ops, "_sync_packaged_resources", return_value=ok),
         patch.object(ops, "migrate_legacy_volumes", return_value=ok),
         patch.object(ops, "_ensure_terraform_binary", return_value=ok),
+        patch.object(ops, "_sync_local_terraform_config", return_value=ok),
         patch.object(ops, "_ensure_terraform_tfvars", return_value=ok) as t,
         patch.object(ops, "_generate_compose_config", return_value=ok),
-        patch.object(ops, "_build_terraform_docker_images", return_value=ok),
+        # The dashboard's bring-up is the artifact path (#3835): it pulls
+        # published images and never builds from a checkout.
+        patch.object(
+            ops, "_pull_terraform_published_images", return_value=({"api": "i", "web": "i"}, ok)
+        ),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok),
         patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
         patch.object(ops, "_sync_grafana_slack_webhook_secret", return_value=ok),
@@ -12429,7 +12492,7 @@ def test_install_kubernetes_local_runs_steps_and_returns_results(monkeypatch):
     ok = [ops.OpsResult(True, "ok")]
     with (
         patch.object(ops, "_ensure_kubectl_and_cluster", return_value=ok),
-        patch.object(ops, "_build_and_load_k8s_image", return_value=ok),
+        patch.object(ops, "_build_and_load_k8s_api_image", return_value=ok),
         # Patched, not left real: these two shell out to `docker`/`kubectl`,
         # so an unpatched step makes this unit test pass or fail on what the
         # machine running it happens to have (and on the state of any cluster
@@ -12469,9 +12532,11 @@ def test_down_kubernetes_returns_results_without_printing(monkeypatch, capsys, t
         ops, "_run", lambda cmd, check=True, **_k: CP(returncode=0, stdout="deleted")
     )
     results = ops.down_kubernetes()
-    # The app-tier kustomization, then the observability overlay (#3787).
-    assert [r.ok for r in results] == [True, True]
+    # The app-tier kustomization, then the observability overlay (#3787),
+    # then the install-mode record for the deployment just removed (#3834).
+    assert [r.ok for r in results] == [True, True, True]
     assert "k8s/observability/" in results[1].message
+    assert "install-mode record" in results[2].message
     assert capsys.readouterr().out == ""
 
 

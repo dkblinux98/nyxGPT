@@ -3653,6 +3653,47 @@ def test_self_heal_status_marks_intentionally_stopped_component_as_disabled(
     assert "(disabled -- not auto-healed)" in out
 
 
+def test_self_heal_status_prints_the_reason_a_component_is_not_auto_healable(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#3832: an unschedulable Pod is unhealthy AND untouched -- say why.
+
+    Without the reason on screen, "!!" with nothing happening is exactly the
+    state an operator was left to guess at while Pods churned.
+    """
+    import nyxgpt.cli as cli_mod
+
+    monkeypatch.setattr(
+        cli_mod.self_heal_mod,
+        "status",
+        lambda: {
+            "enabled": True,
+            "components": [
+                {
+                    "service": "nyxgpt-api-stable-r56wb",
+                    "state": "Pending",
+                    "health": "unschedulable",
+                    "healthy": False,
+                    "desired": True,
+                    "known": True,
+                    "healable": False,
+                    "note": "Pending (Unschedulable): 0/1 nodes are available: 1 "
+                    "Insufficient memory. -- not healed: deleting a Pod cannot create capacity.",
+                }
+            ],
+            "events": [],
+        },
+    )
+
+    exit_code = cli(["self-heal", "status"])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "[!!] nyxgpt-api-stable-r56wb" in out
+    assert "(not auto-healable)" in out
+    assert "Insufficient memory" in out
+
+
 def test_self_heal_status_no_components(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

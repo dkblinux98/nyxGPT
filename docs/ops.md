@@ -362,7 +362,12 @@ Compose app tier) left by an earlier run.
 `nyxgpt up --dev` (equivalently `nyxgpt ops install --dev`) installs the
 **same topology** as above — native api/web service wrappers, Ollama, the
 Cassandra container, observability — but builds `api` and `web` from the
-checkout you run it in instead of from an artifact:
+checkout you run it in instead of from an artifact. The flag means the same
+thing in Kubernetes mode (`nyxgpt ops install --kubernetes --local --dev`,
+#3834): the two container images are built from the working tree rather than
+from the published artifacts — see
+[kubernetes.md](kubernetes.md#install-modes-artifact-and---dev). The table
+below is the native pair:
 
 | | artifact path (default) | `--dev` |
 | --- | --- | --- |
@@ -403,10 +408,20 @@ Constraints, by design:
   release still runs the artifact path (see
   [portability-matrix.md](portability-matrix.md)).
 - **Labelled everywhere.** [`nyxgpt ops status`](#nyxgpt-ops-status) and
-  [`nyxgpt ops doctor`](#nyxgpt-ops-doctor) print `Install mode: dev
-  (editable checkout at …)` and tag `api`/`web` with `[dev]`, so a dev-mode
-  pass can't be read as an artifact-path pass. The mode is recorded in
-  `~/.nyxGPT/install-mode.json`.
+  [`nyxgpt ops doctor`](#nyxgpt-ops-doctor) print `Install mode (native
+  api/web): dev (editable checkout at …)` and tag a *running* `api`/`web`
+  with `[dev]`, so a dev-mode pass can't be read as an artifact-path pass.
+  The mode is recorded in `~/.nyxGPT/install-mode.json`.
+- **Per deployment.** `--dev` means the same thing for the Kubernetes and
+  Terraform deployments — the api/web images built from the working tree
+  instead of from the published ones (see
+  [terraform.md](terraform.md#install-modes-artifact-default-and---dev)) —
+  and each records its mode in its own marker,
+  `~/.nyxGPT/install-mode-kubernetes.json` (#3834) and
+  `~/.nyxGPT/install-mode-terraform.json` (#3835). They are reported as
+  separate `Install mode (…)` lines because they are separate deployments,
+  are often in different modes, and one machine can run all three at once;
+  none ever speaks for another.
 - **Switching modes is reconciled, not layered.** Installing one mode over
   the other stops the previous mode's services first (dev LaunchAgents are
   unloaded and removed; the artifact path's brew services are stopped) and
@@ -441,6 +456,11 @@ is required and explicit — see [terraform.md](terraform.md#one-command-bring-u
 / [kubernetes.md](kubernetes.md#one-command-bring-up-nyxgpt-ops) for what
 each one does and why `--cloud` is rejected today.
 
+`--dev` composes with `--terraform`: it builds that deployment's api/web
+images from the checkout instead of deploying the published ones, and the
+deployment records and reports its own install mode
+([terraform.md](terraform.md#install-modes-artifact-default-and---dev)).
+
 Both deploy observability with the app tier, and `--skip-observability`
 means the same thing in all three modes. In `--kubernetes` mode that layer
 runs *inside the cluster* (`k8s/observability/`) rather than as Compose
@@ -465,17 +485,35 @@ nyxgpt ops status
 
 Reports:
 
-- **Install mode** — `artifact` (the default: published/vendored builds) or
-  `dev` (the checkout, see [`--dev`](#--dev-run-the-current-checkout-without-an-artifact-build)),
-  printed first and repeated per component as `[artifact]`/`[dev]` next to
-  `api` and `web`. In dev mode it also names the checkout the services are
-  running, and warns if that checkout has since disappeared.
+- **Install mode (native api/web)** — `artifact` (the default:
+  published/vendored builds) or `dev` (the checkout, see
+  [`--dev`](#--dev-run-the-current-checkout-without-an-artifact-build)),
+  printed first and repeated as `[artifact]`/`[dev]` next to `api` and `web`
+  — only when that component is actually installed, never on a `none`
+  (#3834). In dev mode it also names the checkout the services are running,
+  and warns if that checkout has since disappeared. When no native api/web
+  exists, the line says so rather than letting a leftover record read as a
+  statement about whatever *is* serving. A Kubernetes deployment's own
+  install mode is reported in the Kubernetes section below.
+- **Install mode (terraform)** — the same line for the local Terraform
+  deployment when there is one (#3835), naming the images it is running and
+  tagging its `api`/`web` components. A deployment that is running with
+  nothing recorded is reported as `not recorded` (tagged `[unrecorded]` per
+  component) rather than defaulting to `artifact`, which for that path would
+  be backwards — see [terraform.md](terraform.md).
 - **Deployment mode** for each component (`api`, `web`, `ollama`, `cassandra`): whether it's
   running natively (Homebrew / the ops-managed Cassandra container) and whether a Docker
   Compose deployment of the same component is also running. If a component is reported
   running in *both* modes, `status` prints a **WARNING** — only one is actually serving
   traffic on the shared port, and config edits to `~/.nyxGPT/config.ini` (native) vs.
   `docker/config.docker.ini` (Compose) reach different, non-interchangeable processes.
+- **Kubernetes deployment**, when Pods are present: the namespace's Pods, the
+  cluster context, the in-cluster observability workloads, the per-component
+  canary rollout state — and that deployment's **own install mode**, `artifact`
+  (images built from the published `nyxgpt-api`/`nyxgpt-web` artifacts) or
+  `dev` (images built from a checkout's working tree, #3834). It is reported
+  here, not in the native line above, because the two are separate installs
+  ([kubernetes.md](kubernetes.md#install-modes-artifact-and---dev)).
 - **Terraform component state** for each `nyxgpt-tf-*` core container, when any are
   running. If a component is reported running under Terraform *and* under native/Compose
   at the same time, `status` prints a second **WARNING** — this means an incomplete mode
@@ -708,12 +746,14 @@ nyxgpt ops doctor
 
 Checks include:
 
-- The **install mode** the machine is on (printed before the findings, same
-  vocabulary as `status`). In dev mode it FAILs when the recorded checkout
-  is gone — the api/web services are then running code nothing can rebuild
-  — or when that checkout has no `web/node_modules` for the dev server to
-  start from. Fix: `nyxgpt up --dev` from a checkout, or `nyxgpt up` to
-  return to the artifact path.
+- The **install mode** each deployment on the machine is on (printed before
+  the findings, same vocabulary as `status`). In dev mode it FAILs when the
+  recorded checkout is gone — the api/web services are then running code
+  nothing can rebuild — or when that checkout has no `web/node_modules` for
+  the dev server to start from. Fix: `nyxgpt up --dev` from a checkout, or
+  `nyxgpt up` to return to the artifact path. A running dev-mode Terraform
+  deployment whose checkout is gone FAILs for the same reason: its images
+  cannot be rebuilt.
 - Required files under `~/.nyxGPT/`
 - Native service-manager availability (`brew` on macOS, `systemctl` on Linux)
 - Running services
@@ -1475,10 +1515,13 @@ Avoid manually invoking `brew services`/`launchctl` (macOS), `systemctl` (Linux)
   running from a source checkout (`pip install -e .`) or an installed,
   non-editable package with no repo present at all (#3621). A few
   genuinely repo-checkout-dependent operations -- building distributable
-  artifacts from source, the Terraform/Kubernetes local deploy paths
-  (`.tf`/`.yaml` files on disk), the `web/` npm project -- still resolve
-  paths relative to the checkout; see `tests/unit/test_repo_root_allowlist.py`
-  for the exact, reviewed list.
+  artifacts from source, the Terraform local deploy path (`.tf` files on
+  disk), the `web/` npm project, and the `--dev` image builds -- still
+  resolve paths relative to the checkout; see
+  `tests/unit/test_repo_root_allowlist.py` for the exact, reviewed list. The
+  Kubernetes manifests left that list in #3834: they ship as package data
+  (`nyxgpt.resources.k8s`) and are synced to `~/.nyxGPT/k8s` like everything
+  else above, which is what makes `--kubernetes` runnable with no checkout.
 - The native `api`/`web` services are built from the same
   `nyxgpt-api-<version>`/`nyxgpt-web-<version>` source tarballs either way:
   vendored from the checkout when there is one, downloaded from that

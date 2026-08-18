@@ -12,21 +12,38 @@ permissions:
 # example.config.ini / httpx, the terraform network aliases + cassandra
 # cluster name, the derived-config transforms, and observability on the
 # terraform network (Prometheus scraping the api). See the trigger scope below.
+#
+# TWO jobs, one per install mode (#3835):
+#
+#   terraform-local-smoke     `--dev`: images built from this ref's working
+#                             tree. This is what the job did before #3835, when
+#                             the deploy was permanently (and silently) in dev
+#                             mode -- so it keeps testing THIS ref's code.
+#   terraform-artifact-smoke  the default artifact path, run from a wheel
+#                             installed into a venv with no checkout in reach.
+#                             Answers the question the other job structurally
+#                             cannot: can a machine with no repository deploy
+#                             at all? It is the executed evidence for #3835's
+#                             repo-less acceptance criterion.
 
 # Scoped to Terraform changes only. Standing up the full `--terraform --local`
 # stack is expensive, so this must not gate every code review -- it runs only
-# when the Terraform config (or this workflow) changes. Trade-off: it will NOT
-# catch app-code (src/**, web/**), Dockerfile/Compose, or ops.py deploy-logic
-# changes that could break the deploy. Add those globs back here if that
-# broader coverage is wanted.
+# when the Terraform config, the packaged copy of it, the install-mode marker
+# or this workflow changes. Trade-off: it will NOT catch app-code (src/**,
+# web/**), Dockerfile/Compose, or ops.py deploy-logic changes that could break
+# the deploy. Add those globs back here if that broader coverage is wanted.
 on:
   pull_request:
     paths:
       - 'terraform/**'
+      - 'src/nyxgpt/resources/terraform/**'
+      - 'src/nyxgpt/install_mode.py'
       - '.github/workflows/terraform-local-smoke.yml'
   push:
     paths:
       - 'terraform/**'
+      - 'src/nyxgpt/resources/terraform/**'
+      - 'src/nyxgpt/install_mode.py'
       - '.github/workflows/terraform-local-smoke.yml'
 
 jobs:
@@ -74,8 +91,18 @@ jobs:
             chmod 777 "$HOME/.nyxGPT/volumes/$d"
           done
 
-      - name: nyxgpt ops install --terraform --local
-        run: nyxgpt ops install --terraform --local
+      # --dev is what this job has always tested (#3835): images built from
+      # the checked-out tree. Without the flag it would deploy the published
+      # images instead, and this job would stop covering the ref under test.
+      - name: nyxgpt ops install --terraform --local --dev
+        run: nyxgpt ops install --terraform --local --dev
+
+      - name: The deployment must report its own install mode, not the native one
+        run: |
+          set -euo pipefail
+          nyxgpt ops status | tee /tmp/status.txt
+          grep -q "Install mode (terraform): dev" /tmp/status.txt
+          grep -q "terraform api: running  \[dev\]" /tmp/status.txt
 
       - name: Verify core + observability are actually serving
         run: |
@@ -129,3 +156,181 @@ jobs:
       - name: Tear down
         if: always()
         run: nyxgpt ops down --terraform || true
+
+  # Can a machine with NO repository deploy the Terraform stack? (#3835)
+  #
+  # The job above cannot answer that: it installs nyxgpt editable from the
+  # checkout, so every repo-relative path it needs happens to exist. Here
+  # nyxgpt is a wheel installed into a venv, `REPO_ROOT` resolves inside
+  # site-packages, and the install is run from an empty directory -- the
+  # Terraform configuration has to come from package data, the api/web images
+  # from a registry, and nothing from a checkout.
+  terraform-artifact-smoke:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.9.5'
+
+      - name: Build the wheel under test and install it into a clean venv
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip build
+          python -m build --wheel --outdir /tmp/wheel
+          mkdir -p /tmp/clean
+          python -m venv /tmp/clean/venv
+          /tmp/clean/venv/bin/pip install --quiet /tmp/wheel/*.whl
+
+      # Both halves of the "no checkout" claim, before anything is deployed:
+      # the wheel must contain the Terraform configuration, and the installed
+      # nyxgpt must NOT believe it is running from a checkout (which is what
+      # would silently re-enable every repo-relative path).
+      - name: The installed package must be repo-less and carry the configuration
+        working-directory: /tmp/clean
+        run: |
+          set -euo pipefail
+          ./venv/bin/python - <<'PY'
+          from nyxgpt import ops
+          assert ops._dev_checkout_root() is None, ops.REPO_ROOT
+          packaged = ops._packaged_local_terraform_dir()
+          missing = [n for n in ("main.tf", "variables.tf", "outputs.tf", "versions.tf")
+                     if not (packaged / n).is_file()]
+          assert not missing, f"wheel is missing {missing} from {packaged}"
+          print("repo-less:", ops.REPO_ROOT, "| config:", packaged)
+          PY
+
+      # The real published-image resolution, against the real registry, from
+      # the repo-less install -- no override. A release candidate has no
+      # images of its own, so this also exercises the reported fallback.
+      - name: Published images must resolve and pull with no checkout
+        working-directory: /tmp/clean
+        run: |
+          set -euo pipefail
+          ./venv/bin/python - <<'PY'
+          from nyxgpt import ops
+          images, results = ops._pull_terraform_published_images()
+          for r in results:
+              print(("OK  " if r.ok else "FAIL"), r.message)
+          assert images.get("api") and images.get("web"), results
+          PY
+
+      # The images actually deployed below are built from THIS ref and staged
+      # in the local daemon, exactly as `NYXGPT_ARTIFACT_DIR` stages a tarball
+      # for the native artifact install: the version under test is not
+      # published yet, and deploying last release's images would test last
+      # release. The install path is unchanged -- it consumes ready-made
+      # images and builds nothing.
+      - name: Stage this ref's images as the artifacts under test
+        run: |
+          set -euo pipefail
+          docker build -t nyxgpt-api:artifact-under-test .
+          docker build -t nyxgpt-web:artifact-under-test \
+            --build-arg NEXT_PUBLIC_API_BASE_URL=http://localhost:8000 ./web
+
+      - name: Seed a native config from the tracked example
+        run: |
+          mkdir -p "$HOME/.nyxGPT"
+          cp example.config.ini "$HOME/.nyxGPT/config.ini"
+
+      - name: Pre-create Docker bind-mount volume dirs (Linux runner perms)
+        run: |
+          # Same reason as the job above: Docker creates missing bind-mount
+          # sources as root on the Linux runner, and the non-root users inside
+          # the observability containers then can't write their data dir.
+          for d in prometheus grafana loki glitchtip-postgres glitchtip-uploads \
+                   cassandra ollama nyxgpt-data; do
+            mkdir -p "$HOME/.nyxGPT/volumes/$d"
+            chmod 777 "$HOME/.nyxGPT/volumes/$d"
+          done
+
+      # Run from an empty directory: nothing here resolves relative to the
+      # checkout, and a regression that reintroduces such a lookup fails.
+      - name: nyxgpt ops install --terraform --local (artifact path, no checkout)
+        working-directory: /tmp/clean
+        env:
+          NYXGPT_TF_API_IMAGE: nyxgpt-api:artifact-under-test
+          NYXGPT_TF_WEB_IMAGE: nyxgpt-web:artifact-under-test
+        run: /tmp/clean/venv/bin/nyxgpt ops install --terraform --local
+
+      - name: The deployment must report the artifact mode and the images it runs
+        working-directory: /tmp/clean
+        run: |
+          set -euo pipefail
+          ./venv/bin/nyxgpt ops status | tee /tmp/status.txt
+          grep -q "Install mode (terraform): artifact" /tmp/status.txt
+          grep -q "nyxgpt-api:artifact-under-test" /tmp/status.txt
+          grep -q "terraform api: running  \[artifact\]" /tmp/status.txt
+
+      # Fault injection (#3753's template): the runner cannot reach the
+      # post-upgrade state of a pre-#3835 deployment naturally -- containers
+      # up, marker absent -- so it is injected. Those deployments were built
+      # from a working tree, so reporting them as the artifact default states
+      # the reverse of the truth. Marker is restored afterwards; the serving
+      # checks below run against the same untouched stack.
+      - name: A live deployment whose mode was never recorded must not read as artifact
+        working-directory: /tmp/clean
+        run: |
+          set -euo pipefail
+          mv ~/.nyxGPT/install-mode-terraform.json /tmp/install-mode-terraform.json
+          ./venv/bin/nyxgpt ops status | tee /tmp/status-unrecorded.txt
+          grep -q "Install mode (terraform): not recorded" /tmp/status-unrecorded.txt
+          grep -q "terraform api: running  \[unrecorded\]" /tmp/status-unrecorded.txt
+          # Not `! grep ...`: bash's `set -e` explicitly does not fire on a
+          # command whose status is inverted by `!`, so that spelling would
+          # assert nothing at all.
+          if grep -q "Install mode (terraform): artifact" /tmp/status-unrecorded.txt; then
+            echo "::error::an unrecorded live deployment was reported as artifact"
+            exit 1
+          fi
+          # doctor reports it too -- and does not fail over it: an unknown
+          # build is not a fault, and the stack is serving.
+          ./venv/bin/nyxgpt ops doctor | tee /tmp/doctor-unrecorded.txt || true
+          grep -q "nothing recorded what these containers were built from" /tmp/doctor-unrecorded.txt
+          mv /tmp/install-mode-terraform.json ~/.nyxGPT/install-mode-terraform.json
+          ./venv/bin/nyxgpt ops status | grep -q "Install mode (terraform): artifact"
+
+      - name: Verify core + observability are actually serving
+        run: |
+          set -uo pipefail
+          fail=0
+          check() { # <label> <url> <expected> [<attempts>] [<delay>]
+            label="$1" url="$2" expected="$3" attempts="${4:-20}" delay="${5:-3}"
+            code=000
+            i=1
+            while [ "$i" -le "$attempts" ]; do
+              code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$url" || echo 000)
+              [ "$code" = "$expected" ] && break
+              sleep "$delay"
+              i=$((i + 1))
+            done
+            echo "  $label -> $code (expect $expected)"
+            [ "$code" = "$expected" ] || { echo "::error::$label expected $expected, got $code"; fail=1; }
+          }
+          check "api  /api/v1/models" http://localhost:8000/api/v1/models 200
+          check "web  /"              http://localhost:3000/ 200
+          check "web  /api/models"    http://localhost:3000/api/models 200
+          check "grafana health"      http://localhost:3001/api/health 200
+          exit $fail
+
+      - name: Dump diagnostics on failure
+        if: failure()
+        run: |
+          docker ps -a
+          for c in nyxgpt-tf-api nyxgpt-tf-web nyxgpt-tf-cassandra \
+                   nyxgpt-prometheus-1 nyxgpt-grafana-1; do
+            echo "::group::logs $c"; docker logs "$c" --tail 80 2>&1 || true; echo "::endgroup::"
+          done
+
+      - name: Tear down
+        if: always()
+        working-directory: /tmp/clean
+        run: ./venv/bin/nyxgpt ops down --terraform || true

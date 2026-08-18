@@ -26,13 +26,13 @@ pytestmark = pytest.mark.unit
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LEDGER_PATH = REPO_ROOT / "agents" / "LEDGER.md"
 
-# Sections the entry schema defines. Decisions/Verifications/Parked/Open
-# questions are the four entry kinds required by #3774's acceptance criteria;
-# Superseded is the pruning target that keeps retired beliefs visible instead
-# of deleted (and re-derivable).
+# Sections the entry schema defines. Verifications were retired on 2026-08-18
+# (owner decision): a fact about behavior belongs in the guard that enforces it,
+# not in a second copy that every run pays to read and that can redden the build
+# on its own. Decisions/Parked/Open questions remain, plus Superseded, which
+# keeps retired beliefs visible instead of deleted (and re-derivable).
 REQUIRED_SECTIONS = (
     "## Decisions",
-    "## Verifications",
     "## Parked",
     "## Open questions",
     "## Superseded",
@@ -80,7 +80,6 @@ def test_ledger_is_seeded_with_each_entry_kind(ledger_text: str) -> None:
     """
     for kind, heading in (
         ("D", "## Decisions"),
-        ("V", "## Verifications"),
         ("P", "## Parked"),
         ("Q", "## Open questions"),
     ):
@@ -89,22 +88,19 @@ def test_ledger_is_seeded_with_each_entry_kind(ledger_text: str) -> None:
         assert found, f"{heading} has no seeded {kind}- entries"
 
 
-def test_every_verification_records_method_and_staleness(ledger_text: str) -> None:
-    """`Method:` and `Re-verify when:` are what separate a verification from a
-    recollection: one says how the fact was established, the other says when to
-    stop trusting it. An entry missing either is an unverified claim wearing a
-    verification's clothes.
-    """
-    body = _section(ledger_text, "## Verifications")
-    # Entries are separated by the blank line preceding the next `- **V-`.
-    chunks = re.split(r"\n(?=- \*\*V-)", body.strip())
-    entries = [c for c in chunks if c.startswith("- **V-")]
-    assert entries, "no verification entries found to check"
+def test_no_verification_entries_return(ledger_text: str) -> None:
+    """The retirement has to hold, or the file regrows to what was removed.
 
-    for entry in entries:
-        entry_id = entry[4:9]
-        assert "Method:" in entry, f"verification {entry_id} records no Method"
-        assert "Re-verify when:" in entry, f"verification {entry_id} records no 'Re-verify when'"
+    54 entries and 71% of the file went on 2026-08-18. Nothing stops a session
+    from appending a `V-` entry out of habit -- the schema it half-remembers
+    still describes one -- so the absence is asserted rather than assumed.
+    """
+    strays = re.findall(r"^- \*\*V-\d+\*\*", ledger_text, re.MULTILINE)
+    assert not strays, (
+        f"{len(strays)} verification entr(y/ies) reappeared in the ledger: facts about "
+        "behavior belong in the guard that enforces them, with the reasoning in its "
+        "docstring -- see the retirement note in agents/LEDGER.md"
+    )
 
 
 def test_every_parked_entry_records_reason_and_revisit(ledger_text: str) -> None:

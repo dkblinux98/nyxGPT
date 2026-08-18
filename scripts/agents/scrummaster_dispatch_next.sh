@@ -10,11 +10,18 @@ Usage:
   scrummaster_dispatch_next.sh [--sprint-scoped]
 
 Runs the #3665 fall-through dispatch loop: select the next eligible
-Backlog candidate (scrummaster_next_issue.sh --select-only), attempt to
+Backlog candidate (developer_pull_next.sh -- the pull, #3883), attempt to
 start it (scrummaster_attempt_start, lib/gh_project.sh), and on any skip
 exclude that issue and retry with the next candidate -- so one bad-state
 issue (e.g. an anomalous assignee, or a deliberate human hold) can no
 longer become a permanent head-of-line block on the whole queue.
+
+Selection left this file with #3883. What decides is now the sprint plan
+the scrummaster grooms (#3908) plus the pull algorithm: plan order,
+relationships eligibility, WIP limit, and a file-overlap check against
+in-flight work. This script keeps what it was always actually for -- the
+dispatch-pause backstops and the fall-through retry -- and the loop runs in
+the developer agent's context, which is where the decision belongs.
 
 Bounded by MAX_ATTEMPTS (default 25) so a systemic problem fails loudly
 instead of looping forever.
@@ -41,7 +48,7 @@ Prints, in $GITHUB_OUTPUT format (`key=value` / `key<<EOF ... EOF`):
   NYXGPT_TRIED_EOF
 
 Options:
-  --sprint-scoped  Passed through to scrummaster_next_issue.sh.
+  --sprint-scoped  Passed through to developer_pull_next.sh.
   -h, --help       Show this help
 EOF
 }
@@ -60,11 +67,16 @@ MAX_ATTEMPTS="${MAX_ATTEMPTS:-25}"
 # Selects the next Backlog candidate not in `exclude` (comma-separated
 # issue numbers). Split out so tests can stub it without a real gh/GraphQL
 # round trip.
+#
+# The pull's reasoning is written to PULL_EXPLAIN_FILE when the caller sets
+# one, so the dispatch comment can quote *why* this issue and not the one
+# above it. A wrong pull has to be visible to be corrected (D-004).
 _select_next_candidate() {
   local exclude="$1" sprint_scoped="$2"
   local args=()
-  [[ "$sprint_scoped" == "1" ]] && args+=("--sprint-scoped")
-  EXCLUDE_ISSUES="$exclude" "$DIR/scrummaster_next_issue.sh" --select-only "${args[@]}" 2>/dev/null || echo ""
+  if [[ "$sprint_scoped" == "1" ]]; then args+=("--sprint-scoped"); fi
+  if [[ -n "${PULL_EXPLAIN_FILE:-}" ]]; then args+=("--explain" "$PULL_EXPLAIN_FILE"); fi
+  EXCLUDE_ISSUES="$exclude" "$DIR/developer_pull_next.sh" "${args[@]}" 2>/dev/null || echo ""
 }
 
 # Wraps escalation_pause_gate (lib/gh_project.sh). Split out so tests can

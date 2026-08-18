@@ -12,16 +12,17 @@ state is indistinguishable from verified state.
 This file is the fix. **The repository carries the memory, not the agent.**
 Sessions read this file at start, treat their own recollection as untrusted
 input wherever this ledger or the live system can answer instead, and append
-here when they decide something, verify something, park something, or hit a
-question they cannot close.
+here when they decide something, park something, or hit a question they
+cannot close. Facts about how the system *behaves* are not written here — they
+are encoded in the guard that enforces them (see below).
 
-**The rule: a claim that is not in this ledger and not freshly verified is not
+**The rule: a claim that is not in this ledger and not freshly checked is not
 asserted as fact.** Say "I have not checked" and then check.
 
 This also bounds churn cost. It converts an unbounded invisible expense
 (re-derive everything every session, sometimes wrongly) into a bounded visible
-one: read one dense file, then re-verify only what is stale *and* load-bearing
-for the task in hand.
+one: read one short file of decisions, and let the guards carry everything
+that can be checked instead of remembered.
 
 ---
 
@@ -37,8 +38,8 @@ this project works, what was decided, what is published, or what is deliberately
 not being done, one of these must be true:
 
 1. It is an entry below, and that entry is not stale for your purpose; or
-2. You just verified it this session, and you can name how; or
-3. You say plainly that you have not verified it.
+2. You just checked it this session, and you can name how; or
+3. You say plainly that you have not checked it.
 
 Recalling it "from earlier in the project" is not one of the three. Neither is
 inferring it from a plausible-looking artifact.
@@ -68,8 +69,6 @@ load-bearing facts and decisions, **not narration**.
 **Include:**
 
 - Decisions that change how the system operates, and who made them.
-- Facts that were expensive to establish and that a session would otherwise
-  re-derive — especially ones with a non-obvious answer.
 - Things deliberately *not* being done, with the condition that would revive
   them.
 - Questions whose answers gate work.
@@ -86,6 +85,11 @@ load-bearing facts and decisions, **not narration**.
   charters or the runbooks. Link to them instead; two copies of a rule
   guarantee one is wrong later.
 - Anything true for only one session.
+- **Facts about behavior.** These go in the test or guard that enforces them,
+  with the reasoning in its docstring. An entry restating what a guard already
+  checks is a second copy of the truth, paid for on every run, free to go stale,
+  and — as 2026-08-18 proved five times over — able to redden the build by
+  itself.
 
 **The test:** *could a future session get this wrong, confidently, and would
 neither the live system nor a single doc lookup catch it?* If yes, it belongs
@@ -99,14 +103,14 @@ re-derived wrong — which is the whole problem.
 
 ## Entry schema
 
-Four kinds. Each has a stable ID (`D`/`V`/`P`/`Q` + zero-padded number).
+Three kinds. Each has a stable ID (`D`/`P`/`Q` + zero-padded number).
 **IDs are never reused**, including after supersession.
 
 **Allocate with the helper, not by eye** (#3806):
 
 ```
 git fetch origin <release branch>
-python3 scripts/agents/lib/ledger_ids.py next V --base origin/<release branch>
+python3 scripts/agents/lib/ledger_ids.py next D --base origin/<release branch>
 ```
 
 It applies the two rules that are easy to get wrong by hand. It takes
@@ -125,19 +129,6 @@ branch alone. That is how `V-034`/`V-035` came to be defined twice, failing
   Source: <issue / PR / doc §>.
 ```
 
-**Verification** — a fact, plus how it was established and when.
-
-```
-- **V-000** · YYYY-MM-DD — <the fact>.
-  Method: <the exact thing that was read, run or observed>.
-  Re-verify when: <the condition that makes this stale>.
-```
-
-`Method` is mandatory and must be specific enough to repeat. "Known from
-context" is not a method. If the check you ran is weaker than the claim (you
-read a doc that describes a setting rather than reading the setting), say so in
-the entry — an honest weaker fact beats a confident wrong one.
-
 **Parked** — deliberately not being worked, so nobody re-proposes it.
 
 ```
@@ -154,11 +145,10 @@ the entry — an honest weaker fact beats a confident wrong one.
   Blocks: <what is waiting, or "nothing yet">.
 ```
 
-**Staleness.** A verification is stale when its `Re-verify when` condition has
-fired, not merely when it is old. Re-verify a stale entry only if it is
-load-bearing for the task at hand; otherwise leave it and say it is unverified.
-When you do re-verify, update the date and `Method` in place — same ID, same
-entry. Only a *changed fact* moves to Superseded.
+**Staleness.** A decision stands until it is superseded; there is nothing to
+re-verify. If the world has moved and a decision no longer holds, move it to
+Superseded with a pointer to what replaced it — never edit it into a different
+decision.
 
 ---
 
@@ -174,7 +164,7 @@ wording. (An entry that contradicts the change it ships with is a normal
 finding, like any other wrong statement in a diff.)
 
 The owner may append directly; owner-authored entries are authoritative and are
-not agent-editable except to add a `Re-verify` result or a supersession pointer.
+not agent-editable except to add a supersession pointer.
 
 **This public ledger is machine-facing.** Incident narratives, owner-sensitive
 decisions and product-forward material live in the owner's private annex
@@ -183,6 +173,30 @@ Public entries state mechanics; they do not narrate the owner. Some entry IDs
 are absent here by design (relocated to the annex; IDs are never reused).
 
 ---
+
+## Verifications were retired (owner decision, 2026-08-18)
+
+There is no verification log any more. 54 `V-` entries, 13,752 words — **71% of
+this file** — were removed at `a802a04`; git history holds every one of them,
+and `V-NNN` citations left in code comments still resolve there.
+
+They were removed because they cost more than they returned. Every agent run
+paid to read them. Five separate id collisions on 2026-08-18 turned the release
+branch red, which failed the gate for every open PR, cost #3825 an entire cycle
+and paged the owner — over bookkeeping with no product meaning. And the rule
+they most loudly enforced ("IDs are never reused") was in context every time it
+was broken: the rule was right and the *mechanism* was racy, which is not
+something prose can fix.
+
+What they were mostly doing was restating, in a second place, something a test
+already enforced — a copy of the truth that has to be maintained, can go stale,
+and could turn the build red on its own. **A fact worth keeping is worth
+encoding in the guard that enforces it**, where it is checked rather than
+remembered and costs nothing per run. If you find yourself wanting to write a
+verification, write the test instead and say why in its docstring.
+
+Decisions and corrections stay, because they record intent and retired beliefs
+rather than mechanism, and nothing can enforce them.
 
 ## Decisions
 
@@ -509,7 +523,30 @@ are absent here by design (relocated to the annex; IDs are never reused).
   Source: owner directive 2026-08-18; `CLAUDE.md` § Bootstrap;
   `scripts/build_context_index.py`.
 
-- **D-022** · 2026-08-18 · developer-agent — **A canary rollout gate reads
+- **D-022** · 2026-08-18 · developer agent (#3832) — **Self-heal never
+  deletes a `Pending` Kubernetes Pod.** `kubectl delete pod` is a repair for
+  exactly one state, `Running`-but-not-`Ready`; an unschedulable Pod cannot be
+  fixed by deleting it (the ReplicaSet recreates it Pending for the identical
+  reason, and the reset Pod age destroys the operator's evidence), and a
+  starting one converges on its own. The rule is not overridable by a manual
+  "Heal now", and is enforced at the destructive action itself
+  (`heal_kubernetes_pod` re-reads the Pod before deleting), not only at the
+  caller that decided to call it. Pod state is *read* in one shared place,
+  `src/nyxgpt/k8s_pod_state.py`, by both `self_heal.py` and
+  `ops._classify_k8s_pod`, so the watchdog and the install report cannot
+  disagree about whether a Pod is serving or why it is not. What each keeps
+  is its own **policy** on that reading, which is not the same thing and is
+  allowed to differ: a `CrashLoopBackOff` Pod fails an install (#3827's
+  three-state vocabulary) and is healable by the watchdog. The distinction is
+  the load-bearing part — the first cut of this change shipped the shared
+  module and the claim while `ops.py` still parsed `PodScheduled` itself, so
+  the two silently disagreed about `SchedulingGated`; two classifiers
+  agreeing by convention is the defect, not the sharing of a vocabulary.
+  Pinned by `test_ops_reads_pod_state_through_this_module_not_its_own_copy`
+  and `test_ops_and_self_heal_never_disagree_about_whether_a_pod_is_serving`.
+  Source: #3832; `docs/self-healing.md` §Pending Pods are reported, not deleted.
+
+- **D-023** · 2026-08-18 · developer-agent — **A canary rollout gate reads
   the canary track's own Pods, never the serving process's counters.** The
   metrics behind `evaluate`/`promote`/`status` come from the Pods labelled
   `track=canary`, read through the API server's Pod proxy, with `/health`
@@ -522,1199 +559,6 @@ are absent here by design (relocated to the annex; IDs are never reused).
   Pods export no `/metrics`. Do not "restore" a process-wide metrics
   snapshot here: it is the defect, not a fallback.
   Source: #3829; `src/nyxgpt/canary.py`; `docs/kubernetes.md` §Metrics source.
-
-## Verifications
-
-- **V-001** · 2026-08-14 — Releases in this repository are immutable: a
-  published release can never gain or change an asset. An attempted asset upload
-  returns `HTTP 422: Cannot upload assets to an immutable release`, so an
-  incomplete release cannot be repaired — it must be superseded by the next
-  candidate. PyPI versions are immutable for the same practical purpose: a burned
-  version number is never reused.
-  Method: read the guards and error text in `.github/workflows/release-artifacts.yml`
-  and `.github/workflows/release-publish-pypi.yml`, the behaviour asserted in
-  `tests/test_supersede_incomplete_rc_releases.sh`, and `docs/homebrew.md`.
-  **Weaker than the claim it supports:** this verifies that the pipeline is built
-  around immutability and has hit the 422 in practice — it does not read the
-  GitHub repository setting itself, which is owner-readable only (no agent
-  token path exists; verified 2026-08-14).
-  Re-verify when: the owner changes the repository's release-immutability
-  setting, or a release is observed gaining an asset after publish.
-
-- **V-002** · 2026-08-14 — Installing any formula from the `dkblinux98/nyxgpt`
-  tap requires a one-time **whole-tap** trust step, because Homebrew gates
-  third-party taps: without it `brew install` stops instead of installing. It is
-  per tap and per machine, not per formula or per version. Homebrew spells the
-  subcommand `brew tap-trust <tap>` on some builds and `brew trust <tap>` on
-  others — if one is rejected as unknown, run the other; an untried spelling is
-  indistinguishable from a trusted tap. A grant scoped to a single formula is
-  **not** sufficient: installing a candidate makes brew resolve
-  `conflicts_with "nyxgpt-api"` and load the stable formula, which the narrow
-  grant leaves untrusted, aborting the install.
-  Method: read `docs/homebrew.md` §"Trusting the tap (one-time, required)" and
-  the `commands.brew` contract in `docs/api.md`; incident #3770.
-  Re-verify when: Homebrew changes its third-party tap gate, or the tap name
-  changes.
-
-- **V-006** · 2026-08-14 — The Homebrew keg **install** path is CI-coverable on
-  a real macOS runner: `macos-brew-smoke.yml` runs `brew install` of the working
-  tree's formulas and of the published tap candidate on `macos-15`, and injects
-  the empty `mac_ver()` condition to prove the shim. "macOS cannot be tested in
-  CI" is therefore not a valid deferral for a formula or install change — only
-  the native launchd/brew-services *operate* half still defers to the owner.
-  Method: read `.github/workflows/macos-brew-smoke.yml` — jobs at `runs-on:
-  macos-15`, steps "Install nyxgpt-api from the local tap", "Tap and install the
-  candidate", "Reproduce the empty mac_ver() failure, then prove the shim fixes
-  it". The deferral lists in `review-runbook.md` §2, the review prompt and
-  `docs/live-verification-ci.md` were corrected to match under #3775.
-  Re-verify when: `macos-brew-smoke.yml` stops installing on a macOS runner, or
-  GitHub retires hosted macOS runners.
-
-- **V-008** · 2026-08-14 — The dual-lane rule of **D-008** is executed, not
-  just written: a CLOSED issue parked in `Acceptance Failed` is promoted to
-  `For Release` only when its whole transitive closure is accepted, is left
-  untouched while any blocker is open, and is never released to `Backlog` by a
-  gate opening; an OPEN issue in the same lane keeps its #3730 holding-pen
-  behavior (released on the drain, never promoted).
-  Method: `bash tests/test_promote_accepted_features.sh` and
-  `bash tests/test_drain_gate_lib.sh` run 2026-08-14 on the #3780 branch —
-  both run the real scripts against a stubbed `gh`/`graphql`, and both are now
-  executed by `pytest tests/unit/` as well.
-  Re-verify when: the lane names change, or either sweep's candidate rule is
-  edited.
-
-- **V-009** · 2026-08-15 — The pypi.org `/simple/` and `/pypi/*/json` endpoints,
-  fetched via this remote session's egress proxy, can serve a **stale CDN cache**
-  for hours: they showed rc9 as the newest candidate while rc10/rc11 were
-  published and pip-resolvable, so stale reads produce confidently wrong
-  currency claims. To learn which candidate is current,
-  use `pip index versions nyxgpt --pre` (fresh in practice) or the publish
-  workflow's run history — never the curled pypi.org JSON alone.
-  Method: side-by-side check 2026-08-15 ~03:30Z — curled JSON showed …rc9 while
-  `pip index versions` returned rc11/rc10 and the rc11 publish run's own
-  "Verify PyPI serves the build" step had passed at 22:06Z.
-  Re-verify when: the session egress proxy or PyPI CDN behaviour changes.
-
-- **V-010** · 2026-08-15 — A distro's bare `python3` cannot be assumed to
-  satisfy nyxGPT's `requires-python` (`>=3.11`): on Amazon Linux 2023 it is
-  3.9, and a venv built from it is one pip refuses the nyxGPT artifact into
-  ("requires a different Python: 3.9.x not in '>=3.11'"). Both the service
-  venv (`ops._create_service_venv`) and the two cloud provisioning paths now
-  select an interpreter by asking each candidate its own version.
-  Method: `scripts/service-venv-python-smoke.py` run 2026-08-15 on Linux with
-  a real CPython 3.9.25 and the real `nyxgpt-3.0.0` sdist — resolving bare
-  `python3` produced a 3.9 venv pip refused; the selection logic picked a
-  qualifying interpreter and the same `pip install` succeeded. Re-running it
-  against a pre-fix `_create_service_venv` fails at that half, so the check
-  is not green by luck. Wired as `linux-native-smoke.yml`'s
-  `service-venv-python` job (#3782).
-  Re-verify when: the `requires-python` floor moves, or the candidate list in
-  `ops._SERVICE_PYTHON_NAMES` changes.
-
-- **V-011** · 2026-08-15 — A comment token in this repo starts work **only
-  where it opens a line**, for all four tokens (`RETRY_IMPLEMENTATION`,
-  `READY_FOR_NEXT_ISSUE`, `@acceptance-failure`, `@improvement`). A GitHub
-  Actions `if:` can only substring-match, which is why the same defect fired
-  twice: #3706 (a park note naming the kick token dispatched work) and #3790
-  (the developer agent's stop message named the retry token, so a stop
-  produced a start — ~500 runs and ~500 comments across #3782/#3784 in under
-  two hours). Each trigger now has a `comment_gate` job running
-  `.github/actions/comment-token-gate`; agent prose that must name a token
-  carries `<!-- nyxgpt-token-mention -->`, which makes the whole comment
-  inert. Reference: `docs/agent-comment-tokens.md`.
-  Method: `.github/workflows/comment-token-gate-smoke.yml` executes the gate
-  action on a runner over the incident's real comment bodies and proves both
-  halves — the pre-#3790 substring rule matches the looping message while
-  the gate refuses it, a genuine command still proceeds; plus
-  `tests/unit/test_comment_token_triggers.py`, which asserts the stop message
-  is token-free and every trigger is gated.
-  Re-verify when: a new comment token is added, or a trigger's `if:` is
-  edited (both tests fail loudly if the gate is dropped).
-
-- **V-012** · 2026-08-15 — The `--kubernetes --local` deployment is
-  **self-contained and chattable**: `k8s/` now ships the data/LLM tier
-  (single-replica Cassandra and Ollama StatefulSets on PVCs, `cassandra:9042`
-  / `ollama:11434`), the api ConfigMap addresses both by Service name, the
-  session backend is `cassandra` so all four api replicas share one session
-  list, and `ops install --kubernetes --local` waits for both StatefulSets to
-  be Ready before reporting health. Ollama's `postStart` pulls
-  `[nyxgpt] default_model` and its readiness probe requires that model, so
-  the Service gets no endpoints until a chat can be served. Before #3786 this
-  path deployed api+web only, pointed Ollama at `host.docker.internal` and
-  had no session store — Pods Running, no chat possible.
-  Method: executed on a real `kind` cluster on a Linux runner (#3786 PR) —
-  `kubectl apply -k k8s/`, both StatefulSets reached Ready, `ollama list`
-  showed `qwen2.5:0.5b`, and a chat POSTed through the web Service's own
-  proxy route (`/api/chat/stream`, the browser's path) streamed an answer
-  back; `cqlsh -e "SELECT name FROM nyxgpt.chat_sessions"` showed the session
-  row, and 12 consecutive session-list reads across the 4 replicas all
-  returned it. `scripts/k8s-local-smoke.sh` /
-  `.github/workflows/k8s-local-smoke.yml` re-run that end to end and then
-  delete the tier to prove the same check fails without it.
-  Re-verify when: `k8s/kustomization.yaml`, `k8s/configmap.yaml`, or the
-  `ops._wait_for_k8s_data_tier` workload list changes (the smoke job and
-  `tests/unit/test_k8s_manifests.py` fail loudly if the tier is dropped).
-
-- **V-013** · 2026-08-15 — The rc11 keg install failure (#3788) is **not** an
-  ordering problem in the pip bootstrap. Its cause is that the Homebrew
-  `python@3.12` keg's pip cannot import
-  `pip._internal.operations.install.wheel`; pip 26.2 pre-imports its lazy
-  imports before writing anything, swallows that `ImportError` into
-  `_MISSING_MODULES`, and its audit hook re-raises it from
-  `_prevent_import_hook` when `req_install.py` needs the module for real.
-  Consequence: **any** install routed through that pip dies, whatever is being
-  installed and in whatever order — so the keg's pip is now allowed to
-  `download` only, and the keg venv is bootstrapped by running pip out of the
-  downloaded wheel (`python pip-X.whl/pip install pip-X.whl`).
-  Method: created exactly that machine state on a stand-in keg (pip 26.2.1)
-  on 2026-08-15 by moving `pip/_internal/operations/install/wheel.py` out of
-  it, and reproduced the owner's traceback line-for-line, down to
-  `req_install.py:779` → `install.py:97 in _prevent_import_hook`; the wheel
-  bootstrap survives the same state (`pip download` succeeds, the venv
-  python installs pip out of the wheel). Scope of that method, stated
-  because it misled three rounds: the stand-in keg was a flat tree with no
-  prefix→Cellar symlinks, so it could not show the injection missing the
-  child, and off-workflow execution is evidence about the *recipe*, not
-  about the step. `macos-brew-smoke.yml`'s "Reproduce the #3788 keg-pip
-  failure" step is where both directions have to run on the real keg
-  topology; as of this entry it has not yet been green there — cite the run
-  here once it is.
-  Corollary, verified 2026-08-15 across three red runs of that step: **a
-  condition injected by emulation is tested in an environment the real
-  install does not have, so the emulation becomes the thing under test.**
-  Both earlier spellings emulated this one with a meta-path finder in a
-  `sitecustomize` on `PYTHONPATH`, and both silently never fired: the first
-  scoped the keg by `os.path.abspath`, which cannot match in the
-  symlink-resolved `pip --python` child (`get_runnable_pip()` is
-  `Path(pip_location).resolve().parent`); the second compared realpaths but
-  shadowed the keg's own `sitecustomize` — python imports exactly one — and
-  so moved pip resolution from the prefix copy to the Cellar copy, off the
-  anchor. Chaining to the shadowed file fixed the resolution and the fault
-  still did not fire, which is the point: each fix bought another round
-  about the vehicle. Taking the file away needs no interpreter environment
-  at all; the third round then moved it at the path *this* process imports
-  it by, which on Homebrew is a link into the Cellar, so the self-check
-  fired through the dangling link while `pip --python`'s child — which
-  re-execs through `Path(pip.__file__).resolve()` — imported an untouched
-  Cellar copy and installed successfully. Corollary of the corollary:
-  **remove the file where every route resolves to (its realpath), and assert
-  the condition by every route, not the convenient one.** A `trap` restores
-  the keg on every exit path (executed: a mid-step failure leaves the keg
-  intact). General rule, and the reason the self-check exists at all: **a
-  fault that does not fire is indistinguishable in a log from a bug that is
-  gone**, so the job asserts the condition exists before inferring anything
-  from it.
-  Re-verify when: pip changes `_EAGER_IMPORTS`/`_prevent_import_hook` (the
-  deprecation there is marked `gone_in="26.3"`), or the recipe stops using
-  `pip download`.
-
-- **V-014** · 2026-08-15 — Next.js compiles `web/src/instrumentation.ts` for the
-  **edge** server runtime as well as the Node.js one, so any node-only module it
-  reaches must be imported *inside* a `process.env.NEXT_RUNTIME === "nodejs"`
-  block, never at the top level. A top-level `import … from "./lib/logger"`
-  (which reaches `node:fs`) failed the edge compile with
-  `UnhandledSchemeError: Reading from "node:fs" is not handled by plugins`, and a
-  failed instrumentation compile makes `next dev` answer **500 to every request**
-  — while `next build`/`next start` are unaffected, so only the dev-server path
-  (`nyxgpt up --dev`, **D-009**) broke and every artifact-path check stayed green.
-  An early `return` is not sufficient: webpack drops an untaken `if` branch and
-  the module graph under it, but statements after a `return` stay live to the
-  bundler.
-  Method: executed on this runner 2026-08-15 — reproduced `GET / 500` with the
-  `⨯ node:fs` compile error, confirmed the failing compiler by logging the
-  webpack context (`{isServer:true,nextRuntime:"edge"}`), then re-ran after the
-  fix for `GET / 200` with zero `UnhandledSchemeError`; `npm run build` +
-  `npm run start` also re-checked at 200 (#3789/#3791). Standing CI guard: the
-  `web / expected 200` check in `linux-native-dev-smoke`.
-  Re-verify when: Next.js changes which runtimes it compiles the instrumentation
-  hook for, or `lib/logger.ts` stops using `node:fs`.
-
-- **V-015** · 2026-08-15 — `ops.install()`'s unit tests patch its steps out **by
-  enumeration**, so every step added to the list afterwards runs for real against
-  the developer's own machine until someone adds it to each `with` block. The
-  install-mode step (**D-009**) landed that way and was not inert: on a machine
-  recording `dev`, running one install unit test deleted the real
-  `~/.nyxGPT/opt/nyxgpt-api/venv`, rewrote the real marker back to `artifact`
-  (and on macOS would `launchctl bootout` the live dev LaunchAgents), then failed
-  — i.e. the suite destroyed the state of the machine `nyxgpt up --dev` had just
-  produced, and passed in CI only because runners start in artifact mode.
-  Method: executed on this runner 2026-08-15 — wrote `{"mode": "dev", …}` to the
-  real `~/.nyxGPT/install-mode.json` plus a sentinel venv, ran
-  `test_ops_install_returns_zero_when_all_ok` on the pre-fix tree (venv
-  DESTROYED, marker rewritten, `assert 2 == 0`), then the same injection on the
-  fixed tree (marker byte-identical, sentinel PRESENT, test passed) (#3789/#3791).
-  Re-verify when: a new step is added to `ops.install()`'s step list — the
-  standing guards are the autouse `_isolate_install_mode_marker` fixture in
-  `tests/unit/conftest.py` and the paired
-  `test_install_tests_patch_the_mode_step_…` / `test_an_unpatched_mode_step_…`
-  fault-injection tests, which close the marker half but not the general pattern.
-
-- **V-016** · 2026-08-15 — Observability on a **plain Linux docker engine**
-  needs two engine-level fixes that Docker Desktop hides on macOS, and both
-  are now reconciled inside `ops._reconcile_grafana_provisioning` — the one
-  function every stack-start path goes through (`nyxgpt ops install`, the
-  standalone `nyxgpt ops observability`, and the dashboard's
-  `reconcile_observability` toggle). (1) dockerd creates a missing bind-mount
-  source `root:root`, so Prometheus (uid 65534), Grafana (472) and Loki
-  (10001) crash-loop unable to write their own data dirs; the #3632 guard for
-  this was wired into `install()`'s step list **only**, so the other two paths
-  brought the stack up broken (#3721). (2) `host.docker.internal:host-gateway`
-  resolves to the bridge gateway, which a loopback-bound native API does not
-  listen on — bridged by the `host-api-relay` Compose service (#3725). With
-  both, `[api] host` stays `127.0.0.1` and no `0.0.0.0` listener is needed.
-  Method: `scripts/linux-observability-smoke.py`, run on a real Linux docker
-  engine (28.0.4) in CI as the `linux-observability` job of
-  `linux-native-smoke.yml`. It fault-injects the pre-fix behaviour first —
-  Prometheus must crash-loop on `open /prometheus/queries.active: permission
-  denied` or the job fails as toothless — then asserts Prometheus runs, its
-  `nyxgpt-api` target reports `up` (a real scrape through the relay), and
-  nothing listens on `0.0.0.0:8000`.
-  Re-verify when: the observability bind-mount set changes, an upstream image
-  changes the uid it runs as, or a new entrypoint starts the stack without
-  going through `_reconcile_grafana_provisioning`.
-
-- **V-017** · 2026-08-15 — A smoke test that satisfies a prerequisite *itself*
-  before invoking the code under test proves nothing about that prerequisite.
-  `scripts/systemd-native-smoke.sh` ran the official Ollama installer before
-  calling `nyxgpt ops install`, so CI never saw that the Linux install step
-  simply stopped with "ollama not found on PATH — install it first: curl … |
-  sh" on a real clean machine, while macOS's twin ran `brew install ollama`
-  for the operator. Two structural lessons, both now encoded: a smoke script
-  must not pre-satisfy what it verifies (the pre-install is gone; the script
-  asserts ops installed it, and hard-fails under `CI` if Ollama is already
-  present), and a smoke script must exercise **the commands the acceptance
-  names** — this one drove `ops install`/`ops down` and never `nyxgpt up`,
-  `nyxgpt down`, `ops status` or `ops doctor`, the four #3508's acceptance is
-  written in terms of.
-  Method: reproduced 2026-08-15 on Linux from the published **rc11 wheel with
-  no repo checkout** (`pip install nyxgpt==3.0.0rc11` into a clean venv) —
-  `nyxgpt up` reported `[FAIL] ollama not found on PATH`. After the fix, the
-  same step ran the installer, `_takeover_system_ollama_service` disabled the
-  system unit the installer had just enabled, `nyxgpt-ollama.service` came up
-  active and served HTTP 200 on 11434. `scripts/ollama-bootstrap-smoke.py`
-  injects the pre-fix behaviour and was executed to confirm it fails without
-  the bootstrap, so the green run is not luck (#3508, #3775). Re-confirmed in
-  CI rather than only off-CI: `linux-native-smoke` run 31907416812 on
-  `49bbb94f` is green across all its jobs, with the injection step firing
-  first — the standing guard for this entry.
-  Re-verify when: Ollama changes its Linux distribution channel, or the
-  install-step ordering in `_install_native_ollama_systemd` changes (the
-  install must stay *before* the port takeover — the installer is what
-  creates the conflicting system unit).
-
-- **V-018** · 2026-08-15 — The pytest suite could not pass on a machine that
-  was *running the stack it tests*, which is now the normal state of a
-  developer machine on Linux as well as macOS (#3508). Two independent
-  environmental couplings, both in `tests/`, neither in product code:
-  the #3443 production-log-dir guard failed the session because the running
-  `nyxgpt-api`/`nyxgpt-web`/`cassandra`/`ollama` supervisors append to
-  `~/.nyxGPT/logs` throughout the run, and the RAG ingest tests treated
-  "Cassandra's port is open" as "the stack is usable" and then hit a live
-  `ollama serve` that answers `501 This server does not support embeddings`
-  because the loaded model is chat-only. Ownership is the discriminator for
-  the first (a file an *external* process holds open was not written by the
-  code under test — `tests/log_guard.py`); probing the real `/api/embed` call
-  is the discriminator for the second (reachability is not usability).
-  Method: reproduced 2026-08-15 on a Linux runner with the native stack up —
-  `pytest tests/unit/` gave 6 failed + 1 error; after the fix, 5073 passed,
-  6 skipped, 0 failed. Both properties proven by execution rather than
-  inspection: a fault-injected test that writes to `~/.nyxGPT/logs` still
-  fails the guard, and `externally_held_log_files` was observed attributing
-  all 9 live service logs to their supervisors. An A/B run of
-  `tests/integration/test_rag_playground.py` and `test_request_id_streaming.py`
-  with the change stashed and applied gave the same 5 pre-existing
-  environmental failures (no `llama3.1:8b`, no embedding model) and dropped
-  the guard error, confirming the fix is not masking product failures.
-  Re-verify when: the guard's attribution moves off `psutil.open_files()`, or
-  a supervisor starts writing service logs as a *different user* than the one
-  running pytest (AccessDenied fails closed, so those files return to the
-  guard's scope and the suite would fail again).
-
-- **V-019** · 2026-08-15 — `nyxgpt up --skip-observability` could **never**
-  return 0. The flag means "don't start the Grafana/Loki/Jaeger/GlitchTip
-  Compose profiles"; it deliberately leaves their config.ini feature flags
-  on, so self-heal keeps reporting those services `desired=True,
-  state="absent"` — which is the correct answer to "what does the operator
-  want running". `ops._wait_for_stack_healthy` knew nothing about the flag,
-  so `up` waited on containers the same command had just chosen not to
-  start, then exited 2 on a completely healthy stack. The wait now excludes
-  `self_heal.observability_services()` when the flag is set, and the timeout
-  message names what is still pending instead of only saying "not every
-  component" (#3508).
-  Two structural lessons, and the reason this sat undiscovered: (1) a flag
-  that suppresses an *action* must also be honoured by anything that later
-  asserts on that action's *effect*, or the two halves of one command
-  disagree; (2) an alias is not covered by testing what it wraps —
-  `systemd-native-smoke.sh` drove `nyxgpt ops install` for months and was
-  green throughout, because `install()` has no health-wait. The defect
-  existed the whole time and surfaced within one CI run of the smoke script
-  being switched to `nyxgpt up` (**V-017**), i.e. to the command the
-  acceptance is actually written in terms of.
-  Method: observed on the #3798 `linux-native-smoke` run for `f6918b8d` —
-  every systemd unit `active`, `ops status` clean, `jaeger`/`otel-collector`
-  reported absent, and `up` still burned its full 300s timeout and exited 2.
-  Confirmed pre-existing rather than merge-induced by reading
-  `_wait_for_stack_healthy` at the merge base and on `v3.0.0`: identical in
-  both. Standing guard: the `linux-native-smoke` job, which now fails if
-  `nyxgpt up` cannot reach healthy.
-  Re-verify when: a new flag suppresses part of the install (it will need
-  the same treatment in the wait), or `--skip-observability` starts clearing
-  the config.ini flags — at which point the exclusion becomes redundant
-  rather than wrong.
-
-- **V-020** · 2026-08-15 — The EC2 artifact install path on Amazon Linux 2023
-  fails at the CLI venv: the AMI's system `python3` is **3.9.25** and every
-  published nyxgpt distribution declares `requires-python >=3.11`, so
-  `pip install nyxgpt` inside that venv resolves nothing (the #3782 class,
-  observed independently on the artifact path — see V-010).
-  Two further facts from the same execution: Ollama's official installer aborts
-  the bootstrap on a bare AL2023 machine with "This version requires zstd for
-  extraction" (fixed in the user-data template by #3784), and with a candidate
-  interpreter fix applied the whole path is green — bare AL2023 -> artifact
-  install -> api/web/ollama serving in 178s.
-  Method: executed `nyxgpt cloud smoke --container` (#3784) three times on the
-  agent runner (docker 28.0.4) on 2026-08-15 — unpatched tree failed in 47s and
-  the harness classified it as the interpreter class; with the fix applied it
-  passed in 178s against published 3.0.0rc11; `--inject old-python` exited 0.
-  Re-verify when: #3782 lands (the unpatched half stops reproducing), or the
-  AL2023 AMI's system interpreter changes.
-
-- **V-021** · 2026-08-15 — An artifact install pulls **three** things off the
-  network, not one: the `nyxgpt` CLI, then `nyxgpt-api-<version>.tar.gz` and
-  `nyxgpt-web-<version>.tar.gz` from that version's GitHub Release
-  (`ops._service_source_tarball`). So a smoke that swaps in a locally built
-  wheel has only replaced the first — the wheel declares the checkout's
-  version (`3.0.0`), which has no release until the ceremony cuts one, and
-  `ops install` 404s at step 33 of 35. `nyxgpt cloud smoke --container
-  --wheel` therefore now also builds those two tarballs with the release's own
-  builder and points `ops` at them with `NYXGPT_ARTIFACT_DIR` (set but
-  asset-missing raises, rather than falling back to the network). The general
-  fact, and why this was worth an entry: **"install from an artifact" is not
-  one artifact**, and a fix that covers only the entry point leaves the
-  dependent assets resolving against a release that does not exist.
-  Method: executed on the agent runner (docker 28.0.4) 2026-08-15 on the
-  merged #3784 branch — `nyxgpt cloud smoke --container --wheel
-  dist/nyxgpt-3.0.0-py3-none-any.whl` PASSED in 193s (bare AL2023 -> artifact
-  install -> api/web/ollama serving), where the same command on the same tree
-  before the staging fix failed with `Could not obtain the nyxgpt-api
-  artifact` after 33/35 steps (CI run 31905652586). `--inject old-python`
-  exited 0 on the same tree, so the fault still fires: it neutralizes the
-  merged template's version loop, the bootstrap reaches its own
-  "no Python >= 3.11 … requires-python is '>=3.11'" guard, and the harness
-  still classifies it as the #3782 interpreter class.
-  Re-verify when: `3.0.0` gains a real GitHub Release (the 404 half stops
-  reproducing), or `_service_source_tarball` grows a fourth source.
-
-- **V-022** · 2026-08-15 — A fault-injected smoke that treats *any* failure as
-  its pass condition is still green by luck. `nyxgpt cloud smoke --container
-  --inject <fault>` inverts the verdict, and inverted was implemented as
-  `passed = bool(failure)` — so a docker outage, an image-pull flake, a build
-  failure or a refused preflight all made the injection job exit 0 while
-  proving nothing about whether the smoke can see the defect, which is the
-  D-006 condition the job exists to close. The pass condition now needs three
-  things: a failure, at or after the bootstrap the fault was injected into,
-  whose classification is the class that fault reintroduces (`FAULTS[...]
-  .expects` -> `injection_verdict`). Second fact from the same round: the
-  failure classifier misdiagnosed a release-asset 404 as a broken
-  `systemd --user` session (CI run 31905652586), because its systemd signature
-  matched any output *mentioning* `systemctl --user` — which a successful
-  install prints constantly — and the whole 35-step log was classified rather
-  than its tail. The general form of both: **an assertion written against
-  "something went wrong" is not an assertion about the thing under test.**
-  Method: executed `pytest tests/unit/test_cloud_artifact_smoke.py` on
-  2026-08-15 with each rejection path injected — a failing `docker build`
-  under `--inject`, a bootstrap failing in another defect class, and an
-  unclassifiable failure — each of which passed before this change and fails
-  the run after it; the 404-vs-systemd misdiagnosis is pinned as a regression
-  case from the real CI output. Standing guard: the `fault-injection` job in
-  `cloud-artifact-smoke.yml`.
-  Re-verify when: a fault is added to `FAULTS` (it needs an `expects` class a
-  signature can actually produce — there is a test for that), or the phase
-  list before `bootstrap` changes.
-
-- **V-023** · 2026-08-16 — A repository ruleset on the release/default branch
-  requires changes to arrive **through a pull request**: a direct
-  `git push` at that ref from an Actions job is rejected with
-  `GH013 ... - Changes must be made through a pull request`, and the job's
-  own commit step reports success right up to the rejected push. This is why
-  every retro dump had been silently discarded since it was written —
-  `relationships.json` had never existed on the branch at all (`create mode
-  100644` in a run that "succeeded"). Merging a pull request is **not**
-  blocked, **but it is not free either**: the ruleset is `PR Rules`
-  (id 20347138, active), it covers `~DEFAULT_BRANCH` and `refs/heads/master`,
-  and its rules are `deletion`, `non_fast_forward`, and `pull_request` with
-  **`required_approving_review_count: 1`**, `allowed_merge_methods: ["merge"]`
-  and **no bypass actors** (`bypass_actors: null`). There is **no**
-  required-status-check rule. So automation that opens its own pull request
-  must also get it **approved by a second identity** — GitHub refuses
-  self-approval — or the PR sits at `mergeable_state: blocked` forever. Every
-  agent PR clears this only because the review agent approves it; that does
-  not transfer to a PR nobody reviews. Generalisation for any future
-  automation that writes to the release branch: **push to a side branch, land
-  it through a PR, and have a second agent identity approve it**; and a green
-  workflow run is not evidence its output landed — read the ref.
-  Method: `gh api repos/dkblinux98/nyxGPT/rulesets/20347138` read in full with
-  the developer agent token on 2026-08-16 (the earlier claim in this entry
-  that the configuration is owner-readable only was wrong — it is readable by
-  the agents, and reading it turned up the approval requirement that the
-  behavioural evidence alone had missed). Run 31941019009 (`Retro Dashboard -
-  Dump Relationships`) is the rejection with that exact GH013 text; both
-  halves of the rule are reproduced on a runner by
-  `tests/test_retro_data_pipeline.sh`, whose lab remote enforces
-  no-direct-push in a `pre-receive` hook and requires an approving review from
-  a second identity, proving the old push fails there and the new
-  publish/approve/merge path lands the JSON (standing job:
-  `.github/workflows/retro-data-pipeline-smoke.yml`). Executed end to end
-  against the real ruleset on 2026-08-16: dispatched run 31959032954
-  published to `claude/retro-data`, opened PR #3818 as
-  `myGPT-scrummaster-agent`, approved it as `myGPT-review-agent`, merged it
-  into `v3.0.0` and deleted the branch — after which
-  `relationships.json` is present on `v3.0.0` (16447 bytes) for the first
-  time ever, read back through the contents API. All six data files landed.
-  Re-verify when: the owner changes the branch ruleset (re-read it — do not
-  infer it from behaviour), or an automated PR merge into the release branch
-  is refused.
-  Source: #3815.
-
-- **V-024** · 2026-08-16 — This repository's **default branch is the release
-  branch `v3.0.0`, not `master`**, so every workflow triggered by an `issues`
-  event (hygiene, drain gate, the comment-command handlers) runs the copy on
-  `v3.0.0`. `master` lags the release line by hundreds of commits and its copy
-  of those workflow files is inert. A session reading `master` to explain live
-  agent-loop behavior will describe code that is not running — #3816 was filed
-  against `master`'s pre-#3666 version of `ensure_project_hygiene.yml`.
-  Method: `git ls-remote --symref origin HEAD` on 2026-08-16 →
-  `ref: refs/heads/v3.0.0`; `git diff origin/master origin/v3.0.0 --
-  .github/workflows/ensure_project_hygiene.yml` shows `master` still carrying
-  the single-gate version, while the hygiene comment posted on #3816 at
-  15:53Z used the "filled missing fields" wording that exists only on
-  `v3.0.0` (introduced by 840225f4, #3666).
-  Re-verify when: Phase 4 of a release ceremony repoints the default branch to
-  the next release line, or `master` is fast-forwarded.
-
-- **V-025** · 2026-08-16 — Fill-if-missing (**#3666**) is not by itself
-  enough to stop hygiene clobbering a deliberate write: the defect is the
-  *window* between a field's check and its write, not the absence of a check.
-  Two runs minutes apart on 2026-08-16 took opposite outcomes on the same
-  code — #3814's Status was overwritten with `Backlog`, #3813's survived. The
-  window is now closed by re-reading each field inside
-  `fill_project_field_if_empty` immediately before the mutation (plus a
-  settle wait before any write, and a re-read before the Milestone edit,
-  which is an issue attribute with no project-field guard available).
-  Method: `bash tests/test_issue_hygiene.sh` on 2026-08-16 — the stub injects
-  the concurrent write into that exact window; case R0 runs a guard-stripped
-  copy of the script and the deliberate `Acceptance Failed` is overwritten
-  with `Backlog` (the defect reproduces on demand), cases R1–R3 run the
-  shipped script in the same scenario and Status, Priority and Milestone all
-  survive, while case 2 shows a genuinely empty issue still fully populated.
-  Standing guards: `project-hygiene-smoke.yml` and
-  `tests/unit/test_issue_hygiene.py`.
-  Re-verify when: the read sequence in `ensure_issue_hygiene.sh` changes (the
-  injection thresholds are expressed in stub reads), or a field is added to
-  the job.
-
-- **V-026** · 2026-08-16 — The pytest suite was **not hermetic against an
-  installed `~/.nyxGPT/config.ini`**. `_ensure_test_config` wrote its
-  tracing-off config only when that file was *absent*, so on any machine (or
-  CI job) where an install ran first, the suite inherited the production
-  default `[tracing] enabled = true` (2026-07-28) and initialized the OTel SDK
-  for real: `/api/v1/tracing` reported enabled and `X-Request-Id` became a
-  32-char trace id instead of a 36-char UUID4. A second, independent leak sat
-  behind it — OTel's global TracerProvider is set-once *and* its `ProxyTracer`
-  caches the resolved tracer for the life of the process, so the SDK provider
-  one tracing test installs can never be fully handed back, and any later test
-  needing "no active trace" must pin `current_trace_id` itself rather than
-  rely on ordering. This is why five failures unrelated to #3816's change
-  appeared in its verification run.
-  Method: on 2026-08-16, `pytest tests/unit/test_tracing.py
-  tests/unit/test_request_id.py` on an **unmodified** checkout of `v3.0.0`
-  reproduced the failures, while `pytest tests/unit/test_request_id.py` alone
-  passed — isolating them to config leakage plus test order, not to any code
-  change. Fixed by forcing the section off in `_isolate_test_log_dir`'s
-  existing session-scoped config rewrite (which already has the crash-safe
-  backup/restore).
-  Standing guard: `test_session_config_keeps_tracing_disabled` fails at the
-  cause instead of at the four downstream symptoms.
-  Re-verify when: the tracing production default changes, or `conftest.py`'s
-  config-rewrite fixtures are restructured.
-
-- **V-027** · 2026-08-16 — A GitHub Actions expression interpolated into an
-  `actions/github-script` `script:` body is **JavaScript source, not data**.
-  Substitution happens before the script is parsed, so ordinary prose breaks
-  it: the developer agent's fatal-error escalation step held
-  `const phase3Diagnosis = '${{ steps.claude_result.outputs.diagnosis }}';`
-  and an apostrophe in that free-form diagnosis terminated the literal, dying
-  with `SyntaxError: Unexpected identifier 'issues'` (run 31959968196). The
-  pipeline's own failure alarm was therefore silently disabled — two steps
-  failed on #3815 and neither failure was reported anywhere. The same
-  construct is an **injection surface**, not just a quoting bug: these steps
-  carry `DEVELOPER_AGENT_TOKEN` / `SCRUMMASTER_AGENT_TOKEN` /
-  `REVIEW_AGENT_TOKEN`, and whatever the substituted text parses as executes
-  with that token. The audit found it was never confined to one step: **47
-  interpolations across 6 workflows** — `developer_auto_implement.yml` (26),
-  `handle_acceptance_failure.yml` (6), `notify_scrum_ready.yml` (6),
-  `handle_improvement.yml` (4), `link_revert_pr_to_issue.yml` (3),
-  `review_agent_auto_review.yml` (2) — including two other free-form-prose
-  carriers — Phase 3's `recommendation`, and the scrummaster's multi-line
-  `tried` list interpolated into a *template* literal, where a backtick or
-  `${` in an issue title breaks out. Values now pass through `env:` and are
-  read with `process.env.NAME`.
-  Method: `scripts/agents/lib/escalation_script_probe.py` extracts the real
-  `script:` body out of the workflow YAML and runs it under Node with
-  `context`/`github`/`core` stubbed, so the JavaScript executed is the
-  JavaScript Actions executes. Both halves, per **D-006**: the pre-fix form
-  (env reads rewritten back into interpolated literals) dies with
-  `SyntaxError: Unexpected identifier 's'`, and the current form escalates
-  with an apostrophe, double quote, backtick, `${`, newline and backslash all
-  intact in the posted body. Run 2026-08-16 on Linux and in
-  `github-script-injection-smoke.yml`, which additionally proves the `env:`
-  hand-off itself delivers hostile text to `process.env` uninterpreted, in a
-  genuine github-script step on a runner.
-  Standing guards: `scripts/agents/lib/workflow_script_guard.py` (fails on any
-  `${{` in any `script:` body, tree-wide),
-  `tests/unit/test_workflow_script_injection.py`, and the smoke workflow's
-  planted-violation step — the guard must reject a seeded instance, so a
-  scanner that silently stops scanning fails too.
-  **Extended by V-046 (2026-08-18):** naming the fault as a `script:` fault
-  was itself too narrow. The class is *any executable body*; the guard was
-  `script:`-only and the same injection was still live in `run:` blocks,
-  found by CodeQL #124 rather than by this entry. Read V-046 with this one.
-  Re-verify when: a new `actions/github-script` step is added, or GitHub
-  changes how `env:` values are delivered to the script sandbox.
-
-- **V-028** · 2026-08-16 — **`anthropics/claude-code-action@v1` loads the
-  repo-root `CLAUDE.md` into the agent's context as project instructions.**
-  `CLAUDE.md` is therefore the runtime binding path for every agent in this
-  repository — scrummaster, developer, review, huddle and `@claude` — and
-  anything written there binds without being copied into a prompt. Two
-  qualifications, both load-bearing:
-  (a) it binds only where the job **checks the repo out** — the action reads
-  project configuration from the working directory, so a `claude-code-action`
-  step with no preceding `actions/checkout` in its job would be unbound (all
-  10 invocations across 5 workflows currently have one);
-  (b) on a **PR-context** run the action *restores* `CLAUDE.md` from the PR's
-  **base branch** before starting Claude, parking the PR's version under
-  `.claude-pr/`. A PR that edits `CLAUDE.md` therefore does not bind its own
-  review — the change binds from the merge onward, never retroactively.
-  Method: three independent lines, run/read 2026-08-16 on the runner —
-  (1) **executed** — developer-agent run 31966671380 (`developer_auto_implement.yml`,
-  `claude-code-action@v1`) opened with a system-reminder headed "Contents of
-  /home/runner/work/nyxGPT/nyxGPT/CLAUDE.md (project instructions, checked into
-  the codebase)" carrying the whole file, including text present in no prompt
-  (the drain-gate rules, the `nyxgpt ops` inventory, the
-  `web/src/app/admin/self-heal/page.tsx:366` violation note);
-  (2) **source**, read at `/home/runner/work/_actions/anthropics/claude-code-action/v1`
-  — `base-action/src/parse-sdk-options.ts:334-340` defaults `settingSources` to
-  `["user", "project", "local"]` unless `--setting-sources` is passed, and
-  `project` is the source that loads `CLAUDE.md`; `src/entrypoints/run.ts:261-272`
-  calls `restoreConfigFromBase()` only when the context is a PR, with
-  `src/github/operations/restore-config.ts:25-34` listing `CLAUDE.md` among the
-  restored paths;
-  (3) **configuration** — no workflow passes `--setting-sources`,
-  `--system-prompt` or `--append-system-prompt` (tree-wide grep, 0 hits), so
-  none opts out of the default.
-  Repeatable: `.github/workflows/claude-md-binding-canary.yml`
-  (`workflow_dispatch`) re-answers the question on demand. It injects a
-  run-unique token into the checked-out `CLAUDE.md`, then proves both halves per
-  **D-006** — the default run must return the token, and a control run pinned to
-  `--setting-sources user` must not (a canary that cannot fail proves nothing,
-  and a model that read the file instead of loading it would return the token in
-  both).
-  Re-verify when: the action is bumped past `v1` or its `settingSources` default
-  changes, any workflow starts passing `--setting-sources`, or a
-  `claude-code-action` step is added to a job with no `actions/checkout`.
-
-- **V-029** · 2026-08-17 — A GitHub code-scanning **alert dismissal comment is
-  capped at 280 characters**; a longer body is refused. Dismissal rationales
-  must be written to that budget: name the sink, the reason the taint does not
-  reach it, and the `file:line` that proves it — not the full argument. Six
-  rationales drafted at 250–500 characters were all over the limit and had to
-  be rewritten.
-  Method: **owner-reported, not independently verified** (owner in session,
-  2026-08-17, while dismissing alerts #115–#120). Weaker than the claim by
-  necessity: dismissing an alert is a code-scanning *write*, and no agent token
-  in this repo has that access — the supported agent path
-  (`code_scan_report.yml`, `CLAUDE.md` § Tooling) is read-only, so the boundary
-  cannot be tested from an agent session.
-  Re-verify when: GitHub changes the dismissal form, or an agent gains
-  code-scanning write access and can test the limit directly.
-- **V-030** · 2026-08-17 — **Every agent script now stores an issue-to-issue
-  link the way D-002 requires, and none of them writes the retired prose
-  form.** `create_issue.sh --blocks N` calls `mark_issue_blocked_by` and does
-  nothing else: it no longer reopens N, no longer applies a `blocks` label,
-  and posts no `Blocks #N` / `Blocked by #N` comment. Its one consumer,
-  `developer_submit_for_review.sh`, no longer scans comments for the retired
-  marker, and no longer adds a second `Closes #N` for the blocked issue —
-  which would have closed a feature that `promote_accepted_features.sh` is
-  supposed to promote. **The gap this closes was between decision and code:**
-  D-002 was taken 2026-08-12 (#3731) and recorded, while the script that
-  contradicted it shipped unchanged for five days, documented in its own
-  `--help` as the obvious way to link issues (#3836).
-  Method: `tests/test_create_issue_blocks.sh`, run 2026-08-17 — the real
-  scripts execute against a stub `gh` that records every call, asserting the
-  POST to `issues/N/dependencies/blocked_by`, the absence of any reopen /
-  label / comment call, and that the target issue's state is unchanged.
-  Both directions per **D-006**: a copy of `create_issue.sh` carrying the
-  pre-#3836 Step 4 (embedded in the test as a fixture) fails those assertions
-  — it reopens the target and posts the prose markers — so the pass is not
-  luck. `issue-relationships-smoke.yml` runs the suite and additionally greps
-  every `scripts/agents/*.sh` executable line for the retired shapes; those
-  greps were confirmed to match the pre-fix sources.
-  Re-verify when: a new script or workflow links two issues, or `--blocks`
-  grows a second write.
-
-- **V-031** · 2026-08-18 — Native issue relationships (`blocked_by`) **are
-  writable from a remote Claude Code session over REST**, even though GraphQL
-  is restricted here to a pinned set of PR-review operations. The endpoint is
-  `POST /repos/{owner}/{repo}/issues/{number}/dependencies/blocked_by` with a
-  `{"issue_id": <numeric id>}` body — the same call `mark_issue_blocked_by`
-  makes (`scripts/agents/lib/gh_project.sh:2125-2135`). GraphQL being blocked
-  is therefore **not** a reason to fall back to body prose for issue links.
-  Method: executed 2026-08-18 from a remote session. `POST .../graphql`
-  returned 403 with "only the pinned set of PR-review operations is served";
-  six `blocked_by` edges were then written over REST (all 201) and confirmed by
-  re-querying `GET .../dependencies/blocked_by` on each issue (#3853←#3861,
-  #3854←#3850, #3857←#3853, #3859←#3850,#3854, #3861←#3860).
-  Re-verify when: the session proxy's allowed-operation list changes, or GitHub
-  moves issue dependencies off this REST route.
-
-- **V-032** · 2026-08-18 — **`macos-brew-smoke.yml` does not exercise the user
-  path.** Neither install job invokes `nyxgpt`, starts the stack, or issues an
-  HTTP request. `keg-install` checks that `bin/nyxgpt-api` exists and runs
-  `brew test`, whose `test do` block asserts only that the venv exists and
-  `import nyxgpt.app` succeeds; `published-tap` verifies the keg version and
-  wrapper file. A keg with no `nyxgpt` CLI passes both. **A green run on this
-  workflow is not evidence that an install works** — it is evidence that a keg
-  builds. This is how #3850 shipped and how the #3516 capstone closed green
-  over an install path no user could complete.
-  Method: read `.github/workflows/macos-brew-smoke.yml` (jobs at :70-506 and
-  :508-586) and the `test do` blocks in `homebrew/nyxgpt-{api,web}.rb`,
-  2026-08-18, against the owner's rc12 acceptance findings (#3850, #3853,
-  #3854, #3857, #3859).
-  Re-verify when: #3860 lands the end-to-end assertions, at which point this
-  entry is superseded rather than re-verified.
-- **V-033** · 2026-08-18 — **Only the Kubernetes mode wires the chat-session
-  backend; every other install path runs the `file` default.** `k8s/configmap.yaml`
-  sets `NYXGPT_SESSION_BACKEND=cassandra` (**V-012**), but nothing in
-  `terraform/`, `docker/`, `src/nyxgpt/cloud_provision.py`,
-  `src/nyxgpt/cloud_deploy.py` or `src/nyxgpt/ops.py` writes a session-backend
-  setting, so a provisioned EC2 instance silently stores sessions as JSON files
-  and the cross-mode shared-session guarantee (#3590) does not hold for the
-  cloud mode — do not generalize **V-012** beyond k8s. Corollary from the same
-  session: nothing except a RAG ingest (or a Cassandra-backend session write)
-  creates the `nyxgpt` keyspace, and the RAG collections endpoints fail on its
-  absence rather than degrade (`USE nyxgpt` inside `list_collections`; the
-  create endpoint checks duplicates before `ensure_schema`), so a genuinely
-  fresh Cassandra shows an unusable RAG Collections page until the first
-  ingest.
-  Method: tree-wide grep for `session_backend|NYXGPT_SESSION_BACKEND`
-  (2026-08-18 — hits only in k8s/, docs/, and the config/session source), plus
-  live reproduction on the owner's rc12 EC2 acceptance deploy: chats landed as
-  files, both collections endpoints returned `Keyspace 'nyxgpt' does not
-  exist`, and a single ingest recovered the page.
-  Re-verify when: #3864 / #3865 land — each retires one half of this entry.
-- **V-034** · 2026-08-18 — **The retrospective dumps' paginated-JSON defect was
-  already fixed on `v3.0.0` before #3808 was worked; what remained was the
-  failure being invisible.** `iter_json_objects` uses `idx = end` and lives in
-  one place (`dump_spend.py`), imported by `dump_churn.py` and
-  `dump_review_rounds.py`; `data/spend.json` and `data/churn.json` are present
-  in the tree. Those fixes reached the release branch through the
-  `claude/retro-data` publish path (commits `52b7255f`, `145d6040`, `d37e3a76`,
-  `2659d64e`, `e5de6ff6`, `864abcc8`, `0f3688e8`, `d66bb9f0`, `6c2bf86f`,
-  `8cda150e`), not through an issue PR, which is why the issue stayed open with
-  its work apparently undone.
-  Method: `git log --grep=3808 --all` and `git branch --contains` on each
-  commit (all on `v3.0.0`), plus reading `scripts/retrospective/dump_spend.py`
-  and `ls scripts/retrospective/data/`, 2026-08-18, while implementing #3808.
-  Re-verify when: a retro dump fails again — check the run before assuming the
-  helper regressed.
-- **V-035** · 2026-08-18 — **A retrospective build with a missing input now
-  fails loudly and says so on the page.** `build_dashboard.py` prints a
-  `missing sources:` line naming each absent file and the dump that owes it and
-  exits **2** (`--allow-missing-sources` to publish deliberately); the spend and
-  churn panels render a "Section unavailable — this is missing data, not zero"
-  notice linking that workflow's runs instead of being hidden. The old
-  "the builder omits the section entirely rather than erroring" guidance in
-  `REFRESH_RUNBOOK.md` steps 4/4b is retired.
-  Method: ran `tests/test_retro_missing_sources.sh` (builds the real dashboard
-  with `spend.json`/`churn.json` removed, then restored, and reads the rendered
-  page back through `tests/retro_render_check.mjs`) — 27 assertions, 0 failures,
-  2026-08-18; and confirmed the pre-fix template renders no notice at all under
-  the same conditions.
-  Re-verify when: the retro template's panel structure changes, or a new
-  optional data source is added without a source stamp.
-- **V-036** · 2026-08-18 — nyxGPT has **two config-reading tiers with different
-  activation semantics**, and the difference is now data rather than folklore.
-  The `api` tier re-reads `config.ini` per request through the hot-reload cache;
-  the `web` tier is a Node process whose settings are read **once**, by the
-  service wrapper (`_NATIVE_WEB_WRAPPER_TEMPLATE` in `ops.py`), and exported into
-  its environment. Every key that wrapper reads is therefore frozen for that
-  process's life: `[auth] api_key`, `[auth] enabled`, `[web] host`/`port`/
-  `api_base_url`. Rotating `[auth] api_key` used to leave the web tier sending
-  the old key into a silent 401 wall on every proxied call — including in the
-  wizard session doing the rotating.
-  Each config key now carries an **activation classification**
-  (`FieldSpec.restart_components` in `config_wizard.py`): empty = hot-reloadable,
-  otherwise the `nyxgpt ops restart` targets that stay stale. It drives the
-  wizard's per-field hints, the persistent pending-restart notice on the wizard
-  and Admin Dashboard, the `nyxgpt secrets setup` message, and
-  `example.config.ini`'s `# Activation:` annotations — which are generated from
-  it, with `tests/unit/test_restart_activation.py` failing on any drift.
-  Pending state lives in `~/.nyxGPT/pending-restart.json`, not process memory,
-  so the CLI writer and the API reader share one set and the notice survives an
-  api restart. It retires on a real restart **or** on the value being reverted to
-  what the service is still running.
-  There are **three** writers of a restart-required key, not two — the
-  Configuration Wizard (`POST /config/sections`), the Admin Dashboard's Access
-  Management panel (`POST /admin/access` → `_apply_auth_config_updates`), and
-  `nyxgpt secrets setup`. The dashboard one was missed on the first pass and
-  rotated the key silently; all three now classify through
-  `config_wizard.field_restart_components`/`restart_required_detail` and write
-  the same `restart_state`, so a new writer that skips it is the failure mode to
-  look for.
-  Method: executed — `scripts/restart-activation-smoke.py` (run 2026-08-18, and
-  wired into `.github/workflows/restart-activation-smoke.yml`) starts uvicorn and
-  the web tier through the real generated wrapper, reproduces the 401 wall,
-  asserts the notice/deferral/CLI-parity/dashboard-parity/restart/revert path,
-  and includes the #3753 fault injection: with the classification stripped, no
-  notice is raised.
-  Re-verify when: the web wrapper stops reading a key from config.ini at start
-  (e.g. if the proxy is ever made to resolve the key per request), or a third
-  tier with its own activation semantics is added.
-
-- **V-037** · 2026-08-18 — Two tests in
-  `tests/unit/test_config_sections_endpoint.py` left a **live `threading.Timer`
-  armed past their `patch` block**: they asserted the restart endpoints defer
-  their work and then returned, so the timer fired seconds later, inside whatever
-  test was running by then, calling the *real* `ops.restart` /
-  `self_heal.heal_now`. On a developer machine that restarts actual services; in
-  CI it silently corrupted an unrelated test's mock call counts
-  (`test_ops_restart_all_ok` saw `_restart_launchagent` called twice). Fixed by a
-  `captured_timers` fixture that records the scheduled timer instead of starting
-  it.
-  Method: executed — reproduced by running
-  `test_config_sections_endpoint.py` before `test_ops.py` and observing the
-  cross-file failure; the failure disappears with the fixture in place.
-  Re-verify when: a new test asserts a `threading.Timer`-deferred endpoint —
-  use `captured_timers`, never a bare "assert not called inline".
-- **V-040** · 2026-08-18 — **An operator can now recover a cloud deployment's
-  address and SSH target after the deploy's scrollback is gone, and read the
-  instance's container state without a hand-rolled `ssh`.** `nyxgpt cloud
-  status` is a first-class subcommand: human-readable by default (`--json` for
-  the payload `nyxgpt cloud deploy --status` used to emit, which still works
-  for anything scripted against it), and it prints `user@host` plus the
-  identity file the deploy actually recorded — `tunnel_invocation()`, which had
-  zero callers since it was written, now carries the raw `ssh` under a
-  "diagnostics … run the wrapped command, not this" heading rather than as an
-  instruction. `nyxgpt cloud ops {status,doctor,self-heal}` runs the instance's
-  own read-only `nyxgpt` over the same wrapped SSH path `nyxgpt cloud
-  credentials` uses. The SSH user/identity resolution for those read-only
-  commands, and for `cloud tunnel`, is `resolve_access_target` — it fills from
-  the deploy record what flags did not give, so a deployment made with a
-  non-default key no longer needs `--identity-file` re-typed on every
-  inspection.
-  Method: executed — `scripts/cloud-status-smoke.sh` run 2026-08-18 against the
-  installed console script and real files under `$HOME/.nyxGPT`, and wired into
-  `.github/workflows/cloud-status-smoke.yml`. Three phases so a pass cannot be
-  vacuous: no record → `UNKNOWN` and explicitly *not* "nothing is deployed"
-  (the #3804 distinction); a record → the SSH target, identity file, URLs and
-  the wrapped container-state command all printed, with no `docker compose`
-  string anywhere in the output; an unroutable TEST-NET-3 host → `cloud ops`
-  exits 1 naming `nyxgpt cloud allow-ip`, never a raw ssh/docker instruction.
-  Re-verify when: the deploy record's field names change (`ssh_user`,
-  `identity_file`, `host`), or a new `cloud ops` inspection is added — it must
-  go in the `REMOTE_OPS_COMMANDS` read-only allowlist, not become a write path.
-
-- **V-038** · 2026-08-18 — **A PR can be merged while the CI for its head
-  commit is still running, and nothing re-examines the result.**
-  `review_accept_and_merge.sh` validates state/mergeability/base-existence and
-  then merges; it never reads the head SHA's check status, and no review
-  workflow does either — "run CI checks on ALL code in the repository" is
-  prose in `review-runbook.md`, evaluated by the reviewing model against
-  whatever run it happened to see. Worked example: PR #3876 pushed `78c0e5cf` at 10:59:33Z,
-  its `ci-tests` run was created at 10:59:37Z, and the PR merged at 10:59:38Z
-  — one second later. That run finished **failing** at 11:05:49Z. The APPROVE
-  had been computed against the previous push (`de50798d`), so the merge was
-  green-by-staleness. This is what put a failing `pytest` on `v3.0.0`, and it
-  is independent of *what* was failing.
-  Method: read `scripts/agents/review_accept_and_merge.sh` end to end
-  (2026-08-18) — no `statusCheckRollup`/check-runs call exists in it or in
-  `review_agent_auto_review.yml`; timings from
-  `gh api repos/.../actions/runs/32129497068` (created/updated) against
-  `gh api repos/.../pulls/3876` (`merged_at`); failure text from that run's
-  log. The check run `test` on `78c0e5cf` reads `completed / failure`.
-  Re-verify when: a check-status gate is added to the merge path — this entry
-  then describes history rather than the present. See **Q-005**.
-
-- **V-045** · 2026-08-18 — **The `--kubernetes --local` stack is sized
-  against the node it actually lands on — in BOTH memory and cpu — and the
-  install measures that node before it applies anything.** The default
-  deployment (app tier + data/LLM tier + the #3787 observability layer)
-  reserves **6976Mi and 2075m**, down from 7872Mi and 2875m, against the
-  **7936Mi / 4000m** allocatable a stock Docker Desktop VM reports; a canary
-  rollout asks for a further 448Mi/150m and fits. **Memory was only the
-  reported half:** with the memory right-sized, `nyxgpt-api-canary` still
-  would not schedule on a 4-core node — `0/1 nodes are available: 1
-  Insufficient cpu` — because four api replicas reserved 250m each. Fixing
-  the named resource alone would have left the canary broken. Sizing is also
-  not the whole fix, since an operator's VM is whatever they gave it, so
-  `_preflight_k8s_capacity` (`src/nyxgpt/ops.py`) totals the rendered
-  manifests per resource against allocatable minus other namespaces'
-  requests and refuses *before* the first `kubectl apply`, warns when only
-  the canary headroom is missing, and skips rather than blocks when it cannot
-  measure (and warns rather than refuses on multi-node, where summed
-  allocatable can disprove a placement but never prove one). Before #3825 the
-  stack requested 8162Mi: every apply succeeded, the install reported
-  success, prometheus was left `Pending / FailedScheduling: Insufficient
-  memory`, and the later canary failure presented as "canary is broken".
-  Method: executed on a real kind cluster on 2026-08-18, ballasted to 7936Mi
-  allocatable (`scripts/k8s-node-ballast.sh` — a `pause` Pod reserving the
-  surplus, since the runner has ~16GiB and would be green by luck; its 4 CPUs
-  already match a Docker Desktop VM, so cpu needs no ballast). Observed, in
-  order: the pre-#3825 memory sizing left `prometheus`, `loki` and
-  `otel-collector` with no node and `Insufficient memory` events, and the
-  preflight refused it ("requests 8256Mi but only 7646Mi is free … at least
-  609Mi more"); the pre-fix cpu sizing with the memory fixed stranded
-  `nyxgpt-api-canary` on `Insufficient cpu`; the shipped sizing scheduled all
-  20 Pods and both canary Pods, and the preflight passed both resources
-  (6976Mi/7646Mi free, 2075m/3050m free). `k8s-capacity-smoke.yml` runs all
-  three phases; `k8s-local-smoke.yml` now runs the **default** install (no
-  `--skip-observability`) on the same ballasted node. After the fact the state
-  is observable: `infra_status()` reports `kubernetes.unschedulable` (Pods
-  with an empty `.spec.nodeName`) and the Infrastructure page names them — the
-  Pod list alone could not, since an unschedulable Pod and one pulling its
-  image both read `Pending`.
-  Re-verify when: a request/limit in `k8s/**` changes, or a workload is added
-  to either kustomization — both gates and
-  `tests/unit/test_k8s_capacity_preflight.py` fail loudly. Supersedes the
-  measured footprint in **V-041**, which was taken on the runner's own
-  16GB node before this right-sizing.
-
-- **V-039** · 2026-08-18 — **A self-heal/infra probe reports "unknown" when it
-  cannot run, and unknown is never counted as unhealthy.** `compose_probe()`
-  answers availability by *running* `docker compose ps`, not by checking that
-  `docker` and the compose file exist; a component whose state could not be
-  determined carries `known=False`/`state="unknown"` plus the reason, is
-  excluded from `unhealthy_count` and from the automatic heal pass, and is
-  rendered as its own third state by the Self-Heal, Infrastructure and System
-  Health pages — the last one because a zero `unhealthy_count` over an
-  unqueryable probe is a green "all healthy" nothing established, which is the
-  same defect pointing the other way.
-  The pre-#3812 check (`_which("docker") is not None and COMPOSE_FILE.exists()`)
-  is retired: it reported "available" for the condition it existed to catch.
-  Method: ran `scripts/self-heal-probe-honesty-smoke.py` on a Linux docker
-  engine, 2026-08-18 — it injects a root-owned mode-000 unix socket as
-  `DOCKER_HOST`, asserts the pre-fix path really renders every desired service
-  absent-and-unhealthy under that condition, then asserts the shipped path
-  reports unknown-with-reason and heals nothing; the restored half starts a
-  real prometheus container and asserts the same survey reports it running and
-  the untouched services absent. Reverting the fix fails the injected half.
-  Wired into `linux-native-smoke.yml` as the `self-heal-probe-honesty` job.
-  Re-verify when: another probe (native/terraform/kubernetes/canary) starts
-  reporting a definite state from an unqueryable source — the pattern, not just
-  this call site, is what the entry stands for.
-
-- **V-041** · 2026-08-18 — **The default `--kubernetes --local` stack (app +
-  data/LLM + observability) fits a single 4-vCPU/16GB node**, and the reason
-  the k8s smoke had been opting out of observability was not footprint but a
-  missing wait. Measured on a kind cluster on the agent runner: with
-  kube-system included the node carries **3825m of CPU requests (95% of
-  allocatable)** and **8162Mi of memory requests (51%)**, every Pod scheduled,
-  zero `FailedScheduling`. So CPU — not memory — is the binding dimension, and
-  the margin is ~175m: a new workload requesting more than that leaves Pods
-  Pending. The separate defect: `ops._k8s_stack_health` scores a Pod's *phase*,
-  and observability Pods land in the same namespace still pulling images, so
-  the default install reported failure on a healthy cluster until
-  `_wait_for_k8s_observability` was added (#3826) — the same shape as **V-019**
-  (an action's flag/effect halves disagreeing), and the reason a smoke that
-  passes `--skip-observability` can be green while the real command is not.
-  Method: executed on 2026-08-18 — `kind create cluster`, `kubectl apply -k
-  k8s/` + `k8s/observability/`, then `kubectl describe node` (the numbers
-  above), `--field-selector=status.phase=Pending` with `.spec.nodeName`
-  populated on every Pod (scheduled, merely pulling), and no
-  `FailedScheduling` event in any namespace. Standing guard:
-  `scripts/k8s-local-smoke.sh` now runs the default install, asserts all ten
-  observability workloads Ready, fails on any Pod the scheduler could not
-  place, and prints the allocatable-vs-requests arithmetic every run.
-  Re-verify when: any `k8s/**` manifest changes a `resources.requests`, a
-  replica count, or adds a workload — the 175m CPU margin is what absorbs it.
-  **Superseded in part by V-045** (#3825): the measured numbers above are the
-  pre-right-sizing footprint, and they were taken on the agent runner's own
-  ~16GB node, not on the 8GiB Docker Desktop VM an operator installs onto —
-  where the same stack did *not* fit. The finding this entry stands for (the
-  `_k8s_stack_health` phase/wait disagreement) is unaffected.
-
-- **V-042** · 2026-08-18 — **A support ticket's entire protection is one
-  label, and the label is now guaranteed rather than assumed.** Every guard —
-  `assign_backlog.yml`, `ensure_project_hygiene.yml`,
-  `summarize_backlog_page.py`, and the owner's Support project auto-add
-  (`is:issue is:open label:Support`) — tests for `Support`, so an unlabeled
-  ticket is invisible to all of them at once. GitHub drops a
-  template-declared label that does not exist, without erroring, which is why
-  #3810 was filed unlabeled and assigned to the scrummaster in seven seconds.
-  `admin_ensure_support_label.yml` now runs on a schedule and on any push
-  touching the form, and verifies the label afterwards by exact match;
-  `support_intake_guard.yml` repairs a ticket that slips through and fails the
-  run on purpose.
-  (Filed as `V-039` under #3811; renumbered on the merge of `v3.0.0` because
-  #3812 allocated `V-039` on a concurrently-open branch. IDs are never
-  reused.)
-  Method: ran `tests/unit/test_support_label_isolation.py` (16 assertions on
-  the triggers, the verification step, the guard's firing condition and the
-  label name matching end to end) and the fault-injection step of
-  `support-intake-smoke.yml`'s predicate locally, 2026-08-18, while
-  implementing #3811 — a label list without `Support` (near-misses `Support
-  request`, `supporting`, `SUPPORT` included) is rejected; one with it passes.
-  The live `gh label list` half runs in CI, not here.
-  Re-verify when: the routing key changes name, or the Support project's
-  auto-add filter is edited (owner-side; agents cannot read it).
-
-- **V-043** · 2026-08-18 — **`_die` does not reliably abort a sourced
-  `gh_project.sh` helper, and a piped `graphql` call swallowed failures
-  entirely.** `_die` `return`s rather than `exit`s when the library is
-  sourced, relying on `set -e` — but `set -e` is suppressed inside a command
-  substitution whose status is being tested, which is exactly how a caller
-  checks for failure. Separately, `project_field_value` piped `graphql` into
-  `jq`, so the pipeline reported jq's status: a failed read returned empty
-  output and exit 0, indistinguishable from "the field is unset". A
-  rate-limited read would have had hygiene write its defaults over every
-  populated field. Both fixed (explicit `return 1`; response into a variable
-  first).
-  (Filed as `V-040` under #3811; renumbered on the merge of `v3.0.0` because
-  #3813 allocated `V-040` on a concurrently-open branch. IDs are never
-  reused.)
-  **The pipeline defect was a class, not one site.** The same shape existed
-  in `issue_status` (a swallowed read reads as "no Status", which is how
-  `promote_accepted_features.sh` and the parked-blocked sweep decide whether
-  a blocker is accepted), in `pr_status` (lane reconciliation), twice in
-  `pr_project_item_id` (a swallowed find sends the PR down the add path), and
-  in `admin_set_fields.sh`'s `item_id_for_content`, where it reads as "not on
-  the board" and the owner's batch reports a clean run having written
-  nothing. All five were converted to the response-into-a-variable form in
-  the same PR, so no call site pipes `graphql` today.
-  Method: ran `tests/test_issue_hygiene.sh` with a `gh` stub whose field
-  reads fail while its existence probe answers "present" — before the fix
-  hygiene populated every field and exited 0; after it, the run fails loud.
-  The sweep for the remaining sites: `grep -n graphql
-  scripts/agents/lib/*.sh scripts/agents/*.sh`, every hit read for a pipe;
-  `tests/unit/test_gh_project_pipelines.py` now re-runs that sweep in CI.
-  2026-08-18, while implementing #3811.
-  Re-verify when: `_die` is changed. A new piped `graphql` call no longer
-  needs re-verification by hand — it fails `test_no_graphql_call_is_piped`.
-  Note the propagated `return 1` reaches a caller only if that caller checks
-  it: `release_ceremony_watch.sh` and `classify_backlog_claim_state`
-  deliberately write `|| echo ""` and still treat a failed read as "no
-  Status".
-
-- **V-044** · 2026-08-18 — **Self-heal watched the api pool alone in
-  Kubernetes mode, and could not name the mode at all.** The Pod survey
-  selected `app=nyxgpt-api-canary-pool`, so web, Cassandra, Ollama and the
-  entire in-cluster observability tier (#3787) were observed and healed by
-  nothing; and because every Kubernetes row is named after a *Pod*, never
-  after a component, `detected_mode()`'s `service in CORE_APP_SERVICES` test
-  matched nothing and the page printed "Nothing detected running" above the
-  list of running Pods. Fixed by surveying the whole namespace once and
-  classifying Pods by label into a `core`/`observability` tier
-  (`ComponentStatus.tier`), which mode detection and the in-cluster
-  observability reporting both key off.
-  Method: real kind cluster, `nyxgpt` namespace carrying the manifests' own
-  labels (api/web pool Deployments, cassandra/ollama StatefulSets, ten
-  `tier: observability` workloads, plus one foreign workload). Shipped code:
-  `mode=kubernetes observability_source=kubernetes`, 6 core + 10
-  observability Pods watched, foreign Pod excluded, and
-  `heal_now(service=<web pod>)` deleted that Pod and the Deployment replaced
-  it. Fault injection with the **actual pre-fix module** (`git show
-  581b4911:src/nyxgpt/self_heal.py`) against the same live cluster: 2
-  Kubernetes rows (both api), `detected_mode` → `none` — the reported defect,
-  reproduced. 2026-08-18, while implementing #3828.
-  Standing guard: `scripts/k8s-self-heal-coverage-smoke.py`, run as step 8 of
-  `scripts/k8s-local-smoke.sh` (`.github/workflows/k8s-local-smoke.yml`,
-  path-filtered on `src/nyxgpt/self_heal.py`), which re-runs those assertions
-  on the full default install and re-injects the api-only survey each run.
-  Re-verify when: a `k8s/**` manifest changes a Pod's `app`/`tier` labels —
-  the classification is keyed on exactly those.
-- **V-049** · 2026-08-18 — **Every API error this app returns is
-  object-shaped, so a UI that interpolates `data.error` renders
-  `[object Object]`.** `http_exception_handler` (`src/nyxgpt/app.py`) wraps
-  *every* `HTTPException` as `{"error": {"code", "message", "details",
-  "request_id"}}` — `data.error` is therefore always truthy and never a
-  string, and `data.detail` reaches the browser only for refusals raised
-  before that handler (where it may still be a list or a dict). The
-  `data.error || data.detail || \`HTTP ${status}\`` idiom is a defect
-  wherever it appears, not a style choice: it hid a Pod scheduling failure
-  from the operator during acceptance (#3831) and a 409 "a run is already in
-  flight" before that (cloud-smoke). One unwrapping lives in
-  `web/src/lib/apiError.ts` (`apiErrorText` / `errorMessage`); pages import
-  it rather than re-deriving it, and `docs/adding-api-endpoints.md` states
-  the rule for new pages.
-  Method: read the handler and every `new Error(` call site in `web/src`
-  (2026-08-18, #3831); the five near-duplicate local helpers found there were
-  replaced. `web/tests/lib/apiError.test.ts` pins each payload shape and
-  `web/tests/app/admin/canary.test.tsx` asserts the rendered card never says
-  `[object Object]` — the pre-existing page tests passed because they only
-  ever returned *string*-shaped payloads, which is why the defect survived
-  them.
-  Re-verify when: the error envelope's shape changes, or a page starts
-  reading a failed response without `apiErrorText`.
-- **V-047** · 2026-08-18 — **A Deployment's own status cannot say why a Pod
-  is not serving; the reason has to be read off the Pods.** `kubectl get
-  deployment -o json` gives only `readyReplicas`, so canary reported
-  "0/1 ready" and `kubectl rollout status` reported "timed out waiting for
-  the condition" while the real cause — `Unschedulable: 0/1 nodes are
-  available: 1 Insufficient memory` — sat on the Pod's `PodScheduled`
-  condition. `canary.py` now reads the Pods behind the Deployment's own
-  `spec.selector.matchLabels` and folds that sentence into the track health,
-  the rollout-failure message and the API's 409 detail (which also stopped
-  dropping `OpsResult.details`).
-  Method: `scripts/canary-pod-reason-smoke.sh`, run 2026-08-18 on a real kind
-  cluster — a Deployment requesting 900Gi produced
-  `nyxgpt-api-canary not healthy (0/1 ready) -- <pod>: Unschedulable: 0/1
-  nodes are available: 1 Insufficient memory. ...` from `deployment_health`,
-  the same reason from `_wait_rollout`, and both halves of D-006 (the same
-  Deployment at 16Mi comes back healthy with no reason appended). Wired as
-  `canary-pod-reason-smoke.yml`.
-  Re-verify when: the canary Deployments' labels change, or Kubernetes
-  changes the `PodScheduled`/`containerStatuses` shape these reasons are read
-  from.
-
-- **V-046** · 2026-08-18 — **The #3820 guard was `script:`-only; the same fault
-  class was still live in `run:` blocks.** V-027 named the fault as "an
-  expression interpolated into an `actions/github-script` `script:` body is
-  JavaScript, not data", swept 47 interpolations on that construct, and
-  installed `workflow_script_guard.py` — which inspected `script:` bodies and
-  nothing else. The true class is **any executable body**: a `run:` block is
-  *shell* source substituted by the same pre-parse pass. CodeQL alert **#124
-  (critical)** found the identical injection in
-  `huddle_decision_dispatch.yml`'s "Restart the fix cycle" step, where
-  `DECISION="${{ steps.decide.outputs.decision }}"` and the issue number were
-  substituted as shell source and the issue number was substituted a *second*
-  time into a nested `bash -lc "..."` command string — two shells parse it, in
-  a job carrying `REVIEW_AGENT_TOKEN` on an `issue_comment` trigger.
-  **Extent, measured:** 593 `${{ }}` interpolations live in `run:` bodies
-  tree-wide. 522 are repo-controlled or shape-constrained (`vars.*`, generated
-  run identity, numeric event ids — the documented `SAFE_IN_RUN` allowlist);
-  **71 across 15 workflows were not, and all 71 were fixed** (#3837), with 0
-  deferred. Among them the same free-form-prose carriers V-027 found on the
-  `script:` side (`classify_error`'s `failed_step` / `signature` /
-  `error_class`, `escalate_reason`, `disagreement_type`), plus one arithmetic
-  context (`LOOP_NUM=$((<output> + 1))`) and four `secrets.*` reads.
-  **The live exploitability of #124 itself was bounded** by a constraint two
-  files away — `huddle_state.py`'s `decision()` returns a closed enum and the
-  issue number is `sed`-extracted digits — so it was a construct one edit from
-  exploitable, not a live exploit. Nothing at the interpolation site said so,
-  which is why it is removed rather than annotated.
-  Method: executed both halves per **D-006**, 2026-08-18 on Linux, via
-  `scripts/agents/lib/run_block_injection_probe.py` — it takes the step's real
-  `run:` body out of the YAML (so it cannot drift) and runs it under `bash`
-  with the step's collaborators stubbed in a throwaway `GITHUB_WORKSPACE`.
-  Fault injected: the pre-fix body (kept verbatim in the probe as a fixture,
-  since the fix deleted it) fed a hostile decision executed the injected
-  command in **both** the outer shell and the nested `bash -lc`. Fixed: the
-  current body, same payload arriving through `env:`, executed neither and
-  carried the text intact into the comment it posts.
-  Standing guards: `workflow_script_guard.py` now inspects `run:` bodies
-  against `SAFE_IN_RUN` (`script:` keeps the absolute no-`${{` rule — a JS body
-  never needs one); `tests/unit/test_workflow_script_injection.py` (35 tests,
-  including a planted `run:` violation and an assertion that the allowlist has
-  not widened to permit everything); and a third
-  `github-script-injection-smoke.yml` job running the probe and a planted-
-  violation step on a runner.
-  Re-verify when: a new `run:` block interpolates an expression the allowlist
-  does not cover, or `SAFE_IN_RUN` gains an entry.
-
-
-- **V-048** · 2026-08-18 — **A repository-wide `rglob` scan reads the runner's
-  workspace, not the repository.** `test_the_source_stays_single` walked
-  `REPO_ROOT.rglob("*.md")` to assert the first principles are stated in full
-  only in `CLAUDE.md`. On a review run that walk also finds
-  `.claude-pr/CLAUDE.md` -- the copy `claude-code-action` itself parks there
-  when it restores the base branch's `CLAUDE.md` on a PR-context run
-  (**V-028**(b)) -- so the contract failed on a workspace artifact, inside the
-  review gate, on whatever PR happened to be under review, while passing on
-  every developer machine. The scan now enumerates tracked files
-  (`git ls-files -- '*.md'`): a committed duplicate anywhere still fails, a
-  scratch file cannot. General form: **a test whose claim is about the
-  repository must ask git what the repository contains**; a working directory
-  is not a checkout, and the difference only shows up where the extra files
-  are, which is CI.
-  Method: executed 2026-08-18 on this runner, both directions. With
-  `.claude-pr/CLAUDE.md` present, the pre-fix scan fails
-  (`test_the_source_stays_single`, 1 failed / 13 passed); the tracked-files
-  scan passes with the same artifact present, and the paired
-  `test_an_untracked_workspace_copy_is_not_a_duplicate` injects that exact
-  artifact so the fault cannot silently stop firing.
-  Re-verify when: `claude-code-action` changes where it parks the restored
-  config, or another contract test starts walking the filesystem instead of
-  the index.
-- **V-050** · 2026-08-18 — **`nyxgpt ops` has one three-state vocabulary for
-  Kubernetes workloads — ready / pending / failed — and `Pending` is not a
-  failure.** `_classify_k8s_pod` (`src/nyxgpt/ops.py`) is the single
-  classifier behind `_k8s_stack_health`, `_k8s_observability_health`, the
-  rollout waits and `infra_status()`'s `pod_states` (which is what lets the
-  admin Infrastructure page badge the difference, since a raw `kubectl get
-  pods` line reads `Pending` for both cases); `OpsResult.status` carries the
-  `[PENDING]` label without
-  touching `ok`, so a Pod that is scheduling, pulling or creating containers
-  never changes an install's exit status, while `Unschedulable`,
-  `ImagePullBackOff`, `CrashLoopBackOff`, a container-config error or a
-  `Failed` phase does — with the scheduler's/kubelet's own reason attached.
-  The waits share it: `_wait_for_k8s_rollouts` polls in 30s slices and ends as
-  soon as a blocked Pod *of the workload it is waiting on* (label-scoped —
-  every tier shares the `nyxgpt` namespace, and an api Pod restarting against
-  its liveness probe must not fail Cassandra's wait) is confirmed over two
-  slices, instead of spending a 900s budget and then blaming whichever
-  workload it was on. The app tier now
-  has a wait of its own (`_wait_for_k8s_app_tier`), so **every** tier is
-  settled before health is snapshotted — this supersedes the part of **V-041**
-  that reads `_k8s_stack_health` as a Pod-*phase* scorer.
-  (Filed as `V-042` under #3827, renumbered to `V-045` on the first merge of
-  `v3.0.0`, to `V-046` on the second, and to `V-050` on the third (#3904):
-  #3811 allocated `V-042`/`V-043`, #3828 `V-044` and #3825 `V-045`, all on
-  concurrently-open branches, and the `V-046` it landed on was already taken
-  by the `run:`-injection entry above — the one `V-027`,
-  `developer-runbook.md` and `workflow_script_guard.py` cross-reference, so
-  that entry keeps the number and this one moves. IDs are never reused.
-  #3825's entry is the sizing one above; this one is the
-  vocabulary, and `infra_status`'s `kubernetes.unschedulable` — which #3825
-  added from a separate `.spec.nodeName` probe — is read from
-  `_classify_k8s_pod` as of that merge, so the Infrastructure page's badges
-  and its "could not be scheduled" list cannot disagree.)
-  Method: executed on 2026-08-18 — `scripts/k8s-pod-state-smoke.py` on a real
-  kind cluster: a Pod blocked on a not-yet-created ConfigMap classified
-  `[PENDING] Pending: ContainerCreating` and then reached Ready once the
-  ConfigMap was created (so the pending verdict was true, not merely kinder);
-  a `cpu: 1000` Pod classified `[FAIL] Pending: unschedulable` carrying
-  `0/1 nodes are available: 1 Insufficient cpu`; a bad image classified
-  `[FAIL] ... ImagePullBackOff`; and the wait over an unschedulable Deployment
-  failed naming that Pod after 60s of a 900s budget. The same run asserts the
-  pre-fix rule (`ok = phase == "Running"`) calls the transient and the
-  unschedulable Pod the *same* thing, so it cannot pass on a build without the
-  fix. Standing guard: the `k8s-pod-state` job in `k8s-local-smoke.yml`.
-  Re-verify when: another `nyxgpt ops` readout starts deriving a verdict from
-  a Pod's `.status.phase` directly instead of going through
-  `_classify_k8s_pod` — the shared vocabulary, not this one call site, is what
-  the entry stands for.
-
-- **V-051** · 2026-08-18 — **The canary gate's verdict now describes the
-  canary track, demonstrated on a real cluster.** On a kind cluster with
-  `nyxgpt-api-canary` at 0 replicas and one stable Pod driven to 42
-  requests, the stable Pod's own `/api/v1/metrics` still reported those 42
-  requests at a 0.00% error rate — the exact pre-fix input that produced
-  #3829's "safe to promote" — while `POST /api/v1/canary/evaluate` served by
-  that same Pod answered "the canary track has no ready Pods". With the
-  canary scaled to 1 and Ready but unserved it reported `0/20 canary-track
-  requests` (proving probes and scrapes are excluded on a live cluster, since
-  the kubelet had already probed it), and `promote` refused. After 25
-  requests were driven at the canary Pod, the verdict from the *stable* Pod
-  became "within thresholds over 25 requests; safe to promote".
-  Method: ran `scripts/canary-track-metrics-smoke.sh` end to end on
-  Linux/kind, 2026-08-18, while implementing #3829; it is
-  `.github/workflows/canary-track-metrics-smoke.yml` in CI. The same run
-  surfaced that a one-replica stable track read three Pods' metrics — a
-  draining ReplicaSet — which is why Pods with a `deletionTimestamp` are
-  excluded.
-  Re-verify when: the Pod `track=` labels, the api container port, or the
-  `pods/proxy` RBAC rule change.
 
 ## Parked
 
@@ -1754,7 +598,8 @@ are absent here by design (relocated to the annex; IDs are never reused).
   merely advised. The ledger is read in full on every agent run, so its growth
   is a per-run cost; it is to be split into a hot ledger (decisions binding on
   current work) and an on-demand archive, filed as its own issue. The
-  `Re-verify when` staleness half of this question remains open.
+  The `Re-verify when` staleness half is **closed** by the 2026-08-18
+  retirement: there are no verifications left to go stale.
   Blocks: nothing yet.
 
 - **Q-002** · 2026-08-18 · owner acceptance (#3853) — Why did

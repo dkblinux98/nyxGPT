@@ -72,11 +72,12 @@ directly outside of `nyxgpt ops`. Only when neither path can supply the tool
 (an unsupported platform, or no network) does the command fail, and then with
 a link to the installer.
 
-It then builds `nyxgpt-api:local` and `nyxgpt-web:local` and loads each into
-the cluster's image cache (kind/minikube get an explicit load step; Docker
-Desktop's built-in cluster shares the host cache already), bootstraps
-`k8s/secret.yaml` from the example (prompting for the API key interactively,
-or pass `--api-key` — the value is never committed), applies the
+It then builds `nyxgpt-api:local` and `nyxgpt-web:local` **from the published
+artifacts** (see [Install modes](#install-modes-artifact-and---dev)) and loads
+each into the cluster's image cache (kind/minikube get an explicit load step;
+Docker Desktop's built-in cluster shares the host cache already), bootstraps
+`~/.nyxGPT/k8s/secret.yaml` from the example (prompting for the API key
+interactively, or pass `--api-key` — the value is never committed), applies the
 kustomization (which includes both the api and web stable/canary pairs, see
 [Canary Deployment](#canary-deployment), plus the [data and LLM
 tier](#data-and-llm-tier)), waits for Cassandra and Ollama to report Ready --
@@ -102,7 +103,15 @@ into one of three states, and the same way in each (#3827):
 | --- | --- | --- |
 | `[OK]` | Running and passing its readiness probe (or `Succeeded`) | no |
 | `[PENDING]` | Still starting: being scheduled, pulling images, creating containers, or ready on some replicas but not all | **no** |
-| `[FAIL]` | Will not start without intervention: `Unschedulable` (the node cannot fit it), `ImagePullBackOff`, `CrashLoopBackOff`, a container config error, or a `Failed` Pod | yes |
+| `[FAIL]` | Will not start without intervention: the scheduler has not placed it (`Unschedulable` — the node cannot fit it — or `SchedulingGated`), `ImagePullBackOff`, `CrashLoopBackOff`, a container config error, or a `Failed` Pod | yes |
+
+Since #3832 the *reading* behind this table — phase, readiness, whether the
+scheduler placed the Pod, and the cluster's own words for why it did not —
+is `src/nyxgpt/k8s_pod_state.py`, shared with the
+[self-heal watchdog](self-healing.md#pending-pods-are-reported-not-deleted)
+so the install report and the watchdog cannot disagree about the same Pod.
+The table above is `nyxgpt ops`' policy *on* that reading, and stays its own:
+a `CrashLoopBackOff` Pod fails an install while the watchdog restarts it.
 
 A Pod pulling a multi-hundred-megabyte image is doing what it is supposed to,
 so `Pending` is reported as pending and never fails the command; what decides
@@ -118,15 +127,59 @@ kubelet's own reason — instead of consuming the whole rollout budget first.
 
 Each image build mirrors the Homebrew reinstall-if-needed behavior (see
 [ops.md](ops.md)): it fingerprints the app source that image is built from
-(`src/nyxgpt/` + `pyproject.toml` for `nyxgpt-api`; `web/` for `nyxgpt-web`)
-and only re-runs `docker build` when that source changed since the image was
-last built, reporting `<image>: built` / `rebuilt (source changed since last
+(`src/nyxgpt/` + `pyproject.toml` for `nyxgpt-api`; the web tree for
+`nyxgpt-web`) and only re-runs `docker build` when that source changed since
+the image was last built, reporting `<image>: built` / `rebuilt (source changed since last
 build)` / `already up to date (skipped rebuild)` instead of always
 rebuilding. `nyxgpt-web:local`'s build bakes `NEXT_PUBLIC_API_BASE_URL` into
 the browser bundle at build time (see [web/Dockerfile](../web/Dockerfile));
 since the api/web Services here are `ClusterIP`-only (no NodePort/Ingress),
 this defaults to the same host-local address the [Verify](#4-verify) section
 below reaches through `kubectl port-forward`.
+
+## Install modes: artifact (default) and `--dev`
+
+`nyxgpt ops install --kubernetes --local` has the same two install modes the
+native install has (#3789, #3834), and records which one this deployment is
+running so nothing has to guess:
+
+| | Where the two images come from | Needs a checkout? |
+|---|---|---|
+| **artifact** (default) | the published `nyxgpt-api-<version>.tar.gz` / `nyxgpt-web-<version>.tar.gz` release artifacts — the same ones the Homebrew formulas install — staged into their own build context under `~/.nyxGPT/build/kubernetes` | no |
+| **dev** (`--dev`) | the working tree of the checkout you run the command in | yes — refused without one |
+
+The artifact path is what makes this mode satisfy the project's [Repo-less
+Portability](../CLAUDE.md) requirement: the manifests ship inside the package
+(`nyxgpt.resources.k8s`, synced to `~/.nyxGPT/k8s` — which is why the
+kustomization and `secret.yaml` live there and not in a repository), and the
+images are built from published artifacts, so `pip install nyxgpt` followed by
+this one command is a working deployment on a machine that has never seen this
+repository. `.github/workflows/k8s-artifact-smoke.yml` runs exactly that, with
+no checkout in reach, and requires a real chat to answer.
+
+The artifacts are the *source* tarballs rather than the `ghcr.io` images on
+purpose: a release publishes images, but a **release candidate** publishes only
+the tarballs — and a candidate is what acceptance testing installs. One
+artifact channel serves every local install mode, so the command behaves the
+same on both.
+
+`--dev` builds the working tree instead. The Pods then run images built from
+that tree **as it was at install time** — re-run the command to pick new code
+up; there is no live reload, unlike the native dev mode's Next dev server. It
+is refused up front (exit 2) when there is no checkout to build, rather than
+half-installing.
+
+Switching between the modes re-rolls the app tier: both modes produce the same
+`:local` tags, so the Deployment specs are identical across a switch and
+`kubectl apply` alone would leave the Pods on the previous mode's image while
+every report claimed the new one.
+
+`nyxgpt ops status` prints the mode under the Kubernetes section (and
+`nyxgpt ops doctor` as `Install mode (kubernetes): …`), separately from the
+native api/web install mode — one machine can run a native dev install and a
+Kubernetes artifact deployment at the same time. The Infrastructure page in
+the admin dashboard shows the same thing. `nyxgpt ops down --kubernetes`
+clears the record along with the deployment.
 
 `--local` is required and explicit — it's the only locality implemented
 today, and is the precursor to a future cloud deployment target. `--cloud`
@@ -179,12 +232,18 @@ expected to type by hand.
 
 The default deployment — app tier, data/LLM tier and the
 [in-cluster observability layer](#observability-in-the-cluster) — reserves
-about **6.9GiB of memory and 2.1 CPUs** in requests on a single-node cluster,
-and a canary rollout asks for a further ~448Mi and ~150m when you start one.
+about **5.5GiB of memory and 1.6 CPUs** in requests on a single-node cluster,
+and a canary rollout **borrows** a further ~1344Mi and ~450m for as long as it
+runs. That borrowing is the whole of [the elastic
+pool](#the-replica-pool-is-borrowed-not-standing-3833): the stable
+Deployments rest at 1 replica and `nyxgpt canary start` grows each track to at
+most `[canary] total_replicas` (4 by default) Pods, so the peak is the same
+figure the pool used to reserve standing — it is just no longer held by an
+install nobody is rolling out.
 A stock Docker Desktop VM (8GiB, 4 CPUs) offers 7936Mi of *allocatable*
 memory and 4 CPUs — the kubelet's reserved slice is already out of those
 numbers — of which kube-system holds a few hundred MiB and ~950m. So the
-default stack fits both, with room for the canary.
+default stack fits both, with room for the rollout.
 
 Two things are worth knowing about those figures:
 
@@ -245,6 +304,11 @@ kind create cluster --name nyxgpt-local
 If you'd rather bring your own cluster (minikube, Docker Desktop, a remote
 context, ...), create/select it yourself and the wrapper will use it as-is.
 
+> The steps below are the **manual** equivalent of the wrapped command, run
+> from a source checkout. They are reference material for troubleshooting; the
+> wrapped command reads its manifests from the synced copy under
+> `~/.nyxGPT/k8s` instead of from a checkout.
+
 ## 1. Build the image
 
 ```bash
@@ -285,10 +349,10 @@ This creates the `nyxgpt` namespace, the ConfigMap, Secret, RBAC
 scoped to just the Deployment/Service operations below), the `cassandra` and
 `ollama` StatefulSets and Services that make up the [data and LLM
 tier](#data-and-llm-tier), the
-`nyxgpt-api-stable` Deployment (4 replicas by default) and
+`nyxgpt-api-stable` Deployment (1 replica by default) and
 `nyxgpt-api-canary` Deployment (0 replicas — idle until a rollout starts),
 the same stable/canary pair for `nyxgpt-web` (`k8s/deployment-web-stable.yaml`
-/ `k8s/deployment-web-canary.yaml`, 4/0 replicas by default), and the
+/ `k8s/deployment-web-canary.yaml`, 1/0 replicas by default), and the
 `nyxgpt-api`/`nyxgpt-api-canary`/`nyxgpt-web`/`nyxgpt-web-canary` Services
 (each pair selects every Pod from either Deployment in that component;
 traffic split is by replica count, not Service selector). `nyxgpt-web`'s
@@ -344,7 +408,10 @@ overlay -- is also watched by the same
 [self-healing.md#kubernetes-mode](self-healing.md#kubernetes-mode) for how it
 checks Pod readiness via `kubectl get pods` and heals via `kubectl delete
 pod`, on top of (not instead of) the liveness probes and the canary
-mechanism described below. `k8s/rbac.yaml`'s `nyxgpt-api` Role grants the
+mechanism described below. That remedy is restricted to a Pod that is
+Running but not Ready -- a `Pending` Pod is reported with the cluster's own
+reason and never deleted (#3832; see [Pending Pods are reported, not
+deleted](self-healing.md#pending-pods-are-reported-not-deleted)). `k8s/rbac.yaml`'s `nyxgpt-api` Role grants the
 `get`/`list`/`delete` on `pods` this needs, alongside what canary already
 used.
 
@@ -418,7 +485,10 @@ Notes:
   restart a failed Pod. The [self-heal watchdog](self-healing.md) watches
   these Pods too (#3828 -- it reports them under `tier: observability` and
   heals a stuck one by deleting it, the same action it takes on an app-tier
-  Pod), which is what makes the tier visible on the Self-Heal page in this
+  Pod, and under the same restriction: Running-but-not-Ready only, never a
+  `Pending` Pod -- see [Pending Pods are reported, not
+  deleted](self-healing.md#pending-pods-are-reported-not-deleted)), which is
+  what makes the tier visible on the Self-Heal page in this
   mode rather than surveyed through a Compose stack the deployment does not
   have.
 - **Evidence.** `.github/workflows/k8s-observability-smoke.yml` runs the
@@ -434,10 +504,11 @@ Notes:
   is merely starting is reported as pending while an unschedulable or
   unpullable one is a named failure (#3827), including that the pre-fix rule
   called both of them the same thing.
-- **Footprint.** Since the #3825 right-sizing the default stack (app +
-  data/LLM + observability) requests ~2.1 CPU and ~6.9GiB of memory including
-  kube-system, so it fits the 4-vCPU/7936Mi a stock Docker Desktop VM offers
-  with room for a canary — see [Node capacity: what the stack
+- **Footprint.** After the #3825 right-sizing and #3833's elastic canary
+  pool, the default stack (app + data/LLM + observability) requests
+  **~1.6 CPU and ~5.5GiB** of memory standing, so it fits the
+  4-vCPU/7936Mi a stock Docker Desktop VM offers with room for a rollout to
+  borrow — see [Node capacity: what the stack
   reserves](#node-capacity-what-the-stack-reserves) for the per-tier numbers
   and the preflight that checks them. `--skip-observability` drops roughly
   0.5 CPU and 2.4GiB of that; the k8s smoke runs on a node ballasted down to
@@ -474,9 +545,11 @@ message.
   that's true, and `nyxgpt ops install --kubernetes --local` waits for both
   Pods to be Ready before it reports the stack healthy.
 - **Sessions are shared.** `k8s/configmap.yaml` sets
-  `[nyxgpt] session_backend = cassandra`, so all four api replicas read and
-  write one session list. With the file backend each replica keeps its own,
-  and consecutive requests from one browser see different sessions (see
+  `[nyxgpt] session_backend = cassandra`, so every api replica reads and
+  writes one session list — including the extra ones a canary rollout borrows
+  (#3833) and the replacement Pod every restart creates. With the file
+  backend each replica keeps its own, and consecutive requests from one
+  browser see different sessions (see
   [session-storage.md](session-storage.md)).
 - **RAG** is off by default (matching the native/Compose default in
   `example.config.ini`) because it only helps once you have ingested
@@ -495,8 +568,17 @@ Terraform deployments use for these components, so the api's config is
 identical across every containerized mode.
 
 To point the deployment at an *external* Cassandra or Ollama instead, change
-`[rag] cassandra_hosts` / `[ollama] base_url` in `k8s/configmap.yaml` and
-drop the corresponding manifest from `k8s/kustomization.yaml`.
+`[rag] cassandra_hosts` / `[ollama] base_url` in `configmap.yaml` and drop the
+corresponding manifest from `kustomization.yaml`.
+
+Edit the copy under `~/.nyxGPT/k8s/` — that is the one the wrapped command
+applies. Every `nyxgpt ops install --kubernetes --local` re-syncs that
+directory from the package's own manifests, so an edit there survives until the
+next install and is then replaced (`secret.yaml` is the exception: it holds the
+API key, is never packaged, and is left alone). From a source checkout, edit the
+repository's `k8s/` instead and the sync carries the change through — the
+package data is a symlink back to it, so a checkout customization is durable
+where a `~/.nyxGPT/k8s/` one is not.
 
 ## Infrastructure Status card (#3468)
 
@@ -542,6 +624,13 @@ VM and a re-run of `nyxgpt ops install --kubernetes --local`, which checks the
 node's capacity against the stack before it applies anything (see [Node
 capacity: what the stack reserves](#node-capacity-what-the-stack-reserves)).
 
+The card also names this deployment's own **install mode** (#3834) — what the
+two images in the cluster were built from, per [Install
+modes](#install-modes-artifact-and---dev) — or `unrecorded` when there is no
+marker for it on the machine the dashboard is running on, which is never
+presented as the artifact default: that default would be a guess about someone
+else's deployment.
+
 The same card carries an **In-cluster observability** section (#3787):
 per-workload readiness for the components in [Observability in the
 cluster](#observability-in-the-cluster), plus the `nyxgpt ops port-forward
@@ -582,7 +671,7 @@ independent Deployments for `nyxgpt-api`, both labeled
 `track: canary`. `k8s/service.yaml` and `k8s/service-canary.yaml` both
 select `app: nyxgpt-api-canary-pool`, targeting **both** Deployments' Pods
 at once -- kube-proxy round-robins Service traffic evenly across every
-matching Pod endpoint, so `canary_replicas / total_replicas` approximates
+matching Pod endpoint, so `canary_replicas / pool_replicas` approximates
 the canary's share of requests. `k8s/deployment-web-stable.yaml` /
 `k8s/deployment-web-canary.yaml` and `k8s/service-web.yaml` /
 `k8s/service-web-canary.yaml` mirror the exact same model for `nyxgpt-web`
@@ -602,6 +691,46 @@ split would mean two divergent datasets, which is a data-migration problem,
 not a traffic-split problem. A schema/version-upgrade story for Cassandra
 will be designed when a version upgrade actually requires one (a future
 issue, not this one).
+
+### The replica pool is borrowed, not standing (#3833)
+
+The stable Deployments rest at **1 replica**. A rollout borrows the replicas
+its weight needs, and gives them back:
+
+- `nyxgpt canary start` reads the stable Deployment's **live** replica count,
+  plans the smallest pool that can express the requested weight (capped by
+  `[canary] total_replicas`, 4 by default), and scales both tracks to it.
+  Stable grows before the canary does, so the canary never briefly holds a
+  larger share than you asked for; if the canary scale then fails, stable is
+  put back, so a failed start leaves nothing inflated behind.
+- `nyxgpt canary promote` re-plans the pool for each new weight — a step that
+  needs finer granularity grows it, one that needs less lets it shrink.
+- `nyxgpt canary promote` at 100% and `nyxgpt canary rollback` both return
+  stable to the count it was resting at when the rollout started. Scale stable
+  to 3 yourself and it comes back to 3: nothing re-inflates it to a constant.
+
+Replica counts are integers, so most weights are not exactly expressible —
+10% needs a 10-wide pool. Rather than silently serving a different weight (or
+growing the cluster to honour the number literally), the command reports the
+weight it actually rounded to:
+
+```text
+[OK] Started canary rollout at 25% (1/4 replicas); 10% is not expressible in a
+pool of at most 4 replicas, so it rounded to 25% -- raise `[canary]
+total_replicas` for finer steps; nyxgpt-api-stable returns to 1 replica on
+promote or rollback
+```
+
+`/admin/canary` shows the same numbers: the badge names the pool the rollout
+borrowed and the count stable rests at, and every action's result message is
+the server's own.
+
+Sizing `[canary] total_replicas` is the cost/granularity trade: `2` keeps a
+rollout to one extra Pod (weights round to 50%), `4` makes 25% steps
+expressible. Before #3833 the manifests shipped a standing `replicas: 4` pool
+that a rollout merely subdivided, so every install — including single-node
+local ones where 4 replicas buy no HA — paid 3072Mi of reservations to make a
+25% step possible.
 
 ### Ollama canary feasibility
 
@@ -678,8 +807,11 @@ splitting:
    Repeat steps 2-3 until `promote` reaches 100%. At that final step,
    `promote` copies the canary's image version onto `nyxgpt-api-stable`,
    waits for stable's rollout to become healthy, then scales canary back to
-   0 and stable back to `total_replicas` -- stable now runs the promoted
-   version at 100% traffic, and the cycle is complete. `promote` refuses to
+   0 and stable back to the count it was resting at before the rollout
+   borrowed any (see [The replica pool is borrowed, not
+   standing](#the-replica-pool-is-borrowed-not-standing-3833)) -- stable now
+   runs the promoted version at 100% traffic, and the cycle is complete.
+   `promote` refuses to
    shift more traffic to the canary at every step (including this final
    one) unless the canary is currently healthy **and has actually served
    requests** (`--force` overrides the traffic half on an idle cluster --
@@ -712,9 +844,11 @@ All six commands accept `--namespace` to override the `[canary] namespace`
 config value (see `example.config.ini`); it defaults to `nyxgpt`. They also
 all accept `--component {api,web}` (default: `api`) to operate on the
 `nyxgpt-web` pair instead -- e.g. `nyxgpt canary deploy --component web`.
-`total_replicas`, `step_percent`, `error_rate_threshold_percent`,
-`latency_p95_threshold_ms`, and `min_requests_for_evaluation` are also
-configured in `[canary]`.
+`total_replicas` (the ceiling on the pool a rollout may borrow, not a
+standing pool -- see [The replica pool is borrowed, not
+standing](#the-replica-pool-is-borrowed-not-standing-3833)), `step_percent`,
+`error_rate_threshold_percent`, `latency_p95_threshold_ms`, and
+`min_requests_for_evaluation` are also configured in `[canary]`.
 
 ### Honest status, mode-aware (#3409)
 
@@ -879,15 +1013,18 @@ profiles are active).
 None of the stable/canary Deployments (`api` or `web`) have an HPA attached
 -- autoscaling would fight canary's replica-count-based traffic split (see
 [Canary Deployment](#canary-deployment)). `nyxgpt-api-stable` and
-`nyxgpt-web-stable` each run a fixed `total_replicas` (4 by default for
-both, `[canary] total_replicas` -- there's no separate per-component config
-value; pass `total_replicas` explicitly if you want `api` and `web` to run
-different steady-state counts). There is no `nyxgpt`-wrapped command for
-changing steady-state replica count yet, so if you need more capacity today,
-raising it is a manual `kubectl` escape hatch pending a wrapper (tracked as
-follow-up work), not a first-class operation -- prefer adjusting `[canary]
-total_replicas` and letting the next rollout apply it where that's
-sufficient. Chat **sessions** are shared across every `api` replica and
+`nyxgpt-web-stable` rest at **1 replica** each and are the source of truth
+for their own steady-state count: a rollout reads it, borrows on top of it,
+and gives the borrowed replicas back (#3833 -- see [The replica pool is
+borrowed, not standing](#the-replica-pool-is-borrowed-not-standing-3833)).
+`[canary] total_replicas` caps how far a rollout may borrow; it does **not**
+set the steady-state count, and raising it does not add standing capacity.
+There is no `nyxgpt`-wrapped command for changing the steady-state replica
+count yet, so if you need more capacity today, scaling the stable Deployment
+is a manual `kubectl` escape hatch pending a wrapper (tracked as follow-up
+work), not a first-class operation -- a count set that way survives
+rollouts, which is the behaviour the fixed pool used to break. Chat
+**sessions** are shared across every `api` replica and
 survive Pod restarts: they live in the in-cluster Cassandra
 (`[nyxgpt] session_backend = cassandra`, #3786 -- see [Data and LLM
 tier](#data-and-llm-tier)). The **vector store** still defaults to an

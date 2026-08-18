@@ -4,10 +4,19 @@ Runs a second `<component>-canary` Deployment alongside the existing
 `<component>-stable` Deployment, both fronted by a single Service (see
 k8s/service-canary.yaml / k8s/service-web-canary.yaml). Traffic is split by
 replica-count ratio: kube-proxy round-robins Service traffic evenly across
-every matching Pod endpoint, so `canary_replicas / total_replicas`
+every matching Pod endpoint, so `canary_replicas / pool_replicas`
 approximates the canary's share of requests. There is no cloud traffic
 manager or extra in-cluster proxy involved -- this targets the same
 local-cluster workflow documented in docs/kubernetes.md (kind/minikube/k3s).
+
+The pool is NOT standing (#3833). Between rollouts the stable Deployment
+rests at whatever replica count it was installed/scaled to (1 by default),
+and a rollout *grows* the pool to the smallest size that can express the
+requested weight -- up to a ceiling (`[canary] total_replicas`, 4 by
+default) -- then returns stable to its resting count on promote or
+rollback. Before #3833 the manifests shipped a standing `replicas: 4` pool
+that a rollout merely subdivided, so every install paid for a 4-wide api
+Deployment purely to make a 25% traffic step expressible.
 
 This is the sole deployment model as of #3409 -- blue/green (deploy.py) was
 retired in favor of canary, which is a strict superset for traffic purposes
@@ -57,7 +66,6 @@ STABLE_DEPLOYMENT = "nyxgpt-api-stable"
 CANARY_DEPLOYMENT = "nyxgpt-api-canary"
 IMAGE_REPOSITORY = "nyxgpt-api"
 DEFAULT_NAMESPACE = "nyxgpt"
-DEFAULT_TOTAL_REPLICAS = 4
 DEFAULT_ROLLOUT_TIMEOUT_SECONDS = 180
 HISTORY_LIMIT = 20
 
@@ -91,6 +99,15 @@ NON_TRAFFIC_PATHS = frozenset({"/health", "/metrics"})
 HTTP_REQUESTS_METRIC = "nyxgpt_http_requests_total"
 HTTP_DURATION_METRIC = "nyxgpt_http_request_duration_seconds"
 
+# What a stable Deployment rests at between rollouts when its live replica
+# count cannot be read (#3833) -- the same number k8s/deployment-stable.yaml
+# and k8s/deployment-web-stable.yaml ship. There is deliberately no
+# "default pool size" constant any more: a rollout reads the stable
+# Deployment's *live* replica count and returns it to exactly that on
+# promote/rollback, so an operator who scales stable to some other number
+# cannot have it silently re-inflated by the next `canary start`.
+DEFAULT_RESTING_REPLICAS = 1
+
 # How much Pod-level failure detail travels back to the dashboard (#3831). A
 # stuck rollout can have every replica failing for the same reason, and
 # Kubernetes' scheduler messages run long -- enough to name the cause, not so
@@ -114,7 +131,6 @@ WEB_STABLE_DEPLOYMENT = "nyxgpt-web-stable"
 WEB_CANARY_DEPLOYMENT = "nyxgpt-web-canary"
 WEB_IMAGE_REPOSITORY = "nyxgpt-web"
 WEB_CONTAINER_NAME = "nyxgpt-web"
-DEFAULT_WEB_TOTAL_REPLICAS = 4
 
 # `ollama` is deliberately NOT implemented: every replica of a canary'd
 # Ollama Deployment would need its own local model store (Ollama has no
@@ -156,7 +172,6 @@ class ComponentSpec:
     service_name: str
     image_repository: str
     container_name: str
-    default_total_replicas: int
     supported: bool = True
     unsupported_reason: str = ""
     # Label shared by this component's stable and canary Pods; combined with
@@ -182,7 +197,6 @@ COMPONENTS: dict[str, ComponentSpec] = {
         service_name=SERVICE_NAME,
         image_repository=IMAGE_REPOSITORY,
         container_name="nyxgpt-api",
-        default_total_replicas=DEFAULT_TOTAL_REPLICAS,
         pod_app_label=API_POD_APP_LABEL,
         metrics_port=8000,
     ),
@@ -193,7 +207,6 @@ COMPONENTS: dict[str, ComponentSpec] = {
         service_name=WEB_SERVICE_NAME,
         image_repository=WEB_IMAGE_REPOSITORY,
         container_name=WEB_CONTAINER_NAME,
-        default_total_replicas=DEFAULT_WEB_TOTAL_REPLICAS,
         pod_app_label=WEB_POD_APP_LABEL,
         metrics_port=None,
         build_context=ops_module.REPO_ROOT / "web",
@@ -208,7 +221,6 @@ COMPONENTS: dict[str, ComponentSpec] = {
         service_name="",
         image_repository="",
         container_name="",
-        default_total_replicas=0,
         supported=False,
         unsupported_reason=OLLAMA_UNSUPPORTED_REASON,
     ),
@@ -708,18 +720,196 @@ def _versioned_image_tag(spec: ComponentSpec) -> str:
 
 
 def _split_replicas(total: int, weight_percent: int) -> tuple[int, int]:
-    """Split `total` replicas into (canary, stable) counts for a weight_percent.
+    """Split a `total`-replica pool into (canary, stable) counts for a weight_percent.
 
-    Canary gets at least 1 replica once weight_percent > 0 (otherwise it
-    would receive no traffic at all despite being "active").
+    Both tracks get at least 1 replica for any weight strictly between 0 and
+    100: a canary with 0 replicas receives no traffic at all despite being
+    "active", and a *stable* with 0 replicas is a full cutover, not a canary.
+    Because of that floor the returned pair sums to 2 rather than to `total`
+    when `total` is 1 -- a partial split simply is not expressible in a
+    one-replica pool, and silently returning `stable = 0` was the trap that
+    made resting at 1 replica unsafe before #3833. Callers derive the pool
+    they actually have to scale to from `canary + stable`, never from
+    `total`.
     """
     if weight_percent <= 0:
         return 0, total
     if weight_percent >= 100:
         return total, 0
-    canary = max(1, round(total * weight_percent / 100))
-    canary = min(canary, total - 1) if total > 1 else canary
-    return canary, total - canary
+    pool = max(2, total)
+    canary = min(max(1, round(pool * weight_percent / 100)), pool - 1)
+    return canary, pool - canary
+
+
+@dataclass(frozen=True)
+class RolloutPlan:
+    """A concrete replica split for a rollout, plus how close it got to the requested weight.
+
+    Replica counts are integers, so most weights are not exactly
+    expressible: 10% needs a 10-wide pool to be exact. Rather than silently
+    serving a different weight than the operator asked for (or inflating the
+    cluster to 10 Pods to honour a 10% ask literally), a plan records both
+    the `requested_percent` and the `achieved_percent` it rounded to, and
+    `describe()` says so in the command's own output (#3833).
+    """
+
+    canary_replicas: int
+    stable_replicas: int
+    requested_percent: int
+    achieved_percent: int
+    max_pool: int
+
+    @property
+    def pool(self) -> int:
+        """Total replicas the pool has to be scaled to for this split."""
+        return self.canary_replicas + self.stable_replicas
+
+    @property
+    def rounded(self) -> bool:
+        """True when the achievable weight isn't the one that was asked for."""
+        return self.achieved_percent != self.requested_percent
+
+    def describe(self) -> str:
+        """Render the split as "N% (canary/pool replicas)", naming any rounding."""
+        text = f"{self.achieved_percent}% ({self.canary_replicas}/{self.pool} replicas)"
+        if self.rounded:
+            text += (
+                f"; {self.requested_percent}% is not expressible in a pool of at most "
+                f"{self.max_pool} replicas, so it rounded to {self.achieved_percent}% "
+                f"-- raise `[canary] total_replicas` for finer steps"
+            )
+        return text
+
+
+def _replica_count(count: int) -> str:
+    """Render a replica count for a message, pluralized ("1 replica" / "3 replicas")."""
+    return f"{count} replica" if count == 1 else f"{count} replicas"
+
+
+def _plan_rollout(resting: int, weight_percent: int, max_pool: int) -> RolloutPlan:
+    """Choose the replica split that comes closest to `weight_percent`, smallest pool wins.
+
+    The pool is grown for the rollout, not carved out of a standing one
+    (#3833): candidate sizes run from the stable Deployment's resting count
+    (never below it -- a rollout must not cut serving capacity) up to
+    `max_pool`, and the smallest candidate with the smallest weight error is
+    chosen. So 50% costs 2 Pods, 25%/75% cost 4, and a 10% ask on a 4-Pod
+    ceiling reports honestly that it is serving 25%.
+    """
+    requested = max(1, min(99, weight_percent))
+    resting = max(1, resting)
+    lowest = max(2, resting)
+    highest = max(lowest, max_pool)
+    best: RolloutPlan | None = None
+    for pool in range(lowest, highest + 1):
+        canary, stable = _split_replicas(pool, requested)
+        achieved = round(100 * canary / (canary + stable))
+        if best is None or abs(achieved - requested) < abs(best.achieved_percent - requested):
+            best = RolloutPlan(canary, stable, requested, achieved, highest)
+    assert best is not None  # the range always yields at least `lowest`
+    return best
+
+
+def _desired_replicas(name: str, namespace: str = DEFAULT_NAMESPACE) -> int | None:
+    """Return Deployment `name`'s currently desired replica count, or None if it can't be read.
+
+    Read live rather than assumed from a constant, so an operator who scales
+    a Deployment themselves keeps that count across a rollout (#3833).
+    """
+    if _which("kubectl") is None:
+        return None
+    cp = _run(
+        ["kubectl", "get", "deployment", name, "-n", namespace, "-o", "jsonpath={.spec.replicas}"],
+        expected=True,
+    )
+    if cp.returncode != 0:
+        return None
+    try:
+        return int((cp.stdout or "").strip())
+    except ValueError:
+        return None
+
+
+def _resting_replicas(name: str, namespace: str = DEFAULT_NAMESPACE) -> int:
+    """Return the replica count a rollout must restore `name` to when it finishes.
+
+    The live desired count, floored at 1: restoring a stable Deployment to 0
+    would leave the Service with no stable endpoint at all once the canary
+    is scaled down. Falls back to `DEFAULT_RESTING_REPLICAS` (what the
+    manifests ship) when the Deployment can't be read.
+    """
+    live = _desired_replicas(name, namespace)
+    if live is None or live < 1:
+        return DEFAULT_RESTING_REPLICAS
+    return live
+
+
+def _first_replica_count(*values: Any) -> int:
+    """Return the first of `values` that reads as a replica count >= 1, else the manifest default.
+
+    State files are read back from disk and may predate a field or hold
+    anything, so every replica count that comes from one is funnelled
+    through here rather than trusted as an int.
+    """
+    for value in values:
+        try:
+            if value is not None and int(value) >= 1:
+                return int(value)
+        except (TypeError, ValueError):
+            continue
+    return DEFAULT_RESTING_REPLICAS
+
+
+def _resting_from_state(state: dict[str, Any], fallback: int | None = None) -> int:
+    """Return the resting replica count `start` recorded for the rollout in `state`.
+
+    Falls back to a pre-#3833 state file's `total_replicas` -- under the old
+    fixed-pool model that number *was* stable's steady-state count, so a
+    rollout started before this change still restores the pool it came from
+    -- then to the caller's value, then to `DEFAULT_RESTING_REPLICAS`.
+    """
+    return _first_replica_count(
+        state.get("resting_replicas"), state.get("total_replicas"), fallback
+    )
+
+
+def _scale_pool(
+    spec: ComponentSpec,
+    plan: RolloutPlan,
+    namespace: str,
+    *,
+    current_stable: int,
+) -> tuple[str, CanaryResult] | None:
+    """Scale both tracks to `plan`, growing before shrinking. None means both succeeded.
+
+    Order matters while the pool is elastic (#3833). When stable has to grow,
+    it grows *first*: scaling the canary up against a still-resting stable
+    would briefly route a much larger share to the new version than the
+    operator asked for. And if the canary scale then fails, stable is put
+    back to `current_stable`, so a failed `start` doesn't leave an inflated
+    pool standing -- exactly the cost this issue removed. When stable is
+    shrinking (a later promote step), the canary grows first instead, so the
+    pool never dips below the capacity it already had.
+
+    Returns `(track, failure)` for the first failing scale, where `track` is
+    "canary" or "stable".
+    """
+    if plan.stable_replicas > current_stable:
+        stable_result = _scale(spec.stable_deployment, plan.stable_replicas, namespace)
+        if not stable_result.ok:
+            return "stable", stable_result
+        canary_result = _scale(spec.canary_deployment, plan.canary_replicas, namespace)
+        if not canary_result.ok:
+            _scale(spec.stable_deployment, current_stable, namespace)
+            return "canary", canary_result
+        return None
+    canary_result = _scale(spec.canary_deployment, plan.canary_replicas, namespace)
+    if not canary_result.ok:
+        return "canary", canary_result
+    stable_result = _scale(spec.stable_deployment, plan.stable_replicas, namespace)
+    if not stable_result.ok:
+        return "stable", stable_result
+    return None
 
 
 @dataclass(frozen=True)
@@ -1038,6 +1228,8 @@ def status(namespace: str = DEFAULT_NAMESPACE, component: str = "api") -> dict[s
             "component": component,
             "active": False,
             "weight_percent": 0,
+            "pool_replicas": 0,
+            "resting_replicas": 0,
             "stable": {"state": "not_deployed", "message": err.message, "version": ""},
             "canary": {"state": "not_deployed", "message": err.message, "version": ""},
             "metrics": TrackMetrics(
@@ -1092,6 +1284,13 @@ def status(namespace: str = DEFAULT_NAMESPACE, component: str = "api") -> dict[s
         "component": component,
         "active": active,
         "weight_percent": weight_percent,
+        # The pool is elastic (#3833): `pool_replicas` is what the rollout
+        # grew it to, `resting_replicas` is what promote/rollback will
+        # return stable to. Both are 0/absent-shaped when no rollout has
+        # ever run, and read from the state file, so this stays a
+        # kubectl-free field.
+        "pool_replicas": int(state.get("total_replicas", 0) or 0) if active else 0,
+        "resting_replicas": _resting_from_state(state) if active else 0,
         "stable": {
             "state": stable_health.state,
             "message": stable_health.message,
@@ -1228,11 +1427,20 @@ def deploy(
 def start(
     namespace: str = DEFAULT_NAMESPACE,
     weight_percent: int = 10,
-    total_replicas: int = DEFAULT_TOTAL_REPLICAS,
+    total_replicas: int | None = None,
     *,
     component: str = "api",
 ) -> CanaryResult:
-    """Start a canary rollout: scale up the canary Deployment to `weight_percent` of traffic."""
+    """Start a canary rollout, growing the pool to serve `weight_percent` from the canary.
+
+    `total_replicas` is a CEILING on how far the pool may be inflated for the
+    duration of the rollout (`[canary] total_replicas`, 4 by default from the
+    CLI/API), not a standing pool to subdivide (#3833). The pool starts from
+    the stable Deployment's live replica count, grows only as far as the
+    requested weight needs, and `promote`/`rollback` return stable to that
+    same resting count. `None` means "inflate as little as possible" -- one
+    replica beyond resting.
+    """
     spec, err = _component_spec(component)
     if spec is None:
         assert err is not None
@@ -1262,34 +1470,38 @@ def start(
         return CanaryResult(False, message)
 
     weight_percent = max(1, min(99, weight_percent))
-    canary_replicas, stable_replicas = _split_replicas(total_replicas, weight_percent)
+    resting = _resting_replicas(spec.stable_deployment, namespace)
+    max_pool = resting + 1 if total_replicas is None else max(2, total_replicas)
+    plan = _plan_rollout(resting, weight_percent, max_pool)
 
     logger.info(
-        "canary: starting rollout at %d%% (canary=%d, stable=%d)",
-        weight_percent,
-        canary_replicas,
-        stable_replicas,
+        "canary: starting rollout at %d%% (canary=%d, stable=%d, resting=%d)",
+        plan.achieved_percent,
+        plan.canary_replicas,
+        plan.stable_replicas,
+        resting,
         extra={
             "component": "canary",
             "action": "start",
-            "weight_percent": weight_percent,
+            "weight_percent": plan.achieved_percent,
+            "requested_weight_percent": plan.requested_percent,
             "canary_component": component,
         },
     )
 
-    canary_result = _scale(spec.canary_deployment, canary_replicas, namespace)
-    if not canary_result.ok:
+    failure = _scale_pool(spec, plan, namespace, current_stable=resting)
+    if failure is not None:
+        track, result = failure
         if component == "api":
             prom_metrics.CANARY_EVENTS_TOTAL.labels(action="start", result="failed").inc()
         prom_metrics.CANARY_COMPONENT_EVENTS_TOTAL.labels(
             component=component, action="start", result="failed"
         ).inc()
-        ops_module.record_canary_action(
-            "start", "failure", canary_result.message, component=component
-        )
+        ops_module.record_canary_action("start", "failure", result.message, component=component)
         logger.error(
-            "canary: start failed scaling canary: %s",
-            canary_result.message,
+            "canary: start failed scaling %s: %s",
+            track,
+            result.message,
             extra={
                 "component": "canary",
                 "action": "start",
@@ -1297,48 +1509,32 @@ def start(
                 "canary_component": component,
             },
         )
-        return canary_result
-    stable_result = _scale(spec.stable_deployment, stable_replicas, namespace)
-    if not stable_result.ok:
-        if component == "api":
-            prom_metrics.CANARY_EVENTS_TOTAL.labels(action="start", result="failed").inc()
-        prom_metrics.CANARY_COMPONENT_EVENTS_TOTAL.labels(
-            component=component, action="start", result="failed"
-        ).inc()
-        ops_module.record_canary_action(
-            "start", "failure", stable_result.message, component=component
-        )
-        logger.error(
-            "canary: start failed scaling stable: %s",
-            stable_result.message,
-            extra={
-                "component": "canary",
-                "action": "start",
-                "outcome": "failed",
-                "canary_component": component,
-            },
-        )
-        return stable_result
+        return result
 
     state["active"] = True
-    state["weight_percent"] = weight_percent
-    state["total_replicas"] = total_replicas
+    state["weight_percent"] = plan.achieved_percent
+    state["total_replicas"] = plan.pool
+    state["resting_replicas"] = resting
+    state["stable_replicas"] = plan.stable_replicas
     history = state.setdefault("history", [])
-    history.append({"action": "start", "weight_percent": weight_percent, "ts": time.time()})
+    history.append({"action": "start", "weight_percent": plan.achieved_percent, "ts": time.time()})
     state["history"] = history[-HISTORY_LIMIT:]
     _save_state(state, component)
 
     if component == "api":
         prom_metrics.CANARY_EVENTS_TOTAL.labels(action="start", result="ok").inc()
         prom_metrics.CANARY_ROLLOUT_ACTIVE.set(1)
-        prom_metrics.CANARY_WEIGHT_PERCENT.set(weight_percent)
+        prom_metrics.CANARY_WEIGHT_PERCENT.set(plan.achieved_percent)
     prom_metrics.CANARY_COMPONENT_EVENTS_TOTAL.labels(
         component=component, action="start", result="ok"
     ).inc()
     prom_metrics.CANARY_COMPONENT_ROLLOUT_ACTIVE.labels(component=component).set(1)
-    prom_metrics.CANARY_COMPONENT_WEIGHT_PERCENT.labels(component=component).set(weight_percent)
+    prom_metrics.CANARY_COMPONENT_WEIGHT_PERCENT.labels(component=component).set(
+        plan.achieved_percent
+    )
     message = (
-        f"Started canary rollout at {weight_percent}% ({canary_replicas}/{total_replicas} replicas)"
+        f"Started canary rollout at {plan.describe()}; {spec.stable_deployment} returns to "
+        f"{_replica_count(resting)} on promote or rollback"
     )
     ops_module.record_canary_action("start", "success", message, component=component)
     logger.info(
@@ -1348,7 +1544,7 @@ def start(
             "component": "canary",
             "action": "start",
             "outcome": "ok",
-            "weight_percent": weight_percent,
+            "weight_percent": plan.achieved_percent,
             "canary_component": component,
         },
     )
@@ -1494,7 +1690,7 @@ def _finalize_promotion(
     state: dict[str, Any],
     canary_health: TrackHealth,
     namespace: str,
-    total: int,
+    resting: int,
     spec: ComponentSpec,
     component: str,
     traffic_note: str = "",
@@ -1510,6 +1706,9 @@ def _finalize_promotion(
     rollout onto the new version doesn't become healthy, so an operator can retry
     or roll the canary back rather than being left in an ambiguous half-promoted
     state.
+
+    `resting` is the replica count stable had before the rollout inflated the
+    pool; deflating back to it here is what keeps the pool transient (#3833).
     """
     version = canary_health.version
     if not version:
@@ -1542,10 +1741,12 @@ def _finalize_promotion(
         )
 
     canary_result = _scale(spec.canary_deployment, 0, namespace)
-    stable_result = _scale(spec.stable_deployment, total, namespace)
+    stable_result = _scale(spec.stable_deployment, resting, namespace)
 
     state["weight_percent"] = 0
     state["active"] = False
+    state["total_replicas"] = resting
+    state["stable_replicas"] = resting
     history = state.setdefault("history", [])
     history.append(
         {"action": "promote", "weight_percent": 100, "version": version, "ts": time.time()}
@@ -1563,8 +1764,8 @@ def _finalize_promotion(
     prom_metrics.CANARY_COMPONENT_WEIGHT_PERCENT.labels(component=component).set(0)
     prom_metrics.CANARY_COMPONENT_ROLLOUT_ACTIVE.labels(component=component).set(0)
     message = (
-        f"Promoted {version} to {spec.stable_deployment} at 100% traffic; canary scaled back "
-        f"to 0{traffic_note}"
+        f"Promoted {version} to {spec.stable_deployment} at 100% traffic; canary scaled back to 0 "
+        f"and stable back to its resting {_replica_count(resting)}{traffic_note}"
     )
     ops_module.record_canary_action("promote", "success", message, component=component)
     logger.info(
@@ -1591,20 +1792,25 @@ def _finalize_promotion(
 def promote(
     namespace: str = DEFAULT_NAMESPACE,
     step_percent: int = 25,
-    total_replicas: int = DEFAULT_TOTAL_REPLICAS,
+    total_replicas: int | None = None,
     *,
     component: str = "api",
     force: bool = False,
 ) -> CanaryResult:
     """Increase the canary's traffic share by `step_percent`.
 
+    The pool is re-planned for the new weight rather than re-sliced at a
+    fixed width (#3833), so a step that needs more granularity grows the
+    pool and one that needs less lets it shrink; `total_replicas` is the
+    same ceiling `start` takes.
+
     At 100%, instead of leaving the canary holding all the traffic, this
     copies the canary's image version onto stable, waits for stable's
     rollout to become healthy, then scales canary back to 0 and stable back
-    to `total_replicas` -- completing the deploy -> gate -> promote cycle
-    with stable now running the promoted version (see #3409). Refuses to
-    shift more traffic to an unhealthy canary at every step, including this
-    final one.
+    to the replica count it was resting at before the rollout -- completing
+    the deploy -> gate -> promote cycle with stable now running the promoted
+    version (see #3409). Refuses to shift more traffic to an unhealthy
+    canary at every step, including this final one.
 
     Also refuses -- at every step -- to promote a canary track that has
     *measurably* served no traffic (#3829): a build no request has ever
@@ -1675,43 +1881,50 @@ def promote(
     elif not canary_traffic.attributable:
         traffic_note = f" (canary traffic not verified: {canary_traffic.reason})"
 
-    total = state.get("total_replicas", total_replicas)
+    resting = _resting_from_state(state, total_replicas)
+    max_pool = resting + 1 if total_replicas is None else max(2, total_replicas)
     new_weight = min(100, state.get("weight_percent", 0) + max(1, step_percent))
 
     if new_weight >= 100:
         return _finalize_promotion(
-            state, canary_health, namespace, total, spec, component, traffic_note
+            state, canary_health, namespace, resting, spec, component, traffic_note
         )
 
-    canary_replicas, stable_replicas = _split_replicas(total, new_weight)
+    plan = _plan_rollout(resting, new_weight, max_pool)
+    current_stable = _first_replica_count(
+        _desired_replicas(spec.stable_deployment, namespace),
+        state.get("stable_replicas"),
+        resting,
+    )
 
     logger.info(
         "canary: promoting rollout from %d%% to %d%% (canary=%d, stable=%d)",
         state.get("weight_percent", 0),
-        new_weight,
-        canary_replicas,
-        stable_replicas,
+        plan.achieved_percent,
+        plan.canary_replicas,
+        plan.stable_replicas,
         extra={
             "component": "canary",
             "action": "promote",
-            "weight_percent": new_weight,
+            "weight_percent": plan.achieved_percent,
+            "requested_weight_percent": plan.requested_percent,
             "canary_component": component,
         },
     )
 
-    canary_result = _scale(spec.canary_deployment, canary_replicas, namespace)
-    if not canary_result.ok:
+    failure = _scale_pool(spec, plan, namespace, current_stable=current_stable)
+    if failure is not None:
+        track, result = failure
         if component == "api":
             prom_metrics.CANARY_EVENTS_TOTAL.labels(action="promote", result="failed").inc()
         prom_metrics.CANARY_COMPONENT_EVENTS_TOTAL.labels(
             component=component, action="promote", result="failed"
         ).inc()
-        ops_module.record_canary_action(
-            "promote", "failure", canary_result.message, component=component
-        )
+        ops_module.record_canary_action("promote", "failure", result.message, component=component)
         logger.error(
-            "canary: promote failed scaling canary: %s",
-            canary_result.message,
+            "canary: promote failed scaling %s: %s",
+            track,
+            result.message,
             extra={
                 "component": "canary",
                 "action": "promote",
@@ -1719,43 +1932,29 @@ def promote(
                 "canary_component": component,
             },
         )
-        return canary_result
-    stable_result = _scale(spec.stable_deployment, stable_replicas, namespace)
-    if not stable_result.ok:
-        if component == "api":
-            prom_metrics.CANARY_EVENTS_TOTAL.labels(action="promote", result="failed").inc()
-        prom_metrics.CANARY_COMPONENT_EVENTS_TOTAL.labels(
-            component=component, action="promote", result="failed"
-        ).inc()
-        ops_module.record_canary_action(
-            "promote", "failure", stable_result.message, component=component
-        )
-        logger.error(
-            "canary: promote failed scaling stable: %s",
-            stable_result.message,
-            extra={
-                "component": "canary",
-                "action": "promote",
-                "outcome": "failed",
-                "canary_component": component,
-            },
-        )
-        return stable_result
+        return result
 
-    state["weight_percent"] = new_weight
+    state["weight_percent"] = plan.achieved_percent
+    state["total_replicas"] = plan.pool
+    state["stable_replicas"] = plan.stable_replicas
+    state["resting_replicas"] = resting
     history = state.setdefault("history", [])
-    history.append({"action": "promote", "weight_percent": new_weight, "ts": time.time()})
+    history.append(
+        {"action": "promote", "weight_percent": plan.achieved_percent, "ts": time.time()}
+    )
     state["history"] = history[-HISTORY_LIMIT:]
     _save_state(state, component)
 
     if component == "api":
         prom_metrics.CANARY_EVENTS_TOTAL.labels(action="promote", result="ok").inc()
-        prom_metrics.CANARY_WEIGHT_PERCENT.set(new_weight)
+        prom_metrics.CANARY_WEIGHT_PERCENT.set(plan.achieved_percent)
     prom_metrics.CANARY_COMPONENT_EVENTS_TOTAL.labels(
         component=component, action="promote", result="ok"
     ).inc()
-    prom_metrics.CANARY_COMPONENT_WEIGHT_PERCENT.labels(component=component).set(new_weight)
-    message = f"Promoted canary to {new_weight}% ({canary_replicas}/{total} replicas){traffic_note}"
+    prom_metrics.CANARY_COMPONENT_WEIGHT_PERCENT.labels(component=component).set(
+        plan.achieved_percent
+    )
+    message = f"Promoted canary to {plan.describe()}{traffic_note}"
     ops_module.record_canary_action("promote", "success", message, component=component)
     logger.info(
         "canary: %s",
@@ -1773,17 +1972,23 @@ def promote(
 
 def rollback(
     namespace: str = DEFAULT_NAMESPACE,
-    total_replicas: int = DEFAULT_TOTAL_REPLICAS,
+    total_replicas: int | None = None,
     *,
     trigger: str = "manual",
     component: str = "api",
 ) -> CanaryResult:
-    """Cut all traffic back to the stable Deployment.
+    """Cut all traffic back to the stable Deployment and deflate the pool.
 
     Scales the canary Deployment to 0 first (removing it from the Service's
     endpoints, which stops it receiving traffic) before restoring stable --
     this is the emergency escape hatch and must not be blocked by a flaky
     stable-scale-up.
+
+    Stable is restored to the count `start` recorded it resting at, not to
+    `total_replicas` (#3833): the rollout is what inflated the pool, so
+    ending the rollout is what has to give the capacity back. `total_replicas`
+    survives only as a fallback for a state file written before that count
+    was recorded.
 
     `trigger` is "manual" for an operator-initiated rollback (dashboard/CLI/
     API) or "auto" when called from `evaluate()`'s automatic regression
@@ -1811,7 +2016,7 @@ def rollback(
         )
         return CanaryResult(False, message)
 
-    total = state.get("total_replicas", total_replicas)
+    resting = _resting_from_state(state, total_replicas)
     previous_weight = state.get("weight_percent", 0)
 
     logger.info(
@@ -1848,10 +2053,12 @@ def rollback(
             },
         )
         return canary_result
-    stable_result = _scale(spec.stable_deployment, total, namespace)
+    stable_result = _scale(spec.stable_deployment, resting, namespace)
 
     state["active"] = False
     state["weight_percent"] = 0
+    state["total_replicas"] = resting
+    state["stable_replicas"] = resting
     history = state.setdefault("history", [])
     history.append(
         {"action": "rollback", "from_weight_percent": previous_weight, "ts": time.time()}
@@ -1887,7 +2094,7 @@ def rollback(
         return CanaryResult(
             True,
             f"Canary traffic stopped (scaled to 0%), but restoring {spec.stable_deployment} to "
-            f"{total} replicas failed: {stable_result.message}",
+            f"{_replica_count(resting)} failed: {stable_result.message}",
         )
 
     if component == "api":
@@ -1895,7 +2102,10 @@ def rollback(
     prom_metrics.CANARY_COMPONENT_EVENTS_TOTAL.labels(
         component=component, action="rollback", result="ok"
     ).inc()
-    message = f"Rolled back canary rollout from {previous_weight}% to 0%"
+    message = (
+        f"Rolled back canary rollout from {previous_weight}% to 0%; {spec.stable_deployment} "
+        f"restored to its resting {_replica_count(resting)}"
+    )
     ops_module.record_canary_action("rollback", "success", message, component=component)
     logger.info(
         "canary: rolled back from %d%% to 0%% (trigger=%s)",
@@ -1916,6 +2126,7 @@ __all__ = [
     "CanaryResult",
     "TrackHealth",
     "TrackMetrics",
+    "RolloutPlan",
     "ComponentSpec",
     "COMPONENTS",
     "SERVICE_NAME",
@@ -1927,8 +2138,7 @@ __all__ = [
     "WEB_CANARY_DEPLOYMENT",
     "WEB_IMAGE_REPOSITORY",
     "DEFAULT_NAMESPACE",
-    "DEFAULT_TOTAL_REPLICAS",
-    "DEFAULT_WEB_TOTAL_REPLICAS",
+    "DEFAULT_RESTING_REPLICAS",
     "OLLAMA_UNSUPPORTED_REASON",
     "MAX_SCRAPED_PODS",
     "NON_TRAFFIC_PATHS",

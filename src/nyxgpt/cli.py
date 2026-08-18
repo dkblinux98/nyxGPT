@@ -1552,9 +1552,17 @@ def cmd_self_heal_status(_cfg_path: Path | None) -> int:
             suffix = " (state could not be determined -- not counted unhealthy)"
         elif not c["desired"]:
             suffix = " (disabled -- not auto-healed)"
+        elif not c.get("healable", True):
+            # #3832: nothing self-heal can do converges this component (an
+            # unschedulable Pod), so say so and print the cluster's own
+            # reason -- "unhealthy, and nothing happening" with no cause is
+            # what left an operator watching Pods silently churn.
+            suffix = " (not auto-healable)"
         else:
             suffix = ""
         print(f" [{marker}] {c['service']}: state={c['state']} health={health}{suffix}")
+        if not c.get("healable", True) and c.get("note"):
+            print(f"        {c['note']}")
     if data["events"]:
         print("\nRecent heal events:")
         for e in data["events"][-10:]:
@@ -1622,8 +1630,11 @@ def _add_install_arguments(parser: argparse.ArgumentParser) -> None:
         help=(
             "Install the api/web services from the current checkout -- an editable venv "
             "(pip install -e) plus the Next dev server -- instead of building/downloading "
-            "artifacts, so the stack runs the working tree at HEAD (#3789). Requires a "
-            "checkout; without this flag the artifact path is used"
+            "artifacts, so the stack runs the working tree at HEAD (#3789). With "
+            "--kubernetes it builds the two container images from the working tree "
+            "instead of from the published artifacts (#3834); with --terraform it builds "
+            "the api/web images from that tree instead of pulling the published ones "
+            "(#3835). Requires a checkout; without this flag the artifact path is used"
         ),
     )
     parser.add_argument(

@@ -6,7 +6,10 @@ stage 1 of the ratified build sequence; the remaining stages are specced as
 issue-ready work items in [§8](#8-implementation-plan-issue-ready).
 **Supersedes:** the number-ordered push dispatch described implicitly by
 `notify_scrum_ready.yml` / `scrummaster_next_issue.sh` (mechanism retained,
-decision-making replaced — see §6).
+decision-making replaced — see §6). **Delivered 2026-08-18:** W4 (#3908, the
+grooming artifact) and W5 (#3883, the pull) landed together;
+`scrummaster_next_issue.sh` is deleted and `notify_scrum_ready.yml` is now
+`developer_pull_next_issue.yml`, running under the developer's token.
 
 ---
 
@@ -252,7 +255,10 @@ W5 ──▶ W6 (charters/runbooks/docs)
   Implement §6: plan-doc order → eligibility filter → WIP-2 check (board/PR
   state, not session memory) → one-against-one file-overlap check → Status
   In Progress then assign. Replaces the lowest-number selection in
-  `scrummaster_next_issue.sh` / `notify_scrum_ready.yml`. AC: §5 assignment
+  `scrummaster_next_issue.sh` / `notify_scrum_ready.yml`. **Delivered
+  2026-08-18** as `scripts/agents/developer_pull_next.sh` +
+  `lib/pull_next_issue.py`, dispatched by
+  `.github/workflows/developer_pull_next_issue.yml`. AC: §5 assignment
   matrix honored (scrummaster-assigned claimable, unassigned stamped, owner
   skipped, anomalies inspected); dispatch ordering status-before-assign;
   overlap conflict yields next candidate, never a parallel pull.

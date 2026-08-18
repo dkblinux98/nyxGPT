@@ -9,9 +9,11 @@ data:
     default_model = qwen2.5:0.5b
     chat_timeout_seconds = 180
     # Chat session storage backend. "file" keeps sessions on each pod's own
-    # filesystem, which forks the session list per pod/replica -- with the 4
-    # stable replicas below, consecutive requests from one browser land on
-    # different pods and see different sessions. This deployment therefore
+    # filesystem, which forks the session list per pod/replica -- and the
+    # stable Deployment is not pinned to one Pod: a canary rollout grows the
+    # pool (#3833) and every restart replaces the Pod, so consecutive
+    # requests from one browser would land on different pods and see
+    # different sessions. This deployment therefore
     # uses "cassandra" (#3786), backed by the in-cluster Cassandra in
     # k8s/statefulset-cassandra.yaml, so every replica -- and every other
     # deployment mode -- shares one session list. See docs/session-storage.md.

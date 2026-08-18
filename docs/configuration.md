@@ -1158,10 +1158,20 @@ wait_time_ms = 50               # max wait to fill a batch
 
 Local canary rollout controls (see `/admin/canary`).
 
+`total_replicas` is the largest pool a rollout may grow to, not a pool the
+stable Deployment carries between rollouts: stable rests at its own replica
+count, `nyxgpt canary start` borrows what the requested weight needs up to
+this ceiling, and promote/rollback give the borrowed replicas back (#3833).
+Raising it buys finer weight steps — 4 makes 25% expressible, 2 keeps a
+rollout to one extra Pod — at the cost of more Pods while a rollout runs. A
+weight the pool cannot express exactly is rounded, and the command reports
+what it rounded to. See
+[kubernetes.md](kubernetes.md#canary-deployment).
+
 ```ini
 [canary]
 namespace = nyxgpt
-total_replicas = 4
+total_replicas = 4                      # CEILING on the rollout pool, not a standing pool
 step_percent = 25                       # traffic increment per step
 error_rate_threshold_percent = 5        # auto-rollback threshold
 latency_p95_threshold_ms = 2000.0       # auto-rollback threshold

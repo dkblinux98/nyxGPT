@@ -1088,6 +1088,8 @@ component.
   "component": "api",
   "active": true,
   "weight_percent": 25,
+  "pool_replicas": 4,
+  "resting_replicas": 1,
   "stable": { "state": "healthy", "message": "nyxgpt-api-stable healthy (3/3 ready)", "version": "2.0.0-abc1234" },
   "canary": { "state": "healthy", "message": "nyxgpt-api-canary healthy (1/1 ready)", "version": "2.0.0-def5678" },
   "metrics": {
@@ -1120,6 +1122,11 @@ component.
   "mode_message": null
 }
 ```
+
+`pool_replicas` is the size the running rollout grew the pool to and
+`resting_replicas` is the count `promote`/`rollback` will return the stable
+Deployment to; both are `0` when no rollout is in progress, since the pool
+only exists for the duration of one (#3833).
 
 `stable`/`canary.state` is one of `"not_deployed"` (cluster unreachable, the
 Deployment doesn't exist yet, or it's at 0 desired replicas -- neutral, not
@@ -1182,10 +1189,19 @@ rollout is already in progress.
 `weight_percent` is optional (default `10`), clamped to `1`-`99`.
 `component` is optional (default `"api"`; `"api"` or `"web"`).
 
+Starting a rollout **grows** the replica pool for its duration rather than
+subdividing a standing one (#3833): stable rests at its own replica count,
+the pool borrows what the weight needs up to `[canary] total_replicas`, and
+`promote`/`rollback` hand the borrowed replicas back. Replica counts are
+integers, so a weight the chosen pool cannot express exactly is rounded —
+the response says which weight is actually being served, and `status`
+reports the pool it grew to (`pool_replicas`) and the count it will return
+to (`resting_replicas`).
+
 **Response:**
 
 ```json
-{ "ok": true, "message": "Started canary rollout at 10% (1/4 replicas)" }
+{ "ok": true, "message": "Started canary rollout at 25% (1/4 replicas); 10% is not expressible in a pool of at most 4 replicas, so it rounded to 25% -- raise `[canary] total_replicas` for finer steps; nyxgpt-api-stable returns to 1 replica on promote or rollback" }
 ```
 
 ### `POST /api/v1/canary/evaluate`
@@ -1221,7 +1237,8 @@ that is simply idle; components whose Pods export no `/metrics` (`web`) are
 not traffic-gated and say so in the result message. At 100%, instead of
 leaving the canary holding all the traffic, this copies the canary's image
 version onto `nyxgpt-api-stable`, waits for stable's rollout to become
-healthy, then scales canary back to 0 and stable back to `total_replicas` --
+healthy, then scales canary back to 0 and stable back to the replica count
+it was resting at before the rollout borrowed any (#3833) --
 stable now runs the promoted version at 100% traffic, completing the
 deploy -> gate -> promote cycle. If stable's rollout onto the new version
 fails, canary is left running untouched (`409`) so you can retry or roll
@@ -1238,16 +1255,20 @@ back. Returns `409` if there is no rollout in progress.
 optional (default `false`) and only bypasses the no-traffic gate above --
 never the health gate.
 
+Each step re-plans the pool for the new weight instead of re-slicing a fixed
+one, so a step needing more granularity grows it and one needing less lets it
+shrink.
+
 **Response (intermediate step):**
 
 ```json
-{ "ok": true, "message": "Promoted canary to 35% (1/4 replicas)" }
+{ "ok": true, "message": "Promoted canary to 50% (1/2 replicas)" }
 ```
 
 **Response (final step, 100%):**
 
 ```json
-{ "ok": true, "message": "Promoted nyxgpt-api:2.0.0-abc1234 to nyxgpt-api-stable at 100% traffic; canary scaled back to 0" }
+{ "ok": true, "message": "Promoted nyxgpt-api:2.0.0-abc1234 to nyxgpt-api-stable at 100% traffic; canary scaled back to 0 and stable back to its resting 1 replica" }
 ```
 
 ### `POST /api/v1/canary/rollback`
@@ -1304,9 +1325,18 @@ a core component an operator deliberately stopped via `nyxgpt ops down`/
 [self-healing.md#desired-state-for-observability-profiles](self-healing.md#desired-state-for-observability-profiles);
 [self-healing.md#intentional-stops-nyxgpt-ops-downstop-vs-self-heal](self-healing.md#intentional-stops-nyxgpt-ops-downstop-vs-self-heal)
 for the latter). Each component also carries `restart_count` (consecutive
-automatic restart attempts since it last recovered) and `giving_up` (`true`
+automatic restart attempts since it last recovered), `giving_up` (`true`
 once that count has hit `max_consecutive_restarts` and the automatic loop
-has stopped retrying it). `compose_probe_available: false` means the
+has stopped retrying it), `healable` and `heal_key`. `healable: false` means
+no heal action would converge this component, so none is taken -- by the
+automatic pass *or* by an explicit `POST /self-heal/heal` on it -- and `note`
+carries the reason; today this is a `Pending` Kubernetes Pod, e.g. one the
+scheduler refused, which deleting cannot fix (#3832, see
+[self-healing.md#pending-pods-are-reported-not-deleted](self-healing.md#pending-pods-are-reported-not-deleted)).
+Such a row is never `giving_up`: nothing was tried. `heal_key` is the
+identity the restart budget is kept under -- the service name for most
+components, the owning ReplicaSet (`kubernetes/replicaset/<name>`) for a Pod,
+because healing a Pod replaces it. `compose_probe_available: false` means the
 `docker compose ps` survey couldn't be run from this vantage point at all --
 no `docker`, an unreachable daemon, or a compose file that isn't there. It is
 answered by *running* the survey, not by checking that a binary and a file
@@ -1350,15 +1380,16 @@ otherwise.
   "compose_probe_available": true,
   "compose_probe_reason": "",
   "components": [
-    { "service": "api", "container": "nyxgpt-api", "state": "started", "health": "", "healthy": true, "source": "native", "desired": true, "known": true, "tier": "", "restart_count": 0, "giving_up": false },
-    { "service": "web", "container": "nyxgpt-web-1", "state": "running", "health": "healthy", "healthy": true, "source": "compose", "desired": true, "known": true, "tier": "", "restart_count": 0, "giving_up": false },
-    { "service": "cassandra", "container": "nyxgpt-tf-cassandra", "state": "running", "health": "healthy", "healthy": true, "source": "terraform", "desired": true, "known": true, "tier": "", "restart_count": 0, "giving_up": false },
-    { "service": "nyxgpt-api-stable-7f8b9c-abcde", "container": "nyxgpt-api-stable-7f8b9c-abcde", "state": "Running", "health": "ready", "healthy": true, "source": "kubernetes", "desired": true, "known": true, "tier": "core", "restart_count": 0, "giving_up": false },
-    { "service": "grafana-6d4c8f-xyz12", "container": "grafana-6d4c8f-xyz12", "state": "Running", "health": "ready", "healthy": true, "source": "kubernetes", "desired": true, "known": true, "tier": "observability", "restart_count": 0, "giving_up": false },
-    { "service": "grafana", "container": "", "state": "absent", "health": "", "healthy": false, "source": "compose", "desired": true, "known": true, "tier": "", "restart_count": 5, "giving_up": true },
-    { "service": "loki", "container": "nyxgpt-loki-1", "state": "exited", "health": "", "healthy": false, "source": "compose", "desired": false, "known": true, "tier": "", "restart_count": 0, "giving_up": false }
+    { "service": "api", "container": "nyxgpt-api", "state": "started", "health": "", "healthy": true, "source": "native", "desired": true, "known": true, "tier": "", "healable": true, "restart_count": 0, "giving_up": false },
+    { "service": "web", "container": "nyxgpt-web-1", "state": "running", "health": "healthy", "healthy": true, "source": "compose", "desired": true, "known": true, "tier": "", "healable": true, "restart_count": 0, "giving_up": false },
+    { "service": "cassandra", "container": "nyxgpt-tf-cassandra", "state": "running", "health": "healthy", "healthy": true, "source": "terraform", "desired": true, "known": true, "tier": "", "healable": true, "restart_count": 0, "giving_up": false },
+    { "service": "nyxgpt-api-stable-7f8b9c-abcde", "container": "nyxgpt-api-stable-7f8b9c-abcde", "state": "Running", "health": "ready", "healthy": true, "source": "kubernetes", "desired": true, "known": true, "tier": "core", "healable": true, "heal_key": "kubernetes/replicaset/nyxgpt-api-stable-7f8b9c", "restart_count": 0, "giving_up": false },
+    { "service": "nyxgpt-api-canary-1a2b3c-r56wb", "container": "nyxgpt-api-canary-1a2b3c-r56wb", "state": "Pending", "health": "unschedulable", "healthy": false, "source": "kubernetes", "desired": true, "known": true, "tier": "core", "healable": false, "heal_key": "kubernetes/replicaset/nyxgpt-api-canary-1a2b3c", "note": "Pending (Unschedulable): 0/1 nodes are available: 1 Insufficient memory. -- not healed: deleting a Pod cannot create capacity, and its replacement would be unschedulable for the same reason. Add node capacity or lower the workload's resource requests.", "restart_count": 0, "giving_up": false },
+    { "service": "grafana-6d4c8f-xyz12", "container": "grafana-6d4c8f-xyz12", "state": "Running", "health": "ready", "healthy": true, "source": "kubernetes", "desired": true, "known": true, "tier": "observability", "healable": true, "restart_count": 0, "giving_up": false },
+    { "service": "grafana", "container": "", "state": "absent", "health": "", "healthy": false, "source": "compose", "desired": true, "known": true, "tier": "", "healable": true, "restart_count": 5, "giving_up": true },
+    { "service": "loki", "container": "nyxgpt-loki-1", "state": "exited", "health": "", "healthy": false, "source": "compose", "desired": false, "known": true, "tier": "", "healable": true, "restart_count": 0, "giving_up": false }
   ],
-  "unhealthy_count": 1,
+  "unhealthy_count": 2,
   "unknown_count": 0,
   "events": [
     { "ts": 1730000000.0, "service": "web", "reason": "state=exited health=n/a", "action": "restart", "ok": true, "restart_count": 1, "message": "Restarted web" }
@@ -1395,8 +1426,12 @@ currently *disabled* in config (`desired: false`) -- see
 With `{"service": "<name>"}`, restarts that one component immediately
 regardless of its current health *or* its `desired` flag — the dashboard's
 per-component "Heal now" button, which can force a disabled component back
-up the same way it bypasses backoff. Returns `404` if `service` isn't a
-currently-known container.
+up the same way it bypasses backoff. The one thing it does not override is
+`healable: false`: a component no action would converge (a `Pending`
+Kubernetes Pod) is refused with the reason, recorded as a non-ok event with
+`"action": "refused"`, because the action would not be a repair for an
+operator either (#3832). Returns `404` if `service` isn't a currently-known
+container.
 
 **Request:**
 
