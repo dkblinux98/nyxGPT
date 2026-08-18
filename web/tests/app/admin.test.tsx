@@ -1628,6 +1628,76 @@ describe('AdminPage Component', () => {
    * (see `KNOWN_FIELDS` in page.tsx) renders generically here, grouped by
    * topic. Also covers the drift-reconciliation stale-key banner.
    */
+  describe('pending-restart notice (#3806)', () => {
+    it('shows nothing on entry when every saved value is already running', async () => {
+      render(<AdminPage />);
+      await waitFor(() => {
+        expect(screen.getByRole('heading', { name: /configuration wizard/i })).toBeInTheDocument();
+      });
+      expect(screen.queryByRole('alert', { name: /restart required/i })).not.toBeInTheDocument();
+    });
+
+    it('shows a restart owed from an earlier visit or from `nyxgpt secrets setup`', async () => {
+      // The state is the backend's, shared with the CLI -- so a key rotated
+      // outside the browser must announce itself the moment the wizard opens.
+      server.use(
+        http.get('/api/v1/infra/restart-status', () =>
+          HttpResponse.json({
+            pending: { web: { keys: ['auth.api_key'], since: 1 } },
+            restart_command: 'nyxgpt ops restart web',
+            session_disrupting: ['web'],
+          })
+        )
+      );
+
+      render(<AdminPage />);
+      await waitFor(() => {
+        expect(screen.getByRole('alert', { name: /restart required/i })).toBeInTheDocument();
+      });
+      expect(screen.getByText(/not yet in effect/i)).toBeInTheDocument();
+      expect(screen.getByText(/auth\.api_key/)).toBeInTheDocument();
+    });
+
+    it('raises the notice when a save reports a restart-required key as pending', async () => {
+      // The wizard reconciles with GET /infra/restart-status after every save,
+      // so the notice reflects the backend's own view rather than a
+      // client-side guess about what the payload implied.
+      server.use(
+        http.get('/api/v1/infra/restart-status', () =>
+          HttpResponse.json({
+            pending: { web: { keys: ['auth.api_key'], since: 1 } },
+            restart_command: 'nyxgpt ops restart web',
+            session_disrupting: ['web'],
+          })
+        )
+      );
+
+      render(<AdminPage />);
+      await selectModelAndClickNext(1);
+      await waitFor(() => {
+        fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByRole('alert', { name: /restart required/i })).toBeInTheDocument();
+      });
+      // ...and it names the tier that is still running the old value, rather
+      // than leaving the user to discover a 401 wall (#3806).
+      expect(screen.getByText(/drop this browser session/i)).toBeInTheDocument();
+    });
+
+    it('renders a per-field activation hint before the save, not only after', async () => {
+      render(<AdminPage />);
+      await selectModelAndClickNext(2);
+      await waitFor(() => {
+        expect(screen.getByLabelText('API Host')).toBeInTheDocument();
+      });
+      expect(
+        screen.getAllByText(/not in effect until you restart: api/i).length
+      ).toBeGreaterThan(0);
+    });
+  });
+
   describe('Additional Settings step (#3388)', () => {
     const SCHEMA_WITH_EXTRAS = [
       {
