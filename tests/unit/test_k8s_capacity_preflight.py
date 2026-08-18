@@ -818,21 +818,36 @@ def test_a_failing_preflight_stops_the_install() -> None:
 
 
 def test_standalone_observability_install_is_preflighted_too() -> None:
-    """`ops observability --kubernetes --local` adds the layer that broke it."""
+    """`ops observability --kubernetes --local` adds the layer that broke it.
+
+    A failing preflight stops before anything reaches the *cluster*. It does
+    not stop the packaged-resource sync, which runs first on purpose (#3834):
+    the manifests the preflight renders are package data that only exists
+    under `K8S_DIR` once that sync has run, so preflighting ahead of it would
+    measure nothing on a machine with no checkout and report a skip for a node
+    it could have measured.
+    """
+    calls: list[str] = []
     with (
         patch.object(ops, "_ensure_kubectl_and_cluster", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(
             ops,
             "_preflight_k8s_capacity",
-            return_value=[ops.OpsResult(False, "Not enough node memory")],
+            side_effect=lambda *a, **k: calls.append("preflight")
+            or [ops.OpsResult(False, "Not enough node memory")],
         ) as preflight,
         patch.object(ops, "_apply_k8s_observability") as apply_observability,
-        patch.object(ops, "_sync_packaged_resources") as sync,
+        patch.object(
+            ops,
+            "_sync_packaged_resources",
+            side_effect=lambda *a, **k: calls.append("sync") or [ops.OpsResult(True, "synced")],
+        ) as sync,
     ):
         results = ops.observability_kubernetes()
 
     preflight.assert_called_once()
-    sync.assert_not_called()
+    sync.assert_called_once()
+    assert calls == ["sync", "preflight"]
     apply_observability.assert_not_called()
     assert not all(r.ok for r in results)
 

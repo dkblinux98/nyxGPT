@@ -57,6 +57,13 @@ def _block_after(hcl: str, open_brace: int) -> str:
     raise AssertionError(f"unbalanced braces starting at offset {open_brace}")
 
 
+def _without_comments(hcl: str) -> str:
+    """Strip `#` comment lines -- a comment explaining why something is NOT
+    done must not read as it being done (several of these files carry a
+    comment naming `var.repo_path` precisely to say it is not used there)."""
+    return "\n".join(line for line in hcl.splitlines() if not line.lstrip().startswith("#"))
+
+
 def _sub_blocks(hcl: str, keyword: str) -> list[str]:
     """Return the body of every top-level `<keyword> { ... }` block in `hcl`."""
     blocks = []
@@ -144,3 +151,73 @@ def test_api_container_still_mounts_docker_socket() -> None:
     assert any(
         "/var/run/docker.sock" in v and v.count("/var/run/docker.sock") == 2 for v in volume_blocks
     )
+
+
+# --- dev mode vs the artifact path (#3835) ---
+
+
+def test_images_are_variables_so_published_ones_can_be_deployed() -> None:
+    """The artifact path runs `ghcr.io/dkblinux98/nyxgpt-*`, whose repository
+    is not `nyxgpt-api` -- so the image is a full ref passed in, not a tag
+    appended to a hard-coded name."""
+    main = _read("main.tf")
+    for resource, variable in (("api", "var.api_image"), ("web", "var.web_image")):
+        block = _resource_block(main, "docker_image", resource)
+        assert re.search(rf"name\s*=\s*{re.escape(variable)}\b", block), block
+
+
+def test_the_build_block_is_conditional_on_dev_mode() -> None:
+    """A `build {}` block makes the deploy need a checkout. It must exist only
+    when `build_from_source` says the operator asked for one (`--dev`)."""
+    main = _read("main.tf")
+    for resource in ("api", "web"):
+        block = _resource_block(main, "docker_image", resource)
+        marker = block.find('dynamic "build"')
+        assert marker != -1, f"expected a dynamic build block in docker_image.{resource}"
+        dynamic_body = _block_after(block, block.index("{", marker))
+        assert "var.build_from_source ? [1] : []" in dynamic_body
+        # No unconditional build: `build {` may only appear inside the dynamic
+        # block's content, never at the resource's own level.
+        assert not re.search(r"^\s{2}build\s*\{", block, re.MULTILINE)
+
+
+def test_repo_path_is_optional_so_a_machine_with_no_checkout_can_apply() -> None:
+    variables = _read("variables.tf")
+    repo_path = re.search(r'variable\s+"repo_path"\s*\{([^}]*)\}', variables, re.DOTALL)
+    assert repo_path, "expected a repo_path variable block"
+    assert 'default     = ""' in repo_path.group(1)
+
+
+def test_no_container_mount_resolves_through_the_checkout() -> None:
+    """Every host path the core stack mounts must be ops-managed (~/.nyxGPT)
+    or a system path -- a `${var.repo_path}/...` mount would make the artifact
+    path require the repository it is defined to work without (#3835)."""
+    main = _read("main.tf")
+    for resource in ("api", "web", "ollama", "cassandra"):
+        block = _resource_block(main, "docker_container", resource)
+        for volume in _sub_blocks(block, "volumes"):
+            assert "var.repo_path" not in _without_comments(
+                volume
+            ), f"{resource} mounts through the checkout: {volume}"
+
+
+def test_the_local_stack_config_is_packaged_for_repo_less_installs() -> None:
+    """`nyxgpt ops install --terraform --local` materializes these files from
+    package data (`_sync_local_terraform_config`), so every one of them has to
+    be in `nyxgpt.resources` and be the same file as the tracked source."""
+    packaged = REPO_ROOT / "src" / "nyxgpt" / "resources" / "terraform" / "local"
+    for name in (
+        "main.tf",
+        "variables.tf",
+        "outputs.tf",
+        "versions.tf",
+        "terraform.tfvars.example",
+    ):
+        assert (packaged / name).is_file(), f"{name} is not packaged"
+        assert (packaged / name).read_text() == (TERRAFORM_DIR / name).read_text()
+
+
+def test_the_tfvars_example_carries_no_checkout_path() -> None:
+    """The bootstrapped tfvars is what an operator keeps; nothing in it may
+    tie the deployment to a repository (#3835)."""
+    assert "repo_path" not in _without_comments(_read("terraform.tfvars.example"))

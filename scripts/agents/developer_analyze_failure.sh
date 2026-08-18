@@ -224,6 +224,15 @@ COMMENT
     exit 2
     ;;
 
+  api_overloaded)
+    echo "[analyze] Handling api_overloaded error..." >&2
+    echo "[transient] API reported 529 Overloaded - capacity, not this run" >&2
+    echo "STATUS=TRANSIENT" > /tmp/analysis_result.txt
+    echo "ERROR_TYPE=api_overloaded" >> /tmp/analysis_result.txt
+    echo "WAIT_SECONDS=120" >> /tmp/analysis_result.txt
+    exit 2
+    ;;
+
   network_timeout)
     echo "[analyze] Handling network_timeout error..." >&2
     echo "[transient] Network issues - retry should resolve" >&2

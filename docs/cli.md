@@ -10,7 +10,9 @@ documentation are linked out to instead of duplicated here:
   `nyxgpt ops install`/`nyxgpt ops down`, see
   [Ops helpers](ops.md#nyxgpt-up--nyxgpt-down). `nyxgpt up --dev` brings the
   same stack up from the current checkout instead of from artifacts — see
-  [`--dev`](ops.md#--dev-run-the-current-checkout-without-an-artifact-build)
+  [`--dev`](ops.md#--dev-run-the-current-checkout-without-an-artifact-build);
+  the flag means the same thing for
+  [`--kubernetes`](kubernetes.md#install-modes-artifact-and---dev)
 - Ops (`nyxgpt ops ...`) — see [Ops helpers](ops.md)
 - Cloud/AWS (`nyxgpt cloud ...`) — deploy, `nyxgpt cloud status` (what is
   deployed and how to reach it), `nyxgpt cloud ops` (read-only inspections

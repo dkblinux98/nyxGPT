@@ -298,7 +298,7 @@ these triggers is added or edited — the review-runbook checklist entry for
 | Workflow | Trigger(s) | Write scope | Actor gate | Notes |
 |---|---|---|---|---|
 | `review_agent_auto_review.yml` | `issue_comment`, `pull_request_review` | `contents`/`pull-requests`/`issues: write`, `REVIEW_AGENT_TOKEN` | `comment.user == HUMAN_OWNER` (manual overrides) / `REVIEW_AGENT` (auto+structured) + fork-PR guard | Fixed by #3600 |
-| `notify_scrum_ready.yml` | `issue_comment` | `SCRUMMASTER_AGENT_TOKEN`, dispatches the scrummaster select-and-start loop | commenter ∈ `{HUMAN_OWNER, SCRUM_AGENT, DEV_AGENT, REVIEW_AGENT, claude[bot]}` | Fixed by #3600; widened by #3870 (D-020) — `claude[bot]` added so Claude remote sessions can issue the `READY_FOR_NEXT_ISSUE` kick; loop protection stays in the layer-2 anchored `comment_gate` (see Verification below) |
+| `developer_pull_next_issue.yml` | `repository_dispatch`(dispatch-next-issue) | `DEVELOPER_AGENT_TOKEN`, runs the pull and claims the chosen issue | none on the trigger — `repository_dispatch` requires write access to send, so there is no public-actor path | Was `notify_scrum_ready.yml`. #3882 replaced the comment kick with an event: prose can name a token, it cannot fire an event, which is how #3706 and #3790 happened. #3883 moved selection here from the scrummaster — the pull decides, under the developer's token |
 | `claude-code-review.yml` | `pull_request`(review_requested,synchronize), `issue_comment`, `workflow_dispatch` | Bash/Write/Edit + `CLAUDE_CODE_OAUTH_TOKEN` | `@review` path: commenter ∈ `{HUMAN_OWNER, REVIEW_AGENT, DEV_AGENT, claude[bot]}` + fork-PR guard; other triggers already gated on `requested_reviewer`/`assignee==REVIEW_AGENT` | Fixed by #3600; widened by #3870 (D-020) — `claude[bot]` added, and the job passes `allowed_bots: "claude"` to `claude-code-action`, which otherwise refuses any bot-actored run; this path has no layer-2 anchored gate (see Verification below) |
 | `handle_acceptance_failure.yml` | `issue_comment` | issues/PR write, `DEV_AGENT_TOKEN` | `comment.user == HUMAN_OWNER`, on the `comment_gate` job | Reference pattern; gate moved to `comment_gate` by #3790 |
 | `developer_auto_implement.yml` | `issues`(assigned), `issue_comment` | `contents`/`issues`/PR write, `DEV_AGENT_TOKEN` | assignee==DEV_AGENT (issues) / `author_association==OWNER` or `user.login` ∈ `{DEV_AGENT, REVIEW_AGENT}` on the `comment_gate` job (retry path) | #3647: extended to `REVIEW_AGENT` so `assign_and_trigger_developer`'s redispatch-fallback comment (posted whenever it has to unassign-then-reassign an already-assigned dev agent) actually starts a run. #3790: the comment path's actor + token tests moved to `comment_gate`, whose verdict `implement` requires |
@@ -322,15 +322,7 @@ representative actors:
   contains(body,'@approve-merge')` evaluates `true` only when HUMAN_OWNER
   comments `@approve-merge`; `false` for any other commenter regardless of
   body content, including a fork contributor.
-- `notify_scrum_ready.yml`: the commenter-in-set check evaluates `true` for
-  HUMAN_OWNER/SCRUM_AGENT/DEV_AGENT/REVIEW_AGENT comments containing
-  `READY_FOR_NEXT_ISSUE`; `false` otherwise. **Widened by #3870 (D-020):**
-  `claude[bot]` — the identity every Claude remote session's GitHub writes
-  carry — now also evaluates `true`. The loop protection this set was once
-  credited with is not weakened by that: it lives in layer 2, the anchored
-  `comment_gate`, which has no author filter, so a `claude[bot]` comment
-  that merely *mentions* the token (or carries an informational marker)
-  still does not dispatch.
+- `developer_pull_next_issue.yml`: nothing to actor-gate. Since #3882 the trigger is a `repository_dispatch`, which only an identity with repo write access can send — the commenter-in-set check (widened to `claude[bot]` by #3870, D-020) went away with the comment trigger it guarded. The anchored comment-token gate it relied on for loop protection is likewise moot: an event cannot be fired by text that mentions it.
 - `claude-code-review.yml`: the `@review` path evaluates `true` for
   HUMAN_OWNER/REVIEW_AGENT/DEV_AGENT and — **since #3870 (D-020)** —
   `claude[bot]`; `false` for any other commenter. The job additionally
@@ -718,7 +710,9 @@ criterion honestly — the falsified section simply was not in the diff.
 ## 7) Open PR
 - Target: active release branch
 - PR body MUST include: "Closes #ISSUE"
-- Ensure CI runs (should pass since pre-commit hooks passed)
+- Ensure CI runs green. The hooks no longer run black/ruff/mypy, so a clean
+  commit is not evidence those pass -- run them yourself before submitting.
+  The reviewer no longer re-runs them and will not catch it for you.
 - Update issue status -> In Review
 - Assign review-agent as PR reviewer (not just assignee)
 

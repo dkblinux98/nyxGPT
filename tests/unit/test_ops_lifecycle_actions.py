@@ -354,6 +354,12 @@ def test_install_terraform_steps_records_success():
         patch.object(ops, "migrate_legacy_volumes", return_value=ok),
         patch.object(ops, "_ensure_terraform_binary", return_value=ok),
         patch.object(ops, "_ensure_terraform_tfvars", return_value=ok),
+        # Unstubbed, this step shells out to a real `docker build` of the
+        # whole checkout -- twice -- against whatever Docker daemon the
+        # developer (or the runner) has, and leaves `nyxgpt-api:local` /
+        # `nyxgpt-web:local` behind on it. This test is about the action
+        # ledger, not about building images (#3834).
+        patch.object(ops, "_build_terraform_docker_images", return_value=ok),
         patch.object(ops, "_generate_compose_config", return_value=ok),
         patch.object(ops, "_ensure_required_models", return_value=ok),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok),
@@ -410,7 +416,7 @@ def test_install_kubernetes_steps_records_success():
     with (
         patch.object(ops, "_refuse_port_collision", return_value=None),
         patch.object(ops, "_ensure_kubectl_and_cluster", return_value=ok),
-        patch.object(ops, "_build_and_load_k8s_image", return_value=ok),
+        patch.object(ops, "_build_and_load_k8s_api_image", return_value=ok),
         # See the note in tests/unit/test_ops.py: both of these shell out, so
         # leaving them real would make this test depend on the machine's
         # docker/cluster state rather than on the code under test.

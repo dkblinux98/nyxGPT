@@ -73,11 +73,12 @@ directly outside of `nyxgpt ops`. Only when neither path can supply the tool
 (an unsupported platform, or no network) does the command fail, and then with
 a link to the installer.
 
-It then builds `nyxgpt-api:local` and `nyxgpt-web:local` and loads each into
-the cluster's image cache (kind/minikube get an explicit load step; Docker
-Desktop's built-in cluster shares the host cache already), bootstraps
-`k8s/secret.yaml` from the example (prompting for the API key interactively,
-or pass `--api-key` — the value is never committed), applies the
+It then builds `nyxgpt-api:local` and `nyxgpt-web:local` **from the published
+artifacts** (see [Install modes](#install-modes-artifact-and---dev)) and loads
+each into the cluster's image cache (kind/minikube get an explicit load step;
+Docker Desktop's built-in cluster shares the host cache already), bootstraps
+`~/.nyxGPT/k8s/secret.yaml` from the example (prompting for the API key
+interactively, or pass `--api-key` — the value is never committed), applies the
 kustomization (which includes both the api and web stable/canary pairs, see
 [Canary Deployment](#canary-deployment), plus the [data and LLM
 tier](#data-and-llm-tier)), waits for Cassandra and Ollama to report Ready --
@@ -104,7 +105,15 @@ into one of three states, and the same way in each (#3827):
 | --- | --- | --- |
 | `[OK]` | Running and passing its readiness probe (or `Succeeded`) | no |
 | `[PENDING]` | Still starting: being scheduled, pulling images, creating containers, or ready on some replicas but not all | **no** |
-| `[FAIL]` | Will not start without intervention: `Unschedulable` (the node cannot fit it), `ImagePullBackOff`, `CrashLoopBackOff`, a container config error, or a `Failed` Pod | yes |
+| `[FAIL]` | Will not start without intervention: the scheduler has not placed it (`Unschedulable` — the node cannot fit it — or `SchedulingGated`), `ImagePullBackOff`, `CrashLoopBackOff`, a container config error, or a `Failed` Pod | yes |
+
+Since #3832 the *reading* behind this table — phase, readiness, whether the
+scheduler placed the Pod, and the cluster's own words for why it did not —
+is `src/nyxgpt/k8s_pod_state.py`, shared with the
+[self-heal watchdog](self-healing.md#pending-pods-are-reported-not-deleted)
+so the install report and the watchdog cannot disagree about the same Pod.
+The table above is `nyxgpt ops`' policy *on* that reading, and stays its own:
+a `CrashLoopBackOff` Pod fails an install while the watchdog restarts it.
 
 A Pod pulling a multi-hundred-megabyte image is doing what it is supposed to,
 so `Pending` is reported as pending and never fails the command; what decides
@@ -120,15 +129,59 @@ kubelet's own reason — instead of consuming the whole rollout budget first.
 
 Each image build mirrors the Homebrew reinstall-if-needed behavior (see
 [ops.md](ops.md)): it fingerprints the app source that image is built from
-(`src/nyxgpt/` + `pyproject.toml` for `nyxgpt-api`; `web/` for `nyxgpt-web`)
-and only re-runs `docker build` when that source changed since the image was
-last built, reporting `<image>: built` / `rebuilt (source changed since last
+(`src/nyxgpt/` + `pyproject.toml` for `nyxgpt-api`; the web tree for
+`nyxgpt-web`) and only re-runs `docker build` when that source changed since
+the image was last built, reporting `<image>: built` / `rebuilt (source changed since last
 build)` / `already up to date (skipped rebuild)` instead of always
 rebuilding. `nyxgpt-web:local`'s build bakes `NEXT_PUBLIC_API_BASE_URL` into
 the browser bundle at build time (see [web/Dockerfile](../web/Dockerfile));
 since the api/web Services here are `ClusterIP`-only (no NodePort/Ingress),
 this defaults to the same host-local address the [Verify](#4-verify) section
 below reaches through `kubectl port-forward`.
+
+## Install modes: artifact (default) and `--dev`
+
+`nyxgpt ops install --kubernetes --local` has the same two install modes the
+native install has (#3789, #3834), and records which one this deployment is
+running so nothing has to guess:
+
+| | Where the two images come from | Needs a checkout? |
+|---|---|---|
+| **artifact** (default) | the published `nyxgpt-api-<version>.tar.gz` / `nyxgpt-web-<version>.tar.gz` release artifacts — the same ones the Homebrew formulas install — staged into their own build context under `~/.nyxGPT/build/kubernetes` | no |
+| **dev** (`--dev`) | the working tree of the checkout you run the command in | yes — refused without one |
+
+The artifact path is what makes this mode satisfy the project's [Repo-less
+Portability](../CLAUDE.md) requirement: the manifests ship inside the package
+(`nyxgpt.resources.k8s`, synced to `~/.nyxGPT/k8s` — which is why the
+kustomization and `secret.yaml` live there and not in a repository), and the
+images are built from published artifacts, so `pip install nyxgpt` followed by
+this one command is a working deployment on a machine that has never seen this
+repository. `.github/workflows/k8s-artifact-smoke.yml` runs exactly that, with
+no checkout in reach, and requires a real chat to answer.
+
+The artifacts are the *source* tarballs rather than the `ghcr.io` images on
+purpose: a release publishes images, but a **release candidate** publishes only
+the tarballs — and a candidate is what acceptance testing installs. One
+artifact channel serves every local install mode, so the command behaves the
+same on both.
+
+`--dev` builds the working tree instead. The Pods then run images built from
+that tree **as it was at install time** — re-run the command to pick new code
+up; there is no live reload, unlike the native dev mode's Next dev server. It
+is refused up front (exit 2) when there is no checkout to build, rather than
+half-installing.
+
+Switching between the modes re-rolls the app tier: both modes produce the same
+`:local` tags, so the Deployment specs are identical across a switch and
+`kubectl apply` alone would leave the Pods on the previous mode's image while
+every report claimed the new one.
+
+`nyxgpt ops status` prints the mode under the Kubernetes section (and
+`nyxgpt ops doctor` as `Install mode (kubernetes): …`), separately from the
+native api/web install mode — one machine can run a native dev install and a
+Kubernetes artifact deployment at the same time. The Infrastructure page in
+the admin dashboard shows the same thing. `nyxgpt ops down --kubernetes`
+clears the record along with the deployment.
 
 `--local` is required and explicit — it's the only locality implemented
 today, and is the precursor to a future cloud deployment target. `--cloud`
@@ -253,6 +306,11 @@ kind create cluster --name nyxgpt-local
 If you'd rather bring your own cluster (minikube, Docker Desktop, a remote
 context, ...), create/select it yourself and the wrapper will use it as-is.
 
+> The steps below are the **manual** equivalent of the wrapped command, run
+> from a source checkout. They are reference material for troubleshooting; the
+> wrapped command reads its manifests from the synced copy under
+> `~/.nyxGPT/k8s` instead of from a checkout.
+
 ## 1. Build the image
 
 ```bash
@@ -352,7 +410,10 @@ overlay -- is also watched by the same
 [self-healing.md#kubernetes-mode](self-healing.md#kubernetes-mode) for how it
 checks Pod readiness via `kubectl get pods` and heals via `kubectl delete
 pod`, on top of (not instead of) the liveness probes and the canary
-mechanism described below. `k8s/rbac.yaml`'s `nyxgpt-api` Role grants the
+mechanism described below. That remedy is restricted to a Pod that is
+Running but not Ready -- a `Pending` Pod is reported with the cluster's own
+reason and never deleted (#3832; see [Pending Pods are reported, not
+deleted](self-healing.md#pending-pods-are-reported-not-deleted)). `k8s/rbac.yaml`'s `nyxgpt-api` Role grants the
 `get`/`list`/`delete` on `pods` this needs, alongside what canary already
 used.
 
@@ -426,7 +487,10 @@ Notes:
   restart a failed Pod. The [self-heal watchdog](self-healing.md) watches
   these Pods too (#3828 -- it reports them under `tier: observability` and
   heals a stuck one by deleting it, the same action it takes on an app-tier
-  Pod), which is what makes the tier visible on the Self-Heal page in this
+  Pod, and under the same restriction: Running-but-not-Ready only, never a
+  `Pending` Pod -- see [Pending Pods are reported, not
+  deleted](self-healing.md#pending-pods-are-reported-not-deleted)), which is
+  what makes the tier visible on the Self-Heal page in this
   mode rather than surveyed through a Compose stack the deployment does not
   have.
 - **Evidence.** `.github/workflows/k8s-observability-smoke.yml` runs the
@@ -509,8 +573,17 @@ Terraform deployments use for these components, so the api's config is
 identical across every containerized mode.
 
 To point the deployment at an *external* Cassandra or Ollama instead, change
-`[rag] cassandra_hosts` / `[ollama] base_url` in `k8s/configmap.yaml` and
-drop the corresponding manifest from `k8s/kustomization.yaml`.
+`[rag] cassandra_hosts` / `[ollama] base_url` in `configmap.yaml` and drop the
+corresponding manifest from `kustomization.yaml`.
+
+Edit the copy under `~/.nyxGPT/k8s/` — that is the one the wrapped command
+applies. Every `nyxgpt ops install --kubernetes --local` re-syncs that
+directory from the package's own manifests, so an edit there survives until the
+next install and is then replaced (`secret.yaml` is the exception: it holds the
+API key, is never packaged, and is left alone). From a source checkout, edit the
+repository's `k8s/` instead and the sync carries the change through — the
+package data is a symlink back to it, so a checkout customization is durable
+where a `~/.nyxGPT/k8s/` one is not.
 
 ## Infrastructure Status card (#3468)
 
@@ -555,6 +628,13 @@ everything else on this page -- the cure is more memory or CPU on the cluster
 VM and a re-run of `nyxgpt ops install --kubernetes --local`, which checks the
 node's capacity against the stack before it applies anything (see [Node
 capacity: what the stack reserves](#node-capacity-what-the-stack-reserves)).
+
+The card also names this deployment's own **install mode** (#3834) — what the
+two images in the cluster were built from, per [Install
+modes](#install-modes-artifact-and---dev) — or `unrecorded` when there is no
+marker for it on the machine the dashboard is running on, which is never
+presented as the artifact default: that default would be a guess about someone
+else's deployment.
 
 The same card carries an **In-cluster observability** section (#3787):
 per-workload readiness for the components in [Observability in the

@@ -66,15 +66,70 @@ migrates any pre-#3346 named-volume data into `~/.nyxGPT/volumes/` (see
 none), installs Terraform via the official HashiCorp tap if it isn't already
 on PATH (`brew install terraform` no longer works on its own — HashiCorp
 pulled the formula from homebrew-core after the 2023 BUSL relicense),
-bootstraps `terraform.tfvars` from the example (a random `auth_api_key` is
-generated unless you pass `--api-key` or answer the interactive prompt),
-builds the `nyxgpt-api:local`/`nyxgpt-web:local` images that
-`docker_image.api`/`.web` reference -- skipping the build and reusing the
-current image when the app source (`src/nyxgpt/`+`pyproject.toml` for api,
-`web/` for web) hasn't changed since it was last built, mirroring the
-Homebrew reinstall-if-needed behavior from [ops.md](ops.md) -- and runs
-`init` → `plan` → `apply`, then reports each container's health plus the
-`api_url`/`web_url`/`ollama_url` outputs.
+materializes the Terraform configuration into `~/.nyxGPT/terraform/` from the
+copy shipped inside the installed package, bootstraps `terraform.tfvars` from
+the example (a random `auth_api_key` is generated unless you pass `--api-key`
+or answer the interactive prompt), pulls the published `api`/`web` container
+images, and runs `init` → `plan` → `apply`, then reports each container's
+health plus the `api_url`/`web_url`/`ollama_url` outputs.
+
+### Install modes: artifact (default) and `--dev`
+
+The deployment has the same two install modes as the native install
+([ops.md](ops.md#install-modes)), and records which one it is running:
+
+| | what the `api`/`web` containers run | needs a checkout |
+| --- | --- | --- |
+| default (**artifact**) | the published `ghcr.io/dkblinux98/nyxgpt-api` / `nyxgpt-web` images | no |
+| `--dev` | images built from the current checkout's working tree | yes |
+
+```bash
+nyxgpt ops install --terraform --local          # published images
+nyxgpt ops install --terraform --local --dev    # this checkout's working tree
+```
+
+The artifact path is what makes this deployment runnable on a machine that
+has never cloned the repository: the `.tf` files come from the installed
+package, the images from the registry, and the api container's mounts from
+`~/.nyxGPT`. `--dev` needs a checkout by definition and is refused (with the
+path it looked at) when nyxgpt is running from an installed package.
+
+`--dev` builds `nyxgpt-api:local`/`nyxgpt-web:local`, skipping the build and
+reusing the current image when the app source (`src/nyxgpt/` +
+`pyproject.toml` for api, `web/` for web) hasn't changed since it was last
+built — the same reinstall-if-needed behavior the Homebrew path uses.
+
+Images are published per release
+(`.github/workflows/release-artifacts.yml`), so a version with no published
+image of its own — a release candidate, or a development version — falls
+back to the newest published one. That is version skew, so it is reported as
+its own line in the install output and named in `ops status`; set
+`NYXGPT_TF_API_IMAGE` / `NYXGPT_TF_WEB_IMAGE` to deploy specific images
+instead (they may be any ref the local Docker daemon holds or can pull —
+the container equivalent of `NYXGPT_ARTIFACT_DIR` for the native tarballs).
+
+Which mode a deployment is in is recorded in
+`~/.nyxGPT/install-mode-terraform.json` — its own file, separate from the
+native services' marker — and reported by `nyxgpt ops status`, `nyxgpt ops
+doctor` and the SRE dashboard's Infrastructure page:
+
+```
+Install mode (native api/web): artifact (published/vendored build -- the repo-less default)
+Install mode (terraform): dev (images built from the working tree at /Users/you/nyxGPT)
+```
+
+A deployment that is *running* with no marker is reported as **not
+recorded** — not as the artifact default. Every Terraform deployment made
+before this marker existed was built from a working tree (that path had no
+other mode), so calling an unrecorded live stack "artifact" would state the
+opposite of what it is running. `ops status` prints the deployment as `not
+recorded (...)` and tags its `api`/`web` `[unrecorded]`, `ops doctor` prints
+it with the way to record it (an unknown build is not a fault, so it does
+not fail the check), and the Infrastructure page badges it `IMAGES NOT
+RECORDED`.
+Redeploying with `nyxgpt up --terraform --local` (or `--dev`) records it. A
+machine with the marker and *nothing deployed* keeps the artifact default:
+there is no live stack for it to misdescribe.
 
 `--local` is required and explicit — it's the only locality implemented
 today, and is the precursor to a future cloud deployment target. `--cloud`
@@ -97,7 +152,10 @@ which runs `terraform destroy`, wrapped the same way.
 The rest of this document walks through what those two commands do — useful
 if you want to run the steps individually (e.g. to review `terraform plan`
 output before applying) or troubleshoot a failure. It is reference material,
-not something you're expected to type by hand.
+not something you're expected to type by hand. It describes the working
+directory `nyxgpt ops` uses, `~/.nyxGPT/terraform/`; the same files live in
+`terraform/` in a checkout, and are the source the packaged copy is built
+from.
 
 ## Prerequisites
 
@@ -117,55 +175,68 @@ its place:
 ```bash
 nyxgpt ops env-sync   # derives docker/config.docker.ini from ~/.nyxGPT/config.ini
 
-cd terraform
+cd ~/.nyxGPT/terraform
 cp terraform.tfvars.example terraform.tfvars
 ```
 
 Edit `terraform.tfvars` and set:
 
-- `repo_path` — absolute path to your nyxGPT checkout (used as the Docker
-  build context for the `api`/`web` images, same role as the `context:` keys
-  in `docker-compose.yml`)
 - `auth_api_key` — a real value for the API's `[auth]` section (see
   [security.md](security.md)); required because the web container reaches
   the API over the Docker network rather than `localhost`
 
 `terraform.tfvars` is gitignored — never commit real credentials.
 
+The variables that select an install mode are deliberately *not* in that
+file, because they change per run — `nyxgpt ops` passes them on the command
+line, and so should you:
+
+- `api_image` / `web_image` — the image refs the `api`/`web` containers run
+- `build_from_source` — `true` builds them from `repo_path` instead (dev
+  mode); `false`, the default, uses `api_image`/`web_image` as-is
+- `repo_path` — absolute path to a nyxGPT checkout, used as the Docker build
+  context when `build_from_source` is set (same role as the `context:` keys
+  in `docker-compose.yml`); unused otherwise, and empty by default
+
 ## 2. State management
 
-By default Terraform writes state to `terraform/terraform.tfstate`. To keep
-it alongside nyxGPT's other local state instead, point the local backend at
-`~/.nyxGPT/terraform/` at init time (`~` does not expand inside a `backend`
-block, so this is set via `-backend-config` rather than a variable):
-
-```bash
-mkdir -p ~/.nyxGPT/terraform
-terraform init -backend-config="path=$HOME/.nyxGPT/terraform/terraform.tfstate"
-```
+Terraform writes state next to the configuration it applies, so the state
+for this stack is `~/.nyxGPT/terraform/terraform.tfstate` — alongside
+nyxGPT's other local state, and outside any checkout.
 
 The state file contains resource IDs, not secrets, but it is still
 sensitive (it does include the values of any variables you pass, including
-`auth_api_key`) — do not commit it. If you skip the `-backend-config` flag,
-`terraform.tfstate` is created in `terraform/` and is gitignored there too.
+`auth_api_key`) — do not commit it.
+
+If you deployed this stack before the working directory moved out of the
+checkout, `nyxgpt ops install --terraform --local` copies your existing
+`terraform/terraform.tfstate` **and** `terraform/terraform.tfvars` into the
+new directory on its next run — so the same deployment keeps being managed
+rather than a second one created alongside it, and it keeps the
+`auth_api_key` you are already using instead of being handed a fresh random
+one.
 
 ## 3. Apply
 
 ```bash
-terraform plan
-terraform apply
+terraform plan -var=api_image=ghcr.io/dkblinux98/nyxgpt-api:latest \
+               -var=web_image=ghcr.io/dkblinux98/nyxgpt-web:latest
+terraform apply -var=api_image=ghcr.io/dkblinux98/nyxgpt-api:latest \
+                -var=web_image=ghcr.io/dkblinux98/nyxgpt-web:latest
 ```
 
-This builds the `api`/`web` images from `repo_path` (equivalent to `docker
-compose up --build`) and starts all four containers on a dedicated
-`nyxgpt-terraform` bridge network. Models are not pulled by this raw-Terraform
-path: `nyxgpt ops install --terraform --local` (above) runs a `required
-models` step after `apply` that pulls the configured chat and embedding models
-into the `ollama` container and fails the install if it cannot (#3824). Blobs
-persist in `~/.nyxGPT/volumes/ollama` -- the same host directory
-`docker-compose.yml` uses, so a model already pulled there is not
-re-downloaded here, and vice versa; see
-[docker-compose.md#volumes](docker-compose.md#volumes).
+(add `-var=build_from_source=true -var=repo_path=/path/to/checkout` to build
+the images from a working tree instead — the dev-mode equivalent of `docker
+compose up --build`.)
+
+This starts all four containers on a dedicated `nyxgpt-terraform` bridge
+network. Models are not pulled by this raw-Terraform path: `nyxgpt ops install
+--terraform --local` (above) runs a `required models` step after `apply` that
+pulls the configured chat and embedding models into the `ollama` container and
+fails the install if it cannot (#3824). Blobs persist in
+`~/.nyxGPT/volumes/ollama` -- the same host directory `docker-compose.yml`
+uses, so a model already pulled there is not re-downloaded here, and vice
+versa; see [docker-compose.md#volumes](docker-compose.md#volumes).
 
 Then verify using the outputs Terraform prints (`api_url`, `web_url`,
 `ollama_url`):

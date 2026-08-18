@@ -1,55 +1,47 @@
-name: Scrummaster Agent - Select and Start Next Issue
+name: Developer Agent - Pull Next Issue
 
+# The developer pulls; nobody pushes work at them (#3883).
+#
+# Selection used to run here in the scrummaster's context under the rule
+# `lowest Phase, then lowest issue number` -- a condition expression standing
+# where D-004 reserves judgment, and a push. Nothing compared a candidate's
+# likely file footprint against work already in flight, so on 2026-08-18 four
+# PRs collided on `src/nyxgpt/app.py`, each costing a conflict round.
+#
+# What runs now is the pull (scripts/agents/developer_pull_next.sh), in the
+# developer agent's context and under its token: plan order from the sprint
+# the scrummaster groomed (#3908), relationships eligibility, a WIP limit read
+# from the board and open PRs rather than from memory, and a file-overlap
+# check. Its reasoning is quoted into the dispatch comment, so a wrong pull is
+# visible instead of merely wrong.
+#
+# The guards did not move: the escalation and cross-issue-anomaly pause
+# backstops, the release wall, the hard sprint boundary and the #3665
+# fall-through retry all still run, in scrummaster_dispatch_next.sh.
+#
+# Started by a repository_dispatch, never by a comment (#3882).
+#
+# The kick used to be the token READY_FOR_NEXT_ISSUE in an issue comment, which
+# made prose into an API: a workflow's own guidance text could start work, and
+# twice did (#3706, #3790 -- ~500 runs in two hours). Two layers of gating were
+# built to make comments safe to parse, which is effort spent making the wrong
+# mechanism survivable.
+#
+# What the comment was actually doing is a cross-identity handoff: the review
+# agent, finishing a merge, asking the scrummaster to select the next issue.
+# repository_dispatch is that, natively -- an event with a name, not text to be
+# pattern-matched, and unforgeable by anything that merely mentions it.
 on:
-  issue_comment:
-    types: [created]
+  repository_dispatch:
+    types: [dispatch-next-issue]
 
 permissions:
   issues: write
   contents: read
 
 jobs:
-  # Layer 1 of the kick trigger. The job `if:` can only substring-match, so a
-  # comment that merely *names* the kick token passes it -- that is how the
-  # #3706 sprint-boundary park note became a kick (and how a PAUSE_SPRINT
-  # notice could dispatch despite the pause). Informational autopilot notes
-  # are stamped with AUTOPILOT_INFO_MARKER (lib/gh_project.sh,
-  # lib/sprint_calc.py) and excluded here, and #3790 adds the anchored
-  # decision below: the token must OPEN A LINE to count as a kick.
-  comment_gate:
-    if: >
-      vars.AGENTS_ENABLED == 'true' &&
-      contains(github.event.comment.body, 'READY_FOR_NEXT_ISSUE') &&
-      !contains(github.event.comment.body, 'nyxgpt-autopilot-informational') &&
-      !contains(github.event.comment.body, 'nyxgpt-token-mention') &&
-      (github.event.comment.user.login == vars.HUMAN_OWNER ||
-       github.event.comment.user.login == vars.SCRUM_AGENT ||
-       github.event.comment.user.login == vars.DEV_AGENT ||
-       github.event.comment.user.login == vars.REVIEW_AGENT ||
-       github.event.comment.user.login == 'claude[bot]')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    outputs:
-      proceed: ${{ steps.gate.outputs.proceed }}
-      reason: ${{ steps.gate.outputs.reason }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ vars.RELEASE_BRANCH }}
-
-      - name: Comment token gate
-        id: gate
-        uses: ./.github/actions/comment-token-gate
-        with:
-          token: READY_FOR_NEXT_ISSUE
-          comment-body: ${{ github.event.comment.body }}
-          author-association: ${{ github.event.comment.author_association }}
-
-  dispatch-next-issue:
-    needs: [comment_gate]
-    if: needs.comment_gate.outputs.proceed == 'true'
+  pull-next-issue:
+    if: vars.AGENTS_ENABLED == 'true'
     runs-on: ubuntu-latest
     # Serialize dispatches: a burst of READY_FOR_NEXT_ISSUE triggers landing
     # within seconds of each other (post-merge autopilot kick + a manual
@@ -61,11 +53,11 @@ jobs:
     # selects, on top of the per-issue idempotency guard in
     # scrummaster_start_issue.sh (classify_backlog_claim_state).
     concurrency:
-      group: scrummaster-dispatch
+      group: developer-pull
       cancel-in-progress: false
 
     env:
-      GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+      GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
       # #3695 human-channel (Slack DM) escalation notifications, sent by
       # scrummaster_dispatch_next.sh on the dispatch-paused/queue-blocked
       # terminal outcomes below. Absent/failing degrades gracefully to the
@@ -132,10 +124,11 @@ jobs:
         env:
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
+          RELEASE_ISSUE: ${{ vars.RELEASE_ISSUE_NUMBER }}
         with:
-          github-token: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+          github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           script: |
-            const issue_number = context.payload.issue.number;
+            const issue_number = Number(process.env.RELEASE_ISSUE);
             const runUrl =
               `https://github.com/${process.env.REPO}/actions/runs/${process.env.RUN_ID}`;
             await github.rest.issues.createComment({
@@ -143,18 +136,18 @@ jobs:
               repo: context.repo.repo,
               issue_number,
               body: (
-                '🤖 **Scrummaster Agent**: Signal received. ' +
-                'Selecting next backlog issue...\n\n' +
+                '🤖 **Developer Agent**: Signal received. ' +
+                'Pulling the next issue from the sprint plan...\n\n' +
                 `[View workflow run](${runUrl})`
               )
             });
 
-      - name: Select and start next issue (fall through on unclaimable candidates)
+      - name: Pull the next issue (fall through on unclaimable candidates)
         id: start
         shell: bash
         env:
           SPRINT_AUTOPILOT: ${{ vars.SPRINT_AUTOPILOT }}
-          KICK_ACTOR: ${{ github.event.comment.user.login }}
+          KICK_ACTOR: ${{ github.actor }}
           KICK_OWNER: ${{ vars.HUMAN_OWNER }}
         run: |
           set -euo pipefail
@@ -193,7 +186,23 @@ jobs:
           # fails loudly instead of looping forever. Its stdout is exactly
           # `next_issue=...` and a `tried<<NYXGPT_TRIED_EOF ... EOF` block --
           # both already in $GITHUB_OUTPUT format.
+          # PULL_EXPLAIN_FILE carries the decision's reasoning back out: which
+          # issue, at what position in the plan, and what it skipped to get
+          # there. It is quoted into the dispatch comment because a pull that
+          # chose wrongly can only be corrected if the choice is visible
+          # (D-004).
+          export PULL_EXPLAIN_FILE="$RUNNER_TEMP/pull-decision.json"
           bash -lc "./scripts/agents/scrummaster_dispatch_next.sh $SPRINT_ARGS" >> "$GITHUB_OUTPUT"
+
+          if [[ -s "$PULL_EXPLAIN_FILE" ]]; then
+            {
+              echo "pull_reason<<NYXGPT_REASON_EOF"
+              jq -r '.reason' "$PULL_EXPLAIN_FILE"
+              jq -r '.considered[]? | "  - skipped #\(.issue): \(.skipped)\(if .detail then " (" + .detail + ")" else "" end)"' \
+                "$PULL_EXPLAIN_FILE"
+              echo "NYXGPT_REASON_EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Post escalation-pause comment
         if: steps.start.outputs.paused == 'true'
@@ -201,17 +210,17 @@ jobs:
         env:
           PAUSE_REASON: ${{ steps.start.outputs.pause_reason }}
         with:
-          github-token: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+          github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           script: |
-            const issue_number = context.payload.issue.number;
+            const issue_number = Number(process.env.RELEASE_ISSUE);
             const reason = process.env.PAUSE_REASON;
             const body = reason === 'cross_issue_anomaly'
-              ? '⏸️ **Scrummaster Agent**: Dispatch paused -- an unresolved cross-issue ' +
+              ? '⏸️ **Developer Agent**: Pull paused -- an unresolved cross-issue ' +
                 'infrastructure anomaly is open. See the loud report on the release ' +
                 'tracking issue (#3694 cross-issue infrastructure-anomaly pause backstop). ' +
                 'Dispatch resumes once the anomaly is resolved (an owner `RESOLVE_ANOMALY` ' +
                 'comment) or its detection window elapses.'
-              : '⏸️ **Scrummaster Agent**: Dispatch paused -- 2 or more unresolved ' +
+              : '⏸️ **Developer Agent**: Pull paused -- 2 or more unresolved ' +
                 'escalations (open issues assigned to the owner, excluding the release ' +
                 'tracking issue). See the loud report on ' +
                 'the release tracking issue (#3687 unresolved-escalation pause backstop). ' +
@@ -227,16 +236,17 @@ jobs:
         if: steps.start.outputs.paused != 'true' && steps.start.outputs.next_issue == '' && steps.start.outputs.tried == ''
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+          github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           script: |
-            const issue_number = context.payload.issue.number;
+            const issue_number = Number(process.env.RELEASE_ISSUE);
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number,
               body: (
-                '⚠️ **Scrummaster Agent**: No eligible issues found in Backlog status.\n\n' +
-                'All work may be complete, or backlog needs replenishment.'
+                '⚠️ **Developer Agent**: Nothing eligible to pull.\n\n' +
+                'Every Backlog candidate was blocked, held, overlapped work already in ' +
+                'flight, or the WIP limit was already reached.'
               )
             });
 
@@ -249,16 +259,16 @@ jobs:
         env:
           TRIED: ${{ steps.start.outputs.tried }}
         with:
-          github-token: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+          github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           script: |
-            const issue_number = context.payload.issue.number;
+            const issue_number = Number(process.env.RELEASE_ISSUE);
             const tried = (process.env.TRIED || '').trim();
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number,
               body: (
-                `🛑 **Scrummaster Agent**: Started nothing this dispatch -- every eligible ` +
+                `🛑 **Developer Agent**: Pulled nothing this dispatch -- every eligible ` +
                 `Backlog candidate was unclaimable:\n\n` +
                 '```\n' + tried + '\n```\n\n' +
                 'This is a head-of-line block on the whole queue. Please inspect the listed ' +
@@ -280,25 +290,32 @@ jobs:
           NEXT_ISSUE: ${{ steps.start.outputs.next_issue }}
           DEV_AGENT: ${{ vars.DEV_AGENT }}
           TRIED: ${{ steps.start.outputs.tried }}
+          PULL_REASON: ${{ steps.start.outputs.pull_reason }}
         with:
-          github-token: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+          github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           script: |
-            const issue_number = context.payload.issue.number;
+            const issue_number = Number(process.env.RELEASE_ISSUE);
             const next_issue = process.env.NEXT_ISSUE;
             const dev_agent = process.env.DEV_AGENT;
             const tried = (process.env.TRIED || '').trim();
             const skippedNote = tried
               ? `\n\nSkipped ${tried.split('\n').length} unclaimable candidate(s) before this one:\n\`\`\`\n${tried}\n\`\`\``
               : '';
+            // Why this issue and not the one above it in the plan. Read from
+            // the environment, not interpolated: a file path or issue title
+            // in the reasoning must not break out of the template literal
+            // (#3820).
+            const reason = (process.env.PULL_REASON || '').trim();
+            const reasonNote = reason ? `\n\n**Why this issue:**\n\n\`\`\`\n${reason}\n\`\`\`` : '';
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number,
               body: (
-                `🚀 **Scrummaster Agent**: Issue #${next_issue} has been moved to ` +
+                `🚀 **Developer Agent**: Pulled issue #${next_issue} -- moved to ` +
                 `**In Progress** and assigned to @${dev_agent}\n\n` +
                 `Developer auto-implementation workflow will begin momentarily.\n\n` +
                 `[View issue](https://github.com/${context.repo.owner}/${context.repo.repo}/issues/${next_issue})` +
-                skippedNote
+                skippedNote + reasonNote
               )
             });

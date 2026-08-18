@@ -92,23 +92,26 @@ image reference) reappears in `docker-compose.yml`, `terraform/main.tf`, or
 
 ## Published container images (GHCR)
 
-`nyxgpt-api`/`nyxgpt-web` above are built locally (`docker-compose.yml`'s
-`build:` blocks) by default -- the Compose/k8s paths otherwise always need a
-repo checkout to build from. As part of repo-less portability (#3622),
-`.github/workflows/release-artifacts.yml` also builds and pushes both
-images to GHCR on every GitHub Release:
+`nyxgpt-api`/`nyxgpt-web` are built locally by `docker-compose.yml`'s
+`build:` blocks and by the Kubernetes install, so those two paths need a repo
+checkout to build from. As part of repo-less portability (#3622),
+`.github/workflows/release-artifacts.yml` builds and pushes both images to
+GHCR on every GitHub Release:
 
 ```
 ghcr.io/dkblinux98/nyxgpt-api:<version>   (and :latest)
 ghcr.io/dkblinux98/nyxgpt-web:<version>   (and :latest)
 ```
 
-This publishes the artifact today; wiring `nyxgpt ops install`/`up` to
-consume these published images instead of building locally (so a Compose/k8s
-deploy needs no checkout either) is tracked as follow-up work -- per
-CLAUDE.md's operational command wrapping requirement, that consumption path
-must go through a `nyxgpt`-wrapped command, never a raw `docker pull`/`docker
-compose` instruction, once it lands.
+`nyxgpt ops install --terraform --local` consumes them: it pulls these
+images and deploys them with no checkout anywhere in the path, and only
+builds from a working tree when asked for that explicitly with `--dev` (see
+[terraform.md](terraform.md#install-modes-artifact-default-and---dev)). The
+same wiring for the Compose and Kubernetes paths is tracked in
+[portability-matrix.md](portability-matrix.md#open-gaps) -- per CLAUDE.md's
+operational command wrapping requirement, that consumption path goes through
+a `nyxgpt`-wrapped command, never a raw `docker pull`/`docker compose`
+instruction.
 
 ## Volumes
 

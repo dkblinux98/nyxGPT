@@ -257,12 +257,32 @@ if [[ "$DEV_MODE" -eq 1 ]]; then
 
   # 1. `ops status` must SAY dev mode -- a dev pass must not be mistakable
   #    for an artifact-path pass (acceptance criterion 3).
-  if nyxgpt ops status | grep -q "Install mode: dev (editable checkout at $CHECKOUT)"; then
-    echo "  ops status reports dev mode at $CHECKOUT"
+  #
+  #    The line is ATTRIBUTED to the native api/web since #3834 (and carries a
+  #    sibling line per Terraform/Kubernetes deployment since #3835): an
+  #    unqualified `Install mode:` is what let a pure-Kubernetes deployment be
+  #    reported with a native marker left over from a torn-down `up --dev`.
+  #    Matching the attributed form is the assertion, not a cosmetic update --
+  #    an unqualified line reappearing is the defect coming back.
+  dev_status_out=$(nyxgpt ops status || true)
+  if grep -q "Install mode (native api/web): dev (editable checkout at $CHECKOUT)" <<<"$dev_status_out"; then
+    echo "  ops status reports dev mode at $CHECKOUT, attributed to the native api/web"
   else
     echo "::error::ops status does not report dev mode for $CHECKOUT"
-    nyxgpt ops status || true
+    echo "$dev_status_out"
     fail_count=1
+  fi
+
+  # 1b. ...and no component that is not running may carry a mode stamp
+  #     (#3834): `native api: none  [dev]` described the install mode of
+  #     something that was not installed at all.
+  stamped_absent=$(grep -E '^[[:space:]]+native[[:space:]]+[a-z]+: none[[:space:]]+\[' <<<"$dev_status_out" || true)
+  if [[ -n "$stamped_absent" ]]; then
+    echo "::error::ops status stamped an install mode on a component that is not running:"
+    echo "$stamped_absent"
+    fail_count=1
+  else
+    echo "  no install-mode stamp on components that are not running"
   fi
 
   # 2. The api venv must import nyxgpt out of the checkout, not out of a
@@ -317,10 +337,13 @@ if [[ "$DEV_MODE" -eq 1 ]]; then
   check "api    /health" http://127.0.0.1:8000/health 200 || { echo "::error::api /health expected 200 after mode switch"; fail_count=1; }
   check "web    /"       http://127.0.0.1:3000/ 200       || { echo "::error::web / expected 200 after mode switch"; fail_count=1; }
 
-  if nyxgpt ops status | grep -q "Install mode: artifact"; then
+  # Attributed to the native api/web, as above: a Terraform or Kubernetes
+  # deployment's mode says nothing about which build the systemd units run.
+  if nyxgpt ops status | grep -q "Install mode (native api/web): artifact"; then
     echo "  ops status reports artifact mode after the switch"
   else
     echo "::error::ops status still reports dev mode after reinstalling without --dev"
+    nyxgpt ops status || true
     fail_count=1
   fi
 

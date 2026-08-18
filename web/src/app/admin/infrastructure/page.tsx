@@ -53,6 +53,23 @@ type InfraStatus = {
     probe_available: boolean;
     deployed: boolean;
     containers: Record<string, string>;
+    // The Terraform deployment's OWN install mode (#3835): 'artifact' (the
+    // published container images, the repo-less default) or 'dev' (images
+    // built from a checkout's working tree, `--dev`). Reported separately
+    // from `install_mode` above because that one describes the native
+    // services, which are a different deployment and frequently in the other
+    // mode. Optional so the page still renders against an api process from
+    // before #3835; `recorded` is false when no Terraform install has ever
+    // written the marker, so the page can stay silent instead of asserting a
+    // default -- and when something IS deployed with no marker, say so
+    // instead (see `terraformImageMode`).
+    install_mode?: {
+      mode: 'artifact' | 'dev';
+      checkout: string | null;
+      label: string;
+      images: Record<string, string>;
+      recorded: boolean;
+    };
   };
   kubernetes: {
     available: boolean;
@@ -78,6 +95,20 @@ type InfraStatus = {
     unschedulable?: string[];
     context: string;
     provisioned: boolean;
+    // What the two images in this cluster were built from (#3834): the
+    // published nyxgpt-api/nyxgpt-web artifacts, or a checkout's working tree
+    // (`nyxgpt ops install --kubernetes --local --dev`). `recorded: false`
+    // means no marker -- deployed before nyxGPT recorded one, or from another
+    // machine -- which must read as UNRECORDED, never as the artifact
+    // default: here that default would be a guess about someone else's
+    // deployment. Optional so the page still renders against an api process
+    // from before #3834.
+    install_mode?: {
+      mode: 'artifact' | 'dev';
+      checkout: string | null;
+      label: string;
+      recorded: boolean;
+    };
     // The in-cluster observability layer (#3787): Kubernetes mode cannot use
     // the Compose observability profiles, so it deploys its own. Optional on
     // purpose: an older api that predates this field must degrade to "NOT
@@ -290,6 +321,27 @@ function ComponentList({ components }: { components: Record<string, string> }) {
       ))}
     </ul>
   );
+}
+
+/** Which build the Terraform containers are running -- the card's tri-state (#3835).
+ *
+ * `unrecorded` is the one that has to exist: a deployment that is *running*
+ * with no marker is not the artifact default, it is a deployment whose build
+ * nobody wrote down. Every Terraform deployment made before #3835 was built
+ * from a working tree, so badging that "ARTIFACT IMAGES" asserts the exact
+ * opposite of the truth -- the dev-read-as-artifact misreading this issue
+ * exists to remove. Mirrors `InstallModeState.short_label(deployed=...)`.
+ */
+function terraformImageMode(
+  terraform: InfraStatus['terraform'],
+): 'dev' | 'artifact' | 'unrecorded' {
+  if (terraform.install_mode?.mode === 'dev') {
+    return 'dev';
+  }
+  if (terraform.deployed && !terraform.install_mode?.recorded) {
+    return 'unrecorded';
+  }
+  return 'artifact';
 }
 
 export default function InfrastructurePage() {
@@ -545,13 +597,29 @@ export default function InfrastructurePage() {
           <div style={boxStyle}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
               <h2 style={{ fontSize: '1.1rem', fontWeight: 'bold' }}>Terraform (local containers)</h2>
-              <span style={badgeStyle(status.terraform.deployed, !status.terraform.probe_available)}>
-                {!status.terraform.probe_available
-                  ? 'CANNOT DETERMINE'
-                  : status.terraform.deployed
-                    ? 'DEPLOYED'
-                    : 'NOT DEPLOYED'}
-              </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                {(status.terraform.deployed || status.terraform.install_mode?.recorded) && (
+                  <span
+                    style={badgeStyle(
+                      terraformImageMode(status.terraform) === 'artifact',
+                      terraformImageMode(status.terraform) === 'unrecorded',
+                    )}
+                  >
+                    {status.terraform.install_mode?.mode === 'dev'
+                      ? 'DEV IMAGES'
+                      : terraformImageMode(status.terraform) === 'unrecorded'
+                        ? 'IMAGES NOT RECORDED'
+                        : 'ARTIFACT IMAGES'}
+                  </span>
+                )}
+                <span style={badgeStyle(status.terraform.deployed, !status.terraform.probe_available)}>
+                  {!status.terraform.probe_available
+                    ? 'CANNOT DETERMINE'
+                    : status.terraform.deployed
+                      ? 'DEPLOYED'
+                      : 'NOT DEPLOYED'}
+                </span>
+              </div>
             </div>
 
             <p style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)', marginBottom: '0.75rem' }}>
@@ -559,6 +627,39 @@ export default function InfrastructurePage() {
               AWS instance that Terraform provisioned is a different thing and is reported under
               AWS below.
             </p>
+
+            {/* This deployment's own install mode (#3835) — never the native
+                marker above it, which describes a different deployment. */}
+            {(status.terraform.deployed || status.terraform.install_mode?.recorded) && (
+              <p style={{ fontSize: '0.85rem', color: 'var(--foreground-muted)', marginBottom: '0.75rem' }}>
+                {status.terraform.install_mode?.mode === 'dev' ? (
+                  <>
+                    The api and web containers were built from the working tree at{' '}
+                    <code>{status.terraform.install_mode.checkout ?? 'an unrecorded checkout'}</code>,
+                    not from published images — so this deployment is not exercising the artifact
+                    path. Re-run <code>nyxgpt up --terraform --local</code> without{' '}
+                    <code>--dev</code> to return to it.
+                  </>
+                ) : !status.terraform.install_mode?.recorded ? (
+                  // Equivalent to `terraformImageMode(...) === 'unrecorded'`
+                  // under the guard above: this paragraph only renders when
+                  // something is deployed or a marker exists, so "not
+                  // recorded" here always means containers are running.
+                  // Written this way so the last branch has a label to show
+                  // rather than a fallback that can never be reached.
+                  <>
+                    Containers are running, but no install recorded what they were built from — this
+                    deployment predates the per-deployment install-mode marker, or was brought up
+                    outside <code>nyxgpt ops</code>. Whether its api and web images came from a
+                    checkout or from the published images is unknown, so neither is claimed here.
+                    Re-run <code>nyxgpt up --terraform --local</code> (add <code>--dev</code> for a
+                    working-tree build) to redeploy it and record the mode.
+                  </>
+                ) : (
+                  <>{status.terraform.install_mode.label}</>
+                )}
+              </p>
+            )}
 
             {!status.terraform.probe_available ? (
               <p style={{ fontSize: '0.875rem', color: 'var(--foreground-muted)' }}>
@@ -602,6 +703,35 @@ export default function InfrastructurePage() {
                   {status.kubernetes.provisioned
                     ? ' — local kind cluster provisioned by nyxgpt (torn down together on `nyxgpt ops down --kubernetes`).'
                     : ' — bring-your-own cluster (never destroyed by `nyxgpt ops down --kubernetes`).'}
+                </p>
+                {/* The deployment's own install mode (#3834) -- what the images in
+                    THIS cluster were built from. Never the native marker: a host
+                    can run a native dev install and a Kubernetes artifact
+                    deployment at once, and reporting one for the other is the
+                    defect this section exists to prevent. */}
+                <p style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)', marginBottom: '0.5rem' }}>
+                  Install mode:{' '}
+                  {!status.kubernetes.install_mode?.recorded ? (
+                    <>
+                      <strong>unrecorded</strong> — no marker for this deployment on the machine
+                      this dashboard runs on. It was deployed before nyxGPT recorded one, or from
+                      another machine.
+                    </>
+                  ) : status.kubernetes.install_mode.mode === 'dev' ? (
+                    <>
+                      <strong>dev</strong> — the Pods run images built from the working tree at{' '}
+                      <code>{status.kubernetes.install_mode.checkout ?? 'an unrecorded checkout'}</code>{' '}
+                      as it was at install time, not from published artifacts. Re-run{' '}
+                      <code>nyxgpt ops install --kubernetes --local</code> without{' '}
+                      <code>--dev</code> to deploy the artifacts.
+                    </>
+                  ) : (
+                    <>
+                      <strong>artifact</strong> — images built from the published{' '}
+                      <code>nyxgpt-api</code>/<code>nyxgpt-web</code> artifacts (no checkout
+                      involved).
+                    </>
+                  )}
                 </p>
                 {status.kubernetes.pod_states && status.kubernetes.pod_states.length > 0 ? (
                   /* Three states, not two (#3827): a Pod that is still pulling its

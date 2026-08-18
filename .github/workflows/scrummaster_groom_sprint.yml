@@ -1,0 +1,193 @@
+name: Scrummaster Agent - Groom the Sprint
+
+# Grooming produces the artifact developers pull from (#3908).
+#
+# Before this existed, sprint scope was implicit, ordering was `lowest issue
+# number`, effort was a field nobody derived from evidence, and no issue
+# recorded which files it was expected to touch -- so the pull's overlap check
+# (#3883) had nothing to compare against, and four PRs collided on
+# `src/nyxgpt/app.py` on 2026-08-18.
+#
+# Two steps, deliberately separate. `groom_sprint.sh` writes the DRAFT from
+# board state -- members, fields, native relationships, expected-files seeded
+# from the issue bodies, and a seed order (dependencies, then priority, then
+# effort). Then the scrummaster agent grooms it: reorders on evidence, writes
+# the rationale for *this* order, records deliberate deferrals, and asks the
+# developer agent where an estimate is contested. The script is the floor; the
+# ordering judgment is the agent's (D-004).
+#
+# The result lands as a PR, not a direct push: the plan is the owner's veto
+# surface, and a veto needs something to review.
+
+on:
+  # Grooming is a planning event, not a loop step: the owner runs it when a
+  # sprint opens, and again mid-sprint when acceptance failures displace
+  # planned work (a regroom -- the existing plan's rationale, deferrals and
+  # curated expected-files survive; see lib/groom_plan.py).
+  workflow_dispatch:
+    inputs:
+      sprint:
+        description: 'Sprint title to groom (default: the active iteration)'
+        required: false
+      skip_agent:
+        description: 'Write the seed draft only, without the grooming pass'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: scrummaster-groom
+  cancel-in-progress: false
+
+jobs:
+  groom:
+    if: vars.AGENTS_ENABLED == 'true'
+    runs-on: ubuntu-latest
+
+    env:
+      GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.RELEASE_BRANCH }}
+          fetch-depth: 0
+          token: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+
+      - name: Auth gh
+        run: gh auth status
+
+      - name: Write ephemeral config.ini (runner temp)
+        shell: bash
+        run: |
+          set -euo pipefail
+          CFG="$RUNNER_TEMP/nyxgpt-config.ini"
+          cat > "$CFG" <<EOF
+          REPO_OWNER=${{ vars.REPO_OWNER }}
+          REPO_NAME=${{ vars.REPO_NAME }}
+          PROJECT_OWNER=${{ vars.PROJECT_OWNER }}
+          PROJECT_NUMBER=${{ vars.PROJECT_NUMBER }}
+
+          DEV_AGENT=${{ vars.DEV_AGENT }}
+          REVIEW_AGENT=${{ vars.REVIEW_AGENT }}
+          SCRUM_AGENT=${{ vars.SCRUM_AGENT }}
+          HUMAN_OWNER=${{ vars.HUMAN_OWNER }}
+
+          STATUS_FIELD=${{ vars.STATUS_FIELD }}
+          STATUS_BACKLOG=${{ vars.STATUS_BACKLOG }}
+          STATUS_IN_PROGRESS=${{ vars.STATUS_IN_PROGRESS }}
+          STATUS_IN_REVIEW=${{ vars.STATUS_IN_REVIEW }}
+          STATUS_FOR_RELEASE=${{ vars.STATUS_FOR_RELEASE }}
+
+          RELEASE_BRANCH=${{ vars.RELEASE_BRANCH }}
+          RELEASE_ISSUE_NUMBER=${{ vars.RELEASE_ISSUE_NUMBER }}
+          SPRINT_FIELD=${{ vars.SPRINT_FIELD }}
+          EOF
+          echo "NYXGPT_CONFIG_FILE=$CFG" >> "$GITHUB_ENV"
+
+      - name: Write the seed draft
+        id: seed
+        shell: bash
+        env:
+          SPRINT_INPUT: ${{ inputs.sprint }}
+        run: |
+          set -euo pipefail
+          ARGS=()
+          if [[ -n "${SPRINT_INPUT:-}" ]]; then ARGS+=(--sprint "$SPRINT_INPUT"); fi
+          PLAN_PATH="$(./scripts/agents/groom_sprint.sh "${ARGS[@]}" | tail -1)"
+          echo "plan_path=$PLAN_PATH" >> "$GITHUB_OUTPUT"
+          echo "::notice::Seed draft at $PLAN_PATH"
+
+      - name: Groom the draft (the judgment the seed cannot make)
+        if: inputs.skip_agent != 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+          # A groom can be started from a Claude remote session, which acts as
+          # the claude[bot] App; without this the action refuses the run.
+          allowed_bots: "claude"
+          track_progress: false
+          claude_args: >-
+            --allowedTools "Read,Edit,Bash(gh issue view:*),Bash(gh api:*),Bash(git diff:*),Bash(python3:*)"
+          prompt: |
+            You are the scrummaster agent grooming a sprint.
+
+            `${{ steps.seed.outputs.plan_path }}` holds a SEED draft written
+            from board state: the sprint's issues, their fields, their native
+            blocked-by/blocks edges, an expected-files list seeded from each
+            issue body, and a starting order (dependencies, then priority,
+            then effort, then number).
+
+            Your job is the part a sort key cannot do. Edit that file:
+
+            1. **Order.** Keep or change the order on evidence -- dependency
+               chains, conflict surface (issues whose expected-files overlap
+               should not sit adjacent, because the pull will defer the second
+               one anyway), risk, and priority. Then write section 2's "Why
+               this order" so a reader can check your reasoning, and a
+               one-line `why_here` for any issue whose position is not
+               obvious.
+            2. **Expected-files.** The seed is heuristic. Open the issues that
+               matter and correct the lists -- this is what the pull's overlap
+               check compares, so a wrong list schedules a conflict.
+            3. **Effort.** Where an estimate looks wrong or is missing, say so
+               in `capacity.notes` and ask the developer agent on the issue
+               rather than guessing a field value.
+            4. **Deferrals.** Anything you considered and left out goes in
+               section 4 with the reason.
+            5. **Regroom.** If the plan already had a regroom log, APPEND to
+               it -- never rewrite the earlier entries. The point of the log
+               is that drift from the original plan stays visible.
+
+            The prose sections and the JSON block at the bottom are generated
+            from one structure and must agree: edit both, or edit the JSON and
+            re-render with
+            `python3 -c "import sys; sys.path.insert(0,'scripts/agents/lib'); import sprint_plan, pathlib; p=pathlib.Path('${{ steps.seed.outputs.plan_path }}'); p.write_text(sprint_plan.render_plan(sprint_plan.parse_plan(p.read_text())))"`.
+
+            Do not change Status, assignees or any project field. Do not open
+            the PR -- the workflow does that. Just leave the file correct.
+
+      - name: Open the plan PR
+        shell: bash
+        env:
+          PLAN_PATH: ${{ steps.seed.outputs.plan_path }}
+          RELEASE_BRANCH: ${{ vars.RELEASE_BRANCH }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- "$PLAN_PATH" && [[ -z "$(git status --porcelain -- "$PLAN_PATH")" ]]; then
+            echo "::notice::Plan unchanged -- nothing to propose."
+            exit 0
+          fi
+
+          SPRINT_SLUG="$(basename "$(dirname "$PLAN_PATH")")"
+          BRANCH="scrum/groom-${SPRINT_SLUG}-$(date -u +%Y%m%d%H%M)"
+          git config user.name "${{ vars.SCRUM_AGENT }}"
+          git config user.email "${{ vars.SCRUM_AGENT }}@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add "$PLAN_PATH"
+          git commit -m "chore: groom ${SPRINT_SLUG} -- ordered scope, expected-files, relationships (#3908)"
+          git push -u origin "$BRANCH"
+
+          gh pr create \
+            --base "$RELEASE_BRANCH" \
+            --head "$BRANCH" \
+            --title "chore: sprint plan for ${SPRINT_SLUG} (#3908)" \
+            --body "$(cat <<EOF
+          The groomed plan for \`${SPRINT_SLUG}\`. Developers pull from this order (#3883).
+
+          Review the order and its stated rationale, the expected-files lists (they drive
+          the pull's conflict avoidance), and the deferrals. Merging this is the go-ahead
+          to dispatch against it.
+
+          Related to #3908.
+
+          ---
+          _Generated by [Claude Code](https://claude.ai/code)_
+          EOF
+          )"

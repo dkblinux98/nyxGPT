@@ -200,8 +200,14 @@ itself after every merge -- no human kick needed -- as long as the active
 Sprint still has open Backlog issues:
 
 ```bash
-./scripts/agents/scrummaster_next_issue.sh --sprint-scoped --select-only
+./scripts/agents/developer_pull_next.sh --sprint-scoped
 ```
+
+Selection is the developer's now (#3883) -- the autopilot fires the event,
+the pull decides. What the scrummaster owns upstream of it is the plan that
+pull reads (#3908): `./scripts/agents/groom_sprint.sh` writes the seed draft,
+and the grooming workflow has this agent order it, justify the order, correct
+the expected-files lists and record deferrals.
 
 Once the sprint has no open Backlog issues left, the merge script posts a
 park note instead of a kick, and autopilot stops dispatching -- starting
@@ -262,9 +268,9 @@ a real work boundary, not bookkeeping:
 **Drift caveat (load-bearing):** because the boundary now decides whether
 work continues, sprint iteration date windows must be kept current on the
 project board. If no iteration's window contains today, there is no active
-sprint, and both the autopilot and `scrummaster_next_issue.sh
---sprint-scoped` stop (conservative stop) rather than falling back to
-release-wide work -- the selector exits 1. Check this in the daily sprint
+sprint, and both the autopilot and `developer_pull_next.sh --sprint-scoped`
+stop (conservative stop) rather than falling back to release-wide work -- the
+pull exits 1. Check this in the daily sprint
 report; a stale window shows up as a parked loop, not as cross-sprint work.
 
 **History, so the record is accurate:** the autopilot code previously gated

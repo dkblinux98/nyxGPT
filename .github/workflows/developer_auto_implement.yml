@@ -263,12 +263,29 @@ jobs:
               body: message
             });
 
-      - name: Verify issue is In Progress in ProjectV2 (otherwise exit)
+      # Assignment IS the dispatch (#3882). The worker owns the transition:
+      # a developer picking work up puts it In Progress, exactly as a person
+      # would, instead of requiring a second actor to stage the board first and
+      # then announce it in a comment.
+      #
+      # What this step still refuses, because assignment must not override a
+      # deliberate placement:
+      #   * a lane that means "held" -- Acceptance Failed is owner signal
+      #     (D-001/D-008), and being assigned does not release it;
+      #   * an issue that is not on the board at all;
+      #   * an assigner who is not a permitted identity.
+      - name: Claim the issue (assignment is the dispatch)
         id: verify_status
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ASSIGNER: ${{ github.event.sender.login }}
+          EVENT_NAME: ${{ github.event_name }}
+          OWNER_LOGIN: ${{ vars.HUMAN_OWNER }}
+          SCRUM_LOGIN: ${{ vars.SCRUM_AGENT }}
+          REVIEW_LOGIN: ${{ vars.REVIEW_AGENT }}
+          DEV_LOGIN: ${{ vars.DEV_AGENT }}
         run: |
           # #3689: the previous version of this check ran inside a nested
           # `bash -lc '...'` subshell and called `exit 0` from there to stop
@@ -302,11 +319,39 @@ jobs:
               exit 3
             fi
             echo "::notice::Issue #$ISSUE_NUMBER status=$status" >&2
-            if [[ "$status" != "$STATUS_IN_PROGRESS" ]]; then
-              echo "::warning::Not In Progress (status=$status)." >&2
+
+            if [[ "$status" == "$STATUS_IN_PROGRESS" ]]; then
+              echo "$status"
+              exit 0
+            fi
+
+            # Held and finished lanes are never claimable by assignment.
+            case "$status" in
+              "$STATUS_BACKLOG")
+                ;;
+              *)
+                echo "::warning::Status '$status' is not claimable by assignment." >&2
+                exit 3
+                ;;
+            esac
+
+            if [[ "$EVENT_NAME" != "issues" ]]; then
+              echo "::warning::Backlog issue reached a non-assignment trigger." >&2
               exit 3
             fi
-            echo "$status"
+
+            case "$ASSIGNER" in
+              "$OWNER_LOGIN"|"$SCRUM_LOGIN"|"$REVIEW_LOGIN"|"$DEV_LOGIN"|"claude[bot]")
+                ;;
+              *)
+                echo "::warning::Assigner '$ASSIGNER' is not a permitted dispatcher." >&2
+                exit 3
+                ;;
+            esac
+
+            set_issue_status "$ISSUE_NUMBER" "$STATUS_IN_PROGRESS"
+            echo "::notice::Claimed #$ISSUE_NUMBER: ${status} -> ${STATUS_IN_PROGRESS} (assigned by ${ASSIGNER})" >&2
+            echo "$STATUS_IN_PROGRESS"
           )"
           RC=$?
           set -e
@@ -511,6 +556,16 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          # An assignment made from a Claude remote session arrives as the
+          # claude[bot] GitHub App -- the identity every such session's writes
+          # carry, and the one the claim step already accepts as a permitted
+          # dispatcher (#3882). Without this the action refuses the run
+          # outright ("Workflow initiated by non-human actor"), so the
+          # assignment lever appeared to work (Status flipped to In Progress)
+          # and then died one step later, leaving the issue claimed with
+          # nothing implementing it. Observed on #3855/#3858/#3860/#3864,
+          # 2026-08-18. Same fix, same reason, as claude-code-review.yml.
+          allowed_bots: "claude"
           track_progress: true
           show_full_output: true
           claude_args: >-
@@ -671,6 +726,16 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          # An assignment made from a Claude remote session arrives as the
+          # claude[bot] GitHub App -- the identity every such session's writes
+          # carry, and the one the claim step already accepts as a permitted
+          # dispatcher (#3882). Without this the action refuses the run
+          # outright ("Workflow initiated by non-human actor"), so the
+          # assignment lever appeared to work (Status flipped to In Progress)
+          # and then died one step later, leaving the issue claimed with
+          # nothing implementing it. Observed on #3855/#3858/#3860/#3864,
+          # 2026-08-18. Same fix, same reason, as claude-code-review.yml.
+          allowed_bots: "claude"
           track_progress: true
           show_full_output: true
           claude_args: >-
@@ -884,6 +949,16 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          # An assignment made from a Claude remote session arrives as the
+          # claude[bot] GitHub App -- the identity every such session's writes
+          # carry, and the one the claim step already accepts as a permitted
+          # dispatcher (#3882). Without this the action refuses the run
+          # outright ("Workflow initiated by non-human actor"), so the
+          # assignment lever appeared to work (Status flipped to In Progress)
+          # and then died one step later, leaving the issue claimed with
+          # nothing implementing it. Observed on #3855/#3858/#3860/#3864,
+          # 2026-08-18. Same fix, same reason, as claude-code-review.yml.
+          allowed_bots: "claude"
           track_progress: true
           show_full_output: true
           claude_args: >-
@@ -1216,6 +1291,8 @@ jobs:
       - name: Run Verification (Attempt 1)
         id: verify1
         continue-on-error: true
+        env:
+          RELEASE_BRANCH: ${{ vars.RELEASE_BRANCH }}
         # Comparable runs finish in ~75s; a pathological tree (e.g. #3370,
         # where an untracked venv got committed) ran 30+ minutes and was on
         # track to burn the 6-hour job timeout silently. Fail fast instead.
@@ -1239,7 +1316,20 @@ jobs:
 
           echo "::group::Running pytest (unit tests - integration tests skipped in CI)"
           # Integration tests require running API server (not available in CI)
-          python -m pytest tests/unit/ -v --cov=src/nyxgpt --cov-report=term-missing 2>&1 | tee /tmp/pytest_attempt1.log
+          #
+          # Scoped to this branch's blast radius (#3896). This is the gate that
+          # matters -- the reviewer no longer re-runs anything and PR-time CI is
+          # gone -- and it runs up to three times per issue, so it is also where
+          # scoping pays. The selector escalates to the whole suite whenever it
+          # cannot classify a path, and the post-merge tripwire on the release
+          # branch is unscoped, so a wrong scope costs a late alarm, not a
+          # silent pass.
+          PYTEST_TARGETS=$(python3 scripts/ci/select_tests.py \
+            --base "origin/$RELEASE_BRANCH" --github-output 2>/dev/null \
+            | sed -n 's/^pytest_args=//p')
+          PYTEST_TARGETS=${PYTEST_TARGETS:-tests/unit/}
+          echo "pytest scope: $PYTEST_TARGETS"
+          python -m pytest $PYTEST_TARGETS -v --cov=src/nyxgpt --cov-report=term-missing 2>&1 | tee /tmp/pytest_attempt1.log
           [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           echo "::endgroup::"
 
@@ -1284,6 +1374,16 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          # An assignment made from a Claude remote session arrives as the
+          # claude[bot] GitHub App -- the identity every such session's writes
+          # carry, and the one the claim step already accepts as a permitted
+          # dispatcher (#3882). Without this the action refuses the run
+          # outright ("Workflow initiated by non-human actor"), so the
+          # assignment lever appeared to work (Status flipped to In Progress)
+          # and then died one step later, leaving the issue claimed with
+          # nothing implementing it. Observed on #3855/#3858/#3860/#3864,
+          # 2026-08-18. Same fix, same reason, as claude-code-review.yml.
+          allowed_bots: "claude"
           track_progress: true
           show_full_output: true
           claude_args: >-
@@ -1340,6 +1440,8 @@ jobs:
         if: steps.claude_fix2.conclusion == 'success'
         id: verify2
         continue-on-error: true
+        env:
+          RELEASE_BRANCH: ${{ vars.RELEASE_BRANCH }}
         timeout-minutes: 15
         run: |
           set +e
@@ -1359,7 +1461,20 @@ jobs:
 
           echo "::group::Running pytest (unit tests - integration tests skipped in CI)"
           # Integration tests require running API server (not available in CI)
-          python -m pytest tests/unit/ -v --cov=src/nyxgpt --cov-report=term-missing 2>&1 | tee /tmp/pytest_attempt2.log
+          #
+          # Scoped to this branch's blast radius (#3896). This is the gate that
+          # matters -- the reviewer no longer re-runs anything and PR-time CI is
+          # gone -- and it runs up to three times per issue, so it is also where
+          # scoping pays. The selector escalates to the whole suite whenever it
+          # cannot classify a path, and the post-merge tripwire on the release
+          # branch is unscoped, so a wrong scope costs a late alarm, not a
+          # silent pass.
+          PYTEST_TARGETS=$(python3 scripts/ci/select_tests.py \
+            --base "origin/$RELEASE_BRANCH" --github-output 2>/dev/null \
+            | sed -n 's/^pytest_args=//p')
+          PYTEST_TARGETS=${PYTEST_TARGETS:-tests/unit/}
+          echo "pytest scope: $PYTEST_TARGETS"
+          python -m pytest $PYTEST_TARGETS -v --cov=src/nyxgpt --cov-report=term-missing 2>&1 | tee /tmp/pytest_attempt2.log
           [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           echo "::endgroup::"
 
@@ -1395,6 +1510,16 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          # An assignment made from a Claude remote session arrives as the
+          # claude[bot] GitHub App -- the identity every such session's writes
+          # carry, and the one the claim step already accepts as a permitted
+          # dispatcher (#3882). Without this the action refuses the run
+          # outright ("Workflow initiated by non-human actor"), so the
+          # assignment lever appeared to work (Status flipped to In Progress)
+          # and then died one step later, leaving the issue claimed with
+          # nothing implementing it. Observed on #3855/#3858/#3860/#3864,
+          # 2026-08-18. Same fix, same reason, as claude-code-review.yml.
+          allowed_bots: "claude"
           track_progress: true
           show_full_output: true
           claude_args: >-
@@ -2087,6 +2212,16 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          # An assignment made from a Claude remote session arrives as the
+          # claude[bot] GitHub App -- the identity every such session's writes
+          # carry, and the one the claim step already accepts as a permitted
+          # dispatcher (#3882). Without this the action refuses the run
+          # outright ("Workflow initiated by non-human actor"), so the
+          # assignment lever appeared to work (Status flipped to In Progress)
+          # and then died one step later, leaving the issue claimed with
+          # nothing implementing it. Observed on #3855/#3858/#3860/#3864,
+          # 2026-08-18. Same fix, same reason, as claude-code-review.yml.
+          allowed_bots: "claude"
           track_progress: true
           show_full_output: false
           claude_args: >-
@@ -2497,8 +2632,18 @@ jobs:
           echo "::notice::Auto-retry triggered (${NEXT_N}/3) for step '${FAILED_STEP}'"
 
       - name: Escalate fatal error (Phase 1+2+3 - no retry)
+        # Phase 3's verdict outranks Phase 1's guess (#3909). Phase 1 is a
+        # grep over log lines: `unknown` from it means "no signature matched",
+        # which is a non-answer, and treating it as a fatal answer is how a
+        # capacity blip reached the owner as a FATAL page. On #3832 the deep
+        # analysis had already concluded TRANSIENT -- 529 Overloaded, no
+        # commits, clean tree, nothing to repair -- written into the run log,
+        # and the escalation fired regardless because the condition ORs the
+        # phases together. When Phase 3 says TRANSIENT the auto-retry step
+        # below owns the failure and this step stands down.
         if: |
-          failure() && steps.cross_issue_anomaly.outputs.matched != 'true' && (
+          failure() && steps.cross_issue_anomaly.outputs.matched != 'true' &&
+          steps.claude_result.outputs.status != 'TRANSIENT' && (
             steps.classify_error.outputs.retriable == 'false' ||
             steps.intelligent_fix.outputs.fix_status == 'FATAL' ||
             steps.claude_result.outputs.status == 'FATAL'

@@ -45,13 +45,14 @@ RETRY = "RETRY_IMPLEMENTATION"
 #: workflow file -> (token, name of the job that does the work)
 TOKEN_TRIGGERS = {
     "developer_auto_implement.yml": (RETRY, "implement"),
-    "notify_scrum_ready.yml": ("READY_FOR_NEXT_ISSUE", "dispatch-next-issue"),
     "handle_acceptance_failure.yml": ("@acceptance-failure", "handle"),
     "handle_improvement.yml": ("@improvement", "handle"),
     "conflict_owner_escalation.yml": ("CONFLICT_REQUIRES_OWNER_DECISION", "escalate"),
 }
 
-VERIFY_STEP = "Verify issue is In Progress in ProjectV2 (otherwise exit)"
+# Renamed by #3882: the step now *claims* the issue on assignment rather than
+# demanding a second actor stage the board first.
+VERIFY_STEP = "Claim the issue (assignment is the dispatch)"
 
 
 def _load(path: Path) -> dict:
@@ -203,7 +204,8 @@ class TestClaudeBotIsAnAllowedTriggerAuthor:
         # The author allowlist is layer 1 -- on the gate job where there is
         # one, on the work job where there is not.
         [
-            ("notify_scrum_ready.yml", "comment_gate"),
+            # notify_scrum_ready.yml is no longer comment-triggered (#3882):
+            # it runs on a repository_dispatch, so it has no author to allow.
             ("claude-code-review.yml", "claude-review"),
         ],
     )

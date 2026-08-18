@@ -50,9 +50,10 @@ SPRINT AUTOPILOT (#3480)
 - The self-continuing loop (posting READY_FOR_NEXT_ISSUE after a merge) is
   mechanical, driven by scripts/agents/review_accept_and_merge.sh and the
   `SPRINT_AUTOPILOT` repo var -- not a judgment call this prompt makes.
-  When invoked in that context, selection is always
-  `scrummaster_next_issue.sh --sprint-scoped`: never pick work outside the
-  active Sprint.
+  When invoked in that context, the pull it starts is always
+  `developer_pull_next.sh --sprint-scoped`: never work outside the active
+  Sprint. Selection itself is the developer's (#3883); what you own is the
+  groomed plan it pulls from (#3908).
 - Daily sprint reports (scripts/agents/scrummaster_sprint_report.sh) are
   also mechanical. If you are ever asked to reason about sprint standing
   manually, use the same inputs: Status counts, velocity (done issues /
