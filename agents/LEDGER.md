@@ -1422,6 +1422,47 @@ are absent here by design (relocated to the annex; IDs are never reused).
   deliberately write `|| echo ""` and still treat a failed read as "no
   Status".
 
+- **V-045** · 2026-08-18 — **Container images are published for stable
+  releases only, and the `ghcr.io/dkblinux98/nyxgpt-*` packages are
+  anonymously pullable.** `release-artifacts.yml`'s `container-images` job
+  runs on `release: [released]`, which an rc prerelease does not fire, and
+  `release-publish-pypi.yml` (the rc channel) publishes no images at all —
+  so a release line has **no image of its own until it ships**. Consumers of
+  the published images must therefore expect a missing version tag and say
+  what they did about it; `nyxgpt ops install --terraform --local` falls back
+  to the newest published image and reports the skew rather than pretending
+  the deployed api is this version.
+  Method: read both workflows' `on:`/`tags:` blocks; queried the registry
+  anonymously — `curl https://ghcr.io/token?scope=repository:dkblinux98/nyxgpt-api:pull`
+  then `/v2/dkblinux98/nyxgpt-api/tags/list` returned `["2.1.0","latest"]`
+  (no 3.0.0, no rc tags), and `docker pull ghcr.io/dkblinux98/nyxgpt-api:latest`
+  succeeded with no credentials. 2026-08-18, while implementing #3835.
+  Re-verify when: a stable release ships (the tag list grows), or rc image
+  publishing is added to `release-publish-pypi.yml`.
+
+- **V-046** · 2026-08-18 — **The Terraform local deployment no longer needs
+  a checkout, and its `--dev` mode is now opt-in rather than permanent.**
+  The `.tf` sources ship as package data
+  (`nyxgpt.resources/terraform/local`, per-file symlinks so a dev checkout's
+  state/tfvars can never be packaged) and are materialized into
+  `~/.nyxGPT/terraform`; images come from the registry; the api container's
+  compose-file mount moved from `${var.repo_path}/docker-compose.yml` to the
+  ops-managed copy. The deployment records its own install mode in
+  `~/.nyxGPT/install-mode.terraform.json` — deliberately NOT the native
+  marker, which decides whether `restart api` drives launchd or `brew
+  services`.
+  Method: built the wheel, installed it into a venv with no checkout
+  (`ops._dev_checkout_root()` → `None`), ran
+  `_sync_local_terraform_config()` (materialized five files from package
+  data) and `_pull_terraform_published_images()` (pulled the two ghcr
+  images, reporting the V-045 fallback), then `terraform plan` in that
+  directory: 9 to add, no build blocks. The dev plan
+  (`-var=build_from_source=true`) still plans its two `build {}` blocks.
+  2026-08-18, while implementing #3835.
+  Re-verify when: `terraform/*.tf` gains a file (it must also be symlinked
+  into `nyxgpt.resources/terraform/local` — `test_terraform_stack.py` fails
+  otherwise), or the packaged-resource sync changes.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
