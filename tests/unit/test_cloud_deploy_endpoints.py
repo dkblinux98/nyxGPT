@@ -1,11 +1,13 @@
-"""Unit tests for the /api/v1/cloud/deploy* endpoints (P6-11, #3513).
+"""Unit tests for the /api/v1/cloud/deploy* endpoints (P6-11, #3513; #3804).
 
 These exercise src/nyxgpt/app.py's cloud_deploy_* route handlers with
 nyxgpt.cloud_deploy mocked out, so no AWS account, no Terraform binary and no
-SSH connection are needed. The dashboard surface exists because CLAUDE.md's
-Definition of Done requires ops features to be operable from the SRE/admin
-dashboard, not only from the CLI -- these tests pin that it drives the same
-code path the CLI does.
+SSH connection are needed.
+
+Opening and closing the SSH access tunnel used to be a dashboard control and
+an endpoint here. The owner removed both (2026-08-16, #3804): the dashboard
+observes the cloud deployment and `nyxgpt cloud tunnel` operates it. Its
+absence is pinned below.
 """
 
 from __future__ import annotations
@@ -120,47 +122,18 @@ def test_destroy_endpoint_tears_down_when_confirmed():
     mock.assert_called_once()
 
 
-def test_tunnel_endpoint_opens_a_background_tunnel():
-    target = type("T", (), {"host": "198.51.100.10"})()
-    started = {"action": "tunnel", "running": True, "pid": 4242, "urls": {}}
-
-    with (
-        patch("nyxgpt.app.cloud_deploy_module.resolve_target", return_value=target),
-        patch(
-            "nyxgpt.app.cloud_deploy_module.load_deploy_state",
-            return_value={"profiles": ["tracing"]},
-        ),
-        patch("nyxgpt.app.cloud_deploy_module.start_tunnel", return_value=started) as mock_start,
-    ):
+def test_tunnel_is_not_reachable_over_http():
+    """`nyxgpt cloud tunnel` / `--stop` own the access tunnel (#3804)."""
+    with patch("nyxgpt.app.cloud_deploy_module.start_tunnel") as mock_start:
         client = TestClient(app)
         response = client.post("/api/v1/cloud/deploy/tunnel", json={})
 
-    assert response.status_code == 200
-    assert response.json()["running"] is True
-    # The tunnel forwards exactly the profiles the deploy enabled.
-    assert mock_start.call_args.args[1] == ["tracing"]
+    assert response.status_code == 404
+    mock_start.assert_not_called()
 
 
-def test_tunnel_endpoint_stops_on_request():
-    with patch(
-        "nyxgpt.app.cloud_deploy_module.stop_tunnel",
-        return_value={"action": "tunnel-stop", "stopped": True, "pid": 4242},
-    ) as mock_stop:
-        client = TestClient(app)
-        response = client.post("/api/v1/cloud/deploy/tunnel", json={"action": "stop"})
+def test_the_only_deploy_read_is_status():
+    """The surviving GET surface is the information the dashboard renders."""
+    paths = {path for path in app.openapi()["paths"] if path.startswith("/api/v1/cloud/deploy")}
 
-    assert response.status_code == 200
-    assert response.json()["stopped"] is True
-    mock_stop.assert_called_once()
-
-
-def test_tunnel_endpoint_surfaces_a_missing_deployment_as_409():
-    with patch(
-        "nyxgpt.app.cloud_deploy_module.resolve_target",
-        side_effect=CloudCommandError("No provisioned instance found"),
-    ):
-        client = TestClient(app)
-        response = client.post("/api/v1/cloud/deploy/tunnel", json={})
-
-    assert response.status_code == 409
-    assert "No provisioned instance" in response.json()["error"]["message"]
+    assert paths == {"/api/v1/cloud/deploy", "/api/v1/cloud/deploy/destroy"}

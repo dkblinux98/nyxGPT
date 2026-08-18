@@ -398,6 +398,47 @@ are absent here by design (relocated to the annex; IDs are never reused).
   pre-product setup and consequential lifecycle run from the CLI.
   Source: #3805 (siblings #3803, #3804); owner acceptance round 2026-08-16.
 
+- **D-017** · 2026-08-18 · owner — **The Definition of Done says *observable*,
+  not *operable*: ops/SRE state is observed from the dashboard, ops/SRE
+  lifecycle is operated from the CLI.** This closes the refinement D-015 left
+  open. It is structural, not a judgment about how often lifecycle actions are
+  run: (a) *the self-hosting paradox* — every acting control changes the
+  substrate the UI itself runs on, so applying a substrate change or migrating
+  Terraform state from a page served by that instance pulls the rug out from
+  under it, and a half-completed operation removes the surface that would
+  report it; (b) *no usable escape hatch* — driving it safely needs a second
+  nyxGPT controlling the first, and two local instances collide on
+  `:8000`/`:3000` while a k8s-hosted one collides with the native install on
+  the same host ports, so the control surface is unusable where it would be
+  safe and unsafe where it is usable. Reading has neither problem. Applied in
+  #3804: the `/admin/cloud-infrastructure` screen and its tile are gone, its
+  information folded read-only into `/admin/infrastructure`, and Plan, the
+  Terraform state actions and tunnel start/stop removed from the web UI *and*
+  the API (`POST /cloud/infra/plan`, `POST /cloud/state/{migrate,unlock,restore}`,
+  `GET /cloud/state/versions`, `POST /cloud/deploy/tunnel`). CLAUDE.md's
+  Definition of Done and `agents/runbooks/review-runbook.md` §"End-to-end
+  usability" now carry the rule; a new acting control on a substrate the
+  dashboard runs on is a Medium (blocking) review finding. Do not rebuild
+  those screens citing the old "operable from the dashboard" wording.
+  Source: #3804; owner acceptance round 2026-08-16.
+
+- **D-018** · 2026-08-18 · owner — **A cloud status surface reports which
+  machine answered, and says *unknown* when none can.** Deriving AWS substrate
+  facts from Terraform state alone made the dashboard read "not provisioned",
+  every field blank, while being served *from* the instance Terraform had
+  created minutes earlier (rc12) — the state file lives on the operator's
+  workstation. The rule: on an EC2 instance read instance metadata (IMDSv2,
+  `nyxgpt.cloud_imds`), which describes the actual running machine; on the
+  workstation read Terraform state; on a machine that is neither report
+  **unknown**, never a blank "not provisioned" that implies an answer nothing
+  checked. Same three-way shape for the deployment (`deploy-record` /
+  `local-instance` / `none`) and for the Terraform state backend, which is
+  reported as *not on this machine* rather than as a local file when the page
+  is served from the instance. Unreachable IMDS means "not on EC2", never an
+  error, and answers are cached both ways so the polled endpoints never pay
+  the link-local timeout.
+  Source: #3804; owner observation 2026-08-16 (rc12 cloud deploy).
+
 ## Verifications
 
 - **V-001** · 2026-08-14 — Releases in this repository are immutable: a

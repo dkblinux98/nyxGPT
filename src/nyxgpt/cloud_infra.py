@@ -46,6 +46,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from nyxgpt import cloud_imds
 from nyxgpt import config as config_mod
 from nyxgpt.cloud import (
     CLOUD_STATE_FILE,
@@ -683,33 +684,100 @@ def test_infra() -> dict[str, Any]:
     return {"action": "test", "passed": True}
 
 
+# Where a substrate answer came from. The distinction is the whole point of
+# #3804: a dashboard served *from* the instance has no Terraform state, so
+# deriving facts from state alone made it report "not provisioned" while
+# running on the provisioned machine.
+SOURCE_IMDS = "imds"
+SOURCE_TERRAFORM_STATE = "terraform-state"
+SOURCE_UNKNOWN = "none"
+
+SOURCE_LABELS = {
+    SOURCE_IMDS: "instance metadata (this dashboard is running on the instance)",
+    SOURCE_TERRAFORM_STATE: "Terraform state on this machine",
+    SOURCE_UNKNOWN: "no source available on this machine",
+}
+
+
 def infra_status() -> dict[str, Any]:
     """Report what is provisioned, without touching AWS or requiring Terraform.
 
-    Reads the recorded outputs rather than refreshing state so the admin
-    dashboard can poll it cheaply and so it still answers on a machine whose
-    credentials have expired.
+    Answers from whichever source can actually see the substrate from here:
+
+    * **On an EC2 instance** -- instance metadata (IMDSv2), which describes
+      the machine this process is running on rather than a state file's
+      intent, and is available with no checkout, tfstate or credential.
+    * **On the workstation that provisioned it** -- the Terraform outputs
+      recorded in `~/.nyxGPT/cloud/state.json`. This is the only source that
+      knows about an instance the local machine is not itself.
+    * **Neither** -- `known` is False and the caller must say *unknown*. A
+      machine that has never provisioned anything and is not an instance has
+      no answer to give, and reporting "not provisioned" there would be an
+      assertion about AWS that nothing here checked.
+
+    Both sources are local reads, so this stays cheap enough for the
+    dashboard to poll and still answers when credentials have expired.
     """
-    state = _load_cloud_state()
     settings = load_settings()
-    provisioned = bool(state.get("instance_id"))
+    facts = cloud_imds.instance_facts()
+
+    if facts is not None:
+        source = SOURCE_IMDS
+        known = True
+        provisioned = True
+        # The instance can see everything about itself except which CIDR its
+        # security group admits -- that is a rule, not metadata. Left empty
+        # and reported as not-visible rather than guessed at.
+        owner_ip_cidr = ""
+        values: dict[str, Any] = dict(facts)
+    else:
+        state = _load_cloud_state()
+        source = SOURCE_TERRAFORM_STATE
+        provisioned = bool(state.get("instance_id"))
+        # "Not provisioned" is only an answer when this machine has actually
+        # run Terraform for the substrate; otherwise there is nothing here
+        # that could know either way.
+        known = provisioned or TFSTATE_FILE.exists() or bool(settings)
+        if not known:
+            source = SOURCE_UNKNOWN
+        owner_ip_cidr = settings.get("owner_ip_cidr") or ""
+        values = {
+            "region": state.get("region") or settings.get("aws_region") or "",
+            "instance_id": state.get("instance_id") or "",
+            "instance_type": state.get("instance_type") or settings.get("instance_type") or "",
+            "public_ip": state.get("public_ip") or "",
+            "private_ip": state.get("private_ip") or "",
+            "vpc_id": state.get("vpc_id") or "",
+            "subnet_id": state.get("subnet_id") or "",
+            "security_group_id": state.get("security_group_id") or "",
+            "ssh_key_name": state.get("ssh_key_name") or "",
+        }
+
     return {
+        "source": source,
+        "source_label": SOURCE_LABELS[source],
+        "on_ec2": source == SOURCE_IMDS,
+        "known": known,
         "provisioned": provisioned,
         "config_synced": TERRAFORM_DIR.is_dir(),
         "state_file": str(TFSTATE_FILE),
         "state_file_exists": TFSTATE_FILE.exists(),
-        "region": state.get("region") or settings.get("aws_region") or "",
-        "instance_id": state.get("instance_id") or "",
-        "instance_type": state.get("instance_type") or settings.get("instance_type") or "",
-        "public_ip": state.get("public_ip") or "",
-        "private_ip": state.get("private_ip") or "",
-        "vpc_id": state.get("vpc_id") or "",
-        "security_group_id": state.get("security_group_id") or "",
-        "ssh_key_name": state.get("ssh_key_name") or "",
-        "owner_ip_cidr": settings.get("owner_ip_cidr") or "",
+        "region": values.get("region") or "",
+        "instance_id": values.get("instance_id") or "",
+        "instance_type": values.get("instance_type") or "",
+        "public_ip": values.get("public_ip") or "",
+        "private_ip": values.get("private_ip") or "",
+        "vpc_id": values.get("vpc_id") or "",
+        "subnet_id": values.get("subnet_id") or "",
+        "security_group_id": values.get("security_group_id") or "",
+        "ssh_key_name": values.get("ssh_key_name") or "",
+        "owner_ip_cidr": owner_ip_cidr,
         # The access model is a property of the configuration, not of a live
         # lookup: the security group has exactly one inbound rule and the
-        # Terraform config refuses to represent any other shape.
+        # Terraform config refuses to represent any other shape. It is
+        # therefore reported for a provisioned substrate whichever source
+        # identified it -- and withheld when there is no substrate to
+        # describe.
         "access_model": {
             "open_ports": [22] if provisioned else [],
             "ssh_only": True,

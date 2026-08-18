@@ -2225,15 +2225,18 @@ def infra_status(_request: Request) -> dict[str, Any]:
 
 # --- Cloud substrate endpoints (AWS, P6-8/#3509) ---
 #
-# The SRE/admin dashboard's counterpart to `nyxgpt cloud infra` (CLAUDE.md's
-# Definition of Done: ops features are operable from the dashboard, not just
-# the CLI). Both surfaces call the same `nyxgpt.cloud_infra` functions, so the
-# access model -- port 22 only, scoped to the owner's IP -- is enforced in one
-# place regardless of who triggers provisioning.
+# The SRE/admin dashboard's counterpart to `nyxgpt cloud infra`. Per CLAUDE.md's
+# Definition of Done the dashboard *observes* the cloud substrate; operating it
+# is a CLI job (owner decision, 2026-08-16, #3804), because a UI served by the
+# instance cannot safely change the substrate it is running on and there is no
+# practical second nyxGPT to drive it from.
 #
-# `plan`/`apply`/`destroy` shell out to Terraform and can take minutes; they
-# are deliberately synchronous (same shape as the canary deploy endpoints
-# above) and the dashboard shows a pending state while they run.
+# So there is one browser-reachable substrate endpoint and it is a read.
+# `apply`/`destroy` remain as API operations for a client that is not the
+# instance's own dashboard -- both shell out to Terraform, can take minutes, and
+# are deliberately synchronous -- but no web surface posts to them; `plan` was
+# removed with the dashboard control that was its only caller (`nyxgpt cloud
+# infra plan` is the surviving surface).
 
 
 def _cloud_infra_args(payload: dict[str, Any]) -> argparse.Namespace:
@@ -2257,21 +2260,11 @@ def _cloud_infra_args(payload: dict[str, Any]) -> argparse.Namespace:
 def cloud_infra_status(_request: Request) -> dict[str, Any]:
     """What AWS substrate is provisioned, and how it is reachable.
 
-    Cheap and side-effect free -- reads the recorded state rather than
-    calling AWS -- so the dashboard can poll it.
+    Cheap and side-effect free -- answers from instance metadata when this
+    process runs on the instance, and from the recorded Terraform outputs
+    otherwise -- so the dashboard can poll it.
     """
     return cloud_infra_module.infra_status()
-
-
-@api.post("/cloud/infra/plan")
-def cloud_infra_plan(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    """Plan the AWS substrate. Creates nothing; returns the resolved settings."""
-    try:
-        result = cloud_infra_module.plan_infra(_cloud_infra_args(payload))
-    except CloudCommandError as e:
-        raise HTTPException(status_code=409, detail=str(e)) from e
-    admin_activity_module.record("cloud_infra.plan", result["settings"]["aws_region"])
-    return result
 
 
 @api.post("/cloud/infra/apply")
@@ -2312,16 +2305,16 @@ def cloud_infra_destroy(payload: dict[str, Any] = Body(default={})) -> dict[str,
     return result
 
 
-# --- Terraform remote state endpoints (P6-9, #3510) ---
+# --- Terraform remote state endpoint (P6-9, #3510) ---
 #
 # The substrate's state starts as one local file, which stops being correct as
-# soon as a second operator or a CI runner applies the same substrate. These
-# endpoints are the dashboard half of `nyxgpt cloud state`: migrate that state
-# into a versioned S3 bucket with a DynamoDB lock table, and recover it when a
-# run dies holding the lock or writes state that has to be rolled back.
-#
-# `migrate`/`local`/`restore` shell out to Terraform and can take a minute;
-# like the provisioning endpoints above they are deliberately synchronous.
+# soon as a second operator or a CI runner applies the same substrate.
+# Migrating it to S3 with a DynamoDB lock, listing what is stored there,
+# restoring a version and breaking a stuck lock are all `nyxgpt cloud state`
+# subcommands and nothing else (owner decision, 2026-08-16, #3804): they act on
+# the record of the substrate the dashboard itself may be running on, which is
+# precisely the surface a UI must not offer. What remains here is the read the
+# Infrastructure page's information panel needs.
 
 
 @api.get("/cloud/state")
@@ -2338,105 +2331,16 @@ def cloud_state_status(_request: Request, verify: bool = False) -> dict[str, Any
         raise HTTPException(status_code=409, detail=str(e)) from e
 
 
-@api.post("/cloud/state/migrate")
-def cloud_state_migrate(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    """Create the S3 bucket + DynamoDB lock table and move existing state into them."""
-    args = argparse.Namespace(
-        bucket=payload.get("bucket") or None,
-        table=payload.get("table") or None,
-        key=payload.get("key") or None,
-        region=payload.get("region") or None,
-        profile=payload.get("profile") or None,
-    )
-    try:
-        result = cloud_state_module.migrate_to_remote(args)
-    except CloudCommandError as e:
-        raise HTTPException(status_code=409, detail=str(e)) from e
-    backend = result["backend"]
-    admin_activity_module.record(
-        "cloud_state.migrate", f"s3://{backend['bucket']}/{backend['key']} lock={backend['table']}"
-    )
-    return result
-
-
-@api.post("/cloud/state/unlock")
-def cloud_state_unlock(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    """Release a state lock left held by a run that was killed mid-apply.
-
-    The lock id is required rather than "release whatever is held": breaking a
-    lock that a *live* apply still owns is how two runs end up writing the same
-    state, so the operator has to name the one they mean.
-    """
-    lock_id = str(payload.get("lock_id") or "").strip()
-    if not lock_id:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "A lock_id is required. Terraform prints it in the error that refused to "
-                "run (`Lock Info: ID: ...`)."
-            ),
-        )
-    try:
-        result = cloud_state_module.unlock_state(lock_id)
-    except CloudCommandError as e:
-        raise HTTPException(status_code=409, detail=str(e)) from e
-    admin_activity_module.record("cloud_state.unlock", lock_id)
-    return result
-
-
-@api.get("/cloud/state/versions")
-def cloud_state_versions(_request: Request, limit: int = 20) -> dict[str, Any]:
-    """List stored versions of the remote state object, newest first."""
-    try:
-        return cloud_state_module.list_state_versions(limit=limit)
-    except CloudCommandError as e:
-        raise HTTPException(status_code=409, detail=str(e)) from e
-
-
-@api.post("/cloud/state/restore")
-def cloud_state_restore(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    """Make a previous version of the remote state the current one.
-
-    Requires `{"confirm": true}` alongside the version id: this replaces what
-    Terraform believes exists in AWS, and applying against a wrong restore can
-    destroy live resources. The version being replaced stays in the bucket's
-    history, so the operation is itself reversible.
-    """
-    version_id = str(payload.get("version_id") or "").strip()
-    if not version_id:
-        raise HTTPException(
-            status_code=400,
-            detail="A version_id is required -- list them at GET /api/v1/cloud/state/versions.",
-        )
-    if not payload.get("confirm"):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Restoring replaces what Terraform believes exists in AWS; a later apply "
-                'against a wrong restore can destroy live resources. Re-send with {"confirm": '
-                "true} to proceed."
-            ),
-        )
-    try:
-        result = cloud_state_module.restore_state_version(version_id)
-    except CloudCommandError as e:
-        raise HTTPException(status_code=409, detail=str(e)) from e
-    admin_activity_module.record("cloud_state.restore", version_id)
-    return result
-
-
 # --- Cloud deploy endpoints (P6-11, #3513) ---
 #
-# The dashboard half of `nyxgpt cloud deploy`/`destroy`/`tunnel`: provision
-# AWS, install a published nyxGPT release onto the instance, open the SSH
-# tunnel that is the only access path, and hand back the localhost URLs.
-# CLAUDE.md's Definition of Done requires ops features to be operable from the
-# SRE dashboard, and both surfaces call the same `nyxgpt.cloud_deploy`
-# functions so there is one deploy implementation, not two.
+# `GET` reports what release is on the instance, whether the access tunnel is
+# open, and the deploy history -- the information the Infrastructure page's AWS
+# section renders. Opening and closing that tunnel is `nyxgpt cloud tunnel`
+# (owner decision, 2026-08-16, #3804).
 #
-# `deploy`/`destroy` run Terraform and a remote install and take minutes; like
-# the provisioning endpoints above they are deliberately synchronous and the
-# dashboard shows a pending state while they run.
+# `deploy`/`destroy` remain as API operations for a client that is not the
+# instance's own dashboard; no web surface posts to them. Both run Terraform
+# and a remote install and take minutes, and are deliberately synchronous.
 
 
 def _cloud_deploy_args(payload: dict[str, Any]) -> argparse.Namespace:
@@ -2507,37 +2411,15 @@ def cloud_deploy_destroy(payload: dict[str, Any] = Body(default={})) -> dict[str
     return result
 
 
-@api.post("/cloud/deploy/tunnel")
-def cloud_deploy_tunnel(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    """Open or close the SSH access tunnel.
-
-    `{"action": "stop"}` closes it; anything else opens it in the background
-    (a dashboard request cannot hold a foreground tunnel). Opening is
-    idempotent -- an already-running tunnel is reported, not duplicated.
-    """
-    if str(payload.get("action") or "start") == "stop":
-        try:
-            return cloud_deploy_module.stop_tunnel()
-        except CloudCommandError as e:
-            raise HTTPException(status_code=409, detail=str(e)) from e
-    try:
-        target = cloud_deploy_module.resolve_target(_cloud_deploy_args(payload))
-        profiles = [str(p) for p in (cloud_deploy_module.load_deploy_state().get("profiles") or [])]
-        result = cloud_deploy_module.start_tunnel(target, profiles)
-    except CloudCommandError as e:
-        raise HTTPException(status_code=409, detail=str(e)) from e
-    admin_activity_module.record("cloud_deploy.tunnel", target.host)
-    return result
-
-
 # --- Containerized cloud artifact-install smoke endpoints (#3784) ---
 #
 # The SRE-surface half of `nyxgpt cloud smoke --container`: start a run of the
 # artifact install path on a bare Amazon Linux 2023 container, and read the
-# last run's verdict. CLAUDE.md's Definition of Done requires ops features to
-# be operable from the dashboard, and both surfaces drive the same
+# last run's verdict. Both surfaces drive the same
 # `nyxgpt.cloud_artifact_smoke` functions and read the same recorded result,
-# so there is one smoke rather than two implementations of it.
+# so there is one smoke rather than two implementations of it. This one stays
+# startable from the dashboard under the #3804 rule: it exercises a throwaway
+# local container, so it changes nothing the dashboard is running on.
 #
 # Unlike the AWS cloud endpoints above, this one is *not* synchronous: a run
 # builds an image, boots systemd, installs Node, Docker, Ollama and the wheel,

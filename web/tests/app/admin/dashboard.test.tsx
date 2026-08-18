@@ -205,6 +205,28 @@ describe('AdminDashboardPage', () => {
     }
   });
 
+  // #3804: the AWS Cloud Infrastructure screen is gone and its information
+  // lives read-only inside Infrastructure Status. The dashboard must not route
+  // to it -- a tile that 404s reads as a broken product, and re-adding one is
+  // how the removed control surface would come back.
+  it('offers no separate AWS cloud screen, only the Infrastructure Status tile', async () => {
+    render(<AdminDashboardPage />);
+    await waitFor(() => {
+      expect(screen.getByText(/Canary: idle/)).toBeInTheDocument();
+    });
+
+    expect(document.querySelector('a[href="/admin/cloud-infrastructure"]')).toBeNull();
+    expect(ADMIN_NAV.map((dest) => dest.href)).not.toContain('/admin/cloud-infrastructure');
+
+    const systemStatus = screen.getByRole('region', { name: 'System status overview' });
+    expect(
+      within(systemStatus).queryByRole('link', { name: /AWS Cloud Infrastructure/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(systemStatus).getByRole('link', { name: /Infrastructure Status/ }),
+    ).toBeInTheDocument();
+  });
+
   it('highlights a quick-nav tile on hover and restores it on leave', async () => {
     render(<AdminDashboardPage />);
     await waitFor(() => {

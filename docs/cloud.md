@@ -223,14 +223,16 @@ falling back to `sudo -n --preserve-env` — and it verifies the hop preserves
 `/home/ec2-user` rather than `/root`
 ([Docker group membership](systemd.md#privileged-install-steps)).
 
-### From the dashboard: status, not controls (P6-15, #3514)
+### From the dashboard: information only (#3804)
 
-The admin dashboard's **AWS Cloud Infrastructure** page
-(`/admin/cloud-infrastructure`) **reports the cloud deployment; it does not
-deploy or tear one down.** It shows the installed release, the instance and
-region, the enabled observability profiles, whether the access tunnel is
-open, a live health answer, the localhost URL list, and the deploy history —
-and it points at the wrapped commands below for anything that changes state:
+The admin dashboard's **[Infrastructure Status](ui.md)** page
+(`/admin/infrastructure`) carries an **AWS** section that **reports the cloud
+substrate and the deployment on it, and does nothing else.** It shows the
+substrate (region, instance, type, public IP, VPC, subnet, security group,
+key pair, open ports), the installed release, the enabled observability
+profiles, whether the access tunnel is open, a health answer, the localhost
+URL list, the Terraform state backend, and the deploy history — and it points
+at the wrapped commands below for everything that changes state:
 
 | To do this | Run |
 | --- | --- |
@@ -239,20 +241,55 @@ and it points at the wrapped commands below for anything that changes state:
 | Run the end-to-end cloud test (deploys, verifies, tears down) | `nyxgpt cloud smoke` |
 | Test the artifact install path locally, without AWS | `nyxgpt cloud smoke --container` |
 | Show the same state from a terminal | `nyxgpt cloud deploy --status` |
+| Open or close the access tunnel | `nyxgpt cloud tunnel` / `nyxgpt cloud tunnel --stop` |
+| Preview a substrate change without creating anything | `nyxgpt cloud infra plan` |
+| Move Terraform state, or recover a version | `nyxgpt cloud state migrate` / `versions` / `restore` / `unlock` |
 | Re-allow SSH after your public IP changes | `nyxgpt cloud allow-ip` |
 
-This is the owner's decision of 2026-08-09 on #3514, extending the #3410
-status-only precedent for the local Infrastructure Status page to cloud:
-cloud lifecycle actions are rare, consequential and irreversible, so a
-deliberate CLI invocation is the safer surface than a dashboard button. The
-page's remaining interactive controls are deliberately limited to things that
-are none of those — **Plan**, which reports what an apply *would* change and
-creates nothing, and the **access tunnel**, a local SSH forward whose opening
-and closing changes nothing in AWS.
+There was a separate **AWS Cloud Infrastructure** screen
+(`/admin/cloud-infrastructure`). The owner removed it, and every remaining
+control on it, on 2026-08-16 (#3804). #3514 had already removed Apply, Deploy
+and Destroy on the grounds that cloud lifecycle actions are rare,
+consequential and irreversible; what the acceptance round found is that the
+argument does not stop at those three:
 
-The page and the CLI still call the same `nyxgpt.cloud_deploy` functions, and
-the lifecycle commands it displays come from the backend's own
-`LIFECYCLE_COMMANDS`, so the two can never drift apart.
+- **The self-hosting paradox.** Every acting control changes the substrate the
+  UI itself runs on. Migrating Terraform state or applying a substrate change
+  from a page served by that instance pulls the rug out from under it, and if
+  the operation half-completes the surface that would report it is gone.
+- **No usable escape hatch.** Driving it safely needs a *second* nyxGPT
+  controlling the first, which is not practical: two local instances collide
+  on `:8000`/`:3000`, and a Kubernetes-hosted one collides with the native
+  install on the same host ports. The control surface is unusable where it
+  would be safe and unsafe where it is usable.
+
+Reading has neither problem — observing does not remove the observer — which
+is why the information folded into the local Infrastructure page and the
+controls did not come with it.
+
+### Which machine is answering (#3804)
+
+The AWS section's facts come from whichever source can actually see the
+substrate from where the dashboard is running, and it names the source it
+used:
+
+| Where the dashboard runs | Source | What it reports |
+| --- | --- | --- |
+| On the EC2 instance | Instance metadata (IMDSv2, `169.254.169.254`) | The running machine's own region, instance id and type, public IP, VPC, subnet, security groups and key pair. The deployment is read first-hand — the stack answering the request *is* the deployment |
+| On the workstation that provisioned it | The Terraform outputs in `~/.nyxGPT/cloud/state.json` | The substrate that machine created, plus its deploy record, tunnel state and history |
+| Neither | — | **Unknown.** Not "not provisioned": nothing on that machine has checked |
+
+This is why the panel exists in this shape. Deriving everything from Terraform
+state — which lives on the operator's workstation — made a dashboard served
+*from* the instance report "not provisioned" with every field blank, on a
+machine Terraform had created minutes earlier (owner observation, rc12).
+Terraform state and the tunnel are likewise reported as *not on this machine*
+when the page is served from the instance, rather than as a local file that
+does not exist there.
+
+The page and the CLI still call the same `nyxgpt.cloud_deploy` and
+`nyxgpt.cloud_infra` functions, and the commands it displays come from the
+backend's own `LIFECYCLE_COMMANDS`, so the two can never drift apart.
 
 ### Where deploy state lives
 
@@ -336,9 +373,9 @@ run would destroy a deployment it did not create.
 
 Every run is appended to `~/.nyxGPT/cloud/history.jsonl` as a `smoke` entry, so
 it appears in the dashboard's deploy history alongside deploys and teardowns.
-The admin **AWS Cloud Infrastructure** page lists the command as a pointer (it
-is a lifecycle action, so it is not a dashboard button — see
-[From the dashboard](#from-the-dashboard-status-not-controls-p6-15-3514)).
+The Infrastructure page's AWS section lists the command as a pointer (it is a
+lifecycle action, so it is not a dashboard button — see
+[From the dashboard](#from-the-dashboard-information-only-3804)).
 
 It is a wrapped CLI command rather than a script in this repository on purpose:
 per CLAUDE.md's repo-less portability requirement it has to run on a machine
@@ -429,9 +466,9 @@ to register as a new key pair) or `--ssh-key-name` (an EC2 key pair that
 already exists in the region) is required — SSH is the only way in, so an
 instance with no key is refused before anything is created.
 
-The same operations are on the SRE/admin dashboard under **AWS Cloud
-Infrastructure** (`/admin/cloud-infrastructure`), which drives the same code
-path; teardown there requires typing `DESTROY`.
+None of these is on the dashboard. The Infrastructure page's AWS section
+reports what they produced and names the commands themselves — see
+[From the dashboard](#from-the-dashboard-information-only-3804).
 
 ### The SSH source CIDR
 
@@ -513,8 +550,9 @@ After migrating, `nyxgpt cloud infra plan/apply/destroy` work exactly as
 before. The difference is that a second concurrent apply now blocks on the
 lock instead of racing.
 
-The same operations are on the SRE/admin dashboard at **Admin → Cloud
-Infrastructure → Terraform state**.
+These are CLI operations only. The Infrastructure page's AWS section reports
+where state lives and how it is locked, and nothing there rewrites it (#3804)
+— see [From the dashboard](#from-the-dashboard-information-only-3804).
 
 ### Recovery
 

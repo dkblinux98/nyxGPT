@@ -98,6 +98,85 @@ export const FULL_WIZARD_SCHEMA = [
   },
 ];
 
+/**
+ * The wrapped `nyxgpt` commands the backend hands every cloud status
+ * (`cloud_deploy.LIFECYCLE_COMMANDS`). The Infrastructure page renders them as
+ * pointers, so a fixture that omitted them would test a page that cannot
+ * exist.
+ */
+export const CLOUD_LIFECYCLE_COMMANDS = {
+  deploy: 'nyxgpt cloud deploy',
+  redeploy: 'nyxgpt cloud deploy',
+  destroy: 'nyxgpt cloud destroy --yes',
+  smoke: 'nyxgpt cloud smoke',
+  tunnel: 'nyxgpt cloud tunnel',
+  tunnel_stop: 'nyxgpt cloud tunnel --stop',
+  status: 'nyxgpt cloud deploy --status',
+  allow_ip: 'nyxgpt cloud allow-ip',
+};
+
+/**
+ * `GET /api/v1/cloud/deploy` on a machine that is neither an EC2 instance nor
+ * the workstation that provisioned one: both the substrate and the deployment
+ * answer *unknown* (#3804). The commonest case, so it is the default.
+ */
+export const CLOUD_DEPLOY_UNKNOWN = {
+  source: 'none',
+  known: false,
+  on_instance: false,
+  deployed: false,
+  version: '',
+  host: '',
+  instance_id: '',
+  region: '',
+  profiles: [],
+  infra: {
+    source: 'none',
+    source_label: 'no source available on this machine',
+    on_ec2: false,
+    known: false,
+    provisioned: false,
+    region: '',
+    instance_id: '',
+    instance_type: '',
+    public_ip: '',
+    private_ip: '',
+    vpc_id: '',
+    subnet_id: '',
+    security_group_id: '',
+    ssh_key_name: '',
+    owner_ip_cidr: '',
+    access_model: {
+      open_ports: [],
+      ssh_only: true,
+      world_open_ingress: false,
+      reachability: 'SSH tunnel to loopback-bound services',
+    },
+  },
+  tunnel: { running: false, pid: 0, host: '', profiles: [], urls: {} },
+  health: { checked: false, healthy: false, status: 0, reason: '' },
+  history: [],
+  urls: {},
+  access_command: 'nyxgpt cloud tunnel',
+  commands: CLOUD_LIFECYCLE_COMMANDS,
+};
+
+/** `GET /api/v1/cloud/state` before any migration: one local state file. */
+export const CLOUD_STATE_LOCAL = {
+  backend: 'local',
+  remote_enabled: false,
+  bootstrapped: false,
+  bucket: '',
+  table: '',
+  key: '',
+  region: '',
+  profile: '',
+  locking: 'none (single local state file)',
+  local_state_file: '/home/op/.nyxGPT/cloud/terraform.tfstate',
+  local_state_exists: false,
+  verified: false,
+};
+
 export const handlers = [
   // GET /api/models
   http.get(`${API_BASE_URL}/api/v1/models`, () => {
@@ -484,5 +563,18 @@ export const handlers = [
       ],
       docs: 'docs/cloud.md#pypi-publishing-rc-and-stable',
     });
+  }),
+
+  // --- Cloud substrate + deployment, read-only (#3804) ---
+  //
+  // The Infrastructure page reads both on every load. Defaults describe the
+  // commonest machine: one that is neither an EC2 instance nor an operator's
+  // workstation, so both answer *unknown* rather than "not provisioned".
+  http.get('/api/v1/cloud/deploy', () => {
+    return HttpResponse.json(CLOUD_DEPLOY_UNKNOWN);
+  }),
+
+  http.get('/api/v1/cloud/state', () => {
+    return HttpResponse.json(CLOUD_STATE_LOCAL);
   }),
 ];

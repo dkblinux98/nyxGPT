@@ -241,6 +241,16 @@ the core repo-less packaging work)*
   decision". In implementation this *removed* the Apply/Deploy/Destroy controls P6-8/P6-11
   had shipped on `/admin/cloud-infrastructure`; Plan and the access tunnel stayed, being
   neither consequential nor irreversible.
+- **Owner decision, 2026-08-16 (#3804): information only, and no cloud screen.** The
+  2026-08-09 decision above stopped one control short. The AWS Cloud Infrastructure screen
+  is removed and its information folded into `/admin/infrastructure`; Plan, the Terraform
+  state panel (migrate/versions/restore/unlock) and the access tunnel are gone with it, in
+  the web UI and in the API. Rationale is structural rather than a judgment about
+  frequency: every acting control changes the substrate the UI itself runs on, and driving
+  it safely needs a *second* nyxGPT, which collides with the first on `:8000`/`:3000`.
+  Observation has neither problem. CLAUDE.md's Definition of Done was amended in the same
+  change — ops/SRE state is *observable* from the dashboard; cloud lifecycle is operated
+  from the CLI — so this is the rule now rather than an exception to it.
 
 ### P6-16 · feat: Phase 6 capstone - clean machine to monitored AWS deploy in one command
 **Label:** Feature · **Module:** cli · **Effort:** XL · **Sequencing: selected LAST**
