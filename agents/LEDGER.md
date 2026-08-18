@@ -350,6 +350,17 @@ are absent here by design (relocated to the annex; IDs are never reused).
   branch accumulation.
   Source: owner in session, 2026-08-18; #3862.
 
+- **D-014** · 2026-08-18 · owner — **Model assignment per work type: review
+  work runs Fable 5, dev work runs Opus 5, huddle work runs Fable 5.** The
+  knobs are the repo Actions variables `AGENT_MODEL_REVIEW`,
+  `AGENT_MODEL_DEV` and `AGENT_MODEL_HUDDLE`; the workflow fallbacks encode
+  the policy (`claude-fable-5` / `claude-opus-5` / `claude-fable-5`), so with
+  no variables set the policy holds by default. Before this decision the
+  developer's huddle-position leg rode `AGENT_MODEL_DEV` (Opus 5) and the
+  scrummaster mediation leg rode `AGENT_MODEL_REVIEW`; both huddle legs now
+  use `AGENT_MODEL_HUDDLE`.
+  Source: owner in session, 2026-08-18.
+
 ## Verifications
 
 - **V-001** · 2026-08-14 — Releases in this repository are immutable: a
