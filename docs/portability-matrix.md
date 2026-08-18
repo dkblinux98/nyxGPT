@@ -108,10 +108,11 @@ wrapped command consumes them from the registry yet.
    images. The path is otherwise fully wrapped, and provisions its own `kind`
    cluster.
 
-While either gap is open, `nyxgpt ops portability --strict` exits non-zero and
-the dashboard says the capstone portability criterion is not met. That is
-deliberate: closing them is what turns the strict gate green, and the gate then
-keeps them closed.
+While either gap is open, `nyxgpt ops portability --strict` exits non-zero. That
+is deliberate: closing them is what turns the strict gate green, and the gate
+then keeps them closed. (There is no dashboard surface for this — the matrix
+describes the product's portability claims, not the state of any one machine, so
+the CLI and `GET /api/v1/ops/portability` are its only readers, see #3803.)
 
 ## Clean-machine acceptance run
 
