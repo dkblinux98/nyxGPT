@@ -13,6 +13,7 @@ Two halves:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -523,7 +524,20 @@ def test_k8s_stack_health_fails_on_a_pod_still_pulling_its_image(monkeypatch) ->
         if "pods" in cmd:
             return MagicMock(
                 returncode=0,
-                stdout="nyxgpt-api-stable-1=Running;prometheus-abc=Pending;",
+                stdout=json.dumps(
+                    {
+                        "items": [
+                            {
+                                "metadata": {"name": "nyxgpt-api-stable-1"},
+                                "status": {"phase": "Running"},
+                            },
+                            {
+                                "metadata": {"name": "prometheus-abc"},
+                                "status": {"phase": "Pending"},
+                            },
+                        ]
+                    }
+                ),
                 stderr="",
             )
         return MagicMock(returncode=0, stdout="", stderr="")

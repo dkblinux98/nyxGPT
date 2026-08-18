@@ -11796,6 +11796,30 @@ def test_ensure_k8s_secret_bootstraps_from_example(monkeypatch, tmp_path):
 # --- Kubernetes: _kubectl_apply_kustomization / _k8s_stack_health ---
 
 
+def _k8s_pods_json(*pods):
+    """A `kubectl get pods -o json` body; each arg is a name or a (name, phase) pair.
+
+    #3832 moved `_k8s_stack_health` off `-o jsonpath` and onto the shared
+    `nyxgpt.k8s_pod_state` reading, so a Pending Pod can report *why* it is
+    Pending rather than only that it is.
+    """
+    items = []
+    for pod in pods:
+        name, phase = pod if isinstance(pod, tuple) else (pod, "Running")
+        items.append(
+            {
+                "metadata": {"name": name},
+                "status": {
+                    "phase": phase,
+                    "conditions": [
+                        {"type": "Ready", "status": "True" if phase == "Running" else "False"}
+                    ],
+                },
+            }
+        )
+    return json.dumps({"items": items})
+
+
 @pytest.mark.unit
 def test_kubectl_apply_kustomization_success(monkeypatch):
     monkeypatch.setattr(
@@ -11818,7 +11842,9 @@ def test_k8s_stack_health_reports_pods_service(monkeypatch):
         if cmd[4] == "pods":
             return CP(
                 returncode=0,
-                stdout="nyxgpt-api-stable-abc=Running;nyxgpt-api-canary-def=Pending;",
+                stdout=_k8s_pods_json(
+                    "nyxgpt-api-stable-abc", ("nyxgpt-api-canary-def", "Pending")
+                ),
             )
         if cmd[4] == "svc":
             return CP(returncode=0, stdout="nyxgpt-api   ClusterIP\n")
@@ -11841,7 +11867,7 @@ def test_k8s_stack_health_reports_web_service_alongside_api(monkeypatch):
 
     def fake_run(cmd, check=True, **_k):
         if cmd[4] == "pods":
-            return CP(returncode=0, stdout="nyxgpt-web-stable-abc=Running;")
+            return CP(returncode=0, stdout=_k8s_pods_json("nyxgpt-web-stable-abc"))
         if cmd[4] == "svc":
             svc_name = cmd[5]
             if svc_name == "nyxgpt-api":
@@ -11864,7 +11890,7 @@ def test_k8s_stack_health_checks_data_and_llm_services(monkeypatch):
 
     def fake_run(cmd, check=True, **_k):
         if cmd[4] == "pods":
-            return CP(returncode=0, stdout="nyxgpt-api-stable-abc=Running;")
+            return CP(returncode=0, stdout=_k8s_pods_json("nyxgpt-api-stable-abc"))
         if cmd[4] == "svc":
             checked.append(cmd[5])
             return CP(returncode=1) if cmd[5] in ("cassandra", "ollama") else CP(returncode=0)

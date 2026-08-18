@@ -65,6 +65,7 @@ from nyxgpt.install_mode import (
     read_install_mode,
     write_install_mode,
 )
+from nyxgpt.k8s_pod_state import classify_pods
 from nyxgpt.logging import get_correlation_id
 
 # The vendored-source tarball builder lives in its own stdlib-only module
@@ -6348,30 +6349,45 @@ def _k8s_stack_health() -> list[OpsResult]:
     starting when this runs; re-check with `nyxgpt ops status`. No HPA check
     here -- the stable/canary Deployments deliberately have none (autoscaling
     would fight canary.py's replica-count-based traffic split; see #3409).
+
+    A non-`Running` Pod is still a failure here (the installs that call this
+    have already waited for their rollouts), but it no longer reports as a
+    bare phase: `nyxgpt.k8s_pod_state` -- the same reading self-heal acts on
+    (#3832) -- names the cause, so "pod prometheus-x: Pending" becomes
+    "Pending (Unschedulable): 0/1 nodes are available: Insufficient memory"
+    with the remedy attached. `Pending` conflates a Pod pulling an image with
+    one the scheduler refused, and only the second needs the operator.
     """
     results: list[OpsResult] = []
 
     cp = _run(
-        [
-            "kubectl",
-            "-n",
-            K8S_NAMESPACE,
-            "get",
-            "pods",
-            "-o",
-            "jsonpath={range .items[*]}{.metadata.name}={.status.phase};{end}",
-        ],
+        ["kubectl", "-n", K8S_NAMESPACE, "get", "pods", "-o", "json"],
         check=False,
     )
     if cp.returncode != 0:
         results.append(OpsResult(False, "Could not read pod status", _cp_details(cp)))
     else:
-        entries = [e for e in (cp.stdout or "").split(";") if e]
-        if not entries:
+        try:
+            payload = json.loads(cp.stdout or "{}")
+        except ValueError:
+            payload = {}
+        pod_states = classify_pods(payload if isinstance(payload, dict) else {})
+        if not pod_states:
             results.append(OpsResult(False, f"No pods found in namespace {K8S_NAMESPACE}"))
-        for entry in entries:
-            name, _, phase = entry.partition("=")
-            results.append(OpsResult(phase == "Running", f"pod {name}: {phase}"))
+        for pod_state in pod_states:
+            results.append(
+                OpsResult(
+                    pod_state.running,
+                    f"pod {pod_state.name}: {pod_state.summary()}",
+                    (
+                        "The scheduler could not place this Pod. Add node capacity or lower the "
+                        "workload's resource requests -- deleting the Pod cannot help, and "
+                        "self-heal will not (#3832)."
+                        if pod_state.unschedulable
+                        else ""
+                    ),
+                )
+            )
 
     # `cassandra`/`ollama` are the data/LLM tier's Services (#3786) -- the
     # hostnames k8s/configmap.yaml points the api at. A missing one is the

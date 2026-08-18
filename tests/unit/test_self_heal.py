@@ -2769,14 +2769,48 @@ def _k8s_pods_json(*pods):
     return json.dumps({"items": list(pods)})
 
 
-def _k8s_pod(name, *, phase="Running", ready=True):
-    return {
-        "metadata": {"name": name},
-        "status": {
-            "phase": phase,
-            "conditions": [{"type": "Ready", "status": "True" if ready else "False"}],
-        },
-    }
+def _k8s_pod(name, *, phase="Running", ready=True, unschedulable=False, owner=None, waiting=None):
+    """One Pod object shaped like `kubectl get pod -o json` returns it.
+
+    `unschedulable=True` adds the `PodScheduled=False`/`Unschedulable`
+    condition a Pod carries when the scheduler could not place it -- the
+    #3832 shape. `owner` adds the ReplicaSet ownerReference that gives the Pod
+    a heal identity surviving its own recreation.
+    """
+    conditions = [{"type": "Ready", "status": "True" if ready else "False"}]
+    if unschedulable:
+        conditions.append(
+            {
+                "type": "PodScheduled",
+                "status": "False",
+                "reason": "Unschedulable",
+                "message": "0/1 nodes are available: 1 Insufficient memory.",
+            }
+        )
+    metadata = {"name": name}
+    if owner is not None:
+        metadata["ownerReferences"] = [{"kind": "ReplicaSet", "name": owner}]
+    status = {"phase": phase, "conditions": conditions}
+    if waiting is not None:
+        status["containerStatuses"] = [{"state": {"waiting": {"reason": waiting}}}]
+    return {"metadata": metadata, "status": status}
+
+
+def _k8s_heal_run(pod, *, delete=None):
+    """`_run` stub for `heal_kubernetes_pod`: answers the pre-delete state read.
+
+    #3832 made the delete conditional on re-reading the Pod, so a stub has to
+    answer both calls -- `kubectl get pod -o json` with `pod`, then the delete
+    with `delete` (default success).
+    """
+    delete_result = delete if delete is not None else CP(returncode=0)
+
+    def _run(cmd, timeout=30.0, **_k):
+        if cmd[1] == "get":
+            return CP(stdout=json.dumps(pod))
+        return delete_result
+
+    return _run
 
 
 @pytest.mark.unit
@@ -2850,21 +2884,32 @@ def test_list_kubernetes_component_status_invalid_json(monkeypatch, caplog):
 
 @pytest.mark.unit
 def test_heal_kubernetes_pod_success(monkeypatch):
-    run_mock = MagicMock(return_value=CP(returncode=0))
-    monkeypatch.setattr(self_heal, "_run", run_mock)
+    calls = []
+
+    def _run(cmd, timeout=30.0, **_k):
+        calls.append(cmd)
+        if cmd[1] == "get":
+            return CP(stdout=json.dumps(_k8s_pod("nyxgpt-api-blue-abc", ready=False)))
+        return CP(returncode=0)
+
+    monkeypatch.setattr(self_heal, "_run", _run)
 
     result = self_heal.heal_kubernetes_pod("nyxgpt-api-blue-abc")
 
     assert result.ok
     assert "Deleted pod nyxgpt-api-blue-abc" in result.message
-    cmd = run_mock.call_args[0][0]
-    assert cmd == ["kubectl", "delete", "pod", "nyxgpt-api-blue-abc", "-n", "nyxgpt"]
+    assert calls[-1] == ["kubectl", "delete", "pod", "nyxgpt-api-blue-abc", "-n", "nyxgpt"]
 
 
 @pytest.mark.unit
 def test_heal_kubernetes_pod_failure(monkeypatch):
     monkeypatch.setattr(
-        self_heal, "_run", lambda cmd, timeout=60.0: CP(returncode=1, stderr="boom")
+        self_heal,
+        "_run",
+        _k8s_heal_run(
+            _k8s_pod("nyxgpt-api-blue-abc", ready=False),
+            delete=CP(returncode=1, stderr="boom"),
+        ),
     )
     result = self_heal.heal_kubernetes_pod("nyxgpt-api-blue-abc")
     assert not result.ok
@@ -2874,6 +2919,8 @@ def test_heal_kubernetes_pod_failure(monkeypatch):
 @pytest.mark.unit
 def test_heal_kubernetes_pod_run_raises(monkeypatch):
     def _boom(cmd, timeout=60.0, **_k):
+        if cmd[1] == "get":
+            return CP(stdout=json.dumps(_k8s_pod("nyxgpt-api-blue-abc", ready=False)))
         raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
 
     monkeypatch.setattr(self_heal, "_run", _boom)

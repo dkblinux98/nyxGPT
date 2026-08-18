@@ -29,7 +29,11 @@ Four deployment modes are covered:
   is on top of, not instead of, Kubernetes' own kubelet liveness-probe
   restarts and `canary.py`'s metrics-gated rollout + auto-rollback; it adds
   the same "torn-down/stuck" recovery + unified dashboard visibility the
-  other three modes get.
+  other three modes get. Deleting a Pod is a repair only for one state --
+  `Running` but not `Ready` -- and `nyxgpt.k8s_pod_state` is what draws that
+  line (#3832); a `Pending` Pod is reported with the cluster's own reason and
+  never deleted, because deletion cannot create the capacity an unschedulable
+  Pod is waiting for.
 
 A component reported by more than one mode at once -- e.g. a stopped native
 `nyxgpt-cassandra` container deliberately left in place after switching to
@@ -97,6 +101,7 @@ from nyxgpt.config import (
     load_config,
 )
 from nyxgpt.install_mode import DEV_LAUNCHD_LABELS, read_install_mode
+from nyxgpt.k8s_pod_state import PodState, classify_pod, classify_pods
 from nyxgpt.logging import get_correlation_id, get_log_dir, mint_correlation_id
 
 logger = logging.getLogger(__name__)
@@ -133,6 +138,29 @@ EVENT_LOG_LIMIT = 100
 DEFAULT_CHECK_INTERVAL_SECONDS = 15.0
 DEFAULT_MAX_CONSECUTIVE_RESTARTS = 5
 DEFAULT_BACKOFF_SECONDS = 30.0
+
+# Rolling window over which the TOTAL number of automatic heal actions taken
+# against one component is capped, independently of the consecutive-failure
+# counter (#3832).
+#
+# The consecutive counter answers "are my restarts failing?" and resets the
+# moment the component looks healthy once. That is the right question for a
+# service that flaps, and it is defeated by two things: a component whose
+# identity *changes* when it is healed (#3832's Pod deletions produced seven
+# names in 4.5 minutes, each with a counter of its own, so a cap of 5 never
+# fired), and a component that comes up healthy just long enough to zero the
+# counter before failing again. This window is the guard that does not care
+# why: attempts are counted against a stable identity
+# (`ComponentStatus.budget_key`) and never reset by a glimpse of health, so no
+# component can be healed without bound whatever the cause.
+DEFAULT_HEAL_ATTEMPT_WINDOW_SECONDS = 900.0
+
+# How many heal actions are allowed in that window, as a multiple of
+# `max_consecutive_restarts`. Deliberately looser than the consecutive cap so
+# the two guards stay distinct: the consecutive counter is what normally stops
+# a failing component (and says so), and this one only catches what gets past
+# it -- an identity that changed, or a health flicker that reset it.
+HEAL_ATTEMPT_WINDOW_MULTIPLIER = 2
 
 # Runs-to-completion services (e.g. one-shot DB migrations) that are never
 # "down" in the self-heal sense -- they're expected to exit 0 and stay exited.
@@ -260,9 +288,27 @@ class ComponentStatus:
     `_resolve_core_component_conflicts` / #3428) -- e.g. a stopped native
     `nyxgpt-cassandra` container left in place while Terraform mode is
     actually running Cassandra -- or unless `known` is `False`, in which case
-    it carries why the state could not be determined. It never affects
-    `healthy`/`state`/`source`, which always describe the winning (active)
-    entry only.
+    it carries why the state could not be determined, or unless `healable` is
+    `False`, in which case it carries the cluster's own reason. It never
+    affects `healthy`/`state`/`source`, which always describe the winning
+    (active) entry only.
+
+    `healable` is `False` when this component is unhealthy and *no action this
+    module has* would converge it -- today that is a `Pending` Kubernetes Pod
+    (#3832): an unschedulable one cannot be fixed by deleting it (deletion
+    does not create capacity, and the replacement is Pending for the identical
+    reason), and a starting one resolves itself. Unlike `desired=False`, a
+    manual "Heal now" does *not* override it: the action would not be a repair
+    for an operator either, and the loop that took it deleted seven Pods in
+    4.5 minutes while erasing the Pod age an operator needed to diagnose the
+    real cause. The reason goes in `note`, which is what the dashboard shows.
+
+    `heal_key` is the stable identity heal attempts are budgeted against, when
+    that differs from `service` -- empty means "same as `service`". A
+    Kubernetes Pod is the case that needs it: healing *replaces* the Pod, so
+    the next pass sees a different `service` name and, keyed by name, a fresh
+    restart budget. Keyed by the owning ReplicaSet instead, the budget spans
+    the recreations (#3832).
     """
 
     service: str
@@ -274,6 +320,13 @@ class ComponentStatus:
     desired: bool = True
     note: str = ""
     known: bool = True
+    healable: bool = True
+    heal_key: str = ""
+
+    @property
+    def budget_key(self) -> str:
+        """Key this component's restart counters/attempt budget are stored under."""
+        return self.heal_key or self.service
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a plain dict suitable for JSON responses."""
@@ -287,6 +340,8 @@ class ComponentStatus:
             "desired": self.desired,
             "note": self.note,
             "known": self.known,
+            "healable": self.healable,
+            "heal_key": self.budget_key,
         }
 
 
@@ -411,6 +466,9 @@ def _default_state() -> dict[str, Any]:
         "events": [],
         "restart_counts": {},
         "last_restart_ts": {},
+        # Timestamps of recent automatic heal actions per budget key, for the
+        # rolling-window cap (#3832) -- see DEFAULT_HEAL_ATTEMPT_WINDOW_SECONDS.
+        "heal_attempts": {},
         "intentionally_stopped": [],
     }
 
@@ -766,12 +824,22 @@ def _list_kubernetes_component_status(already_managed: set[str]) -> list[Compone
 
     Covers `nyxgpt ops install --kubernetes --local` (see `k8s/`): the
     stable/canary Deployments' Pods, one `ComponentStatus` per Pod (not per
-    Deployment -- `stable` alone can run several replicas, and each needs
-    its own backoff/restart-count bookkeeping in `heal_now`). Healed via
-    `kubectl delete pod`, which the Pod's Deployment/ReplicaSet then
-    recreates -- on top of, not instead of, kubelet's own liveness-probe
-    restarts and `canary.py`'s metrics-gated rollout + auto-rollback (see
-    the module docstring).
+    Deployment -- `stable` alone can run several replicas, and each needs its
+    own row). Healed via `kubectl delete pod`, which the Pod's
+    Deployment/ReplicaSet then recreates -- on top of, not instead of,
+    kubelet's own liveness-probe restarts and `canary.py`'s metrics-gated
+    rollout + auto-rollback (see the module docstring).
+
+    What each Pod's state *means* is `nyxgpt.k8s_pod_state`'s job, shared with
+    `ops.py` (#3832), and two of its distinctions land here:
+
+    - a Pod whose state deletion cannot repair -- any `Pending` one, whether
+      unschedulable or still pulling its image -- is reported `healable=False`
+      with the cluster's own reason in `note`, so the operator sees
+      "Insufficient memory" on the dashboard instead of a Pod that silently
+      gets younger every 15 seconds;
+    - `heal_key` is the owning ReplicaSet, not the Pod name, so the restart
+      budget in `heal_now` survives the recreate that healing causes.
 
     Returns an empty list (never raises) if `kubectl` isn't on PATH, there's
     no reachable cluster, or the namespace/Pods don't exist yet -- the same
@@ -811,26 +879,46 @@ def _list_kubernetes_component_status(already_managed: set[str]) -> list[Compone
         return []
 
     statuses: list[ComponentStatus] = []
-    for pod in data.get("items", []):
-        name = pod.get("metadata", {}).get("name", "")
+    for pod_state in classify_pods(data if isinstance(data, dict) else {}):
+        name = pod_state.name
         if not name or name in already_managed:
             continue
-        status = pod.get("status", {})
-        phase = status.get("phase", "")
-        conditions = status.get("conditions", [])
-        ready = any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions)
-        healthy = phase == "Running" and ready
+        healable = pod_state.healthy or pod_state.deletion_may_recover
         statuses.append(
             ComponentStatus(
                 service=name,
                 container=name,
-                state=phase,
-                health="ready" if ready else "not-ready",
-                healthy=healthy,
+                state=pod_state.phase,
+                health=pod_state.health_label,
+                healthy=pod_state.healthy,
                 source="kubernetes",
+                healable=healable,
+                heal_key=f"kubernetes/{pod_state.workload}",
+                note="" if healable else _unhealable_pod_note(pod_state),
             )
         )
     return statuses
+
+
+def _unhealable_pod_note(pod_state: PodState) -> str:
+    """Operator-facing line for a Pod self-heal will not act on (#3832).
+
+    Says what the cluster said, then what self-heal did about it and why --
+    because "unhealthy, not healed" with no explanation is the state the
+    operator was left to guess at while the watchdog quietly churned.
+    """
+    if pod_state.unschedulable:
+        return (
+            f"{pod_state.summary()} -- not healed: deleting a Pod cannot create capacity, "
+            "and its replacement would be unschedulable for the same reason. Add node "
+            "capacity or lower the workload's resource requests."
+        )
+    if pod_state.starting:
+        return f"{pod_state.summary()} -- not healed: still starting, it converges on its own."
+    return (
+        f"{pod_state.summary()} -- not healed: deleting a Pod is only a repair for one that is "
+        "Running but not Ready; this one is the controller's to replace."
+    )
 
 
 def _list_native_component_status() -> list[ComponentStatus]:
@@ -1653,6 +1741,45 @@ def restart_terraform_component(component: str) -> HealResult:
     return _restart_native_container(container)
 
 
+def _kubernetes_pod_state(pod_name: str) -> PodState | None:
+    """Read one Pod's current state, or `None` if it could not be read at all.
+
+    Deliberately its own `kubectl get pod` rather than a value threaded down
+    from the survey: `heal_kubernetes_pod` is a public, destructive entry
+    point reached from the dashboard's per-component button as well as from
+    the watchdog, and the guard it needs has to hold for callers that never
+    looked at a survey (#3832). `None` means "could not tell", which the
+    caller must treat as "do not act" -- the same rule as #3812's Compose
+    probe, applied to a delete.
+    """
+    # Inline barrier (CodeQL #4, py/command-line-injection) -- repeated here
+    # rather than relied on from the caller, per this module's convention: the
+    # value goes on a `kubectl` argv in THIS function.
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", pod_name):
+        return None
+    if _which("kubectl") is None:
+        return None
+    try:
+        cp = _run(
+            ["kubectl", "get", "pod", pod_name, "-n", K8S_NAMESPACE, "-o", "json"],
+            timeout=15.0,
+            expected=True,
+        )
+    except Exception as e:
+        logger.warning("self-heal: failed to read state of pod %s: %s", pod_name, e)
+        return None
+    if cp.returncode != 0:
+        return None
+    try:
+        data = json.loads(cp.stdout or "{}")
+    except Exception as e:
+        logger.warning("self-heal: failed to parse kubectl get pod output for %s: %s", pod_name, e)
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("metadata"), dict):
+        return None
+    return classify_pod(data)
+
+
 def heal_kubernetes_pod(pod_name: str) -> HealResult:
     """Heal a Kubernetes-managed Pod by deleting it: `kubectl delete pod <name>`.
 
@@ -1660,11 +1787,42 @@ def heal_kubernetes_pod(pod_name: str) -> HealResult:
     stronger recovery action than kubelet's own in-place container restart
     on a failed liveness probe, useful for a Pod that's stuck rather than
     cleanly crash-looping.
+
+    **Only ever deletes a `Running` Pod** (#3832). The Pod's state is re-read
+    here, immediately before the delete, and anything else is refused with the
+    cluster's own reason: a `Pending` Pod has no stuck container to recover,
+    and if it is unschedulable the delete cannot create the capacity it is
+    waiting for -- the ReplicaSet just makes another Pending Pod, which is how
+    seven Pods were destroyed in 4.5 minutes with the Pod age (the operator's
+    evidence) reset each time. The guard lives at the action, not only at the
+    caller that decided to call it, so no future caller can reintroduce the
+    loop; `_list_kubernetes_component_status` additionally never *offers* such
+    a Pod to the automatic pass (`healable=False`).
+
+    An explicit operator "Heal now" on a Running-and-Ready Pod is still a
+    recycle, not a repair, and is allowed: the automatic pass only ever
+    targets unhealthy components, so nothing in the loop reaches that case.
     """
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", pod_name):  # inline barrier, CodeQL #4
         return HealResult(False, f"Refused to act on invalid pod name: {pod_name!r}")
     if _which("kubectl") is None:
         return HealResult(False, f"kubectl not found; cannot heal pod {pod_name}")
+
+    pod_state = _kubernetes_pod_state(pod_name)
+    if pod_state is None:
+        return HealResult(
+            False,
+            f"Could not read the state of pod {pod_name}; refusing to delete it blind",
+            "`kubectl get pod -o json` did not return a readable Pod -- an unread state is "
+            "not a reason to destroy one.",
+        )
+    if not pod_state.running:
+        return HealResult(
+            False,
+            f"Refused to delete pod {pod_name}: {pod_state.summary()}",
+            _unhealable_pod_note(pod_state),
+        )
+
     try:
         cp = _run(["kubectl", "delete", "pod", pod_name, "-n", K8S_NAMESPACE], timeout=60.0)
     except Exception as e:
@@ -1989,19 +2147,68 @@ def component_logs(service: str, *, tail: int = 200) -> HealResult:
     return _compose_component_logs(service, tail=tail)
 
 
+def _prune_heal_attempts(
+    state: dict[str, Any], now: float, window_seconds: float
+) -> dict[str, list[float]]:
+    """Drop heal-attempt timestamps older than the window, in place.
+
+    Also drops keys that empty out, so the state file does not accumulate one
+    entry per Pod name ever seen -- the leak the old per-name `restart_counts`
+    bookkeeping had (#3832). Tolerates a malformed/hand-edited state file the
+    same way `_load_state` does: anything unreadable is treated as no history.
+    """
+    raw = state.get("heal_attempts")
+    if not isinstance(raw, dict):
+        raw = {}
+    cutoff = now - window_seconds
+    pruned: dict[str, list[float]] = {}
+    for key, timestamps in raw.items():
+        if not isinstance(key, str) or not isinstance(timestamps, list):
+            continue
+        kept = [
+            float(ts) for ts in timestamps if isinstance(ts, (int, float)) and float(ts) > cutoff
+        ]
+        if kept:
+            pruned[key] = kept
+    state["heal_attempts"] = pruned
+    return pruned
+
+
 def heal_now(
     service: str | None = None,
     *,
     max_consecutive_restarts: int = DEFAULT_MAX_CONSECUTIVE_RESTARTS,
     backoff_seconds: float = DEFAULT_BACKOFF_SECONDS,
+    attempt_window_seconds: float = DEFAULT_HEAL_ATTEMPT_WINDOW_SECONDS,
+    max_attempts_per_window: int | None = None,
 ) -> dict[str, Any]:
     """Run one heal pass.
 
     With `service=None` (the watchdog's normal mode): checks every monitored
     component and restarts only the ones that are unhealthy/stopped,
-    honoring per-service backoff and `max_consecutive_restarts` so a
+    honoring per-component backoff and `max_consecutive_restarts` so a
     genuinely broken component stops being restarted after enough failed
     attempts rather than looping forever.
+
+    Three guards keep "heal" from becoming churn, and they are independent
+    on purpose (#3832):
+
+    - **Nothing that cannot be repaired is acted on at all** -- a component
+      reported `healable=False` (today: any `Pending` Kubernetes Pod) is
+      skipped by the automatic pass *and* by an explicit "Heal now", because
+      the action is not a repair for an operator either. Its reason is already
+      on the component row (`note`), and a manual request gets it back as a
+      recorded, non-ok event rather than silence.
+    - **Consecutive failures** -- `max_consecutive_restarts`, reset when the
+      component comes back healthy. Answers "are my restarts failing?".
+    - **Rolling attempt cap** -- at most `max_attempts_per_window` automatic
+      heal actions per `attempt_window_seconds` against one *stable* identity
+      (`ComponentStatus.budget_key`: the owning ReplicaSet for a Pod, the
+      service name for everything else), defaulting to twice the consecutive
+      cap. This is the guard that does not care why: the consecutive counter
+      resets on any glimpse of health and is keyed by a name that a Pod
+      deletion *changes*, which is exactly how #3832's loop ran unbounded past
+      a cap of 5.
 
     With `service` set (the dashboard's manual "heal now" button): restarts
     that one component immediately, bypassing the health check and backoff
@@ -2025,6 +2232,11 @@ def heal_now(
     statuses = list_component_status()
     now = time.time()
     unhealthy_count = _record_health_check(statuses)
+    attempt_cap = (
+        max_attempts_per_window
+        if max_attempts_per_window is not None
+        else max(1, max_consecutive_restarts * HEAL_ATTEMPT_WINDOW_MULTIPLIER)
+    )
 
     targets = statuses
     if service is not None:
@@ -2049,18 +2261,66 @@ def heal_now(
         state = _load_state()
         restart_counts: dict[str, int] = state.setdefault("restart_counts", {})
         last_restart_ts: dict[str, float] = state.setdefault("last_restart_ts", {})
+        attempt_history = _prune_heal_attempts(state, now, attempt_window_seconds)
         events: list[dict[str, Any]] = state.setdefault("events", [])
 
         for status in targets:
+            key = status.budget_key
+
             if status.healthy and not manual:
-                if restart_counts.get(status.service, 0) != 0:
+                if restart_counts.get(key, 0) != 0:
                     logger.info(
                         "self-heal: %s recovered, resetting consecutive-restart count",
                         status.service,
                         extra={"component": "self_heal", "service": status.service},
                     )
-                restart_counts[status.service] = 0
+                restart_counts[key] = 0
                 prom_metrics.SELFHEAL_RESTART_COUNT.labels(service=status.service).set(0)
+                continue
+
+            if not status.healable:
+                # No action this module has would converge this component, so
+                # taking one is churn with a side effect (#3832). Not
+                # overridable by `manual`, unlike every other guard below:
+                # `note` already carries the cluster's own reason, and an
+                # operator clicking "Heal now" on an unschedulable Pod would
+                # only reset the Pod age they need to diagnose it.
+                logger.warning(
+                    "self-heal: not healing %s -- no action converges it (%s)",
+                    status.service,
+                    status.note or f"state={status.state} health={status.health or 'n/a'}",
+                    extra={
+                        "component": "self_heal",
+                        "service": status.service,
+                        "state": status.state,
+                        "health": status.health,
+                        "note": status.note,
+                        "manual": manual,
+                    },
+                )
+                if manual:
+                    # An explicit request gets an explicit answer, in the same
+                    # event log the dashboard already renders.
+                    refusal = HealEvent(
+                        ts=now,
+                        service=status.service,
+                        reason=f"state={status.state} health={status.health or 'n/a'}",
+                        action="refused",
+                        ok=False,
+                        restart_count=restart_counts.get(key, 0),
+                        message=status.note or "No heal action would converge this component",
+                        evidence={
+                            "probe_type": status.source,
+                            "state": status.state,
+                            "health": status.health,
+                            "container": status.container,
+                            "manual": True,
+                            "healable": False,
+                        },
+                        correlation_id=get_correlation_id(),
+                    )
+                    events.append(refusal.to_dict())
+                    healed.append(refusal.to_dict())
                 continue
 
             if not manual and not status.known:
@@ -2095,10 +2355,35 @@ def heal_now(
                 )
                 continue
 
-            count = restart_counts.get(status.service, 0)
-            last_ts = last_restart_ts.get(status.service, 0.0)
+            count = restart_counts.get(key, 0)
+            last_ts = last_restart_ts.get(key, 0.0)
+            recent_attempts = attempt_history.get(key, [])
 
             if not manual:
+                if len(recent_attempts) >= attempt_cap:
+                    # The identity-independent cap (#3832): this many heal
+                    # actions inside the window without the component settling
+                    # means healing is not the answer, however the component's
+                    # name or health flickered in between.
+                    prom_metrics.SELFHEAL_GIVEUP_TOTAL.labels(service=status.service).inc()
+                    logger.warning(
+                        "self-heal: pausing heals of %s, %d attempt(s) in the last %.0fs without"
+                        " converging (budget_key=%s, max=%d)",
+                        status.service,
+                        len(recent_attempts),
+                        attempt_window_seconds,
+                        key,
+                        attempt_cap,
+                        extra={
+                            "component": "self_heal",
+                            "service": status.service,
+                            "budget_key": key,
+                            "attempts_in_window": len(recent_attempts),
+                            "attempt_window_seconds": attempt_window_seconds,
+                            "max_attempts_per_window": attempt_cap,
+                        },
+                    )
+                    continue
                 if count >= max_consecutive_restarts:
                     prom_metrics.SELFHEAL_GIVEUP_TOTAL.labels(service=status.service).inc()
                     logger.warning(
@@ -2173,8 +2458,14 @@ def heal_now(
                 result = restart_component(status.service)
 
             new_count = count + 1
-            restart_counts[status.service] = new_count
-            last_restart_ts[status.service] = now
+            restart_counts[key] = new_count
+            last_restart_ts[key] = now
+            if not manual:
+                # Counted whatever the outcome and whatever happens to the
+                # component's name afterwards -- an action taken is an action
+                # taken (#3832). Manual requests are the operator's budget,
+                # not the watchdog's, and are not rate-limited here.
+                attempt_history.setdefault(key, []).append(now)
 
             prom_metrics.SELFHEAL_RESTARTS_TOTAL.labels(
                 service=status.service, result="ok" if result.ok else "failed"
@@ -2195,6 +2486,9 @@ def heal_now(
                 "restart_count_before": count,
                 "max_consecutive_restarts": max_consecutive_restarts,
                 "backoff_seconds": backoff_seconds,
+                "budget_key": key,
+                "attempts_in_window_before": len(recent_attempts),
+                "attempt_window_seconds": attempt_window_seconds,
                 "heal_result_details": result.details,
             }
 
@@ -2370,20 +2664,31 @@ def status() -> dict[str, Any]:
     anything -- and `compose_probe_reason` carries the *why* to the page, so
     the operator reads "docker daemon unreachable -- `docker compose ps`
     exited 125" on screen instead of having to find it in a log.
+
+    A component self-heal will not act on at all (`healable=False`, e.g. an
+    unschedulable Pod -- #3832) is not "giving up": nothing was ever tried.
+    The page renders its `note` -- the scheduler's own message -- and does not
+    claim an exhausted restart budget that was never spent.
     """
     survey = component_survey()
     components = survey.components
     unhealthy_count = _record_health_check(components)
-    restart_counts: dict[str, int] = _load_state().get("restart_counts", {})
+    state = _load_state()
+    restart_counts: dict[str, int] = state.get("restart_counts", {})
+    # Read-only view of the same window `heal_now` enforces, so the page's
+    # "gave up" badge and the watchdog's behaviour cannot disagree -- expired
+    # attempts stop counting here at the same moment they stop counting there.
+    attempts = _prune_heal_attempts(dict(state), time.time(), DEFAULT_HEAL_ATTEMPT_WINDOW_SECONDS)
     max_consecutive_restarts = get_watchdog().max_consecutive_restarts
     component_dicts = []
     for c in components:
         d = c.to_dict()
-        count = restart_counts.get(c.service, 0)
-        d["restart_count"] = count
-        d["giving_up"] = (
-            not c.healthy and c.desired and c.known and count >= max_consecutive_restarts
+        count = restart_counts.get(c.budget_key, 0)
+        exhausted = count >= max_consecutive_restarts or len(attempts.get(c.budget_key, [])) >= max(
+            1, max_consecutive_restarts * HEAL_ATTEMPT_WINDOW_MULTIPLIER
         )
+        d["restart_count"] = count
+        d["giving_up"] = not c.healthy and c.desired and c.known and c.healable and exhausted
         component_dicts.append(d)
     return {
         "enabled": is_enabled(),
