@@ -1044,6 +1044,10 @@ are absent here by design (relocated to the annex; IDs are never reused).
   `tests/unit/test_workflow_script_injection.py`, and the smoke workflow's
   planted-violation step — the guard must reject a seeded instance, so a
   scanner that silently stops scanning fails too.
+  **Extended by V-044 (2026-08-18):** naming the fault as a `script:` fault
+  was itself too narrow. The class is *any executable body*; the guard was
+  `script:`-only and the same injection was still live in `run:` blocks,
+  found by CodeQL #124 rather than by this entry. Read V-044 with this one.
   Re-verify when: a new `actions/github-script` step is added, or GitHub
   changes how `env:` values are delivered to the script sandbox.
 
