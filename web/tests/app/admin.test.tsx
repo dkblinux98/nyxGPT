@@ -1634,16 +1634,16 @@ describe('AdminPage Component', () => {
         section: 'cache',
         label: 'Caching',
         fields: [
-          { key: 'embedding_cache_enabled', secret: false, restart_component: 'api', observability: false },
-          { key: 'embedding_cache_dir', secret: false, restart_component: 'api', observability: false },
+          { key: 'embedding_cache_enabled', secret: false, restart_components: ['api'], observability: false },
+          { key: 'embedding_cache_dir', secret: false, restart_components: ['api'], observability: false },
         ],
       },
       {
         section: 'monitoring',
         label: 'Monitoring',
         fields: [
-          { key: 'enabled', secret: false, restart_component: null, observability: true },
-          { key: 'grafana_admin_password', secret: true, restart_component: null, observability: false },
+          { key: 'enabled', secret: false, restart_components: [], observability: true },
+          { key: 'grafana_admin_password', secret: true, restart_components: [], observability: false },
         ],
       },
     ];
@@ -1876,9 +1876,9 @@ describe('AdminPage Component', () => {
           section: 'auth',
           label: 'Auth',
           fields: [
-            { key: 'enabled', secret: false, restart_component: 'api', observability: false },
-            { key: 'header', secret: false, restart_component: 'api', observability: false },
-            { key: 'api_key', secret: true, restart_component: 'api', observability: false },
+            { key: 'enabled', secret: false, restart_components: ['api'], observability: false },
+            { key: 'header', secret: false, restart_components: ['api'], observability: false },
+            { key: 'api_key', secret: true, restart_components: ['api'], observability: false },
           ],
         },
       ];
@@ -1908,8 +1908,8 @@ describe('AdminPage Component', () => {
           label: 'Caching',
           fields: [
             ...SCHEMA_WITH_EXTRAS[0].fields,
-            { key: 'embedding_cache_max_size', secret: false, restart_component: 'api', observability: false },
-            { key: 'example__setting', secret: false, restart_component: null, observability: false },
+            { key: 'embedding_cache_max_size', secret: false, restart_components: ['api'], observability: false },
+            { key: 'example__setting', secret: false, restart_components: [], observability: false },
           ],
         },
         SCHEMA_WITH_EXTRAS[1],
@@ -1954,7 +1954,7 @@ describe('AdminPage Component', () => {
           label: 'Caching',
           fields: [
             ...SCHEMA_WITH_EXTRAS[0].fields,
-            { key: 'embedding_cache_ttl_seconds', secret: false, restart_component: 'api', observability: false },
+            { key: 'embedding_cache_ttl_seconds', secret: false, restart_components: ['api'], observability: false },
           ],
         },
         SCHEMA_WITH_EXTRAS[1],
@@ -2029,17 +2029,17 @@ describe('AdminPage Component', () => {
           section: 'cache',
           label: 'Caching',
           fields: [
-            { key: 'embedding_cache_enabled', secret: false, restart_component: null, observability: false },
-            { key: 'missing_from_config', secret: false, restart_component: null, observability: true },
+            { key: 'embedding_cache_enabled', secret: false, restart_components: [], observability: false },
+            { key: 'missing_from_config', secret: false, restart_components: [], observability: true },
           ],
         },
         {
           section: 'monitoring',
           label: 'Monitoring',
           fields: [
-            { key: 'enabled', secret: false, restart_component: null, observability: true },
-            { key: 'grafana_admin_password', secret: true, restart_component: null, observability: false },
-            { key: 'admin_email_secret', secret: true, restart_component: null, observability: false },
+            { key: 'enabled', secret: false, restart_components: [], observability: true },
+            { key: 'grafana_admin_password', secret: true, restart_components: [], observability: false },
+            { key: 'admin_email_secret', secret: true, restart_components: [], observability: false },
           ],
         },
       ];

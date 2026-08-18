@@ -508,7 +508,10 @@ describe('AdminDashboardPage', () => {
       await waitFor(() => {
         expect(screen.getByRole('alert', { name: /restart required/i })).toBeInTheDocument();
       });
-      expect(screen.getByText(/api \(api\.port\)/)).toBeInTheDocument();
+      expect(screen.getByText(/api\.port/)).toBeInTheDocument();
+      // Not "restart required" phrasing alone: the notice must say the value
+      // IS saved and is simply not running yet (#3806).
+      expect(screen.getByText(/not yet in effect/i)).toBeInTheDocument();
     });
 
     it('clicking Restart now triggers the mode-aware restart and clears the banner once it succeeds', async () => {
@@ -540,7 +543,7 @@ describe('AdminDashboardPage', () => {
         });
 
         await act(async () => {
-          await vi.advanceTimersByTimeAsync(2000);
+          await vi.advanceTimersByTimeAsync(1000);
         });
 
         await waitFor(() => {
@@ -573,9 +576,9 @@ describe('AdminDashboardPage', () => {
           expect(screen.getByRole('button', { name: /restarting/i })).toBeInTheDocument();
         });
 
-        // 10 poll attempts at 2s each -- still pending every time.
+        // 30 poll attempts at 1s each -- still pending every time.
         await act(async () => {
-          await vi.advanceTimersByTimeAsync(20000);
+          await vi.advanceTimersByTimeAsync(31000);
         });
 
         await waitFor(() => {

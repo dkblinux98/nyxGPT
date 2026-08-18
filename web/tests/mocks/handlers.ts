@@ -15,86 +15,88 @@ export const FULL_WIZARD_SCHEMA = [
     section: 'nyxgpt',
     label: 'Core & model',
     fields: [
-      { key: 'default_model', secret: false, restart_component: null, observability: false },
-      { key: 'chat_timeout_seconds', secret: false, restart_component: null, observability: false },
-      { key: 'sessions_dir', secret: false, restart_component: null, observability: false },
-      { key: 'vectorstore_dir', secret: false, restart_component: null, observability: false },
+      { key: 'default_model', secret: false, restart_components: [], observability: false },
+      { key: 'chat_timeout_seconds', secret: false, restart_components: [], observability: false },
+      { key: 'sessions_dir', secret: false, restart_components: [], observability: false },
+      { key: 'vectorstore_dir', secret: false, restart_components: [], observability: false },
     ],
   },
   {
     section: 'logging',
     label: 'Logging',
     fields: [
-      { key: 'level', secret: false, restart_component: null, observability: false },
-      { key: 'dir', secret: false, restart_component: null, observability: false },
+      { key: 'level', secret: false, restart_components: [], observability: false },
+      { key: 'dir', secret: false, restart_components: [], observability: false },
     ],
   },
   {
     section: 'ollama',
     label: 'Model backend',
-    fields: [{ key: 'base_url', secret: false, restart_component: null, observability: false }],
+    fields: [{ key: 'base_url', secret: false, restart_components: [], observability: false }],
   },
   {
     section: 'api',
     label: 'API server',
     fields: [
-      { key: 'host', secret: false, restart_component: 'api', observability: false },
-      { key: 'port', secret: false, restart_component: 'api', observability: false },
+      { key: 'host', secret: false, restart_components: ['api'], observability: false },
+      { key: 'port', secret: false, restart_components: ['api'], observability: false },
     ],
   },
   {
     section: 'auth',
     label: 'Authentication',
     fields: [
-      { key: 'enabled', secret: false, restart_component: 'api', observability: false },
-      { key: 'header', secret: false, restart_component: 'api', observability: false },
-      { key: 'api_key', secret: true, restart_component: 'api', observability: false },
+      // Mirrors the real classification (#3806): the api tier re-reads [auth]
+      // per request, the web tier freezes it into its environment at start.
+      { key: 'enabled', secret: false, restart_components: ['web'], observability: false },
+      { key: 'header', secret: false, restart_components: [], observability: false },
+      { key: 'api_key', secret: true, restart_components: ['web'], observability: false },
     ],
   },
   {
     section: 'rate_limit',
     label: 'Rate limiting',
-    fields: [{ key: 'enabled', secret: false, restart_component: 'api', observability: false }],
+    fields: [{ key: 'enabled', secret: false, restart_components: ['api'], observability: false }],
   },
   {
     section: 'rag',
     label: 'RAG / retrieval',
     fields: [
-      { key: 'enable_chat_context', secret: false, restart_component: null, observability: false },
-      { key: 'cassandra_hosts', secret: false, restart_component: 'api', observability: false },
-      { key: 'cassandra_port', secret: false, restart_component: 'api', observability: false },
-      { key: 'cassandra_keyspace', secret: false, restart_component: 'api', observability: false },
-      { key: 'cassandra_table', secret: false, restart_component: 'api', observability: false },
-      { key: 'embedding_model', secret: false, restart_component: 'api', observability: false },
+      { key: 'enable_chat_context', secret: false, restart_components: [], observability: false },
+      { key: 'cassandra_hosts', secret: false, restart_components: ['api'], observability: false },
+      { key: 'cassandra_port', secret: false, restart_components: ['api'], observability: false },
+      { key: 'cassandra_keyspace', secret: false, restart_components: ['api'], observability: false },
+      { key: 'cassandra_table', secret: false, restart_components: ['api'], observability: false },
+      { key: 'embedding_model', secret: false, restart_components: ['api'], observability: false },
     ],
   },
   {
     section: 'tracing',
     label: 'Tracing',
     fields: [
-      { key: 'enabled', secret: false, restart_component: 'api', observability: true },
-      { key: 'service_name', secret: false, restart_component: null, observability: false },
-      { key: 'otlp_endpoint', secret: false, restart_component: null, observability: false },
+      { key: 'enabled', secret: false, restart_components: ['api'], observability: true },
+      { key: 'service_name', secret: false, restart_components: [], observability: false },
+      { key: 'otlp_endpoint', secret: false, restart_components: [], observability: false },
     ],
   },
   {
     section: 'error_tracking',
     label: 'Error tracking',
     fields: [
-      { key: 'enabled', secret: false, restart_component: 'api', observability: true },
-      { key: 'dsn', secret: true, restart_component: null, observability: false },
-      { key: 'environment', secret: false, restart_component: null, observability: false },
+      { key: 'enabled', secret: false, restart_components: ['api'], observability: true },
+      { key: 'dsn', secret: true, restart_components: [], observability: false },
+      { key: 'environment', secret: false, restart_components: [], observability: false },
     ],
   },
   {
     section: 'monitoring',
     label: 'Monitoring',
-    fields: [{ key: 'enabled', secret: false, restart_component: null, observability: true }],
+    fields: [{ key: 'enabled', secret: false, restart_components: [], observability: true }],
   },
   {
     section: 'log_aggregation',
     label: 'Log aggregation',
-    fields: [{ key: 'enabled', secret: false, restart_component: null, observability: true }],
+    fields: [{ key: 'enabled', secret: false, restart_components: [], observability: true }],
   },
 ];
 
@@ -361,7 +363,7 @@ export const handlers = [
 
   // GET /api/v1/infra/restart-status
   http.get('/api/v1/infra/restart-status', () => {
-    return HttpResponse.json({ pending: {} });
+    return HttpResponse.json({ pending: {}, restart_command: null, session_disrupting: [] });
   }),
 
   // POST /api/v1/infra/restart-required

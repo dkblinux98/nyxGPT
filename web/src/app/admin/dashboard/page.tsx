@@ -5,6 +5,10 @@ import LoadingSpinner from '../../../components/LoadingSpinner';
 import ErrorMessage from '../../../components/ErrorMessage';
 import QueryCacheStatsPanel from '../../../components/QueryCacheStatsPanel';
 import ObservabilityCredentialsHint from '../../../components/ObservabilityCredentialsHint';
+import PendingRestartNotice, {
+  fetchRestartStatus,
+  type RestartStatus,
+} from '../../../components/PendingRestartNotice';
 import { ADMIN_NAV, grafanaSreHomeUrl } from './nav';
 
 type OverviewData = {
@@ -45,13 +49,6 @@ type AccessData = {
   api_key_masked: string | null;
   api_key?: string;
 };
-
-/** `{component: {keys, since}}` -- what a wizard save flagged as needing a restart, and why (#3407). */
-type RestartPending = Record<string, { keys: string[]; since: number }>;
-
-/** How many times to poll `restart-status` after triggering a restart before giving up (#3407). */
-const RESTART_POLL_ATTEMPTS = 10;
-const RESTART_POLL_INTERVAL_MS = 2000;
 
 const cardStyle: React.CSSProperties = {
   padding: '1.25rem',
@@ -170,11 +167,10 @@ export default function AdminDashboardPage() {
   const [revealedKey, setRevealedKey] = useState<string | null>(null);
   const [headerInput, setHeaderInput] = useState('X-API-Key');
 
-  const [restartPending, setRestartPending] = useState<RestartPending>({});
-  const [restartAction, setRestartAction] = useState<'idle' | 'running' | 'succeeded' | 'failed'>(
-    'idle'
-  );
-  const [restartActionError, setRestartActionError] = useState<string | null>(null);
+  // Pending-restart state and the whole restart control now live in
+  // PendingRestartNotice (#3806), shared with the Configuration Wizard so
+  // both surfaces describe and offer exactly the same thing.
+  const [restartStatus, setRestartStatus] = useState<RestartStatus | null>(null);
 
   // Grafana's own URL, used only to build the SRE Overview tile's target --
   // it launches the Grafana single pane of glass in a new tab (#3411)
@@ -240,14 +236,10 @@ export default function AdminDashboardPage() {
   }, []);
 
   const loadRestartStatus = useCallback(async () => {
-    try {
-      const res = await fetch('/api/v1/infra/restart-status', { cache: 'no-store' });
-      if (!res.ok) return;
-      const data = await res.json();
-      setRestartPending(data.pending || {});
-    } catch {
-      // Best-effort: the banner just stays at its last-known state on failure.
-    }
+    const status = await fetchRestartStatus();
+    // null means the fetch failed -- keep the last-known state rather than
+    // flickering the notice away on a transient error.
+    if (status) setRestartStatus(status);
   }, []);
 
   useEffect(() => {
@@ -257,55 +249,6 @@ export default function AdminDashboardPage() {
     loadRestartStatus();
     loadMonitoring();
   }, [loadOverview, loadActivity, loadAccess, loadRestartStatus, loadMonitoring]);
-
-  /**
-   * Triggers the mode-aware restart-required flow (#3407) and polls
-   * `restart-status` until the pending flag clears (success) or the poll
-   * budget runs out (treated as failure -- the operator can retry or check
-   * manually). The restart itself runs off-thread on the backend, so there
-   * is no synchronous result to read from the POST response.
-   */
-  async function handleRestartRequired() {
-    setRestartAction('running');
-    setRestartActionError(null);
-    try {
-      const res = await fetch('/api/v1/infra/restart-required', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data?.detail || `HTTP ${res.status}`);
-      }
-    } catch (e: unknown) {
-      setRestartAction('failed');
-      setRestartActionError(e instanceof Error ? e.message : String(e));
-      return;
-    }
-
-    for (let attempt = 0; attempt < RESTART_POLL_ATTEMPTS; attempt++) {
-      await new Promise((resolve) => setTimeout(resolve, RESTART_POLL_INTERVAL_MS));
-      try {
-        const res = await fetch('/api/v1/infra/restart-status', { cache: 'no-store' });
-        if (res.ok) {
-          const data = await res.json();
-          const pending = (data.pending || {}) as RestartPending;
-          setRestartPending(pending);
-          if (Object.keys(pending).length === 0) {
-            setRestartAction('succeeded');
-            loadOverview();
-            return;
-          }
-        }
-      } catch {
-        // A connection error mid-restart (e.g. the api component itself
-        // restarting) is expected -- keep polling rather than failing early.
-      }
-    }
-    setRestartAction('failed');
-    setRestartActionError('Restart did not complete in time -- check status and retry.');
-  }
 
   async function updateAccess(payload: Record<string, unknown>) {
     setAccessSaving(true);
@@ -438,54 +381,14 @@ export default function AdminDashboardPage() {
           )}
         </section>
 
-        {/* Configuration Management, with the restart-required banner (#3407)
-            stacked directly above it -- same width, outside the card. */}
+        {/* Configuration Management, with the persistent pending-restart
+            notice (#3407, #3806) stacked directly above it -- same width,
+            outside the card. The notice is the shared component the
+            Configuration Wizard also mounts, so both places state the same
+            thing and offer the same control. */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-          {Object.keys(restartPending).length > 0 && (
-            <div
-              role="alert"
-              aria-label="Restart required"
-              style={{
-                padding: '1rem',
-                borderRadius: 8,
-                border: '1px solid var(--link)',
-                background: 'var(--info-bg)',
-              }}
-            >
-              <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 6 }}>
-                Restart required
-              </div>
-              <div style={{ fontSize: 13, color: 'var(--muted-foreground)', marginBottom: 10 }}>
-                Saved configuration changes need a restart to take effect:{' '}
-                {Object.entries(restartPending)
-                  .map(([component, detail]) => `${component} (${detail.keys.join(', ')})`)
-                  .join('; ')}
-                .
-              </div>
-              <button
-                onClick={handleRestartRequired}
-                disabled={restartAction === 'running'}
-                aria-busy={restartAction === 'running'}
-                style={{
-                  padding: '8px 16px',
-                  background: restartAction === 'running' ? '#ccc' : '#0066cc',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: 6,
-                  fontSize: 14,
-                  fontWeight: 600,
-                  cursor: restartAction === 'running' ? 'not-allowed' : 'pointer',
-                }}
-              >
-                {restartAction === 'running' ? 'Restarting…' : 'Restart now'}
-              </button>
-              {restartAction === 'failed' && restartActionError && (
-                <div style={{ color: 'var(--error-text)', fontSize: 13, marginTop: 8 }}>
-                  {restartActionError}
-                </div>
-              )}
-            </div>
-          )}
+          <PendingRestartNotice status={restartStatus} onStatusChange={setRestartStatus} />
+
 
           <section style={cardStyle} aria-label="Configuration management">
             <h2 style={sectionTitleStyle}>Configuration</h2>
