@@ -1338,7 +1338,7 @@ def _canary_namespace(cfg_path: Path | None, override: str | None) -> str:
 
 
 def cmd_canary_status(cfg_path: Path | None, namespace: str | None, component: str = "api") -> int:
-    """Print canary rollout progress, stable/canary health/version, and live traffic metrics.
+    """Print canary rollout progress, stable/canary health/version, and per-track traffic metrics.
 
     Args:
         cfg_path: Optional path to a config.ini to load instead of the default.
@@ -1360,11 +1360,20 @@ def cmd_canary_status(cfg_path: Path | None, namespace: str | None, component: s
         info = data[track]
         version = f", version={info['version']}" if info["version"] else ""
         print(f"  {track}: {info['state']} - {info['message']}{version}")
-    metrics = data["metrics"]
-    print(
-        f"  metrics: {metrics['total_requests']} requests, "
-        f"error_rate={metrics['error_rate_percent']:.2f}%, p95={metrics['p95_latency_ms']:.2f}ms"
-    )
+    # Track-scoped, never this process's own counters (#3829): the canary
+    # line is the same input `nyxgpt canary evaluate` gates on, so an
+    # unattributable canary reads as a stated reason rather than as a
+    # confident number belonging to some other Pod.
+    for label, metrics in (("canary", data["metrics"]), ("stable", data["stable_metrics"])):
+        if not metrics["attributable"]:
+            print(f"  {label}-track metrics: unavailable - {metrics['reason']}")
+            continue
+        print(
+            f"  {label}-track metrics: {metrics['total_requests']} requests across "
+            f"{metrics['pods_scraped']} Pod(s), "
+            f"error_rate={metrics['error_rate_percent']:.2f}%, "
+            f"p95={metrics['p95_latency_ms']:.2f}ms"
+        )
     if data["history"]:
         print("\nRecent actions:")
         for entry in data["history"]:
@@ -1455,6 +1464,7 @@ def cmd_canary_promote(
     namespace: str | None,
     step_percent: int | None,
     component: str = "api",
+    force: bool = False,
 ) -> int:
     """Increase the canary's traffic share by a step percentage.
 
@@ -1463,6 +1473,9 @@ def cmd_canary_promote(
         namespace: Kubernetes namespace override (default: from config).
         step_percent: Percentage points to add (default: from config).
         component: Which component to promote (default: "api"; "api" or "web", #3419).
+        force: Promote even though the canary track has measurably served no
+            traffic -- for an idle cluster, which the gate cannot tell apart
+            from a canary nothing can reach (#3829).
 
     Returns:
         0 if the promotion succeeded, 2 if it failed.
@@ -1474,6 +1487,7 @@ def cmd_canary_promote(
         step_percent=step_percent if step_percent is not None else get_canary_step_percent(cfg),
         total_replicas=get_canary_total_replicas(cfg),
         component=component,
+        force=force,
     )
     print(f"[{'OK' if result.ok else 'FAIL'}] {result.message}")
     if result.details:
@@ -3082,6 +3096,15 @@ def cli(argv: list[str] | None = None) -> int:
     canary_promote_p.add_argument(
         "--component", default="api", help="Component to promote (default: api; or web)"
     )
+    canary_promote_p.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Promote even though the canary track has served no traffic "
+            "(for an idle cluster; the gate exists because a build no request "
+            "reached has not been canaried)"
+        ),
+    )
 
     canary_rollback_p = canary_sub.add_parser(
         "rollback", help="Cut all traffic back to the stable deployment"
@@ -3348,7 +3371,9 @@ def cli(argv: list[str] | None = None) -> int:
         if args.canary_cmd == "evaluate":
             return cmd_canary_evaluate(args.config, args.namespace, args.component)
         if args.canary_cmd == "promote":
-            return cmd_canary_promote(args.config, args.namespace, args.step, args.component)
+            return cmd_canary_promote(
+                args.config, args.namespace, args.step, args.component, args.force
+            )
         if args.canary_cmd == "rollback":
             return cmd_canary_rollback(args.config, args.namespace, args.component)
 

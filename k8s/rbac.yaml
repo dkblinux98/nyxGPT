@@ -20,6 +20,13 @@ metadata:
   # that -- in particular, no access to Secrets, ConfigMaps, or any resource
   # outside this namespace. (Blue/green's Service-selector patch permission
   # was retired along with deploy.py -- see #3409.)
+  #
+  # `pods/proxy` (get) is what makes the canary gate honest (#3829): it lets
+  # canary.py read the /metrics of the Pods carrying `track=canary`
+  # specifically, instead of judging the rollout by the counters of whichever
+  # Pod happens to be serving the dashboard request. Read-only, one verb, and
+  # the proxied endpoint (/metrics) is the same unauthenticated one Prometheus
+  # scrapes.
 rules:
   - apiGroups: ["apps"]
     resources: ["deployments"]
@@ -30,6 +37,9 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/proxy"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
