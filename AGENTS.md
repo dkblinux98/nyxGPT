@@ -37,7 +37,7 @@ Stated in full in `CLAUDE.md` § Agentic First Principles.
 ### The Operating Ledger (All Agents, #3774)
 
 `agents/LEDGER.md` is the system of record for cross-session memory: decisions
-made, facts verified (with method and timestamp), items deliberately parked
+made, items deliberately parked
 (with reason and revisit condition), and questions left open.
 
 - Read it in full at session start.

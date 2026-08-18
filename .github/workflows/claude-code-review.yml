@@ -335,6 +335,26 @@ jobs:
             acceptance criteria, and whether the tests that exist are the right
             ones. Re-running them tells you nothing you cannot read above.
 
+            MANDATORY: You MUST REQUEST_CHANGES if:
+            - Any CI check on this PR head is failing (name it)
+            - Source code changed WITHOUT test updates (tests_updated=false)
+            - User-facing code changed WITHOUT documentation updates
+              (user_facing_undocumented=true)
+            - This change falsifies a claim written elsewhere in the tree and
+              the PR does not fix it (inverse-claims check, review-runbook §1a)
+            - The PR makes a runtime/install/platform behavior claim with NO
+              executed evidence on the target platform (executed-verification
+              gate, review-runbook §1c)
+            - The PR fixes a defect whose cause was never established — no
+              stated cause, no evidence behind it, or one the thread's own
+              evidence contradicts (diagnosis gate, review-runbook §1d)
+            - The PR patches one instance of a fault that exists elsewhere in
+              the tree, without fixing the class or reporting the search
+              (generality gate, review-runbook §1e)
+
+            Do not APPROVE until CI is green, tests are updated, AND
+            documentation is complete.
+
             ## Review Instructions
 
             **CRITICAL: Review ALL changes in this PR from base branch to feature branch HEAD**
