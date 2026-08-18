@@ -156,6 +156,8 @@ def test_install_kubernetes_applies_the_observability_layer() -> None:
         patch.object(
             ops, "_apply_k8s_observability", return_value=[ops.OpsResult(True, "observability")]
         ) as apply_observability,
+        # #3826's rollout wait, for the same reason as the data-tier one above.
+        patch.object(ops, "_wait_for_k8s_observability", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_record_ops_action"),
     ):
         results = ops._install_kubernetes_steps(None)
@@ -181,6 +183,7 @@ def test_install_kubernetes_honours_skip_observability() -> None:
         patch.object(ops, "_wait_for_k8s_data_tier", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_k8s_stack_health", return_value=[]),
         patch.object(ops, "_apply_k8s_observability") as apply_observability,
+        patch.object(ops, "_wait_for_k8s_observability") as wait_observability,
         patch.object(ops, "_k8s_observability_health") as observability_health,
         patch.object(ops, "_record_ops_action"),
     ):
@@ -189,6 +192,7 @@ def test_install_kubernetes_honours_skip_observability() -> None:
     assert all(r.ok for r in results)
 
     apply_observability.assert_not_called()
+    wait_observability.assert_not_called()
     observability_health.assert_not_called()
 
 
@@ -407,3 +411,162 @@ def test_observability_kubernetes_requires_local() -> None:
 
     assert rc == 2
     apply_k8s.assert_not_called()
+
+
+# --- the rollout wait the default install depends on (#3826) ---------------
+
+
+def _rollout_refs(calls: list[list[str]]) -> list[str]:
+    """The workload refs `kubectl rollout status` was asked about, in order."""
+    return [cmd[cmd.index("status") + 1] for cmd in calls if "rollout" in cmd]
+
+
+def test_wait_for_k8s_observability_waits_for_every_workload(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return MagicMock(returncode=0, stdout="rolled out", stderr="")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+
+    results = ops._wait_for_k8s_observability()
+
+    assert all(r.ok for r in results)
+    assert _rollout_refs(calls) == [
+        *(f"deploy/{name}" for name in ops.K8S_OBSERVABILITY_DEPLOYMENTS),
+        *(f"daemonset/{name}" for name in ops.K8S_OBSERVABILITY_DAEMONSETS),
+    ]
+    # One shared deadline, not a per-workload timeout: the budget left shrinks
+    # as the wait proceeds, so ten workloads cannot cost ten budgets.
+    timeouts = [int(arg.split("=")[1][:-1]) for cmd in calls for arg in cmd if "--timeout=" in arg]
+    assert timeouts and all(0 < t <= ops.K8S_OBSERVABILITY_ROLLOUT_BUDGET_S for t in timeouts)
+    assert timeouts == sorted(timeouts, reverse=True)
+
+
+def test_wait_for_k8s_observability_fails_naming_the_workload(monkeypatch) -> None:
+    """A workload that never rolls out is a failure, not a warning -- an
+    operator told "installed" by a command that left Prometheus Pending has
+    been told the wrong thing."""
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        rc = 1 if "deploy/grafana" in cmd else 0
+        return MagicMock(returncode=rc, stdout="", stderr="timed out")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+
+    results = ops._wait_for_k8s_observability()
+
+    assert not results[-1].ok
+    assert "deploy/grafana never became ready" in results[-1].message
+    # Stops at the first failure: the refs after grafana are never waited on.
+    assert _rollout_refs(calls)[-1] == "deploy/grafana"
+
+
+def test_wait_for_k8s_observability_stops_when_the_budget_is_spent(monkeypatch) -> None:
+    clock = iter([0.0, 0.0, 500.0, 1000.0, 1000.0])
+    monkeypatch.setattr(ops.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, **kwargs: MagicMock(returncode=0, stdout="", stderr="")
+    )
+
+    results = ops._wait_for_k8s_observability(budget_s=900)
+
+    assert not results[-1].ok
+    assert "did not roll out within 900s" in results[-1].message
+
+
+def test_install_waits_for_observability_before_reading_pod_phases() -> None:
+    """The ordering is the whole point (#3826).
+
+    `_k8s_stack_health` reads Pod *phase* for every Pod in the namespace, and
+    the observability Pods land in that same namespace -- so reading it while
+    they are still pulling images reports a healthy stack as failed. That is
+    why the smoke used to pass `--skip-observability` and test a configuration
+    no user runs.
+    """
+    order: list[str] = []
+    ok = [ops.OpsResult(True, "ok")]
+    with (
+        patch.object(ops, "_refuse_port_collision", return_value=None),
+        patch.object(ops, "_clear_intentional_stops", return_value=ok),
+        patch.object(ops, "_ensure_kubectl_and_cluster", return_value=ok),
+        patch.object(ops, "_build_and_load_k8s_image", return_value=ok),
+        patch.object(ops, "_build_and_load_k8s_web_image", return_value=ok),
+        patch.object(ops, "_ensure_k8s_secret", return_value=ok),
+        patch.object(ops, "_kubectl_apply_kustomization", return_value=ok),
+        patch.object(ops, "_wait_for_k8s_data_tier", return_value=ok),
+        patch.object(ops, "_sync_packaged_resources", return_value=ok),
+        patch.object(ops, "_apply_k8s_observability", return_value=ok),
+        patch.object(ops, "_k8s_observability_health", return_value=ok),
+        patch.object(
+            ops,
+            "_wait_for_k8s_observability",
+            side_effect=lambda: (order.append("wait"), ok)[1],
+        ),
+        patch.object(ops, "_k8s_stack_health", side_effect=lambda: (order.append("health"), ok)[1]),
+        patch.object(ops, "_record_ops_action"),
+    ):
+        results = ops._install_kubernetes_steps(None)
+
+    assert all(r.ok for r in results)
+    assert order == ["wait", "health"]
+
+
+def test_k8s_stack_health_fails_on_a_pod_still_pulling_its_image(monkeypatch) -> None:
+    """The condition the wait above exists to avoid, stated directly: a
+    `Pending` observability Pod makes the install report failure."""
+
+    def fake_run(cmd, **kwargs):
+        if "pods" in cmd:
+            return MagicMock(
+                returncode=0,
+                stdout="nyxgpt-api-stable-1=Running;prometheus-abc=Pending;",
+                stderr="",
+            )
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+
+    results = ops._k8s_stack_health()
+
+    assert any(not r.ok and "prometheus-abc: Pending" in r.message for r in results)
+
+
+def test_observability_command_waits_for_the_rollout_before_reporting_health() -> None:
+    """`nyxgpt ops observability --kubernetes --local` has the same contract as
+    the install: it returns when the layer works, not when the objects were
+    accepted."""
+    ok = [ops.OpsResult(True, "ok")]
+    with (
+        patch.object(ops, "_ensure_kubectl_and_cluster", return_value=ok),
+        patch.object(ops, "_sync_packaged_resources", return_value=ok),
+        patch.object(ops, "_apply_k8s_observability", return_value=ok),
+        patch.object(ops, "_wait_for_k8s_observability", return_value=ok) as wait,
+        patch.object(ops, "_k8s_observability_health", return_value=ok) as health,
+    ):
+        results = ops.observability_kubernetes()
+
+    assert all(r.ok for r in results)
+    wait.assert_called_once()
+    health.assert_called_once()
+
+
+def test_observability_command_reports_a_failed_rollout_without_claiming_health() -> None:
+    with (
+        patch.object(ops, "_ensure_kubectl_and_cluster", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_sync_packaged_resources", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_apply_k8s_observability", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(
+            ops,
+            "_wait_for_k8s_observability",
+            return_value=[ops.OpsResult(False, "deploy/loki never became ready")],
+        ),
+        patch.object(ops, "_k8s_observability_health") as health,
+    ):
+        results = ops.observability_kubernetes()
+
+    assert not all(r.ok for r in results)
+    health.assert_not_called()
