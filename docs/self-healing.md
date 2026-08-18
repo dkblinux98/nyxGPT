@@ -498,6 +498,22 @@ by name: no Pod name is `api`/`web`/`ollama`/`cassandra`, which is why the
 page reported "Nothing detected running" directly above a list of running
 Pods until #3828.
 
+**The Infrastructure page answers the same question from the same set of
+names** (#3855). `ops.infra_status()`'s `mode` used to take the `compose`
+branch whenever its Compose snapshot was non-empty — and that snapshot holds
+*every* Compose-sourced service, so the ten observability containers a native
+install runs by default (`nyxgpt ops install` starts them unless
+`--skip-observability` is passed) made it non-empty on every correctly
+configured native install, ahead of the native branch ever being evaluated.
+`/admin/infrastructure` therefore said "Docker Compose" while
+`/admin/self-heal`, reading the same probe through `detected_mode()`'s
+core-services filter, said native for the same host in the same minute. Both
+now filter to `CORE_APP_SERVICES` first — `ops.compose_core_components()` is
+the Infrastructure side of it — so "Compose mode" means a core component is
+Compose-managed, never that something Compose-sourced is merely up. The same
+filter governs `nyxgpt ops status`'s "Config in use" line, which names
+`config.docker.ini` only when a Compose core tier is actually reading it.
+
 **Restart-count bookkeeping is keyed on the ReplicaSet, not the Pod**
 (#3832): healing a Pod *replaces* it, so a budget kept under the Pod's own
 name is a budget that never runs out — the next pass sees a different name

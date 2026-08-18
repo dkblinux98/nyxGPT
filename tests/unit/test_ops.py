@@ -5244,13 +5244,47 @@ def test_ops_status_shows_compose_components_without_conflict(monkeypatch, capsy
     monkeypatch.setattr(ops, "_run", lambda *a, **k: CP(stdout=""))
     monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
     monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
-    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "running"})
+    monkeypatch.setattr(
+        ops, "_compose_stack_snapshot", lambda: {"grafana": "running", "api": "running"}
+    )
 
     rc = ops.status(MagicMock())
     assert rc == 0
     out = capsys.readouterr().out
     assert "compose grafana: running" in out
     assert "Compose components" in out
+
+
+@pytest.mark.unit
+def test_ops_status_omits_compose_config_hint_for_observability_only(monkeypatch, capsys):
+    """`COMPOSE_CONFIG_HINT` names a file only a Compose *core* tier reads (#3855).
+
+    The generality sweep's second site: this line used the same
+    whole-snapshot truthiness test `infra_status` did, so a native install
+    running the default observability stack was told to go edit
+    `config.docker.ini` -- a file nothing on that host reads, since the
+    observability containers take no nyxGPT config at all.
+    """
+
+    class CP:
+        def __init__(self, stdout=""):
+            self.stdout = stdout
+            self.stderr = ""
+            self.returncode = 0
+
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
+    monkeypatch.setattr(ops, "_run", lambda *a, **k: CP(stdout=""))
+    monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "running"})
+
+    rc = ops.status(MagicMock())
+    assert rc == 0
+    out = capsys.readouterr().out
+    # The Compose rows are still listed -- only the config hint changed.
+    assert "compose grafana: running" in out
+    assert "Compose components" not in out
+    assert ops.COMPOSE_CONFIG_HINT not in out
 
 
 @pytest.mark.unit
@@ -12872,6 +12906,136 @@ def test_infra_status_detects_native_and_compose_modes(monkeypatch):
         lambda: ops.DeploymentMode(native={}, compose={"api": "running"}, conflicts=[]),
     )
     assert ops.infra_status()["mode"] == "compose"
+
+
+# The Compose-sourced observability tier a native install runs by default:
+# `install()` starts it unless `--skip-observability` is passed, so this is
+# what the *correctly configured* native install looks like (#3855).
+_OBSERVABILITY_COMPOSE_SNAPSHOT = {
+    "grafana": "running",
+    "prometheus": "running",
+    "loki": "running",
+    "promtail": "running",
+    "jaeger": "running",
+    "otel-collector": "running",
+    "glitchtip": "running",
+    "glitchtip-postgres": "running",
+    "glitchtip-redis": "running",
+    "glitchtip-worker": "running",
+}
+
+
+@pytest.mark.unit
+def test_infra_status_observability_only_compose_is_still_native_mode(monkeypatch):
+    """Ten running observability containers are not a Compose *deployment* -- #3855.
+
+    The owner's rc12 acceptance install: native/artifact api/web/ollama plus
+    the ops-managed Cassandra container, with the observability stack up
+    under Compose. Testing the whole Compose snapshot for truthiness took the
+    `compose` branch before `native_running` was ever evaluated, so the
+    Infrastructure page labelled a Homebrew stack "Docker Compose" and sent
+    the operator down the Compose troubleshooting path.
+    """
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "absent"})
+    monkeypatch.setattr(ops, "_which", lambda prog: None)
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: ops.DeploymentMode(
+            native={"api": "started", "web": "started", "ollama": "started"},
+            compose=dict(_OBSERVABILITY_COMPOSE_SNAPSHOT),
+            conflicts=[],
+        ),
+    )
+
+    result = ops.infra_status()
+    assert result["mode"] == "native"
+    # The snapshot itself is unchanged -- the page still renders every
+    # observability container under its Compose panel; only the *mode*
+    # predicate stopped counting them as a core deployment.
+    assert result["compose"] == _OBSERVABILITY_COMPOSE_SNAPSHOT
+
+
+@pytest.mark.unit
+def test_infra_status_compose_mode_survives_when_a_core_component_is_composed(monkeypatch):
+    """A real Compose deployment still reports `compose`, observability alongside it."""
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "absent"})
+    monkeypatch.setattr(ops, "_which", lambda prog: None)
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: ops.DeploymentMode(
+            native={},
+            compose={**_OBSERVABILITY_COMPOSE_SNAPSHOT, "api": "running", "web": "running"},
+            conflicts=[],
+        ),
+    )
+    assert ops.infra_status()["mode"] == "compose"
+
+
+@pytest.mark.unit
+def test_compose_core_components_ignores_the_observability_tier():
+    """The core filter, asked directly -- #3855's generality sweep result."""
+    mode = ops.DeploymentMode(
+        native={},
+        compose={**_OBSERVABILITY_COMPOSE_SNAPSHOT, "api": "running", "cassandra": "exited"},
+        conflicts=[],
+    )
+    assert ops.compose_core_components(mode) == ["api", "cassandra"]
+    assert (
+        ops.compose_core_components(
+            ops.DeploymentMode(
+                native={}, compose=dict(_OBSERVABILITY_COMPOSE_SNAPSHOT), conflicts=[]
+            )
+        )
+        == []
+    )
+
+
+@pytest.mark.unit
+def test_infra_status_and_self_heal_agree_on_detected_mode(monkeypatch):
+    """The Infrastructure page and the Self-Heal page must not contradict each other (#3855).
+
+    Same host, same minute, same underlying probe: `list_component_status()`
+    tags api/web/ollama/cassandra `native` and the observability containers
+    `compose`. The disagreement between the two pages was the observable
+    symptom, so it is asserted directly rather than only via `infra_status`.
+    """
+    components = [
+        self_heal.ComponentStatus(
+            service=service,
+            container=service,
+            state="started",
+            health="healthy",
+            healthy=True,
+            source="native",
+        )
+        for service in ("api", "web", "ollama")
+    ] + [
+        self_heal.ComponentStatus(
+            service=service,
+            container=service,
+            state=state,
+            health="healthy",
+            healthy=True,
+            source="compose",
+        )
+        for service, state in _OBSERVABILITY_COMPOSE_SNAPSHOT.items()
+    ]
+
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "absent"})
+    monkeypatch.setattr(ops, "_which", lambda prog: None)
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: ops.DeploymentMode(
+            native={c.service: c.state for c in components if c.source == "native"},
+            compose={c.service: c.state for c in components if c.source == "compose"},
+            conflicts=[],
+        ),
+    )
+
+    assert ops.infra_status()["mode"] == self_heal.detected_mode(components) == "native"
 
 
 @pytest.mark.unit

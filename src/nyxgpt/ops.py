@@ -1293,6 +1293,35 @@ def detect_deployment_mode() -> DeploymentMode:
     )
 
 
+def compose_core_components(mode: DeploymentMode) -> list[str]:
+    """The *core* app components (api/web/ollama/cassandra) this Compose snapshot manages.
+
+    `mode.compose` is every Compose-sourced service the survey saw --
+    observability containers included, and on a native install those are the
+    only Compose entries there are (`install()` starts the observability
+    stack unless `--skip-observability` is passed, so the correctly
+    configured native install always has ten of them running). Asking
+    "is this deployment Compose-managed?" by testing that dict for
+    truthiness therefore answers yes on every native install: the defect
+    #3855 was filed for, where the Infrastructure page labelled a Homebrew
+    stack "Docker Compose" while the Self-Heal page -- which filters to core
+    services first -- correctly called the same host native.
+
+    This exists so callers ask the core question by name instead of
+    rediscovering the filter, and so it is scoped by `CORE_APP_SERVICES`,
+    the same constant `self_heal.detected_mode()` uses, rather than by a
+    third list of core component names.
+
+    Presence, not `state == "running"`, matching `detected_mode`: a core
+    component only reaches this snapshot at all if Compose won
+    `self_heal._resolve_core_component_conflicts` for it, and any *running*
+    native or Terraform entry beats a non-running Compose one there. So a
+    core name appearing here already is the authoritative reading of that
+    component, whatever state it is in.
+    """
+    return sorted(set(mode.compose) & CORE_APP_SERVICES)
+
+
 # --- Restart helpers ---
 
 
@@ -8595,11 +8624,17 @@ def infra_status() -> dict[str, Any]:
     }
 
     native_running = any(state in ("started", "running") for state in mode_info.native.values())
+    # Compose mode means a *core* component is Compose-managed, not merely
+    # that something Compose-sourced is up (#3855) -- see
+    # `compose_core_components` for why the whole-snapshot truthiness test
+    # this replaces labelled every native install "Docker Compose", ahead of
+    # `native_running` ever being evaluated.
+    compose_core = compose_core_components(mode_info)
     if terraform["deployed"]:
         running_mode = "terraform"
     elif kubernetes["deployed"]:
         running_mode = "kubernetes"
-    elif mode_info.compose:
+    elif compose_core:
         running_mode = "compose"
     elif native_running:
         running_mode = "native"
@@ -9053,7 +9088,14 @@ def status(_args) -> int:
         )
     else:
         config_hint = NATIVE_CONFIG_HINT
-        if mode.compose:
+        # The same core-vs-any question as `infra_status`'s mode selection
+        # (#3855): `COMPOSE_CONFIG_HINT` names the config file mounted into
+        # the Compose *api* container, so it is only in use when a core
+        # component runs under Compose. The observability containers a
+        # native install runs by default read no nyxGPT config at all, and
+        # testing the whole snapshot told every such install to go edit a
+        # file nothing on the host was reading.
+        if compose_core_components(mode):
             config_hint += f" (native components) / {COMPOSE_CONFIG_HINT} (Compose components)"
         print(f"\nConfig in use: {config_hint}")
 
