@@ -5,9 +5,28 @@ Several agent workflows are started by a token in an issue comment:
 | Token | Started by | Starts |
 |---|---|---|
 | `RETRY_IMPLEMENTATION` | owner, developer agent, review agent | `developer_auto_implement.yml` |
-| `READY_FOR_NEXT_ISSUE` | owner, all three agents | `notify_scrum_ready.yml` (select and start the next issue) |
+| `READY_FOR_NEXT_ISSUE` | owner, all three agents, `claude[bot]` | `notify_scrum_ready.yml` (select and start the next issue) |
 | `@acceptance-failure` | owner only | `handle_acceptance_failure.yml` |
 | `@improvement` | owner only | `handle_improvement.yml` |
+
+`claude[bot]` is the identity every Claude remote session's GitHub writes
+carry (the session proxy rewrites all credentials to the Claude GitHub App,
+so no PAT can change it). It is an allowed author for the queue kick and for
+`@review` on `claude-code-review.yml` (owner decision 2026-08-18, #3870);
+`claude-code-review.yml` also passes `allowed_bots: "claude"`, without which
+`claude-code-action` refuses bot-actored runs outright. Excluding identities
+is not what stopped #3706/#3790, and the two widened triggers are protected
+differently:
+
+* **`READY_FOR_NEXT_ISSUE`** keeps its full protection. The anchored-token
+  gate and the informational markers below have no author filter, so
+  widening the author list cannot weaken them — a `claude[bot]` comment
+  that mentions the token, or carries a marker, is as inert as anyone's.
+* **`@review`** has no anchored gate; its author list plus a bare
+  `contains(body, '@review')` is the whole test. The exposure is bounded
+  rather than gated: a triggered review is convergent and one-shot, and its
+  own output posts as the review agent, which was already an allowed author
+  before #3870 — so no new self-trigger path opens.
 
 A GitHub Actions `if:` expression can only substring-match a comment body —
 it has no regex and cannot anchor a match to a line. For a long time that was

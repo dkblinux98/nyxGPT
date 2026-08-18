@@ -318,6 +318,26 @@ def resolve_target(args: argparse.Namespace) -> DeployTarget:
     )
 
 
+def resolve_access_target(args: argparse.Namespace) -> DeployTarget:
+    """Resolve the instance *and* the SSH credentials the last deploy used.
+
+    `resolve_target` takes the host from the substrate handoff but the login
+    user and identity file from flags alone, which is right for `deploy` --
+    `resolve_plan` restores those from the deploy record separately. For the
+    read-only commands that reach the instance afterwards there was no such
+    restore, so a deployment made with a non-default key could only be
+    inspected by re-typing `--identity-file` every time. Flags still win;
+    this only fills in what was not given (#3813).
+    """
+    target = resolve_target(args)
+    record = load_deploy_state()
+    if not getattr(args, "ssh_user", None) and record.get("ssh_user"):
+        target.user = str(record["ssh_user"])
+    if not getattr(args, "identity_file", None) and record.get("identity_file"):
+        target.identity_file = str(Path(str(record["identity_file"])).expanduser())
+    return target
+
+
 def resolve_plan(args: argparse.Namespace) -> DeployPlan:
     """Merge flags over the last deploy's recorded choices.
 
@@ -994,8 +1014,9 @@ def deploy(args: argparse.Namespace) -> dict[str, Any]:
             raise CloudCommandError(
                 f"The stack was installed but {health['url']} never returned 200 within "
                 f"{plan.health_timeout:.0f}s (last status: {health['status'] or 'unreachable'}).\n"
-                "The tunnel is still open -- `nyxgpt cloud deploy --status` and the instance's "
-                "own `nyxgpt ops doctor` will say more."
+                "The tunnel is still open -- `nyxgpt cloud status` and "
+                "`nyxgpt cloud ops doctor` (which runs the instance's own doctor over the "
+                "same SSH path) will say more."
             )
 
     record_history(
@@ -1077,8 +1098,25 @@ LIFECYCLE_COMMANDS: dict[str, str] = {
     "smoke": "nyxgpt cloud smoke",
     "tunnel": "nyxgpt cloud tunnel",
     "tunnel_stop": "nyxgpt cloud tunnel --stop",
-    "status": "nyxgpt cloud deploy --status",
+    "status": "nyxgpt cloud status",
+    "ops_status": "nyxgpt cloud ops status",
+    "doctor": "nyxgpt cloud ops doctor",
+    "self_heal": "nyxgpt cloud ops self-heal",
+    "credentials": "nyxgpt cloud credentials",
     "allow_ip": "nyxgpt cloud allow-ip",
+}
+
+
+# The read-only inspections `nyxgpt cloud ops <name>` runs *on* the instance
+# over the same wrapped SSH path `nyxgpt cloud credentials` uses (#3813), so
+# checking container state never needs a hand-rolled `ssh` followed by a raw
+# `docker compose ps` (CLAUDE.md's wrapper requirement). Deliberately an
+# allowlist of reads: changing what runs on the instance is `nyxgpt cloud
+# deploy`, which is idempotent and records what it did.
+REMOTE_OPS_COMMANDS: dict[str, str] = {
+    "status": "ops status",
+    "doctor": "ops doctor",
+    "self-heal": "self-heal status",
 }
 
 
@@ -1089,6 +1127,77 @@ LIFECYCLE_COMMANDS: dict[str, str] = {
 SOURCE_DEPLOY_RECORD = "deploy-record"
 SOURCE_LOCAL_INSTANCE = "local-instance"
 SOURCE_UNKNOWN = "none"
+
+
+def recorded_target() -> DeployTarget | None:
+    """Rebuild the `DeployTarget` of the last deploy, or `None` if none is recorded.
+
+    `resolve_target` answers the same question from command-line flags plus
+    the substrate handoff, for commands that are about to *act* on the
+    instance. This one answers it from `deploy.json` alone -- the SSH user
+    and identity file a deploy actually used -- which is what a status report
+    has to show: the connection target as it is, not as a fresh set of flags
+    would resolve it.
+    """
+    record = load_deploy_state()
+    host = str(record.get("host") or "")
+    if not host:
+        return None
+    return DeployTarget(
+        host=host,
+        user=str(record.get("ssh_user") or DEFAULT_SSH_USER),
+        identity_file=str(record.get("identity_file") or ""),
+        region=str(record.get("region") or ""),
+        instance_id=str(record.get("instance_id") or ""),
+    )
+
+
+def connection_status(on_instance: bool = False) -> dict[str, Any]:
+    """Report how this workstation reaches the deployment (#3813).
+
+    The `host` a deployment reports is only half an address: reaching it also
+    takes the login user and, when the key is not one of ssh's own defaults,
+    the identity file. All three are recorded by `nyxgpt cloud deploy` and,
+    until this existed, none of them was ever printed -- an operator who had
+    lost the deploy's scrollback had no wrapped command that would say where
+    their own instance was.
+
+    `tunnel_invocation` is the raw `ssh` the wrapped tunnel executes. It is
+    reported as *diagnostics* -- what is running, for a support conversation
+    -- and never as the instruction: `nyxgpt cloud tunnel` is what an
+    operator runs (CLAUDE.md's wrapper requirement).
+    """
+    target = recorded_target()
+    if target is None:
+        return {
+            "known": False,
+            "host": "",
+            "user": "",
+            "identity_file": "",
+            "target": "",
+            "tunnel_invocation": "",
+            "command": LIFECYCLE_COMMANDS["tunnel"],
+            "reason": (
+                "this dashboard is served by the instance itself -- the SSH user and "
+                "identity file are the operator workstation's, and are recorded there"
+                if on_instance
+                else "no deploy has been recorded on this machine, so there is no "
+                "connection target to report"
+            ),
+        }
+    profiles = [str(p) for p in (load_deploy_state().get("profiles") or [])]
+    return {
+        "known": True,
+        "host": target.host,
+        "user": target.user,
+        # Empty means "ssh's own ~/.ssh defaults and agent" -- a real answer,
+        # not a missing one, so it is reported as such rather than blanked.
+        "identity_file": target.identity_file,
+        "target": f"{target.user}@{target.host}",
+        "tunnel_invocation": tunnel_invocation(target, profiles),
+        "command": LIFECYCLE_COMMANDS["tunnel"],
+        "reason": "",
+    }
 
 
 def deploy_status(probe_health: bool = False) -> dict[str, Any]:
@@ -1167,8 +1276,10 @@ def deploy_status(probe_health: bool = False) -> dict[str, Any]:
         "version": version,
         "host": host,
         "instance_id": str(record.get("instance_id") or infra.get("instance_id") or ""),
+        "instance_type": str(infra.get("instance_type") or ""),
         "region": str(record.get("region") or infra.get("region") or ""),
         "profiles": profiles,
+        "connection": connection_status(on_instance),
         "infra": infra,
         "tunnel": tunnel,
         "health": health,
@@ -1208,6 +1319,132 @@ def _print_deploy_summary(result: dict[str, Any]) -> None:
         "(product_management/DECISION_PRIVATE_ACCESS_MECHANISM.md).\n"
         "If your public IP changes, run `nyxgpt cloud allow-ip`."
     )
+    # Everything above scrolls away. This is the command that says it all
+    # again -- the address, the SSH target, the tunnel state -- so an
+    # operator never has to reconstruct it from a terminal's scrollback
+    # (#3813).
+    print(
+        f"\nAsk for all of this again at any time with `{LIFECYCLE_COMMANDS['status']}`, and "
+        f"check the instance's own containers with `{LIFECYCLE_COMMANDS['ops_status']}`."
+    )
+
+
+def _print_row(label: str, value: str) -> None:
+    """Print one aligned `label  value` line of the status summary."""
+    print(f"  {label:<16}{value}")
+
+
+def _health_label(health: dict[str, Any]) -> str:
+    """Describe the health probe in one line, including why it was skipped."""
+    if not health.get("checked"):
+        return f"not checked -- {health['reason']}" if health.get("reason") else "not checked"
+    if health.get("healthy"):
+        return "healthy (the tunneled API answered 200)"
+    status = health.get("status") or 0
+    return f"unhealthy (the tunneled API answered {status or 'nothing'})"
+
+
+def _print_status_summary(status: dict[str, Any]) -> None:
+    """Print `nyxgpt cloud status` in the form an operator reads (#3813).
+
+    The machine form is still available behind `--json`; this is the default
+    because the question being asked -- "where is my instance and how do I
+    reach it?" -- is one a human is asking, and answering it with a nested
+    JSON blob made the operator scroll for the public IP either way.
+    """
+    commands = status.get("commands") or LIFECYCLE_COMMANDS
+    if not status["known"]:
+        print(
+            "nyxGPT cloud deployment: UNKNOWN from this machine.\n\n"
+            "No deploy has been recorded here and this is not the instance. That is not the "
+            "same as nothing being deployed -- another operator's workstation would know. Run "
+            f"`{commands['status']}` where `{commands['deploy']}` was run, or deploy from here "
+            f"with `{commands['deploy']}`."
+        )
+        return
+
+    infra = status.get("infra") or {}
+    connection = status.get("connection") or {}
+    tunnel = status.get("tunnel") or {}
+
+    print("nyxGPT cloud deployment: DEPLOYED")
+    if status["on_instance"]:
+        print(
+            "  (read first-hand: this process is running on the instance, so the release "
+            "below is the one answering)\n"
+        )
+    else:
+        print(f"  (from the deploy record on this machine, {DEPLOY_STATE_FILE})\n")
+
+    _print_row("Version", status["version"] or "unknown")
+    instance = status["instance_id"] or "unknown"
+    if status.get("instance_type"):
+        instance = f"{instance} ({status['instance_type']})"
+    _print_row("Instance", instance)
+    _print_row("Region", status["region"] or "unknown")
+    _print_row("Public IP", status["host"] or "unknown")
+    _print_row("Profiles", ", ".join(status["profiles"]) or "none (core stack only)")
+
+    access = infra.get("access_model") or {}
+    if access.get("open_ports"):
+        allowed = infra.get("owner_ip_cidr") or "your workstation's IP"
+        ports = ", ".join(str(port) for port in access["open_ports"])
+        _print_row("Security group", f"port {ports} from {allowed}, and nothing else")
+
+    print("\nConnection target")
+    if connection.get("known"):
+        _print_row("SSH target", connection["target"])
+        _print_row(
+            "Identity file",
+            connection["identity_file"] or "(ssh's own ~/.ssh defaults and agent)",
+        )
+    else:
+        _print_row("SSH target", f"unknown -- {connection.get('reason', '')}")
+
+    print("\nAccess tunnel")
+    if status["on_instance"]:
+        _print_row("State", "not applicable -- the tunnel is opened from your workstation")
+    elif tunnel.get("running"):
+        _print_row("State", f"open (pid {tunnel['pid']})")
+    else:
+        _print_row("State", f"closed -- open it with `{commands['tunnel']}`")
+    _print_row("Stack health", _health_label(status.get("health") or {}))
+    if status.get("urls") and not status["on_instance"]:
+        print("\n  Reachable while the tunnel is open:")
+        _print_urls(status["urls"])
+
+    print("\nCommands")
+    labelled = [
+        (label, commands[key])
+        for label, key in (
+            ("Open the tunnel", "tunnel"),
+            ("Close the tunnel", "tunnel_stop"),
+            ("Containers on the instance", "ops_status"),
+            ("Diagnose the instance", "doctor"),
+            ("Observability logins", "credentials"),
+            ("Redeploy (idempotent)", "redeploy"),
+            ("Re-allow SSH after an IP change", "allow_ip"),
+            ("Tear it all down", "destroy"),
+        )
+        if commands.get(key)
+    ]
+    # Widened to the longest label rather than the fixed column the fields
+    # above use: these labels are sentences, and a fixed column ran them into
+    # the commands they name.
+    width = max((len(label) for label, _ in labelled), default=0) + 2
+    for label, command in labelled:
+        print(f"  {label:<{width}}{command}")
+
+    # Diagnostics, not an instruction: `nyxgpt cloud tunnel` is the command an
+    # operator runs (CLAUDE.md's wrapper requirement). Printed because a
+    # tunnel that will not open is a support conversation about ssh options,
+    # and nothing used to show what was actually being executed.
+    if connection.get("tunnel_invocation"):
+        print(
+            f"\nDiagnostics -- what `{commands['tunnel']}` executes on your behalf "
+            "(run the wrapped command, not this):"
+        )
+        print(f"  {connection['tunnel_invocation']}")
 
 
 def remote_credentials(target: DeployTarget, service: str = "all") -> list[dict[str, Any]]:
@@ -1262,7 +1499,7 @@ def _credentials_command(args: argparse.Namespace) -> int:
     reachable from the workstation once `nyxgpt cloud tunnel` is open, which
     is the same wrapped access path the dashboard links assume.
     """
-    target = resolve_target(args)
+    target = resolve_access_target(args)
     creds = remote_credentials(target, service=getattr(args, "service", "all") or "all")
     if getattr(args, "json", False):
         print(json.dumps(creds, indent=2))
@@ -1270,6 +1507,68 @@ def _credentials_command(args: argparse.Namespace) -> int:
         _print_credentials(creds)
         print("\nReach these URLs with `nyxgpt cloud tunnel`.")
     return 0 if all(c.get("available") for c in creds) else 2
+
+
+def remote_ops(target: DeployTarget, inspection: str) -> int:
+    """Run one read-only `nyxgpt` inspection *on* the instance, over wrapped SSH.
+
+    The same access path `remote_credentials` uses, for the same reason:
+    checking what containers the deployment is running should not require an
+    operator to hand-roll `ssh` and then a raw `docker compose ps` (#3813).
+    The instance's own output is streamed through unchanged -- this is the
+    remote command's answer, not a re-formatting of it.
+
+    A non-zero exit from the *inspection* is a reportable answer (`ops
+    doctor` says so when the stack is unhealthy) and is returned. Only a
+    failure of the transport itself raises: ssh's own 255, or a shell that
+    could not find the instance's `nyxgpt` at all.
+    """
+    remote = f'"$HOME/.nyxGPT/venv/bin/nyxgpt" {REMOTE_OPS_COMMANDS[inspection]}'
+    completed = run_remote(target, remote, stream=True, timeout=300)
+    stderr = (completed.stderr or "").strip()
+    if completed.returncode == 255:
+        raise CloudCommandError(
+            f"Could not reach {target.user}@{target.host} over SSH: {stderr or 'no detail'}. "
+            f"If your public IP has changed, run `{LIFECYCLE_COMMANDS['allow_ip']}`."
+        )
+    if completed.returncode == 127:
+        raise CloudCommandError(
+            f"{target.host} has no nyxGPT installed at ~/.nyxGPT/venv/bin/nyxgpt. "
+            f"`{LIFECYCLE_COMMANDS['deploy']}` installs it."
+        )
+    if stderr:
+        print(stderr, file=sys.stderr)
+    return completed.returncode
+
+
+def _ops_command(args: argparse.Namespace) -> int:
+    """`nyxgpt cloud ops <inspection>` entry point."""
+    inspection = str(getattr(args, "inspection", "") or "status")
+    target = resolve_access_target(args)
+    print(f"# {target.user}@{target.host}: nyxgpt {REMOTE_OPS_COMMANDS[inspection]}\n")
+    return remote_ops(target, inspection)
+
+
+def _status_command(args: argparse.Namespace) -> int:
+    """`nyxgpt cloud status` entry point (#3813).
+
+    Human-readable by default and JSON on request -- the reverse of the
+    `nyxgpt cloud deploy --status` flag it replaces, which only ever emitted
+    the machine form. Both forms answer from the same `deploy_status` call,
+    so the summary can never describe a different deployment than `--json`.
+
+    The health probe is opt-out rather than opt-in here: this is a one-shot
+    command an operator ran to find out whether their deployment works, and
+    `deploy_status` already skips the probe entirely when there is no tunnel
+    to probe through (or when it is the instance answering), so the default
+    costs nothing in exactly the cases where it would have been useless.
+    """
+    status = deploy_status(probe_health=not getattr(args, "no_probe", False))
+    if getattr(args, "json", False):
+        print(json.dumps(status, indent=2))
+    else:
+        _print_status_summary(status)
+    return 0
 
 
 def _tunnel_command(args: argparse.Namespace) -> int:
@@ -1282,7 +1581,10 @@ def _tunnel_command(args: argparse.Namespace) -> int:
         print(json.dumps(tunnel_status(), indent=2))
         return 0
 
-    target = resolve_target(args)
+    # The same recorded credentials `nyxgpt cloud status` reports as the
+    # connection target -- otherwise the tunnel this opens could differ from
+    # the invocation that command prints as what it executes.
+    target = resolve_access_target(args)
     profiles = [str(p) for p in (load_deploy_state().get("profiles") or [])]
     background = bool(getattr(args, "background", False))
     result = start_tunnel(target, profiles, background=background)
@@ -1297,11 +1599,25 @@ def _tunnel_command(args: argparse.Namespace) -> int:
 
 
 def deploy_command(args: argparse.Namespace) -> int:
-    """`nyxgpt cloud {deploy,destroy,tunnel,credentials}` entry point."""
+    """`nyxgpt cloud {deploy,destroy,tunnel,credentials,status,ops}` entry point."""
     subcommand = getattr(args, "cloud_cmd", "")
     try:
+        if subcommand == "status":
+            return _status_command(args)
+        if subcommand == "ops":
+            return _ops_command(args)
         if subcommand == "deploy":
             if getattr(args, "status", False):
+                # Kept working for anything already scripted against it, and
+                # kept emitting JSON so that output does not change shape
+                # under a script's feet. `nyxgpt cloud status` is the
+                # first-class command now (#3813) and says so here, because
+                # a flag on `deploy` is not where an operator looks for it.
+                print(
+                    f"note: `{LIFECYCLE_COMMANDS['status']}` is the status command -- it prints "
+                    "an operator-readable summary, and `--json` for this same payload.",
+                    file=sys.stderr,
+                )
                 print(json.dumps(deploy_status(), indent=2))
                 return 0
             _print_deploy_summary(deploy(args))
@@ -1334,7 +1650,9 @@ def tunnel_invocation(target: DeployTarget, profiles: list[str] | None = None) -
     """Return the raw `ssh` command the tunnel wraps, for docs and diagnostics.
 
     Never printed as an *instruction* (CLAUDE.md forbids raw commands in user
-    flows) -- `nyxgpt cloud tunnel` is what operators are told to run. This
-    exists so `--status`/support output can show what is actually executing.
+    flows) -- `nyxgpt cloud tunnel` is what operators are told to run. It is
+    carried by `connection_status`, which is how both `nyxgpt cloud status`
+    and the dashboard's cloud page show what is actually executing under a
+    "diagnostics" heading (#3813).
     """
     return " ".join(shlex.quote(part) for part in tunnel_argv(target, profiles))

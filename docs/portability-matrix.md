@@ -139,10 +139,11 @@ command; you never type `ssh`, `terraform`, `docker`, or `kubectl`.
 | 1 | `pip install nyxgpt` | `nyxgpt --version` prints the released version; no checkout exists |
 | 2 | `nyxgpt cloud credentials-setup` | AWS credentials collected and validated, routed to `~/.aws/credentials` or the OS keychain — never `config.ini` |
 | 3 | `nyxgpt cloud deploy` | substrate applied, instance provisioned from published artifacts, observability profiles up, self-heal enabled, tunnel open, `/health` 200, localhost URLs printed |
-| 4 | `nyxgpt cloud deploy --status` | `access_model` reports SSH-only ingress from your own CIDR — every app and observability URL is a `localhost` one through the tunnel |
-| 5 | `nyxgpt cloud smoke --skip-deploy --keep` | chat round-trip, RAG ingest + query, and every observability UI green |
-| 6 | `nyxgpt self-heal status` | `enabled: true`, every component healthy |
-| 7 | `nyxgpt cloud destroy --yes` | tunnel closed, substrate destroyed, no billed resources left |
+| 4 | `nyxgpt cloud status` | the SSH target, the public IP and SSH-only ingress from your own CIDR are printed — every app and observability URL is a `localhost` one through the tunnel |
+| 5 | `nyxgpt cloud ops status` | the instance's own `nyxgpt ops status` answers over the wrapped SSH path — container state with no hand-rolled `ssh` and no raw `docker compose` |
+| 6 | `nyxgpt cloud smoke --skip-deploy --keep` | chat round-trip, RAG ingest + query, and every observability UI green |
+| 7 | `nyxgpt self-heal status` | `enabled: true`, every component healthy |
+| 8 | `nyxgpt cloud destroy --yes` | tunnel closed, substrate destroyed, no billed resources left |
 
 `nyxgpt ops portability` prints this same sequence, so the terminal you are
 accepting from can always tell you the next step.
@@ -180,12 +181,12 @@ and are never announced; `pip install nyxgpt` still resolves
 to the stable release, because pip excludes pre-releases from an unpinned
 requirement.
 
-### Why step 5 passes `--skip-deploy`
+### Why step 6 passes `--skip-deploy`
 
 A bare `nyxgpt cloud smoke` deploys a stack of its own, tests it, and destroys
 it. That proves the smoke test works; it proves nothing about the deployment
 you are accepting. `--skip-deploy` points it at the deployment step 3 made, and
-`--keep` leaves that deployment up for steps 6 and 7 instead of tearing it down
+`--keep` leaves that deployment up for steps 7 and 8 instead of tearing it down
 early. (Without `--keep`, the smoke run destroys the deployment when it
 finishes — which is the right default everywhere except inside an acceptance
 run, since it guarantees no run can leave billed resources behind.)
@@ -196,8 +197,8 @@ For each numbered step: the command, its exit status, and the operator-facing
 output (URLs, the smoke summary, the `self-heal status` payload). Two extra
 pieces of evidence make the acceptance auditable:
 
-- Step 4's `access_model` — the proof that nothing is publicly reachable.
-- After step 7, an AWS console or `nyxgpt cloud deploy --status` check showing
+- Step 4's ingress line — the proof that nothing is publicly reachable.
+- After step 8, an AWS console or `nyxgpt cloud status` check showing
   no instance, no volume, and no security group left behind.
 
 ### Non-AWS rows

@@ -192,6 +192,33 @@ class TestGateAction:
         assert "proceed" in _load(GATE_ACTION)["outputs"]
 
 
+class TestClaudeBotIsAnAllowedTriggerAuthor:
+    """D-020 (#3870): every GitHub write from a Claude remote session carries
+    the `claude[bot]` App identity, so the two sanctioned triggers name it in
+    their author allowlists. Pinned here so a later allowlist tidy-up has to
+    revisit the decision rather than silently re-break remote sessions."""
+
+    @pytest.mark.parametrize(
+        "filename,job",
+        # The author allowlist is layer 1 -- on the gate job where there is
+        # one, on the work job where there is not.
+        [
+            ("notify_scrum_ready.yml", "comment_gate"),
+            ("claude-code-review.yml", "claude-review"),
+        ],
+    )
+    def test_trigger_allows_the_claude_app_identity(self, filename, job):
+        condition = str(_load(WORKFLOWS / filename)["jobs"][job].get("if", ""))
+        assert "github.event.comment.user.login == 'claude[bot]'" in condition
+
+    def test_review_action_permits_the_bot_actor(self):
+        """`claude-code-action` refuses bot-actored runs unless listed, so the
+        allowlist entry alone is not enough for the review trigger."""
+        steps = _steps(_load(WORKFLOWS / "claude-code-review.yml"), "claude-review")
+        allowed = [(s.get("with") or {}).get("allowed_bots") for s in steps]
+        assert "claude" in [a for a in allowed if a]
+
+
 class TestRealCommandPostsStillTrigger:
     """The scripts that legitimately POST a retry command keep working: their
     token must open a line, or the anchored gate would swallow it."""
