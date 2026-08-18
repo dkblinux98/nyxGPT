@@ -361,6 +361,21 @@ are absent here by design (relocated to the annex; IDs are never reused).
   use `AGENT_MODEL_HUDDLE`.
   Source: owner in session, 2026-08-18.
 
+- **D-015** · 2026-08-18 · owner — **The portability matrix gets no dashboard
+  screen.** #3516 read CLAUDE.md's Definition of Done ("Ops/SRE features MUST
+  be operable from the SRE/admin dashboard") as requiring a surface for
+  `nyxgpt ops portability`, and built one; owner acceptance on rc12 removed
+  it. The matrix states the *product*'s portability claims, not the state of
+  the machine whose dashboard is being viewed, so there is nothing to observe
+  and nothing to act on — and the page asserted acceptance status that owner
+  testing contradicted. A page that restates documentation inside the running
+  product is not an ops surface. `nyxgpt ops portability` (plus
+  `GET /api/v1/ops/portability` for machine readers) is how the matrix is
+  read. Do not re-add the tile under the Definition of Done; the broader DoD
+  refinement (observable from the dashboard, lifecycle operated from the CLI)
+  is separate and still open with the owner.
+  Source: #3803; owner acceptance round 2026-08-16.
+
 ## Verifications
 
 - **V-001** · 2026-08-14 — Releases in this repository are immutable: a
