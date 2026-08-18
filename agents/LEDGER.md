@@ -439,6 +439,25 @@ are absent here by design (relocated to the annex; IDs are never reused).
   the link-local timeout.
   Source: #3804; owner observation 2026-08-16 (rc12 cloud deploy).
 
+- **D-019** · 2026-08-18 · owner — **The artifact ships product documentation
+  only; how this repository builds itself stays in the repository.** `docs/`
+  held both, and packaging the directory wholesale put the agent loop, CI
+  process, contributor setup and this project's own GitHub token setup in
+  front of a user opening Support → Docs. The split is an allow-list, not a UI
+  filter: `src/nyxgpt/resources/docs/` holds one symlink per product document,
+  so an unlisted doc is absent from the wheel rather than shipped and hidden.
+  The selection is named and *grouped* in `nyxgpt.support.DOC_SECTIONS`
+  (Getting started → Using nyxGPT → Configuration → Operating → Reference →
+  Help) — the index is grouped by that data, never a flat alphabetical list —
+  and `tests/unit/test_support_docs.py` fails if the packaged set and the
+  grouping ever diverge in either direction. Excluded docs stay in `docs/`,
+  where the agent loop and `CLAUDE.md`'s bootstrap read them; links to them
+  from packaged docs resolve to the hosted copy on GitHub instead of a dead
+  in-app route. Also excluded, beyond the owner's list of 12: `development.md`,
+  `adding-api-endpoints.md`, `file-lock-audit.md` — contributor docs the owner
+  named in the issue body and left out of every proposed group.
+  Source: #3809; owner acceptance round 2026-08-16 (testing #3745).
+
 ## Verifications
 
 - **V-001** · 2026-08-14 — Releases in this repository are immutable: a

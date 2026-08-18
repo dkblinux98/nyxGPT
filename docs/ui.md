@@ -667,7 +667,7 @@ has no repository checkout, so neither the docs nor an issue-reporting path
 would otherwise be reachable from the product.
 
 **Docs** (`/support/docs`) renders the documentation that shipped with the
-installed package. The whole `docs/*.md` tree is package data inside the wheel
+installed package. The product documents are package data inside the wheel
 (`nyxgpt.resources/docs`, the mechanism #3621 introduced for the ops layer's
 runtime data), resolved through `importlib.resources` and never relative to a
 source tree — so the documents shown match the version that is running by
@@ -677,6 +677,19 @@ browses as a unit; links to files that only a checkout has resolve to the
 hosted copy on GitHub. The Markdown is rendered to HTML by the API
 (`/api/v1/support/docs`, `/api/v1/support/docs/{slug}`) with active content
 stripped before the page injects it.
+
+**What ships, and how it is ordered (#3809).** Not everything under `docs/`:
+the repository also documents how it builds itself — the agent loop, CI
+process, contributor setup, this project's own GitHub tokens — and none of
+that is help for using nyxGPT. Those documents stay in the repository and are
+never symlinked into `nyxgpt/resources/docs/`, so they are absent from the
+wheel rather than shipped and hidden. The selection is named, grouped and
+ordered in `nyxgpt.support.DOC_SECTIONS` (Getting started → Using nyxGPT →
+Configuration → Operating → Reference → Help) and the index page renders those
+groups; `/api/v1/support/docs` returns them as `sections`. Because the
+grouping is data and not inferred from filenames, a newly added packaged
+document that no section lists fails `tests/unit/test_support_docs.py` instead
+of quietly appearing at the end of a flat list.
 
 **File an Issue** opens
 [`.github/ISSUE_TEMPLATE/support.yml`](https://github.com/dkblinux98/nyxGPT/blob/master/.github/ISSUE_TEMPLATE/support.yml)

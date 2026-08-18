@@ -126,10 +126,20 @@ where = ["src"]
 # itself contains symlinks back to the canonical top-level files
 # (docker/, docker-compose.yml, ops/, .env.example, four scripts/*.sh,
 # terraform/aws/ for the AWS substrate `nyxgpt cloud infra` provisions --
-# #3509, and docs/ for the web UI's Support -> Docs viewer -- #3745) rather
-# than copies, so there is exactly one place to edit each file;
+# #3509, and the product docs for the web UI's Support -> Docs viewer --
+# #3745) rather than copies, so there is exactly one place to edit each file;
 # setuptools dereferences symlinks when it builds the wheel/sdist, so the
 # built artifact contains real file content, not links.
+#
+# resources/docs/ is the one place this is per *file* rather than per
+# directory (#3809): `docs/` also holds the documents about how this
+# repository builds itself -- the agent loop, CI process, contributor setup,
+# this project's own GitHub tokens -- and none of that is product help for a
+# user opening Support -> Docs. One symlink per product document makes the
+# packaged set an allow-list: a newly added process doc is simply not in it,
+# so it cannot reach the artifact. The selection is named in
+# `nyxgpt.support.DOC_SECTIONS` (which also groups it for the viewer), and
+# tests/unit/test_support_docs.py asserts the two match exactly.
 [tool.setuptools.package-data]
 # "**/*" (glob-style) doesn't match dotfiles, so .env.example needs its own
 # explicit entry.

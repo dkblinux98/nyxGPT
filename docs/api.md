@@ -4406,6 +4406,46 @@ curated per-component Explore links, not general search.
 
 ---
 
+## Support endpoints
+
+Read-only. They back the web UI's Support menu ([ui.md](ui.md#support-menu)),
+which is the whole documentation surface for an install with no repository
+checkout. There is no POST endpoint here: nyxGPT never files an issue on a
+user's behalf.
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/v1/support/docs` | GET | Index of the packaged product documentation, grouped |
+| `/api/v1/support/docs/{slug}` | GET | One document rendered to HTML (404 for an unknown slug) |
+| `/api/v1/support/context` | GET | Running version/platform plus the prefilled issue-form URL |
+
+**`GET /api/v1/support/docs`**
+
+```json
+{
+  "sections": [
+    {
+      "title": "Getting started",
+      "documents": [
+        {"slug": "README", "title": "nyxGPT Documentation", "summary": "Index of the nyxGPT product documentation..."}
+      ]
+    }
+  ],
+  "documents": [
+    {"slug": "README", "title": "nyxGPT Documentation", "summary": "Index of the nyxGPT product documentation..."}
+  ]
+}
+```
+
+`sections` is what the viewer renders: the packaged documents grouped and
+ordered by `nyxgpt.support.DOC_SECTIONS` — install, then use, then configure,
+operate and look things up. `documents` is the same set flattened, in the same
+order. Only **product** documentation is packaged; the agent/CI process and
+contributor documents stay in the repository and are absent from the artifact
+(#3809).
+
+---
+
 ## Error handling
 
 - All errors return JSON
