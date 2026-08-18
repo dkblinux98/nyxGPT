@@ -556,6 +556,16 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          # An assignment made from a Claude remote session arrives as the
+          # claude[bot] GitHub App -- the identity every such session's writes
+          # carry, and the one the claim step already accepts as a permitted
+          # dispatcher (#3882). Without this the action refuses the run
+          # outright ("Workflow initiated by non-human actor"), so the
+          # assignment lever appeared to work (Status flipped to In Progress)
+          # and then died one step later, leaving the issue claimed with
+          # nothing implementing it. Observed on #3855/#3858/#3860/#3864,
+          # 2026-08-18. Same fix, same reason, as claude-code-review.yml.
+          allowed_bots: "claude"
           track_progress: true
           show_full_output: true
           claude_args: >-
@@ -716,6 +726,16 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          # An assignment made from a Claude remote session arrives as the
+          # claude[bot] GitHub App -- the identity every such session's writes
+          # carry, and the one the claim step already accepts as a permitted
+          # dispatcher (#3882). Without this the action refuses the run
+          # outright ("Workflow initiated by non-human actor"), so the
+          # assignment lever appeared to work (Status flipped to In Progress)
+          # and then died one step later, leaving the issue claimed with
+          # nothing implementing it. Observed on #3855/#3858/#3860/#3864,
+          # 2026-08-18. Same fix, same reason, as claude-code-review.yml.
+          allowed_bots: "claude"
           track_progress: true
           show_full_output: true
           claude_args: >-
@@ -929,6 +949,16 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          # An assignment made from a Claude remote session arrives as the
+          # claude[bot] GitHub App -- the identity every such session's writes
+          # carry, and the one the claim step already accepts as a permitted
+          # dispatcher (#3882). Without this the action refuses the run
+          # outright ("Workflow initiated by non-human actor"), so the
+          # assignment lever appeared to work (Status flipped to In Progress)
+          # and then died one step later, leaving the issue claimed with
+          # nothing implementing it. Observed on #3855/#3858/#3860/#3864,
+          # 2026-08-18. Same fix, same reason, as claude-code-review.yml.
+          allowed_bots: "claude"
           track_progress: true
           show_full_output: true
           claude_args: >-
@@ -1344,6 +1374,16 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          # An assignment made from a Claude remote session arrives as the
+          # claude[bot] GitHub App -- the identity every such session's writes
+          # carry, and the one the claim step already accepts as a permitted
+          # dispatcher (#3882). Without this the action refuses the run
+          # outright ("Workflow initiated by non-human actor"), so the
+          # assignment lever appeared to work (Status flipped to In Progress)
+          # and then died one step later, leaving the issue claimed with
+          # nothing implementing it. Observed on #3855/#3858/#3860/#3864,
+          # 2026-08-18. Same fix, same reason, as claude-code-review.yml.
+          allowed_bots: "claude"
           track_progress: true
           show_full_output: true
           claude_args: >-
@@ -1470,6 +1510,16 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          # An assignment made from a Claude remote session arrives as the
+          # claude[bot] GitHub App -- the identity every such session's writes
+          # carry, and the one the claim step already accepts as a permitted
+          # dispatcher (#3882). Without this the action refuses the run
+          # outright ("Workflow initiated by non-human actor"), so the
+          # assignment lever appeared to work (Status flipped to In Progress)
+          # and then died one step later, leaving the issue claimed with
+          # nothing implementing it. Observed on #3855/#3858/#3860/#3864,
+          # 2026-08-18. Same fix, same reason, as claude-code-review.yml.
+          allowed_bots: "claude"
           track_progress: true
           show_full_output: true
           claude_args: >-
@@ -2162,6 +2212,16 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          # An assignment made from a Claude remote session arrives as the
+          # claude[bot] GitHub App -- the identity every such session's writes
+          # carry, and the one the claim step already accepts as a permitted
+          # dispatcher (#3882). Without this the action refuses the run
+          # outright ("Workflow initiated by non-human actor"), so the
+          # assignment lever appeared to work (Status flipped to In Progress)
+          # and then died one step later, leaving the issue claimed with
+          # nothing implementing it. Observed on #3855/#3858/#3860/#3864,
+          # 2026-08-18. Same fix, same reason, as claude-code-review.yml.
+          allowed_bots: "claude"
           track_progress: true
           show_full_output: false
           claude_args: >-
