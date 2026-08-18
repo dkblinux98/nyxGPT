@@ -10830,8 +10830,11 @@ def test_ensure_terraform_tfvars_bootstraps_from_example(monkeypatch, tmp_path):
     assert results[0].ok is True
     tfvars = tf_dir / "terraform.tfvars"
     content = tfvars.read_text(encoding="utf-8")
-    assert str(repo_root) in content
     assert 'auth_api_key = "my-key"' in content  # pragma: allowlist secret
+    # The checkout path is NOT written here (#3835): repo_path is a dev-mode
+    # `-var` on the apply, so the bootstrapped tfvars carries nothing that
+    # ties the deployment to a repository.
+    assert str(repo_root) not in content
 
 
 # --- Terraform: _terraform_init_plan_apply ---

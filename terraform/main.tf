@@ -98,12 +98,22 @@ resource "docker_container" "cassandra" {
   }
 }
 
+# The api image is either the published one (`api_image`, the artifact path
+# and the default -- `nyxgpt ops install --terraform --local` pulls it before
+# apply) or built from a checkout's working tree when `build_from_source` is
+# set (dev mode, `--dev`; #3835). The `dynamic` block is how one resource
+# covers both: with `build_from_source = false` there is no `build {}` at all,
+# so the provider uses the named image as-is and this configuration needs no
+# repository on the machine applying it.
 resource "docker_image" "api" {
-  name = "nyxgpt-api:${var.api_image_tag}"
+  name = var.api_image
 
-  build {
-    context    = var.repo_path
-    dockerfile = "Dockerfile"
+  dynamic "build" {
+    for_each = var.build_from_source ? [1] : []
+    content {
+      context    = var.repo_path
+      dockerfile = "Dockerfile"
+    }
   }
 }
 
@@ -151,9 +161,13 @@ resource "docker_container" "api" {
     read_only      = true
   }
 
-  # Paired with NYXGPT_COMPOSE_FILE above -- see that env var's comment.
+  # Paired with NYXGPT_COMPOSE_FILE above -- see that env var's comment. The
+  # source is the ops-managed copy `_sync_packaged_resources` writes (#3621),
+  # not `${var.repo_path}/docker-compose.yml`: this mount is needed on every
+  # deployment, including an artifact-path one on a machine with no
+  # repository at all (#3835).
   volumes {
-    host_path      = "${var.repo_path}/docker-compose.yml"
+    host_path      = pathexpand("~/.nyxGPT/docker-compose.yml")
     container_path = "/etc/nyxgpt/docker-compose.yml"
     read_only      = true
   }
@@ -185,14 +199,18 @@ resource "docker_container" "api" {
   }
 }
 
+# Same two-mode shape as `docker_image.api` above -- see its comment.
 resource "docker_image" "web" {
-  name = "nyxgpt-web:${var.web_image_tag}"
+  name = var.web_image
 
-  build {
-    context    = "${var.repo_path}/web"
-    dockerfile = "Dockerfile"
-    build_args = {
-      NEXT_PUBLIC_API_BASE_URL = var.web_api_base_url
+  dynamic "build" {
+    for_each = var.build_from_source ? [1] : []
+    content {
+      context    = "${var.repo_path}/web"
+      dockerfile = "Dockerfile"
+      build_args = {
+        NEXT_PUBLIC_API_BASE_URL = var.web_api_base_url
+      }
     }
   }
 }
