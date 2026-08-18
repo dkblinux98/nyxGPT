@@ -80,6 +80,17 @@ classify_error() {
     return
   fi
 
+  # HTTP 529 is the API saying "overloaded", which is a statement about its
+  # capacity and not about this run. On 2026-08-18 every Review Fix request on
+  # #3832 returned 529 for ~3.3 minutes until the action's own retries were
+  # exhausted; nothing had been committed or pushed, so there was nothing to
+  # repair -- and the run was escalated to the owner as a FATAL anyway, because
+  # no signature matched and unknown defaults to fatal.
+  if echo "$error_text" | grep -qE "529|[Oo]verloaded"; then
+    echo "retriable:api_overloaded"
+    return
+  fi
+
   if echo "$error_text" | grep -qE "not a commit|stale ref|couldn't find remote ref"; then
     echo "retriable:stale_ref"
     return

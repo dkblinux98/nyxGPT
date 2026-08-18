@@ -2527,8 +2527,18 @@ jobs:
           echo "::notice::Auto-retry triggered (${NEXT_N}/3) for step '${FAILED_STEP}'"
 
       - name: Escalate fatal error (Phase 1+2+3 - no retry)
+        # Phase 3's verdict outranks Phase 1's guess (#3909). Phase 1 is a
+        # grep over log lines: `unknown` from it means "no signature matched",
+        # which is a non-answer, and treating it as a fatal answer is how a
+        # capacity blip reached the owner as a FATAL page. On #3832 the deep
+        # analysis had already concluded TRANSIENT -- 529 Overloaded, no
+        # commits, clean tree, nothing to repair -- written into the run log,
+        # and the escalation fired regardless because the condition ORs the
+        # phases together. When Phase 3 says TRANSIENT the auto-retry step
+        # below owns the failure and this step stands down.
         if: |
-          failure() && steps.cross_issue_anomaly.outputs.matched != 'true' && (
+          failure() && steps.cross_issue_anomaly.outputs.matched != 'true' &&
+          steps.claude_result.outputs.status != 'TRANSIENT' && (
             steps.classify_error.outputs.retriable == 'false' ||
             steps.intelligent_fix.outputs.fix_status == 'FATAL' ||
             steps.claude_result.outputs.status == 'FATAL'
