@@ -7,12 +7,157 @@ import pytest
 from nyxgpt import canary
 from nyxgpt import metrics as prom_metrics
 
+# Captured before the autouse fixture stubs the module attribute, so the
+# attribution tests below can drive the real implementation against a faked
+# `_run` while every other test is protected from shelling out to a cluster.
+REAL_TRACK_METRICS = canary.track_metrics
+
+# The default histogram bucket bounds prometheus_client uses for
+# `nyxgpt_http_request_duration_seconds` (see metrics.py).
+HISTOGRAM_BUCKETS = [
+    0.005,
+    0.01,
+    0.025,
+    0.05,
+    0.075,
+    0.1,
+    0.25,
+    0.5,
+    0.75,
+    1.0,
+    2.5,
+    5.0,
+    7.5,
+    10.0,
+]
+
 
 class CP:
     def __init__(self, stdout="", stderr="", returncode=0):
         self.stdout = stdout
         self.stderr = stderr
         self.returncode = returncode
+
+
+def _pod_list(*names, ready=True, phase="Running"):
+    """Render a `kubectl get pods -o json` body for the given Pod names."""
+    return json.dumps(
+        {
+            "items": [
+                {
+                    "metadata": {"name": name},
+                    "status": {
+                        "phase": phase,
+                        "conditions": [{"type": "Ready", "status": "True" if ready else "False"}],
+                    },
+                }
+                for name in names
+            ]
+        }
+    )
+
+
+def _exposition(*, ok=0, errors=0, probes=0, latency_s=0.05, path="/api/v1/chat"):
+    """Render a Pod's Prometheus exposition for the HTTP families canary.py reads.
+
+    `probes` adds `/health` and `/metrics` samples with an absurd latency, so
+    a test can prove they are excluded from both the request count and p95
+    rather than merely not dominating them.
+    """
+    lines = [
+        "# HELP nyxgpt_http_requests_total Total HTTP requests handled by the API",
+        "# TYPE nyxgpt_http_requests_total counter",
+    ]
+    if ok:
+        lines.append(
+            f'nyxgpt_http_requests_total{{method="GET",path="{path}",status="200"}} {float(ok)}'
+        )
+    if errors:
+        lines.append(
+            f'nyxgpt_http_requests_total{{method="GET",path="{path}",status="500"}} {float(errors)}'
+        )
+    total = float(ok + errors)
+    lines.append("# TYPE nyxgpt_http_request_duration_seconds histogram")
+    for bound in HISTOGRAM_BUCKETS:
+        cumulative = total if bound >= latency_s else 0.0
+        lines.append(
+            f"nyxgpt_http_request_duration_seconds_bucket"
+            f'{{method="GET",path="{path}",le="{bound}"}} {cumulative}'
+        )
+    lines.append(
+        f"nyxgpt_http_request_duration_seconds_bucket"
+        f'{{method="GET",path="{path}",le="+Inf"}} {total}'
+    )
+    lines.append(
+        f'nyxgpt_http_request_duration_seconds_count{{method="GET",path="{path}"}} {total}'
+    )
+    lines.append(
+        f'nyxgpt_http_request_duration_seconds_sum{{method="GET",path="{path}"}} '
+        f"{total * latency_s}"
+    )
+
+    for probe_path in ("/health", "/metrics"):
+        if not probes:
+            continue
+        lines.append(
+            f'nyxgpt_http_requests_total{{method="GET",path="{probe_path}",status="200"}} '
+            f"{float(probes)}"
+        )
+        for bound in HISTOGRAM_BUCKETS:
+            lines.append(
+                f"nyxgpt_http_request_duration_seconds_bucket"
+                f'{{method="GET",path="{probe_path}",le="{bound}"}} 0.0'
+            )
+        lines.append(
+            f"nyxgpt_http_request_duration_seconds_bucket"
+            f'{{method="GET",path="{probe_path}",le="+Inf"}} {float(probes)}'
+        )
+        lines.append(
+            f'nyxgpt_http_request_duration_seconds_count{{method="GET",path="{probe_path}"}} '
+            f"{float(probes)}"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _fake_cluster(*, canary_pods=(), stable_pods=(), bodies=None):
+    """A `_run` stub answering the Pod list and Pod-proxy scrape canary.py makes.
+
+    `bodies` maps a Pod name to its exposition; a Pod missing from it answers
+    the scrape with a non-zero exit, i.e. an unreadable /metrics.
+    """
+    bodies = bodies or {}
+
+    def _fn(cmd, **_kwargs):
+        if cmd[:3] == ["kubectl", "get", "pods"]:
+            selector = cmd[cmd.index("-l") + 1]
+            names = canary_pods if selector.endswith("track=canary") else stable_pods
+            return CP(stdout=_pod_list(*names))
+        if cmd[:3] == ["kubectl", "get", "--raw"]:
+            pod = cmd[3].split("/pods/")[1].split(":")[0]
+            if pod not in bodies:
+                return CP(returncode=1, stderr="pods proxy unreachable")
+            return CP(stdout=bodies[pod])
+        return CP(returncode=0)
+
+    return _fn
+
+
+def _measured(requests=50, *, error_rate=0.0, p95_ms=100.0, pods=1):
+    """A `track_metrics` stub reporting attributable vitals for whichever track is asked."""
+
+    def _fn(track="canary", namespace=None, *, component="api"):
+        return canary.TrackMetrics(
+            track=track,
+            attributable=True,
+            source="pods",
+            pods_ready=pods,
+            pods_scraped=pods,
+            total_requests=requests,
+            error_rate_percent=error_rate,
+            p95_latency_ms=p95_ms,
+        )
+
+    return _fn
 
 
 def _deployment_json(*, replicas=1, ready=1, image="nyxgpt-api:local"):
@@ -32,7 +177,17 @@ def _isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(canary, "_state_path", lambda: tmp_path / "canary_state.json")
     monkeypatch.setattr(canary, "_which", lambda _: "/usr/local/bin/kubectl")
     monkeypatch.setattr(canary.time, "time", lambda: 1234.0)
-    monkeypatch.setattr(canary, "get_resource_monitor", lambda: None)
+    # Track-scoped metrics reach a real cluster through kubectl (#3829), so
+    # unit tests get an "unattributable, no cluster" default: a test that
+    # cares about attribution patches `_run` and calls REAL_TRACK_METRICS,
+    # and no test can silently shell out to whatever cluster the runner has.
+    monkeypatch.setattr(
+        canary,
+        "track_metrics",
+        lambda track="canary", namespace=None, *, component="api": canary.TrackMetrics(
+            track=track, attributable=False, reason="no cluster in this test"
+        ),
+    )
     monkeypatch.setattr(canary.ops_module, "terraform_stack_state", lambda: {})
     monkeypatch.delenv("NYXGPT_COMPOSE_FILE", raising=False)
 
@@ -395,11 +550,9 @@ def test_status_reports_active_state_and_health(monkeypatch):
     assert data["stable"]["state"] == "healthy"
     assert data["stable"]["version"] == "1.0.0-abcd"
     assert data["canary"]["state"] == "healthy"
-    assert data["metrics"] == {
-        "total_requests": 0,
-        "error_rate_percent": 0.0,
-        "p95_latency_ms": 0.0,
-    }
+    assert data["metrics"]["track"] == "canary"
+    assert data["metrics"]["attributable"] is False
+    assert data["stable_metrics"]["track"] == "stable"
     assert data["available"] is True
     assert data["unavailable_reason"] is None
 
@@ -425,11 +578,7 @@ def test_evaluate_no_active_rollout():
 @pytest.mark.unit
 def test_evaluate_insufficient_data(monkeypatch):
     canary._save_state({"active": True, "weight_percent": 10, "history": []})
-    monkeypatch.setattr(
-        canary,
-        "metrics_snapshot",
-        lambda: {"total_requests": 5, "error_rate_percent": 0.0, "p95_latency_ms": 100.0},
-    )
+    monkeypatch.setattr(canary, "track_metrics", _measured(5, p95_ms=100.0))
 
     result = canary.evaluate("nyxgpt", min_requests=20)
 
@@ -440,11 +589,7 @@ def test_evaluate_insufficient_data(monkeypatch):
 @pytest.mark.unit
 def test_evaluate_passes_within_thresholds(monkeypatch):
     canary._save_state({"active": True, "weight_percent": 10, "history": []})
-    monkeypatch.setattr(
-        canary,
-        "metrics_snapshot",
-        lambda: {"total_requests": 50, "error_rate_percent": 1.0, "p95_latency_ms": 500.0},
-    )
+    monkeypatch.setattr(canary, "track_metrics", _measured(50, error_rate=1.0, p95_ms=500.0))
 
     result = canary.evaluate(
         "nyxgpt", error_rate_threshold_percent=5.0, latency_p95_threshold_ms=2000.0, min_requests=20
@@ -457,11 +602,7 @@ def test_evaluate_passes_within_thresholds(monkeypatch):
 @pytest.mark.unit
 def test_evaluate_triggers_automatic_rollback_on_error_rate_breach(monkeypatch):
     canary._save_state({"active": True, "weight_percent": 25, "total_replicas": 4, "history": []})
-    monkeypatch.setattr(
-        canary,
-        "metrics_snapshot",
-        lambda: {"total_requests": 50, "error_rate_percent": 12.0, "p95_latency_ms": 200.0},
-    )
+    monkeypatch.setattr(canary, "track_metrics", _measured(50, error_rate=12.0, p95_ms=200.0))
     monkeypatch.setattr(canary, "_run", lambda cmd, **_k: CP(returncode=0))
 
     result = canary.evaluate(
@@ -478,11 +619,7 @@ def test_evaluate_triggers_automatic_rollback_on_error_rate_breach(monkeypatch):
 @pytest.mark.unit
 def test_evaluate_triggers_automatic_rollback_on_latency_breach(monkeypatch):
     canary._save_state({"active": True, "weight_percent": 25, "total_replicas": 4, "history": []})
-    monkeypatch.setattr(
-        canary,
-        "metrics_snapshot",
-        lambda: {"total_requests": 50, "error_rate_percent": 0.0, "p95_latency_ms": 5000.0},
-    )
+    monkeypatch.setattr(canary, "track_metrics", _measured(50, p95_ms=5000.0))
     monkeypatch.setattr(canary, "_run", lambda cmd, **_k: CP(returncode=0))
 
     result = canary.evaluate(
@@ -725,13 +862,14 @@ def test_rollback_reports_partial_failure_but_still_cuts_canary_traffic(monkeypa
 
 
 @pytest.mark.unit
-def test_metrics_snapshot_returns_zeros_when_monitor_unset(monkeypatch):
-    monkeypatch.setattr(canary, "get_resource_monitor", lambda: None)
-    assert canary.metrics_snapshot() == {
-        "total_requests": 0,
-        "error_rate_percent": 0.0,
-        "p95_latency_ms": 0.0,
-    }
+def test_track_metrics_unattributable_when_kubectl_missing(monkeypatch):
+    monkeypatch.setattr(canary, "_which", lambda _: None)
+
+    metrics = REAL_TRACK_METRICS("canary", "nyxgpt")
+
+    assert metrics.attributable is False
+    assert "kubectl not found" in metrics.reason
+    assert metrics.total_requests == 0
 
 
 def _metric_value(name, **labels):
@@ -852,11 +990,7 @@ def test_start_logs_and_records_metric_on_scale_failure(monkeypatch, caplog):
 @pytest.mark.unit
 def test_evaluate_pass_logs_and_records_metric(monkeypatch, caplog):
     canary._save_state({"active": True, "weight_percent": 10, "history": []})
-    monkeypatch.setattr(
-        canary,
-        "metrics_snapshot",
-        lambda: {"total_requests": 50, "error_rate_percent": 1.0, "p95_latency_ms": 500.0},
-    )
+    monkeypatch.setattr(canary, "track_metrics", _measured(50, error_rate=1.0, p95_ms=500.0))
 
     with caplog.at_level("INFO"):
         result = canary.evaluate("nyxgpt", min_requests=20)
@@ -869,11 +1003,7 @@ def test_evaluate_pass_logs_and_records_metric(monkeypatch, caplog):
 @pytest.mark.unit
 def test_evaluate_insufficient_data_logs_and_records_metric(monkeypatch, caplog):
     canary._save_state({"active": True, "weight_percent": 10, "history": []})
-    monkeypatch.setattr(
-        canary,
-        "metrics_snapshot",
-        lambda: {"total_requests": 5, "error_rate_percent": 0.0, "p95_latency_ms": 100.0},
-    )
+    monkeypatch.setattr(canary, "track_metrics", _measured(5, p95_ms=100.0))
 
     with caplog.at_level("INFO"):
         result = canary.evaluate("nyxgpt", min_requests=20)
@@ -886,11 +1016,7 @@ def test_evaluate_insufficient_data_logs_and_records_metric(monkeypatch, caplog)
 @pytest.mark.unit
 def test_evaluate_regression_logs_and_triggers_auto_rollback(monkeypatch, caplog):
     canary._save_state({"active": True, "weight_percent": 25, "total_replicas": 4, "history": []})
-    monkeypatch.setattr(
-        canary,
-        "metrics_snapshot",
-        lambda: {"total_requests": 50, "error_rate_percent": 12.0, "p95_latency_ms": 200.0},
-    )
+    monkeypatch.setattr(canary, "track_metrics", _measured(50, error_rate=12.0, p95_ms=200.0))
     monkeypatch.setattr(canary, "_run", lambda cmd, **_k: CP(returncode=0))
 
     with caplog.at_level("INFO"):
@@ -1247,3 +1373,395 @@ def test_web_component_status_uses_component_labeled_metrics_only(monkeypatch):
         )
         == 1
     )
+
+
+# --- Track-scoped metrics attribution (#3829) ---------------------------------
+#
+# The defect these cover: `evaluate()` read the in-process ResourceMonitor of
+# whichever nyxgpt-api Pod served the request, so a canary with zero scheduled
+# Pods was green-lit on a stable Pod's 459 requests and the gate could not
+# fail. Every test below drives the REAL `track_metrics` against a faked
+# cluster, since a stub of it would assert nothing about attribution.
+
+
+@pytest.mark.unit
+def test_evaluate_holds_when_canary_has_no_endpoints_and_stable_is_busy(monkeypatch):
+    """The #3829 acceptance scenario: canary 0/1, stable healthy and serving hundreds.
+
+    The old code compared the *serving* Pod's 459 requests against
+    min_requests, found no breach, and answered "safe to promote" for a build
+    that had never taken a request.
+    """
+    canary._save_state({"active": True, "weight_percent": 10, "history": []})
+    monkeypatch.setattr(canary, "track_metrics", REAL_TRACK_METRICS)
+    monkeypatch.setattr(
+        canary,
+        "_run",
+        _fake_cluster(
+            canary_pods=(),
+            stable_pods=("nyxgpt-api-stable-aaa", "nyxgpt-api-stable-bbb"),
+            bodies={
+                "nyxgpt-api-stable-aaa": _exposition(ok=459, latency_s=0.005),
+                "nyxgpt-api-stable-bbb": _exposition(ok=459, latency_s=0.005),
+            },
+        ),
+    )
+
+    result = canary.evaluate("nyxgpt", min_requests=20)
+
+    assert "safe to promote" not in result.message
+    assert "no ready Pods" in result.message
+    assert result.ok  # a hold, not a regression: nothing to roll back
+
+
+@pytest.mark.unit
+def test_evaluate_reads_the_canary_track_not_the_stable_one(monkeypatch):
+    """A clean canary must pass even while stable is melting down beside it."""
+    canary._save_state({"active": True, "weight_percent": 10, "history": []})
+    monkeypatch.setattr(canary, "track_metrics", REAL_TRACK_METRICS)
+    monkeypatch.setattr(
+        canary,
+        "_run",
+        _fake_cluster(
+            canary_pods=("nyxgpt-api-canary-zzz",),
+            stable_pods=("nyxgpt-api-stable-aaa",),
+            bodies={
+                "nyxgpt-api-canary-zzz": _exposition(ok=100, latency_s=0.05),
+                # Stable: 100% 5xx and multi-second latency. Must not influence
+                # the verdict in either direction.
+                "nyxgpt-api-stable-aaa": _exposition(errors=500, latency_s=7.5),
+            },
+        ),
+    )
+
+    result = canary.evaluate(
+        "nyxgpt", error_rate_threshold_percent=5.0, latency_p95_threshold_ms=2000.0, min_requests=20
+    )
+
+    assert result.ok
+    assert "safe to promote" in result.message
+    assert "100 requests" in result.message
+
+
+@pytest.mark.unit
+def test_evaluate_rolls_back_on_a_canary_track_regression(monkeypatch):
+    """Auto-rollback fires on the canary's own error rate, not the fleet's."""
+    canary._save_state({"active": True, "weight_percent": 25, "total_replicas": 4, "history": []})
+    monkeypatch.setattr(canary, "track_metrics", REAL_TRACK_METRICS)
+    monkeypatch.setattr(
+        canary,
+        "_run",
+        _fake_cluster(
+            canary_pods=("nyxgpt-api-canary-zzz",),
+            stable_pods=("nyxgpt-api-stable-aaa",),
+            bodies={
+                "nyxgpt-api-canary-zzz": _exposition(ok=60, errors=40, latency_s=0.05),
+                "nyxgpt-api-stable-aaa": _exposition(ok=5000, latency_s=0.005),
+            },
+        ),
+    )
+
+    result = canary.evaluate(
+        "nyxgpt", error_rate_threshold_percent=5.0, latency_p95_threshold_ms=2000.0, min_requests=20
+    )
+
+    assert not result.ok
+    assert "error rate 40.00%" in result.message
+    assert "automatically rolled back" in result.message
+    assert canary._load_state()["active"] is False
+
+
+@pytest.mark.unit
+def test_track_metrics_excludes_probe_and_scrape_traffic(monkeypatch):
+    """Kubelet /health probes and Prometheus /metrics scrapes are not canary traffic.
+
+    Counting them would let an idle canary cross min_requests within minutes
+    of being scheduled -- the same "the gate cannot fail" defect in a subtler
+    form.
+    """
+    monkeypatch.setattr(
+        canary,
+        "_run",
+        _fake_cluster(
+            canary_pods=("nyxgpt-api-canary-zzz",),
+            bodies={"nyxgpt-api-canary-zzz": _exposition(ok=0, probes=250, latency_s=0.05)},
+        ),
+    )
+
+    metrics = REAL_TRACK_METRICS("canary", "nyxgpt")
+
+    assert metrics.attributable is True
+    assert metrics.total_requests == 0
+    assert metrics.p95_latency_ms == 0.0
+
+
+@pytest.mark.unit
+def test_track_metrics_sums_pods_and_estimates_p95(monkeypatch):
+    monkeypatch.setattr(
+        canary,
+        "_run",
+        _fake_cluster(
+            canary_pods=("canary-a", "canary-b"),
+            bodies={
+                "canary-a": _exposition(ok=30, errors=10, latency_s=0.05),
+                "canary-b": _exposition(ok=60, latency_s=0.05),
+            },
+        ),
+    )
+
+    metrics = REAL_TRACK_METRICS("canary", "nyxgpt")
+
+    assert metrics.attributable is True
+    assert metrics.source == "pods"
+    assert metrics.pods_ready == 2
+    assert metrics.pods_scraped == 2
+    assert metrics.total_requests == 100
+    assert metrics.error_rate_percent == 10.0
+    # Every observation landed in the (0.025, 0.05] bucket, so the 95th
+    # percentile interpolates to 0.025 + 0.025*0.95 = 48.75ms.
+    assert round(metrics.p95_latency_ms, 2) == 48.75
+
+
+@pytest.mark.unit
+def test_track_metrics_reads_each_pod_through_the_pod_proxy(monkeypatch):
+    calls = []
+
+    def _record(cmd, **kwargs):
+        calls.append(cmd)
+        return _fake_cluster(
+            canary_pods=("canary-a",),
+            bodies={"canary-a": _exposition(ok=1, latency_s=0.05)},
+        )(cmd, **kwargs)
+
+    monkeypatch.setattr(canary, "_run", _record)
+
+    REAL_TRACK_METRICS("canary", "nyxgpt")
+
+    assert calls[0][:3] == ["kubectl", "get", "pods"]
+    assert "app=nyxgpt-api-canary-pool,track=canary" in calls[0]
+    assert calls[1] == [
+        "kubectl",
+        "get",
+        "--raw",
+        "/api/v1/namespaces/nyxgpt/pods/canary-a:8000/proxy/metrics",
+    ]
+
+
+@pytest.mark.unit
+def test_track_metrics_unattributable_when_pods_are_not_ready(monkeypatch):
+    """A scheduled-but-unready Pod serves nothing, so its counters are not evidence."""
+
+    def _fn(cmd, **_kwargs):
+        if cmd[:3] == ["kubectl", "get", "pods"]:
+            return CP(stdout=_pod_list("canary-a", ready=False))
+        return CP(returncode=0)
+
+    monkeypatch.setattr(canary, "_run", _fn)
+
+    metrics = REAL_TRACK_METRICS("canary", "nyxgpt")
+
+    assert metrics.attributable is False
+    assert "no ready Pods" in metrics.reason
+
+
+@pytest.mark.unit
+def test_track_metrics_unattributable_when_no_pod_metrics_can_be_read(monkeypatch):
+    monkeypatch.setattr(canary, "_run", _fake_cluster(canary_pods=("canary-a",), bodies={}))
+
+    metrics = REAL_TRACK_METRICS("canary", "nyxgpt")
+
+    assert metrics.attributable is False
+    assert metrics.pods_ready == 1
+    assert "could not read /metrics" in metrics.reason
+
+
+@pytest.mark.unit
+def test_track_metrics_caps_the_pods_it_scrapes(monkeypatch):
+    pods = tuple(f"canary-{i}" for i in range(canary.MAX_SCRAPED_PODS + 3))
+    monkeypatch.setattr(
+        canary,
+        "_run",
+        _fake_cluster(
+            canary_pods=pods,
+            bodies={pod: _exposition(ok=1, latency_s=0.05) for pod in pods},
+        ),
+    )
+
+    metrics = REAL_TRACK_METRICS("canary", "nyxgpt")
+
+    assert metrics.pods_ready == len(pods)
+    assert metrics.pods_scraped == canary.MAX_SCRAPED_PODS
+    assert metrics.total_requests == canary.MAX_SCRAPED_PODS
+
+
+@pytest.mark.unit
+def test_track_metrics_says_web_traffic_is_not_measurable(monkeypatch):
+    """Next.js Pods export no /metrics, so the honest answer is "unmeasurable", not a number."""
+    run_mock = MagicMock()
+    monkeypatch.setattr(canary, "_run", run_mock)
+
+    metrics = REAL_TRACK_METRICS("canary", "nyxgpt", component="web")
+
+    assert metrics.attributable is False
+    assert "no /metrics endpoint" in metrics.reason
+    run_mock.assert_not_called()
+
+
+@pytest.mark.unit
+def test_evaluate_holds_when_the_canary_track_is_unattributable(monkeypatch, caplog):
+    canary._save_state({"active": True, "weight_percent": 10, "history": []}, "web")
+
+    with caplog.at_level("WARNING"):
+        result = canary.evaluate("nyxgpt", component="web")
+
+    assert result.ok
+    assert "safe to promote" not in result.message
+    assert "Cannot evaluate the canary track" in result.message
+    assert "unattributable" in caplog.text
+    assert (
+        _metric_value(
+            "nyxgpt_canary_component_evaluations_total",
+            component="web",
+            result="unattributable",
+        )
+        >= 1
+    )
+
+
+@pytest.mark.unit
+def test_status_reports_canary_track_metrics_and_skips_stable_when_idle(monkeypatch):
+    canary._save_state({"active": False, "weight_percent": 0, "history": []})
+    monkeypatch.setattr(canary, "track_metrics", REAL_TRACK_METRICS)
+    monkeypatch.setattr(
+        canary,
+        "deployment_health",
+        lambda name, ns: canary.TrackHealth("healthy", f"{name} healthy", "1.0.0"),
+    )
+    monkeypatch.setattr(
+        canary,
+        "_run",
+        _fake_cluster(
+            canary_pods=("canary-a",),
+            stable_pods=("stable-a",),
+            bodies={
+                "canary-a": _exposition(ok=7, latency_s=0.05),
+                "stable-a": _exposition(ok=999, latency_s=0.05),
+            },
+        ),
+    )
+
+    data = canary.status("nyxgpt")
+
+    assert data["metrics"]["track"] == "canary"
+    assert data["metrics"]["attributable"] is True
+    assert data["metrics"]["total_requests"] == 7
+    # Stable costs one Pod-proxy call per Pod on every poll; not worth it with
+    # no canary to compare against.
+    assert data["stable_metrics"]["attributable"] is False
+    assert "no rollout is in progress" in data["stable_metrics"]["reason"]
+
+
+@pytest.mark.unit
+def test_status_measures_both_tracks_during_a_rollout(monkeypatch):
+    canary._save_state({"active": True, "weight_percent": 25, "history": []})
+    monkeypatch.setattr(canary, "track_metrics", REAL_TRACK_METRICS)
+    monkeypatch.setattr(
+        canary,
+        "deployment_health",
+        lambda name, ns: canary.TrackHealth("healthy", f"{name} healthy", "1.0.0"),
+    )
+    monkeypatch.setattr(
+        canary,
+        "_run",
+        _fake_cluster(
+            canary_pods=("canary-a",),
+            stable_pods=("stable-a",),
+            bodies={
+                "canary-a": _exposition(ok=7, latency_s=0.05),
+                "stable-a": _exposition(ok=999, latency_s=0.05),
+            },
+        ),
+    )
+
+    data = canary.status("nyxgpt")
+
+    assert data["metrics"]["total_requests"] == 7
+    assert data["stable_metrics"]["attributable"] is True
+    assert data["stable_metrics"]["total_requests"] == 999
+
+
+@pytest.mark.unit
+def test_promote_refuses_a_canary_track_that_served_no_traffic(monkeypatch):
+    """A build no request ever reached has not been canaried, however healthy its Pods look."""
+    canary._save_state({"active": True, "weight_percent": 10, "total_replicas": 4, "history": []})
+    monkeypatch.setattr(canary, "deployment_health", _healthy())
+    monkeypatch.setattr(canary, "track_metrics", _measured(0))
+    scale_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(canary, "_run", scale_mock)
+
+    result = canary.promote(namespace="nyxgpt", step_percent=25)
+
+    assert not result.ok
+    assert "served no traffic" in result.message
+    scale_mock.assert_not_called()
+    assert canary._load_state()["weight_percent"] == 10
+
+
+@pytest.mark.unit
+def test_promote_refuses_the_final_step_too_when_no_traffic_was_served(monkeypatch):
+    canary._save_state({"active": True, "weight_percent": 90, "total_replicas": 4, "history": []})
+    monkeypatch.setattr(canary, "deployment_health", _healthy())
+    monkeypatch.setattr(canary, "track_metrics", _measured(0))
+    scale_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(canary, "_run", scale_mock)
+
+    result = canary.promote(namespace="nyxgpt", step_percent=25)
+
+    assert not result.ok
+    assert "served no traffic" in result.message
+    scale_mock.assert_not_called()
+    assert canary._load_state()["active"] is True
+
+
+@pytest.mark.unit
+def test_promote_force_overrides_the_no_traffic_gate(monkeypatch):
+    """An idle cluster is indistinguishable from an unreachable canary, so force stays available."""
+    canary._save_state({"active": True, "weight_percent": 10, "total_replicas": 4, "history": []})
+    monkeypatch.setattr(canary, "deployment_health", _healthy())
+    monkeypatch.setattr(canary, "track_metrics", _measured(0))
+    monkeypatch.setattr(canary, "_run", MagicMock(return_value=CP(returncode=0)))
+
+    result = canary.promote(namespace="nyxgpt", step_percent=25, force=True)
+
+    assert result.ok
+    assert "forced" in result.message
+    assert canary._load_state()["weight_percent"] == 35
+
+
+@pytest.mark.unit
+def test_promote_proceeds_when_the_canary_track_has_served_traffic(monkeypatch):
+    canary._save_state({"active": True, "weight_percent": 10, "total_replicas": 4, "history": []})
+    monkeypatch.setattr(canary, "deployment_health", _healthy())
+    monkeypatch.setattr(canary, "track_metrics", _measured(120))
+    monkeypatch.setattr(canary, "_run", MagicMock(return_value=CP(returncode=0)))
+
+    result = canary.promote(namespace="nyxgpt", step_percent=25)
+
+    assert result.ok
+    assert "forced" not in result.message
+    assert canary._load_state()["weight_percent"] == 35
+
+
+@pytest.mark.unit
+def test_promote_proceeds_with_a_note_when_traffic_is_not_measurable(monkeypatch):
+    """`web` has no /metrics to read, so the gate cannot fire -- and says so."""
+    canary._save_state(
+        {"active": True, "weight_percent": 10, "total_replicas": 4, "history": []}, "web"
+    )
+    monkeypatch.setattr(canary, "deployment_health", _healthy())
+    monkeypatch.setattr(canary, "_run", MagicMock(return_value=CP(returncode=0)))
+
+    result = canary.promote(namespace="nyxgpt", step_percent=25, component="web")
+
+    assert result.ok
+    assert "canary traffic not verified" in result.message
