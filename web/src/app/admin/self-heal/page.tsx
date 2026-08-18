@@ -20,6 +20,10 @@ type Component = {
   // from here at all (the Compose probe could not run). Never rendered as a
   // state -- "unknown" is its own third case alongside present and absent.
   known?: boolean;
+  // #3828: set on Kubernetes rows only, which are named after a Pod rather
+  // than after a component -- 'core' (api/web/cassandra/ollama) or
+  // 'observability' (the in-cluster k8s/observability overlay).
+  tier?: string;
   restart_count?: number;
   giving_up?: boolean;
 };
@@ -40,6 +44,10 @@ type DetectedMode = 'native' | 'compose' | 'terraform' | 'kubernetes' | 'none';
 type SelfHealStatus = {
   enabled: boolean;
   mode: DetectedMode;
+  // Where the observability tier was read from this pass (#3828):
+  // 'kubernetes' when it was queried in-cluster, 'compose' otherwise. Absent
+  // from an older API, which only ever read it from Compose.
+  observability_source?: 'compose' | 'kubernetes';
   compose_probe_available: boolean;
   // Why the Compose survey could not run, when it could not (#3812), e.g.
   // "`docker compose ps` exited 125: permission denied while trying to
@@ -212,8 +220,8 @@ export default function SelfHealPage() {
           <p style={{ color: 'var(--foreground-muted)', marginBottom: 8 }}>
             Watches the core app components (API, web UI, Ollama, Cassandra) -- whether they run
             natively (the default local-first setup), under Docker Compose, via Terraform, or as
-            Kubernetes Pods -- plus any running observability containers, and automatically
-            restarts anything unhealthy or stopped.
+            Kubernetes Pods -- plus the observability tier, wherever it runs (Compose containers,
+            or Pods in the cluster), and automatically restarts anything unhealthy or stopped.
           </p>
           <a href="/admin/dashboard" style={{ color: '#0066cc', textDecoration: 'none' }}>
             ← Back to Admin Dashboard
@@ -292,12 +300,32 @@ export default function SelfHealPage() {
           <p style={{ fontSize: '0.875rem', color: 'var(--foreground-muted)', marginBottom: '1rem' }}>
             Detected mode: <strong>{MODE_LABELS[status.mode]}</strong>
             {status.mode === 'kubernetes' &&
-              " -- self-heal watches the Deployments' Pods and deletes a stuck/unhealthy one " +
-                "(the Deployment's controller recreates it), on top of -- not instead of -- " +
+              ' -- self-heal watches every Pod the cluster runs (api, web, Cassandra, Ollama ' +
+                'and the in-cluster observability tier) and deletes a stuck/unhealthy one (its ' +
+                'controller recreates it), on top of -- not instead of -- ' +
                 "kubelet's own liveness-probe restarts and the canary rollout's auto-rollback."}
           </p>
 
-          {!status.compose_probe_available && (
+          {status.observability_source === 'kubernetes' && (
+            <p
+              style={{
+                fontSize: '0.875rem',
+                color: 'var(--foreground-muted)',
+                marginBottom: '1rem',
+                padding: '0.5rem 0.75rem',
+                borderRadius: '0.375rem',
+                border: '1px solid var(--border-color)',
+              }}
+            >
+              Observability tier: <strong>queried in-cluster</strong>. Grafana, Loki, Jaeger,
+              GlitchTip and the collectors run as Pods in this cluster (
+              <code>k8s/observability</code>), so their rows below are read from the cluster
+              itself and are healed like any other Pod. Reach their UIs with{' '}
+              <code>nyxgpt ops port-forward --target observability</code>.
+            </p>
+          )}
+
+          {status.observability_source !== 'kubernetes' && !status.compose_probe_available && (
             <p
               style={{
                 fontSize: '0.875rem',
@@ -477,6 +505,24 @@ export default function SelfHealPage() {
                       >
                         {c.source ?? 'compose'}
                       </span>
+                      {/* Kubernetes rows are named after a Pod, so the tier
+                          is the only thing that says which part of the stack
+                          the row belongs to (#3828). */}
+                      {c.tier && (
+                        <span
+                          style={{
+                            marginLeft: '0.35rem',
+                            fontSize: '0.7rem',
+                            padding: '1px 6px',
+                            borderRadius: 999,
+                            background: 'var(--background)',
+                            border: '1px solid var(--border-color)',
+                            color: 'var(--foreground-muted)',
+                          }}
+                        >
+                          {c.tier}
+                        </span>
+                      )}
                       <span
                         style={{
                           marginLeft: '0.75rem',

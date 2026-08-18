@@ -2225,7 +2225,12 @@ def canary_rollback(request: Request, payload: dict[str, Any] = Body(default={})
 # --- Self-heal watchdog endpoints (SRE/admin dashboard) ---
 @api.get("/self-heal/status")
 def self_heal_status(_request: Request) -> dict[str, Any]:
-    """Per-component health of the Docker Compose stack, plus recent heal events."""
+    """Per-component health of the deployed stack, plus recent heal events.
+
+    Covers whichever deployment mode is actually running -- native, Compose,
+    Terraform or Kubernetes (every Pod tier, including the in-cluster
+    observability layer) -- see `self_heal.status`.
+    """
     return self_heal_module.status()
 
 

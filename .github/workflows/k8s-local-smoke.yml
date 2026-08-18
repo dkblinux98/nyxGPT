@@ -16,14 +16,18 @@ name: Kubernetes Local Smoke
 # It runs the DEFAULT install -- observability included (#3826). It used to
 # pass `--skip-observability`, which meant the only job covering the k8s path
 # tested a command no user types, and could not have supplied #3787's executed
-# evidence because it excluded the layer #3787 added. Measured footprint of the
-# default stack on a 4-vCPU/16GB Linux runner (kind, one node, `kubectl
-# describe node`): 3825m CPU requests (95% of allocatable) and 8162Mi of memory
-# requests (51%) with kube-system included -- it fits, with the CPU margin thin
-# enough that a new workload requesting more than ~175m would leave Pods
-# Pending. The smoke asserts exactly that (no Pending Pod) and prints the
-# arithmetic, so a future footprint increase reads as a number rather than as a
-# mystery timeout, and the preflight below fails fast if the runner shrinks.
+# evidence because it excluded the layer #3787 added.
+#
+# Since #3825 it runs that default install on a node ballasted down to the
+# 7936Mi a stock 8GiB Docker Desktop VM offers, and asserts every Pod was
+# SCHEDULED. That defect was a stack whose requests exceeded the operator's
+# node: chat worked, install reported success, and prometheus sat Pending
+# forever. On the runner's own ~16GiB node it would not have reproduced --
+# hence the ballast. Post-#3825 footprint of the default stack, kube-system
+# included: 2075m of CPU requests and 6976Mi of memory requests against the
+# 4 vCPU / 7936Mi that VM gives, leaving room for a canary Pod. The smoke
+# prints the arithmetic either way, so a future footprint increase reads as a
+# number rather than as a mystery timeout.
 #
 # Scoped like linux-native-smoke.yml and terraform-local-smoke.yml: a full
 # cluster bring-up with two image builds is expensive, so it runs only when
@@ -34,17 +38,25 @@ on:
     paths:
       - 'k8s/**'
       - 'src/nyxgpt/ops.py'
+      # The Kubernetes half of self-heal is asserted against the live cluster
+      # in step 8 (#3828), so a change to it must re-run this job.
+      - 'src/nyxgpt/self_heal.py'
       - 'Dockerfile'
       - 'docker/entrypoint.sh'
       - 'scripts/k8s-local-smoke.sh'
+      - 'scripts/k8s-self-heal-coverage-smoke.py'
       - '.github/workflows/k8s-local-smoke.yml'
   push:
     paths:
       - 'k8s/**'
       - 'src/nyxgpt/ops.py'
+      # The Kubernetes half of self-heal is asserted against the live cluster
+      # in step 8 (#3828), so a change to it must re-run this job.
+      - 'src/nyxgpt/self_heal.py'
       - 'Dockerfile'
       - 'docker/entrypoint.sh'
       - 'scripts/k8s-local-smoke.sh'
+      - 'scripts/k8s-self-heal-coverage-smoke.py'
       - '.github/workflows/k8s-local-smoke.yml'
   workflow_dispatch:
 
@@ -84,19 +96,35 @@ jobs:
           cp example.config.ini "$HOME/.nyxGPT/config.ini"
 
       # The kind node is a container on this runner, so the runner's own size
-      # IS the node's size -- there is nothing to "size up" inside the cluster.
-      # Assert it up front instead: on anything smaller than the standard
-      # 4-vCPU/16GB Linux runner the default stack's 3825m of CPU requests
-      # cannot be scheduled, and the job would spend an hour discovering that
-      # as a rollout timeout deep in the smoke.
-      - name: Preflight -- the runner can fit the default stack
+      # IS the node's size -- there is nothing to "size up" inside the cluster
+      # (#3826). Assert it up front instead, before anything expensive: the
+      # ballast below shrinks the node DOWN to a Docker Desktop VM, which it
+      # can only do on a runner bigger than that VM, and the 4 vCPU it does
+      # not ballast have to carry the stack's CPU requests on their own.
+      - name: Preflight -- the runner can fit the ballasted default stack
         run: |
           set -euo pipefail
           cpus=$(nproc)
           mem_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
           echo "runner: ${cpus} vCPU, $((mem_kb / 1024))Mi RAM, $(df -h --output=avail / | tail -1) free on /"
-          [ "$cpus" -ge 4 ] || { echo "::error::need >= 4 vCPU for the default stack (3825m of requests), have ${cpus}"; exit 1; }
-          [ "$mem_kb" -ge 14000000 ] || { echo "::error::need >= 14Gi RAM for the default stack (8162Mi of requests plus real usage), have $((mem_kb / 1024))Mi"; exit 1; }
+          if [ "$cpus" -lt 4 ]; then
+            echo "::error::need >= 4 vCPU to match a stock Docker Desktop VM" \
+                 "(2075m of requests plus canary headroom), have ${cpus}"
+            exit 1
+          fi
+          if [ "$mem_kb" -lt 14000000 ]; then
+            echo "::error::need >= 14Gi RAM to ballast the node down to 7936Mi and still" \
+                 "run the stack (6976Mi of requests plus real usage), have $((mem_kb / 1024))Mi"
+            exit 1
+          fi
+
+      - name: Create the local cluster and shrink it to a Docker Desktop VM
+        # Created here rather than by the install itself so the ballast is in
+        # place before the stack lands on the node (#3825). `nyxgpt ops`
+        # reuses a cluster of this reserved name instead of creating one.
+        run: |
+          kind create cluster --name nyxgpt-local --wait 120s
+          ./scripts/k8s-node-ballast.sh 7936
 
       - name: Run Kubernetes local smoke
         run: ./scripts/k8s-local-smoke.sh

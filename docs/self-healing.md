@@ -4,8 +4,9 @@ The self-heal watchdog is the "self-heal" pillar of the local DevOps/SRE
 capstone (#3160): it watches the core app components -- `api`, `web`,
 `ollama`, `cassandra` -- however they're deployed (native/local-first,
 [Docker Compose](docker-compose.md), [Terraform](terraform.md), or
-[Kubernetes](kubernetes.md)) -- plus any running Compose observability
-containers, and automatically restarts anything unhealthy or stopped, so a
+[Kubernetes](kubernetes.md)) -- plus the observability tier wherever it runs
+(Compose containers, or Pods in the cluster in Kubernetes mode),
+and automatically restarts anything unhealthy or stopped, so a
 killed or crashed component recovers without an operator running `docker
 restart`/`brew services restart`/`kubectl delete pod` by hand.
 
@@ -68,11 +69,13 @@ from a mode you've since switched away from).
    `healthy`/empty/`starting`) and healed via `docker restart
    nyxgpt-tf-<component>`, the same primitive as native/local-first mode's
    Cassandra container. See [Terraform mode](#terraform-mode) below.
-4. **Kubernetes** (`nyxgpt ops install --kubernetes --local`): every
-   `nyxgpt-api` Pod (stable/canary — see `k8s/`) is checked via
+4. **Kubernetes** (`nyxgpt ops install --kubernetes --local`): every Pod the
+   install deploys — the `nyxgpt-api` and `nyxgpt-web` stable/canary
+   Deployments, the `cassandra` and `ollama` StatefulSets, and the
+   in-cluster observability overlay (`k8s/observability/`) — is checked via
    `kubectl get pods -n nyxgpt` (**healthy** when `phase=Running` and its
    `Ready` condition is `True`) and healed via `kubectl delete pod`, which
-   the owning Deployment's ReplicaSet then recreates. This is on top of, not
+   the owning controller then recreates. This is on top of, not
    instead of, kubelet's own liveness-probe restarts and `canary.py`'s
    metrics-gated rollout + auto-rollback — see [Kubernetes
    mode](#kubernetes-mode) below.
@@ -230,6 +233,25 @@ A component is only reported once it's actually installed/created (a brew
 service never set up via `nyxgpt ops install`, or a not-yet-created
 Cassandra container, is out of scope rather than "down").
 
+### Restarting Cassandra is enough — the API recovers on its own
+
+Restarting the container is self-heal's *only* Cassandra remedy, and that is
+sufficient: it does nothing to the API process, so the API has to recover its
+own client state. It now does. The shared connection pool
+(`CassandraConnectionPool` in `src/nyxgpt/rag/vectorstore_cassandra.py`)
+treats a driver `Cluster` that has been shut down exactly like an absent one
+— it rebuilds it and discards every session bound to it on the next
+`get_session()` — and the chat session store (`nyxgpt.session_db`, a
+process-lifetime singleton) drops a shut-down driver session the same way.
+
+Before that, a shut-down cluster was cached forever: `Cluster.connect()`
+raised `Cluster is already shut down` on every subsequent call, the
+dependency check on `/admin/self-heal` kept reporting `cassandra:
+unreachable`, and only restarting the API cleared it — so restarting the
+dependency, self-heal's remedy, could not fix the failure it was aimed at
+(#3851). No companion change to the remedy itself was needed; the defect was
+entirely on the client side.
+
 ### Dev mode healing
 
 The `brew services` rows above describe an **artifact-path** install, which
@@ -346,17 +368,47 @@ log sees *why* nothing happened.
 ## Kubernetes mode
 
 `nyxgpt ops install --kubernetes --local` (see [kubernetes.md](kubernetes.md))
-deploys `nyxgpt-api` as the stable/canary Deployment pair (see `k8s/`);
-there's no Kubernetes manifest for `web`/`ollama`/`cassandra`, so this mode
-only covers `api`. `src/nyxgpt/self_heal.py` lists every Pod matching
-`app=nyxgpt-api-canary-pool` in the `nyxgpt` namespace via `kubectl get
-pods` (the watchdog runs inside one of those Pods itself, using the same
-`nyxgpt-api` ServiceAccount `canary.py` already uses -- see
-`k8s/rbac.yaml`, which also grants `get`/`list`/`delete` on `pods`) and
-reports **one `ComponentStatus` per Pod** (not per Deployment: `stable`
+deploys the whole stack into the `nyxgpt` namespace: the `nyxgpt-api` and
+`nyxgpt-web` stable/canary Deployment pairs, the `cassandra` and `ollama`
+StatefulSets, and the in-cluster observability overlay (`k8s/observability/`).
+`src/nyxgpt/self_heal.py` watches **all of it** with one `kubectl get pods -n
+nyxgpt` per pass (the watchdog runs inside one of the api Pods itself, using
+the same `nyxgpt-api` ServiceAccount `canary.py` already uses -- see
+`k8s/rbac.yaml`, which also grants `get`/`list`/`delete` on `pods`),
+classifying each Pod by its labels:
+
+| Pod label | Tier | Deployed by |
+|---|---|---|
+| `app: nyxgpt-api-canary-pool` | `core` | `k8s/deployment-{stable,canary}.yaml` |
+| `app: nyxgpt-web-canary-pool` | `core` | `k8s/deployment-web-{stable,canary}.yaml` |
+| `app: cassandra` | `core` | `k8s/statefulset-cassandra.yaml` |
+| `app: ollama` | `core` | `k8s/statefulset-ollama.yaml` |
+| `tier: observability` | `observability` | `k8s/observability/` |
+
+A Pod carrying none of those labels is not a nyxGPT workload and is never
+touched, and a Pod that is already terminating
+(`metadata.deletionTimestamp`) is skipped -- its replacement is already on
+the way, so healing it again would only spend a restart-budget attempt.
+
+Until #3828 the survey selected `app=nyxgpt-api-canary-pool` alone, so web,
+Cassandra, Ollama and the entire observability tier were observed and healed
+by nothing in this mode.
+
+It reports **one `ComponentStatus` per Pod** (not per Deployment: `stable`
 alone can run several replicas, each needing its own backoff/restart-count
 bookkeeping) -- **healthy** when `phase: Running` and its `Ready` condition
-is `True`.
+is `True` -- with the tier above in its `tier` field, which the dashboard
+shows as a badge next to the Pod name.
+
+**The observability tier is read from the cluster in this mode.** Everywhere
+else it is surveyed with `docker compose ps`, and when that survey cannot run
+the page says so ("cannot determine from here", see [Present, absent,
+unknown](#present-absent-unknown-three-states-not-two)). A Kubernetes
+deployment does not
+use that survey at all: `status()` reports `observability_source:
+"kubernetes"`, the Compose desired-service placeholders are dropped, and the
+page states that the tier is queried in-cluster instead of explaining the
+absence of a Compose stack this deployment never had.
 
 Healing deletes the Pod (`kubectl delete pod`); its Deployment's
 ReplicaSet then recreates it. This is **on top of, not instead of**:
@@ -379,7 +431,10 @@ are currently reporting from, and `/admin/self-heal` shows it plus, in
 kubernetes mode specifically, an explicit one-line statement of self-heal's
 role above (Pod-level watch on top of kubelet/canary) — so kubernetes mode
 reads as "designed and covered" rather than looking indistinguishable from
-"no components found."
+"no components found." A Kubernetes row is recognized by its `tier`, never
+by name: no Pod name is `api`/`web`/`ollama`/`cassandra`, which is why the
+page reported "Nothing detected running" directly above a list of running
+Pods until #3828.
 
 **A caveat on restart-count bookkeeping**: since a healed Pod is deleted and
 recreated under a *new* name, its `restart_counts`/`last_restart_ts` entry in
@@ -814,6 +869,16 @@ limitation above, it kills the container, confirms self-heal does *not*
 recover it (which is expected, not a bug), and then brings it back with
 `docker compose up -d api` itself before continuing — this is the one step
 in the whole test that isn't hands-off.
+
+For a **Kubernetes** deployment the counterpart is
+`scripts/k8s-self-heal-coverage-smoke.py`, run as a step of
+`scripts/k8s-local-smoke.sh` (`.github/workflows/k8s-local-smoke.yml`) on the
+real kind cluster that smoke brings up. It asserts against the live cluster
+that the deployment is named `kubernetes`, that all four core tiers plus the
+observability workloads are watched, and that healing a **web** Pod really
+deletes it and gets it replaced — then reconstructs the pre-#3828 (api-only)
+survey from the same cluster and asserts those checks fail against it, so a
+regression to watching the api pool alone cannot pass the job green.
 
 For a **cloud** deployment the counterpart is `nyxgpt cloud smoke` (P6-17,
 #3515), which deploys to AWS, verifies chat, RAG and the observability UIs

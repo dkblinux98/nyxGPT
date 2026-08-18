@@ -1,0 +1,251 @@
+name: Kubernetes Capacity Smoke
+
+# The question this job answers: does the default `nyxgpt ops install
+# --kubernetes --local` stack -- observability included -- actually SCHEDULE
+# on a node the size of the one an operator has?
+#
+# #3825 (owner acceptance, 2026-08-17): the install applied a stack requesting
+# 8162Mi to a 7936Mi kind node. kubectl accepted every object, the install
+# reported success, and prometheus sat `Pending / FailedScheduling:
+# Insufficient memory` forever; a later `nyxgpt canary start` failed the same
+# way and presented as "canary is broken". No manifest review catches this --
+# the numbers only add up wrong once you total them against a real node.
+#
+# A GitHub runner has ~16GiB, twice the stock Docker Desktop VM the defect was
+# found on, so this job would be green by luck. It ballasts the node down to
+# 7936Mi allocatable-equivalent first (a `pause` Pod in its own namespace that
+# RESERVES the surplus without using it), then runs both halves of the
+# fault-injection rule (CLAUDE.md, #3753):
+#
+#   1. the pre-fix memory sizing (api 512Mi, web 256Mi) -- assert Pods are
+#      left unschedulable, i.e. the defect reproduces on this node, and that
+#      the #3825 preflight refuses it;
+#   2. the pre-fix CPU sizing with the memory fixed (api 250m, web 100m) --
+#      assert a Pod is stranded on `Insufficient cpu`. Right-sizing only the
+#      resource the issue named moved the wall instead of removing it: the
+#      canary Pod failed on cpu once the memory fitted;
+#   3. the shipped sizing -- assert EVERY Pod is scheduled, that both canary
+#      Deployments scale up and land, and that the preflight passes.
+#
+# Deliberately no image builds: scheduling is decided from the Pod spec's
+# requests before an image is ever pulled, so building api/web here would add
+# ~20 minutes and prove nothing extra. The full default install on the same
+# ballasted node -- Pods that really run and really answer a chat -- is
+# k8s-local-smoke.yml.
+on:
+  pull_request:
+    paths:
+      - 'k8s/**'
+      - 'src/nyxgpt/ops.py'
+      - '.github/workflows/k8s-capacity-smoke.yml'
+  push:
+    paths:
+      - 'k8s/**'
+      - 'src/nyxgpt/ops.py'
+      - '.github/workflows/k8s-capacity-smoke.yml'
+  workflow_dispatch:
+
+# Read-only: this job drives a local cluster and never writes to the
+# repository or its APIs (CodeQL actions/missing-workflow-permissions).
+permissions:
+  contents: read
+
+env:
+  # Allocatable memory of a stock 8GiB Docker Desktop VM, measured on the
+  # acceptance run #3825 was filed from. Not 8192: the kubelet's reserved
+  # slice is already subtracted from allocatable.
+  TARGET_ALLOCATABLE_MI: 7936
+
+jobs:
+  k8s-capacity-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    if: github.event_name != 'push' || github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install nyxgpt (editable)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Seed a native config from the tracked example
+        run: |
+          mkdir -p "$HOME/.nyxGPT"
+          cp example.config.ini "$HOME/.nyxGPT/config.ini"
+
+      - name: Create the local cluster
+        # Created up front (as in k8s-observability-smoke.yml) so the ballast
+        # below can be applied before anything else lands on the node. `nyxgpt
+        # ops` reuses a cluster of this reserved name rather than making one.
+        run: kind create cluster --name nyxgpt-local --wait 120s
+
+      - name: Shrink the node to a stock Docker Desktop VM
+        run: ./scripts/k8s-node-ballast.sh "$TARGET_ALLOCATABLE_MI"
+
+      - name: Reproduce the defect -- the pre-#3825 memory requests do not fit
+        run: |
+          set -euo pipefail
+          # Raw kubectl is deliberate in the injection steps and only there:
+          # they reconstruct the sizing the defect was filed against, on a
+          # copy of the tree, to prove it really was unschedulable. Every
+          # operator-facing path is a `nyxgpt` command.
+          cp -r k8s /tmp/prefix-k8s
+          cp /tmp/prefix-k8s/secret.example.yaml /tmp/prefix-k8s/secret.yaml
+          cp /tmp/prefix-k8s/observability/secret.example.yaml /tmp/prefix-k8s/observability/secret.yaml
+          sed -i 's/memory: 256Mi/memory: 512Mi/' /tmp/prefix-k8s/deployment-stable.yaml
+          sed -i 's/memory: 192Mi/memory: 256Mi/' /tmp/prefix-k8s/deployment-web-stable.yaml
+          kubectl apply -k /tmp/prefix-k8s/
+          kubectl apply -k /tmp/prefix-k8s/observability/
+          sleep 45
+          unscheduled=$(./scripts/k8s-unscheduled-pods.sh nyxgpt | wc -l | tr -d ' ')
+          echo "--- Pods with no node assigned ---"
+          ./scripts/k8s-unscheduled-pods.sh nyxgpt
+          if [ "$unscheduled" -eq 0 ]; then
+            echo "::error::fault injection failed: the pre-#3825 sizing fits this node, so this gate proves nothing"
+            kubectl -n nyxgpt get pods -o wide
+            exit 1
+          fi
+          echo "$unscheduled Pod(s) could not be scheduled -- the #3825 defect reproduced"
+          kubectl -n nyxgpt get events --field-selector reason=FailedScheduling | tail -5
+
+      - name: The preflight refuses that sizing instead of applying it
+        run: |
+          set -euo pipefail
+          # The preflight is an install STEP, and reaching it through `nyxgpt
+          # ops install` would first build both container images (~20 min) for
+          # a check that needs neither. Called directly here for that reason;
+          # test_k8s_capacity_preflight.py covers its position in the step
+          # order, and k8s-local-smoke.yml runs it through the real command.
+          python - <<'PY'
+          import sys
+          from pathlib import Path
+          from nyxgpt import ops
+
+          ops.K8S_DIR = Path("/tmp/prefix-k8s")
+          ops.K8S_OBSERVABILITY_DIR = Path("/tmp/prefix-k8s/observability")
+          results = ops._preflight_k8s_capacity()
+          for r in results:
+              print(f"{'OK  ' if r.ok else 'FAIL'} {r.message}\n{r.details}")
+          if all(r.ok for r in results):
+              print("::error::the preflight passed a sizing that leaves Pods Pending")
+              sys.exit(1)
+          PY
+
+      - name: Remove the pre-fix deployment
+        run: |
+          kubectl delete -k /tmp/prefix-k8s/observability/ --ignore-not-found
+          kubectl delete -k /tmp/prefix-k8s/ --ignore-not-found
+          # The namespace is deleted by the app-tier kustomization, and a
+          # re-apply into a Terminating namespace is rejected -- wait it out
+          # rather than racing the next step against it.
+          kubectl wait --for=delete namespace/nyxgpt --timeout=300s || true
+
+      - name: Reproduce the second wall -- the pre-fix cpu requests strand the canary
+        run: |
+          set -euo pipefail
+          # Right-sizing only the resource the issue named would have moved
+          # the wall rather than removed it: with the memory fixed, the api
+          # canary Pod on a 4-core node failed with `Insufficient cpu`
+          # instead. Memory here is the SHIPPED sizing; only the cpu requests
+          # go back, so a failure in this step is unambiguously about cpu.
+          cp -r k8s /tmp/prefix-cpu-k8s
+          cp /tmp/prefix-cpu-k8s/secret.example.yaml /tmp/prefix-cpu-k8s/secret.yaml
+          cp /tmp/prefix-cpu-k8s/observability/secret.example.yaml /tmp/prefix-cpu-k8s/observability/secret.yaml
+          sed -i 's/cpu: 100m/cpu: 250m/' /tmp/prefix-cpu-k8s/deployment-stable.yaml
+          sed -i 's/cpu: 100m/cpu: 250m/' /tmp/prefix-cpu-k8s/deployment-canary.yaml
+          sed -i 's/cpu: 50m/cpu: 100m/' /tmp/prefix-cpu-k8s/deployment-web-stable.yaml
+          sed -i 's/cpu: 50m/cpu: 100m/' /tmp/prefix-cpu-k8s/deployment-web-canary.yaml
+          kubectl apply -k /tmp/prefix-cpu-k8s/
+          kubectl apply -k /tmp/prefix-cpu-k8s/observability/
+          kubectl -n nyxgpt scale deployment/nyxgpt-api-canary deployment/nyxgpt-web-canary --replicas=1
+          sleep 45
+          ./scripts/k8s-unscheduled-pods.sh nyxgpt
+          if ! kubectl -n nyxgpt get events --field-selector reason=FailedScheduling \
+               -o jsonpath='{range .items[*]}{.message}{"\n"}{end}' | grep -q 'Insufficient cpu'; then
+            echo "::error::injection failed: the pre-fix cpu requests fit, so the cpu half is untested"
+            kubectl -n nyxgpt get pods -o wide
+            kubectl describe node | sed -n '/Allocated resources/,/Events/p'
+            exit 1
+          fi
+          echo "a Pod was stranded on Insufficient cpu -- the second wall reproduced"
+
+      - name: Remove the pre-fix-cpu deployment
+        run: |
+          kubectl delete -k /tmp/prefix-cpu-k8s/observability/ --ignore-not-found
+          kubectl delete -k /tmp/prefix-cpu-k8s/ --ignore-not-found
+          kubectl wait --for=delete namespace/nyxgpt --timeout=300s || true
+
+      - name: The shipped sizing schedules every Pod
+        run: |
+          set -euo pipefail
+          cp k8s/secret.example.yaml k8s/secret.yaml
+          cp k8s/observability/secret.example.yaml k8s/observability/secret.yaml
+          kubectl apply -k k8s/
+          kubectl apply -k k8s/observability/
+          sleep 45
+          kubectl -n nyxgpt get pods -o wide
+          unscheduled=$(./scripts/k8s-unscheduled-pods.sh nyxgpt)
+          if [ -n "$unscheduled" ]; then
+            names=$(echo "$unscheduled" | tr '\n' ' ')
+            echo "::error::unschedulable on a ${TARGET_ALLOCATABLE_MI}Mi node, #3825 is not fixed: $names"
+            kubectl -n nyxgpt get events --field-selector reason=FailedScheduling | tail -20
+            exit 1
+          fi
+          # The Pod #3825 named: the observability layer is incomplete without it.
+          kubectl -n nyxgpt get pod -l app=prometheus \
+            -o jsonpath='{.items[0].spec.nodeName}' | grep -q . \
+            || { echo "::error::prometheus is still unscheduled"; exit 1; }
+          echo "every Pod scheduled, prometheus included"
+
+      - name: A canary rollout still has somewhere to land
+        run: |
+          set -euo pipefail
+          # `nyxgpt canary start` is the operator's command, and it drives a
+          # RUNNING stack -- no image was built in this job. The replica scale
+          # it performs is the part the capacity claim is about, so that is
+          # what is reproduced here.
+          kubectl -n nyxgpt scale deployment/nyxgpt-api-canary deployment/nyxgpt-web-canary --replicas=1
+          sleep 30
+          for pool in nyxgpt-api-canary-pool nyxgpt-web-canary-pool; do
+            node=$(kubectl -n nyxgpt get pods -l "app=$pool,track=canary" \
+              -o jsonpath='{.items[0].spec.nodeName}' 2>/dev/null || true)
+            [ -n "$node" ] || {
+              echo "::error::$pool's canary Pod could not be scheduled -- the #3825 canary failure again"
+              kubectl -n nyxgpt get events --field-selector reason=FailedScheduling | tail -10
+              exit 1; }
+            echo "  $pool canary Pod scheduled on $node"
+          done
+          kubectl -n nyxgpt scale deployment/nyxgpt-api-canary deployment/nyxgpt-web-canary --replicas=0
+
+      - name: The preflight passes the shipped sizing
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import sys
+          from nyxgpt import ops
+
+          results = ops._preflight_k8s_capacity()
+          for r in results:
+              print(f"{'OK  ' if r.ok else 'FAIL'} {r.message}\n{r.details}")
+          if not all(r.ok for r in results):
+              print("::error::the preflight refuses the sizing this repo ships")
+              sys.exit(1)
+          PY
+
+      - name: Dump diagnostics on failure
+        if: failure()
+        run: |
+          kubectl get nodes -o custom-columns=NAME:.metadata.name,ALLOCATABLE:.status.allocatable.memory
+          kubectl describe node | sed -n '/Allocated resources/,/Events/p'
+          kubectl -n nyxgpt get pods -o wide
+          kubectl -n nyxgpt get events --sort-by=.lastTimestamp | tail -40
+
+      - name: Tear down
+        if: always()
+        run: nyxgpt ops down --kubernetes || kind delete cluster --name nyxgpt-local || true

@@ -51,9 +51,12 @@ spec:
             initialDelaySeconds: 15
             periodSeconds: 20
           resources:
+            # Tracks deployment-web-stable.yaml -- see the note there and in
+            # deployment-canary.yaml: the canary Pod schedules last, so it is
+            # the first casualty of an over-reserved node (#3825).
             requests:
-              cpu: 100m
-              memory: 256Mi
+              cpu: 50m
+              memory: 192Mi
             limits:
               cpu: 500m
               memory: 512Mi
