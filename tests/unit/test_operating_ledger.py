@@ -165,6 +165,10 @@ def test_bootstrap_reading_list_includes_the_ledger() -> None:
     a passing mention elsewhere in the file is not the same instruction.
     """
     text = (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
-    bootstrap = text[text.index("### 1. Core Operating Instructions") :]
+    # Anchored on the section, not on a heading's wording: the bootstrap was
+    # restructured for cost (D-021) and the guarantee under test is that the
+    # ledger stays required reading, not that the headings keep their titles.
+    bootstrap = text[text.index("## Bootstrap") :]
     bootstrap = bootstrap[: bootstrap.index("### After Reading")]
     assert "agents/LEDGER.md" in bootstrap, "ledger is not on the CLAUDE.md bootstrap reading list"
+    assert "in full" in bootstrap, "the ledger must still be required in full, not skimmed"

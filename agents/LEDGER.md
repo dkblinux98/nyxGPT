@@ -492,6 +492,23 @@ are absent here by design (relocated to the annex; IDs are never reused).
   reading only the close comment will get this wrong.
   Source: #3870; owner in session, 2026-08-18.
 
+- **D-021** · 2026-08-18 · owner — **Context loading is scoped, not
+  exhaustive.** The bootstrap no longer tells agents to read
+  `.github/workflows/*`, `scripts/agents/*`, every charter and every runbook:
+  it loads `AGENTS.md`, this ledger and `agents/CONTEXT_INDEX.md` (one line per
+  workflow and script), plus the one charter and one runbook for the role being
+  acted in; everything else is opened on demand through the index. Measured
+  cause, 2026-08-18: the old list was ~137k words (~180k tokens) per run and
+  the churn data put **97.3% of all tokens in context rather than production**
+  (2.26B tokens / 30 days, 84.6M of it repeat context), with workflows and
+  scripts alone 70% of the corpus. Two standing rules follow: reading is a cost
+  decision like any other (first principle 1), and **ledger entries are
+  appended at the end, never reflowed mid-file** — an edit high in a stable
+  prompt invalidates every cached token after it, and cache reads were 2.16B of
+  that 2.26B.
+  Source: owner directive 2026-08-18; `CLAUDE.md` § Bootstrap;
+  `scripts/build_context_index.py`.
+
 ## Verifications
 
 - **V-001** · 2026-08-14 — Releases in this repository are immutable: a
@@ -1458,8 +1475,14 @@ are absent here by design (relocated to the annex; IDs are never reused).
   Reason: it is the largest recurring runner-spend multiplier in the pipeline —
   the dev workflow repeats both full suites on up to three fix attempts for every
   issue — but it is not v3.0.0 scope.
-  Revisit when: Sprint 9 (nyxAgent-focused) grooming — file it there.
-  Source: `product_management/AGENTIC_SDLC_DESIGN.md` §9a.
+  Revisit when: ~~Sprint 9 (nyxAgent-focused) grooming~~ — **UNPARKED by the
+  owner 2026-08-18**, ahead of Sprint 9, on the runner-spend evidence below.
+  Filed as its own issue; this entry stays as the record of why it was parked.
+  Evidence at unpark: 2,243 runner-minutes over 30 days, led by
+  `security-scan.yml` (187 runs) and `ci-tests.yml` (173) — the full tree on
+  every push, every review and every dev fix attempt.
+  Source: `product_management/AGENTIC_SDLC_DESIGN.md` §9a; owner directive
+  2026-08-18.
 
 - **P-002** · 2026-08-09 · owner — A global hard budget circuit breaker (fixed
   caps on expensive invocations per unit time) is **rejected, not pending**. Do
@@ -1477,8 +1500,12 @@ are absent here by design (relocated to the annex; IDs are never reused).
   enforced beyond the structural test shipped with #3774 — e.g. CI warning on
   verifications whose `Re-verify when` condition names a file that has since
   changed, or on an entry count that has outgrown "cheap to read"?
-  Needs: owner decision on how much enforcement is wanted before it becomes
-  ceremony.
+  Needs: ~~owner decision on how much enforcement is wanted~~ — **ANSWERED
+  2026-08-18**: the owner directed that ledger size be actively managed, not
+  merely advised. The ledger is read in full on every agent run, so its growth
+  is a per-run cost; it is to be split into a hot ledger (decisions binding on
+  current work) and an on-demand archive, filed as its own issue. The
+  `Re-verify when` staleness half of this question remains open.
   Blocks: nothing yet.
 
 - **Q-002** · 2026-08-18 · owner acceptance (#3853) — Why did
