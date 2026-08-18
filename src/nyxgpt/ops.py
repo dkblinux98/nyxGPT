@@ -5258,55 +5258,87 @@ def _packaged_local_terraform_dir() -> Path:
 
 
 def _migrate_repo_terraform_state() -> list[OpsResult]:
-    """Move a pre-#3835 checkout-resident tfstate into the ops-managed directory.
+    """Adopt a pre-#3835 checkout-resident deployment's state and tfvars.
 
     Before #3835 the working directory *was* `<checkout>/terraform`, so an
     existing deployment's state file lives there. Leaving it behind would
     orphan a live stack: `terraform apply` from the new directory would plan
     to create the four `nyxgpt-tf-*` containers that already exist (name
     conflicts), and `nyxgpt ops down --terraform` would destroy nothing while
-    reporting success. Copies (never moves) the state so the old directory
-    stays readable if anything about this needs checking afterwards, and only
-    when the new location has none of its own -- state that has already been
-    written here is authoritative.
+    reporting success.
+
+    The tfvars comes with it, for a quieter but worse reason: it carries the
+    deployment's `auth_api_key`, and `_ensure_terraform_tfvars` generates a
+    fresh random one when there is no file. Without this the first apply
+    after an upgrade would rotate the key of a stack the operator is already
+    using, with nothing on screen to say so.
+
+    Copies (never moves), so the old directory stays readable if anything
+    about this needs checking afterwards, and only into a location that has
+    none of its own -- anything already written here is authoritative.
     """
+    old_dir = REPO_ROOT / "terraform"
+    results: list[OpsResult] = []
     new_state = TERRAFORM_DIR / "terraform.tfstate"
-    if new_state.exists():
-        return []
-    old_state = REPO_ROOT / "terraform" / "terraform.tfstate"
-    if not old_state.is_file():
-        return []
-    try:
-        data = json.loads(old_state.read_text(encoding="utf-8"))
-        has_resources = bool(data.get("resources"))
-    except (OSError, ValueError):
-        has_resources = False
-    if not has_resources:
+    old_state = old_dir / "terraform.tfstate"
+    if not new_state.exists() and old_state.is_file():
+        try:
+            data = json.loads(old_state.read_text(encoding="utf-8"))
+            has_resources = bool(data.get("resources"))
+        except (OSError, ValueError):
+            has_resources = False
         # A post-destroy (empty) state records nothing worth carrying over --
         # the fresh directory is equivalent, and copying it would only make
         # this look like a migration happened.
-        return []
-    try:
-        _ensure_dir(TERRAFORM_DIR)
-        shutil.copy2(old_state, new_state)
-        backup = old_state.with_suffix(".tfstate.backup")
-        if backup.is_file():
-            shutil.copy2(backup, new_state.with_suffix(".tfstate.backup"))
-    except OSError as e:
-        return [
-            OpsResult(
-                False,
-                "Failed to migrate the checkout's Terraform state into the ops-managed directory",
-                f"{old_state} -> {new_state}: {type(e).__name__}: {e}",
+        if has_resources:
+            try:
+                _ensure_dir(TERRAFORM_DIR)
+                shutil.copy2(old_state, new_state)
+                backup = old_state.with_suffix(".tfstate.backup")
+                if backup.is_file():
+                    shutil.copy2(backup, new_state.with_suffix(".tfstate.backup"))
+            except OSError as e:
+                return [
+                    OpsResult(
+                        False,
+                        "Failed to migrate the checkout's Terraform state into the "
+                        "ops-managed directory",
+                        f"{old_state} -> {new_state}: {type(e).__name__}: {e}",
+                    )
+                ]
+            results.append(
+                OpsResult(
+                    True,
+                    "Migrated the checkout's Terraform state into the ops-managed directory",
+                    f"{old_state} -> {new_state}",
+                )
             )
-        ]
-    return [
-        OpsResult(
-            True,
-            "Migrated the checkout's Terraform state into the ops-managed directory",
-            f"{old_state} -> {new_state}",
+
+    new_tfvars = TERRAFORM_DIR / "terraform.tfvars"
+    old_tfvars = old_dir / "terraform.tfvars"
+    if not new_tfvars.exists() and old_tfvars.is_file():
+        try:
+            _ensure_dir(TERRAFORM_DIR)
+            shutil.copy2(old_tfvars, new_tfvars)
+            os.chmod(new_tfvars, 0o600)
+        except OSError as e:
+            return results + [
+                OpsResult(
+                    False,
+                    "Failed to migrate the checkout's terraform.tfvars into the "
+                    "ops-managed directory",
+                    f"{old_tfvars} -> {new_tfvars}: {type(e).__name__}: {e}",
+                )
+            ]
+        results.append(
+            OpsResult(
+                True,
+                "Migrated the checkout's terraform.tfvars (keeping the deployment's "
+                "auth key) into the ops-managed directory",
+                f"{old_tfvars} -> {new_tfvars}",
+            )
         )
-    ]
+    return results
 
 
 def _sync_local_terraform_config() -> list[OpsResult]:
@@ -5480,7 +5512,11 @@ def _pull_published_image(component: str) -> tuple[str | None, list[OpsResult]]:
                 "(.github/workflows/release-artifacts.yml), so a release candidate has "
                 f"none of its own. The deployed {component} is therefore NOT version "
                 f"{version} -- set {TF_IMAGE_ENV_OVERRIDES[component]} to deploy a "
-                "specific image, or use --dev to build this checkout's working tree.",
+                "specific image, or use --dev to build this checkout's working tree.\n"
+                # The pull's own error, because "not published" is this
+                # function's inference: an auth or network failure fails the
+                # same way, and only the daemon's message tells them apart.
+                f"{versioned} pull said: {_cp_details(cp)}",
             )
         ]
     return None, [

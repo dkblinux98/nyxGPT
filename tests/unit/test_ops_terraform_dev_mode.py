@@ -246,6 +246,26 @@ def test_pre_3835_checkout_state_is_migrated_not_orphaned(monkeypatch, tmp_path)
     assert migrated["resources"]
 
 
+def test_pre_3835_tfvars_is_adopted_so_the_auth_key_is_not_rotated(monkeypatch, tmp_path):
+    """`_ensure_terraform_tfvars` generates a random auth key when there is no
+    file -- so an upgrade that left the old tfvars behind would silently
+    rotate a running deployment's key on its next apply."""
+    repo = tmp_path / "checkout"
+    (repo / "terraform").mkdir(parents=True)
+    (repo / "terraform" / "terraform.tfvars").write_text('auth_api_key = "the-operators-key"\n')
+    monkeypatch.setattr(ops, "REPO_ROOT", repo)
+
+    ops._sync_local_terraform_config()
+
+    migrated = ops.TERRAFORM_DIR / "terraform.tfvars"
+    assert "the-operators-key" in migrated.read_text()
+    # Carried over as a secret, not as a world-readable copy.
+    assert oct(migrated.stat().st_mode)[-3:] == "600"
+    # And the bootstrap then leaves it alone.
+    ops._ensure_terraform_tfvars("some-other-key")
+    assert "the-operators-key" in migrated.read_text()
+
+
 def test_empty_checkout_state_is_not_migrated(monkeypatch, tmp_path):
     """A post-destroy state records nothing worth carrying over; copying it
     would only make it look like a migration happened."""

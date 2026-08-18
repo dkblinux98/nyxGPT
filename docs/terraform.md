@@ -198,9 +198,11 @@ sensitive (it does include the values of any variables you pass, including
 
 If you deployed this stack before the working directory moved out of the
 checkout, `nyxgpt ops install --terraform --local` copies your existing
-`terraform/terraform.tfstate` into the new directory on its next run, so the
-same deployment keeps being managed rather than a second one being created
-alongside it.
+`terraform/terraform.tfstate` **and** `terraform/terraform.tfvars` into the
+new directory on its next run — so the same deployment keeps being managed
+rather than a second one created alongside it, and it keeps the
+`auth_api_key` you are already using instead of being handed a fresh random
+one.
 
 ## 3. Apply
 
