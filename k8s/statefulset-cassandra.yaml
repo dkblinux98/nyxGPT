@@ -84,9 +84,15 @@ spec:
             periodSeconds: 30
             failureThreshold: 6
           resources:
+            # Raised from 1536Mi (#3825): the running Pod holds ~1675Mi --
+            # the 1G heap pinned above plus off-heap and the JVM's own
+            # overhead -- so it ran ABOVE its request and was therefore the
+            # kubelet's first eviction candidate under node pressure. A
+            # request below observed steady state is not a saving, it is a
+            # deferred outage. Limit unchanged.
             requests:
               cpu: 500m
-              memory: 1536Mi
+              memory: 2Gi
             limits:
               cpu: "2"
               memory: 3Gi

@@ -147,6 +147,10 @@ def test_install_kubernetes_applies_the_observability_layer() -> None:
             ops, "_build_and_load_k8s_web_image", return_value=[ops.OpsResult(True, "ok")]
         ),
         patch.object(ops, "_ensure_k8s_secret", return_value=[ops.OpsResult(True, "ok")]),
+        # #3825's capacity preflight really reads a cluster and really
+        # bootstraps the observability Secret to render it; neither belongs
+        # in a unit test of the step ORDER.
+        patch.object(ops, "_preflight_k8s_capacity", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_kubectl_apply_kustomization", return_value=[ops.OpsResult(True, "ok")]),
         # #3786's in-cluster Cassandra/Ollama wait sits between the app tier
         # and the observability layer, and really polls a cluster.
@@ -179,6 +183,10 @@ def test_install_kubernetes_honours_skip_observability() -> None:
             ops, "_build_and_load_k8s_web_image", return_value=[ops.OpsResult(True, "ok")]
         ),
         patch.object(ops, "_ensure_k8s_secret", return_value=[ops.OpsResult(True, "ok")]),
+        # #3825's capacity preflight really reads a cluster and really
+        # bootstraps the observability Secret to render it; neither belongs
+        # in a unit test of the step ORDER.
+        patch.object(ops, "_preflight_k8s_capacity", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_kubectl_apply_kustomization", return_value=[ops.OpsResult(True, "ok")]),
         # Patched for the same reason as above: otherwise the install stops at
         # the data-tier wait and this would assert nothing.
