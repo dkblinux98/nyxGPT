@@ -492,6 +492,20 @@ are absent here by design (relocated to the annex; IDs are never reused).
   reading only the close comment will get this wrong.
   Source: #3870; owner in session, 2026-08-18.
 
+- **D-021** · 2026-08-18 · owner (issue #3824) — **Model pulling is internal
+  bootstrap machinery, not configuration.** Every run mode pulls the configured
+  chat model (`[nyxgpt] default_model`) and the configured embedding model
+  (`[rag] embedding_model`) as part of bringing the stack up, unconditionally:
+  no flag skips it, because an install already needs network egress for the CLI,
+  the service tarballs and Ollama's own installer, so a skip flag could only
+  create a supported way for `ops install` to report success while chat is
+  broken. Both models regardless of the RAG toggle — `rag_enabled` is
+  per-session, so "RAG is off now" is never a reason to leave the embedding
+  model unpulled. The knobs that used to gate and time this (`[rag]
+  embedding_auto_pull`, `[rag] embedding_pull_timeout_seconds`) are retired;
+  a config.ini that still sets them is ignored, never a startup error.
+  Source: #3824.
+
 ## Verifications
 
 - **V-001** · 2026-08-14 — Releases in this repository are immutable: a
@@ -1335,6 +1349,39 @@ are absent here by design (relocated to the annex; IDs are never reused).
   Re-verify when: another probe (native/terraform/kubernetes/canary) starts
   reporting a definite state from an unqueryable source — the pattern, not just
   this call site, is what the entry stands for.
+
+- **V-041** · 2026-08-18 — **Every run mode now pulls both required models
+  before it reports the stack up, and each one gates on them.** Native
+  (macOS/Linux, `--dev`) and `--terraform` run a `required models` step in
+  `ops.install`/`_install_terraform_steps` (`nyxgpt.model_bootstrap`
+  resolves the names from config, pulls only what is missing, and a failure is
+  a `[FAIL]` line, so `nyxgpt up` cannot report healthy). Docker Compose's
+  `ollama` service pre-pulls both and its healthcheck requires both, and `api`
+  waits on that healthcheck. Kubernetes' Ollama StatefulSet pulls both in
+  `postStart` and its readiness probe requires both, so the Service gets no
+  endpoints until chat *and* embeddings can be served. EC2/cloud inherits the
+  native step through the user-data script's `nyxgpt ops install`. The shipped
+  defaults are the same everywhere — `qwen3:0.6b` and `nomic-embed-text` —
+  after `k8s/configmap.yaml` and `k8s/statefulset-ollama.yaml` were moved off
+  `qwen2.5:0.5b`. The lazy pull in `rag/embeddings.py` stays as the fallback
+  for per-collection embedding models the install cannot know about.
+  Method: executed — `scripts/first-chat-smoke.py`, run by
+  `linux-native-smoke.yml` (native) and `terraform-local-smoke.yml`
+  (Terraform), sends the first chat message and asserts a reply, then on the
+  native job deletes the chat model, asserts readiness flips to missing and the
+  chat fails, re-runs the install and asserts it works again — so a runner that
+  happened to have the model cannot pass it vacuously.
+  `scripts/compose-model-prepull-smoke.sh`
+  (`compose-model-prepull-smoke.yml`) does the same for Compose: the service
+  must become healthy with both models present and serve `/api/embed`, and must
+  NOT become healthy when pointed at an unpullable model.
+  `scripts/k8s-local-smoke.sh` asserts both models in the in-cluster store.
+  Both smokes were changed to *assert* readiness rather than pull it
+  themselves (`scripts/smoke-test.sh`, `cloud_smoke.verify_required_models`) —
+  they previously pre-satisfied what they verify (**V-017**).
+  Re-verify when: a new run mode is added, or the shipped default models
+  change — the readiness view (`ops.required_models_status`,
+  `/api/v1/models/required`) and each mode's own gate must move together.
 
 ## Parked
 
