@@ -1120,6 +1120,8 @@ component.
   "component": "api",
   "active": true,
   "weight_percent": 25,
+  "pool_replicas": 4,
+  "resting_replicas": 1,
   "stable": { "state": "healthy", "message": "nyxgpt-api-stable healthy (3/3 ready)", "version": "2.0.0-abc1234" },
   "canary": { "state": "healthy", "message": "nyxgpt-api-canary healthy (1/1 ready)", "version": "2.0.0-def5678" },
   "metrics": { "total_requests": 120, "error_rate_percent": 0.83, "p95_latency_ms": 340.5 },
@@ -1131,6 +1133,11 @@ component.
   "mode_message": null
 }
 ```
+
+`pool_replicas` is the size the running rollout grew the pool to and
+`resting_replicas` is the count `promote`/`rollback` will return the stable
+Deployment to; both are `0` when no rollout is in progress, since the pool
+only exists for the duration of one (#3833).
 
 `stable`/`canary.state` is one of `"not_deployed"` (cluster unreachable, the
 Deployment doesn't exist yet, or it's at 0 desired replicas -- neutral, not
@@ -1180,10 +1187,19 @@ rollout is already in progress.
 `weight_percent` is optional (default `10`), clamped to `1`-`99`.
 `component` is optional (default `"api"`; `"api"` or `"web"`).
 
+Starting a rollout **grows** the replica pool for its duration rather than
+subdividing a standing one (#3833): stable rests at its own replica count,
+the pool borrows what the weight needs up to `[canary] total_replicas`, and
+`promote`/`rollback` hand the borrowed replicas back. Replica counts are
+integers, so a weight the chosen pool cannot express exactly is rounded —
+the response says which weight is actually being served, and `status`
+reports the pool it grew to (`pool_replicas`) and the count it will return
+to (`resting_replicas`).
+
 **Response:**
 
 ```json
-{ "ok": true, "message": "Started canary rollout at 10% (1/4 replicas)" }
+{ "ok": true, "message": "Started canary rollout at 25% (1/4 replicas); 10% is not expressible in a pool of at most 4 replicas, so it rounded to 25% -- raise `[canary] total_replicas` for finer steps; nyxgpt-api-stable returns to 1 replica on promote or rollback" }
 ```
 
 ### `POST /api/v1/canary/evaluate`
@@ -1212,7 +1228,8 @@ Increase the canary's traffic share by a step. Refuses (`409`) to shift more
 traffic to the canary unless it is currently healthy. At 100%, instead of
 leaving the canary holding all the traffic, this copies the canary's image
 version onto `nyxgpt-api-stable`, waits for stable's rollout to become
-healthy, then scales canary back to 0 and stable back to `total_replicas` --
+healthy, then scales canary back to 0 and stable back to the replica count
+it was resting at before the rollout borrowed any (#3833) --
 stable now runs the promoted version at 100% traffic, completing the
 deploy -> gate -> promote cycle. If stable's rollout onto the new version
 fails, canary is left running untouched (`409`) so you can retry or roll
@@ -1227,16 +1244,20 @@ back. Returns `409` if there is no rollout in progress.
 `step_percent` is optional (default: `[canary] step_percent`, `25`).
 `component` is optional (default `"api"`; `"api"` or `"web"`).
 
+Each step re-plans the pool for the new weight instead of re-slicing a fixed
+one, so a step needing more granularity grows it and one needing less lets it
+shrink.
+
 **Response (intermediate step):**
 
 ```json
-{ "ok": true, "message": "Promoted canary to 35% (1/4 replicas)" }
+{ "ok": true, "message": "Promoted canary to 50% (1/2 replicas)" }
 ```
 
 **Response (final step, 100%):**
 
 ```json
-{ "ok": true, "message": "Promoted nyxgpt-api:2.0.0-abc1234 to nyxgpt-api-stable at 100% traffic; canary scaled back to 0" }
+{ "ok": true, "message": "Promoted nyxgpt-api:2.0.0-abc1234 to nyxgpt-api-stable at 100% traffic; canary scaled back to 0 and stable back to its resting 1 replica" }
 ```
 
 ### `POST /api/v1/canary/rollback`
@@ -1855,6 +1876,13 @@ never behind a button a browser session could press. The endpoint makes one
 outbound call, to PyPI's JSON API, to learn which versions already exist; a
 failed lookup is reported in `pypi_lookup_error` and clears `publishable`
 rather than failing the request.
+
+Anything else that stops the plan being computable is a `502` whose message
+names the branch, the channel and where to read the cause — not the cause
+itself. Those messages are built from caught exceptions (an unreadable
+`pyproject.toml` carries the API host's filesystem path and the OS error
+string), so the full text goes to the API log instead: `nyxgpt ops logs api`,
+or `nyxgpt release plan` on the host to see it directly.
 
 ```json
 {

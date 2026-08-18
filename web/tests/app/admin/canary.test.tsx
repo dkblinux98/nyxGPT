@@ -28,6 +28,8 @@ const mockActiveStatus = {
   namespace: 'nyxgpt',
   active: true,
   weight_percent: 25,
+  pool_replicas: 4,
+  resting_replicas: 1,
   stable: { state: 'healthy', message: 'ok', version: '1.0.0-abc1234' },
   canary: { state: 'unhealthy', message: 'elevated errors', version: '1.1.0-def5678' },
   metrics: { total_requests: 120, error_rate_percent: 1.234, p95_latency_ms: 456.7 },
@@ -242,7 +244,7 @@ describe('CanaryPage', () => {
     });
   });
 
-  it('walks every load-status error branch, then falls back to String(e) on a non-Error rejection', async () => {
+  it('walks every load-status error branch, then falls back to the raw value on a non-Error rejection', async () => {
     mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
     const user = userEvent.setup();
 
@@ -297,7 +299,15 @@ describe('CanaryPage', () => {
     server.use(
       http.post('/api/v1/canary/start', async ({ request }) => {
         capturedBody = await request.json();
-        return HttpResponse.json({});
+        // The pool is elastic (#3833) and 15% is not expressible in it, so
+        // the server reports the weight it actually rounded to -- the page
+        // must show THAT, not the number that was typed into the box.
+        return HttpResponse.json({
+          ok: true,
+          message:
+            'Started canary rollout at 25% (1/4 replicas); 15% is not expressible in a pool ' +
+            'of at most 4 replicas, so it rounded to 25%',
+        });
       }),
       http.get('/api/v1/canary/status', () => HttpResponse.json(mockActiveStatus))
     );
@@ -305,12 +315,15 @@ describe('CanaryPage', () => {
     await user.click(screen.getByRole('button', { name: /^start canary$/i }));
 
     await waitFor(() => {
-      expect(screen.getByText('Started canary rollout at 15%')).toBeInTheDocument();
+      expect(screen.getByText(/rounded to 25%/)).toBeInTheDocument();
     });
+    expect(screen.queryByText(/Started canary rollout at 15%/)).not.toBeInTheDocument();
     expect(capturedBody).toEqual({ weight_percent: 15, component: 'api' });
 
-    // Active state: rollout badge, metrics, and history entries (with and without from_weight_percent)
+    // Active state: rollout badge, the borrowed pool, metrics, and history
+    // entries (with and without from_weight_percent)
     expect(screen.getByText('ROLLOUT IN PROGRESS — 25%')).toBeInTheDocument();
+    expect(screen.getByText(/pool: 4 replicas \(stable rests at\s*1\)/)).toBeInTheDocument();
     expect(screen.getByText('120')).toBeInTheDocument();
     expect(screen.getByText('1.23%')).toBeInTheDocument();
     expect(screen.getByText('457ms')).toBeInTheDocument();
@@ -320,6 +333,25 @@ describe('CanaryPage', () => {
     expect(screen.getByText(/started → 10%/)).toBeInTheDocument();
     expect(screen.getByText(/^evaluated at /)).toBeInTheDocument();
     expect(screen.getByText(/deploy.*\(nyxgpt-api:1\.1\.0-def5678\)/)).toBeInTheDocument();
+  });
+
+  it('omits the pool badge when the server does not report the pool (#3833)', async () => {
+    // A pre-#3833 server sends neither `pool_replicas` nor
+    // `resting_replicas`. The badge must stay away rather than assert a
+    // resting count nobody reported -- the rest of the active view is
+    // unaffected.
+    const { pool_replicas: _pool, resting_replicas: _resting, ...preElasticPool } =
+      mockActiveStatus;
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+    server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(preElasticPool)));
+
+    render(<CanaryPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('ROLLOUT IN PROGRESS — 25%')).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/pool: .* replicas/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/stable rests at/)).not.toBeInTheDocument();
   });
 
   it('deploys the current version to canary only', async () => {
@@ -561,5 +593,87 @@ describe('CanaryPage', () => {
       expect(screen.getByText('action gremlin')).toBeInTheDocument();
     });
     fetchSpy.mockRestore();
+  });
+  // #3831: every real API failure arrives as `{"error": {"code", "message",
+  // "details", "request_id"}}` -- an OBJECT. The card interpolated it and
+  // rendered "[object Object]", which during acceptance hid a Pod scheduling
+  // failure and made a full cluster look like a broken canary feature.
+  it.each([
+    [
+      'the API error envelope',
+      {
+        error: {
+          code: 'http_error',
+          message:
+            'Rollout of nyxgpt-api-canary did not become healthy within 180s -- ' +
+            'nyxgpt-api-canary-7f9c8b6d4-2xk9p: Unschedulable: 0/1 nodes are available: ' +
+            '1 Insufficient memory.',
+          details: null,
+          request_id: 'req-42',
+        },
+      },
+      /Insufficient memory/,
+    ],
+    [
+      'an envelope whose details carry the reason',
+      {
+        error: {
+          code: 'http_error',
+          message: 'Request failed',
+          details: { errors: ['FailedScheduling: Insufficient memory'] },
+          request_id: null,
+        },
+      },
+      /FailedScheduling: Insufficient memory/,
+    ],
+    [
+      'a structured FastAPI detail',
+      { detail: [{ loc: ['body', 'weight_percent'], msg: 'value is not a valid integer' }] },
+      /body\.weight_percent: value is not a valid integer/,
+    ],
+    ['an object-shaped detail', { detail: { message: 'Cluster unreachable' } }, /Cluster unreachable/],
+  ])('renders %s on a failed action instead of [object Object]', async (_label, payload, expected) => {
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+    server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(mockActiveHealthyStatus)));
+    const user = userEvent.setup();
+
+    render(<CanaryPage />);
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /evaluate metrics/i })).toBeInTheDocument();
+    });
+
+    server.use(
+      http.post('/api/v1/canary/evaluate', () => HttpResponse.json(payload, { status: 409 }))
+    );
+    await user.click(screen.getByRole('button', { name: /evaluate metrics/i }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(expected);
+    expect(alert).not.toHaveTextContent('[object Object]');
+  });
+
+  it('renders the envelope from a failed status load, not [object Object]', async () => {
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+    server.use(
+      http.get('/api/v1/canary/status', () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: 'http_error',
+              message: 'kubectl not found; cannot check deployment health',
+              details: null,
+              request_id: 'req-7',
+            },
+          },
+          { status: 503 }
+        )
+      )
+    );
+
+    render(<CanaryPage />);
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/kubectl not found; cannot check deployment health/);
+    expect(alert).not.toHaveTextContent('[object Object]');
   });
 });

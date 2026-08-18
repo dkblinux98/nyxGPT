@@ -3,7 +3,7 @@ name: Kubernetes Local Smoke
 # The question this job answers: does `nyxgpt ops install --kubernetes --local`
 # produce a stack a user can actually CHAT with?
 #
-# #3786 was an acceptance failure where 4/4 api and 4/4 web Pods reported
+# #3786 was an acceptance failure where every api and web Pod reported
 # Running, the web UI loaded, and nothing worked -- the deployment shipped no
 # Cassandra and no Ollama, and the host's own services are stopped in this
 # mode. "Pods Running" is not a working nyxGPT (the #2688 lesson), and no
@@ -23,16 +23,22 @@ name: Kubernetes Local Smoke
 # SCHEDULED. That defect was a stack whose requests exceeded the operator's
 # node: chat worked, install reported success, and prometheus sat Pending
 # forever. On the runner's own ~16GiB node it would not have reproduced --
-# hence the ballast. Post-#3825 footprint of the default stack, kube-system
-# included: 2075m of CPU requests and 6976Mi of memory requests against the
-# 4 vCPU / 7936Mi that VM gives, leaving room for a canary Pod. The smoke
-# prints the arithmetic either way, so a future footprint increase reads as a
-# number rather than as a mystery timeout.
+# hence the ballast. Footprint of the default stack's own requests, after
+# #3825's right-sizing and #3833's elastic canary pool: 1625m of CPU and
+# 5632Mi of memory against the 4 vCPU / 7936Mi that VM gives, with the 450m
+# and 1344Mi a rollout borrows (both tracks grown to the default 4-replica
+# ceiling) left free rather than reserved standing. The smoke prints the
+# arithmetic either way, so a future footprint increase reads as a number
+# rather than as a mystery timeout.
 #
 # Scoped like linux-native-smoke.yml and terraform-local-smoke.yml: a full
 # cluster bring-up with two image builds is expensive, so it runs only when
 # the manifests, the k8s half of the ops layer, the smoke script, or this
 # workflow change.
+#
+# A second, cheap job (`k8s-pod-state`) answers the narrower question #3827
+# asked: does the install tell a Pod that is merely starting apart from one
+# that will never start? See scripts/k8s-pod-state-smoke.py.
 on:
   pull_request:
     paths:
@@ -44,6 +50,7 @@ on:
       - 'Dockerfile'
       - 'docker/entrypoint.sh'
       - 'scripts/k8s-local-smoke.sh'
+      - 'scripts/k8s-pod-state-smoke.py'
       - 'scripts/k8s-self-heal-coverage-smoke.py'
       - '.github/workflows/k8s-local-smoke.yml'
   push:
@@ -56,6 +63,7 @@ on:
       - 'Dockerfile'
       - 'docker/entrypoint.sh'
       - 'scripts/k8s-local-smoke.sh'
+      - 'scripts/k8s-pod-state-smoke.py'
       - 'scripts/k8s-self-heal-coverage-smoke.py'
       - '.github/workflows/k8s-local-smoke.yml'
   workflow_dispatch:
@@ -109,12 +117,12 @@ jobs:
           echo "runner: ${cpus} vCPU, $((mem_kb / 1024))Mi RAM, $(df -h --output=avail / | tail -1) free on /"
           if [ "$cpus" -lt 4 ]; then
             echo "::error::need >= 4 vCPU to match a stock Docker Desktop VM" \
-                 "(2075m of requests plus canary headroom), have ${cpus}"
+                 "(1625m of requests plus the 450m a rollout borrows), have ${cpus}"
             exit 1
           fi
           if [ "$mem_kb" -lt 14000000 ]; then
             echo "::error::need >= 14Gi RAM to ballast the node down to 7936Mi and still" \
-                 "run the stack (6976Mi of requests plus real usage), have $((mem_kb / 1024))Mi"
+                 "run the stack (5632Mi of requests plus real usage), have $((mem_kb / 1024))Mi"
             exit 1
           fi
 
@@ -144,3 +152,40 @@ jobs:
             echo "--- logs $pod ---"
             kubectl -n nyxgpt logs "$pod" --tail 100 || true
           done
+
+  # The question this job answers (#3827): on a real cluster, does ops report a
+  # Pod that is merely starting differently from one that will never start?
+  #
+  # The acceptance run that filed the issue printed ten `[FAIL] pod ...:
+  # Pending` lines for Pods that were all Running minutes later, and the wall of
+  # false failures hid the one Pod that really was broken (`Insufficient
+  # memory`). The classifier reads what a real kubelet and a real scheduler
+  # write into `.status`, so a unit test over hand-written JSON cannot settle
+  # it. The script injects all three conditions for real and also runs the
+  # PRE-FIX rule over the same Pods, so it fails on a build without the fix
+  # instead of passing vacuously.
+  #
+  # Cheap by design: one kind node, three Pods and a busybox image -- no nyxGPT
+  # image builds, no Cassandra, no model pull. Minutes, not the hour above.
+  k8s-pod-state:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install nyxgpt (editable)
+        run: |
+          python -m pip install --upgrade pip setuptools
+          pip install -e .
+
+      - name: Pending is pending, unschedulable is a failure
+        run: python3 scripts/k8s-pod-state-smoke.py
+
+      - name: Tear down the smoke cluster
+        if: always()
+        run: kind delete cluster --name nyxgpt-local || true

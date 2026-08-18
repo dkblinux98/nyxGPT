@@ -47,10 +47,11 @@ jobs:
         id: find_issue
         env:
           GH_TOKEN: ${{ github.token }}
+          # #3837: step outputs reach the shell as data, never as source. This
+          # one is `sed`-extracted from an attacker-influenceable PR body.
+          ORIGINAL_PR: ${{ steps.extract.outputs.original_pr }}
         run: |
           set -euo pipefail
-
-          ORIGINAL_PR="${{ steps.extract.outputs.original_pr }}"
 
           # Get original PR body (REST -- plain PR data has no GraphQL-only
           # dependency, keeps this off the GraphQL/Projects-v2 rate pool)
@@ -76,12 +77,12 @@ jobs:
         if: steps.find_issue.outputs.has_issue == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          # #3837: step outputs reach the shell as data, never as source.
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ISSUE: ${{ steps.find_issue.outputs.issue_number }}
+          ORIGINAL_PR: ${{ steps.extract.outputs.original_pr }}
         run: |
           set -euo pipefail
-
-          PR_NUMBER="${{ github.event.pull_request.number }}"
-          ISSUE="${{ steps.find_issue.outputs.issue_number }}"
-          ORIGINAL_PR="${{ steps.extract.outputs.original_pr }}"
 
           # Update PR body to link to issue
           NEW_BODY=$(cat <<EOF
