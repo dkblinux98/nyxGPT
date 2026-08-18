@@ -93,25 +93,41 @@ def test_sessions_are_shared_across_replicas():
 
 
 @pytest.mark.unit
-def test_ollama_prepulls_the_model_the_api_asks_for():
+def test_ollama_prepulls_the_models_the_api_asks_for():
     """A Ready Ollama holding a different model than `default_model` answers
-    every chat with a 404."""
+    every chat with a 404 -- and one without `[rag] embedding_model` fails the
+    first request after RAG is toggled on (#3824)."""
     ollama = _container(_load("statefulset-ollama.yaml"), "ollama")
     env = {e["name"]: e["value"] for e in ollama["env"]}
-    assert env["NYXGPT_DEFAULT_MODEL"] == _api_config().get("nyxgpt", "default_model")
+    cfg = _api_config()
+    assert env["NYXGPT_DEFAULT_MODEL"] == cfg.get("nyxgpt", "default_model")
+    assert env["NYXGPT_EMBEDDING_MODEL"] == cfg.get("rag", "embedding_model")
     post_start = ollama["lifecycle"]["postStart"]["exec"]["command"][-1]
     assert "ollama pull" in post_start
     assert "NYXGPT_DEFAULT_MODEL" in post_start
+    assert "NYXGPT_EMBEDDING_MODEL" in post_start
 
 
 @pytest.mark.unit
-def test_ollama_readiness_requires_the_model_not_just_the_port():
-    """Endpoints must not appear while the model is still downloading, or the
-    first chat request races the pull."""
+def test_ollama_readiness_requires_both_models_not_just_the_port():
+    """Endpoints must not appear while either model is still downloading, or the
+    first chat (or first RAG-enabled) request races the pull."""
     ollama = _container(_load("statefulset-ollama.yaml"), "ollama")
     probe = ollama["readinessProbe"]
-    assert "exec" in probe, "a port probe cannot tell whether the model is there"
-    assert "NYXGPT_DEFAULT_MODEL" in probe["exec"]["command"][-1]
+    assert "exec" in probe, "a port probe cannot tell whether the models are there"
+    command = probe["exec"]["command"][-1]
+    assert "NYXGPT_DEFAULT_MODEL" in command
+    assert "NYXGPT_EMBEDDING_MODEL" in command
+
+
+@pytest.mark.unit
+def test_k8s_default_models_match_the_shipped_defaults():
+    """Every run mode names the same two models (#3824): a deployment that
+    quietly picks a different chat model is one the acceptance test for one
+    mode cannot speak for."""
+    cfg = _api_config()
+    assert cfg.get("nyxgpt", "default_model") == "qwen3:0.6b"
+    assert cfg.get("rag", "embedding_model") == "nomic-embed-text"
 
 
 @pytest.mark.unit
