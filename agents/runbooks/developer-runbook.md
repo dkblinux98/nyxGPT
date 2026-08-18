@@ -276,7 +276,7 @@ never rely on comment/body text alone (#3600, going-public hardening).
   at verification rather than at the next fatal error.
 
   **The same rule binds `run:` blocks** (#3837, CodeQL #124, ledger
-  **V-044**). A `run:` body is *shell* source, substituted by the same
+  **V-046**). A `run:` body is *shell* source, substituted by the same
   pre-parse pass — and a value interpolated into a body that then builds a
   nested `bash -lc "..."` is parsed by two shells. The guard covers `run:`
   too, against a documented allowlist (`SAFE_IN_RUN`): repository `vars.*`,
