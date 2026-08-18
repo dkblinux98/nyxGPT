@@ -1516,6 +1516,43 @@ are absent here by design (relocated to the annex; IDs are never reused).
   Re-verify when: a `k8s/**` manifest changes a Pod's `app`/`tier` labels —
   the classification is keyed on exactly those.
 
+- **V-046** · 2026-08-18 — **The Kubernetes install mode is now checkout-free,
+  and it records which mode it ran in.** `nyxgpt ops install --kubernetes
+  --local` brings the whole stack up on a machine with no repository: the
+  manifests ship as package data (`nyxgpt.resources.k8s`, synced to
+  `~/.nyxGPT/k8s`) and both images are built from the published
+  `nyxgpt-api`/`nyxgpt-web` release tarballs — the *source* tarballs, not the
+  ghcr.io images, because a release candidate publishes only the tarballs and a
+  candidate is what acceptance testing installs. `--dev` builds the working
+  tree, is refused up front where there is no checkout, and re-rolls the app
+  tier on a mode switch (both modes produce the same `:local` tags, so
+  `kubectl apply` alone would leave the previous mode's Pods running). The mode
+  is recorded per substrate (`~/.nyxGPT/install-mode-kubernetes.json`), so a
+  host can run a native dev install and a Kubernetes artifact deployment at
+  once without either being reported as the other. This closes the Kubernetes
+  row of `docs/portability-matrix.md`; Compose is the one remaining gap.
+  Method: `scripts/k8s-artifact-smoke.sh` executed on an ubuntu-latest runner
+  (4 vCPU / 16Gi), 2026-08-18 17:05–17:11 UTC, exit 0. It builds the wheel,
+  installs it into a venv, and runs every product command from a directory
+  with no repository in it — the installed package's `ops.REPO_ROOT` resolved
+  to `/tmp/nyxgpt-artifact-smoke/venv/lib/python3.12`, asserted different from
+  the checkout. Fault-injection half: `Dockerfile`, `web/Dockerfile` and
+  `k8s/kustomization.yaml` asserted absent under that root *and* `docker build`
+  of the pre-fix context asserted to fail, so a green run cannot come from a
+  checkout being in reach. Then the real bring-up (10 Pods Running, both
+  Deployments rolled out), a real chat answered through
+  web → api → in-cluster Ollama, `ops status` reporting `Install mode:
+  artifact (images built from the published nyxgpt-api/nyxgpt-web artifacts)`
+  with no `[dev]` stamp on `native api: none`, and `ops down --kubernetes`
+  clearing the record. While implementing #3834.
+  Standing guard: `.github/workflows/k8s-artifact-smoke.yml`, path-filtered on
+  `k8s/**`, `src/nyxgpt/ops.py`, `src/nyxgpt/install_mode.py`,
+  `src/nyxgpt/release_tarball.py`, both Dockerfiles and `pyproject.toml`.
+  Re-verify when: the api image's Dockerfile starts `COPY`ing a path the
+  `nyxgpt-api` tarball does not vendor (`_stage_k8s_api_build_files` stages
+  exactly the two exceptions it has today), or `release_tarball`'s vendored
+  file set changes.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
