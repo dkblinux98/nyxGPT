@@ -1280,10 +1280,26 @@ class CassandraVectorStore:
         self.session.execute(SimpleStatement(f"DROP TABLE IF EXISTS {self.table_name}"))
 
     def list_collections(self) -> list[str]:
-        """List all available collections (tables)."""
-        if not self._keyspace_ready:
-            self._ensure_keyspace_selected()
+        """List all available collections (tables).
 
+        Queries ``system_schema`` by fully-qualified keyspace name rather than
+        going through :meth:`_ensure_keyspace_selected`, for the same reason
+        as :meth:`schema_exists`: on a Cassandra that has never been ingested
+        into, the keyspace itself does not exist yet, and ``USE`` against a
+        missing keyspace raises. The listing query already filters on
+        ``keyspace_name`` and never needed the session's current keyspace, so
+        selecting one was pure liability -- it made every read of the
+        collection list (and the duplicate check in ``POST
+        /api/v1/rag/collections``, which runs before the ``ensure_schema``
+        that would have created the keyspace) fail with HTTP 500 on a clean
+        deployment until something happened to ingest a document (#3864).
+
+        A keyspace that does not exist simply has no tables, which is exactly
+        the empty list this returns.
+
+        Returns:
+            Sorted collection names; ``[]`` when the keyspace does not exist.
+        """
         stmt = SimpleStatement("""
             SELECT table_name
             FROM system_schema.tables
