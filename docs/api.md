@@ -532,7 +532,15 @@ curl http://127.0.0.1:8000/api/v1/models/llama3.1:8b/info
 
 ## Config Management
 
-Configuration can be read and updated via the API. Changes to hot-reloadable settings (default_model, rag_enabled, log_level) take effect immediately without restart.
+Configuration can be read and updated via the API. Most settings are
+hot-reloadable and take effect immediately (default_model, rag_enabled,
+log_level). Settings that a service reads once at process start cannot be:
+they are still saved, and the divergence between the saved value and the
+running one is reported by [`GET /api/v1/infra/restart-status`](#get-apiv1infrarestart-status)
+until that service restarts. Which keys those are, and which services they
+affect, is the **activation classification** carried per field in the wizard
+schema (`restart_components`, see `GET /api/v1/config/sections`) and
+annotated in `example.config.ini` (#3806).
 
 ### `GET /api/v1/config`
 
@@ -628,8 +636,8 @@ returned in cleartext.
   },
   "schema": [
     { "section": "api", "label": "API server", "fields": [
-      { "key": "host", "secret": false, "restart_component": "api", "observability": false },
-      { "key": "port", "secret": false, "restart_component": "api", "observability": false }
+      { "key": "host", "secret": false, "restart_components": ["api"], "observability": false },
+      { "key": "port", "secret": false, "restart_components": ["api"], "observability": false }
     ] }
   ],
   "stale_keys": {}
@@ -666,6 +674,9 @@ key -- see `POST /api/v1/config/sections/stale-keys/remove` below.
   },
   "sections": { "...": "full updated sections, same shape as GET" },
   "restart_required": ["api"],
+  "restart_pending": {
+    "api": { "keys": ["api.port"], "since": 1743000000.123 }
+  },
   "observability_reconciled": true,
   "observability_result": { "ok": true, "messages": ["Observability stack up: Grafana http://localhost:3001, ..."] }
 }
@@ -777,22 +788,40 @@ is sent, since the target may be this very API process.
 
 ### `GET /api/v1/infra/restart-status`
 
-Backs the Admin Dashboard's restart-required banner (#3407). Every field a
-`POST /config/sections` save reports in `restart_required` is recorded here
-(process-local, in-memory) along with the `section.key` fields that
-triggered it, until it's actually restarted via `restart-required` below.
+Backs the persistent pending-restart notice shown on both the Admin
+Dashboard and the Configuration Wizard (#3407, #3806): every restart-required
+field whose saved value differs from the value its service is still running
+with, grouped by `nyxgpt ops restart` target.
+
+The state is persisted to `~/.nyxGPT/pending-restart.json`, not held in
+process memory. That is what lets a value written by the CLI (`nyxgpt
+secrets setup`) raise the notice in the browser, lets a pending `web`
+restart survive an `api` restart, and lets the user navigate away and come
+back and still be told the two values differ.
+
+An entry clears when the restart actually happens -- through
+`POST /infra/restart-required`, through `nyxgpt ops restart <target>`, or
+because the value was changed back to what the service is already running.
 
 **Response:**
 
 ```json
 {
   "pending": {
-    "api": { "keys": ["api.port", "rag.cassandra_hosts"], "since": 1743000000.123 }
-  }
+    "api": { "keys": ["api.port", "rag.cassandra_hosts"], "since": 1743000000.123 },
+    "web": { "keys": ["auth.api_key"], "since": 1743000042.456 }
+  },
+  "restart_command": "nyxgpt ops restart api && nyxgpt ops restart web",
+  "session_disrupting": ["web"]
 }
 ```
 
-An empty `pending` object means nothing is currently waiting on a restart.
+An empty `pending` object means nothing is currently waiting on a restart
+(`restart_command` is then `null`). `session_disrupting` lists pending
+components whose restart tears down the server rendering the caller's own
+page -- the UI warns before restarting those instead of appearing to hang.
+`restart_command` is always a wrapped `nyxgpt ops` command, never a raw
+`docker`/`brew`/`kubectl` one.
 
 ### `POST /api/v1/infra/restart-required`
 
@@ -3171,7 +3200,8 @@ curl http://127.0.0.1:8000/api/v1/info \
 
 ### Hot-Reload Support
 
-Authentication configuration is hot-reloaded on every request. Changes to `~/.nyxGPT/config.ini` take effect immediately without restarting the API:
+The **API** re-reads `[auth]` on every request, so a change to
+`~/.nyxGPT/config.ini` takes effect on the API immediately, with no restart:
 
 ```bash
 # 1. Edit config to enable auth
@@ -3182,7 +3212,9 @@ vim ~/.nyxGPT/config.ini
 # enabled = true
 # api_key = my-new-key
 
-# 3. Next request will require authentication (no restart needed)
+# 3. Next request to the API will require authentication (no API restart needed).
+#    The web UI is a separate tier that read the key at startup -- run
+#    `nyxgpt ops restart web` for its proxied calls to use the new key (#3806).
 curl http://127.0.0.1:8000/api/v1/info \
   -H "X-API-Key: my-new-key"
 ```
@@ -3283,7 +3315,13 @@ python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 3. **Rotate Keys Regularly**
    - Change API keys periodically
    - Rotate immediately if compromise suspected
-   - Use hot-reload feature for zero-downtime rotation
+   - Rotate with `nyxgpt secrets setup --reconfigure`, or from the
+     Configuration Wizard, and then **restart the web tier**. The API picks
+     the new key up on its next request, but the web UI's Node process read
+     the old key into its environment at startup and keeps sending it, so
+     every proxied call 401s until `nyxgpt ops restart web` runs. Both
+     surfaces say so and offer the restart; the notice persists until it
+     happens (#3806).
 
 4. **Transport Security**
    - Use HTTPS if API is exposed beyond localhost

@@ -303,7 +303,7 @@ def test_rotating_the_auth_key_flags_web_not_api(_isolated_config):
 
 
 def test_reverting_a_restart_required_value_retires_the_notice(_isolated_config):
-    """"...until the restart happens or the value is reverted" -- no stuck banner (#3806)."""
+    """ "...until the restart happens or the value is reverted" -- no stuck banner (#3806)."""
     client = TestClient(app)
     client.post("/api/v1/config/sections", json={"api": {"port": 9500}})
     assert "api" in client.get("/api/v1/infra/restart-status").json()["pending"]

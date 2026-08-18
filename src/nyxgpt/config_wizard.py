@@ -365,7 +365,9 @@ _FIELD_OVERRIDES: dict[tuple[str, str], _Override] = {
         validator=_bounded_int(min_value=0), restart_components=("api",)
     ),
     ("cache", "response_cache_dir"): _Override(restart_components=("api",)),
-    ("cache", "query_cache_enabled"): _Override(validator=_validate_bool, restart_components=("api",)),
+    ("cache", "query_cache_enabled"): _Override(
+        validator=_validate_bool, restart_components=("api",)
+    ),
     ("cache", "query_cache_backend"): _Override(
         validator=_enum_validator("memory", "disk"), restart_components=("api",)
     ),
@@ -455,7 +457,9 @@ _FIELD_OVERRIDES: dict[tuple[str, str], _Override] = {
     ),
     ("prompt", "short_threshold"): _Override(validator=_validate_positive_int),
     ("prompt", "long_threshold"): _Override(validator=_validate_positive_int),
-    ("rag", "cassandra_hosts"): _Override(validator=_validate_host_list, restart_components=("api",)),
+    ("rag", "cassandra_hosts"): _Override(
+        validator=_validate_host_list, restart_components=("api",)
+    ),
     ("rag", "cassandra_port"): _Override(validator=_validate_port, restart_components=("api",)),
     ("rag", "cassandra_keyspace"): _Override(validator=_validate_str, restart_components=("api",)),
     ("rag", "cassandra_table"): _Override(validator=_validate_str, restart_components=("api",)),
@@ -482,7 +486,9 @@ _FIELD_OVERRIDES: dict[tuple[str, str], _Override] = {
     # `embeddings.py`'s `_embedding_cfg`), so unset is a genuinely
     # context-dependent empty value, not a hidden default.
     ("rag", "embedding_model"): _Override(restart_components=("api",), default=None),
-    ("rag", "embedding_dim"): _Override(validator=_validate_positive_int, restart_components=("api",)),
+    ("rag", "embedding_dim"): _Override(
+        validator=_validate_positive_int, restart_components=("api",)
+    ),
     ("rag", "chunk_size"): _Override(validator=_bounded_int(min_value=100, max_value=10_000)),
     ("rag", "chunk_overlap"): _Override(validator=_bounded_int(min_value=0, max_value=5_000)),
     ("rag", "overlap_strategy"): _Override(
@@ -826,9 +832,7 @@ def activation_classification() -> dict[str, tuple[str, ...]]:
     what keeps the annotations from drifting the way #3388's hand-maintained
     schema did.
     """
-    return {
-        f"{s.section}.{f.key}": f.restart_components for s in WIZARD_SCHEMA for f in s.fields
-    }
+    return {f"{s.section}.{f.key}": f.restart_components for s in WIZARD_SCHEMA for f in s.fields}
 
 
 def restart_components(validated: dict[str, dict[str, Any]], cfg: ConfigParser) -> list[str]:

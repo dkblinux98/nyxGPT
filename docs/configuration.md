@@ -122,17 +122,35 @@ System Health screen and the admin dashboard, #3384, #3413.)
 - **Save is apply-on-save, not just a file write.** Saving validates every
   changed field (ports, URLs, hosts), writes `config.ini` (still the single
   source of truth, #3194), and immediately invalidates the API's config
-  cache so hot-reloadable settings (model, RAG, logging, auth)
-  take effect on the very next request — no restart needed for those.
-- **Settings that can't be hot-reloaded** — `[api] host`/`port`, the RAG
-  Cassandra connection/embedding model, embedding/response/query cache
-  backends, and anything else read only at process startup — are reported
-  back as `restart_required` in the save response and tracked server-side.
-  The **Admin Dashboard** then shows a restart-required banner for the
-  affected component(s), which restarts them mode-aware (native, Compose,
-  Terraform, or Kubernetes, matching however the stack is actually running)
-  when you click **Restart now** (see [`docs/api.md`](api.md#config-wizard))
-  — you never need to run a restart command yourself.
+  cache so hot-reloadable settings (model, RAG, logging) take effect on the
+  very next request — no restart needed for those.
+- **Settings that can't be hot-reloaded are still saved — and you are told
+  so.** Every config key carries an **activation classification** (#3806):
+  hot-reloadable, or restart-required plus which service(s) go stale. The
+  restart-required ones are `[api] host`/`port`, the RAG Cassandra
+  connection and embedding model, the embedding/response/query cache
+  backends (all `api`), and `[web] host`/`port`/`api_base_url` plus `[auth]
+  enabled`/`api_key` (all `web`). They are annotated inline in
+  `example.config.ini` with an `# Activation: restart required (<service>)`
+  line, generated from the classification itself so the two cannot drift.
+
+  Saving one persists the value and then says plainly that it is **not yet
+  in effect**, naming the service(s) involved. That notice is persistent,
+  not a toast: it is shown on both the Configuration Wizard and the Admin
+  Dashboard, survives a reload or navigating away, and stays until the
+  restart happens or the value is changed back. A **Restart now** control is
+  offered from the notice — restarting is optional and can be deferred
+  indefinitely. It restarts mode-aware (native, Compose, Terraform, or
+  Kubernetes, matching however the stack is actually running), so you never
+  need to run a restart command yourself; the equivalent
+  `nyxgpt ops restart <service>` is shown for reference. Restarting `web`
+  from the web UI drops that browser session, and the UI says so before it
+  does it.
+
+  The CLI reports the same fact: `nyxgpt secrets setup` prints what is now
+  awaiting a restart and the command to apply it. The pending set lives in
+  `~/.nyxGPT/pending-restart.json`, which is why a key rotated from the
+  terminal raises the notice in the browser and vice versa.
 - **Enabling an observability toggle actually starts it.** Flipping
   `tracing`/`error_tracking`/`monitoring`/`log_aggregation` to enabled
   reconciles the Compose observability stack the same way `nyxgpt ops
@@ -172,6 +190,15 @@ time the web UI is running, reaching it already required these secrets. The
 dashboard's Configuration card points at the command instead; `GET
 /api/v1/config/secrets` still reports *whether* each secret is set (masked,
 never cleartext), and there is no HTTP path that writes one.
+
+**Rotating `[auth] api_key` needs a `web` restart.** The command reports it
+rather than leaving you to find out: after writing a restart-required key it
+prints which service is still running the old value and the exact wrapped
+command to apply the new one (`nyxgpt ops restart web`), and repeats the
+whole outstanding set in its closing summary. This is the same pending-restart
+state the Configuration Wizard and Admin Dashboard show — one behavior, two
+surfaces (#3806). You can defer the restart; the notice persists until you do
+it or change the value back.
 
 See [Canonical secret store & sync to GitHub Actions](#canonical-secret-store--sync-to-github-actions)
 below for what to do with these once they're set.
@@ -432,7 +459,13 @@ header = X-API-Key
 - Never commit `~/.nyxGPT/config.ini` to version control
 - Rotate keys regularly and immediately if compromise is suspected
 
-**Note:** Authentication configuration is **hot-reloadable** and takes effect immediately without restart.
+**Note:** the **API** re-reads `[auth]` on every request, so a change takes
+effect there immediately. The **web UI** is a separate Node process that
+reads the key once at startup, so rotating `api_key` (or flipping `enabled`)
+leaves it sending the old value and 401-ing on every proxied call until
+`nyxgpt ops restart web` runs. Both keys are classified restart-required for
+`web`: the wizard and `nyxgpt secrets setup` both say so when you change
+them, and offer the restart (#3806).
 
 **Enforced at startup:** if `[api] host` (below) is bound non-loopback while
 `enabled` isn't `true`, the native API refuses to start rather than serving
