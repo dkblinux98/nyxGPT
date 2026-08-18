@@ -113,7 +113,11 @@ export const CLOUD_LIFECYCLE_COMMANDS = {
   smoke: 'nyxgpt cloud smoke',
   tunnel: 'nyxgpt cloud tunnel',
   tunnel_stop: 'nyxgpt cloud tunnel --stop',
-  status: 'nyxgpt cloud deploy --status',
+  status: 'nyxgpt cloud status',
+  ops_status: 'nyxgpt cloud ops status',
+  doctor: 'nyxgpt cloud ops doctor',
+  self_heal: 'nyxgpt cloud ops self-heal',
+  credentials: 'nyxgpt cloud credentials',
   allow_ip: 'nyxgpt cloud allow-ip',
 };
 
@@ -130,8 +134,19 @@ export const CLOUD_DEPLOY_UNKNOWN = {
   version: '',
   host: '',
   instance_id: '',
+  instance_type: '',
   region: '',
   profiles: [],
+  connection: {
+    known: false,
+    host: '',
+    user: '',
+    identity_file: '',
+    target: '',
+    tunnel_invocation: '',
+    command: 'nyxgpt cloud tunnel',
+    reason: 'no deploy has been recorded on this machine, so there is no connection target to report',
+  },
   infra: {
     source: 'none',
     source_label: 'no source available on this machine',

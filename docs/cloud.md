@@ -93,7 +93,68 @@ works here too and is remembered for later runs, plus:
 | `--identity-file` | Private key to authenticate with (default: whatever the last deploy used, then whatever `ssh` would pick from `~/.ssh` and your agent) |
 | `--host` | Target an existing box instead of the provisioned instance |
 | `--health-timeout` / `--ssh-timeout` | Seconds to wait for `/health` (default 900) and for SSH (default 300) |
-| `--status` | Print the deployment's state as JSON and exit, touching nothing |
+| `--status` | Superseded by [`nyxgpt cloud status`](#nyxgpt-cloud-status--where-is-my-instance-3813); still prints the same JSON for anything already scripted against it |
+
+### `nyxgpt cloud status` — where is my instance? (#3813)
+
+The deploy ends by pointing at this command, because everything it printed
+scrolls away and the public IP is not something to recover from a terminal's
+scrollback:
+
+```bash
+nyxgpt cloud status            # the operator summary (default)
+nyxgpt cloud status --json     # the machine-readable payload
+nyxgpt cloud status --no-probe # don't health-check through an open tunnel
+```
+
+It answers from recorded state alone — no AWS call, no connection to the
+instance — so it is safe to run at any time and still answers when your AWS
+credentials have expired. The summary carries the installed release, the
+instance id and type, the region, the public IP, the security group's single
+ingress rule, the enabled observability profiles, the tunnel's state, a
+health verdict, the localhost URLs and, most importantly, the **connection
+target**: the SSH user and identity file the deploy actually used, alongside
+the host. `host` on its own is not an address you can reach.
+
+For support conversations it also prints, under a `Diagnostics` heading, the
+raw `ssh` invocation that `nyxgpt cloud tunnel` executes on your behalf.
+That is shown so you can see what is running when a tunnel misbehaves — the
+command to *run* is always the wrapped one.
+
+Where the answer comes from follows the same three-way rule as the substrate
+(see [Which machine is answering](#which-machine-is-answering-3804)): the
+deploy record on the workstation that deployed, the instance itself when the
+command runs there, and otherwise **unknown** — which is not the same as
+nothing being deployed. The connection target is reportable only in the first
+case; on the instance the SSH user and key are the workstation's, and the
+command says so rather than printing a blank.
+
+### `nyxgpt cloud ops` — inspecting the instance (#3813)
+
+Container state on the instance, without a hand-rolled `ssh` and a raw
+`docker compose ps`:
+
+```bash
+nyxgpt cloud ops status     # the instance's own `nyxgpt ops status` (default)
+nyxgpt cloud ops doctor     # the instance's own `nyxgpt ops doctor`
+nyxgpt cloud ops self-heal  # the instance's own `nyxgpt self-heal status`
+```
+
+Each one runs the named wrapped command *on the instance* over the same SSH
+access path [`nyxgpt cloud credentials`](#nyxgpt-cloud-credentials) uses, and
+streams the instance's own output back unchanged. The list is deliberately
+read-only: changing what runs on the instance is `nyxgpt cloud deploy`, which
+is idempotent and records what it did.
+
+The inspection's own exit code is passed through — `nyxgpt cloud ops doctor`
+exiting non-zero because the stack is unhealthy is a reportable answer, not a
+failure of the command. A failure to *reach* the instance is reported as one,
+with `nyxgpt cloud allow-ip` named as the usual fix.
+
+The SSH user and identity file the deploy recorded are reused automatically,
+so a deployment made with a non-default key does not need `--identity-file`
+re-typed on every inspection; `--ssh-user`, `--identity-file` and `--host`
+still override.
 
 ### Reaching it: `nyxgpt cloud tunnel`
 
@@ -230,8 +291,10 @@ The admin dashboard's **[Infrastructure Status](ui.md)** page
 substrate and the deployment on it, and does nothing else.** It shows the
 substrate (region, instance, type, public IP, VPC, subnet, security group,
 key pair, open ports), the installed release, the enabled observability
-profiles, whether the access tunnel is open, a health answer, the localhost
-URL list, the Terraform state backend, and the deploy history — and it points
+profiles, the connection target (the SSH user@host and identity file, plus
+the raw ssh the wrapped tunnel executes, as diagnostics), whether the access
+tunnel is open, a health answer, the localhost URL list, the Terraform state
+backend, and the deploy history — and it points
 at the wrapped commands below for everything that changes state:
 
 | To do this | Run |
@@ -240,7 +303,10 @@ at the wrapped commands below for everything that changes state:
 | Tear the whole deployment down | `nyxgpt cloud destroy --yes` |
 | Run the end-to-end cloud test (deploys, verifies, tears down) | `nyxgpt cloud smoke` |
 | Test the artifact install path locally, without AWS | `nyxgpt cloud smoke --container` |
-| Show the same state from a terminal | `nyxgpt cloud deploy --status` |
+| Show the same state from a terminal | `nyxgpt cloud status` |
+| Inspect the containers running on the instance | `nyxgpt cloud ops status` |
+| Diagnose the instance | `nyxgpt cloud ops doctor` |
+| Read the observability logins | `nyxgpt cloud credentials` |
 | Open or close the access tunnel | `nyxgpt cloud tunnel` / `nyxgpt cloud tunnel --stop` |
 | Preview a substrate change without creating anything | `nyxgpt cloud infra plan` |
 | Move Terraform state, or recover a version | `nyxgpt cloud state migrate` / `versions` / `restore` / `unlock` |
@@ -299,7 +365,7 @@ backend's own `LIFECYCLE_COMMANDS`, so the two can never drift apart.
 | `~/.nyxGPT/cloud/tunnel.json` | The backgrounded tunnel's pid and forwarded profiles, so `--stop`/`--status` (and the dashboard) find a tunnel another process started |
 | `~/.nyxGPT/cloud/history.jsonl` | One line per deploy, teardown and [smoke run](#nyxgpt-cloud-smoke--the-end-to-end-cloud-test-p6-17-3515) — timestamp, action, outcome, version, instance, and what went wrong on a failure |
 
-All three are read-only inputs to `nyxgpt cloud deploy --status`, which
+All three are read-only inputs to `nyxgpt cloud status`, which
 answers without calling AWS or touching the instance — safe to poll, and it
 still answers when your AWS credentials have expired.
 
@@ -318,7 +384,7 @@ place: nothing has proved the deployment is gone.
 | `did not accept SSH within 300s` | Usually a stale security-group rule — run `nyxgpt cloud allow-ip` (see [Lockout recovery](#lockout-recovery)). Also possible on a very slow first boot: retry with `--ssh-timeout 600`. |
 | `Provisioning the instance failed` | Every failed step of the remote install is listed under it, in full and untruncated (the provisioning run's stdout and stderr are streamed together as they happen, so what you watched is what the summary quotes). When the run failed before any step reported — a package-manager or shell error — the last lines of its output are quoted instead, always on whole-line boundaries. Re-running `nyxgpt cloud deploy` is safe — provisioning is idempotent. |
 | `node/npm could not be installed` | Neither NodeSource nor the distro's own packages produced a Node toolchain, so `ops install` could not build the web bundle. Usually a blocked egress to `nodesource.com`; the instance needs outbound HTTPS. |
-| `never returned 200 within 900s` | The stack installed but isn't healthy. The tunnel is left open; `nyxgpt cloud deploy --status` and the instance's own `nyxgpt ops doctor` say more. |
+| `never returned 200 within 900s` | The stack installed but isn't healthy. The tunnel is left open; `nyxgpt cloud status` and `nyxgpt cloud ops doctor` (the instance's own doctor, over the wrapped SSH path) say more. |
 | `Could not open the SSH tunnel` | A local port is already bound, most often by a local nyxGPT stack. |
 
 ---
