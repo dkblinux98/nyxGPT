@@ -99,9 +99,24 @@ re-derived wrong — which is the whole problem.
 
 ## Entry schema
 
-Four kinds. Each has a stable ID (`D`/`V`/`P`/`Q` + zero-padded number),
-allocated by taking the next unused number in that class. **IDs are never
-reused**, including after supersession.
+Four kinds. Each has a stable ID (`D`/`V`/`P`/`Q` + zero-padded number).
+**IDs are never reused**, including after supersession.
+
+**Allocate with the helper, not by eye** (#3806):
+
+```
+git fetch origin <release branch>
+python3 scripts/agents/lib/ledger_ids.py next V --base origin/<release branch>
+```
+
+It applies the two rules that are easy to get wrong by hand. It takes
+**max + 1, not the lowest unused number** — the gaps below are entries
+relocated to the private annex, and those IDs are still taken. And it reads
+the **live release branch** as well as your working copy — two PRs open at
+once each see a base without the other's entries, so a branch-only scan hands
+both of them the same number and the collision is created at merge, by neither
+branch alone. That is how `V-034`/`V-035` came to be defined twice, failing
+`test_ledger_entry_ids_are_unique` for every review on the branch afterwards.
 
 **Decision** — something was settled, and by whom.
 
@@ -1175,7 +1190,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   Re-verify when: the retro template's panel structure changes, or a new
   optional data source is added without a source stamp.
 
-- **V-034** · 2026-08-18 — nyxGPT has **two config-reading tiers with different
+- **V-036** · 2026-08-18 — nyxGPT has **two config-reading tiers with different
   activation semantics**, and the difference is now data rather than folklore.
   The `api` tier re-reads `config.ini` per request through the hot-reload cache;
   the `web` tier is a Node process whose settings are read **once**, by the
@@ -1214,7 +1229,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   (e.g. if the proxy is ever made to resolve the key per request), or a third
   tier with its own activation semantics is added.
 
-- **V-035** · 2026-08-18 — Two tests in
+- **V-037** · 2026-08-18 — Two tests in
   `tests/unit/test_config_sections_endpoint.py` left a **live `threading.Timer`
   armed past their `patch` block**: they asserted the restart endpoints defer
   their work and then returned, so the timer fired seconds later, inside whatever
@@ -1229,6 +1244,27 @@ are absent here by design (relocated to the annex; IDs are never reused).
   cross-file failure; the failure disappears with the fixture in place.
   Re-verify when: a new test asserts a `threading.Timer`-deferred endpoint —
   use `captured_timers`, never a bare "assert not called inline".
+
+- **V-038** · 2026-08-18 — **A PR can be merged while the CI for its head
+  commit is still running, and nothing re-examines the result.**
+  `review_accept_and_merge.sh` validates state/mergeability/base-existence and
+  then merges; it never reads the head SHA's check status, and no review
+  workflow does either — "run CI checks on ALL code in the repository" is
+  prose in `review-runbook.md`, evaluated by the reviewing model against
+  whatever run it happened to see. Worked example: PR #3876 pushed `78c0e5cf` at 10:59:33Z,
+  its `ci-tests` run was created at 10:59:37Z, and the PR merged at 10:59:38Z
+  — one second later. That run finished **failing** at 11:05:49Z. The APPROVE
+  had been computed against the previous push (`de50798d`), so the merge was
+  green-by-staleness. This is what put a failing `pytest` on `v3.0.0`, and it
+  is independent of *what* was failing.
+  Method: read `scripts/agents/review_accept_and_merge.sh` end to end
+  (2026-08-18) — no `statusCheckRollup`/check-runs call exists in it or in
+  `review_agent_auto_review.yml`; timings from
+  `gh api repos/.../actions/runs/32129497068` (created/updated) against
+  `gh api repos/.../pulls/3876` (`merged_at`); failure text from that run's
+  log. The check run `test` on `78c0e5cf` reads `completed / failure`.
+  Re-verify when: a check-status gate is added to the merge path — this entry
+  then describes history rather than the present. See **Q-005**.
 
 ## Parked
 
@@ -1294,6 +1330,23 @@ are absent here by design (relocated to the annex; IDs are never reused).
   from the known `file://`-tarball violation.
   Needs: inspection of a keg built from the local `nyxgpt-local` tap.
   Blocks: nothing yet; would warrant its own issue if confirmed.
+
+- **Q-005** · 2026-08-18 · developer-agent (#3806) — How should the merge path
+  gate on the head SHA's check status (**V-038**) without deadlocking on the
+  review's *own* in-flight check runs? On `78c0e5cf` the checks include
+  `claude-review` and `execute-review-decision`, which cannot be complete at
+  the moment the reviewer merges, so a naive "no check may be queued or
+  in_progress" rule blocks every merge forever; a failures-only rule would not
+  have caught #3876, whose check had not failed *yet* at merge time. The
+  discriminator (allowlist of quality gates, denylist of review-side runs, or
+  a bounded wait) is a design decision on the pipeline's core merge path, and
+  a wrong one jams every merge in the project.
+  Needs: an owner-approved approach, then its own agent-process issue. Not
+  taken inside #3806's fix branch: that branch exists to unpoison the release
+  branch, and rebuilding the merge gate under it would put an unreviewed
+  change to every merge behind an unrelated issue number.
+  Blocks: nothing today — but every merge is exposed to **V-038** until it is
+  answered.
 
 ## Superseded
 

@@ -42,6 +42,20 @@ did is already recorded by the commits, the PR and the issue thread; what you
 *learned* is not recorded anywhere else. Entry schema and granularity rules are
 in the ledger itself.
 
+**Allocate the entry ID with the helper, never by eye** (#3806):
+
+```bash
+git fetch origin "$RELEASE_BRANCH"
+python3 scripts/agents/lib/ledger_ids.py next V --base "origin/$RELEASE_BRANCH"
+```
+
+Scanning the file yourself gets this wrong two ways: the lowest unused number
+is an ID relocated to the private annex, and your branch's copy does not
+contain the entries another open PR has merged since you branched. `V-034` and
+`V-035` were allocated by eye and ended up defined twice, which failed
+`test_ledger_entry_ids_are_unique` on the release branch — blocking every
+review that followed, not just the PR that caused it.
+
 ## 1) Pick up work
 - Ensure issue is assigned to developer-agent and status is In Progress.
 - Confirm Phase/Sprint fields are set.
