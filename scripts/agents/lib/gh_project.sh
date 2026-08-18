@@ -2300,6 +2300,36 @@ related_feature_of() {
 assign_and_trigger_developer() {
   local issue="$1"
 
+  # A closed issue is not workable, and this is where that is decided (#3906).
+  # The submit path already refuses one (developer_submit_for_review.sh: "Issue
+  # is not OPEN ... Refusing to submit"), but nothing refused to *start* the
+  # work, so the two halves disagreed: on #3825 the review agent dispatched a
+  # rework cycle to an issue that had closed 26 minutes earlier when its PR
+  # merged, the developer implemented and validated a correct fix, and the
+  # submit guard then refused it -- identically on every retry. The work was
+  # real and mainline-blocking; it had to be re-landed by hand.
+  #
+  # Refuse here instead, and say what the next step is. A closed issue means
+  # the work shipped; follow-up work is a new issue, never a second pass at a
+  # finished one. Deliberately not reopening it: a closed issue parked in
+  # Acceptance Failed is owner signal (D-008), and nothing here may overwrite
+  # that.
+  local issue_state
+  issue_state="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}" \
+    --jq '.state | ascii_upcase' 2>/dev/null || echo "")"
+
+  if [[ "$issue_state" == "CLOSED" ]]; then
+    _warn "Issue #${issue} is CLOSED -- refusing to dispatch the developer agent."
+    # Subshell: issue_comment exits on failure, and a failed courtesy
+    # comment must not swallow the refusal itself.
+    ( issue_comment "$issue" "🚫 **Dispatch refused**: this issue is closed, so work started here could not be submitted for review — the submit script refuses a closed issue and would refuse it identically on every retry (#3825, #3906).
+
+If rework is genuinely needed, it is a **new issue**: a closed issue means the work shipped, and a merged PR cannot carry a second pass. File the follow-up and dispatch that.
+
+<!-- nyxgpt-token-mention -->" ) >/dev/null 2>&1 || true
+    return 12
+  fi
+
   # Check if developer is already assigned
   local current_assignee
   current_assignee=$(_issue_assignee_logins "$issue" 2>/dev/null | tr ',' '\n' | grep -x "$DEV_AGENT" || echo "")
