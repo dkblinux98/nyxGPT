@@ -12,6 +12,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tarfile
@@ -1566,3 +1567,157 @@ def test_published_tap_reports_whether_the_stable_counterpart_exists():
 
     assert "brew info --formula" in script
     assert "conflicts_with" in script
+
+
+# --- #3850: the keg has to expose the CLI, not just the service wrapper -----
+#
+# `brew install nyxgpt-api@3.0.0rc` succeeded on the owner's Mac, the
+# dashboard came up, and `nyxgpt up` answered `zsh: command not found`.
+# pyproject.toml declares the `nyxgpt` console script, so pip did create it --
+# inside the keg's venv, which is on nobody's PATH. The formula wrote only
+# `bin/nyxgpt-api`, so the entire documented operating surface (`nyxgpt up`,
+# `nyxgpt ops ...`) was unreachable on the artifact install path, in breach of
+# the operational-command-wrapping rule: with no `nyxgpt` on PATH the operator
+# is left with raw commands or nothing.
+#
+# The formula's own `test do` block asserted the venv python existed and that
+# `nyxgpt.app` imported -- both true of a keg with no reachable CLI at all.
+# That is why these tests pin the *exposure* and the *test block* together: a
+# check that passes against the broken keg is what let this ship.
+
+_CLI_SYMLINK = 'bin.install_symlink venv/"bin/nyxgpt"'
+_WEB_FORMULAS = {
+    "local": REPO_ROOT / "homebrew" / "nyxgpt-web.rb",
+    "tap-template": REPO_ROOT / "homebrew" / "tap" / "nyxgpt-web.rb.tmpl",
+}
+
+
+def _test_block(text: str) -> list[str]:
+    """The formula's `test do` body: code lines only, comments dropped."""
+    start = text.index("  test do")
+    return [
+        line.strip()
+        for line in text[start:].splitlines()[1:]
+        if line.strip() and not line.strip().startswith("#") and line.strip() not in ("end",)
+    ]
+
+
+@pytest.mark.parametrize("which", sorted(_API_FORMULAS))
+def test_the_keg_puts_the_cli_on_path(which):
+    """The fix itself: `bin/` gets the console script, not just the wrapper."""
+    recipe = _venv_recipe(_API_FORMULAS[which].read_text(encoding="utf-8"))
+
+    assert _CLI_SYMLINK in recipe
+    # Linked from the venv pip populated, so it cannot drift from what was
+    # installed -- and only after that install has run.
+    assert recipe.index('system venv/"bin/pip", "install", buildpath') < recipe.index(_CLI_SYMLINK)
+
+
+@pytest.mark.parametrize("which", sorted(_API_FORMULAS))
+def test_the_formula_test_block_runs_the_cli(which):
+    """`test do` has to fail on a keg whose CLI is unreachable.
+
+    The pre-#3850 block asserted only that the venv python existed and that
+    `import nyxgpt.app` worked. Both hold for a keg that exposes no command,
+    so the block verified the library rather than the product and stayed
+    green through every rc the owner could not operate.
+    """
+    block = _test_block(_API_FORMULAS[which].read_text(encoding="utf-8"))
+
+    # Reached through `bin`, the path `brew link` exposes -- an assertion
+    # against `libexec/venv/bin/nyxgpt` would pass on the broken keg.
+    assert any('bin/"nyxgpt"' in line for line in block), block
+    assert any('shell_output("#{bin}/nyxgpt --version")' in line for line in block), block
+    assert not any("libexec" in line and 'nyxgpt"' in line for line in block), block
+    # A CLI that runs but reports nyxgpt.version's 0.0.0 sentinel could not
+    # read its own installed metadata, and a keg has no checkout to fall back
+    # to -- that is a broken install, not a passing test.
+    assert any("refute_match" in line and "0\\.0\\.0" in line for line in block), block
+
+
+def test_both_api_formulas_test_the_keg_the_same_way():
+    """One test block in two files, like the recipe above it.
+
+    #3753 had to be fixed in both formulas; an operability assertion added to
+    one and not the other would leave the published tap -- the path the owner
+    installs from -- asserting less than the local one.
+    """
+    local, template = (
+        _test_block(path.read_text(encoding="utf-8"))
+        for path in (_API_FORMULAS["local"], _API_FORMULAS["tap-template"])
+    )
+
+    assert local == template
+
+
+@pytest.mark.parametrize("channel", ["stable", "rc"])
+def test_stamped_formulas_expose_and_exercise_the_cli(built_artifacts, built_rc_artifacts, channel):
+    """What is published, not just what is in the templates."""
+    out_dir, filename = {
+        "stable": (built_artifacts, "nyxgpt-api.rb"),
+        "rc": (built_rc_artifacts, "nyxgpt-api@9.9.9rc.rb"),
+    }[channel]
+    stamped = (out_dir / filename).read_text(encoding="utf-8")
+
+    assert _CLI_SYMLINK in _venv_recipe(stamped)
+    assert any('bin/"nyxgpt"' in line for line in _test_block(stamped))
+
+
+@pytest.mark.parametrize("which", sorted(_WEB_FORMULAS))
+def test_the_web_keg_exposes_only_its_service_wrapper(which):
+    """The #3850 sweep of the other formula, pinned rather than remembered.
+
+    `nyxgpt-web` ships a Next.js build and one command, `nyxgpt-web`, which
+    `brew services` runs. It declares no console scripts and nothing
+    documented invokes a `nyxgpt-web`-owned binary by any other name -- the
+    CLI comes from `nyxgpt-api`. So the class of gap does not repeat here, and
+    this test fails if the web formula ever grows a second command whose
+    reachability nobody checked.
+    """
+    text = _WEB_FORMULAS[which].read_text(encoding="utf-8")
+    install = text[text.index("  def install") : text.index("  service do")]
+
+    exposed = set(re.findall(r'bin/"([^"]+)"', install))
+    exposed |= set(re.findall(r'bin\.install_symlink \S+/"([^"]+)"', install))
+
+    assert exposed == {"nyxgpt-web"}, exposed
+
+
+def test_brew_smoke_proves_the_cli_is_reachable_by_name():
+    """The check that would have caught #3850, and its negative control.
+
+    Reaching into `$VENV/bin/nyxgpt` is what the job did before, and it passed
+    on every keg the owner could not operate -- so the assertion has to go
+    through PATH, and it has to be shown to fail when the CLI is taken away.
+    Unusually for this workflow the condition needs no injection to
+    reproduce; only the *check* needs proving.
+    """
+    steps = _macos_smoke_workflow()["jobs"]["keg-install"]["steps"]
+    script = next(
+        str(step["run"]) for step in steps if "runnable `nyxgpt`" in str(step.get("name", ""))
+    )
+
+    # PATH, by name -- not a path into the keg.
+    assert "command -v nyxgpt" in script
+    assert "nyxgpt --version" in script
+    # The negative control: the same function, run against a keg with no CLI.
+    assert 'mv "$KEG_CLI" "$HIDDEN"' in script
+    assert "it tests nothing" in script
+    # ...and the keg restored on every exit path, since later steps use it.
+    assert "trap restore_the_cli EXIT" in script
+    # `-e` follows the relative link and would silently skip the restore.
+    assert '[ -L "$HIDDEN" ]' in script
+
+
+@pytest.mark.parametrize("job_name", ["keg-install", "published-tap"])
+def test_brew_smoke_runs_a_no_op_subcommand_on_a_stackless_machine(job_name):
+    """`--version` resolves the entry point; it does not load the app code.
+
+    `ops status` is documented to always return 0, so on a runner with no
+    stack, no Docker and no checkout it is a pure operability probe -- the
+    place a repo-relative path resolution (#3759's class of fault) surfaces
+    on the artifact path.
+    """
+    script = _job_run_script(_macos_smoke_workflow()["jobs"][job_name])
+
+    assert "nyxgpt ops status" in script

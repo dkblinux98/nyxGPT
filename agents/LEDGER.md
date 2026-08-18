@@ -1515,6 +1515,74 @@ are absent here by design (relocated to the annex; IDs are never reused).
   deliberately write `|| echo ""` and still treat a failed read as "no
   Status".
 
+- **V-051** · 2026-08-18 — **The canary replica pool is borrowed for a
+  rollout, not standing — and `V-045`'s footprint numbers moved with it.**
+  The stable Deployments shipped `replicas: 4` deliberately (#2692): traffic
+  is split by replica ratio, so a 4-wide pool is what makes a 25% step
+  expressible. Every install paid for it standing, including single-node
+  local ones where 4 replicas buy no HA. #3833 made the pool elastic:
+  `canary start` reads the stable Deployment's live replica count, plans the
+  smallest pool that can express the requested weight (capped by `[canary]
+  total_replicas`), and promote/rollback return stable to the count they
+  found. So `[canary] total_replicas` is now a **ceiling on borrowing**, not
+  a steady-state size, and an operator-set replica count survives a rollout
+  instead of being re-inflated to a constant. Two traps that had to go with
+  it: `_split_replicas` returned `stable = 0` for any weight below 100% in a
+  1-replica pool (a full cutover, not a canary), and `DEFAULT_TOTAL_REPLICAS`
+  hardcoded the width the next rollout would restore.
+  **Footprint (supersedes the standing figure in V-045):** removing the six
+  standing replicas — at V-045's right-sized requests, 3 api at 100m/256Mi
+  and 3 web at 50m/192Mi — takes the default `--kubernetes --local` stack
+  from 2075m/6976Mi of requests to **1625m CPU and 5632Mi**, against the
+  4000m/7936Mi a stock Docker Desktop VM allocates. The 450m/1344Mi that
+  leaves free is exactly what a rollout borrows back when both tracks grow
+  to the default 4-replica ceiling, so the *peak* is unchanged and only the
+  *resting* reservation fell. V-045's other halves (CPU is the wall right
+  behind memory; `_preflight_k8s_capacity` refuses a node that cannot hold
+  the stack) still stand — with one correction that had to land with this
+  change: the preflight's canary headroom was one parked Pod per track,
+  which is what a rollout cost while the pool was standing. It now counts
+  the whole borrow, `[canary] total_replicas` minus the stable Deployment's
+  resting count, so an elastic pool cannot re-create V-045's defect one
+  rollout later.
+  Method: executed on 2026-08-18 — `scripts/canary-rollout-smoke.sh` on a
+  real kind cluster running the shipped manifests: stable applied at 1
+  replica, `nyxgpt canary start --weight 25` grew the pool to 4 (asserted
+  from the Service's own EndpointSlices: 3 stable + 1 canary Ready
+  endpoints), `promote` re-planned it to 2 for 50%, `rollback` returned it to
+  1, and a stable the operator had scaled to 2 came back to 2. A second run
+  with `NYXGPT_CANARY_SMOKE_INJECT_STANDING_POOL=1` failed at the resting
+  check as required. The footprint figures are arithmetic on V-045's measured
+  total minus the six removed Pods' declared requests, not a fresh
+  measurement; `scripts/k8s-local-smoke.sh` prints the live
+  allocatable-vs-requests numbers on every run, and
+  `tests/unit/test_k8s_capacity_preflight.py` asserts the same arithmetic
+  against the shipped manifests.
+  Standing guard: `.github/workflows/canary-rollout-smoke.yml` (both jobs),
+  plus `k8s-capacity-smoke.yml` for the headroom half. **A capacity fault
+  injection must restore the pre-#3833 standing pool as well as the
+  pre-#3825 requests**: measured 2026-08-18 by totalling the rendered
+  manifests through `ops._workload_resource_requests`, the old requests
+  against the elastic pool schedule 5952Mi (memory tree) and 1825m (cpu
+  tree) — inside the 7936Mi/4000m node, so every Pod places, the injection
+  "passes" and the gate asserts nothing; with the pool restored they are
+  8256Mi and 2875m and both walls reproduce. The
+  reconstruction therefore lives in one place,
+  `scripts/k8s-inject-pre-fix-sizing.sh`, which fails on a substitution that
+  matched nothing, and `tests/unit/test_k8s_capacity_preflight.py` fails if
+  either injection phase stops going through it.
+  Re-verify when: a `k8s/**` manifest changes a `resources.requests` or a
+  replica count, or the pool-planning rule in `canary._plan_rollout` changes.
+  (Filed as `V-045` under #3833, renumbered to `V-046` when #3825 landed
+  `V-045` on `v3.0.0`, to `V-048` on the next merge — #3831 allocated
+  `V-046`/`V-047` there — and to `V-051` on the merge after that, because
+  #3904 took `V-048` for its `rglob` entry while healing the mainline's own
+  triple-`V-046` collision. IDs are never reused. Fourth renumbering of this
+  entry in one day: allocation by "next free number in my checkout" cannot
+  hold when four branches are open against the same base, which is the
+  durable defect #3904 filed separately — this entry is the evidence of its
+  cost, not a second proposal.)
+
 - **V-044** · 2026-08-18 — **Self-heal watched the api pool alone in
   Kubernetes mode, and could not name the mode at all.** The Pod survey
   selected `app=nyxgpt-api-canary-pool`, so web, Cassandra, Ollama and the
@@ -1556,6 +1624,12 @@ are absent here by design (relocated to the annex; IDs are never reused).
   `web/src/lib/apiError.ts` (`apiErrorText` / `errorMessage`); pages import
   it rather than re-deriving it, and `docs/adding-api-endpoints.md` states
   the rule for new pages.
+  (Filed as `V-046` under #3831 and merged to `v3.0.0` with that ID; #3837 had
+  taken `V-046` four minutes earlier on its own branch, so both entries reached
+  the mainline sharing it. Renumbered here to `V-049`, the next unused number,
+  on the #3850 merge — #3837's keeps `V-046` because it merged first and is the
+  one `workflow_script_guard.py` and `developer-runbook.md` §"run: bodies" cite
+  by number. IDs are never reused.)
   Method: read the handler and every `new Error(` call site in `web/src`
   (2026-08-18, #3831); the five near-duplicate local helpers found there were
   replaced. `web/tests/lib/apiError.test.ts` pins each payload shape and
@@ -1565,6 +1639,13 @@ are absent here by design (relocated to the annex; IDs are never reused).
   them.
   Re-verify when: the error envelope's shape changes, or a page starts
   reading a failed response without `apiErrorText`.
+  (Filed as `V-046` under #3831, renumbered to `V-049` by #3904: #3831, #3837
+  and #3827 each allocated `V-046` on a concurrently-open branch and all three
+  merged into `v3.0.0` within ten minutes, so the mainline itself carried
+  three of them and `test_ledger_entry_ids_are_unique` was red for every open
+  PR. #3837's copy — the earliest merge, and the one `V-027`,
+  `developer-runbook.md` and `workflow_script_guard.py` cite by number — keeps
+  `V-046`; this one and #3827's moved. IDs are never reused.)
 - **V-047** · 2026-08-18 — **A Deployment's own status cannot say why a Pod
   is not serving; the reason has to be read off the Pods.** `kubectl get
   deployment -o json` gives only `readyReplicas`, so canary reported
@@ -1632,6 +1713,33 @@ are absent here by design (relocated to the annex; IDs are never reused).
   does not cover, or `SAFE_IN_RUN` gains an entry.
 
 
+- **V-050** · 2026-08-18 — **Test selection is now scoped to a change's
+  blast radius, and the scoping is deterministic** (`scripts/ci/select_tests.py`,
+  #3896, unparking **P-001**). Measured cause: 2,243 runner-minutes over 30
+  days, led by `security-scan.yml` (187 runs) and `ci-tests.yml` (173) — the
+  whole tree on every push, every review round and every developer fix attempt,
+  so a docs-only diff paid what a `src/nyxgpt/ops.py` rewrite paid. Selection
+  is path plus import-closure analysis, never a model call, and is wrong in
+  exactly one direction: a floor of process guards runs for every change, an
+  unclassifiable path selects everything, `conftest.py`/`pyproject.toml`
+  select everything, and the merge boundary (push to the release branch) is
+  never scoped. Measured selection on this tree (179 unit files): docs-only 5,
+  web-only 5 + vitest, workflow/script-only 26, a leaf module 88, widely
+  imported `config` 137.
+  Two facts worth keeping, both of which cost a round to find: `from nyxgpt
+  import cloud` binds a module while naming only the package, and reading it as
+  a bare `nyxgpt` left 32 of 179 files unmappable and therefore always-run; and
+  a bare `import nyxgpt` must **not** be honoured as a wildcard, or a leaf
+  module selects most of the suite and the scoping buys nothing.
+  Method: executed 2026-08-18 on this runner — `pytest
+  tests/unit/test_select_tests.py` (19 passed) pins the properties, including
+  that a changed module still selects the file that covers it
+  (`canary.py` -> `test_canary.py`, and four more pairs), that process tests do
+  not run for application changes and vice versa, and that an empty or
+  unclassified diff escalates to the full suite.
+  Re-verify when: a new top-level directory appears (it will select the full
+  suite until classified — that is the intended default, but it is also the
+  signal to classify it), or the always-on floor list changes.
 - **V-048** · 2026-08-18 — **A repository-wide `rglob` scan reads the runner's
   workspace, not the repository.** `test_the_source_stays_single` walked
   `REPO_ROOT.rglob("*.md")` to assert the first principles are stated in full
@@ -1655,7 +1763,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   Re-verify when: `claude-code-action` changes where it parks the restored
   config, or another contract test starts walking the filesystem instead of
   the index.
-- **V-050** · 2026-08-18 — **`nyxgpt ops` has one three-state vocabulary for
+- **V-058** · 2026-08-18 — **`nyxgpt ops` has one three-state vocabulary for
   Kubernetes workloads — ready / pending / failed — and `Pending` is not a
   failure.** `_classify_k8s_pod` (`src/nyxgpt/ops.py`) is the single
   classifier behind `_k8s_stack_health`, `_k8s_observability_health`, the
@@ -1704,7 +1812,173 @@ are absent here by design (relocated to the annex; IDs are never reused).
   `_classify_k8s_pod` — the shared vocabulary, not this one call site, is what
   the entry stands for.
 
-- **V-051** · 2026-08-18 — Self-heal takes **zero** `kubectl delete` calls
+- **V-055** · 2026-08-18 — **Container images are published for stable
+  releases only, and the `ghcr.io/dkblinux98/nyxgpt-*` packages are
+  anonymously pullable.** `release-artifacts.yml`'s `container-images` job
+  runs on `release: [released]`, which an rc prerelease does not fire, and
+  `release-publish-pypi.yml` (the rc channel) publishes no images at all —
+  so a release line has **no image of its own until it ships**. Consumers of
+  the published images must therefore expect a missing version tag and say
+  what they did about it; `nyxgpt ops install --terraform --local` falls back
+  to the newest published image and reports the skew rather than pretending
+  the deployed api is this version.
+  Method: read both workflows' `on:`/`tags:` blocks; queried the registry
+  anonymously — `curl https://ghcr.io/token?scope=repository:dkblinux98/nyxgpt-api:pull`
+  then `/v2/dkblinux98/nyxgpt-api/tags/list` returned `["2.1.0","latest"]`
+  (no 3.0.0, no rc tags), and `docker pull ghcr.io/dkblinux98/nyxgpt-api:latest`
+  succeeded with no credentials. 2026-08-18, while implementing #3835.
+  (Filed as `V-045` under #3835 and renumbered three times as `v3.0.0` moved
+  under it: to `V-050` (#3825 had `V-045`), to `V-051` (#3904's renumber of
+  the Pod-vocabulary entry took `V-050`), to `V-053` (the mainline's
+  own canary replica-pool entry holds `V-051` and #3850's keg entry holds
+  `V-052`), and now to `V-055` — #3834's Kubernetes install-mode entry took
+  `V-053` on the mainline. IDs are never reused.)
+  Re-verify when: a stable release ships (the tag list grows), or rc image
+  publishing is added to `release-publish-pypi.yml`.
+
+- **V-056** · 2026-08-18 — **The Terraform local deployment no longer needs
+  a checkout, and its `--dev` mode is now opt-in rather than permanent.**
+  The `.tf` sources ship as package data
+  (`nyxgpt.resources/terraform/local`, per-file symlinks so a dev checkout's
+  state/tfvars can never be packaged) and are materialized into
+  `~/.nyxGPT/terraform`; images come from the registry; the api container's
+  compose-file mount moved from `${var.repo_path}/docker-compose.yml` to the
+  ops-managed copy. The deployment records its own install mode in
+  `~/.nyxGPT/install-mode-terraform.json` — deliberately NOT the native
+  marker, which decides whether `restart api` drives launchd or `brew
+  services`.
+  Method: built the wheel, installed it into a venv with no checkout
+  (`ops._dev_checkout_root()` → `None`), ran
+  `_sync_local_terraform_config()` (materialized five files from package
+  data) and `_pull_terraform_published_images()` (pulled the two ghcr
+  images, reporting the **V-055** fallback), then `terraform plan` in that
+  directory: 9 to add, no build blocks. The dev plan
+  (`-var=build_from_source=true`) still plans its two `build {}` blocks.
+  2026-08-18, while implementing #3835.
+  (Filed as `V-046` under #3835 and renumbered as `v3.0.0` moved under it: to
+  `V-051` (#3837 had `V-046`), to `V-052` (behind the entry above), to `V-054`
+  (#3850's keg entry holds `V-052` on the mainline), and now to `V-056`,
+  behind the entry above — #3834's `exclude-package-data` entry took `V-054`.
+  IDs are never reused.)
+  Re-verify when: `terraform/*.tf` gains a file (it must also be symlinked
+  into `nyxgpt.resources/terraform/local` — `test_terraform_stack.py` fails
+  otherwise), or the packaged-resource sync changes.
+  Corollary, added on review of the same PR: the artifact default is a safe
+  fallback, not a fact, and under a *running* Terraform stack it is the
+  reverse of the fact — every deployment made before this marker existed was
+  built from a working tree, because that path had no other mode. Deployed
+  with no marker is therefore its own third state ("not recorded",
+  `[unrecorded]`, `IMAGES NOT RECORDED`), never artifact. The undeployed and
+  native cases keep the artifact default: nothing live to misdescribe, and
+  natively artifact really was the only mode before #3789.
+
+- **V-052** · 2026-08-18 — **A check that reaches *into* a keg cannot answer
+  whether the product is operable.** The macOS artifact path shipped through
+  rc12 with no `nyxgpt` on PATH: `pip install` created the console script
+  declared in `pyproject.toml`, but it landed in `libexec/venv/bin` and the
+  formula wrote only the `nyxgpt-api` service wrapper, so `brew install`
+  succeeded, the dashboard came up, and `nyxgpt up` answered `command not
+  found` (#3850). Every existing check was blind to it by construction: the
+  formula's `test do` asserted the venv python existed and `import nyxgpt.app`
+  worked, and `macos-brew-smoke.yml` ran `"$VENV/bin/nyxgpt" --version` — all
+  three are true of a keg that exposes no command at all. The downstream
+  report (ollama unreachable, cassandra unreachable, sessions HTTP 500) was
+  one defect, not four: it is what a stack looks like when the operator cannot
+  start it. Fixed by `bin.install_symlink venv/"bin/nyxgpt"` in both API
+  formulas; the assertions now go through `bin`/PATH, by the name a user
+  types.
+  (Filed as `V-044` under #3850, then renumbered to `V-048`, `V-051` and
+  finally `V-052` across four merges of `v3.0.0`: each number in turn was
+  claimed by a concurrently-open branch that merged first — `V-044` by #3828,
+  `V-048` by #3905's `rglob` entry, `V-051` by the canary replica-pool entry.
+  `V-052` is what `scripts/agents/lib/ledger_ids.py next V --base
+  origin/v3.0.0` allocates against the current release branch. IDs are never
+  reused.)
+  Method: `tests/unit/test_build_homebrew_artifacts.py` — the new tests were
+  run against the pre-fix formulas (`git stash push -- homebrew
+  .github/workflows/macos-brew-smoke.yml`) and 7 failed, then passed with the
+  fix (142 passed). The smoke job's negative control was rehearsed locally
+  against a simulated keg (relative symlink moved aside → `command -v nyxgpt`
+  fails → restored → passes). `nyxgpt ops status` was run from a venv with no
+  stack and no cwd checkout: exit 0. Executed macOS evidence is the
+  `macos-brew-smoke.yml` run on the #3850 PR, which installs the keg on a
+  `macos-15` runner, asserts the command by name, and proves the assertion
+  fails when the CLI is removed.
+  Re-verify when: the formulas stop building the CLI from the venv pip
+  populates (a wrapper script, a copied entry point, a different venv path),
+  or `nyxgpt-web` grows a command of its own —
+  `test_the_web_keg_exposes_only_its_service_wrapper` pins that it has none
+  today.
+
+- **V-053** · 2026-08-18 — **The Kubernetes install mode is now checkout-free,
+  and it records which mode it ran in.** `nyxgpt ops install --kubernetes
+  --local` brings the whole stack up on a machine with no repository: the
+  manifests ship as package data (`nyxgpt.resources.k8s`, synced to
+  `~/.nyxGPT/k8s`) and both images are built from the published
+  `nyxgpt-api`/`nyxgpt-web` release tarballs — the *source* tarballs, not the
+  ghcr.io images, because a release candidate publishes only the tarballs and a
+  candidate is what acceptance testing installs. `--dev` builds the working
+  tree, is refused up front where there is no checkout, and re-rolls the app
+  tier on a mode switch (both modes produce the same `:local` tags, so
+  `kubectl apply` alone would leave the previous mode's Pods running). The mode
+  is recorded per substrate (`~/.nyxGPT/install-mode-kubernetes.json`), so a
+  host can run a native dev install and a Kubernetes artifact deployment at
+  once without either being reported as the other. This closes the Kubernetes
+  row of `docs/portability-matrix.md`; Compose is the one remaining gap.
+  Method: `scripts/k8s-artifact-smoke.sh` executed on an ubuntu-latest runner
+  (4 vCPU / 16Gi), 2026-08-18 17:05–17:11 UTC, exit 0. It builds the wheel,
+  installs it into a venv, and runs every product command from a directory
+  with no repository in it — the installed package's `ops.REPO_ROOT` resolved
+  to `/tmp/nyxgpt-artifact-smoke/venv/lib/python3.12`, asserted different from
+  the checkout. Fault-injection half: `Dockerfile`, `web/Dockerfile` and
+  `k8s/kustomization.yaml` asserted absent under that root *and* `docker build`
+  of the pre-fix context asserted to fail, so a green run cannot come from a
+  checkout being in reach. Then the real bring-up (10 Pods Running, both
+  Deployments rolled out), a real chat answered through
+  web → api → in-cluster Ollama, `ops status` reporting `Install mode:
+  artifact (images built from the published nyxgpt-api/nyxgpt-web artifacts)`
+  with no `[dev]` stamp on `native api: none`, and `ops down --kubernetes`
+  clearing the record. While implementing #3834.
+  Standing guard: `.github/workflows/k8s-artifact-smoke.yml`, path-filtered on
+  `k8s/**`, `src/nyxgpt/ops.py`, `src/nyxgpt/install_mode.py`,
+  `src/nyxgpt/release_tarball.py`, both Dockerfiles and `pyproject.toml`.
+  Re-verify when: the api image's Dockerfile starts `COPY`ing a path the
+  `nyxgpt-api` tarball does not vendor (`_stage_k8s_api_build_files` stages
+  exactly the two exceptions it has today), or `release_tarball`'s vendored
+  file set changes.
+  (Filed as `V-046` under #3834, then renumbered to `V-052` and finally
+  `V-053` across two merges of `v3.0.0`: #3820's `script:`-guard entry
+  allocated `V-046` on a concurrently-open branch and landed first, and
+  #3850's keg-operability entry then landed on `V-052`. `V-053` is what
+  `scripts/agents/lib/ledger_ids.py next V --base origin/v3.0.0` allocates
+  against the current release branch. IDs are never reused.)
+
+- **V-054** · 2026-08-18 — **An `exclude-package-data` entry for a file nested
+  under an importable-looking resources subdirectory is only half an
+  exclusion, and the missing half is silent.** `[tool.setuptools.packages.find]`
+  in pyproject enables namespace packages, so `src/nyxgpt/resources/k8s/
+  observability/` is discovered as `nyxgpt.resources.k8s.observability` *and*
+  swept up by `nyxgpt.resources`'s `**/*` include. The file is collected twice
+  and setuptools' `build_py.exclude_data_files` applies a pattern only to the
+  package it is keyed under (`spec.get(package)`), so each copy needs its own
+  key — with either one alone the file still ships. This is why
+  `k8s/observability/secret.yaml` (Grafana admin password, Slack webhook,
+  GlitchTip DSN) could reach a wheel built from a checkout that had ever run
+  `nyxgpt ops observability --kubernetes`, while `k8s/secret.yaml` one level
+  up could not. `.terraform/` is unaffected: not a legal package name, so it
+  is never split off.
+  Method: wheels built four ways on the CI runner while implementing #3834
+  (2026-08-18) with both secrets planted in the tree — parent key only:
+  leaked; per-package key only: leaked; both: clean; neither: leaked. Standing
+  guard: `tests/unit/test_resources_packaging.py` now plants both generated
+  secrets before the build it already ran, which is what turned a vacuous
+  assertion (a fresh checkout has no generated secret to leak) into one that
+  fails on the real defect.
+  Re-verify when: a new generated, gitignored file appears more than one level
+  below a symlinked `resources/` subdirectory, or setuptools changes how
+  namespace packages claim data files.
+
+- **V-057** · 2026-08-18 — Self-heal takes **zero** `kubectl delete` calls
   against a genuinely unschedulable Pod, and the pre-#3832 code takes one on
   its first pass. Heal budgets survive the Pod recreation that healing causes:
   keyed on the owning ReplicaSet, a Running-but-not-ready Pod is healed twice

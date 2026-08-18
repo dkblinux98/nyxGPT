@@ -69,13 +69,13 @@ _ALLOWLIST: dict[str, set[str]] = {
         # install path here calls it expecting "vendor from the checkout
         # ops.REPO_ROOT points at", so this wrapper resolves that default.
         "tap_dir, name, version, REPO_ROOT if source_root is None else source_root",
-        # Docker image build fingerprinting for the nyxgpt-api image --
-        # `docker build`'s context and source-change fingerprint are
-        # necessarily a repo checkout's files.
-        'REPO_ROOT / "src" / "nyxgpt",',
-        'REPO_ROOT / "pyproject.toml",',
-        'REPO_ROOT / "example.config.ini",',
-        'REPO_ROOT / "docker" / "entrypoint.sh",',
+        # Docker image build fingerprinting for the nyxgpt-api image, in the
+        # *checkout* build context -- `--dev`/Terraform build the working
+        # tree, so this default is a repo checkout's files by definition. The
+        # Kubernetes artifact path (#3834) applies the very same relative
+        # paths to a staged copy of the published artifact instead, which is
+        # why the list is built from `_API_IMAGE_FINGERPRINT_RELPATHS`.
+        "_API_IMAGE_FINGERPRINT_PATHS = [REPO_ROOT / rel for rel in _API_IMAGE_FINGERPRINT_RELPATHS]",
         # Homebrew formula templates -- also part of the tap-vendoring
         # build-from-source flow above.
         'template = REPO_ROOT / "homebrew" / "nyxgpt-api.rb"',
@@ -93,11 +93,18 @@ _ALLOWLIST: dict[str, set[str]] = {
         # -- repo-local dev tooling, not a runtime dependency of the
         # installed product.
         "root_dir = REPO_ROOT",
-        # Terraform local deploy: terraform/*.tf files are on disk, not
-        # importable package data -- `terraform apply` inherently needs a
-        # repo checkout regardless of how nyxGPT's Python package ships.
-        'TERRAFORM_DIR = REPO_ROOT / "terraform"',
-        "text = re.sub(r'repo_path\\s*=\\s*\".*\"', lambda _m: f'repo_path    = \"{REPO_ROOT}\"', text)",
+        # Terraform local deploy, DEV MODE ONLY (#3835): the configuration
+        # itself is now packaged and materialized under ~/.nyxGPT/terraform
+        # (`_sync_local_terraform_config`), and the default artifact path
+        # deploys published images -- neither reads a checkout. What is left
+        # here is `--dev`, which by definition builds the api/web images
+        # from the working tree (the build context passed to terraform, the
+        # checkout recorded in the deployment's install-mode marker), plus
+        # the one-time migration that looks for a pre-#3835 deployment's
+        # state and tfvars in the checkout they used to live in.
+        'old_dir = REPO_ROOT / "terraform"',
+        'args.append(f"-var=repo_path={REPO_ROOT}")',
+        "checkout = REPO_ROOT if dev else None",
         "REPO_ROOT,",
         'REPO_ROOT / "web",',
         'fingerprint_paths=[REPO_ROOT / "web"],',
@@ -111,10 +118,15 @@ _ALLOWLIST: dict[str, set[str]] = {
         "return REPO_ROOT",
         'f"nyxgpt is running from an installed package ({REPO_ROOT} has no "',
         'f"installed package ({REPO_ROOT} has no pyproject.toml/src/nyxgpt/web).\\n"',
-        # Kubernetes local deploy: k8s/*.yaml manifests, same reasoning.
-        'K8S_DIR = REPO_ROOT / "k8s"',
+        # Kubernetes/Terraform local image builds from the working tree. The
+        # Kubernetes path reaches these only under `--dev` now (#3834): its
+        # default builds the published artifacts from a staged context, and
+        # `K8S_DIR` is no longer REPO_ROOT-relative at all -- the manifests
+        # ship as package data (`nyxgpt.resources.k8s`) and are synced to
+        # `~/.nyxGPT/k8s`, which is what makes `--kubernetes` runnable on a
+        # machine with no checkout.
         "context: Path = REPO_ROOT,",
-        'context=REPO_ROOT / "web",',
+        'context = REPO_ROOT / "web"',
     },
     "src/nyxgpt/release_tarball.py": {
         # Homebrew tap tarball vendoring (`ops package`) -- building a

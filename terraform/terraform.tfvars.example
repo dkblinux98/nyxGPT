@@ -1,6 +1,11 @@
 # Copy to terraform.tfvars and adjust as needed:
 #   cp terraform.tfvars.example terraform.tfvars
+#
+# `nyxgpt ops install --terraform --local` bootstraps this file for you at
+# ~/.nyxGPT/terraform/terraform.tfvars (filling auth_api_key in) and passes
+# the per-run variables -- api_image/web_image, build_from_source and, in dev
+# mode, repo_path -- on the command line, so they are deliberately absent
+# here.
 
-repo_path    = "/absolute/path/to/nyxGPT"
 auth_api_key = "REPLACE_WITH_A_REAL_KEY"
 cors_origins = "http://localhost:3000,http://127.0.0.1:3000"

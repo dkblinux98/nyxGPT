@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -99,18 +100,66 @@ def _workloads() -> dict[str, dict]:
     }
 
 
-def _totals_mi() -> tuple[int, int]:
-    """`(scheduled, standby)` MiB the shipped manifests reserve on one node."""
+# `[canary] total_replicas`'s shipped default: the CEILING a rollout may grow
+# a track to, since #3833 made the pool elastic. It is no longer a standing
+# size -- the difference between it and the stable Deployment's resting count
+# is what a rollout borrows and gives back.
+CANARY_POOL_CEILING = 4
+
+# What the stable Deployments rested at BEFORE #3833: a standing pool of the
+# same width. The #3825 sizing was measured against that pool, so a fault
+# injection that restores the old REQUESTS without also restoring the old POOL
+# injects a fraction of the defect and proves nothing -- the two land together
+# or the budget assertions below become unfalsifiable.
+PRE_3833_POOL_REPLICAS = 4
+
+
+def _totals(
+    per_pod: Callable[[dict], int],
+    *,
+    requests: dict[str, int] | None = None,
+    pool_replicas: int | None = None,
+) -> tuple[int, int]:
+    """`(scheduled, standby)` for one resource, in that resource's own unit.
+
+    `standby` is what a rollout adds to the node: the parked canary Pod plus
+    every stable replica the pool has to borrow to reach the ceiling (#3833).
+    While the pool stood at 4 that was one Pod, which is why counting one Pod
+    is not enough now.
+
+    `requests` and `pool_replicas` inject a counterfactual -- an older per-Pod
+    request for the named workloads, and the standing stable pool the
+    manifests carried before #3833 -- so the fault-injection tests can measure
+    the stack as it was without editing the shipped YAML.
+    """
+    workloads = _workloads()
+
+    def replicas_of(doc: dict) -> int:
+        if doc["kind"] == "DaemonSet":
+            return 1
+        if pool_replicas is not None and doc["metadata"]["name"].endswith("-stable"):
+            return pool_replicas
+        return int(doc["spec"].get("replicas", 1))
+
+    def size_of(doc: dict) -> int:
+        return (requests or {}).get(doc["metadata"]["name"], per_pod(doc))
+
     scheduled = 0
     standby = 0
-    for doc in _workloads().values():
-        per_pod = _pod_request_mi(doc)
-        replicas = 1 if doc["kind"] == "DaemonSet" else doc["spec"].get("replicas", 1)
+    for name, doc in workloads.items():
+        replicas = replicas_of(doc)
         if replicas == 0:
-            standby += per_pod
+            partner = workloads.get(f"{name.removesuffix('-canary')}-stable")
+            resting = replicas_of(partner) if partner else CANARY_POOL_CEILING - 1
+            standby += size_of(doc) * max(1, CANARY_POOL_CEILING - resting)
         else:
-            scheduled += per_pod * replicas
+            scheduled += size_of(doc) * replicas
     return scheduled, standby
+
+
+def _totals_mi() -> tuple[int, int]:
+    """`(scheduled, standby)` MiB the shipped manifests reserve on one node."""
+    return _totals(_pod_request_mi)
 
 
 # --- the manifests fit the node -------------------------------------------
@@ -131,11 +180,13 @@ def test_default_install_fits_a_default_docker_desktop_node() -> None:
 
 
 def test_a_canary_rollout_still_has_somewhere_to_land() -> None:
-    """`nyxgpt canary start` scales a parked Deployment to 1 on the same node.
+    """`nyxgpt canary start` has to land its whole borrowed pool on this node.
 
     The acceptance report saw this as "canary is broken": the rollout's Pod
     was Pending with Insufficient memory, because the steady-state stack had
-    already reserved 99% of the node.
+    already reserved 99% of the node. Since #3833 the rollout borrows the
+    stable replicas too, so the headroom it needs is the whole pool minus the
+    resting count -- not the single parked Pod it used to be.
     """
     scheduled, standby = _totals_mi()
     assert standby > 0, "no parked canary workload found -- this test is measuring nothing"
@@ -154,12 +205,14 @@ def test_the_pre_fix_sizing_would_still_be_caught() -> None:
     them -- otherwise a future headroom change could quietly make the
     assertions unfalsifiable.
     """
-    pre_fix = {"nyxgpt-api-stable": 512, "nyxgpt-web-stable": 256, "glitchtip": 512}
-    scheduled, _ = _totals_mi()
-    for name, old_request in pre_fix.items():
-        doc = _workloads()[name]
-        replicas = doc["spec"].get("replicas", 1)
-        scheduled += (old_request - _pod_request_mi(doc)) * replicas
+    pre_fix = {
+        "nyxgpt-api-stable": 512,
+        "nyxgpt-api-canary": 512,
+        "nyxgpt-web-stable": 256,
+        "nyxgpt-web-canary": 256,
+        "glitchtip": 512,
+    }
+    scheduled, _ = _totals(_pod_request_mi, requests=pre_fix, pool_replicas=PRE_3833_POOL_REPLICAS)
     budget = DOCKER_DESKTOP_ALLOCATABLE_MI - KUBE_SYSTEM_RESERVED_MI
     assert scheduled > budget, (
         "the pre-#3825 requests now fit the budget, so these tests no longer prove the "
@@ -253,16 +306,7 @@ def _pod_request_cpu_m(doc: dict) -> int:
 
 
 def _totals_cpu_m() -> tuple[int, int]:
-    scheduled = 0
-    standby = 0
-    for doc in _workloads().values():
-        per_pod = _pod_request_cpu_m(doc)
-        replicas = 1 if doc["kind"] == "DaemonSet" else doc["spec"].get("replicas", 1)
-        if replicas == 0:
-            standby += per_pod
-        else:
-            scheduled += per_pod * replicas
-    return scheduled, standby
+    return _totals(_pod_request_cpu_m)
 
 
 def test_the_default_stack_and_a_canary_fit_four_cpus() -> None:
@@ -283,14 +327,15 @@ def test_the_default_stack_and_a_canary_fit_four_cpus() -> None:
 
 def test_the_pre_fix_cpu_sizing_would_still_be_caught() -> None:
     """Fault injection for the test above, in the cpu dimension."""
-    pre_fix = {"nyxgpt-api-stable": 250, "nyxgpt-web-stable": 100}
-    scheduled, standby = _totals_cpu_m()
-    for name, old_request in pre_fix.items():
-        doc = _workloads()[name]
-        scheduled += (old_request - _pod_request_cpu_m(doc)) * doc["spec"].get("replicas", 1)
     # The canary pair tracked stable, so its request moved with it.
-    standby += (250 - _pod_request_cpu_m(_workloads()["nyxgpt-api-canary"])) + (
-        100 - _pod_request_cpu_m(_workloads()["nyxgpt-web-canary"])
+    pre_fix = {
+        "nyxgpt-api-stable": 250,
+        "nyxgpt-api-canary": 250,
+        "nyxgpt-web-stable": 100,
+        "nyxgpt-web-canary": 100,
+    }
+    scheduled, standby = _totals(
+        _pod_request_cpu_m, requests=pre_fix, pool_replicas=PRE_3833_POOL_REPLICAS
     )
     budget = DOCKER_DESKTOP_ALLOCATABLE_CPU_M - KUBE_SYSTEM_RESERVED_CPU_M
     assert scheduled + standby > budget, (
@@ -393,6 +438,47 @@ def test_workload_totals_multiply_by_replicas_and_park_zero_replica_workloads() 
     assert scheduled == 3456 * MIB
     assert standby == 256 * MIB
     assert [name for name, _ in breakdown] == ["cassandra x1", "api x4", "promtail x3"]
+
+
+def test_standby_counts_every_replica_a_rollout_borrows() -> None:
+    """A rollout GROWS the pool since #3833, so headroom is more than one Pod.
+
+    The stable track rests at 1 and `canary start` takes it to `[canary]
+    total_replicas` for the duration -- 3 borrowed stable replicas plus the
+    canary itself. Charging one Pod here is what would let an install pass
+    this preflight and strand the rollout anyway, which is #3825's defect one
+    step later.
+    """
+    objects = [
+        _workload("Deployment", "nyxgpt-api-stable", "256Mi", replicas=1),
+        _workload("Deployment", "nyxgpt-api-canary", "256Mi", replicas=0),
+    ]
+    scheduled, standby, _ = ops._workload_resource_requests(
+        objects, node_count=1, canary_pool_ceiling=4
+    )
+    assert scheduled == 256 * MIB
+    assert standby == 4 * 256 * MIB - scheduled
+
+
+def test_standby_is_one_pod_when_the_pool_already_stands_at_the_ceiling() -> None:
+    """An operator who scaled stable to the ceiling has already paid for the pool.
+
+    Nothing is borrowed in that case: the rollout re-slices what is running,
+    which is the pre-#3833 arithmetic and still the right answer here.
+    """
+    objects = [
+        _workload("Deployment", "nyxgpt-api-stable", "256Mi", replicas=4),
+        _workload("Deployment", "nyxgpt-api-canary", "256Mi", replicas=0),
+    ]
+    _, standby, _ = ops._workload_resource_requests(objects, node_count=1, canary_pool_ceiling=4)
+    assert standby == 256 * MIB
+
+
+def test_standby_falls_back_to_one_pod_for_a_parked_workload_with_no_stable_track() -> None:
+    """A parked workload that is not half of a canary pair is still just a Pod."""
+    objects = [_workload("Deployment", "some-parked-job", "128Mi", replicas=0)]
+    _, standby, _ = ops._workload_resource_requests(objects, node_count=1, canary_pool_ceiling=4)
+    assert standby == 128 * MIB
 
 
 def test_committed_memory_excludes_our_namespace_and_unscheduled_pods() -> None:
@@ -732,21 +818,36 @@ def test_a_failing_preflight_stops_the_install() -> None:
 
 
 def test_standalone_observability_install_is_preflighted_too() -> None:
-    """`ops observability --kubernetes --local` adds the layer that broke it."""
+    """`ops observability --kubernetes --local` adds the layer that broke it.
+
+    A failing preflight stops before anything reaches the *cluster*. It does
+    not stop the packaged-resource sync, which runs first on purpose (#3834):
+    the manifests the preflight renders are package data that only exists
+    under `K8S_DIR` once that sync has run, so preflighting ahead of it would
+    measure nothing on a machine with no checkout and report a skip for a node
+    it could have measured.
+    """
+    calls: list[str] = []
     with (
         patch.object(ops, "_ensure_kubectl_and_cluster", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(
             ops,
             "_preflight_k8s_capacity",
-            return_value=[ops.OpsResult(False, "Not enough node memory")],
+            side_effect=lambda *a, **k: calls.append("preflight")
+            or [ops.OpsResult(False, "Not enough node memory")],
         ) as preflight,
         patch.object(ops, "_apply_k8s_observability") as apply_observability,
-        patch.object(ops, "_sync_packaged_resources") as sync,
+        patch.object(
+            ops,
+            "_sync_packaged_resources",
+            side_effect=lambda *a, **k: calls.append("sync") or [ops.OpsResult(True, "synced")],
+        ) as sync,
     ):
         results = ops.observability_kubernetes()
 
     preflight.assert_called_once()
-    sync.assert_not_called()
+    sync.assert_called_once()
+    assert calls == ["sync", "preflight"]
     apply_observability.assert_not_called()
     assert not all(r.ok for r in results)
 
@@ -893,3 +994,47 @@ def test_infra_status_surfaces_unschedulable_pods(monkeypatch) -> None:
         "loki-2": "pending",
         "prometheus-abc": "failed",
     }
+
+
+# --- the fault injections in CI reconstruct BOTH pre-fix conditions ---------
+#
+# `k8s-capacity-smoke.yml` is where the arithmetic above is checked against a
+# real node, and its two injection phases are only gates if they reconstruct
+# the sizing #3825 was filed against: the old requests AND the four-wide
+# standing pool they were paid for. The requests alone, applied to the elastic
+# pool this repo ships since #3833, are a fraction of the defect and fit the
+# node -- the injection then passes while proving nothing, which is how the
+# first version of that workflow behaved on this branch's own head. These
+# tests pin the coupling so the pair cannot come apart again, and so one
+# injection cannot be fixed with its twin left behind.
+
+CAPACITY_SMOKE = REPO_ROOT / ".github" / "workflows" / "k8s-capacity-smoke.yml"
+INJECT_SCRIPT = REPO_ROOT / "scripts" / "k8s-inject-pre-fix-sizing.sh"
+
+
+def test_both_capacity_injections_restore_the_pre_3833_pool() -> None:
+    workflow = CAPACITY_SMOKE.read_text()
+    calls = [
+        line.strip() for line in workflow.splitlines() if "k8s-inject-pre-fix-sizing.sh" in line
+    ]
+    modes = sorted(line.rsplit(" ", 1)[-1] for line in calls)
+    assert modes == ["cpu", "memory"], (
+        "both injection phases must reconstruct the pre-fix sizing through "
+        f"the shared script; found {calls}"
+    )
+    # An inline `sed` on a manifest's requests is how the two phases drifted
+    # apart: it restores the requests and silently leaves the pool at 1.
+    assert "sed -i 's/memory:" not in workflow
+    assert "sed -i 's/cpu:" not in workflow
+
+
+def test_the_injection_script_restores_pool_and_requests_together() -> None:
+    script = INJECT_SCRIPT.read_text()
+    assert f"PRE_3833_POOL_REPLICAS={PRE_3833_POOL_REPLICAS}" in script, (
+        "the script's standing-pool width must be the one these tests measure "
+        "the pre-#3833 stack with"
+    )
+    # Both modes go through the same restore, so neither can ship without it.
+    assert script.count("restore_standing_pool\n") == 2
+    # A no-op substitution is the silent failure this whole comment is about.
+    assert "injection no-op" in script

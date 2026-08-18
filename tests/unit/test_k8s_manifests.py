@@ -30,6 +30,8 @@ from typing import Any
 import pytest
 import yaml
 
+from nyxgpt import canary
+
 K8S_DIR = Path(__file__).resolve().parents[2] / "k8s"
 REPO_ROOT = K8S_DIR.parent
 
@@ -86,10 +88,25 @@ def test_api_config_points_cassandra_at_the_in_cluster_service():
 def test_sessions_are_shared_across_replicas():
     """With the `file` backend each api replica keeps its own session list, so
     consecutive requests from one browser see different sessions -- the
-    "Failed to load sessions" half of #3786. The deployment runs several
-    replicas, so the session store must be the shared one."""
+    "Failed to load sessions" half of #3786. Stable rests at one replica
+    since #3833, which would make the file backend look fine right up until
+    a canary rollout grows the pool and forks the session list, so the store
+    still has to be the shared one."""
     assert _api_config().get("nyxgpt", "session_backend") == "cassandra"
-    assert _load("deployment-stable.yaml")["spec"]["replicas"] > 1
+    resting = _load("deployment-stable.yaml")["spec"]["replicas"]
+    assert canary._plan_rollout(resting, 25, 4).pool > 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("manifest", ["deployment-stable.yaml", "deployment-web-stable.yaml"])
+def test_stable_deployments_rest_at_one_replica(manifest: str):
+    """No install may carry a standing pool just to make canary possible (#3833).
+
+    The pool is grown by `nyxgpt canary start` and handed back on
+    promote/rollback (see canary._plan_rollout), so the manifests ship the
+    resting count -- not the widest one a rollout might need.
+    """
+    assert _load(manifest)["spec"]["replicas"] == 1
 
 
 @pytest.mark.unit

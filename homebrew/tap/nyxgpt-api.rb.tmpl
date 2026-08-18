@@ -164,6 +164,13 @@ class NyxgptApi < Formula
     site_packages = venv/"lib/python3.12/site-packages/nyxgpt"
     cp buildpath/"example.config.ini", site_packages/"example.config.ini"
 
+    # Expose the CLI itself, not just the API service wrapper (#3850): the
+    # `nyxgpt` console script pip creates lands in the keg's venv, which is on
+    # nobody's PATH, so `brew install` from this tap produced a stack the
+    # operator had no wrapped command to drive. See ../nyxgpt-api.rb's install
+    # block for why this is a symlink rather than another bash wrapper.
+    bin.install_symlink venv/"bin/nyxgpt"
+
     (bin/"nyxgpt-api").write <<~EOS
       #!/bin/bash
       set -euo pipefail
@@ -221,9 +228,19 @@ PY
   end
 
   test do
-    # We only validate that the venv and its uvicorn install exist -- the
-    # actual API is exercised by integration tests in the repo.
+    # The venv and its uvicorn install have to exist -- the actual API is
+    # exercised by integration tests in the repo.
     assert_predicate libexec/"venv/bin/python3", :exist?
     system libexec/"venv/bin/python3", "-c", "import nyxgpt.app"
+
+    # And the product has to be operable, not merely importable (#3850): the
+    # two assertions above hold for a keg with no reachable CLI, which is what
+    # this tap published. See ../nyxgpt-api.rb's test block for the account.
+    assert_predicate bin/"nyxgpt", :exist?
+    reported = shell_output("#{bin}/nyxgpt --version")
+    assert_match(/\Anyxgpt \d/, reported)
+    # 0.0.0 is nyxgpt.version's "could not be determined" sentinel -- see
+    # ../nyxgpt-api.rb.
+    refute_match(/\Anyxgpt 0\.0\.0/, reported)
   end
 end

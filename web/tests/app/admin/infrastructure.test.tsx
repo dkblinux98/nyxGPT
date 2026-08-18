@@ -539,6 +539,304 @@ describe('InfrastructurePage', () => {
     });
   });
 
+  // --- The Kubernetes card's OWN install mode (#3834) ---
+  //
+  // Reported separately from the native marker on purpose: a host can run a
+  // native dev install and a Kubernetes artifact deployment at the same time,
+  // and reporting one for the other is the defect this section exists to
+  // prevent. Each of the three states below is a different thing an operator
+  // must be able to act on, so each is pinned.
+  const withK8sInstallMode = (install_mode: unknown) => ({
+    ...mockStatusKubernetesServing,
+    kubernetes: { ...mockStatusKubernetesServing.kubernetes, install_mode },
+  });
+
+  it('reports the Kubernetes deployment as unrecorded when nothing recorded a mode (#3834)', async () => {
+    // `recorded: false` -- a cluster deployed from another machine, or before
+    // nyxGPT recorded the mode. It must NOT read as the artifact default:
+    // that default would be a guess about someone else's deployment.
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json(
+          withK8sInstallMode({
+            mode: 'artifact',
+            checkout: null,
+            label: 'unrecorded (no install-mode marker for this cluster)',
+            recorded: false,
+          })
+        )
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    expect(await screen.findByText('unrecorded')).toBeInTheDocument();
+    expect(screen.getByText(/no marker for this deployment/)).toBeInTheDocument();
+  });
+
+  it('degrades the Kubernetes install mode to unrecorded against an older api (#3834)', async () => {
+    // The field is optional end-to-end: an api process from before #3834 (or
+    // mid-upgrade, when web restarts first) sends no `install_mode` at all.
+    // Absent is the same claim as unrecorded -- never the artifact default.
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json(withK8sInstallMode(undefined))
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    expect(await screen.findByText('unrecorded')).toBeInTheDocument();
+    expect(
+      screen.queryByText(/images built from the published/)
+    ).not.toBeInTheDocument();
+  });
+
+  it('names the checkout a dev-mode Kubernetes deployment was built from (#3834)', async () => {
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json(
+          withK8sInstallMode({
+            mode: 'dev',
+            checkout: '/Users/owner/src/nyxGPT',
+            label: 'dev (images built from the working tree at /Users/owner/src/nyxGPT)',
+            recorded: true,
+          })
+        )
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    expect(await screen.findByText('dev')).toBeInTheDocument();
+    expect(screen.getByText('/Users/owner/src/nyxGPT')).toBeInTheDocument();
+    // The images are frozen at install time -- the operator has to be told
+    // which command puts the cluster back on the artifact path.
+    expect(
+      screen.getByText(/as it was at install time, not from published artifacts/)
+    ).toBeInTheDocument();
+  });
+
+  it('still reads as dev when the Kubernetes marker recorded no checkout (#3834)', async () => {
+    // `checkout` is nullable in the marker exactly as it is for native, and
+    // losing the path must not silently downgrade the warning to artifact
+    // wording -- the Pods still run something that was never published.
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json(
+          withK8sInstallMode({
+            mode: 'dev',
+            checkout: null,
+            label: 'dev (images built from the working tree at unknown checkout)',
+            recorded: true,
+          })
+        )
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    expect(await screen.findByText('dev')).toBeInTheDocument();
+    expect(screen.getByText('an unrecorded checkout')).toBeInTheDocument();
+  });
+
+  it('reports a Kubernetes deployment built from published artifacts (#3834)', async () => {
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json(
+          withK8sInstallMode({
+            mode: 'artifact',
+            checkout: null,
+            label:
+              'artifact (images built from the published nyxgpt-api/nyxgpt-web artifacts)',
+            recorded: true,
+          })
+        )
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    expect(await screen.findByText('artifact')).toBeInTheDocument();
+    expect(screen.getByText(/images built from the published/)).toBeInTheDocument();
+    expect(screen.queryByText('unrecorded')).not.toBeInTheDocument();
+  });
+
+  // --- The Terraform card's OWN install mode (#3835) -------------------
+  // A Terraform deployment records its own marker, so the card must report
+  // that deployment's build and never the native one above it. The state
+  // that matters most is the third one: containers running with no marker,
+  // which is what every pre-#3835 deployment looks like after an upgrade --
+  // and which was built from a working tree, so badging it ARTIFACT IMAGES
+  // asserts the opposite of the truth.
+
+  it('labels the terraform card as dev images and names the working tree (#3835)', async () => {
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json({
+          ...mockStatusTerraform,
+          terraform: {
+            ...mockStatusTerraform.terraform,
+            install_mode: {
+              mode: 'dev',
+              checkout: '/Users/owner/src/nyxGPT',
+              label: 'dev (images built from the working tree at /Users/owner/src/nyxGPT)',
+              images: { api: 'nyxgpt-tf-api:dev', web: 'nyxgpt-tf-web:dev' },
+              recorded: true,
+            },
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('DEV IMAGES')).toBeInTheDocument();
+    });
+    expect(screen.getByText('/Users/owner/src/nyxGPT')).toBeInTheDocument();
+    expect(screen.getByText(/not exercising the artifact path/)).toBeInTheDocument();
+    expect(screen.queryByText('IMAGES NOT RECORDED')).not.toBeInTheDocument();
+  });
+
+  it('still labels terraform dev images when the marker recorded no checkout (#3835)', async () => {
+    // The Terraform twin of the native nullable-checkout case: losing the
+    // path must not downgrade the card to the artifact wording.
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json({
+          ...mockStatusTerraform,
+          terraform: {
+            ...mockStatusTerraform.terraform,
+            install_mode: {
+              mode: 'dev',
+              checkout: null,
+              label: 'dev (images built from the working tree at unknown checkout)',
+              images: {},
+              recorded: true,
+            },
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('DEV IMAGES')).toBeInTheDocument();
+    });
+    expect(screen.getByText('an unrecorded checkout')).toBeInTheDocument();
+  });
+
+  it('labels the terraform card as artifact images when the install recorded it (#3835)', async () => {
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json({
+          ...mockStatusTerraform,
+          terraform: {
+            ...mockStatusTerraform.terraform,
+            install_mode: {
+              mode: 'artifact',
+              checkout: null,
+              label:
+                'artifact (published container images -- the repo-less default) ' +
+                '[api=ghcr.io/dkblinux98/nyxgpt-api:3.0.0]',
+              images: { api: 'ghcr.io/dkblinux98/nyxgpt-api:3.0.0' },
+              recorded: true,
+            },
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('ARTIFACT IMAGES')).toBeInTheDocument();
+    });
+    // The label names the image actually serving, not just the mode.
+    expect(screen.getByText(/ghcr\.io\/dkblinux98\/nyxgpt-api:3\.0\.0/)).toBeInTheDocument();
+    expect(screen.queryByText('IMAGES NOT RECORDED')).not.toBeInTheDocument();
+  });
+
+  it('reports a deployed-but-unrecorded terraform stack as not recorded, never artifact (#3835)', async () => {
+    // The post-upgrade state of every deployment made before #3835: the
+    // containers are up, nothing wrote a marker, and the build is genuinely
+    // unknown. Claiming the artifact default here would state the reverse of
+    // what those deployments actually run.
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json({
+          ...mockStatusTerraform,
+          terraform: {
+            ...mockStatusTerraform.terraform,
+            install_mode: {
+              mode: 'artifact',
+              checkout: null,
+              label: 'not recorded (a Terraform deployment is running that no install recorded)',
+              images: {},
+              recorded: false,
+            },
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('IMAGES NOT RECORDED')).toBeInTheDocument();
+    });
+    expect(screen.getByText(/no install recorded what they were built from/)).toBeInTheDocument();
+    expect(screen.queryByText('ARTIFACT IMAGES')).not.toBeInTheDocument();
+    expect(screen.queryByText('DEV IMAGES')).not.toBeInTheDocument();
+  });
+
+  it('reports not recorded when an older api omits the terraform install_mode entirely (#3835)', async () => {
+    // `mockStatusTerraform` has containers running and no `install_mode` key
+    // at all -- an api process from before this field existed. Same answer:
+    // unknown, not artifact.
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusTerraform)));
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('IMAGES NOT RECORDED')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('ARTIFACT IMAGES')).not.toBeInTheDocument();
+  });
+
+  it('keeps the artifact default for a recorded but undeployed terraform stack (#3835)', async () => {
+    // Nothing is running, so there is no live deployment to mis-describe --
+    // the recorded marker is the whole truth and the card reports it.
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json({
+          ...mockStatusEmpty,
+          terraform: {
+            probe_available: true,
+            deployed: false,
+            containers: {},
+            install_mode: {
+              mode: 'artifact',
+              checkout: null,
+              label: 'artifact (published container images -- the repo-less default)',
+              images: {},
+              recorded: true,
+            },
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('ARTIFACT IMAGES')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('IMAGES NOT RECORDED')).not.toBeInTheDocument();
+  });
+
   it('lists the in-cluster observability workloads and the wrapped port-forward command (#3787)', async () => {
     server.use(
       http.get('/api/v1/infra/status', () =>

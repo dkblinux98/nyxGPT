@@ -24,8 +24,15 @@ name: Kubernetes Capacity Smoke
 #      assert a Pod is stranded on `Insufficient cpu`. Right-sizing only the
 #      resource the issue named moved the wall instead of removing it: the
 #      canary Pod failed on cpu once the memory fitted;
-#   3. the shipped sizing -- assert EVERY Pod is scheduled, that both canary
-#      Deployments scale up and land, and that the preflight passes.
+#   3. the shipped sizing -- assert EVERY Pod is scheduled, that a whole
+#      rollout's borrowed pool lands, and that the preflight passes.
+#
+# Both injections restore the pre-#3833 STANDING POOL (`replicas: 4` on the
+# stable Deployments) as well as the pre-#3825 requests. That pair is what
+# #3825 measured: the requests alone, applied to the elastic pool this repo
+# ships now (`replicas: 1`, #3833), reconstruct a fraction of the defect and
+# fit the node -- an injection that "passes" by proving nothing (V-022). Each
+# `sed` below is therefore checked for having actually matched.
 #
 # Deliberately no image builds: scheduling is decided from the Pod spec's
 # requests before an image is ever pulled, so building api/web here would add
@@ -98,8 +105,10 @@ jobs:
           cp -r k8s /tmp/prefix-k8s
           cp /tmp/prefix-k8s/secret.example.yaml /tmp/prefix-k8s/secret.yaml
           cp /tmp/prefix-k8s/observability/secret.example.yaml /tmp/prefix-k8s/observability/secret.yaml
-          sed -i 's/memory: 256Mi/memory: 512Mi/' /tmp/prefix-k8s/deployment-stable.yaml
-          sed -i 's/memory: 192Mi/memory: 256Mi/' /tmp/prefix-k8s/deployment-web-stable.yaml
+          # The old requests AND the pre-#3833 standing pool they were paid
+          # four times over for -- see the script's header for why one without
+          # the other injects a fraction of the defect.
+          ./scripts/k8s-inject-pre-fix-sizing.sh /tmp/prefix-k8s memory
           kubectl apply -k /tmp/prefix-k8s/
           kubectl apply -k /tmp/prefix-k8s/observability/
           sleep 45
@@ -157,10 +166,9 @@ jobs:
           cp -r k8s /tmp/prefix-cpu-k8s
           cp /tmp/prefix-cpu-k8s/secret.example.yaml /tmp/prefix-cpu-k8s/secret.yaml
           cp /tmp/prefix-cpu-k8s/observability/secret.example.yaml /tmp/prefix-cpu-k8s/observability/secret.yaml
-          sed -i 's/cpu: 100m/cpu: 250m/' /tmp/prefix-cpu-k8s/deployment-stable.yaml
-          sed -i 's/cpu: 100m/cpu: 250m/' /tmp/prefix-cpu-k8s/deployment-canary.yaml
-          sed -i 's/cpu: 50m/cpu: 100m/' /tmp/prefix-cpu-k8s/deployment-web-stable.yaml
-          sed -i 's/cpu: 50m/cpu: 100m/' /tmp/prefix-cpu-k8s/deployment-web-canary.yaml
+          # Same pairing as the memory half: the old cpu requests were only a
+          # wall because four standing replicas each reserved 250m (#3833).
+          ./scripts/k8s-inject-pre-fix-sizing.sh /tmp/prefix-cpu-k8s cpu
           kubectl apply -k /tmp/prefix-cpu-k8s/
           kubectl apply -k /tmp/prefix-cpu-k8s/observability/
           kubectl -n nyxgpt scale deployment/nyxgpt-api-canary deployment/nyxgpt-web-canary --replicas=1
@@ -184,10 +192,17 @@ jobs:
       - name: The shipped sizing schedules every Pod
         run: |
           set -euo pipefail
-          cp k8s/secret.example.yaml k8s/secret.yaml
-          cp k8s/observability/secret.example.yaml k8s/observability/secret.yaml
-          kubectl apply -k k8s/
-          kubectl apply -k k8s/observability/
+          # #3834: the manifests an install applies are package data synced to
+          # ~/.nyxGPT/k8s, and the preflight below reads them from there --
+          # not from the checkout. Sync them the way the install's first step
+          # does, so the sizing measured here is the sizing the product ships
+          # AND the one the preflight is about to render.
+          K8S_DIR=$(python -c 'from nyxgpt import ops; ops._sync_packaged_resources(); print(ops.K8S_DIR)')
+          echo "synced manifests: $K8S_DIR"
+          cp "$K8S_DIR/secret.example.yaml" "$K8S_DIR/secret.yaml"
+          cp "$K8S_DIR/observability/secret.example.yaml" "$K8S_DIR/observability/secret.yaml"
+          kubectl apply -k "$K8S_DIR/"
+          kubectl apply -k "$K8S_DIR/observability/"
           sleep 45
           kubectl -n nyxgpt get pods -o wide
           unscheduled=$(./scripts/k8s-unscheduled-pods.sh nyxgpt)
@@ -203,29 +218,60 @@ jobs:
             || { echo "::error::prometheus is still unscheduled"; exit 1; }
           echo "every Pod scheduled, prometheus included"
 
-      - name: A canary rollout still has somewhere to land
+      - name: A whole rollout's borrowed pool still has somewhere to land
         run: |
           set -euo pipefail
           # `nyxgpt canary start` is the operator's command, and it drives a
           # RUNNING stack -- no image was built in this job. The replica scale
           # it performs is the part the capacity claim is about, so that is
           # what is reproduced here.
-          kubectl -n nyxgpt scale deployment/nyxgpt-api-canary deployment/nyxgpt-web-canary --replicas=1
-          sleep 30
+          #
+          # Since #3833 that scale is not one parked Pod per track: stable
+          # rests at 1 and a rollout GROWS the track to `[canary]
+          # total_replicas` Pods, so the node has to hold the whole borrow
+          # (ceiling minus resting, on both tracks) -- which is exactly what
+          # `ops._workload_resource_requests` charges as `standby`. Checking
+          # only the canary Pod would let this gate pass a node that still
+          # strands the rollout: #3825's defect one step later. The ceiling is
+          # read from config rather than hardcoded, so lowering it lowers what
+          # this step demands.
+          ceiling=$(python -c 'from nyxgpt.config import get_canary_total_replicas, load_config; print(get_canary_total_replicas(load_config()))')
+          echo "canary pool ceiling from config: $ceiling replicas per track"
+          for track in api web; do
+            kubectl -n nyxgpt scale "deployment/nyxgpt-${track}-stable" --replicas=$((ceiling - 1))
+            kubectl -n nyxgpt scale "deployment/nyxgpt-${track}-canary" --replicas=1
+          done
+          sleep 45
+          kubectl -n nyxgpt get pods -o wide
+          unscheduled=$(./scripts/k8s-unscheduled-pods.sh nyxgpt)
+          if [ -n "$unscheduled" ]; then
+            names=$(echo "$unscheduled" | tr '\n' ' ')
+            echo "::error::a rollout's borrowed pool ($ceiling replicas per track) does not fit a ${TARGET_ALLOCATABLE_MI}Mi node: $names"
+            kubectl -n nyxgpt get events --field-selector reason=FailedScheduling | tail -20
+            exit 1
+          fi
           for pool in nyxgpt-api-canary-pool nyxgpt-web-canary-pool; do
-            node=$(kubectl -n nyxgpt get pods -l "app=$pool,track=canary" \
-              -o jsonpath='{.items[0].spec.nodeName}' 2>/dev/null || true)
-            [ -n "$node" ] || {
-              echo "::error::$pool's canary Pod could not be scheduled -- the #3825 canary failure again"
+            ready=$(kubectl -n nyxgpt get pods -l "app=$pool" \
+              -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}' | grep -c . || true)
+            [ "$ready" -eq "$ceiling" ] || {
+              echo "::error::$pool placed $ready of $ceiling Pods -- the borrowed pool did not land"
               kubectl -n nyxgpt get events --field-selector reason=FailedScheduling | tail -10
               exit 1; }
-            echo "  $pool canary Pod scheduled on $node"
+            echo "  $pool: all $ceiling Pods of the grown pool scheduled"
           done
-          kubectl -n nyxgpt scale deployment/nyxgpt-api-canary deployment/nyxgpt-web-canary --replicas=0
+          # Back to the resting shape the manifests ship, so the preflight
+          # below reads the same cluster an install would leave behind.
+          for track in api web; do
+            kubectl -n nyxgpt scale "deployment/nyxgpt-${track}-stable" --replicas=1
+            kubectl -n nyxgpt scale "deployment/nyxgpt-${track}-canary" --replicas=0
+          done
 
       - name: The preflight passes the shipped sizing
         run: |
           set -euo pipefail
+          # No K8S_DIR override here, deliberately: this call reads the synced
+          # manifests and the bootstrapped app-tier Secret the step above put
+          # under ~/.nyxGPT/k8s, which is exactly what an install hands it.
           python - <<'PY'
           import sys
           from nyxgpt import ops

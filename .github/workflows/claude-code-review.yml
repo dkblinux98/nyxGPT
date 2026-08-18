@@ -167,13 +167,37 @@ jobs:
 
           echo "Linter checks complete"
 
+      # #3896: the review gate ran the whole tree on every round, including
+      # every REQUEST_CHANGES re-review. Scope it to what the diff can reach,
+      # reusing the file list the "Detect changed languages" step already
+      # cached. Unknown paths and conftest/pyproject changes still select
+      # everything, and the merge boundary (push to the release branch in
+      # ci-tests.yml) remains unscoped.
+      - name: Select test suites for this diff
+        id: select
+        run: |
+          set -euo pipefail
+          mapfile -t FILES < "$RUNNER_TEMP/pr-changed-files.txt"
+          python3 scripts/ci/select_tests.py --files "${FILES[@]}" --github-output \
+            >> "$GITHUB_OUTPUT"
+
       - name: Run tests
         id: test
+        env:
+          PYTEST_ARGS: ${{ steps.select.outputs.pytest_args }}
+          FULL: ${{ steps.select.outputs.full }}
         run: |
-          echo "Running pytest (unit tests only)..."
-          python -m pytest tests/unit/ -v \
-            --cov=src/nyxgpt --cov-report=term-missing \
-            || echo "pytest_failed=true" >> "$GITHUB_OUTPUT"
+          echo "Running pytest: $PYTEST_ARGS"
+          if [[ "$FULL" == "true" ]]; then
+            # Coverage over a scoped run reports a number about the subset, not
+            # about the tree, so it is only measured when the run is complete.
+            python -m pytest $PYTEST_ARGS -v \
+              --cov=src/nyxgpt --cov-report=term-missing \
+              || echo "pytest_failed=true" >> "$GITHUB_OUTPUT"
+          else
+            python -m pytest $PYTEST_ARGS -v \
+              || echo "pytest_failed=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Set up Node.js
         if: steps.changed.outputs.web_changed == 'true'
