@@ -255,7 +255,8 @@ nyxgpt ops port-forward --target observability
 
 See [Observability in the cluster](#observability-in-the-cluster) below.
 
-The `nyxgpt-api` Pods deployed here are also watched by the same
+Every Pod deployed here -- api, web, Cassandra, Ollama and the observability
+overlay -- is also watched by the same
 [self-heal watchdog](self-healing.md) as every other deployment path -- see
 [self-healing.md#kubernetes-mode](self-healing.md#kubernetes-mode) for how it
 checks Pod readiness via `kubectl get pods` and heals via `kubectl delete
@@ -329,12 +330,14 @@ Notes:
   `job="nyxgpt"` plus a per-component `service_name` (`api`, `web`,
   `grafana`, ...), with the same level/logger extraction as
   `docker/promtail-config.yml`.
-- **Restarts are Kubernetes' own.** The self-heal watchdog restarts running
-  *Compose* observability containers (see
-  [self-healing.md](self-healing.md)); in-cluster, each of these workloads is
-  a Deployment (or DaemonSet), so the cluster's own controllers restart a
-  failed Pod. The watchdog's Kubernetes mode stays focused on the app tier's
-  Pods.
+- **Restarts are Kubernetes' own, with the watchdog on top.** Each of these
+  workloads is a Deployment (or DaemonSet), so the cluster's own controllers
+  restart a failed Pod. The [self-heal watchdog](self-healing.md) watches
+  these Pods too (#3828 -- it reports them under `tier: observability` and
+  heals a stuck one by deleting it, the same action it takes on an app-tier
+  Pod), which is what makes the tier visible on the Self-Heal page in this
+  mode rather than surveyed through a Compose stack the deployment does not
+  have.
 - **Evidence.** `.github/workflows/k8s-observability-smoke.yml` runs the
   whole thing on a real kind cluster: it first proves the pre-#3787 app-tier
   apply leaves zero observability workloads, then asserts all ten roll out,

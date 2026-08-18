@@ -30,6 +30,13 @@
 #      build that never shipped the data tier, which is how a green CI run
 #      and a broken stack coexist.
 #
+# It also runs scripts/k8s-self-heal-coverage-smoke.py against the same live
+# cluster (#3828): whether self-heal names this deployment, watches all four
+# core tiers plus the in-cluster observability tier rather than the api pool
+# alone, and can heal a non-api Pod. That script carries its own
+# fault-injection half -- it reconstructs the pre-#3828 (api-only) survey from
+# the same cluster and asserts its checks fail against it.
+#
 # The observability layer's own behaviour (UIs answering, Grafana datasources,
 # promtail shipping into Loki) is k8s-observability-smoke.yml's job and is not
 # duplicated here -- what this script adds is that the layer comes up *with*
@@ -105,12 +112,12 @@ chat_round_trip() {
     echo "$out" | grep -q '"content"' || return 1
 }
 
-step "1/8 Bring the stack up: nyxgpt ops install --kubernetes --local"
+step "1/9 Bring the stack up: nyxgpt ops install --kubernetes --local"
 # No --skip-observability: this is the command as a user types it (#3826).
 nyxgpt ops install --kubernetes --local --api-key "$API_KEY"
 ok "install --kubernetes --local completed"
 
-step "2/8 The data/LLM tier exists and is Ready"
+step "2/9 The data/LLM tier exists and is Ready"
 # `install` already waits for these (ops._wait_for_k8s_data_tier); asserting
 # again here is what makes the *absence* of the tier a test failure rather
 # than a silently degraded stack.
@@ -135,7 +142,7 @@ ok "embedding model ${EMBEDDING_MODEL} present in the in-cluster Ollama"
 # the rollout-status wait above only returned because both were there -- this
 # assertion names which model, so a probe regression fails with the reason.
 
-step "3/8 The observability layer came up with the app tier"
+step "3/9 The observability layer came up with the app tier"
 # Every workload k8s/observability/ ships, prometheus first: it is the one the
 # SRE dashboard's metrics tiles and every Grafana panel read from, and it is
 # the workload #3787 found missing. `install` already waits for these
@@ -153,7 +160,7 @@ kubectl -n "$NAMESPACE" rollout status ds/promtail --timeout=300s ||
     fail "promtail never became Ready in the default install"
 ok "all ten observability workloads are Ready alongside the app tier"
 
-step "4/8 Nothing is left Pending -- the whole default stack fits on the node"
+step "4/9 Nothing is left Pending -- the whole default stack fits on the node"
 # The failure mode this exists for: the node cannot fit the default stack's
 # requests, so Pods sit Pending forever and every other assertion below either
 # hangs or passes on a partial stack. Report the arithmetic either way, so a
@@ -174,19 +181,19 @@ default stack (size the runner or the kind node, do not drop observability)"
 fi
 ok "no Pending Pods: the default stack (app + data/LLM + observability) fits"
 
-step "5/8 The user path works: sessions list, via the web Service"
+step "5/9 The user path works: sessions list, via the web Service"
 start_port_forward
 curl -fsS "${BASE}/api/sessions" >/dev/null ||
     fail "GET /api/sessions failed -- this is the UI's 'Failed to load sessions'"
 ok "session list loads through the web UI's own proxy route"
 
-step "6/8 A real chat round-trip"
+step "6/9 A real chat round-trip"
 curl -fsS -X POST "${BASE}/api/sessions/init" -H 'Content-Type: application/json' \
     -d "{\"name\":\"${SESSION}\"}" >/dev/null || fail "could not create a chat session"
 chat_round_trip "$SESSION" || fail "chat round-trip produced no answer -- no chat is possible"
 ok "chat answered through web -> api -> in-cluster Ollama"
 
-step "7/8 Sessions are shared by every api replica (Cassandra-backed)"
+step "7/9 Sessions are shared by every api replica (Cassandra-backed)"
 # With the file backend each of the 4 api replicas keeps its own session list,
 # so consecutive requests from one browser see different sessions. Poll enough
 # times to land on every replica.
@@ -199,7 +206,15 @@ kubectl -n "$NAMESPACE" exec cassandra-0 -- \
     fail "session ${SESSION} is not in Cassandra -- the session store is not the shared one"
 ok "session is stored in the in-cluster Cassandra and visible from every replica"
 
-step "8/8 Fault injection: the pre-#3786 topology must FAIL this same check"
+step "8/9 Self-heal sees the whole cluster, not just the api pool (#3828)"
+# Deletes a web Pod for real (the heal action), which is why it runs after the
+# user-path steps and why the tunnel is dropped first -- step 9 reopens it.
+stop_port_forward
+python3 scripts/k8s-self-heal-coverage-smoke.py ||
+    fail "self-heal does not cover this deployment -- see the output above (#3828)"
+ok "self-heal names the mode, watches every tier, and heals a non-api Pod"
+
+step "9/9 Fault injection: the pre-#3786 topology must FAIL this same check"
 stop_port_forward
 kubectl -n "$NAMESPACE" delete statefulset cassandra ollama --wait=true >/dev/null
 kubectl -n "$NAMESPACE" wait --for=delete pod/ollama-0 --timeout=180s >/dev/null 2>&1 || true

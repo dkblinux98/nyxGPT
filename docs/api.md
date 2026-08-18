@@ -1315,21 +1315,37 @@ instead), are never `giving_up`, and are not auto-healed. Every other row
 carries `known: true`. Clients that only understand two states must treat a
 missing/`false` `known` as "do not report this component as down".
 
+`tier` is populated for `source: "kubernetes"` rows only, which are named
+after a Pod rather than after a component: `"core"` for the api/web/
+cassandra/ollama Pods and `"observability"` for a `k8s/observability/`
+workload's Pod (empty string for every other source). It is what tells a
+caller which part of the stack a Pod row belongs to, and what lets `mode`
+report `"kubernetes"` at all -- see
+[self-healing.md#kubernetes-mode](self-healing.md#kubernetes-mode).
+
+`observability_source` says where the observability tier's rows came from
+this pass: `"kubernetes"` when it was read in-cluster (a Kubernetes
+deployment -- the `compose_probe_*` fields then say nothing about it and a
+client must not present them as a verdict on that tier), `"compose"`
+otherwise.
+
 **Response:**
 
 ```json
 {
   "enabled": true,
   "mode": "terraform",
+  "observability_source": "compose",
   "compose_probe_available": true,
   "compose_probe_reason": "",
   "components": [
-    { "service": "api", "container": "nyxgpt-api", "state": "started", "health": "", "healthy": true, "source": "native", "desired": true, "known": true, "restart_count": 0, "giving_up": false },
-    { "service": "web", "container": "nyxgpt-web-1", "state": "running", "health": "healthy", "healthy": true, "source": "compose", "desired": true, "known": true, "restart_count": 0, "giving_up": false },
-    { "service": "cassandra", "container": "nyxgpt-tf-cassandra", "state": "running", "health": "healthy", "healthy": true, "source": "terraform", "desired": true, "known": true, "restart_count": 0, "giving_up": false },
-    { "service": "nyxgpt-api-stable-7f8b9c-abcde", "container": "nyxgpt-api-stable-7f8b9c-abcde", "state": "Running", "health": "ready", "healthy": true, "source": "kubernetes", "desired": true, "known": true, "restart_count": 0, "giving_up": false },
-    { "service": "grafana", "container": "", "state": "absent", "health": "", "healthy": false, "source": "compose", "desired": true, "known": true, "restart_count": 5, "giving_up": true },
-    { "service": "loki", "container": "nyxgpt-loki-1", "state": "exited", "health": "", "healthy": false, "source": "compose", "desired": false, "known": true, "restart_count": 0, "giving_up": false }
+    { "service": "api", "container": "nyxgpt-api", "state": "started", "health": "", "healthy": true, "source": "native", "desired": true, "known": true, "tier": "", "restart_count": 0, "giving_up": false },
+    { "service": "web", "container": "nyxgpt-web-1", "state": "running", "health": "healthy", "healthy": true, "source": "compose", "desired": true, "known": true, "tier": "", "restart_count": 0, "giving_up": false },
+    { "service": "cassandra", "container": "nyxgpt-tf-cassandra", "state": "running", "health": "healthy", "healthy": true, "source": "terraform", "desired": true, "known": true, "tier": "", "restart_count": 0, "giving_up": false },
+    { "service": "nyxgpt-api-stable-7f8b9c-abcde", "container": "nyxgpt-api-stable-7f8b9c-abcde", "state": "Running", "health": "ready", "healthy": true, "source": "kubernetes", "desired": true, "known": true, "tier": "core", "restart_count": 0, "giving_up": false },
+    { "service": "grafana-6d4c8f-xyz12", "container": "grafana-6d4c8f-xyz12", "state": "Running", "health": "ready", "healthy": true, "source": "kubernetes", "desired": true, "known": true, "tier": "observability", "restart_count": 0, "giving_up": false },
+    { "service": "grafana", "container": "", "state": "absent", "health": "", "healthy": false, "source": "compose", "desired": true, "known": true, "tier": "", "restart_count": 5, "giving_up": true },
+    { "service": "loki", "container": "nyxgpt-loki-1", "state": "exited", "health": "", "healthy": false, "source": "compose", "desired": false, "known": true, "tier": "", "restart_count": 0, "giving_up": false }
   ],
   "unhealthy_count": 1,
   "unknown_count": 0,

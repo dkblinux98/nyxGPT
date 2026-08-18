@@ -60,14 +60,22 @@ fi
 # uses issueOrPullRequest; empty result = not on the board (board writes skip).
 item_id_for_content() {
   local num="$1"
-  graphql "query(\$owner:String!, \$name:String!, \$num:Int!) {
+  # Response into a variable, not `graphql ... | jq ...` (#3811, V-043): in a
+  # pipeline the wrapper's failure is the first segment's status, which the
+  # pipeline discards, so a failed read returned empty and exit 0 -- which
+  # this function's contract reads as "not on the board". The batch would
+  # then report every item skipped and exit 0, i.e. an owner cleanup that
+  # silently did nothing.
+  local resp
+  resp="$(graphql "query(\$owner:String!, \$name:String!, \$num:Int!) {
     repository(owner:\$owner, name:\$name) {
       issueOrPullRequest(number:\$num) {
         ... on Issue { projectItems(first:5) { nodes { id project { id } } } }
         ... on PullRequest { projectItems(first:5) { nodes { id project { id } } } }
       }
     }
-  }" -F owner="$REPO_OWNER" -F name="$REPO_NAME" -F num="$num" \
+  }" -F owner="$REPO_OWNER" -F name="$REPO_NAME" -F num="$num")" || return 1
+  echo "$resp" \
     | jq -r --arg pid "$(get_project_id)" \
         '.data.repository.issueOrPullRequest.projectItems.nodes[]? | select(.project.id == $pid) | .id' \
     | head -1
@@ -106,10 +114,22 @@ for n in $normalized; do
       || { _warn "#${n}: failed to set milestone"; item_ok=0; }
   fi
   if [[ "$CLEAR_SPRINT" == "true" || -n "$SPRINT" || -n "$STATUS" ]]; then
-    item_id="$(item_id_for_content "$n" || true)"
-    if [[ -z "$item_id" || "$item_id" == "null" ]]; then
-      echo "[admin-fields] #${n} not on the project board — board fields skipped" >&2
+    # "The read failed" and "it is not on the board" look identical in the
+    # output and mean opposite things (#3811): the second is a legitimate
+    # skip, the first is an item whose fields were never written. Keep them
+    # apart so a batch that hit the API's rate limit does not report a clean
+    # run.
+    if item_id="$(item_id_for_content "$n")"; then
+      if [[ -z "$item_id" || "$item_id" == "null" ]]; then
+        echo "[admin-fields] #${n} not on the project board — board fields skipped" >&2
+        item_id=""
+      fi
     else
+      _warn "#${n}: failed to read the project board — board fields skipped"
+      item_id=""
+      item_ok=0
+    fi
+    if [[ -n "$item_id" ]]; then
       if [[ -n "$STATUS" ]]; then
         set_project_field_value "$item_id" "$STATUS_FIELD" "$STATUS" \
           && echo "[admin-fields] #${n} ${STATUS_FIELD} -> ${STATUS}" >&2 \

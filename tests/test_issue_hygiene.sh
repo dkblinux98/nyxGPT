@@ -324,6 +324,84 @@ after="$(_mutations | wc -l | tr -d ' ')"
 _assert_eq "second run writes no fields" "$after" "$before"
 _assert_contains "second run reports everything as already set" "$out" "leaving as-is"
 
+# ---- case V1: the card vanishes mid-run (#3811) ------------------------
+# The real event: a support ticket that should never have been on the
+# development board was moved off it by hand while hygiene was working on it
+# (run 31926723483). Hygiene had already set Status and Priority; the next
+# field read hit a dangling PVTI_ id and the whole run went red on "Could not
+# resolve to a node with the global id", which reads as a broken pipeline
+# rather than the correct human action it actually was.
+#
+# The card being gone means there is nothing left to fill. That is a clean
+# finish. The fields written before it vanished must stay written.
+_reset_stub caseV1
+_write_issue <<'EOF'
+{"number": 3810, "title": "support: Docs are a mess", "body": "docs",
+ "labels": ["Support"], "milestone": null}
+EOF
+_write_board <<'EOF'
+{"item_id": "PVTI_3810", "fields": {}}
+EOF
+# The card is already on the board, so the reads are: board-state(pre)
+# Status(report) Status(guard) Priority(report) Priority(guard) -- five, both
+# writes landed -- and the item then disappears just as Effort is about to be
+# read. Same point in the sequence as the real failure, which died after
+# setting Status and Priority.
+cat > "$GH_STUB_DIR/vanish.json" <<'EOF'
+{"after_reads": 5}
+EOF
+
+out="$(bash "$HYGIENE" 3810 2>&1)"
+rc=$?
+_assert_eq "vanished item: the run finishes cleanly instead of going red" "$rc" "0"
+_assert_contains "vanished item: says what happened" \
+  "$out" "no longer exists"
+_assert_contains "vanished item: names the board it left" \
+  "$out" "was removed from"
+_assert_not_contains "vanished item: not reported as an error" \
+  "$out" "::error::"
+_assert_eq "vanished item: fields written before it vanished are kept" \
+  "$(_field Status)" "Backlog"
+_assert_eq "vanished item: and so is Priority" "$(_field Priority)" "P1 - High"
+_assert_eq "vanished item: nothing is written after it vanished" \
+  "$(_field Effort)" ""
+_assert_eq "vanished item: no half-finished hygiene comment" \
+  "$([[ -f "$GH_STUB_DIR/comments.log" ]] && echo dirty || echo clean)" "clean"
+
+# ---- case V2: a live item still fails loud -----------------------------
+# The counterpart that keeps V1 honest. "The read failed" must not become a
+# blanket excuse to exit 0: when the item is demonstrably still there, the
+# failure is real (rate limit, transport) and the run has to stay red so it
+# gets re-run. Same injection, but the probe finds the card present -- which
+# is what `vanish.json` absent plus a broken read models.
+_reset_stub caseV2
+_write_issue <<'EOF'
+{"number": 3903, "title": "feat: something ordinary", "body": "api",
+ "labels": ["Feature"], "milestone": null}
+EOF
+_write_board <<'EOF'
+{"item_id": "PVTI_3903", "fields": {}}
+EOF
+# A stub whose field reads fail but whose existence probe answers "present".
+BROKEN_BIN="$TMP_ROOT/bin_broken"
+mkdir -p "$BROKEN_BIN"
+cat > "$BROKEN_BIN/gh" <<EOF
+#!/usr/bin/env bash
+if [[ "\$*" == *"fieldValues(first:50)"* ]]; then
+  echo "gh: API rate limit exceeded (HTTP 403)" >&2
+  exit 1
+fi
+exec python3 "$ROOT_DIR/tests/gh_stub_issue_hygiene.py" "\$@"
+EOF
+chmod +x "$BROKEN_BIN/gh"
+
+out="$(PATH="$BROKEN_BIN:$PATH" bash "$HYGIENE" 3903 2>&1)"
+rc=$?
+_assert_eq "live item, failed read: the run fails" "$rc" "1"
+_assert_contains "live item, failed read: reported as an error" "$out" "::error::"
+_assert_contains "live item, failed read: says the card is still there" \
+  "$out" "still exists"
+
 # ---- summary ------------------------------------------------------------
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "All issue-hygiene checks passed."
