@@ -58,7 +58,7 @@ def _reset_config_fallback_warnings():
 
 @pytest.fixture(autouse=True)
 def _isolate_install_mode_marker(monkeypatch, tmp_path):
-    """Redirect the install-mode marker into `tmp_path` for every unit test (#3789).
+    """Redirect the install-mode markers into `tmp_path` for every unit test (#3789).
 
     `install_mode.INSTALL_MODE_FILE` defaults to the developer's real
     `~/.nyxGPT/install-mode.json`, and it is not an inert file: it is what
@@ -74,10 +74,14 @@ def _isolate_install_mode_marker(monkeypatch, tmp_path):
     Isolating the marker here, once, closes that for every present and future
     test rather than per call site. Tests that need to exercise the marker
     itself still write to it -- they just write into `tmp_path`.
+
+    `NYXGPT_HOME` is redirected alongside it because the per-substrate markers
+    (#3834 -- `install-mode-kubernetes.json`) are resolved from it rather than
+    from a module-level constant of their own.
     """
     from nyxgpt import install_mode
 
-    monkeypatch.setattr(
-        install_mode, "INSTALL_MODE_FILE", tmp_path / "install-mode-home" / "install-mode.json"
-    )
+    home = tmp_path / "install-mode-home"
+    monkeypatch.setattr(install_mode, "NYXGPT_HOME", home)
+    monkeypatch.setattr(install_mode, "INSTALL_MODE_FILE", home / "install-mode.json")
     yield
