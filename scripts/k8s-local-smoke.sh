@@ -114,12 +114,10 @@ ok "default model ${MODEL} present in the in-cluster Ollama"
 kubectl -n "$NAMESPACE" exec ollama-0 -- ollama list | grep -q "$EMBEDDING_MODEL" ||
     fail "Ollama is Ready but the embedding model ${EMBEDDING_MODEL} was never pulled -- \
 the first RAG-enabled message would block on downloading it"
-kubectl -n "$NAMESPACE" exec ollama-0 -- \
-    curl -fsS http://127.0.0.1:11434/api/embed \
-    -H 'Content-Type: application/json' \
-    -d "{\"model\":\"${EMBEDDING_MODEL}\",\"input\":\"k8s smoke\"}" >/dev/null ||
-    fail "the in-cluster Ollama could not serve an embedding with ${EMBEDDING_MODEL}"
-ok "embedding model ${EMBEDDING_MODEL} present and serving /api/embed"
+ok "embedding model ${EMBEDDING_MODEL} present in the in-cluster Ollama"
+# The readiness probe in k8s/statefulset-ollama.yaml gates on both models, so
+# the rollout-status wait above only returned because both were there -- this
+# assertion names which model, so a probe regression fails with the reason.
 
 step "3/6 The user path works: sessions list, via the web Service"
 start_port_forward

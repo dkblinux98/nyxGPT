@@ -84,11 +84,14 @@ grep -q "${embedding_model%%:*}" <<<"$installed" \
   || fail "the embedding model $embedding_model is not in the store -- the first RAG-enabled message would block on downloading it"
 log "Both configured models are in the container's store"
 
-docker compose exec -T ollama \
-  curl -fsS http://127.0.0.1:11434/api/embed \
+# From the host, over the port the Compose file publishes: the ollama image
+# ships no curl, and this is also the path a natively-installed api uses.
+embed_status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 120 \
+  -X POST "http://127.0.0.1:${OLLAMA_PORT:-11434}/api/embed" \
   -H 'Content-Type: application/json' \
-  -d "{\"model\":\"$embedding_model\",\"input\":\"compose smoke\"}" >/dev/null \
-  || fail "the embedding model is listed but cannot serve /api/embed"
+  -d "{\"model\":\"$embedding_model\",\"input\":\"compose smoke\"}" || echo 000)
+[[ "$embed_status" == "200" ]] \
+  || fail "the embedding model is listed but /api/embed returned $embed_status -- a RAG-enabled first message would fail"
 log "The embedding model answers /api/embed"
 
 # --- 2. The inverse proof ----------------------------------------------------
