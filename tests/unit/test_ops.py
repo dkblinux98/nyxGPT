@@ -12310,9 +12310,13 @@ def test_infra_status_compose_probe_available_true_when_probe_can_run(monkeypatc
         lambda: ops.DeploymentMode(native={}, compose={}, conflicts=[]),
     )
     monkeypatch.setattr(ops, "_which", lambda prog: None)
-    monkeypatch.setattr(ops.self_heal, "compose_probe_available", lambda: True)
+    monkeypatch.setattr(
+        ops.self_heal, "compose_probe", lambda: ops.self_heal.ComposeProbe(available=True)
+    )
 
-    assert ops.infra_status()["compose_probe_available"] is True
+    result = ops.infra_status()
+    assert result["compose_probe_available"] is True
+    assert result["compose_probe_reason"] == ""
 
 
 @pytest.mark.unit
@@ -12329,12 +12333,22 @@ def test_infra_status_compose_probe_available_false_when_compose_file_unreachabl
     monkeypatch.setattr(
         ops, "_which", lambda prog: "/usr/local/bin/docker" if prog == "docker" else None
     )
-    monkeypatch.setattr(ops.self_heal, "compose_probe_available", lambda: False)
+    monkeypatch.setattr(
+        ops.self_heal,
+        "compose_probe",
+        lambda: ops.self_heal.ComposeProbe(
+            available=False,
+            reason="`docker compose ps` exited 1: the Compose file is not reachable from here",
+        ),
+    )
 
     result = ops.infra_status()
     assert result["mode"] == "terraform"
     assert result["compose"] == {}
     assert result["compose_probe_available"] is False
+    # #3812: the page must be able to say *why* it can't check, not just that
+    # it can't -- the reason travels with the flag.
+    assert "not reachable" in result["compose_probe_reason"]
 
 
 @pytest.mark.unit

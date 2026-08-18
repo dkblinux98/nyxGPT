@@ -35,6 +35,23 @@ class CP:
         self.returncode = returncode
 
 
+def _patch_survey(monkeypatch, components, *, probe=None):
+    """Stub the one-pass survey `status()` reads (rows + the probe behind them).
+
+    `status()` goes through `component_survey()` rather than
+    `list_component_status()` so the component rows and
+    `compose_probe_available`/`compose_probe_reason` come from the same
+    `docker compose ps` and cannot contradict each other (#3812).
+    """
+    survey = self_heal.ComponentSurvey(
+        components=components,
+        compose_probe=probe if probe is not None else self_heal.ComposeProbe(available=True),
+    )
+    monkeypatch.setattr(self_heal, "component_survey", lambda: survey)
+    monkeypatch.setattr(self_heal, "list_component_status", lambda: survey.components)
+    return survey
+
+
 def _ps_line(service, *, state="running", health="", exit_code=0):
     return json.dumps(
         {
@@ -180,7 +197,7 @@ def test_list_component_status_parses_ps_json(monkeypatch):
 
 
 @pytest.mark.unit
-def test_list_compose_component_status_one_shot_exited_zero_is_skipped(monkeypatch):
+def test_compose_probe_one_shot_exited_zero_is_skipped(monkeypatch):
     # glitchtip-migrate's healthy end state -- exited 0, no running container --
     # must never surface as a component to track at all (#3381).
     monkeypatch.setattr(
@@ -190,11 +207,11 @@ def test_list_compose_component_status_one_shot_exited_zero_is_skipped(monkeypat
             stdout=_ps_line("glitchtip-migrate", state="exited", exit_code=0)
         ),
     )
-    assert self_heal._list_compose_component_status() == []
+    assert self_heal.compose_probe().statuses == ()
 
 
 @pytest.mark.unit
-def test_list_compose_component_status_one_shot_exited_nonzero_reported_unhealthy(monkeypatch):
+def test_compose_probe_one_shot_exited_nonzero_reported_unhealthy(monkeypatch):
     # A genuinely failed migration must still surface -- the one-shot
     # exemption is for the "not a long-running service" shape, not for
     # masking a real failure (#3381).
@@ -205,7 +222,7 @@ def test_list_compose_component_status_one_shot_exited_nonzero_reported_unhealth
             stdout=_ps_line("glitchtip-migrate", state="exited", exit_code=1)
         ),
     )
-    statuses = self_heal._list_compose_component_status()
+    statuses = self_heal.compose_probe().statuses
     assert len(statuses) == 1
     assert statuses[0].service == "glitchtip-migrate"
     assert statuses[0].state == "exited"
@@ -257,7 +274,7 @@ def test_list_component_status_run_raises(monkeypatch, caplog):
         statuses = self_heal.list_component_status()
 
     assert statuses == []
-    assert "failed to query docker compose ps" in caplog.text
+    assert "`docker compose ps` could not be run" in caplog.text
     assert "docker daemon not reachable" in caplog.text
 
 
@@ -297,7 +314,7 @@ def test_list_component_status_compose_failure(monkeypatch):
 
 
 @pytest.mark.unit
-def test_list_compose_component_status_nonzero_exit_logs_warning(monkeypatch, caplog):
+def test_compose_probe_nonzero_exit_logs_warning(monkeypatch, caplog):
     # #3588: a failed `docker compose ps` (e.g. COMPOSE_FILE doesn't exist
     # from this process's vantage point) must never fail silently -- that's
     # exactly what made the observability tier vanish without a trace in
@@ -306,8 +323,8 @@ def test_list_compose_component_status_nonzero_exit_logs_warning(monkeypatch, ca
         self_heal, "_run", lambda cmd, timeout=30.0, **_k: CP(returncode=1, stderr="boom")
     )
     with caplog.at_level("WARNING", logger="nyxgpt.self_heal"):
-        assert self_heal._list_compose_component_status() == []
-    assert "docker compose ps exited" in caplog.text
+        assert self_heal.compose_probe().statuses == ()
+    assert "`docker compose ps` exited" in caplog.text
 
 
 @pytest.mark.unit
@@ -422,8 +439,10 @@ def test_native_container_state_absent_when_no_output(monkeypatch):
 
 @pytest.mark.unit
 def test_native_container_state_no_docker(monkeypatch):
+    # No docker to ask means the state is undetermined, not established as
+    # gone -- "absent" is reserved for an answer Docker actually gave (#3812).
     monkeypatch.setattr(self_heal, "_which", lambda _: None)
-    assert _real_native_container_state("nyxgpt-cassandra") == "absent"
+    assert _real_native_container_state("nyxgpt-cassandra") == "unknown"
 
 
 @pytest.mark.unit
@@ -434,7 +453,8 @@ def test_native_container_state_run_raises(monkeypatch, caplog):
     monkeypatch.setattr(self_heal, "_run", _boom)
 
     with caplog.at_level("WARNING"):
-        assert _real_native_container_state("nyxgpt-cassandra") == "absent"
+        # Unqueryable, not absent (#3812).
+        assert _real_native_container_state("nyxgpt-cassandra") == "unknown"
     assert "failed to query docker state" in caplog.text
 
 
@@ -1381,10 +1401,9 @@ def test_heal_now_unknown_service_returns_error(monkeypatch):
 @pytest.mark.unit
 def test_status_aggregates_enabled_components_and_events(monkeypatch):
     self_heal.set_enabled(True)
-    monkeypatch.setattr(
-        self_heal,
-        "list_component_status",
-        lambda: [
+    _patch_survey(
+        monkeypatch,
+        [
             self_heal.ComponentStatus("api", "nyxgpt-api-1", "running", "healthy", True),
             self_heal.ComponentStatus("web", "nyxgpt-web-1", "exited", "", False),
         ],
@@ -1518,7 +1537,10 @@ def test_heal_now_logs_restart_attempt_and_success(monkeypatch, caplog):
 
     assert "self-heal: attempting restart of web" in caplog.text
     assert "self-heal: restart of web succeeded (restart_count=1)" in caplog.text
-    assert "self-heal: heal pass complete (checked=1, unhealthy=1, healed=1" in caplog.text
+    assert (
+        "self-heal: heal pass complete (checked=1, unhealthy=1, undetermined=0, healed=1"
+        in caplog.text
+    )
 
     assert _metric_value("nyxgpt_selfheal_restarts_total", service="web", result="ok") >= 1
     assert _metric_value("nyxgpt_selfheal_restart_count", service="web") == 1
@@ -1637,10 +1659,9 @@ def test_heal_now_resets_restart_count_metric_on_recovery(monkeypatch):
 
 @pytest.mark.unit
 def test_status_updates_unhealthy_components_gauge(monkeypatch):
-    monkeypatch.setattr(
-        self_heal,
-        "list_component_status",
-        lambda: [
+    _patch_survey(
+        monkeypatch,
+        [
             self_heal.ComponentStatus("api", "nyxgpt-api-1", "running", "healthy", True),
             self_heal.ComponentStatus("web", "nyxgpt-web-1", "exited", "", False),
         ],
@@ -2030,11 +2051,7 @@ def test_record_health_check_updates_last_check_timestamp():
 
 @pytest.mark.unit
 def test_status_reports_zero_restart_count_and_not_giving_up_by_default(monkeypatch):
-    monkeypatch.setattr(
-        self_heal,
-        "list_component_status",
-        lambda: [self_heal.ComponentStatus("web", "c", "running", "healthy", True)],
-    )
+    _patch_survey(monkeypatch, [self_heal.ComponentStatus("web", "c", "running", "healthy", True)])
 
     data = self_heal.status()
 
@@ -2051,10 +2068,9 @@ def test_status_reports_giving_up_once_restart_budget_exhausted(monkeypatch, tmp
     shortly" apart from "needs me to intervene"."""
     state_path = tmp_path / "self_heal_state.json"
     monkeypatch.setattr(self_heal, "_state_path", lambda: state_path)
-    monkeypatch.setattr(
-        self_heal,
-        "list_component_status",
-        lambda: [self_heal.ComponentStatus("glitchtip-worker", "c", "running", "unhealthy", False)],
+    _patch_survey(
+        monkeypatch,
+        [self_heal.ComponentStatus("glitchtip-worker", "c", "running", "unhealthy", False)],
     )
     monkeypatch.setattr(
         self_heal, "get_watchdog", lambda: self_heal.Watchdog(max_consecutive_restarts=3)
