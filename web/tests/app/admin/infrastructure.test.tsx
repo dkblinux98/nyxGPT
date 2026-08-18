@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { server } from '../../mocks/server';
@@ -583,6 +583,52 @@ describe('InfrastructurePage', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('names the Pods no node could schedule, with the wrapped command that refuses it (#3825)', async () => {
+    // An unschedulable Pod appears as `Pending` in the pod list, which is also
+    // what a placed Pod pulling its image looks like -- so the k8s install that
+    // oversubscribed the node read as healthy here. Scoped with `within` because
+    // the remedy command appears in three places on this page.
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json({
+          ...mockStatusKubernetesServing,
+          kubernetes: {
+            ...mockStatusKubernetesServing.kubernetes,
+            unschedulable: ['prometheus-abc123', 'nyxgpt-api-canary-9f8e7d'],
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    const heading = await screen.findByText('2 Pod(s) could not be scheduled');
+    const block = heading.parentElement as HTMLElement;
+    // The names, so the operator sees *which* piece of the stack is missing.
+    expect(within(block).getByText('prometheus-abc123')).toBeInTheDocument();
+    expect(within(block).getByText('nyxgpt-api-canary-9f8e7d')).toBeInTheDocument();
+    expect(within(block).getByText(/No node had enough unreserved memory or CPU/)).toBeInTheDocument();
+    // Reporting only, and the cure is a `nyxgpt` command -- never raw kubectl.
+    expect(
+      within(block).getByText('nyxgpt ops install --kubernetes --local')
+    ).toBeInTheDocument();
+    expect(within(block).queryByText(/kubectl/)).not.toBeInTheDocument();
+  });
+
+  it('says nothing about scheduling when every Pod was placed (#3825)', async () => {
+    // The block must stay silent on a healthy cluster: a standing "could not be
+    // scheduled" box would train the operator to ignore it. Also pins the
+    // absent-field path, which is what an api predating #3825 returns.
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusKubernetesServing)));
+
+    render(<InfrastructurePage />);
+
+    expect(
+      await screen.findByRole('heading', { name: 'In-cluster observability' })
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/could not be scheduled/)).not.toBeInTheDocument();
+  });
+
   it('surfaces a port conflict warning when native and compose collide', async () => {
     server.use(
       http.get('/api/v1/infra/status', () =>
@@ -1134,6 +1180,59 @@ describe('InfrastructurePage', () => {
     });
     expect(screen.getByText(/served by the instance itself/)).toBeInTheDocument();
     expect(screen.queryByText(/Run the wrapped command, not this/)).not.toBeInTheDocument();
+  });
+
+  it('badges a Pod that is merely starting as PENDING, not as a failure (#3827)', async () => {
+    // The raw `kubectl get pods` line says "Pending" for a Pod pulling its
+    // image AND for one the node cannot fit. The page must not repeat the
+    // install's old mistake of calling both of them broken.
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json({
+          ...mockStatusTerraform,
+          kubernetes: {
+            ...mockStatusTerraform.kubernetes,
+            pod_states: [
+              { name: 'nyxgpt-api-stable-1', state: 'ready', summary: 'Running', details: '' },
+              {
+                name: 'grafana-2',
+                state: 'pending',
+                summary: 'Pending: ContainerCreating',
+                details: '',
+              },
+              {
+                name: 'prometheus-3',
+                state: 'failed',
+                summary: 'Pending: unschedulable',
+                details: '0/1 nodes are available: 1 Insufficient memory.',
+              },
+            ],
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('grafana-2')).toBeInTheDocument();
+    });
+    expect(screen.getByText('PENDING')).toBeInTheDocument();
+    expect(screen.getByText('Pending: ContainerCreating')).toBeInTheDocument();
+    // ...and the one that will never start is distinct, with its reason.
+    expect(screen.getByText('FAILED')).toBeInTheDocument();
+    expect(screen.getByText(/Insufficient memory/)).toBeInTheDocument();
+  });
+
+  it('falls back to the plain pod lines when the api predates pod_states', async () => {
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusTerraform)));
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/pod\/nyxgpt-api-abc123/)).toBeInTheDocument();
+    });
+    expect(screen.queryByText('PENDING')).not.toBeInTheDocument();
   });
 
   it('distinguishes the two Terraforms: local containers here, AWS provisioning below (#3804)', async () => {

@@ -431,10 +431,10 @@ jobs:
         id: check_review
         shell: bash
         env:
+          PR: ${{ steps.check_pr.outputs.existing_pr }}
           GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
         run: |
           set -euo pipefail
-          PR="${{ steps.check_pr.outputs.existing_pr }}"
 
           # Check if there are CHANGES_REQUESTED reviews (not comments!)
           # Review agent posts actual GitHub PR Reviews with state CHANGES_REQUESTED.
@@ -474,8 +474,9 @@ jobs:
         if: steps.check_pr.outputs.pr_exists == 'true' && steps.check_pr.outputs.pr_state == 'MERGED'
         id: acceptance_failure
         shell: bash
+        env:
+          MERGED_PR: ${{ steps.check_pr.outputs.existing_pr }}
         run: |
-          MERGED_PR="${{ steps.check_pr.outputs.existing_pr }}"
           echo "::notice::Acceptance failure - PR #$MERGED_PR was merged but issue was reopened"
 
       - name: Post acceptance failure start comment
@@ -588,9 +589,9 @@ jobs:
         if: steps.check_pr.outputs.pr_exists == 'true' && steps.check_review.outputs.has_review_issues == 'true'
         shell: bash
         env:
+          PR: ${{ steps.check_pr.outputs.existing_pr }}
           GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
         run: |
-          PR="${{ steps.check_pr.outputs.existing_pr }}"
           # Get the latest CHANGES_REQUESTED review (not comment).
           # --jq runs once per fetched page -- stream matching reviews
           # across all pages first, then slurp+last (see AGENTS.md).
@@ -1550,11 +1551,11 @@ jobs:
           success()
         shell: bash
         env:
+          PR: ${{ steps.check_pr.outputs.existing_pr }}
           GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
         run: |
           set -euo pipefail
           ISSUE="${{ github.event.issue.number }}"
-          PR="${{ steps.check_pr.outputs.existing_pr }}"
 
           echo "::group::Requesting review for existing PR #$PR"
 
@@ -1614,6 +1615,8 @@ jobs:
         id: pr
         shell: bash
         env:
+          # #3837: step outputs reach the shell as data, never as source.
+          PR_STATE: ${{ steps.check_pr.outputs.pr_state }}
           GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
         run: |
           set -euo pipefail
@@ -1685,7 +1688,7 @@ jobs:
           echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
 
           # For acceptance failures (merged PR), apply the Acceptance Failure label to the new PR
-          if [[ "${{ steps.check_pr.outputs.pr_state }}" == "MERGED" ]]; then
+          if [[ "$PR_STATE" == "MERGED" ]]; then
             gh pr edit "$PR_NUMBER" --add-label "Acceptance Failure" || \
               echo "::warning::Could not add Acceptance Failure label to PR #$PR_NUMBER"
             echo "::notice::Applied 'Acceptance Failure' label to PR #$PR_NUMBER"
@@ -1933,12 +1936,12 @@ jobs:
         id: retry_budget
         shell: bash
         env:
+          FAILED_STEP: ${{ steps.classify_error.outputs.failed_step }}
+          SIGNATURE: ${{ steps.classify_error.outputs.signature }}
           GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
         run: |
           set -euo pipefail
           ISSUE="${{ github.event.issue.number }}"
-          FAILED_STEP="${{ steps.classify_error.outputs.failed_step }}"
-          SIGNATURE="${{ steps.classify_error.outputs.signature }}"
 
           # Full comment thread, chronological, with only the fields
           # retry_budget.py needs. author_association is the same signal
@@ -1977,6 +1980,7 @@ jobs:
         id: cross_issue_anomaly
         shell: bash
         env:
+          FAILED_STEP: ${{ steps.classify_error.outputs.failed_step }}
           GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
         run: |
           set -euo pipefail
@@ -1984,7 +1988,6 @@ jobs:
           load_config
 
           ISSUE="${{ github.event.issue.number }}"
-          FAILED_STEP="${{ steps.classify_error.outputs.failed_step }}"
           RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           NOW_EPOCH="$(date +%s)"
 
@@ -2391,17 +2394,23 @@ jobs:
         id: auto_retry
         shell: bash
         env:
+          FAILED_STEP: ${{ steps.classify_error.outputs.failed_step }}
+          ERROR_CLASS: ${{ steps.classify_error.outputs.error_class }}
+          SIGNATURE: ${{ steps.classify_error.outputs.signature }}
+          PHASE3_STATUS: ${{ steps.claude_result.outputs.status }}
+          RETRY_COUNT: ${{ steps.retry_budget.outputs.retry_count }}
+          CAP_EXCEEDED: ${{ steps.retry_budget.outputs.cap_exceeded }}
+          SAME_SIG: ${{ steps.retry_budget.outputs.same_signature_as_last }}
+          NEXT_N: ${{ steps.retry_budget.outputs.next_retry_number }}
+          CLAUDE_WAIT_SECONDS: ${{ steps.claude_result.outputs.wait_seconds }}
+          FIX_WAIT_SECONDS: ${{ steps.intelligent_fix.outputs.wait_seconds }}
           GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
         run: |
           set -euo pipefail
           ISSUE="${{ github.event.issue.number }}"
           REPO="${{ github.repository }}"
           RUN_ID="${{ github.run_id }}"
-          FAILED_STEP="${{ steps.classify_error.outputs.failed_step }}"
-          ERROR_CLASS="${{ steps.classify_error.outputs.error_class }}"
-          SIGNATURE="${{ steps.classify_error.outputs.signature }}"
 
-          PHASE3_STATUS="${{ steps.claude_result.outputs.status }}"
           ANALYSIS_PHASE="Phase 2 (Script)"
           [[ "$PHASE3_STATUS" == "TRANSIENT" ]] && ANALYSIS_PHASE="Phase 3 (Claude)"
 
@@ -2412,10 +2421,6 @@ jobs:
           # produced (the old counter was keyed to that label, and its
           # "manual intervention resets it" check matched this workflow's
           # own bot comments too, so it never actually bound anything).
-          RETRY_COUNT="${{ steps.retry_budget.outputs.retry_count }}"
-          CAP_EXCEEDED="${{ steps.retry_budget.outputs.cap_exceeded }}"
-          SAME_SIG="${{ steps.retry_budget.outputs.same_signature_as_last }}"
-          NEXT_N="${{ steps.retry_budget.outputs.next_retry_number }}"
           # Defensive defaults: if the "Compute retry budget" step itself
           # failed (e.g. a transient `gh api` error fetching the comment
           # thread), don't let an empty CAP_EXCEEDED/SAME_SIG silently block
@@ -2428,11 +2433,9 @@ jobs:
           SAME_SIG="${SAME_SIG:-false}"
           NEXT_N="${NEXT_N:-1}"
 
-          WAIT_SECONDS="${{ steps.claude_result.outputs.wait_seconds }}"
-          WAIT_SECONDS="${WAIT_SECONDS:-0}"
+          WAIT_SECONDS="${CLAUDE_WAIT_SECONDS:-0}"
           if [[ "$WAIT_SECONDS" -eq 0 ]]; then
-            WAIT_SECONDS="${{ steps.intelligent_fix.outputs.wait_seconds }}"
-            WAIT_SECONDS="${WAIT_SECONDS:-0}"
+            WAIT_SECONDS="${FIX_WAIT_SECONDS:-0}"
           fi
 
           # Same-signature disproof (#3689): a second consecutive TRANSIENT

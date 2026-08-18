@@ -492,6 +492,23 @@ are absent here by design (relocated to the annex; IDs are never reused).
   reading only the close comment will get this wrong.
   Source: #3870; owner in session, 2026-08-18.
 
+- **D-021** · 2026-08-18 · owner — **Context loading is scoped, not
+  exhaustive.** The bootstrap no longer tells agents to read
+  `.github/workflows/*`, `scripts/agents/*`, every charter and every runbook:
+  it loads `AGENTS.md`, this ledger and `agents/CONTEXT_INDEX.md` (one line per
+  workflow and script), plus the one charter and one runbook for the role being
+  acted in; everything else is opened on demand through the index. Measured
+  cause, 2026-08-18: the old list was ~137k words (~180k tokens) per run and
+  the churn data put **97.3% of all tokens in context rather than production**
+  (2.26B tokens / 30 days, 84.6M of it repeat context), with workflows and
+  scripts alone 70% of the corpus. Two standing rules follow: reading is a cost
+  decision like any other (first principle 1), and **ledger entries are
+  appended at the end, never reflowed mid-file** — an edit high in a stable
+  prompt invalidates every cached token after it, and cache reads were 2.16B of
+  that 2.26B.
+  Source: owner directive 2026-08-18; `CLAUDE.md` § Bootstrap;
+  `scripts/build_context_index.py`.
+
 ## Verifications
 
 - **V-001** · 2026-08-14 — Releases in this repository are immutable: a
@@ -1044,6 +1061,10 @@ are absent here by design (relocated to the annex; IDs are never reused).
   `tests/unit/test_workflow_script_injection.py`, and the smoke workflow's
   planted-violation step — the guard must reject a seeded instance, so a
   scanner that silently stops scanning fails too.
+  **Extended by V-046 (2026-08-18):** naming the fault as a `script:` fault
+  was itself too narrow. The class is *any executable body*; the guard was
+  `script:`-only and the same injection was still live in `run:` blocks,
+  found by CodeQL #124 rather than by this entry. Read V-046 with this one.
   Re-verify when: a new `actions/github-script` step is added, or GitHub
   changes how `env:` values are delivered to the script sandbox.
 
@@ -1311,6 +1332,50 @@ are absent here by design (relocated to the annex; IDs are never reused).
   Re-verify when: a check-status gate is added to the merge path — this entry
   then describes history rather than the present. See **Q-005**.
 
+- **V-045** · 2026-08-18 — **The `--kubernetes --local` stack is sized
+  against the node it actually lands on — in BOTH memory and cpu — and the
+  install measures that node before it applies anything.** The default
+  deployment (app tier + data/LLM tier + the #3787 observability layer)
+  reserves **6976Mi and 2075m**, down from 7872Mi and 2875m, against the
+  **7936Mi / 4000m** allocatable a stock Docker Desktop VM reports; a canary
+  rollout asks for a further 448Mi/150m and fits. **Memory was only the
+  reported half:** with the memory right-sized, `nyxgpt-api-canary` still
+  would not schedule on a 4-core node — `0/1 nodes are available: 1
+  Insufficient cpu` — because four api replicas reserved 250m each. Fixing
+  the named resource alone would have left the canary broken. Sizing is also
+  not the whole fix, since an operator's VM is whatever they gave it, so
+  `_preflight_k8s_capacity` (`src/nyxgpt/ops.py`) totals the rendered
+  manifests per resource against allocatable minus other namespaces'
+  requests and refuses *before* the first `kubectl apply`, warns when only
+  the canary headroom is missing, and skips rather than blocks when it cannot
+  measure (and warns rather than refuses on multi-node, where summed
+  allocatable can disprove a placement but never prove one). Before #3825 the
+  stack requested 8162Mi: every apply succeeded, the install reported
+  success, prometheus was left `Pending / FailedScheduling: Insufficient
+  memory`, and the later canary failure presented as "canary is broken".
+  Method: executed on a real kind cluster on 2026-08-18, ballasted to 7936Mi
+  allocatable (`scripts/k8s-node-ballast.sh` — a `pause` Pod reserving the
+  surplus, since the runner has ~16GiB and would be green by luck; its 4 CPUs
+  already match a Docker Desktop VM, so cpu needs no ballast). Observed, in
+  order: the pre-#3825 memory sizing left `prometheus`, `loki` and
+  `otel-collector` with no node and `Insufficient memory` events, and the
+  preflight refused it ("requests 8256Mi but only 7646Mi is free … at least
+  609Mi more"); the pre-fix cpu sizing with the memory fixed stranded
+  `nyxgpt-api-canary` on `Insufficient cpu`; the shipped sizing scheduled all
+  20 Pods and both canary Pods, and the preflight passed both resources
+  (6976Mi/7646Mi free, 2075m/3050m free). `k8s-capacity-smoke.yml` runs all
+  three phases; `k8s-local-smoke.yml` now runs the **default** install (no
+  `--skip-observability`) on the same ballasted node. After the fact the state
+  is observable: `infra_status()` reports `kubernetes.unschedulable` (Pods
+  with an empty `.spec.nodeName`) and the Infrastructure page names them — the
+  Pod list alone could not, since an unschedulable Pod and one pulling its
+  image both read `Pending`.
+  Re-verify when: a request/limit in `k8s/**` changes, or a workload is added
+  to either kustomization — both gates and
+  `tests/unit/test_k8s_capacity_preflight.py` fail loudly. Supersedes the
+  measured footprint in **V-041**, which was taken on the runner's own
+  16GB node before this right-sizing.
+
 - **V-039** · 2026-08-18 — **A self-heal/infra probe reports "unknown" when it
   cannot run, and unknown is never counted as unhealthy.** `compose_probe()`
   answers availability by *running* `docker compose ps`, not by checking that
@@ -1355,10 +1420,15 @@ are absent here by design (relocated to the annex; IDs are never reused).
   populated on every Pod (scheduled, merely pulling), and no
   `FailedScheduling` event in any namespace. Standing guard:
   `scripts/k8s-local-smoke.sh` now runs the default install, asserts all ten
-  observability workloads Ready, fails on any Pending Pod, and prints the
-  allocatable-vs-requests arithmetic every run.
+  observability workloads Ready, fails on any Pod the scheduler could not
+  place, and prints the allocatable-vs-requests arithmetic every run.
   Re-verify when: any `k8s/**` manifest changes a `resources.requests`, a
   replica count, or adds a workload — the 175m CPU margin is what absorbs it.
+  **Superseded in part by V-045** (#3825): the measured numbers above are the
+  pre-right-sizing footprint, and they were taken on the agent runner's own
+  ~16GB node, not on the 8GiB Docker Desktop VM an operator installs onto —
+  where the same stack did *not* fit. The finding this entry stands for (the
+  `_k8s_stack_health` phase/wait disagreement) is unaffected.
 
 - **V-042** · 2026-08-18 — **A support ticket's entire protection is one
   label, and the label is now guaranteed rather than assumed.** Every guard —
@@ -1422,7 +1492,177 @@ are absent here by design (relocated to the annex; IDs are never reused).
   deliberately write `|| echo ""` and still treat a failed read as "no
   Status".
 
-- **V-044** · 2026-08-18 — **A check that reaches *into* a keg cannot answer
+- **V-044** · 2026-08-18 — **Self-heal watched the api pool alone in
+  Kubernetes mode, and could not name the mode at all.** The Pod survey
+  selected `app=nyxgpt-api-canary-pool`, so web, Cassandra, Ollama and the
+  entire in-cluster observability tier (#3787) were observed and healed by
+  nothing; and because every Kubernetes row is named after a *Pod*, never
+  after a component, `detected_mode()`'s `service in CORE_APP_SERVICES` test
+  matched nothing and the page printed "Nothing detected running" above the
+  list of running Pods. Fixed by surveying the whole namespace once and
+  classifying Pods by label into a `core`/`observability` tier
+  (`ComponentStatus.tier`), which mode detection and the in-cluster
+  observability reporting both key off.
+  Method: real kind cluster, `nyxgpt` namespace carrying the manifests' own
+  labels (api/web pool Deployments, cassandra/ollama StatefulSets, ten
+  `tier: observability` workloads, plus one foreign workload). Shipped code:
+  `mode=kubernetes observability_source=kubernetes`, 6 core + 10
+  observability Pods watched, foreign Pod excluded, and
+  `heal_now(service=<web pod>)` deleted that Pod and the Deployment replaced
+  it. Fault injection with the **actual pre-fix module** (`git show
+  581b4911:src/nyxgpt/self_heal.py`) against the same live cluster: 2
+  Kubernetes rows (both api), `detected_mode` → `none` — the reported defect,
+  reproduced. 2026-08-18, while implementing #3828.
+  Standing guard: `scripts/k8s-self-heal-coverage-smoke.py`, run as step 8 of
+  `scripts/k8s-local-smoke.sh` (`.github/workflows/k8s-local-smoke.yml`,
+  path-filtered on `src/nyxgpt/self_heal.py`), which re-runs those assertions
+  on the full default install and re-injects the api-only survey each run.
+  Re-verify when: a `k8s/**` manifest changes a Pod's `app`/`tier` labels —
+  the classification is keyed on exactly those.
+- **V-049** · 2026-08-18 — **Every API error this app returns is
+  object-shaped, so a UI that interpolates `data.error` renders
+  `[object Object]`.** `http_exception_handler` (`src/nyxgpt/app.py`) wraps
+  *every* `HTTPException` as `{"error": {"code", "message", "details",
+  "request_id"}}` — `data.error` is therefore always truthy and never a
+  string, and `data.detail` reaches the browser only for refusals raised
+  before that handler (where it may still be a list or a dict). The
+  `data.error || data.detail || \`HTTP ${status}\`` idiom is a defect
+  wherever it appears, not a style choice: it hid a Pod scheduling failure
+  from the operator during acceptance (#3831) and a 409 "a run is already in
+  flight" before that (cloud-smoke). One unwrapping lives in
+  `web/src/lib/apiError.ts` (`apiErrorText` / `errorMessage`); pages import
+  it rather than re-deriving it, and `docs/adding-api-endpoints.md` states
+  the rule for new pages.
+  (Filed as `V-046` under #3831 and merged to `v3.0.0` with that ID; #3837 had
+  taken `V-046` four minutes earlier on its own branch, so both entries reached
+  the mainline sharing it. Renumbered here to `V-049`, the next unused number,
+  on the #3850 merge — #3837's keeps `V-046` because it merged first and is the
+  one `workflow_script_guard.py` and `developer-runbook.md` §"run: bodies" cite
+  by number. IDs are never reused.)
+  Method: read the handler and every `new Error(` call site in `web/src`
+  (2026-08-18, #3831); the five near-duplicate local helpers found there were
+  replaced. `web/tests/lib/apiError.test.ts` pins each payload shape and
+  `web/tests/app/admin/canary.test.tsx` asserts the rendered card never says
+  `[object Object]` — the pre-existing page tests passed because they only
+  ever returned *string*-shaped payloads, which is why the defect survived
+  them.
+  Re-verify when: the error envelope's shape changes, or a page starts
+  reading a failed response without `apiErrorText`.
+- **V-047** · 2026-08-18 — **A Deployment's own status cannot say why a Pod
+  is not serving; the reason has to be read off the Pods.** `kubectl get
+  deployment -o json` gives only `readyReplicas`, so canary reported
+  "0/1 ready" and `kubectl rollout status` reported "timed out waiting for
+  the condition" while the real cause — `Unschedulable: 0/1 nodes are
+  available: 1 Insufficient memory` — sat on the Pod's `PodScheduled`
+  condition. `canary.py` now reads the Pods behind the Deployment's own
+  `spec.selector.matchLabels` and folds that sentence into the track health,
+  the rollout-failure message and the API's 409 detail (which also stopped
+  dropping `OpsResult.details`).
+  Method: `scripts/canary-pod-reason-smoke.sh`, run 2026-08-18 on a real kind
+  cluster — a Deployment requesting 900Gi produced
+  `nyxgpt-api-canary not healthy (0/1 ready) -- <pod>: Unschedulable: 0/1
+  nodes are available: 1 Insufficient memory. ...` from `deployment_health`,
+  the same reason from `_wait_rollout`, and both halves of D-006 (the same
+  Deployment at 16Mi comes back healthy with no reason appended). Wired as
+  `canary-pod-reason-smoke.yml`.
+  Re-verify when: the canary Deployments' labels change, or Kubernetes
+  changes the `PodScheduled`/`containerStatuses` shape these reasons are read
+  from.
+
+- **V-046** · 2026-08-18 — **The #3820 guard was `script:`-only; the same fault
+  class was still live in `run:` blocks.** V-027 named the fault as "an
+  expression interpolated into an `actions/github-script` `script:` body is
+  JavaScript, not data", swept 47 interpolations on that construct, and
+  installed `workflow_script_guard.py` — which inspected `script:` bodies and
+  nothing else. The true class is **any executable body**: a `run:` block is
+  *shell* source substituted by the same pre-parse pass. CodeQL alert **#124
+  (critical)** found the identical injection in
+  `huddle_decision_dispatch.yml`'s "Restart the fix cycle" step, where
+  `DECISION="${{ steps.decide.outputs.decision }}"` and the issue number were
+  substituted as shell source and the issue number was substituted a *second*
+  time into a nested `bash -lc "..."` command string — two shells parse it, in
+  a job carrying `REVIEW_AGENT_TOKEN` on an `issue_comment` trigger.
+  **Extent, measured:** 593 `${{ }}` interpolations live in `run:` bodies
+  tree-wide. 522 are repo-controlled or shape-constrained (`vars.*`, generated
+  run identity, numeric event ids — the documented `SAFE_IN_RUN` allowlist);
+  **71 across 15 workflows were not, and all 71 were fixed** (#3837), with 0
+  deferred. Among them the same free-form-prose carriers V-027 found on the
+  `script:` side (`classify_error`'s `failed_step` / `signature` /
+  `error_class`, `escalate_reason`, `disagreement_type`), plus one arithmetic
+  context (`LOOP_NUM=$((<output> + 1))`) and four `secrets.*` reads.
+  **The live exploitability of #124 itself was bounded** by a constraint two
+  files away — `huddle_state.py`'s `decision()` returns a closed enum and the
+  issue number is `sed`-extracted digits — so it was a construct one edit from
+  exploitable, not a live exploit. Nothing at the interpolation site said so,
+  which is why it is removed rather than annotated.
+  Method: executed both halves per **D-006**, 2026-08-18 on Linux, via
+  `scripts/agents/lib/run_block_injection_probe.py` — it takes the step's real
+  `run:` body out of the YAML (so it cannot drift) and runs it under `bash`
+  with the step's collaborators stubbed in a throwaway `GITHUB_WORKSPACE`.
+  Fault injected: the pre-fix body (kept verbatim in the probe as a fixture,
+  since the fix deleted it) fed a hostile decision executed the injected
+  command in **both** the outer shell and the nested `bash -lc`. Fixed: the
+  current body, same payload arriving through `env:`, executed neither and
+  carried the text intact into the comment it posts.
+  Standing guards: `workflow_script_guard.py` now inspects `run:` bodies
+  against `SAFE_IN_RUN` (`script:` keeps the absolute no-`${{` rule — a JS body
+  never needs one); `tests/unit/test_workflow_script_injection.py` (35 tests,
+  including a planted `run:` violation and an assertion that the allowlist has
+  not widened to permit everything); and a third
+  `github-script-injection-smoke.yml` job running the probe and a planted-
+  violation step on a runner.
+  Re-verify when: a new `run:` block interpolates an expression the allowlist
+  does not cover, or `SAFE_IN_RUN` gains an entry.
+
+
+- **V-050** · 2026-08-18 — **`nyxgpt ops` has one three-state vocabulary for
+  Kubernetes workloads — ready / pending / failed — and `Pending` is not a
+  failure.** `_classify_k8s_pod` (`src/nyxgpt/ops.py`) is the single
+  classifier behind `_k8s_stack_health`, `_k8s_observability_health`, the
+  rollout waits and `infra_status()`'s `pod_states` (which is what lets the
+  admin Infrastructure page badge the difference, since a raw `kubectl get
+  pods` line reads `Pending` for both cases); `OpsResult.status` carries the
+  `[PENDING]` label without
+  touching `ok`, so a Pod that is scheduling, pulling or creating containers
+  never changes an install's exit status, while `Unschedulable`,
+  `ImagePullBackOff`, `CrashLoopBackOff`, a container-config error or a
+  `Failed` phase does — with the scheduler's/kubelet's own reason attached.
+  The waits share it: `_wait_for_k8s_rollouts` polls in 30s slices and ends as
+  soon as a blocked Pod *of the workload it is waiting on* (label-scoped —
+  every tier shares the `nyxgpt` namespace, and an api Pod restarting against
+  its liveness probe must not fail Cassandra's wait) is confirmed over two
+  slices, instead of spending a 900s budget and then blaming whichever
+  workload it was on. The app tier now
+  has a wait of its own (`_wait_for_k8s_app_tier`), so **every** tier is
+  settled before health is snapshotted — this supersedes the part of **V-041**
+  that reads `_k8s_stack_health` as a Pod-*phase* scorer.
+  (Filed as `V-042` under #3827, renumbered to `V-045` on the first merge of
+  `v3.0.0` and to `V-046` on the second: #3811 allocated `V-042`/`V-043`,
+  #3828 `V-044` and #3825 `V-045`, all on concurrently-open branches. That
+  second renumber collided again — #3837 and #3831 had both already merged
+  `V-046` — so it is `V-050` as of the #3850 merge, which is the first number
+  no branch has claimed. IDs are never reused. #3825's entry is the sizing one above; this one is the
+  vocabulary, and `infra_status`'s `kubernetes.unschedulable` — which #3825
+  added from a separate `.spec.nodeName` probe — is read from
+  `_classify_k8s_pod` as of that merge, so the Infrastructure page's badges
+  and its "could not be scheduled" list cannot disagree.)
+  Method: executed on 2026-08-18 — `scripts/k8s-pod-state-smoke.py` on a real
+  kind cluster: a Pod blocked on a not-yet-created ConfigMap classified
+  `[PENDING] Pending: ContainerCreating` and then reached Ready once the
+  ConfigMap was created (so the pending verdict was true, not merely kinder);
+  a `cpu: 1000` Pod classified `[FAIL] Pending: unschedulable` carrying
+  `0/1 nodes are available: 1 Insufficient cpu`; a bad image classified
+  `[FAIL] ... ImagePullBackOff`; and the wait over an unschedulable Deployment
+  failed naming that Pod after 60s of a 900s budget. The same run asserts the
+  pre-fix rule (`ok = phase == "Running"`) calls the transient and the
+  unschedulable Pod the *same* thing, so it cannot pass on a build without the
+  fix. Standing guard: the `k8s-pod-state` job in `k8s-local-smoke.yml`.
+  Re-verify when: another `nyxgpt ops` readout starts deriving a verdict from
+  a Pod's `.status.phase` directly instead of going through
+  `_classify_k8s_pod` — the shared vocabulary, not this one call site, is what
+  the entry stands for.
+
+- **V-048** · 2026-08-18 — **A check that reaches *into* a keg cannot answer
   whether the product is operable.** The macOS artifact path shipped through
   rc12 with no `nyxgpt` on PATH: `pip install` created the console script
   declared in `pyproject.toml`, but it landed in `libexec/venv/bin` and the
@@ -1437,6 +1677,9 @@ are absent here by design (relocated to the annex; IDs are never reused).
   start it. Fixed by `bin.install_symlink venv/"bin/nyxgpt"` in both API
   formulas; the assertions now go through `bin`/PATH, by the name a user
   types.
+  (Filed as `V-044` under #3850, renumbered to `V-048` on the merge of
+  `v3.0.0`: #3828 allocated `V-044` on a concurrently-open branch, and the
+  mainline had reached `V-047` by then. IDs are never reused.)
   Method: `tests/unit/test_build_homebrew_artifacts.py` — the new tests were
   run against the pre-fix formulas (`git stash push -- homebrew
   .github/workflows/macos-brew-smoke.yml`) and 7 failed, then passed with the
@@ -1461,8 +1704,14 @@ are absent here by design (relocated to the annex; IDs are never reused).
   Reason: it is the largest recurring runner-spend multiplier in the pipeline —
   the dev workflow repeats both full suites on up to three fix attempts for every
   issue — but it is not v3.0.0 scope.
-  Revisit when: Sprint 9 (nyxAgent-focused) grooming — file it there.
-  Source: `product_management/AGENTIC_SDLC_DESIGN.md` §9a.
+  Revisit when: ~~Sprint 9 (nyxAgent-focused) grooming~~ — **UNPARKED by the
+  owner 2026-08-18**, ahead of Sprint 9, on the runner-spend evidence below.
+  Filed as its own issue; this entry stays as the record of why it was parked.
+  Evidence at unpark: 2,243 runner-minutes over 30 days, led by
+  `security-scan.yml` (187 runs) and `ci-tests.yml` (173) — the full tree on
+  every push, every review and every dev fix attempt.
+  Source: `product_management/AGENTIC_SDLC_DESIGN.md` §9a; owner directive
+  2026-08-18.
 
 - **P-002** · 2026-08-09 · owner — A global hard budget circuit breaker (fixed
   caps on expensive invocations per unit time) is **rejected, not pending**. Do
@@ -1480,8 +1729,12 @@ are absent here by design (relocated to the annex; IDs are never reused).
   enforced beyond the structural test shipped with #3774 — e.g. CI warning on
   verifications whose `Re-verify when` condition names a file that has since
   changed, or on an entry count that has outgrown "cheap to read"?
-  Needs: owner decision on how much enforcement is wanted before it becomes
-  ceremony.
+  Needs: ~~owner decision on how much enforcement is wanted~~ — **ANSWERED
+  2026-08-18**: the owner directed that ledger size be actively managed, not
+  merely advised. The ledger is read in full on every agent run, so its growth
+  is a per-run cost; it is to be split into a hot ledger (decisions binding on
+  current work) and an on-demand archive, filed as its own issue. The
+  `Re-verify when` staleness half of this question remains open.
   Blocks: nothing yet.
 
 - **Q-002** · 2026-08-18 · owner acceptance (#3853) — Why did

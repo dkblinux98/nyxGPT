@@ -100,22 +100,28 @@ jobs:
           # Untrusted comment body via env, never interpolated into the
           # script -- same rule as review_agent_auto_review.yml.
           COMMENT_BODY: ${{ github.event.comment.body }}
+          # #3837 / CodeQL #124: every event value the shell reads arrives as
+          # data through env. `${{ }}` substitution happens before bash parses
+          # the body, so an interpolated value is shell *source* -- the same
+          # fault class as #3820's `script:` bodies, one construct wider.
+          PR: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+          COMMENT_ID: ${{ github.event.comment.id }}
         run: |
           set -euo pipefail
-          PR="${{ github.event.issue.number }}"
           LIB="$GITHUB_WORKSPACE/scripts/agents/lib/huddle_state.py"
 
           DECISION=$(printf '%s' "${COMMENT_BODY:-}" | python3 "$LIB" decision)
           echo "decision=$DECISION" >> "$GITHUB_OUTPUT"
           echo "Huddle decision: '${DECISION:-<unparsable>}'"
 
-          COMMENTS=$(gh api "repos/${{ github.repository }}/issues/$PR/comments" \
+          COMMENTS=$(gh api "repos/$REPO/issues/$PR/comments" \
             --paginate --jq '.[]' | jq -s '{comments: .}')
 
           # Only the round's first decision comment dispatches, and only if
           # no dispatch has already happened for it -- so a re-posted or
           # duplicated decision cannot start two fix cycles.
-          PRIMARY=$(printf '%s' "$COMMENTS" | python3 "$LIB" guard 'HUDDLE_DECISION:' "${{ github.event.comment.id }}")
+          PRIMARY=$(printf '%s' "$COMMENTS" | python3 "$LIB" guard 'HUDDLE_DECISION:' "$COMMENT_ID")
           DISPATCHED=$(printf '%s' "$COMMENTS" | python3 "$LIB" status | sed -n 's/^dispatched=//p')
 
           RUN=false
@@ -136,7 +142,7 @@ jobs:
           esac
           echo "run=$RUN" >> "$GITHUB_OUTPUT"
 
-          ISSUE=$(gh api "repos/${{ github.repository }}/pulls/$PR" --jq '.body // ""' \
+          ISSUE=$(gh api "repos/$REPO/pulls/$PR" --jq '.body // ""' \
             | sed -n 's/.*Closes #\([0-9]*\).*/\1/p' | head -1)
           if [[ -z "$ISSUE" && "$RUN" == "true" ]]; then
             echo "::error::PR #$PR body does not contain 'Closes #N' -- cannot dispatch the huddle decision"
@@ -147,22 +153,38 @@ jobs:
       - name: Restart the fix cycle
         if: steps.decide.outputs.run == 'true'
         shell: bash
+        env:
+          # #3837 / CodeQL #124 (critical). These three were substituted into
+          # this `run:` body as shell source, and `$ISSUE` was then substituted
+          # a second time into the nested `bash -lc "..."` command string -- so
+          # a single quote in a step output escaped two shells, in a job
+          # holding REVIEW_AGENT_TOKEN. `decision` is parsed out of a
+          # `## Huddle Decision` comment on an `issue_comment` trigger, which
+          # is reachable input. All three now arrive as data.
+          PR: ${{ github.event.issue.number }}
+          ISSUE: ${{ steps.decide.outputs.issue_number }}
+          DECISION: ${{ steps.decide.outputs.decision }}
+          DEV_AGENT: ${{ vars.DEV_AGENT }}
         run: |
           set -euo pipefail
-          PR="${{ github.event.issue.number }}"
-          ISSUE="${{ steps.decide.outputs.issue_number }}"
-          DECISION="${{ steps.decide.outputs.decision }}"
 
           echo "::group::Dispatching huddle decision '$DECISION' for issue #$ISSUE"
 
-          bash -lc "cd '$GITHUB_WORKSPACE' && \
-            source scripts/agents/lib/gh_project.sh && \
-            load_config && \
-            require_gh_auth && \
-            set_issue_status '$ISSUE' \"\$STATUS_IN_PROGRESS\" && \
-            assign_and_trigger_developer '$ISSUE'"
+          # The inner script is a single-quoted literal, so the outer shell
+          # expands nothing in it; `$ISSUE` reaches it through argv as "$1",
+          # where it is an argument and never source. `$STATUS_IN_PROGRESS`
+          # is set by the inner shell's own `load_config`.
+          bash -lc '
+            set -euo pipefail
+            cd "$GITHUB_WORKSPACE"
+            # shellcheck source=/dev/null
+            source scripts/agents/lib/gh_project.sh
+            load_config
+            require_gh_auth
+            set_issue_status "$1" "$STATUS_IN_PROGRESS"
+            assign_and_trigger_developer "$1"
+          ' huddle-decision-dispatch "$ISSUE"
 
-          DEV_AGENT="${{ vars.DEV_AGENT }}"
           BODY=$(printf '%s\n\n%s\n\n%s\n%s\n%s\n\n%s\n\n%s' \
             "🔁 **Huddle decision dispatched**: \`${DECISION}\`" \
             "Issue #${ISSUE} has been returned to **In Progress** and assigned to @${DEV_AGENT} to carry out the huddle decision above." \

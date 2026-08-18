@@ -95,14 +95,18 @@ jobs:
           echo "NYXGPT_CONFIG_FILE=$CFG" >> "$GITHUB_ENV"
 
       - name: Evaluate the trigger and run the ceremony
+        env:
+          # #3837: dispatch inputs reach the shell as data, never as source.
+          CHECK_ONLY_INPUT: ${{ github.event.inputs.check_only || 'false' }}
+          FORCE_INPUT: ${{ github.event.inputs.force || 'false' }}
         run: |
           set -uo pipefail
           ARGS=()
-          if [[ "${{ github.event.inputs.check_only || 'false' }}" == "true" ]]; then
+          if [[ "$CHECK_ONLY_INPUT" == "true" ]]; then
             ARGS+=(--check-only)
           fi
           FORCE=0
-          if [[ "${{ github.event.inputs.force || 'false' }}" == "true" ]]; then
+          if [[ "$FORCE_INPUT" == "true" ]]; then
             FORCE=1
           fi
           FORCE_CEREMONY="$FORCE" scripts/agents/release_ceremony_watch.sh "${ARGS[@]}" \

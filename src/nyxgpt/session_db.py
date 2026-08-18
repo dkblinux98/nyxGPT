@@ -126,8 +126,21 @@ class CassandraSessionStore:
         )
 
     def _conn(self) -> tuple[Any, str]:
-        """Return a ready (session, keyspace) pair, initializing schema once."""
+        """Return a ready (session, keyspace) pair, initializing schema once.
+
+        This store is a process-lifetime singleton (:func:`get_session_store`),
+        so its cached driver session outlives any single Cassandra outage. A
+        session the driver has shut down can never recover, so it is dropped
+        and re-fetched from the shared pool instead of being handed back
+        forever (#3851).
+        """
+        from nyxgpt.rag.vectorstore_cassandra import driver_object_is_shutdown
+
         with self._lock:
+            if self._session is not None and driver_object_is_shutdown(self._session):
+                log.warning("Session-store Cassandra session was shut down; reconnecting")
+                self._session = None
+                self._schema_ready = False
             if self._session is None:
                 self._session, self._keyspace = self._connect()
             assert self._keyspace is not None
