@@ -154,7 +154,7 @@ board_state="$(
 # ---- the sprint plan: pull order and expected-files (#3908) ----
 plan_json="$(
   SPRINT_TITLE="$ACTIVE_SPRINT_TITLE" python3 - <<'PY'
-import json, os, pathlib, sys
+import json, os, pathlib, re, sys
 sys.path.insert(0, "scripts/agents/lib")
 import sprint_plan
 
@@ -162,8 +162,22 @@ root = pathlib.Path("product_management/sprint_planning")
 title = os.environ.get("SPRINT_TITLE", "")
 plan = {}
 chosen = None
+
+
+def _sprint_key(path):
+    """Order sprint folders numerically, not lexicographically.
+
+    `sorted()` on the names puts sprint_10 before sprint_9, so taking the
+    last one would silently read a stale plan from sprint 10 onward -- stale
+    order, stale expected-files, overlap checked against the wrong lists.
+    Non-numeric slugs sort after numbered ones, by name.
+    """
+    match = re.search(r"sprint_(\d+)", path.parent.name)
+    return (0, int(match.group(1)), "") if match else (1, 0, path.parent.name)
+
+
 if root.is_dir():
-    docs = sorted(root.glob("sprint_*/PLAN.md"))
+    docs = sorted(root.glob("sprint_*/PLAN.md"), key=_sprint_key)
     for doc in docs:
         parsed = sprint_plan.parse_plan(doc.read_text(encoding="utf-8"))
         if title and parsed.get("sprint") == title:
@@ -203,11 +217,22 @@ for pr in prs if isinstance(prs, list) else []:
     branch = pr.get("head", {}).get("ref", "")
     body = pr.get("body") or ""
     title = pr.get("title") or ""
+    # Attribute a PR's diff only to the issue it *declares*: the branch name
+    # (the convention every developer_create_branch.sh branch follows) and a
+    # closing keyword in the body. A bare "related to #NNNN" mention used to
+    # count, which donated the whole diff to an issue the PR merely named and
+    # deferred candidates that had no real overlap.
     issues = set()
     import re
-    for text in (branch, body, title):
-        for match in re.findall(r"(?:#|issue[-_/])(\d{3,6})", text):
-            issues.add(int(match))
+    # Both branch conventions in use: `claude/issue-3824-...` and
+    # `feat/3829-slug`. Anchored so a date or sequence elsewhere in the name
+    # (`...-20260818-1255`) cannot be read as an issue number.
+    for pattern in (r"issue[-_](\d{3,6})", r"^[a-z]+/(\d{3,6})-"):
+        match = re.search(pattern, branch)
+        if match:
+            issues.add(int(match.group(1)))
+    for match in re.findall(r"(?:closes|fixes|resolves)\s+#(\d{3,6})", f"{body}\n{title}", re.I):
+        issues.add(int(match))
     if not issues:
         continue
     files = [f.get("filename", "") for f in gh(f"repos/{repo}/pulls/{number}/files?per_page=100")]
