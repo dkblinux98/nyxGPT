@@ -15,10 +15,10 @@ This page is the matrix of the five in-scope targets and the acceptance run
 that demonstrates them. **Windows is explicitly out of scope.**
 
 The matrix is not maintained by hand here. It lives in
-[`src/nyxgpt/portability.py`](../src/nyxgpt/portability.py) as data, and both
-this page and the SRE dashboard render it, so a table that claims a target
-installs from published artifacts cannot survive someone reintroducing a
-`git clone`. Print the live version any time:
+[`src/nyxgpt/portability.py`](../src/nyxgpt/portability.py) as data, which
+both this page and the CLI render, so a table that claims a target installs
+from published artifacts cannot survive someone reintroducing a `git clone`.
+Print the live version any time:
 
 ```bash
 nyxgpt ops portability            # the report below, current as of your install
@@ -26,9 +26,9 @@ nyxgpt ops portability --json     # machine-readable
 nyxgpt ops portability --strict   # exits non-zero while any target needs a checkout
 ```
 
-The same report is on the SRE dashboard at **Admin → Portability and
-Acceptance** (`/admin/portability`), read-only: the matrix describes the
-product, not your machine, so there is nothing on that page to act on.
+There is no dashboard screen for the matrix (#3803): it describes the
+product, not your machine, so there is nothing on a page to observe or act
+on. This page and the CLI are the two ways to read it.
 
 ## What is checked, mechanically
 
@@ -108,10 +108,11 @@ wrapped command consumes them from the registry yet.
    images. The path is otherwise fully wrapped, and provisions its own `kind`
    cluster.
 
-While either gap is open, `nyxgpt ops portability --strict` exits non-zero and
-the dashboard says the capstone portability criterion is not met. That is
-deliberate: closing them is what turns the strict gate green, and the gate then
-keeps them closed.
+While either gap is open, `nyxgpt ops portability --strict` exits non-zero. That
+is deliberate: closing them is what turns the strict gate green, and the gate
+then keeps them closed. (There is no dashboard surface for this — the matrix
+describes the product's portability claims, not the state of any one machine, so
+the CLI and `GET /api/v1/ops/portability` are its only readers, see #3803.)
 
 ## Clean-machine acceptance run
 

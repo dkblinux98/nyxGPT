@@ -54,8 +54,8 @@ real alerting, Loki/promtail log aggregation, OpenTelemetry tracing into
 Jaeger, and self-hosted GlitchTip error tracking — all local-only,
 auto-started and auto-provisioned by `nyxgpt ops install`, and reachable from
 the SRE/admin dashboard ([alerting.md](alerting.md),
-[docker-compose.md](docker-compose.md), [ops.md](ops.md)). System health,
-metrics, and portability screens live in the admin dashboard ([ui.md](ui.md)),
+[docker-compose.md](docker-compose.md), [ops.md](ops.md)). The system health
+and metrics screens live in the admin dashboard ([ui.md](ui.md)),
 observability logins come from `nyxgpt ops credentials`
 ([ops.md](ops.md#nyxgpt-ops-credentials)), and `nyxgpt ops verify` proves the
 telemetry is real by generating traffic and asserting it landed

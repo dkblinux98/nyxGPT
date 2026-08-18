@@ -1683,14 +1683,16 @@ disposable local container.
 ### `GET /api/v1/ops/portability`
 
 Report the repo-less portability matrix and the clean-machine acceptance
-sequence (P6-16, #3516) — the dashboard half of `nyxgpt ops portability`. See
+sequence (P6-16, #3516) — the machine-readable half of
+`nyxgpt ops portability`. See
 [portability-matrix.md](portability-matrix.md).
 
 Read-only, and there is deliberately no `POST` counterpart: the matrix
 describes the *product* (which artifacts are published, which commands are
 wrapped, which targets still need a checkout), not the state of this machine,
-so there is nothing to act on. Cheap enough to load on every dashboard visit —
-no subprocesses, no network, no AWS.
+so there is nothing to act on. For the same reason it has no dashboard screen
+(#3803) — `nyxgpt ops portability` is the way to read the matrix. Cheap enough
+to poll freely — no subprocesses, no network, no AWS.
 
 ```json
 {

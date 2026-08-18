@@ -2760,16 +2760,17 @@ def ops_cloud_artifact_smoke_run(payload: dict[str, Any] = Body(default={})) -> 
 
 # --- Portability matrix endpoint (P6-16, #3516) ---
 #
-# The SRE-surface half of `nyxgpt ops portability`: which deployment targets
-# install and operate without a repo checkout, what evidence backs each one,
-# what gaps are still open, and the clean-machine acceptance sequence.
+# The machine-readable half of `nyxgpt ops portability`: which deployment
+# targets install and operate without a repo checkout, what evidence backs
+# each one, what gaps are still open, and the clean-machine acceptance
+# sequence.
 #
 # Read-only by construction. The matrix is a property of the *product* (which
 # artifacts are published, which commands are wrapped), not of this machine's
-# state, so there is nothing here to act on -- which also makes it a natural
-# fit for the #3514 decision that the cloud surface is
-# status-plus-CLI-pointers. `commands` in the payload carries the wrapped CLI
-# invocations the dashboard renders instead of buttons.
+# state, so there is nothing here to act on. That is also why it has no
+# dashboard screen (#3803, which removed the one #3516 added): a page that
+# restates the product's own documentation is not an ops surface. `commands`
+# in the payload carries the wrapped CLI invocations a consumer points at.
 
 
 @api.get("/ops/portability")
@@ -2777,8 +2778,8 @@ def ops_portability(_request: Request) -> dict[str, Any]:
     """Report the repo-less portability matrix and the capstone acceptance sequence.
 
     Side-effect free and cheap (no subprocesses, no network, a handful of
-    `Path.exists` calls against the checkout when there is one), so the
-    dashboard can load it on every visit.
+    `Path.exists` calls against the checkout when there is one), so a caller
+    can poll it freely.
     """
     return portability_module.check_matrix()
 

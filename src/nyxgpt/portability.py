@@ -41,8 +41,13 @@ The other half of the capstone is `ACCEPTANCE_SEQUENCE`: the exact command
 sequence an owner runs on a clean machine to accept Phase 6, from
 `pip install nyxgpt` through a live AWS deploy, the smoke test, and
 teardown. It is data for the same reason the matrix is -- `docs/portability-
-matrix.md` and the SRE dashboard both render it, so neither can drift from
-what the CLI actually accepts.
+matrix.md` renders it from here, so the runbook cannot drift from what the
+CLI actually accepts.
+
+There is deliberately no dashboard surface for any of this (#3803). #3516
+added one; the owner removed it, because a matrix describing the *product*
+tells you nothing about the machine whose dashboard you are looking at.
+`nyxgpt ops portability` is how the matrix is read.
 """
 
 from __future__ import annotations
@@ -123,7 +128,7 @@ class Target:
         return (*self.install, *self.operate, self.teardown)
 
     def to_dict(self) -> dict[str, Any]:
-        """JSON-serializable form, as returned by the API and consumed by the dashboard."""
+        """JSON-serializable form, as returned by the API and `--json`."""
         return {
             "key": self.key,
             "name": self.name,
@@ -290,8 +295,8 @@ TARGETS: tuple[Target, ...] = (
 
 
 # The clean-machine acceptance run: what an owner types, in order, on a
-# machine that has never seen this repository. Rendered by
-# docs/portability-matrix.md and the SRE dashboard from this one definition.
+# machine that has never seen this repository. Rendered by the CLI and by
+# docs/portability-matrix.md from this one definition.
 #
 # `cloud smoke --skip-deploy --keep` rather than a bare `cloud smoke`: the
 # deploy that step verifies is the one the previous step just made, which is
@@ -343,9 +348,8 @@ ACCEPTANCE_SEQUENCE: tuple[dict[str, str], ...] = (
 )
 
 # The wrapped commands this surface points at, returned with every payload so
-# the dashboard renders what the CLI documents rather than its own copy (the
-# same pattern as cloud_deploy.LIFECYCLE_COMMANDS, and the same reason: the
-# #3514 decision makes the cloud surface status-plus-CLI-pointers).
+# any consumer names what the CLI documents rather than keeping its own copy
+# (the same pattern as cloud_deploy.LIFECYCLE_COMMANDS).
 PORTABILITY_COMMANDS: dict[str, str] = {
     "report": "nyxgpt ops portability",
     "strict": "nyxgpt ops portability --strict",
@@ -515,7 +519,7 @@ def check_target(target: Target, root: Path | None = None) -> dict[str, Any]:
 
 
 def check_matrix(root: Path | None = None) -> dict[str, Any]:
-    """Check every row and summarize -- the payload behind the CLI, API, and dashboard."""
+    """Check every row and summarize -- the payload behind the CLI and the API."""
     resolved_root = checkout_root() if root is None else root
     targets = [check_target(target, resolved_root) for target in TARGETS]
     ready = [t for t in targets if t["acceptance_ready"]]
