@@ -270,6 +270,34 @@ jobs:
           grep -q "nyxgpt-api:artifact-under-test" /tmp/status.txt
           grep -q "terraform api: running  \[artifact\]" /tmp/status.txt
 
+      # Fault injection (#3753's template): the runner cannot reach the
+      # post-upgrade state of a pre-#3835 deployment naturally -- containers
+      # up, marker absent -- so it is injected. Those deployments were built
+      # from a working tree, so reporting them as the artifact default states
+      # the reverse of the truth. Marker is restored afterwards; the serving
+      # checks below run against the same untouched stack.
+      - name: A live deployment whose mode was never recorded must not read as artifact
+        working-directory: /tmp/clean
+        run: |
+          set -euo pipefail
+          mv ~/.nyxGPT/install-mode.terraform.json /tmp/install-mode.terraform.json
+          ./venv/bin/nyxgpt ops status | tee /tmp/status-unrecorded.txt
+          grep -q "terraform deployment: not recorded" /tmp/status-unrecorded.txt
+          grep -q "terraform api: running  \[unrecorded\]" /tmp/status-unrecorded.txt
+          # Not `! grep ...`: bash's `set -e` explicitly does not fire on a
+          # command whose status is inverted by `!`, so that spelling would
+          # assert nothing at all.
+          if grep -q "terraform deployment: artifact" /tmp/status-unrecorded.txt; then
+            echo "::error::an unrecorded live deployment was reported as artifact"
+            exit 1
+          fi
+          # doctor reports it too -- and does not fail over it: an unknown
+          # build is not a fault, and the stack is serving.
+          ./venv/bin/nyxgpt ops doctor | tee /tmp/doctor-unrecorded.txt || true
+          grep -q "nothing recorded what these containers were built from" /tmp/doctor-unrecorded.txt
+          mv /tmp/install-mode.terraform.json ~/.nyxGPT/install-mode.terraform.json
+          ./venv/bin/nyxgpt ops status | grep -q "terraform deployment: artifact"
+
       - name: Verify core + observability are actually serving
         run: |
           set -uo pipefail
