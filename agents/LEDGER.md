@@ -1492,7 +1492,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   deliberately write `|| echo ""` and still treat a failed read as "no
   Status".
 
-- **V-048** · 2026-08-18 — **The canary replica pool is borrowed for a
+- **V-051** · 2026-08-18 — **The canary replica pool is borrowed for a
   rollout, not standing — and `V-045`'s footprint numbers moved with it.**
   The stable Deployments shipped `replicas: 4` deliberately (#2692): traffic
   is split by replica ratio, so a 4-wide pool is what makes a 25% step
@@ -1551,18 +1551,14 @@ are absent here by design (relocated to the annex; IDs are never reused).
   Re-verify when: a `k8s/**` manifest changes a `resources.requests` or a
   replica count, or the pool-planning rule in `canary._plan_rollout` changes.
   (Filed as `V-045` under #3833, renumbered to `V-046` when #3825 landed
-  `V-045` on `v3.0.0`, and to `V-048` on the next merge: #3831 allocated
-  `V-046`/`V-047` there. IDs are never reused. `v3.0.0` also arrived carrying
-  **three** entries numbered `V-046` — #3831, #3837 and #3827 each allocated
-  it on a concurrently-open branch and all three merged within ten minutes,
-  so no one of them saw the others. An earlier round of this branch left them
-  alone as "not this branch's to rewrite"; that was wrong, because uniqueness
-  is a CI-enforced invariant — `test_ledger_entry_ids_are_unique` — so the
-  collision was failing *every* PR's verification, not just recording an
-  untidy ledger. Healed here: #3837's copy keeps `V-046` (earliest merge, and
-  the only one cited by number outside the ledger — `developer-runbook.md`
-  §"run:" and `workflow_script_guard.py`'s module docstring), #3831's became
-  `V-049` and #3827's `V-050`.)
+  `V-045` on `v3.0.0`, to `V-048` on the next merge — #3831 allocated
+  `V-046`/`V-047` there — and to `V-051` on the merge after that, because
+  #3904 took `V-048` for its `rglob` entry while healing the mainline's own
+  triple-`V-046` collision. IDs are never reused. Fourth renumbering of this
+  entry in one day: allocation by "next free number in my checkout" cannot
+  hold when four branches are open against the same base, which is the
+  durable defect #3904 filed separately — this entry is the evidence of its
+  cost, not a second proposal.)
 
 - **V-044** · 2026-08-18 — **Self-heal watched the api pool alone in
   Kubernetes mode, and could not name the mode at all.** The Pod survey
@@ -1614,13 +1610,13 @@ are absent here by design (relocated to the annex; IDs are never reused).
   them.
   Re-verify when: the error envelope's shape changes, or a page starts
   reading a failed response without `apiErrorText`.
-  (Filed as `V-046` under #3831, renumbered to `V-049` on #3833's merge:
-  #3831, #3837 and #3827 each allocated `V-046` on concurrently-open branches
-  and all three merged into `v3.0.0` within ten minutes, so the mainline
-  itself carried three. #3837's copy — the earliest merge, and the one
-  `developer-runbook.md` and `workflow_script_guard.py` cite by number —
-  keeps `V-046`; this one and #3827's took the next unused IDs. IDs are never
-  reused.)
+  (Filed as `V-046` under #3831, renumbered to `V-049` by #3904: #3831, #3837
+  and #3827 each allocated `V-046` on a concurrently-open branch and all three
+  merged into `v3.0.0` within ten minutes, so the mainline itself carried
+  three of them and `test_ledger_entry_ids_are_unique` was red for every open
+  PR. #3837's copy — the earliest merge, and the one `V-027`,
+  `developer-runbook.md` and `workflow_script_guard.py` cite by number — keeps
+  `V-046`; this one and #3827's moved. IDs are never reused.)
 - **V-047** · 2026-08-18 — **A Deployment's own status cannot say why a Pod
   is not serving; the reason has to be read off the Pods.** `kubectl get
   deployment -o json` gives only `readyReplicas`, so canary reported
@@ -1688,6 +1684,29 @@ are absent here by design (relocated to the annex; IDs are never reused).
   does not cover, or `SAFE_IN_RUN` gains an entry.
 
 
+- **V-048** · 2026-08-18 — **A repository-wide `rglob` scan reads the runner's
+  workspace, not the repository.** `test_the_source_stays_single` walked
+  `REPO_ROOT.rglob("*.md")` to assert the first principles are stated in full
+  only in `CLAUDE.md`. On a review run that walk also finds
+  `.claude-pr/CLAUDE.md` -- the copy `claude-code-action` itself parks there
+  when it restores the base branch's `CLAUDE.md` on a PR-context run
+  (**V-028**(b)) -- so the contract failed on a workspace artifact, inside the
+  review gate, on whatever PR happened to be under review, while passing on
+  every developer machine. The scan now enumerates tracked files
+  (`git ls-files -- '*.md'`): a committed duplicate anywhere still fails, a
+  scratch file cannot. General form: **a test whose claim is about the
+  repository must ask git what the repository contains**; a working directory
+  is not a checkout, and the difference only shows up where the extra files
+  are, which is CI.
+  Method: executed 2026-08-18 on this runner, both directions. With
+  `.claude-pr/CLAUDE.md` present, the pre-fix scan fails
+  (`test_the_source_stays_single`, 1 failed / 13 passed); the tracked-files
+  scan passes with the same artifact present, and the paired
+  `test_an_untracked_workspace_copy_is_not_a_duplicate` injects that exact
+  artifact so the fault cannot silently stop firing.
+  Re-verify when: `claude-code-action` changes where it parks the restored
+  config, or another contract test starts walking the filesystem instead of
+  the index.
 - **V-050** · 2026-08-18 — **`nyxgpt ops` has one three-state vocabulary for
   Kubernetes workloads — ready / pending / failed — and `Pending` is not a
   failure.** `_classify_k8s_pod` (`src/nyxgpt/ops.py`) is the single
@@ -1710,12 +1729,13 @@ are absent here by design (relocated to the annex; IDs are never reused).
   settled before health is snapshotted — this supersedes the part of **V-041**
   that reads `_k8s_stack_health` as a Pod-*phase* scorer.
   (Filed as `V-042` under #3827, renumbered to `V-045` on the first merge of
-  `v3.0.0`, to `V-046` on the second, and to `V-050` on #3833's merge: #3811
-  allocated `V-042`/`V-043`, #3828 `V-044` and #3825 `V-045`, all on
-  concurrently-open branches, and #3831/#3837 had both landed `V-046` in the
-  ten minutes around this entry's own merge — #3837's copy, the earliest of
-  the three and the one cited by number outside the ledger, keeps it. IDs are
-  never reused. #3825's entry is the sizing one above; this one is the
+  `v3.0.0`, to `V-046` on the second, and to `V-050` on the third (#3904):
+  #3811 allocated `V-042`/`V-043`, #3828 `V-044` and #3825 `V-045`, all on
+  concurrently-open branches, and the `V-046` it landed on was already taken
+  by the `run:`-injection entry above — the one `V-027`,
+  `developer-runbook.md` and `workflow_script_guard.py` cross-reference, so
+  that entry keeps the number and this one moves. IDs are never reused.
+  #3825's entry is the sizing one above; this one is the
   vocabulary, and `infra_status`'s `kubernetes.unschedulable` — which #3825
   added from a separate `.spec.nodeName` probe — is read from
   `_classify_k8s_pod` as of that merge, so the Infrastructure page's badges
