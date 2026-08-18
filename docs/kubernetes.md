@@ -455,6 +455,15 @@ states rather than folding every failure into a single "not deployed":
 - **DEPLOYED** -- the probe succeeded and found Pods in the `nyxgpt`
   namespace.
 
+Each Pod on that card is badged with the same three states the CLI prints,
+from `kubernetes.pod_states` in the JSON (#3827): **READY**, **PENDING** (still
+scheduling, pulling or creating containers -- amber, because that is a normal
+stage of a rollout and not a fault) and **FAILED**, which carries the
+scheduler's or kubelet's own reason. The raw `kubectl get pods` line the card
+used to echo says `Pending` for both of the last two, which is the same
+conflation the install used to print — see [Ready, pending,
+failed](#ready-pending-failed).
+
 The same card carries an **In-cluster observability** section (#3787):
 per-workload readiness for the components in [Observability in the
 cluster](#observability-in-the-cluster), plus the `nyxgpt ops port-forward
