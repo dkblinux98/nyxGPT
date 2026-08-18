@@ -1629,6 +1629,10 @@ def test_the_formula_test_block_runs_the_cli(which):
     assert any('bin/"nyxgpt"' in line for line in block), block
     assert any('shell_output("#{bin}/nyxgpt --version")' in line for line in block), block
     assert not any("libexec" in line and 'nyxgpt"' in line for line in block), block
+    # A CLI that runs but reports nyxgpt.version's 0.0.0 sentinel could not
+    # read its own installed metadata, and a keg has no checkout to fall back
+    # to -- that is a broken install, not a passing test.
+    assert any("refute_match" in line and "0\\.0\\.0" in line for line in block), block
 
 
 def test_both_api_formulas_test_the_keg_the_same_way():

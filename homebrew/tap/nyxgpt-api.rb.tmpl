@@ -237,6 +237,10 @@ PY
     # two assertions above hold for a keg with no reachable CLI, which is what
     # this tap published. See ../nyxgpt-api.rb's test block for the account.
     assert_predicate bin/"nyxgpt", :exist?
-    assert_match(/\Anyxgpt \d/, shell_output("#{bin}/nyxgpt --version"))
+    reported = shell_output("#{bin}/nyxgpt --version")
+    assert_match(/\Anyxgpt \d/, reported)
+    # 0.0.0 is nyxgpt.version's "could not be determined" sentinel -- see
+    # ../nyxgpt-api.rb.
+    refute_match(/\Anyxgpt 0\.0\.0/, reported)
   end
 end

@@ -295,6 +295,11 @@ PY
     # `\d` and not the formula's own version: the tarball vendors pyproject.toml
     # as-is, so the package metadata the CLI reports is the project version,
     # which is deliberately not the candidate version stamped onto the formula.
-    assert_match(/\Anyxgpt \d/, shell_output("#{bin}/nyxgpt --version"))
+    reported = shell_output("#{bin}/nyxgpt --version")
+    assert_match(/\Anyxgpt \d/, reported)
+    # 0.0.0 is nyxgpt.version's "could not be determined" sentinel: the CLI
+    # ran, but could not read its own installed metadata, and there is no
+    # checkout in a keg to fall back to.
+    refute_match(/\Anyxgpt 0\.0\.0/, reported)
   end
 end
