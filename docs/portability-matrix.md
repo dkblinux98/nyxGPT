@@ -115,9 +115,9 @@ installs the wheel into a venv with no repository in reach, asserts the pre-fix
 build context and manifests are genuinely absent, brings the cluster up and
 requires a real chat to answer.
 
-While that gap is open, `nyxgpt ops portability --strict` exits non-zero. That
-is deliberate: closing them is what turns the strict gate green, and the gate
-then keeps them closed. (There is no dashboard surface for this — the matrix
+While the Compose gap is open, `nyxgpt ops portability --strict` exits
+non-zero. That is deliberate: closing it is what turns the strict gate green,
+and the gate then keeps it closed. (There is no dashboard surface for this — the matrix
 describes the product's portability claims, not the state of any one machine, so
 the CLI and `GET /api/v1/ops/portability` are its only readers, see #3803.)
 
