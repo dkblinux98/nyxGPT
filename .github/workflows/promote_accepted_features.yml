@@ -67,9 +67,12 @@ jobs:
           echo "NYXGPT_CONFIG_FILE=$CFG" >> "$GITHUB_ENV"
 
       - name: Promote accepted features
+        env:
+          # #3837: dispatch inputs reach the shell as data, never as source.
+          DRY_RUN_INPUT: ${{ github.event.inputs.dry_run || 'false' }}
         run: |
           DRY_RUN=0
-          if [[ "${{ github.event.inputs.dry_run || 'false' }}" == "true" ]]; then
+          if [[ "$DRY_RUN_INPUT" == "true" ]]; then
             DRY_RUN=1
           fi
           DRY_RUN="$DRY_RUN" scripts/agents/promote_accepted_features.sh
