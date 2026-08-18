@@ -1422,6 +1422,52 @@ are absent here by design (relocated to the annex; IDs are never reused).
   deliberately write `|| echo ""` and still treat a failed read as "no
   Status".
 
+- **V-044** · 2026-08-18 — **The #3820 guard was `script:`-only; the same fault
+  class was still live in `run:` blocks.** V-027 named the fault as "an
+  expression interpolated into an `actions/github-script` `script:` body is
+  JavaScript, not data", swept 47 interpolations on that construct, and
+  installed `workflow_script_guard.py` — which inspected `script:` bodies and
+  nothing else. The true class is **any executable body**: a `run:` block is
+  *shell* source substituted by the same pre-parse pass. CodeQL alert **#124
+  (critical)** found the identical injection in
+  `huddle_decision_dispatch.yml`'s "Restart the fix cycle" step, where
+  `DECISION="${{ steps.decide.outputs.decision }}"` and the issue number were
+  substituted as shell source and the issue number was substituted a *second*
+  time into a nested `bash -lc "..."` command string — two shells parse it, in
+  a job carrying `REVIEW_AGENT_TOKEN` on an `issue_comment` trigger.
+  **Extent, measured:** 593 `${{ }}` interpolations live in `run:` bodies
+  tree-wide. 522 are repo-controlled or shape-constrained (`vars.*`, generated
+  run identity, numeric event ids — the documented `SAFE_IN_RUN` allowlist);
+  **71 across 15 workflows were not, and all 71 were fixed** (#3837), with 0
+  deferred. Among them the same free-form-prose carriers V-027 found on the
+  `script:` side (`classify_error`'s `failed_step` / `signature` /
+  `error_class`, `escalate_reason`, `disagreement_type`), plus one arithmetic
+  context (`LOOP_NUM=$((<output> + 1))`) and four `secrets.*` reads.
+  **The live exploitability of #124 itself was bounded** by a constraint two
+  files away — `huddle_state.py`'s `decision()` returns a closed enum and the
+  issue number is `sed`-extracted digits — so it was a construct one edit from
+  exploitable, not a live exploit. Nothing at the interpolation site said so,
+  which is why it is removed rather than annotated.
+  Method: executed both halves per **D-006**, 2026-08-18 on Linux, via
+  `scripts/agents/lib/run_block_injection_probe.py` — it takes the step's real
+  `run:` body out of the YAML (so it cannot drift) and runs it under `bash`
+  with the step's collaborators stubbed in a throwaway `GITHUB_WORKSPACE`.
+  Fault injected: the pre-fix body (kept verbatim in the probe as a fixture,
+  since the fix deleted it) fed a hostile decision executed the injected
+  command in **both** the outer shell and the nested `bash -lc`. Fixed: the
+  current body, same payload arriving through `env:`, executed neither and
+  carried the text intact into the comment it posts.
+  Standing guards: `workflow_script_guard.py` now inspects `run:` bodies
+  against `SAFE_IN_RUN` (`script:` keeps the absolute no-`${{` rule — a JS body
+  never needs one); `tests/unit/test_workflow_script_injection.py` (35 tests,
+  including a planted `run:` violation and an assertion that the allowlist has
+  not widened to permit everything); and a third
+  `github-script-injection-smoke.yml` job running the probe and a planted-
+  violation step on a runner.
+  Re-verify when: a new `run:` block interpolates an expression the allowlist
+  does not cover, or `SAFE_IN_RUN` gains an entry.
+
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

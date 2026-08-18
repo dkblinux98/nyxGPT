@@ -9,6 +9,8 @@ for either channel, and there is no write route beside it.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -125,3 +127,38 @@ def test_endpoint_rejects_an_unknown_channel():
 
     assert response.status_code == 400
     assert "Unknown channel" in response.json()["error"]["message"]
+
+
+# --- Error detail must not carry host state (#3837, CodeQL #123) --------------
+
+
+def test_502_detail_does_not_leak_the_host_filesystem_path(monkeypatch, caplog):
+    """A `ReleaseCandidateError` message is not automatically client-safe.
+
+    `plan` reaches `declared_version`, which raises
+    `ReleaseCandidateError(f"Cannot read {path}: {exc}")` from a caught
+    `OSError` -- so returning `str(e)` verbatim publishes the API host's
+    absolute filesystem path (and the OS error string) to any dashboard
+    viewer. The operator still needs the real message, so it goes to the
+    API log instead.
+    """
+    leaky = "Cannot read /srv/deploy/nyxGPT/pyproject.toml: [Errno 13] Permission denied"
+
+    def explode(*args, **kwargs):
+        raise release_candidate.ReleaseCandidateError(leaky)
+
+    monkeypatch.setattr(release_candidate, "plan", explode)
+
+    with caplog.at_level(logging.WARNING, logger="nyxgpt.api"):
+        response = TestClient(app).get("/api/v1/ops/release-candidate?branch=v3.0.0")
+
+    assert response.status_code == 502
+    detail = response.json()["error"]["message"]
+    assert "/srv/deploy" not in detail
+    assert "Errno 13" not in detail
+    # It still has to be actionable: name the operation and where to look.
+    assert "v3.0.0" in detail
+    assert "nyxgpt release plan" in detail
+
+    logged = " ".join(r.getMessage() for r in caplog.records)
+    assert leaky in logged, "the operator's own logs must still carry the real error"

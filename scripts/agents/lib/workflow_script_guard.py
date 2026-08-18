@@ -17,7 +17,7 @@ reporting anything, so the run's real failure was never surfaced.
 It is not merely a quoting bug: these steps hold ``github-token``, so whatever
 the substituted text parses as executes with that token.
 
-**The class is one construct wider than #3820 swept (#3837, ledger V-032).**
+**The class is one construct wider than #3820 swept (#3837, ledger V-044).**
 The fault was named as "an expression interpolated into a ``script:`` body is
 JavaScript, not data", so the sweep and this guard both stopped at ``script:``.
 The true class is *any executable body*: a ``run:`` block is **shell** source,
@@ -294,7 +294,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"  {violation.format()}", file=sys.stderr)
     print(
         "\nPass these values through `env:` and read them as data -- "
-        "`process.env.NAME` in a script: body, \"$NAME\" in a run: body "
+        '`process.env.NAME` in a script: body, "$NAME" in a run: body '
         "(#3820, #3837).",
         file=sys.stderr,
     )
