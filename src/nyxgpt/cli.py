@@ -1538,9 +1538,17 @@ def cmd_self_heal_status(_cfg_path: Path | None) -> int:
             suffix = " (state could not be determined -- not counted unhealthy)"
         elif not c["desired"]:
             suffix = " (disabled -- not auto-healed)"
+        elif not c.get("healable", True):
+            # #3832: nothing self-heal can do converges this component (an
+            # unschedulable Pod), so say so and print the cluster's own
+            # reason -- "unhealthy, and nothing happening" with no cause is
+            # what left an operator watching Pods silently churn.
+            suffix = " (not auto-healable)"
         else:
             suffix = ""
         print(f" [{marker}] {c['service']}: state={c['state']} health={health}{suffix}")
+        if not c.get("healable", True) and c.get("note"):
+            print(f"        {c['note']}")
     if data["events"]:
         print("\nRecent heal events:")
         for e in data["events"][-10:]:

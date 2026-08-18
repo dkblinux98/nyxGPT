@@ -458,7 +458,10 @@ action when **enabled** — controlled at runtime, not by editing
   [--service NAME]`. `status` marks each component `OK`, `!!` (unhealthy) or
   `??` — the last meaning its state could not be determined from here, with
   the reason printed above the list (see [Present, absent,
-  unknown](#present-absent-unknown-three-states-not-two)).
+  unknown](#present-absent-unknown-three-states-not-two)). A component
+  tagged `(not auto-healable)` prints the cluster's own reason on the next
+  line — see [Pending Pods are reported, not
+  deleted](#pending-pods-are-reported-not-deleted).
 - **API**: `GET /api/v1/self-heal/status`, `POST
   /api/v1/self-heal/toggle`, `POST /api/v1/self-heal/heal` — see
   [api.md](api.md#self-heal-watchdog).
