@@ -1,0 +1,122 @@
+name: Support Intake Smoke
+
+# Which question does this job answer? (#3775 executed verification)
+#
+#   "Does the `Support` label actually exist in THIS repository right now,
+#    and would the guarantee that is supposed to notice its absence actually
+#    notice?"
+#
+# Inspection cannot answer either half. The first is a fact about the live
+# repository, not about the tree: #3810 leaked because a template declared a
+# label that was not there, and every file involved read correctly. The
+# second is the failure mode that made it silent -- `gh label create` exits 0
+# whatever happens next, and `gh label list --search` is a fuzzy match, so a
+# verification written the obvious way passes on a repository that has no
+# such label.
+#
+# So both halves are executed here, and the second is proved in BOTH
+# directions per the macos-brew-smoke.yml template: the check must reject a
+# label list that lacks `Support` as well as accept one that has it. A check
+# that only ever sees the good case is the thing being guarded against.
+#
+# What this job deliberately does NOT do: file a real ticket. That is owner
+# acceptance testing -- it needs a running web UI, a GitHub account, and it
+# writes to the live Support project. This job is read-only against the
+# repository (`gh label list`) and creates nothing.
+
+on:
+  push:
+    paths:
+      - ".github/ISSUE_TEMPLATE/support.yml"
+      - ".github/workflows/admin_ensure_support_label.yml"
+      - ".github/workflows/support_intake_guard.yml"
+      - ".github/workflows/support-intake-smoke.yml"
+      - "scripts/agents/lib/support_label.py"
+      - "src/nyxgpt/support.py"
+  pull_request:
+    paths:
+      - ".github/ISSUE_TEMPLATE/support.yml"
+      - ".github/workflows/admin_ensure_support_label.yml"
+      - ".github/workflows/support_intake_guard.yml"
+      - ".github/workflows/support-intake-smoke.yml"
+      - "scripts/agents/lib/support_label.py"
+      - "src/nyxgpt/support.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  label-exists:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+      LABEL: Support
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: "Live: the label the intake declares exists in this repository"
+        shell: bash
+        # The check the acceptance criterion asks for, run against the real
+        # repository. Read-only. If this fails, every ticket filed from here
+        # on is an unlabeled one: the agent-loop skip does not fire and the
+        # Support project's auto-add never matches (#3810).
+        run: |
+          set -euo pipefail
+          if gh label list --repo "${{ github.repository }}" --limit 200 \
+               --json name --jq '.[].name' | grep -Fxq "$LABEL"; then
+            echo "OK: '$LABEL' exists in ${{ github.repository }}"
+            exit 0
+          fi
+          echo "::error::Label '$LABEL' does not exist in ${{ github.repository }}."
+          echo "::error::Run the 'Admin - Ensure Support Label' workflow. Until then every"
+          echo "::error::support ticket arrives unlabeled and leaks into the agent loop (#3810)."
+          exit 1
+
+      - name: "Wiring: the template declares exactly that label"
+        shell: bash
+        # The live label and the declared label have to be the same string.
+        # Either one drifting reproduces #3810 exactly, and neither drift is
+        # visible from the other side.
+        run: |
+          set -euo pipefail
+          DECLARED=$(grep -E '^labels:' .github/ISSUE_TEMPLATE/support.yml || true)
+          if [[ "$DECLARED" != 'labels: ["Support"]' ]]; then
+            echo "::error::support.yml declares ${DECLARED:-nothing}, not labels: [\"Support\"]"
+            exit 1
+          fi
+          echo "OK: the form declares exactly the label this job just found live"
+
+      - name: "Both directions: the verification catches a MISSING label"
+        shell: bash
+        # Fault injection. The verification step in
+        # admin_ensure_support_label.yml is only worth having if it fails when
+        # the label is absent -- and the obvious spelling of it does not:
+        # `gh label list --search Support` matches any label whose text
+        # merely contains the word, which is how a check can pass on a
+        # repository that has no `Support` label at all. Run the shipped
+        # predicate against both a label list that has it and one that does
+        # not, and require it to disagree.
+        run: |
+          set -euo pipefail
+          LABEL=Support
+
+          check() { grep -Fxq "$LABEL"; }
+
+          if printf '%s\n' "Feature" "Improvement" "Support" | check; then
+            echo "OK: a label list containing '$LABEL' passes"
+          else
+            echo "::error::the verification rejects a repository that DOES have the label"
+            exit 1
+          fi
+
+          # The near-miss cases that a fuzzy or substring check would wave
+          # through: a label merely containing the word, and one differing
+          # only in case.
+          if printf '%s\n' "Feature" "Support request" "supporting" "SUPPORT" | check; then
+            echo "::error::the verification passes on a repository with NO '$LABEL' label."
+            echo "::error::That is the #3810 failure: silent, and every guard downstream inert."
+            exit 1
+          fi
+          echo "OK: a label list without '$LABEL' is rejected, near-misses included"

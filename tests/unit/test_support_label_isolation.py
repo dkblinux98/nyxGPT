@@ -168,6 +168,26 @@ def test_an_unlabeled_support_ticket_is_repaired_and_goes_red():
     assert "::error::" in steps[-1]["run"]
 
 
+def test_the_live_label_check_reads_and_never_writes():
+    """The label's existence is checked against the real repository (#3811).
+
+    A unit test cannot see the repository's labels, and that is exactly where
+    #3810's cause lived: every file in the tree was correct and the label was
+    simply not there. So the check runs in CI against the live repo -- and it
+    must stay read-only, because a check that creates what it is checking for
+    always passes.
+    """
+    spec = yaml.safe_load((_WORKFLOWS / "support-intake-smoke.yml").read_text(encoding="utf-8"))
+    job = spec["jobs"]["label-exists"]
+    assert job["env"]["LABEL"] == SUPPORT_LABEL
+
+    runs = "\n".join(step.get("run", "") for step in job["steps"])
+    assert "gh label list" in runs
+    assert "gh label create" not in runs, "the check must not create what it checks for"
+    assert "gh issue" not in runs, "the smoke job files nothing"
+    assert spec["permissions"] == {"contents": "read"}
+
+
 def test_blank_issues_stay_enabled_for_the_agent_loop():
     """Agent-filed issues follow CLAUDE.md's body structure, not the support form."""
     config = yaml.safe_load(

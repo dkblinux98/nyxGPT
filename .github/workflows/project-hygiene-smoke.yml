@@ -6,6 +6,19 @@ name: Project Hygiene Smoke
 #    running, does the value the owner (or an agent) wrote survive — and does
 #    hygiene still populate a genuinely empty issue?"
 #
+# And, since #3811:
+#
+#   "When the project item DISAPPEARS mid-run — the card deleted, or the
+#    issue moved off this board — does hygiene finish cleanly instead of
+#    going red on a dangling node id, while a failure that is not that still
+#    fails loud?"
+#
+# Also inspection-proof, and for the same reason: the answer depends on what
+# the API returns for an id it no longer knows, which only running it shows.
+# The stub injects the disappearance at the point the real one happened (run
+# 31926723483, after Status and Priority were written), and the counterpart
+# case keeps "the read failed" from becoming a blanket excuse to exit 0.
+#
 # Inspection cannot answer that. This defect's signature is a *successful*
 # hygiene run that overwrote a good value (#3814 lost its Status on
 # 2026-08-16 by about a second; #3813, same code, survived), so a green run of
