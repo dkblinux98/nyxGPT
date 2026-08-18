@@ -10,7 +10,15 @@ spec:
   # Managed by `nyxgpt canary start/promote/rollback` (see docs/kubernetes.md).
   # Do not attach an HPA to this Deployment -- autoscaling would fight the
   # canary tool's replica-count-based traffic split.
-  replicas: 4
+  #
+  # RESTS AT 1 (#3833). This used to ship `replicas: 4` so that a rollout
+  # could carve a 25% traffic step out of a standing pool -- which charged
+  # every install 3072Mi of reservations, including single-node local ones
+  # where 4 replicas buy no HA at all. `nyxgpt canary start` now GROWS the
+  # pool for the duration of a rollout and returns it to whatever count it
+  # finds here, so raising this number is still how you get more steady-state
+  # capacity, and nothing re-inflates it behind your back.
+  replicas: 1
   selector:
     matchLabels:
       app: nyxgpt-api-canary-pool

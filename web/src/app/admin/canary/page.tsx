@@ -34,6 +34,11 @@ type CanaryStatus = {
   component?: string;
   active: boolean;
   weight_percent: number;
+  // The pool is elastic (#3833): `pool_replicas` is what the running rollout
+  // grew it to, `resting_replicas` is what promote/rollback will hand back.
+  // Both are 0 when no rollout is in progress.
+  pool_replicas?: number;
+  resting_replicas?: number;
   stable: TrackHealth;
   canary: TrackHealth;
   metrics: Metrics;
@@ -178,12 +183,16 @@ export default function CanaryPage() {
     );
   };
 
+  // The fallback deliberately does NOT name a weight: replica counts are
+  // integers, so the rollout may have to round the requested weight to the
+  // closest split its pool can express (#3833). The server's own message says
+  // what it actually landed on, and runAction prefers it.
   const handleStart = () =>
     runAction(
       '/api/v1/canary/start',
       { weight_percent: startWeight, component },
       setStarting,
-      `Started canary rollout at ${startWeight}%`
+      'Started canary rollout'
     );
 
   const handleEvaluate = () =>
@@ -364,6 +373,18 @@ export default function CanaryPage() {
             <span style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)' }}>
               namespace: {status.namespace}
             </span>
+            {/* A rollout borrows replicas rather than living off a standing
+                pool (#3833) -- show what it borrowed and what it gives back,
+                so an inflated pool is never a mystery on the cluster. Both
+                numbers come from the server together or not at all (a
+                pre-#3833 server sends neither), so the badge is gated on
+                both rather than inventing a resting count the server never
+                reported. */}
+            {status.active && !!status.pool_replicas && !!status.resting_replicas && (
+              <span style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)' }}>
+                pool: {status.pool_replicas} replicas (stable rests at {status.resting_replicas})
+              </span>
+            )}
           </div>
 
           {!status.mode_supported && (
@@ -580,6 +601,11 @@ export default function CanaryPage() {
                 >
                   {starting ? 'Starting...' : 'Start canary'}
                 </button>
+                <span style={{ fontSize: '0.75rem', color: 'var(--foreground-muted)' }}>
+                  Starting grows the pool for the rollout and hands the replicas back on
+                  promote or rollback; weights that the pool cannot express exactly are
+                  rounded, and the result says to what.
+                </span>
               </>
             )}
             {status.active && (

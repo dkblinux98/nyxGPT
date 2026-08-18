@@ -3,7 +3,7 @@ name: Kubernetes Local Smoke
 # The question this job answers: does `nyxgpt ops install --kubernetes --local`
 # produce a stack a user can actually CHAT with?
 #
-# #3786 was an acceptance failure where 4/4 api and 4/4 web Pods reported
+# #3786 was an acceptance failure where every api and web Pod reported
 # Running, the web UI loaded, and nothing worked -- the deployment shipped no
 # Cassandra and no Ollama, and the host's own services are stopped in this
 # mode. "Pods Running" is not a working nyxGPT (the #2688 lesson), and no
@@ -23,11 +23,13 @@ name: Kubernetes Local Smoke
 # SCHEDULED. That defect was a stack whose requests exceeded the operator's
 # node: chat worked, install reported success, and prometheus sat Pending
 # forever. On the runner's own ~16GiB node it would not have reproduced --
-# hence the ballast. Post-#3825 footprint of the default stack, kube-system
-# included: 2075m of CPU requests and 6976Mi of memory requests against the
-# 4 vCPU / 7936Mi that VM gives, leaving room for a canary Pod. The smoke
-# prints the arithmetic either way, so a future footprint increase reads as a
-# number rather than as a mystery timeout.
+# hence the ballast. Footprint of the default stack's own requests, after
+# #3825's right-sizing and #3833's elastic canary pool: 1625m of CPU and
+# 5632Mi of memory against the 4 vCPU / 7936Mi that VM gives, with the 450m
+# and 1344Mi a rollout borrows (both tracks grown to the default 4-replica
+# ceiling) left free rather than reserved standing. The smoke prints the
+# arithmetic either way, so a future footprint increase reads as a number
+# rather than as a mystery timeout.
 #
 # Scoped like linux-native-smoke.yml and terraform-local-smoke.yml: a full
 # cluster bring-up with two image builds is expensive, so it runs only when
@@ -115,12 +117,12 @@ jobs:
           echo "runner: ${cpus} vCPU, $((mem_kb / 1024))Mi RAM, $(df -h --output=avail / | tail -1) free on /"
           if [ "$cpus" -lt 4 ]; then
             echo "::error::need >= 4 vCPU to match a stock Docker Desktop VM" \
-                 "(2075m of requests plus canary headroom), have ${cpus}"
+                 "(1625m of requests plus the 450m a rollout borrows), have ${cpus}"
             exit 1
           fi
           if [ "$mem_kb" -lt 14000000 ]; then
             echo "::error::need >= 14Gi RAM to ballast the node down to 7936Mi and still" \
-                 "run the stack (6976Mi of requests plus real usage), have $((mem_kb / 1024))Mi"
+                 "run the stack (5632Mi of requests plus real usage), have $((mem_kb / 1024))Mi"
             exit 1
           fi
 
