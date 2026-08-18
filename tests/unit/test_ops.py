@@ -13837,3 +13837,32 @@ def test_ops_port_forward_keyboard_interrupt_is_clean_exit(monkeypatch):
     rc = ops.port_forward(MagicMock(target="web", port=3000))
 
     assert rc == 0
+
+
+@pytest.mark.unit
+def test_compose_stack_snapshot_omits_undetermined_components(monkeypatch):
+    """#3812: this map's values are docker states, compared against "running"
+    by its callers. A component whose state could not be determined has no
+    docker state to contribute, and putting a guess in here would push it into
+    `detect_deployment_mode()`'s conflict checks."""
+    monkeypatch.setattr(
+        ops.self_heal,
+        "list_component_status",
+        lambda: [
+            ops.self_heal.ComponentStatus(
+                "prometheus", "nyxgpt-prometheus-1", "running", "healthy", True, source="compose"
+            ),
+            ops.self_heal.ComponentStatus(
+                "grafana",
+                "",
+                "unknown",
+                "",
+                False,
+                source="compose",
+                note="`docker compose ps` exited 125",
+                known=False,
+            ),
+        ],
+    )
+
+    assert ops._compose_stack_snapshot() == {"prometheus": "running"}

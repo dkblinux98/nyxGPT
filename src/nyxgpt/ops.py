@@ -1160,7 +1160,13 @@ def _compose_stack_snapshot() -> dict[str, str]:
             extra={"component": "ops"},
         )
         return {}
-    return {s.service: s.state for s in statuses if s.source == "compose"}
+    # `known=False` rows are excluded (#3812): this map's values are docker
+    # states, compared against "running"/"absent" by its callers, and an
+    # undetermined component has no docker state to put here. Reporting one
+    # would push a guess into `detect_deployment_mode()`'s conflict checks;
+    # the "can't determine" signal belongs to `compose_probe`, which
+    # `infra_status` reports alongside this map.
+    return {s.service: s.state for s in statuses if s.source == "compose" and s.known}
 
 
 def _terraform_or_kubernetes_managed_components() -> set[str]:
