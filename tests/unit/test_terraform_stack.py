@@ -161,8 +161,9 @@ def test_images_are_variables_so_published_ones_can_be_deployed() -> None:
     is not `nyxgpt-api` -- so the image is a full ref passed in, not a tag
     appended to a hard-coded name."""
     main = _read("main.tf")
-    assert "name = var.api_image" in main
-    assert "name = var.web_image" in main
+    for resource, variable in (("api", "var.api_image"), ("web", "var.web_image")):
+        block = _resource_block(main, "docker_image", resource)
+        assert re.search(rf"name\s*=\s*{re.escape(variable)}\b", block), block
 
 
 def test_the_build_block_is_conditional_on_dev_mode() -> None:

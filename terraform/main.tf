@@ -108,6 +108,14 @@ resource "docker_container" "cassandra" {
 resource "docker_image" "api" {
   name = var.api_image
 
+  # Survive `terraform destroy` (what `nyxgpt ops down --terraform` runs).
+  # The default removes the image, which on the artifact path means
+  # re-downloading a published image on every down/up cycle, and in dev mode
+  # means a rebuild `_docker_build_if_needed`'s fingerprint said was
+  # unnecessary. Nothing here depends on the image being gone: a redeploy
+  # pulls or rebuilds by tag either way.
+  keep_locally = true
+
   dynamic "build" {
     for_each = var.build_from_source ? [1] : []
     content {
@@ -199,9 +207,11 @@ resource "docker_container" "api" {
   }
 }
 
-# Same two-mode shape as `docker_image.api` above -- see its comment.
+# Same two-mode shape (and the same `keep_locally` reasoning) as
+# `docker_image.api` above -- see its comments.
 resource "docker_image" "web" {
-  name = var.web_image
+  name         = var.web_image
+  keep_locally = true
 
   dynamic "build" {
     for_each = var.build_from_source ? [1] : []
