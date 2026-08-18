@@ -1,0 +1,74 @@
+name: Cloud IMDS Smoke
+
+# One job, answering one question about the AWS substrate panel (#3804):
+#
+#   cloud-imds-smoke  When the dashboard is served *from* an EC2 instance, does
+#                     it report that instance -- or does it report "not
+#                     provisioned" because the Terraform state it used to read
+#                     lives on the operator's workstation? That was the rc12
+#                     defect, and it is a property of the machine the process
+#                     runs on, which unit tests structurally cannot reach: they
+#                     mock `urlopen`, so they cannot see whether the real code
+#                     path reaches `169.254.169.254`, completes the IMDSv2
+#                     handshake, or falls back to a token-less read the
+#                     substrate refuses.
+#
+#                     Drives scripts/cloud-imds-smoke.py, which injects the
+#                     condition rather than waiting for an EC2 runner: it
+#                     aliases the metadata address onto `lo` and serves a
+#                     token-gated stand-in on it. Three phases, so a pass
+#                     cannot be vacuous -- unknown before the alias exists,
+#                     the real facts with IMDSv2 up, unknown again when only
+#                     IMDSv1 is offered (#3753's fault-injection rule).
+#
+# What it does NOT cover: a real EC2 instance's metadata contents, and the
+# React rendering of the panel (covered by web/tests/app/admin/infrastructure
+# .test.tsx against the payloads this job proves the backend produces).
+
+on:
+  pull_request:
+    paths:
+      - 'src/nyxgpt/cloud_imds.py'
+      - 'src/nyxgpt/cloud_infra.py'
+      - 'src/nyxgpt/cloud_deploy.py'
+      - 'scripts/cloud-imds-smoke.py'
+      - '.github/workflows/cloud-imds-smoke.yml'
+  push:
+    paths:
+      - 'src/nyxgpt/cloud_imds.py'
+      - 'src/nyxgpt/cloud_infra.py'
+      - 'src/nyxgpt/cloud_deploy.py'
+      - 'scripts/cloud-imds-smoke.py'
+      - '.github/workflows/cloud-imds-smoke.yml'
+  workflow_dispatch:
+
+# Read-only workflow: it checks out the repo and drives a local smoke; it never
+# writes to the repository or its APIs.
+permissions:
+  contents: read
+
+jobs:
+  cloud-imds-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install nyxgpt (editable)
+        run: |
+          python -m pip install --upgrade pip setuptools
+          pip install -e ".[dev]"
+
+      # The script re-executes itself under sudo for the two privileged parts
+      # (aliasing 169.254.169.254 onto lo, binding port 80) and removes the
+      # alias again in a finally block, including on failure.
+      - name: Run the cloud IMDS smoke
+        run: python3 scripts/cloud-imds-smoke.py
+
+      - name: Show the metadata address is gone again
+        if: always()
+        run: ip addr show dev lo
