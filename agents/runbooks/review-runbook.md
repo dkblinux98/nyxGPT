@@ -53,7 +53,7 @@ The review-agent OWNS the review process:
   See §1a — a falsified claim found and left unfixed is a Medium (blocking)
   finding.
 - Reasonable maintainability
-- **End-to-end usability (Definition of Done, CLAUDE.md):** nyxGPT user features must be usable from the web interface; ops/SRE features must be operable from the SRE/admin dashboard. A backend-only implementation is a Medium (blocking) finding unless the issue explicitly scopes it backend-only with owner approval and a linked frontend follow-up issue.
+- **End-to-end usability (Definition of Done, CLAUDE.md):** nyxGPT user features must be usable from the web interface; ops/SRE *state* must be observable from the SRE/admin dashboard, while ops/SRE *lifecycle* is operated from the CLI and named on the dashboard as a text pointer (owner decision 2026-08-16, #3804). A backend-only implementation is a Medium (blocking) finding unless the issue explicitly scopes it backend-only with owner approval and a linked frontend follow-up issue — and so, in the other direction, is a **new acting control on a substrate the dashboard itself runs on**.
 - **Executed-verification gate (#3775):** a change whose claim is about
   runtime, install or platform behavior must be demonstrated by *execution on
   the target platform*, not by inspection. See §1c — missing executed evidence

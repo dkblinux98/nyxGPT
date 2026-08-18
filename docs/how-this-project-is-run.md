@@ -120,9 +120,14 @@ doctrine behind it is `product_management/AGENTIC_SDLC_DESIGN.md` §9b.
 The
 [Definition of Done](../CLAUDE.md#definition-of-done-owner-requirement-2026-07-08)
 requires every user-facing feature to be reachable end-to-end: a backend
-change with no web UI surface, or an ops feature with no admin-dashboard
-surface, is an incomplete implementation, and the review agent is required
-to block on it as a Medium finding.
+change with no web UI surface, or an ops feature whose *state* cannot be seen
+on the admin dashboard, is an incomplete implementation, and the review agent
+is required to block on it as a Medium finding. Ops *lifecycle* is the other
+way round — installing, deploying, provisioning and tearing down are `nyxgpt`
+commands the dashboard names rather than buttons it offers, because a UI
+cannot safely drive the substrate it is itself running on (owner decision
+2026-08-16, #3804) — so a new acting control on that substrate is a Medium
+finding too.
 
 It also requires **executed verification**: a change whose claim is about
 runtime, install or platform behavior reaches acceptance testing only once

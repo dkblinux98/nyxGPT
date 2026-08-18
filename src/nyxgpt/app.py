@@ -2574,10 +2574,11 @@ def cloud_deploy_destroy(payload: dict[str, Any] = Body(default={})) -> dict[str
 #
 # The SRE-surface half of `nyxgpt cloud smoke --container`: start a run of the
 # artifact install path on a bare Amazon Linux 2023 container, and read the
-# last run's verdict. CLAUDE.md's Definition of Done requires ops features to
-# be operable from the dashboard, and both surfaces drive the same
+# last run's verdict. Both surfaces drive the same
 # `nyxgpt.cloud_artifact_smoke` functions and read the same recorded result,
-# so there is one smoke rather than two implementations of it.
+# so there is one smoke rather than two implementations of it. This one stays
+# startable from the dashboard under the #3804 rule: it exercises a throwaway
+# local container, so it changes nothing the dashboard is running on.
 #
 # Unlike the AWS cloud endpoints above, this one is *not* synchronous: a run
 # builds an image, boots systemd, installs Node, Docker, Ollama and the wheel,

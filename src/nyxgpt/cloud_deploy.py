@@ -32,9 +32,11 @@ from my workstation":
 substrate down through `cloud_infra.destroy_infra`.
 
 Everything here is wrapped (CLAUDE.md, 2026-07-15): the operator never types
-`ssh`, `terraform`, or `docker`. The same functions back the admin
-dashboard's Cloud Infrastructure page, so the deploy is operable from the
-SRE surface as well as the CLI.
+`ssh`, `terraform`, or `docker`. Deploying is a CLI operation and only a CLI
+operation (owner decision, 2026-08-16, #3804): the admin dashboard's
+Infrastructure page reads `deploy_status` to *report* what is deployed and
+names the commands below, because a UI served by the instance cannot safely
+change the substrate it is running on.
 """
 
 from __future__ import annotations
