@@ -1175,7 +1175,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   Re-verify when: the retro template's panel structure changes, or a new
   optional data source is added without a source stamp.
 
-- **V-034** · 2026-08-18 — nyxGPT has **two config-reading tiers with different
+- **V-036** · 2026-08-18 — nyxGPT has **two config-reading tiers with different
   activation semantics**, and the difference is now data rather than folklore.
   The `api` tier re-reads `config.ini` per request through the hot-reload cache;
   the `web` tier is a Node process whose settings are read **once**, by the
@@ -1214,7 +1214,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   (e.g. if the proxy is ever made to resolve the key per request), or a third
   tier with its own activation semantics is added.
 
-- **V-035** · 2026-08-18 — Two tests in
+- **V-037** · 2026-08-18 — Two tests in
   `tests/unit/test_config_sections_endpoint.py` left a **live `threading.Timer`
   armed past their `patch` block**: they asserted the restart endpoints defer
   their work and then returned, so the timer fired seconds later, inside whatever
@@ -1229,6 +1229,33 @@ are absent here by design (relocated to the annex; IDs are never reused).
   cross-file failure; the failure disappears with the fixture in place.
   Re-verify when: a new test asserts a `threading.Timer`-deferred endpoint —
   use `captured_timers`, never a bare "assert not called inline".
+- **V-038** · 2026-08-18 — **An operator can now recover a cloud deployment's
+  address and SSH target after the deploy's scrollback is gone, and read the
+  instance's container state without a hand-rolled `ssh`.** `nyxgpt cloud
+  status` is a first-class subcommand: human-readable by default (`--json` for
+  the payload `nyxgpt cloud deploy --status` used to emit, which still works
+  for anything scripted against it), and it prints `user@host` plus the
+  identity file the deploy actually recorded — `tunnel_invocation()`, which had
+  zero callers since it was written, now carries the raw `ssh` under a
+  "diagnostics … run the wrapped command, not this" heading rather than as an
+  instruction. `nyxgpt cloud ops {status,doctor,self-heal}` runs the instance's
+  own read-only `nyxgpt` over the same wrapped SSH path `nyxgpt cloud
+  credentials` uses. The SSH user/identity resolution for those read-only
+  commands, and for `cloud tunnel`, is `resolve_access_target` — it fills from
+  the deploy record what flags did not give, so a deployment made with a
+  non-default key no longer needs `--identity-file` re-typed on every
+  inspection.
+  Method: executed — `scripts/cloud-status-smoke.sh` run 2026-08-18 against the
+  installed console script and real files under `$HOME/.nyxGPT`, and wired into
+  `.github/workflows/cloud-status-smoke.yml`. Three phases so a pass cannot be
+  vacuous: no record → `UNKNOWN` and explicitly *not* "nothing is deployed"
+  (the #3804 distinction); a record → the SSH target, identity file, URLs and
+  the wrapped container-state command all printed, with no `docker compose`
+  string anywhere in the output; an unroutable TEST-NET-3 host → `cloud ops`
+  exits 1 naming `nyxgpt cloud allow-ip`, never a raw ssh/docker instruction.
+  Re-verify when: the deploy record's field names change (`ssh_user`,
+  `identity_file`, `host`), or a new `cloud ops` inspection is added — it must
+  go in the `REMOTE_OPS_COMMANDS` read-only allowlist, not become a write path.
 
 ## Parked
 
