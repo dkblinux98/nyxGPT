@@ -10,6 +10,7 @@ import PendingRestartNotice, {
   type RestartStatus,
 } from '../../../components/PendingRestartNotice';
 import { ADMIN_NAV, grafanaSreHomeUrl } from './nav';
+import { apiErrorText, errorMessage } from '../../../lib/apiError';
 
 type OverviewData = {
   info: {
@@ -198,7 +199,7 @@ export default function AdminDashboardPage() {
       const data = await res.json();
       setOverview(data);
     } catch (e: unknown) {
-      setOverviewError(e instanceof Error ? e.message : String(e));
+      setOverviewError(errorMessage(e));
     } finally {
       setOverviewLoading(false);
     }
@@ -213,7 +214,7 @@ export default function AdminDashboardPage() {
       const data = await res.json();
       setActivity(data.events || []);
     } catch (e: unknown) {
-      setActivityError(e instanceof Error ? e.message : String(e));
+      setActivityError(errorMessage(e));
     } finally {
       setActivityLoading(false);
     }
@@ -229,7 +230,7 @@ export default function AdminDashboardPage() {
       setAccess(data);
       setHeaderInput(data.header || 'X-API-Key');
     } catch (e: unknown) {
-      setAccessError(e instanceof Error ? e.message : String(e));
+      setAccessError(errorMessage(e));
     } finally {
       setAccessLoading(false);
     }
@@ -260,7 +261,7 @@ export default function AdminDashboardPage() {
         body: JSON.stringify(payload),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+      if (!res.ok) throw new Error(apiErrorText(data, `HTTP ${res.status}`));
       setAccess(data);
       setHeaderInput(data.header || 'X-API-Key');
       if (data.api_key) {
@@ -274,7 +275,7 @@ export default function AdminDashboardPage() {
       // one.
       loadRestartStatus();
     } catch (e: unknown) {
-      setAccessError(e instanceof Error ? e.message : String(e));
+      setAccessError(errorMessage(e));
     } finally {
       setAccessSaving(false);
     }

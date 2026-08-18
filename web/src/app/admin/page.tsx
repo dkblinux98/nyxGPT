@@ -7,6 +7,7 @@ import PendingRestartNotice, {
   fetchRestartStatus,
   type RestartStatus,
 } from '../../components/PendingRestartNotice';
+import { apiErrorText, errorMessage } from '../../lib/apiError';
 
 type SecretField = { set: boolean; masked: string | null };
 
@@ -507,15 +508,7 @@ function formatSummaryValue(raw: unknown): string {
 
 /** Extracts a human-readable message from the API's `{error: {message, details}}` envelope. */
 function extractErrorMessage(data: unknown, status: number): string {
-  const err = (data as { error?: { message?: string; details?: { errors?: string[] } } } | null)
-    ?.error;
-  if (err?.details?.errors) {
-    return err.details.errors.join('; ');
-  }
-  if (err?.message) {
-    return err.message;
-  }
-  return `HTTP ${status}`;
+  return apiErrorText(data, `HTTP ${status}`);
 }
 
 const fieldLabelStyle = { display: 'block', marginBottom: 8, fontWeight: 600, fontSize: 14 } as const;
@@ -811,7 +804,7 @@ export default function AdminPage() {
       setExtraValues(toExtraValues(data.sections, schema));
       setStaleKeys(data.stale_keys || {});
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = errorMessage(e);
       setConfigError(msg);
     } finally {
       setLoading(false);
@@ -847,7 +840,7 @@ export default function AdminPage() {
       const data = await res.json();
       setAvailableModels(data.models || []);
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = errorMessage(e);
       console.error('Failed to load models:', e);
       setModelsError(msg);
       setAvailableModels([]);
@@ -1002,7 +995,7 @@ export default function AdminPage() {
       await res.json();
       setTestResult({ success: true, message: 'Connection successful!' });
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = errorMessage(e);
       setTestResult({ success: false, message: `Connection failed: ${msg}` });
     } finally {
       setTestingConnection(false);
@@ -1079,7 +1072,7 @@ export default function AdminPage() {
       });
       advanceAfterSave();
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = errorMessage(e);
       setSaveError(msg);
     } finally {
       setSaving(false);

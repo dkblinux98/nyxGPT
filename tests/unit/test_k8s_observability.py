@@ -13,6 +13,7 @@ Two halves:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -146,10 +147,15 @@ def test_install_kubernetes_applies_the_observability_layer() -> None:
             ops, "_build_and_load_k8s_web_image", return_value=[ops.OpsResult(True, "ok")]
         ),
         patch.object(ops, "_ensure_k8s_secret", return_value=[ops.OpsResult(True, "ok")]),
+        # #3825's capacity preflight really reads a cluster and really
+        # bootstraps the observability Secret to render it; neither belongs
+        # in a unit test of the step ORDER.
+        patch.object(ops, "_preflight_k8s_capacity", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_kubectl_apply_kustomization", return_value=[ops.OpsResult(True, "ok")]),
         # #3786's in-cluster Cassandra/Ollama wait sits between the app tier
         # and the observability layer, and really polls a cluster.
         patch.object(ops, "_wait_for_k8s_data_tier", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_wait_for_k8s_app_tier", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_sync_packaged_resources", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_k8s_stack_health", return_value=[]),
         patch.object(ops, "_k8s_observability_health", return_value=[]),
@@ -177,10 +183,15 @@ def test_install_kubernetes_honours_skip_observability() -> None:
             ops, "_build_and_load_k8s_web_image", return_value=[ops.OpsResult(True, "ok")]
         ),
         patch.object(ops, "_ensure_k8s_secret", return_value=[ops.OpsResult(True, "ok")]),
+        # #3825's capacity preflight really reads a cluster and really
+        # bootstraps the observability Secret to render it; neither belongs
+        # in a unit test of the step ORDER.
+        patch.object(ops, "_preflight_k8s_capacity", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_kubectl_apply_kustomization", return_value=[ops.OpsResult(True, "ok")]),
         # Patched for the same reason as above: otherwise the install stops at
         # the data-tier wait and this would assert nothing.
         patch.object(ops, "_wait_for_k8s_data_tier", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_wait_for_k8s_app_tier", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_k8s_stack_health", return_value=[]),
         patch.object(ops, "_apply_k8s_observability") as apply_observability,
         patch.object(ops, "_wait_for_k8s_observability") as wait_observability,
@@ -444,38 +455,234 @@ def test_wait_for_k8s_observability_waits_for_every_workload(monkeypatch) -> Non
     assert timeouts == sorted(timeouts, reverse=True)
 
 
+def _advancing_clock(monkeypatch, step: float = 30.0) -> None:
+    """Make `time.monotonic` advance by `step` on every read.
+
+    The rollout wait polls in slices, so a fixed clock would spin forever;
+    an advancing one drains any budget in a bounded number of iterations.
+    """
+    ticks = {"t": 0.0}
+
+    def now() -> float:
+        ticks["t"] += step
+        return ticks["t"]
+
+    monkeypatch.setattr(ops.time, "monotonic", now)
+
+
 def test_wait_for_k8s_observability_fails_naming_the_workload(monkeypatch) -> None:
     """A workload that never rolls out is a failure, not a warning -- an
     operator told "installed" by a command that left Prometheus Pending has
     been told the wrong thing."""
     calls: list[list[str]] = []
+    _advancing_clock(monkeypatch)
 
     def fake_run(cmd, **kwargs):
         calls.append(cmd)
-        rc = 1 if "deploy/grafana" in cmd else 0
-        return MagicMock(returncode=rc, stdout="", stderr="timed out")
+        if "deploy/grafana" in cmd:
+            return MagicMock(
+                returncode=1, stdout="", stderr="error: timed out waiting for the condition"
+            )
+        return MagicMock(returncode=0, stdout="{}", stderr="")
 
     monkeypatch.setattr(ops, "_run", fake_run)
 
     results = ops._wait_for_k8s_observability()
 
     assert not results[-1].ok
-    assert "deploy/grafana never became ready" in results[-1].message
+    assert "deploy/grafana did not become ready in time" in results[-1].message
     # Stops at the first failure: the refs after grafana are never waited on.
     assert _rollout_refs(calls)[-1] == "deploy/grafana"
 
 
+def test_wait_for_k8s_observability_reports_a_rollout_it_could_not_check(monkeypatch) -> None:
+    """`rollout status` failing for a reason waiting does not fix (no such
+    object, unreachable cluster) is reported now, not after the budget."""
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        rc = 1 if "deploy/grafana" in cmd else 0
+        return MagicMock(returncode=rc, stdout="", stderr='Error from server (NotFound): "grafana"')
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+
+    results = ops._wait_for_k8s_observability()
+
+    assert not results[-1].ok
+    assert "deploy/grafana: could not check rollout" in results[-1].message
+    assert "NotFound" in results[-1].details
+    # One attempt, not a poll loop: this failure does not resolve by waiting.
+    assert _rollout_refs(calls).count("deploy/grafana") == 1
+
+
 def test_wait_for_k8s_observability_stops_when_the_budget_is_spent(monkeypatch) -> None:
-    clock = iter([0.0, 0.0, 500.0, 1000.0, 1000.0])
-    monkeypatch.setattr(ops.time, "monotonic", lambda: next(clock))
+    _advancing_clock(monkeypatch, step=500.0)
     monkeypatch.setattr(
-        ops, "_run", lambda cmd, **kwargs: MagicMock(returncode=0, stdout="", stderr="")
+        ops,
+        "_run",
+        lambda cmd, **kwargs: MagicMock(
+            returncode=1, stdout="", stderr="error: timed out waiting for the condition"
+        ),
     )
 
     results = ops._wait_for_k8s_observability(budget_s=900)
 
     assert not results[-1].ok
-    assert "did not roll out within 900s" in results[-1].message
+    assert "did not become ready in time" in results[-1].message
+    assert "900s in total" in results[-1].details
+
+
+def test_wait_for_k8s_observability_fails_fast_on_an_unschedulable_pod(monkeypatch) -> None:
+    """#3827's real failure: prometheus could not be scheduled (`Insufficient
+    memory`). The wait must say so within a slice or two rather than spend the
+    whole 900s budget and then blame whichever workload it happened to be on."""
+    _advancing_clock(monkeypatch)
+    rollout_attempts: list[str] = []
+
+    def fake_run(cmd, **kwargs):
+        if "rollout" in cmd:
+            rollout_attempts.append(cmd[cmd.index("status") + 1])
+            return MagicMock(
+                returncode=1, stdout="", stderr="error: timed out waiting for the condition"
+            )
+        if any("jsonpath" in arg for arg in cmd):
+            # The workload's own label selector -- the wait only fast-fails on
+            # Pods it can attribute to the workload it is waiting for.
+            return MagicMock(returncode=0, stdout='{"app": "prometheus"}', stderr="")
+        return MagicMock(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "items": [
+                        {
+                            "metadata": {"name": "prometheus-abc"},
+                            "status": {
+                                "phase": "Pending",
+                                "conditions": [
+                                    {
+                                        "type": "PodScheduled",
+                                        "status": "False",
+                                        "reason": "Unschedulable",
+                                        "message": "0/1 nodes are available: Insufficient memory.",
+                                    }
+                                ],
+                            },
+                        }
+                    ]
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+
+    results = ops._wait_for_k8s_observability()
+
+    assert not results[-1].ok
+    assert "pod prometheus-abc: Pending: unschedulable" in results[-1].message
+    assert "Insufficient memory" in results[-1].details
+    # Confirmed over two slices, then abandoned -- nowhere near the budget.
+    assert len(rollout_attempts) == ops.K8S_BLOCKED_CONFIRMATIONS
+
+
+def test_wait_for_k8s_observability_tolerates_a_one_off_blocked_reading(monkeypatch) -> None:
+    """A single `ImagePullBackOff` reading can be a registry hiccup the next
+    kubelet retry clears; one confirmation slice keeps the wait from aborting
+    a rollout that was about to succeed."""
+    _advancing_clock(monkeypatch)
+    seen = {"polls": 0}
+
+    def fake_run(cmd, **kwargs):
+        if "rollout" in cmd:
+            if seen["polls"] == 0:
+                seen["polls"] += 1
+                return MagicMock(
+                    returncode=1, stdout="", stderr="error: timed out waiting for the condition"
+                )
+            return MagicMock(returncode=0, stdout="rolled out", stderr="")
+        if any("jsonpath" in arg for arg in cmd):
+            return MagicMock(returncode=0, stdout='{"app": "prometheus"}', stderr="")
+        return MagicMock(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "items": [
+                        {
+                            "metadata": {"name": "prometheus-abc"},
+                            "status": {
+                                "phase": "Pending",
+                                "containerStatuses": [
+                                    {"state": {"waiting": {"reason": "ImagePullBackOff"}}}
+                                ],
+                            },
+                        }
+                    ]
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+
+    results = ops._wait_for_k8s_observability()
+
+    assert all(r.ok for r in results)
+
+
+def test_wait_only_fast_fails_on_its_own_workloads_pods(monkeypatch) -> None:
+    """Every tier shares the `nyxgpt` namespace, and the api Pods restart
+    against their liveness probe while Cassandra is still bootstrapping. A
+    wait that scanned the whole namespace would abort the *data tier's* wait
+    over that and report Cassandra broken -- a false failure of exactly the
+    kind #3827 is about. So the blocked-Pod scan is label-scoped."""
+    _advancing_clock(monkeypatch)
+    selectors: list[str] = []
+
+    def fake_run(cmd, **kwargs):
+        if "rollout" in cmd:
+            return MagicMock(
+                returncode=1, stdout="", stderr="error: timed out waiting for the condition"
+            )
+        if any("jsonpath" in arg for arg in cmd):
+            return MagicMock(returncode=0, stdout='{"app": "cassandra"}', stderr="")
+        # The scan is filtered, and the (foreign, crash-looping) api Pod is
+        # not in the filtered answer -- which is what a real cluster returns.
+        selectors.append(cmd[cmd.index("-l") + 1] if "-l" in cmd else "")
+        return MagicMock(returncode=0, stdout=json.dumps({"items": []}), stderr="")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+
+    results = ops._wait_for_k8s_data_tier()
+
+    assert selectors and all(s == "app=cassandra" for s in selectors)
+    # It ran out of budget rather than blaming a Pod belonging to another tier.
+    assert "did not become ready in time" in results[-1].message
+
+
+def test_wait_declines_to_fast_fail_when_the_selector_is_unreadable(monkeypatch) -> None:
+    """No selector means no Pod can be attributed to this workload, and a wait
+    must never invent a failure out of a Pod that may belong to something
+    else -- it waits its budget out instead."""
+    _advancing_clock(monkeypatch)
+    scanned: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        if "rollout" in cmd:
+            return MagicMock(
+                returncode=1, stdout="", stderr="error: timed out waiting for the condition"
+            )
+        if any("jsonpath" in arg for arg in cmd):
+            return MagicMock(returncode=1, stdout="", stderr="NotFound")
+        scanned.append(cmd)
+        return MagicMock(returncode=0, stdout=json.dumps({"items": []}), stderr="")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+
+    results = ops._wait_for_k8s_observability(budget_s=900)
+
+    assert not scanned, "no selector -- no Pod scan at all, rather than an unscoped one"
+    assert "did not become ready in time" in results[-1].message
 
 
 def test_install_waits_for_observability_before_reading_pod_phases() -> None:
@@ -498,6 +705,7 @@ def test_install_waits_for_observability_before_reading_pod_phases() -> None:
         patch.object(ops, "_ensure_k8s_secret", return_value=ok),
         patch.object(ops, "_kubectl_apply_kustomization", return_value=ok),
         patch.object(ops, "_wait_for_k8s_data_tier", return_value=ok),
+        patch.object(ops, "_wait_for_k8s_app_tier", return_value=ok),
         patch.object(ops, "_sync_packaged_resources", return_value=ok),
         patch.object(ops, "_apply_k8s_observability", return_value=ok),
         patch.object(ops, "_k8s_observability_health", return_value=ok),
@@ -515,24 +723,162 @@ def test_install_waits_for_observability_before_reading_pod_phases() -> None:
     assert order == ["wait", "health"]
 
 
-def test_k8s_stack_health_fails_on_a_pod_still_pulling_its_image(monkeypatch) -> None:
-    """The condition the wait above exists to avoid, stated directly: a
-    `Pending` observability Pod makes the install report failure."""
+def _pods_run(pods: list[dict]):
+    """A `_run` stand-in answering `kubectl get pods -o json` with `pods`."""
 
     def fake_run(cmd, **kwargs):
         if "pods" in cmd:
-            return MagicMock(
-                returncode=0,
-                stdout="nyxgpt-api-stable-1=Running;prometheus-abc=Pending;",
-                stderr="",
-            )
+            return MagicMock(returncode=0, stdout=json.dumps({"items": pods}), stderr="")
         return MagicMock(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(ops, "_run", fake_run)
+    return fake_run
+
+
+def _pod(name: str, phase: str, **status) -> dict:
+    return {"metadata": {"name": name}, "status": {"phase": phase, **status}}
+
+
+def test_k8s_stack_health_reports_a_pod_still_pulling_its_image_as_pending(monkeypatch) -> None:
+    """#3827: `Pending` is pending, not `[FAIL]`.
+
+    The install run that produced the issue printed ten `[FAIL] pod ...:
+    Pending` lines for Pods that were all Running three minutes later, and
+    the one genuinely broken Pod was lost among them."""
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        _pods_run(
+            [
+                _pod(
+                    "nyxgpt-api-stable-1",
+                    "Running",
+                    conditions=[{"type": "Ready", "status": "True"}],
+                ),
+                _pod(
+                    "prometheus-abc",
+                    "Pending",
+                    containerStatuses=[{"state": {"waiting": {"reason": "ContainerCreating"}}}],
+                ),
+            ]
+        ),
+    )
 
     results = ops._k8s_stack_health()
+    pending = [r for r in results if "prometheus-abc" in r.message]
 
-    assert any(not r.ok and "prometheus-abc: Pending" in r.message for r in results)
+    assert pending and pending[0].ok, "a Pod pulling its image is not an install failure"
+    assert ops._result_status_label(pending[0]) == "PENDING"
+    assert "Pending: ContainerCreating" in pending[0].message
+
+
+def test_k8s_stack_health_fails_a_pod_that_cannot_be_scheduled(monkeypatch) -> None:
+    """...and the non-transient one still fails, distinctly (#3827)."""
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        _pods_run(
+            [
+                _pod(
+                    "prometheus-abc",
+                    "Pending",
+                    conditions=[
+                        {
+                            "type": "PodScheduled",
+                            "status": "False",
+                            "reason": "Unschedulable",
+                            "message": "0/1 nodes are available: Insufficient memory.",
+                        }
+                    ],
+                ),
+                _pod(
+                    "loki-def",
+                    "Pending",
+                    containerStatuses=[{"state": {"waiting": {"reason": "ContainerCreating"}}}],
+                ),
+            ]
+        ),
+    )
+
+    results = ops._k8s_stack_health()
+    by_pod = {r.message.split(":")[0]: r for r in results if r.message.startswith("pod ")}
+
+    assert not by_pod["pod prometheus-abc"].ok
+    assert "unschedulable" in by_pod["pod prometheus-abc"].message
+    assert "Insufficient memory" in by_pod["pod prometheus-abc"].details
+    # The distinction the issue asks for: the other Pending Pod is untouched.
+    assert by_pod["pod loki-def"].ok
+
+
+def test_k8s_stack_health_fails_a_crashlooping_pod(monkeypatch) -> None:
+    """`Running` is not a synonym for healthy: a container in CrashLoopBackOff
+    keeps its Pod in the Running phase forever."""
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        _pods_run(
+            [
+                _pod(
+                    "nyxgpt-api-stable-1",
+                    "Running",
+                    conditions=[{"type": "Ready", "status": "False"}],
+                    containerStatuses=[
+                        {
+                            "state": {
+                                "waiting": {"reason": "CrashLoopBackOff", "message": "back-off"}
+                            }
+                        }
+                    ],
+                )
+            ]
+        ),
+    )
+
+    results = ops._k8s_stack_health()
+    pod = next(r for r in results if "nyxgpt-api-stable-1" in r.message)
+
+    assert not pod.ok
+    assert "CrashLoopBackOff" in pod.message
+
+
+def test_k8s_stack_health_and_observability_health_agree_on_zero_ready(monkeypatch) -> None:
+    """The contradiction #3827 was filed for: one command printed `[FAIL] pod
+    grafana-x: Pending` and `[OK] observability grafana: 0/1 ready` about the
+    same condition. Both halves now call it PENDING."""
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        _pods_run(
+            [
+                _pod(
+                    "grafana-x",
+                    "Pending",
+                    containerStatuses=[{"state": {"waiting": {"reason": "ContainerCreating"}}}],
+                )
+            ]
+        ),
+    )
+    monkeypatch.setattr(ops, "_k8s_observability_workload_state", lambda: {"grafana": "0/1 ready"})
+
+    pod = next(r for r in ops._k8s_stack_health() if "grafana-x" in r.message)
+    workload = next(r for r in ops._k8s_observability_health() if "grafana" in r.message)
+
+    assert ops._result_status_label(pod) == ops._result_status_label(workload) == "PENDING"
+    assert pod.ok and workload.ok
+
+
+def test_observability_health_fails_an_absent_workload(monkeypatch) -> None:
+    monkeypatch.setattr(
+        ops,
+        "_k8s_observability_workload_state",
+        lambda: {"grafana": "1/1 ready", "loki": "absent"},
+    )
+
+    results = ops._k8s_observability_health()
+    by_name = {r.message: r for r in results}
+
+    assert by_name["observability grafana: 1/1 ready"].ok
+    assert not by_name["observability loki: absent"].ok
+    assert any("missing from the cluster" in r.message and not r.ok for r in results)
 
 
 def test_observability_command_waits_for_the_rollout_before_reporting_health() -> None:

@@ -231,8 +231,11 @@ jobs:
 
       - name: Dry run -- nothing uploaded
         if: ${{ steps.version.outputs.publish == 'true' && inputs.dry_run }}
+        env:
+          # #3837: step outputs reach the shell as data, never as source.
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          echo "::notice::dry_run: built and verified ${{ steps.version.outputs.version }}, uploaded nothing."
+          echo "::notice::dry_run: built and verified $VERSION, uploaded nothing."
 
       - name: Publish to PyPI (Trusted Publishing / OIDC)
         if: ${{ steps.version.outputs.publish == 'true' && !inputs.dry_run }}

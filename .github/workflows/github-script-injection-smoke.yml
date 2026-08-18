@@ -33,6 +33,23 @@ name: GitHub-Script Injection Smoke
 #
 # The second job fails if any `script:` body anywhere in .github/workflows/
 # regrows an expression interpolation.
+#
+# --- widened in #3837 (CodeQL alert #124, critical) --------------------------
+#
+# #3820 named the fault as "a `script:` body is JavaScript, not data" and swept
+# exactly that. A `run:` block is *shell* source substituted by the same
+# pre-parse pass, and the identical injection was still live in
+# `huddle_decision_dispatch.yml`: a step output substituted into a `run:` body
+# that then built a nested `bash -lc "..."` command string, so the value is
+# parsed by two shells, in a job holding REVIEW_AGENT_TOKEN on an
+# `issue_comment` trigger.
+#
+# The third job answers, for the shell half:
+#
+#   "When a huddle decision carries a shell metacharacter, does the dispatch
+#    step execute it -- and did the construct it replaced actually execute it?"
+#
+# Same both-halves shape, on the real body extracted from the YAML.
 
 on:
   push:
@@ -40,12 +57,14 @@ on:
       - ".github/workflows/**"
       - "scripts/agents/lib/workflow_script_guard.py"
       - "scripts/agents/lib/escalation_script_probe.py"
+      - "scripts/agents/lib/run_block_injection_probe.py"
       - "tests/unit/test_workflow_script_injection.py"
   pull_request:
     paths:
       - ".github/workflows/**"
       - "scripts/agents/lib/workflow_script_guard.py"
       - "scripts/agents/lib/escalation_script_probe.py"
+      - "scripts/agents/lib/run_block_injection_probe.py"
       - "tests/unit/test_workflow_script_injection.py"
   workflow_dispatch:
 
@@ -119,7 +138,7 @@ jobs:
       - name: Install PyYAML
         run: python -m pip install --quiet pyyaml
 
-      - name: No expression interpolated into any github-script body
+      - name: "No expression interpolated into any script: or run: body"
         run: python scripts/agents/lib/workflow_script_guard.py
 
       # A guard that cannot fail is not a guard: plant the #3820 construct
@@ -152,3 +171,56 @@ jobs:
             exit 1
           fi
           echo "Guard correctly rejected the planted violation."
+
+      # The same proof for the run: half (#3837). A guard whose run: allowlist
+      # silently widened until nothing could be flagged would pass every other
+      # step in this job.
+      - name: "Guard rejects a planted run: block violation"
+        shell: bash
+        run: |
+          set -euo pipefail
+          TMP="$(mktemp -d)"
+          D='$'
+          {
+            echo "name: planted-run"
+            echo "on: push"
+            echo "jobs:"
+            echo "  planted:"
+            echo "    runs-on: ubuntu-latest"
+            echo "    steps:"
+            echo "      - name: Planted run step"
+            echo "        run: |"
+            echo "          DECISION=\"${D}{{ steps.decide.outputs.decision }}\""
+            echo "          bash -lc \"echo '${D}DECISION'\""
+          } > "$TMP/planted-run.yml"
+          cat "$TMP/planted-run.yml"
+          if python scripts/agents/lib/workflow_script_guard.py "$TMP/planted-run.yml"; then
+            echo "::error::guard accepted a planted run: block interpolation"
+            exit 1
+          fi
+          echo "Guard correctly rejected the planted run: block violation."
+
+  # --- #3837: the shell half, both directions, on the real workflow body ------
+  dispatch-run-block-is-inert:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyYAML
+        run: python -m pip install --quiet pyyaml
+
+      # 1. FAULT INJECTED -- the pre-fix body (kept verbatim in the probe,
+      #    since the fix deleted it) must still execute an injected command,
+      #    in the outer shell AND in the nested `bash -lc`.
+      # 2. FIXED -- the body as it stands in huddle_decision_dispatch.yml
+      #    today, extracted live from the YAML so it cannot drift, must run
+      #    that same payload without executing any of it, and must carry the
+      #    text intact into the comment it posts.
+      - name: Huddle-dispatch run block probe (pre-fix must inject, current must not)
+        run: python scripts/agents/lib/run_block_injection_probe.py

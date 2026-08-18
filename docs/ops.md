@@ -253,7 +253,7 @@ Slow steps (over 3s):
 ```
 
 Pass `--quiet` to any of these commands for the old terse, scripting-friendly
-output -- just the `[OK]`/`[FAIL]`/`[SKIP]`/`[NOTE]` result lines and the
+output -- just the `[OK]`/`[FAIL]`/`[SKIP]`/`[NOTE]`/`[PENDING]` result lines and the
 per-step verdict, with no `[n/m]` announcements, heartbeat, or slow-step
 summary:
 

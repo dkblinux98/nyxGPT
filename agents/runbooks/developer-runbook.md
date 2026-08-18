@@ -275,6 +275,17 @@ never rely on comment/body text alone (#3600, going-public hardening).
   and by `github-script-injection-smoke.yml`), so a reintroduction is caught
   at verification rather than at the next fatal error.
 
+  **The same rule binds `run:` blocks** (#3837, CodeQL #124, ledger
+  **V-046**). A `run:` body is *shell* source, substituted by the same
+  pre-parse pass — and a value interpolated into a body that then builds a
+  nested `bash -lc "..."` is parsed by two shells. The guard covers `run:`
+  too, against a documented allowlist (`SAFE_IN_RUN`): repository `vars.*`,
+  GitHub-generated run/repo identity, login handles, `runner.*` paths and
+  numeric event ids may stay inline; **everything else goes through `env:`
+  and is read as `"$NAME"`** — step and job outputs above all, since their
+  provenance is not visible where you use them. That is the #3820 lesson
+  restated: `diagnosis` looked fine at its use site too.
+
 ## 3c) Workflow actor-gate audit (#3600, 2026-08-03)
 
 Point-in-time audit of every `.github/workflows/*.yml` job triggered by

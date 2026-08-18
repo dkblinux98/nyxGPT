@@ -112,10 +112,14 @@ jobs:
           echo "NYXGPT_CONFIG_FILE=$CFG" >> "$GITHUB_ENV"
 
       - name: Evaluate the drain gate
+        env:
+          # #3837: dispatch inputs are typed by the dispatcher, so they reach
+          # the shell as data, never as substituted source.
+          DRY_RUN_INPUT: ${{ github.event.inputs.dry_run || 'false' }}
         run: |
           set -euo pipefail
           DRY_RUN=0
-          if [[ "${{ github.event.inputs.dry_run || 'false' }}" == "true" ]]; then
+          if [[ "$DRY_RUN_INPUT" == "true" ]]; then
             DRY_RUN=1
           fi
           DRY_RUN="$DRY_RUN" scripts/agents/drain_gate.sh release | tee "$RUNNER_TEMP/gate.json"
