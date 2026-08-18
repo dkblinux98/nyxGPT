@@ -203,6 +203,7 @@ def test_ops_install_step_order_reconciles_before_creating(capsys):
         patch.object(ops, "_install_homebrew_api", side_effect=_record("homebrew api")),
         patch.object(ops, "_install_homebrew_web", side_effect=_record("homebrew web")),
         patch.object(ops, "_ensure_ollama_service", side_effect=_record("ollama service")),
+        patch.object(ops, "_ensure_required_models", side_effect=_record("required models")),
         patch.object(
             ops, "_cleanup_stale_log_symlinks", side_effect=_record("stale log symlink cleanup")
         ),
@@ -226,6 +227,9 @@ def test_ops_install_step_order_reconciles_before_creating(capsys):
     assert "cassandra container" in call_order
     assert "ollama service" in call_order
     assert "env sync" in call_order
+    # The model pull targets the server the ollama step just started, so it
+    # cannot run before it (#3824).
+    assert call_order.index("required models") > call_order.index("ollama service")
 
 
 @pytest.mark.unit
@@ -1645,7 +1649,10 @@ def test_sync_env_from_config_auth_disabled_no_secrets_is_noop(tmp_path, monkeyp
     assert len(results) == 1
     assert results[0].ok is True
     assert "auth disabled" in results[0].message
-    assert not env_path.exists()
+    # No *secret* line is written -- but the Compose ollama service still has
+    # to be told which models to pre-pull, and those are not secrets (#3824).
+    assert "NYXGPT_AUTH_API_KEY" not in env_path.read_text(encoding="utf-8")
+    assert "NYXGPT_DEFAULT_MODEL=" in env_path.read_text(encoding="utf-8")
 
 
 @pytest.mark.unit
@@ -13442,7 +13449,7 @@ def test_ops_install_default_verbose_prints_step_announcements(capsys):
         )
     assert rc == 0
     out = capsys.readouterr().out
-    assert "[1/19] sync packaged ops resources..." in out
+    assert "[1/20] sync packaged ops resources..." in out
 
 
 @pytest.mark.unit

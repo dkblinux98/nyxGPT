@@ -29,7 +29,11 @@ NAMESPACE="nyxgpt"
 API_KEY="${NYXGPT_SMOKE_API_KEY:-k8s-smoke-key}"
 WEB_PORT="${NYXGPT_SMOKE_WEB_PORT:-3000}"
 SESSION="k8s-smoke-$$"
-MODEL="${NYXGPT_SMOKE_MODEL:-qwen2.5:0.5b}"
+# Must match k8s/configmap.yaml's `[nyxgpt] default_model` / `[rag]
+# embedding_model` -- the StatefulSet pulls both and its readiness probe gates
+# on both (#3824), so a mismatch here would assert on a model nothing pulls.
+MODEL="${NYXGPT_SMOKE_MODEL:-qwen3:0.6b}"
+EMBEDDING_MODEL="${NYXGPT_SMOKE_EMBEDDING_MODEL:-nomic-embed-text}"
 BASE="http://127.0.0.1:${WEB_PORT}"
 PF_PID=""
 
@@ -104,6 +108,18 @@ done
 kubectl -n "$NAMESPACE" exec ollama-0 -- ollama list | grep -q "$MODEL" ||
     fail "Ollama is Ready but the default model ${MODEL} was never pulled -- chat would 404"
 ok "default model ${MODEL} present in the in-cluster Ollama"
+# The embedding model too (#3824): RAG is a per-session toggle, so a user can
+# turn it on at any moment, and a Ready Ollama without it would stall that
+# first RAG-enabled message on a ~275 MB download inside the request.
+kubectl -n "$NAMESPACE" exec ollama-0 -- ollama list | grep -q "$EMBEDDING_MODEL" ||
+    fail "Ollama is Ready but the embedding model ${EMBEDDING_MODEL} was never pulled -- \
+the first RAG-enabled message would block on downloading it"
+kubectl -n "$NAMESPACE" exec ollama-0 -- \
+    curl -fsS http://127.0.0.1:11434/api/embed \
+    -H 'Content-Type: application/json' \
+    -d "{\"model\":\"${EMBEDDING_MODEL}\",\"input\":\"k8s smoke\"}" >/dev/null ||
+    fail "the in-cluster Ollama could not serve an embedding with ${EMBEDDING_MODEL}"
+ok "embedding model ${EMBEDDING_MODEL} present and serving /api/embed"
 
 step "3/6 The user path works: sessions list, via the web Service"
 start_port_forward

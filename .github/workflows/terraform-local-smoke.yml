@@ -11,7 +11,13 @@ permissions:
 # unit-test / type-check CI can't see: web build errors, the api's missing
 # example.config.ini / httpx, the terraform network aliases + cassandra
 # cluster name, the derived-config transforms, and observability on the
-# terraform network (Prometheus scraping the api). See the trigger scope below.
+# terraform network (Prometheus scraping the api). Since #3824 it also sends
+# the first chat message: the `--terraform` install now pulls the configured
+# chat and embedding models after `apply`, and the only way to know a Terraform
+# deploy is chattable is to chat with it. (The fault-injected half of that
+# proof -- delete the model, watch the chat fail, re-install, watch it work --
+# lives in linux-native-smoke.yml, where re-running the install is cheap.)
+# See the trigger scope below.
 
 # Scoped to Terraform changes only. Standing up the full `--terraform --local`
 # stack is expensive, so this must not gate every code review -- it runs only
@@ -23,10 +29,14 @@ on:
   pull_request:
     paths:
       - 'terraform/**'
+      - 'src/nyxgpt/model_bootstrap.py'
+      - 'scripts/first-chat-smoke.py'
       - '.github/workflows/terraform-local-smoke.yml'
   push:
     paths:
       - 'terraform/**'
+      - 'src/nyxgpt/model_bootstrap.py'
+      - 'scripts/first-chat-smoke.py'
       - '.github/workflows/terraform-local-smoke.yml'
 
 jobs:
@@ -115,6 +125,16 @@ jobs:
           echo "  prometheus api target -> $api_target (expect up)"
           [ "$api_target" = "up" ] || { echo "::error::prometheus is not scraping the api (got $api_target)"; fail=1; }
           exit $fail
+
+      # The acceptance question for #3824, asked of the Terraform run mode:
+      # can a user send a first chat message without anyone having pulled a
+      # model by hand? The install's `required models` step is what makes this
+      # possible; this is what proves it did.
+      - name: First chat must work with no manual model pull
+        run: |
+          python3 scripts/first-chat-smoke.py \
+            --install-cmd "nyxgpt ops install --terraform --local" \
+            --skip-fault-injection
 
       - name: Dump diagnostics on failure
         if: failure()

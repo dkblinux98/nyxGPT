@@ -11,7 +11,14 @@ name: Linux Native Smoke
 #                       issue's acceptance names). Preceded by
 #                       scripts/ollama-bootstrap-smoke.py, which injects the
 #                       pre-fix behaviour and proves the run would have failed
-#                       without the Ollama bootstrap. This is the review
+#                       without the Ollama bootstrap. Since #3824 it also
+#                       sends the FIRST CHAT MESSAGE (scripts/first-chat-smoke.py):
+#                       an install that reports every unit active while Ollama
+#                       holds no model is the defect that issue exists to
+#                       eliminate, and only sending the message sees it. That
+#                       check deletes the chat model and asserts the chat then
+#                       fails, so it cannot pass on a runner that happened to
+#                       have the model already. This is the review
 #                       agent's only way to see systemd-path regressions --
 #                       unit tests mock systemctl; this runs the real thing on
 #                       a real systemd userland.
@@ -84,6 +91,8 @@ on:
       - 'ops/launchagents/**'
       - 'scripts/systemd-native-smoke.sh'
       - 'scripts/ollama-bootstrap-smoke.py'
+      - 'scripts/first-chat-smoke.py'
+      - 'src/nyxgpt/model_bootstrap.py'
       - 'scripts/ops-subprocess-output-smoke.py'
       - 'scripts/host-relay-posture-smoke.py'
       - 'scripts/service-venv-python-smoke.py'
@@ -101,6 +110,8 @@ on:
       - 'ops/launchagents/**'
       - 'scripts/systemd-native-smoke.sh'
       - 'scripts/ollama-bootstrap-smoke.py'
+      - 'scripts/first-chat-smoke.py'
+      - 'src/nyxgpt/model_bootstrap.py'
       - 'scripts/ops-subprocess-output-smoke.py'
       - 'scripts/host-relay-posture-smoke.py'
       - 'scripts/service-venv-python-smoke.py'
