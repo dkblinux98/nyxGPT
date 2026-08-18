@@ -762,7 +762,11 @@ claude_code_oauth_token =
 - Use fine-grained tokens with minimum required permissions
 - Regularly rotate tokens
 - Monitor agent activity in GitHub audit logs
-- See [`docs/github-tokens.md`](github-tokens.md) for detailed token setup
+- Setting up the *agent system's* own tokens and GitHub Actions variables is a
+  repository topic, not an nyxGPT setting: see
+  [`docs/github-tokens.md`](github-tokens.md) in the repository (it is not
+  packaged with the install — #3809). Every token nyxGPT itself reads is
+  documented here.
 
 **Note:** Agent tokens fall back to the main `pat` if not explicitly set.
 

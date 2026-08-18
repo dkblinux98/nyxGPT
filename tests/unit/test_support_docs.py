@@ -23,12 +23,139 @@ pytestmark = pytest.mark.unit
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_every_docs_markdown_file_is_packaged_and_listed():
-    """The packaged set is the whole `docs/*.md` tree, not a curated subset."""
-    on_disk = {p.stem for p in (_REPO_ROOT / "docs").glob("*.md")}
+#: Documents #3809 removed from the artifact: how this repository builds
+#: itself, not how to use nyxGPT. Named rather than derived, so re-adding one
+#: to the wheel has to be a deliberate edit here too.
+_NOT_PRODUCT_DOCS = {
+    "KNOWN_LIMITATIONS",
+    "acceptance-drain-gate",
+    "adding-api-endpoints",
+    "agent-comment-tokens",
+    "agent-smoke",
+    "cloud-artifact-smoke",
+    "development",
+    "file-lock-audit",
+    "github-tokens",
+    "how-this-project-is-run",
+    "live-verification-ci",
+    "portability-matrix",
+    "security-scanning-ci",
+    "sprint-autopilot",
+    "testing",
+}
+
+
+def test_the_packaged_set_is_exactly_the_grouped_selection():
+    """Packaged files and `DOC_SECTIONS` hold the same slugs, both ways (#3809).
+
+    This is the regression gate the issue asks for. A new process document
+    dropped into `docs/` is not symlinked into `nyxgpt/resources/docs/`, so
+    it fails nothing and ships nowhere; a new *product* document that is
+    packaged but placed in no section fails here rather than appearing in the
+    viewer ungrouped.
+    """
+    packaged = support.packaged_slugs()
+    grouped = set(support.PACKAGED_SLUGS)
+    assert packaged == grouped, (
+        f"packaged but ungrouped: {sorted(packaged - grouped)}; "
+        f"grouped but not packaged: {sorted(grouped - packaged)}"
+    )
+    # No slug listed twice across sections -- the index would render it twice.
+    assert len(support.PACKAGED_SLUGS) == len(grouped)
+
+
+def test_process_and_contributor_docs_are_absent_from_the_artifact():
+    """Not merely hidden in the UI: the files are not in the package at all."""
+    packaged = support.packaged_slugs()
+    assert not (packaged & _NOT_PRODUCT_DOCS), sorted(packaged & _NOT_PRODUCT_DOCS)
     listed = {doc["slug"] for doc in support.list_documents()}
+    assert not (listed & _NOT_PRODUCT_DOCS)
+    # `nyxgpt/resources/docs/` is the packaged directory itself -- assert on
+    # the checked-in symlinks, which is what a wheel build dereferences.
+    resource_docs = _REPO_ROOT / "src" / "nyxgpt" / "resources" / "docs"
+    assert {p.stem for p in resource_docs.glob("*.md")} == set(support.PACKAGED_SLUGS)
+
+
+def test_excluded_docs_stay_in_the_repository():
+    """Removing them from the artifact must not remove them from the repo.
+
+    The agent loop and `CLAUDE.md`'s bootstrap read these from `docs/`.
+    """
+    on_disk = {p.stem for p in (_REPO_ROOT / "docs").glob("*.md")}
     assert on_disk, "no docs/*.md found -- the fixture assumption is wrong"
-    assert listed == on_disk
+    missing = _NOT_PRODUCT_DOCS - on_disk
+    assert not missing, f"excluded docs deleted from the repository: {sorted(missing)}"
+    # Every repo doc is either packaged product documentation or a named
+    # exclusion -- a new document cannot land in neither and go unnoticed.
+    unclassified = on_disk - set(support.PACKAGED_SLUGS) - _NOT_PRODUCT_DOCS
+    assert not unclassified, (
+        f"docs/*.md neither packaged nor listed as non-product: {sorted(unclassified)}. "
+        "Symlink it into src/nyxgpt/resources/docs/ and add it to "
+        "support.DOC_SECTIONS, or add it to _NOT_PRODUCT_DOCS."
+    )
+
+
+def test_sections_are_ordered_deliberately_and_never_empty():
+    """Install before use before reference -- and no flat alphabetical list."""
+    sections = support.list_sections()
+    assert [section["title"] for section in sections] == [
+        "Getting started",
+        "Using nyxGPT",
+        "Configuration",
+        "Operating",
+        "Reference",
+        "Help",
+    ]
+    for section in sections:
+        assert section["documents"], f"empty section rendered: {section['title']}"
+        for doc in section["documents"]:
+            assert doc["title"]
+    # The install docs come before the reference ones, not after them.
+    flat = [doc["slug"] for doc in support.list_documents()]
+    assert flat.index("homebrew") < flat.index("cli")
+
+
+def test_index_endpoint_serves_the_groups_not_a_flat_alphabetical_list():
+    client = TestClient(app)
+    body = client.get("/api/v1/support/docs").json()
+    assert [section["title"] for section in body["sections"]] == [
+        title for title, _slugs in support.DOC_SECTIONS
+    ]
+    # `documents` stays available, and is the same set in the same order.
+    assert [doc["slug"] for doc in body["documents"]] == list(support.PACKAGED_SLUGS)
+    titles = [doc["title"] for doc in body["documents"]]
+    assert titles != sorted(titles, key=str.lower), "the index is still alphabetical"
+
+
+def test_no_packaged_doc_renders_a_dead_link_into_an_excluded_doc():
+    """Criterion: remaining docs must not link into removed ones.
+
+    A relative `.md` link is rewritten to the hosted repository copy when its
+    target is not packaged, so a reference that survives in prose lands on a
+    real page instead of a 404 inside the viewer.
+    """
+    dead = []
+    for slug in support.PACKAGED_SLUGS:
+        soup = BeautifulSoup(support.render_document(slug)["html"], "html.parser")
+        for anchor in soup.find_all("a"):
+            href = anchor.get("href")
+            if not isinstance(href, str) or not href.startswith(support.DOCS_ROUTE_PREFIX):
+                continue
+            target = href[len(support.DOCS_ROUTE_PREFIX) :].lstrip("/").split("#")[0]
+            if target and target not in support.PACKAGED_SLUGS:
+                dead.append(f"{slug} -> {href}")
+    assert not dead, f"in-app links to documents that are not packaged: {dead}"
+
+
+def test_excluded_docs_resolve_to_their_hosted_copy():
+    blob = f"{support.ISSUE_REPO_URL}/blob/{support.REPO_DEFAULT_BRANCH}/docs"
+    assert support._rewrite_link("github-tokens.md") == f"{blob}/github-tokens.md"
+    assert (
+        support._rewrite_link("portability-matrix.md#the-matrix")
+        == f"{blob}/portability-matrix.md#the-matrix"
+    )
+    # A packaged sibling still browses in-app.
+    assert support._rewrite_link("ops.md") == "/support/docs/ops"
 
 
 def test_docs_resolve_through_importlib_resources_not_the_checkout():
@@ -46,9 +173,8 @@ def test_index_lists_title_and_summary_with_the_docs_index_first():
     documents = support.list_documents()
     assert documents[0]["slug"] == support.INDEX_SLUG
     assert all(doc["title"] for doc in documents)
-    # Titles after the index read alphabetically.
-    rest = [doc["title"].lower() for doc in documents[1:]]
-    assert rest == sorted(rest)
+    # Ordering is the manifest's, not the filesystem's or the alphabet's.
+    assert [doc["slug"] for doc in documents] == list(support.PACKAGED_SLUGS)
 
 
 def test_titles_and_summaries_come_from_the_document_body():

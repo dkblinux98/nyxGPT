@@ -51,7 +51,7 @@ example_config = root.joinpath("example.config.ini")
 assert example_config.is_file(), f"missing {example_config}"
 assert "[nyxgpt]" in example_config.read_text(encoding="utf-8")
 
-# #3745: the whole docs/*.md tree ships in the wheel -- it is the only
+# #3745: the product documentation ships in the wheel -- it is the only
 # documentation a PyPI/Homebrew user has, rendered by the web UI under
 # Support -> Docs. Checked through importlib.resources rather than by
 # importing nyxgpt.support, because this venv installs with --no-deps and
@@ -63,6 +63,31 @@ packaged_docs = {p.name for p in docs.iterdir() if p.name.endswith(".md")}
 assert "README.md" in packaged_docs, f"docs index missing from wheel: {packaged_docs}"
 assert len(packaged_docs) > 10, f"docs tree looks truncated in the wheel: {packaged_docs}"
 assert "configuration.md" in packaged_docs, f"docs tree incomplete in wheel: {packaged_docs}"
+
+# #3809: and *only* the product documentation. The agent/CI process and
+# contributor docs stay in the repository; a wheel that carries them is
+# shipping this project's internal operating detail to end users. Asserted
+# against the built artifact, not the source tree, because the whole point
+# is what setuptools put in the wheel.
+not_product = {
+    "KNOWN_LIMITATIONS.md",
+    "acceptance-drain-gate.md",
+    "adding-api-endpoints.md",
+    "agent-comment-tokens.md",
+    "agent-smoke.md",
+    "cloud-artifact-smoke.md",
+    "development.md",
+    "file-lock-audit.md",
+    "github-tokens.md",
+    "how-this-project-is-run.md",
+    "live-verification-ci.md",
+    "portability-matrix.md",
+    "security-scanning-ci.md",
+    "sprint-autopilot.md",
+    "testing.md",
+}
+leaked_docs = sorted(packaged_docs & not_product)
+assert not leaked_docs, f"process/contributor docs leaked into the wheel: {leaked_docs}"
 
 # #3509: `nyxgpt cloud infra` provisions the AWS substrate from the packaged
 # terraform/aws configuration (nyxgpt.cloud_infra.packaged_terraform_dir), so

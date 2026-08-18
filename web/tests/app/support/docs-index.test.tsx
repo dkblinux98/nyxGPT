@@ -20,6 +20,14 @@ const DOCUMENTS = [
   { slug: 'rag', title: 'RAG', summary: '' },
 ];
 
+// The backend groups the index (#3809); the page renders those groups in the
+// order they arrive rather than sorting or inferring anything of its own.
+const SECTIONS = [
+  { title: 'Getting started', documents: [DOCUMENTS[0]] },
+  { title: 'Using nyxGPT', documents: [DOCUMENTS[2]] },
+  { title: 'Configuration', documents: [DOCUMENTS[1]] },
+];
+
 const CONTEXT = {
   environment: { version: '3.0.0', platform: 'Linux 6.1 (x86_64)', python: '3.12.1' },
   issue_form_url: 'https://github.com/dkblinux98/nyxGPT/issues/new?template=support.yml',
@@ -40,7 +48,7 @@ function serveContext(payload: unknown, status = 200) {
 
 describe('Support docs index page', () => {
   it('lists every packaged document, linking each to its in-app viewer route', async () => {
-    serveDocs({ documents: DOCUMENTS });
+    serveDocs({ sections: SECTIONS, documents: DOCUMENTS });
     serveContext(CONTEXT);
     render(<SupportDocsIndexPage />);
 
@@ -56,8 +64,30 @@ describe('Support docs index page', () => {
     expect(screen.getByRole('link', { name: /back to chat/i })).toHaveAttribute('href', '/');
   });
 
-  it('shows the running version and the issue link once the context resolves', async () => {
+  it('renders the sections as headings, in the order the backend sent them', async () => {
+    // #3809: a flat list is what buried product help among agent/CI process
+    // docs. The order is the backend's -- install before use before
+    // reference -- so the page must not sort it.
+    serveDocs({ sections: SECTIONS, documents: DOCUMENTS });
+    serveContext(CONTEXT);
+    render(<SupportDocsIndexPage />);
+
+    await screen.findByRole('link', { name: 'Documentation' });
+    const headings = screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent);
+    expect(headings).toEqual(['Getting started', 'Using nyxGPT', 'Configuration']);
+  });
+
+  it('renders a backend that only returns a flat list as one unnamed group', async () => {
     serveDocs({ documents: DOCUMENTS });
+    serveContext(CONTEXT);
+    render(<SupportDocsIndexPage />);
+
+    expect(await screen.findByRole('link', { name: 'Configuration' })).toBeInTheDocument();
+    expect(screen.queryAllByRole('heading', { level: 2 })).toHaveLength(0);
+  });
+
+  it('shows the running version and the issue link once the context resolves', async () => {
+    serveDocs({ sections: SECTIONS, documents: DOCUMENTS });
     serveContext(CONTEXT);
     render(<SupportDocsIndexPage />);
 
@@ -73,7 +103,7 @@ describe('Support docs index page', () => {
   it('still renders the docs when the issue link cannot be built', async () => {
     // The exact offline case this page exists for: reading must not depend on
     // the one thing that needs the network.
-    serveDocs({ documents: DOCUMENTS });
+    serveDocs({ sections: SECTIONS, documents: DOCUMENTS });
     server.use(http.get('/api/v1/support/context', () => HttpResponse.error()));
     render(<SupportDocsIndexPage />);
 
@@ -82,7 +112,7 @@ describe('Support docs index page', () => {
   });
 
   it('hides the issue banner when the context endpoint returns an error status', async () => {
-    serveDocs({ documents: DOCUMENTS });
+    serveDocs({ sections: SECTIONS, documents: DOCUMENTS });
     serveContext({ detail: 'unavailable' }, 503);
     render(<SupportDocsIndexPage />);
 
@@ -120,7 +150,7 @@ describe('Support docs index page', () => {
   });
 
   it('shows a loading state before the index arrives', () => {
-    serveDocs({ documents: DOCUMENTS });
+    serveDocs({ sections: SECTIONS, documents: DOCUMENTS });
     serveContext(CONTEXT);
     render(<SupportDocsIndexPage />);
 

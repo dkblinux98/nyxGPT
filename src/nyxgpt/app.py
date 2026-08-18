@@ -2556,7 +2556,9 @@ def ops_release_candidate(
 #
 # The web UI's Support menu, which is the only documentation surface a user
 # who installed from PyPI or Homebrew has: they never checked the repo out,
-# so `docs/*.md` ships in the wheel and is served from the package here.
+# so the product docs ship in the wheel and are served from the package here.
+# Only product documentation ships -- the agent/CI process and contributor
+# docs are not in the artifact at all (#3809, `support.DOC_SECTIONS`).
 #
 # All three are read-only. "File an Issue" is deliberately a *link* the UI
 # opens, not an endpoint that posts on the user's behalf -- see
@@ -2565,8 +2567,17 @@ def ops_release_candidate(
 
 @api.get("/support/docs")
 def support_docs_index(_request: Request) -> dict[str, Any]:
-    """List the packaged documentation as `{documents: [{slug, title, summary}]}`."""
-    return {"documents": support_module.list_documents()}
+    """List the packaged documentation, grouped and flat.
+
+    `{sections: [{title, documents: [...]}], documents: [{slug, title,
+    summary}]}` -- the viewer renders `sections` (#3809); `documents` is the
+    same set flattened, in the same order.
+    """
+    sections = support_module.list_sections()
+    return {
+        "sections": sections,
+        "documents": [doc for section in sections for doc in section["documents"]],
+    }
 
 
 @api.get("/support/docs/{slug}")

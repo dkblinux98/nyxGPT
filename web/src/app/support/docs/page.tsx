@@ -17,6 +17,15 @@ interface DocumentSummary {
   summary: string;
 }
 
+// The index is grouped, and the grouping is data from the backend
+// (`support.DOC_SECTIONS`) rather than anything inferred here (#3809): a flat
+// alphabetical list of every packaged file is what shipped agent/CI process
+// docs to readers looking for product help.
+interface DocumentSection {
+  title: string;
+  documents: DocumentSummary[];
+}
+
 interface SupportContext {
   environment: { version: string; platform: string; python: string };
   issue_form_url: string;
@@ -24,7 +33,7 @@ interface SupportContext {
 }
 
 export default function SupportDocsIndexPage() {
-  const [documents, setDocuments] = useState<DocumentSummary[]>([]);
+  const [sections, setSections] = useState<DocumentSection[]>([]);
   const [context, setContext] = useState<SupportContext | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -38,7 +47,16 @@ export default function SupportDocsIndexPage() {
           return;
         }
         const data = await res.json();
-        setDocuments(data.documents ?? []);
+        // An older backend answers with `documents` only; render that as one
+        // unnamed group rather than an empty page.
+        const grouped: DocumentSection[] = data.sections ?? [];
+        setSections(
+          grouped.length > 0
+            ? grouped
+            : data.documents?.length
+              ? [{ title: '', documents: data.documents }]
+              : []
+        );
       } catch {
         setError('Could not reach the nyxGPT API to load the documentation index.');
       } finally {
@@ -115,36 +133,54 @@ export default function SupportDocsIndexPage() {
           </p>
         )}
 
-        {!loading && !error && documents.length === 0 && (
+        {!loading && !error && sections.length === 0 && (
           <p style={{ opacity: 0.7 }}>No documentation shipped with this install.</p>
         )}
 
-        <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-          {documents.map((doc) => (
-            <li
-              key={doc.slug}
-              style={{
-                borderBottom: '1px solid var(--border-light)',
-                padding: '12px 0',
-              }}
-            >
-              <Link
-                href={`/support/docs/${doc.slug}`}
+        {sections.map((section) => (
+          <section key={section.title} style={{ marginBottom: 28 }}>
+            {section.title && (
+              <h2
                 style={{
-                  color: 'var(--foreground)',
-                  textDecoration: 'none',
+                  fontSize: 13,
                   fontWeight: 600,
-                  fontSize: 15,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.06em',
+                  opacity: 0.6,
+                  margin: '0 0 4px',
                 }}
               >
-                {doc.title}
-              </Link>
-              {doc.summary && (
-                <div style={{ opacity: 0.7, fontSize: 13, marginTop: 4 }}>{doc.summary}</div>
-              )}
-            </li>
-          ))}
-        </ul>
+                {section.title}
+              </h2>
+            )}
+            <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+              {section.documents.map((doc) => (
+                <li
+                  key={doc.slug}
+                  style={{
+                    borderBottom: '1px solid var(--border-light)',
+                    padding: '12px 0',
+                  }}
+                >
+                  <Link
+                    href={`/support/docs/${doc.slug}`}
+                    style={{
+                      color: 'var(--foreground)',
+                      textDecoration: 'none',
+                      fontWeight: 600,
+                      fontSize: 15,
+                    }}
+                  >
+                    {doc.title}
+                  </Link>
+                  {doc.summary && (
+                    <div style={{ opacity: 0.7, fontSize: 13, marginTop: 4 }}>{doc.summary}</div>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </section>
+        ))}
       </div>
     </div>
   );

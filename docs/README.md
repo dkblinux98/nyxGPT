@@ -1,16 +1,23 @@
 # nyxGPT Documentation
 
-Index of all nyxGPT documentation, grouped by audience. If you're just getting
-started, read [Installing nyxGPT](ops.md#installing-nyxgpt) and
+Index of the nyxGPT product documentation. If you're just getting started,
+read [Installing nyxGPT](ops.md#installing-nyxgpt) and
 [Configuration](configuration.md) first. The root
 [README](../README.md) is deliberately a thin pointer into this index.
 
-**In the product:** this tree ships inside the installed package, so the web
-UI serves it under **Support → Docs** — the same documents, matching the
+**In the product:** these documents ship inside the installed package, so the
+web UI serves them under **Support → Docs** — the same documents, matching the
 version you are running, readable with no checkout and no internet. The
 Support menu's second item, **File an Issue**, opens a report form prefilled
 with your version and platform (it needs internet and a GitHub account). See
 [ui.md](ui.md#support-menu).
+
+Documents about how this repository *builds itself* — the agent loop, CI
+process, contributor setup — are not product documentation and are not
+packaged with the install. They stay in this directory; start from
+[CONTRIBUTING.md](../CONTRIBUTING.md) for contributor topics and
+[AGENTS.md](../AGENTS.md) for the agent system. The packaged selection is
+named in `nyxgpt.support.DOC_SECTIONS` (#3809).
 
 ## Feature overview
 
@@ -59,7 +66,7 @@ and metrics screens live in the admin dashboard ([ui.md](ui.md)),
 observability logins come from `nyxgpt ops credentials`
 ([ops.md](ops.md#nyxgpt-ops-credentials)), and `nyxgpt ops verify` proves the
 telemetry is real by generating traffic and asserting it landed
-([live-verification-ci.md](live-verification-ci.md)).
+([ops.md](ops.md#nyxgpt-ops-verify)).
 
 **Secrets and security** — guided, masked secret entry with per-key help and
 format validation (`nyxgpt secrets setup`, and `nyxgpt cloud
@@ -71,7 +78,7 @@ credentials-setup` for AWS identity — terminal-only, never a web form), with
 images, published by the release pipeline; `nyxgpt ops portability` checks
 mechanically that every supported target installs and operates with **no repo
 checkout** and no raw orchestrator commands
-([portability-matrix.md](portability-matrix.md), [homebrew.md](homebrew.md),
+([ops.md](ops.md#nyxgpt-ops-portability), [homebrew.md](homebrew.md),
 [cloud.md](cloud.md#pypi-publishing-rc-and-stable)).
 
 ## User guides
@@ -83,7 +90,8 @@ checkout** and no raw orchestrator commands
 - [UI](ui.md) — the web interface
 - [API](api.md) — REST API reference (`/api/v1/*`)
 - [Troubleshooting](troubleshooting.md) — common problems and fixes
-- [Known limitations](KNOWN_LIMITATIONS.md)
+- [Session storage](session-storage.md) — where sessions are stored, and how to change it
+- [Service worker / PWA](service-worker-pwa.md) — offline behaviour and installing the web UI as an app
 
 ## Operations & deployment
 
@@ -92,28 +100,30 @@ checkout** and no raw orchestrator commands
 - [Kubernetes](kubernetes.md) — local-cluster manifests, canary deploy/gate/promote
 - [Terraform](terraform.md) — local-first infrastructure-as-code
 - [Cloud (AWS)](cloud.md) — `nyxgpt cloud` (AWS substrate provisioning, SSH-rule IP refresh, lockout recovery)
-- [Cloud artifact smoke](cloud-artifact-smoke.md) — `nyxgpt cloud smoke --container`: the artifact install path on a bare Amazon Linux 2023 machine
-- [Portability matrix](portability-matrix.md) — which targets install with no repo checkout, and the clean-machine acceptance run
 - [Self-healing](self-healing.md) — the watchdog, healthchecks, and `/admin/self-heal`
 - [Deployment checklist](deployment-checklist.md) — pre-deploy security/perf/monitoring
 - [Ops helpers](ops.md) — `nyxgpt ops` service management
 - [Homebrew](homebrew.md) — macOS install via the Homebrew tap
+- [systemd](systemd.md) — Linux `--user` services
 - [Performance](performance.md) — tuning guide
 - [Security](security.md) — auth, hardening, secrets
 
-## Developer
+## Reference
 
 - [Architecture](architecture.md) — system design and boundaries
-- [Development](development.md) — local dev setup and workflow
-- [Testing](testing.md) — test suites (pytest + vitest) and how to run them
-- [Adding API endpoints](adding-api-endpoints.md)
-- [Service worker / PWA](service-worker-pwa.md)
-- [File-lock audit](file-lock-audit.md)
 
-## Agent system
+## Contributor and agent-system documentation
 
-- [How this project is run](how-this-project-is-run.md) — agent roles, the project board's status flow, decision records, the Definition of Done, and the retrospective
-- [GitHub tokens](github-tokens.md) — agent identities and required scopes
-- [Agent smoke test](agent-smoke.md) — verifying the scrummaster/developer/review loop
-- [Comment tokens](agent-comment-tokens.md) — which comment starts which workflow, why a token counts only at line start, and the stop-loop guard
-- [Live verification in CI](live-verification-ci.md) — `nyxgpt ops verify`, and how the review agent runs it before APPROVE/REQUEST_CHANGES
+Not product documentation, and not packaged with the install (#3809) — these
+are about building nyxGPT and running this repository. The files live in this
+same `docs/` directory in the repository:
+
+- Contributing and local development — [CONTRIBUTING.md](../CONTRIBUTING.md),
+  `development.md`, `testing.md`, `adding-api-endpoints.md`,
+  `file-lock-audit.md`
+- The agent system — [AGENTS.md](../AGENTS.md), `how-this-project-is-run.md`,
+  `agent-smoke.md`, `agent-comment-tokens.md`, `acceptance-drain-gate.md`,
+  `sprint-autopilot.md`, `KNOWN_LIMITATIONS.md`, `github-tokens.md`
+- CI and release process — `live-verification-ci.md`,
+  `security-scanning-ci.md`, `cloud-artifact-smoke.md`,
+  `portability-matrix.md`
