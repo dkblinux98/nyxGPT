@@ -101,8 +101,8 @@ _ALLOWLIST: dict[str, set[str]] = {
         # from the working tree (the build context passed to terraform, the
         # checkout recorded in the deployment's install-mode marker), plus
         # the one-time migration that looks for a pre-#3835 deployment's
-        # state in the checkout it used to live in.
-        'old_state = REPO_ROOT / "terraform" / "terraform.tfstate"',
+        # state and tfvars in the checkout they used to live in.
+        'old_dir = REPO_ROOT / "terraform"',
         'args.append(f"-var=repo_path={REPO_ROOT}")',
         "checkout = REPO_ROOT if dev else None",
         "REPO_ROOT,",
