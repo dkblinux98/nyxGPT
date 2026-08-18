@@ -1311,7 +1311,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   Re-verify when: a check-status gate is added to the merge path — this entry
   then describes history rather than the present. See **Q-005**.
 
-- **V-042** · 2026-08-18 — **The `--kubernetes --local` stack is sized
+- **V-044** · 2026-08-18 — **The `--kubernetes --local` stack is sized
   against the node it actually lands on — in BOTH memory and cpu — and the
   install measures that node before it applies anything.** The default
   deployment (app tier + data/LLM tier + the #3787 observability layer)
@@ -1403,7 +1403,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   place, and prints the allocatable-vs-requests arithmetic every run.
   Re-verify when: any `k8s/**` manifest changes a `resources.requests`, a
   replica count, or adds a workload — the 175m CPU margin is what absorbs it.
-  **Superseded in part by V-042** (#3825): the measured numbers above are the
+  **Superseded in part by V-044** (#3825): the measured numbers above are the
   pre-right-sizing footprint, and they were taken on the agent runner's own
   ~16GB node, not on the 8GiB Docker Desktop VM an operator installs onto —
   where the same stack did *not* fit. The finding this entry stands for (the
