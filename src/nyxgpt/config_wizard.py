@@ -244,9 +244,19 @@ class FieldSpec:
             `WizardValidationError` on failure.
         secret: Never round-tripped in cleartext (see `read_sections`); an
             empty string on save means "leave the existing value unchanged".
-        restart_component: `nyxgpt ops restart` target that must be bounced
-            for a changed value to take effect, or `None` if it's already
-            hot-reloaded per-request (or has no known runtime consumer yet).
+        restart_components: This field's **activation classification**
+            (#3806): the `nyxgpt ops restart` targets that must be bounced
+            before a changed value is actually in effect. Empty means
+            hot-reloadable -- every consumer reads it per-request from the
+            hot-reloading config cache, so a save applies immediately.
+            Non-empty means the value on disk and the value in the named
+            running service(s) diverge until that restart happens, which is
+            what `restart_state.mark_pending` records and every surface
+            (wizard notice, dashboard banner, CLI message) reports. A key can
+            need more than one service: `[auth] api_key` is live on `api` but
+            frozen at process start on `web`, so it is classified `("web",)`
+            -- classification names the tiers that are *stale*, not the tiers
+            that read the key.
         observability: Whether changing this field should trigger a
             reconciliation of the observability Compose stack.
         default: The effective fallback value for this field -- normally
@@ -262,7 +272,7 @@ class FieldSpec:
     key: str
     validator: Callable[[Any], Any]
     secret: bool = False
-    restart_component: str | None = None
+    restart_components: tuple[str, ...] = ()
     observability: bool = False
     default: str | None = None
 
@@ -292,7 +302,7 @@ class _Override:
 
     validator: Callable[[Any], Any] | None = None
     secret: bool = False
-    restart_component: str | None = None
+    restart_components: tuple[str, ...] = ()
     observability: bool = False
     default: Any = _UNSET
 
@@ -330,49 +340,59 @@ _FIELD_OVERRIDES: dict[tuple[str, str], _Override] = {
     ("logging", "level"): _Override(validator=_validate_log_level),
     ("logging", "format"): _Override(validator=_enum_validator("text", "json")),
     ("cache", "embedding_cache_enabled"): _Override(
-        validator=_validate_bool, restart_component="api"
+        validator=_validate_bool, restart_components=("api",)
     ),
     ("cache", "embedding_cache_backend"): _Override(
-        validator=_enum_validator("memory", "disk"), restart_component="api"
+        validator=_enum_validator("memory", "disk"), restart_components=("api",)
     ),
     ("cache", "embedding_cache_max_size"): _Override(
-        validator=_validate_positive_int, restart_component="api"
+        validator=_validate_positive_int, restart_components=("api",)
     ),
     ("cache", "embedding_cache_ttl_seconds"): _Override(
-        validator=_bounded_int(min_value=0), restart_component="api"
+        validator=_bounded_int(min_value=0), restart_components=("api",)
     ),
-    ("cache", "embedding_cache_dir"): _Override(restart_component="api"),
+    ("cache", "embedding_cache_dir"): _Override(restart_components=("api",)),
     ("cache", "response_cache_enabled"): _Override(
-        validator=_validate_bool, restart_component="api"
+        validator=_validate_bool, restart_components=("api",)
     ),
     ("cache", "response_cache_backend"): _Override(
-        validator=_enum_validator("memory", "disk"), restart_component="api"
+        validator=_enum_validator("memory", "disk"), restart_components=("api",)
     ),
     ("cache", "response_cache_max_size"): _Override(
-        validator=_validate_positive_int, restart_component="api"
+        validator=_validate_positive_int, restart_components=("api",)
     ),
     ("cache", "response_cache_ttl_seconds"): _Override(
-        validator=_bounded_int(min_value=0), restart_component="api"
+        validator=_bounded_int(min_value=0), restart_components=("api",)
     ),
-    ("cache", "response_cache_dir"): _Override(restart_component="api"),
-    ("cache", "query_cache_enabled"): _Override(validator=_validate_bool, restart_component="api"),
+    ("cache", "response_cache_dir"): _Override(restart_components=("api",)),
+    ("cache", "query_cache_enabled"): _Override(validator=_validate_bool, restart_components=("api",)),
     ("cache", "query_cache_backend"): _Override(
-        validator=_enum_validator("memory", "disk"), restart_component="api"
+        validator=_enum_validator("memory", "disk"), restart_components=("api",)
     ),
     ("cache", "query_cache_max_size"): _Override(
-        validator=_validate_positive_int, restart_component="api"
+        validator=_validate_positive_int, restart_components=("api",)
     ),
     ("cache", "query_cache_ttl_seconds"): _Override(
-        validator=_bounded_int(min_value=0), restart_component="api"
+        validator=_bounded_int(min_value=0), restart_components=("api",)
     ),
-    ("cache", "query_cache_dir"): _Override(restart_component="api"),
+    ("cache", "query_cache_dir"): _Override(restart_components=("api",)),
     ("ollama", "base_url"): _Override(validator=_validate_url),
-    ("api", "host"): _Override(validator=_validate_host, restart_component="api"),
-    ("api", "port"): _Override(validator=_validate_port, restart_component="api"),
+    ("api", "host"): _Override(validator=_validate_host, restart_components=("api",)),
+    ("api", "port"): _Override(validator=_validate_port, restart_components=("api",)),
     ("api", "base_url"): _Override(validator=_validate_url),
-    ("web", "host"): _Override(validator=_validate_host),
-    ("web", "port"): _Override(validator=_validate_port),
-    ("web", "api_base_url"): _Override(validator=_validate_optional_str),
+    # The `web` tier is a Node process whose settings are read from config.ini
+    # exactly once, by the service wrapper, and exported into its environment
+    # (`_NATIVE_WEB_WRAPPER_TEMPLATE` in ops.py -> HOST/PORT/
+    # NEXT_PUBLIC_API_BASE/NYXGPT_AUTH_API_KEY). Nothing in that process can
+    # observe a later config.ini edit, so every key the wrapper reads is
+    # restart-required for `web` by construction -- `test_restart_activation.py`
+    # re-derives this list from the wrapper's own source and fails if a key is
+    # added there without being classified here (#3806).
+    ("web", "host"): _Override(validator=_validate_host, restart_components=("web",)),
+    ("web", "port"): _Override(validator=_validate_port, restart_components=("web",)),
+    ("web", "api_base_url"): _Override(
+        validator=_validate_optional_str, restart_components=("web",)
+    ),
     ("canary", "step_percent"): _Override(validator=_bounded_int(min_value=1, max_value=100)),
     ("canary", "total_replicas"): _Override(validator=_validate_positive_int),
     ("canary", "min_requests_for_evaluation"): _Override(validator=_validate_positive_int),
@@ -380,21 +400,32 @@ _FIELD_OVERRIDES: dict[tuple[str, str], _Override] = {
         validator=_bounded_float(min_value=0.0, max_value=100.0)
     ),
     ("canary", "latency_p95_threshold_ms"): _Override(validator=_bounded_float(min_value=0.0)),
-    ("auth", "enabled"): _Override(validator=_validate_bool),
-    ("auth", "api_key"): _Override(validator=_validate_optional_str, secret=True),
-    ("rate_limit", "enabled"): _Override(validator=_validate_bool, restart_component="api"),
+    # The worked example for #3806. `api` re-reads `[auth]` per request via
+    # `require_api_key`, so the backend honours a rotation instantly; the web
+    # tier's wrapper baked the key into NYXGPT_AUTH_API_KEY at process start
+    # and `apiProxy.ts` sends that frozen value. Rotating without restarting
+    # `web` therefore 401s every proxied call -- including the wizard session
+    # doing the rotating. Classified for `web` so that divergence is
+    # announced and a restart is offered instead of discovered as a blank
+    # wall. `enabled` is here for the same reason: the wrapper only exports
+    # the key at all when it reads `enabled = true`.
+    ("auth", "enabled"): _Override(validator=_validate_bool, restart_components=("web",)),
+    ("auth", "api_key"): _Override(
+        validator=_validate_optional_str, secret=True, restart_components=("web",)
+    ),
+    ("rate_limit", "enabled"): _Override(validator=_validate_bool, restart_components=("api",)),
     ("rate_limit", "requests_per_second"): _Override(validator=_validate_positive_int),
     ("rate_limit", "burst_size"): _Override(validator=_validate_positive_int),
-    ("batch", "enabled"): _Override(validator=_validate_bool, restart_component="api"),
+    ("batch", "enabled"): _Override(validator=_validate_bool, restart_components=("api",)),
     ("batch", "batch_size"): _Override(validator=_bounded_int(min_value=1, max_value=50)),
     ("batch", "wait_time_ms"): _Override(validator=_bounded_int(min_value=10, max_value=5000)),
     ("tracing", "enabled"): _Override(
-        validator=_validate_bool, restart_component="api", observability=True
+        validator=_validate_bool, restart_components=("api",), observability=True
     ),
     ("tracing", "otlp_endpoint"): _Override(validator=_validate_url),
     ("tracing", "jaeger_ui_url"): _Override(validator=_validate_url),
     ("error_tracking", "enabled"): _Override(
-        validator=_validate_bool, restart_component="api", observability=True
+        validator=_validate_bool, restart_components=("api",), observability=True
     ),
     ("error_tracking", "dsn"): _Override(validator=_validate_optional_str, secret=True),
     ("error_tracking", "release"): _Override(validator=_validate_optional_str),
@@ -424,18 +455,18 @@ _FIELD_OVERRIDES: dict[tuple[str, str], _Override] = {
     ),
     ("prompt", "short_threshold"): _Override(validator=_validate_positive_int),
     ("prompt", "long_threshold"): _Override(validator=_validate_positive_int),
-    ("rag", "cassandra_hosts"): _Override(validator=_validate_host_list, restart_component="api"),
-    ("rag", "cassandra_port"): _Override(validator=_validate_port, restart_component="api"),
-    ("rag", "cassandra_keyspace"): _Override(validator=_validate_str, restart_component="api"),
-    ("rag", "cassandra_table"): _Override(validator=_validate_str, restart_component="api"),
+    ("rag", "cassandra_hosts"): _Override(validator=_validate_host_list, restart_components=("api",)),
+    ("rag", "cassandra_port"): _Override(validator=_validate_port, restart_components=("api",)),
+    ("rag", "cassandra_keyspace"): _Override(validator=_validate_str, restart_components=("api",)),
+    ("rag", "cassandra_table"): _Override(validator=_validate_str, restart_components=("api",)),
     ("rag", "cassandra_pool_size"): _Override(
-        validator=_bounded_int(min_value=1, max_value=16), restart_component="api"
+        validator=_bounded_int(min_value=1, max_value=16), restart_components=("api",)
     ),
     ("rag", "cassandra_health_check_interval"): _Override(
-        validator=_bounded_float(min_value=5.0, max_value=300.0), restart_component="api"
+        validator=_bounded_float(min_value=5.0, max_value=300.0), restart_components=("api",)
     ),
     ("rag", "cassandra_reconnect_max_attempts"): _Override(
-        validator=_bounded_int(min_value=1, max_value=10), restart_component="api"
+        validator=_bounded_int(min_value=1, max_value=10), restart_components=("api",)
     ),
     ("rag", "cassandra_batch_size"): _Override(validator=_bounded_int(min_value=1, max_value=100)),
     ("rag", "vector_similarity_function"): _Override(
@@ -450,8 +481,8 @@ _FIELD_OVERRIDES: dict[tuple[str, str], _Override] = {
     # No fixed default: falls back to `default_model` dynamically (see
     # `embeddings.py`'s `_embedding_cfg`), so unset is a genuinely
     # context-dependent empty value, not a hidden default.
-    ("rag", "embedding_model"): _Override(restart_component="api", default=None),
-    ("rag", "embedding_dim"): _Override(validator=_validate_positive_int, restart_component="api"),
+    ("rag", "embedding_model"): _Override(restart_components=("api",), default=None),
+    ("rag", "embedding_dim"): _Override(validator=_validate_positive_int, restart_components=("api",)),
     ("rag", "chunk_size"): _Override(validator=_bounded_int(min_value=100, max_value=10_000)),
     ("rag", "chunk_overlap"): _Override(validator=_bounded_int(min_value=0, max_value=5_000)),
     ("rag", "overlap_strategy"): _Override(
@@ -505,7 +536,7 @@ def _build_field_spec(section: str, key: str, raw_value: str) -> FieldSpec:
         key=key,
         validator=validator,
         secret=secret,
-        restart_component=override.restart_component if override else None,
+        restart_components=override.restart_components if override else (),
         observability=override.observability if override else False,
         default=default,
     )
@@ -564,7 +595,11 @@ def schema_summary() -> list[dict[str, Any]]:
                 {
                     "key": f.key,
                     "secret": f.secret,
-                    "restart_component": f.restart_component,
+                    # The activation classification (#3806): empty list means
+                    # hot-reloadable, otherwise the services that stay stale
+                    # until restarted. The UI renders this directly, so the
+                    # notice can never disagree with the backend's own rule.
+                    "restart_components": list(f.restart_components),
                     "observability": f.observability,
                 }
                 for f in s.fields
@@ -706,23 +741,83 @@ def _current_value(cfg: ConfigParser, section: str, key: str, new_value: Any) ->
 
 def restart_required_detail(
     validated: dict[str, dict[str, Any]], cfg: ConfigParser
-) -> dict[str, list[str]]:
-    """Return, per `nyxgpt ops restart` target, the `section.key` fields that changed.
+) -> dict[str, dict[str, str]]:
+    """Return, per `nyxgpt ops restart` target, the changed fields and their *running* values.
+
+    Shape: `{component: {"section.key": previous_value_as_ini_text}}`. The
+    previous value is what is on disk right before this save -- which is the
+    value the still-running service actually loaded -- so
+    `restart_state.mark_pending` can later recognise a revert back to it and
+    retire the pending notice without a restart (#3806).
 
     Only fields whose value actually *changed* from what's on disk count --
-    resubmitting the same host/port shouldn't claim a restart is needed. Used
-    both to compute `restart_components`'s target list and, by the caller in
-    `app.py`, to record *why* a restart is pending for the Admin Dashboard's
-    restart-required button (#3407).
+    resubmitting the same host/port shouldn't claim a restart is needed. A
+    field classified for several services appears under each of them.
     """
-    detail: dict[str, list[str]] = {}
+    detail: dict[str, dict[str, str]] = {}
     for section, fields in validated.items():
         field_specs = {f.key: f for f in _SCHEMA_BY_SECTION[section].fields}
         for key, value in fields.items():
             f = field_specs[key]
-            if f.restart_component and _current_value(cfg, section, key, value) != value:
-                detail.setdefault(f.restart_component, []).append(f"{section}.{key}")
+            if not f.restart_components:
+                continue
+            previous = _current_value(cfg, section, key, value)
+            if previous == value:
+                continue
+            for component in f.restart_components:
+                detail.setdefault(component, {})[f"{section}.{key}"] = _ini_value_str(previous)
     return detail
+
+
+def restart_activation_saved(validated: dict[str, dict[str, Any]]) -> dict[str, dict[str, str]]:
+    """Return, per target, every restart-required field in `validated` and its *new* value.
+
+    Unlike `restart_required_detail` this ignores whether the value changed:
+    `restart_state.reconcile_saved` needs the newly saved value of every
+    restart-required key in the payload so it can drop a pending entry whose
+    value has been put back to what the running service is still using
+    (#3806's "or the value is reverted").
+    """
+    saved: dict[str, dict[str, str]] = {}
+    for section, fields in validated.items():
+        field_specs = {f.key: f for f in _SCHEMA_BY_SECTION[section].fields}
+        for key, value in fields.items():
+            f = field_specs[key]
+            for component in f.restart_components:
+                saved.setdefault(component, {})[f"{section}.{key}"] = _ini_value_str(value)
+    return saved
+
+
+def field_restart_components(section: str, key: str) -> tuple[str, ...]:
+    """Return `section.key`'s activation classification, or `()` if it's hot-reloadable.
+
+    The lookup any non-wizard config writer uses to answer "does what I just
+    wrote need a restart, and of what?" -- `secrets_setup.write_secret` calls
+    it so the CLI reports exactly what the wizard reports. Unknown keys
+    (sections the wizard excludes, e.g. `[openai]`/`[github]`) return `()`:
+    they have no running consumer in the api/web tiers to go stale.
+    """
+    spec = _SCHEMA_BY_SECTION.get(section)
+    if spec is None:
+        return ()
+    for f in spec.fields:
+        if f.key == key:
+            return f.restart_components
+    return ()
+
+
+def activation_classification() -> dict[str, tuple[str, ...]]:
+    """Return the whole activation classification as `{"section.key": components}`.
+
+    Every wizard-editable key appears, hot-reloadable ones with an empty
+    tuple. This is the data form of what `example.config.ini` states in prose;
+    `tests/unit/test_restart_activation.py` asserts the two agree, which is
+    what keeps the annotations from drifting the way #3388's hand-maintained
+    schema did.
+    """
+    return {
+        f"{s.section}.{f.key}": f.restart_components for s in WIZARD_SCHEMA for f in s.fields
+    }
 
 
 def restart_components(validated: dict[str, dict[str, Any]], cfg: ConfigParser) -> list[str]:
