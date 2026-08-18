@@ -141,7 +141,9 @@ def test_install_kubernetes_applies_the_observability_layer() -> None:
         patch.object(ops, "_refuse_port_collision", return_value=None),
         patch.object(ops, "_clear_intentional_stops", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_ensure_kubectl_and_cluster", return_value=[ops.OpsResult(True, "ok")]),
-        patch.object(ops, "_build_and_load_k8s_image", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(
+            ops, "_build_and_load_k8s_api_image", return_value=[ops.OpsResult(True, "ok")]
+        ),
         patch.object(
             ops, "_build_and_load_k8s_web_image", return_value=[ops.OpsResult(True, "ok")]
         ),
@@ -172,7 +174,9 @@ def test_install_kubernetes_honours_skip_observability() -> None:
         patch.object(ops, "_refuse_port_collision", return_value=None),
         patch.object(ops, "_clear_intentional_stops", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_ensure_kubectl_and_cluster", return_value=[ops.OpsResult(True, "ok")]),
-        patch.object(ops, "_build_and_load_k8s_image", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(
+            ops, "_build_and_load_k8s_api_image", return_value=[ops.OpsResult(True, "ok")]
+        ),
         patch.object(
             ops, "_build_and_load_k8s_web_image", return_value=[ops.OpsResult(True, "ok")]
         ),
@@ -493,7 +497,7 @@ def test_install_waits_for_observability_before_reading_pod_phases() -> None:
         patch.object(ops, "_refuse_port_collision", return_value=None),
         patch.object(ops, "_clear_intentional_stops", return_value=ok),
         patch.object(ops, "_ensure_kubectl_and_cluster", return_value=ok),
-        patch.object(ops, "_build_and_load_k8s_image", return_value=ok),
+        patch.object(ops, "_build_and_load_k8s_api_image", return_value=ok),
         patch.object(ops, "_build_and_load_k8s_web_image", return_value=ok),
         patch.object(ops, "_ensure_k8s_secret", return_value=ok),
         patch.object(ops, "_kubectl_apply_kustomization", return_value=ok),

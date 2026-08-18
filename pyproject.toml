@@ -164,8 +164,15 @@ where = ["src"]
 # real infrastructure ids next to the tracked config. All of it is
 # gitignored, none of it belongs in a wheel -- `nyxgpt cloud infra` keeps the
 # real state and tfvars under ~/.nyxGPT/cloud/ instead.
+#
+# k8s/secret.yaml is the third case of the same defence (#3834). It holds the
+# deployment's real `[auth] api_key`, it is gitignored, and `_ensure_k8s_secret`
+# now writes it under ~/.nyxGPT/k8s -- but a checkout that ran a pre-#3834
+# `nyxgpt ops install --kubernetes` still has one sitting in the repo's k8s/
+# directory that the resources/k8s symlink resolves through.
 "nyxgpt.resources" = [
   "docker/config.docker.ini",
+  "k8s/secret.yaml",
   "terraform/aws/.terraform/*",
   "terraform/aws/.terraform/**/*",
   "terraform/aws/.terraform.lock.hcl",

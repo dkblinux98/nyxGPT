@@ -11967,7 +11967,7 @@ def test_install_kubernetes_success_runs_all_steps(monkeypatch, capsys):
     ok = [ops.OpsResult(True, "ok")]
     with (
         patch.object(ops, "_ensure_kubectl_and_cluster", return_value=ok) as c,
-        patch.object(ops, "_build_and_load_k8s_image", return_value=ok) as b,
+        patch.object(ops, "_build_and_load_k8s_api_image", return_value=ok) as b,
         patch.object(ops, "_build_and_load_k8s_web_image", return_value=ok) as bw,
         patch.object(ops, "_ensure_k8s_secret", return_value=ok) as s,
         patch.object(ops, "_kubectl_apply_kustomization", return_value=ok) as a,
@@ -12004,7 +12004,7 @@ def test_install_kubernetes_clears_intentional_stop_markers_for_api_and_web(monk
     ok = [ops.OpsResult(True, "ok")]
     with (
         patch.object(ops, "_ensure_kubectl_and_cluster", return_value=ok),
-        patch.object(ops, "_build_and_load_k8s_image", return_value=ok),
+        patch.object(ops, "_build_and_load_k8s_api_image", return_value=ok),
         patch.object(ops, "_build_and_load_k8s_web_image", return_value=ok),
         patch.object(ops, "_ensure_k8s_secret", return_value=ok),
         patch.object(ops, "_kubectl_apply_kustomization", return_value=ok),
@@ -12032,7 +12032,7 @@ def test_install_kubernetes_stops_pipeline_on_step_failure(monkeypatch):
             "_ensure_kubectl_and_cluster",
             return_value=[ops.OpsResult(False, "no cluster")],
         ),
-        patch.object(ops, "_build_and_load_k8s_image") as b,
+        patch.object(ops, "_build_and_load_k8s_api_image") as b,
         patch.object(ops, "_build_and_load_k8s_web_image") as bw,
         patch.object(ops, "_ensure_k8s_secret") as s,
         patch.object(ops, "_kubectl_apply_kustomization") as a,
@@ -12271,7 +12271,7 @@ def test_install_kubernetes_local_runs_steps_and_returns_results(monkeypatch):
     ok = [ops.OpsResult(True, "ok")]
     with (
         patch.object(ops, "_ensure_kubectl_and_cluster", return_value=ok),
-        patch.object(ops, "_build_and_load_k8s_image", return_value=ok),
+        patch.object(ops, "_build_and_load_k8s_api_image", return_value=ok),
         # Patched, not left real: these two shell out to `docker`/`kubectl`,
         # so an unpatched step makes this unit test pass or fail on what the
         # machine running it happens to have (and on the state of any cluster
