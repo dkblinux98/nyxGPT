@@ -661,10 +661,10 @@ new dependency or page to catch regressions.
 
 ## Support menu
 
-The sidebar's **Settings → Support** group has exactly two items, and both
-exist for the same reason: someone who installed nyxGPT from PyPI or Homebrew
-has no repository checkout, so neither the docs nor an issue-reporting path
-would otherwise be reachable from the product.
+The sidebar's **Settings → Support** group holds **Docs** and **File an
+Issue**, and both exist for the same reason: someone who installed nyxGPT from
+PyPI or Homebrew has no repository checkout, so neither the docs nor an
+issue-reporting path would otherwise be reachable from the product.
 
 **Docs** (`/support/docs`) renders the documentation that shipped with the
 installed package. The whole `docs/*.md` tree is package data inside the wheel

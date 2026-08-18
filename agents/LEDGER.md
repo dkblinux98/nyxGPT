@@ -1155,6 +1155,44 @@ are absent here by design (relocated to the annex; IDs are never reused).
   the same conditions.
   Re-verify when: the retro template's panel structure changes, or a new
   optional data source is added without a source stamp.
+- **V-036** · 2026-08-18 — **A support ticket's entire protection is one
+  label, and the label is now guaranteed rather than assumed.** Every guard —
+  `assign_backlog.yml`, `ensure_project_hygiene.yml`,
+  `summarize_backlog_page.py`, and the owner's Support project auto-add
+  (`is:issue is:open label:Support`) — tests for `Support`, so an unlabeled
+  ticket is invisible to all of them at once. GitHub drops a
+  template-declared label that does not exist, without erroring, which is why
+  #3810 was filed unlabeled and assigned to the scrummaster in seven seconds.
+  `admin_ensure_support_label.yml` now runs on a schedule and on any push
+  touching the form, and verifies the label afterwards by exact match;
+  `support_intake_guard.yml` repairs a ticket that slips through and fails the
+  run on purpose.
+  Method: ran `tests/unit/test_support_label_isolation.py` (16 assertions on
+  the triggers, the verification step, the guard's firing condition and the
+  label name matching end to end) and the fault-injection step of
+  `support-intake-smoke.yml`'s predicate locally, 2026-08-18, while
+  implementing #3811 — a label list without `Support` (near-misses `Support
+  request`, `supporting`, `SUPPORT` included) is rejected; one with it passes.
+  The live `gh label list` half runs in CI, not here.
+  Re-verify when: the routing key changes name, or the Support project's
+  auto-add filter is edited (owner-side; agents cannot read it).
+- **V-037** · 2026-08-18 — **`_die` does not reliably abort a sourced
+  `gh_project.sh` helper, and a piped `graphql` call swallowed failures
+  entirely.** `_die` `return`s rather than `exit`s when the library is
+  sourced, relying on `set -e` — but `set -e` is suppressed inside a command
+  substitution whose status is being tested, which is exactly how a caller
+  checks for failure. Separately, `project_field_value` piped `graphql` into
+  `jq`, so the pipeline reported jq's status: a failed read returned empty
+  output and exit 0, indistinguishable from "the field is unset". A
+  rate-limited read would have had hygiene write its defaults over every
+  populated field. Both fixed (explicit `return 1`; response into a variable
+  first).
+  Method: ran `tests/test_issue_hygiene.sh` with a `gh` stub whose field
+  reads fail while its existence probe answers "present" — before the fix
+  hygiene populated every field and exited 0; after it, the run fails loud.
+  2026-08-18, while implementing #3811.
+  Re-verify when: another helper is added that calls `graphql` in a pipeline,
+  or `_die` is changed.
 
 ## Parked
 
