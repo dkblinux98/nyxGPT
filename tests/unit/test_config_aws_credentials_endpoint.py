@@ -24,8 +24,10 @@ from nyxgpt.app import app
 
 pytestmark = pytest.mark.unit
 
-VALID_ACCESS_KEY_ID = "AKIAABCDEFGHIJKLMNOP"
-VALID_SECRET_ACCESS_KEY = "s3cr3t" + "x" * 30
+# Format-valid but entirely fabricated -- these exist to prove the removed
+# write path refuses them, so they are never a real credential.
+VALID_ACCESS_KEY_ID = "AKIAABCDEFGHIJKLMNOP"  # pragma: allowlist secret
+VALID_SECRET_ACCESS_KEY = "s3cr3t" + "x" * 30  # pragma: allowlist secret
 
 
 @pytest.fixture(autouse=True)
