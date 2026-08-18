@@ -361,17 +361,19 @@ class TestCanaryAssertion:
         assert missing_control.returncode != 0
 
 
-def test_ledger_records_the_verification_and_its_qualifications() -> None:
-    ledger = _read(LEDGER)
-    entry = ledger.split("- **V-028**", 1)
-    assert len(entry) == 2, "ledger must carry V-028, the CLAUDE.md loading verification"
-    body = " ".join(entry[1].split("\n- **", 1)[0].split())
+def test_the_canary_documents_what_it_maintains() -> None:
+    """The binding fact lives with its guard, not in a second copy.
 
-    assert "Method:" in body, "V-028 needs a repeatable method (ledger entry schema)"
-    assert "Re-verify when:" in body, "V-028 needs its staleness condition"
-    # The PR-context caveat is the part a future session is most likely to get
-    # wrong: a PR editing CLAUDE.md does not bind its own review.
-    assert "base branch" in body, (
-        "V-028 must record that on PR runs the action restores CLAUDE.md from "
-        "the PR's base branch -- a PR's own edit does not bind its review"
+    This used to assert a ledger entry (`V-028`). Verifications were retired on
+    2026-08-18: a fact about behavior belongs in the thing that enforces it. So
+    the qualification a future session is most likely to get wrong -- that on a
+    PR run the action restores `CLAUDE.md` from the **base** branch, meaning a
+    PR editing it does not bind its own review -- must be stated in the canary
+    workflow itself, where anyone changing that workflow will read it.
+    """
+    text = _read(CANARY_WORKFLOW)
+    assert "base branch" in text or "base-branch" in text, (
+        "the canary must record that a PR run restores CLAUDE.md from the PR's "
+        "base branch -- a PR's own edit does not bind its review, and with the "
+        "verification log retired that caveat has nowhere else to live"
     )

@@ -6,9 +6,25 @@ name: CLAUDE.md Binding Canary
 #    the agent's context — i.e. is CLAUDE.md the runtime binding path for
 #    every agent in this repository, or only a document humans read?"
 #
-# The answer today is yes (ledger V-028), which is why the agentic first
-# principles live in exactly one file and are cited, never copied, everywhere
-# else. That whole design rests on this one behavior of a third-party action,
+# The answer today is yes, which is why the agentic first principles live in
+# exactly one file and are cited, never copied, everywhere else.
+#
+# Two qualifications, and they live here now because the verification log that
+# used to hold them was retired on 2026-08-18 (a fact about behavior belongs
+# with the thing that enforces it, not in a second copy every agent run pays to
+# read). Anyone changing this workflow needs both:
+#
+#   (a) It binds only where the job checks the repo out. The action reads
+#       project configuration from the working directory, so a
+#       claude-code-action step with no preceding actions/checkout is unbound.
+#
+#   (b) On a PR-context run the action RESTORES CLAUDE.md from the PR's
+#       base branch before starting Claude, parking the PR's version under
+#       .claude-pr/. A pull request that edits CLAUDE.md therefore does not
+#       bind its own review -- the change binds from the merge onward, never
+#       retroactively. (That parked copy is also why a repository-wide file
+#       walk finds a second CLAUDE.md on a review runner; tests that scan the
+#       tree must ask git what is tracked.) That whole design rests on this one behavior of a third-party action,
 # so it needs a way to be re-answered by running it rather than re-argued from
 # memory. Dispatch this workflow; it costs one small model call per half.
 #
