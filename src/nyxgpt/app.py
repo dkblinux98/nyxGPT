@@ -2692,6 +2692,30 @@ def models_list(request: Request) -> dict[str, Any]:
         ) from e
 
 
+@api.get("/models/required")
+def models_required(request: Request) -> dict[str, Any]:
+    """Report whether Ollama holds the models this install requires (#3824).
+
+    The models are the configured chat model (`[nyxgpt] default_model`) and the
+    configured embedding model (`[rag] embedding_model`) -- both, regardless of
+    whether RAG is currently enabled, because `rag_enabled` is a per-session
+    toggle a user can flip at any moment.
+
+    `nyxgpt ops install` pulls both before it reports the stack up, so this
+    should read ready; the SRE/admin dashboard surfaces it (and offers the
+    pull) for the machine where it does not -- a deleted model, an Ollama
+    pointed at a different store, or a config that named a new model after the
+    last install.
+
+    Answers from `nyxgpt.ops.required_models_status`, the same function
+    `nyxgpt ops status` prints, so the dashboard and the terminal cannot
+    disagree. Never 502s on an unreachable Ollama: `reachable: false` with
+    `present: null` per model is the honest answer, and the ollama service's
+    own health is reported elsewhere on the same page.
+    """
+    return ops_module.required_models_status(cfg=_req_cfg(request))
+
+
 @api.post("/models/pull")
 def models_pull(request: Request, payload: dict[str, Any] = Body(...)) -> Response:
     """Pull a model from Ollama.

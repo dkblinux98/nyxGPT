@@ -7229,7 +7229,9 @@ def up(args) -> int:
     return 0
 
 
-def required_models_status(cfg_path: Path | None = None) -> dict[str, Any]:
+def required_models_status(
+    cfg: ConfigParser | None = None, cfg_path: Path | None = None
+) -> dict[str, Any]:
     """Report whether Ollama holds every model this install requires (#3824).
 
     Shared by `nyxgpt ops status`, which prints it, and the SRE/admin
@@ -7242,8 +7244,9 @@ def required_models_status(cfg_path: Path | None = None) -> dict[str, Any]:
     """
     from nyxgpt.config import get_ollama_base_url, load_config
 
-    cfg_path = cfg_path or (Path.home() / ".nyxGPT" / "config.ini")
-    cfg = load_config(cfg_path if cfg_path.exists() else None)
+    if cfg is None:
+        cfg_path = cfg_path or (Path.home() / ".nyxGPT" / "config.ini")
+        cfg = load_config(cfg_path if cfg_path.exists() else None)
     base_url = get_ollama_base_url(cfg)
     wanted = model_bootstrap.required_models(cfg)
 
@@ -10310,6 +10313,17 @@ COMPOSE_ENV_SECRET_MAP: dict[str, tuple[str, str]] = {
     "GRAFANA_ADMIN_PASSWORD": ("monitoring", "grafana_admin_password"),
 }
 
+# Non-secret `.env` variables derived from config.ini the same way, kept in
+# their own map so the "no secrets to sync" diagnostics above stay about
+# secrets (#3824). The Compose `ollama` service pre-pulls these two models and
+# gates its healthcheck on them, so they must follow config.ini rather than
+# being hand-edited into `.env` -- that is what makes the Compose run mode's
+# pull config-driven instead of a literal in docker-compose.yml.
+COMPOSE_ENV_MODEL_MAP: dict[str, tuple[str, str]] = {
+    "NYXGPT_DEFAULT_MODEL": ("nyxgpt", "default_model"),
+    "NYXGPT_EMBEDDING_MODEL": ("rag", "embedding_model"),
+}
+
 
 def sync_env_from_config(
     cfg_path: Path | None = None, env_path: Path | None = None
@@ -10351,19 +10365,43 @@ def sync_env_from_config(
     else:
         lines = []
 
+    def _set(var_name: str, value: str) -> None:
+        new_line = f"{var_name}={value}"
+        for i, line in enumerate(lines):
+            if line.startswith(f"{var_name}="):
+                lines[i] = new_line
+                return
+        lines.append(new_line)
+
     synced: list[str] = []
     for var_name, (section, key) in COMPOSE_ENV_SECRET_MAP.items():
         value = cfg.get(section, key, fallback="")
         if not value:
             continue
-        new_line = f"{var_name}={value}"
-        for i, line in enumerate(lines):
-            if line.startswith(f"{var_name}="):
-                lines[i] = new_line
-                break
-        else:
-            lines.append(new_line)
+        _set(var_name, value)
         synced.append(var_name)
+
+    # Derived, not secret: the Compose `ollama` service reads these to know
+    # which models to pre-pull and gate its healthcheck on (#3824). Written
+    # even when no secret was found -- the early returns below are about
+    # secrets -- and the resolved *chat* model is the fallback for an empty
+    # `[rag] embedding_model`, matching how RAG itself resolves it.
+    from nyxgpt.config import get_default_model
+
+    model_values = {
+        "NYXGPT_DEFAULT_MODEL": get_default_model(cfg),
+        "NYXGPT_EMBEDDING_MODEL": (
+            cfg.get("rag", "embedding_model", fallback="").strip() or get_default_model(cfg)
+        ),
+    }
+    models_synced = [var for var, value in model_values.items() if value]
+    for var_name, value in model_values.items():
+        if value:
+            _set(var_name, value)
+    if models_synced and not synced:
+        _ensure_dir(env_path.parent)
+        env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        os.chmod(env_path, 0o600)
 
     if not synced:
         if not cfg.getboolean("auth", "enabled", fallback=False):
@@ -10372,7 +10410,8 @@ def sync_env_from_config(
                     True,
                     "No secrets to sync (auth disabled)",
                     "[auth] enabled = false with no api_key set is a valid "
-                    "localhost-only configuration -- .env left untouched. Run "
+                    "localhost-only configuration -- no secret line written "
+                    f"({', '.join(models_synced)} still synced). Run "
                     "`nyxgpt wizard` to generate secrets before any networked "
                     "deploy, then re-run `nyxgpt ops env-sync`.",
                 )
@@ -10393,7 +10432,7 @@ def sync_env_from_config(
     return [
         OpsResult(
             True,
-            f"Synced {', '.join(synced)} into {env_path} from {cfg_path}",
+            f"Synced {', '.join(synced + models_synced)} into {env_path} from {cfg_path}",
         )
     ]
 
