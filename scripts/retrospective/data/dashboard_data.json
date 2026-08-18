@@ -1,46 +1,19 @@
 {
+ "generated_at": "2026-08-18T10:24:08.583918+00:00",
  "modules": {
-  "rag": {
-   "C": 0,
-   "M": 1,
-   "m": 2,
-   "rounds": 1,
-   "issues": 1
-  },
-  "api": {
-   "C": 3,
-   "M": 26,
-   "m": 36,
-   "rounds": 18,
-   "issues": 10
-  },
-  "security": {
-   "C": 0,
-   "M": 3,
-   "m": 6,
-   "rounds": 2,
-   "issues": 2
+  "web-ui": {
+   "C": 1,
+   "M": 9,
+   "m": 13,
+   "rounds": 7,
+   "issues": 7
   },
   "cli": {
    "C": 5,
-   "M": 18,
-   "m": 28,
-   "rounds": 14,
-   "issues": 8
-  },
-  "web-ui": {
-   "C": 1,
-   "M": 7,
-   "m": 11,
-   "rounds": 5,
-   "issues": 5
-  },
-  "observability": {
-   "C": 1,
-   "M": 13,
-   "m": 20,
-   "rounds": 6,
-   "issues": 5
+   "M": 14,
+   "m": 22,
+   "rounds": 12,
+   "issues": 6
   },
   "testing": {
    "C": 2,
@@ -49,21 +22,36 @@
    "rounds": 5,
    "issues": 1
   },
+  "api": {
+   "C": 2,
+   "M": 30,
+   "m": 34,
+   "rounds": 18,
+   "issues": 10
+  },
   "documentation": {
    "C": 0,
    "M": 6,
    "m": 5,
    "rounds": 3,
    "issues": 1
+  },
+  "observability": {
+   "C": 1,
+   "M": 11,
+   "m": 17,
+   "rounds": 5,
+   "issues": 4
+  },
+  "security": {
+   "C": 0,
+   "M": 1,
+   "m": 4,
+   "rounds": 1,
+   "issues": 1
   }
  },
  "days": {
-  "2026-08-10": {
-   "C": 1,
-   "M": 13,
-   "m": 22,
-   "rounds": 8
-  },
   "2026-08-11": {
    "C": 3,
    "M": 7,
@@ -99,6 +87,12 @@
    "M": 4,
    "m": 8,
    "rounds": 3
+  },
+  "2026-08-18": {
+   "C": 0,
+   "M": 10,
+   "m": 9,
+   "rounds": 5
   }
  },
  "issues": [
@@ -672,254 +666,6 @@
    ]
   },
   {
-   "issue": 3512,
-   "pr": 3702,
-   "title": "[dkblinux98/nyxGPT] Feature: feat: guided AWS credential collection for cloud deploy (#3512) (PR #3702)",
-   "module": "rag",
-   "rounds": 1,
-   "C": 0,
-   "M": 1,
-   "m": 2,
-   "last": "2026-08-10T00:36:08Z",
-   "findings": [
-    [
-     "Medium",
-     "Web coverage gate fails (100% threshold) \u2014 missing tests for `page.tsx`"
-    ],
-    [
-     "Minor",
-     "Region defaulting parity"
-    ],
-    [
-     "Minor",
-     "`write_profile_credentials` drops comments in `~/.aws/credentials`"
-    ]
-   ]
-  },
-  {
-   "issue": 3704,
-   "pr": 3705,
-   "title": "[dkblinux98/nyxGPT] Feature: fix: Dispatched reviews drop the REQUEST_CHANGES handoff to the dev agent - api (#3704) (PR #3705)",
-   "module": "api",
-   "rounds": 1,
-   "C": 0,
-   "M": 1,
-   "m": 4,
-   "last": "2026-08-10T01:37:41Z",
-   "findings": [
-    [
-     "Medium",
-     "`handoff_recorded` false-positives on the run's own structured-review comment, silently disabling the backstop"
-    ],
-    [
-     "Minor",
-     "`disagreement_type` can inherit an earlier cycle's classification"
-    ],
-    [
-     "Minor",
-     "`_DTYPE_BODY_RE` matches anywhere in the review body"
-    ],
-    [
-     "Minor",
-     "AC \"Verified by dispatching a review against a test PR\" is unchecked"
-    ],
-    [
-     "Minor",
-     "`git checkout FETCH_HEAD -- scripts/agents` leaves release-branch scripts in the workspace"
-    ]
-   ]
-  },
-  {
-   "issue": 3706,
-   "pr": 3707,
-   "title": "[dkblinux98/nyxGPT] Feature: fix: Sprint autopilot and dispatch bound by current sprint, not release - api (#3706) (PR #3707)",
-   "module": "api",
-   "rounds": 1,
-   "C": 1,
-   "M": 2,
-   "m": 2,
-   "last": "2026-08-10T04:29:43Z",
-   "findings": [
-    [
-     "Critical",
-     "Park note self-triggers the dispatch workflow and can cross the sprint boundary"
-    ],
-    [
-     "Medium",
-     "`--sprint-scoped` with no active iteration falls back to unscoped selection, contradicting the conservative-stop policy this PR documents"
-    ],
-    [
-     "Medium",
-     "Park note drops the no-sprint bucket in the no-active-sprint variant"
-    ],
-    [
-     "Minor",
-     "`notify_scrum_ready.yml` compares `KICK_ACTOR != KICK_OWNER` case-sensitively in bash while the job-level `if:` comparison is case-insensitive; if `vars.HUMAN_OWNER` ever differs in case from the actual login, an owner kick would silently run scoped. Not blocking."
-    ],
-    [
-     "Minor",
-     "Test 8's `_assert_not_contains` needle includes a trailing newline (`\"READY_FOR_NEXT_ISSUE\\n\"`), which the kick body would not match anyway (no trailing newline after the token); harmless because the content asserts carry the test, but the needle is misleading. Not blocking."
-    ]
-   ]
-  },
-  {
-   "issue": 3509,
-   "pr": 3708,
-   "title": "[dkblinux98/nyxGPT] Feature: feat: Terraform AWS modules - VPC, subnets, security groups, compute (#3509) (PR #3708)",
-   "module": "security",
-   "rounds": 1,
-   "C": 0,
-   "M": 2,
-   "m": 2,
-   "last": "2026-08-10T05:08:30Z",
-   "findings": [
-    [
-     "Medium",
-     "Missing tests for the four new web proxy routes (0% coverage \u2014 fails the vitest coverage gate)"
-    ],
-    [
-     "Medium",
-     "Uncovered branches in `web/src/app/admin/cloud-infrastructure/page.tsx` (82.43% stmts / 72.04% branch / 75% funcs)"
-    ],
-    [
-     "Minor",
-     "`docs/api.md:15` still says \"Quick reference of all 77 available endpoints\" \u2014 the table now lists 79+ rows after this PR adds 4. Update the count while you're in there."
-    ],
-    [
-     "Minor",
-     "`terraform_init` (src/nyxgpt/cloud_infra.py) passes `-upgrade` on every init, re-resolving provider versions on each plan/apply; consider dropping it or only upgrading when the synced config changed. Purely a speed nit."
-    ]
-   ]
-  },
-  {
-   "issue": 3510,
-   "pr": 3711,
-   "title": "[dkblinux98/nyxGPT] Feature: feat: Terraform remote state - S3 backend with DynamoDB locking (#3510) (PR #3711)",
-   "module": "cli",
-   "rounds": 1,
-   "C": 0,
-   "M": 3,
-   "m": 2,
-   "last": "2026-08-10T06:22:08Z",
-   "findings": [
-    [
-     "Medium",
-     "Vitest gate fails: new mount-time fetch breaks two existing page tests"
-    ],
-    [
-     "Medium",
-     "Missing web tests for all new web code (100% coverage gate)"
-    ],
-    [
-     "Medium",
-     "One-click Restore bypasses the API's confirmation guard"
-    ],
-    [
-     "Minor",
-     "Stale symbol reference in `terraform/aws/backend.tf:7`"
-    ],
-    [
-     "Minor",
-     "`list_state_versions` reads only the first page of `list_object_versions`"
-    ]
-   ]
-  },
-  {
-   "issue": 3513,
-   "pr": 3712,
-   "title": "[dkblinux98/nyxGPT] Feature: feat: nyxgpt cloud deploy - provision AWS and deploy the full stack (#3513) (PR #3712)",
-   "module": "cli",
-   "rounds": 1,
-   "C": 0,
-   "M": 1,
-   "m": 4,
-   "last": "2026-08-10T07:37:37Z",
-   "findings": [
-    [
-     "Medium",
-     "Web coverage gate fails: the three new API proxy routes are untested (0% coverage) and two page error branches are uncovered"
-    ],
-    [
-     "Minor",
-     "Wrong command in the health-timeout error message"
-    ],
-    [
-     "Minor",
-     "Background tunnel keeps a never-drained stderr pipe"
-    ],
-    [
-     "Minor",
-     "Unquoted substitution into the provisioning script"
-    ],
-    [
-     "Minor",
-     "Small test/consistency nits"
-    ]
-   ]
-  },
-  {
-   "issue": 3514,
-   "pr": 3713,
-   "title": "[dkblinux98/nyxGPT] Feature: feat: cloud deploy lifecycle from the SRE dashboard (#3514) (PR #3713)",
-   "module": "web-ui",
-   "rounds": 1,
-   "C": 0,
-   "M": 1,
-   "m": 3,
-   "last": "2026-08-10T09:12:32Z",
-   "findings": [
-    [
-     "Medium",
-     "Web coverage gate fails: 4 uncovered branches in `web/src/app/admin/cloud-infrastructure/page.tsx` (branches 99.86% < 100%)"
-    ],
-    [
-     "Minor",
-     "Failed teardowns are never recorded in the history"
-    ],
-    [
-     "Minor",
-     "`docs/api.md` browser-reachability note omits one deleted proxy"
-    ],
-    [
-     "Minor",
-     "Pre-existing pytest flake worth a follow-up issue"
-    ]
-   ]
-  },
-  {
-   "issue": 3516,
-   "pr": 3715,
-   "title": "[dkblinux98/nyxGPT] Feature: feat: Phase 6 capstone - clean machine to monitored AWS deploy in one command (#3516) (PR #3715)",
-   "module": "observability",
-   "rounds": 1,
-   "C": 0,
-   "M": 2,
-   "m": 3,
-   "last": "2026-08-10T17:13:07Z",
-   "findings": [
-    [
-     "Medium",
-     "Web coverage gate fails: new proxy route is entirely untested"
-    ],
-    [
-     "Medium",
-     "Web coverage gate fails: uncovered branches in the portability page"
-    ],
-    [
-     "Minor",
-     "Owner-acceptance note (not a defect in this PR)"
-    ],
-    [
-     "Minor",
-     "`_first_word` in `src/nyxgpt/portability.py` won't catch prefixed invocations (e.g. `sudo docker \u2026`) in the wrapped check. No current row uses a prefix, so this is a latent checker limitation only."
-    ],
-    [
-     "Minor",
-     "`web/src/app/api/v1/ops/portability/route.ts:15` uses a template literal with no interpolation for the URL \u2014 a plain string would do."
-    ]
-   ]
-  },
-  {
    "issue": 3632,
    "pr": 3722,
    "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: Linux install - system ollama.service port conflict; web probe race - sre (#3632) (PR #3722)",
@@ -1374,27 +1120,150 @@
      "Unlinked-PR escalation edge"
     ]
    ]
+  },
+  {
+   "issue": 3868,
+   "pr": 3869,
+   "title": "[dkblinux98/nyxGPT] fix: exclude the release tracking issue from the escalation pause count (PR #3869)",
+   "module": "api",
+   "rounds": 1,
+   "C": 0,
+   "M": 3,
+   "m": 2,
+   "last": "2026-08-18T05:53:17Z",
+   "findings": [
+    [
+     "Medium",
+     "Ruff gate failure (pre-existing B033) \u2014 `tests/unit/test_dump_churn.py:787,795`"
+    ],
+    [
+     "Medium",
+     "Inverse-claims (\u00a71a): `docs/github-tokens.md` falsified by the D-014 commit"
+    ],
+    [
+     "Medium",
+     "Inverse-claims (\u00a71a): runbook definition of \"unresolved escalation\" falsified"
+    ],
+    [
+     "Minor",
+     "Pause-message wording"
+    ],
+    [
+     "Minor",
+     "The new test block restores `RELEASE_ISSUE_NUMBER=\"3521\"` after the unset-fallback fixture (`tests/test_gh_project_lib.sh:660`) \u2014 correct and consistent with the suite's existing convention at lines 719/944; noting only that I verified it."
+    ]
+   ]
+  },
+  {
+   "issue": 3803,
+   "pr": 3872,
+   "title": "[dkblinux98/nyxGPT] Improvement: improvement: remove the Portability and Acceptance dashboard screen (#3803) (PR #3872)",
+   "module": "web-ui",
+   "rounds": 1,
+   "C": 0,
+   "M": 1,
+   "m": 1,
+   "last": "2026-08-18T07:02:50Z",
+   "findings": [
+    [
+     "Medium",
+     "Falsified claim left in docs/portability-matrix.md (inverse-claims check \u00a71a)"
+    ],
+    [
+     "Minor",
+     "`docs/ui.md:310` says the `ADMIN_NAV` list is exported from `web/src/app/admin/dashboard/page.tsx`; it lives in `web/src/app/admin/dashboard/nav.ts`. Pre-existing inaccuracy, not falsified by this PR \u2014 does not block, fine to fix opportunistically while editing docs for the Medium above."
+    ]
+   ]
+  },
+  {
+   "issue": 3805,
+   "pr": 3873,
+   "title": "[dkblinux98/nyxGPT] Improvement: improvement: secrets and AWS credential setup screens move out of the web UI to CLI only (#3805) (PR #3873)",
+   "module": "web-ui",
+   "rounds": 1,
+   "C": 0,
+   "M": 1,
+   "m": 2,
+   "last": "2026-08-18T08:21:23Z",
+   "findings": [
+    [
+     "Medium",
+     "Falsified claim left in `example.config.ini` (\u00a71a inverse-claims, #3744)"
+    ],
+    [
+     "Minor",
+     "`docs/cloud.md:858` \u2014 \"\\`GET /api/v1/config/aws-credentials\\` remains as the read-only status **the dashboard** and tooling can query\": with this PR the dashboard has no proxy route to that path and displays nothing from it (the Next.js proxy GETs were deleted along with their only consumers \u2014 correct as dead-code removal). \"tooling can query\" alone would be accurate. Doesn't block."
+    ],
+    [
+     "Minor",
+     "`product_management/PHASE_6_PLAN.md:135` \u2014 the P6-6 heading still reads \"CLI + admin wizard\". It is the historical issue title and the superseded note sits directly under it in the ACs, so this is acceptable as a record; a strike-through on the heading's \"+ admin wizard\" would be tidier. Doesn't block."
+    ]
+   ]
+  },
+  {
+   "issue": 3807,
+   "pr": 3875,
+   "title": "[dkblinux98/nyxGPT] Improvement: improvement: retro dashboard has no build timestamp or per-source as-of times (#3807) (PR #3875)",
+   "module": "web-ui",
+   "rounds": 1,
+   "C": 0,
+   "M": 1,
+   "m": 2,
+   "last": "2026-08-18T09:32:23Z",
+   "findings": [
+    [
+     "Medium",
+     "CodeQL check failing: new high-severity alert in `tests/retro_render_check.mjs:28`"
+    ],
+    [
+     "Minor",
+     "Greedy script extraction"
+    ],
+    [
+     "Minor",
+     "Committed `scripts/retrospective/retro.html` predates this template change"
+    ]
+   ]
+  },
+  {
+   "issue": 3806,
+   "pr": 3876,
+   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: restart-required config changes apply silently or not at all - need pending-restart notice and restart control (#3806) (PR #3876)",
+   "module": "api",
+   "rounds": 1,
+   "C": 0,
+   "M": 4,
+   "m": 2,
+   "last": "2026-08-18T09:49:02Z",
+   "findings": [
+    [
+     "Medium",
+     "Web coverage gate fails (blocks merge mechanically)"
+    ],
+    [
+     "Medium",
+     "Third writer of `[auth]` left silent \u2014 the #3806 defect is still reachable from the Admin Dashboard's Access Management panel"
+    ],
+    [
+     "Medium",
+     "Falsified claim left in tree (\u00a71a)"
+    ],
+    [
+     "Medium",
+     "CodeQL check red on the PR \u2014 1 new high-severity alert"
+    ],
+    [
+     "Minor",
+     "`web/tests/mocks/handlers.ts:8`: the file-header comment still says \"secret/restart_component/\" \u2014 the field is now `restart_components`. Doesn't block."
+    ],
+    [
+     "Minor",
+     "`tests/unit/test_restart_activation.py::test_no_key_is_annotated_both_hot_and_restart_required` is nearly vacuous: its inner assertion checks `blocks[i - 1]` (the line before the prose) and can't fail against realistic drift. The exact-match test above it is the real guard, so this doesn't block \u2014 consider deleting or tightening it in passing."
+    ]
+   ]
   }
  ],
  "cleanPRs": [
-  {
-   "pr": 3714,
-   "merged": "2026-08-10",
-   "title": "Feature: feat: cloud smoke test - provision, verify chat and RAG, teardown (#3515)",
-   "module": "observability"
-  },
-  {
-   "pr": 3710,
-   "merged": "2026-08-10",
-   "title": "Feature: fix: Sprint park ignores in-flight work; no auto-resume when blockers merge - api (#3709)",
-   "module": "api"
-  },
-  {
-   "pr": 3703,
-   "merged": "2026-08-10",
-   "title": "Improvement: improvement: migrate chat sessions from JSON files to database storage (#3590)",
-   "module": "api"
-  },
   {
    "pr": 3725,
    "merged": "2026-08-11",
@@ -1552,30 +1421,114 @@
    "module": "api"
   },
   {
+   "pr": 3852,
+   "merged": "2026-08-17",
+   "title": "Improvement: fix: remove create_issue.sh --blocks, the retired prose relationship path (#3836)",
+   "module": "api"
+  },
+  {
+   "pr": 3849,
+   "merged": "2026-08-17",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
+  },
+  {
+   "pr": 3848,
+   "merged": "2026-08-17",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
+  },
+  {
+   "pr": 3847,
+   "merged": "2026-08-17",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
+  },
+  {
+   "pr": 3846,
+   "merged": "2026-08-17",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
+  },
+  {
+   "pr": 3845,
+   "merged": "2026-08-17",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
+  },
+  {
+   "pr": 3844,
+   "merged": "2026-08-17",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
+  },
+  {
+   "pr": 3843,
+   "merged": "2026-08-17",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
+  },
+  {
+   "pr": 3842,
+   "merged": "2026-08-17",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
+  },
+  {
+   "pr": 3841,
+   "merged": "2026-08-17",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
+  },
+  {
+   "pr": 3840,
+   "merged": "2026-08-17",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
+  },
+  {
+   "pr": 3839,
+   "merged": "2026-08-17",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
+  },
+  {
    "pr": 3838,
    "merged": "2026-08-17",
    "title": "chore(retro): refresh retrospective data",
    "module": "api"
+  },
+  {
+   "pr": 3874,
+   "merged": "2026-08-18",
+   "title": "Improvement: improvement: AWS cloud infrastructure becomes information-only on the Infrastructure page (#3804)",
+   "module": "web-ui"
+  },
+  {
+   "pr": 3866,
+   "merged": "2026-08-18",
+   "title": "docs(ledger): V-033 - session backend wired only in k8s; fresh-Cassandra collections failure",
+   "module": "documentation"
   }
  ],
  "cleanByModule": {
-  "observability": 2,
-  "api": 16,
   "cli": 8,
+  "observability": 1,
   "rag": 1,
-  "web-ui": 1,
-  "documentation": 1,
+  "web-ui": 2,
+  "api": 26,
+  "documentation": 2,
   "security": 1
  },
  "totals": {
-  "rounds": 54,
-  "C": 12,
-  "M": 79,
-  "m": 120,
-  "items": 33,
-  "clean": 30,
-  "reviewed": 67,
-  "merged": 67,
+  "rounds": 51,
+  "C": 11,
+  "M": 76,
+  "m": 107,
+  "items": 30,
+  "clean": 41,
+  "reviewed": 70,
+  "merged": 70,
   "unreviewed": 0
  }
 }
