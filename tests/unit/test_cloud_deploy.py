@@ -1211,3 +1211,355 @@ def test_credentials_command_exits_two_when_a_service_is_unprovisioned(
     assert code == 2
     assert "(not provisioned)" in out
     assert "nyxgpt ops glitchtip-init" in out
+
+
+# --- The connection target and `nyxgpt cloud status` (#3813) --------------
+
+
+def _write_deploy_record(cloud_dir, **overrides):
+    """Write the record a completed `nyxgpt cloud deploy` leaves behind."""
+    record = {
+        "version": "3.0.0",
+        "profiles": ["monitoring"],
+        "ssh_user": "ec2-user",
+        "identity_file": "/keys/nyxgpt.pem",
+        "host": "198.51.100.10",
+        "instance_id": "i-0abc",
+        "region": "us-east-1",
+    }
+    record.update(overrides)
+    (cloud_dir / "deploy.json").write_text(json.dumps(record), encoding="utf-8")
+    return record
+
+
+def test_recorded_target_is_none_before_any_deploy():
+    assert cloud_deploy.recorded_target() is None
+
+
+def test_recorded_target_carries_the_user_and_key_the_deploy_used(_isolated_cloud_home):
+    _write_deploy_record(_isolated_cloud_home)
+
+    target = cloud_deploy.recorded_target()
+
+    assert target is not None
+    assert (target.user, target.host) == ("ec2-user", "198.51.100.10")
+    assert target.identity_file == "/keys/nyxgpt.pem"
+
+
+def test_connection_status_reports_the_ssh_target_and_what_the_tunnel_runs(_isolated_cloud_home):
+    """The gap #3813 was filed for: `host` alone is not a reachable address."""
+    _write_deploy_record(_isolated_cloud_home)
+
+    connection = cloud_deploy.connection_status()
+
+    assert connection["known"] is True
+    assert connection["target"] == "ec2-user@198.51.100.10"
+    assert connection["identity_file"] == "/keys/nyxgpt.pem"
+    # `tunnel_invocation` was written for this surface and had no callers.
+    assert connection["tunnel_invocation"].startswith("ssh ")
+    assert "-L 8000:127.0.0.1:8000" in connection["tunnel_invocation"]
+    assert connection["tunnel_invocation"].endswith("ec2-user@198.51.100.10")
+    # The wrapped command is what the operator is pointed at, never the ssh.
+    assert connection["command"] == "nyxgpt cloud tunnel"
+
+
+def test_connection_status_forwards_only_the_profiles_the_deploy_enabled(_isolated_cloud_home):
+    _write_deploy_record(_isolated_cloud_home, profiles=[])
+
+    invocation = cloud_deploy.connection_status()["tunnel_invocation"]
+
+    assert "-L 3000:127.0.0.1:3000" in invocation
+    assert "16686" not in invocation
+
+
+def test_connection_status_says_why_it_cannot_answer_rather_than_blanking():
+    connection = cloud_deploy.connection_status()
+
+    assert connection["known"] is False
+    assert connection["target"] == ""
+    assert "no deploy has been recorded" in connection["reason"]
+
+
+def test_connection_status_on_the_instance_points_at_the_workstations_record():
+    connection = cloud_deploy.connection_status(on_instance=True)
+
+    assert connection["known"] is False
+    assert "instance itself" in connection["reason"]
+
+
+def test_deploy_status_carries_the_connection_and_the_instance_type(
+    monkeypatch, _isolated_cloud_home
+):
+    _write_deploy_record(_isolated_cloud_home)
+    monkeypatch.setattr(
+        cloud_infra,
+        "infra_status",
+        lambda: {
+            "provisioned": True,
+            "instance_type": "t3.large",
+            "owner_ip_cidr": "203.0.113.5/32",
+        },
+    )
+
+    status = cloud_deploy.deploy_status()
+
+    assert status["connection"]["target"] == "ec2-user@198.51.100.10"
+    assert status["instance_type"] == "t3.large"
+
+
+def test_resolve_access_target_restores_the_recorded_key(_isolated_cloud_home):
+    """Inspecting a deployment made with a non-default key must not require
+    re-typing --identity-file every time."""
+    _write_cloud_state(_isolated_cloud_home)
+    _write_deploy_record(_isolated_cloud_home)
+
+    target = cloud_deploy.resolve_access_target(_args())
+
+    assert target.user == "ec2-user"
+    assert target.identity_file == "/keys/nyxgpt.pem"
+
+
+def test_resolve_access_target_lets_explicit_flags_win(_isolated_cloud_home, tmp_path):
+    _write_cloud_state(_isolated_cloud_home)
+    _write_deploy_record(_isolated_cloud_home)
+    override = tmp_path / "other.pem"
+
+    target = cloud_deploy.resolve_access_target(
+        _args(ssh_user="ubuntu", identity_file=str(override))
+    )
+
+    assert target.user == "ubuntu"
+    assert target.identity_file == str(override)
+
+
+def _status_out(capsys, monkeypatch, cloud_dir, **args_overrides) -> str:
+    monkeypatch.setattr(
+        cloud_infra,
+        "infra_status",
+        lambda: {
+            "provisioned": True,
+            "instance_type": "t3.large",
+            "owner_ip_cidr": "203.0.113.5/32",
+            "access_model": {"open_ports": [22]},
+        },
+    )
+    code = cloud_deploy.deploy_command(
+        _args(cloud_cmd="status", json=False, no_probe=True, **args_overrides)
+    )
+    assert code == 0
+    return capsys.readouterr().out
+
+
+def test_status_command_prints_an_operator_readable_summary(
+    monkeypatch, _isolated_cloud_home, capsys
+):
+    _write_deploy_record(_isolated_cloud_home)
+
+    out = _status_out(capsys, monkeypatch, _isolated_cloud_home)
+
+    # Everything the operator had to scroll back through deploy output for.
+    assert "DEPLOYED" in out
+    assert "3.0.0" in out
+    assert "i-0abc (t3.large)" in out
+    assert "us-east-1" in out
+    assert "198.51.100.10" in out
+    assert "ec2-user@198.51.100.10" in out
+    assert "/keys/nyxgpt.pem" in out
+    assert "203.0.113.5/32" in out
+    assert "http://localhost:3000" in out
+    # And the wrapped route to the instance's containers, which used to be a
+    # hand-rolled ssh plus a raw `docker compose ps`.
+    assert "nyxgpt cloud ops status" in out
+    assert "docker compose" not in out
+
+
+def test_status_command_labels_the_raw_ssh_as_diagnostics_not_an_instruction(
+    monkeypatch, _isolated_cloud_home, capsys
+):
+    """CLAUDE.md forbids handing an operator a raw command as the instruction."""
+    _write_deploy_record(_isolated_cloud_home)
+
+    out = _status_out(capsys, monkeypatch, _isolated_cloud_home)
+    diagnostics = out[out.index("Diagnostics") :]
+
+    assert "run the wrapped command, not this" in diagnostics.lower()
+    assert "ssh -o StrictHostKeyChecking" in diagnostics
+    # The ssh line appears only under that heading.
+    assert out.count("ssh -o StrictHostKeyChecking") == 1
+
+
+def test_status_command_json_emits_the_machine_payload(monkeypatch, _isolated_cloud_home, capsys):
+    _write_deploy_record(_isolated_cloud_home)
+    monkeypatch.setattr(cloud_infra, "infra_status", lambda: {"provisioned": True})
+
+    code = cloud_deploy.deploy_command(_args(cloud_cmd="status", json=True, no_probe=True))
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["deployed"] is True
+    assert payload["connection"]["target"] == "ec2-user@198.51.100.10"
+
+
+def test_status_command_is_unknown_rather_than_not_deployed(monkeypatch, capsys):
+    monkeypatch.setattr(cloud_infra, "infra_status", lambda: {"provisioned": False})
+
+    code = cloud_deploy.deploy_command(_args(cloud_cmd="status", json=False, no_probe=True))
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "UNKNOWN" in out
+    assert "not the same as nothing being deployed" in out
+
+
+def test_status_command_probes_health_by_default(monkeypatch, _isolated_cloud_home, capsys):
+    _write_deploy_record(_isolated_cloud_home)
+    monkeypatch.setattr(cloud_infra, "infra_status", lambda: {"provisioned": True})
+    monkeypatch.setattr(
+        cloud_deploy, "tunnel_status", lambda: {"running": True, "pid": 7, "urls": {}}
+    )
+    monkeypatch.setattr(cloud_deploy, "_probe", lambda url, timeout: 200)
+
+    cloud_deploy.deploy_command(_args(cloud_cmd="status", json=False, no_probe=False))
+
+    assert "healthy" in capsys.readouterr().out
+
+
+def test_status_command_no_probe_makes_no_network_call(monkeypatch, _isolated_cloud_home, capsys):
+    _write_deploy_record(_isolated_cloud_home)
+    monkeypatch.setattr(cloud_infra, "infra_status", lambda: {"provisioned": True})
+    monkeypatch.setattr(
+        cloud_deploy, "tunnel_status", lambda: {"running": True, "pid": 7, "urls": {}}
+    )
+    monkeypatch.setattr(
+        cloud_deploy, "_probe", lambda url, timeout: pytest.fail("probed despite --no-probe")
+    )
+
+    cloud_deploy.deploy_command(_args(cloud_cmd="status", json=False, no_probe=True))
+
+    assert "not checked" in capsys.readouterr().out
+
+
+def test_deploy_summary_points_at_the_status_command(stubbed_deploy, capsys):
+    """The information has to be recoverable once the scrollback is gone."""
+    cloud_deploy.deploy_command(_args(cloud_cmd="deploy"))
+
+    out = capsys.readouterr().out
+
+    assert "nyxgpt cloud status" in out
+    assert "nyxgpt cloud ops status" in out
+
+
+def test_deploy_status_flag_still_emits_json_and_names_its_replacement(monkeypatch, capsys):
+    monkeypatch.setattr(cloud_infra, "infra_status", lambda: {"provisioned": False})
+
+    code = cloud_deploy.deploy_command(_args(cloud_cmd="deploy", status=True))
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert json.loads(captured.out)["deployed"] is False
+    assert "nyxgpt cloud status" in captured.err
+
+
+# --- `nyxgpt cloud ops` (wrapped remote inspection, #3813) ----------------
+
+
+def test_remote_ops_inspections_are_read_only_wrapped_nyxgpt_commands():
+    for remote in cloud_deploy.REMOTE_OPS_COMMANDS.values():
+        assert remote.split()[-1] in ("status", "doctor")
+        assert "docker" not in remote
+
+
+def test_remote_ops_runs_the_instances_own_command_over_ssh(monkeypatch):
+    seen = {}
+
+    def fake_remote(target, command, **kwargs):
+        seen["command"] = command
+        seen["stream"] = kwargs.get("stream")
+        return subprocess.CompletedProcess(["ssh"], 0, stdout="", stderr="")
+
+    monkeypatch.setattr(cloud_deploy, "run_remote", fake_remote)
+
+    code = cloud_deploy.remote_ops(cloud_deploy.DeployTarget(host="h"), "status")
+
+    assert code == 0
+    assert seen["command"].endswith("ops status")
+    assert "/.nyxGPT/venv/bin/nyxgpt" in seen["command"]
+    # Streamed, so a long remote status is not a silent wait -- and never a
+    # raw `docker compose` typed by the operator.
+    assert seen["stream"] is True
+    assert "docker" not in seen["command"]
+
+
+def test_remote_ops_returns_the_inspections_own_verdict(monkeypatch):
+    """`ops doctor` exiting non-zero is a reportable answer, not a failure."""
+    monkeypatch.setattr(
+        cloud_deploy,
+        "run_remote",
+        lambda *a, **k: subprocess.CompletedProcess(["ssh"], 3, stdout="", stderr="unhealthy"),
+    )
+
+    assert cloud_deploy.remote_ops(cloud_deploy.DeployTarget(host="h"), "doctor") == 3
+
+
+def test_remote_ops_reports_an_unreachable_instance_with_the_allow_ip_fix(monkeypatch):
+    monkeypatch.setattr(
+        cloud_deploy,
+        "run_remote",
+        lambda *a, **k: subprocess.CompletedProcess(
+            ["ssh"], 255, stdout="", stderr="ssh: connect to host: Connection timed out"
+        ),
+    )
+
+    with pytest.raises(CloudCommandError, match="nyxgpt cloud allow-ip"):
+        cloud_deploy.remote_ops(cloud_deploy.DeployTarget(host="h"), "status")
+
+
+def test_remote_ops_reports_an_instance_without_nyxgpt_installed(monkeypatch):
+    monkeypatch.setattr(
+        cloud_deploy,
+        "run_remote",
+        lambda *a, **k: subprocess.CompletedProcess(["ssh"], 127, stdout="", stderr="not found"),
+    )
+
+    with pytest.raises(CloudCommandError, match="nyxgpt cloud deploy"):
+        cloud_deploy.remote_ops(cloud_deploy.DeployTarget(host="h"), "status")
+
+
+def test_ops_command_names_the_instance_and_the_remote_command(
+    monkeypatch, _isolated_cloud_home, capsys
+):
+    _write_cloud_state(_isolated_cloud_home)
+    _write_deploy_record(_isolated_cloud_home)
+    seen = {}
+
+    def fake_remote(target, command, **kwargs):
+        seen["identity"] = target.identity_file
+        return subprocess.CompletedProcess(["ssh"], 0, stdout="", stderr="")
+
+    monkeypatch.setattr(cloud_deploy, "run_remote", fake_remote)
+
+    code = cloud_deploy.deploy_command(_args(cloud_cmd="ops", inspection="self-heal"))
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "ec2-user@198.51.100.10" in out
+    assert "nyxgpt self-heal status" in out
+    # The recorded key is used without the operator re-passing it.
+    assert seen["identity"] == "/keys/nyxgpt.pem"
+
+
+def test_ops_command_defaults_to_the_container_state_inspection(
+    monkeypatch, _isolated_cloud_home, capsys
+):
+    _write_cloud_state(_isolated_cloud_home)
+    seen = {}
+
+    def fake_remote(target, command, **kwargs):
+        seen["command"] = command
+        return subprocess.CompletedProcess(["ssh"], 0, stdout="", stderr="")
+
+    monkeypatch.setattr(cloud_deploy, "run_remote", fake_remote)
+
+    cloud_deploy.deploy_command(_args(cloud_cmd="ops", inspection=None))
+
+    assert seen["command"].endswith("ops status")
