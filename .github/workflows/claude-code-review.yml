@@ -131,93 +131,41 @@ jobs:
             echo "python_changed=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
-
-      - name: Run linters
-        id: lint
-        run: |
-          echo "Running code quality checks..."
-
-          # Run ruff (if configured)
-          if command -v ruff &> /dev/null; then
-            echo "Running ruff..."
-            python -m ruff check . || echo "ruff_failed=true" >> "$GITHUB_OUTPUT"
-          fi
-
-          # Run mypy (if configured)
-          if [ -f "pyproject.toml" ] && grep -q "mypy" pyproject.toml; then
-            echo "Running mypy..."
-            python -m mypy src/ || echo "mypy_failed=true" >> "$GITHUB_OUTPUT"
-          fi
-
-          # Run black --check (if configured)
-          if command -v black &> /dev/null; then
-            echo "Running black --check..."
-            python -m black --check . || echo "black_failed=true" >> "$GITHUB_OUTPUT"
-          fi
-
-          echo "Linter checks complete"
-
-      # #3896: the review gate ran the whole tree on every round, including
-      # every REQUEST_CHANGES re-review. Scope it to what the diff can reach,
-      # reusing the file list the "Detect changed languages" step already
-      # cached. Unknown paths and conftest/pyproject changes still select
-      # everything, and the merge boundary (push to the release branch in
-      # ci-tests.yml) remains unscoped.
-      - name: Select test suites for this diff
-        id: select
+      # The review no longer re-runs the gates (owner decision, 2026-08-18).
+      # AGENTS.md already required the developer to land black/ruff/mypy/pytest
+      # green before submitting; the review workflow re-ran all of them anyway,
+      # on every round, so an N-round issue paid N times for the same answer --
+      # and a whole-tree lint failed PRs over pre-existing errors they never
+      # touched (#3869 lost a cycle to a B033 in a file it did not open).
+      # CI owns the gates now. The reviewer reads the verdict and reviews code.
+      - name: Read CI verdict for this PR
+        id: ci
+        env:
+          PR: ${{ steps.pr_number.outputs.pr }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          mapfile -t FILES < "$RUNNER_TEMP/pr-changed-files.txt"
-          python3 scripts/ci/select_tests.py --files "${FILES[@]}" --github-output \
-            >> "$GITHUB_OUTPUT"
+          HEAD_SHA=$(gh api "repos/${{ github.repository }}/pulls/$PR" --jq '.head.sha')
 
-      - name: Run tests
-        id: test
-        env:
-          PYTEST_ARGS: ${{ steps.select.outputs.pytest_args }}
-          FULL: ${{ steps.select.outputs.full }}
-        run: |
-          echo "Running pytest: $PYTEST_ARGS"
-          if [[ "$FULL" == "true" ]]; then
-            # Coverage over a scoped run reports a number about the subset, not
-            # about the tree, so it is only measured when the run is complete.
-            python -m pytest $PYTEST_ARGS -v \
-              --cov=src/nyxgpt --cov-report=term-missing \
-              || echo "pytest_failed=true" >> "$GITHUB_OUTPUT"
-          else
-            python -m pytest $PYTEST_ARGS -v \
-              || echo "pytest_failed=true" >> "$GITHUB_OUTPUT"
-          fi
+          # Own results only: the review's own check is in this list and would
+          # otherwise report itself as pending forever.
+          gh api "repos/${{ github.repository }}/commits/$HEAD_SHA/check-runs" \
+            --paginate --jq '.check_runs[] | select(.name != "claude-review")
+              | "\(.name)=\(.conclusion // "pending")"' \
+            | sort -u > /tmp/ci-checks.txt
 
-      - name: Set up Node.js
-        if: steps.changed.outputs.web_changed == 'true'
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
+          FAILED=$(grep -cE "=(failure|timed_out|cancelled)$" /tmp/ci-checks.txt || true)
+          PENDING=$(grep -cE "=pending$" /tmp/ci-checks.txt || true)
 
-      - name: Install web dependencies
-        if: steps.changed.outputs.web_changed == 'true'
-        run: cd web && npm ci
+          {
+            echo "failed=$FAILED"
+            echo "pending=$PENDING"
+            echo "summary<<NYXGPT_CI_EOF"
+            sed 's/=/: /' /tmp/ci-checks.txt
+            echo "NYXGPT_CI_EOF"
+          } >> "$GITHUB_OUTPUT"
 
-      - name: Run web checks
-        id: web_lint
-        if: steps.changed.outputs.web_changed == 'true'
-        run: |
-          echo "Running tsc --noEmit..."
-          (cd web && npx tsc --noEmit) || echo "tsc_failed=true" >> "$GITHUB_OUTPUT"
-
-          echo "Running vitest..."
-          (cd web && npx vitest run --coverage) || echo "vitest_failed=true" >> "$GITHUB_OUTPUT"
+          echo "CI: $FAILED failing, $PENDING pending"
 
       - name: Check test coverage
         id: test_coverage
@@ -364,160 +312,28 @@ jobs:
 
             ## Test and Linter Results (REQUIRED for APPROVE)
 
-            **Linter Status:**
-            - Ruff: ${{ steps.lint.outputs.ruff_failed == 'true' && '❌ FAILED' || '✅ PASSED' }}
-            - Mypy: ${{ steps.lint.outputs.mypy_failed == 'true' && '❌ FAILED' || '✅ PASSED' }}
-            - Black: ${{ steps.lint.outputs.black_failed == 'true' && '❌ FAILED' || '✅ PASSED' }}
+            **CI verdict for this PR head** (${{ steps.ci.outputs.failed }} failing,
+            ${{ steps.ci.outputs.pending }} pending):
 
-            **Test Status:**
-            - Pytest: ${{ steps.test.outputs.pytest_failed == 'true' && '❌ FAILED' || '✅ PASSED' }}
-            - Code changed: ${{ steps.test_coverage.outputs.code_changed }}
-            - Tests updated: ${{ steps.test_coverage.outputs.tests_updated }}
-            - Code changed without test updates: >-
-              ${{ steps.test_coverage.outputs.code_changed == 'true' &&
-                 steps.test_coverage.outputs.tests_updated == 'false' &&
-                 '❌ YES (BLOCKS APPROVE)' || '✅ NO' }}
+            ```
+            ${{ steps.ci.outputs.summary }}
+            ```
 
-            **Web Status (PR touches `web/**`: ${{ steps.changed.outputs.web_changed }}):**
-            - TypeScript (tsc --noEmit): >-
-              ${{ steps.changed.outputs.web_changed != 'true' && 'N/A' ||
-                 steps.web_lint.outputs.tsc_failed == 'true' && '❌ FAILED' || '✅ PASSED' }}
-            - Vitest: >-
-              ${{ steps.changed.outputs.web_changed != 'true' && 'N/A' ||
-                 steps.web_lint.outputs.vitest_failed == 'true' && '❌ FAILED' || '✅ PASSED' }}
+            You did NOT run these yourself, and you must not: the developer is
+            required to land them green before submitting (AGENTS.md), and CI
+            runs each gate once per push. Judge them from the verdict above.
 
-            **Documentation Status:**
-            - Code changed: ${{ steps.docs.outputs.code_changed }}
-            - Docs updated: ${{ steps.docs.outputs.docs_updated }}
-            - User-facing changes without docs: >-
-              ${{ steps.docs.outputs.user_facing_undocumented == 'true' &&
-                 '❌ YES (BLOCKS APPROVE)' || '✅ NO' }}
+            - If any check is **failing**, that is a blocking finding on its own
+              and the decision is REQUEST_CHANGES -- name the failing check.
+            - If checks are still **pending**, say so and do not APPROVE on the
+              assumption they will pass.
+            - A check failing for a reason the diff did not cause is still
+              reported, but it belongs to whoever owns that breakage; do not
+              demand this PR carry an unrelated fix unless it blocks the merge.
 
-            Note: the signals above are diff-scoped. They cannot detect prose
-            this change *falsifies* elsewhere in the tree — you must run the
-            inverse-claims check below yourself.
-
-            MANDATORY: You MUST REQUEST_CHANGES if:
-            - ANY linter or test failed (including TypeScript/Vitest when web/** changed)
-            - Source code changed WITHOUT test updates (tests_updated=false)
-            - User-facing code changed WITHOUT documentation updates (user_facing_undocumented=true)
-            - This change falsifies a claim written elsewhere in the tree and
-              the PR does not fix it (inverse-claims check, review-runbook §1a)
-            - The PR makes a runtime/install/platform behavior claim with NO
-              executed evidence on the target platform (executed-verification
-              gate, review-runbook §1c)
-            - The PR fixes a defect whose cause was never established — no
-              stated cause, no evidence behind it, or one the thread's own
-              evidence contradicts (diagnosis gate, review-runbook §1d)
-            - The PR patches one instance of a fault that exists elsewhere in
-              the tree, without fixing the class or reporting the search
-              (generality gate, review-runbook §1e)
-
-            Do not APPROVE until all checks pass, tests are updated, AND documentation is complete.
-
-            ## Inverse-claims check (REQUIRED, review-runbook.md §1a, #3744)
-
-            The documentation criterion above only asks "are docs for this
-            change updated?" You MUST also ask the inverse: **what does this
-            change make untrue elsewhere?** Consequences for existing prose
-            are in scope even when that prose is nowhere near the diff.
-
-            Motivating incident (#3743, 2026-08-13): #3727/#3735 shipped
-            repo-less PyPI publishing while README.md still asserted "this has
-            not shipped in a PyPI release yet… a repo checkout is still
-            required". Both dev and reviewer passed the docs criterion
-            honestly — that section was outside the diff's surfaces — and the
-            tree shipped a claim the PR itself had falsified.
-
-            Run it like this, before deciding:
-
-            1. Name the capability/behavior/constraint this PR adds, removes,
-               or inverts.
-            2. Search the WHOLE tree for existing assertions about it — not
-               just changed files. e.g.
-               `grep -rin "<capability terms>" README.md docs/ agents/ CLAUDE.md product_management/ web/src src/`
-               using the capability's own vocabulary plus expiry phrasing
-               ("not yet", "does not support", "currently", "still required",
-               "will ship", "planned").
-            3. Read each hit: is that sentence still true after this merges?
-               A sentence this PR turns false — or that describes a workaround
-               it makes unnecessary — must be fixed in THIS PR.
-            4. A falsified claim found and left unfixed is a **Medium
-               (blocking)** finding: cite `file:line`, quote the claim, state
-               what is true instead.
-            5. Newly introduced world-state claims with built-in expiry
-               ("currently published version…", "not yet shipped", "requires a
-               checkout") are themselves a **Medium** finding — docs must
-               point at living sources instead (PyPI project page,
-               `docs/portability-matrix.md`, generated docs, release tracking
-               issue). Pre-existing ones are Minor unless this PR falsifies
-               them.
-
-            Report the search you actually ran in the `### Documentation
-            Status` section, so "no falsified claims" is distinguishable from
-            "never checked".
-
-            ## Executed-verification gate (REQUIRED, review-runbook.md §1c, #3775)
-
-            Your review is an *inspection*. Inspection reads a formula and
-            concludes the venv bootstraps; it cannot see `ensurepip` exit 1 on
-            stock Homebrew, `platform.mac_ver()` answering empty, `npm` absent
-            from a cloud image, or a path resolving relative to a repo the
-            target does not have. Those four defects (#3753 twice, #3761,
-            #3759) all passed review and were all found by the owner running
-            the thing once.
-
-            **Nothing reaches owner acceptance testing whose runtime claim has
-            not been demonstrated by execution on the target platform.**
-
-            IN SCOPE (executed evidence required): installs and packaging
-            (formulas, tarballs, wheels, venv bootstrap, dependency
-            resolution); service lifecycle (`nyxgpt ops` install/up/restart/
-            down, launchd, systemd, container start, health); provisioning and
-            deployment (Terraform, cloud-init, EC2, Kubernetes, Compose);
-            cross-platform or OS-specific behavior; anything depending on what
-            exists on the target (interpreter version, `npm`, `brew`, `docker`,
-            filesystem layout, repo-relative path resolution).
-
-            ACCEPTED EVIDENCE — at least one, cited in the PR by run URL, job
-            name, or command transcript:
-            1. a CI job run on the target platform; the existing smoke
-               workflows count (`macos-brew-smoke.yml`,
-               `linux-native-smoke.yml`, `terraform-local-smoke.yml`);
-            2. a `workflow_dispatch` run of one of those or another workflow
-               exercising the changed path;
-            3. `nyxgpt ops verify`, where the change is in its coverage;
-            4. the actual command run on the target, with its output.
-
-            It must exercise the CHANGED path on the TARGET platform — a Linux
-            job does not verify a macOS keg, and a unit test mocking
-            `systemctl` does not verify a systemd unit. Where the runner does
-            not naturally reproduce the failure, the evidence must INJECT the
-            condition and show both halves: it fails without the fix and
-            passes with it (`macos-brew-smoke.yml`'s "Reproduce the empty
-            mac_ver() failure, then prove the shim fixes it" step is the
-            template — the rc5 candidate passed here and died on the owner's
-            Mac precisely because the job only ran the install).
-
-            If NO job covers the changed path, that is the finding, not the
-            excuse: the PR must add one (developer-runbook §4a).
-
-            EXEMPT: pure-logic changes fully covered by unit tests; prose-only
-            changes (docs, runbooks, prompts) whose contract text is pinned by
-            tests; and what `docs/live-verification-ci.md` documents as
-            genuinely not-CI-coverable (the native launchd/brew-services
-            *operate* path, real Slack delivery, LLM answer quality), plus EC2
-            Mac hardware, which has no hosted runner — name which applies and
-            what the owner must exercise. The Homebrew keg *install* is NOT on
-            that list: `macos-brew-smoke.yml` runs it on a real macos-15
-            runner, so "macOS can't be tested in CI" does not excuse a formula
-            change. Never REQUEST_CHANGES demanding evidence that is
-            structurally impossible to produce, or that a cited run already
-            produced.
-
-            Missing executed evidence on an in-scope change is a **Medium
-            (blocking)** finding: cite the claim, name the platform it was
-            never run on, and say which job would have run it.
+            Your job is the code: correctness, security, maintainability, the
+            acceptance criteria, and whether the tests that exist are the right
+            ones. Re-running them tells you nothing you cannot read above.
 
             ## Review Instructions
 
