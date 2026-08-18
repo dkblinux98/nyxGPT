@@ -104,6 +104,7 @@ checkout** and no raw orchestrator commands
 - [Deployment checklist](deployment-checklist.md) — pre-deploy security/perf/monitoring
 - [Ops helpers](ops.md) — `nyxgpt ops` service management
 - [Homebrew](homebrew.md) — macOS install via the Homebrew tap
+- [systemd](systemd.md) — Linux `--user` services
 - [Performance](performance.md) — tuning guide
 - [Security](security.md) — auth, hardening, secrets
 
