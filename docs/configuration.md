@@ -1236,9 +1236,19 @@ config.ini values.
 - `nyxgpt.default_model`
 - `logging.level`
 - `rag.enable_chat_context`
-- `auth.enabled`, `auth.api_key`, `auth.header`
+- `auth.header`
 
-All other settings require a service restart unless otherwise noted.
+All other settings require a service restart unless otherwise noted. In
+particular `auth.enabled` and `auth.api_key` are **not** hot-reloadable for
+the web tier: the API picks both up on its next request, but the web UI reads
+`[auth]` once at process start, so it keeps sending the old key -- and 401s on
+every proxied call -- until `nyxgpt ops restart web` runs. Both are classified
+restart-required for `web`, so the Configuration Wizard, the Admin Dashboard
+and `nyxgpt secrets setup` all say so when you change them and offer the
+restart (#3806); see
+[Option 3: Web Configuration Wizard](#option-3-web-configuration-wizard-edit-an-existing-install)
+for the full activation classification and how the pending-restart notice
+behaves.
 
 ---
 
