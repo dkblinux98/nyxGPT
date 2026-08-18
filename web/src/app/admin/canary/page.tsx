@@ -14,7 +14,17 @@ type TrackHealth = {
   version: string;
 };
 
-type Metrics = {
+// Vitals attributed to ONE track's Pods (#3829). `attributable` is the field
+// to branch on: when it is false the numbers are zeros meaning "unknown", not
+// "measured zero", and `reason` says why -- rendering them as figures anyway is
+// how this page came to show a stable Pod's 459 requests as the canary's.
+type TrackMetrics = {
+  track: string;
+  attributable: boolean;
+  reason: string;
+  source: string;
+  pods_ready: number;
+  pods_scraped: number;
   total_requests: number;
   error_rate_percent: number;
   p95_latency_ms: number;
@@ -35,7 +45,8 @@ type CanaryStatus = {
   weight_percent: number;
   stable: TrackHealth;
   canary: TrackHealth;
-  metrics: Metrics;
+  metrics: TrackMetrics;
+  stable_metrics: TrackMetrics;
   history: HistoryEntry[];
   available: boolean;
   unavailable_reason: string | null;
@@ -89,6 +100,7 @@ export default function CanaryPage() {
   const [starting, setStarting] = useState(false);
   const [evaluating, setEvaluating] = useState(false);
   const [promoting, setPromoting] = useState(false);
+  const [forcePromote, setForcePromote] = useState(false);
   const [rollingBack, setRollingBack] = useState(false);
   const [monitoring, setMonitoring] = useState<MonitoringStatus | null>(null);
   const [logAggregation, setLogAggregation] = useState<LogAggregationStatus | null>(null);
@@ -195,7 +207,12 @@ export default function CanaryPage() {
 
   const handlePromote = () => {
     if (!confirm('Promote the canary to a higher traffic share?')) return;
-    return runAction('/api/v1/canary/promote', { component }, setPromoting, 'Promoted canary');
+    return runAction(
+      '/api/v1/canary/promote',
+      { component, force: forcePromote },
+      setPromoting,
+      'Promoted canary'
+    );
   };
 
   const handleRollback = () => {
@@ -479,37 +496,79 @@ export default function CanaryPage() {
             ))}
           </div>
 
-          <div
-            style={{
-              padding: '1rem 1.5rem',
-              marginBottom: '1.5rem',
-              backgroundColor: 'var(--background-secondary)',
-              borderRadius: '0.5rem',
-              border: '1px solid var(--border-color)',
-              display: 'flex',
-              gap: '2rem',
-              flexWrap: 'wrap',
-            }}
+          {/*
+            Per-track vitals, read from the Pods carrying `track=canary` /
+            `track=stable` -- not from the API process serving this page, whose
+            counters belong to whichever Pod that is and describe neither track
+            (#3829). The canary row is the exact input "Evaluate metrics" gates on.
+          */}
+          {[status.metrics, status.stable_metrics].map((metrics) => (
+            <div
+              key={metrics.track}
+              style={{
+                padding: '1rem 1.5rem',
+                marginBottom: '0.75rem',
+                backgroundColor: 'var(--background-secondary)',
+                borderRadius: '0.5rem',
+                border: '1px solid var(--border-color)',
+                display: 'flex',
+                gap: '2rem',
+                flexWrap: 'wrap',
+                alignItems: 'center',
+              }}
+            >
+              <div style={{ minWidth: '6rem' }}>
+                <div style={{ fontSize: '0.75rem', color: 'var(--foreground-muted)' }}>Track</div>
+                <div style={{ fontSize: '1.1rem', fontWeight: 600 }}>{metrics.track}</div>
+              </div>
+              {metrics.attributable ? (
+                <>
+                  <div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--foreground-muted)' }}>
+                      Requests
+                    </div>
+                    <div style={{ fontSize: '1.1rem', fontWeight: 600 }}>
+                      {metrics.total_requests}
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--foreground-muted)' }}>
+                      Error rate
+                    </div>
+                    <div style={{ fontSize: '1.1rem', fontWeight: 600 }}>
+                      {metrics.error_rate_percent.toFixed(2)}%
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--foreground-muted)' }}>
+                      p95 latency
+                    </div>
+                    <div style={{ fontSize: '1.1rem', fontWeight: 600 }}>
+                      {metrics.p95_latency_ms.toFixed(0)}ms
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--foreground-muted)' }}>
+                      Pods measured
+                    </div>
+                    <div style={{ fontSize: '1.1rem', fontWeight: 600 }}>
+                      {metrics.pods_scraped}/{metrics.pods_ready}
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div style={{ fontSize: '0.85rem', color: 'var(--foreground-muted)' }}>
+                  No traffic attributable to this track: {metrics.reason}
+                </div>
+              )}
+            </div>
+          ))}
+          <p
+            style={{ fontSize: '0.75rem', color: 'var(--foreground-muted)', marginBottom: '1.5rem' }}
           >
-            <div>
-              <div style={{ fontSize: '0.75rem', color: 'var(--foreground-muted)' }}>Requests</div>
-              <div style={{ fontSize: '1.1rem', fontWeight: 600 }}>
-                {status.metrics.total_requests}
-              </div>
-            </div>
-            <div>
-              <div style={{ fontSize: '0.75rem', color: 'var(--foreground-muted)' }}>Error rate</div>
-              <div style={{ fontSize: '1.1rem', fontWeight: 600 }}>
-                {status.metrics.error_rate_percent.toFixed(2)}%
-              </div>
-            </div>
-            <div>
-              <div style={{ fontSize: '0.75rem', color: 'var(--foreground-muted)' }}>p95 latency</div>
-              <div style={{ fontSize: '1.1rem', fontWeight: 600 }}>
-                {status.metrics.p95_latency_ms.toFixed(0)}ms
-              </div>
-            </div>
-          </div>
+            Measured from each track&apos;s own Pods, excluding health probes and metrics scrapes.
+            The stable track is only measured while a rollout is in progress.
+          </p>
 
           {(() => {
             const pairNotReady = status.stable.state !== 'healthy' || status.canary.state === 'error';
@@ -619,6 +678,30 @@ export default function CanaryPage() {
                 >
                   {promoting ? 'Promoting...' : 'Promote'}
                 </button>
+                {/*
+                  Promotion refuses a canary track that has measurably served zero
+                  requests (#3829). An idle cluster looks identical to a canary
+                  nothing can reach, so the override is offered here -- off by
+                  default, and only shown once traffic is measurable at all.
+                */}
+                {status.metrics.attributable && status.metrics.total_requests === 0 && (
+                  <label
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.375rem',
+                      fontSize: '0.8rem',
+                      color: 'var(--foreground-muted)',
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={forcePromote}
+                      onChange={(e) => setForcePromote(e.target.checked)}
+                    />
+                    Promote despite no canary traffic
+                  </label>
+                )}
                 <button
                   onClick={handleRollback}
                   disabled={rollingBack}

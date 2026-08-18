@@ -1506,7 +1506,9 @@ def promote(
                 "Refusing to promote a canary that has served no traffic: its "
                 f"{canary_traffic.pods_ready} ready Pod(s) have handled 0 requests "
                 "(health probes and metrics scrapes excluded). Send traffic through the "
-                "Service and evaluate first, or pass --force if this cluster is simply idle."
+                "Service and evaluate first, or force the promotion if this cluster is "
+                "simply idle (`nyxgpt canary promote --force`, or the Promote page's "
+                "\"no canary traffic\" override)."
             )
             ops_module.record_canary_action("promote", "refused", message, component=component)
             logger.warning(
