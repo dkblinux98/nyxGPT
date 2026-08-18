@@ -109,14 +109,13 @@ instead (they may be any ref the local Docker daemon holds or can pull —
 the container equivalent of `NYXGPT_ARTIFACT_DIR` for the native tarballs).
 
 Which mode a deployment is in is recorded in
-`~/.nyxGPT/install-mode.terraform.json` — its own file, separate from the
+`~/.nyxGPT/install-mode-terraform.json` — its own file, separate from the
 native services' marker — and reported by `nyxgpt ops status`, `nyxgpt ops
 doctor` and the SRE dashboard's Infrastructure page:
 
 ```
-Install mode:
-  native services:      artifact (published/vendored build -- the repo-less default)
-  terraform deployment: dev (images built from the working tree at /Users/you/nyxGPT)
+Install mode (native api/web): artifact (published/vendored build -- the repo-less default)
+Install mode (terraform): dev (images built from the working tree at /Users/you/nyxGPT)
 ```
 
 A deployment that is *running* with no marker is reported as **not

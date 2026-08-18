@@ -28,14 +28,16 @@ mechanically:
   so `check_matrix` reports the evidence check as skipped rather than failed
   when there is no checkout (see `checkout_root`).
 
-`gaps` is the deliberately honest part. Two targets are **not** repo-less
-today, and the capstone's job is to say so mechanically rather than let a
-matrix imply five green rows: Kubernetes and Compose both bring their core
-`api`/`web` services up from images built out of a checkout, even though
-those images are published to ghcr.io on every release. `acceptance_ready`
-is false while any such gap is open -- that is the machine-readable form of
-"the portability AC is not met yet", and `nyxgpt ops portability --strict`
-exits non-zero on it so CI can hold the line once the gaps close.
+`gaps` is the deliberately honest part. A target that cannot be installed
+without a checkout says so mechanically, rather than letting a matrix imply
+five green rows -- `acceptance_ready` is false while any such gap is open,
+which is the machine-readable form of "the portability AC is not met yet",
+and `nyxgpt ops portability --strict` exits non-zero on it so CI can hold the
+line once the gaps close. Compose is the remaining one: its `api`/`web`
+services still come up from images built out of a checkout, even though those
+images are published to ghcr.io on every release. Kubernetes closed its gap in
+#3834 -- the manifests became package data and the images are built from the
+published `nyxgpt-api`/`nyxgpt-web` tarballs.
 
 The other half of the capstone is `ACCEPTANCE_SEQUENCE`: the exact command
 sequence an owner runs on a clean machine to accept Phase 6, from
@@ -234,7 +236,7 @@ TARGETS: tuple[Target, ...] = (
     Target(
         key="kubernetes",
         name="Kubernetes",
-        artifact="ghcr.io/dkblinux98/nyxgpt-api, ghcr.io/dkblinux98/nyxgpt-web",
+        artifact="PyPI wheel (nyxgpt); nyxgpt-api / nyxgpt-web release tarballs",
         install=("pip install nyxgpt",),
         operate=(
             "nyxgpt ops install --kubernetes --local",
@@ -243,25 +245,27 @@ TARGETS: tuple[Target, ...] = (
             "nyxgpt ops port-forward --target observability",
         ),
         teardown="nyxgpt ops down --kubernetes",
-        status="gap",
+        status="ci-verified",
         evidence=(
             "docs/kubernetes.md",
-            "tests/unit/test_repo_root_allowlist.py",
+            # The checkout-free install itself, executed: a wheel install in a
+            # directory with no repository anywhere, then the real bring-up
+            # (#3834).
+            ".github/workflows/k8s-artifact-smoke.yml",
+            "scripts/k8s-artifact-smoke.sh",
             # The observability tier this mode deploys, executed on a real
             # kind cluster rather than inspected (#3787).
             ".github/workflows/k8s-observability-smoke.yml",
         ),
         notes=(
             "Fully wrapped (no raw kubectl in any user instruction, and the command "
-            "provisions a kind cluster itself), but not yet checkout-free."
-        ),
-        gaps=(
-            "k8s/*.yaml is not package data -- `ops.K8S_DIR` resolves under REPO_ROOT "
-            "(allowlisted in tests/unit/test_repo_root_allowlist.py), so the "
-            "kustomization an install applies only exists in a checkout.",
-            "`nyxgpt ops install --kubernetes --local` builds nyxgpt-api:local and "
-            "nyxgpt-web:local from the checkout (`_build_and_load_k8s_image`) rather "
-            "than loading the published ghcr.io images.",
+            "provisions a kind cluster itself) and checkout-free since #3834: the "
+            "manifests ship as package data (nyxgpt.resources.k8s, synced to "
+            "~/.nyxGPT/k8s) and both images are built from the published "
+            "nyxgpt-api/nyxgpt-web tarballs -- the same artifacts the Homebrew "
+            "formulas install, which a release candidate publishes and a container "
+            "image is not. `--dev` builds the working tree instead, records that it "
+            "did, and is refused where there is no checkout."
         ),
     ),
     Target(
@@ -605,8 +609,8 @@ def portability(args: argparse.Namespace) -> int:
     Exit code is 0 whenever the mechanical invariants hold, so the default
     invocation is a report an operator can run anywhere. `--strict` makes it
     a gate that also requires every row to be checkout-free -- which is what
-    a CI job should assert once the Compose and Kubernetes gaps close, so
-    they cannot silently reopen.
+    a CI job should assert once the remaining Compose gap closes, so no
+    closed gap can silently reopen.
     """
     report = check_matrix()
     if getattr(args, "json", False):

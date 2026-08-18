@@ -1762,7 +1762,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   `_classify_k8s_pod` — the shared vocabulary, not this one call site, is what
   the entry stands for.
 
-- **V-053** · 2026-08-18 — **Container images are published for stable
+- **V-055** · 2026-08-18 — **Container images are published for stable
   releases only, and the `ghcr.io/dkblinux98/nyxgpt-*` packages are
   anonymously pullable.** `release-artifacts.yml`'s `container-images` job
   runs on `release: [released]`, which an rc prerelease does not fire, and
@@ -1779,13 +1779,14 @@ are absent here by design (relocated to the annex; IDs are never reused).
   succeeded with no credentials. 2026-08-18, while implementing #3835.
   (Filed as `V-045` under #3835 and renumbered three times as `v3.0.0` moved
   under it: to `V-050` (#3825 had `V-045`), to `V-051` (#3904's renumber of
-  the Pod-vocabulary entry took `V-050`), and now to `V-053` — the mainline's
+  the Pod-vocabulary entry took `V-050`), to `V-053` (the mainline's
   own canary replica-pool entry holds `V-051` and #3850's keg entry holds
-  `V-052`. IDs are never reused.)
+  `V-052`), and now to `V-055` — #3834's Kubernetes install-mode entry took
+  `V-053` on the mainline. IDs are never reused.)
   Re-verify when: a stable release ships (the tag list grows), or rc image
   publishing is added to `release-publish-pypi.yml`.
 
-- **V-054** · 2026-08-18 — **The Terraform local deployment no longer needs
+- **V-056** · 2026-08-18 — **The Terraform local deployment no longer needs
   a checkout, and its `--dev` mode is now opt-in rather than permanent.**
   The `.tf` sources ship as package data
   (`nyxgpt.resources/terraform/local`, per-file symlinks so a dev checkout's
@@ -1793,21 +1794,22 @@ are absent here by design (relocated to the annex; IDs are never reused).
   `~/.nyxGPT/terraform`; images come from the registry; the api container's
   compose-file mount moved from `${var.repo_path}/docker-compose.yml` to the
   ops-managed copy. The deployment records its own install mode in
-  `~/.nyxGPT/install-mode.terraform.json` — deliberately NOT the native
+  `~/.nyxGPT/install-mode-terraform.json` — deliberately NOT the native
   marker, which decides whether `restart api` drives launchd or `brew
   services`.
   Method: built the wheel, installed it into a venv with no checkout
   (`ops._dev_checkout_root()` → `None`), ran
   `_sync_local_terraform_config()` (materialized five files from package
   data) and `_pull_terraform_published_images()` (pulled the two ghcr
-  images, reporting the **V-053** fallback), then `terraform plan` in that
+  images, reporting the **V-055** fallback), then `terraform plan` in that
   directory: 9 to add, no build blocks. The dev plan
   (`-var=build_from_source=true`) still plans its two `build {}` blocks.
   2026-08-18, while implementing #3835.
   (Filed as `V-046` under #3835 and renumbered as `v3.0.0` moved under it: to
-  `V-051` (#3837 had `V-046`), to `V-052` (behind the entry above), and now to
-  `V-054`, since #3850's keg entry holds `V-052` on the mainline. IDs are
-  never reused.)
+  `V-051` (#3837 had `V-046`), to `V-052` (behind the entry above), to `V-054`
+  (#3850's keg entry holds `V-052` on the mainline), and now to `V-056`,
+  behind the entry above — #3834's `exclude-package-data` entry took `V-054`.
+  IDs are never reused.)
   Re-verify when: `terraform/*.tf` gains a file (it must also be symlinked
   into `nyxgpt.resources/terraform/local` — `test_terraform_stack.py` fails
   otherwise), or the packaged-resource sync changes.
@@ -1857,6 +1859,75 @@ are absent here by design (relocated to the annex; IDs are never reused).
   or `nyxgpt-web` grows a command of its own —
   `test_the_web_keg_exposes_only_its_service_wrapper` pins that it has none
   today.
+
+- **V-053** · 2026-08-18 — **The Kubernetes install mode is now checkout-free,
+  and it records which mode it ran in.** `nyxgpt ops install --kubernetes
+  --local` brings the whole stack up on a machine with no repository: the
+  manifests ship as package data (`nyxgpt.resources.k8s`, synced to
+  `~/.nyxGPT/k8s`) and both images are built from the published
+  `nyxgpt-api`/`nyxgpt-web` release tarballs — the *source* tarballs, not the
+  ghcr.io images, because a release candidate publishes only the tarballs and a
+  candidate is what acceptance testing installs. `--dev` builds the working
+  tree, is refused up front where there is no checkout, and re-rolls the app
+  tier on a mode switch (both modes produce the same `:local` tags, so
+  `kubectl apply` alone would leave the previous mode's Pods running). The mode
+  is recorded per substrate (`~/.nyxGPT/install-mode-kubernetes.json`), so a
+  host can run a native dev install and a Kubernetes artifact deployment at
+  once without either being reported as the other. This closes the Kubernetes
+  row of `docs/portability-matrix.md`; Compose is the one remaining gap.
+  Method: `scripts/k8s-artifact-smoke.sh` executed on an ubuntu-latest runner
+  (4 vCPU / 16Gi), 2026-08-18 17:05–17:11 UTC, exit 0. It builds the wheel,
+  installs it into a venv, and runs every product command from a directory
+  with no repository in it — the installed package's `ops.REPO_ROOT` resolved
+  to `/tmp/nyxgpt-artifact-smoke/venv/lib/python3.12`, asserted different from
+  the checkout. Fault-injection half: `Dockerfile`, `web/Dockerfile` and
+  `k8s/kustomization.yaml` asserted absent under that root *and* `docker build`
+  of the pre-fix context asserted to fail, so a green run cannot come from a
+  checkout being in reach. Then the real bring-up (10 Pods Running, both
+  Deployments rolled out), a real chat answered through
+  web → api → in-cluster Ollama, `ops status` reporting `Install mode:
+  artifact (images built from the published nyxgpt-api/nyxgpt-web artifacts)`
+  with no `[dev]` stamp on `native api: none`, and `ops down --kubernetes`
+  clearing the record. While implementing #3834.
+  Standing guard: `.github/workflows/k8s-artifact-smoke.yml`, path-filtered on
+  `k8s/**`, `src/nyxgpt/ops.py`, `src/nyxgpt/install_mode.py`,
+  `src/nyxgpt/release_tarball.py`, both Dockerfiles and `pyproject.toml`.
+  Re-verify when: the api image's Dockerfile starts `COPY`ing a path the
+  `nyxgpt-api` tarball does not vendor (`_stage_k8s_api_build_files` stages
+  exactly the two exceptions it has today), or `release_tarball`'s vendored
+  file set changes.
+  (Filed as `V-046` under #3834, then renumbered to `V-052` and finally
+  `V-053` across two merges of `v3.0.0`: #3820's `script:`-guard entry
+  allocated `V-046` on a concurrently-open branch and landed first, and
+  #3850's keg-operability entry then landed on `V-052`. `V-053` is what
+  `scripts/agents/lib/ledger_ids.py next V --base origin/v3.0.0` allocates
+  against the current release branch. IDs are never reused.)
+
+- **V-054** · 2026-08-18 — **An `exclude-package-data` entry for a file nested
+  under an importable-looking resources subdirectory is only half an
+  exclusion, and the missing half is silent.** `[tool.setuptools.packages.find]`
+  in pyproject enables namespace packages, so `src/nyxgpt/resources/k8s/
+  observability/` is discovered as `nyxgpt.resources.k8s.observability` *and*
+  swept up by `nyxgpt.resources`'s `**/*` include. The file is collected twice
+  and setuptools' `build_py.exclude_data_files` applies a pattern only to the
+  package it is keyed under (`spec.get(package)`), so each copy needs its own
+  key — with either one alone the file still ships. This is why
+  `k8s/observability/secret.yaml` (Grafana admin password, Slack webhook,
+  GlitchTip DSN) could reach a wheel built from a checkout that had ever run
+  `nyxgpt ops observability --kubernetes`, while `k8s/secret.yaml` one level
+  up could not. `.terraform/` is unaffected: not a legal package name, so it
+  is never split off.
+  Method: wheels built four ways on the CI runner while implementing #3834
+  (2026-08-18) with both secrets planted in the tree — parent key only:
+  leaked; per-package key only: leaked; both: clean; neither: leaked. Standing
+  guard: `tests/unit/test_resources_packaging.py` now plants both generated
+  secrets before the build it already ran, which is what turned a vacuous
+  assertion (a fresh checkout has no generated secret to leak) into one that
+  fails on the real defect.
+  Re-verify when: a new generated, gitignored file appears more than one level
+  below a symlinked `resources/` subdirectory, or setuptools changes how
+  namespace packages claim data files.
+
 
 ## Parked
 

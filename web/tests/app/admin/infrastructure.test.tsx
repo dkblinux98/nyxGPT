@@ -539,6 +539,129 @@ describe('InfrastructurePage', () => {
     });
   });
 
+  // --- The Kubernetes card's OWN install mode (#3834) ---
+  //
+  // Reported separately from the native marker on purpose: a host can run a
+  // native dev install and a Kubernetes artifact deployment at the same time,
+  // and reporting one for the other is the defect this section exists to
+  // prevent. Each of the three states below is a different thing an operator
+  // must be able to act on, so each is pinned.
+  const withK8sInstallMode = (install_mode: unknown) => ({
+    ...mockStatusKubernetesServing,
+    kubernetes: { ...mockStatusKubernetesServing.kubernetes, install_mode },
+  });
+
+  it('reports the Kubernetes deployment as unrecorded when nothing recorded a mode (#3834)', async () => {
+    // `recorded: false` -- a cluster deployed from another machine, or before
+    // nyxGPT recorded the mode. It must NOT read as the artifact default:
+    // that default would be a guess about someone else's deployment.
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json(
+          withK8sInstallMode({
+            mode: 'artifact',
+            checkout: null,
+            label: 'unrecorded (no install-mode marker for this cluster)',
+            recorded: false,
+          })
+        )
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    expect(await screen.findByText('unrecorded')).toBeInTheDocument();
+    expect(screen.getByText(/no marker for this deployment/)).toBeInTheDocument();
+  });
+
+  it('degrades the Kubernetes install mode to unrecorded against an older api (#3834)', async () => {
+    // The field is optional end-to-end: an api process from before #3834 (or
+    // mid-upgrade, when web restarts first) sends no `install_mode` at all.
+    // Absent is the same claim as unrecorded -- never the artifact default.
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json(withK8sInstallMode(undefined))
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    expect(await screen.findByText('unrecorded')).toBeInTheDocument();
+    expect(
+      screen.queryByText(/images built from the published/)
+    ).not.toBeInTheDocument();
+  });
+
+  it('names the checkout a dev-mode Kubernetes deployment was built from (#3834)', async () => {
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json(
+          withK8sInstallMode({
+            mode: 'dev',
+            checkout: '/Users/owner/src/nyxGPT',
+            label: 'dev (images built from the working tree at /Users/owner/src/nyxGPT)',
+            recorded: true,
+          })
+        )
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    expect(await screen.findByText('dev')).toBeInTheDocument();
+    expect(screen.getByText('/Users/owner/src/nyxGPT')).toBeInTheDocument();
+    // The images are frozen at install time -- the operator has to be told
+    // which command puts the cluster back on the artifact path.
+    expect(
+      screen.getByText(/as it was at install time, not from published artifacts/)
+    ).toBeInTheDocument();
+  });
+
+  it('still reads as dev when the Kubernetes marker recorded no checkout (#3834)', async () => {
+    // `checkout` is nullable in the marker exactly as it is for native, and
+    // losing the path must not silently downgrade the warning to artifact
+    // wording -- the Pods still run something that was never published.
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json(
+          withK8sInstallMode({
+            mode: 'dev',
+            checkout: null,
+            label: 'dev (images built from the working tree at unknown checkout)',
+            recorded: true,
+          })
+        )
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    expect(await screen.findByText('dev')).toBeInTheDocument();
+    expect(screen.getByText('an unrecorded checkout')).toBeInTheDocument();
+  });
+
+  it('reports a Kubernetes deployment built from published artifacts (#3834)', async () => {
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json(
+          withK8sInstallMode({
+            mode: 'artifact',
+            checkout: null,
+            label:
+              'artifact (images built from the published nyxgpt-api/nyxgpt-web artifacts)',
+            recorded: true,
+          })
+        )
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    expect(await screen.findByText('artifact')).toBeInTheDocument();
+    expect(screen.getByText(/images built from the published/)).toBeInTheDocument();
+    expect(screen.queryByText('unrecorded')).not.toBeInTheDocument();
+  });
+
   // --- The Terraform card's OWN install mode (#3835) -------------------
   // A Terraform deployment records its own marker, so the card must report
   // that deployment's build and never the native one above it. The state

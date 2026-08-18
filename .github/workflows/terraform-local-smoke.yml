@@ -101,7 +101,7 @@ jobs:
         run: |
           set -euo pipefail
           nyxgpt ops status | tee /tmp/status.txt
-          grep -q "terraform deployment: dev" /tmp/status.txt
+          grep -q "Install mode (terraform): dev" /tmp/status.txt
           grep -q "terraform api: running  \[dev\]" /tmp/status.txt
 
       - name: Verify core + observability are actually serving
@@ -266,7 +266,7 @@ jobs:
         run: |
           set -euo pipefail
           ./venv/bin/nyxgpt ops status | tee /tmp/status.txt
-          grep -q "terraform deployment: artifact" /tmp/status.txt
+          grep -q "Install mode (terraform): artifact" /tmp/status.txt
           grep -q "nyxgpt-api:artifact-under-test" /tmp/status.txt
           grep -q "terraform api: running  \[artifact\]" /tmp/status.txt
 
@@ -280,14 +280,14 @@ jobs:
         working-directory: /tmp/clean
         run: |
           set -euo pipefail
-          mv ~/.nyxGPT/install-mode.terraform.json /tmp/install-mode.terraform.json
+          mv ~/.nyxGPT/install-mode-terraform.json /tmp/install-mode-terraform.json
           ./venv/bin/nyxgpt ops status | tee /tmp/status-unrecorded.txt
-          grep -q "terraform deployment: not recorded" /tmp/status-unrecorded.txt
+          grep -q "Install mode (terraform): not recorded" /tmp/status-unrecorded.txt
           grep -q "terraform api: running  \[unrecorded\]" /tmp/status-unrecorded.txt
           # Not `! grep ...`: bash's `set -e` explicitly does not fire on a
           # command whose status is inverted by `!`, so that spelling would
           # assert nothing at all.
-          if grep -q "terraform deployment: artifact" /tmp/status-unrecorded.txt; then
+          if grep -q "Install mode (terraform): artifact" /tmp/status-unrecorded.txt; then
             echo "::error::an unrecorded live deployment was reported as artifact"
             exit 1
           fi
@@ -295,8 +295,8 @@ jobs:
           # build is not a fault, and the stack is serving.
           ./venv/bin/nyxgpt ops doctor | tee /tmp/doctor-unrecorded.txt || true
           grep -q "nothing recorded what these containers were built from" /tmp/doctor-unrecorded.txt
-          mv /tmp/install-mode.terraform.json ~/.nyxGPT/install-mode.terraform.json
-          ./venv/bin/nyxgpt ops status | grep -q "terraform deployment: artifact"
+          mv /tmp/install-mode-terraform.json ~/.nyxGPT/install-mode-terraform.json
+          ./venv/bin/nyxgpt ops status | grep -q "Install mode (terraform): artifact"
 
       - name: Verify core + observability are actually serving
         run: |

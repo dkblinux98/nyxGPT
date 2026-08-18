@@ -172,8 +172,37 @@ where = ["src"]
 # and .terraform/ cache a dev checkout accumulates in its own terraform/
 # directory are not reachable through the packaged tree at all -- the same
 # allow-list reasoning resources/docs/ uses above.
+#
+# The two k8s secrets are the third case of the same defence (#3834), and
+# there are two of them because the Kubernetes path generates two:
+# `_ensure_k8s_secret` writes k8s/secret.yaml (the deployment's real
+# `[auth] api_key`) and `_ensure_k8s_observability_secret` writes
+# k8s/observability/secret.yaml (the Grafana admin password, the Slack
+# webhook and the GlitchTip DSN -- see `_k8s_observability_secret_values`).
+# Both are gitignored and both are now written under ~/.nyxGPT/k8s -- but a
+# checkout that ran a pre-#3834 `nyxgpt ops install --kubernetes` or
+# `nyxgpt ops observability --kubernetes` still has one sitting in the repo's
+# k8s/ directory that the resources/k8s symlink resolves through. Excluding
+# one and not the other would leave the class half-swept.
+#
+# The observability one needs TWO entries, and the reason is a setuptools
+# trap worth naming: `[tool.setuptools.packages.find]` in pyproject enables
+# namespace packages, so `k8s/observability/` -- an importable-looking name --
+# is discovered as the package `nyxgpt.resources.k8s.observability` as well
+# as being swept up by `nyxgpt.resources`'s own `**/*`. The file is therefore
+# collected TWICE, and `exclude_data_files` only applies a pattern to the
+# package it is keyed under (`spec.get(package)` in setuptools' build_py), so
+# either copy alone still reaches the wheel. Both were verified by building
+# one: with only the `nyxgpt.resources` entry below, and with only the
+# per-package key after it, the built wheel still contained the secret.
+# `.terraform/` needs no second key because it is not a legal package name
+# and so is never split off. tests/unit/test_resources_packaging.py plants
+# both secrets before the build, so a wheel that carries one fails the suite
+# rather than shipping.
 "nyxgpt.resources" = [
   "docker/config.docker.ini",
+  "k8s/secret.yaml",
+  "k8s/observability/secret.yaml",
   "terraform/aws/.terraform/*",
   "terraform/aws/.terraform/**/*",
   "terraform/aws/.terraform.lock.hcl",
@@ -182,6 +211,8 @@ where = ["src"]
   "terraform/aws/*.tfvars",
   "terraform/aws/tfplan",
 ]
+# Keyed by the namespace package that actually owns the file -- see above.
+"nyxgpt.resources.k8s.observability" = ["secret.yaml"]
 
 [tool.mypy]
 python_version = "3.11"

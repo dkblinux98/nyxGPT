@@ -192,10 +192,17 @@ jobs:
       - name: The shipped sizing schedules every Pod
         run: |
           set -euo pipefail
-          cp k8s/secret.example.yaml k8s/secret.yaml
-          cp k8s/observability/secret.example.yaml k8s/observability/secret.yaml
-          kubectl apply -k k8s/
-          kubectl apply -k k8s/observability/
+          # #3834: the manifests an install applies are package data synced to
+          # ~/.nyxGPT/k8s, and the preflight below reads them from there --
+          # not from the checkout. Sync them the way the install's first step
+          # does, so the sizing measured here is the sizing the product ships
+          # AND the one the preflight is about to render.
+          K8S_DIR=$(python -c 'from nyxgpt import ops; ops._sync_packaged_resources(); print(ops.K8S_DIR)')
+          echo "synced manifests: $K8S_DIR"
+          cp "$K8S_DIR/secret.example.yaml" "$K8S_DIR/secret.yaml"
+          cp "$K8S_DIR/observability/secret.example.yaml" "$K8S_DIR/observability/secret.yaml"
+          kubectl apply -k "$K8S_DIR/"
+          kubectl apply -k "$K8S_DIR/observability/"
           sleep 45
           kubectl -n nyxgpt get pods -o wide
           unscheduled=$(./scripts/k8s-unscheduled-pods.sh nyxgpt)
@@ -262,6 +269,9 @@ jobs:
       - name: The preflight passes the shipped sizing
         run: |
           set -euo pipefail
+          # No K8S_DIR override here, deliberately: this call reads the synced
+          # manifests and the bootstrapped app-tier Secret the step above put
+          # under ~/.nyxGPT/k8s, which is exactly what an install hands it.
           python - <<'PY'
           import sys
           from nyxgpt import ops

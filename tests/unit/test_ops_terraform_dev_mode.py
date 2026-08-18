@@ -59,7 +59,7 @@ def checkout(tmp_path):
 
 
 def test_terraform_marker_defaults_to_artifact_when_nothing_recorded():
-    state = install_mode.read_terraform_install_mode()
+    state = install_mode.read_install_mode(substrate=install_mode.SUBSTRATE_TERRAFORM)
     assert state.mode == install_mode.INSTALL_MODE_ARTIFACT
     assert state.is_dev is False
     assert state.is_terraform is True
@@ -76,7 +76,7 @@ def test_nothing_recorded_under_a_running_stack_is_reported_as_unknown():
     that path had no other mode. `deployed=True` must therefore report the
     build as unrecorded rather than as artifact.
     """
-    state = install_mode.read_terraform_install_mode()
+    state = install_mode.read_install_mode(substrate=install_mode.SUBSTRATE_TERRAFORM)
 
     label = state.label(deployed=True)
     assert "not recorded" in label
@@ -89,8 +89,10 @@ def test_nothing_recorded_under_a_running_stack_is_reported_as_unknown():
 
 def test_a_recorded_artifact_deployment_is_still_reported_as_artifact():
     """`deployed` only reclassifies the *unrecorded* case."""
-    install_mode.write_terraform_install_mode(install_mode.INSTALL_MODE_ARTIFACT, None, {})
-    state = install_mode.read_terraform_install_mode()
+    install_mode.write_install_mode(
+        install_mode.INSTALL_MODE_ARTIFACT, None, substrate=install_mode.SUBSTRATE_TERRAFORM
+    )
+    state = install_mode.read_install_mode(substrate=install_mode.SUBSTRATE_TERRAFORM)
 
     assert state.recorded is True
     assert state.label(deployed=True).startswith("artifact")
@@ -98,8 +100,10 @@ def test_a_recorded_artifact_deployment_is_still_reported_as_artifact():
 
 
 def test_a_dev_deployment_is_reported_as_dev_whether_or_not_it_is_running():
-    install_mode.write_terraform_install_mode(install_mode.INSTALL_MODE_DEV, "/src/nyxGPT", {})
-    state = install_mode.read_terraform_install_mode()
+    install_mode.write_install_mode(
+        install_mode.INSTALL_MODE_DEV, "/src/nyxGPT", substrate=install_mode.SUBSTRATE_TERRAFORM
+    )
+    state = install_mode.read_install_mode(substrate=install_mode.SUBSTRATE_TERRAFORM)
 
     assert state.short_label(deployed=True) == install_mode.INSTALL_MODE_DEV
     assert "/src/nyxGPT" in state.label(deployed=True)
@@ -107,10 +111,14 @@ def test_a_dev_deployment_is_reported_as_dev_whether_or_not_it_is_running():
 
 def test_an_unreadable_marker_is_not_read_as_a_recorded_mode():
     """A corrupt marker recorded nothing legible, so it recorded nothing."""
-    install_mode.TERRAFORM_INSTALL_MODE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    install_mode.TERRAFORM_INSTALL_MODE_FILE.write_text("{not json", encoding="utf-8")
+    install_mode.install_mode_file(install_mode.SUBSTRATE_TERRAFORM).parent.mkdir(
+        parents=True, exist_ok=True
+    )
+    install_mode.install_mode_file(install_mode.SUBSTRATE_TERRAFORM).write_text(
+        "{not json", encoding="utf-8"
+    )
 
-    state = install_mode.read_terraform_install_mode()
+    state = install_mode.read_install_mode(substrate=install_mode.SUBSTRATE_TERRAFORM)
 
     assert state.recorded is False
     assert "not recorded" in state.label(deployed=True)
@@ -127,12 +135,13 @@ def test_the_native_default_is_unaffected_by_the_terraform_rule():
 
 
 def test_terraform_marker_records_mode_and_the_images_it_runs(tmp_path):
-    install_mode.write_terraform_install_mode(
+    install_mode.write_install_mode(
         install_mode.INSTALL_MODE_ARTIFACT,
         None,
-        {"api": "ghcr.io/dkblinux98/nyxgpt-api:2.1.0"},
+        substrate=install_mode.SUBSTRATE_TERRAFORM,
+        images={"api": "ghcr.io/dkblinux98/nyxgpt-api:2.1.0"},
     )
-    state = install_mode.read_terraform_install_mode()
+    state = install_mode.read_install_mode(substrate=install_mode.SUBSTRATE_TERRAFORM)
     assert state.images == {"api": "ghcr.io/dkblinux98/nyxgpt-api:2.1.0"}
     # The label names the image, so an operator reading `ops status` can see
     # which build is serving rather than inferring it.
@@ -147,14 +156,16 @@ def test_terraform_install_never_touches_the_native_marker(tmp_path):
     ops._record_terraform_install_mode(False, {"api": "img", "web": "img"})
 
     assert install_mode.read_install_mode().is_dev is True
-    assert install_mode.read_terraform_install_mode().is_dev is False
+    assert (
+        install_mode.read_install_mode(substrate=install_mode.SUBSTRATE_TERRAFORM).is_dev is False
+    )
 
 
 def test_terraform_dev_marker_records_the_checkout(monkeypatch, checkout):
     monkeypatch.setattr(ops, "REPO_ROOT", checkout)
     results = ops._record_terraform_install_mode(True, {"api": "nyxgpt-api:local"})
     assert all(r.ok for r in results)
-    state = install_mode.read_terraform_install_mode()
+    state = install_mode.read_install_mode(substrate=install_mode.SUBSTRATE_TERRAFORM)
     assert state.is_dev is True
     assert state.checkout == str(checkout)
 
@@ -404,7 +415,7 @@ def test_artifact_install_pulls_published_images_and_never_builds(monkeypatch):
     assert all(r.ok for r in results)
     assert built == []
     assert applied == [({"api": "ghcr.io/x/nyxgpt-api:1", "web": "ghcr.io/x/nyxgpt-web:1"}, False)]
-    recorded = install_mode.read_terraform_install_mode()
+    recorded = install_mode.read_install_mode(substrate=install_mode.SUBSTRATE_TERRAFORM)
     assert recorded.mode == install_mode.INSTALL_MODE_ARTIFACT
     assert recorded.images["api"] == "ghcr.io/x/nyxgpt-api:1"
 
@@ -435,7 +446,7 @@ def test_dev_install_builds_from_the_working_tree(monkeypatch, checkout):
     assert all(r.ok for r in results)
     assert built == ["built"]
     assert applied == [({"api": ops.TF_API_IMAGE, "web": ops.TF_WEB_IMAGE}, True)]
-    assert install_mode.read_terraform_install_mode().is_dev is True
+    assert install_mode.read_install_mode(substrate=install_mode.SUBSTRATE_TERRAFORM).is_dev is True
 
 
 def test_dev_is_refused_without_a_checkout(monkeypatch, tmp_path, capsys):
@@ -471,8 +482,11 @@ def test_default_install_is_the_artifact_path(monkeypatch):
 
 
 def test_down_destroys_with_the_recorded_images_and_never_builds(monkeypatch):
-    install_mode.write_terraform_install_mode(
-        install_mode.INSTALL_MODE_DEV, "/gone/checkout", {"api": "nyxgpt-api:local"}
+    install_mode.write_install_mode(
+        install_mode.INSTALL_MODE_DEV,
+        "/gone/checkout",
+        substrate=install_mode.SUBSTRATE_TERRAFORM,
+        images={"api": "nyxgpt-api:local"},
     )
     monkeypatch.setattr(ops, "_which", lambda tool: f"/usr/bin/{tool}")
     monkeypatch.setattr(ops, "_sync_local_terraform_config", lambda: [ops.OpsResult(True, "sync")])
@@ -505,8 +519,11 @@ def test_status_reports_each_deployment_s_own_mode(monkeypatch, capsys, tmp_path
     """The defect: a Terraform deployment labelled with the native install
     mode. Both are stated, each named, and neither speaks for the other."""
     install_mode.write_install_mode(install_mode.INSTALL_MODE_DEV, tmp_path / "co")
-    install_mode.write_terraform_install_mode(
-        install_mode.INSTALL_MODE_ARTIFACT, None, {"api": "ghcr.io/x/nyxgpt-api:1"}
+    install_mode.write_install_mode(
+        install_mode.INSTALL_MODE_ARTIFACT,
+        None,
+        substrate=install_mode.SUBSTRATE_TERRAFORM,
+        images={"api": "ghcr.io/x/nyxgpt-api:1"},
     )
     monkeypatch.setattr(
         ops,
@@ -527,10 +544,10 @@ def test_status_reports_each_deployment_s_own_mode(monkeypatch, capsys, tmp_path
     ops.status(Args())
     out = capsys.readouterr().out
 
-    assert "native services:" in out
-    assert "terraform deployment:" in out
+    assert "Install mode (native api/web):" in out
+    assert "Install mode (terraform):" in out
     # The terraform deployment is artifact-mode; the native services are dev.
-    tf_line = next(ln for ln in out.splitlines() if "terraform deployment:" in ln)
+    tf_line = next(ln for ln in out.splitlines() if "Install mode (terraform):" in ln)
     assert "artifact" in tf_line
     assert "ghcr.io/x/nyxgpt-api:1" in tf_line
     assert "terraform api: running  [artifact]" in out
@@ -538,8 +555,11 @@ def test_status_reports_each_deployment_s_own_mode(monkeypatch, capsys, tmp_path
 
 def test_infra_status_reports_the_terraform_deployment_s_install_mode(monkeypatch, tmp_path):
     install_mode.write_install_mode(install_mode.INSTALL_MODE_DEV, tmp_path / "co")
-    install_mode.write_terraform_install_mode(
-        install_mode.INSTALL_MODE_ARTIFACT, None, {"api": "ghcr.io/x/nyxgpt-api:1"}
+    install_mode.write_install_mode(
+        install_mode.INSTALL_MODE_ARTIFACT,
+        None,
+        substrate=install_mode.SUBSTRATE_TERRAFORM,
+        images={"api": "ghcr.io/x/nyxgpt-api:1"},
     )
     monkeypatch.setattr(
         ops,
@@ -586,7 +606,7 @@ def test_status_never_calls_an_unrecorded_running_deployment_artifact(monkeypatc
     ops.status(Args())
     out = capsys.readouterr().out
 
-    tf_line = next(ln for ln in out.splitlines() if "terraform deployment:" in ln)
+    tf_line = next(ln for ln in out.splitlines() if "Install mode (terraform):" in ln)
     assert "not recorded" in tf_line
     assert "artifact (" not in tf_line
     # The per-component tags agree with the line above them.
@@ -646,8 +666,11 @@ def test_doctor_says_nothing_about_an_undeployed_machine_with_no_marker(monkeypa
 
 
 def test_doctor_reports_a_dev_terraform_deployment_whose_checkout_is_gone(monkeypatch, capsys):
-    install_mode.write_terraform_install_mode(
-        install_mode.INSTALL_MODE_DEV, "/gone/checkout", {"api": "nyxgpt-api:local"}
+    install_mode.write_install_mode(
+        install_mode.INSTALL_MODE_DEV,
+        "/gone/checkout",
+        substrate=install_mode.SUBSTRATE_TERRAFORM,
+        images={"api": "nyxgpt-api:local"},
     )
     monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "running"})
 

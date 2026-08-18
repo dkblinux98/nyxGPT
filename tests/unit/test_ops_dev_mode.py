@@ -443,8 +443,9 @@ def test_status_labels_dev_mode_and_its_checkout(monkeypatch, capsys, checkout):
     monkeypatch.setattr(ops, "terraform_stack_state", lambda: {})
     assert ops.status(Args()) == 0
     out = capsys.readouterr().out
-    # One line per deployment since #3835 -- the native services' own.
-    assert f"native services:      dev (editable checkout at {checkout})" in out
+    # Attributed to the native api/web (#3834), with a sibling line per
+    # Terraform/Kubernetes deployment (#3835) -- never one unqualified line.
+    assert f"Install mode (native api/web): dev (editable checkout at {checkout})" in out
     assert "native  api: started  [dev]" in out
     assert "native  web: started  [dev]" in out
 
@@ -466,7 +467,7 @@ def test_status_labels_artifact_mode_by_default(monkeypatch, capsys):
     monkeypatch.setattr(ops, "terraform_stack_state", lambda: {})
     assert ops.status(Args()) == 0
     out = capsys.readouterr().out
-    assert "native services:      artifact" in out
+    assert "Install mode (native api/web): artifact" in out
     assert "native  api: started  [artifact]" in out
 
 
@@ -495,9 +496,14 @@ def _render_status(monkeypatch, capsys, *, dev_checkout=None):
 
 
 def _smoke_status_greps():
-    """Every `nyxgpt ops status | grep -q "..."` pattern in the systemd smoke."""
+    """Every install-mode pattern the systemd smoke greps `ops status` for.
+
+    Matched on the pattern rather than on the pipeline, because the script
+    reads the output both ways: piped straight into `grep -q`, and captured
+    into `dev_status_out` first so a failure can print it.
+    """
     script = Path(__file__).resolve().parents[2] / "scripts" / "systemd-native-smoke.sh"
-    return re.findall(r'nyxgpt ops status \| grep -q "([^"]+)"', script.read_text(encoding="utf-8"))
+    return re.findall(r'grep -q "(Install mode[^"]+)"', script.read_text(encoding="utf-8"))
 
 
 def _greps(pattern, text):
@@ -516,12 +522,13 @@ def test_the_systemd_smoke_scripts_status_greps_match_what_status_prints(
     """The smoke script's assertions are a contract on `ops status`'s text.
 
     `scripts/systemd-native-smoke.sh` is the executed evidence for dev mode,
-    and it reads the mode out of `ops status` with `grep`. #3835 changed that
-    output from one `Install mode: <label>` line to a line per deployment and
-    the script was not updated, so `linux-native-dev-smoke` failed on a
-    correctly-behaving stack. This pins the two together in a unit test, so
-    the next format change fails here in seconds rather than in a Linux smoke
-    job -- and fails whichever side moves.
+    and it reads the mode out of `ops status` with `grep`. Two issues in a row
+    changed that text -- #3834 attributed the line to the native api/web,
+    #3835 added a sibling line per Terraform deployment -- and each time the
+    script's greps could stop matching a correctly-behaving stack, which is
+    how `linux-native-dev-smoke` failed on this branch. This pins the two
+    together in a unit test, so the next format change fails here in seconds
+    rather than in a Linux smoke job -- and fails whichever side moves.
     """
     dev_out = _render_status(monkeypatch, capsys, dev_checkout=checkout)
     artifact_out = _render_status(monkeypatch, capsys)
@@ -557,7 +564,7 @@ def test_doctor_flags_a_dev_install_whose_checkout_is_gone(monkeypatch, capsys, 
     rc = ops.doctor(Args())
     out = capsys.readouterr().out
     assert rc == 2
-    assert "Install mode (native services): dev" in out
+    assert "Install mode (native api/web): dev" in out
     assert "its checkout is missing" in out
 
 
