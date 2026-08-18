@@ -1,20 +1,25 @@
 name: Retro Dashboard Stamp Smoke
 
-# Which question does this job answer? (#3775 executed verification)
+# Which questions do these jobs answer? (#3775 executed verification)
 #
-#   "Does a built retro.html actually show a reader when it was built and how
-#    old each dump behind it is — and does the staleness callout fire only
-#    when the data really is behind the page?"
+#   stamps            "Does a built retro.html actually show a reader when it
+#                      was built and how old each dump behind it is — and does
+#                      the staleness callout fire only when the data really is
+#                      behind the page?"
+#   missing-sources   "When a dump never landed, does the page SAY the section
+#                      is unavailable and which dump owes it, and does the
+#                      build refuse to report success?" (#3808 — the churn dump
+#                      had failed on every run it ever had, the section was
+#                      dropped, and the dashboard looked complete.)
 #
-# The stamps are rendered by the template's JavaScript at page load, so unit
-# tests can prove the numbers reached the HTML but not that anyone sees them:
-# one template typo blanks the dashboard silently. This job builds the real
-# dashboard from a data directory whose stamps are injected (one dump fresh,
-# one 30 days behind, the issue corpus unstamped), runs the page script in
-# Node, and asserts on the rendered strings. Injecting both halves is the
-# point — a lab where every dump is fresh would pass with the callout deleted.
+# Both are rendered by the template's JavaScript at page load, so unit tests
+# can prove the data reached the HTML but not that anyone sees it: one template
+# typo blanks the dashboard silently. These jobs build the real dashboard from
+# an injected data directory, run the page script in Node, and assert on the
+# rendered strings. Injecting both halves is the point — a lab where every dump
+# is fresh and present would pass with the callouts deleted.
 #
-# What it does NOT cover: how the stamps look (layout, colour, dark mode) —
+# What they do NOT cover: how any of it looks (layout, colour, dark mode) —
 # that is the owner's eye on the published artifact.
 
 on:
@@ -24,6 +29,7 @@ on:
       - "scripts/retrospective/retro_template.html"
       - "scripts/retrospective/dump_review_rounds.py"
       - "tests/test_retro_dashboard_stamps.sh"
+      - "tests/test_retro_missing_sources.sh"
       - "tests/retro_render_check.mjs"
       - ".github/workflows/retro-dashboard-stamp-smoke.yml"
   pull_request:
@@ -32,6 +38,7 @@ on:
       - "scripts/retrospective/retro_template.html"
       - "scripts/retrospective/dump_review_rounds.py"
       - "tests/test_retro_dashboard_stamps.sh"
+      - "tests/test_retro_missing_sources.sh"
       - "tests/retro_render_check.mjs"
       - ".github/workflows/retro-dashboard-stamp-smoke.yml"
   workflow_dispatch:
@@ -58,3 +65,25 @@ jobs:
 
       - name: Build the dashboard and read its stamps back out of the rendered page
         run: bash tests/test_retro_dashboard_stamps.sh
+
+  missing-sources:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # Removes the spend and churn dumps, then restores them: the notices must
+      # appear in the first build and be gone in the second, and the build's
+      # exit status must follow (#3808).
+      - name: Prove an absent dump is visible, and that a present one is not flagged
+        run: bash tests/test_retro_missing_sources.sh
