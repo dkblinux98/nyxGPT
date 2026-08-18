@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import LoadingSpinner from '../../../components/LoadingSpinner';
 import ErrorMessage from '../../../components/ErrorMessage';
+import { apiErrorText, errorMessage } from '../../../lib/apiError';
 
 type RAGResult = {
   doc_id: string;
@@ -122,7 +123,7 @@ export default function PlaygroundPage() {
         const data = await res.json();
         setCollections(data.collections || []);
       } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
+        const msg = errorMessage(e);
         setError(msg);
       } finally {
         setLoadingCollections(false);
@@ -177,7 +178,7 @@ export default function PlaygroundPage() {
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({ error: 'Unknown error' }));
-        throw new Error(errorData.detail || errorData.error || `HTTP ${res.status}`);
+        throw new Error(apiErrorText(errorData, `HTTP ${res.status}`));
       }
 
       const data = await res.json();
@@ -195,7 +196,7 @@ export default function PlaygroundPage() {
       setCurrentResult(result);
       setQueryHistory((prev) => [...prev, result]);
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = errorMessage(e);
       setError(`Query failed: ${msg}`);
     } finally {
       setExecuting(false);

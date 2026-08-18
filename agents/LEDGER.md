@@ -1519,6 +1519,49 @@ are absent here by design (relocated to the annex; IDs are never reused).
   on the full default install and re-injects the api-only survey each run.
   Re-verify when: a `k8s/**` manifest changes a Pod's `app`/`tier` labels —
   the classification is keyed on exactly those.
+- **V-046** · 2026-08-18 — **Every API error this app returns is
+  object-shaped, so a UI that interpolates `data.error` renders
+  `[object Object]`.** `http_exception_handler` (`src/nyxgpt/app.py`) wraps
+  *every* `HTTPException` as `{"error": {"code", "message", "details",
+  "request_id"}}` — `data.error` is therefore always truthy and never a
+  string, and `data.detail` reaches the browser only for refusals raised
+  before that handler (where it may still be a list or a dict). The
+  `data.error || data.detail || \`HTTP ${status}\`` idiom is a defect
+  wherever it appears, not a style choice: it hid a Pod scheduling failure
+  from the operator during acceptance (#3831) and a 409 "a run is already in
+  flight" before that (cloud-smoke). One unwrapping lives in
+  `web/src/lib/apiError.ts` (`apiErrorText` / `errorMessage`); pages import
+  it rather than re-deriving it, and `docs/adding-api-endpoints.md` states
+  the rule for new pages.
+  Method: read the handler and every `new Error(` call site in `web/src`
+  (2026-08-18, #3831); the five near-duplicate local helpers found there were
+  replaced. `web/tests/lib/apiError.test.ts` pins each payload shape and
+  `web/tests/app/admin/canary.test.tsx` asserts the rendered card never says
+  `[object Object]` — the pre-existing page tests passed because they only
+  ever returned *string*-shaped payloads, which is why the defect survived
+  them.
+  Re-verify when: the error envelope's shape changes, or a page starts
+  reading a failed response without `apiErrorText`.
+- **V-047** · 2026-08-18 — **A Deployment's own status cannot say why a Pod
+  is not serving; the reason has to be read off the Pods.** `kubectl get
+  deployment -o json` gives only `readyReplicas`, so canary reported
+  "0/1 ready" and `kubectl rollout status` reported "timed out waiting for
+  the condition" while the real cause — `Unschedulable: 0/1 nodes are
+  available: 1 Insufficient memory` — sat on the Pod's `PodScheduled`
+  condition. `canary.py` now reads the Pods behind the Deployment's own
+  `spec.selector.matchLabels` and folds that sentence into the track health,
+  the rollout-failure message and the API's 409 detail (which also stopped
+  dropping `OpsResult.details`).
+  Method: `scripts/canary-pod-reason-smoke.sh`, run 2026-08-18 on a real kind
+  cluster — a Deployment requesting 900Gi produced
+  `nyxgpt-api-canary not healthy (0/1 ready) -- <pod>: Unschedulable: 0/1
+  nodes are available: 1 Insufficient memory. ...` from `deployment_health`,
+  the same reason from `_wait_rollout`, and both halves of D-006 (the same
+  Deployment at 16Mi comes back healthy with no reason appended). Wired as
+  `canary-pod-reason-smoke.yml`.
+  Re-verify when: the canary Deployments' labels change, or Kubernetes
+  changes the `PodScheduled`/`containerStatuses` shape these reasons are read
+  from.
 
 - **V-046** · 2026-08-18 — **The #3820 guard was `script:`-only; the same fault
   class was still live in `run:` blocks.** V-027 named the fault as "an

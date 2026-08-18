@@ -21,6 +21,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import LoadingSpinner from '../../../components/LoadingSpinner';
 import ErrorMessage from '../../../components/ErrorMessage';
+import { apiErrorText, errorMessage } from '../../../lib/apiError';
 
 type DeploymentModeName = 'native' | 'compose' | 'terraform' | 'kubernetes' | 'none';
 
@@ -281,12 +282,11 @@ export default function InfrastructurePage() {
       const res = await fetch('/api/v1/infra/status', { cache: 'no-store' });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || data.detail || `HTTP ${res.status}`);
+        throw new Error(apiErrorText(data, `HTTP ${res.status}`));
       }
       setStatus(data);
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setError(msg);
+      setError(errorMessage(e));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -306,14 +306,14 @@ export default function InfrastructurePage() {
       ]);
       const deployData = await deployRes.json();
       if (!deployRes.ok) {
-        throw new Error(deployData.error || deployData.detail || `HTTP ${deployRes.status}`);
+        throw new Error(apiErrorText(deployData, `HTTP ${deployRes.status}`));
       }
       setCloud(deployData as CloudDeployStatus);
       if (stateRes.ok) {
         setCloudState((await stateRes.json()) as CloudStateStatus);
       }
     } catch (e: unknown) {
-      setCloudError(e instanceof Error ? e.message : String(e));
+      setCloudError(errorMessage(e));
     }
   }, []);
 

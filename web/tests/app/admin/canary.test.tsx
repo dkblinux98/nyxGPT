@@ -242,7 +242,7 @@ describe('CanaryPage', () => {
     });
   });
 
-  it('walks every load-status error branch, then falls back to String(e) on a non-Error rejection', async () => {
+  it('walks every load-status error branch, then falls back to the raw value on a non-Error rejection', async () => {
     mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
     const user = userEvent.setup();
 
@@ -561,5 +561,87 @@ describe('CanaryPage', () => {
       expect(screen.getByText('action gremlin')).toBeInTheDocument();
     });
     fetchSpy.mockRestore();
+  });
+  // #3831: every real API failure arrives as `{"error": {"code", "message",
+  // "details", "request_id"}}` -- an OBJECT. The card interpolated it and
+  // rendered "[object Object]", which during acceptance hid a Pod scheduling
+  // failure and made a full cluster look like a broken canary feature.
+  it.each([
+    [
+      'the API error envelope',
+      {
+        error: {
+          code: 'http_error',
+          message:
+            'Rollout of nyxgpt-api-canary did not become healthy within 180s -- ' +
+            'nyxgpt-api-canary-7f9c8b6d4-2xk9p: Unschedulable: 0/1 nodes are available: ' +
+            '1 Insufficient memory.',
+          details: null,
+          request_id: 'req-42',
+        },
+      },
+      /Insufficient memory/,
+    ],
+    [
+      'an envelope whose details carry the reason',
+      {
+        error: {
+          code: 'http_error',
+          message: 'Request failed',
+          details: { errors: ['FailedScheduling: Insufficient memory'] },
+          request_id: null,
+        },
+      },
+      /FailedScheduling: Insufficient memory/,
+    ],
+    [
+      'a structured FastAPI detail',
+      { detail: [{ loc: ['body', 'weight_percent'], msg: 'value is not a valid integer' }] },
+      /body\.weight_percent: value is not a valid integer/,
+    ],
+    ['an object-shaped detail', { detail: { message: 'Cluster unreachable' } }, /Cluster unreachable/],
+  ])('renders %s on a failed action instead of [object Object]', async (_label, payload, expected) => {
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+    server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(mockActiveHealthyStatus)));
+    const user = userEvent.setup();
+
+    render(<CanaryPage />);
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /evaluate metrics/i })).toBeInTheDocument();
+    });
+
+    server.use(
+      http.post('/api/v1/canary/evaluate', () => HttpResponse.json(payload, { status: 409 }))
+    );
+    await user.click(screen.getByRole('button', { name: /evaluate metrics/i }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(expected);
+    expect(alert).not.toHaveTextContent('[object Object]');
+  });
+
+  it('renders the envelope from a failed status load, not [object Object]', async () => {
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+    server.use(
+      http.get('/api/v1/canary/status', () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: 'http_error',
+              message: 'kubectl not found; cannot check deployment health',
+              details: null,
+              request_id: 'req-7',
+            },
+          },
+          { status: 503 }
+        )
+      )
+    );
+
+    render(<CanaryPage />);
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/kubectl not found; cannot check deployment health/);
+    expect(alert).not.toHaveTextContent('[object Object]');
   });
 });

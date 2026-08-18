@@ -52,6 +52,13 @@ DEFAULT_TOTAL_REPLICAS = 4
 DEFAULT_ROLLOUT_TIMEOUT_SECONDS = 180
 HISTORY_LIMIT = 20
 
+# How much Pod-level failure detail travels back to the dashboard (#3831). A
+# stuck rollout can have every replica failing for the same reason, and
+# Kubernetes' scheduler messages run long -- enough to name the cause, not so
+# much that the error card becomes a log dump.
+POD_REASON_LIMIT = 3
+POD_REASON_MESSAGE_LIMIT = 300
+
 NOT_SUPPORTED_UNDER_COMPOSE = (
     "Canary deployment requires the Kubernetes deployment mode; not "
     "available under docker-compose. See docs/kubernetes.md."
@@ -317,12 +324,134 @@ class TrackHealth:
     version: str = ""
 
 
+def _with_reason(summary: str, reasons: list[str]) -> str:
+    """Append the underlying reason(s) to `summary`, or return it unchanged.
+
+    Kept in one place so "not healthy (0/1 ready)" and "rollout did not
+    become healthy" always read the same way once the cause is known.
+    """
+    detail = "; ".join(r.strip() for r in reasons if r and r.strip())
+    return f"{summary} -- {detail}" if detail else summary
+
+
+def _pod_reason(pod: dict[str, Any]) -> str:
+    """Return why this Pod is not serving, in Kubernetes' own words, or "".
+
+    Reads the Pod's status in the order an operator would: the scheduler's
+    verdict first (`PodScheduled=False` carries `Unschedulable` plus the
+    "0/1 nodes are available: 1 Insufficient memory" sentence), then whatever
+    a container is stuck waiting on or terminated with (`ImagePullBackOff`,
+    `CrashLoopBackOff`, ...), then the readiness condition, and finally the
+    bare phase. This is the sentence #3831 needed and could not see.
+    """
+    status = pod.get("status", {}) or {}
+    conditions = [c for c in (status.get("conditions") or []) if isinstance(c, dict)]
+
+    def _condition(kind: str) -> dict[str, Any] | None:
+        for cond in conditions:
+            if cond.get("type") == kind and str(cond.get("status")) == "False":
+                return cond
+        return None
+
+    scheduled = _condition("PodScheduled")
+    if scheduled:
+        return _join_reason(scheduled.get("reason"), scheduled.get("message"))
+
+    for key in ("initContainerStatuses", "containerStatuses"):
+        for container in status.get(key) or []:
+            if not isinstance(container, dict) or container.get("ready"):
+                continue
+            state = container.get("state", {}) or {}
+            waiting = state.get("waiting") or {}
+            if waiting.get("reason"):
+                return _join_reason(waiting.get("reason"), waiting.get("message"))
+            terminated = state.get("terminated") or {}
+            if terminated.get("reason"):
+                exit_code = terminated.get("exitCode")
+                suffix = f" (exit {exit_code})" if exit_code is not None else ""
+                return _join_reason(terminated.get("reason"), terminated.get("message")) + suffix
+
+    ready = _condition("Ready") or _condition("ContainersReady")
+    if ready:
+        return _join_reason(ready.get("reason"), ready.get("message"))
+    phase = str(status.get("phase") or "").strip()
+    return phase if phase and phase != "Running" else ""
+
+
+def _join_reason(reason: Any, message: Any) -> str:
+    """Render a Kubernetes `reason`/`message` pair as one trimmed sentence."""
+    reason_text = str(reason or "").strip()
+    message_text = " ".join(str(message or "").split())
+    if len(message_text) > POD_REASON_MESSAGE_LIMIT:
+        message_text = message_text[: POD_REASON_MESSAGE_LIMIT - 1].rstrip() + "…"
+    if reason_text and message_text:
+        return f"{reason_text}: {message_text}"
+    return reason_text or message_text
+
+
+def pod_failure_reasons(selector: str, namespace: str = DEFAULT_NAMESPACE) -> list[str]:
+    """Ask the cluster why the Pods matching `selector` are not serving.
+
+    A Deployment's own status says only "0/1 ready"; the reason lives on its
+    Pods. Best-effort by design -- an unreachable cluster, an RBAC denial or
+    an unparseable response yields an empty list, so every caller degrades to
+    the generic message it would have produced anyway (#3831).
+    """
+    if not selector or _which("kubectl") is None:
+        return []
+    cp = _run(
+        ["kubectl", "get", "pods", "-n", namespace, "-l", selector, "-o", "json"], expected=True
+    )
+    if cp.returncode != 0:
+        return []
+    try:
+        data = json.loads(cp.stdout)
+    except Exception:
+        return []
+    reasons: list[str] = []
+    for pod in data.get("items", []):
+        if not isinstance(pod, dict):
+            continue
+        reason = _pod_reason(pod)
+        if not reason:
+            continue
+        name = str(pod.get("metadata", {}).get("name", "")).strip()
+        reasons.append(f"{name}: {reason}" if name else reason)
+        if len(reasons) >= POD_REASON_LIMIT:
+            break
+    return reasons
+
+
+def _selector_from_deployment(data: dict[str, Any]) -> str:
+    """Build a `kubectl -l` selector from a Deployment's `spec.selector.matchLabels`."""
+    labels = data.get("spec", {}).get("selector", {}).get("matchLabels", {})
+    if not isinstance(labels, dict):
+        return ""
+    return ",".join(f"{k}={v}" for k, v in sorted(labels.items()) if isinstance(v, (str, int)))
+
+
+def _deployment_selector(name: str, namespace: str = DEFAULT_NAMESPACE) -> str:
+    """Read `name`'s Pod selector from the cluster, or "" if it can't be read."""
+    cp = _run(
+        ["kubectl", "get", "deployment", name, "-n", namespace, "-o", "json"],
+        expected=True,
+    )
+    if cp.returncode != 0:
+        return ""
+    try:
+        return _selector_from_deployment(json.loads(cp.stdout))
+    except Exception:
+        return ""
+
+
 def deployment_health(name: str, namespace: str = DEFAULT_NAMESPACE) -> TrackHealth:
     """Check whether the given Deployment is fully ready, and what version it's running.
 
     Mirrors the readinessProbe (`GET /health`) already configured on the
     stable/canary Deployments: a Deployment only reports its Pods as Ready
-    once the probe passes.
+    once the probe passes. When it isn't ready, the Pods' own reason is
+    appended (see `pod_failure_reasons`) so the operator reads
+    "Insufficient memory" rather than an unexplained "0/1 ready" (#3831).
     """
     if _which("kubectl") is None:
         return TrackHealth(
@@ -350,12 +479,15 @@ def deployment_health(name: str, namespace: str = DEFAULT_NAMESPACE) -> TrackHea
             )
         ):
             return TrackHealth("not_deployed", "No reachable Kubernetes cluster")
-        return TrackHealth("error", f"Could not read deployment {name}", stderr)
+        # The stderr goes in the message, not the version field: kubectl's own
+        # sentence ("Forbidden: ...") is the only clue to an unexpected failure,
+        # and rendering it as the track's "version" hid it in plain sight (#3831).
+        return TrackHealth("error", _with_reason(f"Could not read deployment {name}", [stderr]))
 
     try:
         data = json.loads(cp.stdout)
     except Exception as e:
-        return TrackHealth("error", f"Could not parse status for {name}", str(e))
+        return TrackHealth("error", _with_reason(f"Could not parse status for {name}", [str(e)]))
 
     containers = data.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
     image = str(containers[0].get("image", "")) if containers else ""
@@ -368,7 +500,12 @@ def deployment_health(name: str, namespace: str = DEFAULT_NAMESPACE) -> TrackHea
         return TrackHealth("not_deployed", f"{name} has 0 desired replicas (idle)", version)
     if ready >= spec_replicas:
         return TrackHealth("healthy", f"{name} healthy ({ready}/{spec_replicas} ready)", version)
-    return TrackHealth("unhealthy", f"{name} not healthy ({ready}/{spec_replicas} ready)", version)
+    reasons = pod_failure_reasons(_selector_from_deployment(data), namespace)
+    return TrackHealth(
+        "unhealthy",
+        _with_reason(f"{name} not healthy ({ready}/{spec_replicas} ready)", reasons),
+        version,
+    )
 
 
 def current_mode() -> str:
@@ -466,9 +603,15 @@ def _wait_rollout(
         ]
     )
     if cp.returncode != 0:
+        # "timed out waiting for the condition" is not a diagnosis. Ask the Pods
+        # why -- FailedScheduling/Insufficient memory, ImagePullBackOff,
+        # CrashLoopBackOff -- and carry that back with the failure (#3831).
+        reasons = pod_failure_reasons(_deployment_selector(name, namespace), namespace)
         return CanaryResult(
             False,
-            f"Rollout of {name} did not become healthy within {timeout_seconds}s",
+            _with_reason(
+                f"Rollout of {name} did not become healthy within {timeout_seconds}s", reasons
+            ),
             (cp.stderr or cp.stdout or "").strip(),
         )
     return CanaryResult(True, f"{name} rollout healthy")
