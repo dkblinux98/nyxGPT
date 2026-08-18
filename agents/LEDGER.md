@@ -1208,7 +1208,6 @@ are absent here by design (relocated to the annex; IDs are never reused).
   the same conditions.
   Re-verify when: the retro template's panel structure changes, or a new
   optional data source is added without a source stamp.
-
 - **V-036** · 2026-08-18 — nyxGPT has **two config-reading tiers with different
   activation semantics**, and the difference is now data rather than folklore.
   The `api` tier re-reads `config.ini` per request through the hot-reload cache;
@@ -1410,6 +1409,68 @@ are absent here by design (relocated to the annex; IDs are never reused).
   where the same stack did *not* fit. The finding this entry stands for (the
   `_k8s_stack_health` phase/wait disagreement) is unaffected.
 
+- **V-042** · 2026-08-18 — **A support ticket's entire protection is one
+  label, and the label is now guaranteed rather than assumed.** Every guard —
+  `assign_backlog.yml`, `ensure_project_hygiene.yml`,
+  `summarize_backlog_page.py`, and the owner's Support project auto-add
+  (`is:issue is:open label:Support`) — tests for `Support`, so an unlabeled
+  ticket is invisible to all of them at once. GitHub drops a
+  template-declared label that does not exist, without erroring, which is why
+  #3810 was filed unlabeled and assigned to the scrummaster in seven seconds.
+  `admin_ensure_support_label.yml` now runs on a schedule and on any push
+  touching the form, and verifies the label afterwards by exact match;
+  `support_intake_guard.yml` repairs a ticket that slips through and fails the
+  run on purpose.
+  (Filed as `V-039` under #3811; renumbered on the merge of `v3.0.0` because
+  #3812 allocated `V-039` on a concurrently-open branch. IDs are never
+  reused.)
+  Method: ran `tests/unit/test_support_label_isolation.py` (16 assertions on
+  the triggers, the verification step, the guard's firing condition and the
+  label name matching end to end) and the fault-injection step of
+  `support-intake-smoke.yml`'s predicate locally, 2026-08-18, while
+  implementing #3811 — a label list without `Support` (near-misses `Support
+  request`, `supporting`, `SUPPORT` included) is rejected; one with it passes.
+  The live `gh label list` half runs in CI, not here.
+  Re-verify when: the routing key changes name, or the Support project's
+  auto-add filter is edited (owner-side; agents cannot read it).
+
+- **V-043** · 2026-08-18 — **`_die` does not reliably abort a sourced
+  `gh_project.sh` helper, and a piped `graphql` call swallowed failures
+  entirely.** `_die` `return`s rather than `exit`s when the library is
+  sourced, relying on `set -e` — but `set -e` is suppressed inside a command
+  substitution whose status is being tested, which is exactly how a caller
+  checks for failure. Separately, `project_field_value` piped `graphql` into
+  `jq`, so the pipeline reported jq's status: a failed read returned empty
+  output and exit 0, indistinguishable from "the field is unset". A
+  rate-limited read would have had hygiene write its defaults over every
+  populated field. Both fixed (explicit `return 1`; response into a variable
+  first).
+  (Filed as `V-040` under #3811; renumbered on the merge of `v3.0.0` because
+  #3813 allocated `V-040` on a concurrently-open branch. IDs are never
+  reused.)
+  **The pipeline defect was a class, not one site.** The same shape existed
+  in `issue_status` (a swallowed read reads as "no Status", which is how
+  `promote_accepted_features.sh` and the parked-blocked sweep decide whether
+  a blocker is accepted), in `pr_status` (lane reconciliation), twice in
+  `pr_project_item_id` (a swallowed find sends the PR down the add path), and
+  in `admin_set_fields.sh`'s `item_id_for_content`, where it reads as "not on
+  the board" and the owner's batch reports a clean run having written
+  nothing. All five were converted to the response-into-a-variable form in
+  the same PR, so no call site pipes `graphql` today.
+  Method: ran `tests/test_issue_hygiene.sh` with a `gh` stub whose field
+  reads fail while its existence probe answers "present" — before the fix
+  hygiene populated every field and exited 0; after it, the run fails loud.
+  The sweep for the remaining sites: `grep -n graphql
+  scripts/agents/lib/*.sh scripts/agents/*.sh`, every hit read for a pipe;
+  `tests/unit/test_gh_project_pipelines.py` now re-runs that sweep in CI.
+  2026-08-18, while implementing #3811.
+  Re-verify when: `_die` is changed. A new piped `graphql` call no longer
+  needs re-verification by hand — it fails `test_no_graphql_call_is_piped`.
+  Note the propagated `return 1` reaches a caller only if that caller checks
+  it: `release_ceremony_watch.sh` and `classify_backlog_claim_state`
+  deliberately write `|| echo ""` and still treat a failed read as "no
+  Status".
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
@@ -1491,6 +1552,30 @@ are absent here by design (relocated to the annex; IDs are never reused).
   change to every merge behind an unrelated issue number.
   Blocks: nothing today — but every merge is exposed to **V-038** until it is
   answered.
+
+- **Q-006** · 2026-08-18 · owner acceptance (#3811) — What credential files a
+  support ticket for a filer who is not the owner? The owner's settled intent
+  (#3811, 2026-08-16) is that the web UI captures the ticket and a background
+  process creates the issue, so **the filer never leaves the nyxGPT chat**.
+  Creating an issue server-side needs a GitHub credential: the owner's install
+  has one (`[github] pat`); a stranger's does not, and a stranger is precisely
+  the population support exists for. The owner named three options and left
+  the choice open — a hosted intake the owner runs, backend creation when a
+  token is configured with the GitHub handoff as fallback, or requiring a
+  configured token. They are not variations on one design: the first needs
+  hosting and abuse controls, the second is two permanent code paths, the
+  third excludes the tokenless filer.
+  Needs: the owner's choice, then its own issue for the intake rework.
+  Blocks: three acceptance criteria on #3811 that this PR does **not** meet
+  and does not claim to — the filer not seeing GitHub's compose page, being
+  returned to the chat with a confirmation after submitting, and the ticket
+  type being applied by the product rather than answered on a form. Everything
+  in #3811 that does not depend on the answer shipped instead: the `Support`
+  label is guaranteed (**V-042**), the type is collected in nyxGPT and carried
+  into the body, and hygiene survives a vanished project item (**V-043**).
+  Not taken inside this PR: an intake path built on a guessed credential model
+  is one that gets rebuilt, and the two paths it would have to hedge across
+  differ in where the product is hosted, not in a detail.
 
 ## Superseded
 

@@ -1,21 +1,40 @@
 name: Admin - Ensure Support Label
 
-# Creates the `Support` label the user-facing issue form declares (#3745).
+# Guarantees the `Support` label the user-facing issue form declares (#3745).
 #
 # This exists as a workflow rather than a remembered manual step because a
 # template naming a nonexistent label applies *nothing*, silently: the form
-# would keep working, the report would land unlabeled, the nyxGPT Support
-# project's auto-add filter (`is:issue label:Support`) would never match it,
-# and nothing would fail loudly. The label is therefore infrastructure, and
-# it is created idempotently -- re-running this only refreshes the colour and
-# description.
+# keeps working, the report lands unlabeled, the nyxGPT Support project's
+# auto-add filter (`is:issue is:open label:Support`) never matches it, and
+# nothing fails loudly. The label is therefore infrastructure.
+#
+# WHY IT IS NO LONGER DISPATCH-ONLY (#3811): it was, and in its entire
+# history it had **zero runs**. The label consequently did not exist, so
+# #3810 was created unlabeled, `assign_backlog.yml`'s `!contains(labels,
+# 'Support')` guard did not fire, and the scrummaster was assigned a user's
+# support ticket seven seconds later. A guarantee nobody ever invokes is not
+# a guarantee. It now runs on a schedule, on any push that touches the form
+# or this file, and still on demand -- and it VERIFIES the label afterwards
+# rather than trusting the create call's exit status, so a silent no-op is a
+# red run instead of a ticket that leaks into the agent loop.
 #
 # Label creation is otherwise forbidden to agents (CLAUDE.md); the owner
-# authorized this one specifically on #3745, which is why this is
-# dispatch-only and scoped to a single label name.
+# authorized this one specifically on #3745, which is why this workflow is
+# scoped to a single hard-coded label name.
 
 on:
   workflow_dispatch:
+  # Daily: the label can be deleted from the GitHub UI at any time by anyone
+  # with write access, and nothing about that deletion is otherwise visible
+  # until a user's ticket leaks. This bounds the exposure window to a day.
+  schedule:
+    - cron: "17 6 * * *"
+  # And immediately whenever the intake's own definition moves, so a change
+  # to the form is never merged ahead of the label it declares.
+  push:
+    paths:
+      - .github/ISSUE_TEMPLATE/support.yml
+      - .github/workflows/admin_ensure_support_label.yml
 
 permissions:
   issues: write
@@ -43,4 +62,23 @@ jobs:
             --color "$COLOR" \
             --description "$DESC" \
             --force
-          gh label list --repo "${{ github.repository }}" --search "$LABEL"
+
+      - name: Verify the label now exists
+        shell: bash
+        # The create step exiting 0 is not evidence the label is there: this
+        # is the check that fails if it is absent (#3811 acceptance
+        # criterion). Exact-match on the name -- `gh label list --search` is
+        # fuzzy, and "Support" matching some other label's description would
+        # be exactly the false assurance that let #3810 through.
+        run: |
+          set -euo pipefail
+          if gh label list --repo "${{ github.repository }}" --limit 200 \
+               --json name --jq '.[].name' | grep -Fxq "$LABEL"; then
+            echo "✅ Label '$LABEL' exists in ${{ github.repository }}"
+            exit 0
+          fi
+          echo "::error::Label '$LABEL' does NOT exist in ${{ github.repository }} after the create step."
+          echo "::error::Every support ticket filed in this state lands unlabeled: the agent-loop skip"
+          echo "::error::(assign_backlog.yml, ensure_project_hygiene.yml) does not fire and the Support"
+          echo "::error::project's auto-add never matches it. This is the #3810 leak. Do not ignore."
+          exit 1

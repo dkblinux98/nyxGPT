@@ -19,11 +19,21 @@ Two surfaces live here:
 * **Docs** -- an index of the packaged Markdown documents plus a rendered
   HTML view of one document, with the links *between* docs rewritten to
   in-app routes so the tree browses as a unit offline.
-* **File an Issue** -- the GitHub issue-form URL, prefilled with the running
-  version and this machine's platform so a report carries its environment
-  without the user having to look either up. This is a link, not an API
-  call: nyxGPT never files an issue on the user's behalf, and the form
-  itself needs internet and a GitHub account.
+* **File an Issue** -- the GitHub issue-form URL, prefilled with the ticket
+  type the filer picked in nyxGPT plus the running version and this
+  machine's platform, so a report carries its environment and its
+  classification without the user having to look either up. This is a link,
+  not an API call: nyxGPT never files an issue on the user's behalf, and the
+  form itself needs internet and a GitHub account.
+
+**The handoff is deliberate-for-now, not the intended end state.** The owner's
+settled intent for #3811 is an intake that captures the ticket in nyxGPT and
+files it from a background process, so the filer never leaves the chat and is
+returned to it with a confirmation. That rework is not built here because it
+needs a GitHub credential and the owner has not yet chosen where one comes
+from for a filer who is not them (ledger **Q-006**). Until that is answered
+this module stays a link-builder: it classifies and prefills, and GitHub's
+compose page is still what the filer sees.
 """
 
 from __future__ import annotations
@@ -93,6 +103,26 @@ _PACKAGED_SLUG_SET = frozenset(PACKAGED_SLUGS)
 ISSUE_REPO_URL = "https://github.com/dkblinux98/nyxGPT"
 ISSUE_FORM_TEMPLATE = "support.yml"
 REPO_DEFAULT_BRANCH = "master"
+
+#: What kind of ticket this is, chosen by the filer in the nyxGPT UI (#3811).
+#: These are the `Ticket Type` options on the Support project, mirrored here
+#: because the filer picks one *before* leaving nyxGPT -- the value travels as
+#: a prefill for the form's `ticket_type` dropdown and lands in the issue
+#: body, where the owner reads it when setting the project field. They are
+#: NOT labels: only `Support` is, and only `Support` routes anything.
+#:
+#: Must stay in step with the dropdown options in
+#: `.github/ISSUE_TEMPLATE/support.yml` -- GitHub ignores a prefill value
+#: that is not one of the declared options, so a drift here degrades to an
+#: unanswered required field rather than a wrong answer.
+TICKET_TYPES: tuple[str, ...] = ("Bug Found", "Feature Request", "Question")
+
+#: What each type means, in the filer's terms rather than the project's.
+TICKET_TYPE_DESCRIPTIONS: dict[str, str] = {
+    "Bug Found": "Something is broken or behaving wrongly",
+    "Feature Request": "Something nyxGPT should be able to do",
+    "Question": "How do I …? / Is this supposed to …?",
+}
 
 #: The in-app route the docs viewer serves documents from; links between
 #: packaged documents are rewritten onto it.
@@ -324,8 +354,11 @@ def environment_summary() -> dict[str, str]:
     }
 
 
-def issue_form_url(environment: dict[str, str] | None = None) -> str:
-    """Return the GitHub issue-form URL with environment details prefilled.
+def issue_form_url(
+    environment: dict[str, str] | None = None,
+    ticket_type: str | None = None,
+) -> str:
+    """Return the GitHub issue-form URL with the report's details prefilled.
 
     Prefill happens through query parameters keyed by the form's field ids
     (`.github/ISSUE_TEMPLATE/support.yml`), which is GitHub's supported
@@ -333,24 +366,58 @@ def issue_form_url(environment: dict[str, str] | None = None) -> str:
     itself, so no label parameter is needed -- and none is sent, since a
     label parameter would silently apply nothing for a filer without write
     access, which is exactly the filer this form exists for.
+
+    `ticket_type`, when given, prefills the form's `ticket_type` dropdown so
+    the choice the filer already made in nyxGPT is not asked again (#3811).
+
+    Raises:
+        ValueError: `ticket_type` is not one of `TICKET_TYPES`. Passing an
+            unrecognized value through would be worse than refusing it:
+            GitHub ignores an unmatched dropdown prefill, so the filer would
+            silently be asked to choose again.
     """
     env = environment or environment_summary()
-    params = urlencode(
+    params: dict[str, str] = {
+        "template": ISSUE_FORM_TEMPLATE,
+        "version": env["version"],
+        "platform": f"{env['platform']}, Python {env['python']}",
+    }
+    if ticket_type is not None:
+        if ticket_type not in TICKET_TYPES:
+            raise ValueError(f"Unknown ticket type: {ticket_type!r}")
+        params["ticket_type"] = ticket_type
+    return f"{ISSUE_REPO_URL}/issues/new?{urlencode(params)}"
+
+
+def ticket_type_options(environment: dict[str, str] | None = None) -> list[dict[str, str]]:
+    """Return one prefilled filing link per ticket type, for the Support menu.
+
+    The filer chooses what kind of ticket this is *in nyxGPT* rather than on
+    GitHub, which is what gets the type recorded at all: the Support project
+    types tickets with a project field, and nothing maps a form answer onto
+    one automatically (#3811).
+    """
+    env = environment or environment_summary()
+    return [
         {
-            "template": ISSUE_FORM_TEMPLATE,
-            "version": env["version"],
-            "platform": f"{env['platform']}, Python {env['python']}",
+            "value": ticket_type,
+            "description": TICKET_TYPE_DESCRIPTIONS[ticket_type],
+            "url": issue_form_url(env, ticket_type),
         }
-    )
-    return f"{ISSUE_REPO_URL}/issues/new?{params}"
+        for ticket_type in TICKET_TYPES
+    ]
 
 
 def support_context() -> dict[str, Any]:
-    """Return everything the Support menu needs: environment plus the issue link."""
+    """Return everything the Support menu needs: environment plus the issue links."""
     env = environment_summary()
     return {
         "environment": env,
+        # Kept as the untyped entry point: a filer who reaches the form some
+        # other way still gets version/platform prefilled and answers the
+        # dropdown on GitHub.
         "issue_form_url": issue_form_url(env),
+        "ticket_types": ticket_type_options(env),
         "docs_route": DOCS_ROUTE_PREFIX,
         # Docs render offline; filing does not. The UI says so rather than
         # letting the link fail mysteriously on an air-gapped install.
