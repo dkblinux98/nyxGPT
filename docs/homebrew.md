@@ -730,16 +730,25 @@ Some settings are hot-reloadable (take effect immediately):
 - `default_model`
 - `rag.enable_chat_context`
 - `logging.level`
-- `auth.enabled` and `auth.api_key`
 
-Other changes require service restart:
+Others are read once at service start and stay at their old value until that
+service restarts -- including `auth.enabled` and `auth.api_key`, which the API
+honours immediately but the web UI does not (its wrapper reads `[auth]` once
+and exports the key into a Node process, so every proxied call 401s with the
+old key until `web` restarts). Each such key is annotated in
+`example.config.ini` with an `# Activation: restart required (<service>)`
+line, and saving one from the Configuration Wizard, the Admin Dashboard or
+`nyxgpt secrets setup` raises a persistent "saved, but not yet in effect"
+notice that offers the restart (#3806).
+
+Apply those changes with:
 
 ```bash
 # Restart API service
-brew services restart nyxgpt-api
+nyxgpt ops restart api
 
 # Restart Web UI service
-brew services restart nyxgpt-web
+nyxgpt ops restart web
 
 # Restart both
 nyxgpt ops restart
