@@ -695,10 +695,15 @@ the save merge -- everything else in the file is untouched.
 
 ## Guided Secrets Setup
 
-These endpoints back `/admin/secrets` (#3505) -- the same guided flow
-`nyxgpt secrets setup` runs on the CLI, for the three human-provided
-secrets the Config Wizard above deliberately excludes (`openai`/`github`
-are agent-level sections, out of scope for `/config/sections`). See
+Read-only. The guided secrets are the three human-provided secrets the Config
+Wizard above deliberately excludes (`openai`/`github` are agent-level
+sections, out of scope for `/config/sections`); they are **entered with
+`nyxgpt secrets setup`**, and pushed to GitHub Actions with `nyxgpt ops
+secrets-sync`. There is no HTTP write path and no web screen for either
+(#3805): a credential typed into a browser crosses an HTTP request and the
+page's process on its way to disk, and by the time this API answers, reaching
+it already required these secrets. The endpoint below reports *whether* a
+secret is set, never its value. See
 [`docs/configuration.md`](configuration.md#option-4-guided-secrets-setup)
 for the write-once canonical-store rationale.
 
@@ -731,65 +736,15 @@ returns cleartext.
 }
 ```
 
-### `POST /api/v1/config/secrets`
+### `GET /api/v1/config/aws-credentials`
 
-Validates and writes one guided secret. Only `(section, key)` pairs in
-`secrets_setup.GUIDED_SECRETS` are accepted -- unlike `/config/sections`,
-this can't be used to write an arbitrary config.ini field. The value is
-never echoed back; only a masked preview is returned.
-
-**Request (manual value):**
-
-```json
-{ "section": "openai", "key": "api_key", "value": "sk-..." }
-```
-
-**Request (generate -- `auth.api_key` only):**
-
-```json
-{ "section": "auth", "key": "api_key", "generate": true }
-```
-
-**Response:**
-
-```json
-{
-  "set": "openai.api_key",
-  "masked": "sk-a****wxyz",
-  "secrets": { "...": "full updated list, same shape as GET" }
-}
-```
-
-Returns `404` for a section/key that isn't a guided secret, `400` if
-`section`/`key`/`value` is missing or malformed, and `422` with a
-`section.key: reason` detail if the value fails format validation.
-
-### `POST /api/v1/config/secrets/sync`
-
-Wraps `ops.sync_secrets_to_github_actions` -- the same function `nyxgpt ops
-secrets-sync` calls -- so the dashboard action and the CLI command can never
-drift. Pushes `config.SECRETS_SYNC_MANIFEST`'s config.ini values to this
-repo's GitHub Actions secrets, one direction only. Results carry secret
-*names* only; a value is never present in the response, logs, or the admin
-activity record.
-
-**Request:**
-
-```json
-{ "dry_run": false }
-```
-
-**Response:**
-
-```json
-{
-  "ok": true,
-  "dry_run": false,
-  "results": [
-    { "ok": true, "message": "Synced monitoring.slack_bot_token -> Actions secret SLACK_BOT_TOKEN", "details": "" }
-  ]
-}
-```
+Reports the AWS identity nyxGPT will deploy with: the flow's field metadata,
+the non-secret `[cloud]` reference (profile, region, credentials source), and
+where the access key pair is currently stored, masked. Never returns
+cleartext, and there is no HTTP write path -- the key pair is entered with
+`nyxgpt cloud credentials-setup`, which routes it to `~/.aws/credentials`, the
+OS keychain, or an existing source, never `config.ini` (#3805). See
+[`docs/cloud.md`](cloud.md#guided-aws-credentials-setup-p6-13-3512).
 
 ### `POST /api/v1/config/restart`
 

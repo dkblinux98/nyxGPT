@@ -376,7 +376,29 @@ are absent here by design (relocated to the annex; IDs are never reused).
   is separate and still open with the owner.
   Source: #3803; owner acceptance round 2026-08-16.
 
-- **D-016** · 2026-08-18 · owner — **The Definition of Done says *observable*,
+- **D-016** · 2026-08-18 · owner — **Credential and secret *entry* does not
+  belong in the web UI.** The `/admin/secrets` (Guided Secrets Setup, #3505)
+  and `/admin/aws-credentials` (AWS Credentials Setup, #3512) screens are
+  removed, along with the four write endpoints behind them (`POST
+  /api/v1/config/secrets`, `/config/secrets/sync`, `/config/aws-credentials`,
+  `/config/aws-credentials/secret-store`). Two reasons: a browser is a worse
+  surface for a credential than a terminal (the value crosses an HTTP request
+  and the page's process, and the same screen reached through a cloud access
+  tunnel would carry it over that path), and by the time the web UI is
+  running these screens are too late to be useful — reaching the dashboard
+  already required the secrets they collected, and AWS credentials are needed
+  before a deploy exists to observe. `nyxgpt secrets setup`, `nyxgpt ops
+  secrets-sync` and `nyxgpt cloud credentials-setup` are the surfaces; the
+  dashboard's Configuration card names them as text, not controls. The
+  **Configuration Wizard is explicitly unchanged**, including its `[auth]
+  api_key` rotation field — it stays the sanctioned in-product configuration
+  surface for a *running* system. The `GET` status paths remain (read-only,
+  masked, never cleartext) as the CLI's machine-readable counterparts. Same
+  Definition-of-Done refinement as **D-015**: observable from the dashboard;
+  pre-product setup and consequential lifecycle run from the CLI.
+  Source: #3805 (siblings #3803, #3804); owner acceptance round 2026-08-16.
+
+- **D-017** · 2026-08-18 · owner — **The Definition of Done says *observable*,
   not *operable*: ops/SRE state is observed from the dashboard, ops/SRE
   lifecycle is operated from the CLI.** This closes the refinement D-015 left
   open. It is structural, not a judgment about how often lifecycle actions are
@@ -400,7 +422,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   those screens citing the old "operable from the dashboard" wording.
   Source: #3804; owner acceptance round 2026-08-16.
 
-- **D-017** · 2026-08-18 · owner — **A cloud status surface reports which
+- **D-018** · 2026-08-18 · owner — **A cloud status surface reports which
   machine answered, and says *unknown* when none can.** Deriving AWS substrate
   facts from Terraform state alone made the dashboard read "not provisioned",
   every field blank, while being served *from* the instance Terraform had

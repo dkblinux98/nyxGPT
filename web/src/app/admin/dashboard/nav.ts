@@ -44,18 +44,18 @@ export const ADMIN_NAV: AdminNavDest[] = [
     group: 'observation',
   },
   { href: '/admin/infrastructure', label: 'Infrastructure Status', description: 'Detected deployment mode and per-component status', group: 'observation' },
-  {
-    href: '/admin/secrets',
-    label: 'Guided Secrets Setup',
-    description: 'Set write-once external tokens with masked entry and per-key help, and sync them to GitHub Actions',
-    group: 'operation',
-  },
-  {
-    href: '/admin/aws-credentials',
-    label: 'AWS Credentials Setup',
-    description: 'Guided AWS identity setup for cloud deploy -- routed to ~/.aws/credentials, the OS keychain, or an existing source, never config.ini',
-    group: 'operation',
-  },
+  // There are deliberately no Guided Secrets Setup or AWS Credentials Setup
+  // tiles (#3805). #3505 and #3512 added them; the owner removed them because
+  // a browser is a worse surface for credential *entry* than a terminal (the
+  // value crosses an HTTP request and the page's process, and over a cloud
+  // access tunnel it would cross that path too), and because by the time this
+  // dashboard is running, reaching it already required the secrets those
+  // screens collected. `nyxgpt secrets setup`, `nyxgpt ops secrets-sync` and
+  // `nyxgpt cloud credentials-setup` are the surfaces; AdminDashboardPage
+  // names them as text under Configuration. Do not re-add a screen that takes
+  // a credential as input. The Configuration Wizard, including its
+  // `[auth] api_key` rotation field, is unaffected.
+
   // There is deliberately no AWS Cloud Infrastructure tile (#3804). The AWS
   // substrate and the release deployed onto it are now an information-only
   // section *inside* Infrastructure Status, because a separate screen implied
@@ -63,6 +63,7 @@ export const ADMIN_NAV: AdminNavDest[] = [
   // nothing else: a UI served by the instance cannot safely change the
   // substrate it runs on, and the second nyxGPT that could drive it safely
   // collides with the first on :8000/:3000. Do not re-add the screen.
+
   // There is deliberately no Portability and Acceptance tile (#3803). #3516
   // added one, reading the Definition of Done as requiring a dashboard
   // surface for `nyxgpt ops portability`; the owner removed it because the

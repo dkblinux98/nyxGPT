@@ -175,6 +175,58 @@ describe('AdminDashboardPage', () => {
     expect(within(configuration).getAllByRole('link')).toHaveLength(operationCount + 1);
   });
 
+  // #3805: credential and secret *entry* left the web UI entirely. The
+  // dashboard may point at the wrapped commands, but it must not offer a
+  // route to a screen that takes a credential as input.
+  it('offers no credential entry screen, only CLI pointers under Configuration', async () => {
+    render(<AdminDashboardPage />);
+    await waitFor(() => {
+      expect(screen.getByText(/Canary: idle/)).toBeInTheDocument();
+    });
+
+    for (const href of ['/admin/secrets', '/admin/aws-credentials']) {
+      expect(document.querySelector(`a[href="${href}"]`)).toBeNull();
+    }
+    expect(ADMIN_NAV.map((dest) => dest.href)).not.toContain('/admin/secrets');
+    expect(ADMIN_NAV.map((dest) => dest.href)).not.toContain('/admin/aws-credentials');
+
+    const configuration = screen.getByRole('region', { name: 'Configuration management' });
+    for (const command of [
+      'nyxgpt secrets setup',
+      'nyxgpt ops secrets-sync',
+      'nyxgpt cloud credentials-setup',
+    ]) {
+      // Text, not a control: the pointer is a <code> element, never a button
+      // or a link to a setup screen.
+      const node = within(configuration).getByText(command);
+      expect(node.tagName).toBe('CODE');
+      expect(node.closest('a')).toBeNull();
+      expect(node.closest('button')).toBeNull();
+    }
+  });
+
+  // #3804: the AWS Cloud Infrastructure screen is gone and its information
+  // lives read-only inside Infrastructure Status. The dashboard must not route
+  // to it -- a tile that 404s reads as a broken product, and re-adding one is
+  // how the removed control surface would come back.
+  it('offers no separate AWS cloud screen, only the Infrastructure Status tile', async () => {
+    render(<AdminDashboardPage />);
+    await waitFor(() => {
+      expect(screen.getByText(/Canary: idle/)).toBeInTheDocument();
+    });
+
+    expect(document.querySelector('a[href="/admin/cloud-infrastructure"]')).toBeNull();
+    expect(ADMIN_NAV.map((dest) => dest.href)).not.toContain('/admin/cloud-infrastructure');
+
+    const systemStatus = screen.getByRole('region', { name: 'System status overview' });
+    expect(
+      within(systemStatus).queryByRole('link', { name: /AWS Cloud Infrastructure/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(systemStatus).getByRole('link', { name: /Infrastructure Status/ }),
+    ).toBeInTheDocument();
+  });
+
   it('highlights a quick-nav tile on hover and restores it on leave', async () => {
     render(<AdminDashboardPage />);
     await waitFor(() => {
