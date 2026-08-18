@@ -515,8 +515,17 @@ Terraform deployments use for these components, so the api's config is
 identical across every containerized mode.
 
 To point the deployment at an *external* Cassandra or Ollama instead, change
-`[rag] cassandra_hosts` / `[ollama] base_url` in `k8s/configmap.yaml` and
-drop the corresponding manifest from `k8s/kustomization.yaml`.
+`[rag] cassandra_hosts` / `[ollama] base_url` in `configmap.yaml` and drop the
+corresponding manifest from `kustomization.yaml`.
+
+Edit the copy under `~/.nyxGPT/k8s/` — that is the one the wrapped command
+applies. Every `nyxgpt ops install --kubernetes --local` re-syncs that
+directory from the package's own manifests, so an edit there survives until the
+next install and is then replaced (`secret.yaml` is the exception: it holds the
+API key, is never packaged, and is left alone). From a source checkout, edit the
+repository's `k8s/` instead and the sync carries the change through — the
+package data is a symlink back to it, so a checkout customization is durable
+where a `~/.nyxGPT/k8s/` one is not.
 
 ## Infrastructure Status card (#3468)
 
@@ -549,6 +558,13 @@ memory or CPU on the cluster VM and a re-run of `nyxgpt ops install
 --kubernetes --local`, which checks the node's capacity against the stack
 before it applies anything (see [Node capacity: what the stack
 reserves](#node-capacity-what-the-stack-reserves)).
+
+The card also names this deployment's own **install mode** (#3834) — what the
+two images in the cluster were built from, per [Install
+modes](#install-modes-artifact-and---dev) — or `unrecorded` when there is no
+marker for it on the machine the dashboard is running on, which is never
+presented as the artifact default: that default would be a guess about someone
+else's deployment.
 
 The same card carries an **In-cluster observability** section (#3787):
 per-workload readiness for the components in [Observability in the
