@@ -103,7 +103,15 @@ into one of three states, and the same way in each (#3827):
 | --- | --- | --- |
 | `[OK]` | Running and passing its readiness probe (or `Succeeded`) | no |
 | `[PENDING]` | Still starting: being scheduled, pulling images, creating containers, or ready on some replicas but not all | **no** |
-| `[FAIL]` | Will not start without intervention: `Unschedulable` (the node cannot fit it), `ImagePullBackOff`, `CrashLoopBackOff`, a container config error, or a `Failed` Pod | yes |
+| `[FAIL]` | Will not start without intervention: the scheduler has not placed it (`Unschedulable` — the node cannot fit it — or `SchedulingGated`), `ImagePullBackOff`, `CrashLoopBackOff`, a container config error, or a `Failed` Pod | yes |
+
+Since #3832 the *reading* behind this table — phase, readiness, whether the
+scheduler placed the Pod, and the cluster's own words for why it did not —
+is `src/nyxgpt/k8s_pod_state.py`, shared with the
+[self-heal watchdog](self-healing.md#pending-pods-are-reported-not-deleted)
+so the install report and the watchdog cannot disagree about the same Pod.
+The table above is `nyxgpt ops`' policy *on* that reading, and stays its own:
+a `CrashLoopBackOff` Pod fails an install while the watchdog restarts it.
 
 A Pod pulling a multi-hundred-megabyte image is doing what it is supposed to,
 so `Pending` is reported as pending and never fails the command; what decides
@@ -400,7 +408,10 @@ overlay -- is also watched by the same
 [self-healing.md#kubernetes-mode](self-healing.md#kubernetes-mode) for how it
 checks Pod readiness via `kubectl get pods` and heals via `kubectl delete
 pod`, on top of (not instead of) the liveness probes and the canary
-mechanism described below. `k8s/rbac.yaml`'s `nyxgpt-api` Role grants the
+mechanism described below. That remedy is restricted to a Pod that is
+Running but not Ready -- a `Pending` Pod is reported with the cluster's own
+reason and never deleted (#3832; see [Pending Pods are reported, not
+deleted](self-healing.md#pending-pods-are-reported-not-deleted)). `k8s/rbac.yaml`'s `nyxgpt-api` Role grants the
 `get`/`list`/`delete` on `pods` this needs, alongside what canary already
 used.
 
@@ -474,7 +485,10 @@ Notes:
   restart a failed Pod. The [self-heal watchdog](self-healing.md) watches
   these Pods too (#3828 -- it reports them under `tier: observability` and
   heals a stuck one by deleting it, the same action it takes on an app-tier
-  Pod), which is what makes the tier visible on the Self-Heal page in this
+  Pod, and under the same restriction: Running-but-not-Ready only, never a
+  `Pending` Pod -- see [Pending Pods are reported, not
+  deleted](self-healing.md#pending-pods-are-reported-not-deleted)), which is
+  what makes the tier visible on the Self-Heal page in this
   mode rather than surveyed through a Compose stack the deployment does not
   have.
 - **Evidence.** `.github/workflows/k8s-observability-smoke.yml` runs the

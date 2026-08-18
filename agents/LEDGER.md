@@ -509,6 +509,29 @@ are absent here by design (relocated to the annex; IDs are never reused).
   Source: owner directive 2026-08-18; `CLAUDE.md` § Bootstrap;
   `scripts/build_context_index.py`.
 
+- **D-022** · 2026-08-18 · developer agent (#3832) — **Self-heal never
+  deletes a `Pending` Kubernetes Pod.** `kubectl delete pod` is a repair for
+  exactly one state, `Running`-but-not-`Ready`; an unschedulable Pod cannot be
+  fixed by deleting it (the ReplicaSet recreates it Pending for the identical
+  reason, and the reset Pod age destroys the operator's evidence), and a
+  starting one converges on its own. The rule is not overridable by a manual
+  "Heal now", and is enforced at the destructive action itself
+  (`heal_kubernetes_pod` re-reads the Pod before deleting), not only at the
+  caller that decided to call it. Pod state is *read* in one shared place,
+  `src/nyxgpt/k8s_pod_state.py`, by both `self_heal.py` and
+  `ops._classify_k8s_pod`, so the watchdog and the install report cannot
+  disagree about whether a Pod is serving or why it is not. What each keeps
+  is its own **policy** on that reading, which is not the same thing and is
+  allowed to differ: a `CrashLoopBackOff` Pod fails an install (#3827's
+  three-state vocabulary) and is healable by the watchdog. The distinction is
+  the load-bearing part — the first cut of this change shipped the shared
+  module and the claim while `ops.py` still parsed `PodScheduled` itself, so
+  the two silently disagreed about `SchedulingGated`; two classifiers
+  agreeing by convention is the defect, not the sharing of a vocabulary.
+  Pinned by `test_ops_reads_pod_state_through_this_module_not_its_own_copy`
+  and `test_ops_and_self_heal_never_disagree_about_whether_a_pod_is_serving`.
+  Source: #3832; `docs/self-healing.md` §Pending Pods are reported, not deleted.
+
 ## Verifications
 
 - **V-001** · 2026-08-14 — Releases in this repository are immutable: a
@@ -1740,7 +1763,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   Re-verify when: `claude-code-action` changes where it parks the restored
   config, or another contract test starts walking the filesystem instead of
   the index.
-- **V-050** · 2026-08-18 — **`nyxgpt ops` has one three-state vocabulary for
+- **V-058** · 2026-08-18 — **`nyxgpt ops` has one three-state vocabulary for
   Kubernetes workloads — ready / pending / failed — and `Pending` is not a
   failure.** `_classify_k8s_pod` (`src/nyxgpt/ops.py`) is the single
   classifier behind `_k8s_stack_health`, `_k8s_observability_health`, the
@@ -1955,6 +1978,35 @@ are absent here by design (relocated to the annex; IDs are never reused).
   below a symlinked `resources/` subdirectory, or setuptools changes how
   namespace packages claim data files.
 
+- **V-057** · 2026-08-18 — Self-heal takes **zero** `kubectl delete` calls
+  against a genuinely unschedulable Pod, and the pre-#3832 code takes one on
+  its first pass. Heal budgets survive the Pod recreation that healing causes:
+  keyed on the owning ReplicaSet, a Running-but-not-ready Pod is healed twice
+  under a `max_consecutive_restarts=2` cap across 10 passes, though every heal
+  renames it.
+  Method: ran `scripts/self-heal-unschedulable-smoke.sh` on a real single-node
+  kind cluster (2026-08-18) — three raw deletions produced three new Pod names,
+  all `Unschedulable: 0/1 nodes are available: 1 Insufficient memory`, age reset
+  each time; then 10 `heal_now()` passes plus one manual heal through a
+  recording `kubectl` shim logged no delete and left the Pod UID unchanged.
+  Fault injection: with `src/nyxgpt/self_heal.py` restored from 581b4911 (the
+  pre-fix module) one pass logged `delete pod
+  nyxgpt-api-unschedulable-55599869fc-2878l` and the Pod came back under a new
+  name. `.github/workflows/self-heal-unschedulable-smoke.yml` runs the same
+  script in CI.
+  The `ops` half of the same sharing keeps its own executed cover: since the
+  review round, `ops._classify_k8s_pod` reads Pods through
+  `k8s_pod_state.classify_pod` rather than parsing `PodScheduled` itself, and
+  the `k8s-pod-state` job in `k8s-local-smoke.yml`
+  (`scripts/k8s-pod-state-smoke.py`, **V-050**) drives that call path on a
+  real kind cluster — a transient Pending Pod, an unschedulable one and an
+  `ImagePullBackOff` one — so a regression in the shared reading fails there,
+  not only in unit tests.
+  (Filed as `V-046` under #3832, renumbered to `V-048` on the first merge of
+  `v3.0.0` and to `V-051` on the second — #3904 landed the `rglob` entry above
+  on `V-048` while this branch was open. IDs are never reused.)
+  Re-verify when: `heal_kubernetes_pod`'s pre-delete guard, the
+  `k8s_pod_state` classification, or the heal-budget keying changes.
 
 ## Parked
 

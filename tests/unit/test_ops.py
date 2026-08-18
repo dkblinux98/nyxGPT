@@ -11866,6 +11866,52 @@ def test_k8s_stack_health_reports_pods_service(monkeypatch):
 
 
 @pytest.mark.unit
+def test_k8s_stack_health_names_why_a_pod_is_pending(monkeypatch):
+    """#3832: `pod x: Pending` told the operator nothing actionable.
+
+    A Pod the scheduler refused must fail the snapshot *and* carry the
+    scheduler's own message (via #3827's `_classify_k8s_pod` vocabulary), so
+    the operator reads the cause instead of a bare phase.
+    """
+
+    def fake_run(cmd, check=True, **_k):
+        if cmd[4] == "pods":
+            return CP(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "items": [
+                            {
+                                "metadata": {"name": "prometheus-abc"},
+                                "status": {
+                                    "phase": "Pending",
+                                    "conditions": [
+                                        {
+                                            "type": "PodScheduled",
+                                            "status": "False",
+                                            "reason": "Unschedulable",
+                                            "message": "0/1 nodes are available: 1 "
+                                            "Insufficient memory.",
+                                        }
+                                    ],
+                                },
+                            }
+                        ]
+                    }
+                ),
+            )
+        return CP(returncode=0, stdout="")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    results = ops._k8s_stack_health()
+    pod_result = next(r for r in results if r.message.startswith("pod "))
+
+    assert pod_result.ok is False
+    assert "unschedulable" in pod_result.message.lower()
+    assert "Insufficient memory" in pod_result.details
+
+
+@pytest.mark.unit
 def test_k8s_stack_health_reports_web_service_alongside_api(monkeypatch):
     """#3419: the post-apply health snapshot must check nyxgpt-web too, distinguishing
     found from not-found per service rather than reporting one combined result."""

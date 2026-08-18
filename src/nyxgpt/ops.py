@@ -69,6 +69,7 @@ from nyxgpt.install_mode import (
     read_install_mode,
     write_install_mode,
 )
+from nyxgpt.k8s_pod_state import classify_pod
 from nyxgpt.logging import get_correlation_id
 
 # The vendored-source tarball builder lives in its own stdlib-only module
@@ -6784,20 +6785,17 @@ def _k8s_container_block(status: dict[str, Any]) -> tuple[str, str] | None:
     return None
 
 
-def _k8s_container_waiting_reason(status: dict[str, Any]) -> str:
-    """The first non-blocking waiting reason (`ContainerCreating`, `PodInitializing`, ...)."""
-    statuses = list(status.get("initContainerStatuses") or []) + list(
-        status.get("containerStatuses") or []
-    )
-    for cs in statuses:
-        reason = str((((cs.get("state") or {}).get("waiting")) or {}).get("reason") or "")
-        if reason:
-            return reason
-    return ""
-
-
 def _classify_k8s_pod(pod: dict[str, Any]) -> K8sWorkloadState:
     """Classify one Pod (as `kubectl get pods -o json` returns it) into the vocabulary.
+
+    The *reading* of the Pod -- phase, readiness, whether the scheduler
+    refused it, and the cluster's own words for why it is not serving -- comes
+    from `nyxgpt.k8s_pod_state.classify_pod`, the one place `self_heal.py` also
+    reads Pods from (#3832). What stays here is this module's *policy* on that
+    reading: which states count against an ops command's exit status, and the
+    phrases the install report prints. Two classifiers that agreed by
+    convention is exactly how the watchdog and the install report came to
+    disagree about a Pending Pod in the first place.
 
     The classification an operator needs, rather than the one the phase field
     happens to offer:
@@ -6805,45 +6803,41 @@ def _classify_k8s_pod(pod: dict[str, Any]) -> K8sWorkloadState:
     * `Running` with its `Ready` condition true, or `Succeeded`, is READY.
     * `Pending` while images pull or containers are created is PENDING --
       the state this whole section exists to stop reporting as a failure.
-    * `Pending` because the scheduler cannot place the Pod (`Unschedulable`,
-      which is what a `FailedScheduling` event leaves behind) is FAILED and
-      says so, because no amount of waiting fixes a node that cannot fit it.
+    * `Pending` with `PodScheduled` not true -- the scheduler cannot place the
+      Pod (`Unschedulable`, what a `FailedScheduling` event leaves behind, or
+      `SchedulingGated`) -- is FAILED and says so, because no amount of
+      waiting fixes a node that cannot fit it.
     * A blocked container state (see `K8S_BLOCKED_WAITING_REASONS`) is FAILED
       whatever the phase says, including the `Running` Pod whose container is
-      in `CrashLoopBackOff`.
+      in `CrashLoopBackOff`. This is the one place the two callers *do*
+      differ, and deliberately: an install must not report a crash-looping Pod
+      as healthy, while self-heal answers that same Pod by restarting it.
     """
-    name = str((pod.get("metadata") or {}).get("name") or "?")
+    state = classify_pod(pod)
+    name = state.name or "?"
     status = pod.get("status") or {}
-    phase = str(status.get("phase") or "Unknown")
-    conditions = {
-        str(c.get("type")): c for c in (status.get("conditions") or []) if isinstance(c, dict)
-    }
+    phase = state.phase or "Unknown"
 
     blocked = _k8s_container_block(status)
     if blocked is not None:
         reason, message = blocked
         return K8sWorkloadState(name, K8S_STATE_FAILED, f"{phase}: {reason}", message)
 
-    if phase == "Pending":
-        scheduled = conditions.get("PodScheduled") or {}
-        if str(scheduled.get("status")) == "False" and scheduled.get("reason") == "Unschedulable":
-            return K8sWorkloadState(
-                name,
-                K8S_STATE_FAILED,
-                K8S_SUMMARY_UNSCHEDULABLE,
-                str(scheduled.get("message") or "").strip(),
-            )
-        waiting = _k8s_container_waiting_reason(status)
-        return K8sWorkloadState(name, K8S_STATE_PENDING, f"Pending: {waiting or 'being scheduled'}")
+    if state.unschedulable:
+        return K8sWorkloadState(name, K8S_STATE_FAILED, K8S_SUMMARY_UNSCHEDULABLE, state.detail)
 
-    if phase == "Running":
-        ready = conditions.get("Ready") or {}
-        if str(ready.get("status")) == "True":
+    if state.pending:
+        return K8sWorkloadState(
+            name, K8S_STATE_PENDING, f"Pending: {state.reason or 'being scheduled'}"
+        )
+
+    if state.running:
+        if state.ready:
             return K8sWorkloadState(name, K8S_STATE_READY, "Running")
         return K8sWorkloadState(
             name,
             K8S_STATE_PENDING,
-            f"Running: {_k8s_container_waiting_reason(status) or 'containers not ready yet'}",
+            f"Running: {state.reason or 'containers not ready yet'}",
         )
 
     if phase == "Succeeded":
