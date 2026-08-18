@@ -744,3 +744,59 @@ def test_standalone_observability_install_is_preflighted_too() -> None:
     sync.assert_not_called()
     apply_observability.assert_not_called()
     assert not all(r.ok for r in results)
+
+
+# --- the operator can SEE an unschedulable Pod (#3825) ---------------------
+
+
+def _pods_jsonpath(lines: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess([], 0, "\n".join(lines) + "\n", "")
+
+
+def test_unschedulable_pods_are_the_ones_with_no_node() -> None:
+    """A placed Pod pulling its image is Pending too -- nodeName is the tell."""
+    with patch.object(
+        ops,
+        "_run",
+        return_value=_pods_jsonpath(
+            [
+                "kind-control-plane|nyxgpt-api-stable-1",
+                "|prometheus-abc",
+                "kind-control-plane|grafana-xyz",
+                "|nyxgpt-api-canary-9",
+            ]
+        ),
+    ):
+        assert ops._k8s_unschedulable_pods() == ["prometheus-abc", "nyxgpt-api-canary-9"]
+
+
+def test_unschedulable_probe_reports_nothing_when_kubectl_fails() -> None:
+    """This feeds a status page, so a failed probe must not invent a problem."""
+    with patch.object(ops, "_run", return_value=subprocess.CompletedProcess([], 1, "", "boom")):
+        assert ops._k8s_unschedulable_pods() == []
+
+
+def test_infra_status_surfaces_unschedulable_pods(monkeypatch) -> None:
+    """#3825 was invisible on the Infrastructure page: 4/4 api and 4/4 web
+    Running, and prometheus stranded with nowhere to go."""
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "absent"})
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: ops.DeploymentMode(native={}, compose={}, conflicts=[]),
+    )
+    monkeypatch.setattr(
+        ops, "_which", lambda prog: "/usr/local/bin/x" if prog == "kubectl" else None
+    )
+    monkeypatch.setattr(ops, "_k8s_observability_workload_state", dict)
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        if "jsonpath" in " ".join(cmd):
+            return _pods_jsonpath(["node-a|nyxgpt-api-1", "|prometheus-abc"])
+        return subprocess.CompletedProcess([], 0, "nyxgpt-api-1   1/1   Running\n", "")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+
+    result = ops.infra_status()
+
+    assert result["kubernetes"]["unschedulable"] == ["prometheus-abc"]

@@ -192,6 +192,12 @@ namespaces already hold, and — per resource —
   multi-node cluster reports rather than refuses, since summed allocatable
   capacity can disprove a placement but never prove one.
 
+After the fact, the [Infrastructure page](#infrastructure-status-card-3468)
+names any Pod no node would take, separately from the Pod list: an
+unschedulable Pod reads as `Pending` there, which is also what a Pod that is
+placed and pulling its image reads as — so the stranded prometheus of #3825
+looked, on that page, exactly like a stack still starting up.
+
 ## 0. Create a cluster (if you don't have one)
 
 `nyxgpt ops install --kubernetes --local` does this step for you automatically
@@ -461,6 +467,16 @@ states rather than folding every failure into a single "not deployed":
   deployed."
 - **DEPLOYED** -- the probe succeeded and found Pods in the `nyxgpt`
   namespace.
+
+Below the Pod list, the card names any Pod **no node would take** (#3825).
+That state is otherwise invisible here: an unschedulable Pod reads as
+`Pending`, exactly like a Pod that is placed and pulling its image, so a
+deployment silently missing prometheus looked the same as one still starting
+up. Reporting only, as with everything else on this page -- the cure is more
+memory or CPU on the cluster VM and a re-run of `nyxgpt ops install
+--kubernetes --local`, which checks the node's capacity against the stack
+before it applies anything (see [Node capacity: what the stack
+reserves](#node-capacity-what-the-stack-reserves)).
 
 The same card carries an **In-cluster observability** section (#3787):
 per-workload readiness for the components in [Observability in the

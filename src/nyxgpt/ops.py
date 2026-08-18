@@ -6562,6 +6562,39 @@ def _workload_resource_requests(
     return scheduled, standby, breakdown
 
 
+def _k8s_unschedulable_pods() -> list[str]:
+    """Name every Pod in the nyxgpt namespace the scheduler could not place.
+
+    An empty `.spec.nodeName` is the only field that separates "no node would
+    take this Pod" from the ordinary `Pending` of one that is placed and
+    pulling its image -- which is why #3825's stranded prometheus was
+    invisible on a Pod list that showed both as Pending. Best-effort: a
+    kubectl that fails reports nothing rather than inventing a problem, since
+    this feeds a status page rather than a gate.
+    """
+    cp = _run(
+        [
+            "kubectl",
+            "-n",
+            K8S_NAMESPACE,
+            "get",
+            "pods",
+            "-o",
+            'jsonpath={range .items[*]}{.spec.nodeName}{"|"}{.metadata.name}{"\\n"}{end}',
+        ],
+        check=False,
+        expected=True,
+    )
+    if cp.returncode != 0:
+        return []
+    names = []
+    for line in (cp.stdout or "").splitlines():
+        node, _, name = line.partition("|")
+        if name and not node:
+            names.append(name)
+    return names
+
+
 def _k8s_render_kustomization(directory: Path) -> tuple[list[dict[str, Any]], str | None]:
     """Render a kustomization to objects without applying it.
 
@@ -7205,6 +7238,15 @@ def infra_status() -> dict[str, Any]:
         kubernetes_probe_available = cp.returncode == 0
         if kubernetes_probe_available:
             pods = [line for line in (cp.stdout or "").splitlines() if line.strip()]
+    # Pods the scheduler could not place (#3825). Reported separately because
+    # the line above cannot show it: an unschedulable Pod reads as `Pending`,
+    # which is also what a Pod that IS placed and pulling its image reads as
+    # -- so a stack with prometheus stranded for want of node memory looked,
+    # on this page, exactly like one that was still starting up. The
+    # distinguishing field is an empty `.spec.nodeName`.
+    unschedulable: list[str] = []
+    if kubernetes_configured and kubernetes_probe_available:
+        unschedulable = _k8s_unschedulable_pods()
     # The in-cluster observability layer (#3787), reported per workload so the
     # Infrastructure page can say *which* piece is missing rather than just
     # "observability: no". Only probed when the cluster answered at all --
@@ -7220,6 +7262,11 @@ def infra_status() -> dict[str, Any]:
         "deployed": bool(pods),
         "namespace": K8S_NAMESPACE,
         "pods": pods,
+        # Names only: the remedy is a CLI one (give the cluster VM more
+        # memory/CPU and re-run `nyxgpt ops install --kubernetes --local`,
+        # which refuses up front rather than repeating this), so the page
+        # reports the state and names the command (#3825).
+        "unschedulable": unschedulable,
         # (#3596) which cluster is configured, and whether it's the local `kind`
         # cluster nyxgpt provisions when nothing else is reachable, vs. a
         # bring-your-own cluster (minikube, Docker Desktop, a remote context, ...).
