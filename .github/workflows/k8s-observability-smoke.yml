@@ -78,8 +78,14 @@ jobs:
           # kubectl is deliberate HERE and only here: this step reconstructs
           # the old code path to prove it was broken. Every operator-facing
           # path is a `nyxgpt` command (see the steps below).
-          cp k8s/secret.example.yaml k8s/secret.yaml
-          kubectl apply -k k8s/
+          # #3834: the manifests live under ~/.nyxGPT/k8s now (package data
+          # the product syncs), so the injection applies the same tree the
+          # wrapped teardown at the end of this job deletes -- applying the
+          # checkout's copy would leave `ops down --kubernetes` reporting "no
+          # app tier bootstrapped" for an app tier that is running.
+          K8S_DIR=$(python -c 'from nyxgpt import ops; ops._sync_packaged_resources(); print(ops.K8S_DIR)')
+          cp "$K8S_DIR/secret.example.yaml" "$K8S_DIR/secret.yaml"
+          kubectl apply -k "$K8S_DIR/"
           found=$(kubectl -n nyxgpt get deploy,daemonset \
             -l tier=observability --no-headers 2>/dev/null | wc -l | tr -d ' ')
           echo "observability workloads after the pre-#3787 apply: $found"
@@ -87,8 +93,10 @@ jobs:
             echo "::error::fault injection failed: the app-tier manifests already ship observability, so this gate proves nothing"
             exit 1
           fi
-          # k8s/secret.yaml stays: the wrapped teardown at the end of this job
-          # deletes the app tier through the same kustomization it came from.
+          # The bootstrapped secret.yaml stays where it was written: the
+          # wrapped teardown at the end of this job deletes the app tier
+          # through the same kustomization it came from, and it looks for that
+          # file under K8S_DIR to decide there is an app tier at all.
 
           # Same rationale as not building the api/web images: the data/LLM
           # tier (#3786) is applied above so the injection really is the whole
@@ -142,7 +150,13 @@ jobs:
           # Grafana's provisioning is generated from docker/grafana at apply
           # time and only resolves because the overlay's Services carry the
           # Compose service names -- a rename breaks these silently.
-          pw=$(grep 'grafana-admin-password:' k8s/observability/secret.yaml | sed 's/.*: "//; s/"$//')
+          # Asked of the product rather than hardcoded: `nyxgpt ops
+          # observability --kubernetes` writes this Secret wherever
+          # `K8S_OBSERVABILITY_DIR` points, which #3834 moved out of the
+          # checkout to ~/.nyxGPT/k8s/observability. Reading it by that name
+          # means the next move relocates this check with it.
+          obs_secret=$(python -c 'from nyxgpt import ops; print(ops.K8S_OBSERVABILITY_DIR / "secret.yaml")')
+          pw=$(grep 'grafana-admin-password:' "$obs_secret" | sed 's/.*: "//; s/"$//')
           datasources=$(curl -s -u "admin:$pw" http://127.0.0.1:3001/api/datasources | jq -r '[.[].name] | sort | join(",")')
           echo "  grafana datasources -> $datasources"
           [ "$datasources" = "GlitchTip,Jaeger,Loki,Prometheus" ] || {

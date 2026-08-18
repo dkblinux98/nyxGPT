@@ -134,10 +134,16 @@ for k8s_file in (
 ):
     assert root.joinpath(k8s_file).is_file(), f"missing {k8s_file}"
 
-# ...and never the operator's real API key: `_ensure_k8s_secret` generates
-# k8s/secret.yaml next to the kustomization, and a wheel built from a tree
-# where someone ran the install in-place must not carry it.
-assert not root.joinpath("k8s/secret.yaml").is_file(), "a generated k8s secret leaked into the wheel"
+# ...and never either of the secrets the Kubernetes path generates:
+# `_ensure_k8s_secret` writes k8s/secret.yaml (the real `[auth] api_key`) and
+# `_ensure_k8s_observability_secret` writes k8s/observability/secret.yaml (the
+# Grafana admin password, Slack webhook and GlitchTip DSN), both next to the
+# kustomization they belong to. A wheel built from a tree where someone ran
+# either command in-place must not carry them.
+for generated_secret in ("k8s/secret.yaml", "k8s/observability/secret.yaml"):
+    assert not root.joinpath(
+        generated_secret
+    ).is_file(), f"a generated k8s secret leaked into the wheel: {generated_secret}"
 
 # #3622: a bare `pip install nyxgpt` (no Homebrew/systemd installer step)
 # must still resolve example.config.ini -- config_wizard.WIZARD_SCHEMA
@@ -154,8 +160,50 @@ print("RESOURCE_RESOLUTION_OK")
 """
 
 
+@pytest.fixture
+def planted_generated_secrets():
+    """Put the k8s secrets an install generates into the tree being built.
+
+    Without this the "no secret reached the wheel" assertions in the script
+    above are vacuous everywhere they actually run: CI builds from a fresh
+    checkout that has never run `nyxgpt ops install --kubernetes`, so the
+    files the `exclude-package-data` entries exist for are not there to leak
+    in the first place. Planting them is the fault-injection half (#3753) --
+    drop either exclusion from pyproject.toml and this test fails.
+
+    A developer's real generated secret is never touched or deleted: only
+    files this fixture created are removed -- and they are removed from
+    setuptools' `build/lib` staging tree as well as from the source tree.
+    That second half is not tidiness: `build/lib` is not cleaned between
+    builds, so a file that reached it once is copied into every later wheel
+    built from this checkout even after the source file is gone. Leaving one
+    behind would poison the developer's next `python -m build` with a secret
+    this test invented.
+    """
+    planted = []
+    for relative in ("k8s/secret.yaml", "k8s/observability/secret.yaml"):
+        path = REPO_ROOT / relative
+        if path.exists():
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "# planted by test_resources_packaging.py -- must not reach a wheel\n"
+            'stringData:\n  api-key: "planted-secret"\n',
+            encoding="utf-8",
+        )
+        planted.append(relative)
+    try:
+        yield
+    finally:
+        for relative in planted:
+            (REPO_ROOT / relative).unlink(missing_ok=True)
+            (REPO_ROOT / "build" / "lib" / "nyxgpt" / "resources" / relative).unlink(
+                missing_ok=True
+            )
+
+
 @pytest.mark.unit
-def test_resources_resolve_from_installed_non_editable_wheel(tmp_path):
+def test_resources_resolve_from_installed_non_editable_wheel(tmp_path, planted_generated_secrets):
     dist_dir = tmp_path / "dist"
     build_cp = subprocess.run(
         [sys.executable, "-m", "build", "--wheel", "--outdir", str(dist_dir), str(REPO_ROOT)],

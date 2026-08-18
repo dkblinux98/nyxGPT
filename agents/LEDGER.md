@@ -1843,6 +1843,31 @@ are absent here by design (relocated to the annex; IDs are never reused).
   `scripts/agents/lib/ledger_ids.py next V --base origin/v3.0.0` allocates
   against the current release branch. IDs are never reused.)
 
+- **V-054** · 2026-08-18 — **An `exclude-package-data` entry for a file nested
+  under an importable-looking resources subdirectory is only half an
+  exclusion, and the missing half is silent.** `[tool.setuptools.packages.find]`
+  in pyproject enables namespace packages, so `src/nyxgpt/resources/k8s/
+  observability/` is discovered as `nyxgpt.resources.k8s.observability` *and*
+  swept up by `nyxgpt.resources`'s `**/*` include. The file is collected twice
+  and setuptools' `build_py.exclude_data_files` applies a pattern only to the
+  package it is keyed under (`spec.get(package)`), so each copy needs its own
+  key — with either one alone the file still ships. This is why
+  `k8s/observability/secret.yaml` (Grafana admin password, Slack webhook,
+  GlitchTip DSN) could reach a wheel built from a checkout that had ever run
+  `nyxgpt ops observability --kubernetes`, while `k8s/secret.yaml` one level
+  up could not. `.terraform/` is unaffected: not a legal package name, so it
+  is never split off.
+  Method: wheels built four ways on the CI runner while implementing #3834
+  (2026-08-18) with both secrets planted in the tree — parent key only:
+  leaked; per-package key only: leaked; both: clean; neither: leaked. Standing
+  guard: `tests/unit/test_resources_packaging.py` now plants both generated
+  secrets before the build it already ran, which is what turned a vacuous
+  assertion (a fresh checkout has no generated secret to leak) into one that
+  fails on the real defect.
+  Re-verify when: a new generated, gitignored file appears more than one level
+  below a symlinked `resources/` subdirectory, or setuptools changes how
+  namespace packages claim data files.
+
 
 ## Parked
 
