@@ -47,7 +47,7 @@ def search_issues(query):
         "api", "-X", "GET", "search/issues", "--paginate", "-f", f"q={query}", "-f", "per_page=100"
     )
     items = []
-    for page in iter_json_objects(out):
+    for page in iter_json_objects(out, source=f"search/issues q={query}"):
         items.extend(page.get("items", []))
     return items
 
@@ -100,7 +100,7 @@ def dump_all_rounds(repo):
         "-f",
         "per_page=100",
     )
-    for page in iter_json_objects(out):
+    for page in iter_json_objects(out, source=f"pulls of {repo}"):
         prs.extend(page)
 
     closes_re = re.compile(r"\bCloses\s+#(\d+)\b", re.I)
@@ -120,7 +120,7 @@ def dump_all_rounds(repo):
             "-f",
             "per_page=100",
         )
-        for page in iter_json_objects(reviews_out):
+        for page in iter_json_objects(reviews_out, source=f"reviews of PR #{number}"):
             for rv in page:
                 findings = parse_review_body(rv.get("body") or "")
                 if findings is None:

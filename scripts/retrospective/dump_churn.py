@@ -189,7 +189,7 @@ def list_runs(repo, workflow_file):
         "per_page=100",
     )
     runs = []
-    for page in iter_json_objects(out):
+    for page in iter_json_objects(out, source=f"runs of {workflow_file}"):
         runs.extend(page.get("workflow_runs", []))
     return runs
 
@@ -215,7 +215,7 @@ def list_jobs(repo, run_id):
     if out is None:
         return []
     jobs = []
-    for page in iter_json_objects(out):
+    for page in iter_json_objects(out, source=f"jobs of run {run_id}"):
         jobs.extend(page.get("jobs", []))
     return jobs
 

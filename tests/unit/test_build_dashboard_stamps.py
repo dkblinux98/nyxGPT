@@ -83,7 +83,8 @@ def test_parse_stamp(build_dashboard, raw, expected):
 
 def _stamps(build_dashboard, generated_at, present=True):
     return build_dashboard.source_stamps(
-        NOW, [("spend", "Spend telemetry", "spend.json", present, generated_at)]
+        NOW,
+        [("spend", "Spend telemetry", "spend.json", present, generated_at, "retro_spend_dump.yml")],
     )["spend"]
 
 
@@ -120,9 +121,15 @@ def test_unstamped_source_is_reported_as_unknown_not_omitted(build_dashboard):
 
 
 def test_absent_file_is_marked_not_present(build_dashboard):
-    """An optional dump that was never produced: its section is omitted, so the
-    page must not claim its data is merely unknown."""
+    """An optional dump that was never produced: the page must not claim its
+    data is merely unknown."""
     assert _stamps(build_dashboard, None, present=False)["present"] is False
+
+
+def test_every_source_names_the_dump_that_owes_it(build_dashboard):
+    """#3808: an absent section has to say which run to go and read, so the
+    producing workflow travels with the stamp."""
+    assert _stamps(build_dashboard, None, present=False)["workflow"] == "retro_spend_dump.yml"
 
 
 def _seed_data_dir(tmp_path, *, issues_stamped=False):
@@ -141,14 +148,18 @@ def _seed_data_dir(tmp_path, *, issues_stamped=False):
     return data
 
 
+def _build(build_dashboard, monkeypatch, data, out, *extra):
+    monkeypatch.setattr(
+        sys, "argv", ["build_dashboard.py", "--data-dir", str(data), "--out", str(out), *extra]
+    )
+    return build_dashboard.main()
+
+
 def test_build_emits_a_stamp_for_every_source(build_dashboard, tmp_path, monkeypatch):
     """End to end: the built HTML carries a build time and one entry per source."""
     data = _seed_data_dir(tmp_path, issues_stamped=True)
     out = tmp_path / "retro.html"
-    monkeypatch.setattr(
-        sys, "argv", ["build_dashboard.py", "--data-dir", str(data), "--out", str(out)]
-    )
-    build_dashboard.main()
+    _build(build_dashboard, monkeypatch, data, out)
 
     embedded = json.loads(
         out.read_text().split("const QDATA = ", 1)[1].split(";\nconst DATA", 1)[0]
@@ -181,10 +192,7 @@ def test_unstamped_corpus_survives_the_build(build_dashboard, tmp_path, monkeypa
     """The bare-list corpus still builds; its as-of time is simply unknown."""
     data = _seed_data_dir(tmp_path, issues_stamped=False)
     out = tmp_path / "retro.html"
-    monkeypatch.setattr(
-        sys, "argv", ["build_dashboard.py", "--data-dir", str(data), "--out", str(out)]
-    )
-    build_dashboard.main()
+    _build(build_dashboard, monkeypatch, data, out)
     embedded = json.loads(
         out.read_text().split("const QDATA = ", 1)[1].split(";\nconst DATA", 1)[0]
     )
@@ -195,4 +203,70 @@ def test_unstamped_corpus_survives_the_build(build_dashboard, tmp_path, monkeypa
         "ageDays": None,
         "stale": False,
         "present": True,
+        # Written by the refresh session by hand, so no dump owes it.
+        "workflow": None,
     }
+
+
+# --- #3808: a dump that did not land must be impossible to publish quietly ---
+
+
+def test_build_fails_when_a_dump_did_not_land(build_dashboard, tmp_path, monkeypatch, capsys):
+    """The churn dump had failed on every run it ever had and the refresh still
+    reported success, because a missing input cost the build nothing."""
+    data = _seed_data_dir(tmp_path, issues_stamped=True)
+    out = tmp_path / "retro.html"
+
+    assert _build(build_dashboard, monkeypatch, data, out) == build_dashboard.MISSING_SOURCE_EXIT
+
+    printed = capsys.readouterr().out
+    assert "missing sources:" in printed
+    # Named and actionable: which file, and which dump owes it.
+    for token in ("spend.json", "retro_spend_dump.yml", "churn.json", "retro_churn_dump.yml"):
+        assert token in printed
+    # The page is still written -- it is publishable, deliberately, not silently.
+    assert out.exists()
+
+
+def test_missing_sources_can_be_published_deliberately(build_dashboard, tmp_path, monkeypatch):
+    """--allow-missing-sources is the conscious override, not the default."""
+    data = _seed_data_dir(tmp_path, issues_stamped=True)
+    out = tmp_path / "retro.html"
+    assert _build(build_dashboard, monkeypatch, data, out, "--allow-missing-sources") == 0
+
+
+def test_build_succeeds_when_every_source_landed(build_dashboard, tmp_path, monkeypatch):
+    data = _seed_data_dir(tmp_path, issues_stamped=True)
+    stamp = {"generated_at": NOW.isoformat()}
+    (data / "project_fields.json").write_text(json.dumps({**stamp, "issues": {}}))
+    empty_bucket = {"claude_steps": 0, "runs": 0, "runner_minutes": 0.0, "retry_cycles": 0}
+    (data / "spend.json").write_text(
+        json.dumps({**stamp, "issues": {}, "unattributed": empty_bucket})
+    )
+    (data / "churn.json").write_text(json.dumps({**stamp, "issues": {}, "rounds": []}))
+    out = tmp_path / "retro.html"
+    assert _build(build_dashboard, monkeypatch, data, out) == 0
+
+
+def test_absent_section_is_rendered_unavailable_not_hidden(build_dashboard, tmp_path, monkeypatch):
+    """The page has to say a section is missing data. Omitting it is what made
+    a never-delivered churn view indistinguishable from a complete dashboard."""
+    data = _seed_data_dir(tmp_path, issues_stamped=True)
+    out = tmp_path / "retro.html"
+    _build(build_dashboard, monkeypatch, data, out)
+    html = out.read_text()
+
+    # Both optional panels are wired to the unavailable renderer, and neither
+    # section element is hidden outright any more.
+    for key, body, notice in (
+        ("spend", "spendbody", "spendunavail"),
+        ("churn", "churnbody", "churnunavail"),
+    ):
+        assert f"renderUnavailable('{key}', '{body}', '{notice}')" in html
+        assert f'<div class="unavail" id="{notice}" hidden></div>' in html
+    assert 'id="spendSection" hidden' not in html
+    assert 'id="churnSection" hidden' not in html
+    # The notice needs the producing workflow to point at a run to read.
+    embedded = json.loads(html.split("const QDATA = ", 1)[1].split(";\nconst DATA", 1)[0])
+    assert embedded["build"]["sources"]["churn"]["workflow"] == "retro_churn_dump.yml"
+    assert embedded["build"]["sources"]["spend"]["workflow"] == "retro_spend_dump.yml"

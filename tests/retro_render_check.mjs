@@ -10,8 +10,13 @@
  * supposed to protect the reader from. Running the script in a JS engine is
  * the only way to see the rendered strings.
  *
+ * The same reasoning covers the "section unavailable" notices (#3808): whether
+ * a reader is TOLD a dump did not land is a property of what the script
+ * renders, not of what the JSON contains.
+ *
  * Usage: node tests/retro_render_check.mjs <built.html>
- * Output: JSON on stdout — {buildstamp, staleafter, provenancerows, asof: {...}}
+ * Output: JSON on stdout — {buildstamp, staleafter, provenancerows, asof: {...},
+ *         unavailable: {<id>: {html, hidden}}, bodies: {<id>: {hidden}}}
  * Exit 1 if the page script throws.
  */
 
@@ -61,17 +66,38 @@ function makeEl(props = {}) {
   };
 }
 
+// Ids the markup itself declares hidden, so an element the script never
+// touches starts in the state a browser would give it. Without this, a panel
+// left alone reads as visible here and as hidden in a browser — the exact
+// distinction #3808's notices turn on. Scanned by index rather than by a
+// tag-shaped regex, for the reason given above the script extraction.
+function hiddenIds(markup) {
+  const ids = new Set();
+  for (let at = markup.indexOf('id="'); at !== -1; at = markup.indexOf('id="', at + 1)) {
+    const open = markup.lastIndexOf('<', at);
+    const close = markup.indexOf('>', at);
+    if (open === -1 || close === -1) continue;
+    const id = markup.slice(at + 4, markup.indexOf('"', at + 4));
+    if (/[\s]hidden[\s>=]/.test(markup.slice(open, close + 1))) ids.add(id);
+  }
+  return ids;
+}
+const initiallyHidden = hiddenIds(html);
+
 // The elements the script addresses by id are created on demand, so a new id
 // in the template needs no shim change; [data-asof] carriers are read out of
 // the markup so their dataset matches the real page.
 const byId = new Map();
+// Seeded with the markup-hidden ids so an element the script never touched is
+// still reported (a notice that stays hidden is a result, not an absence).
+for (const id of initiallyHidden) byId.set(id, makeEl({ id, hidden: true }));
 const asofEls = [...html.matchAll(/data-asof="([^"]*)"/g)].map(([, keys]) =>
   makeEl({ dataset: { asof: keys } }),
 );
 
 const document = {
   getElementById(id) {
-    if (!byId.has(id)) byId.set(id, makeEl({ id }));
+    if (!byId.has(id)) byId.set(id, makeEl({ id, hidden: initiallyHidden.has(id) }));
     return byId.get(id);
   },
   querySelectorAll(sel) {
@@ -100,6 +126,14 @@ const read = (id) => {
   return el.innerHTML || el.textContent || '';
 };
 
+// A panel whose dump did not land renders a notice and keeps its data body
+// hidden (#3808). Both halves matter: a notice nobody shows, or a body shown
+// with no data, is the silent-omission failure in a new costume.
+const suffixed = (suffix, shape) =>
+  Object.fromEntries(
+    [...byId].filter(([id]) => id.endsWith(suffix)).map(([id, el]) => [id, shape(el)]),
+  );
+
 console.log(
   JSON.stringify(
     {
@@ -107,6 +141,8 @@ console.log(
       staleafter: read('staleafter'),
       provenancerows: read('provenancerows'),
       asof: Object.fromEntries(asofEls.map((el) => [el.dataset.asof, el.innerHTML])),
+      unavailable: suffixed('unavail', (el) => ({ html: el.innerHTML, hidden: el.hidden })),
+      bodies: suffixed('body', (el) => ({ hidden: el.hidden })),
     },
     null,
     1,

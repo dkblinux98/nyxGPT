@@ -83,22 +83,77 @@ def gh(*args):
     return subprocess.run(["gh", *args], check=True, capture_output=True, text=True).stdout
 
 
-def iter_json_objects(text):
+class PaginatedJSONError(ValueError):
+    """A `gh --paginate` stream that could not be walked as concatenated JSON.
+
+    Raised instead of letting the bare `json.JSONDecodeError` out: that one
+    reports only a character offset into an anonymous multi-megabyte string,
+    which is what made #3808 take a day to place. This names the endpoint, how
+    many pages were read before the break, and what the bytes at the break
+    actually are, so the next occurrence is diagnosable from the run log alone.
+    """
+
+    def __init__(self, source, pages_read, offset, total, snippet, detail):
+        self.source = source
+        self.pages_read = pages_read
+        self.offset = offset
+        self.total = total
+        self.snippet = snippet
+        super().__init__(
+            f"{source}: malformed or partial page in the paginated response. "
+            f"{pages_read} page(s) decoded cleanly; the stream stops being JSON at "
+            f"byte {offset} of {total} ({detail}). Bytes at the break: {snippet!r}. "
+            "This is a bad response, not a bad caller -- a truncated stream or "
+            "non-JSON text (a gh warning, a rate-limit notice) interleaved into "
+            "stdout. Re-dispatch the dump; if it recurs, capture the raw response "
+            "for that endpoint before fixing anything."
+        )
+
+
+# Characters of the offending region quoted in a PaginatedJSONError. Enough to
+# recognise an HTML error page or a rate-limit notice, short enough for a log.
+SNIPPET_CHARS = 160
+
+
+def iter_json_objects(text, source="gh --paginate output"):
+    """Yield each page of a `gh --paginate` response (concatenated JSON docs).
+
+    `source` names the endpoint being walked and appears in the error raised
+    for a malformed page -- pass it at every call site.
+    """
     dec = json.JSONDecoder()
-    idx, n = 0, len(text)
+    idx, n, pages = 0, len(text), 0
     while idx < n:
         while idx < n and text[idx].isspace():
             idx += 1
         if idx >= n:
             break
-        # raw_decode returns the ABSOLUTE index in `text` where the document
-        # ended, not a length relative to `idx`. `idx += end` therefore
-        # double-counts everything already consumed: correct for the first
-        # document (which starts at 0) and wrong for every one after it. The
-        # overshoot either runs past the end -- exiting this loop and silently
-        # discarding the remaining pages -- or lands mid-document and raises
-        # "Expecting value" (#3808).
-        obj, end = dec.raw_decode(text, idx)
+        try:
+            # raw_decode returns the ABSOLUTE index in `text` where the document
+            # ended, not a length relative to `idx`. `idx += end` therefore
+            # double-counts everything already consumed: correct for the first
+            # document (which starts at 0) and wrong for every one after it. The
+            # overshoot either runs past the end -- exiting this loop and silently
+            # discarding the remaining pages -- or lands mid-document and raises
+            # "Expecting value" (#3808).
+            obj, end = dec.raw_decode(text, idx)
+        except json.JSONDecodeError as exc:
+            raise PaginatedJSONError(
+                source, pages, idx, n, text[idx : idx + SNIPPET_CHARS], exc.msg
+            ) from exc
+        if end <= idx:
+            # A decoder that consumed nothing would spin here forever. Not
+            # reachable through today's json module; a silent infinite loop is
+            # a worse failure than a named error, so it is refused explicitly.
+            raise PaginatedJSONError(
+                source,
+                pages,
+                idx,
+                n,
+                text[idx : idx + SNIPPET_CHARS],
+                "decoder made no forward progress",
+            )
+        pages += 1
         yield obj
         idx = end
 
@@ -155,7 +210,7 @@ def list_runs(repo, workflow_file, since=None):
     if since:
         args += ["-f", f"created=>={since}"]
     runs = []
-    for page in iter_json_objects(gh(*args)):
+    for page in iter_json_objects(gh(*args), source=f"runs of {workflow_file}"):
         runs.extend(page.get("workflow_runs", []))
     return runs
 
@@ -256,7 +311,7 @@ def claude_steps_dynamic(repo, run_id):
     if out is None:
         return 0
     count = 0
-    for page in iter_json_objects(out):
+    for page in iter_json_objects(out, source=f"jobs of run {run_id}"):
         for job in page.get("jobs", []):
             for step in job.get("steps", []):
                 if step.get("conclusion") in (None, "skipped"):

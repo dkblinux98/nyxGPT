@@ -1125,6 +1125,36 @@ are absent here by design (relocated to the annex; IDs are never reused).
   files, both collections endpoints returned `Keyspace 'nyxgpt' does not
   exist`, and a single ingest recovered the page.
   Re-verify when: #3864 / #3865 land — each retires one half of this entry.
+- **V-034** · 2026-08-18 — **The retrospective dumps' paginated-JSON defect was
+  already fixed on `v3.0.0` before #3808 was worked; what remained was the
+  failure being invisible.** `iter_json_objects` uses `idx = end` and lives in
+  one place (`dump_spend.py`), imported by `dump_churn.py` and
+  `dump_review_rounds.py`; `data/spend.json` and `data/churn.json` are present
+  in the tree. Those fixes reached the release branch through the
+  `claude/retro-data` publish path (commits `52b7255f`, `145d6040`, `d37e3a76`,
+  `2659d64e`, `e5de6ff6`, `864abcc8`, `0f3688e8`, `d66bb9f0`, `6c2bf86f`,
+  `8cda150e`), not through an issue PR, which is why the issue stayed open with
+  its work apparently undone.
+  Method: `git log --grep=3808 --all` and `git branch --contains` on each
+  commit (all on `v3.0.0`), plus reading `scripts/retrospective/dump_spend.py`
+  and `ls scripts/retrospective/data/`, 2026-08-18, while implementing #3808.
+  Re-verify when: a retro dump fails again — check the run before assuming the
+  helper regressed.
+- **V-035** · 2026-08-18 — **A retrospective build with a missing input now
+  fails loudly and says so on the page.** `build_dashboard.py` prints a
+  `missing sources:` line naming each absent file and the dump that owes it and
+  exits **2** (`--allow-missing-sources` to publish deliberately); the spend and
+  churn panels render a "Section unavailable — this is missing data, not zero"
+  notice linking that workflow's runs instead of being hidden. The old
+  "the builder omits the section entirely rather than erroring" guidance in
+  `REFRESH_RUNBOOK.md` steps 4/4b is retired.
+  Method: ran `tests/test_retro_missing_sources.sh` (builds the real dashboard
+  with `spend.json`/`churn.json` removed, then restored, and reads the rendered
+  page back through `tests/retro_render_check.mjs`) — 27 assertions, 0 failures,
+  2026-08-18; and confirmed the pre-fix template renders no notice at all under
+  the same conditions.
+  Re-verify when: the retro template's panel structure changes, or a new
+  optional data source is added without a source stamp.
 
 ## Parked
 

@@ -170,6 +170,58 @@ class TestIterJsonObjects:
 
         assert dump_review_rounds.iter_json_objects is dump_spend.iter_json_objects
 
+    # --- a bad page is named, never skipped (#3808) --------------------------
+    # The original failure was a bare JSONDecodeError quoting a character
+    # offset into an anonymous 3.9 MB string. Whatever the cause, the dump has
+    # to say which endpoint, how far it got, and what the bytes actually were.
+
+    def test_malformed_page_raises_a_named_error(self, dump_review_rounds):
+        import dump_spend
+
+        text = '[{"a": 1}][{"a": 2}]<html>rate limit exceeded</html>'
+        with pytest.raises(dump_spend.PaginatedJSONError) as exc:
+            list(dump_review_rounds.iter_json_objects(text, source="pulls of owner/repo"))
+
+        err = exc.value
+        assert err.source == "pulls of owner/repo"
+        assert err.pages_read == 2  # two pages decoded before the break
+        assert err.offset == text.index("<html>")
+        assert err.total == len(text)
+        assert "<html>rate limit exceeded" in err.snippet
+        message = str(err)
+        assert "pulls of owner/repo" in message
+        assert "2 page(s) decoded cleanly" in message
+        assert "rate limit exceeded" in message
+
+    def test_truncated_final_page_is_an_error_not_a_short_result(self, dump_review_rounds):
+        """A stream cut at a buffer boundary must not read as "that's all the
+        data there was" -- that is the silent-undercount half of #3808."""
+        import dump_spend
+
+        text = '[{"a": 1}][{"a": 2}, {"a": 3'
+        with pytest.raises(dump_spend.PaginatedJSONError) as exc:
+            list(dump_review_rounds.iter_json_objects(text))
+        assert exc.value.pages_read == 1
+        assert "gh --paginate output" in str(exc.value)
+
+    def test_the_error_is_a_valueerror(self, dump_review_rounds):
+        """Callers that already guard json parsing keep working."""
+        import dump_spend
+
+        assert issubclass(dump_spend.PaginatedJSONError, ValueError)
+
+    def test_a_bad_page_never_yields_silently(self, dump_review_rounds):
+        """Pages before the break are still yielded, but the consumer cannot
+        finish the loop without seeing the error."""
+        import dump_spend
+
+        text = '[{"a": 1}]not json at all'
+        seen = []
+        with pytest.raises(dump_spend.PaginatedJSONError):
+            for page in dump_review_rounds.iter_json_objects(text):
+                seen.append(page)
+        assert seen == [[{"a": 1}]]
+
 
 class TestBuildDashboardSnapshot:
     def _round(self, issue, pr, date, module="web-ui", critical=(), medium=(), minor=()):

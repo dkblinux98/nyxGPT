@@ -20,13 +20,15 @@ Inputs (all under scripts/retrospective/data/ unless overridden):
                          steps, total workflow runs, runner minutes, retry/self-heal
                          cycle count) produced by the "Retro Dashboard - Dump Spend
                          Telemetry" workflow (#3696). When present, adds a per-sprint
-                         cost view; omitted entirely from the dashboard otherwise.
+                         cost view; when absent the section renders as explicitly
+                         unavailable and the build exits non-zero (#3808).
   churn.json           - OPTIONAL: per-round churn-cost telemetry (tokens split into
                          context re-establishment vs change production, per-issue
                          onboarding tax across rounds, stale-context incident tally)
                          produced by the "Retro Dashboard - Dump Churn Cost" workflow
                          (#3776). Dollars appear only when that dump ran with a price
-                         sheet configured; omitted entirely from the dashboard otherwise.
+                         sheet configured; when the file is absent the section renders
+                         as explicitly unavailable and the build exits non-zero (#3808).
   relationships.json   - OPTIONAL: native issue relationships (blocked-by/blocks)
                          produced by the "Retro Dashboard - Dump Relationships"
                          workflow (#3731). Failure/improvement attribution is read
@@ -51,6 +53,7 @@ import argparse
 import json
 import re
 import statistics
+import sys
 from collections import Counter, defaultdict
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -85,6 +88,12 @@ EXCLUDED_MILESTONES = {"Phase X: Rejected"}
 # behind the build did not get refreshed in that pass and is called out.
 STALE_SOURCE_DAYS = 1.0
 
+# Exit status when an input dump did not land (#3808). The page is still
+# written — every missing section says on its face that it is unavailable —
+# but the build refuses to report success, so a refresh cannot publish a
+# quietly-incomplete dashboard the way it did for spend and churn.
+MISSING_SOURCE_EXIT = 2
+
 
 def load_issues(path):
     """Read all_issues.json in either shape, returning (issues, generated_at).
@@ -115,15 +124,20 @@ def parse_stamp(value):
 def source_stamps(now, sources):
     """Per-source as-of provenance for the page's freshness lines (#3807).
 
-    `sources` is an iterable of (key, label, filename, present, generated_at).
+    `sources` is an iterable of
+    (key, label, filename, present, generated_at, workflow).
     A source whose file carries no parseable stamp keeps `generatedAt: None`,
     which the page renders as an explicit "unknown" — an unstamped dump must
     not be able to pass for a freshly refreshed one. `stale` marks data
     materially older than the build, so a week-old dump cannot hide behind a
     build that ran a minute ago.
+
+    `workflow` names the dump that owes the file (None for the hand-written
+    corpus). It is what turns an absent source from a blank space into an
+    actionable line on the page: which run to go and read (#3808).
     """
     out = {}
-    for key, label, filename, present, generated_at in sources:
+    for key, label, filename, present, generated_at, workflow in sources:
         stamp = parse_stamp(generated_at)
         age = (now - stamp).total_seconds() / 86400 if stamp else None
         out[key] = {
@@ -133,6 +147,7 @@ def source_stamps(now, sources):
             "ageDays": round(age, 2) if age is not None else None,
             "stale": bool(age is not None and age >= STALE_SOURCE_DAYS),
             "present": present,
+            "workflow": workflow,
         }
     return out
 
@@ -535,8 +550,10 @@ def churn_view(churn, project_fields):
     context re-establishment tokens vs change-production tokens, the repeat
     onboarding tax paid by multi-round issues, and the tally of stale-context
     incidents. Dollars appear only when the dump ran with a price sheet
-    configured. Returns None when no churn dump exists, so the dashboard
-    omits the section entirely rather than rendering an empty one."""
+    configured. Returns None when no churn dump exists; the page then renders
+    the section as explicitly unavailable rather than dropping it (#3808) —
+    a missing panel reads as "never built", which is how a churn dump that had
+    never once succeeded went unnoticed for a day."""
     if not churn:
         return None
     sprint_of = sprint_of_map(project_fields) if project_fields else {}
@@ -707,6 +724,15 @@ def main():
     ap.add_argument("--data-dir", default=str(HERE / "data"))
     ap.add_argument("--template", default=str(HERE / "retro_template.html"))
     ap.add_argument("--out", default=str(HERE / "retro.html"))
+    ap.add_argument(
+        "--allow-missing-sources",
+        action="store_true",
+        help=(
+            "build and exit 0 even when an input dump is absent. The page still "
+            "renders those sections as unavailable; this only stops the build "
+            f"from exiting {MISSING_SOURCE_EXIT} (#3808)."
+        ),
+    )
     args = ap.parse_args()
     data = Path(args.data_dir)
 
@@ -741,13 +767,21 @@ def main():
         "sources": source_stamps(
             now,
             [
-                ("issues", "Issue corpus", "all_issues.json", True, issues_generated_at),
+                (
+                    "issues",
+                    "Issue corpus",
+                    "all_issues.json",
+                    True,
+                    issues_generated_at,
+                    None,  # hand-written by the refresh session, not a dump
+                ),
                 (
                     "relationships",
                     "Issue relationships",
                     "relationships.json",
                     relationships is not None,
                     (relationships or {}).get("generated_at"),
+                    "retro_relationships_dump.yml",
                 ),
                 (
                     "reviews",
@@ -755,6 +789,7 @@ def main():
                     "dashboard_data.json",
                     True,
                     dashboard.get("generated_at"),
+                    "retro_review_rounds_dump.yml",
                 ),
                 (
                     "projectFields",
@@ -762,6 +797,7 @@ def main():
                     "project_fields.json",
                     project_fields is not None,
                     (project_fields or {}).get("generated_at"),
+                    "retro_project_fields_dump.yml",
                 ),
                 (
                     "spend",
@@ -769,6 +805,7 @@ def main():
                     "spend.json",
                     spend is not None,
                     (spend or {}).get("generated_at"),
+                    "retro_spend_dump.yml",
                 ),
                 (
                     "churn",
@@ -776,6 +813,7 @@ def main():
                     "churn.json",
                     churn is not None,
                     (churn or {}).get("generated_at"),
+                    "retro_churn_dump.yml",
                 ),
             ],
         ),
@@ -801,11 +839,37 @@ def main():
         for s in qdata["build"]["sources"].values()
         if s["present"] and not s["generatedAt"]
     ]
+    missing = [s for s in qdata["build"]["sources"].values() if not s["present"]]
     print(f"built {args.out}: {qdata['qtotals']} sprintSource={qdata['sprintSource']}")
     print(f"  built at {qdata['build']['at']}")
     print(f"  stale sources: {', '.join(stale) or 'none'}")
     print(f"  unstamped sources: {', '.join(unstamped) or 'none'}")
+    print(
+        "  missing sources: "
+        + (", ".join(f"{s['file']} ({s['workflow'] or 'hand-written'})" for s in missing) or "none")
+    )
+    if missing and not args.allow_missing_sources:
+        # Non-zero, after writing the page: the dashboard is publishable (each
+        # missing section says so on its face), but publishing it is now a
+        # deliberate act. #3808's churn dump had never once succeeded and the
+        # refresh reported success anyway, because a skipped input cost nothing
+        # here. Re-dispatch the named dump, or pass --allow-missing-sources and
+        # report the failed dump with its run URL.
+        print(
+            "ERROR: "
+            + "; ".join(
+                f"{s['label']} is missing — {s['file']} was not produced by "
+                f"{s['workflow'] or 'the refresh session'}"
+                for s in missing
+            )
+            + ". Re-dispatch that dump and read its most recent run, or rebuild with "
+            "--allow-missing-sources to publish deliberately (the page will show the "
+            "section as unavailable).",
+            flush=True,
+        )
+        return MISSING_SOURCE_EXIT
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
