@@ -46,6 +46,7 @@ fails if it drifts. Do not hand-edit.
 | `handle_improvement.yml` | issue_comment | Handle Improvement |
 | `huddle_decision_dispatch.yml` | issue_comment | Huddle Decision Dispatch |
 | `issue-relationships-smoke.yml` | push, pull_request, workflow_dispatch | Issue Relationships Smoke |
+| `k8s-artifact-smoke.yml` | pull_request, push, workflow_dispatch | Kubernetes Artifact Smoke |
 | `k8s-capacity-smoke.yml` | pull_request, push, workflow_dispatch | Kubernetes Capacity Smoke |
 | `k8s-local-smoke.yml` | pull_request, push, workflow_dispatch | Kubernetes Local Smoke |
 | `k8s-observability-smoke.yml` | pull_request, push | Kubernetes Observability Smoke |
