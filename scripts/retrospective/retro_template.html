@@ -62,6 +62,20 @@
   header h1 { margin: 6px 0 4px; font-size: 26px; font-weight: 650; letter-spacing: -0.01em; text-wrap: balance; }
   header .sub { color: var(--ink-2); max-width: 72ch; margin: 0; }
 
+  /* build + per-source freshness stamps (#3807) */
+  .asof {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11.5px; color: var(--muted); margin: -8px 0 12px;
+    display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline;
+  }
+  .asof:empty { display: none; }
+  .asof .sep { color: var(--axis); }
+  .asof .stale, .asof .unknown, header .eyebrow .stale { color: var(--sev-med); font-weight: 650; }
+  .provrows td.stale, .provrows td.unknown { color: var(--sev-med); font-weight: 650; }
+  .provrows td.absent { color: var(--muted); }
+  .provtable { margin: 8px 0 10px; }
+  .provtable table { min-width: 460px; font-size: 12.5px; }
+
   h2.divider { margin: 14px 0 -8px; font-size: 14px; font-weight: 650; letter-spacing: .07em;
     text-transform: uppercase; color: var(--muted); display: flex; align-items: center; gap: 12px; }
   h2.divider::after { content: ""; flex: 1; height: 1px; background: var(--grid); }
@@ -208,7 +222,7 @@
 <div class="wrap">
   <header>
     <div class="eyebrow">
-      <span>dkblinux98/nyxGPT</span><span>·</span><span>agent loop</span><span>·</span><span>Jan 1 – Aug 17, 2026</span>
+      <span>dkblinux98/nyxGPT</span><span>·</span><span>agent loop</span><span>·</span><span>Jan 1 – Aug 17, 2026</span><span>·</span><span id="buildstamp">build time unknown</span>
     </div>
     <h1>nyxGPT Project Retrospective</h1>
     <p class="sub">The overall quality picture across all 500 issues, from the perspective of final
@@ -224,6 +238,7 @@
   <section class="panel">
     <h2>Failures and work by sprint</h2>
     <p class="desc" id="wdesc"></p>
+    <div class="asof" data-asof="issues relationships projectFields"></div>
     <div class="lens" id="wlens" role="group" aria-label="Weekly chart lens"></div>
     <div class="legend" id="wlegend"></div>
     <div class="colchart" id="wchart"></div>
@@ -234,6 +249,7 @@
   <section class="panel">
     <h2>By milestone</h2>
     <p class="desc" id="mdesc"></p>
+    <div class="asof" data-asof="issues"></div>
     <div class="lens" id="mlens" role="group" aria-label="Milestone chart lens"></div>
     <div class="legend" id="mlegend"></div>
     <div id="mchart"></div>
@@ -250,6 +266,7 @@
       <span><span class="dot" style="background:var(--c2)"></span>PRs rejected ≥1× (caught in review)</span>
       <span><span class="dot" style="background:var(--c3)"></span>Acceptance failures filed (escapes)</span>
     </div>
+    <div class="asof" data-asof="issues reviews"></div>
     <div class="gatechart" id="gchart"></div>
     <div class="gatelabels" id="glabels"></div>
   </section>
@@ -275,6 +292,7 @@
   <section class="panel" id="spendSection" hidden>
     <h2>Spend by sprint</h2>
     <p class="desc" id="spenddesc"></p>
+    <div class="asof" data-asof="spend"></div>
     <div class="tiles" id="spendtiles"></div>
     <div class="legend">
       <span><span class="dot" style="background:var(--c1)"></span>Runner minutes</span>
@@ -297,6 +315,7 @@
   <section class="panel" id="churnSection" hidden>
     <h2>Churn cost — context vs change</h2>
     <p class="desc" id="churndesc"></p>
+    <div class="asof" data-asof="churn"></div>
     <div class="tiles" id="churntiles"></div>
     <div class="legend">
       <span><span class="dot" style="background:var(--c2)"></span>Context re-establishment</span>
@@ -320,6 +339,8 @@
   </section>
 
   <h2 class="divider" id="windowdivider">Last 7 days in review</h2>
+
+  <div class="asof" data-asof="reviews"></div>
 
   <div class="tiles" id="tiles"></div>
 
@@ -386,6 +407,20 @@
   </section>
 
   <footer>
+    <p><strong>Data provenance (#3807).</strong> This page is a static artifact, rebuilt on demand from the JSON
+    dumps under <span class="mono">scripts/retrospective/data/</span> — so the stamp in the header is what the
+    refresh session checks to confirm its rebuild actually landed, and nothing here is live. Each dump's own
+    as-of time is below and repeated under the sections it feeds: a source at least
+    <span id="staleafter">a day</span> older than the build is called out as stale, because every dump in a
+    refresh pass is dispatched in the same session — and a file that carries no
+    <span class="mono">generated_at</span> is reported as unknown rather than left off, so an unstamped dump
+    cannot pass for a fresh one.</p>
+    <div class="tablewrap provtable">
+      <table>
+        <thead><tr><th>Source</th><th>File</th><th>As of (UTC)</th><th>Behind this build</th></tr></thead>
+        <tbody class="provrows" id="provenancerows"></tbody>
+      </table>
+    </div>
     <p><strong>Acceptance-perspective classification.</strong> The 182 issues labeled <span class="mono">Acceptance Failure</span>
     (implementation defects found at stakeholder acceptance, before release)
     are classified by root cause: <em>escaped defect</em> — broken behavior in code that had passed
@@ -467,6 +502,69 @@ const fmt = n => n.toLocaleString('en-US');
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c =>
   ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'})[c]);
 const CVAR = ['var(--c1)','var(--c2)','var(--c3)','var(--c4)','var(--c5)','var(--c6)','var(--c7)','var(--c8)'];
+
+/* ---------- build stamp and per-source freshness (#3807) ----------
+   This artifact is rebuilt on demand, so the page has to answer "how old is
+   this?" itself: BUILD.at is when build_dashboard.py ran, and each source
+   carries its dump's own generated_at. Time granularity, not date -- three
+   rebuilds in one day used to render identically. */
+const BUILD = QDATA.build || {at: null, sources: {}, staleAfterDays: 1};
+
+const stampUTC = iso => {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
+  const day = d.toLocaleDateString('en-US', {month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC'});
+  const time = d.toLocaleTimeString('en-GB', {hour: '2-digit', minute: '2-digit', timeZone: 'UTC'});
+  return `${day} ${time} UTC`;
+};
+const ageWords = days => days < 1
+  ? `${Math.max(1, Math.round(days * 24))}h`
+  : `${Math.round(days)} day${Math.round(days) === 1 ? '' : 's'}`;
+
+/* One "<source> as of <time>" fragment, or '' for a source whose file is
+   absent (its section is omitted, so a freshness line would be noise).
+   A missing generated_at renders as an explicit "unknown" -- never silently
+   omitted, or an unstamped dump reads as fresh as the build. */
+function sourceNote(key) {
+  const s = (BUILD.sources || {})[key];
+  if (!s || !s.present) return '';
+  const at = stampUTC(s.generatedAt);
+  if (!at) return `<span class="unknown">${esc(s.label)} as of unknown — ${esc(s.file)} carries no generated_at stamp</span>`;
+  const stale = s.stale
+    ? `<span class="stale"> — ${ageWords(s.ageDays)} older than this page</span>`
+    : '';
+  return `<span>${esc(s.label)} as of ${at}${stale}</span>`;
+}
+
+document.querySelectorAll('[data-asof]').forEach(el => {
+  el.innerHTML = el.dataset.asof.split(' ').map(sourceNote).filter(Boolean)
+    .join('<span class="sep" aria-hidden="true">·</span>');
+});
+
+const builtAt = stampUTC(BUILD.at);
+const behind = Object.values(BUILD.sources || {}).filter(s => s.present && (s.stale || !s.generatedAt));
+document.getElementById('buildstamp').innerHTML = builtAt
+  ? `built ${builtAt}${behind.length ? ` · <span class="stale">${behind.length} source${behind.length === 1 ? '' : 's'} stale or unstamped</span>` : ''}`
+  : 'build time unknown';
+
+document.getElementById('staleafter').textContent =
+  (BUILD.staleAfterDays === 1 ? 'a day' : `${BUILD.staleAfterDays} days`);
+document.getElementById('provenancerows').innerHTML = [
+  {label: 'This page', file: 'build_dashboard.py', generatedAt: BUILD.at, present: true, ageDays: 0, stale: false},
+  ...Object.values(BUILD.sources || {}),
+].map(s => {
+  const at = stampUTC(s.generatedAt);
+  const cls = !s.present ? 'absent' : (!at ? 'unknown' : (s.stale ? 'stale' : ''));
+  const behindText = !s.present ? 'file absent — section omitted'
+    : (!at ? 'unknown' : (s.ageDays >= 0.02 ? ageWords(s.ageDays) : '—'));
+  return `<tr>
+    <td>${esc(s.label)}</td>
+    <td><span class="mono">${esc(s.file)}</span></td>
+    <td class="${cls}">${at ? esc(at) : (s.present ? 'unknown (no generated_at)' : '—')}</td>
+    <td class="${cls}">${esc(behindText)}</td>
+  </tr>`;
+}).join('');
 
 /* ---------- project-wide quality ---------- */
 const qt = QDATA.qtotals;
@@ -651,8 +749,11 @@ function minutesNote() {
 if (SPEND) {
   document.getElementById('spendSection').hidden = false;
   const unattrPct = SPEND.totals.runs ? Math.round(SPEND.unattributed.runs / SPEND.totals.runs * 100) : 0;
+  // The dump's own as-of time is on the freshness line below this one, at time
+  // granularity and with a staleness callout, so the copy no longer repeats a
+  // date-only "as of" that read the same for three rebuilds in a day (#3807).
   document.getElementById('spenddesc').textContent =
-    `Agent workflow runs as of ${SPEND.generatedAt ? new Date(SPEND.generatedAt).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',timeZone:'UTC'}) : 'the last refresh'} — the cost signal an anomaly-watching process reads to judge whether spend on an issue looks unusual, not a fixed cap. ${unattrPct}% of runs (${SPEND.unattributed.runs}) couldn't be attributed to an issue branch.`;
+    `Agent workflow runs — the cost signal an anomaly-watching process reads to judge whether spend on an issue looks unusual, not a fixed cap. ${unattrPct}% of runs (${SPEND.unattributed.runs}) couldn't be attributed to an issue branch.`;
   document.getElementById('spendtiles').innerHTML = [
     {label:'Runner minutes', value: SPEND.totals.runner_minutes, note: minutesNote()},
     {label:'Claude-invoking steps', value: SPEND.totals.claude_steps, note:'across all tracked workflows'},
@@ -689,7 +790,7 @@ if (CHURN) {
   const pct = ct.context_pct;
   const money = v => '$' + v.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
   document.getElementById('churndesc').textContent =
-    `What re-onboarding a zero-memory agent costs, over ${fmt(ct.rounds || 0)} agent round${ct.rounds === 1 ? '' : 's'} across ${fmt(ct.issues || 0)} issue${ct.issues === 1 ? '' : 's'} as of ${CHURN.generatedAt ? new Date(CHURN.generatedAt).toLocaleDateString('en-US', {month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC'}) : 'the last refresh'}. ` +
+    `What re-onboarding a zero-memory agent costs, over ${fmt(ct.rounds || 0)} agent round${ct.rounds === 1 ? '' : 's'} across ${fmt(ct.issues || 0)} issue${ct.issues === 1 ? '' : 's'}. ` +
     `${CHURN.methodology.split || ''} ${ct.unknown_split_rounds ? `${ct.unknown_split_rounds} round(s) yielded no turn markers and are counted in tokens but excluded from the split.` : ''}` +
     `${ct.unattributed_rounds ? ` ${fmt(ct.unattributed_rounds)} round(s) ran on the release branch (huddles, standalone sessions) and carry no issue attribution; their ${fmt(ct.unattributed_tokens || 0)} tokens are in these totals but not in the per-issue table below.` : ''}` +
     `${ct.priced ? '' : ' No price sheet was configured at dump time, so this view reports tokens only.'}`;

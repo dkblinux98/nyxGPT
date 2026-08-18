@@ -2,7 +2,10 @@
 """Build the nyxGPT Project Retrospective dashboard HTML.
 
 Inputs (all under scripts/retrospective/data/ unless overridden):
-  all_issues.json      - full issue corpus: [{n, title, labels, milestone, created}]
+  all_issues.json      - full issue corpus: [{n, title, labels, milestone, created}],
+                         or {generated_at, issues: [...]} when the refresh stamped
+                         it (#3807). Both shapes are read; the stamped one lets the
+                         page report the corpus's own as-of time instead of "unknown".
   dashboard_data.json  - last-7-days review detail (modules/days/issues/cleanPRs/totals)
   project_fields.json  - OPTIONAL: real Project v2 field snapshot produced by the
                          "Retro Dashboard - Dump Project Fields" workflow. When present,
@@ -33,6 +36,10 @@ Inputs (all under scripts/retrospective/data/ unless overridden):
                          historical issues keep attributing correctly.
 
 Output: retro.html next to this script (publish it as the Artifact).
+
+The page stamps itself: `qdata["build"]` carries the UTC time this script ran
+plus each input's own `generated_at`, so a reader can tell how old the page is
+and how far behind it any one dump has fallen (#3807).
 
 The review-gate monthly series is seeded below (older months are historical
 constants mined before the review agent posted rounds as PR reviews); the
@@ -69,6 +76,65 @@ MS_SHORT = [
 ]
 MS_PREFIX_RE = re.compile(r"^Phase\s+(\d+(?:\.\d+)?)\b")
 EXCLUDED_MILESTONES = {"Phase X: Rejected"}
+
+# Data-source provenance (#3807). This dashboard is a static artifact rebuilt
+# on demand, so "how old is what I am reading?" has to be answerable from the
+# page itself: the build stamp says when the HTML was produced, and each dump's
+# own `generated_at` says how old the data behind a section is. Every dump in a
+# refresh pass is dispatched in the same session, so a source a day or more
+# behind the build did not get refreshed in that pass and is called out.
+STALE_SOURCE_DAYS = 1.0
+
+
+def load_issues(path):
+    """Read all_issues.json in either shape, returning (issues, generated_at).
+
+    The corpus has historically been a bare list, which carries no refresh
+    stamp — the page then reports its as-of time as unknown rather than
+    implying it is as fresh as the build (#3807). A refresh may instead write
+    {"generated_at": ..., "issues": [...]}, so the stamp can start being
+    recorded without a flag day.
+    """
+    raw = json.loads(Path(path).read_text())
+    if isinstance(raw, dict):
+        return raw.get("issues") or [], raw.get("generated_at")
+    return raw, None
+
+
+def parse_stamp(value):
+    """Parse a dump's `generated_at` into an aware datetime (None if unusable)."""
+    if not value:
+        return None
+    try:
+        stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return stamp if stamp.tzinfo else stamp.replace(tzinfo=UTC)
+
+
+def source_stamps(now, sources):
+    """Per-source as-of provenance for the page's freshness lines (#3807).
+
+    `sources` is an iterable of (key, label, filename, present, generated_at).
+    A source whose file carries no parseable stamp keeps `generatedAt: None`,
+    which the page renders as an explicit "unknown" — an unstamped dump must
+    not be able to pass for a freshly refreshed one. `stale` marks data
+    materially older than the build, so a week-old dump cannot hide behind a
+    build that ran a minute ago.
+    """
+    out = {}
+    for key, label, filename, present, generated_at in sources:
+        stamp = parse_stamp(generated_at)
+        age = (now - stamp).total_seconds() / 86400 if stamp else None
+        out[key] = {
+            "label": label,
+            "file": filename,
+            "generatedAt": stamp.isoformat() if stamp else None,
+            "ageDays": round(age, 2) if age is not None else None,
+            "stale": bool(age is not None and age >= STALE_SOURCE_DAYS),
+            "present": present,
+        }
+    return out
 
 
 def milestone_short(title):
@@ -644,7 +710,7 @@ def main():
     args = ap.parse_args()
     data = Path(args.data_dir)
 
-    issues = json.loads((data / "all_issues.json").read_text())
+    issues, issues_generated_at = load_issues(data / "all_issues.json")
     dashboard = json.loads((data / "dashboard_data.json").read_text())
     pf_path = data / "project_fields.json"
     project_fields = json.loads(pf_path.read_text()) if pf_path.exists() else None
@@ -659,16 +725,61 @@ def main():
     ch_path = data / "churn.json"
     churn = json.loads(ch_path.read_text()) if ch_path.exists() else None
 
+    now = datetime.now(UTC)
     qdata = build_qdata(issues, project_fields, relationships)
     classified = qdata.pop("issues_classified")
-    qdata["gate"] = gate_series(classified, pr_times, reviews)
-    now = datetime.now(UTC)
+    qdata["gate"] = gate_series(classified, pr_times, reviews, now)
     qdata["aging"], qdata["flow"], open_af = aging_flow(classified, now)
     qdata["themes"] = finding_themes(reviews)
     qdata["takeaways"] = takeaways(classified, dashboard, qdata["weeks"], open_af)
     qdata["releases"] = RELEASES
     qdata["spend"] = spend_by_sprint(spend, project_fields)
     qdata["churn"] = churn_view(churn, project_fields)
+    qdata["build"] = {
+        "at": now.isoformat(),
+        "staleAfterDays": STALE_SOURCE_DAYS,
+        "sources": source_stamps(
+            now,
+            [
+                ("issues", "Issue corpus", "all_issues.json", True, issues_generated_at),
+                (
+                    "relationships",
+                    "Issue relationships",
+                    "relationships.json",
+                    relationships is not None,
+                    (relationships or {}).get("generated_at"),
+                ),
+                (
+                    "reviews",
+                    "Review rounds",
+                    "dashboard_data.json",
+                    True,
+                    dashboard.get("generated_at"),
+                ),
+                (
+                    "projectFields",
+                    "Sprint / module snapshot",
+                    "project_fields.json",
+                    project_fields is not None,
+                    (project_fields or {}).get("generated_at"),
+                ),
+                (
+                    "spend",
+                    "Spend telemetry",
+                    "spend.json",
+                    spend is not None,
+                    (spend or {}).get("generated_at"),
+                ),
+                (
+                    "churn",
+                    "Churn cost",
+                    "churn.json",
+                    churn is not None,
+                    (churn or {}).get("generated_at"),
+                ),
+            ],
+        ),
+    }
     html = Path(args.template).read_text()
     html = re.sub(r"across all \d+ issues", f"across all {qdata['qtotals']['issues']} issues", html)
     html = re.sub(
@@ -684,7 +795,16 @@ def main():
     html = html.replace("__QDATA__", json.dumps(qdata, separators=(",", ":")))
     html = html.replace("__DATA__", json.dumps(dashboard, separators=(",", ":")))
     Path(args.out).write_text(html)
+    stale = [s["file"] for s in qdata["build"]["sources"].values() if s["present"] and s["stale"]]
+    unstamped = [
+        s["file"]
+        for s in qdata["build"]["sources"].values()
+        if s["present"] and not s["generatedAt"]
+    ]
     print(f"built {args.out}: {qdata['qtotals']} sprintSource={qdata['sprintSource']}")
+    print(f"  built at {qdata['build']['at']}")
+    print(f"  stale sources: {', '.join(stale) or 'none'}")
+    print(f"  unstamped sources: {', '.join(unstamped) or 'none'}")
 
 
 if __name__ == "__main__":
