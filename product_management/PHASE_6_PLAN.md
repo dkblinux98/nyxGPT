@@ -132,7 +132,7 @@ the core repo-less packaging work)*
   `nyxgpt up` brings up the full local stack on a macOS machine that has never cloned
   the repo; a source checkout stays supported for development only.
 
-### P6-6 · feat: guided secrets setup - masked input and per-key help, CLI + admin wizard
+### P6-6 · feat: guided secrets setup - masked input and per-key help, CLI ~~+ admin wizard~~
 **Label:** Feature · **Module:** cli · **Effort:** M
 
 - Problem: the first-run wizard exists but secrets entry lacks the guided treatment; DSN

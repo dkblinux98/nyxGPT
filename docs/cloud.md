@@ -855,9 +855,8 @@ and over the SSH access tunnel it would cross that path too -- while the CLI
 takes masked input and writes straight to `~/.aws/credentials` or the OS
 keychain. AWS credentials are also needed *before* there is a deploy to
 observe, so the screen was too late to be useful. `GET
-/api/v1/config/aws-credentials` remains as the read-only status the dashboard
-and tooling can query (masked, never cleartext); no HTTP path writes a
-credential.
+/api/v1/config/aws-credentials` remains as the read-only status tooling can
+query (masked, never cleartext); no HTTP path writes a credential.
 
 ---
 
