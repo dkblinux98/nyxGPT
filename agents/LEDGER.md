@@ -1762,7 +1762,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   `_classify_k8s_pod` — the shared vocabulary, not this one call site, is what
   the entry stands for.
 
-- **V-051** · 2026-08-18 — **A check that reaches *into* a keg cannot answer
+- **V-052** · 2026-08-18 — **A check that reaches *into* a keg cannot answer
   whether the product is operable.** The macOS artifact path shipped through
   rc12 with no `nyxgpt` on PATH: `pip install` created the console script
   declared in `pyproject.toml`, but it landed in `libexec/venv/bin` and the
@@ -1777,11 +1777,13 @@ are absent here by design (relocated to the annex; IDs are never reused).
   start it. Fixed by `bin.install_symlink venv/"bin/nyxgpt"` in both API
   formulas; the assertions now go through `bin`/PATH, by the name a user
   types.
-  (Filed as `V-044` under #3850, renumbered to `V-048` on the second merge of
-  `v3.0.0` and to `V-051` on the third: #3828 allocated `V-044` on a
-  concurrently-open branch, and the `V-048` this landed on was taken in turn by
-  #3905's `rglob` entry, which merged first. `V-051` is the first number no
-  branch has claimed. IDs are never reused.)
+  (Filed as `V-044` under #3850, then renumbered to `V-048`, `V-051` and
+  finally `V-052` across four merges of `v3.0.0`: each number in turn was
+  claimed by a concurrently-open branch that merged first — `V-044` by #3828,
+  `V-048` by #3905's `rglob` entry, `V-051` by the canary replica-pool entry.
+  `V-052` is what `scripts/agents/lib/ledger_ids.py next V --base
+  origin/v3.0.0` allocates against the current release branch. IDs are never
+  reused.)
   Method: `tests/unit/test_build_homebrew_artifacts.py` — the new tests were
   run against the pre-fix formulas (`git stash push -- homebrew
   .github/workflows/macos-brew-smoke.yml`) and 7 failed, then passed with the
