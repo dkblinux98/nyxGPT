@@ -29,15 +29,35 @@ set -euo pipefail
 #      log is the caller's earlier read; the value that DECIDES is the one
 #      taken a single round trip before the write.
 #
+# THE OTHER RULE (owner rule, 2026-08-18, #3871), under --closure:
+#   An issue closed with any state_reason other than `completed` must end up
+#   with Phase = `Phase X`, assigned to the owner, and Sprint cleared.
+#
+# That one is deliberately NOT fill-if-missing. A closure that was not a
+# completion is a decision about the issue's disposition, and the fields have
+# to reflect it whatever they held before -- so it writes over a populated
+# Phase, and clears a populated Sprint, on purpose. The two rules share this
+# file because they share the board plumbing, and they are kept in separate
+# code paths so neither can be read as the other. What --closure never does
+# is touch Status: parked `Acceptance Failed` placements are owner signal
+# (D-001/D-008), and this rule is not entitled to overwrite them.
+#
 # Usage: ensure_issue_hygiene.sh ISSUE_NUMBER
+#        ensure_issue_hygiene.sh --closure ISSUE_NUMBER
 # Env:
 #   HYGIENE_SETTLE_SECONDS  seconds to wait before writing (default 60; the
 #                           tests set 0 so the suite is not a sleep test)
 # ============================================================
 
+MODE="fill"
+if [[ "${1:-}" == "--closure" ]]; then
+  MODE="closure"
+  shift
+fi
+
 ISSUE="${1:-}"
 if [[ -z "$ISSUE" ]]; then
-  echo "usage: $(basename "$0") ISSUE_NUMBER" >&2
+  echo "usage: $(basename "$0") [--closure] ISSUE_NUMBER" >&2
   exit 2
 fi
 
@@ -48,6 +68,117 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/gh_project.sh"
 load_config
 require_gh_auth
+
+# ---- the closure rule (#3871) ------------------------------------------
+# Applied on `issues: closed` when the reason is not `completed`. Everything
+# it needs is here and it returns; the fill-if-missing body below never runs
+# in this mode.
+#
+# Why this exists: the rule was being applied by hand. #3870 was closed
+# not_planned, its assignee fixed over REST, and its Phase and Sprint left
+# for the owner to touch -- because Projects v2 is GraphQL-only and a remote
+# Claude session's proxy blocks GraphQL, so the session that closed the issue
+# structurally could not finish it.
+apply_closure_rule() {
+  local state reason item_id current_phase current_sprint assignees
+  local phase_option="Phase X"
+
+  read -r state reason < <(
+    gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${ISSUE}" \
+      --jq '"\(.state) \(.state_reason // "")"'
+  )
+
+  if [[ "$state" != "closed" ]]; then
+    echo "Issue #$ISSUE is $state, not closed -- the closure rule does not apply."
+    return 0
+  fi
+
+  if [[ "$reason" == "completed" ]]; then
+    echo "✓ Issue #$ISSUE was closed as completed -- untouched by the closure rule."
+    return 0
+  fi
+
+  if [[ -z "$reason" ]]; then
+    # Closing through the API without a reason leaves this null, and a null
+    # is not evidence of a non-completion. Treating it as one would let a
+    # backfill over historical issues reassign the lot to the owner.
+    echo "::notice::Issue #$ISSUE is closed with no recorded state_reason -- treating it as completed."
+    echo "Re-close it with an explicit reason if the closure rule should apply."
+    return 0
+  fi
+
+  echo "Issue #$ISSUE closed as '${reason}' -- applying the closure rule (#3871)."
+
+  item_id="$(find_issue_project_item "$ISSUE")"
+  if [[ -z "$item_id" ]]; then
+    echo "Issue #$ISSUE is not on the ${PROJECT_OWNER}#${PROJECT_NUMBER} board -- no fields to set."
+    return 0
+  fi
+
+  # Never create a field option (owner rule): if `Phase X` is missing from the
+  # board, that is a project-configuration change only the owner may make, and
+  # a silent skip would leave the issue looking handled.
+  if [[ -z "$(single_select_option_id "Phase" "$phase_option")" ]]; then
+    echo "::error::Project field 'Phase' has no option '${phase_option}' -- cannot apply the closure rule to #$ISSUE."
+    echo "Add the option to the board by hand (agents never create field options), then re-run."
+    return 1
+  fi
+
+  rc=0
+  current_phase="$(project_field_value "$item_id" "Phase")" || rc=$?
+  [[ "$rc" -eq 0 ]] || { echo "::error::Failed reading Phase on issue #$ISSUE"; return 1; }
+  if [[ "$current_phase" == "$phase_option" ]]; then
+    echo "✓ Phase: already '${phase_option}'"
+  else
+    set_field_with_retry "$item_id" "Phase" "$phase_option" \
+      || { echo "::error::Failed setting Phase on issue #$ISSUE"; return 1; }
+    echo "✓ Phase: ${current_phase:-(unset)} -> ${phase_option}"
+  fi
+
+  rc=0
+  current_sprint="$(project_field_value "$item_id" "Sprint")" || rc=$?
+  [[ "$rc" -eq 0 ]] || { echo "::error::Failed reading Sprint on issue #$ISSUE"; return 1; }
+  if [[ -z "$current_sprint" ]]; then
+    echo "✓ Sprint: already clear"
+  else
+    clear_project_field_value "$item_id" "Sprint" \
+      || { echo "::error::Failed clearing Sprint on issue #$ISSUE"; return 1; }
+    echo "✓ Sprint: cleared (was '${current_sprint}')"
+  fi
+
+  # The issue lands in the owner's lap, so the owner is added and the agents
+  # that were carrying it are removed -- an agent assignee on a closed,
+  # non-completed issue is a leftover, and leaving it there is what makes
+  # `_open_issues_assigned_to` miscount later.
+  assignees="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${ISSUE}" --jq '.assignees[].login')"
+  if grep -qx "$HUMAN_OWNER" <<<"$assignees"; then
+    echo "✓ Assignee: ${HUMAN_OWNER} already assigned"
+  else
+    gh api -X POST "repos/${REPO_OWNER}/${REPO_NAME}/issues/${ISSUE}/assignees" \
+      -f "assignees[]=${HUMAN_OWNER}" >/dev/null \
+      || { echo "::error::Failed assigning ${HUMAN_OWNER} to issue #$ISSUE"; return 1; }
+    echo "✓ Assignee: added ${HUMAN_OWNER}"
+  fi
+
+  local agent
+  for agent in "$DEV_AGENT" "$REVIEW_AGENT" "$SCRUM_AGENT"; do
+    [[ -n "$agent" ]] || continue
+    if grep -qx "$agent" <<<"$assignees"; then
+      gh api -X DELETE "repos/${REPO_OWNER}/${REPO_NAME}/issues/${ISSUE}/assignees" \
+        -f "assignees[]=${agent}" >/dev/null 2>&1 \
+        && echo "✓ Assignee: removed ${agent}" \
+        || _warn "Could not remove ${agent} from issue #$ISSUE"
+    fi
+  done
+
+  echo "Closure rule applied to issue #$ISSUE (Status untouched by design)."
+  return 0
+}
+
+if [[ "$MODE" == "closure" ]]; then
+  apply_closure_rule
+  exit $?
+fi
 
 echo "Applying fill-if-missing project hygiene for issue #$ISSUE..."
 

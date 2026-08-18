@@ -68,6 +68,10 @@ SELECT_OPTIONS = {
     ],
     "Priority": ["P0 - Critical", "P1 - High", "P2 - Medium", "P3 - Low"],
     "Effort": ["XS", "S", "M", "L", "XL"],
+    # `Phase X` is the closure rule's target (#3871); the stub carries a
+    # couple of real phases alongside it so "the option is missing" can be
+    # tested by removing it, not by the field being absent entirely.
+    "Phase": ["Phase 6", "Phase 7", "Phase X"],
     "Module": [
         "web-ui",
         "api",
@@ -143,6 +147,7 @@ def _state() -> dict:
         "fields": dict(board.get("fields", {})),
         "labels": list(issue.get("labels", [])),
         "milestone": issue.get("milestone"),
+        "assignees": list(issue.get("assignees", [])),
         "field_reads": 0,
         "issue_reads": 0,
         "race_applied": False,
@@ -211,8 +216,14 @@ def _maybe_race(state: dict) -> None:
 # GraphQL
 # --------------------------------------------------------------------------
 def _fields_payload() -> dict:
+    # GH_STUB_NO_PHASE_X models a board whose Phase field exists but has no
+    # `Phase X` option -- the case the closure rule must fail loudly on
+    # rather than create the option (#3871).
+
     nodes = []
     for name, options in SELECT_OPTIONS.items():
+        if name == "Phase" and os.environ.get("GH_STUB_NO_PHASE_X"):
+            options = [o for o in options if o != "Phase X"]
         nodes.append(
             {
                 "__typename": "ProjectV2SingleSelectField",
@@ -309,6 +320,20 @@ def _graphql(query: str, params: dict, jq_filter: str | None) -> None:
             jq_filter,
         )
 
+    if "clearProjectV2ItemFieldValue" in query:
+        field = params.get("field", "").replace("PVTF::", "")
+        state["fields"][field] = ""
+        _save(state)
+        _log("mutations.log", f"{field}\t(cleared)")
+        _emit(
+            {
+                "data": {
+                    "clearProjectV2ItemFieldValue": {"projectV2Item": {"id": state.get("item_id")}}
+                }
+            },
+            jq_filter,
+        )
+
     if "addProjectV2ItemById" in query:
         item_id = f"PVTI_added_{params.get('content', 'x')}"
         state["item_id"] = item_id
@@ -361,13 +386,27 @@ def _issue_payload(state: dict) -> dict:
         "body": issue.get("body", ""),
         "labels": [{"name": name} for name in state["labels"]],
         "milestone": ({"title": state["milestone"]} if state["milestone"] else None),
-        "state": "open",
+        # The closure rule (#3871) decides on these three.
+        "state": issue.get("state", "open"),
+        "state_reason": issue.get("state_reason"),
+        "assignees": [{"login": login} for login in state["assignees"]],
     }
 
 
-def _rest(route: str, jq_filter: str | None) -> None:
+def _rest(route: str, jq_filter: str | None, params: dict, method: str) -> None:
     state = _state()
     parts = route.strip("/").split("/")
+
+    if len(parts) >= 6 and parts[3] == "issues" and parts[5] == "assignees":
+        for login in [v for k, v in params.items() if k.startswith("assignees")]:
+            if method == "POST" and login not in state["assignees"]:
+                state["assignees"].append(login)
+                _log("assignees.log", f"+{login}")
+            elif method == "DELETE" and login in state["assignees"]:
+                state["assignees"].remove(login)
+                _log("assignees.log", f"-{login}")
+        _save(state)
+        _emit({"assignees": [{"login": x} for x in state["assignees"]]}, jq_filter)
 
     if len(parts) >= 4 and parts[3] == "milestones":
         _emit(_read_json("milestones.json", []), jq_filter)
@@ -437,6 +476,7 @@ def main() -> None:
 
     rest = argv[1:]
     route = ""
+    method = "GET"
     jq_filter = None
     params: dict[str, str] = {}
     index = 0
@@ -446,6 +486,7 @@ def main() -> None:
             jq_filter = rest[index + 1]
             index += 2
         elif token in ("-X", "--method"):
+            method = rest[index + 1]
             index += 2
         elif token in ("-f", "-F", "--field", "--raw-field"):
             key, _, value = rest[index + 1].partition("=")
@@ -460,7 +501,7 @@ def main() -> None:
 
     if route == "graphql":
         _graphql(params.get("query", ""), params, jq_filter)
-    _rest(route, jq_filter)
+    _rest(route, jq_filter, params, method)
 
 
 if __name__ == "__main__":

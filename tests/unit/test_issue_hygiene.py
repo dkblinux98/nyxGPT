@@ -111,9 +111,17 @@ class TestHygieneScript:
 
         With every field guarded it is redundant, and it also made hygiene
         skip issues that genuinely needed filling.
+
+        Scoped to the fill path (#3871). This used to ban the string
+        `SCRUM_AGENT` from the whole file, which stated the invariant by
+        proxy: what must not exist is an author-based *exemption* from
+        filling. The closure rule names the agent logins for an unrelated
+        reason -- it takes a closed, non-completed issue off the agents and
+        puts it on the owner -- so the ban now covers the path it is about.
         """
         body = HYGIENE.read_text(encoding="utf-8")
-        assert "SCRUM_AGENT" not in body
+        fill_path = body[: body.index("apply_closure_rule() {")]
+        assert "SCRUM_AGENT" not in fill_path
         assert "issue.user.login" not in body
 
 
@@ -135,8 +143,69 @@ class TestWorkflowWiring:
         steps = workflow["jobs"]["no-clobber"]["steps"]
         assert any("tests/test_issue_hygiene.sh" in (step.get("run") or "") for step in steps)
 
-    def test_hygiene_still_only_fires_on_opened_issues(self):
-        """Re-running on every edit would re-open the window on live issues."""
+    def test_hygiene_never_fires_on_edited_issues(self):
+        """Re-running the fill on every edit would re-open the window on live
+        issues. `closed` was added by #3871 for the closure rule, which is a
+        different job with a different invariant; `edited` still must not be
+        there."""
         workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
         triggers = workflow.get("on", workflow.get(True))
-        assert triggers["issues"]["types"] == ["opened"]
+        assert set(triggers["issues"]["types"]) == {"opened", "closed"}
+
+    def test_the_fill_job_only_runs_on_opened(self):
+        """Adding the `closed` trigger must not put the fill-if-missing job on
+        the closure path -- it would stamp defaults onto a closed issue."""
+        workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+        condition = str(workflow["jobs"]["add-to-project"]["if"])
+        assert "github.event.action == 'opened'" in condition
+
+
+class TestClosureRule:
+    """The non-completed closure rule (#3871): Phase X, owner, Sprint cleared.
+
+    Deliberately not fill-if-missing -- it overwrites, because a closure that
+    was not a completion is a decision the fields have to reflect. What it may
+    never do is touch Status (parked `Acceptance Failed` placements are owner
+    signal, D-001/D-008) or create the `Phase X` option.
+    """
+
+    def test_the_closure_job_runs_the_script_in_closure_mode(self):
+        workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+        steps = workflow["jobs"]["closure-hygiene"]["steps"]
+        assert any("ensure_issue_hygiene.sh --closure" in (step.get("run") or "") for step in steps)
+
+    def test_the_closure_job_is_gated_on_a_non_completed_closure(self):
+        workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+        condition = str(workflow["jobs"]["closure-hygiene"]["if"])
+        assert "github.event.action == 'closed'" in condition
+        assert "github.event.issue.state_reason != 'completed'" in condition
+
+    def test_the_reason_test_is_also_in_the_script(self):
+        """The workflow `if:` is the cheap filter; the executable test is what
+        a suite can run, and what protects a by-hand invocation."""
+        body = HYGIENE.read_text(encoding="utf-8")
+        assert 'if [[ "$reason" == "completed" ]]' in body
+
+    def test_the_closure_rule_never_writes_status(self):
+        body = HYGIENE.read_text(encoding="utf-8")
+        closure = body[
+            body.index("apply_closure_rule() {") : body.index('if [[ "$MODE" == "closure" ]]')
+        ]
+        for forbidden in ("$STATUS_FIELD", "set_issue_status", "STATUS_BACKLOG"):
+            assert forbidden not in closure, f"the closure rule writes {forbidden}"
+
+    def test_the_closure_rule_refuses_a_missing_phase_option(self):
+        """Agents never create field options; a silent skip would leave the
+        issue looking handled with its Phase never set."""
+        body = HYGIENE.read_text(encoding="utf-8")
+        assert 'single_select_option_id "Phase"' in body
+        assert "has no option" in body
+
+    def test_the_closure_rule_uses_the_lookup_only_item_finder(self):
+        """A closed issue that was never on the board must not be added to it."""
+        body = HYGIENE.read_text(encoding="utf-8")
+        closure = body[
+            body.index("apply_closure_rule() {") : body.index('if [[ "$MODE" == "closure" ]]')
+        ]
+        assert "find_issue_project_item" in closure
+        assert "ensure_issue_in_project" not in closure
