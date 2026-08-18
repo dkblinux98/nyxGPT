@@ -13,6 +13,13 @@ name: Kubernetes Local Smoke
 # the same chat fails -- so a build that drops the tier again cannot pass this
 # job green (the fault-injection rule from macos-brew-smoke.yml / #3753).
 #
+# Since #3825 it runs the DEFAULT install (observability included, no
+# --skip-observability) on a node ballasted down to the 7936Mi a stock 8GiB
+# Docker Desktop VM offers, and asserts every Pod was scheduled. That defect
+# was a stack whose requests exceeded the node: chat worked, install reported
+# success, and prometheus sat Pending forever. On the runner's own ~16GiB node
+# it would not have reproduced -- hence the ballast.
+#
 # Scoped like linux-native-smoke.yml and terraform-local-smoke.yml: a full
 # cluster bring-up with two image builds is expensive, so it runs only when
 # the manifests, the k8s half of the ops layer, the smoke script, or this
@@ -46,8 +53,9 @@ jobs:
   k8s-local-smoke:
     runs-on: ubuntu-latest
     # The bring-up builds the api and web images, provisions a kind cluster,
-    # boots Cassandra, and pulls the default model.
-    timeout-minutes: 60
+    # boots Cassandra, pulls the default model, and (since #3825) rolls out
+    # the observability layer's ten workloads as part of the default install.
+    timeout-minutes: 75
     if: github.event_name != 'push' || github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
     steps:
       - uses: actions/checkout@v4
@@ -69,6 +77,14 @@ jobs:
         run: |
           mkdir -p "$HOME/.nyxGPT"
           cp example.config.ini "$HOME/.nyxGPT/config.ini"
+
+      - name: Create the local cluster and shrink it to a Docker Desktop VM
+        # Created here rather than by the install itself so the ballast is in
+        # place before the stack lands on the node (#3825). `nyxgpt ops`
+        # reuses a cluster of this reserved name instead of creating one.
+        run: |
+          kind create cluster --name nyxgpt-local --wait 120s
+          ./scripts/k8s-node-ballast.sh 7936
 
       - name: Run Kubernetes local smoke
         run: ./scripts/k8s-local-smoke.sh
