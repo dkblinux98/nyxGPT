@@ -125,6 +125,122 @@ describe('AdminHealthPage', () => {
       expect(screen.queryByText('canary')).not.toBeInTheDocument();
     });
 
+    // --- #3812: this card must not read "all clear" over an unqueryable probe
+    // The mirror image of the acceptance failure: with the Compose survey
+    // unable to run, `unhealthy_count` is 0, so the badge used to render a
+    // green "All components healthy" -- a positive verdict nothing
+    // established -- while listing the same undetermined rows beneath it as
+    // failures. Both halves are wrong for the same reason.
+    const probeUnavailableStatus = {
+      enabled: true,
+      components: [
+        {
+          service: 'grafana',
+          state: 'unknown',
+          health: '',
+          healthy: false,
+          desired: true,
+          known: false,
+          note: '`docker compose ps` exited 125: permission denied',
+        },
+        {
+          service: 'loki',
+          state: 'unknown',
+          health: '',
+          healthy: false,
+          desired: true,
+          known: false,
+          note: '`docker compose ps` exited 125: permission denied',
+        },
+        { service: 'api', state: 'running', health: 'healthy', healthy: true },
+      ],
+      unhealthy_count: 0,
+      unknown_count: 2,
+      compose_probe_reason: '`docker compose ps` exited 125: permission denied',
+    };
+
+    it('never reads "All components healthy" while components are undetermined', async () => {
+      server.use(
+        http.get('/api/v1/self-heal/status', () => HttpResponse.json(probeUnavailableStatus))
+      );
+
+      render(<AdminHealthPage />);
+      await waitFor(() => {
+        expect(
+          screen.getByText('2 unknown -- cannot determine from here')
+        ).toBeInTheDocument();
+      });
+      expect(screen.queryByText('All components healthy')).not.toBeInTheDocument();
+      expect(screen.queryByText(/^\d+ unhealthy$/)).not.toBeInTheDocument();
+    });
+
+    it('renders undetermined components as unknown, not as unhealthy detail', async () => {
+      server.use(
+        http.get('/api/v1/self-heal/status', () => HttpResponse.json(probeUnavailableStatus))
+      );
+
+      render(<AdminHealthPage />);
+      await waitFor(() => {
+        expect(screen.getByText('grafana')).toBeInTheDocument();
+      });
+      expect(
+        screen.getAllByText(/unknown \(state could not be determined from here\)/)
+      ).toHaveLength(2);
+      expect(screen.queryByText(/state=unknown/)).not.toBeInTheDocument();
+    });
+
+    it('names why the components could not be determined', async () => {
+      server.use(
+        http.get('/api/v1/self-heal/status', () => HttpResponse.json(probeUnavailableStatus))
+      );
+
+      render(<AdminHealthPage />);
+      await waitFor(() => {
+        expect(screen.getByText(/exited 125: permission denied/)).toBeInTheDocument();
+      });
+    });
+
+    it('still reports a genuinely unhealthy component while others are undetermined', async () => {
+      server.use(
+        http.get('/api/v1/self-heal/status', () =>
+          HttpResponse.json({
+            ...probeUnavailableStatus,
+            components: [
+              ...probeUnavailableStatus.components,
+              { service: 'ollama', state: 'exited', health: '', healthy: false },
+            ],
+            unhealthy_count: 1,
+          })
+        )
+      );
+
+      render(<AdminHealthPage />);
+      await waitFor(() => {
+        expect(screen.getByText('1 unhealthy')).toBeInTheDocument();
+      });
+      expect(screen.getByText(/-- state=exited/)).toBeInTheDocument();
+      // Unknown rows stay unknown even when something else really is down.
+      expect(
+        screen.getAllByText(/unknown \(state could not be determined from here\)/)
+      ).toHaveLength(2);
+    });
+
+    it('falls back to counting unknown rows when the API sends no unknown_count', async () => {
+      // Old-API / no-key shape: JSON.stringify drops undefined.
+      server.use(
+        http.get('/api/v1/self-heal/status', () =>
+          HttpResponse.json({ ...probeUnavailableStatus, unknown_count: undefined })
+        )
+      );
+
+      render(<AdminHealthPage />);
+      await waitFor(() => {
+        expect(
+          screen.getByText('2 unknown -- cannot determine from here')
+        ).toBeInTheDocument();
+      });
+    });
+
     it('links to the Self-Heal page for full details', async () => {
       render(<AdminHealthPage />);
       await waitFor(() => {

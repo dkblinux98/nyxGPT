@@ -8,6 +8,16 @@
 # because the deployment had no data tier and no LLM tier at all. Inspection
 # cannot see that; only running it can.
 #
+# THE COMMAND UNDER TEST IS THE DEFAULT ONE (#3826). This script used to pass
+# `--skip-observability`, so it exercised a configuration no user runs: the
+# real command brings the in-cluster observability layer up with the app tier,
+# which is ~2.4Gi more of requests and ten more Pods competing for the node.
+# A smoke that opts out cannot answer "does the install a user actually types
+# work", and it structurally could not supply #3787's executed evidence,
+# because it excluded the very layer #3787 added. If a reduced-footprint run
+# is ever wanted, it belongs in an ADDITIONAL job, never as a replacement for
+# this one.
+#
 # Two halves, deliberately, per the fault-injection rule (CLAUDE.md, #3753):
 #
 #   1. FIXED TOPOLOGY  -- install, then exercise the real user path (the web
@@ -20,12 +30,17 @@
 #      build that never shipped the data tier, which is how a green CI run
 #      and a broken stack coexist.
 #
-# Since #3825 this runs the DEFAULT install -- observability included -- and
-# asserts every Pod was scheduled before it goes on to ask whether chat works.
-# That defect shipped a stack whose memory requests exceeded the node: chat
-# worked, `install` reported success, and prometheus was Pending forever. A
-# gate that installs with --skip-observability, or that only asks "can I
-# chat?", passes on exactly that stack.
+# Since #3825 it also asserts every Pod was SCHEDULED before it goes on to ask
+# whether chat works, on a node ballasted down to the 7936Mi a stock 8GiB
+# Docker Desktop VM offers. That defect shipped a stack whose memory requests
+# exceeded the node: chat worked, `install` reported success, and prometheus
+# was Pending forever. A gate that installs with --skip-observability, or that
+# only asks "can I chat?", passes on exactly that stack.
+#
+# The observability layer's own behaviour (UIs answering, Grafana datasources,
+# promtail shipping into Loki) is k8s-observability-smoke.yml's job and is not
+# duplicated here -- what this script adds is that the layer comes up *with*
+# the app tier, on one node, in the default install, with nothing left Pending.
 #
 # Prerequisites: Docker, and a `nyxgpt` on PATH (`pip install -e .`). kubectl
 # and kind are installed by `nyxgpt ops install --kubernetes --local` itself
@@ -97,33 +112,40 @@ chat_round_trip() {
     echo "$out" | grep -q '"content"' || return 1
 }
 
-step "1/7 Bring the stack up: nyxgpt ops install --kubernetes --local"
-# The DEFAULT install, observability included -- no --skip-observability
-# (#3825). The layer that flag used to hide is the one that did not fit the
-# node, and a gate that installs less than the default cannot see that.
+step "1/8 Bring the stack up: nyxgpt ops install --kubernetes --local"
+# No --skip-observability: this is the command as a user types it (#3826).
+# The layer that flag used to hide is also the one that did not fit the node
+# (#3825), so a gate that installs less than the default cannot see either.
 nyxgpt ops install --kubernetes --local --api-key "$API_KEY"
 ok "install --kubernetes --local completed"
 
-step "2/7 Every Pod of the default stack was scheduled"
+step "2/8 Every Pod of the default stack was scheduled"
 # #3825: `install` reported success on a node whose memory was 99% reserved,
 # with prometheus left Pending / FailedScheduling for good. Nothing in the
 # steps below would have noticed -- chat worked fine. An unscheduled Pod has
 # an empty .spec.nodeName, which is what this checks; "Pending" on its own is
 # also what a Pod that IS scheduled and pulling its image looks like.
+#
+# Checked here, before the rollout waits below, so an unschedulable Pod reads
+# as its own failure rather than as one of those waits timing out. Report the
+# arithmetic either way (#3826), so a future footprint increase shows up as a
+# number in the log rather than as a mysterious timeout.
+echo "--- node allocatable ---"
+kubectl get nodes -o custom-columns=\
+'NAME:.metadata.name,CPU:.status.allocatable.cpu,MEM:.status.allocatable.memory'
+echo "--- requests by Pod ---"
+kubectl -n "$NAMESPACE" get pods -o custom-columns=\
+'NAME:.metadata.name,PHASE:.status.phase,REQ_MEM:.spec.containers[*].resources.requests.memory'
 unscheduled=$("${SCRIPT_DIR}/k8s-unscheduled-pods.sh" "$NAMESPACE")
 if [ -n "$unscheduled" ]; then
     kubectl -n "$NAMESPACE" get pods -o wide >&2
     kubectl -n "$NAMESPACE" get events --field-selector reason=FailedScheduling >&2 | tail -20
-    fail "these Pods could not be scheduled: $(echo "$unscheduled" | tr '\n' ' ')"
+    fail "these Pods could not be scheduled: $(echo "$unscheduled" | tr '\n' ' ')-- the node \
+cannot fit the default stack (size the cluster VM, do not drop observability)"
 fi
 ok "every Pod in the default stack has a node"
-for workload in prometheus grafana loki jaeger glitchtip; do
-    kubectl -n "$NAMESPACE" get "deploy/${workload}" >/dev/null 2>&1 ||
-        fail "no ${workload} Deployment -- the default install shipped no observability layer"
-done
-ok "the observability layer is deployed, prometheus included"
 
-step "3/7 The data/LLM tier exists and is Ready"
+step "3/8 The data/LLM tier exists and is Ready"
 # `install` already waits for these (ops._wait_for_k8s_data_tier); asserting
 # again here is what makes the *absence* of the tier a test failure rather
 # than a silently degraded stack.
@@ -138,19 +160,42 @@ kubectl -n "$NAMESPACE" exec ollama-0 -- ollama list | grep -q "$MODEL" ||
     fail "Ollama is Ready but the default model ${MODEL} was never pulled -- chat would 404"
 ok "default model ${MODEL} present in the in-cluster Ollama"
 
-step "4/7 The user path works: sessions list, via the web Service"
+step "4/8 The observability layer came up with the app tier"
+# Every workload k8s/observability/ ships, prometheus first: it is the one the
+# SRE dashboard's metrics tiles and every Grafana panel read from, and it is
+# the workload #3787 found missing. `install` already waits for these
+# (ops._wait_for_k8s_observability) -- asserting again here is what makes a
+# regression to an app-tier-only install a test failure rather than a quietly
+# blind stack.
+for deploy in prometheus grafana loki otel-collector jaeger \
+              glitchtip-postgres glitchtip-redis glitchtip glitchtip-worker; do
+    kubectl -n "$NAMESPACE" get "deploy/${deploy}" >/dev/null 2>&1 ||
+        fail "no ${deploy} Deployment in the default install -- observability is absent (#3787)"
+    kubectl -n "$NAMESPACE" rollout status "deploy/${deploy}" --timeout=600s ||
+        fail "${deploy} never became Ready in the default install"
+done
+kubectl -n "$NAMESPACE" rollout status ds/promtail --timeout=300s ||
+    fail "promtail never became Ready in the default install"
+ok "all ten observability workloads are Ready alongside the app tier"
+
+# Nothing is left Pending once every rollout above has landed either -- a Pod
+# that was scheduled but never became Ready fails its own rollout wait, and
+# step 2 already ruled out the unschedulable case with the node arithmetic
+# printed alongside it (#3826, #3825).
+
+step "5/8 The user path works: sessions list, via the web Service"
 start_port_forward
 curl -fsS "${BASE}/api/sessions" >/dev/null ||
     fail "GET /api/sessions failed -- this is the UI's 'Failed to load sessions'"
 ok "session list loads through the web UI's own proxy route"
 
-step "5/7 A real chat round-trip"
+step "6/8 A real chat round-trip"
 curl -fsS -X POST "${BASE}/api/sessions/init" -H 'Content-Type: application/json' \
     -d "{\"name\":\"${SESSION}\"}" >/dev/null || fail "could not create a chat session"
 chat_round_trip "$SESSION" || fail "chat round-trip produced no answer -- no chat is possible"
 ok "chat answered through web -> api -> in-cluster Ollama"
 
-step "6/7 Sessions are shared by every api replica (Cassandra-backed)"
+step "7/8 Sessions are shared by every api replica (Cassandra-backed)"
 # With the file backend each of the 4 api replicas keeps its own session list,
 # so consecutive requests from one browser see different sessions. Poll enough
 # times to land on every replica.
@@ -163,20 +208,20 @@ kubectl -n "$NAMESPACE" exec cassandra-0 -- \
     fail "session ${SESSION} is not in Cassandra -- the session store is not the shared one"
 ok "session is stored in the in-cluster Cassandra and visible from every replica"
 
-step "7/7 Fault injection: the pre-#3786 topology must FAIL this same check"
+step "8/8 Fault injection: the pre-#3786 topology must FAIL this same check"
 stop_port_forward
 kubectl -n "$NAMESPACE" delete statefulset cassandra ollama --wait=true >/dev/null
 kubectl -n "$NAMESPACE" wait --for=delete pod/ollama-0 --timeout=180s >/dev/null 2>&1 || true
 start_port_forward
 if curl -fsS -o /dev/null "${BASE}/api/sessions" 2>/dev/null; then
     fail "the session list still loaded with no Cassandra in the cluster -- \
-step 4 cannot detect the #3786 regression"
+step 5 cannot detect the #3786 regression"
 fi
 ok "without Cassandra the session list fails (the UI's 'Failed to load sessions')"
 if chat_round_trip "${SESSION}-nofix" >/tmp/k8s-smoke-nofix.log 2>&1; then
     cat /tmp/k8s-smoke-nofix.log >&2
     fail "chat still answered with no Ollama and no Cassandra in the cluster -- \
-step 5 cannot detect the #3786 regression and is worthless as a gate"
+step 6 cannot detect the #3786 regression and is worthless as a gate"
 fi
 ok "without the data/LLM tier the chat round-trip fails, as it must"
 

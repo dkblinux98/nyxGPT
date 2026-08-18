@@ -1263,7 +1263,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   cross-file failure; the failure disappears with the fixture in place.
   Re-verify when: a new test asserts a `threading.Timer`-deferred endpoint —
   use `captured_timers`, never a bare "assert not called inline".
-- **V-039** · 2026-08-18 — **An operator can now recover a cloud deployment's
+- **V-040** · 2026-08-18 — **An operator can now recover a cloud deployment's
   address and SSH target after the deploy's scrollback is gone, and read the
   instance's container state without a hand-rolled `ssh`.** `nyxgpt cloud
   status` is a first-class subcommand: human-readable by default (`--json` for
@@ -1312,7 +1312,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   Re-verify when: a check-status gate is added to the merge path — this entry
   then describes history rather than the present. See **Q-005**.
 
-- **V-040** · 2026-08-18 — **The `--kubernetes --local` stack is sized
+- **V-042** · 2026-08-18 — **The `--kubernetes --local` stack is sized
   against the node it actually lands on — in BOTH memory and cpu — and the
   install measures that node before it applies anything.** The default
   deployment (app tier + data/LLM tier + the #3787 observability layer)
@@ -1352,7 +1352,63 @@ are absent here by design (relocated to the annex; IDs are never reused).
   image both read `Pending`.
   Re-verify when: a request/limit in `k8s/**` changes, or a workload is added
   to either kustomization — both gates and
-  `tests/unit/test_k8s_capacity_preflight.py` fail loudly.
+  `tests/unit/test_k8s_capacity_preflight.py` fail loudly. Supersedes the
+  measured footprint in **V-041**, which was taken on the runner's own
+  16GB node before this right-sizing.
+
+- **V-039** · 2026-08-18 — **A self-heal/infra probe reports "unknown" when it
+  cannot run, and unknown is never counted as unhealthy.** `compose_probe()`
+  answers availability by *running* `docker compose ps`, not by checking that
+  `docker` and the compose file exist; a component whose state could not be
+  determined carries `known=False`/`state="unknown"` plus the reason, is
+  excluded from `unhealthy_count` and from the automatic heal pass, and is
+  rendered as its own third state by the Self-Heal, Infrastructure and System
+  Health pages — the last one because a zero `unhealthy_count` over an
+  unqueryable probe is a green "all healthy" nothing established, which is the
+  same defect pointing the other way.
+  The pre-#3812 check (`_which("docker") is not None and COMPOSE_FILE.exists()`)
+  is retired: it reported "available" for the condition it existed to catch.
+  Method: ran `scripts/self-heal-probe-honesty-smoke.py` on a Linux docker
+  engine, 2026-08-18 — it injects a root-owned mode-000 unix socket as
+  `DOCKER_HOST`, asserts the pre-fix path really renders every desired service
+  absent-and-unhealthy under that condition, then asserts the shipped path
+  reports unknown-with-reason and heals nothing; the restored half starts a
+  real prometheus container and asserts the same survey reports it running and
+  the untouched services absent. Reverting the fix fails the injected half.
+  Wired into `linux-native-smoke.yml` as the `self-heal-probe-honesty` job.
+  Re-verify when: another probe (native/terraform/kubernetes/canary) starts
+  reporting a definite state from an unqueryable source — the pattern, not just
+  this call site, is what the entry stands for.
+
+- **V-041** · 2026-08-18 — **The default `--kubernetes --local` stack (app +
+  data/LLM + observability) fits a single 4-vCPU/16GB node**, and the reason
+  the k8s smoke had been opting out of observability was not footprint but a
+  missing wait. Measured on a kind cluster on the agent runner: with
+  kube-system included the node carries **3825m of CPU requests (95% of
+  allocatable)** and **8162Mi of memory requests (51%)**, every Pod scheduled,
+  zero `FailedScheduling`. So CPU — not memory — is the binding dimension, and
+  the margin is ~175m: a new workload requesting more than that leaves Pods
+  Pending. The separate defect: `ops._k8s_stack_health` scores a Pod's *phase*,
+  and observability Pods land in the same namespace still pulling images, so
+  the default install reported failure on a healthy cluster until
+  `_wait_for_k8s_observability` was added (#3826) — the same shape as **V-019**
+  (an action's flag/effect halves disagreeing), and the reason a smoke that
+  passes `--skip-observability` can be green while the real command is not.
+  Method: executed on 2026-08-18 — `kind create cluster`, `kubectl apply -k
+  k8s/` + `k8s/observability/`, then `kubectl describe node` (the numbers
+  above), `--field-selector=status.phase=Pending` with `.spec.nodeName`
+  populated on every Pod (scheduled, merely pulling), and no
+  `FailedScheduling` event in any namespace. Standing guard:
+  `scripts/k8s-local-smoke.sh` now runs the default install, asserts all ten
+  observability workloads Ready, fails on any Pod the scheduler could not
+  place, and prints the allocatable-vs-requests arithmetic every run.
+  Re-verify when: any `k8s/**` manifest changes a `resources.requests`, a
+  replica count, or adds a workload — the 175m CPU margin is what absorbs it.
+  **Superseded in part by V-042** (#3825): the measured numbers above are the
+  pre-right-sizing footprint, and they were taken on the agent runner's own
+  ~16GB node, not on the 8GiB Docker Desktop VM an operator installs onto —
+  where the same stack did *not* fit. The finding this entry stands for (the
+  `_k8s_stack_health` phase/wait disagreement) is unaffected.
 
 ## Parked
 

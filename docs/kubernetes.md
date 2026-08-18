@@ -81,8 +81,14 @@ kustomization (which includes both the api and web stable/canary pairs, see
 [Canary Deployment](#canary-deployment), plus the [data and LLM
 tier](#data-and-llm-tier)), waits for Cassandra and Ollama to report Ready --
 which for Ollama includes the first pull of the default model, so the command
-returns only when a chat can actually be answered -- and snapshots
-Pod/Service health for all of them.
+returns only when a chat can actually be answered -- brings up the
+[observability tier](#observability-in-the-cluster) and waits for its ten
+workloads to roll out too, and snapshots Pod/Service health for all of them.
+
+Both waits exist for the same reason: `kubectl apply` returns when the
+objects are accepted, not when they work, so without them the command reports
+health for Pods that are still pulling images -- and the Pod-phase snapshot
+scores a still-pulling Pod as a failure (#3826).
 
 Each image build mirrors the Homebrew reinstall-if-needed behavior (see
 [ops.md](ops.md)): it fingerprints the app source that image is built from
@@ -391,6 +397,19 @@ Notes:
   apply leaves zero observability workloads, then asserts all ten roll out,
   every UI answers, Grafana has its four provisioned datasources and the SRE
   Home dashboard, and promtail's logs actually reach Loki.
+  `.github/workflows/k8s-local-smoke.yml` covers the other half -- that the
+  layer comes up *with* the app tier in the **default** install, on one node
+  the size of a stock Docker Desktop VM, with no Pod the scheduler could not
+  place (#3826, #3825).
+- **Footprint.** Since the #3825 right-sizing the default stack (app +
+  data/LLM + observability) requests ~2.1 CPU and ~6.9GiB of memory including
+  kube-system, so it fits the 4-vCPU/7936Mi a stock Docker Desktop VM offers
+  with room for a canary — see [Node capacity: what the stack
+  reserves](#node-capacity-what-the-stack-reserves) for the per-tier numbers
+  and the preflight that checks them. `--skip-observability` drops roughly
+  0.5 CPU and 2.4GiB of that; the k8s smoke runs on a node ballasted down to
+  that VM's size and prints the allocatable-versus-requests arithmetic on
+  every run, so the numbers stay observed rather than remembered.
 
 ## Data and LLM tier
 
