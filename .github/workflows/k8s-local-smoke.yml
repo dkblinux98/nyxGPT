@@ -3,7 +3,7 @@ name: Kubernetes Local Smoke
 # The question this job answers: does `nyxgpt ops install --kubernetes --local`
 # produce a stack a user can actually CHAT with?
 #
-# #3786 was an acceptance failure where 4/4 api and 4/4 web Pods reported
+# #3786 was an acceptance failure where every api and web Pod reported
 # Running, the web UI loaded, and nothing worked -- the deployment shipped no
 # Cassandra and no Ollama, and the host's own services are stopped in this
 # mode. "Pods Running" is not a working nyxGPT (the #2688 lesson), and no
@@ -18,11 +18,14 @@ name: Kubernetes Local Smoke
 # tested a command no user types, and could not have supplied #3787's executed
 # evidence because it excluded the layer #3787 added. Measured footprint of the
 # default stack on a 4-vCPU/16GB Linux runner (kind, one node, `kubectl
-# describe node`): 3825m CPU requests (95% of allocatable) and 8162Mi of memory
-# requests (51%) with kube-system included -- it fits, with the CPU margin thin
-# enough that a new workload requesting more than ~175m would leave Pods
-# Pending. The smoke asserts exactly that (no Pending Pod) and prints the
-# arithmetic, so a future footprint increase reads as a number rather than as a
+# describe node`) was 3825m CPU requests (95% of allocatable) and 8162Mi of
+# memory requests (51%) with kube-system included. #3833 then took the six
+# standing replicas the stable Deployments carried purely to make canary
+# weights expressible (3 api at 250m/512Mi, 3 web at 100m/256Mi), leaving
+# ~2775m and ~5858Mi -- so the stack now fits with about a CPU of headroom,
+# which is what a canary rollout borrows back when it grows the pool. The
+# smoke asserts no Pod is left Pending and prints the arithmetic on every
+# run, so a future footprint increase reads as a number rather than as a
 # mystery timeout, and the preflight below fails fast if the runner shrinks.
 #
 # Scoped like linux-native-smoke.yml and terraform-local-smoke.yml: a full
@@ -86,17 +89,17 @@ jobs:
       # The kind node is a container on this runner, so the runner's own size
       # IS the node's size -- there is nothing to "size up" inside the cluster.
       # Assert it up front instead: on anything smaller than the standard
-      # 4-vCPU/16GB Linux runner the default stack's 3825m of CPU requests
-      # cannot be scheduled, and the job would spend an hour discovering that
-      # as a rollout timeout deep in the smoke.
+      # 4-vCPU/16GB Linux runner the default stack's ~2775m of CPU requests
+      # cannot be scheduled with room for a rollout, and the job would spend
+      # an hour discovering that as a rollout timeout deep in the smoke.
       - name: Preflight -- the runner can fit the default stack
         run: |
           set -euo pipefail
           cpus=$(nproc)
           mem_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
           echo "runner: ${cpus} vCPU, $((mem_kb / 1024))Mi RAM, $(df -h --output=avail / | tail -1) free on /"
-          [ "$cpus" -ge 4 ] || { echo "::error::need >= 4 vCPU for the default stack (3825m of requests), have ${cpus}"; exit 1; }
-          [ "$mem_kb" -ge 14000000 ] || { echo "::error::need >= 14Gi RAM for the default stack (8162Mi of requests plus real usage), have $((mem_kb / 1024))Mi"; exit 1; }
+          [ "$cpus" -ge 4 ] || { echo "::error::need >= 4 vCPU for the default stack (~2775m of requests), have ${cpus}"; exit 1; }
+          [ "$mem_kb" -ge 14000000 ] || { echo "::error::need >= 14Gi RAM for the default stack (~5858Mi of requests plus real usage), have $((mem_kb / 1024))Mi"; exit 1; }
 
       - name: Run Kubernetes local smoke
         run: ./scripts/k8s-local-smoke.sh

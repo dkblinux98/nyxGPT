@@ -394,7 +394,9 @@ def test_start_reads_the_live_stable_replica_count(monkeypatch):
 @pytest.mark.unit
 def test_start_defaults_resting_to_the_manifest_count_when_unreadable(monkeypatch):
     monkeypatch.setattr(canary, "_run", lambda cmd, **_k: CP(returncode=1, stderr="NotFound"))
-    assert canary._resting_replicas("nyxgpt-api-stable", "nyxgpt") == canary.DEFAULT_RESTING_REPLICAS
+    assert (
+        canary._resting_replicas("nyxgpt-api-stable", "nyxgpt") == canary.DEFAULT_RESTING_REPLICAS
+    )
     assert canary.DEFAULT_RESTING_REPLICAS == 1
 
 

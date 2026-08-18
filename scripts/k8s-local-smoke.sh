@@ -3,7 +3,7 @@
 #
 # The question this answers: after `nyxgpt ops install --kubernetes --local`,
 # can a user actually chat? Not "are the Pods Running" -- #3786 was filed
-# against a stack where 4/4 api and 4/4 web Pods ran and the web UI still
+# against a stack where every api and web Pod ran and the web UI still
 # showed "Failed to load sessions" and could not answer a single message,
 # because the deployment had no data tier and no LLM tier at all. Inspection
 # cannot see that; only running it can.
@@ -173,9 +173,15 @@ chat_round_trip "$SESSION" || fail "chat round-trip produced no answer -- no cha
 ok "chat answered through web -> api -> in-cluster Ollama"
 
 step "7/8 Sessions are shared by every api replica (Cassandra-backed)"
-# With the file backend each of the 4 api replicas keeps its own session list,
-# so consecutive requests from one browser see different sessions. Poll enough
-# times to land on every replica.
+# With the file backend each api replica keeps its own session list, so
+# consecutive requests from one browser see different sessions. The stable
+# Deployment rests at 1 replica since #3833, so the poll below no longer
+# spreads across a standing pool by itself -- scale up for the duration of
+# this check, exactly as a canary rollout would, so the assertion still has
+# more than one replica to disagree.
+kubectl -n "$NAMESPACE" scale deployment/nyxgpt-api-stable --replicas=3 >/dev/null
+kubectl -n "$NAMESPACE" rollout status deployment/nyxgpt-api-stable --timeout=300s >/dev/null ||
+    fail "nyxgpt-api-stable did not reach 3 replicas for the shared-session check"
 for _ in $(seq 1 12); do
     curl -fsS "${BASE}/api/sessions" | grep -q "$SESSION" ||
         fail "session ${SESSION} missing from a replica's session list -- sessions are not shared"
@@ -184,6 +190,7 @@ kubectl -n "$NAMESPACE" exec cassandra-0 -- \
     cqlsh -e "SELECT name FROM ${NAMESPACE}.chat_sessions;" | grep -q "$SESSION" ||
     fail "session ${SESSION} is not in Cassandra -- the session store is not the shared one"
 ok "session is stored in the in-cluster Cassandra and visible from every replica"
+kubectl -n "$NAMESPACE" scale deployment/nyxgpt-api-stable --replicas=1 >/dev/null
 
 step "8/8 Fault injection: the pre-#3786 topology must FAIL this same check"
 stop_port_forward
