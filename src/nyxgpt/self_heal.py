@@ -1688,6 +1688,12 @@ def restart_native_component(component: str) -> HealResult:
     Refuses (rather than silently skipping) to touch the native Cassandra
     container if `_cassandra_active_elsewhere` finds Terraform or Compose
     already running it -- see that function's docstring.
+
+    Restarting the container is the whole Cassandra remedy, and it is
+    sufficient: the API rebuilds its own client state, because the shared
+    connection pool treats a shut-down driver `Cluster` as absent and
+    rebuilds it (`CassandraConnectionPool._connect`, #3851). Until that fix
+    a restart here left the API reporting `cassandra: unreachable` forever.
     """
     if component == "cassandra":
         collision = _cassandra_active_elsewhere()
