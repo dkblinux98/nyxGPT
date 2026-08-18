@@ -1225,13 +1225,25 @@ a core component an operator deliberately stopped via `nyxgpt ops down`/
 for the latter). Each component also carries `restart_count` (consecutive
 automatic restart attempts since it last recovered) and `giving_up` (`true`
 once that count has hit `max_consecutive_restarts` and the automatic loop
-has stopped retrying it). `compose_probe_available: false` means `docker
-compose ps` couldn't be queried from this vantage point at all (no `docker`,
-or the compose file isn't reachable -- e.g. before #3588's fix, a
-Terraform-managed api container missing the bind mount) -- a caller should
-read that as "can't check the observability tier from here", never as "the
-observability tier isn't running", see
+has stopped retrying it). `compose_probe_available: false` means the
+`docker compose ps` survey couldn't be run from this vantage point at all --
+no `docker`, an unreachable daemon, or a compose file that isn't there. It is
+answered by *running* the survey, not by checking that a binary and a file
+exist (#3812), and `compose_probe_reason` carries the cause as one operator-
+facing line (e.g. ``` `docker compose ps` exited 125: permission denied while
+trying to connect to the Docker daemon socket ... ```), empty when the probe
+is available. A caller reads this as "can't check the observability tier from
+here", never as "the observability tier isn't running" -- see
 [self-healing.md#docker-access-from-inside-the-api-container](self-healing.md#docker-access-from-inside-the-api-container).
+
+When the probe couldn't run, the affected components are reported as a third
+state rather than as absent: `known: false`, `state: "unknown"`, with the
+reason in `note`. `known: false` is not a health verdict -- `healthy: false`
+on such a row means "not established as healthy", never "down" -- so those
+components are excluded from `unhealthy_count` (counted in `unknown_count`
+instead), are never `giving_up`, and are not auto-healed. Every other row
+carries `known: true`. Clients that only understand two states must treat a
+missing/`false` `known` as "do not report this component as down".
 
 **Response:**
 
@@ -1240,15 +1252,17 @@ observability tier isn't running", see
   "enabled": true,
   "mode": "terraform",
   "compose_probe_available": true,
+  "compose_probe_reason": "",
   "components": [
-    { "service": "api", "container": "nyxgpt-api", "state": "started", "health": "", "healthy": true, "source": "native", "desired": true, "restart_count": 0, "giving_up": false },
-    { "service": "web", "container": "nyxgpt-web-1", "state": "running", "health": "healthy", "healthy": true, "source": "compose", "desired": true, "restart_count": 0, "giving_up": false },
-    { "service": "cassandra", "container": "nyxgpt-tf-cassandra", "state": "running", "health": "healthy", "healthy": true, "source": "terraform", "desired": true, "restart_count": 0, "giving_up": false },
-    { "service": "nyxgpt-api-stable-7f8b9c-abcde", "container": "nyxgpt-api-stable-7f8b9c-abcde", "state": "Running", "health": "ready", "healthy": true, "source": "kubernetes", "desired": true, "restart_count": 0, "giving_up": false },
-    { "service": "grafana", "container": "", "state": "absent", "health": "", "healthy": false, "source": "compose", "desired": true, "restart_count": 5, "giving_up": true },
-    { "service": "loki", "container": "nyxgpt-loki-1", "state": "exited", "health": "", "healthy": false, "source": "compose", "desired": false, "restart_count": 0, "giving_up": false }
+    { "service": "api", "container": "nyxgpt-api", "state": "started", "health": "", "healthy": true, "source": "native", "desired": true, "known": true, "restart_count": 0, "giving_up": false },
+    { "service": "web", "container": "nyxgpt-web-1", "state": "running", "health": "healthy", "healthy": true, "source": "compose", "desired": true, "known": true, "restart_count": 0, "giving_up": false },
+    { "service": "cassandra", "container": "nyxgpt-tf-cassandra", "state": "running", "health": "healthy", "healthy": true, "source": "terraform", "desired": true, "known": true, "restart_count": 0, "giving_up": false },
+    { "service": "nyxgpt-api-stable-7f8b9c-abcde", "container": "nyxgpt-api-stable-7f8b9c-abcde", "state": "Running", "health": "ready", "healthy": true, "source": "kubernetes", "desired": true, "known": true, "restart_count": 0, "giving_up": false },
+    { "service": "grafana", "container": "", "state": "absent", "health": "", "healthy": false, "source": "compose", "desired": true, "known": true, "restart_count": 5, "giving_up": true },
+    { "service": "loki", "container": "nyxgpt-loki-1", "state": "exited", "health": "", "healthy": false, "source": "compose", "desired": false, "known": true, "restart_count": 0, "giving_up": false }
   ],
   "unhealthy_count": 1,
+  "unknown_count": 0,
   "events": [
     { "ts": 1730000000.0, "service": "web", "reason": "state=exited health=n/a", "action": "restart", "ok": true, "restart_count": 1, "message": "Restarted web" }
   ]

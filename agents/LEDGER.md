@@ -1175,6 +1175,27 @@ are absent here by design (relocated to the annex; IDs are never reused).
   Re-verify when: the retro template's panel structure changes, or a new
   optional data source is added without a source stamp.
 
+- **V-036** · 2026-08-18 — **A self-heal/infra probe reports "unknown" when it
+  cannot run, and unknown is never counted as unhealthy.** `compose_probe()`
+  answers availability by *running* `docker compose ps`, not by checking that
+  `docker` and the compose file exist; a component whose state could not be
+  determined carries `known=False`/`state="unknown"` plus the reason, is
+  excluded from `unhealthy_count` and from the automatic heal pass, and is
+  rendered as its own third state by the Self-Heal and Infrastructure pages.
+  The pre-#3812 check (`_which("docker") is not None and COMPOSE_FILE.exists()`)
+  is retired: it reported "available" for the condition it existed to catch.
+  Method: ran `scripts/self-heal-probe-honesty-smoke.py` on a Linux docker
+  engine, 2026-08-18 — it injects a root-owned mode-000 unix socket as
+  `DOCKER_HOST`, asserts the pre-fix path really renders every desired service
+  absent-and-unhealthy under that condition, then asserts the shipped path
+  reports unknown-with-reason and heals nothing; the restored half starts a
+  real prometheus container and asserts the same survey reports it running and
+  the untouched services absent. Reverting the fix fails the injected half.
+  Wired into `linux-native-smoke.yml` as the `self-heal-probe-honesty` job.
+  Re-verify when: another probe (native/terraform/kubernetes/canary) starts
+  reporting a definite state from an unqueryable source — the pattern, not just
+  this call site, is what the entry stands for.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

@@ -118,8 +118,8 @@ If a section is enabled, its Compose services (resolved via `docker compose
 `cassandra` services excluded — see [Known limitation: the core
 stack](#known-limitation-the-core-stack) below — and one-shot services like
 `glitchtip-migrate` excluded too, since they're never "desired but absent")
-are **desired**. Any desired service missing from `docker compose ps -a`'s
-output is reported with
+are **desired**. Any desired service missing from a `docker compose ps -a`
+that *ran* is reported with
 `state: "absent"` (`healthy: false`) instead of not appearing at all, and is
 healed via `docker compose --profile ... up -d <service>` rather than
 `restart` — there's no container to restart. This is the same set of checks
@@ -127,6 +127,10 @@ healed via `docker compose --profile ... up -d <service>` rather than
 no separate code path, and the `/admin/self-heal` dashboard shows an
 **Absent** badge (distinct from **Unhealthy**) with the reason ("enabled in
 config, no container running").
+
+If that `ps -a` could not run at all, the same services are reported
+**Unknown** instead — never absent, and never counted unhealthy. See
+[Present, absent, unknown](#present-absent-unknown-three-states-not-two).
 
 **Turning a profile off on purpose**: disabling its feature flag in
 config.ini (via the [config wizard](configuration.md), which stops but
@@ -481,14 +485,46 @@ actively working on looks different from one it's given up on and is
 waiting on an operator to fix.
 
 It also reports a top-level `compose_probe_available` boolean (#3588):
-`false` means `docker compose ps` couldn't be queried at all from this
-process's vantage point (no `docker` on PATH, or `COMPOSE_FILE` doesn't exist
-here -- see [Docker access from inside the `api`
-container](#docker-access-from-inside-the-api-container)), so a missing
-observability row must read as "can't check", not "not running". The
-`/admin/self-heal` and `/admin/infrastructure` (`GET /api/v1/infra/status`'s
-`compose_probe_available`) dashboards both show an explicit note instead of
-silently omitting the tier when this is `false`.
+`false` means the `docker compose ps` survey couldn't be run at all from this
+process's vantage point, so a missing observability row must read as "can't
+check", not "not running". The flag is answered by *running* the survey
+(#3812) -- no `docker` on PATH, an unreachable daemon, or a compose file that
+isn't there all make it `false` -- and `compose_probe_reason` carries the
+cause as one line for the page to show. The `/admin/self-heal` and
+`/admin/infrastructure` (`GET /api/v1/infra/status`'s
+`compose_probe_available` / `compose_probe_reason`) dashboards both show an
+explicit note naming that reason instead of silently omitting the tier when
+this is `false`.
+
+### Present, absent, unknown: three states, not two
+
+A component's state is one of three things, and the third is not a kind of
+the second:
+
+| Rendered | Row | Counted in | Auto-healed |
+| --- | --- | --- | --- |
+| Healthy / Unhealthy | `known: true`, real `state`/`health` | `unhealthy_count` when unhealthy | yes |
+| Absent | `known: true`, `state: "absent"` | `unhealthy_count` | yes (`docker compose up -d`) |
+| Unknown | `known: false`, `state: "unknown"`, `note` = the reason | `unknown_count` | **no** |
+
+"Unknown" means the probe that would answer the question could not run. It is
+not a health verdict: `healthy: false` on such a row means "not established
+as healthy", never "down". So an unknown component is never counted unhealthy,
+never marked `giving_up`, and never restarted by the automatic pass -- acting
+on an unread state would `up -d` containers that are probably already running,
+and the action would fail for the probe's own reason anyway. An explicit
+operator "Heal now" on one still goes through, and reports the restart's real
+error.
+
+This distinction is #3812: on the rc12 cloud install the Self-Heal panel
+reported **"11 unhealthy"** with every observability component `absent` while
+all eleven were up and healthy. The API process's `systemd --user` session
+predated its `docker` group membership, so every `docker compose ps` exited
+125 -- and the old `compose_probe_available()`, which only checked that
+`docker` was on PATH and the compose file existed, reported "available" over
+an empty survey. If the panel reports unknown with a permission-denied or
+daemon-unreachable reason, the components are not the problem: the service's
+session cannot reach Docker, and `nyxgpt ops restart all` re-establishes it.
 
 **Loki query** for self-heal events (heal attempts/outcomes) plus operator
 `nyxgpt ops` lifecycle events (see below), used by that timeline panel:
@@ -595,13 +631,18 @@ path that was never mounted, and every `docker compose ps` call failed --
 silently, since a failed probe and a genuinely-empty observability tier both
 rendered as zero rows. The observability tier was invisible to both the
 Self-Heal and Infrastructure Status pages in Terraform mode as a result, even
-though it was running the whole time. `self_heal.compose_probe_available()`
-(surfaced as `compose_probe_available` on both `GET /api/v1/self-heal/status`
-and `GET /api/v1/infra/status`) now distinguishes "the probe couldn't run
-from here" from "the probe ran and found nothing", so a future instance of
-this class of bug reads as "can't check" on the dashboard instead of a false
-"nothing running". See [Terraform mode](#terraform-mode) above. The security
-tradeoffs below apply identically to this container.
+though it was running the whole time. `self_heal.compose_probe()`
+(surfaced as `compose_probe_available` + `compose_probe_reason` on both `GET
+/api/v1/self-heal/status` and `GET /api/v1/infra/status`) now distinguishes
+"the probe couldn't run from here" from "the probe ran and found nothing", so
+a future instance of this class of bug reads as "can't check" on the
+dashboard instead of a false "nothing running". #3588's version of that check
+asked whether `docker` and the compose file existed, which answered the
+question only for the missing-file case; #3812 replaced it with the survey's
+own outcome, so a daemon this process cannot reach counts too (see [Present,
+absent, unknown](#present-absent-unknown-three-states-not-two)). See
+[Terraform mode](#terraform-mode) above. The security tradeoffs below apply
+identically to this container.
 
 ### Security tradeoffs of mounting the Docker socket
 
