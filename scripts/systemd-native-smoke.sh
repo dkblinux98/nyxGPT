@@ -238,8 +238,11 @@ if [[ "$DEV_MODE" -eq 1 ]]; then
   log "Verifying the dev-mode install is actually running the checkout"
 
   # 1. `ops status` must SAY dev mode -- a dev pass must not be mistakable
-  #    for an artifact-path pass (acceptance criterion 3).
-  if nyxgpt ops status | grep -q "Install mode: dev (editable checkout at $CHECKOUT)"; then
+  #    for an artifact-path pass (acceptance criterion 3). Since #3835 the
+  #    mode is printed per deployment under an "Install mode:" heading
+  #    ("  native services:      dev (...)"), because a Terraform deployment
+  #    carries its own mode; match the native line, not the old single line.
+  if nyxgpt ops status | grep -q "native services:.*dev (editable checkout at $CHECKOUT)"; then
     echo "  ops status reports dev mode at $CHECKOUT"
   else
     echo "::error::ops status does not report dev mode for $CHECKOUT"
@@ -299,10 +302,14 @@ if [[ "$DEV_MODE" -eq 1 ]]; then
   check "api    /health" http://127.0.0.1:8000/health 200 || { echo "::error::api /health expected 200 after mode switch"; fail_count=1; }
   check "web    /"       http://127.0.0.1:3000/ 200       || { echo "::error::web / expected 200 after mode switch"; fail_count=1; }
 
-  if nyxgpt ops status | grep -q "Install mode: artifact"; then
+  # Same per-deployment format as above (#3835): the native services' line,
+  # never the "terraform deployment:" one -- a Terraform stack's mode says
+  # nothing about which build the systemd units are running.
+  if nyxgpt ops status | grep -q "native services:.*artifact"; then
     echo "  ops status reports artifact mode after the switch"
   else
     echo "::error::ops status still reports dev mode after reinstalling without --dev"
+    nyxgpt ops status || true
     fail_count=1
   fi
 
