@@ -1262,7 +1262,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   cross-file failure; the failure disappears with the fixture in place.
   Re-verify when: a new test asserts a `threading.Timer`-deferred endpoint —
   use `captured_timers`, never a bare "assert not called inline".
-- **V-038** · 2026-08-18 — **An operator can now recover a cloud deployment's
+- **V-040** · 2026-08-18 — **An operator can now recover a cloud deployment's
   address and SSH target after the deploy's scrollback is gone, and read the
   instance's container state without a hand-rolled `ssh`.** `nyxgpt cloud
   status` is a first-class subcommand: human-readable by default (`--json` for
@@ -1290,12 +1290,8 @@ are absent here by design (relocated to the annex; IDs are never reused).
   `identity_file`, `host`), or a new `cloud ops` inspection is added — it must
   go in the `REMOTE_OPS_COMMANDS` read-only allowlist, not become a write path.
 
-- **V-041** · 2026-08-18 — **A PR can be merged while the CI for its head
+- **V-038** · 2026-08-18 — **A PR can be merged while the CI for its head
   commit is still running, and nothing re-examines the result.**
-  (Filed as `V-038` under #3806; renumbered here because #3813 allocated the
-  same ID on a concurrently-open branch and the two collided on `v3.0.0` —
-  the mechanism this ledger's own ID-allocation note describes. IDs are never
-  reused; the cloud-status `V-038` above keeps the number.)
   `review_accept_and_merge.sh` validates state/mergeability/base-existence and
   then merges; it never reads the head SHA's check status, and no review
   workflow does either — "run CI checks on ALL code in the repository" is
@@ -1315,7 +1311,56 @@ are absent here by design (relocated to the annex; IDs are never reused).
   Re-verify when: a check-status gate is added to the merge path — this entry
   then describes history rather than the present. See **Q-005**.
 
-- **V-039** · 2026-08-18 — **A support ticket's entire protection is one
+- **V-039** · 2026-08-18 — **A self-heal/infra probe reports "unknown" when it
+  cannot run, and unknown is never counted as unhealthy.** `compose_probe()`
+  answers availability by *running* `docker compose ps`, not by checking that
+  `docker` and the compose file exist; a component whose state could not be
+  determined carries `known=False`/`state="unknown"` plus the reason, is
+  excluded from `unhealthy_count` and from the automatic heal pass, and is
+  rendered as its own third state by the Self-Heal, Infrastructure and System
+  Health pages — the last one because a zero `unhealthy_count` over an
+  unqueryable probe is a green "all healthy" nothing established, which is the
+  same defect pointing the other way.
+  The pre-#3812 check (`_which("docker") is not None and COMPOSE_FILE.exists()`)
+  is retired: it reported "available" for the condition it existed to catch.
+  Method: ran `scripts/self-heal-probe-honesty-smoke.py` on a Linux docker
+  engine, 2026-08-18 — it injects a root-owned mode-000 unix socket as
+  `DOCKER_HOST`, asserts the pre-fix path really renders every desired service
+  absent-and-unhealthy under that condition, then asserts the shipped path
+  reports unknown-with-reason and heals nothing; the restored half starts a
+  real prometheus container and asserts the same survey reports it running and
+  the untouched services absent. Reverting the fix fails the injected half.
+  Wired into `linux-native-smoke.yml` as the `self-heal-probe-honesty` job.
+  Re-verify when: another probe (native/terraform/kubernetes/canary) starts
+  reporting a definite state from an unqueryable source — the pattern, not just
+  this call site, is what the entry stands for.
+
+- **V-041** · 2026-08-18 — **The default `--kubernetes --local` stack (app +
+  data/LLM + observability) fits a single 4-vCPU/16GB node**, and the reason
+  the k8s smoke had been opting out of observability was not footprint but a
+  missing wait. Measured on a kind cluster on the agent runner: with
+  kube-system included the node carries **3825m of CPU requests (95% of
+  allocatable)** and **8162Mi of memory requests (51%)**, every Pod scheduled,
+  zero `FailedScheduling`. So CPU — not memory — is the binding dimension, and
+  the margin is ~175m: a new workload requesting more than that leaves Pods
+  Pending. The separate defect: `ops._k8s_stack_health` scores a Pod's *phase*,
+  and observability Pods land in the same namespace still pulling images, so
+  the default install reported failure on a healthy cluster until
+  `_wait_for_k8s_observability` was added (#3826) — the same shape as **V-019**
+  (an action's flag/effect halves disagreeing), and the reason a smoke that
+  passes `--skip-observability` can be green while the real command is not.
+  Method: executed on 2026-08-18 — `kind create cluster`, `kubectl apply -k
+  k8s/` + `k8s/observability/`, then `kubectl describe node` (the numbers
+  above), `--field-selector=status.phase=Pending` with `.spec.nodeName`
+  populated on every Pod (scheduled, merely pulling), and no
+  `FailedScheduling` event in any namespace. Standing guard:
+  `scripts/k8s-local-smoke.sh` now runs the default install, asserts all ten
+  observability workloads Ready, fails on any Pending Pod, and prints the
+  allocatable-vs-requests arithmetic every run.
+  Re-verify when: any `k8s/**` manifest changes a `resources.requests`, a
+  replica count, or adds a workload — the 175m CPU margin is what absorbs it.
+
+- **V-042** · 2026-08-18 — **A support ticket's entire protection is one
   label, and the label is now guaranteed rather than assumed.** Every guard —
   `assign_backlog.yml`, `ensure_project_hygiene.yml`,
   `summarize_backlog_page.py`, and the owner's Support project auto-add
@@ -1327,6 +1372,9 @@ are absent here by design (relocated to the annex; IDs are never reused).
   touching the form, and verifies the label afterwards by exact match;
   `support_intake_guard.yml` repairs a ticket that slips through and fails the
   run on purpose.
+  (Filed as `V-039` under #3811; renumbered on the merge of `v3.0.0` because
+  #3812 allocated `V-039` on a concurrently-open branch. IDs are never
+  reused.)
   Method: ran `tests/unit/test_support_label_isolation.py` (16 assertions on
   the triggers, the verification step, the guard's firing condition and the
   label name matching end to end) and the fault-injection step of
@@ -1336,7 +1384,8 @@ are absent here by design (relocated to the annex; IDs are never reused).
   The live `gh label list` half runs in CI, not here.
   Re-verify when: the routing key changes name, or the Support project's
   auto-add filter is edited (owner-side; agents cannot read it).
-- **V-040** · 2026-08-18 — **`_die` does not reliably abort a sourced
+
+- **V-043** · 2026-08-18 — **`_die` does not reliably abort a sourced
   `gh_project.sh` helper, and a piped `graphql` call swallowed failures
   entirely.** `_die` `return`s rather than `exit`s when the library is
   sourced, relying on `set -e` — but `set -e` is suppressed inside a command
@@ -1347,6 +1396,9 @@ are absent here by design (relocated to the annex; IDs are never reused).
   rate-limited read would have had hygiene write its defaults over every
   populated field. Both fixed (explicit `return 1`; response into a variable
   first).
+  (Filed as `V-040` under #3811; renumbered on the merge of `v3.0.0` because
+  #3813 allocated `V-040` on a concurrently-open branch. IDs are never
+  reused.)
   **The pipeline defect was a class, not one site.** The same shape existed
   in `issue_status` (a swallowed read reads as "no Status", which is how
   `promote_accepted_features.sh` and the parked-blocked sweep decide whether
@@ -1436,7 +1488,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   Blocks: nothing yet; would warrant its own issue if confirmed.
 
 - **Q-005** · 2026-08-18 · developer-agent (#3806) — How should the merge path
-  gate on the head SHA's check status (**V-041**) without deadlocking on the
+  gate on the head SHA's check status (**V-038**) without deadlocking on the
   review's *own* in-flight check runs? On `78c0e5cf` the checks include
   `claude-review` and `execute-review-decision`, which cannot be complete at
   the moment the reviewer merges, so a naive "no check may be queued or
@@ -1449,7 +1501,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   taken inside #3806's fix branch: that branch exists to unpoison the release
   branch, and rebuilding the merge gate under it would put an unreviewed
   change to every merge behind an unrelated issue number.
-  Blocks: nothing today — but every merge is exposed to **V-041** until it is
+  Blocks: nothing today — but every merge is exposed to **V-038** until it is
   answered.
 
 - **Q-006** · 2026-08-18 · owner acceptance (#3811) — What credential files a
@@ -1470,8 +1522,8 @@ are absent here by design (relocated to the annex; IDs are never reused).
   returned to the chat with a confirmation after submitting, and the ticket
   type being applied by the product rather than answered on a form. Everything
   in #3811 that does not depend on the answer shipped instead: the `Support`
-  label is guaranteed (**V-039**), the type is collected in nyxGPT and carried
-  into the body, and hygiene survives a vanished project item (**V-040**).
+  label is guaranteed (**V-042**), the type is collected in nyxGPT and carried
+  into the body, and hygiene survives a vanished project item (**V-043**).
   Not taken inside this PR: an intake path built on a guessed credential model
   is one that gets rebuilt, and the two paths it would have to hedge across
   differ in where the product is hosted, not in a detail.

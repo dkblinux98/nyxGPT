@@ -24,12 +24,20 @@ type SelfHealComponent = {
   health: string;
   healthy: boolean;
   desired?: boolean;
+  // `known: false` means the probe could not determine this component's
+  // state -- "unknown" is its own third case alongside present and absent
+  // (#3812). `healthy: false` on such a row means "not established as
+  // healthy", never "down".
+  known?: boolean;
+  note?: string;
 };
 
 type SelfHealStatus = {
   enabled: boolean;
   components: SelfHealComponent[];
   unhealthy_count: number;
+  unknown_count?: number;
+  compose_probe_reason?: string;
 };
 
 type ResourceMetricsSummary = {
@@ -67,9 +75,37 @@ const sectionTitleStyle: React.CSSProperties = {
   fontSize: '1.1rem',
 };
 
-function StatusBadge({ ok, label }: { ok: boolean; label: string }) {
+// `unknown` is deliberately neither green nor red (#3812): "nobody could ask"
+// is not a verdict in either direction, and rendering it as one is exactly how
+// eleven running, healthy containers were reported as an outage.
+function StatusBadge({
+  ok,
+  label,
+  tone,
+  title,
+}: {
+  ok: boolean;
+  label: string;
+  tone?: 'ok' | 'error' | 'unknown';
+  title?: string;
+}) {
+  const resolved = tone ?? (ok ? 'ok' : 'error');
+  const background =
+    resolved === 'unknown'
+      ? 'var(--background-secondary)'
+      : resolved === 'ok'
+        ? 'var(--success-bg)'
+        : 'var(--error-bg)';
+  const color =
+    resolved === 'unknown'
+      ? 'var(--muted-foreground)'
+      : resolved === 'ok'
+        ? 'var(--success-text)'
+        : 'var(--error-text)';
+  const dot = resolved === 'unknown' ? '#9ca3af' : resolved === 'ok' ? '#22c55e' : '#dc3545';
   return (
     <span
+      title={title}
       style={{
         display: 'inline-flex',
         alignItems: 'center',
@@ -78,8 +114,9 @@ function StatusBadge({ ok, label }: { ok: boolean; label: string }) {
         borderRadius: 999,
         fontSize: 12,
         fontWeight: 600,
-        background: ok ? 'var(--success-bg)' : 'var(--error-bg)',
-        color: ok ? 'var(--success-text)' : 'var(--error-text)',
+        background,
+        color,
+        border: resolved === 'unknown' ? '1px solid var(--border)' : 'none',
       }}
     >
       <span
@@ -87,7 +124,7 @@ function StatusBadge({ ok, label }: { ok: boolean; label: string }) {
           width: 8,
           height: 8,
           borderRadius: '50%',
-          background: ok ? '#22c55e' : '#dc3545',
+          background: dot,
         }}
       />
       {label}
@@ -225,31 +262,58 @@ export default function AdminHealthPage() {
                     Self-heal status unavailable.
                   </p>
                 ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                    <StatusBadge
-                      ok={selfHeal.unhealthy_count === 0}
-                      label={
-                        selfHeal.unhealthy_count === 0
-                          ? 'All components healthy'
-                          : `${selfHeal.unhealthy_count} unhealthy`
-                      }
-                    />
-                    {selfHeal.components
-                      .filter((c) => !c.healthy && c.desired !== false)
-                      .map((c) => (
-                        <div key={c.service} style={{ fontSize: 13 }}>
-                          <strong>{c.service}</strong>
-                          <span style={{ color: 'var(--muted-foreground)' }}>
-                            {' '}
-                            -- state={c.state}
-                            {c.health ? ` health=${c.health}` : ''}
-                          </span>
-                        </div>
-                      ))}
-                    <a href="/admin/self-heal" style={{ color: '#0066cc', fontSize: 13 }}>
-                      Self-Heal details →
-                    </a>
-                  </div>
+                  // Three states, same as the Self-Heal panel (#3812): a
+                  // component the probe could not query is neither healthy
+                  // nor unhealthy, so it must not feed either verdict. Before
+                  // this, an unqueryable probe left `unhealthy_count` at 0 and
+                  // this card read a green "All components healthy" over rows
+                  // it was simultaneously listing as failures.
+                  (() => {
+                    const shown = selfHeal.components.filter((c) => c.desired !== false);
+                    const unknown = shown.filter((c) => c.known === false);
+                    const unhealthy = shown.filter((c) => c.known !== false && !c.healthy);
+                    const unknownCount = selfHeal.unknown_count ?? unknown.length;
+                    return (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                        {selfHeal.unhealthy_count > 0 ? (
+                          <StatusBadge ok={false} label={`${selfHeal.unhealthy_count} unhealthy`} />
+                        ) : unknownCount > 0 ? (
+                          <StatusBadge
+                            ok={false}
+                            tone="unknown"
+                            label={`${unknownCount} unknown -- cannot determine from here`}
+                            title="These components could not be queried from here, so their state is unknown -- not down, and not established as healthy."
+                          />
+                        ) : (
+                          <StatusBadge ok label="All components healthy" />
+                        )}
+                        {selfHeal.compose_probe_reason && unknownCount > 0 && (
+                          <p style={{ margin: 0, fontSize: 12, color: 'var(--muted-foreground)' }}>
+                            Reason: <code>{selfHeal.compose_probe_reason}</code>
+                          </p>
+                        )}
+                        {unhealthy.map((c) => (
+                          <div key={c.service} style={{ fontSize: 13 }}>
+                            <strong>{c.service}</strong>
+                            <span style={{ color: 'var(--muted-foreground)' }}>
+                              {' '}
+                              -- state={c.state}
+                              {c.health ? ` health=${c.health}` : ''}
+                            </span>
+                          </div>
+                        ))}
+                        {unknown.map((c) => (
+                          <div key={c.service} style={{ fontSize: 13, color: 'var(--muted-foreground)' }}>
+                            <strong>{c.service}</strong> -- unknown (state could not be determined
+                            from here)
+                          </div>
+                        ))}
+                        <a href="/admin/self-heal" style={{ color: '#0066cc', fontSize: 13 }}>
+                          Self-Heal details →
+                        </a>
+                      </div>
+                    );
+                  })()
                 )}
               </section>
 

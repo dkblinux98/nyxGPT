@@ -3,7 +3,7 @@ set -uo pipefail
 
 # tests/test_admin_set_fields.sh
 #
-# Which question does this suite answer? (#3811, ledger V-040)
+# Which question does this suite answer? (#3811, ledger V-043)
 #
 #   "When the board read FAILS, does `admin_set_fields.sh` say so — or does it
 #    report a clean run in which it wrote nothing?"
@@ -22,7 +22,7 @@ set -uo pipefail
 # Inspection cannot settle this — the behaviour depends on how bash propagates
 # a non-zero status out of a command substitution used as an `if` condition
 # under `set -e`, which is exactly the class of thing this repo has been wrong
-# about before (V-040's `_die` half). So the suite runs the real script.
+# about before (V-043's `_die` half). So the suite runs the real script.
 #
 # Both directions are proved, per the macos-brew-smoke.yml fault-injection
 # template: a copy of the script with the fix reverted to the piped form must

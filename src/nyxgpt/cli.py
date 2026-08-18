@@ -1516,13 +1516,30 @@ def cmd_self_heal_status(_cfg_path: Path | None) -> int:
     """
     data = self_heal_mod.status()
     print(f"Self-heal watchdog: {'enabled' if data['enabled'] else 'disabled'}")
+    # An unqueryable probe is reported before the rows it explains, so the
+    # `??` markers below read as "could not check" rather than as an outage
+    # (#3812).
+    if not data.get("compose_probe_available", True):
+        reason = data.get("compose_probe_reason") or "reason unavailable"
+        print(f"Observability survey: CANNOT DETERMINE from here -- {reason}")
     if not data["components"]:
-        print("No Docker Compose containers found (is the stack up? `docker compose up -d`)")
+        print("No components found (is the stack up? `nyxgpt ops install`)")
         return 0
     for c in data["components"]:
-        marker = "OK" if c["healthy"] or not c["desired"] else "!!"
+        known = c.get("known", True)
+        if not known:
+            marker = "??"
+        elif c["healthy"] or not c["desired"]:
+            marker = "OK"
+        else:
+            marker = "!!"
         health = c["health"] or "n/a"
-        suffix = " (disabled -- not auto-healed)" if not c["desired"] else ""
+        if not known:
+            suffix = " (state could not be determined -- not counted unhealthy)"
+        elif not c["desired"]:
+            suffix = " (disabled -- not auto-healed)"
+        else:
+            suffix = ""
         print(f" [{marker}] {c['service']}: state={c['state']} health={health}{suffix}")
     if data["events"]:
         print("\nRecent heal events:")

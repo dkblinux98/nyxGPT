@@ -43,6 +43,10 @@ type InfraStatus = {
   native: Record<string, string>;
   compose: Record<string, string>;
   compose_probe_available: boolean;
+  // Why the probe could not run, when it could not (#3812) -- reported so the
+  // page can name the cause ("`docker compose ps` exited 125: permission
+  // denied ...") instead of only saying it can't tell.
+  compose_probe_reason?: string;
   conflicts: string[];
   terraform: {
     probe_available: boolean;
@@ -488,9 +492,16 @@ export default function InfrastructurePage() {
 
             {!status.compose_probe_available ? (
               <p style={{ fontSize: '0.875rem', color: 'var(--foreground-muted)' }}>
-                Cannot determine from this deployment mode — the Compose file isn&apos;t reachable
-                from wherever this API process is running (e.g. a Terraform-managed container
-                missing the docker-compose.yml bind mount).
+                Cannot determine from here — the Compose survey could not be run from wherever
+                this API process is running, so nothing below can be read as &quot;not
+                running&quot;.
+                {status.compose_probe_reason ? (
+                  <>
+                    {' '}
+                    Reason: <code>{status.compose_probe_reason}</code>.
+                  </>
+                ) : null}{' '}
+                Check it yourself with <code>nyxgpt ops status</code>.
               </p>
             ) : (
               <ComponentList components={status.compose} />

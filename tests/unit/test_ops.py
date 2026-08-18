@@ -11967,6 +11967,8 @@ def test_install_kubernetes_success_runs_all_steps(monkeypatch, capsys):
         # The observability layer this mode now deploys too (#3787).
         patch.object(ops, "_sync_packaged_resources", return_value=ok),
         patch.object(ops, "_apply_k8s_observability", return_value=ok) as o,
+        # Its rollout wait (#3826) shells out to kubectl for real otherwise.
+        patch.object(ops, "_wait_for_k8s_observability", return_value=ok),
         patch.object(ops, "_k8s_observability_health", return_value=ok),
     ):
         rc = ops._install_kubernetes(args)
@@ -12001,6 +12003,8 @@ def test_install_kubernetes_clears_intentional_stop_markers_for_api_and_web(monk
         patch.object(ops, "_k8s_stack_health", return_value=ok),
         patch.object(ops, "_sync_packaged_resources", return_value=ok),
         patch.object(ops, "_apply_k8s_observability", return_value=ok),
+        # Its rollout wait (#3826) shells out to kubectl for real otherwise.
+        patch.object(ops, "_wait_for_k8s_observability", return_value=ok),
         patch.object(ops, "_k8s_observability_health", return_value=ok),
         patch.object(ops.self_heal, "clear_intentionally_stopped") as clear_stopped,
     ):
@@ -12272,6 +12276,8 @@ def test_install_kubernetes_local_runs_steps_and_returns_results(monkeypatch):
         # (#3787) -- unpatched, these steps would shell out to kubectl.
         patch.object(ops, "_sync_packaged_resources", return_value=ok),
         patch.object(ops, "_apply_k8s_observability", return_value=ok),
+        # Its rollout wait (#3826) shells out to kubectl for real otherwise.
+        patch.object(ops, "_wait_for_k8s_observability", return_value=ok),
         patch.object(ops, "_k8s_observability_health", return_value=ok),
     ):
         results = ops.install_kubernetes_local(api_key="k")
@@ -12310,9 +12316,13 @@ def test_infra_status_compose_probe_available_true_when_probe_can_run(monkeypatc
         lambda: ops.DeploymentMode(native={}, compose={}, conflicts=[]),
     )
     monkeypatch.setattr(ops, "_which", lambda prog: None)
-    monkeypatch.setattr(ops.self_heal, "compose_probe_available", lambda: True)
+    monkeypatch.setattr(
+        ops.self_heal, "compose_probe", lambda: ops.self_heal.ComposeProbe(available=True)
+    )
 
-    assert ops.infra_status()["compose_probe_available"] is True
+    result = ops.infra_status()
+    assert result["compose_probe_available"] is True
+    assert result["compose_probe_reason"] == ""
 
 
 @pytest.mark.unit
@@ -12329,12 +12339,22 @@ def test_infra_status_compose_probe_available_false_when_compose_file_unreachabl
     monkeypatch.setattr(
         ops, "_which", lambda prog: "/usr/local/bin/docker" if prog == "docker" else None
     )
-    monkeypatch.setattr(ops.self_heal, "compose_probe_available", lambda: False)
+    monkeypatch.setattr(
+        ops.self_heal,
+        "compose_probe",
+        lambda: ops.self_heal.ComposeProbe(
+            available=False,
+            reason="`docker compose ps` exited 1: the Compose file is not reachable from here",
+        ),
+    )
 
     result = ops.infra_status()
     assert result["mode"] == "terraform"
     assert result["compose"] == {}
     assert result["compose_probe_available"] is False
+    # #3812: the page must be able to say *why* it can't check, not just that
+    # it can't -- the reason travels with the flag.
+    assert "not reachable" in result["compose_probe_reason"]
 
 
 @pytest.mark.unit
@@ -13823,3 +13843,32 @@ def test_ops_port_forward_keyboard_interrupt_is_clean_exit(monkeypatch):
     rc = ops.port_forward(MagicMock(target="web", port=3000))
 
     assert rc == 0
+
+
+@pytest.mark.unit
+def test_compose_stack_snapshot_omits_undetermined_components(monkeypatch):
+    """#3812: this map's values are docker states, compared against "running"
+    by its callers. A component whose state could not be determined has no
+    docker state to contribute, and putting a guess in here would push it into
+    `detect_deployment_mode()`'s conflict checks."""
+    monkeypatch.setattr(
+        ops.self_heal,
+        "list_component_status",
+        lambda: [
+            ops.self_heal.ComponentStatus(
+                "prometheus", "nyxgpt-prometheus-1", "running", "healthy", True, source="compose"
+            ),
+            ops.self_heal.ComponentStatus(
+                "grafana",
+                "",
+                "unknown",
+                "",
+                False,
+                source="compose",
+                note="`docker compose ps` exited 125",
+                known=False,
+            ),
+        ],
+    )
+
+    assert ops._compose_stack_snapshot() == {"prometheus": "running"}

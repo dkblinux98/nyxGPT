@@ -1,4 +1,4 @@
-"""No agent-script helper may read GraphQL through a pipeline (#3811, V-040).
+"""No agent-script helper may read GraphQL through a pipeline (#3811, V-043).
 
 `graphql()` in `scripts/agents/lib/gh_project.sh` reports a failed API call by
 returning non-zero. Written as ``graphql ... | jq ...`` that status is the
@@ -93,7 +93,7 @@ def test_no_graphql_call_is_piped(script: Path) -> None:
 
     assert not offenders, (
         "a piped `graphql` call discards the wrapper's exit status, so a failed "
-        "read returns empty output and exit 0 (V-040). Take the response into a "
+        "read returns empty output and exit 0 (V-043). Take the response into a "
         "variable first:\n  " + "\n  ".join(offenders)
     )
 

@@ -243,12 +243,26 @@ class ComponentStatus:
     manual) healing for `desired=False` components, so a deliberate
     feature-flag disable isn't undone by the next auto-heal pass.
 
+    `known` is `False` for a component whose real state could not be
+    determined from here at all -- the probe that would answer the question
+    failed to run (`state="unknown"`, `note` carrying the reason, e.g.
+    "docker daemon unreachable -- `docker compose ps` exited 125"). It is
+    *not* a health verdict: `healthy=False` on an unknown entry means "not
+    established as healthy", never "down". Nothing may count an unknown
+    component as unhealthy or act on it automatically -- see
+    `_record_health_check` and `heal_now`. This is the distinction #3812
+    added after eleven healthy observability containers were reported
+    `absent`, and counted as "11 unhealthy", purely because the API process's
+    session could not reach the Docker daemon.
+
     `note` is an informational annotation, empty unless another mode's
     entry for this same component was shadowed by this one (see
     `_resolve_core_component_conflicts` / #3428) -- e.g. a stopped native
     `nyxgpt-cassandra` container left in place while Terraform mode is
-    actually running Cassandra. It never affects `healthy`/`state`/`source`,
-    which always describe the winning (active) entry only.
+    actually running Cassandra -- or unless `known` is `False`, in which case
+    it carries why the state could not be determined. It never affects
+    `healthy`/`state`/`source`, which always describe the winning (active)
+    entry only.
     """
 
     service: str
@@ -259,6 +273,7 @@ class ComponentStatus:
     source: str = "compose"
     desired: bool = True
     note: str = ""
+    known: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a plain dict suitable for JSON responses."""
@@ -271,7 +286,39 @@ class ComponentStatus:
             "source": self.source,
             "desired": self.desired,
             "note": self.note,
+            "known": self.known,
         }
+
+
+@dataclass(frozen=True)
+class ComposeProbe:
+    """The result of one `docker compose ps` survey, and whether it could run at all.
+
+    `available` answers "did the survey actually run?", not "is the binary
+    installed?" -- see `compose_probe()` for why that distinction is the
+    whole point (#3812). When `available` is `False`, `statuses` is empty and
+    means nothing: it is the absence of an answer, not an answer of absence.
+    `reason` is a short operator-facing sentence, empty when available.
+    """
+
+    available: bool
+    reason: str = ""
+    statuses: tuple[ComponentStatus, ...] = ()
+
+
+@dataclass(frozen=True)
+class ComponentSurvey:
+    """Every component's status for one pass, plus the Compose probe behind it.
+
+    `heal_now()` and `status()` both need the component rows *and* whether
+    the Compose half of them could be determined. Bundling them means one
+    `docker compose ps` per pass answers both, instead of the two
+    independent calls that let the flag and the rows disagree in the first
+    place.
+    """
+
+    components: list[ComponentStatus]
+    compose_probe: ComposeProbe
 
 
 @dataclass(frozen=True)
@@ -617,11 +664,20 @@ def _system_ollama_service_active() -> bool:
 
 
 def _native_container_state(name: str) -> str:
-    """Return the docker state ('running', 'exited', ...) for container `name`, or 'absent'."""
+    """Return the docker state ('running', 'exited', ...) for container `name`.
+
+    Returns `"absent"` only when `docker` actually answered and reported no
+    such container, and `"unknown"` when the question could not be put to
+    Docker at all -- no binary, an unreachable daemon, a refused socket. The
+    two are not interchangeable (#3812): folding an unqueryable daemon into
+    "absent" is how a running container gets reported as gone. Callers skip
+    `"unknown"` exactly as they skip `"absent"`, but from a state they can
+    recognize rather than one that reads as a fact.
+    """
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name):  # inline barrier, CodeQL #4
         return "absent"
     if _which("docker") is None:
-        return "absent"
+        return "unknown"
     try:
         cp = _run(
             ["docker", "ps", "-a", "--filter", f"name=^{name}$", "--format", "{{.State}}"],
@@ -629,9 +685,9 @@ def _native_container_state(name: str) -> str:
         )
     except Exception as e:
         logger.warning("self-heal: failed to query docker state for %s: %s", name, e)
-        return "absent"
+        return "unknown"
     if cp.returncode != 0:
-        return "absent"
+        return "unknown"
     out = (cp.stdout or "").strip()
     return out.splitlines()[0].strip() if out else "absent"
 
@@ -686,7 +742,9 @@ def _list_terraform_component_status() -> list[ComponentStatus]:
     statuses: list[ComponentStatus] = []
     for component, container in TERRAFORM_CONTAINERS.items():
         state = _native_container_state(container)
-        if state == "absent":
+        if state in ("absent", "unknown"):
+            # "unknown" = Docker could not be asked (#3812); reported as
+            # nothing here rather than as a container that isn't there.
             continue
         health = _native_container_health(container)
         healthy = state == "running" and health in ("", "healthy", "starting")
@@ -864,7 +922,7 @@ def _list_native_component_status() -> list[ComponentStatus]:
         )
 
     state = _native_container_state(NATIVE_CASSANDRA_CONTAINER)
-    if state != "absent":
+    if state not in ("absent", "unknown"):  # unknown = Docker unreachable, not "gone" (#3812)
         statuses.append(
             ComponentStatus(
                 service="cassandra",
@@ -920,14 +978,14 @@ def _desired_compose_services(profiles: set[str], *, exclude_one_shot: bool = Tr
     docstring) and, when `exclude_one_shot` (the default), minus
     `ONE_SHOT_SERVICES` (a run-to-completion job is never "desired but
     absent" -- exiting 0 with no running container *is* its healthy end
-    state, mirroring the exemption `_list_compose_component_status` already
+    state, mirroring the exemption `_parse_compose_ps` already
     applies on the present side).
 
     `_mark_disabled_present_services` calls this with `exclude_one_shot=False`
     -- it uses the result to recognize which *present* services belong to
     some observability profile at all, and a one-shot job that's present
     (i.e. it failed, since a successful one is never present -- see
-    `_list_compose_component_status`) must stay recognized so a disabled
+    `_parse_compose_ps`) must stay recognized so a disabled
     profile still clears its `desired` flag instead of leaving it stuck
     `True` forever.
 
@@ -975,7 +1033,7 @@ def _absent_desired_statuses(
 ) -> list[ComponentStatus]:
     """Build a `ComponentStatus` for every desired observability service missing entirely.
 
-    `present_services` is whatever `_list_compose_component_status()` already
+    `present_services` is whatever `compose_probe()`'s survey already
     found (containers that exist, healthy or not); `desired_services` is
     `_desired_compose_services(_enabled_observability_profiles())`. Anything
     desired but not present was torn down (e.g. `nyxgpt ops down`) while its
@@ -996,6 +1054,38 @@ def _absent_desired_statuses(
             desired=True,
         )
         for service in sorted(desired_services - present_services)
+    ]
+
+
+def _unknown_desired_statuses(desired_services: set[str], reason: str) -> list[ComponentStatus]:
+    """Build an `unknown` `ComponentStatus` per desired service when the probe couldn't run.
+
+    The honest counterpart to `_absent_desired_statuses`, and the fix for
+    #3812: "the survey could not run" and "the survey ran and found nothing"
+    produce identical empty results, so which of the two happened has to come
+    from the probe (`ComposeProbe.available`), not from the emptiness. When
+    it could not run, every desired service is reported `known=False`,
+    `state="unknown"`, carrying `reason` -- so the dashboard says "cannot
+    determine from here, because X" instead of asserting eleven running
+    containers are gone.
+
+    `healthy=False` here means "not established as healthy", and callers must
+    treat it that way: `_record_health_check` leaves unknowns out of the
+    unhealthy count and `heal_now`'s automatic pass will not act on them.
+    """
+    return [
+        ComponentStatus(
+            service=service,
+            container="",
+            state="unknown",
+            health="",
+            healthy=False,
+            source="compose",
+            desired=True,
+            note=reason,
+            known=False,
+        )
+        for service in sorted(desired_services)
     ]
 
 
@@ -1096,7 +1186,7 @@ def _resolve_core_component_conflicts(
 def list_component_status() -> list[ComponentStatus]:
     """Health-check every monitored component across every deployment mode.
 
-    Combines `_list_compose_component_status()` (whatever's currently up
+    Combines `compose_probe()`'s survey (whatever's currently up
     under Docker Compose, with any component whose observability profile is
     currently disabled flagged `desired=False` -- see
     `_mark_disabled_present_services`), `_list_native_component_status()`
@@ -1117,12 +1207,31 @@ def list_component_status() -> list[ComponentStatus]:
     mode stopped it, until `nyxgpt ops install`/`restart`/`up` clears the
     marker.
     """
-    compose_statuses = _list_compose_component_status()
+    return component_survey().components
+
+
+def component_survey() -> ComponentSurvey:
+    """`list_component_status()` plus the Compose probe that produced its Compose half.
+
+    Callers that only want the rows can keep using `list_component_status()`;
+    callers that must also say *why* a row is unknown (`status()`, and
+    `heal_now()`, which must not act on one) use this, so a single `docker
+    compose ps` answers both questions and they cannot disagree (#3812).
+
+    When the probe could not run, the desired observability services are
+    reported unknown-with-reason (`_unknown_desired_statuses`) rather than
+    absent -- an unqueryable stack is never rendered as a definite negative.
+    """
+    probe = compose_probe()
+    compose_statuses = list(probe.statuses)
     compose_managed = {s.service for s in compose_statuses}
 
     desired_services = _desired_compose_services(_enabled_observability_profiles())
     compose_statuses = _mark_disabled_present_services(compose_statuses, desired_services)
-    absent_statuses = _absent_desired_statuses(compose_managed, desired_services)
+    if probe.available:
+        undetermined_statuses = _absent_desired_statuses(compose_managed, desired_services)
+    else:
+        undetermined_statuses = _unknown_desired_statuses(desired_services, probe.reason)
 
     native_statuses = _list_native_component_status()
     terraform_statuses = _list_terraform_component_status()
@@ -1132,7 +1241,7 @@ def list_component_status() -> list[ComponentStatus]:
     core_managed = {s.service for s in core_statuses}
     kubernetes_statuses = _list_kubernetes_component_status(core_managed)
 
-    all_statuses = core_statuses + kubernetes_statuses + absent_statuses
+    all_statuses = core_statuses + kubernetes_statuses + undetermined_statuses
 
     stopped = set(list_intentionally_stopped())
     if stopped:
@@ -1140,31 +1249,107 @@ def list_component_status() -> list[ComponentStatus]:
             replace(s, desired=False) if s.desired and s.service in stopped else s
             for s in all_statuses
         ]
-    return all_statuses
+    return ComponentSurvey(components=all_statuses, compose_probe=probe)
+
+
+def _compose_probe_failure_detail(cp: subprocess.CompletedProcess[str]) -> str:
+    """One-line operator-facing reason for a non-zero `docker compose ps`.
+
+    Prefers Docker's own last stderr line (e.g. "permission denied while
+    trying to connect to the Docker daemon socket ...") over the bare exit
+    code, because that line is the actionable half: exit 125 alone doesn't
+    tell an operator their session is missing the `docker` group. Falls back
+    to the exit code when the command failed silently. Kept to a single
+    trimmed line -- this string is rendered in the dashboard, not a log pane.
+    """
+    detail = f"`docker compose ps` exited {cp.returncode}"
+    stderr_lines = [line.strip() for line in (cp.stderr or "").splitlines() if line.strip()]
+    if stderr_lines:
+        tail = stderr_lines[-1]
+        if len(tail) > 200:
+            tail = tail[:197] + "..."
+        detail = f"{detail}: {tail}"
+    elif not COMPOSE_FILE.exists():
+        # #3588's case: the Compose file isn't reachable from this vantage
+        # point (e.g. a Terraform-managed api container missing the bind
+        # mount). Named explicitly when Docker itself said nothing useful,
+        # because the path is the actionable half there.
+        detail = f"{detail}: the Compose file is not reachable from here ({COMPOSE_FILE})"
+    return detail
+
+
+def compose_probe() -> ComposeProbe:
+    """Run the Compose observability survey, reporting whether it *could* run.
+
+    This is the single source of both halves -- the component rows and
+    whether they mean anything -- because they are the same question asked
+    once. `available=False` means `statuses` being empty carries no
+    information about what is running, and callers must render the affected
+    components as unknown rather than absent (see `_unknown_desired_statuses`).
+
+    Three ways the survey can fail to run, each with its own `reason`:
+
+    - **No `docker` on PATH.** Nothing to ask.
+    - **`COMPOSE_FILE` not reachable from here.** Exactly what happened to a
+      Terraform-managed `nyxgpt-tf-api` container before it got the same
+      `docker-compose.yml` bind mount + `NYXGPT_COMPOSE_FILE` env var
+      docker-compose.yml's own `api` service already sets (#3588).
+    - **The command itself failed** -- a non-zero exit or an exception. This
+      is the case #3588's existence checks structurally could not see and
+      #3812 filed: on the rc12 Terraform/cloud install, `docker` was on PATH
+      and the compose file was present, but the `systemd --user` session
+      predated the `ec2-user` docker-group change, so every `docker compose
+      ps` exited 125 (daemon unreachable). Both existence checks passed, the
+      probe reported "available", the survey returned nothing, and eleven
+      running-and-healthy observability containers were rendered `absent` and
+      counted "11 unhealthy". A probe that says it can run must have run.
+
+    Never raises: an unqueryable stack is a reportable state, not an error.
+    """
+    if _which("docker") is None:
+        return ComposeProbe(available=False, reason="`docker` is not installed on this host")
+    try:
+        cp = _run(
+            ["docker", "compose", "-f", str(COMPOSE_FILE), "ps", "-a", "--format", "json"],
+            expected=True,
+        )
+    except Exception as e:
+        reason = f"`docker compose ps` could not be run: {type(e).__name__}: {e}"
+        logger.warning(
+            "self-heal: %s -- observability survey unavailable this pass",
+            reason,
+            extra={"component": "self_heal", "compose_probe_reason": reason},
+        )
+        return ComposeProbe(available=False, reason=reason)
+    if cp.returncode != 0:
+        reason = _compose_probe_failure_detail(cp)
+        logger.warning(
+            "self-heal: %s querying %s -- observability survey unavailable this pass, "
+            "components reported unknown rather than absent",
+            reason,
+            COMPOSE_FILE,
+            extra={
+                "component": "self_heal",
+                "compose_probe_reason": reason,
+                "returncode": cp.returncode,
+            },
+        )
+        return ComposeProbe(available=False, reason=reason)
+    return ComposeProbe(available=True, reason="", statuses=tuple(_parse_compose_ps(cp.stdout)))
 
 
 def compose_probe_available() -> bool:
     """Whether the Compose observability survey can actually run from this process.
 
-    `False` means `_list_compose_component_status()` finding nothing can't be
-    trusted as "genuinely not running" -- e.g. no `docker` binary on PATH, or
-    `COMPOSE_FILE` doesn't exist from this process's vantage point. The latter
-    is exactly what happened to a Terraform-managed `nyxgpt-tf-api` container
-    before it got the same `docker-compose.yml` bind mount + `NYXGPT_COMPOSE_
-    FILE` env var docker-compose.yml's own `api` service already sets (#3588):
-    `_resolve_compose_file()`'s module-path and config.ini fallbacks both fail
-    inside that container, so `COMPOSE_FILE` resolves to a path that was never
-    mounted, and `docker compose ps` against it fails every pass -- silently
-    reporting zero observability containers indistinguishable from "nothing is
-    running". `status()`/`ops.infra_status()` surface this so the Self-Heal
-    and Infrastructure Status pages can say "can't check from here" instead of
-    a false "nothing running".
+    Thin wrapper over `compose_probe()`, kept because `ops.infra_status()`
+    and the dashboards want the boolean on its own. Prefer `compose_probe()`
+    where the failure reason is also wanted -- it costs the same one probe.
     """
-    return _which("docker") is not None and COMPOSE_FILE.exists()
+    return compose_probe().available
 
 
-def _list_compose_component_status() -> list[ComponentStatus]:
-    """Query `docker compose ps -a` for every container the project has created.
+def _parse_compose_ps(stdout: str | None) -> list[ComponentStatus]:
+    """Turn `docker compose ps -a --format json` output into `ComponentStatus` rows.
 
     Only reports containers that actually exist -- an opt-in profile
     (monitoring/logging/tracing/errors) that was never started isn't
@@ -1178,27 +1363,8 @@ def _list_compose_component_status() -> list[ComponentStatus]:
     the exemption is for the "not a long-running service" shape, not for
     masking a real failure.
     """
-    if _which("docker") is None:
-        return []
-    try:
-        cp = _run(
-            ["docker", "compose", "-f", str(COMPOSE_FILE), "ps", "-a", "--format", "json"],
-            expected=True,
-        )
-    except Exception as e:
-        logger.warning("self-heal: failed to query docker compose ps: %s", e)
-        return []
-    if cp.returncode != 0:
-        logger.warning(
-            "self-heal: docker compose ps exited %s querying %s -- observability survey "
-            "unavailable this pass (see compose_probe_available)",
-            cp.returncode,
-            COMPOSE_FILE,
-        )
-        return []
-
     statuses: list[ComponentStatus] = []
-    for line in (cp.stdout or "").splitlines():
+    for line in (stdout or "").splitlines():
         line = line.strip()
         if not line:
             continue
@@ -1259,26 +1425,40 @@ def _record_health_check(statuses: list[ComponentStatus]) -> int:
     condition (`not healthy and desired`) also drives the labeled
     `SELFHEAL_COMPONENT_HEALTHY` gauge, so the aggregate count and the named
     per-service series can never disagree (#3575).
+
+    A component whose state could not be determined at all (`known=False` --
+    the Compose probe could not run, see `compose_probe`) is likewise not
+    counted, and its gauge is left at whatever the last successful pass
+    observed rather than being set either way (#3812): reporting it unhealthy
+    would alarm an operator about containers that are very likely running,
+    and reporting it healthy would assert something this pass did not
+    establish. Leaving the series stale is the standard Prometheus reading of
+    "this could not be scraped", and keeps `SELFHEAL_UNHEALTHY_COMPONENTS` a
+    count of what is genuinely known to be broken.
     """
     unhealthy = 0
     for s in statuses:
-        is_unhealthy = not s.healthy and s.desired
+        is_unhealthy = not s.healthy and s.desired and s.known
         if is_unhealthy:
             unhealthy += 1
         logger.debug(
-            "self-heal: health check %s healthy=%s state=%s health=%s",
+            "self-heal: health check %s healthy=%s state=%s health=%s known=%s",
             s.service,
             s.healthy,
             s.state,
             s.health or "n/a",
+            s.known,
             extra={
                 "component": "self_heal",
                 "service": s.service,
                 "healthy": s.healthy,
                 "state": s.state,
                 "health": s.health,
+                "known": s.known,
             },
         )
+        if not s.known:
+            continue
         prom_metrics.SELFHEAL_COMPONENT_HEALTHY.labels(service=s.service).set(
             0.0 if is_unhealthy else 1.0
         )
@@ -1412,7 +1592,7 @@ def _cassandra_active_elsewhere() -> str | None:
     terraform_container = TERRAFORM_CONTAINERS["cassandra"]
     if _native_container_state(terraform_container) == "running":
         return terraform_container
-    for s in _list_compose_component_status():
+    for s in compose_probe().statuses:
         if s.service == "cassandra" and s.state == "running":
             return s.container or "cassandra (compose)"
     return None
@@ -1828,7 +2008,18 @@ def heal_now(
     -- an explicit operator action shouldn't be blocked by the same guards
     that protect the automatic loop.
 
-    Returns {"checked": [...], "healed": [...]}, and additionally an
+    A component the Compose probe could not determine (`known=False`, see
+    `compose_probe`) is never a target of the automatic pass: acting on a
+    guess would `docker compose up -d` containers that are probably already
+    running, and every attempt would fail anyway for the same reason the
+    probe did -- burning the restart budget until self-heal "gave up" on
+    eleven healthy services (#3812). An explicit operator "Heal now" on one
+    still goes through, like the `desired=False` and backoff overrides: the
+    restart's own error is then reported back honestly.
+
+    Returns {"checked": [...], "healed": [...], "undetermined": [...]} --
+    the last listing the components whose state this pass could not
+    determine, each with its reason in `note` -- and additionally an
     "error" key if an explicit `service` isn't currently a known container.
     """
     statuses = list_component_status()
@@ -1870,6 +2061,23 @@ def heal_now(
                     )
                 restart_counts[status.service] = 0
                 prom_metrics.SELFHEAL_RESTART_COUNT.labels(service=status.service).set(0)
+                continue
+
+            if not manual and not status.known:
+                # State undetermined this pass (the Compose probe could not
+                # run -- #3812). "Not known to be healthy" is not "known to
+                # be broken": healing here would act on an unread state, and
+                # the action would fail for the probe's own reason anyway.
+                logger.info(
+                    "self-heal: skipping %s, its state could not be determined this pass (%s)",
+                    status.service,
+                    status.note or "reason unavailable",
+                    extra={
+                        "component": "self_heal",
+                        "service": status.service,
+                        "compose_probe_reason": status.note,
+                    },
+                )
                 continue
 
             if not manual and not status.desired:
@@ -2024,22 +2232,33 @@ def heal_now(
         state["events"] = events[-EVENT_LOG_LIMIT:]
         _save_state(state)
 
+    undetermined = sum(1 for s in targets if not s.known)
     logger.info(
-        "self-heal: heal pass complete (checked=%d, unhealthy=%d, healed=%d, manual=%s)",
+        "self-heal: heal pass complete (checked=%d, unhealthy=%d, undetermined=%d, healed=%d, "
+        "manual=%s)",
         len(checked),
         unhealthy_count,
+        undetermined,
         len(healed),
         manual,
         extra={
             "component": "self_heal",
             "checked": len(checked),
             "unhealthy": unhealthy_count,
+            "undetermined": undetermined,
             "healed": len(healed),
             "manual": manual,
         },
     )
 
-    return {"checked": checked, "healed": healed}
+    return {
+        "checked": checked,
+        "healed": healed,
+        # Components this pass could not determine at all, each carrying its
+        # reason in `note` -- reported separately so a caller never reads
+        # "not healed" as "healthy" or as "still broken" (#3812).
+        "undetermined": [s.to_dict() for s in targets if not s.known],
+    }
 
 
 class Watchdog:
@@ -2144,8 +2363,16 @@ def status() -> dict[str, Any]:
     this, a component stuck unhealthy looks identical whether self-heal is
     still actively retrying it or has already given up and is waiting on an
     operator (#3575).
+
+    Components come in three states, not two (#3812): present, absent, and
+    unknown (`known=False`, `state="unknown"`). `unhealthy_count` counts only
+    the first two -- a component nobody could query is not evidence of
+    anything -- and `compose_probe_reason` carries the *why* to the page, so
+    the operator reads "docker daemon unreachable -- `docker compose ps`
+    exited 125" on screen instead of having to find it in a log.
     """
-    components = list_component_status()
+    survey = component_survey()
+    components = survey.components
     unhealthy_count = _record_health_check(components)
     restart_counts: dict[str, int] = _load_state().get("restart_counts", {})
     max_consecutive_restarts = get_watchdog().max_consecutive_restarts
@@ -2154,14 +2381,18 @@ def status() -> dict[str, Any]:
         d = c.to_dict()
         count = restart_counts.get(c.service, 0)
         d["restart_count"] = count
-        d["giving_up"] = not c.healthy and c.desired and count >= max_consecutive_restarts
+        d["giving_up"] = (
+            not c.healthy and c.desired and c.known and count >= max_consecutive_restarts
+        )
         component_dicts.append(d)
     return {
         "enabled": is_enabled(),
         "mode": detected_mode(components),
-        "compose_probe_available": compose_probe_available(),
+        "compose_probe_available": survey.compose_probe.available,
+        "compose_probe_reason": survey.compose_probe.reason,
         "components": component_dicts,
         "unhealthy_count": unhealthy_count,
+        "unknown_count": sum(1 for c in components if not c.known),
         "events": recent_events(20),
     }
 
@@ -2169,6 +2400,8 @@ def status() -> dict[str, Any]:
 __all__ = [
     "COMPOSE_FILE",
     "ComponentStatus",
+    "ComponentSurvey",
+    "ComposeProbe",
     "HealResult",
     "HealEvent",
     "Watchdog",
@@ -2181,7 +2414,9 @@ __all__ = [
     "list_intentionally_stopped",
     "recent_events",
     "detected_mode",
+    "compose_probe",
     "compose_probe_available",
+    "component_survey",
     "list_component_status",
     "restart_component",
     "restart_native_component",

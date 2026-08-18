@@ -1160,7 +1160,13 @@ def _compose_stack_snapshot() -> dict[str, str]:
             extra={"component": "ops"},
         )
         return {}
-    return {s.service: s.state for s in statuses if s.source == "compose"}
+    # `known=False` rows are excluded (#3812): this map's values are docker
+    # states, compared against "running"/"absent" by its callers, and an
+    # undetermined component has no docker state to put here. Reporting one
+    # would push a guess into `detect_deployment_mode()`'s conflict checks;
+    # the "can't determine" signal belongs to `compose_probe`, which
+    # `infra_status` reports alongside this map.
+    return {s.service: s.state for s in statuses if s.source == "compose" and s.known}
 
 
 def _terraform_or_kubernetes_managed_components() -> set[str]:
@@ -5991,6 +5997,21 @@ K8S_OBSERVABILITY_DEPLOYMENTS = (
 )
 K8S_OBSERVABILITY_DAEMONSETS = ("promtail",)
 
+# How long `install --kubernetes` / `ops observability --kubernetes` will wait
+# for the ten workloads above to roll out, in total (#3826).
+#
+# A *shared* budget, not a per-workload timeout: the ten Pods pull their
+# images concurrently, so the first `rollout status` absorbs nearly all of the
+# real wait and the rest return immediately. A per-workload timeout would
+# multiply the worst case by ten for no extra coverage.
+#
+# The wait itself exists because `_k8s_stack_health` reads Pod *phase*, and a
+# Pod still pulling grafana/loki/glitchtip is `Pending` -- so without it the
+# default (observability-on) install reports a fistful of failed Pods on a
+# perfectly healthy cluster, which is why the k8s smoke was passing
+# `--skip-observability` and testing a configuration no user runs.
+K8S_OBSERVABILITY_ROLLOUT_BUDGET_S = 900
+
 # Grafana's provisioning, mounted by k8s/observability/grafana.yaml: ConfigMap
 # name -> path under the synced `docker/grafana` tree it is generated from.
 # Generated here rather than committed as k8s manifests because kustomize
@@ -6259,6 +6280,67 @@ def _k8s_observability_health() -> list[OpsResult]:
     return results
 
 
+def _wait_for_k8s_observability(
+    budget_s: int = K8S_OBSERVABILITY_ROLLOUT_BUDGET_S,
+) -> list[OpsResult]:
+    """Block until every observability workload has rolled out (#3826).
+
+    The observability counterpart of `_wait_for_k8s_data_tier`, and it exists
+    for the same reason: `kubectl apply -k` returns as soon as the objects are
+    accepted, so everything downstream of it -- `_k8s_stack_health`'s Pod
+    phases, `_k8s_observability_health`'s ready counts, the operator's first
+    look at the SRE dashboard -- reads a cluster whose Pods are still pulling
+    multi-hundred-megabyte images. `_k8s_stack_health` scores a `Pending` Pod
+    as a failure, so the default install reported failure on a healthy stack.
+
+    One shared deadline across the workloads (see
+    `K8S_OBSERVABILITY_ROLLOUT_BUDGET_S`), and a workload that does not make it
+    is a failure naming that workload -- an operator told "installed" by a
+    command that left Prometheus Pending has been told the wrong thing.
+    """
+    deadline = time.monotonic() + budget_s
+    results: list[OpsResult] = []
+    refs = [f"deploy/{name}" for name in K8S_OBSERVABILITY_DEPLOYMENTS]
+    refs += [f"daemonset/{name}" for name in K8S_OBSERVABILITY_DAEMONSETS]
+    for ref in refs:
+        remaining = int(deadline - time.monotonic())
+        if remaining <= 0:
+            results.append(
+                OpsResult(
+                    False,
+                    f"Observability layer did not roll out within {budget_s}s (waiting on {ref})",
+                    "Check `nyxgpt ops status` for the workload's Pods; a Pod stuck Pending "
+                    "usually means the node cannot fit the stack's resource requests.",
+                )
+            )
+            return results
+        cp = _run(
+            [
+                "kubectl",
+                "-n",
+                K8S_NAMESPACE,
+                "rollout",
+                "status",
+                ref,
+                f"--timeout={remaining}s",
+            ],
+            check=False,
+        )
+        if cp.returncode != 0:
+            results.append(
+                OpsResult(
+                    False,
+                    f"{ref} never became ready",
+                    (_cp_details(cp) or "")
+                    + "\nThe observability layer is part of the default install; re-run with "
+                    "`--skip-observability` only if you deliberately want the app tier alone.",
+                )
+            )
+            return results
+        results.append(OpsResult(True, f"{ref} rolled out", _cp_details(cp)))
+    return results
+
+
 def _k8s_stack_health() -> list[OpsResult]:
     """Snapshot of Pod/Service health in the `nyxgpt` namespace right after apply.
 
@@ -6425,6 +6507,11 @@ def _install_kubernetes_steps(
         # read, so the k8s path must run it too -- it is not install()-only.
         steps.append(("sync packaged resources", _sync_packaged_resources))
         steps.append(("observability layer", _apply_k8s_observability))
+        # ...and wait for it, before `_k8s_stack_health` below reads Pod
+        # phases: those Pods are in the same namespace, and a Pod still
+        # pulling its image is `Pending`, which that snapshot scores as a
+        # failure (#3826).
+        steps.append(("wait for observability layer", _wait_for_k8s_observability))
     for step_name, fn in steps:
         try:
             step_results = fn()
@@ -6475,6 +6562,12 @@ def observability_kubernetes() -> list[OpsResult]:
     if not all(r.ok for r in results):
         return results
     results += _apply_k8s_observability()
+    if not all(r.ok for r in results):
+        return results
+    # Same reason as the install path (#3826): reporting readiness from a
+    # snapshot taken seconds after `kubectl apply` reports whatever the image
+    # pulls happen to have finished, not whether the layer works.
+    results += _wait_for_k8s_observability()
     if all(r.ok for r in results):
         results += _k8s_observability_health()
     return results
@@ -6734,12 +6827,18 @@ def infra_status() -> dict[str, Any]:
 
     `compose_probe_available` extends the same "can't determine" distinction
     to the `compose` section (#3588): `False` means `docker compose ps`
-    couldn't be queried from this vantage point at all (no `docker`, or the
-    Compose file isn't reachable -- e.g. a Terraform-managed api container
-    missing the bind mount), so an empty `compose` dict must not be read as
-    "nothing running" -- see `self_heal.compose_probe_available`.
+    couldn't be queried from this vantage point at all, so an empty `compose`
+    dict must not be read as "nothing running". It is answered by *running*
+    the survey rather than by checking that a binary and a file exist
+    (#3812) -- on the rc12 cloud install both existed and every call still
+    exited 125 against an unreachable daemon, so the flag said "available"
+    while the survey returned nothing. `compose_probe_reason` carries the
+    cause to the page ("`docker compose ps` exited 125: permission denied
+    ...") so the operator does not have to go looking in a log for it --
+    see `self_heal.compose_probe`.
     """
     mode_info = detect_deployment_mode()
+    compose_probe = self_heal.compose_probe()
 
     docker_available = _which("docker") is not None
     tf_state = terraform_stack_state()
@@ -6828,7 +6927,8 @@ def infra_status() -> dict[str, Any]:
         "install_mode": install_mode,
         "native": mode_info.native,
         "compose": mode_info.compose,
-        "compose_probe_available": self_heal.compose_probe_available(),
+        "compose_probe_available": compose_probe.available,
+        "compose_probe_reason": compose_probe.reason,
         "conflicts": sorted(mode_info.conflicts),
         "terraform": terraform,
         "kubernetes": kubernetes,

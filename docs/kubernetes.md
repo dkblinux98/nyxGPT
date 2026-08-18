@@ -81,8 +81,14 @@ kustomization (which includes both the api and web stable/canary pairs, see
 [Canary Deployment](#canary-deployment), plus the [data and LLM
 tier](#data-and-llm-tier)), waits for Cassandra and Ollama to report Ready --
 which for Ollama includes the first pull of the default model, so the command
-returns only when a chat can actually be answered -- and snapshots
-Pod/Service health for all of them.
+returns only when a chat can actually be answered -- brings up the
+[observability tier](#observability-in-the-cluster) and waits for its ten
+workloads to roll out too, and snapshots Pod/Service health for all of them.
+
+Both waits exist for the same reason: `kubectl apply` returns when the
+objects are accepted, not when they work, so without them the command reports
+health for Pods that are still pulling images -- and the Pod-phase snapshot
+scores a still-pulling Pod as a failure (#3826).
 
 Each image build mirrors the Homebrew reinstall-if-needed behavior (see
 [ops.md](ops.md)): it fingerprints the app source that image is built from
@@ -332,6 +338,16 @@ Notes:
   apply leaves zero observability workloads, then asserts all ten roll out,
   every UI answers, Grafana has its four provisioned datasources and the SRE
   Home dashboard, and promtail's logs actually reach Loki.
+  `.github/workflows/k8s-local-smoke.yml` covers the other half -- that the
+  layer comes up *with* the app tier in the **default** install, on one node,
+  with no Pod left Pending (#3826).
+- **Footprint.** The default stack (app + data/LLM + observability) requests
+  ~3.8 CPU and ~8Gi of memory including kube-system, so it fits a single
+  4-vCPU/16GB node with the CPU margin thin: a new workload requesting more
+  than a few hundred millicores leaves Pods Pending. `--skip-observability`
+  drops roughly 0.5 CPU and 2.4Gi of that; the k8s smoke prints the node's
+  allocatable-versus-requests arithmetic on every run, so the numbers stay
+  observed rather than remembered.
 
 ## Data and LLM tier
 

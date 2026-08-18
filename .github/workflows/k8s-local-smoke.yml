@@ -13,6 +13,18 @@ name: Kubernetes Local Smoke
 # the same chat fails -- so a build that drops the tier again cannot pass this
 # job green (the fault-injection rule from macos-brew-smoke.yml / #3753).
 #
+# It runs the DEFAULT install -- observability included (#3826). It used to
+# pass `--skip-observability`, which meant the only job covering the k8s path
+# tested a command no user types, and could not have supplied #3787's executed
+# evidence because it excluded the layer #3787 added. Measured footprint of the
+# default stack on a 4-vCPU/16GB Linux runner (kind, one node, `kubectl
+# describe node`): 3825m CPU requests (95% of allocatable) and 8162Mi of memory
+# requests (51%) with kube-system included -- it fits, with the CPU margin thin
+# enough that a new workload requesting more than ~175m would leave Pods
+# Pending. The smoke asserts exactly that (no Pending Pod) and prints the
+# arithmetic, so a future footprint increase reads as a number rather than as a
+# mystery timeout, and the preflight below fails fast if the runner shrinks.
+#
 # Scoped like linux-native-smoke.yml and terraform-local-smoke.yml: a full
 # cluster bring-up with two image builds is expensive, so it runs only when
 # the manifests, the k8s half of the ops layer, the smoke script, or this
@@ -46,8 +58,9 @@ jobs:
   k8s-local-smoke:
     runs-on: ubuntu-latest
     # The bring-up builds the api and web images, provisions a kind cluster,
-    # boots Cassandra, and pulls the default model.
-    timeout-minutes: 60
+    # boots Cassandra, pulls the default model, and rolls out the ten
+    # observability workloads the default install brings with it (#3826).
+    timeout-minutes: 90
     if: github.event_name != 'push' || github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
     steps:
       - uses: actions/checkout@v4
@@ -70,6 +83,21 @@ jobs:
           mkdir -p "$HOME/.nyxGPT"
           cp example.config.ini "$HOME/.nyxGPT/config.ini"
 
+      # The kind node is a container on this runner, so the runner's own size
+      # IS the node's size -- there is nothing to "size up" inside the cluster.
+      # Assert it up front instead: on anything smaller than the standard
+      # 4-vCPU/16GB Linux runner the default stack's 3825m of CPU requests
+      # cannot be scheduled, and the job would spend an hour discovering that
+      # as a rollout timeout deep in the smoke.
+      - name: Preflight -- the runner can fit the default stack
+        run: |
+          set -euo pipefail
+          cpus=$(nproc)
+          mem_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
+          echo "runner: ${cpus} vCPU, $((mem_kb / 1024))Mi RAM, $(df -h --output=avail / | tail -1) free on /"
+          [ "$cpus" -ge 4 ] || { echo "::error::need >= 4 vCPU for the default stack (3825m of requests), have ${cpus}"; exit 1; }
+          [ "$mem_kb" -ge 14000000 ] || { echo "::error::need >= 14Gi RAM for the default stack (8162Mi of requests plus real usage), have $((mem_kb / 1024))Mi"; exit 1; }
+
       - name: Run Kubernetes local smoke
         run: ./scripts/k8s-local-smoke.sh
 
@@ -77,7 +105,11 @@ jobs:
         if: failure()
         run: |
           kubectl -n nyxgpt get pods -o wide || true
-          kubectl -n nyxgpt get statefulsets,deployments,svc,pvc || true
+          kubectl -n nyxgpt get statefulsets,deployments,daemonsets,svc,pvc || true
+          # What the scheduler had to work with, against what the stack asked
+          # for -- the first thing to look at when a Pod is stuck Pending.
+          kubectl describe node | sed -n '/Allocated resources/,/Events/p' || true
+          kubectl -n nyxgpt get events --sort-by=.lastTimestamp | tail -40 || true
           kubectl -n nyxgpt describe pod -l tier=data || true
           kubectl -n nyxgpt describe pod -l tier=llm || true
           for pod in $(kubectl -n nyxgpt get pods -o name 2>/dev/null); do

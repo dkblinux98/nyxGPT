@@ -3626,7 +3626,47 @@ def test_self_heal_status_no_components(
 
     assert exit_code == 0
     out = capsys.readouterr().out
-    assert "No Docker Compose containers found" in out
+    assert "No components found" in out
+
+
+def test_self_heal_status_reports_undetermined_components_as_such(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#3812: a component the probe could not query prints `??` with the
+    reason, not the `!!` that means "this is broken"."""
+    import nyxgpt.cli as cli_mod
+
+    monkeypatch.setattr(
+        cli_mod.self_heal_mod,
+        "status",
+        lambda: {
+            "enabled": True,
+            "compose_probe_available": False,
+            "compose_probe_reason": "`docker compose ps` exited 125: permission denied",
+            "components": [
+                {
+                    "service": "grafana",
+                    "state": "unknown",
+                    "health": "",
+                    "healthy": False,
+                    "desired": True,
+                    "known": False,
+                }
+            ],
+            "unhealthy_count": 0,
+            "unknown_count": 1,
+            "events": [],
+        },
+    )
+
+    exit_code = cli(["self-heal", "status"])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "CANNOT DETERMINE from here -- `docker compose ps` exited 125" in out
+    assert "[??] grafana" in out
+    assert "state could not be determined" in out
+    assert "[!!]" not in out
 
 
 def test_self_heal_enable(

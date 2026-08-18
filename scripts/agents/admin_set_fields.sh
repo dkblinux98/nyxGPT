@@ -60,7 +60,7 @@ fi
 # uses issueOrPullRequest; empty result = not on the board (board writes skip).
 item_id_for_content() {
   local num="$1"
-  # Response into a variable, not `graphql ... | jq ...` (#3811, V-040): in a
+  # Response into a variable, not `graphql ... | jq ...` (#3811, V-043): in a
   # pipeline the wrapper's failure is the first segment's status, which the
   # pipeline discards, so a failed read returned empty and exit 0 -- which
   # this function's contract reads as "not on the board". The batch would
