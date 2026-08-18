@@ -182,3 +182,42 @@ def test_canary_rollback_endpoint_returns_409_when_no_rollout():
         response = client.post("/api/v1/canary/rollback")
 
     assert response.status_code == 409
+
+
+# --- #3831: the failure envelope must carry the reason, not just the summary ---
+
+
+def test_canary_failure_envelope_carries_the_kubectl_details():
+    """`CanaryResult.details` holds the kubectl stderr; the 409 used to drop it, so the
+    dashboard could only ever show the generic summary (#3831)."""
+    with patch(
+        "nyxgpt.app.canary_module.deploy",
+        return_value=CanaryResult(
+            False,
+            "Rollout of nyxgpt-api-canary did not become healthy within 180s -- "
+            "nyxgpt-api-canary-7f9c8b6d4-2xk9p: Unschedulable: 0/1 nodes are available: "
+            "1 Insufficient memory.",
+            "error: timed out waiting for the condition\n",
+        ),
+    ):
+        client = TestClient(app)
+        response = client.post("/api/v1/canary/deploy")
+
+    assert response.status_code == 409
+    message = response.json()["error"]["message"]
+    assert "Insufficient memory" in message
+    assert "timed out waiting for the condition" in message
+    # One line: the message is rendered into an error card, not a log pane.
+    assert "\n" not in message
+
+
+def test_canary_failure_envelope_without_details_is_unchanged():
+    with patch(
+        "nyxgpt.app.canary_module.start",
+        return_value=CanaryResult(False, "A canary rollout is already in progress"),
+    ):
+        client = TestClient(app)
+        response = client.post("/api/v1/canary/start", json={})
+
+    assert response.status_code == 409
+    assert response.json()["error"]["message"] == "A canary rollout is already in progress"
