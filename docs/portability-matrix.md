@@ -81,8 +81,14 @@ A row is **acceptance-ready** when its checks pass *and* it has no open gap.
   the formulas on a hosted `macos-15` runner — the working tree's own recipe on
   every formula change, and the published candidate from the real tap after
   every rc cut — so an install-breaking recipe fails in CI rather than on a
-  clean Mac. The **operate** half (brew services / launchd reconciliation,
-  `nyxgpt up`) stays owner-verified on the owner's workstation.
+  clean Mac. That job also asserts the keg is **operable**, not just built:
+  `nyxgpt` has to be on PATH by name after `brew install`, and
+  `nyxgpt ops status` has to run on a machine with no stack, no Docker and no
+  checkout (#3850 — the keg installed cleanly and answered
+  `command not found`, because every check reached into the keg's venv
+  instead of asking what the operator can type). The rest of the **operate**
+  half — brew services / launchd reconciliation and a real `nyxgpt up` —
+  stays owner-verified on the owner's workstation.
 - **EC2 Mac** targets (`mac2.metal`, `mac1.metal`) are documentation-verified
   only: hosted macOS runners cover a brew install but are not EC2 instances,
   and a Dedicated Host bills a 24-hour minimum. See [cloud.md](cloud.md)'s

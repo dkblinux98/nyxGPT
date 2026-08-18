@@ -1601,6 +1601,12 @@ are absent here by design (relocated to the annex; IDs are never reused).
   `web/src/lib/apiError.ts` (`apiErrorText` / `errorMessage`); pages import
   it rather than re-deriving it, and `docs/adding-api-endpoints.md` states
   the rule for new pages.
+  (Filed as `V-046` under #3831 and merged to `v3.0.0` with that ID; #3837 had
+  taken `V-046` four minutes earlier on its own branch, so both entries reached
+  the mainline sharing it. Renumbered here to `V-049`, the next unused number,
+  on the #3850 merge — #3837's keeps `V-046` because it merged first and is the
+  one `workflow_script_guard.py` and `developer-runbook.md` §"run: bodies" cite
+  by number. IDs are never reused.)
   Method: read the handler and every `new Error(` call site in `web/src`
   (2026-08-18, #3831); the five near-duplicate local helpers found there were
   replaced. `web/tests/lib/apiError.test.ts` pins each payload shape and
@@ -1756,7 +1762,45 @@ are absent here by design (relocated to the annex; IDs are never reused).
   `_classify_k8s_pod` — the shared vocabulary, not this one call site, is what
   the entry stands for.
 
-- **V-052** · 2026-08-18 — **The Kubernetes install mode is now checkout-free,
+- **V-052** · 2026-08-18 — **A check that reaches *into* a keg cannot answer
+  whether the product is operable.** The macOS artifact path shipped through
+  rc12 with no `nyxgpt` on PATH: `pip install` created the console script
+  declared in `pyproject.toml`, but it landed in `libexec/venv/bin` and the
+  formula wrote only the `nyxgpt-api` service wrapper, so `brew install`
+  succeeded, the dashboard came up, and `nyxgpt up` answered `command not
+  found` (#3850). Every existing check was blind to it by construction: the
+  formula's `test do` asserted the venv python existed and `import nyxgpt.app`
+  worked, and `macos-brew-smoke.yml` ran `"$VENV/bin/nyxgpt" --version` — all
+  three are true of a keg that exposes no command at all. The downstream
+  report (ollama unreachable, cassandra unreachable, sessions HTTP 500) was
+  one defect, not four: it is what a stack looks like when the operator cannot
+  start it. Fixed by `bin.install_symlink venv/"bin/nyxgpt"` in both API
+  formulas; the assertions now go through `bin`/PATH, by the name a user
+  types.
+  (Filed as `V-044` under #3850, then renumbered to `V-048`, `V-051` and
+  finally `V-052` across four merges of `v3.0.0`: each number in turn was
+  claimed by a concurrently-open branch that merged first — `V-044` by #3828,
+  `V-048` by #3905's `rglob` entry, `V-051` by the canary replica-pool entry.
+  `V-052` is what `scripts/agents/lib/ledger_ids.py next V --base
+  origin/v3.0.0` allocates against the current release branch. IDs are never
+  reused.)
+  Method: `tests/unit/test_build_homebrew_artifacts.py` — the new tests were
+  run against the pre-fix formulas (`git stash push -- homebrew
+  .github/workflows/macos-brew-smoke.yml`) and 7 failed, then passed with the
+  fix (142 passed). The smoke job's negative control was rehearsed locally
+  against a simulated keg (relative symlink moved aside → `command -v nyxgpt`
+  fails → restored → passes). `nyxgpt ops status` was run from a venv with no
+  stack and no cwd checkout: exit 0. Executed macOS evidence is the
+  `macos-brew-smoke.yml` run on the #3850 PR, which installs the keg on a
+  `macos-15` runner, asserts the command by name, and proves the assertion
+  fails when the CLI is removed.
+  Re-verify when: the formulas stop building the CLI from the venv pip
+  populates (a wrapper script, a copied entry point, a different venv path),
+  or `nyxgpt-web` grows a command of its own —
+  `test_the_web_keg_exposes_only_its_service_wrapper` pins that it has none
+  today.
+
+- **V-053** · 2026-08-18 — **The Kubernetes install mode is now checkout-free,
   and it records which mode it ran in.** `nyxgpt ops install --kubernetes
   --local` brings the whole stack up on a machine with no repository: the
   manifests ship as package data (`nyxgpt.resources.k8s`, synced to
@@ -1792,9 +1836,13 @@ are absent here by design (relocated to the annex; IDs are never reused).
   `nyxgpt-api` tarball does not vendor (`_stage_k8s_api_build_files` stages
   exactly the two exceptions it has today), or `release_tarball`'s vendored
   file set changes.
-  (Filed as `V-046` under #3834, renumbered to `V-052` on the merge of
-  `v3.0.0`: #3820's `script:`-guard entry allocated `V-046` on a
-  concurrently-open branch and landed first. IDs are never reused.)
+  (Filed as `V-046` under #3834, then renumbered to `V-052` and finally
+  `V-053` across two merges of `v3.0.0`: #3820's `script:`-guard entry
+  allocated `V-046` on a concurrently-open branch and landed first, and
+  #3850's keg-operability entry then landed on `V-052`. `V-053` is what
+  `scripts/agents/lib/ledger_ids.py next V --base origin/v3.0.0` allocates
+  against the current release branch. IDs are never reused.)
+
 
 ## Parked
 
