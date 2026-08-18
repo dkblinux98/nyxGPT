@@ -6,6 +6,7 @@ import ErrorMessage from '../../components/ErrorMessage';
 import SkeletonLoader from '../../components/SkeletonLoader';
 import { useToast } from '../../contexts/ToastContext';
 import { estimateModelResourceHint } from './model-hints';
+import { apiErrorText, errorMessage } from '../../lib/apiError';
 
 type Model = {
   name: string;
@@ -32,7 +33,7 @@ export default function ModelsPage() {
       const data = await res.json();
       setModels(data.models || []);
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = errorMessage(e);
       setError(msg);
     } finally {
       setLoading(false);
@@ -59,14 +60,14 @@ export default function ModelsPage() {
 
       if (!res.ok) {
         const data = await res.json();
-        throw new Error(data.detail || `HTTP ${res.status}`);
+        throw new Error(apiErrorText(data, `HTTP ${res.status}`));
       }
 
       setPullModelName('');
       await loadModels();
       toast.success('Model pulled successfully');
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = errorMessage(e);
       setPullError(msg);
       toast.error(`Failed to pull model: ${msg}`);
     } finally {
@@ -86,13 +87,13 @@ export default function ModelsPage() {
 
       if (!res.ok) {
         const data = await res.json();
-        throw new Error(data.detail || `HTTP ${res.status}`);
+        throw new Error(apiErrorText(data, `HTTP ${res.status}`));
       }
 
       await loadModels();
       toast.success('Model deleted successfully');
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = errorMessage(e);
       toast.error(`Failed to delete model: ${msg}`);
     } finally {
       setDeletingModel(null);
