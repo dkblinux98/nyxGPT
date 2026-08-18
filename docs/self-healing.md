@@ -441,9 +441,12 @@ cleanly crash-looping, where nothing else would touch it.
 
 **A `Pending` Pod is never healed by deletion, under any circumstances** —
 not by the automatic pass and not by the dashboard's "Heal now" button. A
-Pod's state is read through `src/nyxgpt/k8s_pod_state.py` (shared with
-`nyxgpt ops`, so the install snapshot and the watchdog cannot disagree),
-which distinguishes:
+Pod's state is read through `src/nyxgpt/k8s_pod_state.py` — the same module
+`nyxgpt ops` reads Pods through (`_classify_k8s_pod`), so the install
+snapshot and the watchdog cannot disagree about whether a Pod is serving or
+why it is not. Each still applies its own policy to that reading: a
+`CrashLoopBackOff` Pod fails an install while the watchdog will restart it.
+The states the shared reading distinguishes:
 
 | State | What it means | What self-heal does |
 | --- | --- | --- |
@@ -468,6 +471,15 @@ auto-healable**, with the scheduler's message and the remedy —
 > — not healed: deleting a Pod cannot create capacity, and its replacement
 > would be unschedulable for the same reason. Add node capacity or lower the
 > workload's resource requests.`
+
+A component in that state is announced once, not once a pass: the watchdog
+logs a WARNING when the condition appears (or its reason changes) and the
+identical repeats at DEBUG, so a Pod that stays unschedulable for an hour
+does not bury its own first sighting under 240 identical lines. The last
+reason announced per component lives in `unhealable_reported` in
+`~/.nyxGPT/self_heal_state.json`, so a watchdog restart does not re-announce
+a condition that never changed. A manual "Heal now" always logs at WARNING —
+it is an explicit request and gets an explicit answer.
 
 The guard is enforced at the destructive action itself (`heal_kubernetes_pod`
 re-reads the Pod immediately before deleting and refuses anything not

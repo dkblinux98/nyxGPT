@@ -10,8 +10,12 @@ observed seven Pods in 4.5 minutes, each `FailedScheduling: Insufficient
 memory`, each deletion resetting the Pod's age so no operator ever saw a Pod
 stuck long enough to diagnose. The loop erased its own evidence.
 
-So the reading lives here, once, and both callers use it. The distinctions
-that matter:
+So the reading lives here, once, and both callers use it -- `self_heal.py`
+directly, `ops._classify_k8s_pod` to build its own three-state install
+vocabulary on top (#3827). What each does *with* the reading is still its
+own: a `CrashLoopBackOff` Pod fails an install and is healable by the
+watchdog. Sharing the reading is what stops them disagreeing about the facts;
+sharing the policy was never the goal. The distinctions that matter:
 
 - **healthy** -- `Running` and `Ready`. Nothing to do.
 - **unschedulable** -- `Pending` with `PodScheduled=False`: the scheduler has
@@ -216,10 +220,13 @@ def classify_pod(pod: Mapping[str, Any]) -> PodState:
 
     scheduled = conditions.get("PodScheduled") or {}
     scheduled_status = scheduled.get("status")
-    # Only an explicit `False` means unschedulable. A Pod so new that the
-    # condition is not there yet is simply starting -- absence of the answer is
-    # not a negative answer, the same rule #3812 established for the Compose
-    # probe.
+    # A `PodScheduled` condition that is present and not `True` means the
+    # scheduler has not placed this Pod -- `False` (`Unschedulable`), and
+    # equally `SchedulingGated` or any status a future Kubernetes reports, so
+    # an unrecognised answer errs toward "not scheduled" rather than silently
+    # toward "fine". A Pod so new that the condition is not there *at all* is
+    # simply starting: absence of the answer is not a negative answer, the
+    # same rule #3812 established for the Compose probe.
     unschedulable = (
         phase == "Pending" and isinstance(scheduled_status, str) and scheduled_status != "True"
     )

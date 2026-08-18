@@ -501,6 +501,16 @@ def _default_state() -> dict[str, Any]:
         # Timestamps of recent automatic heal actions per budget key, for the
         # rolling-window cap (#3832) -- see DEFAULT_HEAL_ATTEMPT_WINDOW_SECONDS.
         "heal_attempts": {},
+        # Last reason logged per budget key for a component no heal action
+        # converges (#3832). The watchdog passes every ~15s and an
+        # unschedulable Pod stays unschedulable until a human adds capacity,
+        # so warning every pass is four identical lines a minute for as long
+        # as the condition lasts -- noise that buries the transition an
+        # operator needs to see. Warn on the transition (or a changed reason),
+        # log the repeats at DEBUG. Kept with the state rather than in memory
+        # so a watchdog restart does not re-announce a condition that never
+        # changed.
+        "unhealable_reported": {},
         "intentionally_stopped": [],
     }
 
@@ -2350,6 +2360,7 @@ def heal_now(
         restart_counts: dict[str, int] = state.setdefault("restart_counts", {})
         last_restart_ts: dict[str, float] = state.setdefault("last_restart_ts", {})
         attempt_history = _prune_heal_attempts(state, now, attempt_window_seconds)
+        unhealable_reported: dict[str, str] = state.setdefault("unhealable_reported", {})
         events: list[dict[str, Any]] = state.setdefault("events", [])
 
         for status in targets:
@@ -2363,6 +2374,7 @@ def heal_now(
                         extra={"component": "self_heal", "service": status.service},
                     )
                 restart_counts[key] = 0
+                unhealable_reported.pop(key, None)
                 prom_metrics.SELFHEAL_RESTART_COUNT.labels(service=status.service).set(0)
                 continue
 
@@ -2373,10 +2385,16 @@ def heal_now(
                 # `note` already carries the cluster's own reason, and an
                 # operator clicking "Heal now" on an unschedulable Pod would
                 # only reset the Pod age they need to diagnose it.
-                logger.warning(
+                detail = status.note or f"state={status.state} health={status.health or 'n/a'}"
+                # First sighting of this condition (or a changed reason) is
+                # the event; the identical repeats every 15s after it are not.
+                changed = unhealable_reported.get(key) != detail
+                unhealable_reported[key] = detail
+                logger.log(
+                    logging.WARNING if changed or manual else logging.DEBUG,
                     "self-heal: not healing %s -- no action converges it (%s)",
                     status.service,
-                    status.note or f"state={status.state} health={status.health or 'n/a'}",
+                    detail,
                     extra={
                         "component": "self_heal",
                         "service": status.service,
@@ -2410,6 +2428,10 @@ def heal_now(
                     events.append(refusal.to_dict())
                     healed.append(refusal.to_dict())
                 continue
+
+            # Healable again (or never unhealable): the next time no action
+            # converges it, that is a new event and warns.
+            unhealable_reported.pop(key, None)
 
             if not manual and not status.known:
                 # State undetermined this pass (the Compose probe could not

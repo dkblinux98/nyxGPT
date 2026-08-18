@@ -189,3 +189,67 @@ def test_classify_pods_reads_a_list_body_and_ignores_junk():
     assert [s.name for s in states] == ["a"]
     assert classify_pods({}) == []
     assert classify_pods({"items": "nope"}) == []
+
+
+@pytest.mark.unit
+def test_ops_reads_pod_state_through_this_module_not_its_own_copy():
+    """The sharing this module exists for is a fact about `ops.py`, not a claim.
+
+    #3832 shipped this module and asserted both callers used it while
+    `ops._classify_k8s_pod` still parsed `PodScheduled` itself -- two
+    classifiers agreeing by convention, which is precisely how the watchdog
+    and the install report diverged. The observable consequence of the
+    sharing is that `ops` inherits *this* module's unschedulable rule
+    (`PodScheduled` not true, whatever the reason), so a `SchedulingGated`
+    Pod -- which the old ops copy read as merely pending -- is now a failure
+    on both sides. If ops ever forks its own reading again, this fails.
+    """
+    from nyxgpt import ops
+
+    gated = _pod(
+        "nyxgpt-api-gated",
+        phase="Pending",
+        conditions=[
+            _NOT_READY,
+            {
+                "type": "PodScheduled",
+                "status": "False",
+                "reason": "SchedulingGated",
+                "message": "waiting on scheduling gate 'quota'",
+            },
+        ],
+    )
+
+    shared = classify_pod(gated)
+    reported = ops._classify_k8s_pod(gated)
+
+    assert shared.unschedulable is True
+    assert reported.state == ops.K8S_STATE_FAILED
+    assert reported.summary == ops.K8S_SUMMARY_UNSCHEDULABLE
+    assert reported.ok is False
+    assert "scheduling gate" in reported.details
+
+
+@pytest.mark.unit
+def test_ops_and_self_heal_never_disagree_about_whether_a_pod_is_serving():
+    """One reading, two policies: the readiness verdict itself has to match.
+
+    `ops` layers its own severity policy on top (a `CrashLoopBackOff` Pod is a
+    failed install but a healable service), so this pins the part that must
+    never diverge -- whether the Pod is serving -- across the states #3832
+    conflated.
+    """
+    from nyxgpt import ops
+
+    pods = [
+        _pod("ready", conditions=[_READY]),
+        _pod("not-ready", conditions=[_NOT_READY]),
+        _pod("starting", phase="Pending", conditions=[_NOT_READY]),
+        _pod("unschedulable", phase="Pending", conditions=[_NOT_READY, _UNSCHEDULABLE]),
+        _pod("failed", phase="Failed", conditions=[_NOT_READY]),
+    ]
+
+    for pod in pods:
+        shared = classify_pod(pod)
+        reported = ops._classify_k8s_pod(pod)
+        assert (reported.state == ops.K8S_STATE_READY) is shared.healthy, shared.name

@@ -3737,3 +3737,33 @@ def test_heal_now_manual_still_acts_on_an_unknown_component(monkeypatch):
 
     restart_mock.assert_called_once_with("grafana")
     assert result["healed"][0]["ok"] is False
+
+
+@pytest.mark.unit
+def test_unhealable_component_warns_on_the_transition_not_on_every_pass(
+    monkeypatch, k8s_live, caplog
+):
+    """A watchdog pass every ~15s must not mean a WARNING every ~15s (#3832).
+
+    The condition appearing is the event an operator needs; the identical
+    repeats for as long as the cluster stays full are noise that buries it.
+    """
+    pods = _k8s_pods_json(
+        _k8s_pod(
+            "nyxgpt-api-stable-r56wb",
+            phase="Pending",
+            ready=False,
+            unschedulable=True,
+            owner="nyxgpt-api-stable-7d9c",
+        )
+    )
+    monkeypatch.setattr(self_heal, "_run", _k8s_only_run(pods, []))
+
+    with caplog.at_level(logging.DEBUG, logger="nyxgpt.self_heal"):
+        for _ in range(5):
+            self_heal.heal_now(backoff_seconds=0.0)
+
+    lines = [r for r in caplog.records if "no action converges it" in r.getMessage()]
+    assert len(lines) == 5
+    assert [r.levelno for r in lines] == [logging.WARNING] + [logging.DEBUG] * 4
+    assert "Insufficient memory" in lines[0].getMessage()
