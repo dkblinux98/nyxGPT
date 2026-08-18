@@ -5,7 +5,7 @@ const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://127.0.0.1:8
 /**
  * Mirrors `config_wizard.schema_summary()`'s derived schema (#3388) for the
  * 11 sections the wizard hand-builds fields for (#3354) -- section labels
- * match `config_wizard._SECTION_LABELS`, and secret/restart_component/
+ * match `config_wizard._SECTION_LABELS`, and secret/restart_components/
  * observability flags match `config_wizard._FIELD_OVERRIDES`, so tests that
  * rely on the default `GET /api/v1/config/sections` mock exercise the same
  * schema-driven Summary step (#3407) real traffic would.

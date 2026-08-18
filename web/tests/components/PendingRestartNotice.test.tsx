@@ -202,3 +202,38 @@ describe('fetchRestartStatus', () => {
     expect(await fetchRestartStatus()).toBeNull();
   });
 });
+
+/**
+ * How long the divergence has been standing is part of what makes the notice
+ * a *persistent* one rather than a toast: a user returning days later should
+ * be told it has been days, not "just now". Each unit boundary and each
+ * singular/plural form is a branch, and an unexercised one renders the wrong
+ * text at exactly the moment the notice matters most.
+ */
+describe('the age of a pending change', () => {
+  const secondsAgo = (seconds: number): RestartStatus => ({
+    pending: { web: { keys: ['auth.api_key'], since: Math.floor(Date.now() / 1000) - seconds } },
+    restart_command: 'nyxgpt ops restart web',
+    session_disrupting: ['web'],
+  });
+
+  it.each([
+    [5, 'changed just now'],
+    [90, 'changed 1 minute ago'],
+    [150, 'changed 2 minutes ago'],
+    [60 * 60, 'changed 1 hour ago'],
+    [2 * 60 * 60, 'changed 2 hours ago'],
+    [24 * 60 * 60, 'changed 1 day ago'],
+    [3 * 24 * 60 * 60, 'changed 3 days ago'],
+  ])('renders %i seconds ago as "%s"', (seconds, expected) => {
+    render(<PendingRestartNotice status={secondsAgo(seconds)} onStatusChange={vi.fn()} />);
+    expect(screen.getByText(`(${expected})`)).toBeInTheDocument();
+  });
+
+  it('never reports a future timestamp as a negative age', () => {
+    // Clock skew between the API host and the browser is normal; "changed
+    // -3 minutes ago" would read as a bug in the notice itself.
+    render(<PendingRestartNotice status={secondsAgo(-3600)} onStatusChange={vi.fn()} />);
+    expect(screen.getByText('(changed just now)')).toBeInTheDocument();
+  });
+});

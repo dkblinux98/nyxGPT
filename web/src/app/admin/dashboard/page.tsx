@@ -267,6 +267,12 @@ export default function AdminDashboardPage() {
         setRevealedKey(data.api_key);
       }
       loadActivity();
+      // `[auth] enabled`/`api_key` are restart-required for `web` (#3806), so
+      // a save here can raise (or retire) the pending-restart notice that
+      // this very page hosts. Re-read it rather than leaving the panel
+      // claiming the new key is live while the web tier still sends the old
+      // one.
+      loadRestartStatus();
     } catch (e: unknown) {
       setAccessError(e instanceof Error ? e.message : String(e));
     } finally {

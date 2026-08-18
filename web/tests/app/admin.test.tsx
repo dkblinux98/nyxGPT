@@ -1686,6 +1686,73 @@ describe('AdminPage Component', () => {
       expect(screen.getByText(/drop this browser session/i)).toBeInTheDocument();
     });
 
+    it('shows the save response\'s own pending set when the reconcile fetch fails', async () => {
+      // Two things at once, both of which the earlier tests left untested:
+      // the notice is derived from the save response *before* the reconcile
+      // round trip lands (so it never flickers absent), and a reconcile that
+      // fails leaves that derived state standing rather than blanking the
+      // notice on a transient error. `session_disrupting` is computed
+      // client-side here, so this is also what proves the wizard names the
+      // session-dropping tier without waiting for the backend to say so.
+      server.use(
+        http.post('/api/v1/config/sections', async () =>
+          HttpResponse.json({
+            applied: {},
+            sections: {
+              nyxgpt: {
+                default_model: 'llama3.1:8b',
+                chat_timeout_seconds: '120',
+                sessions_dir: '',
+                vectorstore_dir: '',
+              },
+              logging: { level: 'INFO', dir: '' },
+              ollama: { base_url: 'http://127.0.0.1:11434' },
+              api: { host: '127.0.0.1', port: '8000' },
+              auth: { enabled: 'false', header: 'X-API-Key', api_key: { set: false, masked: null } },
+              rate_limit: { enabled: 'false' },
+              rag: {
+                enable_chat_context: 'false',
+                cassandra_hosts: '127.0.0.1',
+                cassandra_port: '9042',
+                cassandra_keyspace: 'nyxgpt',
+                cassandra_table: 'rag_chunks',
+                embedding_model: 'nomic-embed-text',
+              },
+              tracing: { enabled: 'false', service_name: '', otlp_endpoint: '' },
+              error_tracking: { enabled: 'false', dsn: { set: false, masked: null }, environment: '' },
+              monitoring: { enabled: 'false' },
+              log_aggregation: { enabled: 'false' },
+            },
+            restart_required: ['api', 'web'],
+            restart_pending: {
+              web: { keys: ['auth.api_key'], since: Math.floor(Date.now() / 1000) },
+              api: { keys: ['api.port'], since: Math.floor(Date.now() / 1000) },
+            },
+            observability_reconciled: false,
+            observability_result: null,
+          })
+        ),
+        http.get('/api/v1/infra/restart-status', () =>
+          HttpResponse.json({}, { status: 502 })
+        )
+      );
+
+      render(<AdminPage />);
+      await selectModelAndClickNext(1);
+      await waitFor(() => {
+        fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByRole('alert', { name: /restart required/i })).toBeInTheDocument();
+      });
+      expect(screen.getByText(/auth\.api_key/)).toBeInTheDocument();
+      expect(screen.getByText(/api\.port/)).toBeInTheDocument();
+      // Only `web` drops the session -- `api` is in the same pending set and
+      // must not be described that way.
+      expect(screen.getByText(/drop this browser session/i)).toBeInTheDocument();
+    });
+
     it('renders a per-field activation hint before the save, not only after', async () => {
       render(<AdminPage />);
       await selectModelAndClickNext(2);
@@ -1775,6 +1842,42 @@ describe('AdminPage Component', () => {
         'placeholder',
         'Set (sekr****xxxx) -- leave blank to keep'
       );
+    });
+
+    it('names every service a field goes stale on, not just the first (#3806)', async () => {
+      // Nothing in the shipped classification is restart-required for two
+      // tiers at once today, but the classification is data the backend owns
+      // and the mechanism is general by design -- the hint has to read
+      // correctly the first time a key is classified for both, rather than
+      // silently dropping one.
+      server.use(
+        http.get('/api/v1/config/sections', () =>
+          HttpResponse.json({
+            sections: SECTIONS_WITH_EXTRAS,
+            schema: [
+              {
+                ...SCHEMA_WITH_EXTRAS[0],
+                fields: [
+                  {
+                    key: 'embedding_cache_dir',
+                    secret: false,
+                    restart_components: ['api', 'web'],
+                    observability: false,
+                  },
+                ],
+              },
+            ],
+            field_defaults: {},
+            stale_keys: {},
+          })
+        )
+      );
+
+      await goToMoreStep();
+
+      expect(
+        screen.getByText(/not in effect until you restart: api and web\./i)
+      ).toBeInTheDocument();
     });
 
     it('does not re-render fields the hand-typed sections already cover', async () => {

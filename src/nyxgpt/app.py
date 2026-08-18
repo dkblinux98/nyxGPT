@@ -983,8 +983,19 @@ def _apply_auth_config_updates(updates: dict[str, Any]) -> dict[str, Any]:
     - header (str)   -> [auth] header
     - api_key (str)  -> [auth] api_key
 
-    Auth config is read fresh on every request (see `_auth_cfg`), so
-    changes take effect immediately without a service restart.
+    The **api** tier reads auth config fresh on every request (see
+    `_auth_cfg`), so it honours a change here immediately. The **web** tier
+    does not: its service wrapper reads `[auth]` once at process start and
+    exports `NYXGPT_AUTH_API_KEY` into a Node process that cannot observe a
+    later edit, so rotating the key from this endpoint 401s every proxied
+    call until `web` restarts (#3806).
+
+    That divergence is recorded, not left to be discovered: this is the third
+    writer of a restart-required key (with the Configuration Wizard's
+    `POST /config/sections` and `nyxgpt secrets setup`), and all three go
+    through the same `config_wizard` classification and the same on-disk
+    `restart_state`, so all three raise the same persistent notice and offer
+    the same restart.
     """
 
     cfg_path = _config_file_path()
@@ -995,28 +1006,48 @@ def _apply_auth_config_updates(updates: dict[str, Any]) -> dict[str, Any]:
     if cfg_path.exists():
         parser.read(cfg_path)
 
-    if not parser.has_section("auth"):
-        parser.add_section("auth")
-
     out: dict[str, Any] = {}
 
     if "enabled" in updates:
-        val = bool(updates["enabled"])
-        parser.set("auth", "enabled", "true" if val else "false")
-        out["enabled"] = val
+        out["enabled"] = bool(updates["enabled"])
 
     if "header" in updates and isinstance(updates.get("header"), str):
-        header = updates["header"].strip()
-        parser.set("auth", "header", header)
-        out["header"] = header
+        out["header"] = updates["header"].strip()
 
     if "api_key" in updates and isinstance(updates.get("api_key"), str):
-        parser.set("auth", "api_key", updates["api_key"])
         out["api_key"] = updates["api_key"]
+
+    # Computed against the *pre-write* parser: `restart_required_detail` needs
+    # the value the still-running service loaded, which is what is on disk
+    # right now. Keys the wizard schema does not declare are skipped rather
+    # than assumed hot -- an undeclared key has no classification to consult.
+    classified = config_wizard.activation_classification()
+    tracked = {key: value for key, value in out.items() if f"auth.{key}" in classified}
+    restart_detail = config_wizard.restart_required_detail({"auth": tracked}, parser)
+
+    if not parser.has_section("auth"):
+        parser.add_section("auth")
+
+    if "enabled" in out:
+        parser.set("auth", "enabled", "true" if out["enabled"] else "false")
+    if "header" in out:
+        parser.set("auth", "header", out["header"])
+    if "api_key" in out:
+        parser.set("auth", "api_key", out["api_key"])
 
     with cfg_path.open("w", encoding="utf-8") as f:
         parser.write(f)
     os.chmod(cfg_path, 0o600)
+
+    # Mark first, reconcile second -- the same load-bearing order as
+    # `config_sections_update`: putting a key back to the value the running
+    # service still holds arrives here as a change, and only the reconcile
+    # pass (comparing against the originally recorded running value) can
+    # retire it without a restart.
+    for component, changes in restart_detail.items():
+        restart_state_module.mark_pending(component, changes)
+    for component, saved in config_wizard.restart_activation_saved({"auth": tracked}).items():
+        restart_state_module.reconcile_saved(component, saved)
 
     nyxgpt.config._CACHED_CFG = None
     nyxgpt.config._CACHED_PATH = None

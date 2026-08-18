@@ -464,8 +464,9 @@ effect there immediately. The **web UI** is a separate Node process that
 reads the key once at startup, so rotating `api_key` (or flipping `enabled`)
 leaves it sending the old value and 401-ing on every proxied call until
 `nyxgpt ops restart web` runs. Both keys are classified restart-required for
-`web`: the wizard and `nyxgpt secrets setup` both say so when you change
-them, and offer the restart (#3806).
+`web`: every writer -- the Configuration Wizard, the admin dashboard's Access
+Management panel, and `nyxgpt secrets setup` -- says so when you change them,
+and offers the restart (#3806).
 
 **Enforced at startup:** if `[api] host` (below) is bound non-loopback while
 `enabled` isn't `true`, the native API refuses to start rather than serving
@@ -481,7 +482,8 @@ Instead of editing `config.ini` by hand, you can view the enabled state and a
 masked key, toggle authentication, and rotate the key from the admin
 dashboard's Access Management panel (`/admin/dashboard`), backed by
 `GET`/`POST /api/v1/admin/access` — see
-[`docs/api.md`](api.md#admin-dashboard). The full Configuration Wizard
+[`docs/api.md`](api.md#admin-dashboard). A rotation there raises the same
+pending-restart notice, on that same page. The full Configuration Wizard
 (`/admin`, see above) also covers `enabled`/`header`/`api_key` on its API &
 Auth step, backed by `GET`/`POST /api/v1/config/sections`.
 

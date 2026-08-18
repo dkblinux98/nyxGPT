@@ -119,20 +119,40 @@ class TestClassificationIsData:
         assert _annotated_keys() == classified
 
     def test_no_key_is_annotated_both_hot_and_restart_required(self):
-        """The pre-existing "(hot-reload; no restart required)" prose must not contradict it."""
-        text = EXAMPLE_CONFIG.read_text(encoding="utf-8")
-        blocks = text.split("\n")
-        for i, line in enumerate(blocks):
-            if "hot-reload; no restart required" not in line:
+        """The pre-existing "(hot-reload; no restart required)" prose must not contradict it.
+
+        Checks the *classification*, not the neighbouring line: a key whose
+        comment block promises a hot reload must classify as hot. Comparing
+        against `activation_classification()` is what makes this fail on the
+        realistic drift -- someone classifying a key restart-required and
+        leaving the old promise in the file above it.
+        """
+        classified = config_wizard.activation_classification()
+        lines = EXAMPLE_CONFIG.read_text(encoding="utf-8").splitlines()
+        section: str | None = None
+        promised_hot = False
+        checked = 0
+        for line in lines:
+            sm = _SECTION_RE.match(line)
+            if sm:
+                section, promised_hot = sm.group(1), False
                 continue
-            # Find the key this prose belongs to: the next non-comment line.
-            for candidate in blocks[i + 1 :]:
-                km = _KEY_RE.match(candidate)
-                if km:
-                    assert not _ANNOTATION_RE.match(blocks[i - 1] if i else "")
-                    break
-                if _SECTION_RE.match(candidate):
-                    break
+            if "hot-reload; no restart required" in line:
+                promised_hot = True
+                continue
+            km = _KEY_RE.match(line)
+            if km and section and promised_hot:
+                full_key = f"{section}.{km.group(1)}"
+                assert not classified.get(full_key), (
+                    f"{full_key} promises a hot reload in example.config.ini but is "
+                    f"classified restart-required for {classified[full_key]}"
+                )
+                checked += 1
+            if km or (line.strip() and not line.lstrip().startswith("#")):
+                promised_hot = False
+        # The prose is what this guards; if it ever disappears entirely the
+        # test would pass vacuously, so require that it found some.
+        assert checked > 0, "no 'hot-reload; no restart required' prose found to check"
 
 
 class TestWrapperReadKeysAreClassified:

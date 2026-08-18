@@ -982,6 +982,15 @@ On rotation, the freshly generated key is returned once in the response
 body as `api_key` so the operator can copy it — it is never returned
 again by `GET /admin/access`, which only shows the masked value.
 
+`[auth] enabled` and `[auth] api_key` are classified restart-required for
+the `web` tier (#3806): the API honours the change on the next request, but
+the web UI's Node process read the old key at start and keeps sending it, so
+proxied calls 401 until `web` restarts. Writing either here therefore raises
+the same persistent pending-restart notice the Configuration Wizard and
+`nyxgpt secrets setup` raise — visible on the same dashboard page, with a
+Restart control and `nyxgpt ops restart web` as the CLI equivalent. See
+[`GET /api/v1/infra/restart-status`](#get-apiv1infrarestart-status).
+
 **Response:**
 
 ```json

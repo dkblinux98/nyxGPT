@@ -1106,11 +1106,20 @@ are absent here by design (relocated to the annex; IDs are never reused).
   so the CLI writer and the API reader share one set and the notice survives an
   api restart. It retires on a real restart **or** on the value being reverted to
   what the service is still running.
+  There are **three** writers of a restart-required key, not two — the
+  Configuration Wizard (`POST /config/sections`), the Admin Dashboard's Access
+  Management panel (`POST /admin/access` → `_apply_auth_config_updates`), and
+  `nyxgpt secrets setup`. The dashboard one was missed on the first pass and
+  rotated the key silently; all three now classify through
+  `config_wizard.field_restart_components`/`restart_required_detail` and write
+  the same `restart_state`, so a new writer that skips it is the failure mode to
+  look for.
   Method: executed — `scripts/restart-activation-smoke.py` (run 2026-08-18, and
   wired into `.github/workflows/restart-activation-smoke.yml`) starts uvicorn and
   the web tier through the real generated wrapper, reproduces the 401 wall,
-  asserts the notice/deferral/CLI-parity/restart/revert path, and includes the
-  #3753 fault injection: with the classification stripped, no notice is raised.
+  asserts the notice/deferral/CLI-parity/dashboard-parity/restart/revert path,
+  and includes the #3753 fault injection: with the classification stripped, no
+  notice is raised.
   Re-verify when: the web wrapper stops reading a key from config.ini at start
   (e.g. if the proxy is ever made to resolve the key per request), or a third
   tier with its own activation semantics is added.

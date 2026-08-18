@@ -24,16 +24,20 @@ a real `config.ini` between them, and drives the whole acceptance scenario:
   6. CLI parity        a separate process writing the key via
                        `secrets_setup.write_secret` shows up in the running
                        API's notice. One behavior, two surfaces.
-  7. Failed restart    `nyxgpt ops restart web` against a stack it cannot
+  7. Dashboard parity  the Admin Dashboard's Access panel
+                       (`POST /admin/access`) is the third writer of the key
+                       and raises the same notice -- on the very page that
+                       hosts it.
+  8. Failed restart    `nyxgpt ops restart web` against a stack it cannot
                        manage must NOT clear the flag -- a restart that did
                        not happen must never read as "all good".
-  8. Revert            putting the value back to what web is still running
+  9. Revert            putting the value back to what web is still running
                        retires the notice AND removes the 401 wall, with no
                        restart at all.
-  9. Restart           rotate again, then re-exec the wrapper (what a web
+ 10. Restart           rotate again, then re-exec the wrapper (what a web
                        restart does) -> proxied calls are 200 on the new key.
                        Healthy stack, not a blank 401.
- 10. Fault injection   redo step 3 with the classification stripped, and
+ 11. Fault injection   redo step 3 with the classification stripped, and
                        assert this script would have caught the pre-fix
                        product: the 401 wall still happens and NO notice
                        appears. Without this, steps 3-4 would pass on any
@@ -55,6 +59,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -64,9 +69,15 @@ WEB_PORT = 3123
 API_URL = f"http://127.0.0.1:{API_PORT}"
 WEB_URL = f"http://127.0.0.1:{WEB_PORT}"
 
-KEY_ORIGINAL = "smoke-original-key-aaaaaaaaaaaaaaaaaaaa"
-KEY_ROTATED = "smoke-rotated-key-bbbbbbbbbbbbbbbbbbbbb"
-KEY_FROM_CLI = "smoke-cli-written-key-cccccccccccccccccc"
+# The three distinct values this scenario moves `[auth] api_key` between:
+# what the tiers start on, what the dashboard rotation writes, and what the
+# CLI writer writes. Nothing about the scenario depends on their content --
+# only on their being different from each other -- so they are generated per
+# run into a throwaway config under a temp directory that `cleanup()` removes,
+# rather than committed as literals.
+ORIGINAL_VALUE = f"smoke-original-{uuid.uuid4().hex}"
+ROTATED_VALUE = f"smoke-rotated-{uuid.uuid4().hex}"
+CLI_WRITTEN_VALUE = f"smoke-cli-written-{uuid.uuid4().hex}"
 
 failures: list[str] = []
 _procs: list[subprocess.Popen] = []
@@ -98,14 +109,14 @@ def http(url: str, *, headers: dict[str, str] | None = None, timeout: float = 10
         return 0
 
 
-def restart_status(api_key: str) -> dict:
-    """Read the pending-restart notice from the API, authenticating with `api_key`.
+def restart_status(value: str) -> dict:
+    """Read the pending-restart notice from the API, authenticating with `value`.
 
     Auth is deliberately on for this whole run, so every direct call needs the
     header -- and after a rotation that means the NEW key, since the api tier
     is the one that applies it immediately.
     """
-    return get_json(f"{API_URL}/api/v1/infra/restart-status", headers={"X-API-Key": api_key})
+    return get_json(f"{API_URL}/api/v1/infra/restart-status", headers={"X-API-Key": value})
 
 
 def get_json(url: str, *, headers: dict[str, str] | None = None) -> dict:
@@ -132,8 +143,14 @@ def wait_for(url: str, *, expect: tuple[int, ...], timeout: float = 180.0) -> bo
     return False
 
 
-def write_config(cfg_path: Path, api_key: str) -> None:
-    """Write the minimal config both tiers read. Auth is ON -- that's the point."""
+def write_config(cfg_path: Path, value: str) -> None:
+    """Write the minimal config both tiers read. Auth is ON -- that's the point.
+
+    `cfg_path` is a throwaway file under the smoke's own temp directory and
+    `value` is a per-run generated string; a plain-text `config.ini` is also
+    exactly what the product stores here by design (0600, `~/.nyxGPT`), so the
+    scenario cannot be reproduced through any other store.
+    """
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
     cfg_path.write_text(
         "[ollama]\n"
@@ -150,7 +167,7 @@ def write_config(cfg_path: Path, api_key: str) -> None:
         "\n"
         "[auth]\n"
         "enabled = true\n"
-        f"api_key = {api_key}\n"
+        f"api_key = {value}\n"
         "header = X-API-Key\n",
         encoding="utf-8",
     )
@@ -279,7 +296,7 @@ def main() -> int:  # noqa: C901 -- a linear scenario reads better in one place
     os.environ["NYXGPT_PENDING_RESTART_PATH"] = str(pending_path)
     os.environ["HOME"] = str(home)
 
-    write_config(cfg_path, KEY_ORIGINAL)
+    write_config(cfg_path, ORIGINAL_VALUE)
 
     api_proc: subprocess.Popen | None = None
     web_proc: subprocess.Popen | None = None
@@ -305,16 +322,16 @@ def main() -> int:  # noqa: C901 -- a linear scenario reads better in one place
         log("Step 2-3: rotate the key and reproduce the 401 wall")
         post_json(
             f"{API_URL}/api/v1/config/sections",
-            {"auth": {"api_key": KEY_ROTATED}},
-            headers={"X-API-Key": KEY_ORIGINAL},
+            {"auth": {"api_key": ROTATED_VALUE}},
+            headers={"X-API-Key": ORIGINAL_VALUE},
         )
 
         check(
-            http(f"{API_URL}/api/v1/info", headers={"X-API-Key": KEY_ROTATED}) == 200,
+            http(f"{API_URL}/api/v1/info", headers={"X-API-Key": ROTATED_VALUE}) == 200,
             "the api tier honours the rotated key immediately (hot)",
         )
         check(
-            http(f"{API_URL}/api/v1/info", headers={"X-API-Key": KEY_ORIGINAL}) == 401,
+            http(f"{API_URL}/api/v1/info", headers={"X-API-Key": ORIGINAL_VALUE}) == 401,
             "the api tier rejects the old key immediately (hot)",
         )
         wall = proxied_status()
@@ -325,7 +342,7 @@ def main() -> int:  # noqa: C901 -- a linear scenario reads better in one place
         )
 
         log("Step 4: the notice explains it instead of leaving a blank wall")
-        status = restart_status(KEY_ROTATED)
+        status = restart_status(ROTATED_VALUE)
         check("web" in status["pending"], "restart-status flags `web` as pending")
         check(
             status["pending"].get("web", {}).get("keys") == ["auth.api_key"],
@@ -346,7 +363,7 @@ def main() -> int:  # noqa: C901 -- a linear scenario reads better in one place
         if not wait_for(f"{API_URL}/health", expect=(200,)):
             print("::error::api did not come back after restart", flush=True)
             return 2
-        status = restart_status(KEY_ROTATED)
+        status = restart_status(ROTATED_VALUE)
         check(
             "web" in status["pending"],
             "the notice persists across an api restart (on-disk state, not in-memory)",
@@ -361,18 +378,37 @@ def main() -> int:  # noqa: C901 -- a linear scenario reads better in one place
                 "from pathlib import Path\n"
                 "from nyxgpt import secrets_setup\n"
                 "spec = secrets_setup.find_guided_secret('auth', 'api_key')\n"
-                f"secrets_setup.write_secret(Path({str(cfg_path)!r}), spec, {KEY_FROM_CLI!r})\n",
+                f"secrets_setup.write_secret(Path({str(cfg_path)!r}), spec, {CLI_WRITTEN_VALUE!r})\n",
             ],
             env=env,
             check=True,
         )
-        status = restart_status(KEY_FROM_CLI)
+        status = restart_status(CLI_WRITTEN_VALUE)
         check(
             "web" in status["pending"] and "auth.api_key" in status["pending"]["web"]["keys"],
             "a separate CLI process's write is visible to the running API (one behavior, two surfaces)",
         )
 
-        log("Step 7: a restart that did NOT happen must not clear the flag")
+        log("Step 7: the Admin Dashboard's Access panel is the third writer")
+        # `POST /admin/access` rotates `[auth] api_key` too, from the very page
+        # that hosts the notice. A writer that stayed silent here would rebuild
+        # the 401 wall on the one surface guaranteed to be looking at it.
+        dashboard_value = post_json(
+            f"{API_URL}/api/v1/admin/access",
+            {"rotate": True},
+            headers={"X-API-Key": CLI_WRITTEN_VALUE},
+        )["api_key"]
+        status = restart_status(dashboard_value)
+        check(
+            "web" in status["pending"] and "auth.api_key" in status["pending"]["web"]["keys"],
+            "a dashboard rotation raises the same notice as the wizard and the CLI",
+        )
+        check(
+            proxied_status() == 401,
+            "and the web tier is demonstrably still frozen while it stands",
+        )
+
+        log("Step 8: a restart that did NOT happen must not clear the flag")
         subprocess.run(
             ["nyxgpt", "ops", "restart", "web"],
             env=env,
@@ -380,25 +416,25 @@ def main() -> int:  # noqa: C901 -- a linear scenario reads better in one place
             stderr=subprocess.DEVNULL,
             check=False,
         )
-        status = restart_status(KEY_FROM_CLI)
+        status = restart_status(dashboard_value)
         check(
             "web" in status["pending"],
             "a failed `nyxgpt ops restart web` leaves the notice standing (no false all-clear)",
         )
 
-        log("Step 8: reverting retires the notice with no restart at all")
-        # The web tier is still running KEY_ORIGINAL. Writing that exact value
+        log("Step 9: reverting retires the notice with no restart at all")
+        # The web tier is still running ORIGINAL_VALUE. Writing that exact value
         # back means saved and running agree again -- which is the other way
         # #3806 says the notice retires ("...until the restart happens or the
         # value is reverted"). Nothing is restarted here, and both the notice
         # AND the 401 wall must go away.
         post_json(
             f"{API_URL}/api/v1/config/sections",
-            {"auth": {"api_key": KEY_ORIGINAL}},
-            headers={"X-API-Key": KEY_FROM_CLI},
+            {"auth": {"api_key": ORIGINAL_VALUE}},
+            headers={"X-API-Key": dashboard_value},
         )
         check(
-            restart_status(KEY_ORIGINAL)["pending"] == {},
+            restart_status(ORIGINAL_VALUE)["pending"] == {},
             "reverting to the value web is still running retires the notice, with no restart",
         )
         check(
@@ -406,14 +442,14 @@ def main() -> int:  # noqa: C901 -- a linear scenario reads better in one place
             "and the 401 wall is gone -- saved and running agree again",
         )
 
-        log("Step 9: rotate again, restart web, and show a healthy stack")
+        log("Step 10: rotate again, restart web, and show a healthy stack")
         post_json(
             f"{API_URL}/api/v1/config/sections",
-            {"auth": {"api_key": KEY_ROTATED}},
-            headers={"X-API-Key": KEY_ORIGINAL},
+            {"auth": {"api_key": ROTATED_VALUE}},
+            headers={"X-API-Key": ORIGINAL_VALUE},
         )
         check(proxied_status() == 401, "rotating again re-raises the 401 wall")
-        check("web" in restart_status(KEY_ROTATED)["pending"], "and re-raises the notice")
+        check("web" in restart_status(ROTATED_VALUE)["pending"], "and re-raises the notice")
 
         # Restarting the web tier IS re-execing this wrapper -- that is what
         # `nyxgpt ops restart web` ultimately does through systemd/launchd.
@@ -444,11 +480,11 @@ def main() -> int:  # noqa: C901 -- a linear scenario reads better in one place
             check=True,
         )
         check(
-            restart_status(KEY_ROTATED)["pending"] == {},
+            restart_status(ROTATED_VALUE)["pending"] == {},
             "clearing after a restart is visible to the already-running API process",
         )
 
-        log("Step 10: fault injection -- prove steps 3-4 are not vacuous")
+        log("Step 11: fault injection -- prove steps 3-4 are not vacuous")
         # Rebuild the classification WITHOUT auth.api_key -- the pre-#3806
         # product -- in a subprocess, and confirm the rotation then produces
         # the 401 wall with NO notice at all. If this passes, steps 3-4 above
