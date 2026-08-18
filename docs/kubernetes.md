@@ -81,14 +81,40 @@ kustomization (which includes both the api and web stable/canary pairs, see
 [Canary Deployment](#canary-deployment), plus the [data and LLM
 tier](#data-and-llm-tier)), waits for Cassandra and Ollama to report Ready --
 which for Ollama includes the first pull of the default model, so the command
-returns only when a chat can actually be answered -- brings up the
-[observability tier](#observability-in-the-cluster) and waits for its ten
-workloads to roll out too, and snapshots Pod/Service health for all of them.
+returns only when a chat can actually be answered -- waits for the api and web
+Deployments, brings up the [observability tier](#observability-in-the-cluster)
+and waits for its ten workloads to roll out too, and only then snapshots
+Pod/Service health for all of them.
 
-Both waits exist for the same reason: `kubectl apply` returns when the
+All three waits exist for the same reason: `kubectl apply` returns when the
 objects are accepted, not when they work, so without them the command reports
-health for Pods that are still pulling images -- and the Pod-phase snapshot
-scores a still-pulling Pod as a failure (#3826).
+on Pods that are still pulling images and its exit status describes a
+mid-rollout snapshot rather than the stack the operator is handed (#3826,
+#3827).
+
+### Ready, pending, failed
+
+Every Kubernetes readout `nyxgpt ops` prints — the install's health snapshot,
+the observability workload list, `nyxgpt ops status` — classifies a workload
+into one of three states, and the same way in each (#3827):
+
+| Label | Meaning | Counts as a failure? |
+| --- | --- | --- |
+| `[OK]` | Running and passing its readiness probe (or `Succeeded`) | no |
+| `[PENDING]` | Still starting: being scheduled, pulling images, creating containers, or ready on some replicas but not all | **no** |
+| `[FAIL]` | Will not start without intervention: `Unschedulable` (the node cannot fit it), `ImagePullBackOff`, `CrashLoopBackOff`, a container config error, or a `Failed` Pod | yes |
+
+A Pod pulling a multi-hundred-megabyte image is doing what it is supposed to,
+so `Pending` is reported as pending and never fails the command; what decides
+whether the stack settled is the wait, which fails when its budget runs out.
+The distinction is load-bearing rather than cosmetic: the acceptance run that
+produced #3827 printed ten `[FAIL] pod …: Pending` lines for Pods that were
+all Running three minutes later, and the one Pod that genuinely could not
+start (`Insufficient memory`) was indistinguishable among them.
+
+The waits use the same vocabulary, so a Pod in a state waiting cannot fix ends
+the wait as soon as it is confirmed — naming that Pod and the scheduler's or
+kubelet's own reason — instead of consuming the whole rollout budget first.
 
 Each image build mirrors the Homebrew reinstall-if-needed behavior (see
 [ops.md](ops.md)): it fingerprints the app source that image is built from
@@ -340,7 +366,11 @@ Notes:
   Home dashboard, and promtail's logs actually reach Loki.
   `.github/workflows/k8s-local-smoke.yml` covers the other half -- that the
   layer comes up *with* the app tier in the **default** install, on one node,
-  with no Pod left Pending (#3826).
+  with no Pod left Pending (#3826) -- and its `k8s-pod-state` job
+  (`scripts/k8s-pod-state-smoke.py`) proves on a real cluster that a Pod which
+  is merely starting is reported as pending while an unschedulable or
+  unpullable one is a named failure (#3827), including that the pre-fix rule
+  called both of them the same thing.
 - **Footprint.** The default stack (app + data/LLM + observability) requests
   ~3.8 CPU and ~8Gi of memory including kube-system, so it fits a single
   4-vCPU/16GB node with the CPU margin thin: a new workload requesting more

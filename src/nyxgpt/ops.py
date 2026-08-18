@@ -381,7 +381,8 @@ def _emit_results(action: str, results: list[OpsResult]) -> bool:
     """Print and structured-log each OpsResult from an ops step, returning overall success.
 
     Preserves the `[OK]`/`[FAIL]`/`[SKIP]` stdout lines every CLI entrypoint
-    already printed, and additionally logs one INFO/WARNING record per
+    already printed (plus any label a result set for itself -- `[PENDING]`,
+    see `_result_status_label`), and additionally logs one INFO/WARNING record per
     result (service/action/result plus any subprocess failure detail in
     `details`) so `nyxgpt ops` activity lands in the log files instead of
     only stdout.

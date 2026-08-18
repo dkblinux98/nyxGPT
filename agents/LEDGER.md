@@ -1361,6 +1361,37 @@ are absent here by design (relocated to the annex; IDs are never reused).
   Re-verify when: any `k8s/**` manifest changes a `resources.requests`, a
   replica count, or adds a workload — the 175m CPU margin is what absorbs it.
 
+- **V-042** · 2026-08-18 — **`nyxgpt ops` has one three-state vocabulary for
+  Kubernetes workloads — ready / pending / failed — and `Pending` is not a
+  failure.** `_classify_k8s_pod` (`src/nyxgpt/ops.py`) is the single
+  classifier behind `_k8s_stack_health`, `_k8s_observability_health` and the
+  rollout waits; `OpsResult.status` carries the `[PENDING]` label without
+  touching `ok`, so a Pod that is scheduling, pulling or creating containers
+  never changes an install's exit status, while `Unschedulable`,
+  `ImagePullBackOff`, `CrashLoopBackOff`, a container-config error or a
+  `Failed` phase does — with the scheduler's/kubelet's own reason attached.
+  The waits share it: `_wait_for_k8s_rollouts` polls in 30s slices and ends as
+  soon as a blocked Pod is confirmed over two slices, instead of spending a
+  900s budget and then blaming whichever workload it was on. The app tier now
+  has a wait of its own (`_wait_for_k8s_app_tier`), so **every** tier is
+  settled before health is snapshotted — this supersedes the part of **V-041**
+  that reads `_k8s_stack_health` as a Pod-*phase* scorer.
+  Method: executed on 2026-08-18 — `scripts/k8s-pod-state-smoke.py` on a real
+  kind cluster: a Pod blocked on a not-yet-created ConfigMap classified
+  `[PENDING] Pending: ContainerCreating` and then reached Ready once the
+  ConfigMap was created (so the pending verdict was true, not merely kinder);
+  a `cpu: 1000` Pod classified `[FAIL] Pending: unschedulable` carrying
+  `0/1 nodes are available: 1 Insufficient cpu`; a bad image classified
+  `[FAIL] ... ImagePullBackOff`; and the wait over an unschedulable Deployment
+  failed naming that Pod after 60s of a 900s budget. The same run asserts the
+  pre-fix rule (`ok = phase == "Running"`) calls the transient and the
+  unschedulable Pod the *same* thing, so it cannot pass on a build without the
+  fix. Standing guard: the `k8s-pod-state` job in `k8s-local-smoke.yml`.
+  Re-verify when: another `nyxgpt ops` readout starts deriving a verdict from
+  a Pod's `.status.phase` directly instead of going through
+  `_classify_k8s_pod` — the shared vocabulary, not this one call site, is what
+  the entry stands for.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
