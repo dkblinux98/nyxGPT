@@ -1609,6 +1609,51 @@ are absent here by design (relocated to the annex; IDs are never reused).
   does not cover, or `SAFE_IN_RUN` gains an entry.
 
 
+- **V-046** · 2026-08-18 — **`nyxgpt ops` has one three-state vocabulary for
+  Kubernetes workloads — ready / pending / failed — and `Pending` is not a
+  failure.** `_classify_k8s_pod` (`src/nyxgpt/ops.py`) is the single
+  classifier behind `_k8s_stack_health`, `_k8s_observability_health`, the
+  rollout waits and `infra_status()`'s `pod_states` (which is what lets the
+  admin Infrastructure page badge the difference, since a raw `kubectl get
+  pods` line reads `Pending` for both cases); `OpsResult.status` carries the
+  `[PENDING]` label without
+  touching `ok`, so a Pod that is scheduling, pulling or creating containers
+  never changes an install's exit status, while `Unschedulable`,
+  `ImagePullBackOff`, `CrashLoopBackOff`, a container-config error or a
+  `Failed` phase does — with the scheduler's/kubelet's own reason attached.
+  The waits share it: `_wait_for_k8s_rollouts` polls in 30s slices and ends as
+  soon as a blocked Pod *of the workload it is waiting on* (label-scoped —
+  every tier shares the `nyxgpt` namespace, and an api Pod restarting against
+  its liveness probe must not fail Cassandra's wait) is confirmed over two
+  slices, instead of spending a 900s budget and then blaming whichever
+  workload it was on. The app tier now
+  has a wait of its own (`_wait_for_k8s_app_tier`), so **every** tier is
+  settled before health is snapshotted — this supersedes the part of **V-041**
+  that reads `_k8s_stack_health` as a Pod-*phase* scorer.
+  (Filed as `V-042` under #3827, renumbered to `V-045` on the first merge of
+  `v3.0.0` and to `V-046` on the second: #3811 allocated `V-042`/`V-043`,
+  #3828 `V-044` and #3825 `V-045`, all on concurrently-open branches. IDs are
+  never reused. #3825's entry is the sizing one above; this one is the
+  vocabulary, and `infra_status`'s `kubernetes.unschedulable` — which #3825
+  added from a separate `.spec.nodeName` probe — is read from
+  `_classify_k8s_pod` as of that merge, so the Infrastructure page's badges
+  and its "could not be scheduled" list cannot disagree.)
+  Method: executed on 2026-08-18 — `scripts/k8s-pod-state-smoke.py` on a real
+  kind cluster: a Pod blocked on a not-yet-created ConfigMap classified
+  `[PENDING] Pending: ContainerCreating` and then reached Ready once the
+  ConfigMap was created (so the pending verdict was true, not merely kinder);
+  a `cpu: 1000` Pod classified `[FAIL] Pending: unschedulable` carrying
+  `0/1 nodes are available: 1 Insufficient cpu`; a bad image classified
+  `[FAIL] ... ImagePullBackOff`; and the wait over an unschedulable Deployment
+  failed naming that Pod after 60s of a 900s budget. The same run asserts the
+  pre-fix rule (`ok = phase == "Running"`) calls the transient and the
+  unschedulable Pod the *same* thing, so it cannot pass on a build without the
+  fix. Standing guard: the `k8s-pod-state` job in `k8s-local-smoke.yml`.
+  Re-verify when: another `nyxgpt ops` readout starts deriving a verdict from
+  a Pod's `.status.phase` directly instead of going through
+  `_classify_k8s_pod` — the shared vocabulary, not this one call site, is what
+  the entry stands for.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
