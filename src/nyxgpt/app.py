@@ -1660,205 +1660,46 @@ def config_sections_update(request: Request, payload: dict[str, Any] = Body(...)
     }
 
 
-# --- Guided secrets setup endpoints (#3505) ---
+# --- Guided secrets / AWS credentials status endpoints (#3505, #3512) ---
 #
-# Deliberately separate from `/config/sections` above: `config_wizard`
-# excludes `openai`/`github` entirely (#3388's `EXCLUDED_SECTIONS` -- an
-# agent-system concern, not a nyxGPT user option) and has no notion of
-# per-field "where to obtain this" guidance or a generate-for-me offer.
-# `secrets_setup.GUIDED_SECRETS` is the closed set this surface can write --
-# unlike `/config/sections`, it never accepts an arbitrary section/key.
+# Read-only by owner decision (#3805). The matching write endpoints
+# (`POST /config/secrets`, `/config/secrets/sync`, `/config/aws-credentials`,
+# `/config/aws-credentials/secret-store`) and the two `/admin` screens that
+# drove them are gone: a credential typed into a browser crosses an HTTP
+# request and the page's process on its way to disk -- and over a cloud
+# access tunnel it would cross that path too -- while `nyxgpt secrets setup`,
+# `nyxgpt ops secrets-sync` and `nyxgpt cloud credentials-setup` take masked
+# input and write straight to config.ini, ~/.aws/credentials or the OS
+# keychain. By the time this API is answering, reaching it already required
+# the secrets those screens collected. What remains here reports *whether*
+# something is configured, never a cleartext value, and never accepts one.
+# Do not re-add a write path: the Configuration Wizard
+# (`/config/sections`, which excludes `[cloud]` and the `openai`/`github`
+# agent-system sections) is the sanctioned in-product configuration surface.
 
 
 @api.get("/config/secrets")
 def config_secrets_get(request: Request) -> dict[str, Any]:
     """Return the guided secrets' metadata plus each one's current set/masked state.
 
-    Backs both the CLI's `nyxgpt secrets setup` (same `secrets_setup` module)
-    and the `/admin` Guided Secrets Setup step (#3505's Definition of Done
-    requirement for a matching web surface). Never returns cleartext.
+    The machine-readable counterpart of `nyxgpt secrets setup` (same
+    `secrets_setup` module, so the two can't drift about what the closed
+    `GUIDED_SECRETS` set is or which of them are set). Never returns
+    cleartext; setting a value is a CLI operation (#3805).
     """
     cfg = _req_cfg(request)
     return {"secrets": secrets_setup.secret_status(cfg)}
 
 
-@api.post("/config/secrets")
-def config_secrets_update(request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    """Validate, write, and reload one guided secret (#3505).
-
-    Payload shape: `{"section": ..., "key": ..., "value": ...}`, or
-    `{"section": ..., "key": ..., "generate": true}` for `[auth] api_key`
-    (the only guided secret with a generator). Only `(section, key)` pairs in
-    `secrets_setup.GUIDED_SECRETS` are accepted -- this can't be used to
-    write an arbitrary config.ini field. The value is never echoed back;
-    only a masked preview is returned.
-    """
-    section = payload.get("section")
-    key = payload.get("key")
-    if not isinstance(section, str) or not isinstance(key, str):
-        raise HTTPException(status_code=400, detail="'section' and 'key' are required")
-
-    spec = secrets_setup.find_guided_secret(section, key)
-    if spec is None:
-        raise HTTPException(status_code=404, detail=f"{section}.{key} is not a guided secret")
-
-    value: str
-    if payload.get("generate"):
-        if spec.generate is None:
-            raise HTTPException(status_code=400, detail=f"{spec.full_key} has no generator")
-        value = spec.generate()
-    else:
-        raw_value = payload.get("value")
-        if not isinstance(raw_value, str) or not raw_value.strip():
-            raise HTTPException(status_code=400, detail="'value' must be a non-empty string")
-        value = raw_value
-
-    try:
-        written = secrets_setup.write_secret(_config_file_path(), spec, value)
-    except secrets_setup.SecretValidationError as e:
-        raise HTTPException(status_code=422, detail=f"{spec.full_key}: {e}") from e
-
-    nyxgpt.config._CACHED_CFG = None
-    nyxgpt.config._CACHED_PATH = None
-    nyxgpt.config._CACHED_MTIME_NS = None
-    request.state.cfg = load_config(None)
-    cfg = _req_cfg(request)
-
-    admin_activity_module.record("config.secret_set", spec.full_key)
-
-    return {
-        "set": spec.full_key,
-        "masked": secrets_setup.mask_secret(written),
-        "secrets": secrets_setup.secret_status(cfg),
-    }
-
-
-@api.post("/config/secrets/sync")
-def config_secrets_sync(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    """Push `config.SECRETS_SYNC_MANIFEST`'s values to GitHub Actions secrets (#3505).
-
-    Wraps `ops.sync_secrets_to_github_actions` -- the same function
-    `nyxgpt ops secrets-sync` calls -- so this dashboard action never shells
-    out to a raw command and the two surfaces can't drift. Payload shape:
-    `{"dry_run": bool}` (default false). Results carry secret *names* only;
-    a value is never present in the response, logs, or the admin activity
-    record.
-    """
-    dry_run = bool(payload.get("dry_run", False))
-    results = ops_module.sync_secrets_to_github_actions(dry_run=dry_run)
-    ok = all(r.ok for r in results)
-    admin_activity_module.record(
-        "config.secrets_synced" if not dry_run else "config.secrets_sync_dry_run",
-        "; ".join(r.message for r in results),
-    )
-    return {
-        "ok": ok,
-        "dry_run": dry_run,
-        "results": [{"ok": r.ok, "message": r.message, "details": r.details} for r in results],
-    }
-
-
-# --- Guided AWS credentials setup endpoints (P6-13, #3512) ---
-#
-# Deliberately separate from `/config/sections` and `/config/secrets`
-# above: the access key pair collected here is never written to
-# config.ini -- it's routed to ~/.aws/credentials or the OS keychain by
-# `aws_credentials_setup.save_aws_credentials`. Only the non-secret
-# `[cloud]` reference (profile/region/destination) goes through
-# `config_wizard.apply_updates`, and `[cloud]` is excluded from the
-# general wizard's schema for exactly this reason.
-
-
 @api.get("/config/aws-credentials")
 def config_aws_credentials_get(request: Request) -> dict[str, Any]:
-    """Return the guided AWS credentials flow's status: fields, `[cloud]` reference, and
-    where the access key pair is currently stored (masked). Never returns cleartext.
+    """Return the AWS credentials status: fields, `[cloud]` reference, and where the
+    access key pair is currently stored (masked). Never returns cleartext.
+
+    The machine-readable counterpart of `nyxgpt cloud credentials-setup`,
+    which is where the key pair is entered (#3805).
     """
     cfg = _req_cfg(request)
-    return aws_credentials_setup.aws_credentials_status(cfg)
-
-
-@api.post("/config/aws-credentials")
-def config_aws_credentials_update(
-    request: Request, payload: dict[str, Any] = Body(...)
-) -> dict[str, Any]:
-    """Validate and save AWS credentials via the guided flow (#3512).
-
-    Payload: `{"destination": "profile"|"keychain"|"ambient", "profile": ...,
-    "region": ..., "access_key_id"?: ..., "secret_access_key"?: ...}`. The
-    key pair (required for `profile`/`keychain`) is routed to
-    `~/.aws/credentials` or the OS keychain -- never config.ini. Only
-    profile/region/destination are written to config.ini's `[cloud]`
-    section.
-    """
-    destination = payload.get("destination")
-    profile = payload.get("profile")
-    region = payload.get("region")
-    if (
-        not isinstance(destination, str)
-        or not isinstance(profile, str)
-        or not isinstance(region, str)
-    ):
-        raise HTTPException(
-            status_code=400, detail="'destination', 'profile', and 'region' are required"
-        )
-
-    access_key_id = payload.get("access_key_id")
-    secret_access_key = payload.get("secret_access_key")
-    if access_key_id is not None and not isinstance(access_key_id, str):
-        raise HTTPException(status_code=400, detail="'access_key_id' must be a string")
-    if secret_access_key is not None and not isinstance(secret_access_key, str):
-        raise HTTPException(status_code=400, detail="'secret_access_key' must be a string")
-
-    try:
-        aws_credentials_setup.save_aws_credentials(
-            _config_file_path(), destination, profile, region, access_key_id, secret_access_key
-        )
-    except aws_credentials_setup.SecretValidationError as e:
-        raise HTTPException(status_code=422, detail=str(e)) from e
-    except aws_credentials_setup.AwsCredentialsError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-    nyxgpt.config._CACHED_CFG = None
-    nyxgpt.config._CACHED_PATH = None
-    nyxgpt.config._CACHED_MTIME_NS = None
-    request.state.cfg = load_config(None)
-    cfg = _req_cfg(request)
-
-    admin_activity_module.record(
-        "config.aws_credentials_set", f"profile={profile} destination={destination}"
-    )
-
-    return aws_credentials_setup.aws_credentials_status(cfg)
-
-
-@api.post("/config/aws-credentials/secret-store")
-def config_aws_secret_store_update(
-    request: Request, payload: dict[str, Any] = Body(...)
-) -> dict[str, Any]:
-    """Validate and save #3507's `[secrets]` provider reference (#3512's guided-flow parity).
-
-    Payload: `{"provider"?: ..., "region"?: ..., "ssm_prefix"?: ...,
-    "secretsmanager_id"?: ...}`. These aren't secret values themselves --
-    the actual application secrets stay in SSM/Secrets Manager -- so
-    they're written to config.ini like every other setting.
-    """
-    values = {
-        f.key: payload.get(f.key, "") for f in aws_credentials_setup.SECRET_STORE_REFERENCE_FIELDS
-    }
-    try:
-        aws_credentials_setup.save_secret_store_reference(_config_file_path(), values)
-    except aws_credentials_setup.SecretValidationError as e:
-        raise HTTPException(status_code=422, detail=str(e)) from e
-
-    nyxgpt.config._CACHED_CFG = None
-    nyxgpt.config._CACHED_PATH = None
-    nyxgpt.config._CACHED_MTIME_NS = None
-    request.state.cfg = load_config(None)
-    cfg = _req_cfg(request)
-
-    admin_activity_module.record("config.secret_store_reference_set", "secrets section updated")
-
     return aws_credentials_setup.aws_credentials_status(cfg)
 
 
