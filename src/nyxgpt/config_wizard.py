@@ -764,8 +764,19 @@ def restart_required_detail(
             previous = _current_value(cfg, section, key, value)
             if previous == value:
                 continue
+            # What the running service actually loaded. When the option is
+            # absent from config.ini that is the *default* it fell back to --
+            # not `_current_value`'s "-1"/"" absent-sentinel, which exists to
+            # force the change comparison above to register. Recording the
+            # sentinel would make "revert it back to the default" fail to
+            # clear the notice, leaving a banner the user cannot dismiss.
+            previous_text = (
+                cfg.get(section, key)
+                if cfg.has_option(section, key)
+                else (f.default if f.default is not None else "")
+            )
             for component in f.restart_components:
-                detail.setdefault(component, {})[f"{section}.{key}"] = _ini_value_str(previous)
+                detail.setdefault(component, {})[f"{section}.{key}"] = previous_text
     return detail
 
 
