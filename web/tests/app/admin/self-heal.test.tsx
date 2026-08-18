@@ -86,9 +86,14 @@ const mockEmptyStatus = {
   events: [],
 };
 
+// #3828: every tier the cluster runs, and the observability tier read from
+// the cluster rather than from a Compose survey that has no bearing on it.
 const mockKubernetesStatus = {
   enabled: true,
   mode: 'kubernetes',
+  observability_source: 'kubernetes',
+  compose_probe_available: false,
+  compose_probe_reason: '`docker` is not installed on this host',
   components: [
     {
       service: 'nyxgpt-api-stable-abc123',
@@ -97,6 +102,43 @@ const mockKubernetesStatus = {
       health: 'ready',
       healthy: true,
       source: 'kubernetes',
+      tier: 'core',
+    },
+    {
+      service: 'nyxgpt-web-stable-def456',
+      container: 'nyxgpt-web-stable-def456',
+      state: 'Running',
+      health: 'ready',
+      healthy: true,
+      source: 'kubernetes',
+      tier: 'core',
+    },
+    {
+      service: 'cassandra-0',
+      container: 'cassandra-0',
+      state: 'Running',
+      health: 'ready',
+      healthy: true,
+      source: 'kubernetes',
+      tier: 'core',
+    },
+    {
+      service: 'ollama-0',
+      container: 'ollama-0',
+      state: 'Running',
+      health: 'ready',
+      healthy: true,
+      source: 'kubernetes',
+      tier: 'core',
+    },
+    {
+      service: 'grafana-7f9',
+      container: 'grafana-7f9',
+      state: 'Running',
+      health: 'ready',
+      healthy: true,
+      source: 'kubernetes',
+      tier: 'observability',
     },
   ],
   unhealthy_count: 0,
@@ -817,6 +859,43 @@ describe('SelfHealPage', () => {
     expect(screen.getByText('Kubernetes')).toBeInTheDocument();
     expect(screen.getByText(/kubelet's own liveness-probe restarts/)).toBeInTheDocument();
     expect(screen.getByText('nyxgpt-api-stable-abc123')).toBeInTheDocument();
+  });
+
+  // --- #3828: Kubernetes mode watches every tier, and says so ---------------
+  // Acceptance saw "Detected mode: Nothing detected running" printed directly
+  // above a list of running `kubernetes` components, with the Compose
+  // "can't check" banner over an observability tier that was up in-cluster.
+
+  it('lists every kubernetes tier with its tier badge, not just the api pool', async () => {
+    server.use(http.get('/api/v1/self-heal/status', () => HttpResponse.json(mockKubernetesStatus)));
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+
+    render(<SelfHealPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('nyxgpt-api-stable-abc123')).toBeInTheDocument();
+    });
+    expect(screen.getByText('nyxgpt-web-stable-def456')).toBeInTheDocument();
+    expect(screen.getByText('cassandra-0')).toBeInTheDocument();
+    expect(screen.getByText('ollama-0')).toBeInTheDocument();
+    expect(screen.getByText('grafana-7f9')).toBeInTheDocument();
+    expect(screen.getAllByText('core')).toHaveLength(4);
+    expect(screen.getByText('observability')).toBeInTheDocument();
+  });
+
+  it('reports the observability tier as in-cluster, not as unreadable, in kubernetes mode', async () => {
+    server.use(http.get('/api/v1/self-heal/status', () => HttpResponse.json(mockKubernetesStatus)));
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+
+    render(<SelfHealPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/queried in-cluster/)).toBeInTheDocument();
+    });
+    // The Compose banner is about a survey this deployment does not use.
+    expect(screen.queryByText(/cannot determine from here/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Compose file isn/)).not.toBeInTheDocument();
+    expect(screen.getByText(/nyxgpt ops port-forward --target observability/)).toBeInTheDocument();
   });
 
   it('shows the detected mode for non-kubernetes modes without the kubernetes role statement', async () => {
