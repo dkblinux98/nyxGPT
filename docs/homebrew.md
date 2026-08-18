@@ -13,8 +13,8 @@ A Homebrew install has no repository checkout, so the documentation you would
 otherwise read from `docs/` ships inside the package instead: once
 `nyxgpt-web` is running, the whole tree is served in the web UI under
 **Support → Docs**, offline and matching the installed version. The same menu's
-**File an Issue** item reports a problem with your version and platform already
-filled in. See [ui.md](ui.md#support-menu).
+**File an Issue** entries report a problem, request a feature or ask a question
+with the ticket type, your version and your platform already filled in. See [ui.md](ui.md#support-menu).
 
 ---
 

@@ -5,6 +5,16 @@ Issue link, which opens `.github/ISSUE_TEMPLATE/support.yml`; the template
 declares `labels: [Support]`, so the label lands on every such report no
 matter who files it.
 
+That holds only while the label exists. GitHub drops a template-declared
+label that does not exist, silently, and the form keeps accepting tickets
+that carry nothing -- which makes every guard below inert at once, because
+they all test the same absent name. That is #3810: filed unlabeled, assigned
+to the scrummaster seven seconds later, caught by a human five minutes after
+that. The label is therefore guaranteed rather than assumed --
+`admin_ensure_support_label.yml` re-asserts and verifies it on a schedule,
+and `support_intake_guard.yml` fails loudly on any ticket that slips through
+without it (#3811).
+
 That label is a boundary, not a category. A `Support`-labeled issue:
 
 * is never added to the code project, stamped with project fields, put in a
@@ -12,9 +22,11 @@ That label is a boundary, not a category. A `Support`-labeled issue:
   workflows skip it outright, and the backlog summarizer refuses it as a
   candidate even if one somehow reached the board;
 * is routed instead onto the separate **nyxGPT Support** project by that
-  project's own auto-add workflow (filter `is:issue label:Support`), which is
-  owner-configured and which agent code must never add to, read from, or
-  depend on.
+  project's own auto-add workflow (filter `is:issue is:open label:Support`),
+  which is owner-configured and which agent code must never add to, read
+  from, or depend on. The ticket's TYPE -- Bug Found / Feature Request /
+  Question -- is a field on that project, not a label: the intake collects it
+  into the issue body and the owner sets the field at triage (#3811).
 
 Adopting a support report into engineering is the owner's act: they file (or
 convert it to) a normal issue on the code project. Nothing here does that

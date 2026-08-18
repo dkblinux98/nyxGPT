@@ -1518,29 +1518,39 @@ function Home() {
                       <span>{ticketType.value}</span>
                     </a>
                   ))}
-                  {/* Until the context resolves -- and on an older backend
-                      that reports no ticket types -- one disabled placeholder
-                      rather than a menu that silently has no filing path. */}
+                  {/* Until the context resolves -- and on a backend that
+                      reports no ticket types -- the untyped entry, disabled
+                      until its link exists. Degrading to one working filing
+                      path beats a menu that silently offers none: the user
+                      answers the type question on GitHub instead. */}
                   {!supportContext?.ticket_types?.length && (
-                    <span
+                    <a
+                      href={supportContext?.issue_form_url ?? '#'}
+                      target="_blank"
+                      rel="noopener noreferrer"
                       title={
                         supportContext?.network_note ??
                         'Filing an issue opens GitHub and needs internet access and a GitHub account.'
                       }
-                      aria-disabled="true"
+                      aria-disabled={!supportContext}
                       style={{
                         display: 'flex',
                         alignItems: 'center',
                         gap: 8,
                         padding: '8px 16px 8px 40px',
+                        textDecoration: 'none',
                         color: 'var(--foreground)',
                         fontSize: 14,
-                        opacity: 0.5,
+                        opacity: supportContext ? 1 : 0.5,
+                        pointerEvents: supportContext ? 'auto' : 'none',
                       }}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--button-hover)')}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                      onClick={() => setShowSettingsMenu(false)}
                     >
                       <span>🐛</span>
-                      <span>Loading…</span>
-                    </span>
+                      <span>File an Issue</span>
+                    </a>
                   )}
                 </div>
               )}
