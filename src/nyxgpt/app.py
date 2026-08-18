@@ -2078,6 +2078,17 @@ def analytics_export(request: Request, format: str = "json") -> Response:
     )
 
 
+def _canary_failure_detail(result: canary_module.CanaryResult) -> str:
+    """Render a failed canary step as one sentence, `details` included.
+
+    `CanaryResult.details` is where the kubectl stderr lands; raising only
+    `result.message` threw it away, so the dashboard could show "Rollout did
+    not become healthy" and nothing about why (#3831).
+    """
+    detail = " ".join((result.details or "").split())
+    return f"{result.message}: {detail}" if detail else result.message
+
+
 # --- Local canary deployment endpoints (SRE/admin dashboard) ---
 # Blue/green (deploy.py, `/api/v1/deploy/*`) was retired in favor of canary,
 # a strict superset for traffic purposes (0%/100% reproduces a cutover) plus
@@ -2114,7 +2125,7 @@ def canary_deploy(request: Request, payload: dict[str, Any] = Body(default={})) 
     component = payload.get("component", "api")
     result = canary_module.deploy(namespace=get_canary_namespace(cfg), component=component)
     if not result.ok:
-        raise HTTPException(status_code=409, detail=result.message)
+        raise HTTPException(status_code=409, detail=_canary_failure_detail(result))
     admin_activity_module.record("canary.deploy", result.message)
     return {"ok": result.ok, "message": result.message}
 
@@ -2138,7 +2149,7 @@ def canary_start(request: Request, payload: dict[str, Any] = Body(default={})) -
         component=component,
     )
     if not result.ok:
-        raise HTTPException(status_code=409, detail=result.message)
+        raise HTTPException(status_code=409, detail=_canary_failure_detail(result))
     admin_activity_module.record("canary.start", result.message)
     return {"ok": result.ok, "message": result.message}
 
@@ -2167,7 +2178,7 @@ def canary_evaluate(request: Request, payload: dict[str, Any] = Body(default={})
         component=component,
     )
     if not result.ok:
-        raise HTTPException(status_code=409, detail=result.message)
+        raise HTTPException(status_code=409, detail=_canary_failure_detail(result))
     admin_activity_module.record("canary.evaluate", result.message)
     return {"ok": result.ok, "message": result.message}
 
@@ -2197,7 +2208,7 @@ def canary_promote(request: Request, payload: dict[str, Any] = Body(default={}))
         force=bool(payload.get("force", False)),
     )
     if not result.ok:
-        raise HTTPException(status_code=409, detail=result.message)
+        raise HTTPException(status_code=409, detail=_canary_failure_detail(result))
     admin_activity_module.record("canary.promote", result.message)
     return {"ok": result.ok, "message": result.message}
 
@@ -2220,7 +2231,7 @@ def canary_rollback(request: Request, payload: dict[str, Any] = Body(default={})
         component=component,
     )
     if not result.ok:
-        raise HTTPException(status_code=409, detail=result.message)
+        raise HTTPException(status_code=409, detail=_canary_failure_detail(result))
     admin_activity_module.record("canary.rollback", result.message)
     return {"ok": result.ok, "message": result.message}
 
@@ -2228,7 +2239,12 @@ def canary_rollback(request: Request, payload: dict[str, Any] = Body(default={})
 # --- Self-heal watchdog endpoints (SRE/admin dashboard) ---
 @api.get("/self-heal/status")
 def self_heal_status(_request: Request) -> dict[str, Any]:
-    """Per-component health of the Docker Compose stack, plus recent heal events."""
+    """Per-component health of the deployed stack, plus recent heal events.
+
+    Covers whichever deployment mode is actually running -- native, Compose,
+    Terraform or Kubernetes (every Pod tier, including the in-cluster
+    observability layer) -- see `self_heal.status`.
+    """
     return self_heal_module.status()
 
 
@@ -2631,7 +2647,25 @@ def ops_release_candidate(
     try:
         return release_candidate_module.plan(target, requested_channel)
     except release_candidate_module.ReleaseCandidateError as e:
-        raise HTTPException(status_code=502, detail=str(e)) from e
+        # #3837 (CodeQL #123). `ReleaseCandidateError` is typed, but its
+        # *message* is not always host-independent: `plan` reaches
+        # `declared_version`, which raises `Cannot read {path}: {exc}` from a
+        # caught `OSError` -- so a failed pyproject read would print the API
+        # host's absolute filesystem path into the dashboard. Log the real
+        # message where the operator's logs are, and hand the client a
+        # message that says what failed and where to look.
+        log.warning(
+            "Release plan failed for branch %r on channel %r: %s", target, requested_channel, e
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"Could not compute the release plan for '{target}' on the "
+                f"'{requested_channel}' channel. The underlying error is in the "
+                "API logs (`nyxgpt ops logs api`); `nyxgpt release plan` on the "
+                "host reports it directly."
+            ),
+        ) from e
 
 
 # --- Support endpoints (#3745) ---

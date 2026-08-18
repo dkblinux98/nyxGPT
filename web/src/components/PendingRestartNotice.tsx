@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { apiErrorText, errorMessage } from '../lib/apiError';
 
 /**
  * The persistent "saved, but not yet in effect" notice (#3806).
@@ -118,11 +119,11 @@ export default function PendingRestartNotice({
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data?.detail || `HTTP ${res.status}`);
+        throw new Error(apiErrorText(data, `HTTP ${res.status}`));
       }
     } catch (e: unknown) {
       setAction('failed');
-      setActionError(e instanceof Error ? e.message : String(e));
+      setActionError(errorMessage(e));
       return;
     }
 

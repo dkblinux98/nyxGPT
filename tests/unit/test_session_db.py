@@ -183,6 +183,61 @@ class TestStoreCrud:
 
 
 # ----------------------------
+# Shut-down session recovery (#3851)
+# ----------------------------
+
+
+class TestShutDownSessionRecovery:
+    """The singleton store must not cache a driver session the driver killed.
+
+    `get_session_store()` lives for the life of the API process, so a session
+    cached across a Cassandra outage would otherwise be handed back forever
+    and no amount of restarting Cassandra would recover the store.
+    """
+
+    def _pooled_store(self, monkeypatch, sessions):
+        """Return a store whose pool hands out `sessions` in order."""
+        from nyxgpt.rag import vectorstore_cassandra as vs
+
+        handed_out = iter(sessions)
+        pool = SimpleNamespace(get_session=lambda *a, **k: next(handed_out))
+        monkeypatch.setattr(vs, "get_connection_pool", lambda cfg: pool)
+        return CassandraSessionStore(keyspace="testks")
+
+    def test_shut_down_session_is_replaced(self, monkeypatch):
+        dead, live = FakeCassandraSession(), FakeCassandraSession()
+        dead.is_shutdown = False
+        live.is_shutdown = False
+        store = self._pooled_store(monkeypatch, [dead, live])
+
+        store.save_messages("chat1", MSGS)
+        assert dead.rows  # first write landed on the first session
+
+        dead.is_shutdown = True
+        store.save_messages("chat2", MSGS)
+
+        assert "chat2" in live.rows, "the write must go to the replacement session"
+        assert "chat2" not in dead.rows
+        assert store._session is live
+
+    def test_live_session_is_reused(self, monkeypatch):
+        live = FakeCassandraSession()
+        live.is_shutdown = False
+        store = self._pooled_store(monkeypatch, [live])
+
+        store.save_messages("chat1", MSGS)
+        store.save_messages("chat2", MSGS)
+
+        assert store._session is live  # no spurious reconnect
+
+    def test_injected_session_without_shutdown_flag_is_reused(self, store, fake_session):
+        """A stand-in session with no `is_shutdown` attribute counts as usable."""
+        store.save_messages("chat1", MSGS)
+        store.save_messages("chat2", MSGS)
+        assert store._session is fake_session
+
+
+# ----------------------------
 # Legacy directory migration
 # ----------------------------
 

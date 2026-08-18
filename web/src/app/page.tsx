@@ -18,6 +18,7 @@ import { useSessionCache } from '../hooks/useSessionCache';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { useSidebarVisibility } from '../hooks/useSidebarVisibility';
 import { isQueuedForBackgroundSync } from './lib/backgroundSync';
+import { apiErrorText } from '../lib/apiError';
 
 // Route-based code splitting: ChatPane is large (2000+ lines) and only needed
 // after initial render; lazy-load it to reduce the initial bundle size.
@@ -276,15 +277,8 @@ function Home() {
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({ error: { message: 'Unknown error' } }));
-        // Handle wrapped error format {"error": {"message": "..."}} or legacy {"detail": "..."}
-        const detail = errorData.error?.message
-          || (typeof errorData.detail === 'string' ? errorData.detail : null)
-          || (Array.isArray(errorData.detail)
-            ? errorData.detail.map((e: { msg?: string }) => e.msg || JSON.stringify(e)).join(', ')
-            : null)
-          || `HTTP ${res.status}`;
         console.error('Session init error:', errorData);
-        throw new Error(detail);
+        throw new Error(apiErrorText(errorData, `HTTP ${res.status}`));
       }
 
       // Revalidate the cache to get actual server state
@@ -398,7 +392,7 @@ function Home() {
 
         if (!res.ok) {
           const errorData = await res.json();
-          throw new Error(errorData.detail || 'Rename failed');
+          throw new Error(apiErrorText(errorData, 'Rename failed'));
         }
 
         const data = await res.json();

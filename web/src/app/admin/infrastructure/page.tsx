@@ -21,6 +21,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import LoadingSpinner from '../../../components/LoadingSpinner';
 import ErrorMessage from '../../../components/ErrorMessage';
+import { apiErrorText, errorMessage } from '../../../lib/apiError';
 
 type DeploymentModeName = 'native' | 'compose' | 'terraform' | 'kubernetes' | 'none';
 
@@ -60,6 +61,21 @@ type InfraStatus = {
     deployed: boolean;
     namespace: string;
     pods: string[];
+    // Per-Pod ready/pending/failed (#3827). Optional on purpose, like
+    // `observability` below: an older api that predates this field must fall
+    // back to the plain `pods` lines, not take the page down.
+    pod_states?: {
+      name: string;
+      state: 'ready' | 'pending' | 'failed' | string;
+      summary: string;
+      details: string;
+    }[];
+    // Pods no node would take (#3825) -- the FAILED subset of `pod_states`
+    // whose remedy is a bigger cluster VM rather than a fix to the workload,
+    // so the page can print that remedy once instead of per badge. Optional so
+    // an api that predates the field degrades to "none reported" instead of
+    // breaking the page.
+    unschedulable?: string[];
     context: string;
     provisioned: boolean;
     // The in-cluster observability layer (#3787): Kubernetes mode cannot use
@@ -240,6 +256,23 @@ function badgeStyle(ok: boolean, neutral = false): React.CSSProperties {
   };
 }
 
+// A Pod is ready, still starting, or broken -- the same three states
+// `nyxgpt ops` prints as [OK]/[PENDING]/[FAIL] (#3827). Pending is amber
+// rather than red on purpose: it is a normal stage of a rollout, and colouring
+// it as a failure is the browser version of the defect this fixed.
+function podStateBadgeStyle(state: string): React.CSSProperties {
+  const color = state === 'ready' ? '#22c55e' : state === 'pending' ? '#f59e0b' : '#ef4444';
+  return {
+    fontSize: '0.7rem',
+    fontWeight: 600,
+    padding: '1px 8px',
+    borderRadius: 999,
+    background: color,
+    color: 'white',
+    whiteSpace: 'nowrap',
+  };
+}
+
 function ComponentList({ components }: { components: Record<string, string> }) {
   const entries = Object.entries(components);
   if (entries.length === 0) {
@@ -278,12 +311,11 @@ export default function InfrastructurePage() {
       const res = await fetch('/api/v1/infra/status', { cache: 'no-store' });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || data.detail || `HTTP ${res.status}`);
+        throw new Error(apiErrorText(data, `HTTP ${res.status}`));
       }
       setStatus(data);
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setError(msg);
+      setError(errorMessage(e));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -303,14 +335,14 @@ export default function InfrastructurePage() {
       ]);
       const deployData = await deployRes.json();
       if (!deployRes.ok) {
-        throw new Error(deployData.error || deployData.detail || `HTTP ${deployRes.status}`);
+        throw new Error(apiErrorText(deployData, `HTTP ${deployRes.status}`));
       }
       setCloud(deployData as CloudDeployStatus);
       if (stateRes.ok) {
         setCloudState((await stateRes.json()) as CloudStateStatus);
       }
     } catch (e: unknown) {
-      setCloudError(e instanceof Error ? e.message : String(e));
+      setCloudError(errorMessage(e));
     }
   }, []);
 
@@ -571,7 +603,30 @@ export default function InfrastructurePage() {
                     ? ' — local kind cluster provisioned by nyxgpt (torn down together on `nyxgpt ops down --kubernetes`).'
                     : ' — bring-your-own cluster (never destroyed by `nyxgpt ops down --kubernetes`).'}
                 </p>
-                {status.kubernetes.pods.length > 0 ? (
+                {status.kubernetes.pod_states && status.kubernetes.pod_states.length > 0 ? (
+                  /* Three states, not two (#3827): a Pod that is still pulling its
+                     image is PENDING, not a failure -- the install used to print
+                     [FAIL] for exactly this and buried the one Pod that really
+                     could not start. FAILED carries the scheduler's/kubelet's own
+                     reason, because "Pending" on its own does not distinguish
+                     "downloading" from "this node cannot fit it". */
+                  <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: '0.8rem' }}>
+                    {status.kubernetes.pod_states.map((pod) => (
+                      <li key={pod.name} style={{ padding: '3px 0' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}>
+                          <span style={{ fontFamily: 'monospace' }}>{pod.name}</span>
+                          <span style={podStateBadgeStyle(pod.state)}>
+                            {pod.state === 'ready' ? 'READY' : pod.state === 'pending' ? 'PENDING' : 'FAILED'}
+                          </span>
+                        </div>
+                        <div style={{ color: 'var(--foreground-muted)', fontFamily: 'monospace' }}>
+                          {pod.summary}
+                          {pod.details ? ` — ${pod.details}` : ''}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                ) : status.kubernetes.pods.length > 0 ? (
                   <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: '0.8rem', fontFamily: 'monospace' }}>
                     {status.kubernetes.pods.map((line, idx) => (
                       <li key={idx} style={{ padding: '2px 0' }}>
@@ -583,6 +638,40 @@ export default function InfrastructurePage() {
                   <p style={{ fontSize: '0.875rem', color: 'var(--foreground-muted)' }}>
                     No pods in the <code>{status.kubernetes.namespace}</code> namespace.
                   </p>
+                )}
+
+                {/* #3825: an unschedulable Pod reads as `Pending` in the list
+                    above, indistinguishable from one that is starting -- so a
+                    deployment missing prometheus for want of node memory
+                    looked healthy here. Named explicitly, with the wrapped
+                    command that diagnoses and refuses it up front. Reporting
+                    only: the cure is more memory or CPU on the cluster VM,
+                    which no page served by that cluster can grant itself. */}
+                {(status.kubernetes.unschedulable?.length ?? 0) > 0 && (
+                  <div
+                    style={{
+                      marginTop: '0.75rem',
+                      padding: '0.75rem',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '4px',
+                      fontSize: '0.8rem',
+                    }}
+                  >
+                    <strong>
+                      {status.kubernetes.unschedulable?.length} Pod(s) could not be scheduled
+                    </strong>
+                    <ul style={{ margin: '0.35rem 0', paddingLeft: '1.1rem', fontFamily: 'monospace' }}>
+                      {status.kubernetes.unschedulable?.map((name) => (
+                        <li key={name}>{name}</li>
+                      ))}
+                    </ul>
+                    <span style={{ color: 'var(--foreground-muted)' }}>
+                      No node had enough unreserved memory or CPU for them. Give the cluster VM
+                      more of either (Docker Desktop: Settings &rarr; Resources), then re-run{' '}
+                      <code>nyxgpt ops install --kubernetes --local</code> — it checks the node&apos;s
+                      capacity against the stack before applying anything.
+                    </span>
+                  </div>
                 )}
 
                 {/* In-cluster observability (#3787). Kubernetes mode runs its own

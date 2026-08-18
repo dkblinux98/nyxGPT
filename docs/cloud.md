@@ -1061,7 +1061,11 @@ no provided key can ever match, so the API rejects every request rather
 than accepting none. For `[openai] api_key` / `[github] pat`, that
 integration simply doesn't work until the underlying AWS issue is fixed;
 check the nyxGPT process logs for a `Cloud secret resolution failed for
-...` warning naming the failing key and provider.
+...` warning naming the failing key, the provider and the exception class
+(e.g. `CloudSecretsError`). The provider's own message is deliberately not
+in that warning -- nothing constrains an SDK error string to be free of the
+secret payload it was handling -- so raise the log level to `DEBUG` when you
+need it (`[logging] level = DEBUG`, then `nyxgpt ops restart api`).
 
 A sustained failure (outage, bad IAM, wrong prefix) is remembered for only
 30 seconds (vs. the 5-minute success cache), so resolution is retried

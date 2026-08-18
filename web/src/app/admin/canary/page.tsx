@@ -5,6 +5,7 @@ import LoadingSpinner from '../../../components/LoadingSpinner';
 import ErrorMessage from '../../../components/ErrorMessage';
 import ObservabilityCredentialsHint from '../../../components/ObservabilityCredentialsHint';
 import { exploreQueryUrl } from '../../../lib/grafanaExplore';
+import { apiErrorText, errorMessage } from '../../../lib/apiError';
 
 type TrackState = 'not_deployed' | 'unhealthy' | 'healthy' | 'error';
 
@@ -114,12 +115,13 @@ export default function CanaryPage() {
       });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || data.detail || `HTTP ${res.status}`);
+        // The API's envelope is `{"error": {"message", ...}}` -- reading
+        // `data.error` directly rendered the card as "[object Object]" (#3831).
+        throw new Error(apiErrorText(data, `HTTP ${res.status}`));
       }
       setStatus(data);
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setError(msg);
+      setError(errorMessage(e));
     } finally {
       setLoading(false);
     }
@@ -166,13 +168,12 @@ export default function CanaryPage() {
       });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || data.detail || data.message || `HTTP ${res.status}`);
+        throw new Error(apiErrorText(data, `HTTP ${res.status}`));
       }
       setActionMessage(data.message || fallbackMessage);
       await loadStatus();
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setActionError(msg);
+      setActionError(errorMessage(e));
     } finally {
       setBusy(false);
     }

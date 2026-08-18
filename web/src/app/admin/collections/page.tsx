@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import LoadingSpinner from '../../../components/LoadingSpinner';
 import ErrorMessage from '../../../components/ErrorMessage';
+import { apiErrorText, errorMessage } from '../../../lib/apiError';
 
 type CollectionInfo = {
   name: string;
@@ -39,22 +40,6 @@ function validateCollectionName(name: string): string | null {
 // nests the human-readable message under `error.message`; a plain string
 // `error` (from the Next.js proxy route's own catch block, e.g. on a network
 // failure) or a top-level `detail` are also handled as fallbacks.
-function extractErrorMessage(errorData: unknown, fallback: string): string {
-  if (errorData && typeof errorData === 'object') {
-    const { error, detail } = errorData as { error?: unknown; detail?: unknown };
-    if (typeof error === 'string') {
-      return error;
-    }
-    if (error && typeof error === 'object' && typeof (error as { message?: unknown }).message === 'string') {
-      return (error as { message: string }).message;
-    }
-    if (typeof detail === 'string') {
-      return detail;
-    }
-  }
-  return fallback;
-}
-
 export default function CollectionsPage() {
   const [collections, setCollections] = useState<CollectionInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -94,7 +79,7 @@ export default function CollectionsPage() {
       const data = await res.json();
       setCollections(data.collections || []);
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = errorMessage(e);
       setError(msg);
     } finally {
       setLoading(false);
@@ -113,7 +98,7 @@ export default function CollectionsPage() {
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({ error: 'Unknown error' }));
-        throw new Error(extractErrorMessage(errorData, `HTTP ${res.status}`));
+        throw new Error(apiErrorText(errorData, `HTTP ${res.status}`));
       }
 
       const data = await res.json();
@@ -124,7 +109,7 @@ export default function CollectionsPage() {
         `Cleared '${collectionName}': ${data.doc_count} documents / ${data.chunk_count} chunks remain. The collection and its settings are intact.`
       );
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = errorMessage(e);
       setError(`Failed to clear collection: ${msg}`);
     } finally {
       setClearingCollection(null);
@@ -142,7 +127,7 @@ export default function CollectionsPage() {
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({ error: 'Unknown error' }));
-        throw new Error(extractErrorMessage(errorData, `HTTP ${res.status}`));
+        throw new Error(apiErrorText(errorData, `HTTP ${res.status}`));
       }
 
       // Reload collections after successful delete
@@ -153,7 +138,7 @@ export default function CollectionsPage() {
         `Collection '${collectionName}' and its settings have been permanently deleted.`
       );
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = errorMessage(e);
       setError(`Failed to delete collection: ${msg}`);
     } finally {
       setDeletingCollection(null);
@@ -189,7 +174,7 @@ export default function CollectionsPage() {
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({ error: 'Unknown error' }));
-        throw new Error(extractErrorMessage(errorData, `HTTP ${res.status}`));
+        throw new Error(apiErrorText(errorData, `HTTP ${res.status}`));
       }
 
       // Reload collections and close modal
@@ -199,7 +184,7 @@ export default function CollectionsPage() {
       setNewCollectionDim('768');
       setNewCollectionModel('');
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = errorMessage(e);
       setError(`Failed to create collection: ${msg}`);
     } finally {
       setCreating(false);
@@ -232,7 +217,7 @@ export default function CollectionsPage() {
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({ error: 'Unknown error' }));
-        throw new Error(extractErrorMessage(errorData, `HTTP ${res.status}`));
+        throw new Error(apiErrorText(errorData, `HTTP ${res.status}`));
       }
 
       const data = await res.json();
@@ -242,7 +227,7 @@ export default function CollectionsPage() {
         `Uploaded '${data.doc_id}' into '${data.collection || targetCollection}': ${data.chunks_ingested} chunk(s) ingested (${data.status}).`
       );
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = errorMessage(e);
       setError(`Failed to upload document to '${targetCollection}': ${msg}`);
     } finally {
       setUploadingCollection(null);
@@ -261,7 +246,7 @@ export default function CollectionsPage() {
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({ error: 'Unknown error' }));
-        throw new Error(extractErrorMessage(errorData, `HTTP ${res.status}`));
+        throw new Error(apiErrorText(errorData, `HTTP ${res.status}`));
       }
 
       const data = await res.json();
@@ -272,7 +257,7 @@ export default function CollectionsPage() {
       setSettingsChunkSize(String(data.settings?.chunk_size || ''));
       setSettingsChunkOverlap(String(data.settings?.chunk_overlap || ''));
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = errorMessage(e);
       setError(`Failed to load settings: ${msg}`);
       setViewingSettings(null);
     } finally {
@@ -299,7 +284,7 @@ export default function CollectionsPage() {
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({ error: 'Unknown error' }));
-        throw new Error(extractErrorMessage(errorData, `HTTP ${res.status}`));
+        throw new Error(apiErrorText(errorData, `HTTP ${res.status}`));
       }
 
       const data = await res.json();
@@ -309,7 +294,7 @@ export default function CollectionsPage() {
       await loadCollections();
       alert('Settings saved successfully');
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = errorMessage(e);
       setError(`Failed to save settings: ${msg}`);
     } finally {
       setEditingSettings(false);
