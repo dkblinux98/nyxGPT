@@ -308,6 +308,29 @@ def _ensure_test_logging_works():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _no_instance_metadata_reads(monkeypatch):
+    """No test reaches the EC2 metadata address (#3804).
+
+    `cloud_infra.infra_status` asks `cloud_imds` whether it is running on an
+    instance, and every cloud status read goes through it. On a test runner
+    that link-local address either black-holes (one timeout per uncached read)
+    or -- on an actual EC2 runner -- answers, which would make the assertions
+    depend on where CI happens to run. So the default for the whole suite is
+    "not on EC2", stated once here.
+
+    `tests/unit/test_cloud_imds.py` is the exception: it captures the real
+    reader at import time, before this fixture replaces it, because exercising
+    it is the point of that file.
+    """
+    from nyxgpt import cloud_imds
+
+    monkeypatch.setattr(cloud_imds, "read_metadata", lambda timeout=None: None)
+    cloud_imds.reset_cache()
+    yield
+    cloud_imds.reset_cache()
+
+
 @pytest.fixture
 def cassandra_test_setup():
     """Fixture for tests that require Cassandra connection.

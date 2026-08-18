@@ -77,9 +77,10 @@ def _read(path: str, token: str, timeout: float) -> str:
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
-            return response.read().decode("utf-8", errors="replace").strip()
+            body: bytes = response.read()
     except Exception:
         return ""
+    return body.decode("utf-8", errors="replace").strip()
 
 
 def _session_token(timeout: float) -> str:
@@ -91,9 +92,10 @@ def _session_token(timeout: float) -> str:
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
-            return response.read().decode("utf-8", errors="replace").strip()
+            body: bytes = response.read()
     except Exception:
         return ""
+    return body.decode("utf-8", errors="replace").strip()
 
 
 def _ssh_key_name(token: str, timeout: float) -> str:

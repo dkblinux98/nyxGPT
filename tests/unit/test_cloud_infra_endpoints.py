@@ -1,11 +1,13 @@
-"""Unit tests for the /api/v1/cloud/infra* endpoints (P6-8, #3509).
+"""Unit tests for the /api/v1/cloud/infra* endpoints (P6-8, #3509; #3804).
 
 These exercise src/nyxgpt/app.py's cloud_infra_* route handlers with
 nyxgpt.cloud_infra mocked out, so no Terraform binary and no AWS account are
-needed. The dashboard surface exists because CLAUDE.md's Definition of Done
-requires ops features to be operable from the SRE/admin dashboard, not only
-from the CLI -- these tests pin that it drives the same code path the CLI
-does.
+needed.
+
+Per CLAUDE.md's Definition of Done the dashboard *observes* the substrate and
+the CLI operates it (owner decision, 2026-08-16, #3804), so `plan` -- whose
+only caller was the dashboard control that has since been removed -- is gone
+from the API too, and its absence is pinned below.
 """
 
 from __future__ import annotations
@@ -45,24 +47,19 @@ def test_status_endpoint_returns_module_status():
     mock_status.assert_called_once()
 
 
-def test_plan_endpoint_passes_dashboard_inputs_through():
-    result = {"action": "plan", "settings": _SETTINGS, "plan_file": "/tmp/tfplan"}
+def test_plan_is_not_reachable_over_http():
+    """Planning is `nyxgpt cloud infra plan` and nothing else (#3804).
 
-    with patch("nyxgpt.app.cloud_infra_module.plan_infra", return_value=result) as mock_plan:
+    Pinned at the route rather than at the removed button: the dashboard is
+    only one of the things that can reach the API, and the guarantee has to
+    hold for all of them.
+    """
+    with patch("nyxgpt.app.cloud_infra_module.plan_infra") as mock_plan:
         client = TestClient(app)
-        response = client.post(
-            "/api/v1/cloud/infra/plan",
-            json={"region": "eu-west-2", "ssh_key_name": "owner-pair"},
-        )
+        response = client.post("/api/v1/cloud/infra/plan", json={})
 
-    assert response.status_code == 200
-    assert response.json()["action"] == "plan"
-    args = mock_plan.call_args.args[0]
-    assert args.region == "eu-west-2"
-    assert args.ssh_key_name == "owner-pair"
-    # Omitted fields arrive as None so the module falls back to saved settings.
-    assert args.owner_ip is None
-    assert args.instance_type is None
+    assert response.status_code == 404
+    mock_plan.assert_not_called()
 
 
 def test_apply_endpoint_returns_outputs():

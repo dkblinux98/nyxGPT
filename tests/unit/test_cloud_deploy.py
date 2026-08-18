@@ -967,6 +967,67 @@ def test_deploy_status_reflects_the_last_deploy(monkeypatch, _isolated_cloud_hom
     assert status["urls"]["grafana"] == "http://localhost:3001"
 
 
+def test_deploy_status_names_the_deploy_record_as_its_source(monkeypatch, _isolated_cloud_home):
+    (_isolated_cloud_home / "deploy.json").write_text(
+        json.dumps({"version": "3.0.0", "host": "198.51.100.10"}), encoding="utf-8"
+    )
+    monkeypatch.setattr(cloud_infra, "infra_status", lambda: {"provisioned": True})
+
+    status = cloud_deploy.deploy_status()
+
+    assert status["source"] == cloud_deploy.SOURCE_DEPLOY_RECORD
+    assert status["known"] is True
+    assert status["on_instance"] is False
+
+
+def test_deploy_status_reports_itself_when_served_from_the_instance(monkeypatch):
+    """On the instance there is no deploy record -- the answering stack is the answer (#3804).
+
+    The record lives on the workstation that ran `nyxgpt cloud deploy`, so a
+    dashboard served from the box would otherwise report "not deployed" about
+    the very release rendering the page.
+    """
+    monkeypatch.setattr(
+        cloud_infra,
+        "infra_status",
+        lambda: {"provisioned": True, "on_ec2": True, "public_ip": "203.0.113.10"},
+    )
+    monkeypatch.setattr(cloud_deploy, "installed_version", lambda: "3.0.0rc12")
+
+    status = cloud_deploy.deploy_status()
+
+    assert status["source"] == cloud_deploy.SOURCE_LOCAL_INSTANCE
+    assert status["known"] is True
+    assert status["on_instance"] is True
+    assert status["deployed"] is True
+    assert status["version"] == "3.0.0rc12"
+    assert status["host"] == "203.0.113.10"
+
+
+def test_deploy_status_does_not_probe_a_tunnel_from_the_instance(monkeypatch):
+    """The tunnel is not the access path here, and the prober is the probed."""
+    monkeypatch.setattr(cloud_infra, "infra_status", lambda: {"on_ec2": True, "public_ip": ""})
+    monkeypatch.setattr(cloud_deploy, "tunnel_status", lambda: {"running": True, "urls": {}})
+    monkeypatch.setattr(
+        cloud_deploy, "_probe", lambda url, timeout: pytest.fail("probed itself through a tunnel")
+    )
+
+    health = cloud_deploy.deploy_status(probe_health=True)["health"]
+
+    assert health["checked"] is False
+    assert "served from the instance" in health["reason"]
+
+
+def test_deploy_status_is_unknown_rather_than_not_deployed_on_a_third_machine(monkeypatch):
+    monkeypatch.setattr(cloud_infra, "infra_status", lambda: {"provisioned": False})
+
+    status = cloud_deploy.deploy_status()
+
+    assert status["source"] == cloud_deploy.SOURCE_UNKNOWN
+    assert status["known"] is False
+    assert status["version"] == ""
+
+
 # --- CLI dispatch ---------------------------------------------------------
 
 

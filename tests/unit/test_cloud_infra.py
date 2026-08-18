@@ -403,6 +403,106 @@ def test_status_reports_the_recorded_substrate(terraform_calls, monkeypatch):
     assert status["access_model"]["ssh_only"] is True
 
 
+# --- status: which source can see the substrate from here (#3804) --------
+
+
+def test_status_is_unknown_on_a_machine_that_is_neither_an_instance_nor_an_operator():
+    """Never "not provisioned" without a source that could know (#3804).
+
+    "Not provisioned" is an assertion about AWS. A machine that is not an
+    instance and has never run Terraform for the substrate has checked
+    nothing, so it must say so -- the rc12 defect in its general form.
+    """
+    status = cloud_infra.infra_status()
+
+    assert status["known"] is False
+    assert status["source"] == cloud_infra.SOURCE_UNKNOWN
+    assert status["provisioned"] is False
+    assert status["on_ec2"] is False
+
+
+def test_status_reads_the_instance_itself_when_running_on_ec2(monkeypatch):
+    """The owner's rc12 observation: served from the instance, state is elsewhere."""
+    monkeypatch.setattr(
+        cloud_infra.cloud_imds,
+        "instance_facts",
+        lambda **_kwargs: {
+            "instance_id": "i-0abc123",
+            "region": "us-east-1",
+            "instance_type": "m5.large",
+            "public_ip": "203.0.113.10",
+            "private_ip": "10.0.1.20",
+            "vpc_id": "vpc-0def456",
+            "subnet_id": "subnet-0aaa111",
+            "security_group_id": "sg-0bbb222",
+            "ssh_key_name": "nyxgpt-owner",
+        },
+    )
+
+    status = cloud_infra.infra_status()
+
+    assert status["source"] == cloud_infra.SOURCE_IMDS
+    assert status["on_ec2"] is True
+    assert status["known"] is True
+    assert status["provisioned"] is True
+    assert status["instance_id"] == "i-0abc123"
+    assert status["vpc_id"] == "vpc-0def456"
+    assert status["security_group_id"] == "sg-0bbb222"
+    assert status["ssh_key_name"] == "nyxgpt-owner"
+    assert status["access_model"]["open_ports"] == [22]
+    # The one substrate fact the instance cannot see: which CIDR its security
+    # group admits is a rule, not metadata. Left empty rather than guessed.
+    assert status["owner_ip_cidr"] == ""
+
+
+def test_instance_metadata_wins_over_a_stale_local_state_file(terraform_calls, monkeypatch):
+    """Both sources present: the machine you are on beats a file describing another."""
+    monkeypatch.setattr(
+        cloud_infra,
+        "terraform_outputs",
+        lambda: {"region": "eu-west-2", "instance_id": "i-from-state"},
+    )
+    cloud_infra.apply_infra(_args())
+    monkeypatch.setattr(
+        cloud_infra.cloud_imds,
+        "instance_facts",
+        lambda **_kwargs: {"instance_id": "i-from-imds", "region": "us-east-1"},
+    )
+
+    status = cloud_infra.infra_status()
+
+    assert status["instance_id"] == "i-from-imds"
+    assert status["region"] == "us-east-1"
+
+
+def test_status_reports_the_terraform_state_source_on_the_operator_workstation(
+    terraform_calls, monkeypatch
+):
+    monkeypatch.setattr(
+        cloud_infra, "terraform_outputs", lambda: {"region": "us-east-1", "instance_id": "i-789"}
+    )
+    cloud_infra.apply_infra(_args())
+
+    status = cloud_infra.infra_status()
+
+    assert status["source"] == cloud_infra.SOURCE_TERRAFORM_STATE
+    assert status["on_ec2"] is False
+    assert status["known"] is True
+    assert status["provisioned"] is True
+
+
+def test_not_provisioned_is_an_answer_once_this_machine_has_run_terraform(terraform_calls):
+    """Settings saved here and no instance recorded: a real "nothing is up"."""
+    cloud_infra.save_settings(cloud_infra.resolve_settings(_args()))
+
+    status = cloud_infra.infra_status()
+
+    assert status["known"] is True
+    assert status["source"] == cloud_infra.SOURCE_TERRAFORM_STATE
+    assert status["provisioned"] is False
+    assert status["access_model"]["open_ports"] == []
+
+
 # --- terraform binary + output decoding ----------------------------------
 
 
