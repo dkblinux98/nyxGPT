@@ -201,6 +201,19 @@ class NyxgptApi < Formula
     site_packages = venv/"lib/python3.12/site-packages/nyxgpt"
     cp buildpath/"example.config.ini", site_packages/"example.config.ini"
 
+    # Expose the CLI itself, not just the API service wrapper (#3850). `pip
+    # install` above creates the `nyxgpt` console script declared in
+    # pyproject.toml, but it lands in the keg's venv, which is on nobody's
+    # PATH -- so a keg that installed perfectly still answered
+    # `zsh: command not found: nyxgpt`, and every documented operation
+    # (`nyxgpt up`, `nyxgpt ops ...`) was unreachable on the artifact path.
+    # A symlink rather than another bash wrapper: the console script's
+    # shebang already names this keg's venv interpreter by absolute path, so
+    # nothing needs re-deriving, and libexec is the one tree Homebrew's
+    # Cleaner leaves alone -- the target keeps the 0755 pip gave it. The link
+    # cannot drift from what was installed, which a hand-written wrapper can.
+    bin.install_symlink venv/"bin/nyxgpt"
+
     (bin/"nyxgpt-api").write <<~EOS
       #!/bin/bash
       set -euo pipefail
@@ -267,9 +280,21 @@ PY
   end
 
   test do
-    # We only validate that the venv and its uvicorn install exist -- the
-    # actual API is exercised by integration tests in the repo.
+    # The venv and its uvicorn install have to exist -- the actual API is
+    # exercised by integration tests in the repo.
     assert_predicate libexec/"venv/bin/python3", :exist?
     system libexec/"venv/bin/python3", "-c", "import nyxgpt.app"
+
+    # And the product has to be operable, not merely importable (#3850). The
+    # two assertions above are both true of a keg that ships no reachable CLI
+    # at all, which is precisely the keg that shipped: `nyxgpt up` answered
+    # `command not found` on the owner's Mac while this block stayed green.
+    # So run the command the docs tell the operator to run, through `bin` --
+    # a CLI that exists only inside the keg's venv fails here.
+    assert_predicate bin/"nyxgpt", :exist?
+    # `\d` and not the formula's own version: the tarball vendors pyproject.toml
+    # as-is, so the package metadata the CLI reports is the project version,
+    # which is deliberately not the candidate version stamped onto the formula.
+    assert_match(/\Anyxgpt \d/, shell_output("#{bin}/nyxgpt --version"))
   end
 end
