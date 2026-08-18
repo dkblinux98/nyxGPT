@@ -1345,7 +1345,11 @@ are absent here by design (relocated to the annex; IDs are never reused).
   20 Pods and both canary Pods, and the preflight passed both resources
   (6976Mi/7646Mi free, 2075m/3050m free). `k8s-capacity-smoke.yml` runs all
   three phases; `k8s-local-smoke.yml` now runs the **default** install (no
-  `--skip-observability`) on the same ballasted node.
+  `--skip-observability`) on the same ballasted node. After the fact the state
+  is observable: `infra_status()` reports `kubernetes.unschedulable` (Pods
+  with an empty `.spec.nodeName`) and the Infrastructure page names them — the
+  Pod list alone could not, since an unschedulable Pod and one pulling its
+  image both read `Pending`.
   Re-verify when: a request/limit in `k8s/**` changes, or a workload is added
   to either kustomization — both gates and
   `tests/unit/test_k8s_capacity_preflight.py` fail loudly.
