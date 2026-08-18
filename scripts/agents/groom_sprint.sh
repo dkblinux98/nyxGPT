@@ -170,8 +170,11 @@ rel_entries=""
 blk_entries=""
 while read -r n; do
   [[ -n "$n" ]] || continue
-  bb="$(blocked_by_issues "$n" | paste -sd, -)"
-  bl="$(blocking_issues "$n" | paste -sd, -)"
+  # Only well-formed issue numbers: a helper degrading to an error string
+  # would otherwise be spliced into the JSON below and fail the groom with a
+  # parse error instead of a legible message (same guard as the pull's).
+  bb="$(blocked_by_issues "$n" | grep -E '^[0-9]+$' | paste -sd, - || true)"
+  bl="$(blocking_issues "$n" | grep -E '^[0-9]+$' | paste -sd, - || true)"
   [[ -z "$bb" ]] || rel_entries="${rel_entries}${rel_entries:+,}\"$n\":[${bb}]"
   [[ -z "$bl" ]] || blk_entries="${blk_entries}${blk_entries:+,}\"$n\":[${bl}]"
 done <<<"$numbers"
