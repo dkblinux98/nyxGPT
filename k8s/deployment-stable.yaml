@@ -52,9 +52,17 @@ spec:
             initialDelaySeconds: 15
             periodSeconds: 20
           resources:
+            # The REQUEST reserves node capacity at schedule time; the LIMIT
+            # contains the peak. Four replicas at the old 512Mi request
+            # reserved 2Gi of an 8Gi workstation node to run ~300Mi of actual
+            # process, which is what left prometheus (and later the canary
+            # Pod) Pending on a default kind node (#3825). 256Mi covers the
+            # api's steady state with room above the ~75Mi measured at light
+            # load; the 1Gi limit below is unchanged, so a RAG or concurrent
+            # chat burst still has the same ceiling it always had.
             requests:
               cpu: 250m
-              memory: 512Mi
+              memory: 256Mi
             limits:
               cpu: "1"
               memory: 1Gi

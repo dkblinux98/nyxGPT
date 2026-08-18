@@ -53,9 +53,14 @@ spec:
             initialDelaySeconds: 15
             periodSeconds: 20
           resources:
+            # Must track deployment-stable.yaml: `nyxgpt canary start` scales
+            # this Deployment up on a node the stable pool is already sitting
+            # on, so an over-reserved canary Pod is the one that cannot
+            # schedule (#3825 -- "canary is broken" was really Insufficient
+            # memory). Same request, same limit as stable.
             requests:
               cpu: 250m
-              memory: 512Mi
+              memory: 256Mi
             limits:
               cpu: "1"
               memory: 1Gi
