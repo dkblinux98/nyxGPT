@@ -485,10 +485,85 @@ jobs:
           # put there without ensurepip.
           "$VENV/bin/pip" --version
           "$VENV/bin/python3" -c 'import nyxgpt.app; print("nyxgpt.app imports")'
+          # Inside the venv only -- deliberately not the operability check.
+          # This exact line was green for every rc while `nyxgpt` was
+          # unreachable from a shell (#3850); the step below is the one that
+          # answers "can the operator run it?".
           "$VENV/bin/nyxgpt" --version
           test -f "$KEG/bin/nyxgpt-api" || { echo "::error::no nyxgpt-api wrapper"; exit 1; }
           # `brew test` runs the formula's own test block against the keg.
           brew test nyxgpt/brew-smoke/nyxgpt-api@3.0.0rc
+
+      - name: "Prove the keg exposes a runnable `nyxgpt`, and that a CLI-less keg fails"
+        # #3850: `brew install` succeeded, the dashboard came up, and
+        # `nyxgpt up` answered `zsh: command not found`. The console script
+        # existed the whole time -- in the keg's venv, on nobody's PATH -- so
+        # every check that reached into the venv passed. This step asks the
+        # operator's question instead: is the command on PATH, by name.
+        #
+        # Unlike the mac_ver and keg-pip steps above, the condition needs no
+        # emulation: an unexposed CLI reproduces on this runner exactly as it
+        # did on the owner's Mac. What is still worth proving is that the new
+        # check would have *caught* it, so the CLI is taken away and the same
+        # function is re-run -- a check that only ever runs against a good keg
+        # is indistinguishable from no check at all.
+        run: |
+          set -euo pipefail
+          KEG="$(brew --prefix nyxgpt-api@3.0.0rc)"
+          KEG_CLI="$KEG/bin/nyxgpt"
+          HIDDEN="$RUNNER_TEMP/nyxgpt-cli-link"
+
+          # One function, used for both the negative control and the real
+          # assertion: a check re-typed for the injection proves nothing about
+          # the check that ships.
+          cli_is_operable() {
+            command -v nyxgpt >/dev/null 2>&1 || { echo "nyxgpt is not on PATH"; return 1; }
+            nyxgpt --version || return 1
+          }
+
+          echo "=== what the keg exposes ==="
+          ls -l "$KEG/bin"
+          test -e "$KEG_CLI" || { echo "::error::the keg installs no nyxgpt CLI"; exit 1; }
+
+          restore_the_cli() {
+            # `-L` before `-e`: Homebrew writes `bin/nyxgpt` as a *relative*
+            # link into libexec, so the copy parked under $RUNNER_TEMP dangles
+            # and `-e` -- which follows the link -- would report it missing and
+            # skip the restore, leaving the keg broken for the steps after
+            # this one.
+            if [ -L "$HIDDEN" ] || [ -e "$HIDDEN" ]; then
+              mv "$HIDDEN" "$KEG_CLI"
+            fi
+          }
+          trap restore_the_cli EXIT
+
+          echo "=== negative control: the keg #3850 shipped, with no CLI in bin ==="
+          # `mv` moves the symlink itself, so the prefix link left behind
+          # dangles -- which is the state the owner's install was in.
+          mv "$KEG_CLI" "$HIDDEN"
+          if cli_is_operable; then
+            echo "::error::the CLI check passes against a keg with no CLI -- it tests nothing"
+            exit 1
+          fi
+          echo "good: the check fails when the CLI is not exposed"
+
+          echo "=== restore, and prove the shipped keg is operable ==="
+          restore_the_cli
+          trap - EXIT
+          command -v nyxgpt
+          cli_is_operable
+
+      - name: Run a no-op CLI subcommand against a machine with no stack
+        # `--version` proves the entry point resolves; it does not prove the
+        # CLI can do anything once the app code loads. `ops status` reports
+        # what is running and is documented to always exit 0 -- so on a runner
+        # with no nyxGPT stack, no Docker and no repo checkout, a non-zero exit
+        # or a traceback is a real defect in the artifact install path (the
+        # class of fault #3759 shipped: paths resolved relative to a repo that
+        # is not there).
+        run: |
+          set -euo pipefail
+          nyxgpt ops status
 
       - name: Install nyxgpt-web from the local tap
         if: ${{ inputs.include_web }}
@@ -573,6 +648,15 @@ jobs:
           "$VENV/bin/python3" -c 'import nyxgpt.app; print("nyxgpt.app imports")'
           "$VENV/bin/nyxgpt" --version
           test -f "$KEG/bin/nyxgpt-api" || { echo "::error::no nyxgpt-api wrapper"; exit 1; }
+          # The owner's own next command after `brew install` (#3850). The
+          # line above only proves the entry point exists *inside* the keg;
+          # this is the one that fails if the published formula leaves the CLI
+          # unreachable, which is what shipped through rc12.
+          command -v nyxgpt || { echo "::error::nyxgpt is not on PATH after brew install"; exit 1; }
+          nyxgpt --version
+          # Documented to always exit 0, so a failure here is the artifact
+          # path breaking on a machine with no stack and no checkout.
+          nyxgpt ops status
           # The installed version has to be the candidate that was asked for,
           # not whatever the tap happened to already carry.
           brew list --versions "nyxgpt-api@${RELEASE}rc" | grep -F "$VERSION"
