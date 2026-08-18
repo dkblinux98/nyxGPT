@@ -1263,7 +1263,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   cross-file failure; the failure disappears with the fixture in place.
   Re-verify when: a new test asserts a `threading.Timer`-deferred endpoint —
   use `captured_timers`, never a bare "assert not called inline".
-- **V-038** · 2026-08-18 — **An operator can now recover a cloud deployment's
+- **V-040** · 2026-08-18 — **An operator can now recover a cloud deployment's
   address and SSH target after the deploy's scrollback is gone, and read the
   instance's container state without a hand-rolled `ssh`.** `nyxgpt cloud
   status` is a first-class subcommand: human-readable by default (`--json` for
@@ -1318,7 +1318,10 @@ are absent here by design (relocated to the annex; IDs are never reused).
   `docker` and the compose file exist; a component whose state could not be
   determined carries `known=False`/`state="unknown"` plus the reason, is
   excluded from `unhealthy_count` and from the automatic heal pass, and is
-  rendered as its own third state by the Self-Heal and Infrastructure pages.
+  rendered as its own third state by the Self-Heal, Infrastructure and System
+  Health pages — the last one because a zero `unhealthy_count` over an
+  unqueryable probe is a green "all healthy" nothing established, which is the
+  same defect pointing the other way.
   The pre-#3812 check (`_which("docker") is not None and COMPOSE_FILE.exists()`)
   is retired: it reported "available" for the condition it existed to catch.
   Method: ran `scripts/self-heal-probe-honesty-smoke.py` on a Linux docker

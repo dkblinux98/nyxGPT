@@ -2017,7 +2017,9 @@ def heal_now(
     still goes through, like the `desired=False` and backoff overrides: the
     restart's own error is then reported back honestly.
 
-    Returns {"checked": [...], "healed": [...]}, and additionally an
+    Returns {"checked": [...], "healed": [...], "undetermined": [...]} --
+    the last listing the components whose state this pass could not
+    determine, each with its reason in `note` -- and additionally an
     "error" key if an explicit `service` isn't currently a known container.
     """
     statuses = list_component_status()

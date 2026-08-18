@@ -1350,9 +1350,17 @@ currently-known container.
 ```json
 {
   "checked": [{ "service": "web", "container": "nyxgpt-web-1", "state": "running", "health": "healthy", "healthy": true, "source": "compose" }],
-  "healed": [{ "ts": 1730000000.0, "service": "web", "reason": "manual heal-now", "action": "restart", "ok": true, "restart_count": 2, "message": "Restarted web" }]
+  "healed": [{ "ts": 1730000000.0, "service": "web", "reason": "manual heal-now", "action": "restart", "ok": true, "restart_count": 2, "message": "Restarted web" }],
+  "undetermined": [{ "service": "grafana", "container": "", "state": "unknown", "health": "", "healthy": false, "source": "compose", "known": false, "note": "`docker compose ps` exited 125: permission denied while trying to connect to the Docker daemon socket" }]
 }
 ```
+
+`undetermined` lists the components this pass could not query at all
+(`known: false`), each carrying the probe's reason in `note` -- reported
+apart from `checked`/`healed` so a caller never reads "not healed" as
+"healthy" or as "still broken" (#3812). The automatic pass never acts on
+these; an explicit `{"service": "<name>"}` heal still does, and reports the
+restart's real error if it fails.
 
 ### `GET /api/v1/self-heal/logs`
 
