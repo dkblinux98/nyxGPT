@@ -3,6 +3,11 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { server } from '../../mocks/server';
+import {
+  CLOUD_DEPLOY_UNKNOWN,
+  CLOUD_LIFECYCLE_COMMANDS,
+  CLOUD_STATE_LOCAL,
+} from '../../mocks/handlers';
 import InfrastructurePage from '../../../src/app/admin/infrastructure/page';
 
 // The in-cluster observability layer (#3787) the api reports under
@@ -266,7 +271,7 @@ describe('InfrastructurePage', () => {
     await waitFor(() => {
       expect(screen.getAllByText('DEPLOYED')).toHaveLength(2);
     });
-    expect(screen.getByRole('heading', { name: 'Terraform' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Terraform (local containers)' })).toBeInTheDocument();
     expect(screen.getByText('api')).toBeInTheDocument();
     expect(screen.getAllByText('running')).toHaveLength(2);
     expect(screen.getByText('exited')).toBeInTheDocument();
@@ -321,7 +326,7 @@ describe('InfrastructurePage', () => {
     render(<InfrastructurePage />);
 
     await waitFor(() => {
-      expect(screen.getByRole('heading', { name: 'Terraform' })).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'Terraform (local containers)' })).toBeInTheDocument();
     });
     expect(screen.getAllByText('CANNOT DETERMINE')).toHaveLength(1);
     expect(
@@ -336,7 +341,7 @@ describe('InfrastructurePage', () => {
     render(<InfrastructurePage />);
 
     await waitFor(() => {
-      expect(screen.getByRole('heading', { name: 'Terraform' })).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'Terraform (local containers)' })).toBeInTheDocument();
     });
     expect(screen.queryByRole('button', { name: /^install$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^destroy$/i })).not.toBeInTheDocument();
@@ -605,5 +610,393 @@ describe('InfrastructurePage', () => {
     await waitFor(() => {
       expect(screen.getAllByText('DEPLOYED')).toHaveLength(2);
     });
+  });
+  // --- AWS: information only, source-aware (#3804) ---------------------
+  //
+  // The section that replaced the /admin/cloud-infrastructure screen. Its
+  // whole point is that the answer depends on where the UI is running, so
+  // every source gets its own case.
+
+  it('reports the AWS substrate as unknown -- never "not provisioned" -- on a machine that is neither an instance nor an operator workstation', async () => {
+    // The rc12 defect this section exists to prevent, in its general form: a
+    // machine with no source must not assert an answer about AWS.
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'AWS substrate' })).toBeInTheDocument();
+    });
+    expect(screen.getAllByText('UNKNOWN')).toHaveLength(2);
+    expect(screen.queryByText('NOT PROVISIONED')).not.toBeInTheDocument();
+    expect(screen.getByText(/neither an EC2 instance nor one that has provisioned the substrate/)).toBeInTheDocument();
+    expect(screen.getByText(/no deploy has been recorded here and this is not the instance/)).toBeInTheDocument();
+  });
+
+  it('shows IMDS-derived substrate facts when the dashboard is running on the EC2 instance (#3804)', async () => {
+    // The owner's rc12 observation: served *from* the provisioned instance,
+    // the page used to read "not provisioned" with every field blank because
+    // it looked at Terraform state that lives on the operator's workstation.
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({
+          ...CLOUD_DEPLOY_UNKNOWN,
+          source: 'local-instance',
+          known: true,
+          on_instance: true,
+          deployed: true,
+          version: '3.0.0rc12',
+          host: '203.0.113.10',
+          region: 'us-east-1',
+          health: {
+            checked: false,
+            healthy: false,
+            status: 0,
+            reason: 'this dashboard is served from the instance -- the stack answering this request is the deployment',
+          },
+          infra: {
+            ...CLOUD_DEPLOY_UNKNOWN.infra,
+            source: 'imds',
+            source_label: 'instance metadata (this dashboard is running on the instance)',
+            on_ec2: true,
+            known: true,
+            provisioned: true,
+            region: 'us-east-1',
+            instance_id: 'i-0abc123',
+            instance_type: 'm5.large',
+            public_ip: '203.0.113.10',
+            vpc_id: 'vpc-0def456',
+            subnet_id: 'subnet-0aaa111',
+            security_group_id: 'sg-0bbb222',
+            ssh_key_name: 'nyxgpt-owner',
+            owner_ip_cidr: '',
+            access_model: { ...CLOUD_DEPLOY_UNKNOWN.infra.access_model, open_ports: [22] },
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('PROVISIONED')).toBeInTheDocument();
+    });
+    expect(screen.getByText('i-0abc123')).toBeInTheDocument();
+    expect(screen.getByText('vpc-0def456')).toBeInTheDocument();
+    expect(screen.getByText('sg-0bbb222')).toBeInTheDocument();
+    expect(screen.getByText('nyxgpt-owner')).toBeInTheDocument();
+    expect(screen.getByText('22')).toBeInTheDocument();
+    expect(screen.getByText(/instance metadata \(this dashboard is running on the instance\)/)).toBeInTheDocument();
+    // The one substrate fact IMDS cannot answer, named rather than blanked.
+    expect(screen.getByText(/not visible from the instance/)).toBeInTheDocument();
+    // The deployment is read first-hand, and the tunnel is not this machine's.
+    expect(screen.getByText('3.0.0rc12')).toBeInTheDocument();
+    expect(screen.getByText(/served by the deployed stack itself/)).toBeInTheDocument();
+    expect(screen.getByText(/not applicable — the tunnel is opened/)).toBeInTheDocument();
+    // Terraform state does not exist on the instance, and saying "local file"
+    // there would be a plain falsehood.
+    expect(screen.getByText('NOT ON THIS MACHINE')).toBeInTheDocument();
+    expect(screen.getByText(/Terraform state lives on the machine that provisioned the substrate/)).toBeInTheDocument();
+  });
+
+  it('shows Terraform-state-derived facts, the open tunnel and the remote backend on the operator workstation', async () => {
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({
+          ...CLOUD_DEPLOY_UNKNOWN,
+          source: 'deploy-record',
+          known: true,
+          deployed: true,
+          version: '3.0.0rc12',
+          host: '203.0.113.10',
+          region: 'us-east-1',
+          profiles: ['monitoring', 'tracing'],
+          tunnel: { running: true, pid: 4242, host: '203.0.113.10', profiles: [], urls: {} },
+          health: { checked: true, healthy: true, status: 200, reason: '' },
+          urls: { api: 'http://localhost:8000', web: 'http://localhost:3000' },
+          history: [
+            { ts: 1755300000, action: 'deploy', outcome: 'succeeded', version: '3.0.0rc12' },
+            { ts: 1755200000, action: 'destroy', outcome: 'failed', detail: 'instance still present' },
+          ],
+          infra: {
+            ...CLOUD_DEPLOY_UNKNOWN.infra,
+            source: 'terraform-state',
+            source_label: 'Terraform state on this machine',
+            known: true,
+            provisioned: true,
+            region: 'us-east-1',
+            instance_id: 'i-0abc123',
+            owner_ip_cidr: '198.51.100.4/32',
+            access_model: { ...CLOUD_DEPLOY_UNKNOWN.infra.access_model, open_ports: [22] },
+          },
+        })
+      )
+    );
+    server.use(
+      http.get('/api/v1/cloud/state', () =>
+        HttpResponse.json({
+          ...CLOUD_STATE_LOCAL,
+          backend: 's3',
+          remote_enabled: true,
+          bootstrapped: true,
+          bucket: 'nyxgpt-tfstate-1234',
+          table: 'nyxgpt-tfstate-locks',
+          key: 'nyxgpt/aws/terraform.tfstate',
+          region: 'us-east-1',
+          locking: 'dynamodb',
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('PROVISIONED')).toBeInTheDocument();
+    });
+    expect(screen.getByText('Terraform state on this machine')).toBeInTheDocument();
+    expect(screen.getByText('198.51.100.4/32')).toBeInTheDocument();
+    expect(screen.getByText('open (pid 4242)')).toBeInTheDocument();
+    expect(screen.getByText('healthy (HTTP 200 over the tunnel)')).toBeInTheDocument();
+    expect(screen.getByText('http://localhost:8000')).toBeInTheDocument();
+    expect(screen.getByText('S3 + DYNAMODB LOCK')).toBeInTheDocument();
+    expect(screen.getByText('nyxgpt-tfstate-locks')).toBeInTheDocument();
+    // Deploy history, including a failed teardown with its detail.
+    expect(screen.getByText('succeeded')).toBeInTheDocument();
+    expect(screen.getByText(/instance still present/)).toBeInTheDocument();
+  });
+
+  it('reads "not provisioned" only when this machine has Terraform state that records no instance', async () => {
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({
+          ...CLOUD_DEPLOY_UNKNOWN,
+          infra: {
+            ...CLOUD_DEPLOY_UNKNOWN.infra,
+            source: 'terraform-state',
+            source_label: 'Terraform state on this machine',
+            known: true,
+            provisioned: false,
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('NOT PROVISIONED')).toBeInTheDocument();
+    });
+    expect(screen.getByText(/has Terraform state for the substrate and it records no instance/)).toBeInTheDocument();
+    expect(screen.getByText('LOCAL FILE')).toBeInTheDocument();
+  });
+
+  it('carries no acting cloud control: no Plan, state migrate/restore/unlock or tunnel buttons, only wrapped command pointers (#3804)', async () => {
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Cloud lifecycle commands' })).toBeInTheDocument();
+    });
+    for (const name of [/^plan$/i, /migrate/i, /restore/i, /unlock/i, /tunnel/i, /^deploy$/i, /destroy/i]) {
+      expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
+    }
+    // Refresh status is the only button on the page, and it is a re-read.
+    expect(screen.getAllByRole('button')).toHaveLength(1);
+    expect(screen.getByRole('button', { name: /refresh status/i })).toBeInTheDocument();
+    // No lingering route to the removed screen.
+    expect(screen.queryByRole('link', { name: /AWS Cloud Infrastructure/i })).not.toBeInTheDocument();
+  });
+
+  it('renders the lifecycle pointers the backend sent, so the page cannot drift from the CLI (#3804)', async () => {
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({
+          ...CLOUD_DEPLOY_UNKNOWN,
+          commands: { ...CLOUD_LIFECYCLE_COMMANDS, deploy: 'nyxgpt cloud deploy --version 9.9.9' },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('nyxgpt cloud deploy --version 9.9.9')).toBeInTheDocument();
+    });
+    expect(screen.getByText('nyxgpt cloud destroy --yes')).toBeInTheDocument();
+    expect(screen.getByText('nyxgpt cloud tunnel --stop')).toBeInTheDocument();
+    expect(screen.getByText('nyxgpt cloud state migrate')).toBeInTheDocument();
+  });
+
+  it('keeps the local sections readable when the cloud read fails, in its own error slot', async () => {
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusTerraform)));
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({ error: 'cloud status unavailable' }, { status: 502 })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('cloud status unavailable')).toBeInTheDocument();
+    });
+    // The local probe is unaffected -- one failure must not blank the other.
+    expect(screen.getByRole('heading', { name: 'Terraform (local containers)' })).toBeInTheDocument();
+    expect(screen.getByText(/pod\/nyxgpt-api-abc123/)).toBeInTheDocument();
+    // With no cloud payload the pointers still render, from the page's own
+    // copy of the wrapped commands.
+    expect(screen.getByText('nyxgpt cloud destroy --yes')).toBeInTheDocument();
+
+    // Retrying re-reads only the cloud half.
+    const user = userEvent.setup();
+    server.use(http.get('/api/v1/cloud/deploy', () => HttpResponse.json(CLOUD_DEPLOY_UNKNOWN)));
+    await user.click(screen.getByRole('button', { name: /retry/i }));
+    await waitFor(() => {
+      expect(screen.queryByText('cloud status unavailable')).not.toBeInTheDocument();
+    });
+  });
+
+  it('reports a closed tunnel, an unhealthy probe, an undated history entry and an unreadable state backend', async () => {
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    server.use(
+      http.get('/api/v1/cloud/state', () =>
+        HttpResponse.json({ detail: 'no backend configured' }, { status: 500 })
+      )
+    );
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({
+          ...CLOUD_DEPLOY_UNKNOWN,
+          source: 'deploy-record',
+          known: true,
+          deployed: true,
+          version: '3.0.0rc12',
+          tunnel: { running: false, pid: 0, host: '', profiles: [], urls: {} },
+          health: { checked: true, healthy: false, status: 502, reason: 'the tunneled API did not answer with 200' },
+          // `ts` absent, as an entry written by an older CLI would be: the
+          // label must degrade rather than print "Invalid Date".
+          history: [{ action: 'deploy', outcome: 'failed', version: '3.0.0rc11' }],
+          infra: {
+            ...CLOUD_DEPLOY_UNKNOWN.infra,
+            source: 'terraform-state',
+            source_label: 'Terraform state on this machine',
+            known: true,
+            provisioned: true,
+            instance_id: 'i-0abc123',
+            // Unset on a workstation that never recorded one -- and not an
+            // instance, so there is no "not visible from here" to say either.
+            owner_ip_cidr: '',
+            access_model: { ...CLOUD_DEPLOY_UNKNOWN.infra.access_model, open_ports: [22] },
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('closed')).toBeInTheDocument();
+    });
+    expect(screen.getByText('unhealthy — HTTP 502 over the tunnel')).toBeInTheDocument();
+    expect(screen.getByText(/deploy 3\.0\.0rc11 · failed/)).toBeInTheDocument();
+    expect(screen.getByText('UNKNOWN')).toBeInTheDocument();
+    expect(screen.getByText(/the state backend could not be read/)).toBeInTheDocument();
+    expect(screen.queryByText(/not visible from the instance/)).not.toBeInTheDocument();
+  });
+
+  it('walks every cloud-read error branch, then falls back to String(e) on a non-Error rejection', async () => {
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({ detail: 'cloud state store unreachable' }, { status: 500 })
+      )
+    );
+    render(<InfrastructurePage />);
+    await waitFor(() => {
+      expect(screen.getByText('cloud state store unreachable')).toBeInTheDocument();
+    });
+
+    const user = userEvent.setup();
+    server.use(http.get('/api/v1/cloud/deploy', () => HttpResponse.json({}, { status: 503 })));
+    await user.click(screen.getByRole('button', { name: /retry/i }));
+    await waitFor(() => {
+      expect(screen.getByText('HTTP 503')).toBeInTheDocument();
+    });
+
+    const fetchSpy = vi.spyOn(global, 'fetch');
+    fetchSpy.mockImplementationOnce(() => Promise.reject('cloud gremlin'));
+    await user.click(screen.getByRole('button', { name: /retry/i }));
+    await waitFor(() => {
+      expect(screen.getByText('cloud gremlin')).toBeInTheDocument();
+    });
+    fetchSpy.mockRestore();
+  });
+
+  it('separates "no response at all" from an HTTP status, and an absent health field from either', async () => {
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    const deployed = {
+      ...CLOUD_DEPLOY_UNKNOWN,
+      source: 'deploy-record',
+      known: true,
+      deployed: true,
+      tunnel: { running: false, pid: 0, host: '', profiles: [], urls: {} },
+    };
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({
+          ...deployed,
+          health: { checked: true, healthy: false, status: 0, reason: '' },
+        })
+      )
+    );
+
+    const { unmount } = render(<InfrastructurePage />);
+    await waitFor(() => {
+      expect(screen.getByText('unhealthy — no response over the tunnel')).toBeInTheDocument();
+    });
+    unmount();
+
+    // Not probed and the backend gave no reason: say so rather than leaving
+    // the sentence hanging.
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({
+          ...deployed,
+          health: { checked: false, healthy: false, status: 0, reason: '' },
+        })
+      )
+    );
+    const second = render(<InfrastructurePage />);
+    await waitFor(() => {
+      expect(screen.getByText('not checked — no probe was run')).toBeInTheDocument();
+    });
+    second.unmount();
+
+    // An api that predates the health field at all: unknown, not unhealthy.
+    const withoutHealth: Record<string, unknown> = { ...deployed };
+    delete withoutHealth.health;
+    server.use(http.get('/api/v1/cloud/deploy', () => HttpResponse.json(withoutHealth)));
+
+    render(<InfrastructurePage />);
+    await waitFor(() => {
+      expect(screen.getByText('unknown')).toBeInTheDocument();
+    });
+  });
+
+  it('distinguishes the two Terraforms: local containers here, AWS provisioning below (#3804)', async () => {
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Terraform (local containers)' })).toBeInTheDocument();
+    });
+    expect(screen.getByText(/containers Terraform runs on/)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'AWS substrate' })).toBeInTheDocument();
   });
 });

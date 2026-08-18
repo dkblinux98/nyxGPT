@@ -56,18 +56,13 @@ export const ADMIN_NAV: AdminNavDest[] = [
     description: 'Guided AWS identity setup for cloud deploy -- routed to ~/.aws/credentials, the OS keychain, or an existing source, never config.ini',
     group: 'operation',
   },
-  {
-    href: '/admin/cloud-infrastructure',
-    // No parentheses in the label: dashboard.test.tsx builds a RegExp from it
-    // verbatim, so punctuation with regex meaning would never match its tile.
-    label: 'AWS Cloud Infrastructure',
-    description:
-      'State of the AWS substrate and the release deployed onto it -- version, access tunnel, health, and deploy history. Deploying and tearing down are CLI operations (#3514)',
-    // Observation, not operation, since the owner's #3514 decision made the
-    // cloud surface status-plus-CLI-pointers: nothing on this page creates or
-    // destroys cloud resources.
-    group: 'observation',
-  },
+  // There is deliberately no AWS Cloud Infrastructure tile (#3804). The AWS
+  // substrate and the release deployed onto it are now an information-only
+  // section *inside* Infrastructure Status, because a separate screen implied
+  // a separate thing to operate. Cloud lifecycle is `nyxgpt cloud ...` and
+  // nothing else: a UI served by the instance cannot safely change the
+  // substrate it runs on, and the second nyxGPT that could drive it safely
+  // collides with the first on :8000/:3000. Do not re-add the screen.
   // There is deliberately no Portability and Acceptance tile (#3803). #3516
   // added one, reading the Definition of Done as requiring a dashboard
   // surface for `nyxgpt ops portability`; the owner removed it because the

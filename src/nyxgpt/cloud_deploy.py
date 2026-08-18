@@ -1080,25 +1080,71 @@ LIFECYCLE_COMMANDS: dict[str, str] = {
 }
 
 
+# Where a deployment answer came from -- the same three-way distinction
+# `cloud_infra.infra_status` makes about the substrate, for the same reason
+# (#3804): the deploy record lives on the workstation that ran the deploy, so
+# a dashboard served from the instance has to answer from what it *is*.
+SOURCE_DEPLOY_RECORD = "deploy-record"
+SOURCE_LOCAL_INSTANCE = "local-instance"
+SOURCE_UNKNOWN = "none"
+
+
 def deploy_status(probe_health: bool = False) -> dict[str, Any]:
     """Report the deployment's state without touching AWS or the instance.
 
     Cheap enough for the dashboard to poll, and still answers on a machine
     whose AWS credentials have expired.
 
+    Like the substrate status it wraps, this answers from whichever source
+    can see the deployment from here:
+
+    * the deploy record `nyxgpt cloud deploy` wrote, on the workstation that
+      ran it (`source: deploy-record`);
+    * this process itself, when running *on* the instance -- the stack
+      serving the request is the deployment, so its version and address are
+      known first-hand even though no deploy record exists there
+      (`source: local-instance`);
+    * neither, on a machine that is neither the operator's nor the instance
+      (`source: none`, `known: False` -- the caller must say *unknown*).
+
     `probe_health=True` additionally makes one short request to the tunneled
     API health endpoint. Opt-in rather than always-on so the polled default
     stays free of network calls; the dashboard asks for it on an explicit
     load or refresh, where waiting a moment for a real answer is the point.
-    A probe with no tunnel open would only ever time out, so it is skipped.
+    A probe with no tunnel open would only ever time out, so it is skipped --
+    as is a probe from the instance, where the tunnel is not the access path
+    and the answering process is the one being asked about.
     """
     record = load_deploy_state()
     infra = cloud_infra.infra_status()
+    on_instance = bool(infra.get("on_ec2"))
     profiles = [str(p) for p in (record.get("profiles") or [])]
     tunnel = tunnel_status()
 
+    if record.get("host"):
+        source = SOURCE_DEPLOY_RECORD
+        deployed = True
+        version = str(record.get("version") or "")
+        host = str(record.get("host") or "")
+    elif on_instance:
+        source = SOURCE_LOCAL_INSTANCE
+        deployed = True
+        # First-hand, not recorded: this is the release answering the request.
+        version = installed_version()
+        host = str(infra.get("public_ip") or "")
+    else:
+        source = SOURCE_UNKNOWN
+        deployed = False
+        version = ""
+        host = ""
+
     health: dict[str, Any] = {"checked": False, "healthy": False, "status": 0, "reason": ""}
-    if probe_health and not tunnel["running"]:
+    if probe_health and source == SOURCE_LOCAL_INSTANCE:
+        health["reason"] = (
+            "this dashboard is served from the instance -- the stack answering this request "
+            "is the deployment, so there is nothing to probe through a tunnel"
+        )
+    elif probe_health and not tunnel["running"]:
         health["reason"] = "no access tunnel is open, so the instance is not reachable from here"
     elif probe_health:
         url = f"http://localhost:8000{HEALTH_PATH}"
@@ -1112,9 +1158,12 @@ def deploy_status(probe_health: bool = False) -> dict[str, Any]:
         }
 
     return {
-        "deployed": bool(record.get("host")),
-        "version": str(record.get("version") or ""),
-        "host": str(record.get("host") or ""),
+        "source": source,
+        "known": source != SOURCE_UNKNOWN,
+        "on_instance": on_instance,
+        "deployed": deployed,
+        "version": version,
+        "host": host,
         "instance_id": str(record.get("instance_id") or infra.get("instance_id") or ""),
         "region": str(record.get("region") or infra.get("region") or ""),
         "profiles": profiles,
