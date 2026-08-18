@@ -798,10 +798,9 @@ work, but it has not been exercised on real hardware.
 
 Every `nyxgpt cloud` command (and `[secrets] provider = ssm`/`secretsmanager`
 above) ultimately calls boto3, which needs AWS credentials available
-somewhere. `nyxgpt cloud credentials-setup` (CLI) and the `/admin` **AWS
-Credentials** wizard (web) walk through getting a profile in place, with the
-same masked-entry, what-it-is/where-to-get-it treatment as the guided
-secrets flow (#3505) -- but the AWS access key ID/secret access key
+somewhere. `nyxgpt cloud credentials-setup` walks through getting a profile
+in place, with the same masked-entry, what-it-is/where-to-get-it treatment as
+the guided secrets flow (#3505) -- but the AWS access key ID/secret access key
 collected here are **never written to `config.ini`**. They're routed
 instead to one of:
 
@@ -849,14 +848,15 @@ Configuration Wizard -- those fields aren't secret values themselves (the
 actual application secrets stay in SSM/Secrets Manager), just which store to
 use.
 
-The `/admin` **AWS Credentials** wizard (`web/src/app/admin/aws-credentials`)
-is the same flow's web surface: `GET /api/v1/config/aws-credentials` reports
-current status (masked, never cleartext), `POST /api/v1/config/aws-credentials`
-saves a key pair to the chosen destination, and
-`POST /api/v1/config/aws-credentials/secret-store` saves the `[secrets]`
-reference. It seeds the same defaults the CLI offers (`nyxgpt` profile,
-`us-east-1` region, "AWS CLI profile file" destination) when nothing has been
-saved yet, so both surfaces produce identical results on a fresh install.
+**This flow is terminal-only (#3805).** The `/admin/aws-credentials` screen
+that used to offer the same entry was removed: an access key pair typed into
+a browser crosses an HTTP request and the page's process on its way to disk,
+and over the SSH access tunnel it would cross that path too -- while the CLI
+takes masked input and writes straight to `~/.aws/credentials` or the OS
+keychain. AWS credentials are also needed *before* there is a deploy to
+observe, so the screen was too late to be useful. `GET
+/api/v1/config/aws-credentials` remains as the read-only status tooling can
+query (masked, never cleartext); no HTTP path writes a credential.
 
 ---
 

@@ -832,8 +832,8 @@ Requires `[github] pat` (with permission to manage Actions secrets) and
 secrets setup` if you haven't already. Each value is sealed with the repo's
 Actions public key before it's sent (libsodium sealed-box, via PyNaCl); a
 value never appears in this command's output, logs, or tracebacks -- only
-the secret's name and success/failure. Also available from the web UI at
-`/admin/secrets`.
+the secret's name and success/failure. CLI only: the dashboard button that
+used to run this went away with the `/admin/secrets` screen (#3805).
 
 ---
 

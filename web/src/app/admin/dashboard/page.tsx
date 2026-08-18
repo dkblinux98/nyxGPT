@@ -516,6 +516,28 @@ export default function AdminDashboardPage() {
                 <NavTile key={dest.href} dest={dest} />
               ))}
             </div>
+            {/* Where credential entry used to be offered (#3805): text, not a
+                control. The Guided Secrets and AWS Credentials screens were
+                removed because a browser is a worse surface for a credential
+                than a terminal, and because reaching this dashboard already
+                required the secrets they collected. Same pointer pattern as
+                the cloud surface (#3514). */}
+            <p
+              style={{
+                marginTop: '1rem',
+                marginBottom: 0,
+                fontSize: 13,
+                color: 'var(--muted-foreground)',
+              }}
+            >
+              Secrets and cloud credentials are entered from the terminal, not here — masked
+              entry writes straight to <code>config.ini</code>, <code>~/.aws/credentials</code>{' '}
+              or the OS keychain, with no browser process or HTTP request in between. Run{' '}
+              <code>nyxgpt secrets setup</code> for the guided secrets,{' '}
+              <code>nyxgpt ops secrets-sync</code> to push them to GitHub Actions, and{' '}
+              <code>nyxgpt cloud credentials-setup</code> for AWS identity. The Configuration
+              Wizard above still edits every non-credential setting.
+            </p>
           </section>
         </div>
 

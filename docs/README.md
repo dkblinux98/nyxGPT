@@ -62,7 +62,8 @@ telemetry is real by generating traffic and asserting it landed
 ([live-verification-ci.md](live-verification-ci.md)).
 
 **Secrets and security** — guided, masked secret entry with per-key help and
-format validation (`nyxgpt secrets setup` or `/admin/secrets`), with
+format validation (`nyxgpt secrets setup`, and `nyxgpt cloud
+credentials-setup` for AWS identity — terminal-only, never a web form), with
 `config.ini` as the canonical store ([security.md](security.md),
 [configuration.md](configuration.md)).
 

@@ -4,9 +4,14 @@ Three `config.ini` values still require a human to go fetch them from an
 external service: `[auth] api_key` (nyxGPT can generate its own), `[openai]
 api_key`, and `[github] pat`. This module is the single source of truth for
 that guided flow -- plain-language name, what it's for, exactly where to get
-it, masked entry, and format validation -- shared by both surfaces the
-Definition of Done requires: the CLI (`nyxgpt secrets setup`) and the
-`/admin` wizard (`GET|POST /api/v1/config/secrets`, `web/src/app/admin/secrets`).
+it, masked entry, and format validation.
+
+**Entry is CLI-only (`nyxgpt secrets setup`), by owner decision (#3805).**
+The `/admin/secrets` screen and `POST /api/v1/config/secrets` were removed: a
+secret typed into a browser crosses an HTTP request and the page's process on
+its way to disk, and by the time the web UI is running, reaching it already
+required these secrets. `GET /api/v1/config/secrets` remains as the
+read-only, never-cleartext status counterpart (`secret_status` below).
 
 Deliberately separate from `config_wizard.py`'s schema-driven wizard: that
 wizard excludes the `openai`/`github` sections entirely (they're
