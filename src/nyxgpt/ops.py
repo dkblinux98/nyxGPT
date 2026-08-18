@@ -7402,7 +7402,11 @@ def _pod_resource_request(pod_spec: dict[str, Any], resource: str = "memory") ->
 
 
 def _workload_resource_requests(
-    objects: list[dict[str, Any]], *, node_count: int, resource: str = "memory"
+    objects: list[dict[str, Any]],
+    *,
+    node_count: int,
+    resource: str = "memory",
+    canary_pool_ceiling: int = 1,
 ) -> tuple[int, int, list[tuple[str, int]]]:
     """Total what a set of rendered manifests will reserve of `resource`.
 
@@ -7419,10 +7423,30 @@ def _workload_resource_requests(
       rather than hardcoded, so a new parked workload is counted for free.
     * `breakdown` -- `(name, amount)` per workload, largest first, for the
       operator-facing detail.
+
+    `canary_pool_ceiling` is `[canary] total_replicas`. Since #3833 a rollout
+    does not carve its split out of a standing pool -- it GROWS the track to
+    at most that many Pods and gives them back on promote/rollback -- so the
+    headroom a rollout needs is the whole difference between the ceiling and
+    the stable Deployment's resting count, not the single parked Pod that
+    used to be the only thing scaled up. Counting one Pod here would let an
+    install pass this preflight and still strand a rollout, which is exactly
+    #3825's defect one step later. Left at 1 (the pre-#3833 meaning) when the
+    caller has no config to read.
     """
     scheduled = 0
     standby = 0
     breakdown: list[tuple[str, int]] = []
+    # Resting counts first: a parked canary is charged against the count its
+    # own stable track rests at, and kustomize may render either one first.
+    resting: dict[str, int] = {}
+    for obj in objects:
+        if obj.get("kind") != "Deployment":
+            continue
+        declared = (obj.get("spec") or {}).get("replicas")
+        name = ((obj.get("metadata") or {}).get("name")) or ""
+        if name:
+            resting[name] = 1 if declared is None else int(declared)
     for obj in objects:
         kind = obj.get("kind")
         if kind not in ("Deployment", "StatefulSet", "DaemonSet"):
@@ -7437,7 +7461,14 @@ def _workload_resource_requests(
             replicas = 1 if declared is None else int(declared)
         name = ((obj.get("metadata") or {}).get("name")) or kind.lower()
         if replicas == 0:
-            standby += per_pod
+            # The Pods a rollout of this track adds to the node: the canary
+            # itself, plus every stable replica the pool has to borrow to
+            # express the weight. Never fewer than one -- a parked workload
+            # with no stable partner is still one Pod when something scales
+            # it up.
+            partner = f"{name.removesuffix('-canary')}-stable"
+            borrowed = max(1, canary_pool_ceiling - resting.get(partner, canary_pool_ceiling - 1))
+            standby += per_pod * borrowed
             continue
         scheduled += per_pod * replicas
         breakdown.append((f"{name} x{replicas}", per_pod * replicas))
@@ -7564,6 +7595,7 @@ def _evaluate_k8s_capacity(
     node_count: int,
     committed: int,
     skip_observability: bool,
+    canary_pool_ceiling: int = 1,
 ) -> OpsResult:
     """Compare one resource's requests against what the cluster has left.
 
@@ -7584,7 +7616,10 @@ def _evaluate_k8s_capacity(
     fit, but never that it can.
     """
     requested, standby, breakdown = _workload_resource_requests(
-        objects, node_count=node_count, resource=resource
+        objects,
+        node_count=node_count,
+        resource=resource,
+        canary_pool_ceiling=canary_pool_ceiling,
     )
     free = allocatable - committed
 
@@ -7682,6 +7717,17 @@ def _preflight_k8s_capacity(*, skip_observability: bool = False) -> list[OpsResu
     if error is not None:
         return [OpsResult(True, "Skipped capacity preflight", error)]
 
+    # How far `nyxgpt canary start` may grow a track (#3833) -- the pool is
+    # borrowed for the rollout, so this is the headroom the node has to keep
+    # free, not a count of standing Pods. An unreadable config falls back to
+    # the shipped default rather than to "one Pod", which would understate it.
+    from nyxgpt.config import get_canary_total_replicas, load_config
+
+    try:
+        ceiling = get_canary_total_replicas(load_config())
+    except Exception:  # pragma: no cover - config is best-effort here
+        ceiling = 4
+
     return [
         _evaluate_k8s_capacity(
             objects,
@@ -7690,6 +7736,7 @@ def _preflight_k8s_capacity(*, skip_observability: bool = False) -> list[OpsResu
             node_count=node_count,
             committed=committed.get(resource, 0),
             skip_observability=skip_observability,
+            canary_pool_ceiling=ceiling,
         )
         for resource in _K8S_PREFLIGHT_RESOURCES
     ]

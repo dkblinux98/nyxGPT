@@ -480,10 +480,17 @@ def get_canary_namespace(cfg: ConfigParser) -> str:
 
 
 def get_canary_total_replicas(cfg: ConfigParser) -> int:
-    """Return the total replica count for canary rollouts.
+    """Return the replica ceiling a canary rollout may grow a track to.
 
     Reads ``[canary] total_replicas``, clamped to a minimum of 1. Falls
     back to 4 (also used on parse errors).
+
+    Since #3833 this is a **ceiling on borrowing**, not a standing pool
+    size: the stable Deployments rest at 1 replica and ``nyxgpt canary
+    start`` grows a track to at most this many Pods for the rollout's
+    duration, handing them back on promote/rollback. A larger value buys
+    finer weight steps (4 makes 25% expressible) at the cost of the Pods a
+    running rollout has to be able to schedule -- nothing while idle.
     """
     try:
         return max(1, cfg.getint("canary", "total_replicas", fallback=4))
