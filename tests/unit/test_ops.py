@@ -39,6 +39,21 @@ def _no_terraform_or_kubernetes_managed_components(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_required_model_check(monkeypatch):
+    """Default `ops._missing_required_models_issue()` to "nothing missing".
+
+    `doctor()` asks the configured Ollama whether it holds the required models
+    (#3824). On a developer machine (or a runner that has one from another
+    test) that is a live HTTP call whose answer depends on which models happen
+    to be in that store -- so a `doctor` test asserting rc == 0 would pass or
+    fail based on the host, not the code under test. The check's own behavior
+    is covered by tests/unit/test_required_model_bootstrap.py, which calls it
+    directly with the model list stubbed.
+    """
+    monkeypatch.setattr(ops, "_missing_required_models_issue", lambda *a, **k: None)
+
+
+@pytest.fixture(autouse=True)
 def _force_macos_native_path(monkeypatch):
     """Pin `platform.system()` to "Darwin" for this file's tests.
 
