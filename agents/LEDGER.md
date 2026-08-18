@@ -948,8 +948,32 @@ are absent here by design (relocated to the annex; IDs are never reused).
   cannot be tested from an agent session.
   Re-verify when: GitHub changes the dismissal form, or an agent gains
   code-scanning write access and can test the limit directly.
+- **V-030** · 2026-08-17 — **Every agent script now stores an issue-to-issue
+  link the way D-002 requires, and none of them writes the retired prose
+  form.** `create_issue.sh --blocks N` calls `mark_issue_blocked_by` and does
+  nothing else: it no longer reopens N, no longer applies a `blocks` label,
+  and posts no `Blocks #N` / `Blocked by #N` comment. Its one consumer,
+  `developer_submit_for_review.sh`, no longer scans comments for the retired
+  marker, and no longer adds a second `Closes #N` for the blocked issue —
+  which would have closed a feature that `promote_accepted_features.sh` is
+  supposed to promote. **The gap this closes was between decision and code:**
+  D-002 was taken 2026-08-12 (#3731) and recorded, while the script that
+  contradicted it shipped unchanged for five days, documented in its own
+  `--help` as the obvious way to link issues (#3836).
+  Method: `tests/test_create_issue_blocks.sh`, run 2026-08-17 — the real
+  scripts execute against a stub `gh` that records every call, asserting the
+  POST to `issues/N/dependencies/blocked_by`, the absence of any reopen /
+  label / comment call, and that the target issue's state is unchanged.
+  Both directions per **D-006**: a copy of `create_issue.sh` carrying the
+  pre-#3836 Step 4 (embedded in the test as a fixture) fails those assertions
+  — it reopens the target and posts the prose markers — so the pass is not
+  luck. `issue-relationships-smoke.yml` runs the suite and additionally greps
+  every `scripts/agents/*.sh` executable line for the retired shapes; those
+  greps were confirmed to match the pre-fix sources.
+  Re-verify when: a new script or workflow links two issues, or `--blocks`
+  grows a second write.
 
-- **V-030** · 2026-08-18 — Native issue relationships (`blocked_by`) **are
+- **V-031** · 2026-08-18 — Native issue relationships (`blocked_by`) **are
   writable from a remote Claude Code session over REST**, even though GraphQL
   is restricted here to a pinned set of PR-review operations. The endpoint is
   `POST /repos/{owner}/{repo}/issues/{number}/dependencies/blocked_by` with a
@@ -964,7 +988,7 @@ are absent here by design (relocated to the annex; IDs are never reused).
   Re-verify when: the session proxy's allowed-operation list changes, or GitHub
   moves issue dependencies off this REST route.
 
-- **V-031** · 2026-08-18 — **`macos-brew-smoke.yml` does not exercise the user
+- **V-032** · 2026-08-18 — **`macos-brew-smoke.yml` does not exercise the user
   path.** Neither install job invokes `nyxgpt`, starts the stack, or issues an
   HTTP request. `keg-install` checks that `bin/nyxgpt-api` exists and runs
   `brew test`, whose `test do` block asserts only that the venv exists and
@@ -979,7 +1003,6 @@ are absent here by design (relocated to the annex; IDs are never reused).
   #3854, #3857, #3859).
   Re-verify when: #3860 lands the end-to-end assertions, at which point this
   entry is superseded rather than re-verified.
-
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
