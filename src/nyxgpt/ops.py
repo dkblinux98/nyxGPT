@@ -10508,7 +10508,12 @@ def sync_env_from_config(
                 False,
                 "No secrets found in config.ini to sync",
                 f"Set [auth] api_key and/or [monitoring] grafana_admin_password in "
-                f"{cfg_path} (re-run `nyxgpt wizard` to generate them), then retry.",
+                f"{cfg_path} (re-run `nyxgpt wizard` to generate them), then retry"
+                + (
+                    f" -- {', '.join(models_synced)} were still written to {env_path}."
+                    if models_synced
+                    else "."
+                ),
             )
         ]
 

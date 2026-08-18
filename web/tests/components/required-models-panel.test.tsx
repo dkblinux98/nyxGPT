@@ -38,10 +38,20 @@ const MISSING_EMBEDDING = {
   ],
 };
 
-function mockFetch(responses: Array<{ ok?: boolean; json: unknown }>) {
+type MockResponse = { ok?: boolean; status?: number; json?: unknown; reject?: unknown };
+
+function mockFetch(responses: MockResponse[]) {
   const fn = vi.fn();
   for (const r of responses) {
-    fn.mockResolvedValueOnce({ ok: r.ok ?? true, json: async () => r.json });
+    if ('reject' in r) {
+      fn.mockRejectedValueOnce(r.reject);
+      continue;
+    }
+    fn.mockResolvedValueOnce({
+      ok: r.ok ?? true,
+      status: r.status ?? 200,
+      json: async () => ('json' in r ? r.json : {}),
+    });
   }
   global.fetch = fn as unknown as typeof fetch;
   return fn;
@@ -83,6 +93,90 @@ describe('RequiredModelsPanel', () => {
     expect(fetchMock.mock.calls[1][0]).toBe('/api/models');
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ model: 'nomic-embed-text' });
     await waitFor(() => expect(screen.getAllByText('present')).toHaveLength(2));
+  });
+
+  it('surfaces a failed pull instead of silently reporting the model still missing', async () => {
+    const fetchMock = mockFetch([
+      { json: MISSING_EMBEDDING },
+      { ok: false, status: 500, json: { error: 'ollama refused the pull' } },
+    ]);
+    render(<RequiredModelsPanel />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Pull nomic-embed-text' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Pull failed: HTTP 500');
+    // The failure must not be mistaken for success: readiness is not re-read,
+    // and the button comes back out of its "Pulling..." state so it can be retried.
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(
+      await screen.findByRole('button', { name: 'Pull nomic-embed-text' })
+    ).toBeEnabled();
+  });
+
+  it('reports a failed readiness read rather than an empty panel', async () => {
+    mockFetch([{ ok: false, status: 502 }]);
+    render(<RequiredModelsPanel />);
+
+    expect(await screen.findByText('Failed to load model readiness')).toBeInTheDocument();
+    expect(
+      screen.getByText('Failed to load model readiness: HTTP 502')
+    ).toBeInTheDocument();
+    expect(screen.queryByText('qwen3:0.6b')).not.toBeInTheDocument();
+  });
+
+  it('still reports something readable when the failure is not an Error', async () => {
+    mockFetch([{ reject: 'the proxy died' }]);
+    render(<RequiredModelsPanel />);
+
+    expect(await screen.findByText('the proxy died')).toBeInTheDocument();
+  });
+
+  it('still reports something readable when a failed pull is not an Error', async () => {
+    mockFetch([{ json: MISSING_EMBEDDING }, { reject: 'the proxy died mid-pull' }]);
+    render(<RequiredModelsPanel />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Pull nomic-embed-text' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('the proxy died mid-pull');
+  });
+
+  it('says so when no models are configured', async () => {
+    mockFetch([{ json: { ...READY, models: [] } }]);
+    render(<RequiredModelsPanel />);
+
+    expect(await screen.findByText('No models configured.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Pull / })).not.toBeInTheDocument();
+  });
+
+  it('omits the parenthetical when Ollama gave no reason', async () => {
+    mockFetch([
+      {
+        json: {
+          ...READY,
+          reachable: false,
+          ready: false,
+          error: '',
+          models: READY.models.map((m) => ({ ...m, present: null })),
+        },
+      },
+    ]);
+    render(<RequiredModelsPanel />);
+
+    const line = await screen.findByText(/Ollama did not answer/);
+    expect(line).toHaveTextContent('Ollama did not answer, so readiness is unknown.');
+  });
+
+  it('renders the heading alone when the backend returns no readiness payload', async () => {
+    mockFetch([{ json: null }]);
+    render(<RequiredModelsPanel />);
+
+    expect(await screen.findByRole('heading', { name: 'Required Models' })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByLabelText('Loading model readiness...')).not.toBeInTheDocument()
+    );
+    expect(screen.queryByText('qwen3:0.6b')).not.toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
   it('reports unknown rather than missing when Ollama cannot be asked', async () => {

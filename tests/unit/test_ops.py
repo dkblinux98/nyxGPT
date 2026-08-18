@@ -1682,6 +1682,11 @@ def test_sync_env_from_config_auth_enabled_but_no_secrets_fails(tmp_path, monkey
     assert len(results) == 1
     assert results[0].ok is False
     assert "No secrets found" in results[0].message
+    # The FAIL is about secrets only: the model vars were written anyway, so
+    # the detail has to say so rather than leave the operator thinking `.env`
+    # was left untouched (#3824).
+    assert "NYXGPT_DEFAULT_MODEL" in results[0].details
+    assert "NYXGPT_DEFAULT_MODEL=" in env_path.read_text(encoding="utf-8")
 
 
 @pytest.mark.unit
