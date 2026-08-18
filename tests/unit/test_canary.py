@@ -1765,3 +1765,30 @@ def test_promote_proceeds_with_a_note_when_traffic_is_not_measurable(monkeypatch
 
     assert result.ok
     assert "canary traffic not verified" in result.message
+
+
+@pytest.mark.unit
+def test_track_metrics_ignores_pods_that_are_terminating(monkeypatch):
+    """After `canary deploy`, the draining Pods run the PREVIOUS image.
+
+    Counting them would credit the old version's traffic to the version being
+    judged -- and it is what made a one-replica stable track report three
+    Pods' requests during the #3829 cluster smoke.
+    """
+
+    def _fn(cmd, **_kwargs):
+        if cmd[:3] == ["kubectl", "get", "pods"]:
+            items = json.loads(_pod_list("canary-new", "canary-old"))
+            items["items"][1]["metadata"]["deletionTimestamp"] = "2026-08-18T14:00:00Z"
+            return CP(stdout=json.dumps(items))
+        if cmd[:3] == ["kubectl", "get", "--raw"]:
+            pod = cmd[3].split("/pods/")[1].split(":")[0]
+            return CP(stdout=_exposition(ok=5 if pod == "canary-new" else 500, latency_s=0.05))
+        return CP(returncode=0)
+
+    monkeypatch.setattr(canary, "_run", _fn)
+
+    metrics = REAL_TRACK_METRICS("canary", "nyxgpt")
+
+    assert metrics.pods_ready == 1
+    assert metrics.total_requests == 5

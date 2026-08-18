@@ -755,6 +755,12 @@ def _ready_track_pods(spec: ComponentSpec, track: str, namespace: str) -> tuple[
         status = item.get("status", {})
         if status.get("phase") != "Running":
             continue
+        # A Pod being deleted is draining out of the Service's endpoints, and
+        # after a `canary deploy` the draining Pods are the ones running the
+        # PREVIOUS image -- counting their requests would credit the old
+        # version's traffic to the version now being judged.
+        if item.get("metadata", {}).get("deletionTimestamp"):
+            continue
         conditions = status.get("conditions", []) or []
         if not any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions):
             continue
@@ -1508,7 +1514,7 @@ def promote(
                 "(health probes and metrics scrapes excluded). Send traffic through the "
                 "Service and evaluate first, or force the promotion if this cluster is "
                 "simply idle (`nyxgpt canary promote --force`, or the Promote page's "
-                "\"no canary traffic\" override)."
+                '"no canary traffic" override).'
             )
             ops_module.record_canary_action("promote", "refused", message, component=component)
             logger.warning(
