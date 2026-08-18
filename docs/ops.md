@@ -1354,8 +1354,10 @@ Exit codes:
 - `1` -- a row failed a check, or `--strict` was passed and at least one
   target is not yet installable without a checkout
 
-The same report is on the SRE/admin dashboard at **Portability and
-Acceptance** (`/admin/portability`), read-only.
+This command is the only way to read the matrix. There is no dashboard
+screen for it (#3803): the matrix describes the product's portability
+claims, not the state of the machine you are on, so there is nothing on a
+page to observe or act on.
 
 ---
 

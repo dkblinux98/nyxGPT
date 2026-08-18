@@ -68,17 +68,13 @@ export const ADMIN_NAV: AdminNavDest[] = [
     // destroys cloud resources.
     group: 'observation',
   },
-  {
-    href: '/admin/portability',
-    // No parentheses in the label, same reason as AWS Cloud Infrastructure
-    // above: dashboard.test.tsx builds a RegExp from it verbatim.
-    label: 'Portability and Acceptance',
-    description:
-      'Which deployment targets install and operate with no repo checkout, what evidence backs each one, and the clean-machine sequence that accepts Phase 6',
-    // Observation: the matrix describes the product, not this machine, so
-    // there is nothing on the page to act on (#3516).
-    group: 'observation',
-  },
+  // There is deliberately no Portability and Acceptance tile (#3803). #3516
+  // added one, reading the Definition of Done as requiring a dashboard
+  // surface for `nyxgpt ops portability`; the owner removed it because the
+  // matrix describes the *product*'s portability claims, not this machine's
+  // state -- nothing to observe, nothing to act on. `nyxgpt ops portability`
+  // is the way to read the matrix. Do not re-add a screen that only restates
+  // documentation.
   { href: '/admin/canary', label: 'Canary Operations', description: 'Deploy, gradual rollout, and promotion with automatic rollback', group: 'operation' },
   { href: '/admin/self-heal', label: 'Self-heal Operations', description: 'Watchdog that restarts unhealthy services', group: 'operation' },
   {

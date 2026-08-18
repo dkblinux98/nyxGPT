@@ -2,9 +2,15 @@
 //
 // There is deliberately no POST: publishing to PyPI runs in the
 // dispatch-only workflow and in `nyxgpt release publish --publish`
-// -- not behind a button a browser session could press. The page renders
-// the pinned install commands the backend returns, in the same
-// status-plus-CLI-pointers shape as the portability surface (#3514).
+// -- not behind a button a browser session could press. What it returns is
+// the plan plus the pinned install commands the backend already documents,
+// so a consumer points at the CLI rather than keeping its own copy.
+//
+// No in-app page consumes this today: its only reader was the Portability
+// and Acceptance screen, removed in #3803. The proxy is kept because the
+// plan is still read over HTTP (`GET /api/v1/ops/release-candidate`,
+// docs/api.md) -- removing it was not in that issue's scope. If nothing
+// grows a UI for it, retiring this route and its test is the tidy-up.
 import { apiFetch } from "@/lib/apiProxy";
 import { logger } from "@/lib/logger";
 import { withRequestLog } from "@/lib/withRequestLog";

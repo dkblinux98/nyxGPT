@@ -302,7 +302,11 @@ def test_the_scan_reaches_the_files_that_carry_install_sequences():
         Path("scripts") / "agents" / "lib" / "sprint_calc.py",
         Path("src") / "nyxgpt" / "release_candidate.py",
         Path("web") / "tests" / "mocks" / "handlers.ts",
-        Path("web") / "tests" / "app" / "admin" / "portability.test.tsx",
+        # A `.tsx` sentinel, not an install sequence: #3803 deleted the only
+        # `.tsx` file that carried one along with the portability screen, and
+        # `.tsx` still has to be demonstrably reached so a narrowed sweep is
+        # a visible edit. The admin dashboard is the durable pick.
+        Path("web") / "src" / "app" / "admin" / "dashboard" / "page.tsx",
     ):
         assert expected in scanned, f"{expected} is no longer scanned"
 

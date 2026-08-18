@@ -1027,10 +1027,9 @@ nyxgpt release publish --publish --number 4
 
 The command reports the release line, which RCs PyPI already serves, the
 next version, the tap formulas that candidate installs as, and -- if it
-cannot be cut from where you are -- exactly why. The same report is on the
-SRE dashboard at **Admin → Portability & Acceptance**, read-only:
-publishing carries the owner's credentials, so it is a terminal command and
-a dispatch-only workflow, never a button.
+cannot be cut from where you are -- exactly why. Publishing carries the
+owner's credentials, so it is a terminal command and a dispatch-only
+workflow, never a button.
 
 The workflow builds an sdist and a wheel from the tip with
 `pyproject.toml`'s version rewritten to the resolved version (build-time
