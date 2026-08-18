@@ -52,6 +52,22 @@ type InfraStatus = {
     probe_available: boolean;
     deployed: boolean;
     containers: Record<string, string>;
+    // The Terraform deployment's OWN install mode (#3835): 'artifact' (the
+    // published container images, the repo-less default) or 'dev' (images
+    // built from a checkout's working tree, `--dev`). Reported separately
+    // from `install_mode` above because that one describes the native
+    // services, which are a different deployment and frequently in the other
+    // mode. Optional so the page still renders against an api process from
+    // before #3835; `recorded` is false when no Terraform install has ever
+    // written the marker, so the page can stay silent instead of asserting a
+    // default.
+    install_mode?: {
+      mode: 'artifact' | 'dev';
+      checkout: string | null;
+      label: string;
+      images: Record<string, string>;
+      recorded: boolean;
+    };
   };
   kubernetes: {
     available: boolean;
@@ -513,13 +529,22 @@ export default function InfrastructurePage() {
           <div style={boxStyle}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
               <h2 style={{ fontSize: '1.1rem', fontWeight: 'bold' }}>Terraform (local containers)</h2>
-              <span style={badgeStyle(status.terraform.deployed, !status.terraform.probe_available)}>
-                {!status.terraform.probe_available
-                  ? 'CANNOT DETERMINE'
-                  : status.terraform.deployed
-                    ? 'DEPLOYED'
-                    : 'NOT DEPLOYED'}
-              </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                {(status.terraform.deployed || status.terraform.install_mode?.recorded) && (
+                  <span style={badgeStyle(status.terraform.install_mode?.mode !== 'dev', false)}>
+                    {status.terraform.install_mode?.mode === 'dev'
+                      ? 'DEV IMAGES'
+                      : 'ARTIFACT IMAGES'}
+                  </span>
+                )}
+                <span style={badgeStyle(status.terraform.deployed, !status.terraform.probe_available)}>
+                  {!status.terraform.probe_available
+                    ? 'CANNOT DETERMINE'
+                    : status.terraform.deployed
+                      ? 'DEPLOYED'
+                      : 'NOT DEPLOYED'}
+                </span>
+              </div>
             </div>
 
             <p style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)', marginBottom: '0.75rem' }}>
@@ -527,6 +552,27 @@ export default function InfrastructurePage() {
               AWS instance that Terraform provisioned is a different thing and is reported under
               AWS below.
             </p>
+
+            {/* This deployment's own install mode (#3835) — never the native
+                marker above it, which describes a different deployment. */}
+            {(status.terraform.deployed || status.terraform.install_mode?.recorded) && (
+              <p style={{ fontSize: '0.85rem', color: 'var(--foreground-muted)', marginBottom: '0.75rem' }}>
+                {status.terraform.install_mode?.mode === 'dev' ? (
+                  <>
+                    The api and web containers were built from the working tree at{' '}
+                    <code>{status.terraform.install_mode.checkout ?? 'an unrecorded checkout'}</code>,
+                    not from published images — so this deployment is not exercising the artifact
+                    path. Re-run <code>nyxgpt up --terraform --local</code> without{' '}
+                    <code>--dev</code> to return to it.
+                  </>
+                ) : (
+                  <>
+                    {status.terraform.install_mode?.label ??
+                      'artifact (published container images -- the repo-less default)'}
+                  </>
+                )}
+              </p>
+            )}
 
             {!status.terraform.probe_available ? (
               <p style={{ fontSize: '0.875rem', color: 'var(--foreground-muted)' }}>

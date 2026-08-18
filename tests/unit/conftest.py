@@ -75,9 +75,38 @@ def _isolate_install_mode_marker(monkeypatch, tmp_path):
     test rather than per call site. Tests that need to exercise the marker
     itself still write to it -- they just write into `tmp_path`.
     """
-    from nyxgpt import install_mode
+    from nyxgpt import install_mode, ops
 
     monkeypatch.setattr(
         install_mode, "INSTALL_MODE_FILE", tmp_path / "install-mode-home" / "install-mode.json"
     )
+    monkeypatch.setattr(
+        install_mode,
+        "TERRAFORM_INSTALL_MODE_FILE",
+        tmp_path / "install-mode-home" / "install-mode.terraform.json",
+    )
+    # `ops` imports the constant by name, so redirecting the module attribute
+    # alone would leave every `TERRAFORM_INSTALL_MODE_FILE.exists()` check in
+    # `status`/`doctor`/`infra_status` reading the developer's real marker.
+    monkeypatch.setattr(
+        ops,
+        "TERRAFORM_INSTALL_MODE_FILE",
+        tmp_path / "install-mode-home" / "install-mode.terraform.json",
+    )
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_ops_terraform_dir(monkeypatch, tmp_path):
+    """Redirect the ops-managed Terraform working directory into `tmp_path` (#3835).
+
+    `ops.TERRAFORM_DIR` defaults to the developer's real
+    `~/.nyxGPT/terraform`, which `_sync_local_terraform_config` writes into
+    (and `terraform destroy` runs against). A unit test reaching either must
+    not touch the state of a real deployment on the machine running the
+    suite -- the same reasoning as the install-mode marker above.
+    """
+    from nyxgpt import ops
+
+    monkeypatch.setattr(ops, "TERRAFORM_DIR", tmp_path / "ops-terraform")
     yield

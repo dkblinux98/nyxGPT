@@ -8347,6 +8347,38 @@ def _loki_recent_volume_by_logger(
     return volumes, None
 
 
+def _terraform_install_mode_issues() -> list[str]:
+    """Print the Terraform deployment's install mode and return its issues (#3835).
+
+    Separate from the native install mode `doctor` reports just above the
+    call: it is a different deployment, installed independently, and
+    frequently in the other mode -- stating one for the other is exactly the
+    defect this marker was added to fix. Says nothing at all on a machine
+    that has never deployed Terraform.
+
+    The one issue raised here is the Terraform twin of the native dev-mode
+    check: a running dev-mode deployment whose checkout is gone is running
+    images nothing can rebuild.
+    """
+    deployed = any(state != "absent" for state in terraform_stack_state().values())
+    if not (deployed or TERRAFORM_INSTALL_MODE_FILE.exists()):
+        return []
+    state = read_terraform_install_mode()
+    print(f"Install mode (terraform deployment): {state.label()}")
+    if not (state.is_dev and deployed):
+        return []
+    checkout = Path(state.checkout) if state.checkout else None
+    if checkout is not None and checkout.is_dir():
+        return []
+    return [
+        "Dev-mode Terraform deployment recorded, but its checkout is missing "
+        f"({state.checkout or 'no path recorded'}) -- the running api/web images were "
+        "built from a tree that is no longer there and cannot be rebuilt. Re-run "
+        "`nyxgpt up --terraform --local --dev` from a checkout, or without --dev to "
+        "deploy the published images."
+    ]
+
+
 def doctor(_args) -> int:
     """CLI entrypoint for `nyxgpt ops doctor`.
 
@@ -8405,27 +8437,7 @@ def doctor(_args) -> int:
                 "(run: nyxgpt up --dev)"
             )
 
-    # The Terraform deployment records its own mode (#3835) -- reported here
-    # for the same reason, and separately, because it is a different
-    # deployment that can be in a different mode. Only stated when there is
-    # one: a machine that has never deployed Terraform has nothing to say.
-    terraform_deployed = any(state != "absent" for state in terraform_stack_state().values())
-    if terraform_deployed or TERRAFORM_INSTALL_MODE_FILE.exists():
-        terraform_install_mode = read_terraform_install_mode()
-        print(f"Install mode (terraform deployment): {terraform_install_mode.label()}")
-        if terraform_install_mode.is_dev and terraform_deployed:
-            checkout = (
-                Path(terraform_install_mode.checkout) if terraform_install_mode.checkout else None
-            )
-            if checkout is None or not checkout.is_dir():
-                issues.append(
-                    "Dev-mode Terraform deployment recorded, but its checkout is missing "
-                    f"({terraform_install_mode.checkout or 'no path recorded'}) -- the "
-                    "running api/web images were built from a tree that is no longer "
-                    "there and cannot be rebuilt. Re-run `nyxgpt up --terraform --local "
-                    "--dev` from a checkout, or without --dev to deploy the published "
-                    "images."
-                )
+    issues += _terraform_install_mode_issues()
 
     cfg = Path.home() / ".nyxGPT" / "config.ini"
     if not cfg.exists():

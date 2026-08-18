@@ -12196,9 +12196,14 @@ def test_install_terraform_local_runs_steps_and_returns_results(monkeypatch):
         patch.object(ops, "_sync_packaged_resources", return_value=ok),
         patch.object(ops, "migrate_legacy_volumes", return_value=ok),
         patch.object(ops, "_ensure_terraform_binary", return_value=ok),
+        patch.object(ops, "_sync_local_terraform_config", return_value=ok),
         patch.object(ops, "_ensure_terraform_tfvars", return_value=ok) as t,
         patch.object(ops, "_generate_compose_config", return_value=ok),
-        patch.object(ops, "_build_terraform_docker_images", return_value=ok),
+        # The dashboard's bring-up is the artifact path (#3835): it pulls
+        # published images and never builds from a checkout.
+        patch.object(
+            ops, "_pull_terraform_published_images", return_value=({"api": "i", "web": "i"}, ok)
+        ),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok),
         patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
         patch.object(ops, "_sync_grafana_slack_webhook_secret", return_value=ok),
