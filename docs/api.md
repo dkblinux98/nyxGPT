@@ -1532,8 +1532,19 @@ path there, and the prober would be the probed.
   "version": "3.0.0",
   "host": "198.51.100.200",
   "instance_id": "i-0abc123",
+  "instance_type": "t3.large",
   "region": "us-east-1",
   "profiles": ["monitoring", "logging", "tracing", "errors"],
+  "connection": {
+    "known": true,
+    "host": "198.51.100.200",
+    "user": "ec2-user",
+    "identity_file": "/home/op/.ssh/nyxgpt.pem",
+    "target": "ec2-user@198.51.100.200",
+    "tunnel_invocation": "ssh -o BatchMode=yes -N -L 8000:127.0.0.1:8000 ... ec2-user@198.51.100.200",
+    "command": "nyxgpt cloud tunnel",
+    "reason": ""
+  },
   "tunnel": { "running": true, "pid": 4242, "host": "198.51.100.200" },
   "health": {
     "checked": true,
@@ -1565,11 +1576,22 @@ path there, and the prober would be the probed.
     "deploy": "nyxgpt cloud deploy",
     "destroy": "nyxgpt cloud destroy --yes",
     "tunnel": "nyxgpt cloud tunnel",
-    "status": "nyxgpt cloud deploy --status",
+    "status": "nyxgpt cloud status",
+    "ops_status": "nyxgpt cloud ops status",
+    "credentials": "nyxgpt cloud credentials",
     "allow_ip": "nyxgpt cloud allow-ip"
   }
 }
 ```
+
+`connection` is how this machine reaches the deployment (#3813): the SSH user
+and identity file the deploy recorded, alongside the host — `host` on its own
+is not a reachable address. `tunnel_invocation` is the raw `ssh` that
+`nyxgpt cloud tunnel` executes, carried for **diagnostics**; the surface
+rendering it points at the wrapped command, never at the ssh. `known` is
+`false` on a machine with no deploy record and on the instance itself (where
+the user and key belong to the operator's workstation), and `reason` says
+which — consumers render that instead of a blank target.
 
 `health.checked` is `false` both when no probe was requested and when there
 was no tunnel to probe through; `reason` says which. That is deliberately not

@@ -1650,7 +1650,9 @@ def tunnel_invocation(target: DeployTarget, profiles: list[str] | None = None) -
     """Return the raw `ssh` command the tunnel wraps, for docs and diagnostics.
 
     Never printed as an *instruction* (CLAUDE.md forbids raw commands in user
-    flows) -- `nyxgpt cloud tunnel` is what operators are told to run. This
-    exists so `--status`/support output can show what is actually executing.
+    flows) -- `nyxgpt cloud tunnel` is what operators are told to run. It is
+    carried by `connection_status`, which is how both `nyxgpt cloud status`
+    and the dashboard's cloud page show what is actually executing under a
+    "diagnostics" heading (#3813).
     """
     return " ".join(shlex.quote(part) for part in tunnel_argv(target, profiles))
