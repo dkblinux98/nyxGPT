@@ -233,6 +233,25 @@ A component is only reported once it's actually installed/created (a brew
 service never set up via `nyxgpt ops install`, or a not-yet-created
 Cassandra container, is out of scope rather than "down").
 
+### Restarting Cassandra is enough — the API recovers on its own
+
+Restarting the container is self-heal's *only* Cassandra remedy, and that is
+sufficient: it does nothing to the API process, so the API has to recover its
+own client state. It now does. The shared connection pool
+(`CassandraConnectionPool` in `src/nyxgpt/rag/vectorstore_cassandra.py`)
+treats a driver `Cluster` that has been shut down exactly like an absent one
+— it rebuilds it and discards every session bound to it on the next
+`get_session()` — and the chat session store (`nyxgpt.session_db`, a
+process-lifetime singleton) drops a shut-down driver session the same way.
+
+Before that, a shut-down cluster was cached forever: `Cluster.connect()`
+raised `Cluster is already shut down` on every subsequent call, the
+dependency check on `/admin/self-heal` kept reporting `cassandra:
+unreachable`, and only restarting the API cleared it — so restarting the
+dependency, self-heal's remedy, could not fix the failure it was aimed at
+(#3851). No companion change to the remedy itself was needed; the defect was
+entirely on the client side.
+
 ### Dev mode healing
 
 The `brew services` rows above describe an **artifact-path** install, which
