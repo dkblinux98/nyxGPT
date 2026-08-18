@@ -1,8 +1,16 @@
 name: CI - Tests & Type Check
 
+# Post-merge integration tripwire (owner decision, 2026-08-18). The developer
+# runs the gates before cutting the PR and green is green for that diff, so
+# re-running them at PR time answers a question already answered. What a
+# developer's run cannot see is a change that did not exist when it ran: two
+# PRs with no overlapping lines, each green, that break each other once both
+# land. That happened twice on 2026-08-18 -- a new workflow merging against a
+# new index guard, and three branches each allocating ledger id V-046 -- and
+# both left the release branch red for hours before anyone noticed. So the
+# suite runs once, here, after the merge, as the alarm.
 on:
   push:
-  pull_request:
 
 permissions:
   contents: read
@@ -10,9 +18,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # Same push/PR scoping as terraform-local-smoke.yml: run on every PR, but
-    # only on pushes that land on the release branch (not every feature branch).
-    if: github.event_name == 'pull_request' || github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
+    if: github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
     steps:
       - uses: actions/checkout@v4
         with:
@@ -42,27 +48,8 @@ jobs:
       # Pull requests run the suites their diff can actually reach; pushes to
       # the release branch stay unscoped, so the merge boundary is still
       # protected by the whole tree.
-      - name: Select test suites for this diff
-        id: select
-        env:
-          # Never interpolated into the body: expressions in a `run:` block are
-          # source, not data (V-027, and the run:-block extension of it).
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          set -euo pipefail
-          if [[ "$GITHUB_EVENT_NAME" != "pull_request" ]]; then
-            echo "push to $GITHUB_REF -- merge boundary, running the full suite"
-            echo "pytest_args=tests/unit/" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          git fetch --no-tags --depth=1 origin "$BASE_SHA" 2>/dev/null || true
-          python3 scripts/ci/select_tests.py --base "$BASE_SHA" --github-output \
-            >> "$GITHUB_OUTPUT"
-
       - name: pytest - unit tests (integration tests skipped in CI, no live services)
-        env:
-          PYTEST_ARGS: ${{ steps.select.outputs.pytest_args }}
-        run: pytest $PYTEST_ARGS -v
+        run: pytest tests/unit/ -v
 
   # The web gates (tsc / eslint / vitest) also lived only in the review workflow.
   # Self-gating on the diff rather than a workflow-level `paths:` filter, so the
@@ -70,7 +57,7 @@ jobs:
   # that disappears is indistinguishable from one that has not run yet.
   web:
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' || github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
+    if: github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
     steps:
       - uses: actions/checkout@v4
         with:
