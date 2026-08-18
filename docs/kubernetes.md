@@ -179,12 +179,18 @@ expected to type by hand.
 
 The default deployment — app tier, data/LLM tier and the
 [in-cluster observability layer](#observability-in-the-cluster) — reserves
-about **6.9GiB of memory and 2.1 CPUs** in requests on a single-node cluster,
-and a canary rollout asks for a further ~448Mi and ~150m when you start one.
+about **5.5GiB of memory and 1.6 CPUs** in requests on a single-node cluster,
+and a canary rollout **borrows** a further ~1344Mi and ~450m for as long as it
+runs. That borrowing is the whole of [the elastic
+pool](#the-replica-pool-is-borrowed-not-standing-3833): the stable
+Deployments rest at 1 replica and `nyxgpt canary start` grows each track to at
+most `[canary] total_replicas` (4 by default) Pods, so the peak is the same
+figure the pool used to reserve standing — it is just no longer held by an
+install nobody is rolling out.
 A stock Docker Desktop VM (8GiB, 4 CPUs) offers 7936Mi of *allocatable*
 memory and 4 CPUs — the kubelet's reserved slice is already out of those
 numbers — of which kube-system holds a few hundred MiB and ~950m. So the
-default stack fits both, with room for the canary.
+default stack fits both, with room for the rollout.
 
 Two things are worth knowing about those figures:
 
@@ -285,10 +291,10 @@ This creates the `nyxgpt` namespace, the ConfigMap, Secret, RBAC
 scoped to just the Deployment/Service operations below), the `cassandra` and
 `ollama` StatefulSets and Services that make up the [data and LLM
 tier](#data-and-llm-tier), the
-`nyxgpt-api-stable` Deployment (4 replicas by default) and
+`nyxgpt-api-stable` Deployment (1 replica by default) and
 `nyxgpt-api-canary` Deployment (0 replicas — idle until a rollout starts),
 the same stable/canary pair for `nyxgpt-web` (`k8s/deployment-web-stable.yaml`
-/ `k8s/deployment-web-canary.yaml`, 4/0 replicas by default), and the
+/ `k8s/deployment-web-canary.yaml`, 1/0 replicas by default), and the
 `nyxgpt-api`/`nyxgpt-api-canary`/`nyxgpt-web`/`nyxgpt-web-canary` Services
 (each pair selects every Pod from either Deployment in that component;
 traffic split is by replica count, not Service selector). `nyxgpt-web`'s
@@ -434,10 +440,11 @@ Notes:
   is merely starting is reported as pending while an unschedulable or
   unpullable one is a named failure (#3827), including that the pre-fix rule
   called both of them the same thing.
-- **Footprint.** Since the #3825 right-sizing the default stack (app +
-  data/LLM + observability) requests ~2.1 CPU and ~6.9GiB of memory including
-  kube-system, so it fits the 4-vCPU/7936Mi a stock Docker Desktop VM offers
-  with room for a canary — see [Node capacity: what the stack
+- **Footprint.** After the #3825 right-sizing and #3833's elastic canary
+  pool, the default stack (app + data/LLM + observability) requests
+  **~1.6 CPU and ~5.5GiB** of memory standing, so it fits the
+  4-vCPU/7936Mi a stock Docker Desktop VM offers with room for a rollout to
+  borrow — see [Node capacity: what the stack
   reserves](#node-capacity-what-the-stack-reserves) for the per-tier numbers
   and the preflight that checks them. `--skip-observability` drops roughly
   0.5 CPU and 2.4GiB of that; the k8s smoke runs on a node ballasted down to
@@ -474,9 +481,11 @@ message.
   that's true, and `nyxgpt ops install --kubernetes --local` waits for both
   Pods to be Ready before it reports the stack healthy.
 - **Sessions are shared.** `k8s/configmap.yaml` sets
-  `[nyxgpt] session_backend = cassandra`, so all four api replicas read and
-  write one session list. With the file backend each replica keeps its own,
-  and consecutive requests from one browser see different sessions (see
+  `[nyxgpt] session_backend = cassandra`, so every api replica reads and
+  writes one session list — including the extra ones a canary rollout borrows
+  (#3833) and the replacement Pod every restart creates. With the file
+  backend each replica keeps its own, and consecutive requests from one
+  browser see different sessions (see
   [session-storage.md](session-storage.md)).
 - **RAG** is off by default (matching the native/Compose default in
   `example.config.ini`) because it only helps once you have ingested
@@ -582,7 +591,7 @@ independent Deployments for `nyxgpt-api`, both labeled
 `track: canary`. `k8s/service.yaml` and `k8s/service-canary.yaml` both
 select `app: nyxgpt-api-canary-pool`, targeting **both** Deployments' Pods
 at once -- kube-proxy round-robins Service traffic evenly across every
-matching Pod endpoint, so `canary_replicas / total_replicas` approximates
+matching Pod endpoint, so `canary_replicas / pool_replicas` approximates
 the canary's share of requests. `k8s/deployment-web-stable.yaml` /
 `k8s/deployment-web-canary.yaml` and `k8s/service-web.yaml` /
 `k8s/service-web-canary.yaml` mirror the exact same model for `nyxgpt-web`
@@ -602,6 +611,46 @@ split would mean two divergent datasets, which is a data-migration problem,
 not a traffic-split problem. A schema/version-upgrade story for Cassandra
 will be designed when a version upgrade actually requires one (a future
 issue, not this one).
+
+### The replica pool is borrowed, not standing (#3833)
+
+The stable Deployments rest at **1 replica**. A rollout borrows the replicas
+its weight needs, and gives them back:
+
+- `nyxgpt canary start` reads the stable Deployment's **live** replica count,
+  plans the smallest pool that can express the requested weight (capped by
+  `[canary] total_replicas`, 4 by default), and scales both tracks to it.
+  Stable grows before the canary does, so the canary never briefly holds a
+  larger share than you asked for; if the canary scale then fails, stable is
+  put back, so a failed start leaves nothing inflated behind.
+- `nyxgpt canary promote` re-plans the pool for each new weight — a step that
+  needs finer granularity grows it, one that needs less lets it shrink.
+- `nyxgpt canary promote` at 100% and `nyxgpt canary rollback` both return
+  stable to the count it was resting at when the rollout started. Scale stable
+  to 3 yourself and it comes back to 3: nothing re-inflates it to a constant.
+
+Replica counts are integers, so most weights are not exactly expressible —
+10% needs a 10-wide pool. Rather than silently serving a different weight (or
+growing the cluster to honour the number literally), the command reports the
+weight it actually rounded to:
+
+```text
+[OK] Started canary rollout at 25% (1/4 replicas); 10% is not expressible in a
+pool of at most 4 replicas, so it rounded to 25% -- raise `[canary]
+total_replicas` for finer steps; nyxgpt-api-stable returns to 1 replica on
+promote or rollback
+```
+
+`/admin/canary` shows the same numbers: the badge names the pool the rollout
+borrowed and the count stable rests at, and every action's result message is
+the server's own.
+
+Sizing `[canary] total_replicas` is the cost/granularity trade: `2` keeps a
+rollout to one extra Pod (weights round to 50%), `4` makes 25% steps
+expressible. Before #3833 the manifests shipped a standing `replicas: 4` pool
+that a rollout merely subdivided, so every install — including single-node
+local ones where 4 replicas buy no HA — paid 3072Mi of reservations to make a
+25% step possible.
 
 ### Ollama canary feasibility
 
@@ -675,8 +724,11 @@ splitting:
    Repeat steps 2-3 until `promote` reaches 100%. At that final step,
    `promote` copies the canary's image version onto `nyxgpt-api-stable`,
    waits for stable's rollout to become healthy, then scales canary back to
-   0 and stable back to `total_replicas` -- stable now runs the promoted
-   version at 100% traffic, and the cycle is complete. `promote` refuses to
+   0 and stable back to the count it was resting at before the rollout
+   borrowed any (see [The replica pool is borrowed, not
+   standing](#the-replica-pool-is-borrowed-not-standing-3833)) -- stable now
+   runs the promoted version at 100% traffic, and the cycle is complete.
+   `promote` refuses to
    shift more traffic to the canary at every step (including this final
    one) unless the canary is currently healthy, and if stable's rollout
    onto the new version fails, canary is left running untouched so you can
@@ -705,9 +757,11 @@ All six commands accept `--namespace` to override the `[canary] namespace`
 config value (see `example.config.ini`); it defaults to `nyxgpt`. They also
 all accept `--component {api,web}` (default: `api`) to operate on the
 `nyxgpt-web` pair instead -- e.g. `nyxgpt canary deploy --component web`.
-`total_replicas`, `step_percent`, `error_rate_threshold_percent`,
-`latency_p95_threshold_ms`, and `min_requests_for_evaluation` are also
-configured in `[canary]`.
+`total_replicas` (the ceiling on the pool a rollout may borrow, not a
+standing pool -- see [The replica pool is borrowed, not
+standing](#the-replica-pool-is-borrowed-not-standing-3833)), `step_percent`,
+`error_rate_threshold_percent`, `latency_p95_threshold_ms`, and
+`min_requests_for_evaluation` are also configured in `[canary]`.
 
 ### Honest status, mode-aware (#3409)
 
@@ -834,15 +888,18 @@ profiles are active).
 None of the stable/canary Deployments (`api` or `web`) have an HPA attached
 -- autoscaling would fight canary's replica-count-based traffic split (see
 [Canary Deployment](#canary-deployment)). `nyxgpt-api-stable` and
-`nyxgpt-web-stable` each run a fixed `total_replicas` (4 by default for
-both, `[canary] total_replicas` -- there's no separate per-component config
-value; pass `total_replicas` explicitly if you want `api` and `web` to run
-different steady-state counts). There is no `nyxgpt`-wrapped command for
-changing steady-state replica count yet, so if you need more capacity today,
-raising it is a manual `kubectl` escape hatch pending a wrapper (tracked as
-follow-up work), not a first-class operation -- prefer adjusting `[canary]
-total_replicas` and letting the next rollout apply it where that's
-sufficient. Chat **sessions** are shared across every `api` replica and
+`nyxgpt-web-stable` rest at **1 replica** each and are the source of truth
+for their own steady-state count: a rollout reads it, borrows on top of it,
+and gives the borrowed replicas back (#3833 -- see [The replica pool is
+borrowed, not standing](#the-replica-pool-is-borrowed-not-standing-3833)).
+`[canary] total_replicas` caps how far a rollout may borrow; it does **not**
+set the steady-state count, and raising it does not add standing capacity.
+There is no `nyxgpt`-wrapped command for changing the steady-state replica
+count yet, so if you need more capacity today, scaling the stable Deployment
+is a manual `kubectl` escape hatch pending a wrapper (tracked as follow-up
+work), not a first-class operation -- a count set that way survives
+rollouts, which is the behaviour the fixed pool used to break. Chat
+**sessions** are shared across every `api` replica and
 survive Pod restarts: they live in the in-cluster Cassandra
 (`[nyxgpt] session_backend = cassandra`, #3786 -- see [Data and LLM
 tier](#data-and-llm-tier)). The **vector store** still defaults to an

@@ -1,0 +1,135 @@
+name: Canary Rollout Smoke
+
+# The question this job answers: on a real cluster, does a canary rollout
+# borrow the replicas it needs and give them back -- and does the stable track
+# always keep at least one Pod in the Service?
+#
+# #3833 removed the standing `replicas: 4` pool the stable Deployments shipped
+# (3072Mi reserved on every install, including single-node local ones) and made
+# the pool elastic instead: `canary start` reads the live replica count, grows
+# the pool only as far as the requested weight needs, and promote/rollback hand
+# the borrowed replicas back. None of that is visible to inspection --
+# `_split_replicas` returning `stable = 0` reads as ordinary arithmetic in a
+# diff, and on a cluster it is a full cutover with the previous version gone
+# from the Service's endpoints. So it is executed: scripts/canary-rollout-smoke.sh
+# drives the real `nyxgpt canary start/promote/rollback` against a real kind
+# cluster running the shipped manifests, and reads the split back out of the
+# Service's own EndpointSlices.
+#
+# Two jobs, per the fault-injection rule (CLAUDE.md, #3753): the smoke itself,
+# and a second run that re-creates the pre-#3833 standing pool and REQUIRES the
+# smoke to fail on it. A gate that passes either way is not a gate.
+#
+# Cheap on purpose (~3 minutes): the app image is irrelevant to replica
+# arithmetic, so both Deployments run a 2.7MB stand-in that answers the
+# manifests' own readiness probe. The full-stack install -- real images,
+# Cassandra, Ollama, observability, a real chat -- is k8s-local-smoke.yml's
+# job and is not duplicated here.
+on:
+  pull_request:
+    paths:
+      - 'src/nyxgpt/canary.py'
+      - 'k8s/deployment-stable.yaml'
+      - 'k8s/deployment-canary.yaml'
+      - 'k8s/deployment-web-stable.yaml'
+      - 'k8s/deployment-web-canary.yaml'
+      - 'k8s/service.yaml'
+      - 'k8s/service-canary.yaml'
+      - 'scripts/canary-rollout-smoke.sh'
+      - '.github/workflows/canary-rollout-smoke.yml'
+  push:
+    paths:
+      - 'src/nyxgpt/canary.py'
+      - 'k8s/deployment-stable.yaml'
+      - 'k8s/deployment-canary.yaml'
+      - 'k8s/deployment-web-stable.yaml'
+      - 'k8s/deployment-web-canary.yaml'
+      - 'k8s/service.yaml'
+      - 'k8s/service-canary.yaml'
+      - 'scripts/canary-rollout-smoke.sh'
+      - '.github/workflows/canary-rollout-smoke.yml'
+  workflow_dispatch:
+
+# Read-only workflow: it checks out the repo and drives a local cluster; it
+# never writes to the repository or its APIs (CodeQL #33,
+# actions/missing-workflow-permissions -- same pattern as k8s-local-smoke.yml).
+permissions:
+  contents: read
+
+jobs:
+  canary-rollout-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: github.event_name != 'push' || github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install nyxgpt (editable)
+        run: |
+          python -m pip install --upgrade pip setuptools
+          pip install -e .
+
+      - name: Install kind
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
+
+      - name: Run the canary rollout smoke
+        run: ./scripts/canary-rollout-smoke.sh
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          kubectl -n nyxgpt get deploy,pods,endpointslices -o wide || true
+          kubectl -n nyxgpt describe pods || true
+          kubectl -n nyxgpt get events --sort-by=.lastTimestamp | tail -30 || true
+
+  # Without this job the one above would pass on a build that re-introduced a
+  # standing pool: every later assertion is about what a rollout DOES, not
+  # about what the install rests at. Here the pre-#3833 pool is put back on the
+  # cluster and the smoke has to reject it.
+  standing-pool-must-fail:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: github.event_name != 'push' || github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install nyxgpt (editable)
+        run: |
+          python -m pip install --upgrade pip setuptools
+          pip install -e .
+
+      - name: Install kind
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
+
+      - name: The smoke must FAIL on a standing 4-replica pool
+        env:
+          NYXGPT_CANARY_SMOKE_INJECT_STANDING_POOL: '1'
+          NYXGPT_CANARY_SMOKE_CLUSTER: nyxgpt-canary-inject
+        run: |
+          set -euo pipefail
+          if ./scripts/canary-rollout-smoke.sh > /tmp/inject.log 2>&1; then
+            cat /tmp/inject.log
+            echo "::error::the smoke passed with a standing 4-replica pool -- it cannot detect the regression #3833 removed and is worthless as a gate"
+            exit 1
+          fi
+          grep -q 'has 4 desired replicas, expected 1' /tmp/inject.log || {
+            cat /tmp/inject.log
+            echo "::error::the smoke failed, but not on the injected standing pool -- check what actually broke"
+            exit 1
+          }
+          echo "the smoke rejects a standing pool, as it must:"
+          grep -E '^\[(INJECTED|FAIL)\]' /tmp/inject.log
