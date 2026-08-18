@@ -11818,7 +11818,26 @@ def test_k8s_stack_health_reports_pods_service(monkeypatch):
         if cmd[4] == "pods":
             return CP(
                 returncode=0,
-                stdout="nyxgpt-api-stable-abc=Running;nyxgpt-api-canary-def=Pending;",
+                stdout=json.dumps(
+                    {
+                        "items": [
+                            {
+                                "metadata": {"name": "nyxgpt-api-stable-abc"},
+                                "status": {
+                                    "phase": "Running",
+                                    "conditions": [{"type": "Ready", "status": "True"}],
+                                },
+                            },
+                            {
+                                "metadata": {"name": "nyxgpt-api-canary-def"},
+                                "status": {
+                                    "phase": "Failed",
+                                    "message": "evicted",
+                                },
+                            },
+                        ]
+                    }
+                ),
             )
         if cmd[4] == "svc":
             return CP(returncode=0, stdout="nyxgpt-api   ClusterIP\n")
@@ -11841,7 +11860,22 @@ def test_k8s_stack_health_reports_web_service_alongside_api(monkeypatch):
 
     def fake_run(cmd, check=True, **_k):
         if cmd[4] == "pods":
-            return CP(returncode=0, stdout="nyxgpt-web-stable-abc=Running;")
+            return CP(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "items": [
+                            {
+                                "metadata": {"name": "nyxgpt-web-stable-abc"},
+                                "status": {
+                                    "phase": "Running",
+                                    "conditions": [{"type": "Ready", "status": "True"}],
+                                },
+                            }
+                        ]
+                    }
+                ),
+            )
         if cmd[4] == "svc":
             svc_name = cmd[5]
             if svc_name == "nyxgpt-api":
@@ -11864,7 +11898,22 @@ def test_k8s_stack_health_checks_data_and_llm_services(monkeypatch):
 
     def fake_run(cmd, check=True, **_k):
         if cmd[4] == "pods":
-            return CP(returncode=0, stdout="nyxgpt-api-stable-abc=Running;")
+            return CP(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "items": [
+                            {
+                                "metadata": {"name": "nyxgpt-api-stable-abc"},
+                                "status": {
+                                    "phase": "Running",
+                                    "conditions": [{"type": "Ready", "status": "True"}],
+                                },
+                            }
+                        ]
+                    }
+                ),
+            )
         if cmd[4] == "svc":
             checked.append(cmd[5])
             return CP(returncode=1) if cmd[5] in ("cassandra", "ollama") else CP(returncode=0)
@@ -11929,6 +11978,117 @@ def test_wait_for_k8s_data_tier_reports_the_failing_workload(monkeypatch):
     assert "Ollama" in results[-1].message
 
 
+# --- Kubernetes: _wait_for_k8s_app_tier (#3827) ---
+
+
+@pytest.mark.unit
+def test_wait_for_k8s_app_tier_waits_for_the_stable_deployments(monkeypatch):
+    """The app tier had no wait at all: health was snapshotted seconds after
+    `kubectl apply`, so its verdict described a rollout rather than a stack."""
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, check=True, **_k):
+        calls.append(cmd)
+        return CP(returncode=0, stdout="rolled out")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    results = ops._wait_for_k8s_app_tier()
+
+    assert [c[5] for c in calls] == ["deploy/nyxgpt-api-stable", "deploy/nyxgpt-web-stable"]
+    assert all(r.ok for r in results)
+
+
+@pytest.mark.unit
+def test_wait_for_k8s_app_tier_skips_the_zero_replica_canaries(monkeypatch):
+    """The canary halves ship at zero replicas until `nyxgpt canary start`
+    scales them up -- waiting on them would wait for Pods nobody asked for."""
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, check=True, **_k: (calls.append(cmd), CP(returncode=0))[1]
+    )
+    ops._wait_for_k8s_app_tier()
+
+    assert not any("canary" in c[5] for c in calls)
+
+
+@pytest.mark.unit
+def test_install_kubernetes_waits_for_the_app_tier_before_reading_health():
+    """Ordering is the fix (#3827): every wait runs before the snapshot, so the
+    install's exit status is about the settled stack, not a mid-rollout one."""
+    order: list[str] = []
+    ok = [ops.OpsResult(True, "ok")]
+
+    def record(name):
+        return lambda: (order.append(name), ok)[1]
+
+    with (
+        patch.object(ops, "_refuse_port_collision", return_value=None),
+        patch.object(ops, "_clear_intentional_stops", return_value=ok),
+        patch.object(ops, "_ensure_kubectl_and_cluster", return_value=ok),
+        patch.object(ops, "_build_and_load_k8s_image", return_value=ok),
+        patch.object(ops, "_build_and_load_k8s_web_image", return_value=ok),
+        patch.object(ops, "_ensure_k8s_secret", return_value=ok),
+        patch.object(ops, "_kubectl_apply_kustomization", return_value=ok),
+        patch.object(ops, "_wait_for_k8s_data_tier", side_effect=record("data")),
+        patch.object(ops, "_wait_for_k8s_app_tier", side_effect=record("app")),
+        patch.object(ops, "_sync_packaged_resources", return_value=ok),
+        patch.object(ops, "_apply_k8s_observability", return_value=ok),
+        patch.object(ops, "_wait_for_k8s_observability", side_effect=record("observability")),
+        patch.object(ops, "_k8s_stack_health", side_effect=record("health")),
+        patch.object(ops, "_k8s_observability_health", return_value=ok),
+        patch.object(ops, "_record_ops_action"),
+    ):
+        results = ops._install_kubernetes_steps(None)
+
+    assert all(r.ok for r in results)
+    assert order == ["data", "app", "observability", "health"]
+
+
+@pytest.mark.unit
+def test_install_kubernetes_does_not_fail_on_a_pod_that_is_merely_pending(monkeypatch):
+    """End to end over the reported run (#3827): with the waits satisfied, the
+    Pods still finishing their startup must not make the command exit 2."""
+    ok = [ops.OpsResult(True, "ok")]
+    pods = {
+        "items": [
+            {
+                "metadata": {"name": "grafana-1"},
+                "status": {
+                    "phase": "Pending",
+                    "containerStatuses": [{"state": {"waiting": {"reason": "ContainerCreating"}}}],
+                },
+            }
+        ]
+    }
+
+    def fake_run(cmd, check=True, **_k):
+        if "pods" in cmd:
+            return CP(returncode=0, stdout=json.dumps(pods))
+        return CP(returncode=0, stdout="")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    with (
+        patch.object(ops, "_refuse_port_collision", return_value=None),
+        patch.object(ops, "_clear_intentional_stops", return_value=ok),
+        patch.object(ops, "_ensure_kubectl_and_cluster", return_value=ok),
+        patch.object(ops, "_build_and_load_k8s_image", return_value=ok),
+        patch.object(ops, "_build_and_load_k8s_web_image", return_value=ok),
+        patch.object(ops, "_ensure_k8s_secret", return_value=ok),
+        patch.object(ops, "_kubectl_apply_kustomization", return_value=ok),
+        patch.object(ops, "_wait_for_k8s_data_tier", return_value=ok),
+        patch.object(ops, "_wait_for_k8s_app_tier", return_value=ok),
+        patch.object(ops, "_sync_packaged_resources", return_value=ok),
+        patch.object(ops, "_apply_k8s_observability", return_value=ok),
+        patch.object(ops, "_wait_for_k8s_observability", return_value=ok),
+        patch.object(ops, "_k8s_observability_health", return_value=ok),
+        patch.object(ops, "_record_ops_action"),
+    ):
+        results = ops._install_kubernetes_steps(None)
+
+    assert all(r.ok for r in results), [r.message for r in results if not r.ok]
+    assert any(ops._result_status_label(r) == "PENDING" for r in results)
+
+
 # --- Kubernetes: _install_kubernetes / _down_kubernetes ---
 
 
@@ -11963,6 +12123,7 @@ def test_install_kubernetes_success_runs_all_steps(monkeypatch, capsys):
         patch.object(ops, "_ensure_k8s_secret", return_value=ok) as s,
         patch.object(ops, "_kubectl_apply_kustomization", return_value=ok) as a,
         patch.object(ops, "_wait_for_k8s_data_tier", return_value=ok) as w,
+        patch.object(ops, "_wait_for_k8s_app_tier", return_value=ok),
         patch.object(ops, "_k8s_stack_health", return_value=ok) as h,
         # The observability layer this mode now deploys too (#3787).
         patch.object(ops, "_sync_packaged_resources", return_value=ok),
@@ -12000,6 +12161,7 @@ def test_install_kubernetes_clears_intentional_stop_markers_for_api_and_web(monk
         patch.object(ops, "_ensure_k8s_secret", return_value=ok),
         patch.object(ops, "_kubectl_apply_kustomization", return_value=ok),
         patch.object(ops, "_wait_for_k8s_data_tier", return_value=ok),
+        patch.object(ops, "_wait_for_k8s_app_tier", return_value=ok),
         patch.object(ops, "_k8s_stack_health", return_value=ok),
         patch.object(ops, "_sync_packaged_resources", return_value=ok),
         patch.object(ops, "_apply_k8s_observability", return_value=ok),
@@ -12028,6 +12190,7 @@ def test_install_kubernetes_stops_pipeline_on_step_failure(monkeypatch):
         patch.object(ops, "_ensure_k8s_secret") as s,
         patch.object(ops, "_kubectl_apply_kustomization") as a,
         patch.object(ops, "_wait_for_k8s_data_tier") as w,
+        patch.object(ops, "_wait_for_k8s_app_tier"),
         patch.object(ops, "_k8s_stack_health") as h,
     ):
         rc = ops._install_kubernetes(args)
@@ -12271,6 +12434,7 @@ def test_install_kubernetes_local_runs_steps_and_returns_results(monkeypatch):
         patch.object(ops, "_ensure_k8s_secret", return_value=ok) as s,
         patch.object(ops, "_kubectl_apply_kustomization", return_value=ok),
         patch.object(ops, "_wait_for_k8s_data_tier", return_value=ok),
+        patch.object(ops, "_wait_for_k8s_app_tier", return_value=ok),
         patch.object(ops, "_k8s_stack_health", return_value=ok),
         # The in-cluster observability layer is part of this bring-up now
         # (#3787) -- unpatched, these steps would shell out to kubectl.

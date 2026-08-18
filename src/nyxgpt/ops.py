@@ -300,11 +300,20 @@ class DeploymentMode:
 
 @dataclass(frozen=True)
 class OpsResult:
-    """Outcome of a single ops step: whether it succeeded, plus human-readable detail."""
+    """Outcome of a single ops step: whether it succeeded, plus human-readable detail.
+
+    `status` overrides the stdout label this result prints under (see
+    `_result_status_label`) without touching `ok`, which stays the sole input
+    to exit codes and to `_ops_action_outcome`. It exists for the states that
+    are genuinely neither success nor failure -- a Pod that is still starting
+    is not a healthy Pod, but calling it `[FAIL]` reports a mid-rollout
+    snapshot as a broken stack (#3827).
+    """
 
     ok: bool
     message: str
     details: str = ""
+    status: str = ""
 
 
 # Prefix a step uses to mark an attempt that failed but that a later fallback
@@ -313,7 +322,7 @@ _SUPERSEDED_PREFIX = "Superseded"
 
 
 def _result_status_label(r: OpsResult) -> str:
-    """Return the stdout status label for `r`: "OK", "FAIL", "SKIP" or "NOTE".
+    """Return the stdout status label for `r`: "OK", "FAIL", "SKIP", "NOTE" or `r.status`.
 
     A skip is still `ok=True` (accounting/exit-code logic is unaffected) but
     reads misleadingly as a plain "OK" -- results whose message starts with
@@ -323,7 +332,13 @@ def _result_status_label(r: OpsResult) -> str:
     "NOTE" is the same idea for the other direction: an attempt that *failed*
     but that the step then recovered from is not a success and not a failure,
     and printing it as either misreports the step (#3762).
+
+    An explicit `status` wins over all of it, including over `ok=False`: a
+    caller that has already classified its own result ("PENDING" for a Pod
+    still pulling its image) knows more about it than these heuristics do.
     """
+    if r.status:
+        return r.status.upper()
     if not r.ok:
         return "FAIL"
     if r.message.strip().lower().startswith("skip"):
@@ -5528,6 +5543,21 @@ K8S_DATA_TIER_WORKLOADS: tuple[tuple[str, str, int], ...] = (
     ("statefulset/ollama", "Ollama (LLM, including the first default-model pull)", 900),
 )
 
+# The app tier's own rollout (#3827). The canary halves of both pairs ship at
+# zero replicas by design (`nyxgpt canary start` scales them up), so only the
+# stable Deployments are waited on -- a wait on a deliberately-empty Deployment
+# would be a wait for Pods nobody asked for.
+K8S_APP_TIER_WORKLOADS: tuple[tuple[str, str], ...] = (
+    ("deploy/nyxgpt-api-stable", "nyxGPT API"),
+    ("deploy/nyxgpt-web-stable", "nyxGPT web UI"),
+)
+
+# Shorter than the data tier's budgets on purpose: both images are built
+# locally and side-loaded into the cluster by the install itself
+# (`_build_and_load_k8s_image`), so there is no registry pull to absorb -- this
+# covers scheduling and the readiness probes, not a download.
+K8S_APP_TIER_ROLLOUT_TIMEOUT_S = 600
+
 # The local cluster `nyxgpt ops install --kubernetes --local` provisions via `kind`
 # when kubectl's current context has no reachable cluster (#3596, owner decision
 # 2026-08-03). The name is reserved for nyxgpt: `nyxgpt ops down --kubernetes` only
@@ -6215,6 +6245,206 @@ def _delete_k8s_observability() -> list[OpsResult]:
     return [OpsResult(True, "kubectl delete -k k8s/observability/", _cp_details(cp))]
 
 
+# --- One shared readiness vocabulary for Kubernetes workloads (#3827) ---
+#
+# `_k8s_stack_health` used to score a Pod on its `phase` alone -- anything but
+# `Running` was `[FAIL]` -- while `_k8s_observability_health` reported a
+# workload with zero ready replicas as `[OK] observability grafana: 0/1
+# ready`. One command printed both, so a single `--kubernetes --local` install
+# gave two contradictory verdicts on the same condition, and the ten `[FAIL]
+# pod ...: Pending` lines it emitted while kind was still pulling images
+# buried the one Pod that was genuinely broken (prometheus, `Insufficient
+# memory`).
+#
+# Everything that reports on a Kubernetes workload now classifies it into
+# exactly one of these three states, and the distinction that matters is the
+# middle one: PENDING is not a failure. A Pod pulling a multi-hundred-megabyte
+# image is doing what it is supposed to; only a wait that runs out of budget
+# (`_await_k8s_rollout`), or a condition that will never resolve on its own,
+# turns into FAILED.
+K8S_STATE_READY = "ready"
+K8S_STATE_PENDING = "pending"
+K8S_STATE_FAILED = "failed"
+
+# Container waiting reasons that a Pod does not recover from by waiting
+# longer: the image cannot be fetched or is misnamed, the container config
+# references a missing ConfigMap/Secret key, or the process keeps dying.
+# kubelet retries these forever, so the Pod sits in a state that *looks*
+# like startup and never leaves it -- reporting them as "still starting"
+# would be the same lie in the other direction.
+K8S_BLOCKED_WAITING_REASONS = frozenset(
+    {
+        "CrashLoopBackOff",
+        "CreateContainerConfigError",
+        "CreateContainerError",
+        "ErrImageNeverPull",
+        "ErrImagePull",
+        "ImageInspectError",
+        "ImagePullBackOff",
+        "InvalidImageName",
+        "RunContainerError",
+    }
+)
+
+
+@dataclass(frozen=True)
+class K8sWorkloadState:
+    """One workload's (or Pod's) state in the shared vocabulary above.
+
+    `summary` is the operator-facing phrase -- it carries *why*, which is the
+    whole point of separating "Pending: pulling images" from "Pending:
+    unschedulable (0/1 nodes are available: Insufficient memory)".
+    """
+
+    name: str
+    state: str
+    summary: str
+    details: str = ""
+
+    @property
+    def ok(self) -> bool:
+        """Whether this state should count against an ops command's exit status.
+
+        Pending counts as ok: it is a transient state, and the caller that
+        can actually decide whether it settled is the wait, not the snapshot.
+        """
+        return self.state != K8S_STATE_FAILED
+
+    @property
+    def label(self) -> str:
+        """The stdout label (`OK`/`PENDING`/`FAIL`) this state prints under."""
+        return {
+            K8S_STATE_READY: "OK",
+            K8S_STATE_PENDING: "PENDING",
+            K8S_STATE_FAILED: "FAIL",
+        }[self.state]
+
+    def as_result(self, prefix: str = "") -> OpsResult:
+        """Render as an `OpsResult` carrying the label, not just a boolean."""
+        return OpsResult(
+            self.ok, f"{prefix}{self.name}: {self.summary}", self.details, status=self.label
+        )
+
+
+def _k8s_container_block(status: dict[str, Any]) -> tuple[str, str] | None:
+    """Return `(reason, message)` for the first container stuck in a blocked state.
+
+    Looks at init containers too: an init container in `ImagePullBackOff`
+    holds the whole Pod in `Pending` with nothing wrong in the main
+    container's status.
+    """
+    statuses = list(status.get("initContainerStatuses") or []) + list(
+        status.get("containerStatuses") or []
+    )
+    for cs in statuses:
+        waiting = ((cs.get("state") or {}).get("waiting")) or {}
+        reason = str(waiting.get("reason") or "")
+        if reason in K8S_BLOCKED_WAITING_REASONS:
+            return reason, str(waiting.get("message") or "").strip()
+    return None
+
+
+def _k8s_container_waiting_reason(status: dict[str, Any]) -> str:
+    """The first non-blocking waiting reason (`ContainerCreating`, `PodInitializing`, ...)."""
+    statuses = list(status.get("initContainerStatuses") or []) + list(
+        status.get("containerStatuses") or []
+    )
+    for cs in statuses:
+        reason = str((((cs.get("state") or {}).get("waiting")) or {}).get("reason") or "")
+        if reason:
+            return reason
+    return ""
+
+
+def _classify_k8s_pod(pod: dict[str, Any]) -> K8sWorkloadState:
+    """Classify one Pod (as `kubectl get pods -o json` returns it) into the vocabulary.
+
+    The classification an operator needs, rather than the one the phase field
+    happens to offer:
+
+    * `Running` with its `Ready` condition true, or `Succeeded`, is READY.
+    * `Pending` while images pull or containers are created is PENDING --
+      the state this whole section exists to stop reporting as a failure.
+    * `Pending` because the scheduler cannot place the Pod (`Unschedulable`,
+      which is what a `FailedScheduling` event leaves behind) is FAILED and
+      says so, because no amount of waiting fixes a node that cannot fit it.
+    * A blocked container state (see `K8S_BLOCKED_WAITING_REASONS`) is FAILED
+      whatever the phase says, including the `Running` Pod whose container is
+      in `CrashLoopBackOff`.
+    """
+    name = str((pod.get("metadata") or {}).get("name") or "?")
+    status = pod.get("status") or {}
+    phase = str(status.get("phase") or "Unknown")
+    conditions = {
+        str(c.get("type")): c for c in (status.get("conditions") or []) if isinstance(c, dict)
+    }
+
+    blocked = _k8s_container_block(status)
+    if blocked is not None:
+        reason, message = blocked
+        return K8sWorkloadState(name, K8S_STATE_FAILED, f"{phase}: {reason}", message)
+
+    if phase == "Pending":
+        scheduled = conditions.get("PodScheduled") or {}
+        if str(scheduled.get("status")) == "False" and scheduled.get("reason") == "Unschedulable":
+            return K8sWorkloadState(
+                name,
+                K8S_STATE_FAILED,
+                "Pending: unschedulable",
+                str(scheduled.get("message") or "").strip(),
+            )
+        waiting = _k8s_container_waiting_reason(status)
+        return K8sWorkloadState(name, K8S_STATE_PENDING, f"Pending: {waiting or 'being scheduled'}")
+
+    if phase == "Running":
+        ready = conditions.get("Ready") or {}
+        if str(ready.get("status")) == "True":
+            return K8sWorkloadState(name, K8S_STATE_READY, "Running")
+        return K8sWorkloadState(
+            name,
+            K8S_STATE_PENDING,
+            f"Running: {_k8s_container_waiting_reason(status) or 'containers not ready yet'}",
+        )
+
+    if phase == "Succeeded":
+        return K8sWorkloadState(name, K8S_STATE_READY, "Succeeded")
+
+    # `Failed`, `Unknown`, and anything a future Kubernetes adds: not ready,
+    # and not something waiting resolves.
+    return K8sWorkloadState(name, K8S_STATE_FAILED, phase, str(status.get("message") or "").strip())
+
+
+def _k8s_pod_states(namespace: str = "") -> tuple[list[K8sWorkloadState], OpsResult | None]:
+    """Classify every Pod in the namespace; returns `(states, read_failure)`.
+
+    `read_failure` is non-None only when the Pod list could not be read at
+    all -- which is a real failure (an unreachable cluster is not "pending"),
+    kept separate so callers do not have to invent a fake state for it.
+    """
+    cp = _run(
+        ["kubectl", "-n", namespace or K8S_NAMESPACE, "get", "pods", "-o", "json"],
+        check=False,
+    )
+    if cp.returncode != 0:
+        return [], OpsResult(False, "Could not read pod status", _cp_details(cp))
+    try:
+        payload = json.loads(cp.stdout or "{}")
+    except json.JSONDecodeError as e:
+        return [], OpsResult(False, "Could not parse pod status", f"{e}\n{_cp_details(cp)}")
+    items = payload.get("items") or []
+    return [_classify_k8s_pod(p) for p in items if isinstance(p, dict)], None
+
+
+def _k8s_blocked_pods(namespace: str = "") -> list[K8sWorkloadState]:
+    """The Pods that are FAILED right now -- what a wait fast-fails on (#3827).
+
+    A read that itself fails returns nothing: an unreachable cluster is a
+    reason to keep waiting for the rollout, not to declare a Pod broken.
+    """
+    states, _ = _k8s_pod_states(namespace)
+    return [s for s in states if s.state == K8S_STATE_FAILED]
+
+
 def _k8s_observability_workload_state() -> dict[str, str]:
     """Map every observability workload to `ready/N`-style state, or "absent".
 
@@ -6255,20 +6485,45 @@ def _k8s_observability_workload_state() -> dict[str, str]:
     return state
 
 
-def _k8s_observability_health() -> list[OpsResult]:
-    """Snapshot of the observability workloads right after apply.
+def _classify_k8s_observability_workload(name: str, value: str) -> K8sWorkloadState:
+    """Classify one `_k8s_observability_workload_state` entry into the shared vocabulary.
 
-    A snapshot, not a wait-until-ready loop -- same contract as
-    `_k8s_stack_health`: Pods are still pulling images when this runs, so a
-    not-yet-ready workload is reported, not failed. `nyxgpt ops status`
-    re-reads it.
+    "absent" is FAILED -- the workload was applied and is not there. A
+    `0/1 ready` counts as PENDING, not as the `[OK] observability grafana:
+    0/1 ready` it used to print (#3827): zero ready replicas is exactly the
+    condition `_k8s_stack_health` was simultaneously calling a failure, and
+    the two halves of one command must not disagree about it.
+    """
+    if value == "absent":
+        return K8sWorkloadState(
+            name,
+            K8S_STATE_FAILED,
+            "absent",
+            "Re-run `nyxgpt ops observability --kubernetes --local`.",
+        )
+    ready, _, desired = value.partition("/")
+    desired_count = desired.split()[0] if desired else ""
+    if ready.strip().isdigit() and ready.strip() == desired_count and ready.strip() != "0":
+        return K8sWorkloadState(name, K8S_STATE_READY, value)
+    return K8sWorkloadState(name, K8S_STATE_PENDING, value)
+
+
+def _k8s_observability_health() -> list[OpsResult]:
+    """Snapshot of the observability workloads right after the rollout wait.
+
+    Uses the same three-state vocabulary as `_k8s_stack_health`
+    (`_classify_k8s_observability_workload`): ready, still-rolling-out
+    (`[PENDING]`, not a failure and not a green tick), or absent. The install
+    waits for the layer first (`_wait_for_k8s_observability`), so a workload
+    reported PENDING here is one that reached readiness during the wait and
+    lost a replica since -- worth showing, not worth failing on, since the
+    wait is what already ruled on whether the layer settled. `nyxgpt ops
+    status` re-reads it.
     """
     state = _k8s_observability_workload_state()
-    missing = [name for name, value in state.items() if value == "absent"]
-    results = [
-        OpsResult(name not in missing, f"observability {name}: {value}")
-        for name, value in state.items()
-    ]
+    states = [_classify_k8s_observability_workload(name, value) for name, value in state.items()]
+    results = [s.as_result(prefix="observability ") for s in states]
+    missing = [s for s in states if s.summary == "absent"]
     if missing:
         results.append(
             OpsResult(
@@ -6280,6 +6535,110 @@ def _k8s_observability_health() -> list[OpsResult]:
     return results
 
 
+# A rollout wait checks for blocked Pods every slice rather than blocking on
+# one long `kubectl rollout status`: the point is to notice a Pod that will
+# never start (`Insufficient memory`, a bad image) in the first minute instead
+# of at the end of a 900s budget, which is what made #3827's one real failure
+# arrive last and buried among nine false ones.
+K8S_ROLLOUT_POLL_SLICE_S = 30
+
+# ...but only after the same Pod has been seen blocked on two consecutive
+# slices. `ImagePullBackOff` can follow a single registry hiccup that the next
+# kubelet retry clears, and a Pod can be briefly `Unschedulable` while a
+# cluster autoscaler adds the node it needs. One confirmation costs ~30s and
+# removes the whole class of "aborted a healthy rollout" failures.
+K8S_BLOCKED_CONFIRMATIONS = 2
+
+# What `kubectl rollout status` prints when it hits its own `--timeout`, as
+# opposed to failing for a reason waiting will not fix (object not found,
+# cluster unreachable, a paused Deployment).
+_K8S_ROLLOUT_TIMEOUT_MARKER = "timed out waiting for the condition"
+
+
+def _k8s_rollout_timed_out(cp: subprocess.CompletedProcess[str]) -> bool:
+    """Whether a failed `rollout status` merely ran out of its slice."""
+    return _K8S_ROLLOUT_TIMEOUT_MARKER in ((cp.stdout or "") + (cp.stderr or ""))
+
+
+def _wait_for_k8s_rollouts(
+    workloads: list[tuple[str, str, float]],
+    *,
+    remedy: str,
+) -> list[OpsResult]:
+    """Wait for each `(ref, label, deadline)` to roll out, failing fast on blocked Pods.
+
+    The one wait every Kubernetes bring-up step uses (#3827), so that "ready"
+    means the same thing everywhere and the three ways a wait can end are
+    distinguished:
+
+    * the workload rolled out -> `[OK] <label> ready`;
+    * a Pod is in a state waiting does not fix (`_k8s_blocked_pods`,
+      confirmed over `K8S_BLOCKED_CONFIRMATIONS` slices) -> a failure that
+      names *that* Pod and its reason, raised immediately rather than after
+      the whole budget drains;
+    * the deadline passed -> a failure naming the workload still being waited
+      on.
+
+    Stops at the first failure: the remaining workloads' verdicts would be
+    about a cluster that is already known to be broken.
+    """
+    results: list[OpsResult] = []
+    blocked_seen: dict[str, int] = {}
+    for ref, label, deadline in workloads:
+        while True:
+            remaining = int(deadline - time.monotonic())
+            if remaining <= 0:
+                results.append(OpsResult(False, f"{label} did not become ready in time", remedy))
+                return results
+            cp = _run(
+                [
+                    "kubectl",
+                    "-n",
+                    K8S_NAMESPACE,
+                    "rollout",
+                    "status",
+                    ref,
+                    f"--timeout={max(1, min(remaining, K8S_ROLLOUT_POLL_SLICE_S))}s",
+                ],
+                check=False,
+            )
+            if cp.returncode == 0:
+                results.append(OpsResult(True, f"{label} ready", _cp_details(cp)))
+                break
+            if not _k8s_rollout_timed_out(cp):
+                # Not a slow rollout: `rollout status` itself could not run
+                # (no such object, unreachable cluster, paused Deployment).
+                results.append(
+                    OpsResult(
+                        False,
+                        f"{label}: could not check rollout",
+                        f"{_cp_details(cp)}\n{remedy}".strip(),
+                    )
+                )
+                return results
+            blocked = _k8s_blocked_pods()
+            names = {s.name for s in blocked}
+            blocked_seen = {n: c + 1 for n, c in blocked_seen.items() if n in names}
+            for name in names - set(blocked_seen):
+                blocked_seen[name] = 1
+            confirmed = [
+                s for s in blocked if blocked_seen.get(s.name, 0) >= K8S_BLOCKED_CONFIRMATIONS
+            ]
+            if confirmed:
+                results.append(
+                    OpsResult(
+                        False,
+                        f"{label} cannot start: "
+                        + "; ".join(f"pod {s.name}: {s.summary}" for s in confirmed),
+                        "\n".join(f"{s.name}: {s.details}" for s in confirmed if s.details)
+                        + ("\n" if any(s.details for s in confirmed) else "")
+                        + remedy,
+                    )
+                )
+                return results
+    return results
+
+
 def _wait_for_k8s_observability(
     budget_s: int = K8S_OBSERVABILITY_ROLLOUT_BUDGET_S,
 ) -> list[OpsResult]:
@@ -6288,10 +6647,10 @@ def _wait_for_k8s_observability(
     The observability counterpart of `_wait_for_k8s_data_tier`, and it exists
     for the same reason: `kubectl apply -k` returns as soon as the objects are
     accepted, so everything downstream of it -- `_k8s_stack_health`'s Pod
-    phases, `_k8s_observability_health`'s ready counts, the operator's first
+    states, `_k8s_observability_health`'s ready counts, the operator's first
     look at the SRE dashboard -- reads a cluster whose Pods are still pulling
-    multi-hundred-megabyte images. `_k8s_stack_health` scores a `Pending` Pod
-    as a failure, so the default install reported failure on a healthy stack.
+    multi-hundred-megabyte images, and reports a mid-rollout snapshot as the
+    install's verdict.
 
     One shared deadline across the workloads (see
     `K8S_OBSERVABILITY_ROLLOUT_BUDGET_S`), and a workload that does not make it
@@ -6299,79 +6658,46 @@ def _wait_for_k8s_observability(
     command that left Prometheus Pending has been told the wrong thing.
     """
     deadline = time.monotonic() + budget_s
-    results: list[OpsResult] = []
     refs = [f"deploy/{name}" for name in K8S_OBSERVABILITY_DEPLOYMENTS]
     refs += [f"daemonset/{name}" for name in K8S_OBSERVABILITY_DAEMONSETS]
-    for ref in refs:
-        remaining = int(deadline - time.monotonic())
-        if remaining <= 0:
-            results.append(
-                OpsResult(
-                    False,
-                    f"Observability layer did not roll out within {budget_s}s (waiting on {ref})",
-                    "Check `nyxgpt ops status` for the workload's Pods; a Pod stuck Pending "
-                    "usually means the node cannot fit the stack's resource requests.",
-                )
-            )
-            return results
-        cp = _run(
-            [
-                "kubectl",
-                "-n",
-                K8S_NAMESPACE,
-                "rollout",
-                "status",
-                ref,
-                f"--timeout={remaining}s",
-            ],
-            check=False,
-        )
-        if cp.returncode != 0:
-            results.append(
-                OpsResult(
-                    False,
-                    f"{ref} never became ready",
-                    (_cp_details(cp) or "")
-                    + "\nThe observability layer is part of the default install; re-run with "
-                    "`--skip-observability` only if you deliberately want the app tier alone.",
-                )
-            )
-            return results
-        results.append(OpsResult(True, f"{ref} rolled out", _cp_details(cp)))
-    return results
+    return _wait_for_k8s_rollouts(
+        [(ref, ref, deadline) for ref in refs],
+        remedy=(
+            f"The observability layer had {budget_s}s in total to roll out. Check "
+            "`nyxgpt ops status` for the workload's Pods; a Pod stuck Pending usually means "
+            "the node cannot fit the stack's resource requests.\nThe layer is part of the "
+            "default install; re-run with `--skip-observability` only if you deliberately "
+            "want the app tier alone."
+        ),
+    )
 
 
 def _k8s_stack_health() -> list[OpsResult]:
-    """Snapshot of Pod/Service health in the `nyxgpt` namespace right after apply.
+    """Snapshot of Pod/Service health in the `nyxgpt` namespace, after the waits.
 
-    A one-shot snapshot, not a wait-until-ready loop -- Pods may still be
-    starting when this runs; re-check with `nyxgpt ops status`. No HPA check
-    here -- the stable/canary Deployments deliberately have none (autoscaling
-    would fight canary.py's replica-count-based traffic split; see #3409).
+    A one-shot snapshot, not a wait-until-ready loop -- the install's rollout
+    waits (`_wait_for_k8s_data_tier`, `_wait_for_k8s_app_tier`,
+    `_wait_for_k8s_observability`) are what decide whether the stack settled,
+    and this reports the state they left behind. So a Pod that is still
+    starting prints `[PENDING]` and does not fail the command, while a Pod
+    that cannot start (unschedulable, image it cannot pull, container in
+    CrashLoopBackOff) prints `[FAIL]` with the reason -- one vocabulary,
+    shared with `_k8s_observability_health` (#3827). Re-check with `nyxgpt ops
+    status`.
+
+    No HPA check here -- the stable/canary Deployments deliberately have none
+    (autoscaling would fight canary.py's replica-count-based traffic split;
+    see #3409).
     """
     results: list[OpsResult] = []
 
-    cp = _run(
-        [
-            "kubectl",
-            "-n",
-            K8S_NAMESPACE,
-            "get",
-            "pods",
-            "-o",
-            "jsonpath={range .items[*]}{.metadata.name}={.status.phase};{end}",
-        ],
-        check=False,
-    )
-    if cp.returncode != 0:
-        results.append(OpsResult(False, "Could not read pod status", _cp_details(cp)))
+    states, read_failure = _k8s_pod_states()
+    if read_failure is not None:
+        results.append(read_failure)
     else:
-        entries = [e for e in (cp.stdout or "").split(";") if e]
-        if not entries:
+        if not states:
             results.append(OpsResult(False, f"No pods found in namespace {K8S_NAMESPACE}"))
-        for entry in entries:
-            name, _, phase = entry.partition("=")
-            results.append(OpsResult(phase == "Running", f"pod {name}: {phase}"))
+        results += [s.as_result(prefix="pod ") for s in states]
 
     # `cassandra`/`ollama` are the data/LLM tier's Services (#3786) -- the
     # hostnames k8s/configmap.yaml points the api at. A missing one is the
@@ -6409,33 +6735,40 @@ def _wait_for_k8s_data_tier() -> list[OpsResult]:
     up cannot chat, and saying otherwise is what produced this issue. The
     failure names the workload so the operator knows which half to look at.
     """
-    results: list[OpsResult] = []
-    for ref, label, timeout in K8S_DATA_TIER_WORKLOADS:
-        cp = _run(
-            [
-                "kubectl",
-                "-n",
-                K8S_NAMESPACE,
-                "rollout",
-                "status",
-                ref,
-                f"--timeout={timeout}s",
-            ],
-            check=False,
-        )
-        if cp.returncode != 0:
-            results.append(
-                OpsResult(
-                    False,
-                    f"{label} did not become ready within {timeout}s",
-                    (_cp_details(cp) or "")
-                    + f"\nThe stack cannot serve chat without it. Check `nyxgpt ops status` "
-                    f"for the {ref.split('/')[-1]} Pod's state.",
-                )
-            )
-            return results
-        results.append(OpsResult(True, f"{label} ready", _cp_details(cp)))
-    return results
+    now = time.monotonic()
+    return _wait_for_k8s_rollouts(
+        [(ref, label, now + timeout) for ref, label, timeout in K8S_DATA_TIER_WORKLOADS],
+        remedy=(
+            "The stack cannot serve chat without it. Check `nyxgpt ops status` for the "
+            "workload's Pod state."
+        ),
+    )
+
+
+def _wait_for_k8s_app_tier() -> list[OpsResult]:
+    """Block until the api and web Deployments have rolled out (#3827).
+
+    The app tier had no wait at all: `kubectl apply -k` returned, and the
+    install snapshotted health while the api and web Pods were still being
+    created. Whatever that snapshot said was a statement about the first few
+    seconds of a rollout, not about the stack -- which is the defect this
+    issue is, seen from the app tier's side rather than observability's.
+
+    Only the *stable* Deployments: the canary pair ships at zero replicas by
+    design (`nyxgpt canary start` scales it up), so waiting on it would be
+    waiting for Pods nobody asked for.
+    """
+    now = time.monotonic()
+    return _wait_for_k8s_rollouts(
+        [
+            (ref, label, now + K8S_APP_TIER_ROLLOUT_TIMEOUT_S)
+            for ref, label in K8S_APP_TIER_WORKLOADS
+        ],
+        remedy=(
+            "The stack serves neither chat nor the UI without it. Check "
+            "`nyxgpt ops status` for the workload's Pod state."
+        ),
+    )
 
 
 def _build_and_load_k8s_web_image() -> list[OpsResult]:
@@ -6498,6 +6831,12 @@ def _install_kubernetes_steps(
         ("secret bootstrap", lambda: _ensure_k8s_secret(api_key)),
         ("apply kustomization", _kubectl_apply_kustomization),
         ("wait for data/LLM tier", _wait_for_k8s_data_tier),
+        # The api/web Pods depend on the tier above for their readiness
+        # probes, so they are waited on after it -- and they ARE waited on
+        # (#3827): without this the health snapshot below described a
+        # rollout a few seconds old rather than the stack the operator was
+        # about to be handed.
+        ("wait for app tier", _wait_for_k8s_app_tier),
     ]
     if not skip_observability:
         # After the app tier: Prometheus's scrape target and promtail's
