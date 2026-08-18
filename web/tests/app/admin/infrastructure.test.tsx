@@ -151,6 +151,8 @@ const mockStatusComposeCannotDetermine = {
   native: {},
   compose: {},
   compose_probe_available: false,
+  compose_probe_reason:
+    '`docker compose ps` exited 125: permission denied while trying to connect to the Docker daemon socket',
   conflicts: [],
   terraform: {
     probe_available: true,
@@ -330,9 +332,37 @@ describe('InfrastructurePage', () => {
     });
     expect(screen.getAllByText('CANNOT DETERMINE')).toHaveLength(1);
     expect(
-      screen.getByText(/the Compose file isn.t reachable from wherever this API process is running/)
+      screen.getByText(/the Compose survey could not be run from wherever/)
     ).toBeInTheDocument();
     expect(screen.getByText('DEPLOYED')).toBeInTheDocument();
+  });
+
+  it('names why the compose probe could not run, rather than only that it could not (#3812)', async () => {
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusComposeCannotDetermine)));
+
+    render(<InfrastructurePage />);
+
+    // The operator reads the cause on the page -- exit 125 against an
+    // unreachable daemon -- instead of having to go find it in a log.
+    await waitFor(() => {
+      expect(
+        screen.getByText(/exited 125: permission denied while trying to connect/)
+      ).toBeInTheDocument();
+    });
+  });
+
+  it('still says it cannot determine when the probe reports no reason at all', async () => {
+    // Serialized without the key at all: JSON.stringify drops undefined,
+    // so this is the old-API / no-reason-available shape.
+    const withoutReason = { ...mockStatusComposeCannotDetermine, compose_probe_reason: undefined };
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(withoutReason)));
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('CANNOT DETERMINE')).toHaveLength(1);
+    });
+    expect(screen.queryByText(/Reason:/)).not.toBeInTheDocument();
   });
 
   it('never renders install/destroy controls or api key inputs', async () => {

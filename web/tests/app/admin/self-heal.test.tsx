@@ -831,4 +831,111 @@ describe('SelfHealPage', () => {
     expect(screen.getByText(/Native/)).toBeInTheDocument();
     expect(screen.queryByText(/kubelet's own liveness-probe restarts/)).not.toBeInTheDocument();
   });
+  // --- #3812: an unqueryable probe renders as unknown-with-reason -----------
+  // Owner acceptance saw "11 unhealthy" with every observability component
+  // reported Absent while all eleven were up and healthy: the API process
+  // could not reach the Docker daemon, and the panel rendered "couldn't ask"
+  // as "definitely not there".
+
+  const mockStatusProbeUnavailable = {
+    enabled: true,
+    mode: 'terraform',
+    compose_probe_available: false,
+    compose_probe_reason:
+      '`docker compose ps` exited 125: permission denied while trying to connect to the Docker daemon socket',
+    components: [
+      {
+        service: 'grafana',
+        container: '',
+        state: 'unknown',
+        health: '',
+        healthy: false,
+        source: 'compose',
+        desired: true,
+        known: false,
+        note: '`docker compose ps` exited 125: permission denied while trying to connect to the Docker daemon socket',
+      },
+      {
+        service: 'loki',
+        container: '',
+        state: 'unknown',
+        health: '',
+        healthy: false,
+        source: 'compose',
+        desired: true,
+        known: false,
+        note: '`docker compose ps` exited 125: permission denied while trying to connect to the Docker daemon socket',
+      },
+    ],
+    unhealthy_count: 0,
+    unknown_count: 2,
+    events: [],
+  };
+
+  it('renders undeterminable components as Unknown, never as Absent or Unhealthy', async () => {
+    server.use(
+      http.get('/api/v1/self-heal/status', () => HttpResponse.json(mockStatusProbeUnavailable))
+    );
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+
+    render(<SelfHealPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('grafana')).toBeInTheDocument();
+    });
+    expect(screen.getAllByText('Unknown')).toHaveLength(2);
+    expect(screen.queryByText('Absent')).not.toBeInTheDocument();
+    expect(screen.queryByText('Unhealthy')).not.toBeInTheDocument();
+    expect(
+      screen.getAllByText(/state could not be determined from here/)
+    ).toHaveLength(2);
+  });
+
+  it('counts unknown components apart from unhealthy ones', async () => {
+    server.use(
+      http.get('/api/v1/self-heal/status', () => HttpResponse.json(mockStatusProbeUnavailable))
+    );
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+
+    render(<SelfHealPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('2 unknown')).toBeInTheDocument();
+    });
+    // The regression: this badge said "2 unhealthy" for containers that were
+    // running and healthy the whole time.
+    expect(screen.queryByText(/^\d+ unhealthy$/)).not.toBeInTheDocument();
+  });
+
+  it('names why the observability survey could not run', async () => {
+    server.use(
+      http.get('/api/v1/self-heal/status', () => HttpResponse.json(mockStatusProbeUnavailable))
+    );
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+
+    render(<SelfHealPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/cannot determine from here/)).toBeInTheDocument();
+    });
+    expect(
+      screen.getAllByText(/exited 125: permission denied while trying to connect/).length
+    ).toBeGreaterThan(0);
+    expect(screen.getByText(/nyxgpt ops restart all/)).toBeInTheDocument();
+  });
+
+  it('omits the reason sentence when the API reports no reason', async () => {
+    // Serialized without the key at all: JSON.stringify drops undefined,
+    // so this is the old-API / no-reason-available shape.
+    const withoutReason = { ...mockStatusProbeUnavailable, compose_probe_reason: undefined };
+    server.use(http.get('/api/v1/self-heal/status', () => HttpResponse.json(withoutReason)));
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+
+    render(<SelfHealPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/cannot determine from here/)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/Reason:/)).not.toBeInTheDocument();
+  });
 });
