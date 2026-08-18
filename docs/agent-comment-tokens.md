@@ -5,9 +5,16 @@ Several agent workflows are started by a token in an issue comment:
 | Token | Started by | Starts |
 |---|---|---|
 | `RETRY_IMPLEMENTATION` | owner, developer agent, review agent | `developer_auto_implement.yml` |
-| `READY_FOR_NEXT_ISSUE` | owner, all three agents | `notify_scrum_ready.yml` (select and start the next issue) |
+| `READY_FOR_NEXT_ISSUE` | owner, all three agents, `claude[bot]` | `notify_scrum_ready.yml` (select and start the next issue) |
 | `@acceptance-failure` | owner only | `handle_acceptance_failure.yml` |
 | `@improvement` | owner only | `handle_improvement.yml` |
+
+`claude[bot]` is the identity every Claude remote session's GitHub writes
+carry (the session proxy rewrites all credentials to the Claude GitHub App,
+so no PAT can change it). It is an allowed author for the queue kick and for
+`@review` on `claude-code-review.yml` (owner decision 2026-08-18, #3870):
+the #3706/#3790 loop protection lives in the anchored-token gate and the
+informational markers below, not in excluding identities.
 
 A GitHub Actions `if:` expression can only substring-match a comment body —
 it has no regex and cannot anchor a match to a line. For a long time that was
