@@ -75,7 +75,10 @@ from a mode you've since switched away from).
    in-cluster observability overlay (`k8s/observability/`) — is checked via
    `kubectl get pods -n nyxgpt` (**healthy** when `phase=Running` and its
    `Ready` condition is `True`) and healed via `kubectl delete pod`, which
-   the owning controller then recreates. This is on top of, not
+   the owning controller then recreates — but **only** for a
+   Pod that is `Running` and not `Ready`. A `Pending` Pod is never deleted:
+   see [Pending Pods are reported, not
+   deleted](#pending-pods-are-reported-not-deleted). This is on top of, not
    instead of, kubelet's own liveness-probe restarts and `canary.py`'s
    metrics-gated rollout + auto-rollback — see [Kubernetes
    mode](#kubernetes-mode) below.
@@ -90,6 +93,15 @@ Regardless of mode:
   stops touching it automatically — a component that keeps failing needs a
   human to look at it, not an infinite restart loop. The counter resets to
   0 the next time the component is observed healthy.
+- **A rolling cap that no reset clears**: independently of the counter
+  above, at most `2 × max_consecutive_restarts` automatic heal actions are
+  taken against one component per 15-minute window. The consecutive counter
+  answers "are my restarts failing?" and is zeroed by a single healthy
+  observation, so a component that comes back for one pass and dies again
+  could otherwise be restarted indefinitely. Attempts are counted against a
+  component's *stable* identity — for a Kubernetes Pod that is the owning
+  ReplicaSet, not the Pod's own name, because healing a Pod replaces it (see
+  [Kubernetes mode](#kubernetes-mode)).
 - One-shot services (`glitchtip-migrate`, which runs a DB migration and is
   expected to exit 0 and stay exited) are excluded from both the present-container
   check and the desired-service resolution below, so an exited-0 one-shot job is
@@ -425,6 +437,56 @@ ReplicaSet then recreates it. This is **on top of, not instead of**:
 "stuck" (e.g. passing its liveness probe but otherwise wedged) rather than
 cleanly crash-looping, where nothing else would touch it.
 
+### Pending Pods are reported, not deleted
+
+**A `Pending` Pod is never healed by deletion, under any circumstances** —
+not by the automatic pass and not by the dashboard's "Heal now" button. A
+Pod's state is read through `src/nyxgpt/k8s_pod_state.py` — the same module
+`nyxgpt ops` reads Pods through (`_classify_k8s_pod`), so the install
+snapshot and the watchdog cannot disagree about whether a Pod is serving or
+why it is not. Each still applies its own policy to that reading: a
+`CrashLoopBackOff` Pod fails an install while the watchdog will restart it.
+The states the shared reading distinguishes:
+
+| State | What it means | What self-heal does |
+| --- | --- | --- |
+| `Running` + `Ready` | healthy | nothing |
+| `Running`, not `Ready` | a container came up and isn't serving | **deletes the Pod**; the ReplicaSet recreates it |
+| `Pending`, `PodScheduled=False` | the scheduler refused it (`Unschedulable`: insufficient memory/CPU, no matching node) | reports it with the scheduler's own message; **takes no action** |
+| `Pending`, otherwise | still being scheduled, pulling an image, running init containers | reports it as `starting`; **takes no action** |
+| `Failed` / `Succeeded` / `Unknown` | terminal, or the node is gone | reports it; replacement is the controller's job |
+
+Deleting an unschedulable Pod cannot create the capacity it is waiting for:
+the ReplicaSet makes another Pod, which is `Pending` for the identical
+reason. Before #3832 self-heal did exactly that — seven Pods in 4.5 minutes,
+one roughly every 15 seconds — and because each deletion resets the Pod's
+age, the operator could never see a Pod stuck long enough to diagnose the
+real cause (an oversubscribed node). The loop erased its own evidence.
+
+What you see instead, on `/admin/self-heal` and in `GET
+/api/v1/self-heal/status`: the row is `Unhealthy`, tagged **not
+auto-healable**, with the scheduler's message and the remedy —
+
+> `Pending (Unschedulable): 0/1 nodes are available: 1 Insufficient memory.
+> — not healed: deleting a Pod cannot create capacity, and its replacement
+> would be unschedulable for the same reason. Add node capacity or lower the
+> workload's resource requests.`
+
+A component in that state is announced once, not once a pass: the watchdog
+logs a WARNING when the condition appears (or its reason changes) and the
+identical repeats at DEBUG, so a Pod that stays unschedulable for an hour
+does not bury its own first sighting under 240 identical lines. The last
+reason announced per component lives in `unhealable_reported` in
+`~/.nyxGPT/self_heal_state.json`, so a watchdog restart does not re-announce
+a condition that never changed. A manual "Heal now" always logs at WARNING —
+it is an explicit request and gets an explicit answer.
+
+The guard is enforced at the destructive action itself (`heal_kubernetes_pod`
+re-reads the Pod immediately before deleting and refuses anything not
+`Running`), not only where the decision to call it is made, so a future
+caller cannot reintroduce the loop. `scripts/self-heal-unschedulable-smoke.sh`
+proves it on a real cluster.
+
 **Detected mode on the dashboard** (#3410): `self_heal.detected_mode()`
 reports which of native/compose/terraform/kubernetes the core components
 are currently reporting from, and `/admin/self-heal` shows it plus, in
@@ -436,13 +498,16 @@ by name: no Pod name is `api`/`web`/`ollama`/`cassandra`, which is why the
 page reported "Nothing detected running" directly above a list of running
 Pods until #3828.
 
-**A caveat on restart-count bookkeeping**: since a healed Pod is deleted and
-recreated under a *new* name, its `restart_counts`/`last_restart_ts` entry in
-`~/.nyxGPT/self_heal_state.json` becomes orphaned (the new Pod starts a
-fresh entry under its own name) rather than being reused — harmless (state
-just grows slightly over time, the same way the bounded `events` log already
-does), but worth knowing if you're reading that file directly rather than
-through the dashboard/API.
+**Restart-count bookkeeping is keyed on the ReplicaSet, not the Pod**
+(#3832): healing a Pod *replaces* it, so a budget kept under the Pod's own
+name is a budget that never runs out — the next pass sees a different name
+and a fresh count of 5. In `~/.nyxGPT/self_heal_state.json`, a Kubernetes
+Pod's `restart_counts`/`last_restart_ts`/`heal_attempts` entries are
+therefore filed under `kubernetes/replicaset/<name>`, which survives the
+recreation, and the same key is what the dashboard reads back for the
+"gave up after N restarts" badge. (Before #3832 they were filed per Pod
+name and orphaned on every heal, which both grew the file and defeated the
+cap.)
 
 ## Turning it on
 
@@ -460,7 +525,10 @@ action when **enabled** — controlled at runtime, not by editing
   [--service NAME]`. `status` marks each component `OK`, `!!` (unhealthy) or
   `??` — the last meaning its state could not be determined from here, with
   the reason printed above the list (see [Present, absent,
-  unknown](#present-absent-unknown-three-states-not-two)).
+  unknown](#present-absent-unknown-three-states-not-two)). A component
+  tagged `(not auto-healable)` prints the cluster's own reason on the next
+  line — see [Pending Pods are reported, not
+  deleted](#pending-pods-are-reported-not-deleted).
 - **API**: `GET /api/v1/self-heal/status`, `POST
   /api/v1/self-heal/toggle`, `POST /api/v1/self-heal/heal` — see
   [api.md](api.md#self-heal-watchdog).

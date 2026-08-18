@@ -523,6 +523,29 @@ rather than mechanism, and nothing can enforce them.
   Source: owner directive 2026-08-18; `CLAUDE.md` § Bootstrap;
   `scripts/build_context_index.py`.
 
+- **D-022** · 2026-08-18 · developer agent (#3832) — **Self-heal never
+  deletes a `Pending` Kubernetes Pod.** `kubectl delete pod` is a repair for
+  exactly one state, `Running`-but-not-`Ready`; an unschedulable Pod cannot be
+  fixed by deleting it (the ReplicaSet recreates it Pending for the identical
+  reason, and the reset Pod age destroys the operator's evidence), and a
+  starting one converges on its own. The rule is not overridable by a manual
+  "Heal now", and is enforced at the destructive action itself
+  (`heal_kubernetes_pod` re-reads the Pod before deleting), not only at the
+  caller that decided to call it. Pod state is *read* in one shared place,
+  `src/nyxgpt/k8s_pod_state.py`, by both `self_heal.py` and
+  `ops._classify_k8s_pod`, so the watchdog and the install report cannot
+  disagree about whether a Pod is serving or why it is not. What each keeps
+  is its own **policy** on that reading, which is not the same thing and is
+  allowed to differ: a `CrashLoopBackOff` Pod fails an install (#3827's
+  three-state vocabulary) and is healable by the watchdog. The distinction is
+  the load-bearing part — the first cut of this change shipped the shared
+  module and the claim while `ops.py` still parsed `PodScheduled` itself, so
+  the two silently disagreed about `SchedulingGated`; two classifiers
+  agreeing by convention is the defect, not the sharing of a vocabulary.
+  Pinned by `test_ops_reads_pod_state_through_this_module_not_its_own_copy`
+  and `test_ops_and_self_heal_never_disagree_about_whether_a_pod_is_serving`.
+  Source: #3832; `docs/self-healing.md` §Pending Pods are reported, not deleted.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

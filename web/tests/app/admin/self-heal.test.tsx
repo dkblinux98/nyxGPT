@@ -312,6 +312,80 @@ describe('SelfHealPage', () => {
     expect(screen.queryByText(/gave up after/)).not.toBeInTheDocument();
   });
 
+  // #3832: a Pod the scheduler refused is reported, never deleted. The page
+  // has to say so and must not offer the operator a button that would take
+  // the action self-heal itself declines -- clicking it resets the Pod age
+  // they need to diagnose the real cause (a cluster too small for the Pod).
+  it('badges a component no heal action converges, shows why, and disables its heal button', async () => {
+    server.use(
+      http.get('/api/v1/self-heal/status', () =>
+        HttpResponse.json({
+          ...mockStatus,
+          components: [
+            {
+              service: 'nyxgpt-api-stable-r56wb',
+              container: 'api',
+              state: 'Pending',
+              health: 'unschedulable',
+              healthy: false,
+              source: 'kubernetes',
+              healable: false,
+              note: 'Pending (Unschedulable): 0/1 nodes are available: 1 Insufficient memory. Add node capacity or lower the workload resource requests.',
+            },
+          ],
+        })
+      )
+    );
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+
+    render(<SelfHealPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('not auto-healable')).toBeInTheDocument();
+    });
+    expect(screen.getByText(/Insufficient memory/)).toBeInTheDocument();
+
+    const healButton = screen.getByRole('button', { name: 'Heal now' });
+    expect(healButton).toBeDisabled();
+    expect(healButton).toHaveAttribute(
+      'title',
+      'Nothing to heal from here -- see the reason on this row'
+    );
+  });
+
+  it('leaves the heal button enabled, untitled and unbadged for a healable component', async () => {
+    server.use(
+      http.get('/api/v1/self-heal/status', () =>
+        HttpResponse.json({
+          ...mockStatus,
+          components: [
+            {
+              service: 'nyxgpt-api-stable-abc',
+              container: 'api',
+              state: 'Running',
+              health: 'not-ready',
+              healthy: false,
+              source: 'kubernetes',
+              healable: true,
+            },
+          ],
+        })
+      )
+    );
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+
+    render(<SelfHealPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('nyxgpt-api-stable-abc')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('not auto-healable')).not.toBeInTheDocument();
+
+    const healButton = screen.getByRole('button', { name: 'Heal now' });
+    expect(healButton).toBeEnabled();
+    expect(healButton).not.toHaveAttribute('title');
+  });
+
   it('describes the monitored set as core app components regardless of source, not "the Docker Compose stack"', async () => {
     server.use(http.get('/api/v1/self-heal/status', () => HttpResponse.json(mockStatus)));
     mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
