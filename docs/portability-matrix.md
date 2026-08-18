@@ -89,8 +89,9 @@ A row is **acceptance-ready** when its checks pass *and* it has no open gap.
 ### Open gaps
 
 Both remaining gaps are the same shape, and both are product gaps rather than
-documentation ones: the images **are** published on every release, but no
-wrapped command consumes them from the registry yet.
+documentation ones: the images **are** published on every release, and
+`nyxgpt ops install --terraform --local` deploys them with no checkout
+(#3835) — but these two paths still build from one.
 
 1. **Docker / Compose** — `docker-compose.yml`'s `api` and `web` services
    carry a `build:` context (`.` and `./web`), so Compose builds them from a

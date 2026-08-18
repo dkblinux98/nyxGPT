@@ -403,10 +403,18 @@ Constraints, by design:
   release still runs the artifact path (see
   [portability-matrix.md](portability-matrix.md)).
 - **Labelled everywhere.** [`nyxgpt ops status`](#nyxgpt-ops-status) and
-  [`nyxgpt ops doctor`](#nyxgpt-ops-doctor) print `Install mode: dev
+  [`nyxgpt ops doctor`](#nyxgpt-ops-doctor) print `native services: dev
   (editable checkout at …)` and tag `api`/`web` with `[dev]`, so a dev-mode
   pass can't be read as an artifact-path pass. The mode is recorded in
   `~/.nyxGPT/install-mode.json`.
+- **Per deployment.** `--dev` means the same thing for the Terraform
+  deployment — api/web images built from the working tree instead of the
+  published ones (see
+  [terraform.md](terraform.md#install-modes-artifact-default-and---dev)) —
+  and that deployment records its mode in its own marker,
+  `~/.nyxGPT/install-mode.terraform.json`. The two are reported as separate
+  lines because they are separate deployments and are often in different
+  modes; neither ever speaks for the other.
 - **Switching modes is reconciled, not layered.** Installing one mode over
   the other stops the previous mode's services first (dev LaunchAgents are
   unloaded and removed; the artifact path's brew services are stopped) and
@@ -441,6 +449,11 @@ is required and explicit — see [terraform.md](terraform.md#one-command-bring-u
 / [kubernetes.md](kubernetes.md#one-command-bring-up-nyxgpt-ops) for what
 each one does and why `--cloud` is rejected today.
 
+`--dev` composes with `--terraform`: it builds that deployment's api/web
+images from the checkout instead of deploying the published ones, and the
+deployment records and reports its own install mode
+([terraform.md](terraform.md#install-modes-artifact-default-and---dev)).
+
 Both deploy observability with the app tier, and `--skip-observability`
 means the same thing in all three modes. In `--kubernetes` mode that layer
 runs *inside the cluster* (`k8s/observability/`) rather than as Compose
@@ -468,7 +481,9 @@ Reports:
 - **Install mode** — `artifact` (the default: published/vendored builds) or
   `dev` (the checkout, see [`--dev`](#--dev-run-the-current-checkout-without-an-artifact-build)),
   printed first and repeated per component as `[artifact]`/`[dev]` next to
-  `api` and `web`. In dev mode it also names the checkout the services are
+  `api` and `web`. One line per deployment: `native services:` always, and
+  `terraform deployment:` when there is one — the latter also naming the
+  images it is running. In dev mode it names the checkout the services are
   running, and warns if that checkout has since disappeared.
 - **Deployment mode** for each component (`api`, `web`, `ollama`, `cassandra`): whether it's
   running natively (Homebrew / the ops-managed Cassandra container) and whether a Docker
@@ -708,12 +723,14 @@ nyxgpt ops doctor
 
 Checks include:
 
-- The **install mode** the machine is on (printed before the findings, same
-  vocabulary as `status`). In dev mode it FAILs when the recorded checkout
-  is gone — the api/web services are then running code nothing can rebuild
-  — or when that checkout has no `web/node_modules` for the dev server to
-  start from. Fix: `nyxgpt up --dev` from a checkout, or `nyxgpt up` to
-  return to the artifact path.
+- The **install mode** each deployment on the machine is on (printed before
+  the findings, same vocabulary as `status`). In dev mode it FAILs when the
+  recorded checkout is gone — the api/web services are then running code
+  nothing can rebuild — or when that checkout has no `web/node_modules` for
+  the dev server to start from. Fix: `nyxgpt up --dev` from a checkout, or
+  `nyxgpt up` to return to the artifact path. A running dev-mode Terraform
+  deployment whose checkout is gone FAILs for the same reason: its images
+  cannot be rebuilt.
 - Required files under `~/.nyxGPT/`
 - Native service-manager availability (`brew` on macOS, `systemctl` on Linux)
 - Running services

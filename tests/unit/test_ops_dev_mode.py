@@ -441,7 +441,8 @@ def test_status_labels_dev_mode_and_its_checkout(monkeypatch, capsys, checkout):
     monkeypatch.setattr(ops, "terraform_stack_state", lambda: {})
     assert ops.status(Args()) == 0
     out = capsys.readouterr().out
-    assert f"Install mode: dev (editable checkout at {checkout})" in out
+    # One line per deployment since #3835 -- the native services' own.
+    assert f"native services:      dev (editable checkout at {checkout})" in out
     assert "native  api: started  [dev]" in out
     assert "native  web: started  [dev]" in out
 
@@ -463,7 +464,7 @@ def test_status_labels_artifact_mode_by_default(monkeypatch, capsys):
     monkeypatch.setattr(ops, "terraform_stack_state", lambda: {})
     assert ops.status(Args()) == 0
     out = capsys.readouterr().out
-    assert "Install mode: artifact" in out
+    assert "native services:      artifact" in out
     assert "native  api: started  [artifact]" in out
 
 
@@ -476,7 +477,7 @@ def test_doctor_flags_a_dev_install_whose_checkout_is_gone(monkeypatch, capsys, 
     rc = ops.doctor(Args())
     out = capsys.readouterr().out
     assert rc == 2
-    assert "Install mode: dev" in out
+    assert "Install mode (native services): dev" in out
     assert "its checkout is missing" in out
 
 
