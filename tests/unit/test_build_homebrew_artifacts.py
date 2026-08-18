@@ -1586,7 +1586,10 @@ def test_published_tap_reports_whether_the_stable_counterpart_exists():
 # check that passes against the broken keg is what let this ship.
 
 _CLI_SYMLINK = 'bin.install_symlink venv/"bin/nyxgpt"'
-_WEB_FORMULA = REPO_ROOT / "homebrew" / "nyxgpt-web.rb"
+_WEB_FORMULAS = {
+    "local": REPO_ROOT / "homebrew" / "nyxgpt-web.rb",
+    "tap-template": REPO_ROOT / "homebrew" / "tap" / "nyxgpt-web.rb.tmpl",
+}
 
 
 def _test_block(text: str) -> list[str]:
@@ -1656,7 +1659,8 @@ def test_stamped_formulas_expose_and_exercise_the_cli(built_artifacts, built_rc_
     assert any('bin/"nyxgpt"' in line for line in _test_block(stamped))
 
 
-def test_the_web_keg_exposes_only_its_service_wrapper():
+@pytest.mark.parametrize("which", sorted(_WEB_FORMULAS))
+def test_the_web_keg_exposes_only_its_service_wrapper(which):
     """The #3850 sweep of the other formula, pinned rather than remembered.
 
     `nyxgpt-web` ships a Next.js build and one command, `nyxgpt-web`, which
@@ -1666,7 +1670,7 @@ def test_the_web_keg_exposes_only_its_service_wrapper():
     this test fails if the web formula ever grows a second command whose
     reachability nobody checked.
     """
-    text = _WEB_FORMULA.read_text(encoding="utf-8")
+    text = _WEB_FORMULAS[which].read_text(encoding="utf-8")
     install = text[text.index("  def install") : text.index("  service do")]
 
     exposed = set(re.findall(r'bin/"([^"]+)"', install))

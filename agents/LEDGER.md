@@ -1422,6 +1422,37 @@ are absent here by design (relocated to the annex; IDs are never reused).
   deliberately write `|| echo ""` and still treat a failed read as "no
   Status".
 
+- **V-044** · 2026-08-18 — **A check that reaches *into* a keg cannot answer
+  whether the product is operable.** The macOS artifact path shipped through
+  rc12 with no `nyxgpt` on PATH: `pip install` created the console script
+  declared in `pyproject.toml`, but it landed in `libexec/venv/bin` and the
+  formula wrote only the `nyxgpt-api` service wrapper, so `brew install`
+  succeeded, the dashboard came up, and `nyxgpt up` answered `command not
+  found` (#3850). Every existing check was blind to it by construction: the
+  formula's `test do` asserted the venv python existed and `import nyxgpt.app`
+  worked, and `macos-brew-smoke.yml` ran `"$VENV/bin/nyxgpt" --version` — all
+  three are true of a keg that exposes no command at all. The downstream
+  report (ollama unreachable, cassandra unreachable, sessions HTTP 500) was
+  one defect, not four: it is what a stack looks like when the operator cannot
+  start it. Fixed by `bin.install_symlink venv/"bin/nyxgpt"` in both API
+  formulas; the assertions now go through `bin`/PATH, by the name a user
+  types.
+  Method: `tests/unit/test_build_homebrew_artifacts.py` — the new tests were
+  run against the pre-fix formulas (`git stash push -- homebrew
+  .github/workflows/macos-brew-smoke.yml`) and 7 failed, then passed with the
+  fix (142 passed). The smoke job's negative control was rehearsed locally
+  against a simulated keg (relative symlink moved aside → `command -v nyxgpt`
+  fails → restored → passes). `nyxgpt ops status` was run from a venv with no
+  stack and no cwd checkout: exit 0. Executed macOS evidence is the
+  `macos-brew-smoke.yml` run on the #3850 PR, which installs the keg on a
+  `macos-15` runner, asserts the command by name, and proves the assertion
+  fails when the CLI is removed.
+  Re-verify when: the formulas stop building the CLI from the venv pip
+  populates (a wrapper script, a copied entry point, a different venv path),
+  or `nyxgpt-web` grows a command of its own —
+  `test_the_web_keg_exposes_only_its_service_wrapper` pins that it has none
+  today.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
