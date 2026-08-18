@@ -35,7 +35,7 @@ ALLOWLIST_FILES=(
   ".github/workflows/README-notification-workflows.md"
   "scripts/agents/create_phase6.sh"
   "scripts/agents/check_no_hardcoded_release_branch.sh"
-  "scripts/agents/scrummaster_next_issue.sh"
+  "scripts/agents/developer_pull_next.sh"
   "scripts/agents/lib/gh_project.sh"
   "scripts/agents/lib/summarize_backlog_page.py"
   "scripts/agents/verify_phase6_fields.sh"

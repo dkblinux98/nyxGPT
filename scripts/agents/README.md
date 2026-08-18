@@ -50,11 +50,12 @@ This preserves your release-issue checklist signal: unchecked = planned, checked
 
 ## Commands
 ### scrummaster-agent
-- `scrummaster_next_issue.sh [--select-only] [--sprint-scoped]` — prints the next issue number to work (best effort ordering). `EXCLUDE_ISSUES` (comma-separated issue numbers) skips candidates, for fall-through retries within one dispatch (#3665).
+- `groom_sprint.sh [--sprint TITLE] [--out PATH]` — writes the seed draft of `product_management/sprint_planning/sprint_<N>/PLAN.md`: sprint members with their fields and native relationships, expected-files seeded from the issue bodies, and a seed order (dependencies, then priority, then effort). The scrummaster agent then grooms it — the order's justification is judgment, not a sort key (#3908). Re-running mid-sprint is a regroom: rationale, deferrals, the regroom log and curated expected-files survive.
 - `scrummaster_start_issue.sh <ISSUE_NUMBER>` — classifies the issue's claim state and, if claimable, sets it -> In Progress and assigns the dev agent. Exit codes distinguish outcome: `0` started, `10` skipped quietly (in-flight duplicate, a deliberate human hold, or no longer open — not a block), `11` skipped loudly (unrecognized assignee — reported via a comment on the issue). See the start-guard decision matrix in `lib/gh_project.sh`'s `classify_backlog_claim_state` (#3665).
-- `scrummaster_dispatch_next.sh [--sprint-scoped]` — runs the full select-and-start fall-through loop used by `notify_scrum_ready.yml`: selects a candidate, attempts to start it, and on any skip excludes it and retries the next candidate, so a single bad-state issue can no longer block the whole queue (#3665, root cause of a ~5 day sprint-loop stall on #3593).
+- `scrummaster_dispatch_next.sh [--sprint-scoped]` — runs the dispatch-pause backstops and the fall-through loop used by `developer_pull_next_issue.yml`: pulls a candidate (`developer_pull_next.sh`), attempts to start it, and on any skip excludes it and retries the next candidate, so a single bad-state issue can no longer block the whole queue (#3665, root cause of a ~5 day sprint-loop stall on #3593).
 
 ### developer-agent
+- `developer_pull_next.sh [--sprint-scoped] [--explain FILE]` — the pull (#3883): prints the issue number to take next, chosen by sprint-plan order, relationships eligibility, the WIP limit (`WIP_LIMIT`, default 2, read from the board and open PRs) and a file-overlap check against in-flight work. Overlapping candidates are deferred rather than pulled in parallel. `--explain` writes the decision and everything it skipped as JSON, for the dispatch comment. `EXCLUDE_ISSUES` skips candidates, for fall-through retries within one dispatch (#3665).
 - `developer_create_branch.sh <ISSUE_NUMBER> [feat|fix] [slug]` — create branch from release branch
 - `developer_submit_for_review.sh <ISSUE_NUMBER> "<PR_TITLE>" [PR_BODY_FILE]` — open PR + set issue -> In Review, assign review-agent
 
