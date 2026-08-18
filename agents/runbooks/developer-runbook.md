@@ -718,7 +718,9 @@ criterion honestly — the falsified section simply was not in the diff.
 ## 7) Open PR
 - Target: active release branch
 - PR body MUST include: "Closes #ISSUE"
-- Ensure CI runs (should pass since pre-commit hooks passed)
+- Ensure CI runs green. The hooks no longer run black/ruff/mypy, so a clean
+  commit is not evidence those pass -- run them yourself before submitting.
+  The reviewer no longer re-runs them and will not catch it for you.
 - Update issue status -> In Review
 - Assign review-agent as PR reviewer (not just assignee)
 

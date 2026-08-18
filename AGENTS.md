@@ -182,7 +182,9 @@ Scripts:
 - validate-web-routes.sh (validates web proxy routes match backend endpoints)
 
 Validation Requirements:
-- All pre-commit hooks MUST pass before commit succeeds
+- All pre-commit hooks MUST pass before commit succeeds (file hygiene,
+  yamllint, secret detection -- black/ruff/mypy were removed from the hooks
+  in 2026-08-18's de-duplication; they are CI gates now)
 - Developer keeps working until all checks pass: black, ruff, mypy, pytest
 - Only after all checks pass can commit/push/PR creation happen
 - This ensures CI checks during review should not fail
