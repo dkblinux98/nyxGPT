@@ -140,8 +140,11 @@ the core repo-less packaging work)*
 - ACs: for each secret still human-provided (`[auth] api_key` — with an offer to generate,
   `[openai] api_key`, `[github] pat`): plain-language name, what-it's-for, exactly where to
   obtain it, masked entry (`getpass`), format validation, 0600 write; idempotent
-  (`--reconfigure` to force); the same guided step exists in the `/admin` wizard per the
-  Definition of Done; tests for prompt/skip/validate flows. **Canonical store + sync
+  (`--reconfigure` to force); ~~the same guided step exists in the `/admin` wizard per the
+  Definition of Done~~ **superseded (owner, 2026-08-16, #3805): the `/admin` guided-secrets
+  and AWS-credentials screens were removed — credential entry is terminal-only, and the
+  Definition of Done reads "observable from the dashboard; pre-product setup runs from the
+  CLI"**; tests for prompt/skip/validate flows. **Canonical store + sync
   (owner, 2026-08-01):** `~/.nyxGPT/config.ini` is the single canonical store for
   write-once external tokens (Slack webhook/bot token, PATs — the issuing service never
   shows them again); a wrapped `nyxgpt ops secrets-sync` pushes a declared key mapping
@@ -201,8 +204,9 @@ the core repo-less packaging work)*
 
 - ACs: extends P6-6's guided flow to AWS access key/secret/region/profile + secret-store
   references; masked entry with what-it-is/where-to-get-it help; AWS secrets never written
-  to `config.ini` — routed to AWS profile / OS keychain / secret store; CLI + `/admin`
-  cloud wizard parity.
+  to `config.ini` — routed to AWS profile / OS keychain / secret store; ~~CLI + `/admin`
+  cloud wizard parity~~ **superseded (owner, 2026-08-16, #3805): CLI only — the
+  `/admin/aws-credentials` screen was removed with the guided-secrets one.**
 
 ### P6-14 · feat: Linux-native install path - systemd units with OS dispatch
 **Label:** Feature · **Module:** cli · **Effort:** L

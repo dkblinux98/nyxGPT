@@ -163,10 +163,15 @@ nyxgpt secrets setup --reconfigure  # re-prompt for every secret, even set ones
 
 Idempotent: re-running with no `--reconfigure` skips anything already set
 (showing its masked value), so it's safe to run repeatedly, e.g. after a
-fresh install before any of the three are set. The same guided flow is
-available from the web UI at **`/admin/secrets`** (masked entry, per-key
-help, and a "Generate for me" option for `[auth] api_key`), backed by
-`GET|POST /api/v1/config/secrets`.
+fresh install before any of the three are set.
+
+**This is a terminal-only flow (#3805).** The `/admin/secrets` screen that
+used to offer the same entry was removed: a secret typed into a browser
+crosses an HTTP request and the page's process on its way to disk, and by the
+time the web UI is running, reaching it already required these secrets. The
+dashboard's Configuration card points at the command instead; `GET
+/api/v1/config/secrets` still reports *whether* each secret is set (masked,
+never cleartext), and there is no HTTP path that writes one.
 
 See [Canonical secret store & sync to GitHub Actions](#canonical-secret-store--sync-to-github-actions)
 below for what to do with these once they're set.
@@ -174,9 +179,10 @@ below for what to do with these once they're set.
 ### Option 5: Guided AWS credentials setup
 
 Any `nyxgpt cloud` command, and `[secrets] provider` above, needs AWS
-credentials available to boto3. `nyxgpt cloud credentials-setup` (and the
-`/admin` **AWS Credentials** wizard) walks through the same masked-entry,
-what-it-is/where-to-get-it treatment as Option 4 -- but the AWS access key
+credentials available to boto3. `nyxgpt cloud credentials-setup` walks
+through the same masked-entry, what-it-is/where-to-get-it treatment as
+Option 4 -- also terminal-only, for the same reason (#3805; the credentials
+are needed *before* there is a deploy to observe) -- but the AWS access key
 ID/secret access key are **never written to `config.ini`**, routed instead
 to `~/.aws/credentials`, the OS keychain, or left alone if already available
 some other way (instance role, SSO, environment variables). See
@@ -196,8 +202,8 @@ rotate, it's easy to update only one of them and not notice until CI starts
 failing with stale credentials.
 
 `~/.nyxGPT/config.ini` is the **single canonical store** for these tokens.
-Set them once via `nyxgpt secrets setup` (or `/admin/secrets`), then push the
-declared subset that CI needs to this repo's GitHub Actions secrets with:
+Set them once via `nyxgpt secrets setup`, then push the declared subset that
+CI needs to this repo's GitHub Actions secrets with:
 
 ```bash
 nyxgpt ops secrets-sync            # push config.ini's mapped secrets to Actions
@@ -206,8 +212,8 @@ nyxgpt ops secrets-sync --dry-run  # show which secrets *would* be pushed, by na
 
 This is **one direction only**: config.ini → GitHub Actions. Nothing is ever
 read back from GitHub (the Actions secrets API can't return a value anyway).
-Also available from the web UI at `/admin/secrets` ("Sync to GitHub Actions
-secrets"), backed by `POST /api/v1/config/secrets/sync`.
+CLI only: the dashboard button that used to run this was removed with the
+`/admin/secrets` screen (#3805).
 
 - **What gets synced is a declared mapping, not "everything."**
   `nyxgpt.config.SECRETS_SYNC_MANIFEST` is the single place that maps a
@@ -651,8 +657,8 @@ api_key =
 - Visit: https://platform.openai.com/api-keys
 - Create a new API key
 - Store it securely in your config file
-- Or run `nyxgpt secrets setup` (or `/admin/secrets`) for guided, masked
-  entry instead of hand-editing this field -- see [Guided secrets
+- Or run `nyxgpt secrets setup` for guided, masked entry instead of
+  hand-editing this field -- see [Guided secrets
   setup](#option-4-guided-secrets-setup). This key is write-once (OpenAI
   won't show it again), so config.ini is its canonical copy -- see
   [Canonical secret store & sync to GitHub
@@ -726,8 +732,8 @@ claude_code_oauth_token =
 1. **Create a Personal Access Token (PAT):**
    - Visit: https://github.com/settings/tokens
    - Generate a new token with `repo` and `project` permissions
-   - Store it in the `pat` field -- or run `nyxgpt secrets setup` (or
-     `/admin/secrets`) for guided, masked entry, and format validation. This
+   - Store it in the `pat` field -- or run `nyxgpt secrets setup` for
+     guided, masked entry, and format validation. This
      token is write-once (GitHub won't show it again), so config.ini is its
      canonical copy: see [Guided secrets
      setup](#option-4-guided-secrets-setup) and [Canonical secret store &
@@ -798,9 +804,8 @@ See [`docs/cloud.md`](cloud.md#cloud-secrets-ssm--secrets-manager) for setup, th
 The AWS identity *reference* nyxGPT uses for its own AWS API calls (`nyxgpt
 cloud allow-ip`, cloud deploy, `[secrets]` resolution above) -- P6-13,
 #3512. Excluded from the general Configuration Wizard: it has its own
-guided flow instead (`nyxgpt cloud credentials-setup` / the `/admin` AWS
-Credentials wizard), since the actual AWS access key pair must never be
-hand-edited into this file.
+guided CLI flow instead (`nyxgpt cloud credentials-setup`), since the actual
+AWS access key pair must never be hand-edited into this file.
 
 ```ini
 [cloud]

@@ -1,11 +1,18 @@
 """Guided AWS credential collection for cloud deploy (P6-13, #3512).
 
 Extends #3505's guided-secrets pattern (masked entry, plain-language
-what-it-is/where-to-get-it help, one definition shared by the CLI and the
-`/admin` wizard) to the AWS identity nyxGPT itself needs to call the AWS
-API: `nyxgpt cloud allow-ip`, the eventual Terraform-driven deploy flow, and
-#3507's `cloud_secrets.resolve_secret` all go through boto3's normal
-credential resolution.
+what-it-is/where-to-get-it help) to the AWS identity nyxGPT itself needs to
+call the AWS API: `nyxgpt cloud allow-ip`, the eventual Terraform-driven
+deploy flow, and #3507's `cloud_secrets.resolve_secret` all go through
+boto3's normal credential resolution.
+
+**Entry is CLI-only (`nyxgpt cloud credentials-setup`), by owner decision
+(#3805).** The `/admin/aws-credentials` screen and the `POST` endpoints
+behind it were removed: a key pair typed into a browser crosses an HTTP
+request and the page's process on its way to disk (and over the SSH access
+tunnel, that path too), and AWS credentials are needed *before* there is a
+deploy to observe. `GET /api/v1/config/aws-credentials` remains as the
+read-only, never-cleartext status counterpart (`aws_credentials_status`).
 
 Unlike `secrets_setup.py`'s `GUIDED_SECRETS`, the access key ID / secret
 access key collected here are **never** written to `config.ini` (this
@@ -473,10 +480,10 @@ def save_aws_credentials(
 
 
 def aws_credentials_status(cfg: ConfigParser) -> dict[str, Any]:
-    """Return the guided AWS credentials flow's full status: fields, reference, and storage state.
+    """Return the AWS credentials flow's full status: fields, reference, and storage state.
 
-    Never returns cleartext -- shared by the CLI and
-    `GET /api/v1/config/aws-credentials`.
+    Never returns cleartext -- shared by the CLI and the read-only
+    `GET /api/v1/config/aws-credentials` (#3805: there is no write endpoint).
     """
     reference = cloud_reference_status(cfg)
     profile = reference["profile"] or DEFAULT_PROFILE_NAME
