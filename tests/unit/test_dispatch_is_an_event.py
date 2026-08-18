@@ -22,7 +22,7 @@ import yaml
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-KICK_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "notify_scrum_ready.yml"
+KICK_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "developer_pull_next_issue.yml"
 LIB = REPO_ROOT / "scripts" / "agents" / "lib" / "gh_project.sh"
 TOKEN = "READY_FOR_NEXT" + "_ISSUE"  # split so this file is not itself a trigger
 
@@ -43,7 +43,7 @@ def test_the_kick_is_not_comment_triggered() -> None:
     """The property that closes #3706 and #3790 for this trigger, permanently."""
     triggers = _triggers(KICK_WORKFLOW)
     assert "issue_comment" not in triggers, (
-        "notify_scrum_ready.yml must not be comment-triggered; a comment trigger "
+        "the pull workflow must not be comment-triggered; a comment trigger "
         "can be fired by any text that names the token, including its own output"
     )
 
@@ -67,7 +67,7 @@ def test_the_dispatch_helper_exists_and_names_the_event() -> None:
     assert "dispatch_next_issue()" in text, "the dispatch helper is gone"
     assert (
         "event_type=dispatch-next-issue" in text
-    ), "the helper must send the event type notify_scrum_ready.yml subscribes to"
+    ), "the helper must send the event type the pull workflow subscribes to"
 
 
 def test_both_producers_use_the_helper() -> None:

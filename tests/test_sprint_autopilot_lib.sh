@@ -258,8 +258,19 @@ release_version_from_issue() { echo "v3.0.0"; }
 release_backlog_by_sprint() { echo '{"Sprint 8":0,"Sprint 9":11,"":2}'; }
 
 COMMENT_FILE="$(mktemp)"
-trap 'rm -f "$GRAPHQL_CALLS_FILE" "$COMMENT_FILE"' EXIT
+# Deliberately NOT named DISPATCH_FILE: Test 23 already uses that name for
+# the RC-publish dispatch mock, and sharing it would make a kick assertion
+# read another feature's writes.
+KICK_FILE="$(mktemp)"
+trap 'rm -f "$GRAPHQL_CALLS_FILE" "$COMMENT_FILE" "$KICK_FILE"' EXIT
 issue_comment() { printf '%s' "$2" > "$COMMENT_FILE"; }
+# Since #3882 the kick is a repository_dispatch, not a token in the note.
+# "Did it kick?" is therefore a question about the event the helper sends --
+# asking it of the comment body is what made these assertions stale, and is
+# the same category error (prose as an API) that #3706 and #3790 were.
+dispatch_next_issue() { printf '%s\n' "${1:-}" >> "$KICK_FILE"; return 0; }
+_dispatched() { [[ -s "$KICK_FILE" ]] && echo yes || echo no; }
+_reset_dispatch() { : > "$KICK_FILE"; }
 
 # The park decision now reads the sprint's whole population (#3709), so
 # these tests stub sprint_population_snapshot instead of the Backlog-only
@@ -277,34 +288,38 @@ trap 'rm -f "$GRAPHQL_CALLS_FILE" "$COMMENT_FILE" "$RESUME_FILE"' EXIT
 iteration_active_title() { echo "Sprint 8"; }
 count_sprint_backlog_open() { echo "4"; }
 _snapshot='{"open":{"Backlog":[1,2,3,4]},"closed":{}}'
+_reset_dispatch
 sprint_autopilot_kick 123 merged 2>/dev/null
 body="$(cat "$COMMENT_FILE")"
-_assert_contains "kicks while the active sprint has open Backlog work" "$body" "READY_FOR_NEXT_ISSUE"
-_assert_contains "kick names the active sprint, not the release, as the pool" "$body" 'Sprint "Sprint 8" still has 4 open Backlog issue(s)'
+_assert_eq "kicks while the active sprint has open Backlog work" "yes" "$(_dispatched)"
+_assert_contains "note names the active sprint, not the release, as the pool" "$body" 'Sprint "Sprint 8" has 4 open item(s)'
 
 # Test 7b (#3709): the continue kick still reports parked issues waiting on
 # gates -- they must never be silently dropped, park or kick.
 autopilot_scan_parked() { echo '{"resumable":[],"waiting":[{"issue":3516,"open_blockers":[3514]}],"exhausted":[],"active":[],"selected":null}'; }
+_reset_dispatch
 sprint_autopilot_kick 123 merged 2>/dev/null
 body="$(cat "$COMMENT_FILE")"
 _assert_contains "continue kick reports issues waiting on gates" "$body" "#3516 (waiting on #3514)"
-_assert_contains "continue kick still dispatches" "$body" "READY_FOR_NEXT_ISSUE"
+_assert_eq "continue kick still dispatches" "yes" "$(_dispatched)"
 autopilot_scan_parked() { echo '{"resumable":[],"waiting":[],"exhausted":[],"active":[],"selected":null}'; }
 
 # Test 8 (#3709): Backlog empty but work still In Progress / In Review. The
 # pre-#3709 decision announced "sprint complete -- acceptance next" here,
 # which was the reported defect: the sprint is demonstrably unfinished.
 #
-# The "no kick" assertion is on the BARE token, not a token+newline needle:
-# notify_scrum_ready.yml triggers on a plain substring test, so any
-# occurrence anywhere in the body -- prose included -- dispatches work. The
-# original park note named the token in its override line and therefore
-# kicked every time it "parked" (#3706 review).
+# The "no kick" assertion asks whether the dispatch event was sent. It used
+# to test the note's text for the kick token, because the workflow triggered
+# on a plain substring match -- so the original park note named the token in
+# its override line and kicked every time it "parked" (#3706 review). That
+# whole failure mode is gone with the comment trigger (#3882); what is left
+# to assert is that a park sends no event.
 count_sprint_backlog_open() { echo "0"; }
 _snapshot='{"open":{"In Progress":[3513],"In Review":[3514]},"closed":{"Acceptance Testing":[3510]}}'
+_reset_dispatch
 sprint_autopilot_kick 123 merged 2>/dev/null
 body="$(cat "$COMMENT_FILE")"
-_assert_not_contains "parks at the sprint boundary even though the release has work left" "$body" "READY_FOR_NEXT_ISSUE"
+_assert_eq "parks at the sprint boundary even though the release has work left" "no" "$(_dispatched)"
 _assert_contains "park note carries the informational marker that excludes it from dispatch" "$body" "nyxgpt-autopilot-informational"
 _assert_contains "in-flight park note does not claim completion" "$body" "work still in flight"
 _assert_contains "in-flight park note counts every open issue, not just Backlog" "$body" "2 issue(s) are still open"
@@ -318,33 +333,36 @@ _assert_contains "park note points at the docs for the manual-kick override" "$b
 # "agentic work complete", explicitly NOT sprint completion (owner
 # definition, 2026-08-10).
 _snapshot='{"open":{},"closed":{"Acceptance Testing":[3510,3513],"For Release":[3509]}}'
+_reset_dispatch
 sprint_autopilot_kick 123 merged 2>/dev/null
 body="$(cat "$COMMENT_FILE")"
 _assert_contains "all-closed sprint reports agentic work complete" "$body" "agentic work complete; awaiting owner acceptance"
 _assert_contains "agentic-complete note lists what awaits acceptance" "$body" "#3510, #3513"
 _assert_contains "agentic-complete note denies sprint completion" "$body" 'This is not "sprint complete."'
-_assert_not_contains "agentic-complete note posts no kick" "$body" "READY_FOR_NEXT_ISSUE"
+_assert_eq "agentic-complete note posts no kick" "no" "$(_dispatched)"
 
 # Test 8c (#3709): every item accepted to For Release -> the only state
 # that may call the sprint done.
 _snapshot='{"open":{},"closed":{"For Release":[3509,3510]}}'
+_reset_dispatch
 sprint_autopilot_kick 123 merged 2>/dev/null
 body="$(cat "$COMMENT_FILE")"
 _assert_contains "sprint-complete note requires every item in For Release" "$body" "Sprint Autopilot — sprint complete"
 _assert_contains "sprint-complete note lists the accepted items" "$body" "#3509, #3510"
-_assert_not_contains "sprint-complete note posts no kick" "$body" "READY_FOR_NEXT_ISSUE"
+_assert_eq "sprint-complete note posts no kick" "no" "$(_dispatched)"
 
 # Test 8d (#3709): a parked issue whose gates have all closed is resumed
 # before the park, and the park note says so.
 autopilot_scan_parked() { echo '{"resumable":[{"issue":3513,"open_blockers":[]}],"waiting":[{"issue":3516,"open_blockers":[3514]}],"exhausted":[],"active":[],"selected":3513}'; }
 : > "$RESUME_FILE"
 _snapshot='{"open":{"In Progress":[3513,3516]},"closed":{}}'
+_reset_dispatch
 sprint_autopilot_kick 123 merged 2>/dev/null
 body="$(cat "$COMMENT_FILE")"
 _assert_eq "auto-resume posts the retry trigger on the selected parked issue" "3513" "$(cat "$RESUME_FILE")"
 _assert_contains "park note reports the auto-resumed issue" "$body" "Auto-resumed:** #3513"
 _assert_contains "park note reports the issue still waiting on its gate" "$body" "#3516 (waiting on #3514)"
-_assert_not_contains "auto-resume does not turn a park into a kick" "$body" "READY_FOR_NEXT_ISSUE"
+_assert_eq "auto-resume does not turn a park into a kick" "no" "$(_dispatched)"
 autopilot_scan_parked() { echo '{"resumable":[],"waiting":[],"exhausted":[],"active":[],"selected":null}'; }
 
 # Test 8e (#3709): if the population snapshot is unavailable, the decision
@@ -352,14 +370,16 @@ autopilot_scan_parked() { echo '{"resumable":[],"waiting":[],"exhausted":[],"act
 # that still has work.
 sprint_population_snapshot() { return 1; }
 count_sprint_backlog_open() { echo "5"; }
+_reset_dispatch
 sprint_autopilot_kick 123 merged 2>/dev/null
 body="$(cat "$COMMENT_FILE")"
-_assert_contains "falls back to the Backlog-only count when the snapshot fails" "$body" "READY_FOR_NEXT_ISSUE"
-_assert_contains "fallback kick still names the sprint pool" "$body" 'still has 5 open Backlog issue(s)'
+_assert_eq "falls back to the Backlog-only count when the snapshot fails" "yes" "$(_dispatched)"
+_assert_contains "fallback kick still names the sprint pool" "$body" 'has 5 open item(s)'
 count_sprint_backlog_open() { echo "0"; }
+_reset_dispatch
 sprint_autopilot_kick 123 merged 2>/dev/null
 body="$(cat "$COMMENT_FILE")"
-_assert_not_contains "fallback park posts no kick" "$body" "READY_FOR_NEXT_ISSUE"
+_assert_eq "fallback park posts no kick" "no" "$(_dispatched)"
 _assert_not_contains "fallback park claims no completion state it cannot prove" "$body" "sprint complete"
 sprint_population_snapshot() { echo "$_snapshot"; }
 _snapshot='{"open":{},"closed":{}}'
@@ -370,10 +390,11 @@ _snapshot='{"open":{},"closed":{}}'
 # it hid waiting work and undercounted the total (#3706 review).
 iteration_active_title() { echo ""; }
 count_sprint_backlog_open() { echo "7"; }  # must be ignored: nothing is active
+_reset_dispatch
 sprint_autopilot_kick 123 merged 2>/dev/null
 body="$(cat "$COMMENT_FILE")"
 _assert_contains "parks when no sprint iteration is active" "$body" "No sprint iteration is currently active"
-_assert_not_contains "posts no kick when no sprint iteration is active" "$body" "READY_FOR_NEXT_ISSUE"
+_assert_eq "posts no kick when no sprint iteration is active" "no" "$(_dispatched)"
 _assert_contains "no-active-sprint park note keeps the no-sprint bucket" "$body" "- _No sprint set_: 2 open Backlog issue(s)"
 _assert_contains "no-active-sprint park note totals every waiting bucket" "$body" "**13**"
 
@@ -381,6 +402,7 @@ _assert_contains "no-active-sprint park note totals every waiting bucket" "$body
 # the kick token (notify_scrum_ready.yml is not gated on PAUSE_SPRINT, so a
 # paused notice that named it dispatched work despite the pause).
 sprint_autopilot_paused() { return 0; }
+_reset_dispatch
 sprint_autopilot_kick 123 merged 2>/dev/null
 body="$(cat "$COMMENT_FILE")"
 _assert_contains "paused notice is posted" "$body" 'autopilot is paused'
@@ -434,8 +456,13 @@ _assert_eq "snapshot buckets closed sprint issues by status" \
   '{"Acceptance Testing":[5],"For Release":[6]}' "$(jq -c '.closed' <<<"$result")"
 _assert_eq "snapshot paged until the cursor ran out" "2" "$(_graphql_calls)"
 
-# --- Test 12: _issue_open_gate_refs unions the interim prose "Blocked by:" ---
-# --- refs with the native blocked_by deps, keeping only OPEN blockers ---
+# --- Test 12: _issue_open_gate_refs reads native blocked_by deps, falling ---
+# --- back to the interim prose "Blocked by:" refs ONLY when there are no ---
+# --- native edges, and keeping only OPEN blockers. Fallback, not union: ---
+# --- native relationships are the only storage (#3731), and prose is read ---
+# --- solely so issues filed before that decision still gate correctly. An ---
+# --- issue that has a native edge has been converted, and its stale prose ---
+# --- must not resurrect a gate the conversion dropped. ---
 blocked_by_issues() { [[ "$1" == "3516" ]] && echo "3515"; return 0; }
 _issue_open_state() {
   case "$1" in
@@ -447,8 +474,15 @@ result="$(_issue_open_gate_refs 3516 "Some prose #9999.
 
 Blocked by: #3509 (P6-11), #3514
 " | tr '\n' ' ')"
-_assert_eq "keeps open prose gates, drops closed ones, and unions native deps" \
-  "3514 3515 " "$result"
+_assert_eq "native deps win outright when present" "3515 " "$result"
+
+# With no native edge, the prose refs are read -- open ones only.
+blocked_by_issues() { return 0; }
+result="$(_issue_open_gate_refs 3516 "Some prose #9999.
+
+Blocked by: #3509 (P6-11), #3514
+" | tr '\n' ' ')"
+_assert_eq "falls back to prose gates, dropping closed ones" "3514 " "$result"
 _assert_eq "an issue with no declared gates has none open" "" "$(_issue_open_gate_refs 3510 "no gates here")"
 
 # --- Test 13: autopilot_scan_parked classifies the sprint's In Progress ---
@@ -628,16 +662,18 @@ autopilot_scan_parked() { echo '{"resumable":[],"waiting":[],"exhausted":[],"act
 _autopilot_post_resume() { echo "$1" > "$RESUME_FILE"; }
 sprint_population_snapshot() { echo '{"open":{},"closed":{"Acceptance Testing":[3510,3513]}}'; }
 : > "$DISPATCH_FILE"
+_reset_dispatch
 sprint_autopilot_kick 3510 merged 2>/dev/null
 body="$(cat "$COMMENT_FILE")"
 _assert_contains "the agentic-complete park dispatches a candidate" "$(_dispatch_args)" "channel=rc"
 _assert_contains "the park note names the candidate" "$body" "3.0.0rc2"
 _assert_contains "the park note gives the install command" "$body" "pip install nyxgpt==3.0.0rc2"
-_assert_not_contains "publishing a candidate does not turn a park into a kick" "$body" "READY_FOR_NEXT_ISSUE"
+_assert_eq "publishing a candidate does not turn a park into a kick" "no" "$(_dispatched)"
 
 # A sprint still working publishes nothing and says nothing about candidates.
 sprint_population_snapshot() { echo '{"open":{"In Progress":[3513]},"closed":{}}'; }
 : > "$DISPATCH_FILE"
+_reset_dispatch
 sprint_autopilot_kick 3510 merged 2>/dev/null
 body="$(cat "$COMMENT_FILE")"
 _assert_eq "an in-flight park dispatches no candidate" "" "$(_dispatch_args)"

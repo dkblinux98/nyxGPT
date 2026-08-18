@@ -50,7 +50,7 @@ Defaults:
 Options:
   --issue N            Use specific issue number
 Options (turn off behaviors):
-  --issue N            Use specific issue number (skip scrummaster_next_issue)
+  --issue N            Use specific issue number (skip the pull)
   --kind feat|fix      Branch kind (default: feat)
   --prefix TEXT        Branch suffix prefix (default: smoke)
 
@@ -267,7 +267,7 @@ pause
 
 if [[ -z "$ISSUE" ]]; then
   log "Selecting next backlog issue..."
-  ISSUE="$(./scripts/agents/scrummaster_next_issue.sh)"
+  ISSUE="$(./scripts/agents/developer_pull_next.sh)"
 fi
 [[ -n "$ISSUE" ]] || die "Could not determine issue number"
 log "ISSUE=$ISSUE"

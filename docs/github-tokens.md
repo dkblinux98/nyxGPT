@@ -19,7 +19,7 @@ Each agent bot account needs a classic Personal Access Token with these scopes:
 
 | Secret Name | Bot Account | Used By |
 |------------|-------------|---------|
-| `SCRUMMASTER_AGENT_TOKEN` | `nyxGPT-scrummaster-agent` | notify_scrum_ready.yml, assign_backlog.yml |
+| `SCRUMMASTER_AGENT_TOKEN` | `nyxGPT-scrummaster-agent` | scrummaster_groom_sprint.yml, assign_backlog.yml |
 | `DEVELOPER_AGENT_TOKEN` | `nyxGPT-developer-agent` | developer_auto_implement.yml |
 | `REVIEW_AGENT_TOKEN` | `nyxGPT-review-agent` | review_agent_auto_review.yml, huddle_decision_dispatch.yml |
 

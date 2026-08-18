@@ -147,16 +147,26 @@ Closed       – released (human only)
 Controls backlog intake and sequencing.
 
 Allowed:
-- Select next issue by lowest Phase then lowest issue number
-- Set issue → In Progress
-- Assign issue → developer-agent
+- Groom the sprint: scope, order, relationships, effort (taking developer
+  feedback where an estimate is contested), and the per-issue expected-files
+  list — written to `product_management/sprint_planning/sprint_<N>/PLAN.md`
+- Set Sprint / Priority / Effort fields; maintain eligible work
+- Push an issue directly when the owner asks for it
+
+**Selection is retired here (#3883).** The rule was "lowest Phase, then
+lowest issue number", and the scrummaster pushed the result at the developer.
+Developers now *pull* — from the plan's order, filtered by relationships,
+WIP and file overlap. Preparation is the scrummaster's job; choosing what to
+work next is the developer's.
 
 Scripts:
-- scrummaster_next_issue.sh
-- scrummaster_start_issue.sh <ISSUE>
-- scrummaster_dispatch_next.sh — select-and-start with fall-through: one
-  unclaimable candidate (stray assignee, human hold) excludes and retries
-  the next candidate instead of blocking the whole queue (#3665)
+- groom_sprint.sh [--sprint TITLE] — writes the seed draft of the sprint plan
+- scrummaster_start_issue.sh <ISSUE> — the claim mechanism (Status → In
+  Progress, then assign), used by the pull and by an owner push
+- scrummaster_dispatch_next.sh — the dispatch-pause backstops and the
+  fall-through retry: one unclaimable candidate (stray assignee, human hold)
+  excludes and retries the next candidate instead of blocking the whole
+  queue (#3665)
 
 Forbidden:
 - Writing code
@@ -170,6 +180,13 @@ Forbidden:
 Implements features and fixes.
 
 Allowed:
+- **Pull the next issue** from the groomed sprint plan (#3883): plan order,
+  filtered by relationships eligibility, a WIP limit read from the board and
+  open PRs, and a file-overlap check against work already in flight. An
+  overlapping candidate is deferred, never pulled in parallel — scheduling is
+  how conflicts are avoided rather than resolved
+- Claim it: Status → In Progress, then assign itself (the actor doing the
+  work owns the transition)
 - Create branches
 - Write code and tests
 - Open PRs
@@ -177,6 +194,7 @@ Allowed:
 - Assign review-agent
 
 Scripts:
+- developer_pull_next.sh [--sprint-scoped] — the pull decision
 - developer_create_branch.sh <ISSUE>
 - developer_submit_for_review.sh <ISSUE> "<PR TITLE>"
 - validate-web-routes.sh (validates web proxy routes match backend endpoints)

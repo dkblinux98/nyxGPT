@@ -38,6 +38,7 @@ fails if it drifts. Do not hand-edit.
 | `delete_branch_on_pr_close.yml` | pull_request | Delete Branch on PR Close Without Merge |
 | `developer_auto_implement.yml` | issues, issue_comment | Developer Agent Auto-Implement |
 | `developer_huddle_position.yml` | issue_comment | Developer Agent - Huddle Position |
+| `developer_pull_next_issue.yml` | repository_dispatch | Developer Agent - Pull Next Issue |
 | `ensure_project_hygiene.yml` | issues, pull_request | Ensure Project Hygiene |
 | `file_phase6_issues.yml` | workflow_dispatch | File Phase 6 Issues |
 | `gh_query.yml` | workflow_dispatch | GH Query (read-only) |
@@ -55,7 +56,6 @@ fails if it drifts. Do not hand-edit.
 | `list_issues_by_status.yml` | workflow_dispatch | List Issues By Status |
 | `macos-brew-smoke.yml` | pull_request, workflow_dispatch, workflow_call | macOS Brew Smoke |
 | `notify-merge-conflicts.yml` | pull_request, push, workflow_dispatch | Notify Merge Conflicts |
-| `notify_scrum_ready.yml` | repository_dispatch | Scrummaster Agent - Select and Start Next Issue |
 | `pr_project_status_on_close.yml` | pull_request | PR Project Status on Close |
 | `project-hygiene-smoke.yml` | push, pull_request, workflow_dispatch | Project Hygiene Smoke |
 | `project_workflows_dump.yml` | workflow_dispatch | Project Workflows Dump |
@@ -74,6 +74,7 @@ fails if it drifts. Do not hand-edit.
 | `retro_review_rounds_dump.yml` | workflow_dispatch | Retro Dashboard - Dump Review Rounds |
 | `retro_spend_dump.yml` | workflow_dispatch | Retro Dashboard - Dump Spend Telemetry |
 | `review_agent_auto_review.yml` | issue_comment, pull_request_review | Review Agent Execute Decision |
+| `scrummaster_groom_sprint.yml` | workflow_dispatch | Scrummaster Agent - Groom the Sprint |
 | `scrummaster_huddle_mediation.yml` | issue_comment | Scrummaster Agent - Huddle Mediation |
 | `scrummaster_sprint_reorg_apply.yml` | issue_comment | Scrummaster Agent - Apply Sprint Reorg |
 | `scrummaster_sprint_report.yml` | schedule, workflow_dispatch | Scrummaster Agent - Sprint Report |
@@ -100,10 +101,12 @@ fails if it drifts. Do not hand-edit.
 | `create_phase6.sh` | File the Phase 6 issue set from product_management/PHASE_6_PLAN.md (2026-07-31 rewrite) into the owner-created milestone and the t |
 | `developer_analyze_failure.sh` | Intelligent failure analysis for developer workflow Analyzes workflow failures and attempts auto-fixes for common issues |
 | `developer_create_branch.sh` | Creates and checks out a branch off the current release branch |
+| `developer_pull_next.sh` | Selection, in the developer's context (#3883) |
 | `developer_submit_for_review.sh` | "<SingleLabel>: <Issue Title> (#<N>)" |
 | `dispatch_conflict_resolution.sh` | route a conflicted PR (#3801) |
 | `drain_gate.sh` | acceptance drain gate watcher (#3730) |
 | `ensure_issue_hygiene.sh` | fill-if-missing project hygiene for one issue |
+| `groom_sprint.sh` | Grooming: write the sprint plan doc the developers pull from (#3908) |
 | `manually_trigger_pr_review.sh` | Manually triggers a code review for a PR. This is useful for: |
 | `pr_close_project_status.sh` | stamp a merged/closed PR's project item to the terminal PR lane (STATUS_CLOSED) |
 | `promote_accepted_features.sh` | Promote issues whose acceptance blockers are all accepted (owner flow, 2026-08-02; native relationships since #3731, owner decisio |
@@ -114,7 +117,6 @@ fails if it drifts. Do not hand-edit.
 | `review_accept_and_merge.sh` | Merges the PR into the current release branch (merge commit) and deletes the PR branch, then: |
 | `review_ensure_handoff.sh` | dispatch-mode post-review handoff backstop (#3704) |
 | `scrummaster_dispatch_next.sh` | Runs the #3665 fall-through dispatch loop: select the next eligible |
-| `scrummaster_next_issue.sh` | Selects the next Backlog issue (lowest Phase, lowest issue number) |
 | `scrummaster_sprint_reorg_apply.sh` | Applies the most recent unapplied sprint reorganization proposal posted by |
 | `scrummaster_sprint_report.sh` | Computes sprint standing for the active Sprint (done / in-review / |
 | `scrummaster_start_issue.sh` | For a claimable Backlog issue (unassigned, or assigned only to the |
