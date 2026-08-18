@@ -609,9 +609,24 @@ of three honest states rather than a binary healthy/unhealthy that treats
 
 A genuine kubectl failure against a reachable cluster (e.g. an RBAC denial)
 is reported as its own distinguishable **error** state, never silently
-folded into "not deployed". Outside Kubernetes mode (native/terraform),
+folded into "not deployed" — and kubectl's own sentence travels in the
+state's message. Outside Kubernetes mode (native/terraform),
 `status`/`/admin/canary` say so explicitly and name which mode provides
 canary, instead of inferring "not applicable" from a failed kubectl call.
+
+**Unhealthy and failed rollouts name the Kubernetes reason (#3831).** "0/1
+ready" is a symptom, not a diagnosis: the Deployment's own status never says
+*why* a Pod isn't serving. When a track is unhealthy, or a rollout doesn't
+finish inside its timeout, `canary.py` reads the Pods behind that
+Deployment's own selector and appends what Kubernetes said —
+`Unschedulable: 0/1 nodes are available: 1 Insufficient memory`,
+`ImagePullBackOff`, `CrashLoopBackOff`, a container's termination reason, or
+the readiness condition, whichever applies. That reason reaches the CLI, the
+`/admin/canary` error card and the API's `409` detail (which also carries the
+failing step's kubectl stderr). A healthy track costs no extra call — the
+Pods are only queried when there is something to explain. Evidence:
+`.github/workflows/canary-pod-reason-smoke.yml` asserts it on a real kind
+cluster, against a Pod the scheduler actually refuses.
 
 ### SRE/admin dashboard
 
