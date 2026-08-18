@@ -1789,7 +1789,9 @@ notify_human_escalation() {
 # Unresolved-escalation pause backstop (#3687)
 # -------------------------
 # "Unresolved escalation" = an open issue currently assigned to
-# HUMAN_OWNER. Both escalation paths (the review agent's 3-cycle breaker
+# HUMAN_OWNER, excluding the release tracking issue (RELEASE_ISSUE_NUMBER),
+# which is owner-assigned by design for the whole life of a release
+# (#3868). Both escalation paths (the review agent's 3-cycle breaker
 # and the huddle's type-(c) immediate/spec-ambiguity escalation) end in
 # assign_issue_verified(issue, HUMAN_OWNER) on a still-open issue; the
 # owner resolving it means reassigning it away or closing it. Purely

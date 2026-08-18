@@ -608,7 +608,11 @@ Escalations (§6's 3-cycle limit, or §6b's type-(c)/type-(b)-deadlock
 escalate) must not silently accumulate: one escalated item is normal
 traffic, but two or more open at once usually signals something systemic
 (bad base commit, poisoned suite, review-prompt regression). "Unresolved
-escalation" = an open issue currently assigned to `HUMAN_OWNER`
+escalation" = an open issue currently assigned to `HUMAN_OWNER`, **excluding
+the release tracking issue** (`RELEASE_ISSUE_NUMBER`), which is owner-assigned
+by design for the whole life of a release and would otherwise inflate the count
+by one forever, dropping the effective pause threshold from 2 to 1 (#3868 — the
+same exemption the drain gate applies)
 (`count_unresolved_escalations`/`escalation_pause_gate`,
 `scripts/agents/lib/gh_project.sh`) — purely derived from live issue state,
 no hidden counter. `scrummaster_dispatch_next.sh` checks this gate before

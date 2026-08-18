@@ -45,7 +45,11 @@ parked items (with revisit condition), open questions.
 Before dispatching, `scrummaster_dispatch_next.sh` checks
 `escalation_pause_gate` (`scripts/agents/lib/gh_project.sh`):
 "unresolved escalation" = an open issue currently assigned to
-`HUMAN_OWNER` (`count_unresolved_escalations`) -- purely derived from live
+`HUMAN_OWNER`, **excluding the release tracking issue**
+(`RELEASE_ISSUE_NUMBER`), which is owner-assigned by design for the whole
+life of a release and would otherwise inflate the count by one forever,
+dropping the effective pause threshold from 2 to 1 (#3868 -- the same
+exemption the drain gate applies). Purely derived from live
 issue state, no hidden counter to drift out of sync. Both escalation paths
 (the review agent's 3-cycle breaker, and the huddle's type-(c)/deadlock
 escalation, see below) end in exactly that state.
