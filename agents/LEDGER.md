@@ -1003,6 +1003,27 @@ are absent here by design (relocated to the annex; IDs are never reused).
   #3854, #3857, #3859).
   Re-verify when: #3860 lands the end-to-end assertions, at which point this
   entry is superseded rather than re-verified.
+- **V-033** · 2026-08-18 — **Only the Kubernetes mode wires the chat-session
+  backend; every other install path runs the `file` default.** `k8s/configmap.yaml`
+  sets `NYXGPT_SESSION_BACKEND=cassandra` (**V-012**), but nothing in
+  `terraform/`, `docker/`, `src/nyxgpt/cloud_provision.py`,
+  `src/nyxgpt/cloud_deploy.py` or `src/nyxgpt/ops.py` writes a session-backend
+  setting, so a provisioned EC2 instance silently stores sessions as JSON files
+  and the cross-mode shared-session guarantee (#3590) does not hold for the
+  cloud mode — do not generalize **V-012** beyond k8s. Corollary from the same
+  session: nothing except a RAG ingest (or a Cassandra-backend session write)
+  creates the `nyxgpt` keyspace, and the RAG collections endpoints fail on its
+  absence rather than degrade (`USE nyxgpt` inside `list_collections`; the
+  create endpoint checks duplicates before `ensure_schema`), so a genuinely
+  fresh Cassandra shows an unusable RAG Collections page until the first
+  ingest.
+  Method: tree-wide grep for `session_backend|NYXGPT_SESSION_BACKEND`
+  (2026-08-18 — hits only in k8s/, docs/, and the config/session source), plus
+  live reproduction on the owner's rc12 EC2 acceptance deploy: chats landed as
+  files, both collections endpoints returned `Keyspace 'nyxgpt' does not
+  exist`, and a single ingest recovered the page.
+  Re-verify when: #3864 / #3865 land — each retires one half of this entry.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
