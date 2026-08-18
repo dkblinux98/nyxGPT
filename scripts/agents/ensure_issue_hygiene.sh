@@ -51,6 +51,41 @@ require_gh_auth
 
 echo "Applying fill-if-missing project hygiene for issue #$ISSUE..."
 
+# ---- what to do when a project read or write fails ---------------------
+# Called at top level (never inside a command substitution -- an `exit` in a
+# subshell exits only the subshell) whenever a project-item operation fails.
+#
+# A project item that GitHub can no longer resolve is not this run's failure:
+# the card was deleted, or the issue was moved off this board, WHILE hygiene
+# was working on it. There is then nothing left to fill and the correct
+# outcome is a clean finish. #3811 / run 31926723483 is the case: a support
+# ticket that should never have reached the development board was moved off
+# it by hand mid-run, and hygiene -- having already set Status and Priority
+# -- died on "Could not resolve to a node with the global id 'PVTI_...'",
+# leaving an unexplained red run behind a correct human action.
+#
+# Anything else stays loud. A rate limit or transport error means the item is
+# probably fine and simply unwritten, which is a real failure to re-run.
+handle_project_item_failure() {
+  local context="$1"
+  case "$(project_item_state "$ITEM_ID")" in
+    gone)
+      echo "::notice::Project item for issue #$ISSUE no longer exists (while $context)."
+      echo "The issue was removed from the ${PROJECT_OWNER}#${PROJECT_NUMBER} board while hygiene was running —"
+      echo "there is nothing further to fill. Finishing cleanly rather than failing the run."
+      exit 0
+      ;;
+    present)
+      echo "::error::Failed while $context on issue #$ISSUE (its project item still exists)"
+      exit 1
+      ;;
+    *)
+      echo "::error::Failed while $context on issue #$ISSUE, and could not determine whether its project item still exists"
+      exit 1
+      ;;
+  esac
+}
+
 # ---- board state, before we add anything -------------------------------
 # "Not on the board yet" and "on the board with no Status" are different
 # situations that both read back as an empty Status (#3816). The first is a
@@ -62,8 +97,17 @@ if [[ -z "$PRE_ITEM_ID" ]]; then
   BOARD_STATE="new"
   echo "Board state: issue #$ISSUE is not on the project board yet — adding it"
 else
-  PRE_STATUS="$(project_field_value "$PRE_ITEM_ID" "$STATUS_FIELD")"
-  if [[ -n "$PRE_STATUS" ]]; then
+  # This read is descriptive, not decisive -- every write below re-reads
+  # through fill_project_field_if_empty. It runs before ITEM_ID is resolved,
+  # so it cannot use handle_project_item_failure; a failure here (including
+  # the card vanishing between the lookup and this call) just leaves the
+  # board state unreported, and ensure_issue_in_project re-resolves next.
+  rc=0
+  PRE_STATUS="$(project_field_value "$PRE_ITEM_ID" "$STATUS_FIELD")" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    BOARD_STATE="unreadable"
+    echo "Board state: could not read Status on the existing project item for issue #$ISSUE — continuing"
+  elif [[ -n "$PRE_STATUS" ]]; then
     BOARD_STATE="populated"
     echo "Board state: issue #$ISSUE is already on the board with Status '$PRE_STATUS'"
   else
@@ -103,7 +147,9 @@ FILLED=()
 # a value that appears between the report below and the mutation still wins.
 
 # ---- Status ------------------------------------------------------------
-CURRENT_STATUS="$(project_field_value "$ITEM_ID" "$STATUS_FIELD")"
+rc=0
+CURRENT_STATUS="$(project_field_value "$ITEM_ID" "$STATUS_FIELD")" || rc=$?
+[[ "$rc" -eq 0 ]] || handle_project_item_failure "reading Status"
 if [[ -n "$CURRENT_STATUS" ]]; then
   echo "✓ Status: already '$CURRENT_STATUS' — leaving as-is"
 else
@@ -117,15 +163,14 @@ else
     2)
       echo "✓ Status: a value appeared while hygiene was running — leaving it as-is"
       ;;
-    *)
-      echo "::error::Failed to set Status on issue #$ISSUE"
-      exit 1
-      ;;
+    *) handle_project_item_failure "setting Status" ;;
   esac
 fi
 
 # ---- Priority ----------------------------------------------------------
-CURRENT_PRIORITY="$(project_field_value "$ITEM_ID" "Priority")"
+rc=0
+CURRENT_PRIORITY="$(project_field_value "$ITEM_ID" "Priority")" || rc=$?
+[[ "$rc" -eq 0 ]] || handle_project_item_failure "reading Priority"
 if [[ -n "$CURRENT_PRIORITY" ]]; then
   echo "✓ Priority: already '$CURRENT_PRIORITY' — leaving as-is"
 else
@@ -137,15 +182,14 @@ else
       FILLED+=("Priority: P1 - High")
       ;;
     2) echo "✓ Priority: a value appeared while hygiene was running — leaving it as-is" ;;
-    *)
-      echo "::error::Failed to set Priority on issue #$ISSUE"
-      exit 1
-      ;;
+    *) handle_project_item_failure "setting Priority" ;;
   esac
 fi
 
 # ---- Effort ------------------------------------------------------------
-CURRENT_EFFORT="$(project_field_value "$ITEM_ID" "Effort")"
+rc=0
+CURRENT_EFFORT="$(project_field_value "$ITEM_ID" "Effort")" || rc=$?
+[[ "$rc" -eq 0 ]] || handle_project_item_failure "reading Effort"
 if [[ -n "$CURRENT_EFFORT" ]]; then
   echo "✓ Effort: already '$CURRENT_EFFORT' — leaving as-is"
 else
@@ -157,10 +201,7 @@ else
       FILLED+=("Effort: XS")
       ;;
     2) echo "✓ Effort: a value appeared while hygiene was running — leaving it as-is" ;;
-    *)
-      echo "::error::Failed to set Effort on issue #$ISSUE"
-      exit 1
-      ;;
+    *) handle_project_item_failure "setting Effort" ;;
   esac
 fi
 
@@ -186,7 +227,9 @@ fi
 # passing, and the old greedy web|ui first-match mis-stamped them (e.g. #3415
 # stamped web-ui because its body said "Web tier"). The project's Module
 # option was renamed observability -> sre (owner, 2026-07-29).
-CURRENT_MODULE="$(project_field_value "$ITEM_ID" "Module")"
+rc=0
+CURRENT_MODULE="$(project_field_value "$ITEM_ID" "Module")" || rc=$?
+[[ "$rc" -eq 0 ]] || handle_project_item_failure "reading Module"
 if [[ -n "$CURRENT_MODULE" ]]; then
   echo "✓ Module: already '$CURRENT_MODULE' — leaving as-is"
 else
@@ -225,10 +268,7 @@ else
       FILLED+=("Module: $MODULE")
       ;;
     2) echo "✓ Module: a value appeared while hygiene was running — leaving it as-is" ;;
-    *)
-      echo "::error::Failed to set Module on issue #$ISSUE"
-      exit 1
-      ;;
+    *) handle_project_item_failure "setting Module" ;;
   esac
 fi
 
@@ -237,7 +277,9 @@ fi
 # SPRINT_TIMEZONE (owner rule: sprint midnights are Eastern, not UTC). A failed
 # Sprint write must never abort hygiene — Milestone still needs applying, and
 # Sprint is "current sprint (if active)".
-CURRENT_SPRINT="$(project_field_value "$ITEM_ID" "Sprint")"
+rc=0
+CURRENT_SPRINT="$(project_field_value "$ITEM_ID" "Sprint")" || rc=$?
+[[ "$rc" -eq 0 ]] || handle_project_item_failure "reading Sprint"
 if [[ -n "$CURRENT_SPRINT" ]]; then
   echo "✓ Sprint: already '$CURRENT_SPRINT' — leaving as-is"
 else

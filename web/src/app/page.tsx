@@ -57,6 +57,13 @@ type Info = {
 type SupportContext = {
   /** GitHub's issue form, with version and platform already filled in. */
   issue_form_url: string;
+  /**
+   * One prefilled filing link per ticket type (#3811). The filer classifies
+   * the ticket here rather than on GitHub, which is the only reason the type
+   * is recorded at all -- the Support project types tickets with a project
+   * field and nothing maps a GitHub form answer onto one.
+   */
+  ticket_types?: Array<{ value: string; description: string; url: string }>;
   /** Says plainly that filing needs internet and an account; docs do not. */
   network_note: string;
 };
@@ -1399,10 +1406,10 @@ function Home() {
               {/* Divider */}
               <div style={{ height: 1, background: 'var(--border-light)', margin: '6px 0' }} />
 
-              {/* Support (collapsible group) -- exactly two items, Docs and
-                  File an Issue (#3745). This is the only documentation and
-                  reporting path a user who installed from PyPI or Homebrew
-                  has: they never checked the repo out. */}
+              {/* Support (collapsible group) -- Docs, and a File an Issue
+                  entry per ticket type (#3745, #3811). This is the only
+                  documentation and reporting path a user who installed from
+                  PyPI or Homebrew has: they never checked the repo out. */}
               <button
                 onClick={() => {
                   setShowSupportSubmenu((prev) => !prev);
@@ -1462,37 +1469,79 @@ function Home() {
                     <span>Docs</span>
                   </Link>
 
-                  {/* File an Issue -- opens GitHub's issue form with this
-                      install's version and platform prefilled. Needs
-                      internet and a GitHub account, hence the title text and
-                      the disabled state until the link resolves. */}
-                  <a
-                    href={supportContext?.issue_form_url ?? '#'}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    title={
-                      supportContext?.network_note ??
-                      'Filing an issue opens GitHub and needs internet access and a GitHub account.'
-                    }
-                    aria-disabled={!supportContext}
+                  {/* File an Issue -- one entry per ticket type (#3811). The
+                      filer classifies the ticket HERE, in nyxGPT, and the
+                      choice travels as a prefill for the form's `ticket_type`
+                      dropdown; the Support project's `Ticket Type` field is
+                      then set from it at triage. Asking on GitHub instead
+                      would work, but every ticket filed before #3811 arrived
+                      unclassified because nothing asked at all.
+                      Each link also carries this install's version and
+                      platform, needs internet and a GitHub account (hence the
+                      title text), and stays disabled until the context
+                      resolves. */}
+                  <div
                     style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      padding: '8px 16px 8px 32px',
-                      textDecoration: 'none',
-                      color: 'var(--foreground)',
-                      fontSize: 14,
-                      opacity: supportContext ? 1 : 0.5,
-                      pointerEvents: supportContext ? 'auto' : 'none',
+                      padding: '8px 16px 2px 32px',
+                      fontSize: 12,
+                      opacity: 0.7,
+                      fontWeight: 600,
                     }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--button-hover)')}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-                    onClick={() => setShowSettingsMenu(false)}
                   >
-                    <span>🐛</span>
-                    <span>File an Issue</span>
-                  </a>
+                    File an Issue
+                  </div>
+                  {(supportContext?.ticket_types ?? []).map((ticketType) => (
+                    <a
+                      key={ticketType.value}
+                      href={ticketType.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title={`${ticketType.description}. ${
+                        supportContext?.network_note ?? ''
+                      }`.trim()}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        padding: '8px 16px 8px 40px',
+                        textDecoration: 'none',
+                        color: 'var(--foreground)',
+                        fontSize: 14,
+                      }}
+                      onMouseEnter={(e) =>
+                        (e.currentTarget.style.background = 'var(--button-hover)')
+                      }
+                      onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                      onClick={() => setShowSettingsMenu(false)}
+                    >
+                      <span>🐛</span>
+                      <span>{ticketType.value}</span>
+                    </a>
+                  ))}
+                  {/* Until the context resolves -- and on an older backend
+                      that reports no ticket types -- one disabled placeholder
+                      rather than a menu that silently has no filing path. */}
+                  {!supportContext?.ticket_types?.length && (
+                    <span
+                      title={
+                        supportContext?.network_note ??
+                        'Filing an issue opens GitHub and needs internet access and a GitHub account.'
+                      }
+                      aria-disabled="true"
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        padding: '8px 16px 8px 40px',
+                        color: 'var(--foreground)',
+                        fontSize: 14,
+                        opacity: 0.5,
+                      }}
+                    >
+                      <span>🐛</span>
+                      <span>Loading…</span>
+                    </span>
+                  )}
                 </div>
               )}
 

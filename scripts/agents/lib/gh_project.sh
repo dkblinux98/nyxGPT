@@ -250,6 +250,14 @@ graphql() {
   raw="$(gh api graphql -f query="$q" "$@" 2>&1)" || {
     echo "$raw" >&2
     _die "gh api graphql failed"
+    # Explicit, not left to _die (#3811). _die `return`s rather than `exit`s
+    # when the library is sourced, and it was relying on `set -e` to turn
+    # that into an abort -- but `set -e` is suppressed inside a command
+    # substitution whose status is being TESTED, which is exactly how a
+    # caller checks for a failed call. Without this, `x="$(graphql ...)" ||
+    # handle_it` fell through: the function carried on past the error and
+    # echoed the error text as if it were the response.
+    return 1
   }
 
   if [[ "$raw" != \{* ]]; then
@@ -428,6 +436,53 @@ find_issue_project_item() {
   return 0
 }
 
+# Does `item_id` still name a live project item? Echoes one of:
+#
+#   present  GitHub resolved it
+#   gone     GitHub says it does not exist ("Could not resolve to a node
+#            with the global id ..."), i.e. the card was deleted or the
+#            issue was moved off this board since the id was read
+#   unknown  the question could not be answered (rate limit, transport)
+#
+# Why this is not just "did the call fail": those three demand different
+# responses, and collapsing them is how a routine board move became a red
+# run. #3811 / run 31926723483: a support ticket was hand-moved off the
+# development project while hygiene was mid-flight, the next field read hit
+# a dangling PVTI_ id, `graphql` _die()d, and the whole run failed with an
+# unexplained global-id error. A vanished item means there is nothing left
+# to fill -- which is a clean finish, not a failure. A transport error still
+# has to be loud, because the item may be perfectly fine and unwritten.
+#
+# Deliberately does NOT go through graphql(): that helper _die()s on a
+# non-zero `gh` exit, and the whole point here is to inspect that failure.
+project_item_state() {
+  require_cmd jq
+  local item_id="$1"
+  local q='query($item:ID!){ node(id:$item){ ... on ProjectV2Item { id } } }'
+
+  local raw rc=0
+  raw="$(gh api graphql -f query="$q" -F item="$item_id" 2>&1)" || rc=$?
+
+  if [[ $rc -eq 0 ]] && [[ "$(echo "$raw" | jq -r '.data.node.id // empty' 2>/dev/null)" == "$item_id" ]]; then
+    echo "present"
+    return 0
+  fi
+
+  # GitHub reports a dangling node id as a NOT_FOUND GraphQL error, which
+  # `gh` surfaces on stderr with a non-zero exit. Match the error type where
+  # it is machine-readable and fall back to the message text, which is what
+  # `gh` prints when it cannot parse the body as JSON.
+  local err_type=""
+  err_type="$(echo "$raw" | jq -r '[.errors[]?.type] | join(",")' 2>/dev/null || true)"
+  if [[ "$err_type" == *NOT_FOUND* ]] || [[ "$raw" == *"Could not resolve to a node with the global id"* ]]; then
+    echo "gone"
+    return 0
+  fi
+
+  _warn "Could not determine whether project item ${item_id} still exists: ${raw}"
+  echo "unknown"
+}
+
 ensure_issue_in_project() {
   require_cmd jq
   local issue_number="$1"
@@ -491,7 +546,17 @@ project_field_value() {
       }
     }
   }'
-  graphql "$q" -F item="$item_id" | jq -r --arg f "$field_name" '
+  # NOT `graphql ... | jq ...` (#3811): in a pipeline the wrapper's failure
+  # is the *first* segment's status, which the pipeline discards, so a failed
+  # read returned empty output and exit 0 -- indistinguishable from "the
+  # field is unset". That is the clobber fill_project_field_if_empty exists
+  # to prevent, arrived at from the other direction: a rate-limited read
+  # would have reported every field empty and hygiene would have written its
+  # defaults over all of them. Take the response into a variable first so a
+  # failed read is a failed read.
+  local resp
+  resp="$(graphql "$q" -F item="$item_id")" || return 1
+  echo "$resp" | jq -r --arg f "$field_name" '
     .data.node.fieldValues.nodes[]
     | select(.field.name == $f)
     | (.name // .title // .text // empty)

@@ -30,6 +30,12 @@ Fixtures the suite writes into ``$GH_STUB_DIR``:
                        "after_issue_reads": int,  # REST issue reads
                        "fields": {name: value}, "milestone": str}
                       One trigger, either counter; both value keys optional.
+  ``vanish.json``     {"after_reads": int}
+                      The project item stops resolving after N field-value
+                      reads: every later `node(id:)` query fails the way
+                      GitHub really does, with "Could not resolve to a node
+                      with the global id". Models the card being deleted or
+                      the issue moved off the board mid-run (#3811).
 
 Logs written into ``$GH_STUB_DIR``:
   ``gh.log``          every argv
@@ -147,6 +153,30 @@ def _state() -> dict:
 
 def _save(state: dict) -> None:
     _write_json("state.json", state)
+
+
+def _item_has_vanished(state: dict) -> bool:
+    """Has the project item stopped resolving yet? (``vanish.json``, #3811)."""
+    vanish = _read_json("vanish.json", None)
+    if not vanish:
+        return False
+    return state["field_reads"] >= int(vanish.get("after_reads", 1))
+
+
+def _emit_dangling_node_error() -> None:
+    """Fail the way `gh` does on a project item id GitHub no longer knows.
+
+    The real CLI exits non-zero and prints the GraphQL error as text on
+    stderr -- which is why the caller cannot simply parse `.errors` -- and
+    that text is the whole signal available to tell "this card is gone" apart
+    from "the API is unhappy". Reproduce it verbatim; a tidier stub error
+    would let a handler pass here and still die on the real thing.
+    """
+    sys.stderr.write(
+        "gh: Could not resolve to a node with the global id "
+        "'PVTI_lADOAlG7Cs4A2Ol1zgh3nLQ' (HTTP 200)\n"
+    )
+    sys.exit(1)
 
 
 def _maybe_race(state: dict) -> None:
@@ -292,7 +322,17 @@ def _graphql(query: str, params: dict, jq_filter: str | None) -> None:
     if "fields(first:100)" in query:
         _emit(_fields_payload(), jq_filter)
 
+    # The existence probe (`project_item_state`): answers "is this card still
+    # there?" without going through the graphql() wrapper, so it must be
+    # served whether the item is live or gone.
+    if "... on ProjectV2Item { id }" in query and "fieldValues" not in query:
+        if _item_has_vanished(state):
+            _emit_dangling_node_error()
+        _emit({"data": {"node": {"id": state.get("item_id")}}}, jq_filter)
+
     if "fieldValues(first:50)" in query:
+        if _item_has_vanished(state):
+            _emit_dangling_node_error()
         payload = _field_values_payload(state)
         # Count the read, then let the injected writer land: the NEXT read of
         # this field (hygiene's guard, taken immediately before its write)

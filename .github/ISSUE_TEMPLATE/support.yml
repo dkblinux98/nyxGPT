@@ -4,9 +4,14 @@ title: "support: "
 # Template-declared labels apply for every filer, including someone with no
 # write access to this repo -- which is the filer this form exists for. The
 # label is also the routing key: the nyxGPT Support project auto-adds
-# `is:issue label:Support`, and the agent loop skips these issues entirely
-# (see scripts/agents/lib/support_label.py). A label parameter in the URL
-# would NOT do this -- GitHub silently drops it for non-collaborators.
+# `is:issue is:open label:Support`, and the agent loop skips these issues
+# entirely (see scripts/agents/lib/support_label.py). A label parameter in
+# the URL would NOT do this -- GitHub silently drops it for non-collaborators.
+#
+# This only works while the label EXISTS: GitHub drops a template-declared
+# label that does not, without erroring, and the form keeps accepting tickets
+# that route nowhere (#3810). `admin_ensure_support_label.yml` guarantees it
+# and `support_intake_guard.yml` fails loudly if one slips through anyway.
 labels: ["Support"]
 body:
   - type: markdown
@@ -17,8 +22,29 @@ body:
         This form is for **users of nyxGPT**. You do not need to know anything
         about the internals — describe what you were doing and what happened.
 
-        The version and platform fields are prefilled when you open this form
-        from the web UI under **Support → File an Issue**.
+        The ticket type, version and platform fields are prefilled when you
+        open this form from the web UI under **Support → File an Issue**.
+
+  # The ticket type is a form field, not a label. The Support project holds
+  # `Ticket Type` as a project FIELD (Bug Found / Feature Request / Question)
+  # and there is no GitHub mechanism that maps a form dropdown to either a
+  # label or a project field -- a dropdown answer lands in the issue BODY,
+  # and `labels:` above is a static template-level list. So the filer's
+  # answer is collected here, rendered into the body under its own heading,
+  # and the owner sets the project field from it at triage (#3811). Priority
+  # is triage-set for the same reason and is deliberately not asked: it is a
+  # judgement about the queue, which the filer has no way to make.
+  - type: dropdown
+    id: ticket_type
+    attributes:
+      label: Ticket type
+      description: What kind of ticket is this?
+      options:
+        - Bug Found
+        - Feature Request
+        - Question
+    validations:
+      required: true
 
   - type: textarea
     id: what_happened
