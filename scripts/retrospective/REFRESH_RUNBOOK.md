@@ -97,18 +97,19 @@ run's "Land it on the default branch" step rather than re-dispatching.
    one walks GitHub Actions run history across several workflows, including a
    per-run `jobs`/`timing` API call for each `developer_auto_implement.yml`
    and cost-tracked run — expect several minutes, not the ~1 min of the other
-   dumps), then `git pull` once the merge workflow has landed it. If dispatch
-   fails or `data/spend.json` doesn't exist yet, skip; the builder omits the
-   spend section entirely rather than erroring.
+   dumps), then `git pull` once the merge workflow has landed it.
+
+   **A failed dump is not a step you skip** (#3808). If the dispatch fails or
+   `data/spend.json` still isn't there afterwards, read that run and say so —
+   see "When a dump does not land" below.
 
 4b. **Refresh churn-cost telemetry** → `data/churn.json` (#3776).
    Dispatch the workflow `retro_churn_dump.yml` on the default branch
    (`actions_run_trigger`, method `run_workflow`; optional `window_days`
    input, default 30), wait for completion (it downloads one job log per
    Claude round in the window — minutes, not seconds), then `git pull` once the
-   merge workflow has landed it. If dispatch fails or `data/churn.json` doesn't
-   exist yet, skip; the builder omits the churn section entirely rather than
-   erroring.
+   merge workflow has landed it. As with spend, a failed dump is reported, not
+   skipped — see "When a dump does not land" below.
 
    Where spend telemetry says what a run *cost to run*, churn cost says what
    the agent *spent thinking* and how much of that was re-onboarding. One
@@ -187,9 +188,14 @@ run's "Land it on the default branch" step rather than re-dispatching.
    → `scripts/retrospective/retro.html`.
 
    The builder prints the build time and, under it, which inputs are **stale**
-   (a day or more behind the build) or **unstamped** (#3807). Read those two
-   lines before publishing: a source listed there is one whose dump did not
-   actually land in this pass, and the page will say so to the reader.
+   (a day or more behind the build), **unstamped** (#3807) or **missing**
+   (#3808). Read those three lines before publishing: a source listed there is
+   one whose dump did not actually land in this pass, and the page will say so
+   to the reader.
+
+   **Exit status is part of the output.** A build with every input present
+   exits 0; a build missing any input writes the page and exits **2**, naming
+   each missing file and the dump that owes it. That is the gate — see below.
 
 7. **Publish** the built file with the Artifact tool to the URL above
    (`url` parameter — same URL, do not create a new artifact). Favicon stays 🔍.
@@ -228,6 +234,42 @@ run's "Land it on the default branch" step rather than re-dispatching.
    `scripts/retrospective/` — both the publish script and the merge workflow
    refuse anything else — and never push to any other branch. Opening the
    pull request is the merge workflow's job, not yours.
+
+## When a dump does not land (#3808)
+
+The rule the old wording broke: **a refresh never publishes a
+quietly-incomplete dashboard.** Steps 4 and 4b used to say to skip a failed
+dump because "the builder omits the section entirely rather than erroring".
+That is exactly how `retro_churn_dump.yml` — which had failed on *every run it
+ever had* — produced a normal-looking dashboard with the churn section simply
+absent, for a day, with nothing anywhere reporting it. A missing panel is
+indistinguishable from a feature that was never built.
+
+What happens now, and what you owe the owner:
+
+1. **The build tells you.** `missing sources: churn.json (retro_churn_dump.yml)`
+   in the output, and exit status **2**. The page is still written.
+2. **The page tells the reader.** That section renders a "Section unavailable —
+   this is missing data, not zero" notice naming the data file and linking the
+   dump's runs, instead of disappearing. The header counts the unavailable
+   sections next to the build stamp, and the provenance table marks the file
+   absent.
+3. **Read the run before re-dispatching.** Open the named workflow's most
+   recent run and find the actual failure. Guessing and re-dispatching is how
+   one defect gets patched three times.
+4. **Re-dispatch and rebuild** if the failure was transient. The dumps share
+   the `retro-data-branch` concurrency group, so dispatch them **one at a
+   time** — GitHub keeps only the newest *pending* run in a group and cancels
+   earlier ones, `cancel-in-progress: false` notwithstanding.
+5. **If you publish anyway**, do it deliberately: rebuild with
+   `--allow-missing-sources` (exit 0, the unavailable notices stay on the
+   page), and **report the failed dump with its run URL** in what you tell the
+   owner. "Refreshed" without that sentence is the failure this rule exists to
+   stop.
+
+The same applies to `project_fields.json` and `relationships.json`: their
+fallbacks (calendar weeks, prose attribution) keep the build usable, but a
+missing file still means a dump failed and is still reported.
 
 ## Module attribution and classification
 
