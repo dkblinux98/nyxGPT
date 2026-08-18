@@ -1,0 +1,84 @@
+name: Self-Heal Unschedulable Pod Smoke
+
+# The question this job answers: what does the self-heal watchdog DO to a Pod
+# the scheduler has refused?
+#
+# #3832 (owner acceptance, 2026-08-17, local k8s): self-heal deleted an
+# unschedulable Pod every ~15 seconds forever -- seven Pods in 4.5 minutes,
+# each `FailedScheduling: Insufficient memory`, each deletion resetting the
+# Pod's age so the operator never saw a Pod stuck long enough to diagnose. The
+# loop erased its own evidence and masked the real cause (node
+# oversubscription). Unit tests with a mocked `kubectl` cannot show that: only
+# a real scheduler really refusing a Pod, and a real ReplicaSet really
+# recreating it under a new name, can.
+#
+# scripts/self-heal-unschedulable-smoke.sh runs three halves on a real kind
+# cluster (the fault-injection rule, #3753): it first reproduces the old
+# remedy and proves it never converged, then runs real `heal_now()` passes
+# through a recording `kubectl` shim and asserts zero delete calls with the
+# scheduler's reason surfaced on the component row, then proves healing a
+# Running-but-not-ready Pod still happens and still stops at its budget even
+# though every heal renames the Pod.
+#
+# Cheap by design: no image builds, no app tier, no observability -- the claim
+# under test is about what self-heal does to a Pod's state, so the Pods are
+# `pause`/`busybox`. Scoped to the files that can break it.
+on:
+  pull_request:
+    paths:
+      - 'src/nyxgpt/self_heal.py'
+      - 'src/nyxgpt/k8s_pod_state.py'
+      - 'src/nyxgpt/ops.py'
+      - 'scripts/self-heal-unschedulable-smoke.sh'
+      - '.github/workflows/self-heal-unschedulable-smoke.yml'
+  push:
+    paths:
+      - 'src/nyxgpt/self_heal.py'
+      - 'src/nyxgpt/k8s_pod_state.py'
+      - 'src/nyxgpt/ops.py'
+      - 'scripts/self-heal-unschedulable-smoke.sh'
+      - '.github/workflows/self-heal-unschedulable-smoke.yml'
+  workflow_dispatch:
+
+# Read-only workflow: it checks out the repo and drives a local cluster; it
+# never writes to the repository or its APIs (CodeQL #33,
+# actions/missing-workflow-permissions -- same pattern as k8s-local-smoke.yml).
+permissions:
+  contents: read
+
+jobs:
+  self-heal-unschedulable-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Same scoping as the other cluster smokes: every PR that touches these
+    # files, plus the release branch itself -- a push to some other branch
+    # would spend a cluster bring-up on a change the PR run already covered.
+    if: github.event_name != 'push' || github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install nyxgpt (editable)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Create the local cluster
+        # One small single-node cluster is all this needs: the Pod under test
+        # is one the scheduler must REFUSE, which any node size satisfies.
+        run: kind create cluster --name nyxgpt-selfheal --wait 120s
+
+      - name: Run the self-heal unschedulable-Pod smoke
+        run: ./scripts/self-heal-unschedulable-smoke.sh
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          kubectl -n nyxgpt get pods -o wide || true
+          kubectl -n nyxgpt describe pods -l app=nyxgpt-api-canary-pool || true
+          kubectl -n nyxgpt get events --sort-by=.lastTimestamp | tail -40 || true
+          kubectl describe node | sed -n '/Allocated resources/,/Events/p' || true
