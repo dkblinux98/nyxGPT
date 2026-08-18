@@ -1516,6 +1516,35 @@ are absent here by design (relocated to the annex; IDs are never reused).
   Re-verify when: a `k8s/**` manifest changes a Pod's `app`/`tier` labels —
   the classification is keyed on exactly those.
 
+- **V-046** · 2026-08-18 — **Two contract tests were red on `v3.0.0` for
+  reasons no PR under review had caused, and both surfaced in the *reviewer's*
+  pytest gate rather than the author's.** (a) `agents/CONTEXT_INDEX.md` had no
+  line for `k8s-capacity-smoke.yml`: #3825 added the workflow while the index
+  contract (#3893) landed on the base in parallel, so both sides merged
+  cleanly and the *semantic* contract broke — a workflow missing from the
+  index is a workflow no agent knows exists, which is the failure mode D-021
+  exists to prevent. Git conflict resolution cannot see this class of skew;
+  only the test does, and it ran after the merge (see **V-038**: the merge
+  path does not gate on check status). (b) `test_the_source_stays_single`
+  walked the working directory with `rglob`, so `.claude-pr/CLAUDE.md` — an
+  untracked copy of `CLAUDE.md` that the review workflow's own checkout
+  leaves beside the tree — read as a second committed statement of the first
+  principles. It failed in every workspace carrying that artifact, on
+  whatever PR happened to be under review, and blamed that PR. The scan now
+  enumerates `git ls-files -- '*.md'`: the claim is about the repository, and
+  a checkout is not a working directory.
+  Method: both reproduced on `a074bbab` (2026-08-18) with the gate command
+  `python -m pytest tests/unit/`; (a) regenerated with
+  `python3 scripts/build_context_index.py` — exactly one line added, and the
+  coverage test named the missing workflow when the pre-fix index was
+  restored; (b) fault-injected by writing `.claude-pr/CLAUDE.md` and running
+  both scans side by side — the `rglob` predicate reports it as a duplicate,
+  the tracked scan does not. Standing guard for (b):
+  `test_an_untracked_workspace_copy_is_not_a_duplicate`, which injects that
+  same artifact.
+  Re-verify when: another contract test starts walking the tree with `rglob`
+  — the shape is the trap, not this one file.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
