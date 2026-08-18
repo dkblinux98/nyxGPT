@@ -1610,8 +1610,9 @@ def _add_install_arguments(parser: argparse.ArgumentParser) -> None:
             "(pip install -e) plus the Next dev server -- instead of building/downloading "
             "artifacts, so the stack runs the working tree at HEAD (#3789). With "
             "--kubernetes it builds the two container images from the working tree "
-            "instead of from the published artifacts (#3834). Requires a checkout; "
-            "without this flag the artifact path is used"
+            "instead of from the published artifacts (#3834); with --terraform it builds "
+            "the api/web images from that tree instead of pulling the published ones "
+            "(#3835). Requires a checkout; without this flag the artifact path is used"
         ),
     )
     parser.add_argument(

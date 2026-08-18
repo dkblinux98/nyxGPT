@@ -411,10 +411,17 @@ Constraints, by design:
   [`nyxgpt ops doctor`](#nyxgpt-ops-doctor) print `Install mode (native
   api/web): dev (editable checkout at …)` and tag a *running* `api`/`web`
   with `[dev]`, so a dev-mode pass can't be read as an artifact-path pass.
-  The mode is recorded in `~/.nyxGPT/install-mode.json`; a Kubernetes
-  deployment records its own in `~/.nyxGPT/install-mode-kubernetes.json` and
-  is reported separately, because one machine can run a native dev install
-  and a Kubernetes artifact deployment at once (#3834).
+  The mode is recorded in `~/.nyxGPT/install-mode.json`.
+- **Per deployment.** `--dev` means the same thing for the Kubernetes and
+  Terraform deployments — the api/web images built from the working tree
+  instead of from the published ones (see
+  [terraform.md](terraform.md#install-modes-artifact-default-and---dev)) —
+  and each records its mode in its own marker,
+  `~/.nyxGPT/install-mode-kubernetes.json` (#3834) and
+  `~/.nyxGPT/install-mode-terraform.json` (#3835). They are reported as
+  separate `Install mode (…)` lines because they are separate deployments,
+  are often in different modes, and one machine can run all three at once;
+  none ever speaks for another.
 - **Switching modes is reconciled, not layered.** Installing one mode over
   the other stops the previous mode's services first (dev LaunchAgents are
   unloaded and removed; the artifact path's brew services are stopped) and
@@ -448,6 +455,11 @@ entirely and runs that deployment's own install sequence instead). `--local`
 is required and explicit — see [terraform.md](terraform.md#one-command-bring-up-nyxgpt-ops)
 / [kubernetes.md](kubernetes.md#one-command-bring-up-nyxgpt-ops) for what
 each one does and why `--cloud` is rejected today.
+
+`--dev` composes with `--terraform`: it builds that deployment's api/web
+images from the checkout instead of deploying the published ones, and the
+deployment records and reports its own install mode
+([terraform.md](terraform.md#install-modes-artifact-default-and---dev)).
 
 Both deploy observability with the app tier, and `--skip-observability`
 means the same thing in all three modes. In `--kubernetes` mode that layer
@@ -483,6 +495,12 @@ Reports:
   exists, the line says so rather than letting a leftover record read as a
   statement about whatever *is* serving. A Kubernetes deployment's own
   install mode is reported in the Kubernetes section below.
+- **Install mode (terraform)** — the same line for the local Terraform
+  deployment when there is one (#3835), naming the images it is running and
+  tagging its `api`/`web` components. A deployment that is running with
+  nothing recorded is reported as `not recorded` (tagged `[unrecorded]` per
+  component) rather than defaulting to `artifact`, which for that path would
+  be backwards — see [terraform.md](terraform.md).
 - **Deployment mode** for each component (`api`, `web`, `ollama`, `cassandra`): whether it's
   running natively (Homebrew / the ops-managed Cassandra container) and whether a Docker
   Compose deployment of the same component is also running. If a component is reported
@@ -728,12 +746,14 @@ nyxgpt ops doctor
 
 Checks include:
 
-- The **install mode** the machine is on (printed before the findings, same
-  vocabulary as `status`). In dev mode it FAILs when the recorded checkout
-  is gone — the api/web services are then running code nothing can rebuild
-  — or when that checkout has no `web/node_modules` for the dev server to
-  start from. Fix: `nyxgpt up --dev` from a checkout, or `nyxgpt up` to
-  return to the artifact path.
+- The **install mode** each deployment on the machine is on (printed before
+  the findings, same vocabulary as `status`). In dev mode it FAILs when the
+  recorded checkout is gone — the api/web services are then running code
+  nothing can rebuild — or when that checkout has no `web/node_modules` for
+  the dev server to start from. Fix: `nyxgpt up --dev` from a checkout, or
+  `nyxgpt up` to return to the artifact path. A running dev-mode Terraform
+  deployment whose checkout is gone FAILs for the same reason: its images
+  cannot be rebuilt.
 - Required files under `~/.nyxGPT/`
 - Native service-manager availability (`brew` on macOS, `systemctl` on Linux)
 - Running services

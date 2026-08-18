@@ -62,8 +62,10 @@ from nyxgpt.install_mode import (
     INSTALL_MODE_ARTIFACT,
     INSTALL_MODE_DEV,
     SUBSTRATE_KUBERNETES,
+    SUBSTRATE_TERRAFORM,
     InstallModeState,
     clear_install_mode,
+    install_mode_file,
     read_install_mode,
     write_install_mode,
 )
@@ -3809,7 +3811,9 @@ def _reconcile_install_mode(dev: bool) -> list[OpsResult]:
             results.extend(_stop_artifact_brew_services() if dev else _remove_dev_launchagents())
         results.extend(_drop_stale_api_venv())
 
-    state = InstallModeState(mode=target, checkout=str(checkout) if checkout else None)
+    state = InstallModeState(
+        mode=target, checkout=str(checkout) if checkout else None, recorded=True
+    )
     marker = write_install_mode(target, checkout)
     results.append(OpsResult(True, f"Install mode: {state.label()}", str(marker)))
     return results
@@ -5189,7 +5193,19 @@ def _refuse_port_collision(components: list[str]) -> OpsResult | None:
 
 # --- Terraform local deployment (`nyxgpt ops install/down --terraform --local`) ---
 
-TERRAFORM_DIR = REPO_ROOT / "terraform"
+# The Terraform working directory, materialized from the packaged
+# `nyxgpt.resources/terraform/local` configuration (#3835) rather than read
+# out of a checkout's `terraform/`: `--terraform --local` has to work on a
+# machine that has no repository (CLAUDE.md's repo-less portability
+# requirement), and package data is not a directory `terraform -chdir=` can
+# be pointed at on every install (a wheel's data may be read-only, and
+# `terraform init` writes a provider cache into the config directory). Same
+# shape `nyxgpt cloud infra` already uses for `terraform/aws`
+# (`cloud_infra.sync_terraform_config`), with one difference: state stays
+# inside this directory, because `versions.tf`'s local backend path is
+# relative to it and pre-#3835 installs kept their state next to the config
+# too -- `_migrate_repo_terraform_state` moves exactly that file in.
+TERRAFORM_DIR = NYXGPT_HOME / "terraform"
 
 # Container names terraform/main.tf creates for the core stack (see docs/terraform.md).
 TERRAFORM_CONTAINERS: dict[str, str] = {
@@ -5203,13 +5219,41 @@ TERRAFORM_CONTAINERS: dict[str, str] = {
 # so `brew install terraform` fails -- install from the official tap instead.
 HASHICORP_TAP = "hashicorp/tap"
 
-# Matches terraform/variables.tf's `api_image_tag`/`web_image_tag` defaults
-# ("local") that terraform/main.tf's `docker_image.api`/`.web` resources
-# interpolate into their image `name` -- the tag `_build_terraform_docker_images`
-# pre-builds below so `terraform apply`'s own `build {}` block hits Docker's
-# layer cache instead of doing real work when the source hasn't changed.
+# Dev mode's image refs (`--terraform --local --dev`, #3835): built from the
+# checkout's working tree and never pushed anywhere, so the tag says so.
+# `_build_terraform_docker_images` pre-builds them before `terraform apply`
+# so terraform's own `build {}` block hits Docker's layer cache instead of
+# doing real work when the source hasn't changed.
 TF_API_IMAGE = "nyxgpt-api:local"
 TF_WEB_IMAGE = "nyxgpt-web:local"
+
+# The artifact path's image refs: what `.github/workflows/release-artifacts.yml`
+# publishes on every release, and the only api/web build a machine with no
+# checkout can run. Kept as repository + tag rather than one string so the
+# fallback below can re-tag without re-parsing.
+PUBLISHED_IMAGE_REPOS: dict[str, str] = {
+    "api": "ghcr.io/dkblinux98/nyxgpt-api",
+    "web": "ghcr.io/dkblinux98/nyxgpt-web",
+}
+
+# Tag used when this nyxGPT's own version has no published image. Release
+# candidates are the standing case: release-artifacts.yml runs on `released`
+# only, so an rc line publishes tarballs and wheels but no images. Falling
+# back is reported loudly (never silently), and naming the resolved digest's
+# tag is what lets an operator see the skew in `ops status`.
+PUBLISHED_IMAGE_FALLBACK_TAG = "latest"
+
+# Operator/CI override for the artifact path's image refs, mirroring
+# `NYXGPT_ARTIFACT_DIR` for the native tarballs (`_staged_service_tarball`):
+# it names images already present in (or pullable by) the local Docker
+# daemon, so a version whose images are not published yet can still be
+# deployed -- and CI can execute the artifact path against images built from
+# the ref under test instead of whatever `latest` happens to be.
+TF_IMAGE_ENV_OVERRIDES: dict[str, str] = {
+    "api": "NYXGPT_TF_API_IMAGE",
+    "web": "NYXGPT_TF_WEB_IMAGE",
+}
+
 # Matches terraform/variables.tf's `web_api_base_url` default.
 TF_WEB_API_BASE_URL_DEFAULT = "http://localhost:8000"
 
@@ -5238,8 +5282,144 @@ def _ensure_terraform_binary() -> list[OpsResult]:
     return [OpsResult(True, f"Installed terraform via {HASHICORP_TAP}")]
 
 
+def _packaged_local_terraform_dir() -> Path:
+    """Path to the packaged local-stack Terraform configuration inside `nyxgpt.resources`."""
+    return _packaged_resources_root() / "terraform" / "local"
+
+
+def _migrate_repo_terraform_state() -> list[OpsResult]:
+    """Adopt a pre-#3835 checkout-resident deployment's state and tfvars.
+
+    Before #3835 the working directory *was* `<checkout>/terraform`, so an
+    existing deployment's state file lives there. Leaving it behind would
+    orphan a live stack: `terraform apply` from the new directory would plan
+    to create the four `nyxgpt-tf-*` containers that already exist (name
+    conflicts), and `nyxgpt ops down --terraform` would destroy nothing while
+    reporting success.
+
+    The tfvars comes with it, for a quieter but worse reason: it carries the
+    deployment's `auth_api_key`, and `_ensure_terraform_tfvars` generates a
+    fresh random one when there is no file. Without this the first apply
+    after an upgrade would rotate the key of a stack the operator is already
+    using, with nothing on screen to say so.
+
+    Copies (never moves), so the old directory stays readable if anything
+    about this needs checking afterwards, and only into a location that has
+    none of its own -- anything already written here is authoritative.
+    """
+    old_dir = REPO_ROOT / "terraform"
+    results: list[OpsResult] = []
+    new_state = TERRAFORM_DIR / "terraform.tfstate"
+    old_state = old_dir / "terraform.tfstate"
+    if not new_state.exists() and old_state.is_file():
+        try:
+            data = json.loads(old_state.read_text(encoding="utf-8"))
+            has_resources = bool(data.get("resources"))
+        except (OSError, ValueError):
+            has_resources = False
+        # A post-destroy (empty) state records nothing worth carrying over --
+        # the fresh directory is equivalent, and copying it would only make
+        # this look like a migration happened.
+        if has_resources:
+            try:
+                _ensure_dir(TERRAFORM_DIR)
+                shutil.copy2(old_state, new_state)
+                backup = old_state.with_suffix(".tfstate.backup")
+                if backup.is_file():
+                    shutil.copy2(backup, new_state.with_suffix(".tfstate.backup"))
+            except OSError as e:
+                return [
+                    OpsResult(
+                        False,
+                        "Failed to migrate the checkout's Terraform state into the "
+                        "ops-managed directory",
+                        f"{old_state} -> {new_state}: {type(e).__name__}: {e}",
+                    )
+                ]
+            results.append(
+                OpsResult(
+                    True,
+                    "Migrated the checkout's Terraform state into the ops-managed directory",
+                    f"{old_state} -> {new_state}",
+                )
+            )
+
+    new_tfvars = TERRAFORM_DIR / "terraform.tfvars"
+    old_tfvars = old_dir / "terraform.tfvars"
+    if not new_tfvars.exists() and old_tfvars.is_file():
+        try:
+            _ensure_dir(TERRAFORM_DIR)
+            shutil.copy2(old_tfvars, new_tfvars)
+            os.chmod(new_tfvars, 0o600)
+        except OSError as e:
+            return results + [
+                OpsResult(
+                    False,
+                    "Failed to migrate the checkout's terraform.tfvars into the "
+                    "ops-managed directory",
+                    f"{old_tfvars} -> {new_tfvars}: {type(e).__name__}: {e}",
+                )
+            ]
+        results.append(
+            OpsResult(
+                True,
+                "Migrated the checkout's terraform.tfvars (keeping the deployment's "
+                "auth key) into the ops-managed directory",
+                f"{old_tfvars} -> {new_tfvars}",
+            )
+        )
+    return results
+
+
+def _sync_local_terraform_config() -> list[OpsResult]:
+    """Materialize the packaged local-stack Terraform configuration into `TERRAFORM_DIR`.
+
+    Idempotent: overwrites the `.tf` sources (so an upgraded nyxGPT always
+    applies its own configuration) while leaving this working directory's
+    `.terraform/` provider cache, `terraform.tfvars` and state alone. Runs
+    the pre-#3835 state migration first so a machine that deployed from a
+    checkout keeps operating on the same stack (see
+    `_migrate_repo_terraform_state`).
+    """
+    source = _packaged_local_terraform_dir()
+    if not source.is_dir():
+        return [
+            OpsResult(
+                False,
+                f"Packaged Terraform configuration not found at {source}",
+                "This nyxGPT installation is incomplete -- reinstall the package.",
+            )
+        ]
+    results = _migrate_repo_terraform_state()
+    try:
+        _ensure_dir(TERRAFORM_DIR)
+        shutil.copytree(
+            source,
+            TERRAFORM_DIR,
+            dirs_exist_ok=True,
+            ignore=shutil.ignore_patterns(".terraform", "*.tfstate", "*.tfstate.*", "*.tfvars"),
+        )
+    except OSError as e:
+        return results + [
+            OpsResult(
+                False,
+                f"Failed to materialize the Terraform configuration in {TERRAFORM_DIR}",
+                f"{type(e).__name__}: {e}",
+            )
+        ]
+    return results + [OpsResult(True, f"Synced the Terraform configuration to {TERRAFORM_DIR}")]
+
+
 def _ensure_terraform_tfvars(api_key: str | None) -> list[OpsResult]:
-    """Bootstrap terraform/terraform.tfvars from the example if it doesn't exist yet."""
+    """Bootstrap `~/.nyxGPT/terraform/terraform.tfvars` from the example, once.
+
+    Deliberately never rewrites an existing file: without `--api-key` the key
+    is auto-generated (`_resolve_api_key`), so regenerating tfvars on every
+    install would rotate the deployed stack's auth key behind the operator's
+    back. Everything that varies per run -- the install mode, the images, the
+    dev-mode build context -- is passed as `-var` instead of stored here (see
+    `_terraform_init_plan_apply`).
+    """
     tfvars = TERRAFORM_DIR / "terraform.tfvars"
     if tfvars.exists():
         return [OpsResult(True, f"{tfvars} already exists")]
@@ -5248,22 +5428,45 @@ def _ensure_terraform_tfvars(api_key: str | None) -> list[OpsResult]:
         return [OpsResult(False, f"Missing {example} to bootstrap tfvars from")]
     key = _resolve_api_key(api_key)
     text = example.read_text(encoding="utf-8")
-    text = re.sub(r'repo_path\s*=\s*".*"', lambda _m: f'repo_path    = "{REPO_ROOT}"', text)
     text = re.sub(r'auth_api_key\s*=\s*".*"', lambda _m: f'auth_api_key = "{key}"', text)
     tfvars.write_text(text, encoding="utf-8")
     os.chmod(tfvars, 0o600)
     return [OpsResult(True, f"Bootstrapped {tfvars} from terraform.tfvars.example")]
 
 
-def _terraform_init_plan_apply() -> list[OpsResult]:
-    """Run `terraform init` -> `plan` -> `apply` in terraform/, stopping at the first failure."""
+def _terraform_image_vars(images: dict[str, str], dev: bool) -> list[str]:
+    """The `-var` arguments that put `images` (and the install mode) into the plan.
+
+    Passed per run rather than persisted in tfvars so switching between
+    `--dev` and the artifact path is a single command with no leftover state:
+    the previous mode's `build {}` block, image ref and build context all
+    come from these flags, so the next apply simply replaces them.
+    """
+    args = [
+        f"-var=api_image={images['api']}",
+        f"-var=web_image={images['web']}",
+        f"-var=build_from_source={'true' if dev else 'false'}",
+    ]
+    if dev:
+        args.append(f"-var=repo_path={REPO_ROOT}")
+    return args
+
+
+def _terraform_init_plan_apply(
+    images: dict[str, str] | None = None, dev: bool = False
+) -> list[OpsResult]:
+    """Run `terraform init` -> `plan` -> `apply`, stopping at the first failure."""
+    var_args = _terraform_image_vars(
+        images or {"api": TF_API_IMAGE, "web": TF_WEB_IMAGE},
+        dev,
+    )
     chdir = f"-chdir={TERRAFORM_DIR}"
     cp = _run(["terraform", chdir, "init", "-input=false"], check=False)
     if cp.returncode != 0:
         return [OpsResult(False, "terraform init failed", _cp_details(cp))]
     results = [OpsResult(True, "terraform init")]
 
-    cp = _run(["terraform", chdir, "plan", "-input=false", "-out=tfplan"], check=False)
+    cp = _run(["terraform", chdir, "plan", "-input=false", *var_args, "-out=tfplan"], check=False)
     if cp.returncode != 0:
         results.append(OpsResult(False, "terraform plan failed", _cp_details(cp)))
         return results
@@ -5277,17 +5480,124 @@ def _terraform_init_plan_apply() -> list[OpsResult]:
     return results
 
 
-def _build_terraform_docker_images() -> list[OpsResult]:
-    """Build the `nyxgpt-api`/`nyxgpt-web` images the Terraform `--local` deploy
-    consumes, skipping each build the app source hasn't changed since (#3414).
+def _published_image_ref(component: str, tag: str) -> str:
+    """The published image ref for `component` (`api`/`web`) at `tag`."""
+    return f"{PUBLISHED_IMAGE_REPOS[component]}:{tag}"
 
-    Runs before `terraform init/plan/apply` so `docker_image.api`/`.web` in
-    terraform/main.tf (tag `local`, matching `TF_API_IMAGE`/`TF_WEB_IMAGE`
-    here) already exist locally in the target state: unchanged source means
-    `_docker_build_if_needed` skips the rebuild entirely (reported below,
-    mirroring the Homebrew `_install_homebrew_api`/`_web` decision output);
-    changed source means it rebuilds now, so terraform's own `build {}` block
-    then just hits Docker's layer cache instead of doing the real work again.
+
+def _pull_published_image(component: str) -> tuple[str | None, list[OpsResult]]:
+    """Resolve and pull the published image for `component`, returning (ref, results).
+
+    Three sources, in order, each reported so the operator can see which one
+    answered: the `NYXGPT_TF_{API,WEB}_IMAGE` override (an image already in
+    the local daemon -- the staged-artifact path, mirroring
+    `NYXGPT_ARTIFACT_DIR`), this nyxGPT's own version tag, and
+    `PUBLISHED_IMAGE_FALLBACK_TAG`. `ref` is None when none of them produced
+    a usable image, in which case the results say why.
+    """
+    override = os.environ.get(TF_IMAGE_ENV_OVERRIDES[component], "").strip()
+    if override:
+        cp = _run(["docker", "image", "inspect", override], check=False, expected=True)
+        if cp.returncode == 0:
+            return override, [
+                OpsResult(
+                    True,
+                    f"terraform {component} image: {override} "
+                    f"(staged via {TF_IMAGE_ENV_OVERRIDES[component]})",
+                )
+            ]
+        cp = _run(["docker", "pull", override], check=False)
+        if cp.returncode == 0:
+            return override, [
+                OpsResult(
+                    True,
+                    f"terraform {component} image: pulled {override} "
+                    f"(named by {TF_IMAGE_ENV_OVERRIDES[component]})",
+                )
+            ]
+        return None, [
+            OpsResult(
+                False,
+                f"{TF_IMAGE_ENV_OVERRIDES[component]}={override} is neither present locally "
+                "nor pullable",
+                _cp_details(cp),
+            )
+        ]
+
+    version = _native_service_version()
+    versioned = _published_image_ref(component, version)
+    cp = _run(["docker", "pull", versioned], check=False)
+    if cp.returncode == 0:
+        return versioned, [OpsResult(True, f"terraform {component} image: pulled {versioned}")]
+
+    fallback = _published_image_ref(component, PUBLISHED_IMAGE_FALLBACK_TAG)
+    cp_fallback = _run(["docker", "pull", fallback], check=False)
+    if cp_fallback.returncode == 0:
+        return fallback, [
+            OpsResult(
+                True,
+                f"terraform {component} image: {versioned} is not published, "
+                f"using {fallback} instead",
+                "Container images are published per release "
+                "(.github/workflows/release-artifacts.yml), so a release candidate has "
+                f"none of its own. The deployed {component} is therefore NOT version "
+                f"{version} -- set {TF_IMAGE_ENV_OVERRIDES[component]} to deploy a "
+                "specific image, or use --dev to build this checkout's working tree.\n"
+                # The pull's own error, because "not published" is this
+                # function's inference: an auth or network failure fails the
+                # same way, and only the daemon's message tells them apart.
+                f"{versioned} pull said: {_cp_details(cp)}",
+            )
+        ]
+    return None, [
+        OpsResult(
+            False,
+            f"No published nyxgpt-{component} image could be pulled "
+            f"({versioned}, then {fallback})",
+            f"{_cp_details(cp_fallback)}\nSet {TF_IMAGE_ENV_OVERRIDES[component]} to an "
+            "image this machine can reach, or run with --dev from a checkout to build "
+            "the image locally.",
+        )
+    ]
+
+
+def _pull_terraform_published_images() -> tuple[dict[str, str], list[OpsResult]]:
+    """Resolve+pull both published images the artifact-path deploy runs (#3835).
+
+    The artifact path is the default and the only one a machine with no
+    checkout can take: nothing here reads `REPO_ROOT`, and `terraform apply`
+    gets image refs rather than a build context (see
+    `_terraform_image_vars`). Returns the refs alongside the per-image
+    results; a component missing from the dict means its result explains why.
+    """
+    images: dict[str, str] = {}
+    results: list[OpsResult] = []
+    if _which("docker") is None:
+        return images, [
+            OpsResult(False, "docker not found on PATH -- cannot pull the nyxgpt api/web images")
+        ]
+    for component in ("api", "web"):
+        ref, component_results = _pull_published_image(component)
+        results += component_results
+        if ref is not None:
+            images[component] = ref
+    return images, results
+
+
+def _build_terraform_docker_images() -> list[OpsResult]:
+    """Build the `nyxgpt-api`/`nyxgpt-web` images the Terraform `--local --dev`
+    deploy consumes, skipping each build the app source hasn't changed since (#3414).
+
+    Dev mode only (#3835): the artifact path runs published images instead
+    (`_pull_terraform_published_images`) and never needs a checkout. Runs
+    before `terraform init/plan/apply` so `docker_image.api`/`.web` in
+    terraform/main.tf (the `local` tags, matching `TF_API_IMAGE`/
+    `TF_WEB_IMAGE` here) already exist locally in the target state: unchanged
+    source means `_docker_build_if_needed` skips the rebuild entirely
+    (reported below, mirroring the Homebrew `_install_homebrew_api`/`_web`
+    decision output); changed source means it rebuilds now, so terraform's
+    own `build {}` block then just hits Docker's layer cache instead of doing
+    the real work again.
     """
     if _which("docker") is None:
         return [OpsResult(False, "docker not found on PATH -- cannot build nyxgpt-api/nyxgpt-web")]
@@ -5362,15 +5672,47 @@ def _terraform_stack_health() -> list[OpsResult]:
     return results
 
 
-def _install_terraform_steps(api_key: str | None) -> list[OpsResult]:
+def _record_terraform_install_mode(dev: bool, images: dict[str, str]) -> list[OpsResult]:
+    """Record which mode -- and which images -- this Terraform deployment runs (#3835).
+
+    Its own marker, never the native one (`nyxgpt.install_mode`): the two
+    deployments are installed independently, and the native marker also
+    decides whether `restart api` drives launchd or `brew services`, so
+    writing it here would break the native services this deploy does not
+    touch. Written before `terraform apply` so a failed apply still leaves
+    `ops status`/`doctor` reporting the mode that was attempted rather than
+    the previous deployment's.
+    """
+    checkout = REPO_ROOT if dev else None
+    target = INSTALL_MODE_DEV if dev else INSTALL_MODE_ARTIFACT
+    marker = write_install_mode(target, checkout, substrate=SUBSTRATE_TERRAFORM, images=images)
+    state = InstallModeState(
+        mode=target,
+        checkout=str(checkout) if checkout else None,
+        substrate=SUBSTRATE_TERRAFORM,
+        images=images,
+        # The marker was just written, so this state is recorded by
+        # construction -- not the artifact default (#3835).
+        recorded=True,
+    )
+    return [OpsResult(True, f"Terraform install mode: {state.label()}", str(marker))]
+
+
+def _install_terraform_steps(api_key: str | None, dev: bool = False) -> list[OpsResult]:
     """Run the Terraform bring-up steps and return structured results (no printing).
 
     Ensures terraform is present (installing via the hashicorp tap if
-    missing), bootstraps terraform.tfvars from the example if absent, runs
-    init -> plan -> apply, and reports the resulting stack health. Stops at
-    the first failing step since each depends on the last (installing the
-    binary before generating tfvars before running init, etc.) -- unlike
-    `install()`'s native steps, which are independent and best-effort.
+    missing), materializes the packaged Terraform configuration into
+    `TERRAFORM_DIR`, bootstraps terraform.tfvars from the example if absent,
+    resolves the api/web images for this mode, runs init -> plan -> apply,
+    and reports the resulting stack health. Stops at the first failing step
+    since each depends on the last (installing the binary before generating
+    tfvars before running init, etc.) -- unlike `install()`'s native steps,
+    which are independent and best-effort.
+
+    `dev=True` builds the api/web images from `REPO_ROOT`'s working tree
+    (the pre-#3835 behavior, now opt-in); the default artifact path deploys
+    the published images and touches no checkout at all.
 
     Shared by the `nyxgpt ops install --terraform --local` CLI entrypoint
     (`_install_terraform`) and `install_terraform_local`, the SRE/admin
@@ -5382,9 +5724,27 @@ def _install_terraform_steps(api_key: str | None) -> list[OpsResult]:
         return [collision]
 
     logger.info(
-        "ops: install --terraform --local starting",
-        extra={"component": "ops", "action": "install-terraform"},
+        "ops: install --terraform --local starting (mode=%s)",
+        INSTALL_MODE_DEV if dev else INSTALL_MODE_ARTIFACT,
+        extra={
+            "component": "ops",
+            "action": "install-terraform",
+            "install_mode": INSTALL_MODE_DEV if dev else INSTALL_MODE_ARTIFACT,
+        },
     )
+
+    # Filled in by the image step below and read by the two steps after it.
+    # A dict rather than a return value because every step in this list has
+    # the same `() -> list[OpsResult]` shape.
+    images: dict[str, str] = {"api": TF_API_IMAGE, "web": TF_WEB_IMAGE} if dev else {}
+
+    def _resolve_images() -> list[OpsResult]:
+        if dev:
+            return _build_terraform_docker_images()
+        resolved, results = _pull_terraform_published_images()
+        images.update(resolved)
+        return results
+
     results: list[OpsResult] = []
     steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
         # Must run first: `_start_observability_stack_terraform` targets
@@ -5402,18 +5762,28 @@ def _install_terraform_steps(api_key: str | None) -> list[OpsResult]:
         # as part of reconciling state to the new host-bind-mount config.
         ("migrate legacy volumes", migrate_legacy_volumes),
         ("terraform binary", _ensure_terraform_binary),
+        # Must run before tfvars and apply: it puts the .tf sources (and any
+        # state migrated out of a pre-#3835 checkout) in the working
+        # directory both of them operate on (#3835).
+        ("terraform configuration", _sync_local_terraform_config),
         ("terraform tfvars", lambda: _ensure_terraform_tfvars(api_key)),
         # Must run before apply: terraform/main.tf bind-mounts
         # docker/config.docker.ini into the api container (same pattern as
         # docker-compose.yml), so the derived file has to exist first or
         # Docker creates an empty directory in its place.
         ("compose config (derive from native)", _generate_compose_config),
-        # Must run before apply: pre-builds (or skips, if source is unchanged
-        # since the last build -- #3414) the images `docker_image.api`/`.web`
-        # reference by tag, so terraform's own build hits Docker's cache
-        # instead of doing the work again.
-        ("docker images (source-change detection)", _build_terraform_docker_images),
-        ("terraform init/plan/apply", _terraform_init_plan_apply),
+        # Must run before apply: resolves the api/web images the plan
+        # references. In dev mode that pre-builds them from the working tree
+        # (or skips, if source is unchanged since the last build -- #3414) so
+        # terraform's own build hits Docker's cache instead of doing the work
+        # again; on the artifact path it pulls the published images, which is
+        # what makes this deploy possible with no checkout at all (#3835).
+        ("api/web images", _resolve_images),
+        # After the images are known, before apply: the marker is what `ops
+        # status`/`doctor` read to report this deployment's mode instead of
+        # the native services' (#3835).
+        ("terraform install mode", lambda: _record_terraform_install_mode(dev, images)),
+        ("terraform init/plan/apply", lambda: _terraform_init_plan_apply(images, dev)),
         # Must run before the observability stack starts: Grafana's Compose
         # bind-mount auto-creates a missing ~/.nyxGPT/secrets root-owned on
         # Linux (#3432), which then blocks the token write below.
@@ -5450,23 +5820,39 @@ def _install_terraform_steps(api_key: str | None) -> list[OpsResult]:
     return results
 
 
-def install_terraform_local(api_key: str | None = None) -> list[OpsResult]:
+def install_terraform_local(api_key: str | None = None, dev: bool = False) -> list[OpsResult]:
     """Structured (non-printing) Terraform local bring-up, for the SRE/admin dashboard API.
 
     Runs the same steps as `nyxgpt ops install --terraform --local` --
     locality is implicitly "local" here since that's the only target this
     endpoint offers (see `_resolve_locality`) -- and returns the OpsResult
     list directly instead of routing it through `_emit_results`, so a
-    FastAPI endpoint can translate it straight to JSON.
+    FastAPI endpoint can translate it straight to JSON. `dev` defaults to
+    False: the dashboard has no checkout to build from and must never
+    silently deploy one.
     """
-    return _install_terraform_steps(api_key)
+    return _install_terraform_steps(api_key, dev=dev)
 
 
 def _install_terraform(args) -> int:
     """`nyxgpt ops install --terraform --local`: the full Terraform bring-up in one command."""
     if _resolve_locality(args) is None:
         return 2
-    results = _install_terraform_steps(getattr(args, "api_key", None))
+    dev = bool(getattr(args, "dev", False))
+    if dev and _dev_checkout_root() is None:
+        # Checkout-only by definition -- dev mode builds the api/web images
+        # from the working tree. Say so up front rather than failing at the
+        # image build after terraform is already installed (#3835, mirroring
+        # `install()`'s native refusal).
+        print(
+            "ERROR: --dev needs a source checkout, and this nyxgpt is running from an "
+            f"installed package ({REPO_ROOT} has no pyproject.toml/src/nyxgpt/web).\n"
+            "       Run `nyxgpt up --terraform --local --dev` from a clone of the "
+            "repository, or drop --dev to deploy the published images.",
+            file=sys.stderr,
+        )
+        return 2
+    results = _install_terraform_steps(getattr(args, "api_key", None), dev=dev)
     ok = _emit_results("install --terraform", results)
     return 0 if ok else 2
 
@@ -5479,13 +5865,35 @@ def _down_terraform_steps() -> list[OpsResult]:
     destroy` can't remove that network while those containers are still
     attached (it times out on the network delete). Then runs `terraform
     destroy` for the core stack.
+
+    Syncs the packaged configuration into `TERRAFORM_DIR` first (#3835): a
+    machine upgrading from a pre-#3835 install has its state in the
+    checkout's `terraform/` and nothing in the ops-managed directory, and
+    destroying from an empty directory would report success while leaving
+    the whole stack running. `build_from_source=false` is forced here
+    regardless of the deployment's mode -- tearing down never needs an image
+    built, and a dev-mode deployment whose checkout has since been deleted
+    must still be destroyable.
     """
     if _which("terraform") is None:
         results = [OpsResult(False, "terraform not found on PATH -- nothing to destroy")]
     else:
-        results = _stop_observability_stack_terraform()
+        results = _sync_local_terraform_config()
+        results += _stop_observability_stack_terraform()
+        recorded = read_install_mode(substrate=SUBSTRATE_TERRAFORM)
+        images = {
+            "api": recorded.images.get("api", TF_API_IMAGE),
+            "web": recorded.images.get("web", TF_WEB_IMAGE),
+        }
         cp = _run(
-            ["terraform", f"-chdir={TERRAFORM_DIR}", "destroy", "-input=false", "-auto-approve"],
+            [
+                "terraform",
+                f"-chdir={TERRAFORM_DIR}",
+                "destroy",
+                "-input=false",
+                *_terraform_image_vars(images, dev=False),
+                "-auto-approve",
+            ],
             check=False,
         )
         if cp.returncode == 0:
@@ -8082,10 +8490,25 @@ def infra_status() -> dict[str, Any]:
 
     docker_available = _which("docker") is not None
     tf_state = terraform_stack_state()
+    # The Terraform deployment's own install mode (#3835) -- never the native
+    # marker, which describes a different deployment that may well be in the
+    # other mode.
+    tf_install_mode_state = read_install_mode(substrate=SUBSTRATE_TERRAFORM)
+    tf_deployed = docker_available and any(state != "absent" for state in tf_state.values())
     terraform = {
         "probe_available": docker_available,
-        "deployed": docker_available and any(state != "absent" for state in tf_state.values()),
+        "deployed": tf_deployed,
         "containers": tf_state,
+        "install_mode": {
+            "mode": tf_install_mode_state.mode,
+            "checkout": tf_install_mode_state.checkout,
+            # The label is the deployment-aware one: a running stack with no
+            # marker is reported as unrecorded, never as the artifact default
+            # it did not earn (#3835).
+            "label": tf_install_mode_state.label(deployed=tf_deployed),
+            "images": tf_install_mode_state.images,
+            "recorded": tf_install_mode_state.recorded,
+        },
     }
 
     kubectl_available = _which("kubectl") is not None
@@ -8548,8 +8971,9 @@ def status(_args) -> int:
     # any (#3834): this marker says nothing about a Terraform or Kubernetes
     # deployment, and reporting it unqualified is what let a pure-Kubernetes
     # deployment be labelled `dev (editable checkout at ...)` from a native
-    # dev install that had long since been torn down. The Kubernetes section
-    # below reports that deployment's own recorded mode.
+    # dev install that had long since been torn down. The Terraform line
+    # below and the Kubernetes section further down report those deployments'
+    # own recorded modes (#3835, #3834).
     install_mode = read_install_mode()
     native_installed = any(
         mode.native.get(component, "none") != "none" for component in DEV_LAUNCHD_LABELS
@@ -8574,6 +8998,24 @@ def status(_args) -> int:
             "(published tap/tarball) is NOT what is being exercised here."
         )
 
+    terraform_deployed = any(state != "absent" for state in mode.terraform.values())
+    terraform_install_mode = read_install_mode(substrate=SUBSTRATE_TERRAFORM)
+    if terraform_deployed or install_mode_file(SUBSTRATE_TERRAFORM).exists():
+        # Attributed the same way as the native line above, and printed only
+        # when there is a Terraform deployment to describe (#3835). `deployed`
+        # matters here: a running stack with no marker is reported as not
+        # recorded rather than as the artifact default, which for Terraform
+        # would assert the opposite of the truth.
+        print(
+            f"Install mode (terraform): {terraform_install_mode.label(deployed=terraform_deployed)}"
+        )
+        if terraform_install_mode.is_dev:
+            print(
+                "  the api/web containers were built from that working tree, not from "
+                "published images -- artifact-path behavior is NOT what is being "
+                "exercised here."
+            )
+
     print("\nDeployment mode:")
     for component in ("api", "web", "ollama"):
         state = mode.native.get(component, "none")
@@ -8594,8 +9036,14 @@ def status(_args) -> int:
         print("  compose: not detected (no Docker Compose stack running)")
     running_terraform = {c: s for c, s in mode.terraform.items() if s != "absent"}
     if running_terraform:
+        # Tri-state, matching the deployment line above: dev, artifact, or
+        # unrecorded when something is running that no install recorded.
+        tf_mode_label = terraform_install_mode.short_label(deployed=True)
         for component, state in sorted(running_terraform.items()):
-            print(f"  terraform {component}: {state}")
+            # Only api/web have an install mode -- ollama/cassandra are
+            # pinned third-party images in both modes.
+            suffix = f"  [{tf_mode_label}]" if component in ("api", "web") else ""
+            print(f"  terraform {component}: {state}{suffix}")
 
     if mode.conflicts:
         stop_examples = ", ".join(f"nyxgpt ops stop {c}" for c in sorted(mode.conflicts))
@@ -9264,6 +9712,53 @@ def _loki_recent_volume_by_logger(
     return volumes, None
 
 
+def _terraform_install_mode_issues() -> list[str]:
+    """Print the Terraform deployment's install mode and return its issues (#3835).
+
+    Separate from the native install mode `doctor` reports just above the
+    call: it is a different deployment, installed independently, and
+    frequently in the other mode -- stating one for the other is exactly the
+    defect this marker was added to fix. Says nothing at all on a machine
+    that has never deployed Terraform.
+
+    A deployment that is running with no marker is reported as *unrecorded*
+    rather than defaulted to artifact, which for Terraform states the reverse
+    of the truth (every pre-#3835 deployment was built from a working tree).
+    That is printed, not raised as an issue: an unrecorded build is an
+    unknown, not a fault -- the stack is serving, and failing `doctor` (and
+    with it `ops verify`) on every machine that deployed before the marker
+    existed would report a healthy stack as broken.
+
+    The one issue raised here is the Terraform twin of the native dev-mode
+    check: a running dev-mode deployment whose checkout is gone is running
+    images nothing can rebuild.
+    """
+    deployed = any(state != "absent" for state in terraform_stack_state().values())
+    if not (deployed or install_mode_file(SUBSTRATE_TERRAFORM).exists()):
+        return []
+    state = read_install_mode(substrate=SUBSTRATE_TERRAFORM)
+    print(f"Install mode (terraform): {state.label(deployed=deployed)}")
+    if deployed and not state.recorded:
+        print(
+            "  (nothing recorded what these containers were built from -- redeploy with "
+            "`nyxgpt up --terraform --local`, or `--dev` for a working-tree build, to "
+            "record it)"
+        )
+        return []
+    if not (state.is_dev and deployed):
+        return []
+    checkout = Path(state.checkout) if state.checkout else None
+    if checkout is not None and checkout.is_dir():
+        return []
+    return [
+        "Dev-mode Terraform deployment recorded, but its checkout is missing "
+        f"({state.checkout or 'no path recorded'}) -- the running api/web images were "
+        "built from a tree that is no longer there and cannot be rebuilt. Re-run "
+        "`nyxgpt up --terraform --local --dev` from a checkout, or without --dev to "
+        "deploy the published images."
+    ]
+
+
 def doctor(_args) -> int:
     """CLI entrypoint for `nyxgpt ops doctor`.
 
@@ -9305,9 +9800,10 @@ def doctor(_args) -> int:
     # checkout has been moved/deleted -- which leaves api/web running code
     # nothing can rebuild -- is reported rather than silently tolerated.
     #
-    # Named as the *native* api/web's mode, with the Kubernetes deployment's
-    # own mode reported beside it when there is one (#3834): the two are
-    # separate installs and one line cannot speak for both.
+    # Named as the *native* api/web's mode, with the Kubernetes and Terraform
+    # deployments' own modes reported beside it when there are any (#3834,
+    # #3835): they are separate installs and one line cannot speak for all of
+    # them.
     install_mode = read_install_mode()
     print(f"Install mode (native api/web): {install_mode.label()}")
     k8s_install_mode = read_install_mode(substrate=SUBSTRATE_KUBERNETES)
@@ -9338,6 +9834,8 @@ def doctor(_args) -> int:
                 "node_modules is missing) -- the Next dev server cannot start "
                 "(run: nyxgpt up --dev)"
             )
+
+    issues += _terraform_install_mode_issues()
 
     cfg = Path.home() / ".nyxGPT" / "config.ini"
     if not cfg.exists():

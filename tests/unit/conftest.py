@@ -76,14 +76,31 @@ def _isolate_install_mode_marker(monkeypatch, tmp_path):
     itself still write to it -- they just write into `tmp_path`.
 
     `NYXGPT_HOME` is redirected alongside it because the per-substrate markers
-    (#3834 -- `install-mode-kubernetes.json`) are resolved from it rather than
-    from a module-level constant of their own.
+    (#3834 -- `install-mode-kubernetes.json`; #3835 --
+    `install-mode-terraform.json`) are resolved from it rather than from a
+    module-level constant of their own.
     """
     from nyxgpt import install_mode
 
     home = tmp_path / "install-mode-home"
     monkeypatch.setattr(install_mode, "NYXGPT_HOME", home)
     monkeypatch.setattr(install_mode, "INSTALL_MODE_FILE", home / "install-mode.json")
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_ops_terraform_dir(monkeypatch, tmp_path):
+    """Redirect the ops-managed Terraform working directory into `tmp_path` (#3835).
+
+    `ops.TERRAFORM_DIR` defaults to the developer's real
+    `~/.nyxGPT/terraform`, which `_sync_local_terraform_config` writes into
+    (and `terraform destroy` runs against). A unit test reaching either must
+    not touch the state of a real deployment on the machine running the
+    suite -- the same reasoning as the install-mode marker above.
+    """
+    from nyxgpt import ops
+
+    monkeypatch.setattr(ops, "TERRAFORM_DIR", tmp_path / "ops-terraform")
     yield
 
 

@@ -126,8 +126,10 @@ where = ["src"]
 # itself contains symlinks back to the canonical top-level files
 # (docker/, docker-compose.yml, ops/, .env.example, four scripts/*.sh,
 # terraform/aws/ for the AWS substrate `nyxgpt cloud infra` provisions --
-# #3509, and the product docs for the web UI's Support -> Docs viewer --
-# #3745) rather than copies, so there is exactly one place to edit each file;
+# #3509, terraform/local/ for the local stack `nyxgpt ops install --terraform
+# --local` applies -- #3835, and the product docs for the web UI's Support ->
+# Docs viewer -- #3745) rather than copies, so there is exactly one place to
+# edit each file;
 # setuptools dereferences symlinks when it builds the wheel/sdist, so the
 # built artifact contains real file content, not links.
 #
@@ -164,6 +166,12 @@ where = ["src"]
 # real infrastructure ids next to the tracked config. All of it is
 # gitignored, none of it belongs in a wheel -- `nyxgpt cloud infra` keeps the
 # real state and tfvars under ~/.nyxGPT/cloud/ instead.
+#
+# terraform/local/ (#3835) needs no entries here: it is symlinked per *file*
+# (the four .tf sources plus terraform.tfvars.example), so the state, tfvars
+# and .terraform/ cache a dev checkout accumulates in its own terraform/
+# directory are not reachable through the packaged tree at all -- the same
+# allow-list reasoning resources/docs/ uses above.
 #
 # The two k8s secrets are the third case of the same defence (#3834), and
 # there are two of them because the Kubernetes path generates two:

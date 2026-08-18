@@ -1762,6 +1762,66 @@ are absent here by design (relocated to the annex; IDs are never reused).
   `_classify_k8s_pod` — the shared vocabulary, not this one call site, is what
   the entry stands for.
 
+- **V-055** · 2026-08-18 — **Container images are published for stable
+  releases only, and the `ghcr.io/dkblinux98/nyxgpt-*` packages are
+  anonymously pullable.** `release-artifacts.yml`'s `container-images` job
+  runs on `release: [released]`, which an rc prerelease does not fire, and
+  `release-publish-pypi.yml` (the rc channel) publishes no images at all —
+  so a release line has **no image of its own until it ships**. Consumers of
+  the published images must therefore expect a missing version tag and say
+  what they did about it; `nyxgpt ops install --terraform --local` falls back
+  to the newest published image and reports the skew rather than pretending
+  the deployed api is this version.
+  Method: read both workflows' `on:`/`tags:` blocks; queried the registry
+  anonymously — `curl https://ghcr.io/token?scope=repository:dkblinux98/nyxgpt-api:pull`
+  then `/v2/dkblinux98/nyxgpt-api/tags/list` returned `["2.1.0","latest"]`
+  (no 3.0.0, no rc tags), and `docker pull ghcr.io/dkblinux98/nyxgpt-api:latest`
+  succeeded with no credentials. 2026-08-18, while implementing #3835.
+  (Filed as `V-045` under #3835 and renumbered three times as `v3.0.0` moved
+  under it: to `V-050` (#3825 had `V-045`), to `V-051` (#3904's renumber of
+  the Pod-vocabulary entry took `V-050`), to `V-053` (the mainline's
+  own canary replica-pool entry holds `V-051` and #3850's keg entry holds
+  `V-052`), and now to `V-055` — #3834's Kubernetes install-mode entry took
+  `V-053` on the mainline. IDs are never reused.)
+  Re-verify when: a stable release ships (the tag list grows), or rc image
+  publishing is added to `release-publish-pypi.yml`.
+
+- **V-056** · 2026-08-18 — **The Terraform local deployment no longer needs
+  a checkout, and its `--dev` mode is now opt-in rather than permanent.**
+  The `.tf` sources ship as package data
+  (`nyxgpt.resources/terraform/local`, per-file symlinks so a dev checkout's
+  state/tfvars can never be packaged) and are materialized into
+  `~/.nyxGPT/terraform`; images come from the registry; the api container's
+  compose-file mount moved from `${var.repo_path}/docker-compose.yml` to the
+  ops-managed copy. The deployment records its own install mode in
+  `~/.nyxGPT/install-mode-terraform.json` — deliberately NOT the native
+  marker, which decides whether `restart api` drives launchd or `brew
+  services`.
+  Method: built the wheel, installed it into a venv with no checkout
+  (`ops._dev_checkout_root()` → `None`), ran
+  `_sync_local_terraform_config()` (materialized five files from package
+  data) and `_pull_terraform_published_images()` (pulled the two ghcr
+  images, reporting the **V-055** fallback), then `terraform plan` in that
+  directory: 9 to add, no build blocks. The dev plan
+  (`-var=build_from_source=true`) still plans its two `build {}` blocks.
+  2026-08-18, while implementing #3835.
+  (Filed as `V-046` under #3835 and renumbered as `v3.0.0` moved under it: to
+  `V-051` (#3837 had `V-046`), to `V-052` (behind the entry above), to `V-054`
+  (#3850's keg entry holds `V-052` on the mainline), and now to `V-056`,
+  behind the entry above — #3834's `exclude-package-data` entry took `V-054`.
+  IDs are never reused.)
+  Re-verify when: `terraform/*.tf` gains a file (it must also be symlinked
+  into `nyxgpt.resources/terraform/local` — `test_terraform_stack.py` fails
+  otherwise), or the packaged-resource sync changes.
+  Corollary, added on review of the same PR: the artifact default is a safe
+  fallback, not a fact, and under a *running* Terraform stack it is the
+  reverse of the fact — every deployment made before this marker existed was
+  built from a working tree, because that path had no other mode. Deployed
+  with no marker is therefore its own third state ("not recorded",
+  `[unrecorded]`, `IMAGES NOT RECORDED`), never artifact. The undeployed and
+  native cases keep the artifact default: nothing live to misdescribe, and
+  natively artifact really was the only mode before #3789.
+
 - **V-052** · 2026-08-18 — **A check that reaches *into* a keg cannot answer
   whether the product is operable.** The macOS artifact path shipped through
   rc12 with no `nyxgpt` on PATH: `pip install` created the console script

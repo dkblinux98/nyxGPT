@@ -240,7 +240,8 @@ if [[ "$DEV_MODE" -eq 1 ]]; then
   # 1. `ops status` must SAY dev mode -- a dev pass must not be mistakable
   #    for an artifact-path pass (acceptance criterion 3).
   #
-  #    The line is ATTRIBUTED to the native api/web since #3834: an
+  #    The line is ATTRIBUTED to the native api/web since #3834 (and carries a
+  #    sibling line per Terraform/Kubernetes deployment since #3835): an
   #    unqualified `Install mode:` is what let a pure-Kubernetes deployment be
   #    reported with a native marker left over from a torn-down `up --dev`.
   #    Matching the attributed form is the assertion, not a cosmetic update --
@@ -318,6 +319,8 @@ if [[ "$DEV_MODE" -eq 1 ]]; then
   check "api    /health" http://127.0.0.1:8000/health 200 || { echo "::error::api /health expected 200 after mode switch"; fail_count=1; }
   check "web    /"       http://127.0.0.1:3000/ 200       || { echo "::error::web / expected 200 after mode switch"; fail_count=1; }
 
+  # Attributed to the native api/web, as above: a Terraform or Kubernetes
+  # deployment's mode says nothing about which build the systemd units run.
   if nyxgpt ops status | grep -q "Install mode (native api/web): artifact"; then
     echo "  ops status reports artifact mode after the switch"
   else

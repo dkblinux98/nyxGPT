@@ -108,6 +108,17 @@ from the registry yet.
    `nyxgpt ops observability` starts the monitoring/logging/tracing/errors
    profiles from public images with no checkout.
 
+**Terraform closed its gap in #3835.** The `.tf` configuration ships as package
+data (`nyxgpt.resources.terraform.local`, materialized into `~/.nyxGPT/terraform`)
+instead of being read from `REPO_ROOT`, and `nyxgpt ops install --terraform
+--local` pulls the published `ghcr.io/dkblinux98/nyxgpt-api`/`-web` images rather
+than building the working tree. `--dev` still builds it, records that it did, and
+is refused where there is no checkout. The proof is executed, not inspected: the
+`terraform-artifact-smoke` job in
+[`terraform-local-smoke.yml`](../.github/workflows/terraform-local-smoke.yml)
+installs the wheel into a venv with no repository in reach, resolves and pulls the
+real published images, deploys, and requires the stack to serve.
+
 **Kubernetes closed its gap in #3834.** The manifests ship as package data
 (`nyxgpt.resources.k8s`, synced to `~/.nyxGPT/k8s`) instead of being read from
 `REPO_ROOT`, and `nyxgpt ops install --kubernetes --local` builds both images
