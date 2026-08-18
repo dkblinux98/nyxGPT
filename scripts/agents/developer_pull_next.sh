@@ -152,43 +152,43 @@ board_state="$(
 )"
 
 # ---- the sprint plan: pull order and expected-files (#3908) ----
+# Read ONLY the plan for the sprint being pulled, matched by title (owner
+# rule, 2026-08-18). There is deliberately no "use the most recent plan"
+# fallback: grooming is an owner-initiated planning event, and until the
+# owner has groomed THIS sprint there is no plan to obey. Falling back to a
+# neighbouring sprint's plan would silently impose a stale order and stale
+# expected-files on work it was never written for -- and an unscoped pull
+# (the owner deliberately reaching across the sprint boundary) has no sprint
+# whose plan could apply at all.
+#
+# No plan means no plan-driven behavior: the pull falls back to board order
+# and says so in its reasoning.
 plan_json="$(
-  SPRINT_TITLE="$ACTIVE_SPRINT_TITLE" python3 - <<'PY'
-import json, os, pathlib, re, sys
+  SPRINT_TITLE="$ACTIVE_SPRINT_TITLE" python3 - <<'PLANPY'
+import json, os, pathlib, sys
 sys.path.insert(0, "scripts/agents/lib")
 import sprint_plan
 
-root = pathlib.Path("product_management/sprint_planning")
 title = os.environ.get("SPRINT_TITLE", "")
+root = pathlib.Path("product_management/sprint_planning")
 plan = {}
 chosen = None
 
-
-def _sprint_key(path):
-    """Order sprint folders numerically, not lexicographically.
-
-    `sorted()` on the names puts sprint_10 before sprint_9, so taking the
-    last one would silently read a stale plan from sprint 10 onward -- stale
-    order, stale expected-files, overlap checked against the wrong lists.
-    Non-numeric slugs sort after numbered ones, by name.
-    """
-    match = re.search(r"sprint_(\d+)", path.parent.name)
-    return (0, int(match.group(1)), "") if match else (1, 0, path.parent.name)
-
-
-if root.is_dir():
-    docs = sorted(root.glob("sprint_*/PLAN.md"), key=_sprint_key)
-    for doc in docs:
+if title and root.is_dir():
+    for doc in sorted(root.glob("sprint_*/PLAN.md")):
         parsed = sprint_plan.parse_plan(doc.read_text(encoding="utf-8"))
-        if title and parsed.get("sprint") == title:
+        if parsed.get("sprint") == title:
             plan, chosen = parsed, doc
             break
-    if not plan and docs and not title:
-        chosen = docs[-1]
-        plan = sprint_plan.parse_plan(chosen.read_text(encoding="utf-8"))
+
 print(json.dumps(plan))
-print(f"[pull] plan doc: {chosen or 'none found -- pulling in board order'}", file=sys.stderr)
-PY
+if chosen:
+    print(f"[pull] plan doc: {chosen}", file=sys.stderr)
+elif title:
+    print(f"[pull] no groomed plan for '{title}' -- pulling in board order", file=sys.stderr)
+else:
+    print("[pull] unscoped pull -- no sprint plan applies; pulling in board order", file=sys.stderr)
+PLANPY
 )"
 
 # ---- in-flight footprints: the open PR's real diff, else expected-files ----

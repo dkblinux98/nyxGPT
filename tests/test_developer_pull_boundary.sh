@@ -271,6 +271,33 @@ stderr="$(cat "$TMP_DIR/stderr")"
 _assert_eq "a declared link makes the PR's real diff the in-flight footprint" "0|" "$result"
 _assert_contains "and the candidate is deferred on the file it collides with" "$stderr" "skipped #100: file_overlap"
 
+# --- Scenario I: a plan is read only for the sprint being pulled ---------
+# --- Grooming is an owner-initiated planning event: until the owner has ---
+# --- groomed THIS sprint there is no plan to obey, and no neighbouring ---
+# --- sprint's plan may stand in for it. ---
+echo '[]' >"$FAKE_GH_PRS_FILE"
+echo '[]' >"$FAKE_GH_PR_FILES_FILE"
+_write_items "$(_item 100 Backlog "Sprint 8")" "$(_item 199 Backlog "Sprint 8")"
+
+# A plan exists, but for a different sprint: it must not be read.
+_write_plan '{"sprint":"Sprint 7","order":[{"issue":199,"expected_files":["src/b.py"]}]}'
+result="$(_run_pull --sprint-scoped)"
+stderr="$(cat "$TMP_DIR/stderr")"
+_assert_eq "another sprint's plan does not order this sprint's pull" "0|100" "$result"
+_assert_contains "and it says the sprint is ungroomed" "$stderr" "no groomed plan for 'Sprint 8'"
+
+# The active sprint's own plan is read, as before.
+_write_plan '{"sprint":"Sprint 8","order":[{"issue":199,"expected_files":["src/b.py"]}]}'
+result="$(_run_pull --sprint-scoped)"
+_assert_eq "the groomed plan for this sprint does order it" "0|199" "$result"
+
+# An unscoped pull -- the owner reaching across the boundary -- has no
+# sprint whose plan could apply, so it reads none even though one exists.
+result="$(_run_pull)"
+stderr="$(cat "$TMP_DIR/stderr")"
+_assert_eq "an unscoped pull ignores the plan entirely" "0|100" "$result"
+_assert_contains "and says why" "$stderr" "no sprint plan applies"
+
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "All tests passed."
   exit 0
