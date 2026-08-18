@@ -89,20 +89,6 @@ jobs:
             <!-- nyxgpt-token-mention -->
 
       # --- the sibling tokens, same gate ----------------------------------
-      - name: "Kick token: a real kick proceeds"
-        id: kick
-        uses: ./.github/actions/comment-token-gate
-        with:
-          token: READY_FOR_NEXT_ISSUE
-          comment-body: "READY_FOR_NEXT_ISSUE"
-
-      - name: "Kick token: a park note naming it does not"
-        id: park
-        uses: ./.github/actions/comment-token-gate
-        with:
-          token: READY_FOR_NEXT_ISSUE
-          comment-body: "Sprint boundary reached -- parking. A READY_FOR_NEXT_ISSUE from the owner pulls work forward."
-
       - name: "Owner command: @improvement issued proceeds"
         id: improvement
         uses: ./.github/actions/comment-token-gate

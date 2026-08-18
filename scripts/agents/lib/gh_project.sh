@@ -839,7 +839,7 @@ sprint_population_snapshot() {
 # Counts OPEN issues with Status=Backlog whose Sprint iteration field equals
 # `sprint_title`. This is the sprint-autopilot DISPATCH condition (owner
 # policy 2026-08-10, #3706 -- the auto loop is bound by the current sprint):
-# review_accept_and_merge.sh posts READY_FOR_NEXT_ISSUE while this is > 0.
+# review_accept_and_merge.sh dispatches next-issue selection while this is > 0.
 # Once it hits 0 the loop stops dispatching, but whether that is "complete"
 # is decided by sprint_population_snapshot + sprint_calc.py (#3709), not by
 # this count alone.
@@ -1254,9 +1254,11 @@ ${AUTOPILOT_INFO_MARKER}" \
 
 ${DRAIN_GATE_KICK_MARKER}
 
-READY_FOR_NEXT_ISSUE" \
+${AUTOPILOT_INFO_MARKER}" \
+        || _warn "drain_gate_release: could not post the release note."
+      dispatch_next_issue "drain gate: acceptance round drained" \
         && kicked=true \
-        || _warn "drain_gate_release: could not post the queue kick."
+        || _warn "drain_gate_release: could not dispatch next-issue selection."
     fi
   fi
 
@@ -1585,13 +1587,35 @@ _autopilot_publish_rc() {
 # Sprint-autopilot continuation kick (#3480), shared by the post-merge path
 # (review_accept_and_merge.sh) and the 3-cycle review escalation path
 # (review_agent_auto_review.yml): both outcomes free the reviewer for the
-# next issue, so both post the same gated READY_FOR_NEXT_ISSUE kick on the
+# next issue, so both send the same dispatch-next-issue event on the
 # release tracking issue. `verb` is "merged", "escalated", or "anomaly" and
 # only changes the comment wording; every gate (SPRINT_AUTOPILOT,
 # RELEASE_ISSUE_NUMBER, PAUSE_SPRINT, release version parse, sprint-drained
 # park) is identical. Best-effort by design: always returns 0 so a kick
 # failure never fails the merge, escalation, or anomaly detection that
 # invoked it.
+# Ask the scrummaster to select and start the next issue (#3882).
+#
+# This replaces posting READY_FOR_NEXT_ISSUE into an issue comment. The comment
+# was never a message to a human: it was one workflow asking another to run,
+# expressed as text that a job `if:` then had to pattern-match -- which is how a
+# workflow's own guidance text twice started work it was announcing the end of
+# (#3706, #3790). A repository_dispatch says the same thing as an event, so
+# nothing that merely mentions it can trigger it.
+dispatch_next_issue() {
+  local reason="${1:-}"
+
+  if gh api "repos/${REPO_OWNER}/${REPO_NAME}/dispatches" \
+      -f "event_type=dispatch-next-issue" \
+      -f "client_payload[reason]=${reason}" >/dev/null 2>&1; then
+    echo "[dispatch] requested next-issue selection (${reason})" >&2
+    return 0
+  fi
+
+  _warn "dispatch_next_issue: could not send the dispatch event (${reason})."
+  return 1
+}
+
 sprint_autopilot_kick() {
   local issue="$1" verb="${2:-merged}"
   local event_phrase continue_phrase
@@ -1636,7 +1660,7 @@ ${AUTOPILOT_INFO_MARKER}" \
     # contains today per SPRINT_TIMEZONE) still has open Backlog work, and
     # parks with a loud note when that pool drains -- even if the release
     # has plenty queued in later sprints. Crossing into the next sprint
-    # needs a planning event or a human READY_FOR_NEXT_ISSUE kick.
+    # needs a planning event, or the owner assigning an issue directly.
     #
     # The release version is still resolved, but only as the OUTER
     # branch-safety wall and to describe what is waiting behind the sprint
@@ -1716,15 +1740,19 @@ ${AUTOPILOT_INFO_MARKER}" \
       fi
 
       if [[ "$decision" == "continue" ]]; then
-        issue_comment "$RELEASE_ISSUE_NUMBER" "🔁 **Sprint Autopilot**: ${event_phrase}. Sprint \"${active_sprint}\" still has ${remaining} open Backlog issue(s) -- ${continue_phrase}.${gate_lines:+
+        # Audit note first (it is for humans reading the release issue), then
+        # the dispatch event that actually starts the work.
+        ( issue_comment "$RELEASE_ISSUE_NUMBER" "🔁 **Sprint Autopilot**: ${event_phrase}. Sprint \"${active_sprint}\" has ${remaining} open item(s) -- ${continue_phrase}.
 
 **Parked-issue scan (auto-resume, #3709):**
 
-${gate_lines}}
+${gate_lines}
 
-READY_FOR_NEXT_ISSUE" \
-          && echo "[review] Autopilot: posted READY_FOR_NEXT_ISSUE (sprint ${active_sprint} has ${remaining} remaining)." >&2 \
-          || _warn "Autopilot: failed to post READY_FOR_NEXT_ISSUE kick."
+${AUTOPILOT_INFO_MARKER}" ) >/dev/null 2>&1 || _warn "Autopilot: could not post the continue note."
+
+        dispatch_next_issue "autopilot: ${event_phrase}" \
+          && echo "[review] Autopilot: dispatched next-issue selection (sprint ${active_sprint} has ${remaining} remaining)." >&2 \
+          || _warn "Autopilot: failed to dispatch next-issue selection."
       else
         echo "[review] Autopilot: sprint ${active_sprint} has no dispatchable Backlog work (park state: ${state:-unknown}) -- parked, no kick." >&2
         # #3729: a park that just reached agentic-work-complete is the start

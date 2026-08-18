@@ -1,55 +1,28 @@
 name: Scrummaster Agent - Select and Start Next Issue
 
+# Started by a repository_dispatch, never by a comment (#3882).
+#
+# The kick used to be the token READY_FOR_NEXT_ISSUE in an issue comment, which
+# made prose into an API: a workflow's own guidance text could start work, and
+# twice did (#3706, #3790 -- ~500 runs in two hours). Two layers of gating were
+# built to make comments safe to parse, which is effort spent making the wrong
+# mechanism survivable.
+#
+# What the comment was actually doing is a cross-identity handoff: the review
+# agent, finishing a merge, asking the scrummaster to select the next issue.
+# repository_dispatch is that, natively -- an event with a name, not text to be
+# pattern-matched, and unforgeable by anything that merely mentions it.
 on:
-  issue_comment:
-    types: [created]
+  repository_dispatch:
+    types: [dispatch-next-issue]
 
 permissions:
   issues: write
   contents: read
 
 jobs:
-  # Layer 1 of the kick trigger. The job `if:` can only substring-match, so a
-  # comment that merely *names* the kick token passes it -- that is how the
-  # #3706 sprint-boundary park note became a kick (and how a PAUSE_SPRINT
-  # notice could dispatch despite the pause). Informational autopilot notes
-  # are stamped with AUTOPILOT_INFO_MARKER (lib/gh_project.sh,
-  # lib/sprint_calc.py) and excluded here, and #3790 adds the anchored
-  # decision below: the token must OPEN A LINE to count as a kick.
-  comment_gate:
-    if: >
-      vars.AGENTS_ENABLED == 'true' &&
-      contains(github.event.comment.body, 'READY_FOR_NEXT_ISSUE') &&
-      !contains(github.event.comment.body, 'nyxgpt-autopilot-informational') &&
-      !contains(github.event.comment.body, 'nyxgpt-token-mention') &&
-      (github.event.comment.user.login == vars.HUMAN_OWNER ||
-       github.event.comment.user.login == vars.SCRUM_AGENT ||
-       github.event.comment.user.login == vars.DEV_AGENT ||
-       github.event.comment.user.login == vars.REVIEW_AGENT ||
-       github.event.comment.user.login == 'claude[bot]')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    outputs:
-      proceed: ${{ steps.gate.outputs.proceed }}
-      reason: ${{ steps.gate.outputs.reason }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ vars.RELEASE_BRANCH }}
-
-      - name: Comment token gate
-        id: gate
-        uses: ./.github/actions/comment-token-gate
-        with:
-          token: READY_FOR_NEXT_ISSUE
-          comment-body: ${{ github.event.comment.body }}
-          author-association: ${{ github.event.comment.author_association }}
-
   dispatch-next-issue:
-    needs: [comment_gate]
-    if: needs.comment_gate.outputs.proceed == 'true'
+    if: vars.AGENTS_ENABLED == 'true'
     runs-on: ubuntu-latest
     # Serialize dispatches: a burst of READY_FOR_NEXT_ISSUE triggers landing
     # within seconds of each other (post-merge autopilot kick + a manual
@@ -132,10 +105,11 @@ jobs:
         env:
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
+          RELEASE_ISSUE: ${{ vars.RELEASE_ISSUE_NUMBER }}
         with:
           github-token: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
           script: |
-            const issue_number = context.payload.issue.number;
+            const issue_number = Number(process.env.RELEASE_ISSUE);
             const runUrl =
               `https://github.com/${process.env.REPO}/actions/runs/${process.env.RUN_ID}`;
             await github.rest.issues.createComment({
@@ -154,7 +128,7 @@ jobs:
         shell: bash
         env:
           SPRINT_AUTOPILOT: ${{ vars.SPRINT_AUTOPILOT }}
-          KICK_ACTOR: ${{ github.event.comment.user.login }}
+          KICK_ACTOR: ${{ github.actor }}
           KICK_OWNER: ${{ vars.HUMAN_OWNER }}
         run: |
           set -euo pipefail
@@ -203,7 +177,7 @@ jobs:
         with:
           github-token: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
           script: |
-            const issue_number = context.payload.issue.number;
+            const issue_number = Number(process.env.RELEASE_ISSUE);
             const reason = process.env.PAUSE_REASON;
             const body = reason === 'cross_issue_anomaly'
               ? '⏸️ **Scrummaster Agent**: Dispatch paused -- an unresolved cross-issue ' +
@@ -229,7 +203,7 @@ jobs:
         with:
           github-token: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
           script: |
-            const issue_number = context.payload.issue.number;
+            const issue_number = Number(process.env.RELEASE_ISSUE);
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -251,7 +225,7 @@ jobs:
         with:
           github-token: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
           script: |
-            const issue_number = context.payload.issue.number;
+            const issue_number = Number(process.env.RELEASE_ISSUE);
             const tried = (process.env.TRIED || '').trim();
             await github.rest.issues.createComment({
               owner: context.repo.owner,
@@ -283,7 +257,7 @@ jobs:
         with:
           github-token: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
           script: |
-            const issue_number = context.payload.issue.number;
+            const issue_number = Number(process.env.RELEASE_ISSUE);
             const next_issue = process.env.NEXT_ISSUE;
             const dev_agent = process.env.DEV_AGENT;
             const tried = (process.env.TRIED || '').trim();
