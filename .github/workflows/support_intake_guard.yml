@@ -1,0 +1,129 @@
+name: Support Intake Guard
+
+# The loud failure the Support intake did not have (#3811).
+#
+# Every other protection around a user support ticket is keyed on the
+# `Support` label: `assign_backlog.yml` refuses to assign one to the
+# scrummaster, `ensure_project_hygiene.yml` refuses to put one on the code
+# project, `summarize_backlog_page.py` refuses to select one, and the owner's
+# Support project auto-adds on it. The label is applied by
+# `.github/ISSUE_TEMPLATE/support.yml` declaring `labels: ["Support"]` -- and
+# GitHub applies template-declared labels only if they EXIST. When the label
+# was missing, the template applied nothing, silently, and every guard above
+# read the ticket as ordinary work: #3810 was filed at 04:28:40 with no
+# labels and assigned to the scrummaster at 04:28:47.
+#
+# `admin_ensure_support_label.yml` now runs on a schedule so that state is
+# short-lived. This workflow is the backstop for the window in between: a
+# support-shaped issue arriving WITHOUT the label is, by construction, the
+# degraded case, so this repairs the ticket (label it, take the agent off it)
+# and then FAILS ON PURPOSE. A red run is the signal the incident lacked --
+# the degraded path must never be quiet again.
+#
+# Cost: the `if` below is evaluated by GitHub, not by a runner. A normal
+# agent-filed issue, and a correctly-labeled support ticket, start no job at
+# all.
+
+on:
+  issues:
+    types: [opened, reopened]
+
+permissions:
+  issues: write
+
+jobs:
+  repair-and-alert:
+    # Support-shaped but unlabeled. Two independent tells, because either can
+    # be edited away: the template's `title: "support: "` prefix, and the
+    # heading GitHub renders for the form's required `version` field.
+    if: >-
+      !contains(github.event.issue.labels.*.name, 'Support')
+      && (startsWith(github.event.issue.title, 'support:')
+          || contains(github.event.issue.body, '### Installed version'))
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+      REPO: ${{ github.repository }}
+      ISSUE: ${{ github.event.issue.number }}
+      LABEL: Support
+
+    steps:
+      - name: Restore the missing label
+        shell: bash
+        # Create-then-apply, in that order: the overwhelmingly likely reason
+        # the template applied nothing is that the label does not exist, and
+        # applying it to this ticket would fail the same way. `--force` is
+        # idempotent, so this is a no-op when the label was merely dropped
+        # for some other reason.
+        run: |
+          set -euo pipefail
+          gh label create "$LABEL" \
+            --repo "$REPO" \
+            --color "0e8a16" \
+            --description "User-filed support report (web UI -> Support -> File an Issue). Routed to the nyxGPT Support project; skipped by the agent loop." \
+            --force
+          gh issue edit "$ISSUE" --repo "$REPO" --add-label "$LABEL"
+          echo "Applied '$LABEL' to #$ISSUE"
+
+      - name: Take the agent loop off the ticket
+        shell: bash
+        # `assign_backlog.yml` fires on this same event and had already
+        # assigned #3810 seven seconds in, so the assignee this removes is
+        # usually one written *concurrently with this job*. Settle first,
+        # then read, then remove -- reading before that window closes would
+        # report "no assignees" and leave the agent on the ticket.
+        run: |
+          set -euo pipefail
+          sleep 45
+          mapfile -t ASSIGNEES < <(
+            gh issue view "$ISSUE" --repo "$REPO" --json assignees \
+              --jq '.assignees[].login'
+          )
+          if [[ "${#ASSIGNEES[@]}" -eq 0 ]]; then
+            echo "No assignees on #$ISSUE — nothing to remove"
+            exit 0
+          fi
+          echo "Removing assignees from #$ISSUE: ${ASSIGNEES[*]}"
+          for login in "${ASSIGNEES[@]}"; do
+            gh issue edit "$ISSUE" --repo "$REPO" --remove-assignee "$login"
+          done
+          REMAINING=$(gh issue view "$ISSUE" --repo "$REPO" --json assignees \
+                        --jq '.assignees | length')
+          if [[ "$REMAINING" != "0" ]]; then
+            echo "::error::#$ISSUE still has $REMAINING assignee(s) after removal"
+            exit 1
+          fi
+
+      - name: Say so on the ticket
+        shell: bash
+        # The filer is a user, not an agent: they get plain language about
+        # what happened to their ticket, and no process vocabulary.
+        run: |
+          set -euo pipefail
+          cat > /tmp/support-guard-comment.md <<'EOF'
+          Thanks for the report — it arrived without its `Support` label, which
+          is what routes it to the support queue. That has been corrected
+          automatically and the ticket is now in the right place. Nothing is
+          needed from you.
+
+          <sub>Filed via nyxGPT → Support → File an Issue. Repaired by `support_intake_guard.yml` (#3811).</sub>
+          EOF
+          # The heredoc is indented to match the YAML block; strip that back
+          # off so the comment does not render as a code block.
+          sed -i 's/^          //' /tmp/support-guard-comment.md
+          gh issue comment "$ISSUE" --repo "$REPO" --body-file /tmp/support-guard-comment.md
+
+      - name: Fail loudly
+        shell: bash
+        # Deliberate. The ticket is repaired; the *mechanism* is not, and a
+        # green run here would restore exactly the silence that made #3810 a
+        # manual catch at 04:33. This step is the alert.
+        run: |
+          echo "::error::Support ticket #$ISSUE was filed WITHOUT the '$LABEL' label."
+          echo "::error::It has been labeled and unassigned, but the label was missing at filing time,"
+          echo "::error::which means the intake degraded silently: for the length of that window every"
+          echo "::error::guard keyed on the label (assign_backlog, project hygiene, backlog selection,"
+          echo "::error::the Support project's auto-add) was inert. Check that the label exists"
+          echo "::error::(Admin - Ensure Support Label) and that #$ISSUE is not sitting on the"
+          echo "::error::development project board."
+          exit 1
