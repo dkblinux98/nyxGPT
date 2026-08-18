@@ -1436,7 +1436,17 @@ def test_detected_mode_prefers_terraform_then_kubernetes_then_compose_then_nativ
     sources, expected
 ):
     components = [
-        self_heal.ComponentStatus("api", "c", "running", "healthy", True, source=source)
+        self_heal.ComponentStatus(
+            "api",
+            "c",
+            "running",
+            "healthy",
+            True,
+            source=source,
+            # A Kubernetes row is named after a Pod and carries its tier in
+            # `tier` (#3828); every other source names the component itself.
+            tier="core" if source == "kubernetes" else "",
+        )
         for source in sources
     ]
     assert self_heal.detected_mode(components) == expected
@@ -1448,6 +1458,46 @@ def test_detected_mode_ignores_non_core_components():
         self_heal.ComponentStatus("grafana", "c", "running", "healthy", True, source="compose"),
     ]
     assert self_heal.detected_mode(components) == "none"
+
+
+@pytest.mark.unit
+def test_detected_mode_names_kubernetes_from_pod_named_rows():
+    # #3828: the page printed "Nothing detected running" directly above a list
+    # of four running Pods, because no Pod name is in CORE_APP_SERVICES.
+    components = [
+        self_heal.ComponentStatus(
+            pod, pod, "Running", "ready", True, source="kubernetes", tier="core"
+        )
+        for pod in (
+            "nyxgpt-api-stable-abc123",
+            "nyxgpt-web-stable-def456",
+            "cassandra-0",
+            "ollama-0",
+        )
+    ]
+    assert self_heal.detected_mode(components) == "kubernetes"
+    assert self_heal.kubernetes_mode_active(components) is True
+
+
+@pytest.mark.unit
+def test_detected_mode_ignores_kubernetes_observability_only():
+    # `nyxgpt ops observability --kubernetes` can put that tier on a cluster
+    # while the core stack runs natively -- that is not a Kubernetes
+    # deployment of nyxGPT itself.
+    components = [
+        self_heal.ComponentStatus(
+            "grafana-7f9",
+            "grafana-7f9",
+            "Running",
+            "ready",
+            True,
+            source="kubernetes",
+            tier="observability",
+        ),
+        self_heal.ComponentStatus("api", "nyxgpt-api", "started", "", True, source="native"),
+    ]
+    assert self_heal.detected_mode(components) == "native"
+    assert self_heal.kubernetes_mode_active(components) is False
 
 
 @pytest.mark.unit
@@ -2769,13 +2819,25 @@ def _k8s_pods_json(*pods):
     return json.dumps({"items": list(pods)})
 
 
-def _k8s_pod(name, *, phase="Running", ready=True, unschedulable=False, owner=None, waiting=None):
+def _k8s_pod(
+    name,
+    *,
+    phase="Running",
+    ready=True,
+    unschedulable=False,
+    owner=None,
+    waiting=None,
+    labels=None,
+    deleting=False,
+):
     """One Pod object shaped like `kubectl get pod -o json` returns it.
 
     `unschedulable=True` adds the `PodScheduled=False`/`Unschedulable`
     condition a Pod carries when the scheduler could not place it -- the
     #3832 shape. `owner` adds the ReplicaSet ownerReference that gives the Pod
-    a heal identity surviving its own recreation.
+    a heal identity surviving its own recreation. `labels` defaults to the
+    api pool's so a plain Pod passes the #3828 core-tier filter; `deleting`
+    stamps the `deletionTimestamp` of a Pod already on its way out.
     """
     conditions = [{"type": "Ready", "status": "True" if ready else "False"}]
     if unschedulable:
@@ -2787,9 +2849,14 @@ def _k8s_pod(name, *, phase="Running", ready=True, unschedulable=False, owner=No
                 "message": "0/1 nodes are available: 1 Insufficient memory.",
             }
         )
-    metadata = {"name": name}
+    metadata = {
+        "name": name,
+        "labels": {"app": "nyxgpt-api-canary-pool"} if labels is None else labels,
+    }
     if owner is not None:
         metadata["ownerReferences"] = [{"kind": "ReplicaSet", "name": owner}]
+    if deleting:
+        metadata["deletionTimestamp"] = "2026-08-18T10:00:00Z"
     status = {"phase": phase, "conditions": conditions}
     if waiting is not None:
         status["containerStatuses"] = [{"state": {"waiting": {"reason": waiting}}}]
@@ -2828,6 +2895,68 @@ def test_list_kubernetes_component_status_parses_pods(monkeypatch):
     assert by_service["nyxgpt-api-blue-abc"].healthy is True
     assert by_service["nyxgpt-api-stable-def"].healthy is False
     assert by_service["nyxgpt-api-stable-def"].health == "not-ready"
+
+
+@pytest.mark.unit
+def test_list_kubernetes_component_status_covers_every_core_tier(monkeypatch):
+    # #3828: the probe selected `app=nyxgpt-api-canary-pool`, so web,
+    # Cassandra and Ollama were watched by nothing at all in Kubernetes mode.
+    stdout = _k8s_pods_json(
+        _k8s_pod("nyxgpt-api-stable-abc", labels={"app": "nyxgpt-api-canary-pool"}),
+        _k8s_pod("nyxgpt-web-stable-def", labels={"app": "nyxgpt-web-canary-pool"}),
+        _k8s_pod("cassandra-0", labels={"app": "cassandra", "tier": "data"}),
+        _k8s_pod("ollama-0", labels={"app": "ollama", "tier": "llm"}, ready=False),
+    )
+    captured = {}
+
+    def _capture(cmd, timeout=15.0, **_k):
+        captured["cmd"] = cmd
+        return CP(stdout=stdout)
+
+    monkeypatch.setattr(self_heal, "_run", _capture)
+
+    statuses = _real_list_kubernetes_component_status(set())
+    by_service = {s.service: s for s in statuses}
+
+    assert set(by_service) == {
+        "nyxgpt-api-stable-abc",
+        "nyxgpt-web-stable-def",
+        "cassandra-0",
+        "ollama-0",
+    }
+    assert all(s.tier == "core" for s in statuses)
+    assert by_service["ollama-0"].healthy is False
+    # One namespace-wide query, no api-only selector.
+    assert "-l" not in captured["cmd"]
+
+
+@pytest.mark.unit
+def test_list_kubernetes_component_status_covers_in_cluster_observability(monkeypatch):
+    stdout = _k8s_pods_json(
+        _k8s_pod("grafana-7f9", labels={"app": "grafana", "tier": "observability"}),
+        _k8s_pod("promtail-x2k", labels={"app": "promtail", "tier": "observability"}, ready=False),
+    )
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=15.0, **_k: CP(stdout=stdout))
+
+    statuses = _real_list_kubernetes_component_status(set())
+
+    assert [s.tier for s in statuses] == ["observability", "observability"]
+    assert [s.healthy for s in statuses] == [True, False]
+
+
+@pytest.mark.unit
+def test_list_kubernetes_component_status_ignores_foreign_and_terminating_pods(monkeypatch):
+    stdout = _k8s_pods_json(
+        # Someone else's workload in the namespace: never a heal target.
+        _k8s_pod("random-job-abc", labels={"app": "someone-elses-job"}),
+        _k8s_pod("no-labels-at-all", labels={}),
+        # Already being replaced -- healing it would burn a restart attempt on
+        # a deletion that has already happened.
+        _k8s_pod("nyxgpt-api-stable-old", deleting=True, ready=False),
+    )
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=15.0, **_k: CP(stdout=stdout))
+
+    assert _real_list_kubernetes_component_status(set()) == []
 
 
 @pytest.mark.unit
@@ -2880,6 +3009,161 @@ def test_list_kubernetes_component_status_invalid_json(monkeypatch, caplog):
     with caplog.at_level("WARNING"):
         assert _real_list_kubernetes_component_status(set()) == []
     assert "failed to parse kubectl get pods output" in caplog.text
+
+
+@pytest.mark.unit
+def test_component_survey_reads_observability_in_cluster_in_kubernetes_mode(monkeypatch):
+    # #3828: in Kubernetes mode the page showed the Compose-specific
+    # "cannot determine from here" banner over a screen of `unknown`
+    # observability rows, while that tier was running in-cluster and
+    # queryable all along (#3787).
+    monkeypatch.setattr(
+        self_heal,
+        "compose_probe",
+        lambda: self_heal.ComposeProbe(available=False, reason="`docker` is not installed here"),
+    )
+    monkeypatch.setattr(self_heal, "_enabled_observability_profiles", lambda: {"monitoring"})
+    monkeypatch.setattr(self_heal, "_desired_compose_services", lambda profiles: {"grafana"})
+    monkeypatch.setattr(
+        self_heal,
+        "_list_kubernetes_component_status",
+        lambda already_managed: [
+            self_heal.ComponentStatus(
+                "nyxgpt-api-stable-abc",
+                "nyxgpt-api-stable-abc",
+                "Running",
+                "ready",
+                True,
+                source="kubernetes",
+                tier="core",
+            ),
+            self_heal.ComponentStatus(
+                "grafana-7f9",
+                "grafana-7f9",
+                "Running",
+                "ready",
+                True,
+                source="kubernetes",
+                tier="observability",
+            ),
+        ],
+    )
+
+    survey = self_heal.component_survey()
+    by_service = {s.service: s for s in survey.components}
+
+    # The Compose placeholder for grafana is gone; the in-cluster Pod is the
+    # observability tier's row.
+    assert "grafana" not in by_service
+    assert by_service["grafana-7f9"].healthy is True
+    assert all(s.known for s in survey.components)
+
+
+@pytest.mark.unit
+def test_component_survey_keeps_compose_placeholders_outside_kubernetes_mode(monkeypatch):
+    # The suppression above is keyed on a core tier running as Pods -- an
+    # observability-only cluster must not blind the Compose survey.
+    monkeypatch.setattr(
+        self_heal,
+        "compose_probe",
+        lambda: self_heal.ComposeProbe(available=False, reason="`docker` is not installed here"),
+    )
+    monkeypatch.setattr(self_heal, "_enabled_observability_profiles", lambda: {"monitoring"})
+    monkeypatch.setattr(self_heal, "_desired_compose_services", lambda profiles: {"grafana"})
+    monkeypatch.setattr(
+        self_heal,
+        "_list_kubernetes_component_status",
+        lambda already_managed: [
+            self_heal.ComponentStatus(
+                "grafana-7f9",
+                "grafana-7f9",
+                "Running",
+                "ready",
+                True,
+                source="kubernetes",
+                tier="observability",
+            ),
+        ],
+    )
+
+    by_service = {s.service: s for s in self_heal.component_survey().components}
+
+    assert by_service["grafana"].known is False
+    assert by_service["grafana"].state == "unknown"
+
+
+@pytest.mark.unit
+def test_status_reports_kubernetes_as_the_observability_source(monkeypatch):
+    monkeypatch.setattr(
+        self_heal,
+        "component_survey",
+        lambda: self_heal.ComponentSurvey(
+            components=[
+                self_heal.ComponentStatus(
+                    "nyxgpt-api-stable-abc",
+                    "nyxgpt-api-stable-abc",
+                    "Running",
+                    "ready",
+                    True,
+                    source="kubernetes",
+                    tier="core",
+                )
+            ],
+            compose_probe=self_heal.ComposeProbe(available=False, reason="no docker here"),
+        ),
+    )
+
+    payload = self_heal.status()
+
+    assert payload["mode"] == "kubernetes"
+    assert payload["observability_source"] == "kubernetes"
+    assert payload["components"][0]["tier"] == "core"
+
+
+@pytest.mark.unit
+def test_status_reports_compose_as_the_observability_source_elsewhere(monkeypatch):
+    monkeypatch.setattr(
+        self_heal,
+        "component_survey",
+        lambda: self_heal.ComponentSurvey(
+            components=[
+                self_heal.ComponentStatus("api", "nyxgpt-api", "started", "", True, source="native")
+            ],
+            compose_probe=self_heal.ComposeProbe(available=True),
+        ),
+    )
+
+    assert self_heal.status()["observability_source"] == "compose"
+
+
+@pytest.mark.unit
+def test_heal_now_heals_every_kubernetes_tier_not_just_the_api_pool(monkeypatch):
+    # The coverage half of #3828: an unhealthy web/Cassandra/Ollama/Grafana
+    # Pod is a heal target in Kubernetes mode, exactly like an api Pod.
+    unhealthy = [
+        self_heal.ComponentStatus(
+            pod, pod, "Running", "not-ready", False, source="kubernetes", tier=tier
+        )
+        for pod, tier in (
+            ("nyxgpt-web-stable-def", "core"),
+            ("cassandra-0", "core"),
+            ("ollama-0", "core"),
+            ("grafana-7f9", "observability"),
+        )
+    ]
+    monkeypatch.setattr(self_heal, "list_component_status", lambda: unhealthy)
+    heal_mock = MagicMock(return_value=self_heal.HealResult(True, "Deleted pod"))
+    monkeypatch.setattr(self_heal, "heal_kubernetes_pod", heal_mock)
+
+    result = self_heal.heal_now()
+
+    assert [c.args[0] for c in heal_mock.call_args_list] == [
+        "nyxgpt-web-stable-def",
+        "cassandra-0",
+        "ollama-0",
+        "grafana-7f9",
+    ]
+    assert len(result["healed"]) == 4
 
 
 @pytest.mark.unit

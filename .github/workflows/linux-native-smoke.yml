@@ -298,9 +298,13 @@ jobs:
       # The artifact is the real one, not a probe package: the whole defect is
       # that pip refuses *nyxGPT's* requires-python in a 3.9 venv.
       - name: Service venv must be built on a Python that meets requires-python
+        env:
+          # #3837: step outputs reach the shell as data, never as source --
+          # this one was inside a single-quoted literal, the exact #3820 shape.
+          OLD_PYTHON: ${{ steps.old-python.outputs.python-path }}
         run: |
           python3 scripts/service-venv-python-smoke.py \
-            --old-python '${{ steps.old-python.outputs.python-path }}' \
+            --old-python "$OLD_PYTHON" \
             --sdist "$(ls dist/nyxgpt-*.tar.gz)"
 
   # Cheap enough for every ops.py PR: two short-lived containers and a local

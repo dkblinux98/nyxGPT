@@ -8,20 +8,44 @@ Claude must not invent workflow, authority, or automation.
 
 ## Bootstrap (Required Reading for Every New Session)
 
-**Before taking any action, Claude must read these files in order:**
+**Read what the task needs, not the whole repository.** Measured 2026-08-18:
+the old "read all of it" list came to ~137k words (~180k tokens) per run, and
+the retrospective churn data put **97.3% of all tokens in context rather than
+production** (2.26B tokens over 30 days, 84.6M of it *repeat* context).
+Workflows and agent scripts alone were 70% of that corpus, and almost none of
+it bears on any one issue. Loading it is not diligence; it is the largest
+single cost in the pipeline and it buries the parts that matter.
 
-### 1. Core Operating Instructions (Always read first)
-- `CLAUDE.md` (this file)
-- `AGENTS.md`
-- `agents/LEDGER.md` (the operating ledger — read in full)
-- `docs/architecture.md`
-- `product_management/VISION.md`
-- `README.md`
-- All files in `.github/workflows/*`
-- All files in `agents/charters/*`
-- All files in `agents/prompts/*`
-- All files in `agents/runbooks/*`
-- All files in `scripts/agents/*`
+### 1. Always (small, and load-bearing for every role)
+- `CLAUDE.md` (this file) — **already in context**: `claude-code-action` loads
+  it as project instructions on every agent run (**V-028**). Never re-read it.
+- `AGENTS.md` — roles, permissions, REST/GraphQL rules
+- `agents/LEDGER.md` — the operating ledger, in full
+- `agents/CONTEXT_INDEX.md` — one line per workflow and agent script: what each
+  is and what starts it. **This is the map. Read it instead of the territory.**
+
+### 2. Role-scoped (only the role you are about to act in)
+| Role | Charter | Runbook |
+|---|---|---|
+| scrummaster-agent | `agents/charters/scrummaster-agent.md` | `agents/runbooks/scrummaster-runbook.md` |
+| developer-agent | `agents/charters/developer-agent.md` | `agents/runbooks/developer-runbook.md` |
+| review-agent | `agents/charters/review-agent.md` | `agents/runbooks/review-runbook.md` |
+
+One charter and one runbook — not all of `agents/charters/*` and not all of
+`agents/runbooks/*` (those three runbooks are 17k words together).
+
+### 3. On demand only — never wholesale
+`.github/workflows/*`, `scripts/agents/*`, `agents/prompts/*`,
+`docs/architecture.md`, `product_management/VISION.md`, `README.md`.
+
+Find the one file you need in `agents/CONTEXT_INDEX.md`, then open that file.
+Opening a workflow to debug it is correct; opening 69 of them to "have
+context" is the defect this section exists to stop.
+
+**Reading is a cost decision like any other** (first principle 1). Prefer the
+ledger entry over re-deriving; prefer the index line over the file; prefer the
+one file over its directory. If a read would not change what you do next, skip
+it and say so.
 
 ### After Reading, Claude Must:
 

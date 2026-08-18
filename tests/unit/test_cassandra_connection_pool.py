@@ -133,6 +133,138 @@ def test_pool_get_session_different_keyspaces_returns_same_connection():
 
 
 # ---------------------------------------------------------------------------
+# CassandraConnectionPool – shut-down cluster recovery (#3851)
+# ---------------------------------------------------------------------------
+
+
+def _live_cluster():
+    """Return a (cluster, session) mock pair that reports itself as live."""
+    session = Mock()
+    session.is_shutdown = False
+    cluster = Mock()
+    cluster.is_shutdown = False
+    cluster.connect.return_value = session
+    return cluster, session
+
+
+@pytest.mark.unit
+def test_driver_object_is_shutdown_only_trusts_a_real_true():
+    """Only a driver object whose is_shutdown is True counts as shut down.
+
+    A missing attribute or a truthy non-bool (an auto-generated Mock
+    attribute, a stand-in object) must read as *usable*: a false positive
+    would rebuild a healthy cluster on every call.
+    """
+    from nyxgpt.rag.vectorstore_cassandra import driver_object_is_shutdown
+
+    assert driver_object_is_shutdown(object()) is False
+    assert driver_object_is_shutdown(Mock(is_shutdown=False)) is False
+    assert driver_object_is_shutdown(Mock()) is False  # auto-generated attribute
+    assert driver_object_is_shutdown(Mock(is_shutdown=True)) is True
+
+
+@pytest.mark.unit
+def test_pool_rebuilds_cluster_after_it_is_shut_down():
+    """get_session() rebuilds a shut-down Cluster instead of reconnecting to it.
+
+    Reproduces the acceptance failure: once the driver shuts the Cluster
+    down, `Cluster.connect()` raises "Cluster is already shut down" forever,
+    so restarting Cassandra could never recover the API (#3851).
+    """
+    from nyxgpt.rag.vectorstore_cassandra import CassandraConnectionPool
+
+    cluster1, session1 = _live_cluster()
+    cluster2, session2 = _live_cluster()
+
+    pool = CassandraConnectionPool(_make_cfg())
+
+    with patch(
+        "nyxgpt.rag.vectorstore_cassandra.Cluster",
+        side_effect=[cluster1, cluster2],
+    ) as cluster_cls:
+        assert pool.get_session() is session1
+
+        # The driver shuts the cluster down (Cassandra went away, a restart,
+        # a network event).  Both the cluster and its session are now dead.
+        cluster1.is_shutdown = True
+        session1.is_shutdown = True
+        cluster1.connect.side_effect = RuntimeError("Cluster is already shut down")
+        session1.execute.side_effect = RuntimeError("Cluster is already shut down")
+
+        session = pool.get_session()
+
+    assert session is session2, "a fresh session from a rebuilt cluster must be returned"
+    assert cluster_cls.call_count == 2, "a new Cluster must be constructed"
+    assert pool._cluster is cluster2
+
+
+@pytest.mark.unit
+def test_pool_discards_sessions_bound_to_shut_down_cluster():
+    """Sessions cached against a dead cluster are dropped, never handed back."""
+    from nyxgpt.rag.vectorstore_cassandra import CassandraConnectionPool
+
+    cluster1, session1 = _live_cluster()
+    cluster2, session2 = _live_cluster()
+
+    pool = CassandraConnectionPool(_make_cfg(health_check_interval=3600.0))
+
+    with patch(
+        "nyxgpt.rag.vectorstore_cassandra.Cluster",
+        side_effect=[cluster1, cluster2],
+    ):
+        pool.get_session(keyspace=None)
+        pool.get_session(keyspace="test_ks")
+        assert set(pool._sessions) == {None, "test_ks"}
+
+        cluster1.is_shutdown = True
+        refreshed = pool.get_session(keyspace="test_ks")
+
+    assert refreshed is session2
+    assert session1 not in pool._sessions.values()
+    assert set(pool._sessions) == {"test_ks"}, "stale keyspace entries must be cleared too"
+
+
+@pytest.mark.unit
+def test_pool_reopens_individually_shut_down_session_on_live_cluster():
+    """A dead session on a live cluster is reopened without rebuilding the cluster."""
+    from nyxgpt.rag.vectorstore_cassandra import CassandraConnectionPool
+
+    cluster, session1 = _live_cluster()
+    session2 = Mock()
+    session2.is_shutdown = False
+
+    pool = CassandraConnectionPool(_make_cfg(health_check_interval=3600.0))
+
+    with patch("nyxgpt.rag.vectorstore_cassandra.Cluster", return_value=cluster) as cluster_cls:
+        assert pool.get_session() is session1
+
+        session1.is_shutdown = True
+        cluster.connect.return_value = session2
+        refreshed = pool.get_session()
+
+    assert refreshed is session2
+    assert cluster_cls.call_count == 1, "a live cluster must not be rebuilt"
+    assert cluster.connect.call_count == 2
+
+
+@pytest.mark.unit
+def test_pool_keeps_live_cluster_and_session():
+    """A live cluster/session pair is reused — no spurious rebuilds."""
+    from nyxgpt.rag.vectorstore_cassandra import CassandraConnectionPool
+
+    cluster, session = _live_cluster()
+    pool = CassandraConnectionPool(_make_cfg(health_check_interval=3600.0))
+
+    with patch("nyxgpt.rag.vectorstore_cassandra.Cluster", return_value=cluster) as cluster_cls:
+        first = pool.get_session()
+        second = pool.get_session()
+
+    assert first is second is session
+    assert cluster_cls.call_count == 1
+    cluster.connect.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 # CassandraConnectionPool – health check
 # ---------------------------------------------------------------------------
 

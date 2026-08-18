@@ -78,9 +78,12 @@ spec:
             periodSeconds: 10
             failureThreshold: 30
           resources:
+            # Raised from 256Mi (#3825): Grafana with the two plugins above
+            # and the provisioned dashboards settles around 334Mi, i.e. over
+            # its old request -- first to be evicted under node pressure.
             requests:
               cpu: 50m
-              memory: 256Mi
+              memory: 384Mi
             limits:
               memory: 1Gi
       volumes:

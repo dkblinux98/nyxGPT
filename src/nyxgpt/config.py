@@ -12,6 +12,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import os
+import re
 import secrets
 import sys
 import tempfile
@@ -46,6 +47,29 @@ def _log_fallback_once(key: str, message: str, *, level: int = logging.WARNING) 
 def reset_fallback_warnings() -> None:
     """Clear the once-per-key fallback warning dedup set (test helper)."""
     _fallback_warned_keys.clear()
+
+
+#: ``scheme://userinfo@`` -- the only part of a URL that carries a credential.
+#: ``[^/@]`` cannot cross a path separator, so a literal ``@`` in a path
+#: (``http://host/a@b``) is left alone.
+_URL_USERINFO = re.compile(r"^(?P<scheme>[A-Za-z][A-Za-z0-9+.\-]*://)(?P<userinfo>[^/@]+)@")
+
+
+def redact_url_userinfo(url: str) -> str:
+    """Return ``url`` with any ``user:password@`` component replaced by ``***@``.
+
+    Config values that name a *host* are routinely written as full URLs, and
+    a full URL may legally carry credentials -- ``http://user:pass@ollama``
+    is a valid `[ollama] base_url`. Error messages quoting such a value back
+    at the operator would print the password to stderr and the logs.
+
+    Called before interpolating any configured URL into a message (#3837,
+    CodeQL #116). The redaction is unconditional rather than conditional on
+    "does this deployment use credentials today": that question has to be
+    re-answered on every future edit, and the answer is not visible at the
+    interpolation site.
+    """
+    return _URL_USERINFO.sub(lambda m: f"{m.group('scheme')}***@", url)
 
 
 class ConfigValidationError(Exception):
@@ -95,7 +119,10 @@ def validate_config(cfg: ConfigParser) -> list[str]:
     if cfg.has_option("ollama", "base_url"):
         url = cfg.get("ollama", "base_url")
         if not url.startswith(("http://", "https://")):
-            errors.append(f"Invalid ollama.base_url: {url} (must start with http:// or https://)")
+            errors.append(
+                f"Invalid ollama.base_url: {redact_url_userinfo(url)} "
+                "(must start with http:// or https://)"
+            )
 
     # Validate RAG numeric settings
     rag_int_settings = {
@@ -1571,9 +1598,22 @@ def _resolve_cloud_secret(cfg: ConfigParser, key: str) -> str | None:
             secretsmanager_id=get_secrets_secretsmanager_id(cfg),
         )
     except cloud_secrets.CloudSecretsError as exc:
+        # #3837 (CodeQL #115): the exception *type* is the diagnostic; its
+        # message is not. A cloud secrets provider builds that message from
+        # whatever the SDK handed it, and nothing in this process constrains
+        # it to be value-free -- an AWS error quoting a malformed secret
+        # payload would land it in the log verbatim. The full exception is
+        # still available at DEBUG for an operator who opts in on their own
+        # machine; the once-per-key WARNING that everyone sees names only the
+        # key, the provider and the failure class.
         _log_fallback_once(
             f"secrets.{key}",
-            f"Cloud secret resolution failed for {key!r} via provider {provider!r}: {exc}",
+            f"Cloud secret resolution failed for {key!r} via provider "
+            f"{provider!r}: {type(exc).__name__} "
+            "(enable DEBUG logging for the provider's own message)",
+        )
+        _logger.debug(
+            "Cloud secret resolution failure detail for %r via %r", key, provider, exc_info=exc
         )
         return ""
 

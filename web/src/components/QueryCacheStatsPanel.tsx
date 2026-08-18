@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import LoadingSpinner from './LoadingSpinner';
 import ErrorMessage from './ErrorMessage';
+import { apiErrorText, errorMessage } from '../lib/apiError';
 
 type QueryCacheStats = {
   hits: number;
@@ -158,7 +159,7 @@ export default function QueryCacheStatsPanel() {
       const data = await res.json();
       setStats(data);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
     } finally {
       setLoading(false);
     }
@@ -178,11 +179,11 @@ export default function QueryCacheStatsPanel() {
     try {
       const res = await fetch('/api/v1/rag/cache/clear', { method: 'POST' });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+      if (!res.ok) throw new Error(apiErrorText(data, `HTTP ${res.status}`));
       setClearMessage(data.status || 'Query result cache cleared');
       await loadStats();
     } catch (e: unknown) {
-      setClearError(e instanceof Error ? e.message : String(e));
+      setClearError(errorMessage(e));
     } finally {
       setClearing(false);
     }

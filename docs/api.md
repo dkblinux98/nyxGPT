@@ -1292,22 +1292,38 @@ instead), are never `giving_up`, and are not auto-healed. Every other row
 carries `known: true`. Clients that only understand two states must treat a
 missing/`false` `known` as "do not report this component as down".
 
+`tier` is populated for `source: "kubernetes"` rows only, which are named
+after a Pod rather than after a component: `"core"` for the api/web/
+cassandra/ollama Pods and `"observability"` for a `k8s/observability/`
+workload's Pod (empty string for every other source). It is what tells a
+caller which part of the stack a Pod row belongs to, and what lets `mode`
+report `"kubernetes"` at all -- see
+[self-healing.md#kubernetes-mode](self-healing.md#kubernetes-mode).
+
+`observability_source` says where the observability tier's rows came from
+this pass: `"kubernetes"` when it was read in-cluster (a Kubernetes
+deployment -- the `compose_probe_*` fields then say nothing about it and a
+client must not present them as a verdict on that tier), `"compose"`
+otherwise.
+
 **Response:**
 
 ```json
 {
   "enabled": true,
   "mode": "terraform",
+  "observability_source": "compose",
   "compose_probe_available": true,
   "compose_probe_reason": "",
   "components": [
-    { "service": "api", "container": "nyxgpt-api", "state": "started", "health": "", "healthy": true, "source": "native", "desired": true, "known": true, "restart_count": 0, "giving_up": false },
-    { "service": "web", "container": "nyxgpt-web-1", "state": "running", "health": "healthy", "healthy": true, "source": "compose", "desired": true, "known": true, "restart_count": 0, "giving_up": false },
-    { "service": "cassandra", "container": "nyxgpt-tf-cassandra", "state": "running", "health": "healthy", "healthy": true, "source": "terraform", "desired": true, "known": true, "restart_count": 0, "giving_up": false },
-    { "service": "nyxgpt-api-stable-7f8b9c-abcde", "container": "nyxgpt-api-stable-7f8b9c-abcde", "state": "Running", "health": "ready", "healthy": true, "source": "kubernetes", "desired": true, "known": true, "healable": true, "heal_key": "kubernetes/replicaset/nyxgpt-api-stable-7f8b9c", "restart_count": 0, "giving_up": false },
-    { "service": "nyxgpt-api-canary-1a2b3c-r56wb", "container": "nyxgpt-api-canary-1a2b3c-r56wb", "state": "Pending", "health": "unschedulable", "healthy": false, "source": "kubernetes", "desired": true, "known": true, "healable": false, "heal_key": "kubernetes/replicaset/nyxgpt-api-canary-1a2b3c", "note": "Pending (Unschedulable): 0/1 nodes are available: 1 Insufficient memory. -- not healed: deleting a Pod cannot create capacity, and its replacement would be unschedulable for the same reason. Add node capacity or lower the workload's resource requests.", "restart_count": 0, "giving_up": false },
-    { "service": "grafana", "container": "", "state": "absent", "health": "", "healthy": false, "source": "compose", "desired": true, "known": true, "restart_count": 5, "giving_up": true },
-    { "service": "loki", "container": "nyxgpt-loki-1", "state": "exited", "health": "", "healthy": false, "source": "compose", "desired": false, "known": true, "restart_count": 0, "giving_up": false }
+    { "service": "api", "container": "nyxgpt-api", "state": "started", "health": "", "healthy": true, "source": "native", "desired": true, "known": true, "tier": "", "healable": true, "restart_count": 0, "giving_up": false },
+    { "service": "web", "container": "nyxgpt-web-1", "state": "running", "health": "healthy", "healthy": true, "source": "compose", "desired": true, "known": true, "tier": "", "healable": true, "restart_count": 0, "giving_up": false },
+    { "service": "cassandra", "container": "nyxgpt-tf-cassandra", "state": "running", "health": "healthy", "healthy": true, "source": "terraform", "desired": true, "known": true, "tier": "", "healable": true, "restart_count": 0, "giving_up": false },
+    { "service": "nyxgpt-api-stable-7f8b9c-abcde", "container": "nyxgpt-api-stable-7f8b9c-abcde", "state": "Running", "health": "ready", "healthy": true, "source": "kubernetes", "desired": true, "known": true, "tier": "core", "healable": true, "heal_key": "kubernetes/replicaset/nyxgpt-api-stable-7f8b9c", "restart_count": 0, "giving_up": false },
+    { "service": "nyxgpt-api-canary-1a2b3c-r56wb", "container": "nyxgpt-api-canary-1a2b3c-r56wb", "state": "Pending", "health": "unschedulable", "healthy": false, "source": "kubernetes", "desired": true, "known": true, "tier": "core", "healable": false, "heal_key": "kubernetes/replicaset/nyxgpt-api-canary-1a2b3c", "note": "Pending (Unschedulable): 0/1 nodes are available: 1 Insufficient memory. -- not healed: deleting a Pod cannot create capacity, and its replacement would be unschedulable for the same reason. Add node capacity or lower the workload's resource requests.", "restart_count": 0, "giving_up": false },
+    { "service": "grafana-6d4c8f-xyz12", "container": "grafana-6d4c8f-xyz12", "state": "Running", "health": "ready", "healthy": true, "source": "kubernetes", "desired": true, "known": true, "tier": "observability", "healable": true, "restart_count": 0, "giving_up": false },
+    { "service": "grafana", "container": "", "state": "absent", "health": "", "healthy": false, "source": "compose", "desired": true, "known": true, "tier": "", "healable": true, "restart_count": 5, "giving_up": true },
+    { "service": "loki", "container": "nyxgpt-loki-1", "state": "exited", "health": "", "healthy": false, "source": "compose", "desired": false, "known": true, "tier": "", "healable": true, "restart_count": 0, "giving_up": false }
   ],
   "unhealthy_count": 2,
   "unknown_count": 0,
@@ -1821,6 +1837,13 @@ never behind a button a browser session could press. The endpoint makes one
 outbound call, to PyPI's JSON API, to learn which versions already exist; a
 failed lookup is reported in `pypi_lookup_error` and clears `publishable`
 rather than failing the request.
+
+Anything else that stops the plan being computable is a `502` whose message
+names the branch, the channel and where to read the cause — not the cause
+itself. Those messages are built from caught exceptions (an unreadable
+`pyproject.toml` carries the API host's filesystem path and the OS error
+string), so the full text goes to the API log instead: `nyxgpt ops logs api`,
+or `nyxgpt release plan` on the host to see it directly.
 
 ```json
 {

@@ -8,27 +8,12 @@ import { isQueuedForBackgroundSync } from '../lib/backgroundSync';
 import { formatVersion } from '../lib/version';
 import { useToast } from '../../contexts/ToastContext';
 import { useIsMobile } from '../../hooks/useIsMobile';
+import { apiErrorText } from '../../lib/apiError';
 
 // The API's error envelope (see `http_exception_handler` in src/nyxgpt/app.py)
 // nests the human-readable message under `error.message`; a plain string
 // `error` (from the Next.js proxy route's own catch block, e.g. on a network
 // failure) or a top-level `detail` are also handled as fallbacks.
-function extractUploadErrorMessage(errorData: unknown, fallback: string): string {
-  if (errorData && typeof errorData === 'object') {
-    const { error, detail } = errorData as { error?: unknown; detail?: unknown };
-    if (typeof error === 'string') {
-      return error;
-    }
-    if (error && typeof error === 'object' && typeof (error as { message?: unknown }).message === 'string') {
-      return (error as { message: string }).message;
-    }
-    if (typeof detail === 'string') {
-      return detail;
-    }
-  }
-  return fallback;
-}
-
 // Error Boundary for Virtuoso rendering
 export class VirtuosoErrorBoundary extends Component<
   {
@@ -814,7 +799,7 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({ error: 'Unknown error' }));
-        throw new Error(extractUploadErrorMessage(errorData, `HTTP ${res.status}`));
+        throw new Error(apiErrorText(errorData, `HTTP ${res.status}`));
       }
 
       const data = await res.json();
