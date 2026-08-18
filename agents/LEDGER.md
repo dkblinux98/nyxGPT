@@ -473,6 +473,25 @@ are absent here by design (relocated to the annex; IDs are never reused).
   named in the issue body and left out of every proposed group.
   Source: #3809; owner acceptance round 2026-08-16 (testing #3745).
 
+- **D-020** · 2026-08-18 · owner — **`claude[bot]` is an allowed author for
+  the sanctioned comment triggers** (`READY_FOR_NEXT_ISSUE` on
+  `notify_scrum_ready.yml`, `@review` on `claude-code-review.yml`, which also
+  passes `allowed_bots: "claude"` to the review action). Every GitHub write
+  from a Claude remote session carries that App identity — the session proxy
+  rewrites all credentials, so no PAT changes it (verified 2026-08-18: a
+  PAT-signed reviewer request still produced a `claude[bot]`-actored run).
+  The #3706/#3790 runaway-loop protection lives in the anchored-token gate
+  and informational markers, **not in identity exclusion** — removing the
+  identity wholesale was a ceiling, not a floor (D-004). Scope note: that
+  anchored gate covers the *kick* only; `@review` has no layer-2 gate (author
+  list + bare `contains`), and is bounded instead by being convergent and
+  one-shot with its own output posting as the already-allowed REVIEW_AGENT.
+  The owner's earlier
+  same-day "fine as is" close of #3870 was a misunderstanding (they believed
+  the restriction already lifted) and was reversed within hours — a session
+  reading only the close comment will get this wrong.
+  Source: #3870; owner in session, 2026-08-18.
+
 ## Verifications
 
 - **V-001** · 2026-08-14 — Releases in this repository are immutable: a
