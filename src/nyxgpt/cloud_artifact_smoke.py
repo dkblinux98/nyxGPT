@@ -126,8 +126,11 @@ COVERAGE_GAPS: tuple[str, ...] = (
     "are absent, so anything that reads them is not verified here.",
     "Real AWS timing and hardware: instance boot, EBS throughput and network "
     "egress differ from a container on a developer machine or CI runner.",
-    "The live end-to-end behaviour of a deployment (chat, RAG, observability "
-    "UIs) is `nyxgpt cloud smoke` without --container, against real AWS.",
+    "The live end-to-end behaviour of a deployment (model answers, RAG "
+    "retrieval, the observability UIs) is `nyxgpt cloud smoke` without "
+    "--container, against real AWS. Session *storage* is the exception: the "
+    "`session-backend` step drives the running API and reads the row back out "
+    "of the instance's Cassandra (#3865).",
 )
 
 
@@ -147,6 +150,10 @@ class ArtifactSmokeFailure(CloudCommandError):
 
 _OLD_PYTHON_RE = re.compile(r"python3\.\d+")
 _NO_NODE_RE = re.compile(r"nodesource\.com|install\s+-y\s+nodejs|setup_\d+\.x")
+# Written against the defect, not the line: any invocation of the wrapped
+# setter, however the bootstrap comes to spell it, so `file-sessions` keeps
+# reproducing #3865 if the call is later moved or renamed.
+_NO_SESSION_BACKEND_RE = re.compile(r"ops\s+session-backend")
 
 
 @dataclass(frozen=True)
@@ -180,6 +187,15 @@ FAULTS: dict[str, Fault] = {
         ),
         expects="node-provisioning",
     ),
+    "file-sessions": Fault(
+        description=(
+            "Drop the session-backend selection, reintroducing the #3865 class: the "
+            "instance keeps `example.config.ini`'s back-compat `session_backend = "
+            "file`, so chats are written as JSON on the instance's own disk and never "
+            "reach the Cassandra every other deployment mode reads."
+        ),
+        expects="session-backend",
+    ),
 }
 
 
@@ -206,6 +222,16 @@ def apply_faults(script: str, faults: list[str]) -> tuple[str, list[dict[str, An
             script = _OLD_PYTHON_RE.sub("python3", script)
         elif name == "no-node":
             script = "\n".join(line for line in script.splitlines() if not _NO_NODE_RE.search(line))
+        elif name == "file-sessions":
+            script = "\n".join(
+                line
+                for line in script.splitlines()
+                # Only the invocation, never the comment block explaining it:
+                # a `#`-prefixed mention is documentation, and removing it
+                # would make the injected script differ from the real one in
+                # ways the fault is not about.
+                if line.lstrip().startswith("#") or not _NO_SESSION_BACKEND_RE.search(line)
+            )
         records.append(
             {
                 "fault": name,
@@ -586,6 +612,18 @@ _FAILURE_SIGNATURES: tuple[tuple[str, str, str], ...] = (
         r"(?:lingering|user service manager)[^\n]*(?:not |un|refus|fail)",
         "systemd --user session: lingering or the user bus was not usable for the target user",
     ),
+    (
+        # Matched on this smoke's own wording rather than on anything the
+        # install prints: the defect is silent by construction (#3865 -- the
+        # instance came up healthy and served chat, it just stored it in the
+        # wrong place), so the only thing that can name it is the check that
+        # went looking.
+        "session-backend",
+        r"session backend|chat_sessions",
+        "session storage backend: the instance did not end up on the Cassandra session "
+        "store, so its chats are host-local JSON that no other deployment mode can see "
+        "(the #3865 class)",
+    ),
 )
 
 
@@ -727,10 +765,104 @@ def verify_services(timeout: float) -> dict[str, Any]:
     return {"services": reached, "units": _tail(units, 12)}
 
 
+# The session this phase asks the running API to create. A valid session name
+# (see `sessions.validate_session_name`) and obviously synthetic, so a kept
+# container (`--keep`) shows plainly where the row came from.
+SMOKE_SESSION_NAME = "cloud-artifact-smoke"
+
+# The Docker container `nyxgpt ops install` creates for the one Docker-managed
+# core service (`_ensure_cassandra_container`), and the keyspace/table
+# `nyxgpt.session_db` writes into (`[rag] cassandra_keyspace`, default
+# `nyxgpt`, and `SESSIONS_TABLE`).
+CASSANDRA_CONTAINER = "nyxgpt-cassandra"
+CHAT_SESSIONS_TABLE = "nyxgpt.chat_sessions"
+
+
+def verify_session_backend(timeout: float = 180.0) -> dict[str, Any]:
+    """Assert a fresh artifact install stores chat sessions in Cassandra (#3865).
+
+    Three checks, in the order that makes a failure name its own cause:
+
+    1. The wrapped reader (`nyxgpt ops session-backend`) reports `cassandra`
+       as the backend in force. This is the configuration claim.
+    2. The *running API* -- not this process, and not the CLI -- creates a
+       session over HTTP. `POST /api/v1/sessions/init` goes through the same
+       `nyxgpt.sessions` dispatch layer every chat write uses and needs no
+       model, so it proves the serving process's behaviour without depending
+       on Ollama having a model pulled.
+    3. That session is a row in `nyxgpt.chat_sessions`, read back through
+       `cqlsh` in the instance's own Cassandra container. This is the check
+       that cannot be satisfied by a well-formed config alone, and it is the
+       issue's acceptance criterion stated literally: a chat produces a row,
+       with no manual configuration step anywhere above it.
+
+    Checking (1) alone would be the same mistake #3865 was: config.ini said
+    nothing, nobody looked, and the deployment served happily while writing
+    sessions somewhere no other mode could read them.
+    """
+    reported = _exec_as_target("nyxgpt ops session-backend", timeout=timeout)
+    if "session_backend = cassandra" not in reported:
+        raise ArtifactSmokeFailure(
+            "The instance did not come up on the Cassandra session backend -- "
+            f"`nyxgpt ops session-backend` reported: {_tail(reported, 5) or '(no output)'}. "
+            "A fresh cloud install must not fall back to host-local JSON sessions (#3865)."
+        )
+
+    payload = json.dumps({"name": SMOKE_SESSION_NAME})
+    created = _exec_as_target(
+        "curl -sS -X POST --max-time 60 -H 'Content-Type: application/json' "
+        f"-d {shlex.quote(payload)} http://127.0.0.1:8000/api/v1/sessions/init",
+        timeout=timeout,
+    )
+    if '"ok"' not in created or "true" not in created.lower():
+        raise ArtifactSmokeFailure(
+            "The running API refused to create a session through the Cassandra session "
+            f"backend: {_tail(created, 5) or '(no output)'}"
+        )
+
+    # Read the row back out of Cassandra itself, not out of the API: asking the
+    # API would just re-report whatever store it used, which is the thing under
+    # test. `cqlsh` ships inside the Cassandra image, so this needs nothing
+    # installed on the instance.
+    cql = (
+        f"SELECT name FROM {CHAT_SESSIONS_TABLE} "
+        f"WHERE name = '{SMOKE_SESSION_NAME}';"  # noqa: S608 - a fixed literal, not input
+    )
+    rows = _exec_as_target(
+        f"docker exec {shlex.quote(CASSANDRA_CONTAINER)} cqlsh -e {shlex.quote(cql)}",
+        timeout=timeout,
+    )
+    if SMOKE_SESSION_NAME not in rows:
+        raise ArtifactSmokeFailure(
+            f"The API created session '{SMOKE_SESSION_NAME}' but it is not a row in "
+            f"{CHAT_SESSIONS_TABLE} -- the session went to this host's disk instead of the "
+            f"shared store (#3865). cqlsh said: {_tail(rows, 8) or '(no output)'}"
+        )
+
+    return {
+        "backend": "cassandra",
+        "session": SMOKE_SESSION_NAME,
+        "table": CHAT_SESSIONS_TABLE,
+        "reported": _tail(reported, 3),
+        "row": _tail(rows, 6),
+    }
+
+
 def collect_diagnostics() -> dict[str, str]:
     """Gather what an operator would ask for after a failed run. Never raises."""
     return {
         "ops_status": _tail(_exec_as_target("nyxgpt ops status || true", timeout=180.0), 40),
+        # #3865: on a session-backend failure the first question is which
+        # backend the instance actually resolved, and what the config says --
+        # `session_backend` is the whole diagnosis, and it is one grep.
+        "session_backend": _tail(
+            _exec_as_target(
+                "nyxgpt ops session-backend 2>&1 || true; "
+                'grep -n "^session_backend" "$HOME/.nyxGPT/config.ini" 2>/dev/null || true',
+                timeout=120.0,
+            ),
+            10,
+        ),
         "units": _tail(
             _exec_as_target(
                 "systemctl --user list-units 'nyxgpt-*' --all --no-pager || true", timeout=120.0
@@ -936,6 +1068,9 @@ def run_container_smoke(args: argparse.Namespace) -> dict[str, Any]:
         )
         steps.append({"step": "repo-less", **verify_repo_less()})
         steps.append({"step": "services", **verify_services(health_timeout)})
+        # After services: this one drives the running API, so it needs the
+        # stack the step above just proved is answering (#3865).
+        steps.append({"step": "session-backend", **verify_session_backend()})
     except CloudCommandError as exc:
         failure = str(exc)
     except KeyboardInterrupt:
@@ -975,7 +1110,10 @@ def run_container_smoke(args: argparse.Namespace) -> dict[str, Any]:
         )
     else:
         passed = not failure
-        detail = failure or "bare AL2023 -> artifact install -> services serving, verified"
+        detail = failure or (
+            "bare AL2023 -> artifact install -> services serving -> a session created "
+            "through the API landed in nyxgpt.chat_sessions, verified"
+        )
 
     return {
         "action": "cloud-artifact-smoke",
