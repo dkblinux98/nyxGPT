@@ -10,6 +10,8 @@ install rather than being reported as success.
 
 from __future__ import annotations
 
+import json
+import logging
 from configparser import ConfigParser
 from pathlib import Path
 from types import SimpleNamespace
@@ -307,6 +309,32 @@ def test_status_says_unknown_rather_than_missing_when_ollama_is_down(monkeypatch
     assert info["reachable"] is False
     assert [m["present"] for m in info["models"]] == [None, None]
     assert info["ready"] is False
+
+
+@pytest.mark.unit
+def test_status_error_names_the_failure_class_not_the_transport_message(monkeypatch, caplog):
+    """#3837 (CodeQL #129): this dict is served verbatim by `GET /models/required`.
+
+    Same fault class as #123 — a caught exception's *message* stored into a
+    structure an endpoint returns. Here the `except Exception` catches whatever
+    httpx raises against an unreachable Ollama, and that string names the base
+    URL's resolution failure and the host's proxy. The class is what the
+    dashboard renders; the message belongs in the log.
+    """
+    host_state = "proxy.corp.internal:3128 (resolver ns1.corp.internal)"
+
+    def unreachable(base_url=None):  # noqa: ARG001
+        raise RuntimeError(f"connection refused via {host_state}")
+
+    monkeypatch.setattr(model_bootstrap, "installed_model_names", unreachable)
+
+    with caplog.at_level(logging.WARNING, logger="nyxgpt.ops"):
+        info = ops.required_models_status(cfg=_cfg())
+
+    assert host_state not in json.dumps(info)
+    # Still diagnostic, and still reported somewhere the operator can reach.
+    assert info["error"] == "RuntimeError"
+    assert host_state in caplog.text
 
 
 @pytest.mark.unit

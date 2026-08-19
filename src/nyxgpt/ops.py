@@ -9248,7 +9248,17 @@ def required_models_status(
         installed = model_bootstrap.installed_model_names(base_url=base_url)
     except Exception as e:
         installed = None
-        error = f"{type(e).__name__}: {e}"
+        # #3837 (CodeQL #129, py/stack-trace-exposure). Same fault class as
+        # #123 one file over, and found by the same sweep: this dict is
+        # returned straight out of `GET /models/required` (`app.py`), so a
+        # caught exception's message reaching it reaches a browser. The bare
+        # `except Exception` is the point -- whatever `installed_model_names`
+        # raises against an unreachable Ollama is an httpx transport error,
+        # and its string names the base URL's resolution failure and the
+        # host's proxy. The class is what the dashboard renders ("Ollama did
+        # not answer (ConnectError)"); the message goes to the log.
+        logger.warning("Ollama model lookup failed at %s", base_url, exc_info=e)
+        error = type(e).__name__
 
     missing = (
         []

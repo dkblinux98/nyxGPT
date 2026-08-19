@@ -62,7 +62,9 @@ def test_models_required_does_not_502_on_an_unreachable_ollama():
     unknown = {
         "base_url": "http://127.0.0.1:11434",
         "reachable": False,
-        "error": "RuntimeError: connection refused",
+        # The failure class only -- `required_models_status` keeps the
+        # transport message out of this field (#3837, CodeQL #129).
+        "error": "RuntimeError",
         "ready": False,
         "remediation": "",
         "models": [

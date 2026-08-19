@@ -2541,3 +2541,36 @@ def test_cloud_secret_failure_log_omits_the_provider_exception_text(
     assert not any("sk-live-leaked" in message for message in warnings)
     assert any("CloudSecretsError" in message for message in warnings)
     assert any("auth_api_key" in message for message in warnings)
+
+
+def test_cloud_secret_failure_debug_line_does_not_relog_the_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """#3837 (CodeQL #130): the DEBUG companion logs the key, not the provider.
+
+    The #115 hardening (PR #3899) added this DEBUG line and passed `provider`
+    to it, which opened a fresh `py/clear-text-logging-sensitive-data` alert
+    -- the fix for one alert built the next. The provider is already named
+    once per key by the WARNING above it, so dropping it here costs nothing;
+    what the line exists for is the exception, and that must survive.
+    """
+    ini = tmp_path / "config.ini"
+    _write(ini, "[secrets]\nprovider = ssm\n[auth]\napi_key = should-not-be-used\n")
+    cfg = load_config(str(ini))
+    reset_fallback_warnings()
+
+    def _raise(provider, key, **kwargs):
+        raise cloud_secrets.CloudSecretsError("payload was {'auth_api_key': 'sk-live-leaked'}")
+
+    monkeypatch.setattr(cloud_secrets, "resolve_secret", _raise)
+
+    with caplog.at_level(logging.DEBUG, logger="nyxgpt.config"):
+        assert get_auth_api_key(cfg) == ""
+
+    debug = [r for r in caplog.records if r.levelno == logging.DEBUG]
+    assert debug, "the opt-in DEBUG detail must still be emitted"
+    assert not any("ssm" in r.getMessage() for r in debug)
+    assert any("auth_api_key" in r.getMessage() for r in debug)
+    # The exception is the whole point of the DEBUG line -- redacting the
+    # provider must not have taken the traceback with it.
+    assert any(r.exc_info is not None for r in debug)
