@@ -134,7 +134,7 @@ class TestHygieneScript:
     def test_labels_are_re_read_before_the_add(self):
         """The two-label deadlock rule (#3390/#3413/#3415) reads labels late."""
         body = HYGIENE.read_text(encoding="utf-8")
-        assert body.index("LABELS=$(gh api") < body.index('gh issue edit "$ISSUE" --add-label')
+        assert body.index("LABELS_JSON=$(gh api") < body.index('gh issue edit "$ISSUE" --add-label')
 
     def test_settle_wait_is_configurable_and_defaults_to_60s(self):
         body = HYGIENE.read_text(encoding="utf-8")

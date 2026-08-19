@@ -82,7 +82,11 @@ jobs:
             // Only assign to scrummaster if status is Backlog (or newly created without status)
             if (currentStatus === status_backlog || currentStatus === null) {
               console.log(`Assigning issue #${issue_number} to ${scrum_agent}`);
-              await github.rest.issues.addAssignees({
+              // SET, not add: an issue carries exactly one assignee (owner
+              // rule). addAssignees appends, which is how issues came to
+              // show two or three agents at once and made "who owns this?"
+              // unanswerable from the board.
+              await github.rest.issues.update({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number,
