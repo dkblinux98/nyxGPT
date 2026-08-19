@@ -300,6 +300,16 @@ This command:
 - Detects and stops any Docker Compose app-tier containers (`api`, `web`,
   `ollama`, `cassandra`) left running from an earlier raw `docker compose
   up` or a previous mixed-mode install, reporting what it stopped
+- **macOS**: stops any `nyxgpt-api`/`nyxgpt-web` brew service belonging to a
+  *different formula* than the one this install owns, before that install
+  runs. A candidate install registers `nyxgpt-api@3.0.0rc` while an older
+  release's `nyxgpt-api` keg stays installed and registered — Homebrew treats
+  a differently-named formula as unrelated software — and both formulas
+  declare `keep_alive true`, so launchd relaunches whichever loses the race
+  for :8000 indefinitely, filing `[Errno 48] address already in use` into the
+  error tracker the whole time (#3853). Only the service is stopped; the keg
+  is left installed, and `nyxgpt ops uninstall` is what removes it. Nothing is
+  reported when there is nothing superseded, which is the normal case.
 - **macOS**: installs Homebrew formulas (`nyxgpt-api`, `nyxgpt-web`) if
   missing, or reinstalls them when the vendored source has changed since the
   last install. When `nyxgpt-web` is actually rebuilt this way, the service
@@ -546,7 +556,15 @@ Reports:
   switch (e.g. `nyxgpt ops install` after `nyxgpt ops down` without `--terraform`) left
   two whole core stacks up at once, each answering on its own network (#3565).
 - Native service state (`started`, `stopped`, `error`) — Homebrew services
-  on macOS, systemd --user units on Linux
+  on macOS, systemd --user units on Linux. On macOS the service name is
+  **resolved from `brew services list`**, not assumed: a release-candidate
+  install registers `nyxgpt-api@3.0.0rc` after its formula, and reading the
+  stable name instead reported an entirely healthy candidate stack as
+  `none` — and made `nyxgpt up` wait its whole timeout and exit 2 on it,
+  since the health wait consumes the same probe (#3853). When a machine
+  carries several services for one component, the one that is **running** is
+  reported. See
+  [homebrew.md](homebrew.md#the-service-is-named-after-the-formula)
 - Docker container state for Cassandra
 - LaunchAgent load state for every agent nyxGPT installs on macOS -- both
   log followers (`com.nyxgpt.cassandra-logs`, `com.nyxgpt.ollama-logs`), the
@@ -842,6 +860,15 @@ alone is refused, same contract as `down`.
   launchd job loaded against files that no longer exist is named at install
   time, with this command as the fix, before anything tries to bind the
   ports it is holding.
+- The neighbouring case — a job whose files *do* exist, because a previous
+  release's keg is still installed alongside this one — is handled by
+  install's own `superseded brew services` step rather than reported here.
+  Homebrew treats a differently-named formula as unrelated software, so a
+  `nyxgpt-api` keg is untouched by a `nyxgpt-api@3.0.0rc` install, and both
+  formulas declare `keep_alive true`: launchd relaunches whichever loses the
+  race for :8000, forever. Install stops the superseded *service* before
+  starting its own; the keg is left installed, and this command is what
+  removes it (#3853).
 
 ### Exit codes
 

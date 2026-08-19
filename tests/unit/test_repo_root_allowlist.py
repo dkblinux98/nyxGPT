@@ -80,6 +80,14 @@ _ALLOWLIST: dict[str, set[str]] = {
         # build-from-source flow above.
         'template = REPO_ROOT / "homebrew" / "nyxgpt-api.rb"',
         'template = REPO_ROOT / "homebrew" / "nyxgpt-web.rb"',
+        # `_target_brew_formula` (#3853): asks the *same* question those two
+        # lines answer -- "is there a checkout to build a local file:// tap
+        # from?" -- so that the superseded-service reconcile can never stop
+        # the service this install is about to start. Deliberately the
+        # installer's own condition rather than a second heuristic; on an
+        # artifact install it is simply False and the published channel
+        # formula answers, which is the repo-less path working as intended.
+        'if (REPO_ROOT / "homebrew" / f"{name}.rb").exists():',
         # Self-contained Linux venv build (`ops package --linux`): builds
         # an installable artifact from the checkout's own example.config.ini.
         'example_config = REPO_ROOT / "example.config.ini"',

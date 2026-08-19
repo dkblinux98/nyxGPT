@@ -319,9 +319,10 @@ jobs:
     #     are never built, copied or `git add`ed here, so `brew install
     #     nyxgpt-api` keeps resolving to the latest stable release. (Homebrew
     #     has no pre-release semantics -- channel separation has to live in
-    #     the formula names.) The candidate formulas declare `conflicts_with`
-    #     their stable counterparts, so switching channels on one machine is
-    #     an explicit uninstall, never a silent swap;
+    #     the formula names.) Each channel's formulas declare
+    #     `conflicts_with` the other's -- both directions since #3853 -- so
+    #     switching channels on one machine is an explicit uninstall, never a
+    #     silent swap;
     #   * the GitHub release is created with `--prerelease --latest=false`,
     #     so it is never the repository's "Latest" release. That also keeps
     #     release-artifacts.yml (which triggers on `release: [released]`,
