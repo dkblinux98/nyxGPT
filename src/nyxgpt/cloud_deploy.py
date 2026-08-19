@@ -20,6 +20,15 @@ from my workstation":
    (there may not be one). This mirrors, step for step, the
    `artifact-install-smoke` job in `.github/workflows/release-artifacts.yml`,
    which proves that exact sequence on a checkout-free Linux runner.
+
+   `--dev` (#3950) is the one deliberate exception, and it is opt-in and
+   checkout-only exactly like `nyxgpt up --dev` (D-009): the operator's
+   *working tree* is shipped to the instance by `ship_working_tree` and
+   installed editable there, so `ops install --dev` on the box builds from
+   that tree instead of a release. The instance still never clones anything
+   -- the tree crosses the same SSH connection everything else does -- and
+   the default path is untouched, so the repo-less guarantee (#3504) holds
+   for every deploy that does not ask for this.
 4. **Open the tunnel and wait for health** -- the app, web UI and every
    observability UI bind `127.0.0.1` on the instance and are never exposed
    in the security group
@@ -49,6 +58,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -102,6 +112,21 @@ _VERSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 # Amazon Linux 2023's default login user -- the AMI the compute module
 # resolves by default (terraform/aws/modules/compute/main.tf).
 DEFAULT_SSH_USER = "ec2-user"
+
+# Where `--dev` lands the operator's working tree on the instance (#3950).
+# Under `~/.nyxGPT` beside the venv and config the same provisioning script
+# creates, so a teardown that removes the nyxGPT home removes the copy with
+# it and nothing is left in the login user's home directory. Written as a
+# shell expansion rather than an absolute path because the login user is
+# `--ssh-user`'s to choose.
+REMOTE_SOURCE_DIR = "$HOME/.nyxGPT/src"
+
+# How long `ship_working_tree`'s two steps may take. The archive is built
+# locally from files git already knows about (fast, and bounded by the tree
+# rather than the network); the transfer is a few tens of MB over one SSH
+# connection to an instance that has just booted, which is the slow half.
+ARCHIVE_TIMEOUT = 300.0
+TRANSFER_TIMEOUT = 1800.0
 
 # The session backend a cloud deploy selects unless told otherwise (#3865).
 #
@@ -188,6 +213,12 @@ class DeployPlan:
     health_timeout: float = 900.0
     ssh_timeout: float = 300.0
     session_backend: str = DEFAULT_SESSION_BACKEND
+    # `--dev` (#3950): ship and install the working tree at `source_dir`
+    # instead of the published release `version` names. `source_dir` is only
+    # ever set together with `dev`, and `resolve_plan` refuses `dev` without
+    # a resolvable checkout -- so the two can never disagree.
+    dev: bool = False
+    source_dir: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         """Serializable form, recorded in `deploy.json`."""
@@ -200,6 +231,8 @@ class DeployPlan:
             "health_timeout": self.health_timeout,
             "ssh_timeout": self.ssh_timeout,
             "session_backend": self.session_backend,
+            "dev": self.dev,
+            "source_dir": self.source_dir,
         }
 
 
@@ -365,16 +398,36 @@ def resolve_plan(args: argparse.Namespace) -> DeployPlan:
     The session backend carries over for the same reason the SSH user does:
     a re-deploy of an instance whose sessions live in Cassandra must not
     silently move them back to files because the operator omitted a flag.
+
+    `dev` (#3950) deliberately does **not** carry over. Every other recorded
+    choice describes the instance's configuration, which a re-deploy should
+    preserve; `--dev` describes where this *particular run* gets its code, and
+    a plain `nyxgpt cloud deploy` has meant "install a published release"
+    since the command existed. Inheriting it would silently re-ship whatever
+    tree happened to be checked out -- a different commit, a half-finished
+    edit -- under a command the operator read as the artifact path. The
+    recorded `dev` flag is still written, so `cloud status` can say the box is
+    running a tree rather than a release.
     """
     previous = load_deploy_state()
-    version = str(
-        getattr(args, "version", None) or previous.get("version") or installed_version() or ""
-    )
+    dev = bool(getattr(args, "dev", False))
+    source_dir = ""
+    if dev:
+        source_dir = str(_require_dev_source())
+    if dev:
+        # The tree being shipped is the answer, so this run's own version
+        # comes before the last deploy's: `version` here is a label for what
+        # is about to be on the box, and nothing installs from it.
+        version = str(getattr(args, "version", None) or installed_version() or "0.0.0")
+    else:
+        version = str(
+            getattr(args, "version", None) or previous.get("version") or installed_version() or ""
+        )
     if not version:
         raise CloudCommandError(
             "Could not determine which nyxGPT release to install on the instance. "
-            "Pass --version <release> (e.g. --version 3.0.0) -- the instance installs a "
-            "published artifact, never a copy of your working tree."
+            "Pass --version <release> (e.g. --version 3.0.0) -- without --dev the instance "
+            "installs a published artifact, never a copy of your working tree."
         )
     # The version is spliced into the remote provisioning script, so a stray
     # quote or `$` in it would surface as a confusing shell error ten minutes
@@ -415,7 +468,161 @@ def resolve_plan(args: argparse.Namespace) -> DeployPlan:
         health_timeout=float(getattr(args, "health_timeout", None) or 900.0),
         ssh_timeout=float(getattr(args, "ssh_timeout", None) or 300.0),
         session_backend=backend,
+        dev=dev,
+        source_dir=source_dir,
     )
+
+
+# --- Dev mode: the working tree as the build source (#3950) ------------
+
+
+def dev_source_root() -> Path | None:
+    """Return the checkout `nyxgpt cloud deploy --dev` would ship, or None.
+
+    Delegates to `ops.dev_checkout_root` rather than testing for a
+    `pyproject.toml` here, so the cloud path and the local install path can
+    never disagree about what counts as a source tree. On an
+    artifact-installed CLI there is no tree above the package and this
+    answers None -- which is the whole of the refusal below.
+    """
+    from nyxgpt import ops
+
+    return ops.dev_checkout_root()
+
+
+def _require_dev_source() -> Path:
+    """Return the checkout `--dev` will ship, or raise saying why there is none.
+
+    The loud refusal the local install paths already make (`ops.install` and
+    `ops._install_terraform`), moved to the front of the cloud path for the
+    same reason: an operator who believes they are testing their working tree
+    must never be handed a published release instead. Failing here also means
+    failing *before* AWS is touched, so a mistaken `--dev` costs nothing.
+    """
+    source = dev_source_root()
+    if source is None:
+        raise CloudCommandError(
+            "--dev deploys your working tree, and this nyxgpt is running from an installed "
+            "package -- there is no checkout above it to ship (it needs pyproject.toml, "
+            "src/nyxgpt/ and web/).\n"
+            "Run `nyxgpt cloud deploy --dev` from a clone of the repository, or drop --dev "
+            "to deploy a published release."
+        )
+    return source
+
+
+def working_tree_files(source: Path) -> list[str]:
+    """Return every path under `source` that `--dev` ships, relative to it.
+
+    Asks git rather than walking the tree: `--cached --others
+    --exclude-standard` is exactly "everything tracked, plus everything new
+    that is not ignored", which is the working tree as the operator sees it
+    -- uncommitted edits included, `node_modules`/`.venv`/`.next` excluded by
+    the ignore rules already in the repository. Committed state (`git
+    archive HEAD`) would be the wrong answer: dev mode exists to run the code
+    in front of you, and half of that is usually not committed yet.
+
+    `.git` itself is never listed, so the instance receives a source tree and
+    not a repository -- there is nothing on the box to pull, push or clone
+    from, and the transfer stays small.
+
+    Tracked paths deleted in the working tree are dropped: git still lists
+    them and tar would fail on the first one.
+    """
+    completed = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(source),
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=ARCHIVE_TIMEOUT,
+    )
+    if completed.returncode != 0:
+        raise CloudCommandError(
+            f"Could not list the working tree at {source} to ship it: "
+            f"{(completed.stderr or '').strip() or 'git ls-files failed'}"
+        )
+    names = [name for name in completed.stdout.split("\0") if name]
+    return sorted({name for name in names if (source / name).is_file()})
+
+
+def build_working_tree_archive(source: Path, dest: Path) -> int:
+    """Write a gzipped tar of `source`'s working tree to `dest`; return the file count.
+
+    Staged to a file rather than streamed straight into ssh's stdin: the two
+    halves then fail independently and legibly (a tar problem is a tar
+    problem, not a mysterious broken pipe), and there is no producer/consumer
+    deadlock to get wrong on a tree that is tens of megabytes.
+    """
+    names = working_tree_files(source)
+    if not names:
+        raise CloudCommandError(
+            f"The working tree at {source} lists no files to ship -- is it a git checkout?"
+        )
+    listing = "\0".join(names)
+    completed = subprocess.run(
+        ["tar", "-czf", str(dest), "-C", str(source), "--null", "-T", "-"],
+        input=listing,
+        capture_output=True,
+        text=True,
+        timeout=ARCHIVE_TIMEOUT,
+    )
+    if completed.returncode != 0:
+        raise CloudCommandError(
+            f"Could not archive the working tree at {source}: "
+            f"{(completed.stderr or '').strip() or 'tar failed'}"
+        )
+    return len(names)
+
+
+def ship_working_tree(target: DeployTarget, source: Path) -> dict[str, Any]:
+    """Copy the working tree at `source` to `REMOTE_SOURCE_DIR` on the instance.
+
+    The remote directory is replaced, not merged: a file deleted or renamed in
+    the tree since the last `--dev` deploy has to disappear from the box too,
+    and an install that half-matches the operator's tree is worse than one
+    that plainly does not. The tree is small enough (git's own file list, no
+    `node_modules`, no history) that re-shipping it is cheaper than teaching
+    this to reconcile.
+
+    Returns the step record `deploy` reports: how many files crossed and how
+    big the archive was.
+    """
+    with tempfile.TemporaryDirectory(prefix="nyxgpt-dev-deploy-") as staging:
+        archive = Path(staging) / "worktree.tar.gz"
+        files = build_working_tree_archive(source, archive)
+        size = archive.stat().st_size
+        remote = (
+            f'rm -rf "{REMOTE_SOURCE_DIR}" && mkdir -p "{REMOTE_SOURCE_DIR}" '
+            f'&& tar -xzf - -C "{REMOTE_SOURCE_DIR}"'
+        )
+        with archive.open("rb") as handle:
+            completed = subprocess.run(
+                [*ssh_argv(target), remote],
+                stdin=handle,
+                capture_output=True,
+                text=True,
+                timeout=TRANSFER_TIMEOUT,
+            )
+    if completed.returncode != 0:
+        raise CloudCommandError(
+            f"Could not copy the working tree to {target.user}@{target.host}: "
+            f"{(completed.stderr or '').strip() or 'ssh failed'}"
+        )
+    return {
+        "step": "source",
+        "source_dir": str(source),
+        "remote_dir": REMOTE_SOURCE_DIR,
+        "files": files,
+        "archive_bytes": size,
+    }
 
 
 # --- SSH ---------------------------------------------------------------
@@ -621,14 +828,7 @@ export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
 # --- Ollama ------------------------------------------------------------
 command -v ollama >/dev/null 2>&1 || curl -fsSL https://ollama.com/install.sh | sh
 
-# --- nyxGPT itself, from the published PyPI artifact -------------------
-# No checkout is created on this machine, by design (CLAUDE.md, repo-less
-# portability 2026-08-01): the instance installs the same published release
-# an operator would install on a laptop.
-"$PY" -m venv "$HOME/.nyxGPT/venv" >/dev/null
-"$HOME/.nyxGPT/venv/bin/pip" install --quiet --upgrade pip
-"$HOME/.nyxGPT/venv/bin/pip" install --quiet "nyxgpt==${NYXGPT_VERSION}"
-NYXGPT="$HOME/.nyxGPT/venv/bin/nyxgpt"
+__NYXGPT_INSTALL__
 
 # --- Seed config.ini from the installed package ------------------------
 mkdir -p "$HOME/.nyxGPT"
@@ -669,9 +869,9 @@ fi
 # retry #3760 removed. A re-deploy still converges: `ops install` is a
 # reconcile, not a first-run-only bootstrap.
 if [ -n "$NYXGPT_PROFILES" ]; then
-  run_nyxgpt ops install
+  run_nyxgpt ops install__OPS_INSTALL_FLAGS__
 else
-  run_nyxgpt ops install --skip-observability
+  run_nyxgpt ops install --skip-observability__OPS_INSTALL_FLAGS__
 fi
 
 # --- Self-healing ------------------------------------------------------
@@ -690,16 +890,57 @@ fi
 echo "==> nyxGPT ${NYXGPT_VERSION} provisioned"
 """
 
+# The one block that differs between the two build sources, spliced into
+# `__NYXGPT_INSTALL__` above. Everything else the instance needs -- the OS
+# packages, the Python floor, Node, Docker, lingering, Ollama, the seeded
+# config, the session backend, `ops install`, self-heal -- is identical, and
+# is deliberately *one* template rather than two: a second copy of a
+# 200-line bootstrap is a copy that drifts, and the defects this script has
+# collected (#3759, #3760, #3761, #3762, #3782) would each have had to be
+# found and fixed twice.
+ARTIFACT_INSTALL_BLOCK = """# --- nyxGPT itself, from the published PyPI artifact -------------------
+# No checkout is created on this machine, by design (CLAUDE.md, repo-less
+# portability 2026-08-01): the instance installs the same published release
+# an operator would install on a laptop.
+"$PY" -m venv "$HOME/.nyxGPT/venv" >/dev/null
+"$HOME/.nyxGPT/venv/bin/pip" install --quiet --upgrade pip
+"$HOME/.nyxGPT/venv/bin/pip" install --quiet "nyxgpt==${NYXGPT_VERSION}"
+NYXGPT="$HOME/.nyxGPT/venv/bin/nyxgpt\""""
+
+# `--dev` (#3950). Still no clone and no download of source: the tree was
+# copied here over this deploy's own SSH connection by `ship_working_tree`
+# before this script ran. The guard is not paranoia -- an install that fell
+# through to a published release here would hand the operator a healthy stack
+# that is not the code they are testing, which is the exact failure `--dev`
+# exists to prevent, and it would be invisible until they wondered why their
+# change had no effect.
+DEV_INSTALL_BLOCK = """# --- nyxGPT itself, from the working tree this deploy shipped ----------
+if [ ! -f "__REMOTE_SOURCE__/pyproject.toml" ]; then
+  echo "no working tree at __REMOTE_SOURCE__ -- --dev ships one before provisioning, and this instance has none" >&2
+  exit 1
+fi
+"$PY" -m venv "$HOME/.nyxGPT/venv" >/dev/null
+"$HOME/.nyxGPT/venv/bin/pip" install --quiet --upgrade pip
+# Editable, so the api service on the box runs the shipped tree rather than a
+# copy of it -- the same property `nyxgpt up --dev` gives a laptop, and what
+# makes `ops install --dev` below resolve its checkout to this directory.
+"$HOME/.nyxGPT/venv/bin/pip" install --quiet -e "__REMOTE_SOURCE__"
+NYXGPT="$HOME/.nyxGPT/venv/bin/nyxgpt\""""
+
 
 def render_provision_script(plan: DeployPlan) -> str:
     """Render the instance provisioning script for `plan`.
 
     Kept a pure function so the repo-less guarantee (no clone, no checkout
-    copy) and the artifact version pin are unit-testable without an EC2
-    instance.
+    copy on the default path), the artifact version pin, and `--dev`'s
+    working-tree source are all unit-testable without an EC2 instance.
     """
+    install_block = DEV_INSTALL_BLOCK if plan.dev else ARTIFACT_INSTALL_BLOCK
     return (
-        PROVISION_SCRIPT_TEMPLATE.replace("__VERSION__", plan.version)
+        PROVISION_SCRIPT_TEMPLATE.replace("__NYXGPT_INSTALL__", install_block)
+        .replace("__REMOTE_SOURCE__", REMOTE_SOURCE_DIR)
+        .replace("__OPS_INSTALL_FLAGS__", " --dev" if plan.dev else "")
+        .replace("__VERSION__", plan.version)
         .replace("__PROFILES__", ",".join(plan.profiles))
         .replace("__SESSION_BACKEND__", plan.session_backend)
     )
@@ -789,7 +1030,12 @@ def provision_instance(target: DeployTarget, plan: DeployPlan) -> dict[str, Any]
     # `self_heal_enabled` is safe to assert rather than re-probe: the script
     # runs under `set -euo pipefail`, so a failed `self-heal enable` would
     # have made this a non-zero exit and raised above.
-    return {"version": plan.version, "profiles": list(plan.profiles), "self_heal_enabled": True}
+    return {
+        "version": plan.version,
+        "profiles": list(plan.profiles),
+        "self_heal_enabled": True,
+        "dev": plan.dev,
+    }
 
 
 # --- The tunnel (the P6-4 access path) ---------------------------------
@@ -1024,6 +1270,13 @@ def deploy(args: argparse.Namespace) -> dict[str, Any]:
     waited = wait_for_ssh(target, plan.ssh_timeout)
     steps.append({"step": "ssh", "host": target.host, "waited_seconds": round(waited, 1)})
 
+    # Before provisioning, not during: the provisioning script installs from
+    # the tree, so the tree has to already be there -- and a transfer that
+    # fails should fail with nothing installed rather than half-way through a
+    # bootstrap. Only under `--dev`; the artifact path copies nothing.
+    if plan.dev:
+        steps.append(ship_working_tree(target, Path(plan.source_dir)))
+
     steps.append({"step": "provision", **provision_instance(target, plan)})
 
     record = {
@@ -1038,6 +1291,12 @@ def deploy(args: argparse.Namespace) -> dict[str, Any]:
         # move an instance's sessions back to files because the flag was
         # omitted -- `resolve_plan` reads this back.
         "session_backend": plan.session_backend,
+        # Recorded but never carried forward by `resolve_plan` (see there):
+        # this is how `cloud status` and the dashboard can say the instance is
+        # running a working tree rather than the release `version` names,
+        # which is otherwise indistinguishable from the outside.
+        "dev": plan.dev,
+        "source_dir": plan.source_dir,
         "host": target.host,
         "instance_id": target.instance_id,
         "region": target.region,
@@ -1060,6 +1319,7 @@ def deploy(args: argparse.Namespace) -> dict[str, Any]:
                 "deploy",
                 "failed",
                 version=plan.version,
+                dev=plan.dev,
                 host=target.host,
                 instance_id=target.instance_id,
                 region=target.region,
@@ -1081,6 +1341,9 @@ def deploy(args: argparse.Namespace) -> dict[str, Any]:
         "deploy",
         "succeeded",
         version=plan.version,
+        # So the dashboard's history can tell a tree deploy from a release
+        # deploy after the fact, which the version alone cannot (#3950).
+        dev=plan.dev,
         host=target.host,
         instance_id=target.instance_id,
         region=target.region,
@@ -1350,6 +1613,17 @@ def deploy_status(probe_health: bool = False) -> dict[str, Any]:
         # Empty when nothing was recorded -- a deploy from before #3865, or
         # no deploy at all -- which is not the same claim as "file".
         "session_backend": str(record.get("session_backend") or ""),
+        # Whether the instance is running a shipped working tree rather than
+        # the published release `version` names (#3950). Reported because it
+        # is otherwise invisible: a dev deploy and an artifact deploy of the
+        # same version look identical in every other field, and an operator
+        # debugging one needs to know which they are looking at. Only the
+        # deploy record can answer -- an instance asked about itself
+        # (`local-instance`) reads its own package metadata, which says the
+        # version and not where it came from -- so `source` says how much
+        # weight this carries.
+        "dev": bool(record.get("dev")),
+        "source_dir": str(record.get("source_dir") or ""),
         "connection": connection_status(on_instance),
         "infra": infra,
         "tunnel": tunnel,
@@ -1375,6 +1649,16 @@ def _print_deploy_summary(result: dict[str, Any]) -> None:
     target = result["target"]
     plan = result["plan"]
     print(f"\nnyxGPT {plan['version']} deployed to {target['instance_id'] or target['host']}.")
+    if plan.get("dev"):
+        # Said plainly and every time: the version above is the tree's own
+        # declared version, which on a working tree usually names a release
+        # that does not exist yet. An operator reading only that line would
+        # conclude they had deployed a published build.
+        print(
+            f"Built from your working tree at {plan.get('source_dir')} (--dev), not from a "
+            f"published {plan['version']} release. Re-run `nyxgpt cloud deploy --dev` to ship "
+            "your latest edits; a plain `nyxgpt cloud deploy` puts the published release back."
+        )
     backend = str(plan.get("session_backend") or DEFAULT_SESSION_BACKEND)
     if backend == "cassandra":
         print(
