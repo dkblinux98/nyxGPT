@@ -1635,7 +1635,9 @@ def _add_install_arguments(parser: argparse.ArgumentParser) -> None:
             "--kubernetes it builds the two container images from the working tree "
             "instead of from the published artifacts (#3834); with --terraform it builds "
             "the api/web images from that tree instead of pulling the published ones "
-            "(#3835). Requires a checkout; without this flag the artifact path is used"
+            "(#3835). Requires a checkout; without this flag the artifact path is used. "
+            "Where --dev is accepted: here (this machine, all three modes) and on "
+            "`nyxgpt cloud deploy` (the AWS EC2 target, #3950) -- see docs/cloud.md"
         ),
     )
     parser.add_argument(
@@ -2703,7 +2705,8 @@ def cli(argv: list[str] | None = None) -> int:
     # `cloud deploy` / `destroy` / `tunnel` -- the one-command story (P6-11,
     # #3513). `deploy` applies the substrate above, installs a *published*
     # nyxGPT release onto the instance (never a clone -- CLAUDE.md's
-    # repo-less requirement), opens the SSH tunnel that is the only access
+    # repo-less requirement; `--dev` ships the operator's own tree over SSH
+    # instead, and still clones nothing -- #3950), opens the SSH tunnel that is the only access
     # path (product_management/DECISION_PRIVATE_ACCESS_MECHANISM.md), waits
     # for health through it, and prints the localhost URLs.
     cloud_deploy_p = cloud_sub.add_parser(
@@ -2759,6 +2762,19 @@ def cli(argv: list[str] | None = None) -> int:
             "Target instance OS family (default: auto -- macos for a mac*.metal instance "
             "type, linux otherwise). `--os macos` provisions an EC2 Mac named with --host; "
             "nyxGPT's substrate cannot allocate the Dedicated Host one would need"
+        ),
+    )
+    cloud_deploy_p.add_argument(
+        "--dev",
+        action="store_true",
+        help=(
+            "Deploy your working tree instead of a published release (#3950): the checkout "
+            "this nyxgpt runs from is copied to the instance and installed editable there, "
+            "and `ops install --dev` on the box builds the api/web services from it. "
+            "Requires a source checkout and refuses without one; --version is ignored. "
+            "Linux targets only -- refused with --os macos, whose Homebrew bootstrap has "
+            "no working-tree source. Not inherited by the next deploy -- a plain "
+            "`nyxgpt cloud deploy` always installs a published release. See docs/cloud.md"
         ),
     )
     cloud_deploy_p.add_argument(
