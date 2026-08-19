@@ -2,14 +2,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ChatPane from '@/app/components/ChatPane';
+import type { VirtuosoMockProps } from '../mocks/virtuoso';
 
 vi.mock('react-virtuoso', () => ({
-  Virtuoso: ({ data, itemContent, style, startReached }: any) => (
+  Virtuoso: ({ data, itemContent, style, startReached }: VirtuosoMockProps) => (
     <div style={style} data-testid="virtuoso-mock">
       <button data-testid="trigger-start-reached" onClick={() => startReached?.()}>
         load-older
       </button>
-      {(data || []).map((item: any, index: number) => (
+      {(data || []).map((item: unknown, index: number) => (
         <div key={index}>{itemContent(index, item)}</div>
       ))}
     </div>
@@ -21,7 +22,7 @@ vi.mock('@/contexts/ToastContext', () => ({
   useToast: () => toastMocks,
 }));
 
-type Handler = (url: string, init?: RequestInit) => any;
+type Handler = (url: string, init?: RequestInit) => unknown;
 
 function makeFetchMock(extra: Record<string, Handler> = {}) {
   return vi.fn().mockImplementation((url: string, init?: RequestInit) => {
@@ -228,7 +229,7 @@ describe('send() editingIndex-cleared and rag_filters operand branches', () => {
   });
 
   it('includes rag_filters when doc_ids or tags are set (send and regenerate)', async () => {
-    let sendBody: any = null;
+    let sendBody: Record<string, unknown> | null = null;
     global.fetch = makeFetchMock({
       '/metadata': () => ({ ok: true, status: 200, json: () => Promise.resolve({ rag_enabled: true, title: '', model: '' }) }),
       '/api/chat/stream': (_url: string, init?: RequestInit) => {
@@ -297,7 +298,7 @@ describe('remaining edge-case branches: datalist fallback label, FileReader with
   });
 
   it('includes rag_filters in the regenerate request body when only tags or dates are set', async () => {
-    let capturedBody: any = null;
+    let capturedBody: Record<string, unknown> | null = null;
     const seed = [
       { role: 'user', content: 'Q3' },
       { role: 'assistant', content: 'old3' },
@@ -386,7 +387,7 @@ describe('drag-over visual state and paperclip hover while streaming', () => {
 
 describe('regenerate includes rag_filters, and assistant-message highlight background branch', () => {
   it('includes rag_filters in the regenerate request body when doc_ids/tags are set', async () => {
-    let capturedBody: any = null;
+    let capturedBody: Record<string, unknown> | null = null;
     const seed = [
       { role: 'user', content: 'Q' },
       { role: 'assistant', content: 'old answer' },
@@ -411,7 +412,7 @@ describe('regenerate includes rag_filters, and assistant-message highlight backg
   });
 
   it('includes rag_filters in the regenerate request body when only collection is set', async () => {
-    let capturedBody: any = null;
+    let capturedBody: Record<string, unknown> | null = null;
     const seed = [
       { role: 'user', content: 'Q' },
       { role: 'assistant', content: 'old answer' },

@@ -2,14 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ChatPane from '@/app/components/ChatPane';
-
-type VirtuosoMockProps = {
-  totalCount: number;
-  itemContent: (index: number) => React.ReactNode;
-  style?: React.CSSProperties;
-  'aria-label'?: string;
-  role?: string;
-};
+import type { VirtuosoMockProps } from '../mocks/virtuoso';
 
 vi.mock('react-virtuoso', () => ({
   Virtuoso: ({ totalCount, itemContent, style, ...props }: VirtuosoMockProps) => (

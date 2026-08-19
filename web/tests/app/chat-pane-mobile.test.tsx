@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ChatPane from '@/app/components/ChatPane';
+import type { VirtuosoMockProps } from '../mocks/virtuoso';
 
 // Force the mobile layout branch (width/height/padding ternaries throughout
 // ChatPane keyed off isMobile) so those branches get exercised alongside
@@ -11,9 +12,9 @@ vi.mock('@/hooks/useIsMobile', () => ({
 }));
 
 vi.mock('react-virtuoso', () => ({
-  Virtuoso: ({ data, itemContent, style }: any) => (
+  Virtuoso: ({ data, itemContent, style }: VirtuosoMockProps) => (
     <div style={style} data-testid="virtuoso-mock">
-      {(data || []).map((item: any, index: number) => (
+      {(data || []).map((item: unknown, index: number) => (
         <div key={index}>{itemContent(index, item)}</div>
       ))}
     </div>
@@ -25,7 +26,7 @@ vi.mock('@/contexts/ToastContext', () => ({
   useToast: () => toastMocks,
 }));
 
-type Handler = (url: string, init?: RequestInit) => any;
+type Handler = (url: string, init?: RequestInit) => unknown;
 
 function makeFetchMock(extra: Record<string, Handler> = {}) {
   return vi.fn().mockImplementation((url: string, init?: RequestInit) => {
