@@ -45,15 +45,39 @@ SKIPPED_CONCLUSIONS = frozenset({"skipped", "cancelled"})
 CLAUDE_WORKFLOWS_STATIC = {
     "claude.yml": 1,
     "claude-code-review.yml": 1,
-    "developer_huddle_position.yml": 1,
-    "scrummaster_huddle_mediation.yml": 1,
     # Dispatch-only, and both halves run unconditionally when it does (#3821).
     "claude-md-binding-canary.yml": 2,
 }
-# developer_auto_implement.yml calls the action conditionally, up to 6 times
-# per run (initial attempt, review-fix, acceptance-fix, and up to 3 self-heal
-# phases) -- its per-run step count is fetched from the Jobs API instead.
-CLAUDE_WORKFLOW_DYNAMIC = "developer_auto_implement.yml"
+# Workflows that call the action a *variable* number of times per run, so no
+# static count is honest -- the per-run count is fetched from the Jobs API.
+#
+#   developer_auto_implement.yml -- up to 6 (initial attempt, review-fix,
+#     acceptance-fix, and up to 3 self-heal phases).
+#   huddle_session.yml (#3911) -- up to 7 (a dev and a review turn per round,
+#     up to HUDDLE_MAX_ROUNDS rounds, plus the mediation), and fewer whenever
+#     the huddle settles early. It replaced developer_huddle_position.yml and
+#     scrummaster_huddle_mediation.yml, which were 1 static step each; a
+#     static count here would have made the huddle's real spend invisible to
+#     the telemetry that cost decisions are made on (ledger D-021).
+CLAUDE_WORKFLOWS_DYNAMIC = frozenset(
+    {
+        "developer_auto_implement.yml",
+        "huddle_session.yml",
+    }
+)
+
+# Of those, the ones whose repeat invocations are *retries of a failed
+# attempt*. A huddle's extra invocations are rounds of one conversation, not
+# retries, and counting them as retry_cycles would report every huddle as a
+# 6-retry implementation.
+RETRY_WORKFLOWS = frozenset({"developer_auto_implement.yml"})
+
+# What a step name looks like when the step invoked claude-code-action. Most
+# are named after Claude; the huddle's are named after the speaker and the
+# round (#3911), so a name-contains-"claude" rule would count zero of them.
+CLAUDE_STEP_NAME_RE = re.compile(
+    r"claude|round \d+ - (?:dev|review) turn|scrummaster's decision", re.I
+)
 
 # Additional runner-minute cost commonly triggered on issue/PR branches that
 # is not itself a Claude invocation (CI, security/smoke gates, the review
@@ -69,7 +93,7 @@ COST_ONLY_WORKFLOWS = {
 }
 
 ALL_WORKFLOWS = sorted(
-    set(CLAUDE_WORKFLOWS_STATIC) | {CLAUDE_WORKFLOW_DYNAMIC} | COST_ONLY_WORKFLOWS
+    set(CLAUDE_WORKFLOWS_STATIC) | set(CLAUDE_WORKFLOWS_DYNAMIC) | COST_ONLY_WORKFLOWS
 )
 
 # Branch naming conventions in use across the agent scripts: developer
@@ -316,7 +340,7 @@ def claude_steps_dynamic(repo, run_id):
             for step in job.get("steps", []):
                 if step.get("conclusion") in (None, "skipped"):
                     continue
-                if re.search(r"claude", step.get("name") or "", re.I):
+                if CLAUDE_STEP_NAME_RE.search(step.get("name") or ""):
                     count += 1
     return count
 
@@ -359,10 +383,11 @@ def collect(
             bucket["runner_minutes"] += run_minutes_fn(repo, run["id"])
             if wf in CLAUDE_WORKFLOWS_STATIC:
                 bucket["claude_steps"] += CLAUDE_WORKFLOWS_STATIC[wf]
-            elif wf == CLAUDE_WORKFLOW_DYNAMIC:
+            elif wf in CLAUDE_WORKFLOWS_DYNAMIC:
                 n = claude_steps_fn(repo, run["id"])
                 bucket["claude_steps"] += n
-                bucket["retry_cycles"] += max(0, n - 1)
+                if wf in RETRY_WORKFLOWS:
+                    bucket["retry_cycles"] += max(0, n - 1)
 
     return issues, unattributed
 

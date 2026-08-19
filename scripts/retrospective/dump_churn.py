@@ -83,29 +83,41 @@ CHURN_WORKFLOWS = [
     "developer_auto_implement.yml",
     "claude.yml",
     "claude-code-review.yml",
-    "developer_huddle_position.yml",
-    "scrummaster_huddle_mediation.yml",
+    # #3911 replaced developer_huddle_position.yml and
+    # scrummaster_huddle_mediation.yml (one action step each) with this one
+    # workflow, which invokes the action up to 7 times per run.
+    "huddle_session.yml",
     "scrummaster_groom_sprint.yml",
     "claude-md-binding-canary.yml",
 ]
 
 # Step names that ARE a Claude invocation. Deliberately stricter than
-# dump_spend.py's "name contains claude": shell steps like "Check Claude
-# progress completion" and "Read Claude analysis result" mention Claude but
-# spend no tokens, and counting them would invent rounds. The huddle steps
-# ("Post developer position", "Run mediation") and the sprint-grooming step
-# ("Groom the draft ...") do not say "Claude" at all, hence the explicit
-# alternatives rather than a name-contains rule.
+# dump_spend.py's step-name rule: shell steps like "Check Claude progress
+# completion" and "Read Claude analysis result" mention Claude but spend no
+# tokens, and counting them would invent rounds. The huddle steps and the
+# sprint-grooming step ("Groom the draft ...") do not say "Claude" at all,
+# hence the explicit alternatives rather than a name-contains rule.
+#
+# The huddle contributes two shapes. "Round N - dev/review turn" and "The
+# scrummaster's decision" are the live ones (#3911). "Post developer position"
+# and "Run mediation" are the retired legs' step names, kept because this
+# script walks a *history* window: dropping them would silently zero every
+# huddle round that ran before #3911 merged, which is the same
+# partial-data-presented-as-complete failure TestWorkflowCoverage exists to
+# catch.
 CLAUDE_STEP_RE = re.compile(
     r"^\s*(run claude|claude fix issues|deep analysis with claude"
-    r"|post developer position|run mediation|groom the draft)",
+    r"|post developer position|run mediation|groom the draft"
+    r"|round \d+ - (?:dev|review) turn|the scrummaster's decision)",
     re.I,
 )
 
 # Round kind, first match wins (an acceptance-fix step also says "fix").
+# The huddle pattern must stay ahead of the bare "review" rule: "Round 1 -
+# review turn" is a huddle turn, not a code review.
 ROUND_KIND_RULES = [
     ("groom", r"groom"),
-    ("huddle", r"position|mediation"),
+    ("huddle", r"position|mediation|round \d+ - (?:dev|review) turn|scrummaster's decision"),
     ("acceptance-fix", r"acceptance"),
     ("review-fix", r"review fix|fix review issues"),
     ("self-heal", r"fix issues|attempt\s*\d|deep analysis"),
