@@ -808,8 +808,8 @@ KUBERNETES_LLM_RUNTIME_SECTION = """# --- Single-node Kubernetes (k3s) ---------
 
 # The address k3s binds to. IMDSv2 first (this is an EC2 instance by
 # construction), falling back to the first address the kernel reports, which
-# is what makes this same text executable on a plain Linux machine -- the CI
-# proxy in .github/workflows/k3s-cloud-smoke.yml runs exactly this block.
+# is what makes this same text executable on a plain Linux machine -- the
+# k3s-cloud-smoke CI job runs exactly this block.
 NYXGPT_IMDS_TOKEN=$(curl -sf -m 5 -X PUT "http://169.254.169.254/latest/api/token" \\
   -H "X-aws-ec2-metadata-token-ttl-seconds: 300" 2>/dev/null || true)
 NYXGPT_NODE_IP=""
