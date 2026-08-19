@@ -30,6 +30,7 @@ fails if it drifts. Do not hand-edit.
 | `claude-code-review.yml` | pull_request, issue_comment, workflow_dispatch | Claude Code Review |
 | `claude-md-binding-canary.yml` | workflow_dispatch | CLAUDE.md Binding Canary |
 | `claude.yml` | issue_comment, pull_request_review_comment, issues, pull_request_review | Claude Code |
+| `cli-locality-smoke.yml` | pull_request, push, workflow_dispatch | CLI Locality Smoke |
 | `cloud-artifact-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Artifact Smoke |
 | `cloud-dev-deploy-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Dev Deploy Smoke |
 | `cloud-imds-smoke.yml` | pull_request, push, workflow_dispatch | Cloud IMDS Smoke |

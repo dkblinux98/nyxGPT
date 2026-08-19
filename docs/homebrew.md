@@ -945,7 +945,7 @@ nyxgpt ops restart
 Compose/Terraform's `ollama` container uses -- instead of Ollama's own
 default `~/.ollama/models`, via the `OLLAMA_MODELS` environment variable
 (never a symlink). This means a model pulled while running in any one local
-launch mode (native, `nyxgpt ops install --terraform --local`, or Compose)
+launch mode (native, `nyxgpt ops install --terraform`, or Compose)
 shows up in all of them, with no duplicate downloads.
 
 This is applied via `launchctl setenv OLLAMA_MODELS ...`, plus a

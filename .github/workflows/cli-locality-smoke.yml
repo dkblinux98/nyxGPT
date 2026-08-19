@@ -1,0 +1,141 @@
+name: CLI Locality Smoke
+
+# Least-privilege token: this gate only reads the checked-out code (CodeQL #2).
+permissions:
+  contents: read
+
+# Question this job answers: on a machine with no checkout, does the shipped
+# `nyxgpt` binary accept `ops install --terraform/--kubernetes` with NO
+# locality flag, and does its help describe that truthfully?
+#
+# #3948 (owner acceptance, 2026-08-19): `ops -h` told users `--terraform` and
+# `--kubernetes` "require --local" -- an obligation with exactly one legal
+# answer -- and that `--cloud` was "not yet implemented", which reads as
+# "nyxGPT cannot deploy to a cloud target" when in fact `nyxgpt cloud infra
+# apply` + `nyxgpt cloud deploy` are the shipped cloud path. Unit tests pin the
+# parser and the gate; they cannot see whether the built distribution a user
+# actually installs behaves that way, which is what this runs.
+#
+# It deliberately stops before any deploy: the two commands are given `--dev`
+# from a venv with no repository in reach, so each runs the locality gate and
+# is then refused for the *unrelated* reason that dev mode needs a checkout.
+# Reaching that refusal is the proof the locality gate let it through, and it
+# costs seconds instead of a 20-minute image build. The real end-to-end
+# evidence for the default -- a full deploy with no locality flag -- is
+# k8s-local-smoke.yml and terraform-local-smoke.yml, which now run the command
+# in exactly that form.
+#
+# The injected negative half (D-006): `--cloud` must still be REFUSED, and
+# with the pointer at the commands that do deploy to a cloud. Without it, a
+# gate deleted outright would pass every other assertion here.
+on:
+  pull_request:
+    paths:
+      - 'src/nyxgpt/cli.py'
+      - 'src/nyxgpt/ops.py'
+      - '.github/workflows/cli-locality-smoke.yml'
+  push:
+    paths:
+      - 'src/nyxgpt/cli.py'
+      - 'src/nyxgpt/ops.py'
+      - '.github/workflows/cli-locality-smoke.yml'
+  workflow_dispatch:
+
+jobs:
+  cli-locality-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name != 'push' || github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Built and installed as a wheel into a venv outside the checkout, then
+      # run from /tmp: this is the `nyxgpt` a user gets from PyPI, not an
+      # editable import of the tree next to it.
+      - name: Install the built wheel into a venv with no checkout in reach
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip build
+          python -m build --wheel --outdir /tmp/dist .
+          python -m venv /tmp/clean-venv
+          /tmp/clean-venv/bin/pip install /tmp/dist/*.whl
+
+      - name: The help surface must not advertise a requirement that is not enforced
+        working-directory: /tmp
+        run: |
+          set -euo pipefail
+          /tmp/clean-venv/bin/nyxgpt ops install --help | tee /tmp/install-help.txt
+          # Collapse argparse's wrapping so a claim split across lines is seen.
+          tr '\n' ' ' < /tmp/install-help.txt | tr -s ' ' > /tmp/install-help-flat.txt
+
+          if grep -qi -e 'requires --local' -e 'required with --terraform' \
+                      -e 'required with --kubernetes' -e 'only locality' \
+                      /tmp/install-help-flat.txt; then
+            echo "FAIL: ops install help still claims a locality requirement" >&2
+            exit 1
+          fi
+
+          # ...and it must name what actually deploys to a cloud, so a reader
+          # does not conclude the product has no cloud story (the defect).
+          grep -q 'nyxgpt cloud infra apply' /tmp/install-help-flat.txt
+          grep -q 'nyxgpt cloud deploy' /tmp/install-help-flat.txt
+
+      - name: A deploy with no locality flag is accepted
+        working-directory: /tmp
+        run: |
+          set -euo pipefail
+          for mode in --terraform --kubernetes; do
+            # Exits non-zero for the dev-mode-needs-a-checkout reason, which
+            # only happens AFTER the locality gate has passed.
+            set +e
+            /tmp/clean-venv/bin/nyxgpt ops install "$mode" --dev >/tmp/out.txt 2>&1
+            rc=$?
+            set -e
+            cat /tmp/out.txt
+            if [ "$rc" -eq 0 ]; then
+              echo "FAIL: $mode --dev unexpectedly succeeded with no checkout" >&2
+              exit 1
+            fi
+            if grep -qi -e '--local is required' -e 'locality' /tmp/out.txt; then
+              echo "FAIL: $mode was refused over locality with no locality flag" >&2
+              exit 1
+            fi
+            grep -qi 'checkout' /tmp/out.txt
+            echo "OK: $mode reached the dev-mode refusal, so the locality gate passed"
+          done
+
+      - name: --local is still accepted, as a no-op
+        working-directory: /tmp
+        run: |
+          set -euo pipefail
+          set +e
+          /tmp/clean-venv/bin/nyxgpt ops install --kubernetes --local --dev >/tmp/local.txt 2>&1
+          rc=$?
+          set -e
+          cat /tmp/local.txt
+          [ "$rc" -ne 0 ]
+          # The same dev-mode refusal, not "unrecognized arguments": scripts
+          # and docs that still pass --local keep working.
+          grep -qi 'checkout' /tmp/local.txt
+          ! grep -qi 'unrecognized arguments' /tmp/local.txt
+
+      - name: Injected negative -- --cloud must still be refused, with the pointer
+        working-directory: /tmp
+        run: |
+          set -euo pipefail
+          set +e
+          /tmp/clean-venv/bin/nyxgpt ops install --kubernetes --cloud >/tmp/cloud.txt 2>&1
+          rc=$?
+          set -e
+          cat /tmp/cloud.txt
+          if [ "$rc" -eq 0 ]; then
+            echo "FAIL: --cloud was accepted; the locality gate is gone" >&2
+            exit 1
+          fi
+          grep -q 'nyxgpt cloud infra apply' /tmp/cloud.txt
+          grep -q 'nyxgpt cloud deploy' /tmp/cloud.txt

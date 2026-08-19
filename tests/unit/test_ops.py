@@ -11037,20 +11037,30 @@ def test_resolve_locality_rejects_cloud_by_naming_the_command_that_does_it(capsy
     args = SimpleNamespace(local=False, cloud=True)
     assert ops._resolve_locality(args) is None
     err = capsys.readouterr().err
+    # Scoped to the flag, and carrying the pointer at the commands that DO
+    # deploy to a cloud target -- never "cloud deployment is unimplemented"
+    # (#3948).
+    assert "not implemented for `ops install --terraform/--kubernetes`" in err
+    assert ops.CLOUD_DEPLOY_POINTER in err
+    # ...and that pointer names the Kubernetes half of the cloud path too
+    # (#3956), so an operator who wants a cluster is not left believing the
+    # cloud target only runs Compose.
     assert "nyxgpt cloud deploy" in err
     assert "--kubernetes" in err
     assert "not yet implemented" not in err
 
 
 @pytest.mark.unit
-def test_resolve_locality_requires_local(capsys):
+def test_resolve_locality_defaults_to_local(capsys):
+    """No locality flag is not an error: local is the default (#3948)."""
     args = SimpleNamespace(local=False, cloud=False)
-    assert ops._resolve_locality(args) is None
-    assert "--local is required" in capsys.readouterr().err
+    assert ops._resolve_locality(args) == "local"
+    assert capsys.readouterr().err == ""
 
 
 @pytest.mark.unit
-def test_resolve_locality_accepts_local():
+def test_resolve_locality_accepts_explicit_local():
+    """`--local` stays accepted, as a no-op, so existing scripts keep working."""
     args = SimpleNamespace(local=True, cloud=False)
     assert ops._resolve_locality(args) == "local"
 
@@ -11312,10 +11322,25 @@ def test_terraform_stack_health_reports_outputs(monkeypatch):
 
 
 @pytest.mark.unit
-def test_install_terraform_requires_locality(capsys):
-    args = SimpleNamespace(local=False, cloud=False, api_key=None)
+def test_install_terraform_rejects_cloud_locality(capsys):
+    args = SimpleNamespace(local=False, cloud=True, api_key=None)
     assert ops._install_terraform(args) == 2
-    assert "--local is required" in capsys.readouterr().err
+    assert ops.CLOUD_DEPLOY_POINTER in capsys.readouterr().err
+
+
+@pytest.mark.unit
+def test_install_terraform_defaults_to_local_locality(monkeypatch):
+    """No locality flag deploys locally rather than refusing (#3948)."""
+    called = {}
+
+    def fake_steps(api_key, dev=False):
+        called["api_key"] = api_key
+        return [ops.OpsResult(True, "install", "ok")]
+
+    monkeypatch.setattr(ops, "_install_terraform_steps", fake_steps)
+    args = SimpleNamespace(local=False, cloud=False, api_key="k", dev=False)
+    assert ops._install_terraform(args) == 0
+    assert called == {"api_key": "k"}
 
 
 @pytest.mark.unit
@@ -12548,10 +12573,27 @@ def test_install_kubernetes_does_not_fail_on_a_pod_that_is_merely_pending(monkey
 
 
 @pytest.mark.unit
-def test_install_kubernetes_requires_locality(capsys):
-    args = SimpleNamespace(local=False, cloud=False, api_key=None)
+def test_install_kubernetes_rejects_cloud_locality(capsys):
+    args = SimpleNamespace(local=False, cloud=True, api_key=None)
     assert ops._install_kubernetes(args) == 2
-    assert "--local is required" in capsys.readouterr().err
+    assert ops.CLOUD_DEPLOY_POINTER in capsys.readouterr().err
+
+
+@pytest.mark.unit
+def test_install_kubernetes_defaults_to_local_locality(monkeypatch):
+    """No locality flag deploys to the local cluster rather than refusing (#3948)."""
+    called = {}
+
+    def fake_steps(api_key, skip_observability=False, dev=False):
+        called["api_key"] = api_key
+        return [ops.OpsResult(True, "install", "ok")]
+
+    monkeypatch.setattr(ops, "_install_kubernetes_steps", fake_steps)
+    args = SimpleNamespace(
+        local=False, cloud=False, api_key="k", dev=False, skip_observability=False
+    )
+    assert ops._install_kubernetes(args) == 0
+    assert called == {"api_key": "k"}
 
 
 @pytest.mark.unit

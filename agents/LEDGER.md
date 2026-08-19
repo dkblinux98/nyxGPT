@@ -1045,7 +1045,28 @@ rather than mechanism, and nothing can enforce them.
   showed #3811 had taken *that* one. IDs are never reused and every entry
   stands.)
   Source: #3950; #3506; extends **D-009**; interacts with **D-033**.
-- **D-036** · 2026-08-19 · developer agent (#3956) — **A decision record is a
+- **D-036** · 2026-08-19 · owner (#3948) — **`--local` is the default locality
+  for `ops install --terraform/--kubernetes`, not a requirement**, and it stays
+  accepted as an explicit no-op so existing scripts and docs keep working. It
+  had been mandatory while also being the only legal value, which made the CLI
+  demand the one possible answer. `--cloud` is still refused by these flags,
+  but the refusal (and the help) now says what it means: *this flag* has no
+  cloud target — cloud deployment is `nyxgpt cloud infra apply` +
+  `nyxgpt cloud deploy`. The old "not yet implemented" wording read as "nyxGPT
+  cannot deploy to a cloud target at all", which was never true. One shared
+  constant (`ops.CLOUD_DEPLOY_POINTER`) backs both the error and the help so
+  they cannot drift, and `tests/unit/test_cli_locality_help.py` reads the
+  requirement claims out of the generated help and compares them against what
+  `_resolve_locality` enforces — a wording grep would not have caught this
+  drift and does not catch the next one.
+  Source: #3948; `src/nyxgpt/ops.py` (`_resolve_locality`);
+  `src/nyxgpt/cli.py` (`_add_install_arguments`);
+  `.github/workflows/cli-locality-smoke.yml`.
+  Filed as **D-033** on this branch and renumbered three times on the way
+  into `v3.0.0` — #3867 took `D-033`, #3811 then took `D-034`, and #3950 then
+  took `D-035`, each while this PR was in review. IDs are never reused and
+  every entry stands.
+- **D-037** · 2026-08-19 · developer agent (#3956) — **A decision record is a
   requirement even where no issue transcribed it, and "the cloud target" is a
   *place the existing install mode runs*, not a second install mode.**
   `DECISION_AWS_COMPUTE_SUBSTRATE.md` (#3506, owner-approved 2026-08-04) chose
@@ -1108,15 +1129,26 @@ rather than mechanism, and nothing can enforce them.
   Source: #3956; `product_management/DECISION_AWS_COMPUTE_SUBSTRATE.md`;
   #3513 (the issue that under-specified it); `docs/cloud.md`
   §Kubernetes on the instance.
-  Filed as **D-033** on this branch, then **D-034**, then **D-035** on the
-  two earlier merges into `v3.0.0`; renumbered again here, #3867, #3811 and
-  #3950 having taken those three in turn while this PR was in review. Number
-  from `python3 scripts/agents/lib/ledger_ids.py next D --base
-  origin/v3.0.0` — run, not eyeballed, on each pass. IDs are never reused.
+  Filed as **D-033** on this branch, then **D-034**, then **D-035**, then
+  **D-036** on the three earlier merges into `v3.0.0`; renumbered again here,
+  #3867, #3811, #3950 and #3948 having taken those four in turn while this PR
+  was in review. Number from `python3 scripts/agents/lib/ledger_ids.py next D
+  --base origin/v3.0.0` — run, not eyeballed, on each pass. IDs are never
+  reused.
   Supersedes the reading in **D-035**(b) that there is "no Kubernetes cloud
   target": that entry correctly called it unbuilt work rather than a scope
-  decision, and this PR builds it. `--dev` and `--kubernetes` still do not
-  compose — see D-035(a) on why `--dev` is not carried forward.
+  decision, and this PR builds it. It also supersedes D-035(b)'s "no Kubernetes
+  cloud target for `--dev` to modify" — the two flags **do** compose here:
+  `--kubernetes` chooses the substrate and `--dev` chooses where the images
+  come from, so `cloud deploy --dev --kubernetes` renders
+  `ops install --kubernetes --local --dev` on the instance. D-035(a) still
+  holds unchanged: `--dev` is not *carried forward* by `resolve_plan` on either
+  substrate. **D-036** (#3948) landed while this was in review and removed the
+  `--local` requirement these scripts were written against; the rendered
+  command still passes `--local` explicitly, which is now the accepted no-op,
+  and the `--cloud` refusal's pointer (`ops.CLOUD_DEPLOY_POINTER`) carries this
+  PR's `--kubernetes` half so both the help and the error name the whole cloud
+  path.
 
 ## Parked
 

@@ -55,7 +55,7 @@ alongside this stack (they share the `nyxgpt` service names via
 ## One-command bring-up (`nyxgpt ops`)
 
 ```bash
-nyxgpt ops install --terraform --local
+nyxgpt ops install --terraform
 ```
 
 Per the project's [Operational Command Wrapping](../CLAUDE.md) rule, this is
@@ -84,8 +84,8 @@ The deployment has the same two install modes as the native install
 | `--dev` | images built from the current checkout's working tree | yes |
 
 ```bash
-nyxgpt ops install --terraform --local          # published images
-nyxgpt ops install --terraform --local --dev    # this checkout's working tree
+nyxgpt ops install --terraform          # published images
+nyxgpt ops install --terraform --dev    # this checkout's working tree
 ```
 
 The artifact path is what makes this deployment runnable on a machine that
@@ -138,14 +138,18 @@ recorded (...)` and tags its `api`/`web` `[unrecorded]`, `ops doctor` prints
 it with the way to record it (an unknown build is not a fault, so it does
 not fail the check), and the Infrastructure page badges it `IMAGES NOT
 RECORDED`.
-Redeploying with `nyxgpt up --terraform --local` (or `--dev`) records it. A
+Redeploying with `nyxgpt up --terraform` (or `--dev`) records it. A
 machine with the marker and *nothing deployed* keeps the artifact default:
 there is no live stack for it to misdescribe.
 
-`--local` is required and explicit — it's the only locality implemented
-today, and is the precursor to a future cloud deployment target. `--cloud`
-is accepted by the CLI surface but rejected with a "not yet implemented"
-message rather than silently doing the wrong thing.
+Locality: this flag deploys to the local machine, and that is the default —
+`nyxgpt ops install --terraform` needs no locality flag (#3948). `--local` is
+still accepted as an explicit no-op, so the commands on this page and in your
+scripts keep working. `--cloud` is accepted by the CLI surface but rejected,
+because *this flag* has no cloud target: cloud deployment is
+`nyxgpt cloud infra apply` to provision the AWS substrate — which is Terraform
+too, see [cloud.md](cloud.md) — and `nyxgpt cloud deploy` to deploy the stack
+onto it.
 
 The command refuses to start if the native/Compose stack already owns the
 same host ports (8000/3000/11434/9042) — run `nyxgpt ops down` (or stop the
@@ -171,12 +175,12 @@ from.
 ## Prerequisites
 
 - [Terraform](https://developer.hashicorp.com/terraform/install) >= 1.5.0
-  (installed automatically by `nyxgpt ops install --terraform --local` above)
+  (installed automatically by `nyxgpt ops install --terraform` above)
 - Docker, with the daemon running
 
 ## 1. Configure variables
 
-`nyxgpt ops install --terraform --local` generates `docker/config.docker.ini`
+`nyxgpt ops install --terraform` generates `docker/config.docker.ini`
 for you (deriving it from your native `~/.nyxGPT/config.ini`). If you drive
 Terraform by hand instead (below), generate it first with `nyxgpt ops env-sync`
 — it's a git-ignored, per-machine file that `main.tf` bind-mounts into the `api`
@@ -220,7 +224,7 @@ sensitive (it does include the values of any variables you pass, including
 `auth_api_key`) — do not commit it.
 
 If you deployed this stack before the working directory moved out of the
-checkout, `nyxgpt ops install --terraform --local` copies your existing
+checkout, `nyxgpt ops install --terraform` copies your existing
 `terraform/terraform.tfstate` **and** `terraform/terraform.tfvars` into the
 new directory on its next run — so the same deployment keeps being managed
 rather than a second one created alongside it, and it keeps the
@@ -242,7 +246,7 @@ compose up --build`.)
 
 This starts all four containers on a dedicated `nyxgpt-terraform` bridge
 network. Models are not pulled by this raw-Terraform path: `nyxgpt ops install
---terraform --local` (above) runs a `required models` step after `apply` that
+--terraform` (above) runs a `required models` step after `apply` that
 pulls the configured chat and embedding models into the `ollama` container and
 fails the install if it cannot (#3824). Blobs persist in
 `~/.nyxGPT/volumes/ollama` -- the same host directory `docker-compose.yml`
@@ -301,7 +305,7 @@ integrity now, not just ports: `ollama`/`cassandra`/`api` bind-mount the same
 `docker-compose.yml` (see [docker-compose.md#volumes](docker-compose.md#volumes)),
 so two Cassandra processes writing to `~/.nyxGPT/volumes/cassandra`
 concurrently (e.g. if you've customized `cassandra_port` past the default
-collision) would corrupt it. `nyxgpt ops install --terraform --local` and the
+collision) would corrupt it. `nyxgpt ops install --terraform` and the
 native `nyxgpt ops install` Cassandra container both refuse to start against
 an already-running instance of the other for this reason.
 

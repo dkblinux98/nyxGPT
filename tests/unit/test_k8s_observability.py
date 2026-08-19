@@ -429,17 +429,20 @@ def test_observability_command_routes_kubernetes_to_the_cluster() -> None:
     compose_path.assert_not_called()
 
 
-def test_observability_kubernetes_requires_local() -> None:
+def test_observability_kubernetes_defaults_to_local() -> None:
+    """No locality flag targets the local cluster rather than refusing (#3948)."""
     with (
-        patch.object(ops, "observability_kubernetes") as apply_k8s,
+        patch.object(
+            ops, "observability_kubernetes", return_value=[ops.OpsResult(True, "applied")]
+        ) as apply_k8s,
         patch.object(ops, "_record_ops_action"),
     ):
         rc = ops.observability(
             SimpleNamespace(kubernetes=True, local=False, cloud=False, quiet=True)
         )
 
-    assert rc == 2
-    apply_k8s.assert_not_called()
+    assert rc == 0
+    apply_k8s.assert_called_once()
 
 
 # --- the rollout wait the default install depends on (#3826) ---------------

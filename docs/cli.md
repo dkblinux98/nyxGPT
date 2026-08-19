@@ -13,7 +13,10 @@ documentation are linked out to instead of duplicated here:
   [`--dev`](ops.md#--dev-run-the-current-checkout-without-an-artifact-build);
   the flag means the same thing for
   [`--kubernetes`](kubernetes.md#install-modes-artifact-and---dev)
-- Ops (`nyxgpt ops ...`) — see [Ops helpers](ops.md)
+- Ops (`nyxgpt ops ...`) — see [Ops helpers](ops.md). Its `--terraform` and
+  `--kubernetes` install modes deploy to *this machine*, which is the default
+  locality (`--local` is accepted as an explicit no-op, #3948); deploying to a
+  cloud target is `nyxgpt cloud ...` below, not a flag on these
 - Cloud/AWS (`nyxgpt cloud ...`) — deploy (`--kubernetes` runs the stack on a
   single-node k3s cluster on the instance), `nyxgpt cloud status` (what is
   deployed and how to reach it), `nyxgpt cloud ops` (read-only inspections

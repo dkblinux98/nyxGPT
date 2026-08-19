@@ -19,7 +19,7 @@
 # hand-maintained approximation of a bootstrap is evidence about the
 # approximation (the #3860 lesson).
 #
-# Six steps, and two of them are fault injections -- a job that only runs the
+# Seven steps, and two of them are fault injections -- a job that only runs the
 # happy path passes on every machine that fails to reproduce the bug (#3753):
 #
 #   1  Execute the deploy's own k3s bootstrap.
@@ -38,6 +38,10 @@
 #      forwards to.
 #   6  FAULT INJECTION: stop the bridge and prove 127.0.0.1:8000 goes dead --
 #      i.e. that step 5 measured the bridge and not something else.
+#   7  The `--no-kubernetes` transition, against the live cluster and bridge
+#      the steps above built: the native section really stops and removes the
+#      bridge, frees 8000, uninstalls k3s and frees 6443 -- and a second pass
+#      on a box with none of them is a no-op, which every first deploy runs.
 #
 # Usage:
 #   ./scripts/k3s-cloud-smoke.sh              # full run, tears the cluster down
@@ -129,7 +133,11 @@ bash "$WORK/k3s-bootstrap.sh"
 
 export KUBECONFIG="$HOME/.kube/config"
 [[ -f "$KUBECONFIG" ]] || fail "the bootstrap did not write $KUBECONFIG"
-NODE_IP="$(awk -F'[/:]' '/server:/ {print $4}' "$KUBECONFIG")"
+# `server: https://10.1.1.137:6443` -- the `//` in the scheme separator yields
+# two EMPTY fields under a `[/:]` split, so the address is not the field the
+# naive count says it is. `+` collapses each run of separators into one, which
+# makes the field index say what it means: scheme, host, port.
+NODE_IP="$(awk -F'[/:]+' '/server:/ {print $3; exit}' "$KUBECONFIG")"
 [[ -n "$NODE_IP" ]] || fail "could not read the API server address out of $KUBECONFIG"
 log "MEASURED: the kubeconfig points at https://${NODE_IP}:6443"
 
@@ -143,13 +151,50 @@ if ss -ltnH 'sport = :6443' | awk '{print $4}' | grep -Eq '^(0\.0\.0\.0|\*|\[::\
   fail "the k3s apiserver is listening on every interface -- on an EC2 instance that is the
         public NIC, and #3503's access model is that nothing but TCP 22 is reachable"
 fi
-ss -ltnH 'sport = :6443' | awk '{print $4}' | grep -q "${NODE_IP}:6443" \
+# -F: the address is an IPv4 literal, so its dots are data, not regex.
+ss -ltnH 'sport = :6443' | awk '{print $4}' | grep -qF "${NODE_IP}:6443" \
   || fail "nothing is listening on ${NODE_IP}:6443, which is what the kubeconfig points at"
 log "PASS: the apiserver is bound to the node's private address only"
 
 # Traefik binds host ports 80/443 and is k3s's default ingress controller;
 # servicelb is what makes a `Service: LoadBalancer` provision anything. #3506's
 # premise is that the manifests need neither.
+# The bootstrap returns as soon as the NODE reports Ready, and k3s's deploy
+# controller applies the bundled addons after that -- measured at ~3s on this
+# runner. Every assertion below is about what that controller did or did not
+# apply, so waiting for its evidence is what makes them mean anything: check
+# them at node-Ready and "traefik is not running" is true because *nothing* is
+# running yet. `local-path` is the addon that must survive, so its arrival is
+# both the property under test and the barrier for the negative ones.
+log "Waiting up to 90s for k3s's addon deployer (the local-path StorageClass)"
+default_sc=""
+for _ in $(seq 1 30); do
+  # The single-object form, not a filter expression over `.items[?(...)]`:
+  # kubectl's jsonpath does not reliably escape a dotted, slashed annotation
+  # key inside a filter, and it answers "" for the missing and the mistyped
+  # alike -- which is how the previous spelling of this key (`default-class`,
+  # for the real `is-default-class`) read as "not the default" on a cluster
+  # where it plainly was.
+  default_sc="$(kubectl get storageclass local-path \
+    -o jsonpath='{.metadata.annotations.storageclass\.kubernetes\.io/is-default-class}' \
+    2>/dev/null || true)"
+  [[ "$default_sc" == "true" ]] && break
+  sleep 3
+done
+log "MEASURED: StorageClasses after the addon deployer ran:"
+kubectl get storageclass 2>&1 | sed 's/^/    | /'
+
+# local-storage IS still enabled, because the Cassandra and Ollama
+# StatefulSets bind through whatever the default StorageClass is.
+kubectl get storageclass local-path >/dev/null 2>&1 \
+  || fail "the local-path StorageClass is gone -- every volumeClaimTemplate in k8s/ would
+           sit Pending on an unbound PVC"
+[[ "$default_sc" == "true" ]] \
+  || fail "local-path is not the default StorageClass (is-default-class=${default_sc:-unset})"
+log "PASS: local-path is present and is the default StorageClass"
+
+# ...and now that the deploy controller has demonstrably run, the absence of
+# these two is evidence rather than a head start.
 for unwanted in traefik svclb; do
   if kubectl get pods -A --no-headers 2>/dev/null | grep -q "$unwanted"; then
     kubectl get pods -A | sed 's/^/    | /'
@@ -157,16 +202,6 @@ for unwanted in traefik svclb; do
   fi
 done
 log "PASS: no ingress controller and no LoadBalancer implementation are installed"
-
-# ...and local-storage IS still enabled, because the Cassandra and Ollama
-# StatefulSets bind through whatever the default StorageClass is.
-kubectl get storageclass local-path >/dev/null 2>&1 \
-  || fail "the local-path StorageClass is gone -- every volumeClaimTemplate in k8s/ would
-           sit Pending on an unbound PVC"
-kubectl get storageclass -o jsonpath='{.items[?(@.metadata.annotations.storageclass\.kubernetes\.io/default-class=="true")].metadata.name}' \
-  | grep -q local-path \
-  || fail "local-path is not the default StorageClass"
-log "PASS: local-path is present and is the default StorageClass"
 
 # ---------------------------------------------------------------------------
 step "3/7  k8s/*.yaml applies to k3s UNCHANGED"
@@ -189,12 +224,22 @@ PY
 
 K8S_DIR="$HOME/.nyxGPT/k8s"
 
-# A server-side dry run is the strong, cheap form of "these manifests apply":
-# the real API server validates, defaults and admits every object, and nothing
-# is created -- so the job does not spend ten minutes pulling the Cassandra and
-# Ollama images to learn what admission already answered. Whether those Pods
-# then become Ready is k8s-local-smoke.yml's question, on a real cluster with
-# real builds; this job's question is the k3s delta.
+# The namespace, for real and FIRST -- a property of the DRY RUN, not of the
+# manifests. What a deploy runs is `kubectl apply -k` for real
+# (`ops._kubectl_apply_kustomization`), where kubectl creates the Namespace
+# before the objects that declare themselves into it, so one pass suffices. A
+# server-side dry run creates nothing, so that namespace never comes into
+# existence and every namespaced object is rejected with `namespaces "nyxgpt"
+# not found` -- an error that reads as "the manifests do not apply to k3s" and
+# is really "nothing can be validated against a namespace that was not made".
+kubectl apply -f "$K8S_DIR/namespace.yaml" | sed 's/^/    | /'
+
+# A server-side dry run is then the strong, cheap form of "these manifests
+# apply": the real API server validates, defaults and admits every object, and
+# nothing is created -- so the job does not spend ten minutes pulling the
+# Cassandra and Ollama images to learn what admission already answered. Whether
+# those Pods then become Ready is k8s-local-smoke.yml's question, on a real
+# cluster with real builds; this job's question is the k3s delta.
 kubectl apply -k "$K8S_DIR" --dry-run=server -o name | sed 's/^/    | /'
 log "PASS: every object in k8s/ is accepted by the k3s API server as written"
 
@@ -212,7 +257,6 @@ log "PASS: the applied manifests are byte-identical to k8s/ (secret.yaml aside)"
 
 # The Services, really created this time -- they are free (no Pods, no pulls)
 # and they are what the LoadBalancer assertion and the bridge below need.
-kubectl apply -f "$K8S_DIR/namespace.yaml" >/dev/null
 for svc in service.yaml service-canary.yaml service-web.yaml service-web-canary.yaml \
            service-cassandra.yaml service-ollama.yaml; do
   kubectl apply -n "$NAMESPACE" -f "$K8S_DIR/$svc" >/dev/null
