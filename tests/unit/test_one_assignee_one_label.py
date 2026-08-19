@@ -36,8 +36,24 @@ WORKFLOWS = ROOT / ".github" / "workflows"
 SCRIPTS = ROOT / "scripts"
 HYGIENE = SCRIPTS / "agents" / "ensure_issue_hygiene.sh"
 
-#: `POST .../issues/<n>/assignees` -- GitHub's append verb.
-_REST_ADD = re.compile(r"-X\s+POST[^\n]*issues/[^\n]*?/assignees")
+#: Every shape that APPENDS an assignee rather than setting the list.
+#:
+#: `gh api .../assignees` with `-f`/`-F` and no explicit method defaults to
+#: POST, so matching only `-X POST` left the commonest form invisible -- the
+#: gap the review found. `--method POST` and `gh issue edit --add-assignee`
+#: are the other two spellings in use.
+_REST_ADD = re.compile(
+    r"(?:-X\s+POST|--method\s+POST)[^\n]*issues/[^\n]*?/assignees"
+    r"|gh api[^\n]*issues/[^\n]*?/assignees[^\n]*?-[fF]\s"
+    r"|gh issue edit[^\n]*--add-assignee"
+)
+
+#: `gh pr edit --add-assignee` is fine: the rule is about issues, and a PR
+#: legitimately carries an author and a reviewer. So is an error message that
+#: *names* the manual fix -- text is not a call.
+#: A line that merely *starts* with a quote is a continuation of the string
+#: above it (a wrapped `echo`), not a command of its own.
+_NOT_A_CALL = re.compile(r"^\s*(echo|printf)\b|^\s*\"|::error::|::warning::|Manual fix:")
 #: The Octokit/github-script equivalent.
 _SCRIPT_ADD = re.compile(r"issues\.addAssignees\s*\(")
 
@@ -61,9 +77,11 @@ class TestExactlyOneAssignee:
     def test_nothing_appends_an_assignee_to_an_issue(self):
         offenders = []
         for path in _sources():
-            body = _uncommented(path)
-            if _REST_ADD.search(body) or _SCRIPT_ADD.search(body):
-                offenders.append(str(path.relative_to(ROOT)))
+            for line in _uncommented(path).splitlines():
+                if _NOT_A_CALL.search(line):
+                    continue
+                if _REST_ADD.search(line) or _SCRIPT_ADD.search(line):
+                    offenders.append(f"{path.relative_to(ROOT)}: {line.strip()[:70]}")
         assert not offenders, (
             "these append an assignee instead of setting one, which leaves an "
             f"issue with two: {offenders}. Use assign_issue_verified (or PATCH "
@@ -76,6 +94,20 @@ class TestExactlyOneAssignee:
         assert '-X PATCH "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}"' in lib
         # It reads the list back and compares to the single expected login.
         assert 'if [[ "$actual" == "$assignee" ]]; then' in lib
+
+    def test_the_retry_refires_send_a_documented_clear(self):
+        """`-F "assignees[]="` looks like a clear and is not: it sends
+        {"assignees":[""]}, an assignee literally named "". The clear then
+        no-ops, the set that follows is a same-login replace, and a same-login
+        replace emits no `assigned` event (#3647) -- so the re-fire re-fires
+        nothing. Both auto-retry paths depend on this."""
+        for path in (
+            WORKFLOWS / "developer_auto_implement.yml",
+            WORKFLOWS / "usage_limit_retry.yml",
+        ):
+            body = _uncommented(path)
+            assert "--input - <<<'{\"assignees\":[]}'" in body, f"{path.name}"
+            assert '-F "assignees[]="' not in body, f"{path.name} still sends the empty-string form"
 
     def test_the_closure_rule_sets_the_owner_rather_than_adding_them(self):
         body = HYGIENE.read_text(encoding="utf-8")
