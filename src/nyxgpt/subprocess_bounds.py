@@ -26,7 +26,10 @@ cannot reinvent a subtly different answer:
   (`kubectl --request-timeout`). Deliberately both bounds: the flag makes the
   tool give up with its own clean message, and the Python `timeout=` catches
   everything the flag does not (a wedged TLS handshake, a hung DNS lookup, a
-  binary that ignores the flag entirely).
+  binary that ignores the flag entirely). The flag is *not* added when we are
+  running inside a Pod, because there it breaks kubectl outright -- see
+  `bounded_argv`. The Python bound, which carries the whole safety property
+  above, applies everywhere unconditionally.
 
 Enumeration of every `subprocess.run`/`subprocess.Popen` in `src/nyxgpt/`, as
 of #3858 -- **18 call sites, 10 of them reachable from an HTTP handler**. Kept
@@ -79,6 +82,7 @@ Not reachable from a handler (CLI-only, no bound needed):
 from __future__ import annotations
 
 import math
+import os
 import subprocess
 from pathlib import Path
 
@@ -139,6 +143,22 @@ _KUBECTL_VALUE_FLAGS = frozenset(
         "--v",
     }
 )
+
+
+# Set by the kubelet in every Pod, and the same variable client-go's own
+# in-cluster detection keys on (`rest.InClusterConfig`). Its presence is the
+# cheapest honest answer to "would kubectl reach the API server through the
+# mounted service account rather than a kubeconfig file?".
+_IN_CLUSTER_ENV_VAR = "KUBERNETES_SERVICE_HOST"
+
+
+def _running_in_cluster() -> bool:
+    """True when this process is running inside a Kubernetes Pod.
+
+    Read at call time, not import time: a test (and a long-lived process whose
+    environment is rewritten) must be able to change the answer.
+    """
+    return bool(os.environ.get(_IN_CLUSTER_ENV_VAR))
 
 
 def _positional_args(args: list[str]) -> list[str]:
@@ -206,10 +226,30 @@ def bounded_argv(cmd: list[str], timeout: float | None) -> list[str]:
     wrongly bounding a watch is the worse of the two mistakes: it cuts a
     healthy slow rollout short and reports it as a failure, whereas wrongly
     skipping the flag still leaves the Python `timeout=` in force.
+
+    **The flag is never added from inside a Pod, because there it does not
+    bound kubectl -- it breaks it.** kubectl only falls back to the mounted
+    service account when the kubeconfig it merged is *identical* to the
+    built-in default (client-go's `DeferredLoadingClientConfig` consults
+    `IsDefaultConfig` before `InClusterConfig`). `--request-timeout` lands in
+    the client-config overrides, so the merged config stops comparing equal,
+    the fallback is skipped, and kubectl dials the no-config default server
+    `http://localhost:8080` -- connection refused, every call, on the one
+    deployment mode canary and the Pod probes exist for. Proven on a live kind
+    cluster: `canary-track-metrics-smoke` failed with
+    `Get "http://localhost:8080/api?timeout=5s": connection refused` (the
+    injected bound visible in the query string) on two consecutive heads while
+    the same job was green without the flag. A workstation with a real
+    kubeconfig is unaffected, which is why only a cluster test can see this.
+    Losing the flag in-cluster costs the clean message only; the Python
+    `timeout=` still bounds the identical hang, and it is the half that carries
+    the pool-exhaustion property.
     """
     if timeout is None or not cmd:
         return cmd
     if Path(cmd[0]).name != "kubectl":
+        return cmd
+    if _running_in_cluster():
         return cmd
     if any(arg.startswith("--request-timeout") for arg in cmd[1:]):
         return cmd

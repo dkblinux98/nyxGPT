@@ -641,7 +641,12 @@ rather than mechanism, and nothing can enforce them.
   comes back as returncode 124 (`timed_out()`), so a status probe degrades
   ("… health check timed out after 5s") instead of 500ing. Two bounds are
   applied deliberately where the tool offers one: `kubectl --request-timeout`
-  *and* Python's `timeout=`. **Handlers stay plain `def`** — the considered
+  *and* Python's `timeout=` — **except from inside a Pod, where the kubectl
+  flag is withheld**: it lands in client-go's config overrides, which makes
+  kubectl skip its service-account fallback and dial `http://localhost:8080`.
+  The Python bound is the half that carries the safety property and applies
+  unconditionally; the reasoning and its cluster evidence live in
+  `bounded_argv`'s docstring. **Handlers stay plain `def`** — the considered
   alternative, `async def` + `run_in_threadpool`, moves the same blocking call
   onto the same threadpool and buys nothing, while making a future forgotten
   `await` block the event loop instead of one worker; bounding the subprocess

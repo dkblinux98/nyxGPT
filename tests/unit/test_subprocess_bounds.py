@@ -33,6 +33,19 @@ def _raise_timeout(*_args, **kwargs):
     raise subprocess.TimeoutExpired(["kubectl"], kwargs.get("timeout") or 1.0)
 
 
+@pytest.fixture(autouse=True)
+def _outside_a_pod(monkeypatch):
+    """Pin the environment the argv assertions below assume: not inside a Pod.
+
+    `bounded_argv` deliberately withholds kubectl's `--request-timeout` when
+    `KUBERNETES_SERVICE_HOST` is set, so every "the flag is added" assertion is
+    conditional on that variable being absent. A CI runner happens to satisfy
+    that; saying it explicitly means these tests keep testing what they claim
+    even when something in the environment does not.
+    """
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+
+
 # --- The shared vocabulary ---------------------------------------------------
 
 
@@ -55,10 +68,33 @@ def test_a_normal_failure_is_not_reported_as_a_timeout():
 
 @pytest.mark.unit
 def test_kubectl_gets_the_tools_own_dial_bound_as_well_as_the_python_one():
-    """Deliberately both: the flag yields a clean message, `timeout=` catches the rest."""
+    """Deliberately both, *outside* a Pod: the flag yields a clean message, `timeout=` the rest."""
     argv = bounded_argv(["kubectl", "get", "pods", "-n", "nyxgpt"], PROBE_TIMEOUT_SECONDS)
 
     assert argv == ["kubectl", "--request-timeout=5s", "get", "pods", "-n", "nyxgpt"]
+
+
+@pytest.mark.unit
+def test_the_dial_bound_flag_is_withheld_inside_a_pod(monkeypatch):
+    """In-cluster, `--request-timeout` doesn't bound kubectl -- it breaks it.
+
+    kubectl uses the mounted service account only when the kubeconfig it merged
+    equals the built-in default; the flag makes it stop comparing equal, so
+    kubectl skips the in-cluster fallback and dials `http://localhost:8080`.
+    A live kind cluster proved it (`canary-track-metrics-smoke`:
+    `Get "http://localhost:8080/api?timeout=5s": connection refused`), and no
+    stub-below-the-rewrite unit test could -- which is why this one asserts the
+    *absence* of the flag rather than the behavior it causes.
+    """
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.96.0.1")
+    cmd = ["kubectl", "get", "pods", "-n", "nyxgpt", "-o", "json"]
+
+    assert bounded_argv(cmd, PROBE_TIMEOUT_SECONDS) == cmd
+
+    # The bound that carries the actual safety property is unconditional: the
+    # caller still passes `timeout=` to subprocess.run, in a Pod or out of one.
+    monkeypatch.setattr(subprocess, "run", _raise_timeout)
+    assert timed_out(canary._run(["kubectl", "get", "deployment", "x"]))
 
 
 @pytest.mark.unit

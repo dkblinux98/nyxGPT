@@ -302,7 +302,9 @@ def _run(
     held -- these calls run in Starlette's threadpool behind `/canary/status`,
     where an unreachable cluster that blackholes rather than refuses would
     otherwise hold a worker forever -- and `bounded_argv` hands kubectl its own
-    `--request-timeout` so it gives up with its own message first. An expired
+    `--request-timeout` so it gives up with its own message first, except from
+    inside a Pod, where that flag disables kubectl's service-account fallback
+    (see `bounded_argv`) and only `timeout` applies. An expired
     bound comes back as a `TIMEOUT_RETURNCODE` result (see `timed_out`) rather
     than a `TimeoutExpired` traveling up into a handler, so one wedged Pod
     degrades a panel (the per-Pod metrics reads, #3829) instead of hanging the
@@ -681,9 +683,20 @@ def current_mode() -> str:
 
 
 def _mode_message(mode: str) -> str | None:
-    """Explain why canary doesn't apply outside Kubernetes mode, and which mode provides it."""
+    """Explain why canary doesn't apply outside Kubernetes mode, and which mode provides it.
+
+    `None` means "canary does apply here", which is only ever Kubernetes mode.
+    Callers that have already established the mode is not Kubernetes want
+    `_non_kubernetes_mode_message` instead, so they don't carry an `or "..."`
+    fallback that can never run.
+    """
     if mode == "kubernetes":
         return None
+    return _non_kubernetes_mode_message(mode)
+
+
+def _non_kubernetes_mode_message(mode: str) -> str:
+    """The reason canary state is unavailable in `mode`, for a caller that knows it isn't Kubernetes."""
     if mode == "unknown":
         return (
             f"Could not determine the deployment mode: the Kubernetes probe "
@@ -1338,7 +1351,7 @@ def status(namespace: str = DEFAULT_NAMESPACE, component: str = "api") -> dict[s
         stable_health = deployment_health(spec.stable_deployment, namespace)
         canary_health = deployment_health(spec.canary_deployment, namespace)
     else:
-        skipped = TrackHealth("not_deployed", _mode_message(mode) or "")
+        skipped = TrackHealth("not_deployed", _non_kubernetes_mode_message(mode))
         stable_health = canary_health = skipped
     kubectl_present = _which("kubectl") is not None
     active = bool(state.get("active", False))
@@ -1350,21 +1363,20 @@ def status(namespace: str = DEFAULT_NAMESPACE, component: str = "api") -> dict[s
     # running natively, which is precisely the blackholing dial #3858 exists to
     # remove. Outside Kubernetes mode the panels report the mode as the reason
     # they are not attributable, which is the honest answer.
-    unmeasured_reason = _mode_message(mode) or f"deployment mode is {mode}, not kubernetes"
-    if mode_supported:
-        canary_metrics = track_metrics("canary", namespace, component=component)
-    else:
-        canary_metrics = TrackMetrics(track="canary", attributable=False, reason=unmeasured_reason)
     if not mode_supported:
+        unmeasured_reason = _non_kubernetes_mode_message(mode)
+        canary_metrics = TrackMetrics(track="canary", attributable=False, reason=unmeasured_reason)
         stable_metrics = TrackMetrics(track="stable", attributable=False, reason=unmeasured_reason)
-    elif active:
-        stable_metrics = track_metrics("stable", namespace, component=component)
     else:
-        stable_metrics = TrackMetrics(
-            track="stable",
-            attributable=False,
-            reason="not measured while no rollout is in progress",
-        )
+        canary_metrics = track_metrics("canary", namespace, component=component)
+        if active:
+            stable_metrics = track_metrics("stable", namespace, component=component)
+        else:
+            stable_metrics = TrackMetrics(
+                track="stable",
+                attributable=False,
+                reason="not measured while no rollout is in progress",
+            )
 
     if component == "api":
         prom_metrics.CANARY_ROLLOUT_ACTIVE.set(1 if active else 0)
