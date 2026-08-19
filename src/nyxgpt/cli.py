@@ -2743,10 +2743,29 @@ def cli(argv: list[str] | None = None) -> int:
             "of this CLI, then whatever the last deploy used)"
         ),
     )
+    # #3867: which target OS's bootstrap the deploy drives. `auto` keeps the
+    # Linux path flagless -- it reads the configured instance type (and, for a
+    # re-deploy of a `--host` target, that host's own deploy record). `macos`
+    # pipes the EC2 Mac bootstrap over the same wrapped SSH path, replacing the
+    # console copy/paste flow the wrapping requirement forbids.
+    cloud_deploy_p.add_argument(
+        "--os",
+        dest="os_family",
+        default="auto",
+        choices=list(cloud_deploy_mod.DEPLOY_OS_CHOICES),
+        help=(
+            "Target instance OS family (default: auto -- macos for a mac*.metal instance "
+            "type, linux otherwise). `--os macos` provisions an EC2 Mac named with --host; "
+            "nyxGPT's substrate cannot allocate the Dedicated Host one would need"
+        ),
+    )
     cloud_deploy_p.add_argument(
         "--skip-observability",
         action="store_true",
-        help="Deploy the core app only, without the monitoring/logging/tracing/errors stack",
+        help=(
+            "Deploy the core app only, without the monitoring/logging/tracing/errors stack "
+            "(implied by --os macos, whose bootstrap installs no observability stack)"
+        ),
     )
     # #3865: defaults to `cassandra` so a cloud deploy shares one session list
     # with every other mode pointed at the same Cassandra, matching what the
@@ -2756,8 +2775,9 @@ def cli(argv: list[str] | None = None) -> int:
         "--session-backend",
         choices=list(VALID_SESSION_BACKENDS),
         help=(
-            "Chat session storage backend for the instance (default: cassandra, then "
-            "whatever the last deploy used) -- see docs/session-storage.md"
+            "Chat session storage backend for the instance (default: cassandra on Linux, "
+            "file on macOS, then whatever the last deploy of the same target OS used) -- "
+            "see docs/session-storage.md"
         ),
     )
     cloud_deploy_p.add_argument(
