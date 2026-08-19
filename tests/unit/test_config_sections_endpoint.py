@@ -177,6 +177,49 @@ def test_post_sections_never_echoes_secret_value(_isolated_config):
     assert data["applied"]["auth"]["api_key"] == {"set": True, "masked": "tops****t123"}
 
 
+def test_get_sections_does_not_hand_the_slack_bot_token_to_the_browser(_isolated_config):
+    """#3947: the wizard's GET is the surface the token actually leaked through.
+
+    `[monitoring] slack_bot_token` was declared `secret=False`, so
+    `read_sections` returned it verbatim -- into the page, into page state,
+    and back out on every save. The classification guard lives in
+    `test_wizard_secret_classification.py`; this asserts the HTTP response
+    itself, because that is what a browser (or a proxy, or a log) sees.
+    """
+    _isolated_config.write_text(
+        "[ollama]\nbase_url = http://localhost:11434\n"
+        "[monitoring]\nslack_bot_token = xoxb-000000-live-bot-token\n",
+        encoding="utf-8",
+    )
+    client = TestClient(app)
+    resp = client.get("/api/v1/config/sections")
+    assert resp.status_code == 200
+    assert "xoxb-000000-live-bot-token" not in resp.text
+    assert resp.json()["sections"]["monitoring"]["slack_bot_token"]["set"] is True
+
+
+def test_saving_without_retyping_the_slack_bot_token_keeps_it(_isolated_config):
+    """The wizard posts "" for a secret the user didn't retype -- it must survive.
+
+    Flipping a live field to `secret=True` changes what the browser sends;
+    this is the half that proves an existing user's token is not blanked by a
+    plain Save (#3947).
+    """
+    _isolated_config.write_text(
+        "[ollama]\nbase_url = http://localhost:11434\n"
+        "[monitoring]\nenabled = false\nslack_bot_token = xoxb-000000-live-bot-token\n",
+        encoding="utf-8",
+    )
+    client = TestClient(app)
+    resp = client.post(
+        "/api/v1/config/sections",
+        json={"monitoring": {"enabled": True, "slack_bot_token": ""}},
+    )
+    assert resp.status_code == 200
+    assert "xoxb-000000-live-bot-token" not in resp.text
+    assert "xoxb-000000-live-bot-token" in _isolated_config.read_text(encoding="utf-8")
+
+
 def test_post_sections_triggers_observability_reconciliation(_isolated_config):
     client = TestClient(app)
     with patch(
@@ -284,7 +327,10 @@ def test_restart_status_empty_with_no_pending_restart(_isolated_config):
 def test_restart_status_reports_the_wrapped_command_and_session_impact(_isolated_config):
     """The notice tells the user the CLI equivalent and warns before dropping their session (#3806)."""
     client = TestClient(app)
-    client.post("/api/v1/config/sections", json={"auth": {"api_key": "rotated-key"}})
+    client.post(
+        "/api/v1/config/sections",
+        json={"auth": {"api_key": "rotated-key"}},  # pragma: allowlist secret
+    )
 
     data = client.get("/api/v1/infra/restart-status").json()
     assert data["pending"]["web"]["keys"] == ["auth.api_key"]

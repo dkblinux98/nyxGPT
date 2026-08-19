@@ -444,6 +444,17 @@ _FIELD_OVERRIDES: dict[tuple[str, str], _Override] = {
         validator=_validate_optional_str, secret=True
     ),
     ("monitoring", "slack_webhook_url"): _Override(validator=_validate_optional_str, secret=True),
+    # A Slack bot token, and every other reader of this key already treats it
+    # as one: `config.SECRETS_SYNC_MANIFEST` pushes it to the *secret*
+    # `SLACK_BOT_TOKEN` (not a variable), `get_effective_config_summary`
+    # redacts it, and `example.config.ini` documents it as write-once (Slack
+    # shows a bot token only at creation). Missing this override was #3947:
+    # the field defaulted to `secret=False`, so `read_sections` took its
+    # `elif` branch and `GET /api/v1/config/sections` handed the live token to
+    # every browser that opened the wizard -- in cleartext, on every load,
+    # including over a cloud access tunnel. `test_wizard_secret_classification`
+    # is the general guard; this comment is why the entry exists.
+    ("monitoring", "slack_bot_token"): _Override(validator=_validate_optional_str, secret=True),
     ("log_aggregation", "enabled"): _Override(validator=_validate_bool, observability=True),
     ("log_aggregation", "grafana_explore_url"): _Override(validator=_validate_url),
     ("self_heal", "check_interval_seconds"): _Override(validator=_bounded_float(min_value=1.0)),
