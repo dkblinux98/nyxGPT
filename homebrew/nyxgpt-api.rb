@@ -272,19 +272,70 @@ PY
     system "chmod", "0755", bin/"nyxgpt-api"
   end
 
-  # `brew uninstall` does not stop a formula's service first, and Homebrew has
-  # no uninstall hook that could -- it deletes the keg's files out from under a
-  # running process, which goes on serving from memory. `brew untap` then makes
-  # the formula name unresolvable, so `brew services stop` has nothing left to
-  # act on: the operator ends up with services they cannot name to stop (#3859).
-  # nyxGPT also installs LaunchAgents of its own (`com.nyxgpt.*`) that Homebrew
-  # never knew about and so could never have removed. The teardown command
-  # clears all three populations; this block is the one place the operator is
-  # actually standing when they decide to remove nyxGPT (#3854).
+  service do
+    run ["/bin/bash", opt_bin/"nyxgpt-api"]
+    keep_alive true
+    log_path var/"log/nyxgpt-api.log"
+    error_log_path var/"log/nyxgpt-api.err.log"
+  end
+
+  # Homebrew generates its own post-install message for any formula carrying a
+  # `service` block -- "To start ... now and restart at login: brew services
+  # start ..." -- and with no `caveats` here that generated line was the only
+  # instruction an operator ever received. The owner followed it and got a
+  # stack with no Ollama, no Cassandra and no observability (#3854): `brew
+  # services start` starts the one service it names and nothing else, so it
+  # never reaches `ops.install()` -- which is what installs and starts Ollama
+  # (`_ensure_native_ollama_service`), creates the `nyxgpt-cassandra` container
+  # (`_ensure_cassandra_container`), brings the observability Compose profiles
+  # up (they are opt-*out*, behind `--skip-observability`) and syncs the
+  # packaged resources into ~/.nyxGPT (`_sync_packaged_resources`).
+  #
+  # The `service` block stays: it is what makes restart-at-login work, and what
+  # `nyxgpt ops restart`/self-heal drive (`brew services restart nyxgpt-api`).
+  # Removing it to silence the competing guidance would cost real behavior to
+  # fix a text problem. What was actually missing is any statement of which
+  # command comes first, so this block names `nyxgpt up` and says plainly what
+  # the per-service command does not do.
+  #
+  # `#{name}` rather than a literal: the rc channel installs this same recipe
+  # as `nyxgpt-api@<line>rc`, and naming the stable formula there would print a
+  # command the operator does not have.
+  #
+  # Asserted on the real `brew install` output by macos-brew-smoke.yml's
+  # "Prove the install tells the operator to run `nyxgpt up`" step.
+  #
+  # It also carries the teardown guidance (#3859), which arrived on v3.0.0 as a
+  # second `caveats` block. Ruby keeps only the last definition of a method, so
+  # two blocks in one formula is not two messages -- it is one silently winning
+  # and the other never printed, with `ruby -c` clean either way. They are one
+  # block for that reason: `brew uninstall` does not stop a formula's service
+  # first and Homebrew has no uninstall hook that could, so it deletes the keg's
+  # files out from under a running process that goes on serving from memory;
+  # `brew untap` then makes the formula name unresolvable, leaving services the
+  # operator cannot name to stop. nyxGPT's own `com.nyxgpt.*` LaunchAgents
+  # Homebrew never knew about. Caveats are the one place the operator is
+  # actually standing when they decide to remove nyxGPT.
   def caveats
     <<~EOS
-      Start the stack with:
+      To start nyxGPT, run:
         nyxgpt up
+
+      That brings up the whole stack -- this API, the web UI, Ollama, Cassandra
+      and the observability services -- waits for it to report healthy, and
+      prints the web UI URL. `nyxgpt down` stops it again, and `nyxgpt ops
+      status` shows what is running.
+
+      If you were pointed at `brew services start #{name}`, note
+      that it starts only this one service. It does not install or start
+      Ollama, it does not create the Cassandra container, and it does not
+      start observability. A stack brought up that way reports
+      `ollama: unreachable` and `cassandra: unreachable`, and the web UI
+      fails to load sessions. Use it to control this individual service once
+      `nyxgpt up` has set the stack up -- not instead of it.
+
+      `nyxgpt up` starts the Homebrew services for you, so they still restart
+      at login.
 
       Before removing nyxGPT, run the wrapped teardown FIRST:
         nyxgpt ops uninstall
@@ -300,13 +351,6 @@ PY
       Uninstalling first leaves #{name} running from deleted files on its
       port, with no supported command left to stop it.
     EOS
-  end
-
-  service do
-    run ["/bin/bash", opt_bin/"nyxgpt-api"]
-    keep_alive true
-    log_path var/"log/nyxgpt-api.log"
-    error_log_path var/"log/nyxgpt-api.err.log"
   end
 
   test do
