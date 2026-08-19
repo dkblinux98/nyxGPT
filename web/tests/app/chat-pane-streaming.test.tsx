@@ -2,13 +2,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ChatPane from '@/app/components/ChatPane';
+import type { VirtuosoMockProps } from '../mocks/virtuoso';
 
 // Render every item directly (no real virtualization) so message content is
 // queryable in tests, following the pattern in chat-pane-models.test.tsx.
 vi.mock('react-virtuoso', () => ({
-  Virtuoso: ({ data, itemContent, style }: any) => (
+  Virtuoso: ({ data, itemContent, style }: VirtuosoMockProps) => (
     <div style={style}>
-      {(data || []).map((item: any, index: number) => (
+      {(data || []).map((item: unknown, index: number) => (
         <div key={index}>{itemContent(index, item)}</div>
       ))}
     </div>
@@ -58,7 +59,7 @@ function rejectingBodyResponse() {
   };
 }
 
-type FetchOverride = (url: string, init?: RequestInit) => any;
+type FetchOverride = (url: string, init?: RequestInit) => unknown;
 
 function makeFetchMock(streamHandler?: FetchOverride, extra?: Record<string, FetchOverride>) {
   return vi.fn().mockImplementation((url: string, init?: RequestInit) => {
@@ -287,7 +288,7 @@ describe('ChatPane send() SSE streaming', () => {
   it('truncates a long first message into an auto-title and warns when title save fails', async () => {
     const raw = ['event: done', 'data: {}', '', ''].join('\n');
     let titleCalled = false;
-    let capturedTitleBody: any = null;
+    let capturedTitleBody: Record<string, unknown> | null = null;
     global.fetch = makeFetchMock(() => sseResponse(raw), {
       '/title': (_url, init) => {
         titleCalled = true;
@@ -355,7 +356,7 @@ describe('ChatPane send() SSE streaming', () => {
     const sendBtn = screen.getByTitle('Send message');
     expect(sendBtn).toBeDisabled();
     await user.click(sendBtn);
-    expect((global.fetch as any).mock.calls.some((c: any[]) => c[0] === '/api/chat/stream')).toBe(false);
+    expect(vi.mocked(global.fetch).mock.calls.some((c: unknown[]) => c[0] === '/api/chat/stream')).toBe(false);
   });
 
   it('stop() aborts the in-flight request', async () => {
@@ -381,7 +382,7 @@ describe('ChatPane send() SSE streaming', () => {
 });
 
 describe('ChatPane handleRegenerate() SSE streaming', () => {
-  function seedMessages(messages: any[]) {
+  function seedMessages(messages: unknown[]) {
     return {
       '/api/v1/sessions/': () => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ messages, total: messages.length }) }),
     };

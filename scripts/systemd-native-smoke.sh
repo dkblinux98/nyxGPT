@@ -385,6 +385,51 @@ if [[ "$KEEP_UP" -eq 0 ]]; then
       echo "::error::$unit is still active after nyxgpt down"; fail_count=1;
     }
   done
+
+  # --- Uninstall teardown (#3859), the Linux half. -------------------------
+  #
+  # `down` stops the stack and leaves the machine installed: every unit file
+  # is still in ~/.config/systemd/user and still enabled, so the services
+  # return at the next login. That is correct for "stop", and it is why the
+  # owner's macOS uninstall left services running with nothing left to stop
+  # them. `nyxgpt ops uninstall` is the command that deregisters.
+  #
+  # Both halves, in order, so a green run means something: the unit files are
+  # asserted PRESENT after `down` (the state that survives it -- if that ever
+  # stops being true this check is vacuous) and ABSENT after the teardown.
+  UNIT_DIR="$HOME/.config/systemd/user"
+  units_left() { ls -1 "$UNIT_DIR"/nyxgpt-*.service 2>/dev/null || true; }
+
+  log "Uninstall teardown: units that survived nyxgpt down"
+  units_left
+  if [[ -z "$(units_left)" ]]; then
+    echo "::error::no nyxgpt unit files after nyxgpt down -- the teardown check below tests nothing"
+    fail_count=1
+  fi
+
+  log "nyxgpt ops uninstall"
+  nyxgpt ops uninstall --quiet || {
+    echo "::error::nyxgpt ops uninstall exited non-zero"; fail_count=1;
+  }
+  if [[ -n "$(units_left)" ]]; then
+    units_left
+    echo "::error::nyxgpt systemd units remain after nyxgpt ops uninstall (#3859)"
+    fail_count=1
+  fi
+  for unit in nyxgpt-api nyxgpt-web nyxgpt-ollama nyxgpt-cassandra-logs nyxgpt-ollama-logs; do
+    state=$(systemctl --user is-active "$unit.service" 2>/dev/null || echo "inactive")
+    [[ "$state" == "active" ]] && {
+      echo "::error::$unit is still active after nyxgpt ops uninstall"; fail_count=1;
+    }
+  done
+
+  # Idempotent by contract: it routinely runs against partially-removed
+  # machines, and this is the most partial of all -- the one it just cleaned.
+  log "nyxgpt ops uninstall (second run -- idempotency)"
+  nyxgpt ops uninstall --quiet || {
+    echo "::error::a second nyxgpt ops uninstall failed on an already-clean machine (#3859)"
+    fail_count=1
+  }
 else
   log "--keep-up set: leaving services running"
 fi

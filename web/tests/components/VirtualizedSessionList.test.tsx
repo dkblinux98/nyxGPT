@@ -2,11 +2,12 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { VirtualizedSessionList } from '../../src/components/VirtualizedSessionList';
 import React from 'react';
+import type { VirtuosoMockProps } from '../mocks/virtuoso';
 
 // Mock react-virtuoso for testing environment
 // This mock simulates viewport-based rendering to verify virtualization works
 vi.mock('react-virtuoso', () => ({
-  Virtuoso: ({ totalCount, itemContent, style, overscan, ...props }: any) => {
+  Virtuoso: ({ totalCount, itemContent, style, overscan, ...props }: VirtuosoMockProps) => {
     // Simulate viewport rendering: only render ~20 items regardless of total count
     // This verifies that large lists don't render all items at once
     const VIEWPORT_ITEMS = 20;
@@ -218,8 +219,12 @@ describe('VirtualizedSessionList', () => {
     const renderSpy = vi.fn();
 
     const OriginalMemo = React.memo;
-    const memoSpy = vi.fn((component: any) => {
-      return OriginalMemo((props: any) => {
+    // `React.memo`'s own signature is generic over the wrapped component's
+    // props; the spy only needs to read `session.name` off whatever it is
+    // handed, so it types the props it actually touches.
+    type SpiedProps = { session?: { name?: string } };
+    const memoSpy = vi.fn((component: (props: SpiedProps) => React.ReactNode) => {
+      return OriginalMemo((props: SpiedProps) => {
         renderSpy(props.session?.name);
         return component(props);
       });

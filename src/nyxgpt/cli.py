@@ -34,6 +34,7 @@ from nyxgpt import self_heal as self_heal_mod
 from nyxgpt.aws_credentials_setup import run_aws_credentials_setup
 from nyxgpt.chat import chat, chat_stream
 from nyxgpt.config import (
+    VALID_SESSION_BACKENDS,
     get_canary_error_rate_threshold,
     get_canary_latency_p95_threshold_ms,
     get_canary_min_requests,
@@ -2129,6 +2130,30 @@ def cli(argv: list[str] | None = None) -> int:
     _add_down_arguments(ops_down)
     _add_quiet_flag(ops_down)
 
+    # The teardown that has to run BEFORE `brew uninstall` (#3859). `down`
+    # stops the stack and leaves it installed -- every service still
+    # registered to come back at the next login; this deregisters it. Homebrew
+    # has no uninstall hook, so nothing else can do it, and an operator who
+    # uninstalls first ends up with services they can no longer name to stop.
+    ops_uninstall = ops_sub.add_parser(
+        "uninstall",
+        help=(
+            "Stop and deregister everything nyxGPT installed (services, LaunchAgents/"
+            "systemd units, containers) -- run this BEFORE `brew uninstall`"
+        ),
+    )
+    ops_uninstall.add_argument(
+        "--volumes",
+        action="store_true",
+        help="Also remove Docker volumes (DESTRUCTIVE: deletes Cassandra/Postgres/Grafana data)",
+    )
+    ops_uninstall.add_argument(
+        "--yes-really",
+        action="store_true",
+        help="Required confirmation for --volumes",
+    )
+    _add_quiet_flag(ops_uninstall)
+
     ops_env_sync = ops_sub.add_parser(
         "env-sync",
         help="Derive Docker Compose's .env secrets from config.ini (single source of truth)",
@@ -2138,6 +2163,24 @@ def cli(argv: list[str] | None = None) -> int:
         "--env-file", help="Path to the .env file to update (default: <repo>/.env)"
     )
     _add_quiet_flag(ops_env_sync)
+
+    # `ops session-backend` (#3865): the wrapped replacement for SSHing to a
+    # deployed instance and hand-editing `[nyxgpt] session_backend` in
+    # config.ini. See docs/session-storage.md for what each backend means for
+    # cross-mode session sharing.
+    ops_session_backend = ops_sub.add_parser(
+        "session-backend",
+        help=("Show or set the chat session storage backend (file | cassandra) " "in config.ini"),
+    )
+    ops_session_backend.add_argument(
+        "backend",
+        nargs="?",
+        choices=list(VALID_SESSION_BACKENDS),
+        help="Backend to select; omit to report the backend currently in force",
+    )
+    ops_session_backend.add_argument(
+        "--config", help="Path to config.ini (default: ~/.nyxGPT/config.ini)"
+    )
 
     ops_secrets_sync = ops_sub.add_parser(
         "secrets-sync",
@@ -2401,6 +2444,18 @@ def cli(argv: list[str] | None = None) -> int:
             "Pin the installed nyxGPT version (Linux: pip install nyxgpt==<version>; "
             "macOS: recorded for reference only -- the Homebrew tap always tracks its "
             "current formula). Default: latest."
+        ),
+    )
+    # #3865. Per-OS default (cloud_provision.DEFAULT_SESSION_BACKEND_BY_OS):
+    # `cassandra` on Linux, where `ops install` provisions the Cassandra
+    # container as a core service, and `file` on EC2 Mac, where nothing in
+    # that template does.
+    cloud_user_data.add_argument(
+        "--session-backend",
+        choices=list(VALID_SESSION_BACKENDS),
+        help=(
+            "Chat session storage backend to select on the instance (default: cassandra "
+            "on Linux, file on macOS) -- see docs/session-storage.md"
         ),
     )
     cloud_user_data.add_argument(
@@ -2692,6 +2747,18 @@ def cli(argv: list[str] | None = None) -> int:
         "--skip-observability",
         action="store_true",
         help="Deploy the core app only, without the monitoring/logging/tracing/errors stack",
+    )
+    # #3865: defaults to `cassandra` so a cloud deploy shares one session list
+    # with every other mode pointed at the same Cassandra, matching what the
+    # Kubernetes overlay already asserts. `file` is available for a
+    # single-instance deploy that deliberately wants host-local JSON sessions.
+    cloud_deploy_p.add_argument(
+        "--session-backend",
+        choices=list(VALID_SESSION_BACKENDS),
+        help=(
+            "Chat session storage backend for the instance (default: cassandra, then "
+            "whatever the last deploy used) -- see docs/session-storage.md"
+        ),
     )
     cloud_deploy_p.add_argument(
         "--no-tunnel",
@@ -3282,8 +3349,12 @@ def cli(argv: list[str] | None = None) -> int:
             return ops_mod.stop(args)
         if args.ops_cmd == "down":
             return ops_mod.down(args)
+        if args.ops_cmd == "uninstall":
+            return ops_mod.uninstall(args)
         if args.ops_cmd == "env-sync":
             return ops_mod.env_sync(args)
+        if args.ops_cmd == "session-backend":
+            return ops_mod.session_backend(args)
         if args.ops_cmd == "secrets-sync":
             return ops_mod.secrets_sync(args)
         if args.ops_cmd == "logs":

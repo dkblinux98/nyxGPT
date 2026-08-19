@@ -341,13 +341,25 @@ describe('System Theme Detection', () => {
   it('updates the theme when the system preference changes and no user preference is stored', async () => {
     let changeHandler: ((e: MediaQueryListEvent) => void) | undefined;
     const removeEventListener = vi.fn();
-    matchMediaMock.mockReturnValue({
-      matches: false,
+    // A real MediaQueryList updates its own `matches` before it dispatches
+    // `change`; a mock pinned to one value only works for an implementation
+    // that trusts the event payload, and the provider reads the live query
+    // instead. Keep the mock's state in sync with the dispatch so this test
+    // pins the behavior ("system flips, theme follows") and not the mechanism.
+    let systemPrefersDark = false;
+    matchMediaMock.mockImplementation(() => ({
+      get matches() {
+        return systemPrefersDark;
+      },
       addEventListener: vi.fn((event: string, handler: (e: MediaQueryListEvent) => void) => {
         if (event === 'change') changeHandler = handler;
       }),
       removeEventListener,
-    });
+    }));
+    const flipSystemPreference = (matches: boolean) => {
+      systemPrefersDark = matches;
+      changeHandler!({ matches } as MediaQueryListEvent);
+    };
 
     render(
       <ThemeProvider>
@@ -361,7 +373,7 @@ describe('System Theme Detection', () => {
 
     expect(changeHandler).toBeDefined();
     act(() => {
-      changeHandler!({ matches: true } as MediaQueryListEvent);
+      flipSystemPreference(true);
     });
 
     await waitFor(() => {
@@ -369,7 +381,7 @@ describe('System Theme Detection', () => {
     });
 
     act(() => {
-      changeHandler!({ matches: false } as MediaQueryListEvent);
+      flipSystemPreference(false);
     });
 
     await waitFor(() => {

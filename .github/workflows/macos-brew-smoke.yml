@@ -20,7 +20,14 @@ name: macOS Brew Smoke
 #                the owner's Mac exhibited and this runner does not, because a
 #                job that only runs the install is green on any machine that
 #                fails to reproduce the bug -- which is exactly how the rc5
-#                candidate passed here and failed there.
+#                candidate passed here and failed there. Since #3854 it also
+#                asserts what the install *says*: the transcript has to name
+#                `nyxgpt up` and what `brew services start` leaves out. That
+#                assertion lives in the keg-install job and not in
+#                published-tap deliberately -- published-tap can be dispatched
+#                against an older candidate, whose formulas predate the
+#                caveats, and a gate that fails on correct history is a gate
+#                people learn to ignore.
 #   published-tap  Does what the owner actually types work? `brew tap` +
 #                `brew install` against the real published tap, and then --
 #                since #3860 -- the whole user path after it:
@@ -68,6 +75,10 @@ on:
     paths:
       - 'homebrew/**'
       - 'scripts/build_homebrew_artifacts.py'
+      # Unlike macos-user-path-smoke.sh below, this one IS in the filter: the
+      # PR-triggered keg-install job runs it, so a change to it changes what
+      # this workflow asserts on the next PR.
+      - 'scripts/homebrew-caveats-smoke.sh'
       - 'src/nyxgpt/release_tarball.py'
       - 'src/nyxgpt/install_mode.py'
       - '.github/workflows/macos-brew-smoke.yml'
@@ -509,7 +520,25 @@ jobs:
           # still fails the step rather than being masked by tail's exit 0.
           # The trimmed tail is the readable part; the full Homebrew log is
           # dumped by the on-failure step below.
-          brew install --verbose nyxgpt/brew-smoke/nyxgpt-api@3.0.0rc 2>&1 | tail -80
+          #
+          # `tee` keeps the whole transcript, because the next step asserts
+          # against what the operator was *told*, and the caveats are printed
+          # once, at install time (#3854).
+          brew install --verbose nyxgpt/brew-smoke/nyxgpt-api@3.0.0rc 2>&1 \
+            | tee "$RUNNER_TEMP/install-nyxgpt-api.log" | tail -80
+
+      - name: "Prove the install tells the operator to run `nyxgpt up`"
+        # #3854: the owner ran `brew services start` because that is what
+        # Homebrew told them to, and got a stack with no Ollama, no Cassandra
+        # and no observability. Every job here was green throughout -- they all
+        # asked whether the keg builds, and none asked what the install says.
+        #
+        # The script injects the condition itself (strip `caveats`, ask brew
+        # what it would print, require the check to fail), so this is not a
+        # gate that only ever runs against a good formula. See its header.
+        run: |
+          ./scripts/homebrew-caveats-smoke.sh nyxgpt/brew-smoke/nyxgpt-api@3.0.0rc \
+            "$RUNNER_TEMP/install-nyxgpt-api.log"
 
       - name: Verify the keg venv was really built
         run: |
@@ -605,8 +634,128 @@ jobs:
         if: ${{ inputs.include_web }}
         run: |
           set -euo pipefail
-          brew install --verbose nyxgpt/brew-smoke/nyxgpt-web@3.0.0rc 2>&1 | tail -80
+          brew install --verbose nyxgpt/brew-smoke/nyxgpt-web@3.0.0rc 2>&1 \
+            | tee "$RUNNER_TEMP/install-nyxgpt-web.log" | tail -80
           brew test nyxgpt/brew-smoke/nyxgpt-web@3.0.0rc
+          # The owner is told this twice, once per keg, so both formulas are
+          # asserted (#3854). This one only runs when the web keg is built,
+          # which is why tests/unit/test_homebrew_caveats_smoke.py pins the web
+          # formula's caveats on every PR as well.
+          ./scripts/homebrew-caveats-smoke.sh nyxgpt/brew-smoke/nyxgpt-web@3.0.0rc "$RUNNER_TEMP/install-nyxgpt-web.log"
+
+      - name: "Teardown: prove the wrapped uninstall clears what `brew uninstall` cannot"
+        # #3859. The owner ran `brew uninstall` on both candidate formulas and
+        # then `brew untap`, and was left with api and web still serving on
+        # :8000/:3000 out of deleted kegs, three `com.nyxgpt.*` agents still
+        # loaded (one at PID 58068), five plists still in ~/Library/LaunchAgents
+        # -- and, the tap being gone, no formula name left to hand
+        # `brew services stop`. Homebrew has no uninstall hook, so nothing in a
+        # `brew uninstall` could ever have cleaned that up.
+        #
+        # The condition is *injected* rather than waited for: this job installs
+        # a keg, it does not run `nyxgpt ops install`, so the three agents that
+        # outlived the owner's uninstall would not otherwise exist here and the
+        # step would be green on a machine that never reproduced the bug --
+        # exactly how rc5 passed CI and died on the owner's Mac (#3753).
+        #
+        # Both halves are proven in one run, because "it is clean afterwards"
+        # is worthless without "it was dirty before" and "the command we had
+        # before this fix does not clean it":
+        #
+        #   1. inject the agents, and assert they are really there
+        #   2. `nyxgpt ops down` -- the supported stop that existed before this
+        #      issue -- and assert the plists SURVIVE it. That is the defect,
+        #      reproduced. `down` stops a stack and leaves it installed by
+        #      design, which is why it was never the missing command.
+        #   3. `nyxgpt ops uninstall` -- and assert nothing is left loaded or
+        #      registered.
+        #   4. `brew uninstall` + `brew untap` afterwards, then the same
+        #      residue check, since the ordering the caveats prescribe has to
+        #      survive the removal it precedes.
+        run: |
+          set -euo pipefail
+          LA="$HOME/Library/LaunchAgents"
+          mkdir -p "$LA"
+
+          # One function, used for the negative control and the real
+          # assertion alike: a residue check re-typed per call site proves
+          # nothing about the one that matters.
+          nyxgpt_plists() {
+            find "$LA" -maxdepth 1 -iname '*nyxgpt*' 2>/dev/null || true
+          }
+          nyxgpt_jobs() {
+            launchctl list 2>/dev/null | grep -i nyxgpt || true
+          }
+
+          echo "=== inject the agents nyxgpt ops install writes, and brew never knew about ==="
+          for label in com.nyxgpt.cassandra-logs com.nyxgpt.ollama-logs com.nyxgpt.ollama-env; do
+            cat > "$LA/$label.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>Label</key><string>$label</string>
+            <key>ProgramArguments</key>
+            <array><string>/bin/bash</string><string>-lc</string><string>sleep 3600</string></array>
+            <key>RunAtLoad</key><true/>
+          </dict>
+          </plist>
+          PLIST
+            # Tolerated: a hosted runner's launchd session is not always a
+            # `gui` domain. The plist on disk is the half that matters -- it is
+            # what reloads at the next login, and what nothing removed.
+            launchctl bootstrap "gui/$(id -u)" "$LA/$label.plist" 2>/dev/null || true
+          done
+          # And the Homebrew-managed half: the population that held :8000 on
+          # the owner's Mac after its keg was deleted. Tolerated, because a
+          # runner that cannot start a brew service still exercises everything
+          # above -- but when it can, this is the real thing rather than a
+          # simulation of it.
+          brew services start nyxgpt-api@3.0.0rc 2>&1 | tail -5 || true
+
+          echo "--- injected ---"
+          nyxgpt_plists
+          test -n "$(nyxgpt_plists)" \
+            || { echo "::error::injection failed -- the rest of this step would be vacuous"; exit 1; }
+
+          echo "=== negative control: the command that existed before #3859 ==="
+          nyxgpt ops down --quiet || true
+          if [ -z "$(nyxgpt_plists)" ]; then
+            echo "::error::ops down already removed the agents -- this check tests nothing"
+            exit 1
+          fi
+          echo "good: the plists survive 'nyxgpt ops down', which is the defect"
+
+          echo "=== the wrapped teardown ==="
+          nyxgpt ops uninstall --quiet
+          LEFT="$(nyxgpt_plists)"
+          if [ -n "$LEFT" ]; then
+            echo "$LEFT"
+            echo "::error::nyxgpt plists remain in ~/Library/LaunchAgents after the teardown"
+            exit 1
+          fi
+          JOBS="$(nyxgpt_jobs)"
+          if [ -n "$JOBS" ]; then
+            echo "$JOBS"
+            echo "::error::a nyxgpt launchd job is still loaded after the teardown"
+            exit 1
+          fi
+          echo "good: nothing loaded, nothing registered"
+
+          echo "=== and the removal the teardown precedes ==="
+          for formula in $(brew list --formula | grep -i '^nyxgpt' || true); do
+            brew uninstall --force "$formula" 2>&1 | tail -5
+          done
+          brew untap nyxgpt/brew-smoke 2>&1 | tail -5 || true
+          LEFT="$(nyxgpt_plists)"
+          JOBS="$(nyxgpt_jobs)"
+          if [ -n "$LEFT$JOBS" ]; then
+            echo "$LEFT"
+            echo "$JOBS"
+            echo "::error::residue after teardown + brew uninstall + brew untap (#3859)"
+            exit 1
+          fi
+          echo "clean: no nyxgpt plist, no nyxgpt launchd job"
 
       - name: Install logs on failure
         if: failure()

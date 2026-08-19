@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import LoadingSpinner from '../../../components/LoadingSpinner';
 import ErrorMessage from '../../../components/ErrorMessage';
 import { apiErrorText, errorMessage } from '../../../lib/apiError';
+import Link from 'next/link';
 
 type RAGResult = {
   doc_id: string;
@@ -159,7 +160,13 @@ export default function PlaygroundPage() {
     try {
       const endpoint = collectMetrics ? '/api/v1/rag/metrics/query' : '/api/v1/rag/query';
 
-      const payload: any = {
+      const payload: {
+        query: string;
+        top_k: number;
+        debug_mode: boolean;
+        collection: string;
+        collect_metrics?: boolean;
+      } = {
         query: query.trim(),
         top_k: topK,
         debug_mode: debugMode,
@@ -243,9 +250,9 @@ export default function PlaygroundPage() {
           <p style={{ color: 'var(--foreground-muted)', marginBottom: 8 }}>
             Test queries, adjust parameters, and compare results
           </p>
-          <a href="/" style={{ color: '#0066cc', textDecoration: 'none' }}>
+          <Link href="/" style={{ color: '#0066cc', textDecoration: 'none' }}>
             ← Back to Chat
-          </a>
+          </Link>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           <button
@@ -525,7 +532,7 @@ export default function PlaygroundPage() {
           {!currentResult ? (
             <div style={{ textAlign: 'center', paddingTop: '3rem' }}>
               <p style={{ fontSize: '1.125rem', color: 'var(--foreground-muted)' }}>
-                Enter a query and click "Run Query" to see results
+                Enter a query and click &quot;Run Query&quot; to see results
               </p>
             </div>
           ) : (
@@ -620,7 +627,7 @@ export default function PlaygroundPage() {
                 <div>
                   {!currentResult.evaluation_metrics ? (
                     <p style={{ fontSize: '0.875rem', color: 'var(--foreground-muted)', textAlign: 'center', padding: '2rem' }}>
-                      No metrics available. Enable "Collect Evaluation Metrics" to see this data.
+                      No metrics available. Enable &quot;Collect Evaluation Metrics&quot; to see this data.
                     </p>
                   ) : (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
@@ -758,7 +765,7 @@ export default function PlaygroundPage() {
                 <div>
                   {!currentResult.debug_info ? (
                     <p style={{ fontSize: '0.875rem', color: 'var(--foreground-muted)', textAlign: 'center', padding: '2rem' }}>
-                      No debug info available. Enable "Debug Mode" to see this data.
+                      No debug info available. Enable &quot;Debug Mode&quot; to see this data.
                     </p>
                   ) : (
                     <div>

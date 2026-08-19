@@ -29,7 +29,49 @@ from multiple API instances (canary + stable, horizontally scaled replicas)
 can never produce a torn session document; the last complete write wins,
 which is the same policy the file store's atomic rename gave a single host.
 
+## How each deployment mode selects the backend (#3865)
+
+Every mode resolves the backend through the same two inputs
+(`config.get_session_backend`): the `NYXGPT_SESSION_BACKEND` environment
+variable if set, else `[nyxgpt] session_backend` in that process's
+`config.ini`. What differs per mode is *who writes that value*:
+
+| Mode | Default | How it is selected | Sharing |
+|---|---|---|---|
+| Native (local, single host) | `file` | `example.config.ini`'s shipped value; change it with `nyxgpt ops session-backend cassandra` | The other modes on this host share the value, because they derive their config from this one |
+| Docker Compose | inherited | `nyxgpt ops install`/`env-sync` derives `docker/config.docker.ini` **verbatim** from the native `config.ini`, rewriting only service hostnames (`cassandra_hosts = cassandra`) | Shares the native host's backend by construction — set it once natively and Compose follows |
+| Terraform, local containers | inherited | The same derived `config.docker.ini`; the Terraform containers get matching network aliases | As Compose |
+| Kubernetes | `cassandra` | Declarative in `k8s/configmap.yaml` (`session_backend = cassandra`); overridable per pod with `NYXGPT_SESSION_BACKEND` | Every api replica reads and writes one store — required, since replicas have no shared disk |
+| Cloud — `nyxgpt cloud deploy` | `cassandra` | `--session-backend {file,cassandra}`, applied on the instance by the provisioning script before `ops install`, and recorded in `deploy.json` so a re-deploy keeps it | Shares with any other mode pointed at that Cassandra |
+| Cloud — `nyxgpt cloud user-data --os linux` | `cassandra` | `--session-backend`, applied by the rendered bootstrap before `ops install` | As above |
+| Cloud — `nyxgpt cloud user-data --os macos` (EC2 Mac) | `file` | `--session-backend` | **File-backed by default, deliberately.** That template installs the two Homebrew formulas and starts them; it does not run `ops install`, so nothing provisions a Cassandra on the instance. Passing `--session-backend cassandra` is supported for an operator who points `[rag] cassandra_hosts` at a Cassandra they run elsewhere |
+
+The cloud rows are the ones that changed in #3865. Before it, the cloud paths
+seeded `config.ini` from `example.config.ini` and never touched the backend,
+so a provisioned instance silently ran `file`: chats were JSON files on
+ephemeral instance disk, invisible to every other mode pointed at the same
+Cassandra, and lost with the instance. Changing it meant an SSH session and a
+hand edit of `config.ini` — the raw-operations flow the wrapped-command
+requirement forbids as the user-facing path.
+
 ## Enabling it
+
+The wrapped command, on any host or instance:
+
+```bash
+nyxgpt ops session-backend cassandra   # set it
+nyxgpt ops session-backend             # report the backend in force
+nyxgpt ops restart api                 # the API reads it at startup
+```
+
+It edits `[nyxgpt] session_backend` in `config.ini` in place, leaving the
+file's comments intact, and writes nothing when the value is already what you
+asked for — so a provisioning script can call it on every run. With no
+argument it reports the value actually in force, including an
+`NYXGPT_SESSION_BACKEND` override of the file, which is what you want when a
+container disagrees with its config.
+
+Or set it directly:
 
 ```ini
 [nyxgpt]
@@ -39,6 +81,18 @@ session_backend = cassandra
 Cassandra is already a required core service (`nyxgpt ops install` provisions
 `nyxgpt-cassandra`); no new infrastructure is needed. The keyspace and
 `chat_sessions` table are created automatically on first use.
+
+For a cloud deployment, select it at deploy time instead — no SSH, no
+instance edit:
+
+```bash
+nyxgpt cloud deploy --session-backend cassandra   # the default
+nyxgpt cloud deploy --session-backend file        # host-local JSON sessions
+```
+
+`nyxgpt cloud status` and the admin dashboard's Infrastructure page report
+which backend the deployment recorded; `nyxgpt cloud ops session-backend`
+asks the instance itself over the same wrapped SSH path.
 
 ## Schema
 
@@ -112,3 +166,15 @@ modes share the same files. **Decision: not adopted.** Reasons:
 the migration (fresh, partial, re-run), the `nyxgpt.sessions` dispatch layer,
 and the multi-writer concurrency guarantee, all against an in-memory fake of
 the Cassandra driver session (no live Cassandra needed).
+
+That the *cloud* path actually ends up on this backend is proven by running
+it, not by inspection (#3865): the `session-backend` phase of
+`nyxgpt cloud smoke --container`
+(`.github/workflows/cloud-artifact-smoke.yml`) brings a bare Amazon Linux
+2023 machine up through the real rendered EC2 bootstrap, then asks the
+*running API* to create a session over HTTP and reads that row back out of
+the instance's own Cassandra with `cqlsh`. A companion job runs the same
+install with `--inject file-sessions` — the session-backend wiring removed —
+and passes only if the smoke fails; without it, a check that had stopped
+looking would stay green. This defect class is invisible to inspection
+precisely because the instance is *healthy* while it happens.
