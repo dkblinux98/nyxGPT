@@ -643,30 +643,85 @@ def test_preflight_reports_both_resources() -> None:
     }
 
 
-def test_preflight_refusal_names_the_skip_observability_escape_hatch() -> None:
-    """A refusal an operator cannot act on is just a different dead end."""
+def _preflight_two_tiers(
+    tmp_path: Path,
+    *,
+    allocatable_gi: int,
+    app_tier: list[dict[str, Any]],
+    observability: list[dict[str, Any]],
+) -> list[ops.OpsResult]:
+    """Run the preflight with the two kustomizations rendering *different* stacks.
+
+    A single mocked render for both directories cannot express "how much of
+    this total is the observability layer", which is the question the
+    `--skip-observability` remedy turns on.
+    """
+    app_dir = tmp_path / "k8s"
+    obs_dir = app_dir / "observability"
+    obs_dir.mkdir(parents=True)
+    # The marker `_preflight_k8s_capacity` reads for "an app tier exists".
+    (app_dir / "secret.yaml").write_text("{}")
+
+    def _render(directory: Path) -> tuple[list[dict[str, Any]], None]:
+        return (list(observability) if directory == obs_dir else list(app_tier), None)
+
     with (
+        patch.object(ops, "K8S_DIR", app_dir),
+        patch.object(ops, "K8S_OBSERVABILITY_DIR", obs_dir),
         patch.object(
             ops,
             "_k8s_node_allocatable",
-            return_value=({"memory": 2 * 1024**3, "cpu": 8000}, 1, None),
+            return_value=({"memory": allocatable_gi * 1024**3, "cpu": 8000}, 1, None),
         ),
-        patch.object(
-            ops,
-            "_k8s_render_kustomization",
-            return_value=([_workload("Deployment", "api", "4Gi", 1)], None),
-        ),
+        patch.object(ops, "_k8s_render_kustomization", side_effect=_render),
         patch.object(ops, "_k8s_committed_requests", return_value=({"memory": 0, "cpu": 0}, None)),
         patch.object(
             ops, "_ensure_k8s_observability_secret", return_value=[ops.OpsResult(True, "ok")]
         ),
     ):
-        results = ops._preflight_k8s_capacity(skip_observability=False)
+        return ops._preflight_k8s_capacity(skip_observability=False)
+
+
+def test_preflight_refusal_names_the_skip_observability_escape_hatch(tmp_path: Path) -> None:
+    """A refusal an operator cannot act on is just a different dead end."""
+    results = _preflight_two_tiers(
+        tmp_path,
+        allocatable_gi=8,
+        app_tier=[_workload("Deployment", "api", "6Gi", 1)],
+        observability=[_workload("Deployment", "grafana", "4Gi", 1)],
+    )
 
     assert not all(r.ok for r in results)
     memory = _for(results, "memory")
     assert "--skip-observability" in memory.details
+    # Named with its size, so the operator can see it closes the 2Gi gap
+    # rather than taking it on faith.
+    assert "4096Mi of the above" in memory.details
     assert "Docker Desktop" in memory.details
+
+
+def test_preflight_withholds_the_escape_hatch_when_it_would_not_help(tmp_path: Path) -> None:
+    """Advice that still refuses is worse than none -- it costs a second install.
+
+    The layer is 1Gi and the shortfall is 3Gi, so dropping it leaves the app
+    tier alone still 2Gi over the node. Offering `--skip-observability` here
+    reads as "nyxGPT told me to do this and it did not work" (#3825, owner
+    acceptance).
+    """
+    results = _preflight_two_tiers(
+        tmp_path,
+        allocatable_gi=4,
+        app_tier=[_workload("Deployment", "api", "6Gi", 1)],
+        observability=[_workload("Deployment", "grafana", "1Gi", 1)],
+    )
+
+    assert not all(r.ok for r in results)
+    memory = _for(results, "memory")
+    assert "Not enough node memory" in memory.message
+    assert "--skip-observability" not in memory.details
+    # The remedy that DOES work is still there.
+    assert "Docker Desktop" in memory.details
+    assert "3072Mi more memory" in memory.details
 
 
 def test_preflight_passes_with_canary_headroom() -> None:
@@ -754,7 +809,16 @@ def test_render_never_touches_the_cluster() -> None:
 
 
 def test_install_runs_the_preflight_before_applying_anything() -> None:
-    """Order is the whole point: a refusal after `kubectl apply` is too late."""
+    """Order is the whole point: a refusal after `kubectl apply` is too late.
+
+    And a refusal after the IMAGE BUILDS is nearly as bad (#3825, owner
+    acceptance): those are the ~20 expensive minutes of this command, they
+    need nothing the preflight produces, and an operator whose VM cannot hold
+    the stack was paying for both of them before being told so. The two builds
+    are recorded here for that reason -- an ordering that puts them ahead of
+    the preflight again fails this test rather than costing the next operator
+    twenty minutes.
+    """
     order: list[str] = []
 
     def _record(label: str):
@@ -768,10 +832,8 @@ def test_install_runs_the_preflight_before_applying_anything() -> None:
         patch.object(ops, "_refuse_port_collision", return_value=None),
         patch.object(ops, "_clear_intentional_stops", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_ensure_kubectl_and_cluster", return_value=[ops.OpsResult(True, "ok")]),
-        patch.object(ops, "_build_and_load_k8s_image", return_value=[ops.OpsResult(True, "ok")]),
-        patch.object(
-            ops, "_build_and_load_k8s_web_image", return_value=[ops.OpsResult(True, "ok")]
-        ),
+        patch.object(ops, "_build_and_load_k8s_api_image", side_effect=_record("build-api")),
+        patch.object(ops, "_build_and_load_k8s_web_image", side_effect=_record("build-web")),
         patch.object(ops, "_ensure_k8s_secret", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_preflight_k8s_capacity", side_effect=_record("preflight")),
         patch.object(ops, "_kubectl_apply_kustomization", side_effect=_record("apply")),
@@ -789,7 +851,7 @@ def test_install_runs_the_preflight_before_applying_anything() -> None:
     ):
         ops._install_kubernetes_steps(None)
 
-    assert order == ["preflight", "apply", "apply-observability"]
+    assert order == ["preflight", "build-api", "build-web", "apply", "apply-observability"]
 
 
 def test_a_failing_preflight_stops_the_install() -> None:

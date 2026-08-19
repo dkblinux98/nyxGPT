@@ -27,6 +27,12 @@ name: Kubernetes Capacity Smoke
 #   3. the shipped sizing -- assert EVERY Pod is scheduled, that a whole
 #      rollout's borrowed pool lands, and that the preflight passes.
 #
+# Plus the refusal as an OPERATOR meets it (#3825 acceptance round): the real
+# `nyxgpt ops install --kubernetes --local`, on a node deliberately too small
+# for the shipped stack, refusing with no image built and nothing applied.
+# That step is only affordable because the preflight now runs ahead of the two
+# image builds; it fails on the previous order, which is its injected half.
+#
 # Both injections restore the pre-#3833 STANDING POOL (`replicas: 4` on the
 # stable Deployments) as well as the pre-#3825 requests. That pair is what
 # #3825 measured: the requests alone, applied to the elastic pool this repo
@@ -95,6 +101,67 @@ jobs:
       - name: Shrink the node to a stock Docker Desktop VM
         run: ./scripts/k8s-node-ballast.sh "$TARGET_ALLOCATABLE_MI"
 
+      # The operator's own command, refusing, with nothing built and nothing
+      # applied. Every other phase in this job reaches the preflight by
+      # calling `ops._preflight_k8s_capacity()` directly, because reaching it
+      # through `nyxgpt ops install` used to mean building both container
+      # images first -- so no gate covered what an operator on an undersized
+      # VM actually experiences, and the ~20 minutes they spent before the
+      # refusal was invisible here. Since #3825's acceptance round the
+      # preflight runs BEFORE those builds, which is what makes this step
+      # cheap enough to exist at all.
+      #
+      # It is also the fault-injection half for that ordering: on the previous
+      # order the same run reaches the preflight only after building
+      # `nyxgpt-api:local`, so the "no image was built" assertion below fails.
+      - name: The real install refuses before it builds anything
+        run: |
+          set -euo pipefail
+          # Reserve enough on top of the Docker Desktop ballast that the
+          # SHIPPED stack no longer fits -- this phase is about the refusal
+          # path, not about the sizing the phases below measure.
+          kubectl apply -f - <<'YAML'
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: ballast-extra
+            namespace: capacity-ballast
+          spec:
+            containers:
+              - name: pause
+                # Same tag k8s-node-ballast.sh uses, so the node already has it.
+                image: registry.k8s.io/pause:3.9
+                resources:
+                  requests:
+                    memory: 4096Mi
+          YAML
+          kubectl -n capacity-ballast wait --for=condition=Ready pod/ballast-extra --timeout=120s
+          docker image rm -f nyxgpt-api:local nyxgpt-web:local >/dev/null 2>&1 || true
+
+          set +e
+          nyxgpt ops install --kubernetes --local --api-key capacity-smoke-key \
+            >/tmp/refusal.log 2>&1
+          rc=$?
+          set -e
+          cat /tmp/refusal.log
+          if [ "$rc" -eq 0 ]; then
+            echo "::error::the install did not refuse a node the shipped stack cannot fit"
+            exit 1
+          fi
+          grep -q 'Not enough node memory' /tmp/refusal.log || {
+            echo "::error::the install failed, but not with the capacity refusal"; exit 1; }
+          if docker image inspect nyxgpt-api:local >/dev/null 2>&1; then
+            echo "::error::the refusal came after the api image build -- the preflight is" \
+                 "behind the ~20 expensive minutes it exists to save (#3825)"
+            exit 1
+          fi
+          if kubectl get namespace nyxgpt >/dev/null 2>&1; then
+            echo "::error::the refusal applied the namespace anyway"; exit 1
+          fi
+          echo "refused in $(awk 'END {print NR}' /tmp/refusal.log) lines, no image built," \
+               "nothing applied"
+          kubectl -n capacity-ballast delete pod ballast-extra --wait=true
+
       - name: Reproduce the defect -- the pre-#3825 memory requests do not fit
         run: |
           set -euo pipefail
@@ -126,10 +193,12 @@ jobs:
       - name: The preflight refuses that sizing instead of applying it
         run: |
           set -euo pipefail
-          # The preflight is an install STEP, and reaching it through `nyxgpt
-          # ops install` would first build both container images (~20 min) for
-          # a check that needs neither. Called directly here for that reason;
-          # test_k8s_capacity_preflight.py covers its position in the step
+          # Called directly, not through `nyxgpt ops install`, because this
+          # phase measures a sizing that only exists in /tmp/prefix-k8s -- the
+          # real command renders the packaged manifests under ~/.nyxGPT and
+          # would overwrite the injection on its way past. The step above
+          # covers the operator's path with the shipped manifests;
+          # test_k8s_capacity_preflight.py covers the position in the step
           # order, and k8s-local-smoke.yml runs it through the real command.
           python - <<'PY'
           import sys
