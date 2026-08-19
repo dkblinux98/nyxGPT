@@ -430,12 +430,23 @@ nyxgpt ops restart api              # pick up new api code from the tree
 nyxgpt up                           # switch back to the artifact path
 ```
 
+**Where `--dev` is accepted.** On this machine, by
+`nyxgpt up` / `nyxgpt ops install` in all three modes (native,
+`--terraform --local`, `--kubernetes --local`). On a cloud target, by
+`nyxgpt cloud deploy --dev`, which copies this checkout to the EC2 instance
+over the deploy's own SSH connection and installs it there — the same
+working-tree-instead-of-artifact choice, one machine further away (#3950,
+[cloud.md](cloud.md#dev-mode-on-a-cloud-target)). Nowhere else: there is no
+Kubernetes or Terraform *mode* of `nyxgpt cloud deploy` for the flag to
+modify.
+
 Constraints, by design:
 
 - **Checkout-only.** Dev mode needs `pyproject.toml`, `src/nyxgpt/` and
   `web/` next to the running `nyxgpt`. Run from an installed package it
   refuses immediately, naming the path it looked at, rather than
-  half-installing.
+  half-installing. `nyxgpt cloud deploy --dev` refuses on the same check, run
+  on your workstation before AWS is touched.
 - **Not the default, and not a substitute for artifact testing.** A bare
   `nyxgpt up` is the artifact path, unchanged; dev mode exercises neither
   the published tap/wheel nor the production web build, so acceptance of a

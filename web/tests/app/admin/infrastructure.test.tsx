@@ -1312,6 +1312,55 @@ describe('InfrastructurePage', () => {
     expect(screen.getByText(/nyxgpt cloud ops session-backend/)).toBeInTheDocument();
   });
 
+  it('says when the cloud instance is running a shipped working tree rather than a release (#3950)', async () => {
+    // Every other field on this card reads identically for a `--dev` deploy
+    // and an artifact deploy of the same version -- version, host, instance,
+    // region, profiles, health. So without this the page reports a
+    // working-tree build as a published release, and an operator debugging
+    // one has no way to tell which they are looking at.
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    const deployed = {
+      ...CLOUD_DEPLOY_UNKNOWN,
+      source: 'deploy-record',
+      known: true,
+      deployed: true,
+      version: '3.0.0',
+      tunnel: { running: false, pid: 0, host: '', profiles: [], urls: {} },
+    };
+
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({ ...deployed, dev: true, source_dir: '/Users/o/src/nyxGPT' })
+      )
+    );
+    const devDeploy = render(<InfrastructurePage />);
+    await waitFor(() => {
+      expect(screen.getByText('DEV BUILD')).toBeInTheDocument();
+    });
+    expect(
+      screen.getByText(/working tree shipped from \/Users\/o\/src\/nyxGPT \(--dev\)/)
+    ).toBeInTheDocument();
+    // And it says what that means, not just what it is: the version above
+    // names a release this stack is not running.
+    expect(screen.getByText(/not a published 3\.0\.0 release/)).toBeInTheDocument();
+    devDeploy.unmount();
+
+    // The artifact path makes the positive claim rather than staying silent:
+    // "published release" is the thing an operator wants confirmed.
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({ ...deployed, dev: false, source_dir: '' })
+      )
+    );
+    render(<InfrastructurePage />);
+    await waitFor(() => {
+      expect(
+        screen.getByText('published release, installed from PyPI on the instance')
+      ).toBeInTheDocument();
+    });
+    expect(screen.queryByText('DEV BUILD')).not.toBeInTheDocument();
+  });
+
   it('names which target OS provisioned the instance, and separates "not recorded" from "linux" (#3867)', async () => {
     // The two target OSes do not leave an instance in the same shape: an EC2
     // Mac runs the Homebrew formulas under launchd with no observability

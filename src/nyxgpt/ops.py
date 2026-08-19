@@ -1924,6 +1924,23 @@ def _dev_checkout_root() -> Path | None:
     return None
 
 
+def dev_checkout_root() -> Path | None:
+    """Public name for `_dev_checkout_root`, for modules outside `ops` (#3950).
+
+    `nyxgpt cloud deploy --dev` has to answer the same question this module's
+    own install paths do -- *is there a working tree to build from at all?* --
+    and it must answer it the same way, or the cloud path would refuse (or
+    accept) a checkout the local path disagrees about. Delegating rather than
+    re-implementing is the point: `cloud_deploy` gets one call, and this stays
+    the only definition of what a dev-mode source tree is.
+
+    Deliberately a thin forward to the private name rather than a rename: every
+    caller inside this module, and the tests that monkeypatch
+    `ops._dev_checkout_root`, keep working unchanged.
+    """
+    return _dev_checkout_root()
+
+
 def _installed_distribution_version() -> str | None:
     """Version of the installed `nyxgpt` distribution, or None if it isn't installed."""
     try:

@@ -1767,8 +1767,18 @@ def test_the_linux_bootstrap_is_untouched_by_the_dispatch():
     """The acceptance criterion the rest of this change must not cost: `--os
     linux` renders exactly the script the pre-#3867 deploy rendered."""
     plan = cloud_deploy.resolve_plan(_args(os_family="linux"))
+    # The artifact install block and the empty `ops install` flags are what
+    # #3950 spliced into the one shared template for the non-`--dev` path;
+    # substituting them here keeps this asserting what it was written to
+    # assert -- that the OS dispatch changes nothing about the Linux script --
+    # rather than re-asserting that `--dev` exists, which its own file covers.
     expected = (
-        cloud_deploy.PROVISION_SCRIPT_TEMPLATE.replace("__VERSION__", plan.version)
+        cloud_deploy.PROVISION_SCRIPT_TEMPLATE.replace(
+            "__NYXGPT_INSTALL__", cloud_deploy.ARTIFACT_INSTALL_BLOCK
+        )
+        .replace("__REMOTE_SOURCE__", cloud_deploy.REMOTE_SOURCE_DIR)
+        .replace("__OPS_INSTALL_FLAGS__", "")
+        .replace("__VERSION__", plan.version)
         .replace("__PROFILES__", ",".join(plan.profiles))
         .replace("__SESSION_BACKEND__", plan.session_backend)
     )

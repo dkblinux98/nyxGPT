@@ -21,7 +21,9 @@ pip install "nyxgpt[cloud]"
 deployments, not the local stack every other `nyxgpt` command drives.
 
 A cloud instance provisions from published artifacts and never clones this
-repository, so the documentation on it is the copy inside the installed
+repository (the one exception, [`--dev`](#dev-mode-on-a-cloud-target), copies
+your tree over SSH and still clones nothing), so the documentation on it is
+the copy inside the installed
 package: reach it in the tunneled web UI under **Support → Docs**, which
 renders the product documentation that shipped with the deployed version. **File an Issue**
 sits beside it in the same menu and files the ticket from the instance itself,
@@ -68,7 +70,9 @@ reach from your workstation. It:
    floor — see [Python on the instance](#python-on-the-instance)), Node 20
    (from NodeSource, the toolchain `ops install` builds and
    runs the web bundle with), the Docker engine, Ollama, and a **published**
-   `nyxgpt` release, then runs `nyxgpt ops install` on the box **exactly
+   `nyxgpt` release (or, under
+   [`--dev`](#dev-mode-on-a-cloud-target), your working tree), then runs
+   `nyxgpt ops install` on the box **exactly
    once**: one install pass per deploy, no retry pass and no follow-up
    `ops observability` run (the install already reconciles those profiles
    unless `--skip-observability` is passed). See
@@ -95,7 +99,8 @@ works here too and is remembered for later runs, plus:
 | Flag | Meaning |
 | --- | --- |
 | `--os {auto,linux,macos}` | Which target OS's bootstrap to drive (default `auto`: `macos` for a `mac*.metal` instance type, `linux` otherwise). See [EC2 Mac targets](#ec2-mac-targets) |
-| `--version` | Published release to install on the instance (default: this CLI's own version, then whatever the last deploy used) |
+| `--version` | Published release to install on the instance (default: this CLI's own version, then whatever the last deploy used). Ignored under `--dev` |
+| `--dev` | Deploy **your working tree** instead of a published release — Linux targets only, see [Dev mode on a cloud target](#dev-mode-on-a-cloud-target) |
 | `--skip-observability` | Deploy the core app only, without monitoring/logging/tracing/errors (implied by `--os macos`, whose bootstrap installs none) |
 | `--session-backend` | Where the instance stores chat sessions: `cassandra` (default — shared with every mode pointed at the same Cassandra) or `file` (JSON on the instance's own disk). Remembered for later runs, so a re-deploy never silently moves an instance's sessions back to files. See [session-storage.md](session-storage.md) |
 | `--no-tunnel` | Don't open the tunnel (and so don't health-check through it); prints the `nyxgpt cloud tunnel` command to run instead |
@@ -315,6 +320,82 @@ of this flow touches a checkout:
 
 The instance therefore runs a *published* release, not your working tree. If
 you want a version other than your CLI's, name it with `--version`.
+
+[`--dev`](#dev-mode-on-a-cloud-target) is the one deliberate exception, and it
+is opt-in and checkout-only for exactly this reason: a plain
+`nyxgpt cloud deploy` still needs no repository on either side, and the
+instance still clones nothing under `--dev` either — your tree crosses the
+deploy's own SSH connection.
+
+### Dev mode on a cloud target
+
+`nyxgpt up --dev` runs the stack from the checkout in front of you instead of
+building artifacts ([ops.md](ops.md#--dev-run-the-current-checkout-without-an-artifact-build)).
+`nyxgpt cloud deploy --dev` is the same idea aimed at the EC2 instance:
+
+```bash
+nyxgpt cloud deploy --dev        # deploy the tree you are standing in
+nyxgpt cloud deploy              # back to a published release
+```
+
+What it does, in the order the deploy reports it:
+
+1. **Refuses immediately if you are not in a checkout.** The check is
+   `nyxgpt.ops.dev_checkout_root()` — the same one `nyxgpt up --dev` uses, so
+   the two can never disagree about what a source tree is — and it runs before
+   AWS is touched, so a mistaken `--dev` costs nothing.
+2. **Ships your working tree**, after the substrate is applied and the
+   instance is answering SSH. The file list comes from git
+   (`--cached --others --exclude-standard`): everything tracked plus everything
+   new that is not ignored, so **uncommitted edits go too** — that is the point
+   of dev mode. `node_modules`, `.venv` and `.next` are excluded by the
+   repository's own ignore rules, and `.git` is never sent: the instance gets
+   a source tree, not a repository it could pull or push from. It lands in
+   `~/.nyxGPT/src` and **replaces** whatever the last `--dev` deploy left
+   there, so a file you deleted locally leaves the instance too.
+3. **Installs it editable** (`pip install -e ~/.nyxGPT/src`) instead of
+   `pip install nyxgpt==<version>`, and runs `nyxgpt ops install --dev` on the
+   box. Everything else about the deploy is identical — same bootstrap, same
+   Node 20, same Docker, same session backend, same self-heal enable.
+
+Things worth knowing before you use it:
+
+- **It is not an acceptance path.** Same rule as the local dev mode: it exists
+  for development and mid-stream testing. What you accept is a published
+  release, installed the artifact way.
+- **`--dev` is never inherited.** Every other choice a deploy records (the SSH
+  user, the identity file, the session backend, the version) carries over to
+  the next run; this one does not. A plain `nyxgpt cloud deploy` always means
+  "install a published release", so re-running it after a `--dev` deploy puts
+  the release back rather than silently re-shipping whatever is checked out.
+- **The version you see is your tree's.** A working tree usually declares a
+  release that does not exist yet, so the deploy summary says plainly that it
+  built from your tree and names the directory. `nyxgpt cloud status` reports
+  it as well — a **Build source** row, in the human form and under `--json`
+  alike, and on the dashboard's cloud card — so an instance running a tree is
+  never mistaken for one running a release.
+- **The web UI runs Next's dev server**, as it does under `nyxgpt up --dev` —
+  slower first paint, no production build.
+- **It ships the tree, not the machine.** Anything your local stack has that
+  the repository does not (an untracked config, a hand-installed dependency)
+  is not on the instance.
+- **Linux targets only.** `--dev --os macos` is refused, before the substrate
+  is applied: the [EC2 Mac bootstrap](#ec2-mac-targets) installs published
+  Homebrew formulas from the remote tap and has no working-tree source, so
+  ignoring the flag would hand you a published release while you believed you
+  were testing your tree.
+
+Terraform and Kubernetes modes are a *local* install-mode choice
+(`nyxgpt ops install --terraform/--kubernetes --local`), and `--dev` composes
+with both there — see [terraform.md](terraform.md#install-modes-artifact-default-and---dev)
+and [kubernetes.md](kubernetes.md#install-modes-artifact-and---dev). Neither is
+a `nyxgpt cloud deploy` mode: the cloud path deploys the native stack to one
+EC2 instance.
+
+Verified by execution, not inspection: `.github/workflows/cloud-dev-deploy-smoke.yml`
+ships this repository's working tree to a bare Amazon Linux 2023 container over
+real SSH and requires the box to import `nyxgpt` from the shipped tree, an
+uncommitted sentinel included.
 
 ### Python on the instance
 
