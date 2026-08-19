@@ -397,6 +397,48 @@ def test_render_k3s_bootstrap_is_the_text_the_deploy_sends():
     assert "__K3S_SERVER_FLAGS__" not in cloud_deploy.render_k3s_bootstrap()
 
 
+class _ReachedSSH(Exception):
+    """Stops `deploy` at the first step that needs a real instance."""
+
+
+@pytest.mark.parametrize(("kubernetes", "expected"), [(True, True), (False, False)])
+def test_the_node_sizing_pointer_comes_before_the_provisioning(
+    _isolated_cloud_home, monkeypatch, capsys, kubernetes, expected
+):
+    """In Kubernetes mode the instance carries the whole stack as Pods, and the
+    default instance type was chosen for the native layout.
+
+    The install's own capacity preflight refuses an undersized node before it
+    builds anything (#3825) -- but that is on the instance, after ~20 minutes
+    of provisioning, which is a slow and billed way to learn that
+    `--instance-type` exists. Said before that, and only in Kubernetes mode:
+    on a native deploy the default is the right size and the advice would be
+    noise.
+    """
+    (_isolated_cloud_home / "state.json").write_text(
+        json.dumps({"public_ip": "198.51.100.10", "region": "us-east-1"}), encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        cloud_infra,
+        "apply_infra",
+        lambda args: {"outputs": {}, "settings": {"instance_type": "m5.large"}},
+    )
+
+    def stop(*_a, **_k):
+        raise _ReachedSSH
+
+    monkeypatch.setattr(cloud_deploy, "wait_for_ssh", stop)
+
+    with pytest.raises(_ReachedSSH):
+        cloud_deploy.deploy(_args(kubernetes=kubernetes))
+
+    err = capsys.readouterr().err
+    assert ("--instance-type" in err) is expected
+    if expected:
+        assert "m5.large" in err
+        assert "docs/kubernetes.md" in err
+
+
 # --- The CLI surface -----------------------------------------------------
 
 

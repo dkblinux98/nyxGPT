@@ -1267,6 +1267,31 @@ def deploy(args: argparse.Namespace) -> dict[str, Any]:
     # deploy is running from. Recorded as its own step because "which CIDR
     # can reach this box" is the thing an operator most needs to see.
     applied_settings = infra.get("settings", {})
+
+    if plan.kubernetes:
+        # Said before the ~20 minutes of provisioning, not after it (#3956).
+        # In Kubernetes mode the instance carries the whole stack as Pods --
+        # api and web on both tracks, Cassandra, Ollama and the observability
+        # layer -- so it needs what a local cluster node needs, and the
+        # default instance type was chosen for the native layout.
+        #
+        # `ops install --kubernetes`'s own capacity preflight is the authority
+        # on whether a given node fits, and refuses *before* building anything
+        # (#3825). So this is a pointer to the flag that fixes it, not a size
+        # table this file would have to keep correct as instance families
+        # change. Read from the applied settings rather than re-resolving
+        # them: `resolve_settings` re-detects the operator's public IP over
+        # the network, and calling it twice would pay for that twice and could
+        # answer differently the second time.
+        print(
+            "Kubernetes substrate: the whole stack runs as Pods on this one "
+            f"{applied_settings.get('instance_type') or 'instance'}. See the node-capacity "
+            "section of docs/kubernetes.md for what it reserves, and pass --instance-type to "
+            "size up -- the install refuses a node that cannot hold the stack before it "
+            "builds anything.",
+            file=sys.stderr,
+        )
+
     steps.append(
         {
             "step": "access",
