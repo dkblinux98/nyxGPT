@@ -28,27 +28,36 @@ function below takes a `component: str = "api"` parameter -- see
 for why), and the Cassandra data-migration story remains deferred per the
 #3409 owner decision.
 
-Metrics-based promotion/rollback reads the process-wide ResourceMonitor
-(error rate + p95 latency, see resource_monitor.py) since dedicated
-Prometheus metrics (#2693) have not landed yet.
+Metrics-based promotion/rollback reads the *canary track's own* Pods
+(`track_metrics`, #3829): the Pod list is filtered by the `track=` label the
+stable/canary Deployments already carry, and each matching Pod's
+unauthenticated Prometheus `/metrics` endpoint is read through the API
+server's Pod proxy. It deliberately does NOT read this process's own
+ResourceMonitor -- doing so gated the rollout on the vitals of whichever
+`nyxgpt-api` Pod happened to serve the dashboard/CLI request, so a canary
+with zero scheduled Pods was reported "safe to promote" on a stable Pod's
+459 requests (#3829). No Prometheus server is required: the canary gate
+reads the Pods directly, so it works whether or not the optional
+observability stack is installed.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import math
 import os
+import re
 import shutil
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from nyxgpt import metrics as prom_metrics
 from nyxgpt import ops as ops_module
 from nyxgpt.ops import OpsResult as CanaryResult
-from nyxgpt.resource_monitor import get_resource_monitor
 from nyxgpt.subprocess_bounds import (
     PROBE_TIMEOUT_SECONDS,
     bounded_argv,
@@ -70,10 +79,41 @@ HISTORY_LIMIT = 20
 # Every kubectl call here is a single API request, not a stream, so none of
 # them has a legitimate reason to take half a minute -- this is the backstop
 # for the mutating ones (`scale`, `set image`). Read-only probes on a polled
-# endpoint use the much tighter `PROBE_TIMEOUT_SECONDS` instead, and
+# endpoint use the much tighter `PROBE_TIMEOUT_SECONDS` instead, the per-Pod
+# metrics reads (#3829) pass `METRICS_SCRAPE_TIMEOUT_SECONDS`, and
 # `_wait_rollout` -- the one call that blocks by contract -- passes its own
 # bound. See `subprocess_bounds` for why any of this exists (#3858).
 DEFAULT_RUN_TIMEOUT_SECONDS = 30.0
+
+# Track-scoped metrics (#3829). Both Deployments' Pods carry the same
+# `app` label and are told apart by `track: stable|canary` (see
+# k8s/deployment-stable.yaml / deployment-canary.yaml), which is what makes
+# per-track attribution possible without a traffic manager.
+API_POD_APP_LABEL = "nyxgpt-api-canary-pool"
+WEB_POD_APP_LABEL = "nyxgpt-web-canary-pool"
+
+# How long a single Pod `/metrics` read may take before it is abandoned. The
+# dashboard's status poll fans out over the track's Pods, so a wedged Pod
+# must degrade the panel to "not attributable", never hang it.
+METRICS_SCRAPE_TIMEOUT_SECONDS = 5
+
+# Upper bound on Pods scraped per track per call, so a large stable track
+# cannot turn one status poll into an unbounded fan-out of kubectl
+# invocations. Pods beyond the bound are reported in `pods_ready` but not
+# read; `pods_scraped` is what the numbers are actually based on.
+MAX_SCRAPED_PODS = 8
+
+# Paths excluded from the traffic the canary gate judges. The kubelet's
+# readiness/liveness probes hit `/health` every 10s and Prometheus (plus this
+# module's own scrape) hits `/metrics`; counting them would let a canary that
+# has served no real request cross `min_requests` on automated traffic alone
+# within a few minutes of being scheduled -- the same "the gate cannot fail"
+# defect this attribution work exists to close (#3829).
+NON_TRAFFIC_PATHS = frozenset({"/health", "/metrics"})
+
+# Metric families read out of a Pod's exposition (see metrics.py).
+HTTP_REQUESTS_METRIC = "nyxgpt_http_requests_total"
+HTTP_DURATION_METRIC = "nyxgpt_http_request_duration_seconds"
 
 # What a stable Deployment rests at between rollouts when its live replica
 # count cannot be read (#3833) -- the same number k8s/deployment-stable.yaml
@@ -150,6 +190,15 @@ class ComponentSpec:
     container_name: str
     supported: bool = True
     unsupported_reason: str = ""
+    # Label shared by this component's stable and canary Pods; combined with
+    # `track=stable|canary` it selects exactly one track's Pods (#3829).
+    pod_app_label: str = ""
+    # Container port serving the Prometheus exposition, or None when this
+    # component's Pods export no metrics at all -- `web` runs Next.js, which
+    # has no /metrics endpoint, so its canary traffic is not measurable and
+    # `track_metrics` says so rather than inventing a number.
+    metrics_port: int | None = None
+    metrics_path: str = "/metrics"
     build_context: Path | None = None
     build_fingerprint_paths: list[Path] | None = None
     build_excludes: frozenset[str] = frozenset()
@@ -164,6 +213,8 @@ COMPONENTS: dict[str, ComponentSpec] = {
         service_name=SERVICE_NAME,
         image_repository=IMAGE_REPOSITORY,
         container_name="nyxgpt-api",
+        pod_app_label=API_POD_APP_LABEL,
+        metrics_port=8000,
     ),
     "web": ComponentSpec(
         key="web",
@@ -172,6 +223,8 @@ COMPONENTS: dict[str, ComponentSpec] = {
         service_name=WEB_SERVICE_NAME,
         image_repository=WEB_IMAGE_REPOSITORY,
         container_name=WEB_CONTAINER_NAME,
+        pod_app_label=WEB_POD_APP_LABEL,
+        metrics_port=None,
         build_context=ops_module.REPO_ROOT / "web",
         build_fingerprint_paths=[ops_module.REPO_ROOT / "web"],
         build_excludes=ops_module._WEB_VENDOR_EXCLUDES,
@@ -251,8 +304,10 @@ def _run(
     otherwise hold a worker forever -- and `bounded_argv` hands kubectl its own
     `--request-timeout` so it gives up with its own message first. An expired
     bound comes back as a `TIMEOUT_RETURNCODE` result (see `timed_out`) rather
-    than a `TimeoutExpired` traveling up into a handler. Pass `timeout=None`
-    only for a call that blocks by contract and carries its own bound.
+    than a `TimeoutExpired` traveling up into a handler, so one wedged Pod
+    degrades a panel (the per-Pod metrics reads, #3829) instead of hanging the
+    request. Pass `timeout=None` only for a call that blocks by contract and
+    carries its own bound.
     """
     try:
         result = subprocess.run(
@@ -267,7 +322,8 @@ def _run(
         # exception rather than asserting it: `assert` is stripped under
         # `python -O`, and the narrowing has to hold in that build too.
         expired = timeout if timeout is not None else exc.timeout
-        logger.warning(
+        logger.log(
+            logging.DEBUG if expected else logging.WARNING,
             f"Subprocess {timeout_message(expired)}: {' '.join(cmd)}",
             extra={"component": "canary", "cmd": cmd, "timeout_seconds": expired},
         )
@@ -931,17 +987,292 @@ def _scale_pool(
     return None
 
 
-def metrics_snapshot() -> dict[str, Any]:
-    """Return the current error-rate/latency snapshot from the ResourceMonitor."""
-    monitor = get_resource_monitor()
-    if monitor is None:
-        return {"total_requests": 0, "error_rate_percent": 0.0, "p95_latency_ms": 0.0}
-    metrics = monitor.get_metrics()
-    return {
-        "total_requests": metrics.total_requests,
-        "error_rate_percent": metrics.error_rate_percent,
-        "p95_latency_ms": metrics.p95_request_latency_ms,
-    }
+@dataclass(frozen=True)
+class TrackMetrics:
+    """Request vitals attributed to ONE track's Pods, or an honest reason why they aren't.
+
+    `attributable` is the field callers must branch on. It is False whenever
+    the numbers cannot be tied to this track's Pods -- no cluster, no ready
+    Pods (the canary's normal idle state), every scrape failed, or a
+    component whose Pods export no metrics at all -- and in that case the
+    numeric fields are zeros that mean "unknown", NOT "measured zero". A
+    rollout gate must therefore never read `total_requests` without first
+    checking `attributable`; conflating the two is exactly how #3829's
+    "safe to promote" verdict was reached for a canary with no Pods.
+
+    `total_requests`/`error_rate_percent`/`p95_latency_ms` exclude the
+    `NON_TRAFFIC_PATHS` (`/health`, `/metrics`) so kubelet probes and
+    Prometheus scrapes cannot masquerade as canary traffic.
+    """
+
+    track: str
+    attributable: bool
+    reason: str = ""
+    source: str = ""
+    pods_ready: int = 0
+    pods_scraped: int = 0
+    total_requests: int = 0
+    error_rate_percent: float = 0.0
+    p95_latency_ms: float = 0.0
+
+    def as_dict(self) -> dict[str, Any]:
+        """Render as the JSON shape the API/dashboard consume."""
+        return {
+            "track": self.track,
+            "attributable": self.attributable,
+            "reason": self.reason,
+            "source": self.source,
+            "pods_ready": self.pods_ready,
+            "pods_scraped": self.pods_scraped,
+            "total_requests": self.total_requests,
+            "error_rate_percent": self.error_rate_percent,
+            "p95_latency_ms": self.p95_latency_ms,
+        }
+
+
+_SAMPLE_RE = re.compile(
+    r"^(?P<name>[a-zA-Z_:][a-zA-Z0-9_:]*)"
+    r"(?:\{(?P<labels>.*)\})?"
+    r"\s+(?P<value>[^\s]+)\s*(?:[0-9]+)?$"
+)
+_LABEL_RE = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)="((?:\\.|[^"\\])*)"')
+
+
+def _parse_labels(raw: str) -> dict[str, str]:
+    """Parse a Prometheus sample's label set into a dict (quoted values, escapes tolerated)."""
+    return {m.group(1): m.group(2) for m in _LABEL_RE.finditer(raw)}
+
+
+@dataclass
+class _ExpositionTotals:
+    """Running aggregate of one or more Pods' HTTP exposition, in Prometheus terms."""
+
+    requests: float = 0.0
+    errors: float = 0.0
+    # `le` upper bound -> cumulative observation count, summed across Pods.
+    buckets: dict[float, float] = field(default_factory=dict)
+    observations: float = 0.0
+
+
+def _accumulate_exposition(text: str, totals: _ExpositionTotals) -> None:
+    """Fold one Pod's `/metrics` body into `totals`, skipping non-traffic paths.
+
+    Request counts and errors come from `nyxgpt_http_requests_total` (its
+    `status` label is the single source for both, so the error *rate* is
+    always a ratio of the same denominator), and latency from the
+    `nyxgpt_http_request_duration_seconds` histogram's buckets. Samples for
+    `NON_TRAFFIC_PATHS` are dropped on both.
+    """
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = _SAMPLE_RE.match(line)
+        if match is None:
+            continue
+        name = match.group("name")
+        if not name.startswith((HTTP_REQUESTS_METRIC, HTTP_DURATION_METRIC)):
+            continue
+        try:
+            value = float(match.group("value"))
+        except ValueError:
+            continue
+        if math.isnan(value):
+            continue
+        labels = _parse_labels(match.group("labels") or "")
+        if labels.get("path", "") in NON_TRAFFIC_PATHS:
+            continue
+
+        if name == HTTP_REQUESTS_METRIC:
+            totals.requests += value
+            if labels.get("status", "").startswith("5"):
+                totals.errors += value
+        elif name == f"{HTTP_DURATION_METRIC}_bucket":
+            try:
+                bound = float(labels.get("le", "nan"))
+            except ValueError:
+                continue
+            if math.isnan(bound):
+                continue
+            totals.buckets[bound] = totals.buckets.get(bound, 0.0) + value
+        elif name == f"{HTTP_DURATION_METRIC}_count":
+            totals.observations += value
+
+
+def _p95_from_buckets(buckets: dict[float, float], observations: float) -> float:
+    """Estimate the 95th percentile in milliseconds from summed cumulative histogram buckets.
+
+    The same linear interpolation Prometheus' `histogram_quantile` uses: find
+    the first bucket whose cumulative count reaches the rank, then
+    interpolate within it. Falls back to the largest finite bucket bound when
+    the rank lands in the `+Inf` bucket (an observation above every bound),
+    which is also what `histogram_quantile` reports.
+    """
+    if observations <= 0 or not buckets:
+        return 0.0
+    finite = sorted(b for b in buckets if not math.isinf(b))
+    if not finite:
+        return 0.0
+    rank = 0.95 * observations
+    previous_bound = 0.0
+    previous_count = 0.0
+    for bound in finite:
+        count = buckets[bound]
+        if count >= rank:
+            span = count - previous_count
+            if span <= 0:
+                return bound * 1000.0
+            within = (rank - previous_count) / span
+            return (previous_bound + (bound - previous_bound) * within) * 1000.0
+        previous_bound = bound
+        previous_count = count
+    return finite[-1] * 1000.0
+
+
+def _ready_track_pods(spec: ComponentSpec, track: str, namespace: str) -> tuple[list[str], str]:
+    """List the Ready Pod names on `track`, or return an empty list plus the reason.
+
+    Filters on the Pods' own `track` label rather than on Deployment names, so
+    the answer is about which Pods are actually serving, not about what the
+    Deployment intends.
+    """
+    cp = _run(
+        [
+            "kubectl",
+            "get",
+            "pods",
+            "-n",
+            namespace,
+            "-l",
+            f"app={spec.pod_app_label},track={track}",
+            "-o",
+            "json",
+        ],
+        expected=True,
+        timeout=METRICS_SCRAPE_TIMEOUT_SECONDS,
+    )
+    if cp.returncode != 0:
+        return [], f"could not list {track} Pods: {(cp.stderr or '').strip() or 'kubectl failed'}"
+    try:
+        data = json.loads(cp.stdout)
+    except Exception:
+        return [], f"could not parse the {track} Pod list"
+
+    ready: list[str] = []
+    for item in data.get("items", []):
+        status = item.get("status", {})
+        if status.get("phase") != "Running":
+            continue
+        # A Pod being deleted is draining out of the Service's endpoints, and
+        # after a `canary deploy` the draining Pods are the ones running the
+        # PREVIOUS image -- counting their requests would credit the old
+        # version's traffic to the version now being judged.
+        if item.get("metadata", {}).get("deletionTimestamp"):
+            continue
+        conditions = status.get("conditions", []) or []
+        if not any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions):
+            continue
+        name = item.get("metadata", {}).get("name", "")
+        if name:
+            ready.append(name)
+    if not ready:
+        return [], f"the {track} track has no ready Pods"
+    return sorted(ready), ""
+
+
+def _scrape_pod_metrics(pod: str, port: int, path: str, namespace: str) -> str | None:
+    """Read one Pod's Prometheus exposition through the API server's Pod proxy.
+
+    Uses `kubectl get --raw` rather than a direct connection because Pod IPs
+    are not routable from outside the cluster (the CLI's case) and this keeps
+    a single code path for in-Pod and out-of-cluster callers. Needs only
+    `get` on `pods/proxy` (see k8s/rbac.yaml); the endpoint is unauthenticated
+    on the app side, like /health.
+    """
+    raw_path = f"/api/v1/namespaces/{namespace}/pods/{pod}:{port}/proxy{path}"
+    cp = _run(
+        ["kubectl", "get", "--raw", raw_path],
+        expected=True,
+        timeout=METRICS_SCRAPE_TIMEOUT_SECONDS,
+    )
+    if cp.returncode != 0:
+        return None
+    return cp.stdout or ""
+
+
+def track_metrics(
+    track: str = "canary",
+    namespace: str = DEFAULT_NAMESPACE,
+    *,
+    component: str = "api",
+) -> TrackMetrics:
+    """Return request vitals attributed to `track`'s Pods only (#3829).
+
+    This is the input every rollout gate must use. It reads the Pods that
+    carry `track=<track>` and aggregates their own counters -- never this
+    process's, which belong to whichever Pod happens to be serving the
+    caller's request and say nothing about the canary.
+
+    Returns a `TrackMetrics` whose `attributable` is False (with a `reason`)
+    whenever the numbers cannot be tied to the track: no kubectl/cluster, no
+    ready Pods, no readable `/metrics` on any of them, or a component that
+    exports none at all.
+    """
+    spec, err = _component_spec(component)
+    if spec is None:
+        assert err is not None
+        return TrackMetrics(track=track, attributable=False, reason=err.message)
+    if spec.metrics_port is None:
+        return TrackMetrics(
+            track=track,
+            attributable=False,
+            reason=(
+                f"{component} Pods export no /metrics endpoint, so {track}-track traffic "
+                "is not measurable; judge this rollout on Pod health and your own checks"
+            ),
+        )
+    if _which("kubectl") is None:
+        return TrackMetrics(
+            track=track,
+            attributable=False,
+            reason=_kubectl_missing_message(
+                f"kubectl not found; cannot read the {track} track's metrics"
+            ),
+        )
+
+    pods, reason = _ready_track_pods(spec, track, namespace)
+    if not pods:
+        return TrackMetrics(track=track, attributable=False, reason=reason)
+
+    scraped = 0
+    totals = _ExpositionTotals()
+    for pod in pods[:MAX_SCRAPED_PODS]:
+        body = _scrape_pod_metrics(pod, spec.metrics_port, spec.metrics_path, namespace)
+        if body is None:
+            continue
+        _accumulate_exposition(body, totals)
+        scraped += 1
+
+    if scraped == 0:
+        return TrackMetrics(
+            track=track,
+            attributable=False,
+            reason=f"could not read /metrics from any of the {len(pods)} ready {track} Pod(s)",
+            pods_ready=len(pods),
+        )
+
+    requests = int(totals.requests)
+    error_rate = (totals.errors / totals.requests * 100.0) if totals.requests > 0 else 0.0
+    return TrackMetrics(
+        track=track,
+        attributable=True,
+        source="pods",
+        pods_ready=len(pods),
+        pods_scraped=scraped,
+        total_requests=requests,
+        error_rate_percent=error_rate,
+        p95_latency_ms=_p95_from_buckets(totals.buckets, totals.observations),
+    )
 
 
 def status(namespace: str = DEFAULT_NAMESPACE, component: str = "api") -> dict[str, Any]:
@@ -949,17 +1280,23 @@ def status(namespace: str = DEFAULT_NAMESPACE, component: str = "api") -> dict[s
 
     Includes whether a rollout is active, its current traffic weight,
     stable/canary health (as an honest not_deployed/unhealthy/healthy/error
-    state plus the version each is running), a live error-rate/latency
-    metrics snapshot, the last 10 history entries, the currently detected
-    deployment mode (with an explanation when it isn't Kubernetes), and
-    whether kubectl is available (with a reason string when it isn't). An
-    unknown or unsupported `component` (e.g. `ollama`, see
+    state plus the version each is running), the last 10 history entries, the
+    currently detected deployment mode (with an explanation when it isn't
+    Kubernetes), and whether kubectl is available (with a reason string when
+    it isn't). An unknown or unsupported `component` (e.g. `ollama`, see
     `OLLAMA_UNSUPPORTED_REASON`) reports `available: False` with the reason
     in both `unavailable_reason` and `mode_message` instead of raising.
 
-    The per-track health reads only happen in Kubernetes mode (#3858): in any
-    other mode the tracks report the mode message rather than the result of a
-    kubectl call that had no cluster to reach.
+    The per-track health and metrics reads only happen in Kubernetes mode
+    (#3858): in any other mode the tracks report the mode message rather than
+    the result of a kubectl call that had no cluster to reach.
+
+    `metrics` is the **canary track's** vitals -- the same input `evaluate()`
+    gates on -- as a `TrackMetrics` dict, not this process's own counters
+    (#3829). `stable_metrics` carries the stable track's for contrast and is
+    only measured while a rollout is active: reading it costs one Pod-proxy
+    call per stable Pod on every status poll, which is not worth spending
+    when there is no canary to compare it against.
     """
     mode = current_mode()
     spec, err = _component_spec(component)
@@ -974,7 +1311,12 @@ def status(namespace: str = DEFAULT_NAMESPACE, component: str = "api") -> dict[s
             "resting_replicas": 0,
             "stable": {"state": "not_deployed", "message": err.message, "version": ""},
             "canary": {"state": "not_deployed", "message": err.message, "version": ""},
-            "metrics": metrics_snapshot(),
+            "metrics": TrackMetrics(
+                track="canary", attributable=False, reason=err.message
+            ).as_dict(),
+            "stable_metrics": TrackMetrics(
+                track="stable", attributable=False, reason=err.message
+            ).as_dict(),
             "history": [],
             "available": False,
             "unavailable_reason": err.message,
@@ -1001,6 +1343,28 @@ def status(namespace: str = DEFAULT_NAMESPACE, component: str = "api") -> dict[s
     kubectl_present = _which("kubectl") is not None
     active = bool(state.get("active", False))
     weight_percent = state.get("weight_percent", 0)
+    # The per-track metrics reads (#3829) are cluster calls too -- one Pod
+    # list plus one Pod-proxy read per Pod -- so the same guard covers them.
+    # `track_metrics` stops at `_which("kubectl")`, which is not enough here:
+    # a developer machine can have kubectl installed and a stale context while
+    # running natively, which is precisely the blackholing dial #3858 exists to
+    # remove. Outside Kubernetes mode the panels report the mode as the reason
+    # they are not attributable, which is the honest answer.
+    unmeasured_reason = _mode_message(mode) or f"deployment mode is {mode}, not kubernetes"
+    if mode_supported:
+        canary_metrics = track_metrics("canary", namespace, component=component)
+    else:
+        canary_metrics = TrackMetrics(track="canary", attributable=False, reason=unmeasured_reason)
+    if not mode_supported:
+        stable_metrics = TrackMetrics(track="stable", attributable=False, reason=unmeasured_reason)
+    elif active:
+        stable_metrics = track_metrics("stable", namespace, component=component)
+    else:
+        stable_metrics = TrackMetrics(
+            track="stable",
+            attributable=False,
+            reason="not measured while no rollout is in progress",
+        )
 
     if component == "api":
         prom_metrics.CANARY_ROLLOUT_ACTIVE.set(1 if active else 0)
@@ -1040,7 +1404,8 @@ def status(namespace: str = DEFAULT_NAMESPACE, component: str = "api") -> dict[s
             "message": canary_health.message,
             "version": canary_health.version,
         },
-        "metrics": metrics_snapshot(),
+        "metrics": canary_metrics.as_dict(),
+        "stable_metrics": stable_metrics.as_dict(),
         "history": state.get("history", [])[-10:],
         "available": kubectl_present,
         "unavailable_reason": (
@@ -1298,12 +1663,19 @@ def evaluate(
     min_requests: int = 20,
     component: str = "api",
 ) -> CanaryResult:
-    """Compare live error-rate/latency metrics against thresholds.
+    """Compare the CANARY TRACK's live error-rate/latency against thresholds.
+
+    The metrics come from `track_metrics("canary", ...)` -- the canary Pods'
+    own counters -- so a canary that has taken no traffic cannot be
+    green-lit on the vitals of the stable Pod serving this request, and an
+    auto-rollback cannot be provoked by load on stable (#3829).
 
     Automatically rolls back the canary if either threshold is breached.
-    Returns ok=True (with an "insufficient data" note) when too few requests
-    have been observed to judge the canary yet, so a quiet canary doesn't
-    get auto-rolled-back for lack of traffic.
+    Returns ok=True with an explicit hold -- never "safe to promote" -- when
+    the canary's traffic cannot be attributed at all (no ready Pods, no
+    readable `/metrics`) or when too few of its requests have been observed
+    to judge it yet, so a quiet canary doesn't get auto-rolled-back for lack
+    of traffic.
     """
     spec, err = _component_spec(component)
     if spec is None:
@@ -1313,16 +1685,38 @@ def evaluate(
     if not state.get("active"):
         return CanaryResult(False, "No canary rollout in progress")
 
-    metrics = metrics_snapshot()
-    if metrics["total_requests"] < min_requests:
+    metrics = track_metrics("canary", namespace, component=component)
+    if not metrics.attributable:
+        if component == "api":
+            prom_metrics.CANARY_EVALUATIONS_TOTAL.labels(result="unattributable").inc()
+        prom_metrics.CANARY_COMPONENT_EVALUATIONS_TOTAL.labels(
+            component=component, result="unattributable"
+        ).inc()
+        logger.warning(
+            "canary: evaluate holding, canary-track metrics unattributable (%s)",
+            metrics.reason,
+            extra={
+                "component": "canary",
+                "action": "evaluate",
+                "outcome": "unattributable",
+                "canary_component": component,
+            },
+        )
+        return CanaryResult(
+            True,
+            f"Cannot evaluate the canary track: {metrics.reason}; holding at "
+            f"{state.get('weight_percent', 0)}%",
+        )
+
+    if metrics.total_requests < min_requests:
         if component == "api":
             prom_metrics.CANARY_EVALUATIONS_TOTAL.labels(result="insufficient_data").inc()
         prom_metrics.CANARY_COMPONENT_EVALUATIONS_TOTAL.labels(
             component=component, result="insufficient_data"
         ).inc()
         logger.info(
-            "canary: evaluate holding, insufficient data (%d/%d requests)",
-            metrics["total_requests"],
+            "canary: evaluate holding, insufficient data (%d/%d canary-track requests)",
+            metrics.total_requests,
             min_requests,
             extra={
                 "component": "canary",
@@ -1333,18 +1727,19 @@ def evaluate(
         )
         return CanaryResult(
             True,
-            f"Insufficient data to evaluate ({metrics['total_requests']}/{min_requests} "
-            f"requests observed); holding at {state.get('weight_percent', 0)}%",
+            f"Insufficient data to evaluate ({metrics.total_requests}/{min_requests} "
+            f"canary-track requests observed across {metrics.pods_scraped} canary Pod(s)); "
+            f"holding at {state.get('weight_percent', 0)}%",
         )
 
     breaches = []
-    if metrics["error_rate_percent"] > error_rate_threshold_percent:
+    if metrics.error_rate_percent > error_rate_threshold_percent:
         breaches.append(
-            f"error rate {metrics['error_rate_percent']:.2f}% > {error_rate_threshold_percent}%"
+            f"error rate {metrics.error_rate_percent:.2f}% > {error_rate_threshold_percent}%"
         )
-    if metrics["p95_latency_ms"] > latency_p95_threshold_ms:
+    if metrics.p95_latency_ms > latency_p95_threshold_ms:
         breaches.append(
-            f"p95 latency {metrics['p95_latency_ms']:.2f}ms > {latency_p95_threshold_ms}ms"
+            f"p95 latency {metrics.p95_latency_ms:.2f}ms > {latency_p95_threshold_ms}ms"
         )
 
     if breaches:
@@ -1367,7 +1762,8 @@ def evaluate(
         rollback_result = rollback(namespace, trigger="auto", component=component)
         return CanaryResult(
             False,
-            f"Metrics regression detected ({'; '.join(breaches)}); automatically rolled back",
+            f"Canary-track metrics regression detected ({'; '.join(breaches)}); "
+            "automatically rolled back",
             rollback_result.message,
         )
 
@@ -1376,8 +1772,8 @@ def evaluate(
     prom_metrics.CANARY_COMPONENT_EVALUATIONS_TOTAL.labels(component=component, result="pass").inc()
     logger.info(
         "canary: evaluate passed (error_rate=%.2f%%, p95=%.2fms); safe to promote",
-        metrics["error_rate_percent"],
-        metrics["p95_latency_ms"],
+        metrics.error_rate_percent,
+        metrics.p95_latency_ms,
         extra={
             "component": "canary",
             "action": "evaluate",
@@ -1387,8 +1783,9 @@ def evaluate(
     )
     return CanaryResult(
         True,
-        f"Metrics within thresholds (error_rate={metrics['error_rate_percent']:.2f}%, "
-        f"p95={metrics['p95_latency_ms']:.2f}ms); safe to promote",
+        f"Canary-track metrics within thresholds over {metrics.total_requests} requests "
+        f"(error_rate={metrics.error_rate_percent:.2f}%, "
+        f"p95={metrics.p95_latency_ms:.2f}ms); safe to promote",
     )
 
 
@@ -1399,11 +1796,16 @@ def _finalize_promotion(
     resting: int,
     spec: ComponentSpec,
     component: str,
+    traffic_note: str = "",
 ) -> CanaryResult:
     """Complete a promotion: copy canary's image to stable, then return weight to 100% stable.
 
-    Refuses (via the `promote()` health gate below) unless the canary is currently
-    healthy. Stops -- leaving canary running and stable untouched -- if stable's
+    Refuses (via the `promote()` health and canary-track traffic gates below)
+    unless the canary is currently healthy and has actually served requests.
+    `traffic_note` carries `promote()`'s caveat about the canary's measured
+    traffic into the success message, so a forced or unmeasurable promotion
+    says so in the operator's transcript.
+    Stops -- leaving canary running and stable untouched -- if stable's
     rollout onto the new version doesn't become healthy, so an operator can retry
     or roll the canary back rather than being left in an ambiguous half-promoted
     state.
@@ -1466,7 +1868,7 @@ def _finalize_promotion(
     prom_metrics.CANARY_COMPONENT_ROLLOUT_ACTIVE.labels(component=component).set(0)
     message = (
         f"Promoted {version} to {spec.stable_deployment} at 100% traffic; canary scaled back to 0 "
-        f"and stable back to its resting {_replica_count(resting)}"
+        f"and stable back to its resting {_replica_count(resting)}{traffic_note}"
     )
     ops_module.record_canary_action("promote", "success", message, component=component)
     logger.info(
@@ -1496,6 +1898,7 @@ def promote(
     total_replicas: int | None = None,
     *,
     component: str = "api",
+    force: bool = False,
 ) -> CanaryResult:
     """Increase the canary's traffic share by `step_percent`.
 
@@ -1511,6 +1914,15 @@ def promote(
     the deploy -> gate -> promote cycle with stable now running the promoted
     version (see #3409). Refuses to shift more traffic to an unhealthy
     canary at every step, including this final one.
+
+    Also refuses -- at every step -- to promote a canary track that has
+    *measurably* served no traffic (#3829): a build no request has ever
+    reached has not been canaried, whatever its Pods' health says. The gate
+    only fires where traffic is measurable, so a component whose Pods export
+    no metrics (`web`) is promoted on health alone with that stated in the
+    result. `force=True` promotes anyway, for the case the gate cannot tell
+    apart from a broken canary: an idle cluster nobody is sending requests
+    to.
     """
     spec, err = _component_spec(component)
     if spec is None:
@@ -1544,12 +1956,42 @@ def promote(
         )
         return CanaryResult(False, message)
 
+    traffic_note = ""
+    canary_traffic = track_metrics("canary", namespace, component=component)
+    if canary_traffic.attributable and canary_traffic.total_requests <= 0:
+        if not force:
+            message = (
+                "Refusing to promote a canary that has served no traffic: its "
+                f"{canary_traffic.pods_ready} ready Pod(s) have handled 0 requests "
+                "(health probes and metrics scrapes excluded). Send traffic through the "
+                "Service and evaluate first, or force the promotion if this cluster is "
+                "simply idle (`nyxgpt canary promote --force`, or the Promote page's "
+                '"no canary traffic" override).'
+            )
+            ops_module.record_canary_action("promote", "refused", message, component=component)
+            logger.warning(
+                "canary: %s",
+                message,
+                extra={
+                    "component": "canary",
+                    "action": "promote",
+                    "outcome": "refused",
+                    "canary_component": component,
+                },
+            )
+            return CanaryResult(False, message)
+        traffic_note = " (forced: the canary track has served no traffic)"
+    elif not canary_traffic.attributable:
+        traffic_note = f" (canary traffic not verified: {canary_traffic.reason})"
+
     resting = _resting_from_state(state, total_replicas)
     max_pool = resting + 1 if total_replicas is None else max(2, total_replicas)
     new_weight = min(100, state.get("weight_percent", 0) + max(1, step_percent))
 
     if new_weight >= 100:
-        return _finalize_promotion(state, canary_health, namespace, resting, spec, component)
+        return _finalize_promotion(
+            state, canary_health, namespace, resting, spec, component, traffic_note
+        )
 
     plan = _plan_rollout(resting, new_weight, max_pool)
     current_stable = _first_replica_count(
@@ -1615,7 +2057,7 @@ def promote(
     prom_metrics.CANARY_COMPONENT_WEIGHT_PERCENT.labels(component=component).set(
         plan.achieved_percent
     )
-    message = f"Promoted canary to {plan.describe()}"
+    message = f"Promoted canary to {plan.describe()}{traffic_note}"
     ops_module.record_canary_action("promote", "success", message, component=component)
     logger.info(
         "canary: %s",
@@ -1786,6 +2228,7 @@ def rollback(
 __all__ = [
     "CanaryResult",
     "TrackHealth",
+    "TrackMetrics",
     "RolloutPlan",
     "ComponentSpec",
     "COMPONENTS",
@@ -1800,9 +2243,11 @@ __all__ = [
     "DEFAULT_NAMESPACE",
     "DEFAULT_RESTING_REPLICAS",
     "OLLAMA_UNSUPPORTED_REASON",
+    "MAX_SCRAPED_PODS",
+    "NON_TRAFFIC_PATHS",
     "current_mode",
     "deployment_health",
-    "metrics_snapshot",
+    "track_metrics",
     "status",
     "deploy",
     "start",

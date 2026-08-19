@@ -193,10 +193,27 @@ wait_ready nyxgpt-api-canary
 ok "25% is served as 1 canary + 3 stable Pods, all of them in the Service"
 
 step "4/7 Promote to 50%: the pool is RE-PLANNED, not re-sliced"
-promote_output="$(nyxgpt canary promote --step 25)"
+# `--force` is required here, and is not a way around the #3829 no-traffic
+# gate: this smoke's subject is replica arithmetic, so both Deployments run
+# the stand-in image (see the header), which exports none of the nyxgpt HTTP
+# metric families. `track_metrics` therefore scrapes its Pod successfully and
+# reads an attributable ZERO -- indistinguishable, by design, from a canary
+# nothing can reach -- and `promote` refuses. Driving requests at the stand-in
+# cannot move that count; only re-platforming this smoke onto a real
+# nyxgpt-api image could, which would trade minutes of image build for
+# coverage that already exists. The gate has its own end-to-end proof on a
+# real cluster in scripts/canary-track-metrics-smoke.sh, including the
+# refuse-at-zero-traffic step this line is forcing past.
+promote_output="$(nyxgpt canary promote --step 25 --force)"
 echo "$promote_output"
 echo "$promote_output" | grep -q '50% (1/2 replicas)' ||
     fail "promote did not re-plan the pool down to the 2 replicas 50% needs"
+# Keeps the `--force` above honest: if this stops matching, the promote no
+# longer needed forcing and the flag must come off rather than sit there
+# waving a real no-traffic canary through in some future edit of this script.
+echo "$promote_output" | grep -q 'forced: the canary track has served no traffic' ||
+    fail "the promote was forced but did not report forcing past the no-traffic \
+gate -- drop --force from this step (see the comment above it)"
 assert_replicas nyxgpt-api-canary 1
 assert_replicas nyxgpt-api-stable 1
 ok "50% costs 2 Pods, not the 4 the previous step borrowed"

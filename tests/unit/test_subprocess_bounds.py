@@ -173,13 +173,27 @@ def test_current_mode_says_unknown_rather_than_guessing_native_on_a_timeout(monk
 def test_status_does_not_touch_kubectl_outside_kubernetes_mode(monkeypatch, tmp_path):
     """The cheaper half of the fix: on a native install, don't make the calls at all (#3468)."""
     monkeypatch.setattr(canary, "_state_path", lambda: tmp_path / "canary_state.json")
+    # kubectl present but the mode is native: the binary being installed is
+    # exactly the case a `_which` check does not catch, since a stale context
+    # dials a cluster that is not there.
     monkeypatch.setattr(canary, "_which", lambda _: "/usr/local/bin/kubectl")
-    monkeypatch.setattr(canary, "get_resource_monitor", lambda: None)
     monkeypatch.setattr(canary, "current_mode", lambda: "native")
     monkeypatch.setattr(
         canary,
         "deployment_health",
         lambda *_a, **_k: pytest.fail("deployment_health must not run outside Kubernetes mode"),
+    )
+    # The per-track metrics reads (#3829) are cluster calls too -- a Pod list
+    # plus a Pod-proxy read per Pod -- and are covered by the same guard.
+    monkeypatch.setattr(
+        canary,
+        "track_metrics",
+        lambda *_a, **_k: pytest.fail("track_metrics must not run outside Kubernetes mode"),
+    )
+    monkeypatch.setattr(
+        canary,
+        "_run",
+        lambda *_a, **_k: pytest.fail("status() must make no subprocess call outside Kubernetes"),
     )
 
     data = canary.status("nyxgpt")
@@ -188,6 +202,11 @@ def test_status_does_not_touch_kubectl_outside_kubernetes_mode(monkeypatch, tmp_
     assert data["mode_supported"] is False
     assert data["stable"]["state"] == "not_deployed"
     assert "Kubernetes" in data["stable"]["message"]
+    # The panels still answer -- non-attributable, naming the mode as the
+    # reason, rather than reporting numbers nothing measured.
+    for key in ("metrics", "stable_metrics"):
+        assert data[key]["attributable"] is False
+        assert "Kubernetes" in data[key]["reason"]
 
 
 # --- ops ---------------------------------------------------------------------

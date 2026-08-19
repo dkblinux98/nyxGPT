@@ -9,13 +9,46 @@ import { exploreQueryUrl } from '../../../src/lib/grafanaExplore';
 const CANARY_LOKI_QUERY =
   '{job="nyxgpt"} |= `canary:` |~ `deploying|Deployed|starting|started|promoting|Promoted|rolling back|rolled back|regression`';
 
+// Per-track vitals in the shape `/api/v1/canary/status` reports since #3829:
+// each track's OWN Pods, with `attributable` saying whether the numbers mean
+// anything. When it is false the zeros mean "unknown", not "measured zero" --
+// the page must never present them as figures (that conflation is the defect).
+function trackMetrics(track: string, overrides: Record<string, unknown> = {}) {
+  return {
+    track,
+    attributable: true,
+    reason: '',
+    source: `pod-proxy (${track})`,
+    pods_ready: 1,
+    pods_scraped: 1,
+    total_requests: 0,
+    error_rate_percent: 0,
+    p95_latency_ms: 0,
+    ...overrides,
+  };
+}
+
+function unattributable(track: string, reason: string) {
+  return trackMetrics(track, {
+    attributable: false,
+    reason,
+    source: '',
+    pods_ready: 0,
+    pods_scraped: 0,
+  });
+}
+
+const idleCanaryMetrics = unattributable('canary', 'the canary track has no ready Pods');
+const idleStableMetrics = unattributable('stable', 'not measured while no rollout is in progress');
+
 const mockStatus = {
   namespace: 'nyxgpt',
   active: false,
   weight_percent: 0,
   stable: { state: 'healthy', message: 'ok', version: '1.0.0-abc1234' },
   canary: { state: 'not_deployed', message: 'nyxgpt-api-canary has 0 desired replicas (idle)', version: '' },
-  metrics: { total_requests: 0, error_rate_percent: 0, p95_latency_ms: 0 },
+  metrics: idleCanaryMetrics,
+  stable_metrics: idleStableMetrics,
   history: [],
   available: true,
   unavailable_reason: null,
@@ -32,7 +65,21 @@ const mockActiveStatus = {
   resting_replicas: 1,
   stable: { state: 'healthy', message: 'ok', version: '1.0.0-abc1234' },
   canary: { state: 'unhealthy', message: 'elevated errors', version: '1.1.0-def5678' },
-  metrics: { total_requests: 120, error_rate_percent: 1.234, p95_latency_ms: 456.7 },
+  metrics: trackMetrics('canary', {
+    total_requests: 120,
+    error_rate_percent: 1.234,
+    p95_latency_ms: 456.7,
+  }),
+  // Deliberately busier and healthier than the canary: these are the numbers
+  // that used to be reported AS the canary's (#3829), so every canary
+  // assertion below is also an assertion that they did not leak across.
+  stable_metrics: trackMetrics('stable', {
+    pods_ready: 4,
+    pods_scraped: 4,
+    total_requests: 4000,
+    error_rate_percent: 0.011,
+    p95_latency_ms: 38.4,
+  }),
   history: [
     { action: 'started', weight_percent: 10, ts: 1768300000 },
     { action: 'promoted', weight_percent: 25, from_weight_percent: 10, ts: 1768300100 },
@@ -51,13 +98,22 @@ const mockActiveHealthyStatus = {
   canary: { state: 'healthy', message: 'nyxgpt-api-canary healthy (1/1 ready)', version: '1.1.0-def5678' },
 };
 
+// A Ready canary Pod nothing has routed to yet: measurable, and measurably at
+// zero. This is the state `promote` refuses, and the only one in which the
+// dashboard offers the override.
+const mockIdleCanaryStatus = {
+  ...mockActiveHealthyStatus,
+  metrics: trackMetrics('canary', { total_requests: 0 }),
+};
+
 const mockUnavailableStatus = {
   namespace: 'nyxgpt',
   active: false,
   weight_percent: 0,
   stable: { state: 'not_deployed', message: 'No reachable Kubernetes cluster', version: '' },
   canary: { state: 'not_deployed', message: 'No reachable Kubernetes cluster', version: '' },
-  metrics: { total_requests: 0, error_rate_percent: 0, p95_latency_ms: 0 },
+  metrics: unattributable('canary', 'kubectl not found; cannot check deployment health'),
+  stable_metrics: unattributable('stable', 'kubectl not found; cannot check deployment health'),
   history: [],
   available: false,
   unavailable_reason: 'kubectl not found; cannot check deployment health',
@@ -72,7 +128,8 @@ const mockUnsupportedModeStatus = {
   weight_percent: 0,
   stable: { state: 'not_deployed', message: 'No reachable Kubernetes cluster', version: '' },
   canary: { state: 'not_deployed', message: 'No reachable Kubernetes cluster', version: '' },
-  metrics: { total_requests: 0, error_rate_percent: 0, p95_latency_ms: 0 },
+  metrics: unattributable('canary', 'No reachable Kubernetes cluster'),
+  stable_metrics: unattributable('stable', 'No reachable Kubernetes cluster'),
   history: [],
   available: false,
   unavailable_reason: 'No reachable Kubernetes cluster',
@@ -702,5 +759,221 @@ describe('CanaryPage', () => {
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(/kubectl not found; cannot check deployment health/);
     expect(alert).not.toHaveTextContent('[object Object]');
+  });
+
+  // #3829: the page showed ONE metrics row -- the counters of whichever
+  // nyxgpt-api Pod happened to serve the request. A canary at 0/1 replicas was
+  // therefore presented with a stable Pod's 459 requests / 0.00% errors, and
+  // the rollout gate read the same figures. Each track now reports its own.
+  it('renders each track vitals from its own Pods, never one row for both', async () => {
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+    server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(mockActiveStatus)));
+
+    render(<CanaryPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('canary')).toBeInTheDocument();
+    });
+    expect(screen.getByText('stable')).toBeInTheDocument();
+    expect(screen.getAllByText('Requests')).toHaveLength(2);
+
+    // Canary row: the exact input "Evaluate metrics" gates on.
+    expect(screen.getByText('120')).toBeInTheDocument();
+    expect(screen.getByText('1.23%')).toBeInTheDocument();
+    expect(screen.getByText('457ms')).toBeInTheDocument();
+    expect(screen.getByText('1/1')).toBeInTheDocument();
+
+    // Stable row: busier and healthier, and kept firmly out of the canary's.
+    expect(screen.getByText('4000')).toBeInTheDocument();
+    expect(screen.getByText('0.01%')).toBeInTheDocument();
+    expect(screen.getByText('38ms')).toBeInTheDocument();
+    expect(screen.getByText('4/4')).toBeInTheDocument();
+
+    expect(
+      screen.getByText(
+        /Measured from each track.s own Pods, excluding health probes and metrics scrapes/
+      )
+    ).toBeInTheDocument();
+  });
+
+  it('states why an unmeasurable track is unmeasurable instead of showing zeros as figures', async () => {
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+    server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(mockStatus)));
+
+    render(<CanaryPage />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          'No traffic attributable to this track: the canary track has no ready Pods'
+        )
+      ).toBeInTheDocument();
+    });
+    expect(
+      screen.getByText(
+        'No traffic attributable to this track: not measured while no rollout is in progress'
+      )
+    ).toBeInTheDocument();
+    // The zeros behind an unattributable track mean "unknown" -- rendering
+    // them as Requests / Error rate / p95 is what made #3829 readable as health.
+    expect(screen.queryByText('Requests')).not.toBeInTheDocument();
+    expect(screen.queryByText('Error rate')).not.toBeInTheDocument();
+    expect(screen.queryByText('Pods measured')).not.toBeInTheDocument();
+  });
+
+  it('offers the no-traffic promote override only for a measurably idle canary, and sends it', async () => {
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+    server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(mockIdleCanaryStatus)));
+    const user = userEvent.setup();
+
+    render(<CanaryPage />);
+
+    const checkbox = await screen.findByLabelText(/Promote despite no canary traffic/i);
+    expect(checkbox).not.toBeChecked();
+
+    let promoteBody: unknown = null;
+    server.use(
+      http.post('/api/v1/canary/promote', async ({ request }) => {
+        promoteBody = await request.json();
+        return HttpResponse.json({});
+      })
+    );
+
+    // Unchecked: the api-side refusal stands.
+    await user.click(screen.getByRole('button', { name: /^promote$/i }));
+    await waitFor(() => {
+      expect(promoteBody).toEqual({ component: 'api', force: false });
+    });
+
+    // Checked: the operator's explicit "this cluster is simply idle".
+    promoteBody = null;
+    await user.click(await screen.findByLabelText(/Promote despite no canary traffic/i));
+    expect(await screen.findByLabelText(/Promote despite no canary traffic/i)).toBeChecked();
+    await user.click(screen.getByRole('button', { name: /^promote$/i }));
+    await waitFor(() => {
+      expect(promoteBody).toEqual({ component: 'api', force: true });
+    });
+  });
+
+  it('withholds the override when the canary has served traffic or cannot be measured', async () => {
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+    server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(mockActiveHealthyStatus)));
+    const user = userEvent.setup();
+
+    render(<CanaryPage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /^promote$/i })).toBeInTheDocument();
+    });
+    // 120 canary requests: nothing to override.
+    expect(screen.queryByLabelText(/Promote despite no canary traffic/i)).not.toBeInTheDocument();
+
+    // Unattributable is NOT "idle": offering the override here would let an
+    // operator wave through a canary nothing can even reach.
+    server.use(
+      http.get('/api/v1/canary/status', () =>
+        HttpResponse.json({
+          ...mockActiveHealthyStatus,
+          metrics: unattributable('canary', 'every canary Pod scrape failed'),
+        })
+      )
+    );
+    await user.click(screen.getByRole('button', { name: /refresh/i }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText('No traffic attributable to this track: every canary Pod scrape failed')
+      ).toBeInTheDocument();
+    });
+    expect(screen.queryByLabelText(/Promote despite no canary traffic/i)).not.toBeInTheDocument();
+  });
+
+  it('does not let a ticked override outlive the situation it was ticked for', async () => {
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+    server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(mockIdleCanaryStatus)));
+    const user = userEvent.setup();
+
+    render(<CanaryPage />);
+
+    await user.click(await screen.findByLabelText(/Promote despite no canary traffic/i));
+    expect(await screen.findByLabelText(/Promote despite no canary traffic/i)).toBeChecked();
+
+    // The canary starts serving: the override is withdrawn, and the tick must
+    // go with it -- not sit in state waiting to ride along on a later promote.
+    server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(mockActiveHealthyStatus)));
+    await user.click(screen.getByRole('button', { name: /refresh/i }));
+    await waitFor(() => {
+      expect(screen.queryByLabelText(/Promote despite no canary traffic/i)).not.toBeInTheDocument();
+    });
+
+    let promoteBody: unknown = null;
+    server.use(
+      http.post('/api/v1/canary/promote', async ({ request }) => {
+        promoteBody = await request.json();
+        return HttpResponse.json({});
+      })
+    );
+    await user.click(screen.getByRole('button', { name: /^promote$/i }));
+    await waitFor(() => {
+      expect(promoteBody).toEqual({ component: 'api', force: false });
+    });
+
+    // And back to idle: the checkbox returns unchecked, so forcing is always a
+    // fresh decision about the situation on screen.
+    server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(mockIdleCanaryStatus)));
+    await user.click(screen.getByRole('button', { name: /refresh/i }));
+    expect(await screen.findByLabelText(/Promote despite no canary traffic/i)).not.toBeChecked();
+  });
+
+  it('clears the override when the operator switches to another component', async () => {
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+    server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(mockIdleCanaryStatus)));
+    const user = userEvent.setup();
+
+    render(<CanaryPage />);
+
+    await user.click(await screen.findByLabelText(/Promote despite no canary traffic/i));
+    expect(await screen.findByLabelText(/Promote despite no canary traffic/i)).toBeChecked();
+
+    // The switch keeps rendering the previous component's status until the new
+    // one lands, so the effect cannot see the change yet. A second component
+    // that also reads measurably-idle must not inherit the tick the operator
+    // made about api -- the override is per-situation, not per-session.
+    server.use(
+      http.get('/api/v1/canary/status', () =>
+        HttpResponse.json({ ...mockIdleCanaryStatus, component: 'web' })
+      )
+    );
+    await user.click(screen.getByRole('button', { name: /^web$/i }));
+
+    expect(await screen.findByLabelText(/Promote despite no canary traffic/i)).not.toBeChecked();
+  });
+
+  it('degrades a pre-per-track status payload to a named placeholder instead of blanking', async () => {
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+    // The rolling-upgrade window: this build talking to an api still serving
+    // the old process-wide `metrics` and no `stable_metrics` at all.
+    server.use(
+      http.get('/api/v1/canary/status', () =>
+        HttpResponse.json({
+          ...mockActiveHealthyStatus,
+          metrics: { total_requests: 459, error_rate_percent: 0, p95_latency_ms: 6 },
+          stable_metrics: undefined,
+        })
+      )
+    );
+
+    render(<CanaryPage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Canary Deployment' })).toBeInTheDocument();
+    });
+    expect(
+      screen.getAllByText(
+        'No traffic attributable to this track: not reported by this version of the API'
+      )
+    ).toHaveLength(2);
+    // The old process-wide count is not silently re-presented as the canary's.
+    expect(screen.queryByText('459')).not.toBeInTheDocument();
   });
 });

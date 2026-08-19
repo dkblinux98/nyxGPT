@@ -23,6 +23,7 @@ fails if it drifts. Do not hand-edit.
 | `bulk_set_issue_status.yml` | workflow_dispatch | Bulk Set Issue Status |
 | `canary-pod-reason-smoke.yml` | pull_request, push, workflow_dispatch | Canary Pod Reason Smoke |
 | `canary-rollout-smoke.yml` | pull_request, push, workflow_dispatch | Canary Rollout Smoke |
+| `canary-track-metrics-smoke.yml` | pull_request, push, workflow_dispatch | Canary Track Metrics Smoke |
 | `ci-tests.yml` | push | CI - Tests & Type Check |
 | `claude-code-review.yml` | pull_request, issue_comment, workflow_dispatch | Claude Code Review |
 | `claude-md-binding-canary.yml` | workflow_dispatch | CLAUDE.md Binding Canary |
@@ -106,7 +107,7 @@ fails if it drifts. Do not hand-edit.
 | `developer_submit_for_review.sh` | "<SingleLabel>: <Issue Title> (#<N>)" |
 | `dispatch_conflict_resolution.sh` | route a conflicted PR (#3801) |
 | `drain_gate.sh` | acceptance drain gate watcher (#3730) |
-| `ensure_issue_hygiene.sh` | fill-if-missing project hygiene for one issue |
+| `ensure_issue_hygiene.sh` | fill-if-missing project hygiene for one issue, and the non-completed closure rule (--closure) |
 | `groom_sprint.sh` | Grooming: write the sprint plan doc the developers pull from (#3908) |
 | `manually_trigger_pr_review.sh` | Manually triggers a code review for a PR. This is useful for: |
 | `pr_close_project_status.sh` | stamp a merged/closed PR's project item to the terminal PR lane (STATUS_CLOSED) |

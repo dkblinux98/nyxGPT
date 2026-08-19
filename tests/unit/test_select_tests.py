@@ -130,6 +130,45 @@ def test_a_changed_test_file_runs_itself() -> None:
     assert "tests/unit/test_canary.py" in _targets("tests/unit/test_canary.py")
 
 
+def test_a_changed_test_module_does_not_escalate_to_the_full_suite() -> None:
+    """The other direction of the helper rule: a real test module still scopes."""
+    selection = selector.select(["tests/unit/test_canary.py"])
+    assert not selection.full
+    assert selection.pytest_args != "tests/unit/"
+
+
+def _helpers_under_tests() -> list[str]:
+    """Every file under `tests/` that pytest would not collect on its own."""
+    return sorted(
+        path.relative_to(REPO_ROOT).as_posix()
+        for path in (REPO_ROOT / "tests").rglob("*.py")
+        if not selector._is_test_module(path.name)
+    )
+
+
+def test_no_test_helper_is_ever_handed_to_pytest_by_name() -> None:
+    """The #3871 regression: an explicit argument bypasses `python_files`.
+
+    `tests/gh_stub_issue_hygiene.py` is the shell suite's stateful `gh` stub and
+    reads `GH_STUB_DIR` at import, because the suite that runs it always sets
+    that. Changing it made the selector pass it to pytest by name, the import
+    raised KeyError during collection, and collection errors interrupt the run:
+    the gate reported a stub failure having executed no tests at all.
+
+    Asserted over the tree rather than over one path, so the next helper added
+    beside the two stubs is covered without anyone remembering to come back.
+    """
+    helpers = _helpers_under_tests()
+    assert helpers, "no helper modules found -- this guard would be vacuous"
+    for helper in helpers:
+        selection = selector.select([helper])
+        assert helper not in selection.pytest_args.split(), (
+            f"{helper} is not a test module, but the selector hands it to pytest; "
+            "an explicit argument is imported whatever its name"
+        )
+        assert selection.full, f"{helper}: a helper's blast radius is unknown -- must escalate"
+
+
 def test_an_empty_diff_runs_everything() -> None:
     """No information is not the same as no impact."""
     selection = selector.select([])

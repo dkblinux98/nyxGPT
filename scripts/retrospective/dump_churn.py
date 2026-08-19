@@ -85,8 +85,14 @@ CHURN_WORKFLOWS = [
     "claude-code-review.yml",
     "developer_huddle_position.yml",
     "scrummaster_huddle_mediation.yml",
-    "scrummaster_groom_sprint.yml",
     "claude-md-binding-canary.yml",
+    # #3919's grooming workflow. Two branches added it independently, the
+    # de-duplication of that (#3927) removed both copies, and `collect()`
+    # iterates this list directly -- so every grooming round was dropped from
+    # the retrospective rather than double-counted. Exactly one entry;
+    # `test_no_claude_invoking_workflow_is_missing_from_the_list` and
+    # `test_listed_workflows_are_not_stale_duplicates` pin both directions.
+    "scrummaster_groom_sprint.yml",
 ]
 
 # Step names that ARE a Claude invocation. Deliberately stricter than

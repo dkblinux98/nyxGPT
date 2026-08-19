@@ -37,10 +37,10 @@ Quick reference of all 82 available endpoints:
 | `/api/v1/admin/access` | POST | Update API-key access configuration / rotate key |
 | `/api/v1/analytics/usage` | GET | Aggregated chat usage analytics (tokens, sessions, by model/day) |
 | `/api/v1/analytics/export` | GET | Export recorded usage events (json/csv) |
-| `/api/v1/canary/status` | GET | Canary rollout status (weight, stable/canary health + version, mode, live metrics, history) |
+| `/api/v1/canary/status` | GET | Canary rollout status (weight, stable/canary health + version, mode, per-track metrics, history) |
 | `/api/v1/canary/deploy` | POST | Build the current checkout into a versioned image and deploy it to canary only |
 | `/api/v1/canary/start` | POST | Start a canary rollout at an initial traffic weight |
-| `/api/v1/canary/evaluate` | POST | Check live error-rate/latency metrics against thresholds; auto-rollback on regression |
+| `/api/v1/canary/evaluate` | POST | Check the canary track's error-rate/latency metrics against thresholds; auto-rollback on regression |
 | `/api/v1/canary/promote` | POST | Increase the canary's traffic share by a step |
 | `/api/v1/canary/rollback` | POST | Cut all traffic back to nyxgpt-api-stable |
 | `/api/v1/self-heal/status` | GET | Self-heal watchdog status (per-component health, recent events) |
@@ -178,7 +178,7 @@ Prometheus text exposition format metrics for scraping. Unauthenticated
 | `nyxgpt_selfheal_last_recovery_timestamp` | Gauge | `service` | Unix timestamp of the last successful self-heal restart, by service |
 | `nyxgpt_canary_rollout_active` | Gauge | — | `api`-only: whether a canary rollout is currently in progress (1) or idle (0) |
 | `nyxgpt_canary_weight_percent` | Gauge | — | `api`-only: current canary traffic weight percentage (0-100) |
-| `nyxgpt_canary_evaluations_total` | Counter | `result` | `api`-only: canary metric evaluations, by result (`pass`/`insufficient_data`/`regression`) |
+| `nyxgpt_canary_evaluations_total` | Counter | `result` | `api`-only: canary metric evaluations, by result (`pass`/`insufficient_data`/`unattributable`/`regression`) |
 | `nyxgpt_canary_events_total` | Counter | `action`, `result` | `api`-only: canary lifecycle events (`deploy`/`start`/`promote`/`rollback`), by outcome |
 | `nyxgpt_canary_track_version_info` | Gauge | `track`, `version` | `api`-only: 1 for the (track, version) currently observed on that track's Deployment |
 | `nyxgpt_canary_component_rollout_active` | Gauge | `component` | Whether a canary rollout is currently in progress (1) or idle (0), by component (#3419) |
@@ -1076,8 +1076,8 @@ saved query, both linked directly from `/admin/canary`.
 ### `GET /api/v1/canary/status`
 
 Return rollout progress, stable/canary health + running version, the
-currently detected deployment mode, live error-rate/latency metrics, and
-recent action history. `?component=api|web` (default `api`) selects the
+currently detected deployment mode, per-track error-rate/latency metrics,
+and recent action history. `?component=api|web` (default `api`) selects the
 component.
 
 **Response:**
@@ -1092,7 +1092,28 @@ component.
   "resting_replicas": 1,
   "stable": { "state": "healthy", "message": "nyxgpt-api-stable healthy (3/3 ready)", "version": "2.0.0-abc1234" },
   "canary": { "state": "healthy", "message": "nyxgpt-api-canary healthy (1/1 ready)", "version": "2.0.0-def5678" },
-  "metrics": { "total_requests": 120, "error_rate_percent": 0.83, "p95_latency_ms": 340.5 },
+  "metrics": {
+    "track": "canary",
+    "attributable": true,
+    "reason": "",
+    "source": "pods",
+    "pods_ready": 1,
+    "pods_scraped": 1,
+    "total_requests": 120,
+    "error_rate_percent": 0.83,
+    "p95_latency_ms": 340.5
+  },
+  "stable_metrics": {
+    "track": "stable",
+    "attributable": true,
+    "reason": "",
+    "source": "pods",
+    "pods_ready": 3,
+    "pods_scraped": 3,
+    "total_requests": 4820,
+    "error_rate_percent": 0.02,
+    "p95_latency_ms": 310.1
+  },
   "history": [{ "action": "start", "weight_percent": 10, "ts": 1730000000.0 }],
   "available": true,
   "unavailable_reason": null,
@@ -1137,6 +1158,24 @@ Kubernetes namespace — never an inference from a *failed* kubectl call.
 Kubernetes probe timed out, and `mode_message` says so rather than claiming
 `"native"`, which would assert something about the substrate that nothing
 managed to check (#3858).
+
+`metrics` is the **canary track's** own vitals -- read from the Pods
+labelled `track=canary`, never from the counters of the process answering
+this call (#3829) -- and `stable_metrics` the stable track's. Branch on
+`attributable`: when it is `false` the numeric fields are zeros meaning
+*unknown*, not *measured zero*, and `reason` says which it is (no ready
+Pods, no readable `/metrics`, a component that exports none, no cluster).
+`pods_scraped`/`pods_ready` are how many of the track's ready Pods the
+numbers came from. `/health` and `/metrics` requests are excluded from the
+counts so kubelet probes and Prometheus scrapes cannot read as canary
+traffic. `stable_metrics` is only measured while a rollout is active --
+otherwise it reports `attributable: false` with that as the reason. Outside
+Kubernetes mode neither track is measured at all: both report
+`attributable: false` naming the mode, for the same reason the per-track
+health reads are skipped there (#3858) -- there are no Pods to attribute
+traffic to, and dialing for them would spend a request thread on a cluster
+this deployment does not use. See
+[kubernetes.md](kubernetes.md#metrics-source-the-canary-tracks-own-pods-3829).
 
 ### `POST /api/v1/canary/deploy`
 
@@ -1190,11 +1229,14 @@ to (`resting_replicas`).
 
 ### `POST /api/v1/canary/evaluate`
 
-Compare live error-rate/p95-latency metrics (from `/api/v1/metrics`) against
-the configured `[canary]` thresholds. Automatically rolls back if either is
-breached, or reports "insufficient data" (still `200`) if too few requests
-have been observed. Returns `409` if there is no rollout in progress or a
-regression triggered an automatic rollback.
+Compare the **canary track's** error-rate/p95-latency metrics -- read from
+the Pods labelled `track=canary`, not from the process serving this call
+(#3829) -- against the configured `[canary]` thresholds. Automatically rolls
+back if either is breached, or holds (still `200`) when the canary's traffic
+cannot be attributed at all or fewer than `min_requests_for_evaluation` of
+its requests have been observed. A hold never reports "safe to promote".
+Returns `409` if there is no rollout in progress or a regression triggered
+an automatic rollback.
 
 **Request (optional):**
 
@@ -1205,13 +1247,17 @@ regression triggered an automatic rollback.
 **Response:**
 
 ```json
-{ "ok": true, "message": "Metrics within thresholds (error_rate=0.83%, p95=340.50ms); safe to promote" }
+{ "ok": true, "message": "Canary-track metrics within thresholds over 120 requests (error_rate=0.83%, p95=340.50ms); safe to promote" }
 ```
 
 ### `POST /api/v1/canary/promote`
 
 Increase the canary's traffic share by a step. Refuses (`409`) to shift more
-traffic to the canary unless it is currently healthy. At 100%, instead of
+traffic to the canary unless it is currently healthy **and its track has
+actually served requests** -- a build no request has reached has not been
+canaried (#3829). Send `{"force": true}` to promote anyway, for a cluster
+that is simply idle; components whose Pods export no `/metrics` (`web`) are
+not traffic-gated and say so in the result message. At 100%, instead of
 leaving the canary holding all the traffic, this copies the canary's image
 version onto `nyxgpt-api-stable`, waits for stable's rollout to become
 healthy, then scales canary back to 0 and stable back to the replica count
@@ -1224,11 +1270,13 @@ back. Returns `409` if there is no rollout in progress.
 **Request:**
 
 ```json
-{ "step_percent": 25, "component": "api" }
+{ "step_percent": 25, "component": "api", "force": false }
 ```
 
 `step_percent` is optional (default: `[canary] step_percent`, `25`).
-`component` is optional (default `"api"`; `"api"` or `"web"`).
+`component` is optional (default `"api"`; `"api"` or `"web"`). `force` is
+optional (default `false`) and only bypasses the no-traffic gate above --
+never the health gate.
 
 Each step re-plans the pool for the new weight instead of re-slicing a fixed
 one, so a step needing more granularity grows it and one needing less lets it
