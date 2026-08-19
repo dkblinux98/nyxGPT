@@ -1268,9 +1268,16 @@ brew tap dkblinux98/nyxgpt
 brew tap-trust dkblinux98/nyxgpt   # one-time per machine (docs/homebrew.md)
 brew install nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc
 
-brew services start nyxgpt-api@3.0.0rc
-brew services start nyxgpt-web@3.0.0rc
+nyxgpt up
 ```
+
+`nyxgpt up`, not `brew services start` -- this block used to end with the
+per-service commands, which is the sequence the owner ran in #3854 and which
+produced an acceptance candidate with no Ollama, no Cassandra and no
+observability. `brew services start` starts the one service it names; only
+`nyxgpt up` reaches `ops.install()`, which is what installs Ollama, creates
+the `nyxgpt-cassandra` container and brings the observability profiles up. It
+starts the Homebrew services too, so restart-at-login still works.
 
 **The stable formulas are never touched.** Homebrew has no pre-release
 semantics, so `brew install nyxgpt-api` staying on the latest stable release
