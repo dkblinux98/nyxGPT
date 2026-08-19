@@ -1774,3 +1774,363 @@ def test_brew_smoke_runs_a_no_op_subcommand_on_a_stackless_machine(job_name):
     script = _job_run_script(_macos_smoke_workflow()["jobs"][job_name])
 
     assert "nyxgpt ops status" in script
+
+
+# --- The build-interpreter preflight (#3814) --------------------------------
+#
+# The root cause under #3753 and #3788, and the reason both were patched
+# against a guess: the owner's `python@3.12` keg could not dlopen its own
+# `pyexpat`. `plistlib` imports it, so `platform.mac_ver()` answered empty
+# (#3753); pip's vendored distlib reaches it through `xmlrpc.client`, so pip
+# swallowed the dlopen error and re-raised `No module named
+# 'pip._internal.operations.install.wheel'` (#3788). One broken `.so`, two
+# defects that looked unrelated, three release candidates spent on pip.
+#
+# nyxGPT cannot repair a Homebrew bottle. What the formulas now do is refuse
+# to build on a broken interpreter and say why. Like the shim above, the check
+# is Python inside a Ruby heredoc, so these tests pull the shipped source back
+# out and *run* it rather than grepping for a spelling of it.
+
+_DLOPEN_ERROR = (
+    "dlopen(/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/"
+    "Versions/3.12/lib/python3.12/lib-dynload/pyexpat.cpython-312-darwin.so, 0x0002): "
+    "Symbol not found: _XML_SetAllocTrackerActivationThreshold"
+)
+
+
+def _preflight_source(which: str = "local") -> str:
+    return build_homebrew_artifacts.extract_interpreter_preflight(
+        _API_FORMULAS[which].read_text(encoding="utf-8")
+    )
+
+
+def _preflight_script(tmp_path, which: str = "local") -> Path:
+    script = tmp_path / "nyxgpt-interpreter-preflight.py"
+    script.write_text(_preflight_source(which), encoding="utf-8")
+    return script
+
+
+def _broken_pyexpat_path(tmp_path) -> Path:
+    """A `sys.path` entry that reproduces the owner's interpreter.
+
+    Shadowing `xml.parsers.expat` with a module that raises the owner's dyld
+    error is the closest a Linux test runner gets to a keg whose pyexpat
+    resolves the wrong libexpat -- and it reproduces the property that
+    matters, which is that `plistlib` goes down with it.
+    """
+    root = tmp_path / "broken-interpreter"
+    (root / "xml" / "parsers").mkdir(parents=True)
+    (root / "xml" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "xml" / "parsers" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "xml" / "parsers" / "expat.py").write_text(
+        f"raise ImportError({_DLOPEN_ERROR!r})\n", encoding="utf-8"
+    )
+    return root
+
+
+def _run_preflight(script: Path, broken: Path | None = None):
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+    if broken is not None:
+        env["PYTHONPATH"] = str(broken)
+    return subprocess.run(
+        [sys.executable, str(script)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+    )
+
+
+@pytest.mark.parametrize("which", sorted(_API_FORMULAS))
+def test_the_embedded_preflight_is_valid_python(which):
+    """Same exposure as the shim: nothing else in the repo compiles it."""
+    compile(_preflight_source(which), "<interpreter preflight>", "exec")
+
+
+def test_both_api_formulas_embed_the_same_preflight():
+    """One check in two files. A drift here is a check on one channel only."""
+    assert _preflight_source("local") == _preflight_source("tap-template")
+
+
+def test_the_preflight_passes_on_an_interpreter_that_works(tmp_path):
+    """It has to say yes as well as no, or it blocks every healthy install."""
+    done = _run_preflight(_preflight_script(tmp_path))
+
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert build_homebrew_artifacts.PREFLIGHT_OK in done.stdout
+
+
+def test_the_preflight_refuses_an_interpreter_that_cannot_load_pyexpat(tmp_path):
+    """The owner's machine, and everything they asked the message to carry.
+
+    Not "an import failed": the keg being refused, the dyld error verbatim
+    (that string is what makes the fault searchable), and what to do about it.
+    """
+    done = _run_preflight(_preflight_script(tmp_path), _broken_pyexpat_path(tmp_path))
+    report = done.stdout
+
+    assert done.returncode != 0
+    assert build_homebrew_artifacts.PREFLIGHT_OK not in report
+    # Both symptoms named, because that is what makes the two issues one.
+    assert "import xml.parsers.expat" in report
+    assert "import plistlib" in report
+    # The error, quoted rather than summarised.
+    assert _DLOPEN_ERROR in report
+    # The interpreter and the keg it lives in.
+    assert sys.executable in report
+    assert os.path.realpath(getattr(sys, "base_prefix", sys.prefix)) in report
+    # The operator action. The macOS update is the fix that worked on the
+    # reporting machine; the reinstall is the other case, and the message has
+    # to keep saying which is which -- `brew reinstall --build-from-source`
+    # was tried there and could not build pyexpat against the newer SDK.
+    assert "Update macOS" in report
+    assert "brew reinstall python@3.12" in report
+    assert "--build-from-source" in report
+
+
+def test_the_preflight_reports_the_mac_ver_symptom_it_explains(tmp_path):
+    """#3753's empty `mac_ver()` printed next to its cause, in one report."""
+    done = _run_preflight(_preflight_script(tmp_path), _broken_pyexpat_path(tmp_path))
+
+    assert "mac_ver():   ('', ('', '', ''), '')" in done.stdout
+
+
+def test_the_preflight_survives_an_interpreter_broken_in_an_unforeseen_way(tmp_path):
+    """Its whole job is to run where the stdlib is unreliable.
+
+    Only `os` and `sys` are imported at module level for that reason; anything
+    else it needs is imported inside a function, so a machine that cannot
+    import `subprocess` or `platform` still gets a report rather than a
+    traceback about the checker.
+    """
+    source = _preflight_source()
+    module_level = [
+        line
+        for line in source.splitlines()
+        if line.startswith("import ") or line.startswith("from ")
+    ]
+
+    assert module_level == ["import os", "import sys"]
+
+
+@pytest.mark.parametrize("which", sorted(_API_FORMULAS))
+def test_the_preflight_runs_before_anything_is_built(which):
+    """After dependency resolution (it is inside `install`), before the venv.
+
+    Homebrew resolves and installs dependencies before it calls `install`, so
+    this is the interpreter the build will really use -- which is the
+    placement constraint the owner named: a dependency upgrade during
+    `brew install` must not be able to swap the interpreter out from under
+    the check.
+    """
+    text = _API_FORMULAS[which].read_text(encoding="utf-8")
+    recipe = _venv_recipe(text)
+    refusal = next(index for index, line in enumerate(recipe) if line.startswith("odie <<~EOS"))
+
+    assert recipe.index('preflight = buildpath/"nyxgpt-interpreter-preflight.py"') < refusal
+    assert refusal < recipe.index(_WITHOUT_PIP)
+    assert refusal < recipe.index(_PIP_DOWNLOAD)
+
+
+@pytest.mark.parametrize("which", sorted(_API_FORMULAS))
+def test_the_formula_accepts_only_the_line_the_preflight_prints(which):
+    """The Ruby and the Python have to agree, and it has to fail closed.
+
+    Anything other than the ok line refuses -- including no output at all,
+    which is what a python that cannot start produces. A check that treats
+    "no answer" as a pass is not a check.
+    """
+    text = _API_FORMULAS[which].read_text(encoding="utf-8")
+    ok = build_homebrew_artifacts.PREFLIGHT_OK
+
+    assert f'preflight_report.include?("{ok}")' in text
+    assert ok in _preflight_source(which)
+    # The empty case is turned into a refusal explicitly rather than left to
+    # `include?` on an empty string, so the operator is told what happened.
+    assert "produced no output at all" in text
+
+
+@pytest.mark.parametrize("which", sorted(_API_FORMULAS))
+def test_the_preflight_heredoc_is_single_quoted(which):
+    """`<<~PY` would interpolate `#{}` and expand escapes inside the Python."""
+    text = _API_FORMULAS[which].read_text(encoding="utf-8")
+    stanza = text[text.index("nyxgpt-interpreter-preflight: begin") :]
+    stanza = stanza[: stanza.index("nyxgpt-interpreter-preflight: end")]
+
+    assert "<<~'PY'" in stanza
+    assert "<<~PY" not in stanza
+
+
+@pytest.mark.parametrize("channel", ["stable", "rc"])
+def test_stamped_formulas_ship_the_preflight(built_artifacts, built_rc_artifacts, channel):
+    """What is published, not just what is in the templates."""
+    out_dir, filename = {
+        "stable": (built_artifacts, "nyxgpt-api.rb"),
+        "rc": (built_rc_artifacts, "nyxgpt-api@9.9.9rc.rb"),
+    }[channel]
+    stamped = (out_dir / filename).read_text(encoding="utf-8")
+
+    assert build_homebrew_artifacts.has_interpreter_preflight(stamped)
+    assert build_homebrew_artifacts.extract_interpreter_preflight(stamped) == _preflight_source(
+        "tap-template"
+    )
+
+
+def test_publishing_refuses_an_api_formula_that_lost_its_preflight():
+    """The release build is the last place this can still be cheap.
+
+    Keyed on "does this formula start Homebrew's python", not on the file
+    name: if nyxgpt-web ever grows a step that runs the brewed interpreter,
+    it inherits the same exposure and the same requirement.
+    """
+    without = build_homebrew_artifacts.strip_interpreter_preflight(
+        _API_FORMULAS["local"].read_text(encoding="utf-8")
+    )
+
+    with pytest.raises(ValueError, match="no interpreter preflight"):
+        build_homebrew_artifacts.validate_interpreter_preflight(without, "nyxgpt-api")
+
+
+def test_publishing_refuses_a_formula_whose_preflight_is_broken():
+    """A heredoc typo in the check would otherwise ship to a Mac."""
+    broken = (
+        _API_FORMULAS["local"]
+        .read_text(encoding="utf-8")
+        .replace("def _failures():", "def _failures(:")
+    )
+
+    with pytest.raises(ValueError, match="not valid Python"):
+        build_homebrew_artifacts.validate_build_shim(broken, "nyxgpt-api")
+
+
+def test_stripping_the_preflight_leaves_the_rest_of_the_recipe_alone():
+    """The macOS smoke job installs this to prove the negative control.
+
+    It has to be the rc12 recipe minus one check -- not a differently broken
+    formula, which would prove nothing about what the check is worth.
+    """
+    text = _API_FORMULAS["local"].read_text(encoding="utf-8")
+    without = build_homebrew_artifacts.strip_interpreter_preflight(text)
+
+    assert not build_homebrew_artifacts.has_interpreter_preflight(without)
+    # Everything else the recipe does survives.
+    assert build_homebrew_artifacts.has_build_shim(without)
+    assert _WITHOUT_PIP in without
+    assert _PIP_DOWNLOAD in without
+    assert 'bin.install_symlink venv/"bin/nyxgpt"' in without
+
+
+def test_the_web_formula_starts_no_brewed_python_so_it_needs_no_preflight():
+    """The web keg's exposure to #3814, stated as a checked fact.
+
+    It builds with npm, and its service wrapper parses config.ini with
+    `/usr/bin/python3` -- Apple's, which ships with the OS and so cannot skew
+    against it. A `python@3.12` bottle built for a newer macOS minor release
+    is therefore not this keg's problem. If that ever changes, this fails and
+    the web formula needs the preflight too.
+    """
+    web = (REPO_ROOT / "homebrew" / "nyxgpt-web.rb").read_text(encoding="utf-8")
+    template = (REPO_ROOT / "homebrew" / "tap" / "nyxgpt-web.rb.tmpl").read_text(encoding="utf-8")
+
+    for text in (web, template):
+        assert not build_homebrew_artifacts.builds_with_brewed_python(text)
+        assert "python@3.12" not in text
+        build_homebrew_artifacts.validate_interpreter_preflight(text, "nyxgpt-web")
+
+
+@pytest.mark.parametrize("which", sorted(_API_FORMULAS))
+def test_the_shim_declines_to_repair_a_broken_interpreter(which, monkeypatch):
+    """An empty `mac_ver()` is a symptom, and repairing it silently is what
+    carried three candidates past a broken keg (#3814).
+
+    The formula's preflight refuses that build before this file is written at
+    all; this is the second line, for a build that somehow reached it.
+    """
+    import platform
+
+    empty = ("", ("", "", ""), "")
+    monkeypatch.setattr(platform, "mac_ver", lambda *a, **k: empty)
+    # `import plistlib` raises with None in sys.modules -- the same shape as a
+    # plistlib whose pyexpat will not load.
+    monkeypatch.setitem(sys.modules, "plistlib", None)
+
+    namespace = _shim_namespace(which)
+    namespace["_repair_mac_ver"]()
+
+    # Not repaired: the install has to fail on the interpreter, not on one of
+    # its symptoms.
+    assert platform.mac_ver() == empty
+
+
+def test_the_shim_still_repairs_a_healthy_interpreter(monkeypatch):
+    """The case the shim was actually written for is left working.
+
+    An unreadable SystemVersion.plist on an interpreter that imports fine is
+    a build-environment quirk, not a broken keg, and pip still cannot start
+    without a version.
+    """
+    import platform
+
+    monkeypatch.setattr(platform, "mac_ver", lambda *a, **k: ("", ("", "", ""), ""))
+
+    _shim_namespace()["_repair_mac_ver"]()
+
+    assert _truststore_line_22(platform.mac_ver()[0]) >= (10, 16)
+
+
+def test_macos_smoke_injects_the_broken_interpreter_the_runner_cannot_have():
+    """A hosted runner's bottle matches its OS, so pyexpat imports fine there.
+
+    An install-only job would pass on this runner whether or not the preflight
+    works -- the same green-by-luck shape that shipped rc5, rc11 and rc12. So
+    the condition is forced and both halves are proved with the real
+    `brew install`.
+    """
+    steps = _macos_smoke_workflow()["jobs"]["keg-install"]["steps"]
+    script = next(
+        str(step["run"]) for step in steps if "broken pyexpat" in str(step.get("name", ""))
+    )
+
+    # Injected at the realpath every import route resolves to -- #3788's third
+    # red round is the reason that word is load-bearing here.
+    assert "os.path.realpath(pyexpat.__file__)" in script
+    # An unloadable file rather than a missing one: the owner's fault came out
+    # of dyld, and a missing file raises ModuleNotFoundError instead.
+    assert "not a mach-o file" in script
+    # The fault has to be shown to have fired before anything is inferred.
+    assert "condition was not created" in script
+    # The negative control: the same install with the check taken out.
+    assert "strip_interpreter_preflight" in script
+    assert "the preflight was not actually removed" in script
+    # And the refusal has to carry what the operator acts on.
+    assert "refusing to build against" in script
+    assert "brew reinstall python@3.12" in script
+    # ...having stopped before it built anything.
+    assert "the preflight is not stopping the build" in script
+    # Restored, since the steps after this one install with this same keg.
+    assert "trap restore_the_machine EXIT" in script
+
+
+def test_macos_smoke_reads_the_preflight_out_of_the_formula_it_ships():
+    """A copy in the workflow could pass while the shipped formula's is broken."""
+    steps = _macos_smoke_workflow()["jobs"]["keg-install"]["steps"]
+    script = next(
+        str(step["run"]) for step in steps if "broken pyexpat" in str(step.get("name", ""))
+    )
+
+    assert "from build_homebrew_artifacts import extract_interpreter_preflight" in script
+
+
+def test_the_published_tap_job_installs_both_formulas_the_owner_types():
+    """#3814 AC4: the owner's command line names two formulas, not one.
+
+    `include_web` gates the *checkout* build (a full Next.js build on a macOS
+    runner, off by default on cost), so the job that runs the owner's literal
+    path is the one that has to install both -- and nothing pinned that until
+    this test.
+    """
+    script = _job_run_script(_macos_smoke_workflow()["jobs"]["published-tap"])
+
+    assert 'brew install --verbose "${TAP}/nyxgpt-api@${RELEASE}rc"' in script
+    assert 'brew install --verbose "${TAP}/nyxgpt-web@${RELEASE}rc"' in script
