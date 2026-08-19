@@ -39,7 +39,15 @@ INSTALL_STEP_FUNCS: tuple[str, ...] = (
     "_sync_packaged_resources",
     "_clear_intentional_stops",
     "_install_config",
+    # Was missing until #3853: #3859 added it to `ops.install()` without
+    # adding it here, so `test_install_step_list_is_fully_enumerated` was red
+    # on the release branch and this step ran unpatched in every install test.
+    "_report_orphaned_launchd_jobs",
     "_reconcile_install_mode",
+    # Stops an api/web brew service belonging to a *different* formula than
+    # the one this install owns -- the leftover keg's `keep_alive` service
+    # that kept winning the :8000 race on the owner's Mac (#3853).
+    "_stop_superseded_brew_services",
     "_ensure_docker_engine",
     "migrate_legacy_volumes",
     "_reconcile_phantom_compose_app_containers",
