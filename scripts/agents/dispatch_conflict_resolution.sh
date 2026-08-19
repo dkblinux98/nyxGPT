@@ -119,7 +119,7 @@ done
 if [[ -z "$ISSUE" ]]; then
   # The link, not the sentence (owner rule, 2026-08-19): the native edge
   # first, the body convention only as a fallback.
-  ISSUE="$(pr_linked_issue "$PR")"
+  ISSUE="$(pr_linked_issue "$PR" || true)"
 fi
 
 echo "[conflict] PR #${PR}: state=${pr_state}, mergeable=${pr_mergeable}, head=${pr_head}, base=${pr_base}, issue=${ISSUE:-none}" >&2

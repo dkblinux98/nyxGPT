@@ -2252,8 +2252,12 @@ open_blocked_by_issues() {
 # PRs opened before this existed. Prints nothing when the PR closes no issue
 # -- which is a legitimate state (a machinery PR with no issue behind it),
 # and the caller decides what that means.
+# Exit status carries the distinction the output cannot: 0 means "answered"
+# (with the issue number on stdout, or nothing when the PR genuinely closes
+# no issue), non-zero means "could not read". They must not be conflated --
+# see the response-into-a-variable note below.
 pr_linked_issue() {
-  local pr="$1" q num
+  local pr="$1" q resp num
 
   q='query($owner:String!, $name:String!, $pr:Int!){
     repository(owner:$owner, name:$name){
@@ -2262,7 +2266,19 @@ pr_linked_issue() {
       }
     }
   }'
-  num="$(graphql "$q" -f owner="$REPO_OWNER" -f name="$REPO_NAME" -F pr="$pr" 2>/dev/null \
+  # Response into a variable, not `graphql ... | jq ...` (V-043): in a
+  # pipeline the wrapper's failure is the first segment's status, which the
+  # pipeline discards, so a rate-limited or errored read returns empty and
+  # exit 0. Here that is not a cosmetic loss -- empty means "this PR closes
+  # no issue", and since #3935 that answer makes the merge path skip every
+  # issue-side step. A transient GraphQL failure would silently merge a
+  # linked PR without closing its issue, moving its lane, or handing it to
+  # the owner. Fail loudly instead and let the caller decide.
+  if ! resp="$(graphql "$q" -f owner="$REPO_OWNER" -f name="$REPO_NAME" -F pr="$pr" 2>/dev/null)"; then
+    _warn "pr_linked_issue: GraphQL read failed for PR #${pr}; cannot tell 'no issue' from 'no answer'."
+    return 1
+  fi
+  num="$(printf '%s' "$resp" \
     | jq -r '.data.repository.pullRequest.closingIssuesReferences.nodes[0].number // empty' 2>/dev/null)"
   if [[ -n "$num" && "$num" != "null" ]]; then
     echo "$num"
@@ -2270,8 +2286,12 @@ pr_linked_issue() {
   fi
 
   # Fallback: the body convention. Still read, never required.
-  gh api "repos/${REPO_OWNER}/${REPO_NAME}/pulls/${pr}" --jq '.body // ""' 2>/dev/null \
-    | grep -oiE 'closes #[0-9]+' | head -1 | grep -oE '[0-9]+' || true
+  local body
+  if ! body="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/pulls/${pr}" --jq '.body // ""' 2>/dev/null)"; then
+    _warn "pr_linked_issue: body read failed for PR #${pr}; cannot tell 'no issue' from 'no answer'."
+    return 1
+  fi
+  printf '%s' "$body" | grep -oiE 'closes #[0-9]+' | head -1 | grep -oE '[0-9]+' || true
 }
 
 # -------------------------

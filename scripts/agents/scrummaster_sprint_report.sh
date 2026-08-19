@@ -176,7 +176,9 @@ if [[ "$(echo "$in_review_issues" | jq 'length')" -gt 0 ]]; then
     [[ -n "$pr_num" ]] || continue
     body="$(echo "$pr_bodies_json" | jq -r --argjson n "$pr_num" '.[] | select(.number == $n) | .body // ""')"
     # The link, not the sentence (owner rule, 2026-08-19).
-    issue_num="$(pr_linked_issue "$pr_num")"
+    # `|| true`: a report is best-effort per PR -- one unreadable link
+    # should skip that PR, not abort the whole sprint report.
+    issue_num="$(pr_linked_issue "$pr_num" || true)"
     [[ -n "$issue_num" ]] || continue
     is_in_review="$(jq --argjson n "$issue_num" 'index($n) != null' <<<"$in_review_issues")"
     [[ "$is_in_review" == "true" ]] || continue

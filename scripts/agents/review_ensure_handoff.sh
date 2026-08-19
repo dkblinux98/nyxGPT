@@ -128,7 +128,12 @@ fi
 
 # The link, not the sentence (owner rule, 2026-08-19): the native
 # closing-issue edge first, the body convention only as a fallback.
-ISSUE="$(pr_linked_issue "$PR")"
+if ! ISSUE="$(pr_linked_issue "$PR")"; then
+  # Distinct from "closes no issue": the lookup itself failed. Retrying the
+  # backstop later can still succeed, whereas an issue-less PR never will.
+  echo "::error::PR #${PR}: could not read the linked issue (API failure) -- not concluding that it closes none" >&2
+  exit 1
+fi
 if [[ -z "$ISSUE" ]]; then
   echo "::error::PR #${PR} closes no issue -- cannot resolve the issue to hand off to" >&2
   exit 1

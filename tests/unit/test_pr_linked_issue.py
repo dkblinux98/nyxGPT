@@ -266,3 +266,57 @@ class TestTheApprovePathCanRunDuringTheTransition:
         assert "grep -q 'HAS_ISSUE' scripts/agents/review_accept_and_merge.sh" in step
         # And it still calls the real script in every other case.
         assert "bash scripts/agents/review_accept_and_merge.sh '$PR' '$ISSUE'" in step
+
+
+class TestAFailedReadIsNotAnAnswer:
+    """ "No issue" and "could not tell" must not be the same result.
+
+    `pr_linked_issue` piped `graphql` straight into `jq`, so the wrapper's
+    exit status was the pipeline's first segment and got discarded (V-043):
+    a rate-limited or errored read returned empty output and exit 0. Empty
+    means "this PR closes no issue", and since #3935 that answer makes the
+    merge path skip every issue-side step -- so one transient GraphQL
+    failure would merge a linked PR without closing its issue, moving its
+    lane, or handing it to the owner. Silently.
+    """
+
+    def test_the_helper_does_not_pipe_the_graphql_call(self):
+        body = LIB.read_text(encoding="utf-8")
+        fn = body.split("pr_linked_issue() {", 1)[1].split("\n}", 1)[0]
+        assert "resp=" in fn, "the response must land in a variable first"
+        assert "graphql " in fn
+        for line in fn.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            if "graphql " in stripped and stripped.endswith("\\"):
+                # a continuation is fine; a pipe into jq on the same
+                # logical command is what discards the status
+                assert "| jq" not in stripped
+
+    def test_a_failed_read_returns_non_zero(self):
+        body = LIB.read_text(encoding="utf-8")
+        fn = body.split("pr_linked_issue() {", 1)[1].split("\n}", 1)[0]
+        assert "return 1" in fn, "a failed read must be distinguishable from 'no issue'"
+
+    @pytest.mark.parametrize(
+        "script",
+        [
+            "review_ensure_handoff.sh",
+            "dispatch_conflict_resolution.sh",
+            "scrummaster_sprint_report.sh",
+        ],
+    )
+    def test_every_caller_handles_the_failure_status(self, script):
+        body = (SCRIPTS / script).read_text(encoding="utf-8")
+        calls = [
+            ln
+            for ln in body.splitlines()
+            if "pr_linked_issue" in ln and "#" not in ln.split("pr_linked_issue")[0]
+        ]
+        assert calls, f"{script} no longer calls pr_linked_issue -- update this test"
+        for call in calls:
+            # Either the failure is caught (`if ! VAR=...`) or explicitly
+            # tolerated (`|| true`). A bare assignment under `set -e` would
+            # abort mid-run with no explanation.
+            assert ("if ! " in call) or ("|| true" in call), call
