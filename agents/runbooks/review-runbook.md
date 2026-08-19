@@ -583,8 +583,8 @@ for both verdicts:
   of that, the review run's own final step
   (`scripts/agents/review_ensure_handoff.sh`) waits ~4 minutes for that chain
   to leave a footprint on the PR and, if none appears, executes the same
-  routing decision itself: resolve the linked issue from the PR body's
-  its linked issue, then loop / huddle / escalate per §6b.
+  routing decision itself: resolve the PR's linked issue, then loop / huddle
+  / escalate per §6b.
 
   Routing is not duplicated — the backstop calls the same
   `huddle_routing_decision` in `scripts/agents/lib/sprint_calc.py` the primary

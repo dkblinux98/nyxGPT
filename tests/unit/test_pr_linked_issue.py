@@ -205,3 +205,66 @@ class TestAnIssuelessPRCanStillBeMerged:
         assert body.count('"$HAS_ISSUE"') >= 4
         # And the skip is recorded where somebody reads it, not just in logs.
         assert "no issue-side bookkeeping ran" in body
+
+
+class TestAlreadyHandledMatchesNoStep:
+    """`ALREADY_HANDLED` is a sentinel, and a negation quietly recruited it.
+
+    `parse_decision` resolves a duplicated trigger to `ALREADY_HANDLED`, and
+    the workflow documents it as a value that matches no downstream step.
+    The no-issue stop step was first written `decision != 'APPROVE'`, which
+    matched it — so on an issue-less PR the structured-comment fallback run
+    would post "cannot execute ALREADY_HANDLED" onto a PR the primary path
+    had just merged, and redden the run. That is the #3728/#3733
+    false-escalation shape, re-created by a negation rather than a list.
+
+    Pinned as an invariant over every step, not just the one that broke it:
+    the next `!=` will fail here instead of in production.
+    """
+
+    def _step_conditions(self) -> list[tuple[str, str]]:
+        body = (WORKFLOWS / "review_agent_auto_review.yml").read_text(encoding="utf-8")
+        out = []
+        for chunk in body.split("      - name: ")[1:]:
+            name = chunk.splitlines()[0].strip()
+            head = chunk.split("run:", 1)[0]
+            if "steps.parse_decision.outputs.decision" in head:
+                out.append((name, head))
+        return out
+
+    def test_every_decision_gate_names_its_decisions(self):
+        gates = self._step_conditions()
+        assert gates, "no decision-gated steps found -- the parser drifted"
+        for name, head in gates:
+            assert "decision != " not in head, (
+                f"step {name!r} gates on a negation of the decision, which also "
+                "matches the ALREADY_HANDLED sentinel; name the decisions it is for"
+            )
+
+    def test_no_step_is_gated_on_already_handled(self):
+        body = (WORKFLOWS / "review_agent_auto_review.yml").read_text(encoding="utf-8")
+        for chunk in body.split("      - name: ")[1:]:
+            head = chunk.split("run:", 1)[0]
+            assert "'ALREADY_HANDLED'" not in head
+
+
+class TestTheApprovePathCanRunDuringTheTransition:
+    """The change has to be able to merge itself.
+
+    `Execute merge` runs the PR's copy of the workflow against a
+    `ref: RELEASE_BRANCH` checkout, so it calls the BASE's
+    `review_accept_and_merge.sh` — which rejects an empty issue until this
+    branch lands. Without a guard, an approved issue-less PR exits 2 and
+    waits for a human, which is the incident this whole change removes.
+    """
+
+    def test_the_merge_step_carries_a_self_retiring_transition_guard(self):
+        body = (WORKFLOWS / "review_agent_auto_review.yml").read_text(encoding="utf-8")
+        step = body.split("- name: Execute merge (if approved)", 1)[1]
+        step = step.split("      - name: ", 1)[0]
+        # Guarded on BOTH conditions: no issue, and a base script that
+        # predates the guard. Either alone would fork behavior permanently.
+        assert '-z "$ISSUE"' in step
+        assert "grep -q 'HAS_ISSUE' scripts/agents/review_accept_and_merge.sh" in step
+        # And it still calls the real script in every other case.
+        assert "bash scripts/agents/review_accept_and_merge.sh '$PR' '$ISSUE'" in step
