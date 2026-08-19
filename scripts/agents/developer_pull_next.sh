@@ -152,29 +152,43 @@ board_state="$(
 )"
 
 # ---- the sprint plan: pull order and expected-files (#3908) ----
+# Read ONLY the plan for the sprint being pulled, matched by title (owner
+# rule, 2026-08-18). There is deliberately no "use the most recent plan"
+# fallback: grooming is an owner-initiated planning event, and until the
+# owner has groomed THIS sprint there is no plan to obey. Falling back to a
+# neighbouring sprint's plan would silently impose a stale order and stale
+# expected-files on work it was never written for -- and an unscoped pull
+# (the owner deliberately reaching across the sprint boundary) has no sprint
+# whose plan could apply at all.
+#
+# No plan means no plan-driven behavior: the pull falls back to board order
+# and says so in its reasoning.
 plan_json="$(
-  SPRINT_TITLE="$ACTIVE_SPRINT_TITLE" python3 - <<'PY'
+  SPRINT_TITLE="$ACTIVE_SPRINT_TITLE" python3 - <<'PLANPY'
 import json, os, pathlib, sys
 sys.path.insert(0, "scripts/agents/lib")
 import sprint_plan
 
-root = pathlib.Path("product_management/sprint_planning")
 title = os.environ.get("SPRINT_TITLE", "")
+root = pathlib.Path("product_management/sprint_planning")
 plan = {}
 chosen = None
-if root.is_dir():
-    docs = sorted(root.glob("sprint_*/PLAN.md"))
-    for doc in docs:
+
+if title and root.is_dir():
+    for doc in sorted(root.glob("sprint_*/PLAN.md")):
         parsed = sprint_plan.parse_plan(doc.read_text(encoding="utf-8"))
-        if title and parsed.get("sprint") == title:
+        if parsed.get("sprint") == title:
             plan, chosen = parsed, doc
             break
-    if not plan and docs and not title:
-        chosen = docs[-1]
-        plan = sprint_plan.parse_plan(chosen.read_text(encoding="utf-8"))
+
 print(json.dumps(plan))
-print(f"[pull] plan doc: {chosen or 'none found -- pulling in board order'}", file=sys.stderr)
-PY
+if chosen:
+    print(f"[pull] plan doc: {chosen}", file=sys.stderr)
+elif title:
+    print(f"[pull] no groomed plan for '{title}' -- pulling in board order", file=sys.stderr)
+else:
+    print("[pull] unscoped pull -- no sprint plan applies; pulling in board order", file=sys.stderr)
+PLANPY
 )"
 
 # ---- in-flight footprints: the open PR's real diff, else expected-files ----
@@ -203,11 +217,22 @@ for pr in prs if isinstance(prs, list) else []:
     branch = pr.get("head", {}).get("ref", "")
     body = pr.get("body") or ""
     title = pr.get("title") or ""
+    # Attribute a PR's diff only to the issue it *declares*: the branch name
+    # (the convention every developer_create_branch.sh branch follows) and a
+    # closing keyword in the body. A bare "related to #NNNN" mention used to
+    # count, which donated the whole diff to an issue the PR merely named and
+    # deferred candidates that had no real overlap.
     issues = set()
     import re
-    for text in (branch, body, title):
-        for match in re.findall(r"(?:#|issue[-_/])(\d{3,6})", text):
-            issues.add(int(match))
+    # Both branch conventions in use: `claude/issue-3824-...` and
+    # `feat/3829-slug`. Anchored so a date or sequence elsewhere in the name
+    # (`...-20260818-1255`) cannot be read as an issue number.
+    for pattern in (r"issue[-_](\d{3,6})", r"^[a-z]+/(\d{3,6})-"):
+        match = re.search(pattern, branch)
+        if match:
+            issues.add(int(match.group(1)))
+    for match in re.findall(r"(?:closes|fixes|resolves)\s+#(\d{3,6})", f"{body}\n{title}", re.I):
+        issues.add(int(match))
     if not issues:
         continue
     files = [f.get("filename", "") for f in gh(f"repos/{repo}/pulls/{number}/files?per_page=100")]

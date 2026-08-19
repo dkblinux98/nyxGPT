@@ -9,8 +9,9 @@ Several agent workflows are started by a token in an issue comment:
 | `@improvement` | owner only | `handle_improvement.yml` |
 
 **The queue kick is gone (#3882).** `READY_FOR_NEXT_ISSUE` no longer exists:
-`notify_scrum_ready.yml` runs on a `repository_dispatch` of type
-`dispatch-next-issue`, sent by `dispatch_next_issue` in
+`developer_pull_next_issue.yml` (which was `notify_scrum_ready.yml` until
+#3883 moved the decision to the developer) runs on a `repository_dispatch` of
+type `dispatch-next-issue`, sent by `dispatch_next_issue` in
 `scripts/agents/lib/gh_project.sh`. The comment was never a message to a
 human -- it was one workflow asking another to run, written as text a job
 `if:` then had to pattern-match, which is exactly how #3706 and #3790
