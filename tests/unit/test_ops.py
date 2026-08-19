@@ -14058,7 +14058,7 @@ def test_ops_install_default_verbose_prints_step_announcements(capsys):
         )
     assert rc == 0
     out = capsys.readouterr().out
-    assert "[1/20] sync packaged ops resources..." in out
+    assert "[1/21] sync packaged ops resources..." in out
 
 
 @pytest.mark.unit

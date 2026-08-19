@@ -2129,6 +2129,30 @@ def cli(argv: list[str] | None = None) -> int:
     _add_down_arguments(ops_down)
     _add_quiet_flag(ops_down)
 
+    # The teardown that has to run BEFORE `brew uninstall` (#3859). `down`
+    # stops the stack and leaves it installed -- every service still
+    # registered to come back at the next login; this deregisters it. Homebrew
+    # has no uninstall hook, so nothing else can do it, and an operator who
+    # uninstalls first ends up with services they can no longer name to stop.
+    ops_uninstall = ops_sub.add_parser(
+        "uninstall",
+        help=(
+            "Stop and deregister everything nyxGPT installed (services, LaunchAgents/"
+            "systemd units, containers) -- run this BEFORE `brew uninstall`"
+        ),
+    )
+    ops_uninstall.add_argument(
+        "--volumes",
+        action="store_true",
+        help="Also remove Docker volumes (DESTRUCTIVE: deletes Cassandra/Postgres/Grafana data)",
+    )
+    ops_uninstall.add_argument(
+        "--yes-really",
+        action="store_true",
+        help="Required confirmation for --volumes",
+    )
+    _add_quiet_flag(ops_uninstall)
+
     ops_env_sync = ops_sub.add_parser(
         "env-sync",
         help="Derive Docker Compose's .env secrets from config.ini (single source of truth)",
@@ -3282,6 +3306,8 @@ def cli(argv: list[str] | None = None) -> int:
             return ops_mod.stop(args)
         if args.ops_cmd == "down":
             return ops_mod.down(args)
+        if args.ops_cmd == "uninstall":
+            return ops_mod.uninstall(args)
         if args.ops_cmd == "env-sync":
             return ops_mod.env_sync(args)
         if args.ops_cmd == "secrets-sync":
