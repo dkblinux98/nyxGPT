@@ -371,8 +371,16 @@ fi
 # deadlock that had to be trimmed by hand every time (#3390, #3413, #3415).
 # Labels are re-read here rather than reused from ISSUE_DATA above, for the
 # same reason the project fields are: the label may have been applied since.
-LABELS=$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${ISSUE}" --jq '[.labels[].name] | join(" ")')
-if echo "$LABELS" | grep -qE "Acceptance Failure|Improvement|Release Management|Feature"; then
+# "Real" means "not a workflow-control label" -- real_label_names is the same
+# helper the submit script's check uses, so the two cannot disagree. This used
+# to be a hardcoded list of four names, which made any label added to the
+# project later invisible: an `Agent`-labeled issue looked unlabeled, got
+# Feature stamped on top, and deadlocked at submit time exactly as this comment
+# describes. A rule about HOW MANY labels has to count labels, not recognise
+# names.
+LABELS_JSON=$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${ISSUE}" --jq '.labels')
+LABELS="$(real_label_names "$LABELS_JSON" | paste -sd, -)"
+if [[ -n "$LABELS" ]]; then
   echo "✓ Label: already labeled ($LABELS), leaving as-is"
 else
   gh issue edit "$ISSUE" --add-label "Feature"

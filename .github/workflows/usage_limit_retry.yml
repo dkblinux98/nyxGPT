@@ -61,12 +61,15 @@ jobs:
             gh issue edit "$ISSUE" --repo "$REPO" --remove-label "usage-limit-retry"
             gh issue comment "$ISSUE" --repo "$REPO" --body "🔁 **Scrummaster Agent**: Usage-limit retry window reached — re-assigning @$DEV_AGENT to resume implementation."
 
-            # Unassign then re-assign to emit the 'assigned' event that
-            # triggers developer_auto_implement.yml (its only trigger).
-            gh api -X DELETE "repos/$REPO/issues/$ISSUE/assignees" \
-              -f "assignees[]=$DEV_AGENT" >/dev/null 2>&1 || true
+            # Clear the assignee list, then set it back to the developer
+            # agent: that emits the 'assigned' event developer_auto_implement
+            # triggers on, and -- unlike DELETE-then-POST on .../assignees,
+            # which only removes and re-adds one login -- guarantees the end
+            # state is exactly one assignee (owner rule).
+            gh api -X PATCH "repos/$REPO/issues/$ISSUE" \
+              -F "assignees[]=" >/dev/null 2>&1 || true
             sleep 3
-            gh api -X POST "repos/$REPO/issues/$ISSUE/assignees" \
+            gh api -X PATCH "repos/$REPO/issues/$ISSUE" \
               -f "assignees[]=$DEV_AGENT" >/dev/null
 
             echo "::endgroup::"

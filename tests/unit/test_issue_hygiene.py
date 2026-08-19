@@ -126,15 +126,20 @@ class TestHygieneScript:
         )
 
     def test_milestone_is_re_read_before_its_edit(self):
-        """Milestone is an issue attribute, so it needs the same re-read by hand."""
-        body = HYGIENE.read_text(encoding="utf-8")
+        """Milestone is an issue attribute, so it needs the same re-read by hand.
+
+        Scoped to the FILL path: the closure rule also edits a milestone, but
+        it does so deliberately and unconditionally (Phase X is the marker it
+        exists to apply), so the no-clobber ordering does not apply there.
+        """
+        body = _fill_path(HYGIENE.read_text(encoding="utf-8"))
         assert "RECHECK_MILESTONE" in body
         assert body.index("RECHECK_MILESTONE") < body.index('gh issue edit "$ISSUE" --milestone')
 
     def test_labels_are_re_read_before_the_add(self):
         """The two-label deadlock rule (#3390/#3413/#3415) reads labels late."""
         body = HYGIENE.read_text(encoding="utf-8")
-        assert body.index("LABELS=$(gh api") < body.index('gh issue edit "$ISSUE" --add-label')
+        assert body.index("LABELS_JSON=$(gh api") < body.index('gh issue edit "$ISSUE" --add-label')
 
     def test_settle_wait_is_configurable_and_defaults_to_60s(self):
         body = HYGIENE.read_text(encoding="utf-8")
@@ -251,17 +256,40 @@ class TestClosureRule:
         body = HYGIENE.read_text(encoding="utf-8")
         assert 'if [[ "$reason" == "completed" ]]' in body
 
-    def test_the_closure_rule_never_writes_status(self):
-        closure = _closure_rule(HYGIENE.read_text(encoding="utf-8"))
-        for forbidden in ("$STATUS_FIELD", "set_issue_status", "STATUS_BACKLOG"):
-            assert forbidden not in closure, f"the closure rule writes {forbidden}"
+    def test_the_closure_rule_strips_every_project_field(self):
+        """Phase X takes a dead issue out of the picture (owner rule,
+        2026-08-19): the milestone is the only marker it keeps. A rejected
+        issue holding a Status still sits in a lane, one holding a Sprint
+        still counts against that sprint's population, and one holding
+        Priority/Effort/Module still skews the statistics computed over those
+        fields.
 
-    def test_the_closure_rule_refuses_a_missing_phase_option(self):
-        """Agents never create field options; a silent skip would leave the
-        issue looking handled with its Phase never set."""
-        body = HYGIENE.read_text(encoding="utf-8")
-        assert 'single_select_option_id "Phase"' in body
-        assert "has no option" in body
+        Status is cleared here, and this is the one rule that writes it. The
+        D-001/D-008 rule that lane placement is owner signal governs *live*
+        work; an issue closed as not-planned has no lane to be signalled
+        about, and leaving it in one is the debris this removes.
+        """
+        closure = _closure_rule(HYGIENE.read_text(encoding="utf-8"))
+        assert 'for field in "$STATUS_FIELD" Priority Effort Module Phase Sprint' in closure
+        assert "clear_project_field_value" in closure
+        assert "set_issue_status" not in closure
+
+    def test_the_marker_is_the_milestone_not_a_project_field(self):
+        """Phase X is a GitHub milestone (`Phase X: Rejected`), which is what
+        `EXCLUDED_MILESTONES` in the retrospective reads. Setting a project
+        `Phase` field instead would leave the issue in the picture it is
+        supposed to leave."""
+        closure = _closure_rule(HYGIENE.read_text(encoding="utf-8"))
+        assert "Phase X: Rejected" in closure
+        assert "--milestone" in closure
+        assert 'set_field_with_retry "$item_id" "Phase"' not in closure
+
+    def test_the_closure_rule_refuses_a_missing_milestone(self):
+        """Agents never create project metadata; a silent skip would leave the
+        issue looking handled with no marker on it at all."""
+        closure = _closure_rule(HYGIENE.read_text(encoding="utf-8"))
+        assert "milestones?state=all" in closure
+        assert "does not exist" in closure
 
     def test_the_closure_rule_uses_the_lookup_only_item_finder(self):
         """A closed issue that was never on the board must not be added to it."""

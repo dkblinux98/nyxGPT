@@ -1789,12 +1789,17 @@ jobs:
               echo "::warning::Early-cutoff no-op detected (Claude step <90s, 0 commits) — auto-retrying (attempt $((EC_ATTEMPTS + 1))/3)."
               gh issue comment "$ISSUE" --body "🔁 **Developer Agent**: The implementation step ended early with no changes (a turn/budget cutoff, not a real block). **Auto-retry $((EC_ATTEMPTS + 1))/3** — re-assigning @${{ vars.DEV_AGENT }} to resume.
           <!-- early-cutoff-retry: $((EC_ATTEMPTS + 1)) -->" || true
-              # Re-fire: unassign then re-assign to emit the 'assigned' event
-              # that re-triggers this workflow (the issue stays In Progress).
-              gh api -X DELETE "repos/${{ github.repository }}/issues/$ISSUE/assignees" \
-                -f "assignees[]=${{ vars.DEV_AGENT }}" >/dev/null 2>&1 || true
+              # Re-fire: clear the assignee list, then set it back to the
+              # developer agent. That emits the 'assigned' event this
+              # workflow triggers on, and -- unlike DELETE-then-POST on
+              # .../assignees, which only removes and re-adds one login --
+              # it also guarantees the end state is exactly one assignee
+              # (owner rule), whatever the issue was carrying before.
+              # (The issue stays In Progress throughout.)
+              gh api -X PATCH "repos/${{ github.repository }}/issues/$ISSUE" \
+                -F "assignees[]=" >/dev/null 2>&1 || true
               sleep 3
-              gh api -X POST "repos/${{ github.repository }}/issues/$ISSUE/assignees" \
+              gh api -X PATCH "repos/${{ github.repository }}/issues/$ISSUE" \
                 -f "assignees[]=${{ vars.DEV_AGENT }}" >/dev/null || true
               exit 0
             fi
@@ -2472,7 +2477,13 @@ jobs:
             });
 
             if (humanOwner) {
-              await github.rest.issues.addAssignees({
+              // SET, not add: an issue carries exactly one assignee (owner
+              // rule). An escalation hands the issue to the owner, so the
+              // developer agent that was carrying it stops being an assignee
+              // -- appending left both on it, which made "who owns this?"
+              // unanswerable and inflated every sweep that counts issues
+              // assigned to the owner.
+              await github.rest.issues.update({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number,

@@ -401,6 +401,17 @@ def _rest(route: str, jq_filter: str | None, params: dict, method: str) -> None:
     # "this stub does not implement that call".
     parts = route.split("?", 1)[0].strip("/").split("/")
 
+    # PATCH repos/{o}/{r}/issues/{n} with assignees[] REPLACES the list --
+    # the only sanctioned way to assign, since an issue carries exactly one
+    # assignee. Must be answered before the plain issue-read branch below.
+    if len(parts) == 5 and parts[3] == "issues" and method == "PATCH":
+        replacement = [v for k, v in params.items() if k.startswith("assignees")]
+        if replacement:
+            state["assignees"] = replacement
+            _log("assignees.log", "=" + ",".join(replacement))
+            _save(state)
+            _emit(_issue_payload(state), jq_filter)
+
     if len(parts) >= 6 and parts[3] == "issues" and parts[5] == "assignees":
         for login in [v for k, v in params.items() if k.startswith("assignees")]:
             if method == "POST" and login not in state["assignees"]:
