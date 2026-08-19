@@ -94,6 +94,17 @@ package, the images from the registry, and the api container's mounts from
 `~/.nyxGPT`. `--dev` needs a checkout by definition and is refused (with the
 path it looked at) when nyxgpt is running from an installed package.
 
+**Where dev mode is available.** `--dev` is a flag of the *install* command,
+so it applies to this machine: `nyxgpt ops install`/`nyxgpt up` accepts it in
+all three modes (native, `--terraform --local`, `--kubernetes --local`). The
+cloud path has its own, `nyxgpt cloud deploy --dev`, which ships this checkout
+to the EC2 instance and installs it there — see
+[cloud.md](cloud.md#dev-mode-on-a-cloud-target). What is *not* available is
+Terraform-on-cloud as a `nyxgpt cloud deploy` mode: `nyxgpt cloud infra` uses
+Terraform to provision the AWS substrate, but the application stack on that
+instance is the native install, not this Terraform deployment. `--terraform`
+here means `--local`, which is why the flag requires it.
+
 `--dev` builds `nyxgpt-api:local`/`nyxgpt-web:local`, skipping the build and
 reusing the current image when the app source (`src/nyxgpt/` +
 `pyproject.toml` for api, `web/` for web) hasn't changed since it was last
@@ -275,7 +286,7 @@ design. To actually delete it, remove the host directories yourself or use
 | [`nyxgpt ops`](ops.md) (Homebrew) | Native macOS install, no containers |
 | [Docker Compose](docker-compose.md) | One-command bring-up, including opt-in observability profiles |
 | **Terraform** (this doc) | You want plan/apply/destroy semantics and drift detection for the core stack |
-| [Kubernetes](kubernetes.md) | Local cluster (kind/minikube/k3s), canary rollout of the API |
+| [Kubernetes](kubernetes.md) | A cluster — local (kind/minikube/k3s) or the single-node k3s a `nyxgpt cloud deploy --kubernetes` puts on the instance — and canary rollout of the API |
 | [Cloud (AWS)](cloud.md) | You want the stack on an EC2 instance in your own AWS account, reachable only over an SSH tunnel (`nyxgpt cloud infra`) |
 
 This deployment is watched by the same [self-heal watchdog](self-healing.md)

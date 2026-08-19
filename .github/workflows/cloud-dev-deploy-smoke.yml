@@ -1,0 +1,93 @@
+name: Cloud Dev Deploy Smoke
+
+# Does `nyxgpt cloud deploy --dev` actually put the operator's WORKING TREE on
+# a cloud target (#3950)?
+#
+# One job, and it is an executed answer rather than an inspected one (D-006).
+# The claim spans two machines and the link between them -- what git selects,
+# what tar packs, how the remote command is quoted, where the tree lands under
+# a login user the code does not choose, and what the instance's own venv
+# imports afterwards. Unit tests can assert the strings that go over the wire;
+# only a run can assert what arrives. So this drives the product's own
+# functions (`cloud_deploy.ship_working_tree`, `cloud_deploy.DEV_INSTALL_BLOCK`
+# as rendered -- never a copy) over a real SSH connection into a bare Amazon
+# Linux 2023 container, and then asks the box what it is running.
+#
+# Both halves, per the #3753 fault-injection rule:
+#
+#   * phase 0 installs the built wheel into a venv with no checkout above it
+#     and requires `nyxgpt cloud deploy --dev` to refuse, naming the missing
+#     tree, before the substrate is applied. That is the acceptance criterion
+#     about what an operator sees, checked the way they meet it.
+#   * phase 1 runs the dev install block on a box that was never shipped a
+#     tree and requires it to FAIL at the working-tree guard. Measured with
+#     the guard removed: the run instead reaches pip and dies with a message
+#     about VCS URLs, and a *stale* tree from an earlier deploy produces no
+#     error whatsoever. See the script's header.
+#   * phase 2 plants an UNCOMMITTED sentinel in the tree and requires it on the
+#     far side. That is precisely the difference between "your working tree"
+#     and "the last commit" -- the obvious wrong implementation (`git archive
+#     HEAD`) passes every other check in this file and fails that one.
+#   * phase 4 renders the unchanged default path through the same function and
+#     requires it to still install `nyxgpt==<version>` from PyPI with no
+#     mention of the tree. `--dev` is opt-in and checkout-only (D-009); the
+#     repo-less guarantee (#3504) has to survive it.
+#
+# What it does NOT cover, named rather than left implicit: EC2, Terraform,
+# cloud-init, the security group and the access tunnel are outside the
+# container (the same boundary `cloud-artifact-smoke.yml`'s COVERAGE_GAPS
+# draws), and the full `ops install --dev` bring-up on the instance -- npm ci,
+# the Next dev server, Cassandra, Ollama -- is not run here.
+# `linux-native-smoke.yml` covers the Linux native install and
+# `cloud-artifact-smoke.yml` the full AL2023 bring-up; what is new in #3950 is
+# that the build source on a cloud target can be a working tree, and that is
+# what this proves.
+#
+# Path-scoped to the code that can break it.
+on:
+  pull_request:
+    paths:
+      - 'src/nyxgpt/cloud_deploy.py'
+      - 'src/nyxgpt/ops.py'
+      - 'src/nyxgpt/cli.py'
+      - 'scripts/cloud-dev-deploy-smoke.sh'
+      - 'scripts/cloud/al2023-sshd.Dockerfile'
+      - '.github/workflows/cloud-dev-deploy-smoke.yml'
+  push:
+    paths:
+      - 'src/nyxgpt/cloud_deploy.py'
+      - 'src/nyxgpt/ops.py'
+      - 'src/nyxgpt/cli.py'
+      - 'scripts/cloud-dev-deploy-smoke.sh'
+      - 'scripts/cloud/al2023-sshd.Dockerfile'
+      - '.github/workflows/cloud-dev-deploy-smoke.yml'
+  workflow_dispatch:
+
+# Read-only: it checks out the repo and drives a local container. It never
+# writes to the repository or its APIs, and it never touches AWS.
+permissions:
+  contents: read
+
+jobs:
+  cloud-dev-deploy-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Editable on purpose, and it is the condition under test rather than a
+      # convenience: `--dev` is checkout-only by definition, so the smoke has
+      # to run the way an operator running it does -- from a checkout, with
+      # `ops.dev_checkout_root()` able to answer.
+      - name: Install nyxGPT from the checkout
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Ship a working tree to a bare AL2023 box and prove the box runs it
+        run: ./scripts/cloud-dev-deploy-smoke.sh

@@ -31,12 +31,14 @@ fails if it drifts. Do not hand-edit.
 | `claude-md-binding-canary.yml` | workflow_dispatch | CLAUDE.md Binding Canary |
 | `claude.yml` | issue_comment, pull_request_review_comment, issues, pull_request_review | Claude Code |
 | `cloud-artifact-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Artifact Smoke |
+| `cloud-dev-deploy-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Dev Deploy Smoke |
 | `cloud-imds-smoke.yml` | pull_request, push, workflow_dispatch | Cloud IMDS Smoke |
 | `cloud-status-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Status Smoke |
 | `cloud-target-os-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Target OS Smoke |
 | `code_scan_report.yml` | workflow_dispatch | Code Scan Report |
 | `comment-token-gate-smoke.yml` | push, pull_request, workflow_dispatch | Comment Token Gate Smoke |
 | `compose-model-prepull-smoke.yml` | pull_request, push, workflow_dispatch | Compose Model Pre-pull Smoke |
+| `config-wizard-save-smoke.yml` | pull_request, push, workflow_dispatch | Config Wizard Save Smoke |
 | `conflict-resolution-smoke.yml` | push, pull_request, workflow_dispatch | Conflict Resolution Smoke |
 | `conflict_owner_escalation.yml` | issue_comment | Conflict Owner Escalation |
 | `delete_branch_on_pr_close.yml` | pull_request | Delete Branch on PR Close Without Merge |

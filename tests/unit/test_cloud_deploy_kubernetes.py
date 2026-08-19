@@ -450,7 +450,72 @@ def test_the_bridge_is_installed_after_the_stack_exists():
 
 
 def test_the_native_deploy_grows_no_bridge():
-    assert "nyxgpt-k8s-bridge" not in _script()
+    """A native deploy installs no bridge. It does *retire* one -- the
+    `--no-kubernetes` transition below -- so the claim is about the unit file
+    and the `enable`, not about the string appearing anywhere."""
+    script = _script()
+    assert "nyxgpt-k8s-bridge@.service\" <<'UNIT'" not in script
+    assert "systemctl --user enable --now nyxgpt-k8s-bridge" not in script
+
+
+# --- Switching substrates on an instance that already has one ------------
+#
+# The failure these pin is silent in every direction that is not covered.
+# k3s and the `Restart=always` bridge keep answering 127.0.0.1:8000/3000
+# after a `--no-kubernetes` re-deploy, so the native services fail to bind
+# and every health probe -- the install's, the deploy's, the tunnel's -- is
+# satisfied by the substrate the operator just asked to leave, while
+# `deploy.json` and the dashboard's Substrate row both say "native".
+
+
+def test_the_native_deploy_retires_a_cluster_the_instance_was_running():
+    script = _script()
+
+    assert "systemctl --user disable --now" in script
+    assert "nyxgpt-k8s-bridge@${bridge}.service" in script
+    assert "/usr/local/bin/k3s-uninstall.sh" in script
+
+
+def test_the_native_teardown_runs_before_the_native_install():
+    """Order is the whole point: uninstalling k3s after `ops install` would
+    leave the install racing the cluster for the ports it needs."""
+    script = _script()
+
+    assert script.index("k3s-uninstall.sh") < script.index("run_nyxgpt ops install")
+
+
+def test_the_native_teardown_is_guarded_and_survives_a_box_that_never_had_k3s():
+    """A first deploy and an ordinary native re-deploy must pass straight
+    through: `disable --now` on an absent unit and an absent uninstaller are
+    both errors, and `set -euo pipefail` would abort the deploy on either."""
+    script = _script()
+
+    assert "if [ -x /usr/local/bin/k3s-uninstall.sh ]; then" in script
+    bridge_teardown = script[
+        script.index("for bridge in api web observability") : script.index(
+            'rm -f "$HOME/.config/systemd/user/nyxgpt-k8s-bridge@.service"'
+        )
+    ]
+    assert ">/dev/null 2>&1 || true" in bridge_teardown
+
+
+def test_the_kubernetes_deploy_retires_a_native_stack_the_instance_was_running():
+    """The mirror image, and the direction that used to fail loudly with a
+    refusal prescribing `nyxgpt ops down` -- a command no wrapped `nyxgpt
+    cloud` surface can run on the instance."""
+    script = _script(kubernetes=True)
+
+    assert "run_nyxgpt ops down" in script
+    assert 'if [ -f "$HOME/.config/systemd/user/nyxgpt-api.service" ]; then' in script
+    assert script.index("run_nyxgpt ops down") < script.index("run_nyxgpt ops install --kubernetes")
+
+
+def test_neither_teardown_appears_in_the_other_substrates_script():
+    """Each script retires the substrate it is replacing, and only that one:
+    a native deploy must not tear down the native stack it is about to
+    install, nor a Kubernetes deploy the cluster it is about to use."""
+    assert "k3s-uninstall.sh" not in _script(kubernetes=True)
+    assert "run_nyxgpt ops down" not in _script()
 
 
 # --- The rendered script is a script -------------------------------------

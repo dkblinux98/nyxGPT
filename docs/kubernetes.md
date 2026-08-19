@@ -200,6 +200,20 @@ up; there is no live reload, unlike the native dev mode's Next dev server. It
 is refused up front (exit 2) when there is no checkout to build, rather than
 half-installing.
 
+**Where dev mode is available.** `--dev` applies to the machine you run
+`nyxgpt ops install`/`nyxgpt up` on — natively, under `--terraform --local`,
+and under `--kubernetes --local` as described here. On a cloud target,
+`nyxgpt cloud deploy --dev` ships your checkout to the EC2 instance and
+installs it there ([cloud.md](cloud.md#dev-mode-on-a-cloud-target)) — but that
+is the **native** stack on that instance. There is no Kubernetes mode of
+`nyxgpt cloud deploy` for `--dev` to modify: `--kubernetes` is a local install
+mode, and `nyxgpt cloud deploy` deploys the native stack to one EC2 box.
+Kubernetes on a cloud target is separate, unbuilt work rather than a decision
+against it — `product_management/DECISION_AWS_COMPUTE_SUBSTRATE.md` (#3506)
+rejects a *managed EKS control plane* and calls for the existing `k8s/*.yaml`
+layered on a single-node k3s cluster on that instance, which nothing
+implements yet.
+
 Switching between the modes re-rolls the app tier: both modes produce the same
 `:local` tags, so the Deployment specs are identical across a switch and
 `kubectl apply` alone would leave the Pods on the previous mode's image while
@@ -311,7 +325,11 @@ from a source checkout, and the instance has none. Roll a new release out with
 admin dashboard's Infrastructure page. The choice is recorded, so a later bare
 `nyxgpt cloud deploy` reconciles the same Kubernetes deployment rather than
 installing a native stack beside it; `--no-kubernetes` moves a deployment back
-to the native substrate.
+to the native substrate. Both directions are a real transition, not a second
+install: the deploy retires the substrate it replaces first (`nyxgpt ops down`
+on the instance going in, the access bridge plus k3s's own uninstaller coming
+out). Sessions do not follow the move — each substrate has its own Cassandra;
+see [cloud.md](cloud.md#kubernetes-on-the-instance-3956).
 
 **Teardown** is `nyxgpt cloud destroy --yes`. The cluster is entirely on the
 instance — control plane, image store, `local-path` volumes — so terminating

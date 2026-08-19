@@ -430,12 +430,23 @@ nyxgpt ops restart api              # pick up new api code from the tree
 nyxgpt up                           # switch back to the artifact path
 ```
 
+**Where `--dev` is accepted.** On this machine, by
+`nyxgpt up` / `nyxgpt ops install` in all three modes (native,
+`--terraform --local`, `--kubernetes --local`). On a cloud target, by
+`nyxgpt cloud deploy --dev`, which copies this checkout to the EC2 instance
+over the deploy's own SSH connection and installs it there — the same
+working-tree-instead-of-artifact choice, one machine further away (#3950,
+[cloud.md](cloud.md#dev-mode-on-a-cloud-target)). Nowhere else: there is no
+Kubernetes or Terraform *mode* of `nyxgpt cloud deploy` for the flag to
+modify.
+
 Constraints, by design:
 
 - **Checkout-only.** Dev mode needs `pyproject.toml`, `src/nyxgpt/` and
   `web/` next to the running `nyxgpt`. Run from an installed package it
   refuses immediately, naming the path it looked at, rather than
-  half-installing.
+  half-installing. `nyxgpt cloud deploy --dev` refuses on the same check, run
+  on your workstation before AWS is touched.
 - **Not the default, and not a substitute for artifact testing.** A bare
   `nyxgpt up` is the artifact path, unchanged; dev mode exercises neither
   the published tap/wheel nor the production web build, so acceptance of a
@@ -1012,6 +1023,15 @@ Checks include:
   reported as exactly that, rather than as a clean bill of health. Fix:
   `nyxgpt up` (add `--dev` from a checkout), which reconciles them.
 - Required files under `~/.nyxGPT/`
+- **Whether `config.ini` parses at all**, and if not, *why* — the error class
+  and the line number, e.g. `DuplicateOptionError at line 134: option
+  'slack_bot_token' in section 'monitoring' is defined more than once`. This
+  is the one fault that takes the whole API down (every request loads
+  `config.ini`, so a malformed line means `500` everywhere and a restarted
+  API that cannot boot), which makes `doctor` the only surface left that can
+  say what is wrong. Reported as a FAIL, not a log line (#3944). Fix the
+  named line and the API recovers on its next request. See
+  [configuration.md](configuration.md#when-configini-will-not-parse)
 - Native service-manager availability (`brew` on macOS, `systemctl` on Linux)
 - Running services
 - Docker daemon availability

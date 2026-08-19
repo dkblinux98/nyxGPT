@@ -1767,20 +1767,36 @@ def test_the_linux_bootstrap_is_untouched_by_the_dispatch():
     """The acceptance criterion the rest of this change must not cost: `--os
     linux` renders exactly the script a native Linux deploy always rendered.
 
-    The substrate sections (#3956) are substituted here rather than left as
-    placeholders because the template gained them after #3867: a *native*
-    Linux plan must still produce the pre-#3956 script, which is the same
-    claim this test was written to make about the `--os` dispatch.
+    Later placeholders (#3956's substrate sections, #3950's install block)
+    are substituted here rather than left unresolved because the template
+    gained them after #3867: a *native, non-dev* Linux plan must still
+    produce the script it always did, which is the same claim this test was
+    written to make about the `--os` dispatch.
     """
     plan = cloud_deploy.resolve_plan(_args(os_family="linux"))
+    # Both substitutions below stand in for blocks the shared template gained
+    # after #3867: the substrate sections (#3956) and the artifact install
+    # block plus empty `ops install` flags (#3950). Substituting them keeps
+    # this asserting what it was written to assert -- that the OS dispatch
+    # changes nothing about the Linux script -- rather than re-asserting that
+    # `--kubernetes` or `--dev` exist, which their own files cover.
     assert plan.kubernetes is False
+    assert plan.dev is False
     expected = (
-        cloud_deploy.PROVISION_SCRIPT_TEMPLATE.replace("__VERSION__", plan.version)
+        cloud_deploy.PROVISION_SCRIPT_TEMPLATE.replace(
+            "__NYXGPT_INSTALL__", cloud_deploy.ARTIFACT_INSTALL_BLOCK
+        )
+        .replace("__REMOTE_SOURCE__", cloud_deploy.REMOTE_SOURCE_DIR)
+        .replace("__VERSION__", plan.version)
         .replace("__PROFILES__", ",".join(plan.profiles))
         .replace("__SESSION_BACKEND__", plan.session_backend)
         .replace("__NODE_SECTION__", cloud_deploy.NATIVE_NODE_SECTION)
         .replace("__LLM_RUNTIME_SECTION__", cloud_deploy.NATIVE_LLM_RUNTIME_SECTION)
         .replace("__STACK_BRINGUP_SECTION__", cloud_deploy.NATIVE_STACK_BRINGUP_SECTION)
+        # After the section, not before: #3956 lifted the `ops install` call
+        # out of the template and into the bringup sections, so the flags
+        # placeholder now arrives with the section rather than ahead of it.
+        .replace("__OPS_INSTALL_FLAGS__", "")
     )
 
     assert cloud_deploy.render_provision_script(plan) == expected

@@ -2574,3 +2574,207 @@ def test_cloud_secret_failure_debug_line_does_not_relog_the_provider(
     # The exception is the whole point of the DEBUG line -- redacting the
     # provider must not have taken the traceback with it.
     assert any(r.exc_info is not None for r in debug)
+
+
+# --- unparseable config.ini reports its real cause (#3944) ---
+#
+# `parser.read()` was completely unguarded, so a `configparser` error escaped
+# `load_config` and the API's catch-all handler flattened it to "Internal
+# server error". Every endpoint loads config, so one bad line took the entire
+# dashboard down while stating no cause at all.
+
+
+def test_load_config_raises_config_parse_error_naming_the_line(tmp_path: Path) -> None:
+    from nyxgpt.config import ConfigParseError
+
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[monitoring]
+SLACK_BOT_TOKEN = a
+slack_bot_token = b
+""".lstrip(),
+    )
+
+    with pytest.raises(ConfigParseError) as excinfo:
+        load_config(str(ini))
+
+    message = str(excinfo.value)
+    assert str(ini) in message
+    assert "DuplicateOptionError" in message
+    assert "line 3" in message
+    assert "slack_bot_token" in message
+    # The whole point: a user staring at two differently-cased lines is told
+    # why they collide.
+    assert "case-insensitive" in message
+
+
+def test_load_config_parse_error_is_not_a_bare_configparser_error(tmp_path: Path) -> None:
+    """Callers catch `ConfigParseError`; it must not also be a `configparser.Error`."""
+    import configparser
+
+    from nyxgpt.config import ConfigParseError
+
+    ini = tmp_path / "config.ini"
+    _write(ini, "not-a-header = 1\n")
+
+    with pytest.raises(ConfigParseError) as excinfo:
+        load_config(str(ini))
+    assert not isinstance(excinfo.value, configparser.Error)
+    assert isinstance(excinfo.value.__cause__, configparser.Error)
+
+
+def test_describe_config_parse_error_covers_each_configparser_shape(tmp_path: Path) -> None:
+    """The line number lives on a different attribute per subclass -- cover them."""
+    import configparser
+
+    from nyxgpt.config import describe_config_parse_error
+
+    cases = {
+        "[a]\nx = 1\n[a]\ny = 2\n": ("DuplicateSectionError", "line 3"),
+        "x = 1\n[a]\n": ("MissingSectionHeaderError", "line 1"),
+        "[a]\n x = 1\ny 2\n": ("ParsingError", "line 3"),
+    }
+    for text, (expected_type, expected_line) in cases.items():
+        try:
+            configparser.ConfigParser().read_string(text)
+        except configparser.Error as e:
+            rendered = describe_config_parse_error(tmp_path / "config.ini", e)
+        else:  # pragma: no cover - the fixtures above are all invalid
+            raise AssertionError(f"expected a parse error for {text!r}")
+        assert expected_type in rendered
+        assert expected_line in rendered
+        assert "config.ini" in rendered
+
+
+def test_describe_config_parse_error_redacts_the_offending_line_by_default() -> None:
+    """The API returns this text pre-auth, so it must not quote the file (#3944).
+
+    `config_unreadable_guard` is the outermost middleware by necessity --
+    `api_key_auth` loads config before it can check a key, so a malformed
+    config.ini is a state in which auth cannot be enforced at all. The two
+    shapes that carried raw text are `MissingSectionHeaderError` (whose
+    `.line` is the setting that appears before any header) and `ParsingError`
+    (whose `.errors` pairs a line number with the line). A hand-edit that
+    drops a `[section]` header makes a live credential the offender.
+    """
+    import configparser
+
+    from nyxgpt.config import describe_config_parse_error
+
+    secret = "sk-live-VERYSECRETVALUE"
+    cases = [
+        (f"api_key = {secret}\n[auth]\n", "MissingSectionHeaderError", "line 1"),
+        (f"[auth]\napi_key = {secret}\n oops\nkey {secret}\n", "ParsingError", "line 4"),
+    ]
+    for text, expected_type, expected_line in cases:
+        try:
+            configparser.ConfigParser().read_string(text)
+        except configparser.Error as e:
+            rendered = describe_config_parse_error(Path("/home/u/.nyxGPT/config.ini"), e)
+        else:  # pragma: no cover - the fixtures above are all invalid
+            raise AssertionError(f"expected a parse error for {text!r}")
+
+        # Still a diagnosis: the class and the line number survive redaction.
+        assert expected_type in rendered
+        assert expected_line in rendered
+        # But no bytes from the file.
+        assert secret not in rendered
+        assert "api_key" not in rendered
+        # And it points at the one surface that will show the line.
+        assert "nyxgpt ops doctor" in rendered
+
+
+def test_describe_config_parse_error_names_the_file_home_relative(monkeypatch) -> None:
+    """The path is the same pre-auth channel on a smaller scale (#3944 review).
+
+    `Cannot parse /Users/darla/.nyxGPT/config.ini: ...` reaches unauthenticated
+    callers and spells out the OS account name. `~/.nyxGPT/config.ini` names
+    the file just as usefully and names nobody. A path *outside* home is the
+    operator's explicit choice and is left intact -- shortening it would only
+    hide which file failed.
+    """
+    import configparser
+
+    from nyxgpt.config import describe_config_parse_error
+
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: Path("/home/darla")))
+
+    try:
+        configparser.ConfigParser().read_string("[a]\nx = 1\nx = 2\n")
+    except configparser.Error as e:
+        exc: configparser.Error = e
+    else:  # pragma: no cover - the fixture above is invalid
+        raise AssertionError("expected a parse error")
+
+    for include_line_text in (False, True):
+        rendered = describe_config_parse_error(
+            Path("/home/darla/.nyxGPT/config.ini"), exc, include_line_text=include_line_text
+        )
+        assert "~/.nyxGPT/config.ini" in rendered
+        assert "/home/darla" not in rendered
+
+    # Outside home: left exactly as given, so the operator can see which file.
+    elsewhere = describe_config_parse_error(Path("/etc/nyxgpt/config.ini"), exc)
+    assert "/etc/nyxgpt/config.ini" in elsewhere
+
+
+def test_describe_config_parse_error_quotes_the_line_only_when_opted_in() -> None:
+    """`nyxgpt ops doctor` is local and does opt in -- that split is the fix."""
+    import configparser
+
+    from nyxgpt.config import describe_config_parse_error
+
+    secret = "sk-live-VERYSECRETVALUE"
+    try:
+        configparser.ConfigParser().read_string(f"api_key = {secret}\n[auth]\n")
+    except configparser.Error as e:
+        rendered = describe_config_parse_error(Path("config.ini"), e, include_line_text=True)
+    else:  # pragma: no cover - the fixture above is invalid
+        raise AssertionError("expected a parse error")
+
+    assert secret in rendered
+    assert "MissingSectionHeaderError" in rendered
+    assert "line 1" in rendered
+
+
+def test_describe_config_parse_error_redacts_the_fallback_shape() -> None:
+    """The default branch renders `str(exc)`, and some subclasses put values there.
+
+    `InterpolationMissingOptionError` carries the raw value it failed to
+    interpolate. `read()` does not raise it (interpolation is lazy), but this
+    helper is a general renderer and the redaction must not depend on a
+    caller-by-caller judgement about which subclass is safe.
+    """
+    import configparser
+
+    from nyxgpt.config import describe_config_parse_error
+
+    exc = configparser.InterpolationMissingOptionError(
+        "api_key", "auth", "sk-live-VERYSECRETVALUE-%(missing)s", "missing"
+    )
+
+    redacted = describe_config_parse_error(Path("config.ini"), exc)
+    assert "sk-live-VERYSECRETVALUE" not in redacted
+    assert "InterpolationMissingOptionError" in redacted
+
+    assert "sk-live-VERYSECRETVALUE" in describe_config_parse_error(
+        Path("config.ini"), exc, include_line_text=True
+    )
+
+
+def test_load_config_parse_error_does_not_carry_the_offending_line(tmp_path: Path) -> None:
+    """End to end: what `load_config` raises is what the HTTP body says."""
+    from nyxgpt.config import ConfigParseError
+
+    ini = tmp_path / "config.ini"
+    _write(ini, "api_key = sk-live-VERYSECRETVALUE\n[auth]\nenabled = true\n")
+
+    with pytest.raises(ConfigParseError) as excinfo:
+        load_config(str(ini))
+
+    message = str(excinfo.value)
+    assert "MissingSectionHeaderError" in message
+    assert "line 1" in message
+    assert "sk-live-VERYSECRETVALUE" not in message

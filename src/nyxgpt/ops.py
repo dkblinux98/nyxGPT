@@ -11,6 +11,7 @@ can warn about -- and refuse to create -- port collisions between the two.
 from __future__ import annotations
 
 import base64
+import configparser
 import contextlib
 import getpass
 import hashlib
@@ -55,6 +56,7 @@ from nyxgpt import metrics as prom_metrics
 from nyxgpt import verify as verify_mod
 from nyxgpt.config import (
     VALID_SESSION_BACKENDS,
+    describe_config_parse_error,
     get_error_tracking_config,
     get_error_tracking_enabled,
     get_log_aggregation_enabled,
@@ -1922,6 +1924,23 @@ def _dev_checkout_root() -> Path | None:
     if _has_vendorable_source("nyxgpt-api") and _has_vendorable_source("nyxgpt-web"):
         return REPO_ROOT
     return None
+
+
+def dev_checkout_root() -> Path | None:
+    """Public name for `_dev_checkout_root`, for modules outside `ops` (#3950).
+
+    `nyxgpt cloud deploy --dev` has to answer the same question this module's
+    own install paths do -- *is there a working tree to build from at all?* --
+    and it must answer it the same way, or the cloud path would refuse (or
+    accept) a checkout the local path disagrees about. Delegating rather than
+    re-implementing is the point: `cloud_deploy` gets one call, and this stays
+    the only definition of what a dev-mode source tree is.
+
+    Deliberately a thin forward to the private name rather than a rename: every
+    caller inside this module, and the tests that monkeypatch
+    `ops._dev_checkout_root`, keep working unchanged.
+    """
+    return _dev_checkout_root()
 
 
 def _installed_distribution_version() -> str | None:
@@ -9033,6 +9052,60 @@ def _restart_k8s_app_tier() -> list[OpsResult]:
     return results
 
 
+# The systemd --user template a `nyxgpt cloud deploy --kubernetes` installs to
+# bridge the instance's loopback into the ClusterIP-only Services (#3956). Named
+# here so `doctor` can report it: on a cloud Kubernetes deployment this unit,
+# not the API process, is what holds 127.0.0.1:8000, so it is a distinct thing
+# that can be down while every Pod is Running -- and an operator told only "the
+# API did not answer" goes looking in the cluster, where nothing is wrong.
+K8S_ACCESS_BRIDGE_UNIT = "nyxgpt-k8s-bridge@"
+K8S_ACCESS_BRIDGE_TARGETS: tuple[str, ...] = ("api", "web", "observability")
+
+
+def _k8s_access_bridge_issues() -> list[str]:
+    """Report the access bridge's units, returning `doctor` issues for any down.
+
+    Silent where no bridge exists: the template is installed only by a cloud
+    `--kubernetes` deploy, so a local kind/minikube cluster (where the operator
+    runs `nyxgpt ops port-forward` in a terminal) has no units to report and
+    gets no output. Reads only `is-active`; `doctor` never starts anything.
+    """
+    if not _is_linux():
+        return []
+    unit_dir = _systemd_user_dir()
+    if not (unit_dir / f"{K8S_ACCESS_BRIDGE_UNIT}.service").exists():
+        return []
+    issues: list[str] = []
+    for target in K8S_ACCESS_BRIDGE_TARGETS:
+        unit = f"{K8S_ACCESS_BRIDGE_UNIT}{target}.service"
+        enabled = _run(
+            ["systemctl", "--user", "is-enabled", unit],
+            check=False,
+            expected=True,
+            timeout=LOCAL_PROBE_TIMEOUT_SECONDS,
+        )
+        if (enabled.stdout or "").strip() != "enabled":
+            # Not enabled is not a fault: `--skip-observability` deliberately
+            # leaves the observability bridge alone.
+            continue
+        active = _run(
+            ["systemctl", "--user", "is-active", unit],
+            check=False,
+            expected=True,
+            timeout=LOCAL_PROBE_TIMEOUT_SECONDS,
+        )
+        state = (active.stdout or "").strip() or "unknown"
+        print(f"Kubernetes access bridge ({target}): {state}")
+        if state != "active":
+            issues.append(
+                f"The Kubernetes access bridge for {target} is {state}. That unit, not "
+                f"the Pod, is what holds this host's loopback port, so the stack is "
+                f"unreachable through the SSH tunnel even with every Pod Running. "
+                f"Re-run `nyxgpt cloud deploy` to reconcile it."
+            )
+    return issues
+
+
 def _record_k8s_install_mode(dev: bool) -> list[OpsResult]:
     """Record the mode the Kubernetes deployment was just built in (#3834).
 
@@ -11123,6 +11196,7 @@ def doctor(_args) -> int:
                     "be rebuilt. Re-run `nyxgpt ops install --kubernetes --local` (add "
                     "--dev from a checkout to stay on the working tree)."
                 )
+        issues.extend(_k8s_access_bridge_issues())
     if install_mode.is_dev:
         checkout = Path(install_mode.checkout) if install_mode.checkout else None
         if checkout is None or not checkout.is_dir():
@@ -11153,9 +11227,22 @@ def doctor(_args) -> int:
             parsed = ConfigParser()
             parsed.read(cfg)
             cfg_parser = parsed
+        except configparser.Error as e:
+            # A doctor that only logs "Failed to parse <path>" and moves on is
+            # not actionable: this is the single fault that takes the whole API
+            # down (every request loads config.ini), and the user needs the
+            # line to fix it (#3944). Report it as an issue, with the line.
+            #
+            # This is the one caller that opts into quoting the file's own text
+            # (`include_line_text`), and it is the reason the default is off:
+            # doctor is a local command, run by the owner of the file, printing
+            # to their terminal. The API's rendering of the same fault is
+            # redacted because it is reachable pre-auth, and it points here.
+            issues.append(describe_config_parse_error(cfg, e, include_line_text=True))
+            cfg_parser = None
         except Exception as e:
             logger.warning(
-                "Failed to parse %s, skipping config-dependent doctor checks: %s",
+                "Failed to read %s, skipping config-dependent doctor checks: %s",
                 cfg,
                 e,
                 extra={"component": "ops"},

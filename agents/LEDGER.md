@@ -993,7 +993,59 @@ rather than mechanism, and nothing can enforce them.
   Filed as **D-033** on this branch; renumbered on the merge into `v3.0.0`,
   where #3867 had already allocated that number. IDs are never reused.
 
-- **D-035** · 2026-08-19 · developer agent (#3956) — **A decision record is a
+- **D-035** · 2026-08-19 · developer agent (#3950) — **"Dev mode on a cloud
+  target" means shipping the working tree to the instance; it does not mean a
+  cloud Terraform or Kubernetes deployment.** The two halves of this are what
+  a future session would re-derive wrongly, because the flag names look like
+  they compose and they do not.
+  (a) *What was built.* `nyxgpt cloud deploy --dev` copies the operator's tree
+  over the deploy's own SSH connection (git's file list — tracked plus
+  new-not-ignored, so **uncommitted edits go**; never `.git`) into
+  `~/.nyxGPT/src`, installs it editable there, and runs `ops install --dev` on
+  the box, so `ops.dev_checkout_root()` on the *instance* answers the shipped
+  directory. The refusal without a checkout is `ops.dev_checkout_root()` — the
+  local paths' own predicate, reached through a new public forwarder rather
+  than re-implemented, because two definitions of "is this a checkout" is how
+  one path refuses a tree the other accepts. `--dev` is **not** carried
+  forward by `resolve_plan` although every other recorded choice is: the
+  others describe the instance's configuration, this one describes where a
+  single run got its code, and inheriting it would re-ship whatever tree
+  happened to be checked out under a command every operator reads as the
+  artifact path. Not exposed on `POST /cloud/deploy`: the API host has no tree
+  to ship (D-017).
+  (b) *What "cloud mode" does and does not mean.* `--terraform` and
+  `--kubernetes` are **local install-mode** flags of `ops install`; neither is
+  a mode of `nyxgpt cloud deploy`, which deploys the native stack to one EC2
+  box. So there was no "Terraform dev mode on cloud" to add — cloud uses
+  Terraform for the *substrate* only — and no Kubernetes cloud target for
+  `--dev` to modify. The latter is **unbuilt work, not a scope decision
+  against it**: `product_management/DECISION_AWS_COMPUTE_SUBSTRATE.md` (#3506)
+  rejects a managed **EKS control plane** while explicitly calling for the
+  existing `k8s/*.yaml` on a single-node k3s cluster on that instance. #3950's
+  thread contains a retracted comment asserting the opposite from the Options
+  section alone; the Decision section is what binds.
+  (c) *`--dev` is Linux-only, and refuses rather than ignores.* The `--os
+  macos` target (**D-033**, merged alongside this) renders the EC2 Mac
+  bootstrap, which installs published Homebrew formulas and has no
+  working-tree source. `resolve_plan` therefore rejects `--dev --os macos`
+  before the substrate is applied: honouring the combination by rendering the
+  Mac script anyway would install a published release to an operator who
+  believes they are testing their tree, which is the exact defect this issue
+  was filed about — reachable, without the refusal, by combining two flags
+  that are each correct alone.
+  The behaviour itself is not recorded here — it is enforced by
+  `tests/unit/test_cloud_deploy_dev_mode.py` and, on a real machine, by
+  `.github/workflows/cloud-dev-deploy-smoke.yml`, per the verification
+  retirement. What that smoke found and inspection did not: `is_file()` drops
+  every symlink-to-a-directory in `src/nyxgpt/resources/` (#3621), which
+  silently shipped a checkout whose `ops install` could not find its own
+  runtime data.
+  (Allocated D-033 from `ledger_ids.py`; renumbered to D-034 when a merge from
+  v3.0.0 showed #3867 had taken that number, then to D-035 when the next merge
+  showed #3811 had taken *that* one. IDs are never reused and every entry
+  stands.)
+  Source: #3950; #3506; extends **D-009**; interacts with **D-033**.
+- **D-036** · 2026-08-19 · developer agent (#3956) — **A decision record is a
   requirement even where no issue transcribed it, and "the cloud target" is a
   *place the existing install mode runs*, not a second install mode.**
   `DECISION_AWS_COMPUTE_SUBSTRATE.md` (#3506, owner-approved 2026-08-04) chose
@@ -1031,9 +1083,23 @@ rather than mechanism, and nothing can enforce them.
   StorageClass, which on k3s is `local-path` — disabling it leaves both Pods
   Pending on unbound PVCs, which reads as a capacity problem and is not one.
 
+  (c) *Switching substrates is a transition, and both directions fail
+  silently if it is not.* A `--no-kubernetes` re-deploy that merely renders
+  the native script leaves k3s and the `Restart=always` access bridge holding
+  127.0.0.1:8000/3000, so the new native services never bind and *every*
+  probe that would notice -- the install's health wait, the deploy's own
+  check, the tunnel -- is answered by the cluster the operator just asked to
+  leave, while `deploy.json` and the dashboard both say "native". Each
+  provisioning script therefore retires the substrate it replaces before
+  installing its own, guarded on existence so a first deploy runs neither.
+  The reverse direction failed *loudly* instead, which was no better: its
+  refusal prescribed `nyxgpt ops down` on the instance, a command no wrapped
+  `nyxgpt cloud` surface can run, leaving `cloud destroy` as the only exit.
+
   What the change actually does is not recorded here — it is enforced by
   `tests/unit/test_cloud_deploy_kubernetes.py`,
-  `tests/unit/test_k3s_image_import.py` and
+  `tests/unit/test_k3s_image_import.py`,
+  `tests/unit/test_k8s_access_bridge_doctor.py` and
   `.github/workflows/k3s-cloud-smoke.yml`, which executes the deploy's own
   bootstrap text on a real cluster, per the verification retirement. Related:
   **D-023** (canary reads the canary track's own Pods) is what makes the
@@ -1042,11 +1108,15 @@ rather than mechanism, and nothing can enforce them.
   Source: #3956; `product_management/DECISION_AWS_COMPUTE_SUBSTRATE.md`;
   #3513 (the issue that under-specified it); `docs/cloud.md`
   §Kubernetes on the instance.
-  Filed as **D-033** on this branch, then **D-034** on the first merge into
-  `v3.0.0`; renumbered again here, #3867 having taken the first and #3811 the
-  second while this PR was in review. Number from `python3
-  scripts/agents/lib/ledger_ids.py next D --base origin/v3.0.0` — run, not
-  eyeballed, on each pass. IDs are never reused.
+  Filed as **D-033** on this branch, then **D-034**, then **D-035** on the
+  two earlier merges into `v3.0.0`; renumbered again here, #3867, #3811 and
+  #3950 having taken those three in turn while this PR was in review. Number
+  from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed, on each pass. IDs are never reused.
+  Supersedes the reading in **D-035**(b) that there is "no Kubernetes cloud
+  target": that entry correctly called it unbuilt work rather than a scope
+  decision, and this PR builds it. `--dev` and `--kubernetes` still do not
+  compose — see D-035(a) on why `--dev` is not carried forward.
 
 ## Parked
 

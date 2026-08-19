@@ -112,7 +112,7 @@ if ! systemctl --user status >/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
-step "1/6  Execute the deploy's own k3s bootstrap"
+step "1/7  Execute the deploy's own k3s bootstrap"
 # ---------------------------------------------------------------------------
 python3 - > "$WORK/k3s-bootstrap.sh" <<'PY'
 from nyxgpt.cloud_deploy import render_k3s_bootstrap
@@ -134,7 +134,7 @@ NODE_IP="$(awk -F'[/:]' '/server:/ {print $4}' "$KUBECONFIG")"
 log "MEASURED: the kubeconfig points at https://${NODE_IP}:6443"
 
 # ---------------------------------------------------------------------------
-step "2/6  The access surface: #3503 says nothing but TCP 22"
+step "2/7  The access surface: #3503 says nothing but TCP 22"
 # ---------------------------------------------------------------------------
 log "MEASURED: listeners on 6443:"
 ss -ltnH 'sport = :6443' | sed 's/^/    | /'
@@ -169,7 +169,7 @@ kubectl get storageclass -o jsonpath='{.items[?(@.metadata.annotations.storagecl
 log "PASS: local-path is present and is the default StorageClass"
 
 # ---------------------------------------------------------------------------
-step "3/6  k8s/*.yaml applies to k3s UNCHANGED"
+step "3/7  k8s/*.yaml applies to k3s UNCHANGED"
 # ---------------------------------------------------------------------------
 # Through the product's own resource sync and secret bootstrap, not a
 # hand-rolled copy: what a deploy applies is the PACKAGED manifests under
@@ -226,7 +226,7 @@ fi
 log "PASS: every Service is ClusterIP"
 
 # ---------------------------------------------------------------------------
-step "4/6  FAULT INJECTION: a docker-built image is invisible to k3s"
+step "4/7  FAULT INJECTION: a docker-built image is invisible to k3s"
 # ---------------------------------------------------------------------------
 # k3s runs its own containerd with its own image store, and every Deployment in
 # k8s/ pins `imagePullPolicy: IfNotPresent` against a `:local` tag that exists
@@ -305,7 +305,7 @@ kubectl -n "$NAMESPACE" wait --for=condition=Ready pod/import-probe-after --time
 log "PASS (fix proven): after _k3s_import_image the same Pod runs"
 
 # ---------------------------------------------------------------------------
-step "5/6  The access bridge, end to end"
+step "5/7  The access bridge, end to end"
 # ---------------------------------------------------------------------------
 # `k8s/`'s Services are ClusterIP-only, so nothing binds 127.0.0.1:8000 on the
 # instance the way the native services do -- and the SSH tunnel forwards to
@@ -349,7 +349,7 @@ log "MEASURED: 127.0.0.1:8000/health -> $bridged"
 log "PASS: systemd --user unit -> nyxgpt ops port-forward -> ClusterIP Service -> Pod"
 
 # ---------------------------------------------------------------------------
-step "6/6  FAULT INJECTION: the bridge is what was measured"
+step "6/7  FAULT INJECTION: the bridge is what was measured"
 # ---------------------------------------------------------------------------
 # Without this, step 5 would pass on any runner where something else happened
 # to be listening on 8000.
@@ -361,9 +361,85 @@ if curl -fsS --max-time 3 http://127.0.0.1:8000/health >/dev/null 2>&1; then
 fi
 log "PASS: with the bridge stopped, 127.0.0.1:8000 is dead"
 
+# ---------------------------------------------------------------------------
+step "7/7  The --no-kubernetes transition actually moves the box"
+# ---------------------------------------------------------------------------
+# `--no-kubernetes` is documented as moving a deployment back to the native
+# substrate. The failure this proves against is silent in the worst available
+# way: without the teardown, k3s and the `Restart=always` bridge keep holding
+# 127.0.0.1:8000, the freshly installed native services never bind, and the
+# install's health wait, the deploy's own check and the tunnel are all answered
+# by the cluster the operator just asked to leave -- so the deploy reports
+# success and records "native" about a box still serving from the cluster.
+#
+# Inspection cannot see that. It needs a running cluster and a running bridge,
+# which is exactly what the preceding steps have built, so the teardown is run
+# here against the real thing. As everywhere else in this script the text is
+# LIFTED from the rendered native section rather than retyped.
+python3 - > "$WORK/teardown.sh" <<'TEARDOWN_PY'
+from nyxgpt.cloud_deploy import NATIVE_STACK_BRINGUP_SECTION
+
+end = NATIVE_STACK_BRINGUP_SECTION.index("# --- Bring the stack up")
+print("set -euo pipefail")
+print(NATIVE_STACK_BRINGUP_SECTION[:end])
+TEARDOWN_PY
+
+log "Teardown text (as a --no-kubernetes deploy sends it):"
+sed 's/^/    | /' "$WORK/teardown.sh"
+
+# Step 6 stopped the bridge to prove it was the thing being measured. Bring it
+# back first, so what kills it below is the teardown and not that.
+systemctl --user start nyxgpt-k8s-bridge@api.service
+restored=""
+for _ in $(seq 1 20); do
+  if restored="$(curl -fsS --max-time 3 http://127.0.0.1:8000/health 2>/dev/null)"; then
+    break
+  fi
+  sleep 3
+done
+[[ -n "$restored" ]] \
+  || fail "could not restore the bridge before the teardown -- step 7 would prove nothing"
+log "MEASURED (precondition): bridge up again, 127.0.0.1:8000/health -> $restored"
+command -v k3s >/dev/null 2>&1 || fail "k3s is already gone before the teardown ran"
+
+bash "$WORK/teardown.sh"
+
+# The bridge: gone as a unit, and gone off the port.
+if systemctl --user is-active nyxgpt-k8s-bridge@api.service >/dev/null 2>&1; then
+  fail "the access bridge is still active after the --no-kubernetes teardown -- the
+        native services would fail to bind 8000 and every probe would be answered by
+        the cluster the operator asked to leave"
+fi
+if curl -fsS --max-time 3 http://127.0.0.1:8000/health >/dev/null 2>&1; then
+  fail "127.0.0.1:8000 still answers after the --no-kubernetes teardown"
+fi
+[[ ! -f "$HOME/.config/systemd/user/nyxgpt-k8s-bridge@.service" ]] \
+  || fail "the bridge unit template survived the teardown"
+log "PASS: the bridge is stopped, disabled, removed, and 8000 is free for the native stack"
+
+# The cluster: actually uninstalled, not merely stopped.
+if command -v k3s >/dev/null 2>&1; then
+  fail "k3s is still installed after the --no-kubernetes teardown -- the cluster would
+        keep running the stack the deploy record now says is native"
+fi
+if ss -ltnH 'sport = :6443' | grep -q .; then
+  fail "something still listens on 6443 after the k3s uninstall"
+fi
+log "PASS: k3s is uninstalled and 6443 is free"
+
+# And the half that makes it safe to run on every native deploy: a second pass,
+# on a box that now has neither, must be a no-op rather than an abort. The
+# teardown runs under `set -euo pipefail` on the instance, where `disable --now`
+# on an absent unit and an absent uninstaller are both non-zero.
+bash "$WORK/teardown.sh" \
+  || fail "the teardown is not idempotent -- it aborts on a box that never had k3s,
+           which is every first deploy and every ordinary native re-deploy"
+log "PASS (idempotence): a second teardown on a box with neither is a no-op"
+
 echo
 log "ALL PASS -- the k3s substrate a --kubernetes cloud deploy creates works, the"
-log "manifests apply to it unchanged, nothing listens on the public interface, and"
-log "both fault injections reproduced the failures they guard against."
+log "manifests apply to it unchanged, nothing listens on the public interface, the"
+log "--no-kubernetes transition really retires it, and both fault injections"
+log "reproduced the failures they guard against."
 log "NOT covered here, by construction: a real EC2 instance, a real AWS security"
 log "group, and IMDSv2 -- see docs/live-verification-ci.md."

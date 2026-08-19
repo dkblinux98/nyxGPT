@@ -295,8 +295,14 @@ and screenshots make verifiable in the review loop:
   runner: it installs k3s, measures that the API server is bound to the node's
   private address rather than every interface, proves Traefik and `servicelb`
   are absent and `local-path` is still the default StorageClass, applies
-  `k8s/` unchanged against the real API server, and drives the access bridge
-  end to end. Two of its steps are fault injections rather than happy paths --
+  `k8s/` unchanged against the real API server, drives the access bridge end
+  to end, and then executes the `--no-kubernetes` teardown against that same
+  live cluster and bridge -- proving the transition really stops the bridge,
+  frees `127.0.0.1:8000`, uninstalls k3s, frees 6443, and is a no-op on a
+  second pass (which is what every first deploy runs). That last one is only
+  meaningful with a cluster actually running, which is why it is here and not
+  in a unit test. Two of its steps are fault injections rather than happy
+  paths --
   a Pod referencing a docker-built image is proved to fail before
   `_k3s_import_image` and to run after it, and stopping the bridge is proved
   to kill `127.0.0.1:8000` -- so neither assertion can pass by luck. What is

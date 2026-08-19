@@ -1,0 +1,68 @@
+name: Config Wizard Save Smoke
+
+# One job, answering one question that no unit test can:
+#
+#   config-wizard-save  After a real `POST /api/v1/config/sections` against a
+#                       config.ini spelled the way a user's actually is, does
+#                       the API still serve requests -- and can a fresh
+#                       process still boot from that file?
+#
+# #3944: the wizard's Remove+Save wrote config.ini before anything checked the
+# result parsed. A `SLACK_BOT_TOKEN` on disk was invisible to a case-sensitive
+# matcher, so the save inserted a *second* `slack_bot_token`, `configparser`
+# rejected the file, and the whole admin dashboard went 500/502 with the damage
+# already committed to disk. Unit tests cover the merge; only a running uvicorn
+# reading a real config.ini can show the API surviving it.
+#
+# scripts/config-wizard-save-smoke.py drives both halves: it first injects the
+# pre-fix matcher and the unchecked write and asserts the API *does* break, so
+# the job cannot pass vacuously on a build that never fixed anything (#3753's
+# fault-injection rule), then asserts the shipped code passes.
+
+on:
+  pull_request:
+    paths:
+      - 'src/nyxgpt/config_wizard.py'
+      - 'src/nyxgpt/config.py'
+      - 'src/nyxgpt/app.py'
+      - 'example.config.ini'
+      - 'scripts/config-wizard-save-smoke.py'
+      - '.github/workflows/config-wizard-save-smoke.yml'
+  push:
+    paths:
+      - 'src/nyxgpt/config_wizard.py'
+      - 'src/nyxgpt/config.py'
+      - 'src/nyxgpt/app.py'
+      - 'example.config.ini'
+      - 'scripts/config-wizard-save-smoke.py'
+      - '.github/workflows/config-wizard-save-smoke.yml'
+  workflow_dispatch:
+
+# Read-only workflow: it checks out the repo and drives a local API process
+# against a throwaway $HOME; it never writes to the repository or its APIs
+# (CodeQL #33, actions/missing-workflow-permissions).
+permissions:
+  contents: read
+
+jobs:
+  config-wizard-save:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install nyxgpt (editable)
+        run: |
+          python -m pip install --upgrade pip setuptools
+          pip install -e .
+
+      # The script seeds an isolated $HOME/.nyxGPT/config.ini in the failing
+      # shape, starts a real uvicorn against it, clicks Remove then Save, and
+      # asserts the file still parses, the option was rewritten in place with
+      # its casing intact, the API still answers, and a fresh process boots.
+      - name: A wizard save must not brick the running API
+        run: python3 scripts/config-wizard-save-smoke.py

@@ -17,10 +17,18 @@ name: k3s Cloud Smoke
 # `render_provision_script()`, rather than a hand-maintained copy. A smoke that
 # tests an approximation certifies the approximation -- the #3860 lesson.
 #
-# Two of its six steps are FAULT INJECTIONS (#3753's both-halves rule): the
+# Two of its seven steps are FAULT INJECTIONS (#3753's both-halves rule): the
 # image-import step proves the Pod fails without the import and runs with it,
 # and the bridge step proves 127.0.0.1:8000 goes dead when the bridge stops, so
 # neither can pass by luck on a runner where something else was listening.
+#
+# The last step is the `--no-kubernetes` transition, and it needs a running
+# cluster and a running bridge to mean anything -- which is why it runs here
+# rather than in a unit test. It proves the native deploy's teardown really
+# stops the bridge, frees 8000, uninstalls k3s and frees 6443, and that a
+# second pass on a box with none of those is a no-op (every first deploy runs
+# it). Without that, a `--no-kubernetes` re-deploy leaves both stacks up with
+# every health probe answered by the wrong one.
 #
 # WHAT THIS JOB CANNOT COVER, and does not pretend to: a real EC2 instance, a
 # real AWS security group, and the IMDSv2 read (exercised here through its
