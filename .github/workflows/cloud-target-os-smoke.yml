@@ -1,0 +1,116 @@
+name: Cloud Target OS Smoke
+
+# One job, answering one question about `nyxgpt cloud deploy --os` (#3867):
+#
+#   cloud-target-os-smoke  When an operator runs the installed `nyxgpt`, does
+#                          the CLI itself deliver the target OS's bootstrap to
+#                          the instance -- or does something still have to be
+#                          carried there by hand?
+#
+#                          That is the whole defect #3867 reports. Before it,
+#                          `cloud deploy` drove one hard-coded Linux script,
+#                          and the only route to an EC2 Mac was to render
+#                          `nyxgpt cloud user-data --os macos` and paste the
+#                          result into an AWS console instance launch --
+#                          exactly the raw-operations instruction CLAUDE.md's
+#                          Operational Command Wrapping requirement forbids.
+#
+#                          Unit tests import the module, so they can prove the
+#                          dispatch returns the right text and nothing about
+#                          whether it ever leaves the operator's machine. This
+#                          runs a real sshd on the runner and points the real
+#                          `nyxgpt cloud deploy` at it. The authorized-keys
+#                          entry carries a forced command that captures stdin
+#                          and $SSH_ORIGINAL_COMMAND, so the client, the
+#                          server, the connection and the delivery are all
+#                          real while the bootstrap is inspected rather than
+#                          executed -- running the EC2 Mac script on a Linux
+#                          runner would only prove that `dscl` is missing.
+#
+#                          Injects the condition rather than hoping for it
+#                          (#3753's rule). Phase 1 asserts the Mac-with-no-host
+#                          refusal names the Dedicated Host and its 24-hour
+#                          minimum and applied nothing; phase 2 asserts the
+#                          macOS bootstrap arrived, elevated; phase 3 asserts
+#                          the *Linux* bootstrap arrives over the same path for
+#                          a Linux plan. A deploy still shipping one script
+#                          regardless of --os fails one of those two -- and
+#                          does: reverting the dispatch in an installed wheel
+#                          fails phase 2 on "expected 'tap dkblinux98/nyxgpt'".
+#
+# What it does NOT cover: a real EC2 Mac executing the bootstrap. GitHub
+# Actions has no macOS EC2 runner and Apple's licensing does not permit macOS
+# in a container, so EC2 Mac hardware stays on the short list in
+# docs/live-verification-ci.md. The *contents* of that bootstrap are covered
+# on real macOS by macos-brew-smoke.yml, which installs the same formulas from
+# the same remote tap on a macos-15 runner; what is unverifiable is only that
+# a `mac*.metal` instance runs them, which is the owner retest.
+
+on:
+  pull_request:
+    paths:
+      - 'src/nyxgpt/cloud_deploy.py'
+      - 'src/nyxgpt/cloud_provision.py'
+      - 'src/nyxgpt/cli.py'
+      - 'scripts/cloud/ec2-user-data-macos.sh.tmpl'
+      - 'scripts/cloud-target-os-smoke.sh'
+      - '.github/workflows/cloud-target-os-smoke.yml'
+  push:
+    paths:
+      - 'src/nyxgpt/cloud_deploy.py'
+      - 'src/nyxgpt/cloud_provision.py'
+      - 'src/nyxgpt/cli.py'
+      - 'scripts/cloud/ec2-user-data-macos.sh.tmpl'
+      - 'scripts/cloud-target-os-smoke.sh'
+      - '.github/workflows/cloud-target-os-smoke.yml'
+  workflow_dispatch:
+
+# Read-only workflow: it checks out the repo and drives a local smoke against
+# a localhost sshd. It never writes to the repository or its APIs, and it
+# never touches AWS.
+permissions:
+  contents: read
+
+jobs:
+  cloud-target-os-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # From the wheel, not `pip install -e .`: the question is what an
+      # operator's installed `nyxgpt` puts on the wire, and an editable
+      # install answers it from the checkout instead.
+      - name: Build and install the wheel into a clean venv
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel
+          python -m venv /tmp/cloud-target-os-venv
+          /tmp/cloud-target-os-venv/bin/pip install --upgrade pip
+          /tmp/cloud-target-os-venv/bin/pip install dist/*.whl
+
+      - name: Make sure an sshd is installed
+        run: |
+          if ! [ -x /usr/sbin/sshd ] && ! command -v sshd >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq openssh-server
+          fi
+
+      # A HOME of its own for nyxGPT's state, so the smoke's deploy record
+      # cannot collide with anything else on the runner. The authorized_keys
+      # the smoke writes goes to the account's real home, which is where sshd
+      # reads it from.
+      - name: Run the cloud target-OS smoke
+        run: |
+          mkdir -p /tmp/cloud-target-os-home
+          HOME=/tmp/cloud-target-os-home \
+            PATH="/tmp/cloud-target-os-venv/bin:$PATH" \
+            bash scripts/cloud-target-os-smoke.sh
+
+      - name: Show the state files the smoke left behind
+        if: always()
+        run: ls -la /tmp/cloud-target-os-home/.nyxGPT/cloud || true
