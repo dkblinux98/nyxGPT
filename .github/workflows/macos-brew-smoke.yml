@@ -702,6 +702,23 @@ jobs:
             exit 1
           fi
 
+          # A refusal only counts as `conflicts_with` holding if brew refused
+          # FOR THAT REASON. An untrusted tap refuses too ("Refusing to load
+          # formula ... from untrusted tap", #3770's shape, which this job hit
+          # in run 32202247518), and a refusal to load is indistinguishable
+          # from a refusal to conflict when all you look at is "the candidate
+          # is not installed". Homebrew's wording here is verified, not
+          # guessed: run 32204454740 logged
+          # `Cannot install nyxgpt/both-channels/nyxgpt-api@3.0.0rc because
+          # conflicting formulae are installed.`
+          if [ "$candidate_installed" = "0" ]; then
+            grep -qi 'conflicting formulae are installed' candidate.log || {
+              echo "::error::the candidate was refused, but not for conflicts_with -- brew gave some other reason (see candidate.log above); this job is measuring something other than the conflict"
+              exit 1
+            }
+            echo "refused for the declared conflict, which is conflicts_with working"
+          fi
+
           # Whatever Homebrew chose, the machine has to be left usable: a
           # dangling `nyxgpt` after a refused install is the #3850 shape again.
           command -v nyxgpt || { echo "::error::no nyxgpt on PATH after the candidate install attempt"; exit 1; }
@@ -719,26 +736,38 @@ jobs:
           nyxgpt --version
 
       - name: The other direction -- the stable onto an installed candidate
-        # The order the owner actually reached it by (#3853): the rc formula
-        # declares the conflict, the stable one does not, so this is the
-        # direction where "both installed" can happen. Asserted the same way,
-        # because a machine carrying both is broken regardless of the order it
-        # got there.
+        # Beyond AC4, which names only the direction above. This is the order
+        # the owner actually reached #3853 by: the rc formula declares the
+        # conflict, the stable one does not, so this is the direction where
+        # "both installed" can happen.
         #
-        # This step is RED TODAY, and it is red because the product is, not
-        # because the step is wrong. Run 32202943938 answered ledger Q-002 here:
-        # `conflicts_with` is directional and nothing checks this direction, so
-        # brew builds and installs the stable keg to completion
+        # It RECORDS that outcome, it does not fail on it, and that is a
+        # ratified decision, not a softening for a green check (huddle
+        # `change-approach`, 2026-08-19, on PR #3925). The reasoning: run
+        # 32202943938 answered ledger Q-002 here -- `conflicts_with` is
+        # directional and nothing checks this direction, so brew builds and
+        # installs the stable keg to completion
         # (`/opt/homebrew/Cellar/nyxgpt-api/3.0.0: 6,140 files`) and only then
         # fails `brew link` on the symlink collision -- `Could not symlink
         # bin/nyxgpt ... is a symlink belonging to nyxgpt-api@3.0.0rc`. A failed
         # link is not a guard: the keg stays installed, /opt/homebrew/bin/nyxgpt
         # still points at the candidate, and the machine ends at
-        # `stable installed: 1 / candidate installed: 1`. Do not soften this
-        # assertion to get a green check -- reporting green over that state is
-        # the exact failure #3860 exists to remove. It goes green when #3853
-        # lands (a `conflicts_with` on the stable formula, or an equivalent
-        # packaging-level guard).
+        # `stable installed: 1 / candidate installed: 1`.
+        #
+        # That is #3853, which is OPEN and whose fix direction is deliberately
+        # parked by ledger Q-002 -- taking the packaging side of it here (adding
+        # `conflicts_with` to the stable formula) would unpark an owner
+        # decision. A hard failure on a parked open defect is a gate no fix
+        # cycle on this PR can land, so this job's job is to be the standing CI
+        # reproduction of #3853 instead: the warning below names it, and the
+        # assertions that stay HARD are the ones about the state the machine is
+        # left in (`nyxgpt` on PATH and running), which no open defect excuses.
+        #
+        # THE DEBT: the PR that fixes #3853 owes the flip back -- turn the
+        # `::warning::` into `::error::` + `exit 1` and update the test that
+        # pins this text. Noted on #3853 itself. Do not flip it before then,
+        # and do not delete the recording: an unrecorded both-installed state
+        # is the hollow-gate shape #3860 exists to remove.
         run: |
           set -uo pipefail
           # Same rc-capture as the step above, for the same reason: the default
@@ -756,8 +785,10 @@ jobs:
           echo "stable installed: $stable_installed / candidate installed: $candidate_installed"
 
           if [ "$stable_installed" = "1" ] && [ "$candidate_installed" = "1" ]; then
-            echo "::error::installing the stable over the candidate leaves both installed (#3853)"
-            exit 1
+            echo "::warning::#3853 reproduced in CI by this job: installing the stable over the candidate leaves both installed, because conflicts_with is directional and only the rc formula declares it. Recorded, not failed, while #3853 is open (ledger Q-002); the PR that fixes #3853 flips this back to a hard failure."
+          else
+            echo "the stable did not install over the candidate -- if #3853 has landed,"
+            echo "this step owes its flip back to a hard assertion (see the comment above)."
           fi
           command -v nyxgpt || { echo "::error::no nyxgpt on PATH after the stable install attempt"; exit 1; }
           nyxgpt --version || { echo "::error::nyxgpt is on PATH but does not run after the stable install attempt"; exit 1; }

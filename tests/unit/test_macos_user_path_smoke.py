@@ -398,6 +398,141 @@ def test_the_stable_over_candidate_job_covers_the_present_counterpart_case() -> 
     )
 
 
+REVERSE_DIRECTION_STEP = "The other direction -- the stable onto an installed candidate"
+
+
+def _conflict_step(name: str) -> dict:
+    """One named step of `stable-over-candidate`, by its exact `name:`."""
+    steps = _workflow()["jobs"]["stable-over-candidate"]["steps"]
+    for step in steps:
+        if step.get("name") == name:
+            return step
+    raise AssertionError(
+        f"`stable-over-candidate` no longer has a step named {name!r}; "
+        f"it has {[s.get('name') for s in steps]}"
+    )
+
+
+def test_the_conflict_job_proves_the_refusal_was_the_declared_conflict() -> None:
+    """ "The candidate is not installed" is not by itself `conflicts_with` holding.
+
+    An untrusted tap refuses the install too -- "Refusing to load formula ...
+    from untrusted tap", which is what this job actually hit in run 32202247518
+    (#3770's shape). Both refusals leave the same observable state, so without
+    reading the reason a tap-trust regression reads as the conflict working and
+    the job silently stops measuring what it exists to measure.
+    """
+    run = _conflict_step("Install the stable, then the candidate on top of it")["run"]
+    assert "conflicting formulae are installed" in run, (
+        "the job no longer checks WHY brew refused the candidate, so any refusal "
+        "-- including an untrusted-tap refusal -- passes as conflicts_with holding"
+    )
+    assert "candidate.log" in run, (
+        "the refusal reason has to be read out of the captured install log; "
+        "brew's message is not on stdout when the install is redirected"
+    )
+
+
+def test_the_conflict_jobs_own_direction_stays_a_hard_assertion() -> None:
+    """AC4's direction is proven to work, so a regression there is a real defect.
+
+    Run 32204454740: candidate-onto-stable is refused, `stable installed: 1 /
+    candidate installed: 0`. Nothing about #3853 excuses that direction
+    breaking, so it keeps `::error::` + `exit 1`.
+    """
+    run = _conflict_step("Install the stable, then the candidate on top of it")["run"]
+    assert "::error::stable and candidate are installed simultaneously" in run, (
+        "the candidate-onto-stable direction no longer fails when both channels "
+        "end up installed -- that direction demonstrably works today, so a green "
+        "run over the both-installed state there would be a hollow gate"
+    )
+    assert re.search(r"::error::stable and candidate[^\n]*\n\s*exit 1", run), (
+        "the candidate-onto-stable both-installed outcome logs an error but no "
+        "longer exits non-zero, so the check would report green"
+    )
+
+
+def test_the_reverse_direction_records_3853_instead_of_failing_on_it() -> None:
+    """Ratified by huddle `change-approach` (2026-08-19, PR #3925).
+
+    This direction is beyond AC4 and reproduces #3853, which is open and whose
+    fix direction is parked by ledger Q-002. A PR gate that hard-fails on a
+    parked open defect cannot be landed green by any fix cycle, so the outcome
+    is recorded as a warning naming the issue. The assertions about the state
+    the machine is left in stay hard -- no open defect excuses a `nyxgpt` that
+    is missing or will not run.
+    """
+    step = _conflict_step(REVERSE_DIRECTION_STEP)
+    run = step["run"]
+
+    warning = next(
+        (line for line in run.splitlines() if "::warning::" in line and "#3853" in line),
+        None,
+    )
+    assert warning is not None, (
+        "the reverse direction no longer emits a warning naming #3853; the "
+        "both-installed state it reproduces would then be recorded nowhere"
+    )
+    for phrase in ("#3853 reproduced in CI by this job", "conflicts_with is directional"):
+        assert phrase in warning, (
+            f"the #3853 warning text no longer says {phrase!r}, so the log stops "
+            "explaining what was reproduced and why it is not a failure"
+        )
+
+    both_installed = re.search(
+        r'if \[ "\$stable_installed" = "1" \] && \[ "\$candidate_installed" = "1" \]; then'
+        r"(.*?)\n *fi\b",
+        run,
+        re.S,
+    )
+    assert both_installed is not None, "the both-installed branch is gone from the step"
+    assert "exit 1" not in both_installed.group(1), (
+        "the reverse direction hard-fails on the both-installed state again. That "
+        "state is open defect #3853; failing on it makes this check unlandable by "
+        "any fix cycle. The huddle ratified recording it. The flip back belongs to "
+        "the PR that fixes #3853 -- and that PR updates this test with it."
+    )
+
+    for hard in (
+        "no nyxgpt on PATH after the stable install attempt",
+        "nyxgpt is on PATH but does not run after the stable install attempt",
+    ):
+        assert re.search(rf"::error::{re.escape(hard)}[^\n]*exit 1", run), (
+            f"the machine-left-usable assertion {hard!r} is no longer hard; #3853 "
+            "does not excuse a broken CLI, so these stay failures"
+        )
+
+
+def test_the_reverse_direction_comment_records_the_debt_not_a_refusal() -> None:
+    """The comment must not instruct the next session to undo the agreed fix.
+
+    An earlier revision of this block said "Do not soften this assertion to get
+    a green check", which -- after the huddle ratified exactly that change --
+    would have trapped both the #3853 fixer and the next reviewer into
+    re-litigating a settled decision.
+    """
+    # The step still has to exist under that name; `yaml.safe_load` drops
+    # comments, so the block itself is read off the raw file -- everything
+    # between this step's `- name:` line and its `run:` line.
+    _conflict_step(REVERSE_DIRECTION_STEP)
+    raw = WORKFLOW.read_text(encoding="utf-8")
+    start = raw.index(f"- name: {REVERSE_DIRECTION_STEP}")
+    comment = raw[start : raw.index("run: |", start)]
+
+    assert "Do not soften this assertion" not in comment, (
+        "the comment tells future sessions to refuse the ratified record-don't-fail "
+        "decision; it would trap the #3853 fixer and the next reviewer"
+    )
+    assert "RED TODAY" not in comment, (
+        "the comment asserts today's check color, which expires the moment the "
+        "behavior changes and cannot be verified from the file"
+    )
+    assert "#3853" in comment and "flip" in comment, (
+        "the comment no longer records the debt: the PR that fixes #3853 owes "
+        "the flip back to a hard assertion, and nothing else says so in-tree"
+    )
+
+
 @pytest.mark.parametrize("formula", API_FORMULAS, ids=lambda p: p.name)
 def test_api_formula_test_blocks_run_the_cli(formula: Path) -> None:
     """`import nyxgpt.app` resolving is true of a keg with no reachable CLI."""

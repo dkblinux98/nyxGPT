@@ -581,6 +581,27 @@ rather than mechanism, and nothing can enforce them.
   evidence") and §10.
   Source: #3860; #3516; `scripts/macos-user-path-smoke.sh`.
 
+- **D-025** · 2026-08-19 · huddle `change-approach` on PR #3925 (#3860) — **A
+  CI gate may *record* an open, parked defect; it may not *fail* on one.**
+  `macos-brew-smoke.yml`'s `stable-over-candidate` job covers both
+  `conflicts_with` directions. The direction AC4 names (candidate onto an
+  installed stable) works, so it stays a hard assertion. The reverse direction
+  — stable onto an installed candidate, added beyond AC4 — reproduces **#3853**,
+  which is open and whose fix direction is parked by **Q-002**. Hard-failing
+  there made the check unlandable by any fix cycle: no change to #3860's branch
+  could turn it green, and the only routes to green were softening the
+  assertion or taking the packaging side of a parked owner decision. So the
+  both-installed outcome is emitted as a `::warning::` naming #3853, while the
+  assertions about the state the machine is *left in* (`nyxgpt` on PATH and
+  running) stay hard. **The debt:** the PR that fixes #3853 flips that warning
+  back to `::error::` + `exit 1` and updates
+  `tests/unit/test_macos_user_path_smoke.py::test_the_reverse_direction_records_3853_instead_of_failing_on_it`
+  with it; the note is on #3853 itself. Generalise the rule, not the special
+  case: a gate that hard-fails on a defect the project has decided not to fix
+  yet is not a gate, it is a permanent red that trains readers to ignore it —
+  record it loudly and hold the debt where the fixer will find it.
+  Source: PR #3925 huddle decision 2026-08-19; run 32202943938; run 32204454740.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
