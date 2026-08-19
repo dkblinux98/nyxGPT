@@ -290,11 +290,32 @@ if nyxgpt ops status 2>&1 | tee "$WORK/status.log"; then
 else
   fail "nyxgpt ops status exited non-zero on an installed machine"
 fi
+# The line shape is the one `ops.py` actually prints -- `  native  api: started`,
+# `  compose web: running`, `  terraform api: running` (src/nyxgpt/ops.py, the
+# "Deployment mode:" block). No status line ever begins with a bare component
+# name, so a `^[[:space:]]*api\b` pattern could not match even a perfectly
+# working install; it reported a phantom #3854 forever.
+#
+# And naming the component is not enough on its own: `native  api: none` names
+# it while telling the operator nothing is there. This asserts the state as
+# well, because that is the read-out #3854 is about -- what the operator is
+# told about the services this script just started.
 for component in api web; do
-  if grep -qiE "^[[:space:]]*${component}\b" "$WORK/status.log"; then
-    pass "status names the $component component"
+  state_line="$(grep -iE "^[[:space:]]*(native|compose|terraform)[[:space:]]+${component}:" \
+    "$WORK/status.log" | head -1 || true)"
+  if [ -n "$state_line" ]; then
+    pass "status names the $component component ($(printf '%s' "$state_line" | sed 's/^[[:space:]]*//'))"
   else
     fail "nyxgpt ops status never mentions $component, so the operator cannot see what they installed (#3854)"
+    continue
+  fi
+  # `started` is what `brew services list` reports for a running native
+  # service and what the native snapshot passes straight through; `running`
+  # covers the Compose/Terraform spellings of the same state.
+  if printf '%s' "$state_line" | grep -qiE ":[[:space:]]*(started|running)\b"; then
+    pass "status reports $component as running"
+  else
+    fail "nyxgpt ops status reports $component as not running ($(printf '%s' "$state_line" | sed 's/^[[:space:]]*//')) after nyxgpt up (#3854)"
   fi
 done
 

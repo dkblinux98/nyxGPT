@@ -249,13 +249,18 @@ platform under review) rather than an install job.
 - **Prose-only changes** (docs, runbooks, prompts, charters), including
   agent-process changes whose contract text is pinned by tests.
 - **What CI genuinely cannot produce** — the short documented list in
-  `docs/live-verification-ci.md` (the native launchd/brew-services *operate*
-  path, real Slack delivery, LLM answer quality), plus EC2 Mac hardware, for
+  `docs/live-verification-ci.md` (Docker-backed components on the hosted macOS
+  runners, the setup wizard's prompts, what the web UI *renders*, Ollama model
+  pulls, real Slack delivery, LLM answer quality), plus EC2 Mac hardware, for
   which no hosted runner exists (`docs/portability-matrix.md`). Name which
   item applies and what the owner must exercise; do not defer to it when the
-  condition could be injected instead, and note that the brew *install* half
-  is covered by `macos-brew-smoke.yml` — "macOS can't be tested in CI" is not
-  a valid excuse for a formula change.
+  condition could be injected instead. **The macOS brew path is not on this
+  list — neither the install nor the operate half.** Since #3860,
+  `macos-brew-smoke.yml`'s `published-tap` job runs `nyxgpt --version`,
+  `nyxgpt up`, `GET /health`, `GET /api/v1/sessions`, the web UI on :3000,
+  `nyxgpt ops status`, `nyxgpt down` and the uninstall/residue check on a real
+  `macos-15` runner. "macOS can't be tested in CI" is not a valid excuse for a
+  formula, install or service-lifecycle change.
 
 **Severity and symmetry.** Missing executed evidence on an in-scope change is a
 **Medium (blocking)** finding: cite the claim, name the platform it was never
@@ -444,13 +449,16 @@ review agent runs this harness itself, in CI, before deciding:**
 
 **What still defers to owner acceptance** — because CI genuinely cannot
 exercise it, not because it's inconvenient — is the short, explicit list
-`docs/live-verification-ci.md` documents: the Apple Silicon native
-brew-services *operate* path (this harness only exercises the Compose path;
-the keg **install** is executed on a real `macos-15` runner by
-`macos-brew-smoke.yml`, so it is not on this list), real Slack
-delivery (no real webhook secret in CI), and LLM response *quality* (CI's
-model is stubbed/tiny — the pipeline being intact end to end is what's
-asserted, not answer quality). List exactly which of these apply, explicitly,
+`docs/live-verification-ci.md` documents: the Docker-backed components on the
+hosted macOS runners (those images ship no Docker daemon), the setup wizard's
+interactive prompts, what a web *panel* renders on the brew path, Ollama model
+pulls, real Slack delivery (no real webhook secret in CI), and LLM response
+*quality* (CI's model is stubbed/tiny — the pipeline being intact end to end
+is what's asserted, not answer quality). The Apple Silicon brew-services
+**operate** path is *not* on this list any more: this harness only exercises
+the Compose path, but `macos-brew-smoke.yml`'s `published-tap` job executes
+the brew keg install *and* the user path after it on a real `macos-15` runner
+(#3860). List exactly which of these apply, explicitly,
 in the APPROVE review so the owner knows precisely what to exercise during
 acceptance. Do not REQUEST_CHANGES or burn escalation cycles demanding
 evidence the harness already produced, or evidence that's on the

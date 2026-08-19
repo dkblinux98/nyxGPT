@@ -43,6 +43,12 @@ name: macOS Brew Smoke
 #
 # Cost: macOS runners bill at a multiple of Linux, so the PR trigger is
 # paths-filtered down to the formulas, the stamping script and this file.
+# Deliberately NOT in the filter: `scripts/macos-user-path-smoke.sh` and its
+# unit test. No PR-triggered job runs that script (the job that drives it needs
+# a published candidate, so it is dispatch/rc-cut only), so a script-only PR
+# would spend two macOS runners to execute nothing that changed;
+# `tests/unit/test_macos_user_path_smoke.py` pins its content on every PR
+# instead, and the script itself is exercised by the dispatch/rc-cut run.
 on:
   pull_request:
     paths:
@@ -651,12 +657,19 @@ jobs:
           nyxgpt --version
 
           echo "=== brew install <candidate> with the stable already installed ==="
-          # Deliberately not `set -e` around this: a refusal is a legitimate
-          # outcome (it is what `conflicts_with` promises), and the assertion
-          # below is about the *state the machine is left in*, not this exit
-          # code.
-          brew install --verbose nyxgpt/both-channels/nyxgpt-api@3.0.0rc > candidate.log 2>&1
-          echo "candidate install exited $?"
+          # A refusal is a legitimate outcome here (it is what `conflicts_with`
+          # promises), and the assertion below is about the *state the machine
+          # is left in*, not this exit code. Omitting `set -e` is not enough to
+          # say that: Actions runs a `run:` body with no `shell:` key as
+          # `/bin/bash -e {0}`, so errexit arrives already on and `set -uo
+          # pipefail` does not clear it. Before this, a refusal aborted the step
+          # here -- the job was red exactly when `conflicts_with` worked, and
+          # candidate.log, the one artifact saying why, was never printed
+          # (run 32200501142). Capture the code in a `||` list, which errexit
+          # does not act on, rather than trying to switch errexit off.
+          rc=0
+          brew install --verbose nyxgpt/both-channels/nyxgpt-api@3.0.0rc > candidate.log 2>&1 || rc=$?
+          echo "candidate install exited $rc"
           tail -40 candidate.log
 
           stable_installed=0
@@ -699,8 +712,12 @@ jobs:
         # got there.
         run: |
           set -uo pipefail
-          brew install --verbose nyxgpt/both-channels/nyxgpt-api > stable-on-top.log 2>&1
-          echo "stable install exited $?"
+          # Same rc-capture as the step above, for the same reason: the default
+          # shell is `/bin/bash -e {0}`, so a legitimate refusal would otherwise
+          # abort the step before a single assertion ran.
+          rc=0
+          brew install --verbose nyxgpt/both-channels/nyxgpt-api > stable-on-top.log 2>&1 || rc=$?
+          echo "stable install exited $rc"
           tail -40 stable-on-top.log
 
           stable_installed=0
@@ -719,6 +736,15 @@ jobs:
       - name: Install logs on failure
         if: failure()
         run: |
+          # The redirected install logs first: when a step above fails before
+          # its `tail`, these carry the reason brew gave, and Homebrew's own
+          # per-formula logs do not (they only exist for installs that got as
+          # far as building).
+          for log in candidate.log stable-on-top.log; do
+            [ -f "$log" ] || continue
+            echo "--- $log ---"
+            cat "$log" || true
+          done
           for log in ~/Library/Logs/Homebrew/nyxgpt-api*/*; do
             [ -f "$log" ] || continue
             echo "--- $log ---"

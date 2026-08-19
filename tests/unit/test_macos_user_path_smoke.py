@@ -26,6 +26,8 @@ than as a cosmetic test failure.
 from __future__ import annotations
 
 import os
+import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -164,6 +166,134 @@ def test_the_script_asserts_its_own_precondition_instead_of_degrading() -> None:
     )
 
 
+def _script_ere(fragment: str) -> str:
+    """The first extended regex the script passes to `grep -E`/`-iE` containing `fragment`.
+
+    Extracted rather than restated: a copy of the pattern in this file would
+    pass while the script shipped a different one, which is the exact failure
+    mode these tests exist to remove.
+    """
+    for match in re.finditer(r'grep -q?[a-zA-Z]*E\s+"([^"]+)"', _script()):
+        if fragment in match.group(1):
+            return match.group(1)
+    raise AssertionError(
+        f"no grep -E pattern in the script mentions {fragment!r}; the assertion it "
+        "belonged to was removed or rewritten"
+    )
+
+
+def _ops_status_line(prefix: str, component: str, state: str) -> str:
+    """A `nyxgpt ops status` line, rendered from `ops.py`'s own format literal.
+
+    The point is that this test cannot go stale in the safe direction: the
+    sample is the product's format string, so a change to how status prints
+    fails here instead of silently making the script's grep unmatchable.
+    """
+    source = (REPO_ROOT / "src" / "nyxgpt" / "ops.py").read_text(encoding="utf-8")
+    match = re.search(rf'print\(f"(  {prefix}\s*\{{component\}}: [^"]*)"\)', source)
+    assert match, (
+        f"src/nyxgpt/ops.py no longer prints a {prefix!r} deployment-mode line in the "
+        "shape scripts/macos-user-path-smoke.sh greps for"
+    )
+    return (
+        match.group(1)
+        .replace("{component}", component)
+        .replace("{state}", state)
+        .replace("{suffix}", "")
+    )
+
+
+def _grep_matches(pattern: str, text: str) -> bool:
+    """`grep -iE`, run for real -- POSIX classes are not Python regex syntax."""
+    return (
+        subprocess.run(
+            ["grep", "-qiE", pattern],
+            input=text,
+            text=True,
+            check=False,
+        ).returncode
+        == 0
+    )
+
+
+@pytest.mark.parametrize(("prefix", "state"), [("native", "started"), ("compose", "running")])
+def test_the_status_assertion_matches_what_ops_status_actually_prints(
+    prefix: str, state: str
+) -> None:
+    """A pattern that cannot match is a permanently red assertion, not a gate.
+
+    The first cut anchored on `^[[:space:]]*api\\b`, but no status line begins
+    with a bare component name -- `ops.py` prints `  native  api: started` and
+    `  compose web: running`. That assertion would have failed forever,
+    including after #3850-#3859 land, reporting a phantom #3854 and
+    contradicting this issue's own criterion that each assertion passes once
+    the fixes land. Inspection missed it once; this executes the pattern.
+    """
+    pattern = _script_ere("native|compose|terraform")
+    for component in ("api", "web"):
+        line = _ops_status_line(prefix, component, state)
+        assert _grep_matches(pattern.replace("${component}", component), line), (
+            f"the script's status pattern does not match {line!r}, which is what "
+            "nyxgpt ops status prints -- the assertion can never pass"
+        )
+
+
+def test_the_status_assertion_rejects_a_component_that_is_not_running() -> None:
+    """Naming the component is not the claim; `native  api: none` names it too.
+
+    #3854 is about what the operator is told is running after they ran
+    `nyxgpt up`, so a `none` state has to fail the gate rather than satisfy it.
+    """
+    pattern = _script_ere("started|running")
+    assert _grep_matches(pattern, _ops_status_line("native", "api", "started"))
+    assert not _grep_matches(pattern, _ops_status_line("native", "api", "none")), (
+        "the script accepts a status line reporting the api service as absent, so a "
+        "machine where nyxgpt up started nothing would still pass this step (#3854)"
+    )
+
+
+def test_the_self_heal_assertion_matches_what_self_heal_status_prints() -> None:
+    """Same contract, same failure mode, for the #3853 probe."""
+    source = (REPO_ROOT / "src" / "nyxgpt" / "cli.py").read_text(encoding="utf-8")
+    match = re.search(r"print\(f\"( \[\{marker\}\] \{c\['service'\]\}: [^\"]*)\"\)", source)
+    assert match, (
+        "src/nyxgpt/cli.py no longer prints the ` [<marker>] <service>: ` line the "
+        "user-path script greps for; the #3853 probe cannot match"
+    )
+    line = (
+        match.group(1)
+        .replace("{marker}", "OK")
+        .replace("{c['service']}", "api")
+        .replace("{c['state']}", "running")
+        .replace("{health}", "healthy")
+        .replace("{suffix}", "")
+    )
+    pattern = _script_ere(r"\[OK\]").replace("${component}", "api")
+    assert _grep_matches(pattern, line), (
+        f"the script's self-heal pattern does not match {line!r}, which is what "
+        "`nyxgpt self-heal status` prints"
+    )
+
+
+def test_the_conflict_job_captures_install_exit_codes_without_tripping_errexit() -> None:
+    """A refusal is the designed pass case, and it was killing the step.
+
+    GitHub runs a `run:` body with no `shell:` key as `/bin/bash -e {0}`, so
+    errexit is on before the script's own `set -uo pipefail` and is not cleared
+    by it. `brew install <candidate> > candidate.log 2>&1` therefore aborted the
+    step the moment Homebrew honoured `conflicts_with` -- the job was red
+    exactly when the behavior it tests worked, and none of its state assertions
+    ran (run 32200501142).
+    """
+    runs = _job_run_text(_workflow()["jobs"]["stable-over-candidate"])
+    for log in ("candidate.log", "stable-on-top.log"):
+        assert re.search(rf"> {re.escape(log)} 2>&1 \|\| rc=\$\?", runs), (
+            f"the install writing {log} no longer captures its exit code in a `||` "
+            "list, so the inherited errexit aborts the step on a legitimate "
+            "conflicts_with refusal before a single assertion runs"
+        )
+
+
 def test_the_published_tap_job_runs_the_user_path() -> None:
     job = _workflow()["jobs"]["published-tap"]
     runs = _job_run_text(job)
@@ -225,6 +355,53 @@ def test_web_formula_test_blocks_run_the_server(formula: Path) -> None:
     assert (
         'assert_equal "200", code' in block
     ), f"{formula.name}'s test block no longer requires the server to answer"
+
+
+# Every place in the tree that enumerates what CI cannot execute. They are
+# separate files by necessity (a runbook, a prompt, a doc), which is exactly
+# why they drifted: #3860 made the macOS operate path CI-executed in
+# `docs/live-verification-ci.md` and left five other files still calling it
+# owner-acceptance-only.
+NOT_COVERABLE_CLAIM_SITES = (
+    REPO_ROOT / "docs" / "live-verification-ci.md",
+    REPO_ROOT / "docs" / "testing.md",
+    REPO_ROOT / "agents" / "runbooks" / "review-runbook.md",
+    REPO_ROOT / "agents" / "runbooks" / "developer-runbook.md",
+    REPO_ROOT / "agents" / "prompts" / "review-agent.prompt.md",
+)
+
+
+@pytest.mark.parametrize("path", NOT_COVERABLE_CLAIM_SITES, ids=lambda p: p.name)
+def test_no_file_calls_the_macos_operate_path_uncoverable_without_naming_its_gate(
+    path: Path,
+) -> None:
+    """The contradiction #3860 left behind must not be able to come back.
+
+    After this issue the tree said both things at once: `live-verification-ci.md`
+    that the macOS operate path is executed in CI, and five other files that it
+    is structurally impossible to execute there. The second is what a future
+    reviewer cites to exempt a macOS service-lifecycle change from executed
+    evidence -- i.e. the loophole this issue exists to close.
+
+    What this pins is narrow and deliberate: a paragraph that talks about the
+    *operate* path has to name the gate that runs it. It cannot judge the
+    polarity of a sentence, so it will not catch every possible re-statement --
+    but a fresh "the operate path is owner acceptance" bullet written without
+    reference to #3860 or the workflow that executes it is precisely the shape
+    that drifted, and that shape trips here.
+    """
+    text = path.read_text(encoding="utf-8")
+    for paragraph in re.split(r"\n[ \t]*\n", text):
+        if not re.search(r"\boperate\b", paragraph):
+            continue
+        assert "macos-brew-smoke" in paragraph or "#3860" in paragraph, (
+            f"{path.relative_to(REPO_ROOT)} discusses the *operate* path without naming "
+            "the gate that executes it:\n\n"
+            f"{paragraph.strip()[:400]}\n\n"
+            "Since #3860 the macOS brew-services operate path runs on a real macos-15 "
+            "runner (macos-brew-smoke.yml, published-tap job). A passage that leaves it "
+            "on the not-CI-coverable list is the exemption a reviewer will cite."
+        )
 
 
 def test_the_review_contract_refuses_component_evidence_for_a_scenario_criterion() -> None:
