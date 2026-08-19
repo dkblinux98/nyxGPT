@@ -912,7 +912,7 @@ def _apply_hot_config_updates(updates: dict[str, Any]) -> dict[str, Any]:
     """Apply a small set of hot config updates to ~/.nyxGPT/config.ini.
 
     Supported updates:
-    - default_model (str) -> [ollama] default_model
+    - default_model (str) -> [nyxgpt] default_model
     - rag_enabled (bool)  -> [rag] enable_chat_context
     - log_level (str)     -> [logging] level
 

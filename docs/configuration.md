@@ -346,15 +346,16 @@ Connection details for the Ollama server.
 ```ini
 [ollama]
 base_url = http://127.0.0.1:11434
-default_model = qwen2.5:latest
 ```
 
 | Key | Description |
 |---|---|
 | `base_url` | Base URL of the Ollama HTTP API (default: `http://127.0.0.1:11434`) |
-| `default_model` | Default model for Ollama (optional override of `nyxgpt.default_model`) |
 
-**Note:** If `default_model` is not set, nyxGPT uses `nyxgpt.default_model` instead.
+**Note:** there is no `[ollama] default_model`. The chat model is
+[`[nyxgpt] default_model`](#nyxgpt-section) and nothing reads an `[ollama]`
+override — it is also the model `nyxgpt ops install` pulls (#3824), so a
+second key here would name a model the install does not fetch.
 
 **Note:** `base_url` may carry credentials (`http://user:pass@host:11434`) for
 an Ollama behind basic auth. When startup validation rejects the value it
