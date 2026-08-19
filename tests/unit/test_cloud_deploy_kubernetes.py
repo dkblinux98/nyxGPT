@@ -134,6 +134,36 @@ def test_a_deploy_predating_the_flag_reads_as_native(_isolated_cloud_home):
     assert cloud_deploy.resolve_plan(_args(version=None)).kubernetes is False
 
 
+def test_a_session_backend_the_cluster_cannot_honour_is_refused():
+    """Refused, not accepted-and-ignored.
+
+    In Kubernetes mode the Pods read `k8s/configmap.yaml`, which asserts
+    `session_backend = cassandra`. `ops session-backend` writes the *host's*
+    config.ini, which nothing in the cluster reads -- so `--session-backend
+    file --kubernetes` is a flag that cannot do anything, and the deploy
+    summary reporting it would have described a setting no Pod was using.
+    """
+    with pytest.raises(CloudCommandError, match="configmap"):
+        cloud_deploy.resolve_plan(_args(kubernetes=True, session_backend="file"))
+
+
+def test_a_carried_forward_backend_says_where_it_came_from(_isolated_cloud_home):
+    """The nastier half: the operator passed no `--session-backend` at all.
+
+    Adding `--kubernetes` to a box last deployed natively with `file` sessions
+    would otherwise produce a refusal naming a flag they did not type.
+    """
+    (_isolated_cloud_home / "deploy.json").write_text(
+        json.dumps({"version": "3.0.0", "session_backend": "file"}), encoding="utf-8"
+    )
+    with pytest.raises(CloudCommandError, match="carries it forward"):
+        cloud_deploy.resolve_plan(_args(version=None, kubernetes=True))
+
+
+def test_the_default_backend_is_fine_in_kubernetes_mode():
+    assert cloud_deploy.resolve_plan(_args(kubernetes=True)).session_backend == "cassandra"
+
+
 # --- Reuse: the existing install mode, on the instance -------------------
 
 

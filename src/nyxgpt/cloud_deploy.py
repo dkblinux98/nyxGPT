@@ -431,6 +431,29 @@ def resolve_plan(args: argparse.Namespace) -> DeployPlan:
     kubernetes = (
         bool(previous.get("kubernetes", False)) if requested_k8s is None else bool(requested_k8s)
     )
+    if kubernetes and backend != "cassandra":
+        # Refused rather than accepted-and-ignored (#3956). In Kubernetes mode
+        # the Pods read `k8s/configmap.yaml`, which asserts
+        # `session_backend = cassandra` declaratively -- `ops session-backend`
+        # writes the *host's* config.ini, which nothing in the cluster reads.
+        # So the flag cannot take effect here, and the deploy summary that
+        # reported it would have been describing a setting no Pod was using.
+        # This also fires on a value merely carried forward from an earlier
+        # native deploy, which is exactly the case where the flag silently
+        # changes meaning under the operator.
+        raise CloudCommandError(
+            f"--session-backend {backend} cannot take effect on a Kubernetes deployment: the "
+            "Pods read k8s/configmap.yaml, which sets `session_backend = cassandra` so that "
+            "every api replica shares one session list (see docs/session-storage.md). "
+            f"Pass --session-backend cassandra, or drop --kubernetes to deploy natively with "
+            f"the {backend} backend."
+            + (
+                "\n(That value came from the last deploy on this machine, not from a flag on "
+                "this one -- `deploy.json` carries it forward.)"
+                if not getattr(args, "session_backend", None)
+                else ""
+            )
+        )
     return DeployPlan(
         version=version,
         profiles=profiles,
@@ -1764,7 +1787,15 @@ def _print_deploy_summary(result: dict[str, Any]) -> None:
             "evaluate / promote / rollback) run the instance's own `nyxgpt canary`."
         )
     backend = str(plan.get("session_backend") or DEFAULT_SESSION_BACKEND)
-    if backend == "cassandra":
+    if plan.get("kubernetes"):
+        # Always cassandra here, and said as the cluster's own statement
+        # rather than as a choice this deploy made: `k8s/configmap.yaml` is
+        # what the Pods read, and `resolve_plan` refuses any other value.
+        print(
+            "Chat sessions: the in-cluster Cassandra (`nyxgpt.chat_sessions`), as "
+            "k8s/configmap.yaml asserts -- every api replica shares one session list."
+        )
+    elif backend == "cassandra":
         print(
             "Chat sessions: the instance's Cassandra (`nyxgpt.chat_sessions`) -- shared with "
             "every mode pointed at the same Cassandra."

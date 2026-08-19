@@ -96,7 +96,7 @@ works here too and is remembered for later runs, plus:
 | `--version` | Published release to install on the instance (default: this CLI's own version, then whatever the last deploy used) |
 | `--kubernetes` / `--no-kubernetes` | Run the stack on a single-node k3s cluster on the instance instead of natively, applying the same `k8s/*.yaml` manifests — this is what makes `nyxgpt cloud canary` available. Remembered for later runs. See [Kubernetes on the instance](#kubernetes-on-the-instance-3956) |
 | `--skip-observability` | Deploy the core app only, without monitoring/logging/tracing/errors |
-| `--session-backend` | Where the instance stores chat sessions: `cassandra` (default — shared with every mode pointed at the same Cassandra) or `file` (JSON on the instance's own disk). Remembered for later runs, so a re-deploy never silently moves an instance's sessions back to files. See [session-storage.md](session-storage.md) |
+| `--session-backend` | Where the instance stores chat sessions: `cassandra` (default — shared with every mode pointed at the same Cassandra) or `file` (JSON on the instance's own disk). Remembered for later runs, so a re-deploy never silently moves an instance's sessions back to files. Refused with `--kubernetes` for anything but `cassandra`, which the cluster's ConfigMap fixes. See [session-storage.md](session-storage.md) |
 | `--no-tunnel` | Don't open the tunnel (and so don't health-check through it); prints the `nyxgpt cloud tunnel` command to run instead |
 | `--ssh-user` | Login user on the instance (default `ec2-user`, the Amazon Linux 2023 default) |
 | `--identity-file` | Private key to authenticate with (default: whatever the last deploy used, then whatever `ssh` would pick from `~/.ssh` and your agent) |
@@ -241,8 +241,15 @@ command you would run on a workstation, taking the same bring-your-own-cluster
 branch it takes against any reachable cluster. Steps 1, 2, 5 and 6 of the
 deploy above are unchanged; step 3 installs k3s in place of the host Ollama
 and Node toolchain (the cluster runs Ollama itself, and the web image is built
-by Docker rather than by `npm` on the host), and step 4's session backend is
-governed in-cluster by `k8s/configmap.yaml`.
+by Docker rather than by `npm` on the host).
+
+Step 4 has no Kubernetes form: chat sessions live in the in-cluster Cassandra
+because `k8s/configmap.yaml` says so, and the Pods read that rather than the
+host's `config.ini`. `--session-backend file --kubernetes` is therefore
+**refused** rather than accepted and ignored — including when the `file` value
+was carried forward from an earlier native deploy of the same instance, which
+is exactly the case where the flag would otherwise change meaning underneath
+you.
 
 What the access model gets, beyond the single port-22 rule that is unchanged:
 
