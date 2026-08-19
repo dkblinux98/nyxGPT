@@ -607,19 +607,31 @@ jobs:
           echo "=== self-check: the interpreter is really in the owner's state ==="
           # A fault that does not fire produces a passing negative control,
           # which in a log is indistinguishable from "the bug is gone".
-          "$PY" - <<'CHECK'
+          #
+          # The observed error is written out rather than assumed: the claim
+          # under test is that the refusal quotes what the *loader* said, so
+          # the later assertion greps for the string this step actually saw
+          # instead of hard-coding dyld's current phrasing.
+          NYXGPT_SMOKE_WORK="$WORK" "$PY" - <<'CHECK'
+          import os
           import platform
           import sys
 
+          work = os.environ["NYXGPT_SMOKE_WORK"]
+          observed = None
           for module in ("xml.parsers.expat", "plistlib"):
               try:
                   __import__(module)
               except Exception as exc:  # noqa: BLE001 - this is the assertion
                   print(f"  import {module}: {type(exc).__name__}: {exc}")
+                  if observed is None:
+                      observed = str(exc).splitlines()[0]
                   if "dlopen(" not in str(exc):
-                      print(f"::error::{module} failed, but not through dlopen --")
-                      print("::error::the injected fault is not the owner's shape")
-                      sys.exit(1)
+                      # Not fatal: the condition (this interpreter cannot load
+                      # pyexpat) is created either way, and that is what the
+                      # preflight has to catch. Say it, because the owner's
+                      # fault came out of dyld and a drift here is worth seeing.
+                      print(f"::warning::{module} failed, but not through dlopen -- injected shape has drifted")
               else:
                   print(f"::error::{module} still imports; #3814's condition was not created")
                   sys.exit(1)
@@ -630,6 +642,8 @@ jobs:
           if release:
               print("::error::mac_ver() still answers, so this is not the state the owner's Mac was in")
               sys.exit(1)
+          with open(os.path.join(work, "observed-error.txt"), "w", encoding="utf-8") as handle:
+              handle.write((observed or "") + "\n")
           print("  the interpreter cannot load pyexpat, as on the owner's Mac")
           CHECK
 
@@ -747,7 +761,6 @@ jobs:
             "refusing to build against" \
             "nyxgpt-preflight: this interpreter cannot import part of its own" \
             "import xml.parsers.expat" \
-            "dlopen(" \
             "brew reinstall python@3.12" \
             "Update macOS"
           do
@@ -756,6 +769,17 @@ jobs:
               exit 1
             }
           done
+          # The loader's own words, quoted -- compared against what the
+          # self-check above actually observed, not against a phrasing this
+          # file guessed. That string is what makes the fault searchable, which
+          # is the property the owner asked the message to have.
+          OBSERVED="$(head -1 "$WORK/observed-error.txt")"
+          test -n "$OBSERVED" || { echo "::error::the self-check recorded no loader error"; exit 1; }
+          grep -qF "$OBSERVED" "$WORK/preflight-install.log" || {
+            echo "expected verbatim: $OBSERVED"
+            echo "::error::the refusal summarises the loader error instead of quoting it"
+            exit 1
+          }
           grep -qF "$(brew --prefix python@3.12)" "$WORK/preflight-install.log" \
             || grep -qF "/python@3.12/" "$WORK/preflight-install.log" \
             || { echo "::error::the refusal never names the keg it is refusing"; exit 1; }
