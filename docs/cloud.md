@@ -251,6 +251,9 @@ of this flow touches a checkout:
   `tests/unit/test_cloud_deploy.py` asserts the generated script contains no
   source-control fetch at all.
 
+The instance therefore runs a *published* release, not your working tree. If
+you want a version other than your CLI's, name it with `--version`.
+
 [`--dev`](#dev-mode-on-a-cloud-target) is the one deliberate exception, and it
 is opt-in and checkout-only for exactly this reason: a plain
 `nyxgpt cloud deploy` still needs no repository on either side, and the
@@ -301,8 +304,9 @@ Things worth knowing before you use it:
 - **The version you see is your tree's.** A working tree usually declares a
   release that does not exist yet, so the deploy summary says plainly that it
   built from your tree and names the directory. `nyxgpt cloud status` reports
-  it as well, so an instance running a tree is never mistaken for one running
-  a release.
+  it as well — a **Build source** row, in the human form and under `--json`
+  alike, and on the dashboard's cloud card — so an instance running a tree is
+  never mistaken for one running a release.
 - **The web UI runs Next's dev server**, as it does under `nyxgpt up --dev` —
   slower first paint, no production build.
 - **It ships the tree, not the machine.** Anything your local stack has that
@@ -320,9 +324,6 @@ Verified by execution, not inspection: `.github/workflows/cloud-dev-deploy-smoke
 ships this repository's working tree to a bare Amazon Linux 2023 container over
 real SSH and requires the box to import `nyxgpt` from the shipped tree, an
 uncommitted sentinel included.
-
-The instance therefore runs a *published* release, not your working tree. If
-you want a version other than your CLI's, name it with `--version`.
 
 ### Python on the instance
 

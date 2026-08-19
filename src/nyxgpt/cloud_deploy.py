@@ -535,21 +535,33 @@ def working_tree_files(source: Path) -> list[str]:
     answers False for. Shipping the tree without them would put a checkout on
     the instance whose `ops install` could not find its own runtime data.
     """
-    completed = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(source),
-            "ls-files",
-            "-z",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=ARCHIVE_TIMEOUT,
-    )
+    try:
+        completed = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(source),
+                "ls-files",
+                "-z",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=ARCHIVE_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired as exc:
+        # Named rather than left to surface as a traceback: every other way
+        # this step can fail already reads as one sentence, and a timeout is
+        # the one an operator is most likely to hit on a huge or
+        # network-mounted tree -- where the answer is a fixable fact about
+        # their tree, not a stack trace about `subprocess`.
+        raise CloudCommandError(
+            f"Listing the working tree at {source} took longer than "
+            f"{ARCHIVE_TIMEOUT:.0f}s and was stopped. A very large or "
+            "network-mounted checkout can do this; deploy from a local tree."
+        ) from exc
     if completed.returncode != 0:
         raise CloudCommandError(
             f"Could not list the working tree at {source} to ship it: "
@@ -573,13 +585,19 @@ def build_working_tree_archive(source: Path, dest: Path) -> int:
             f"The working tree at {source} lists no files to ship -- is it a git checkout?"
         )
     listing = "\0".join(names)
-    completed = subprocess.run(
-        ["tar", "-czf", str(dest), "-C", str(source), "--null", "-T", "-"],
-        input=listing,
-        capture_output=True,
-        text=True,
-        timeout=ARCHIVE_TIMEOUT,
-    )
+    try:
+        completed = subprocess.run(
+            ["tar", "-czf", str(dest), "-C", str(source), "--null", "-T", "-"],
+            input=listing,
+            capture_output=True,
+            text=True,
+            timeout=ARCHIVE_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise CloudCommandError(
+            f"Archiving the working tree at {source} ({len(names)} files) took longer than "
+            f"{ARCHIVE_TIMEOUT:.0f}s and was stopped. Nothing was shipped."
+        ) from exc
     if completed.returncode != 0:
         raise CloudCommandError(
             f"Could not archive the working tree at {source}: "
@@ -609,14 +627,28 @@ def ship_working_tree(target: DeployTarget, source: Path) -> dict[str, Any]:
             f'rm -rf "{REMOTE_SOURCE_DIR}" && mkdir -p "{REMOTE_SOURCE_DIR}" '
             f'&& tar -xzf - -C "{REMOTE_SOURCE_DIR}"'
         )
-        with archive.open("rb") as handle:
-            completed = subprocess.run(
-                [*ssh_argv(target), remote],
-                stdin=handle,
-                capture_output=True,
-                text=True,
-                timeout=TRANSFER_TIMEOUT,
-            )
+        try:
+            with archive.open("rb") as handle:
+                completed = subprocess.run(
+                    [*ssh_argv(target), remote],
+                    stdin=handle,
+                    capture_output=True,
+                    text=True,
+                    timeout=TRANSFER_TIMEOUT,
+                )
+        except subprocess.TimeoutExpired as exc:
+            # Says what the box is left holding, which the traceback did not:
+            # the remote command removes the old tree before extracting, so a
+            # transfer stopped part-way leaves an incomplete one behind. The
+            # next `--dev` deploy replaces it wholesale, so the fix is to
+            # re-run -- but an operator who reconnects meanwhile must not
+            # trust what is there.
+            raise CloudCommandError(
+                f"Copying the working tree to {target.user}@{target.host} took longer than "
+                f"{TRANSFER_TIMEOUT:.0f}s and was stopped. The instance is left with an "
+                f"incomplete tree at {REMOTE_SOURCE_DIR}; re-run `nyxgpt cloud deploy --dev`, "
+                "which replaces it, once the link to the instance is healthy."
+            ) from exc
     if completed.returncode != 0:
         raise CloudCommandError(
             f"Could not copy the working tree to {target.user}@{target.host}: "
@@ -1756,6 +1788,28 @@ def _print_status_summary(status: dict[str, Any]) -> None:
         print(f"  (from the deploy record on this machine, {DEPLOY_STATE_FILE})\n")
 
     _print_row("Version", status["version"] or "unknown")
+    # #3950. The version line alone cannot answer "is this a published build?":
+    # a working tree declares a release that usually does not exist yet, so a
+    # dev deploy and an artifact deploy of the same version print an identical
+    # `Version` row. Named on every deployment rather than only on dev ones --
+    # "published release" is a claim worth stating, and a row that appears in
+    # one state only is a row an operator does not know to look for. Same three
+    # answers the dashboard gives (`web/src/app/admin/infrastructure/page.tsx`),
+    # including the honest "not recorded here" when the question is asked from
+    # the instance, where no deploy record exists to answer it.
+    if status.get("dev"):
+        _print_row(
+            "Build source",
+            f"working tree shipped from {status.get('source_dir') or 'an unrecorded checkout'} "
+            f"(--dev) -- not a published {status['version']} release",
+        )
+    elif status.get("source") == SOURCE_LOCAL_INSTANCE:
+        _print_row(
+            "Build source",
+            "not recorded here -- the deploy record lives on the workstation that ran the deploy",
+        )
+    else:
+        _print_row("Build source", "published release, installed from PyPI on the instance")
     instance = status["instance_id"] or "unknown"
     if status.get("instance_type"):
         instance = f"{instance} ({status['instance_type']})"

@@ -270,6 +270,35 @@ def test_a_failed_transfer_is_reported_with_ssh_s_own_error(dev_checkout, monkey
         cloud_deploy.ship_working_tree(cloud_deploy.DeployTarget(host="h"), dev_checkout)
 
 
+def _timeout(*_a, **_k):
+    raise subprocess.TimeoutExpired(cmd="stub", timeout=1)
+
+
+def test_a_transfer_that_times_out_says_what_the_instance_is_left_holding(
+    dev_checkout, monkeypatch
+):
+    """A raw `TimeoutExpired` traceback hides the part that matters.
+
+    The remote command removes the old tree before extracting, so a transfer
+    stopped part-way leaves an incomplete one on the box. An operator who
+    reconnects meanwhile must not trust what is there.
+    """
+    monkeypatch.setattr(cloud_deploy, "build_working_tree_archive", _fake_archive)
+    monkeypatch.setattr(cloud_deploy.subprocess, "run", _timeout)
+    with pytest.raises(CloudCommandError, match="incomplete tree"):
+        cloud_deploy.ship_working_tree(cloud_deploy.DeployTarget(host="h"), dev_checkout)
+
+
+def test_listing_and_archiving_timeouts_are_named_rather_than_raised_raw(dev_checkout, monkeypatch):
+    monkeypatch.setattr(cloud_deploy.subprocess, "run", _timeout)
+    with pytest.raises(CloudCommandError, match="Listing the working tree"):
+        cloud_deploy.working_tree_files(dev_checkout)
+
+    monkeypatch.setattr(cloud_deploy, "working_tree_files", lambda _s: ["pyproject.toml"])
+    with pytest.raises(CloudCommandError, match="Archiving the working tree"):
+        cloud_deploy.build_working_tree_archive(dev_checkout, dev_checkout / "out.tar.gz")
+
+
 # --- The provisioning script (acceptance criterion 2) --------------------
 
 
@@ -467,6 +496,58 @@ def test_status_of_an_artifact_deployment_does_not_claim_dev(stubbed_deploy, mon
     monkeypatch.setattr(cloud_infra, "infra_status", lambda: {"on_ec2": False})
     cloud_deploy.deploy(_args())
     assert cloud_deploy.deploy_status()["dev"] is False
+
+
+def test_the_human_status_names_the_build_source_of_a_dev_deployment(
+    stubbed_deploy, dev_checkout, monkeypatch, capsys
+):
+    """`nyxgpt cloud status` without `--json` is what an operator actually runs.
+
+    The machine form carrying `dev`/`source_dir` is not enough on its own: the
+    default output prints `Version <the tree's declared version>`, which reads
+    exactly like a published build. Same misleading line `_print_deploy_summary`
+    already qualifies, one command later.
+    """
+    monkeypatch.setattr(cloud_infra, "infra_status", lambda: {"on_ec2": False})
+    cloud_deploy.deploy(_args(dev=True))
+    capsys.readouterr()
+    cloud_deploy._print_status_summary(cloud_deploy.deploy_status())
+    printed = capsys.readouterr().out
+    assert "Build source" in printed
+    assert "--dev" in printed
+    assert str(dev_checkout) in printed
+
+
+def test_the_human_status_calls_an_artifact_deployment_a_published_release(
+    stubbed_deploy, monkeypatch, capsys
+):
+    """Stated on every deployment: a row that appears only in the dev case is
+    one an operator does not know to look for, so its absence says nothing."""
+    monkeypatch.setattr(cloud_infra, "infra_status", lambda: {"on_ec2": False})
+    cloud_deploy.deploy(_args())
+    capsys.readouterr()
+    cloud_deploy._print_status_summary(cloud_deploy.deploy_status())
+    printed = capsys.readouterr().out
+    assert "Build source    published release" in printed
+    assert "--dev" not in printed
+
+
+def test_the_human_status_on_the_instance_does_not_guess_the_build_source(monkeypatch, capsys):
+    """Asked on the box, there is no deploy record to answer from (D-018).
+
+    `dev` is False there because nothing recorded it, not because a release was
+    installed -- so claiming "published release" would be inventing the one
+    fact this row exists to report.
+    """
+    monkeypatch.setattr(
+        cloud_infra, "infra_status", lambda: {"on_ec2": True, "public_ip": "1.2.3.4"}
+    )
+    status = cloud_deploy.deploy_status()
+    assert status["source"] == cloud_deploy.SOURCE_LOCAL_INSTANCE
+    cloud_deploy._print_status_summary(status)
+    printed = capsys.readouterr().out
+    assert "Build source    not recorded here" in printed
+    assert "published release" not in printed
 
 
 def test_the_summary_says_the_version_is_not_a_published_release(
