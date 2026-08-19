@@ -72,9 +72,9 @@ export class ChunkErrorBoundary extends Component<Props, State> {
         <div style={{ fontSize: 24 }}>⚠️</div>
         <div style={{ fontWeight: 600 }}>Failed to load the interface</div>
         <div style={{ fontSize: 14, opacity: 0.85, maxWidth: 420 }}>
-          {`The code for ${this.props.label} did not load. The server is not
-            necessarily down -- this usually means the browser is holding an
-            outdated copy of the app. Reloading clears it.`}
+          The code for {this.props.label} did not load. The server is not necessarily down --
+          this usually means the browser is holding an outdated copy of the app, which
+          reloading clears.
         </div>
         <button
           onClick={this.handleReload}
