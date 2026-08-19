@@ -956,6 +956,24 @@ rather than mechanism, and nothing can enforce them.
   `tests/unit/test_install_identity.py`;
   `.github/workflows/macos-brew-smoke.yml` (`stable-over-candidate`).
 
+- **D-033** · 2026-08-19 · owner (#3948) — **`--local` is the default locality
+  for `ops install --terraform/--kubernetes`, not a requirement**, and it stays
+  accepted as an explicit no-op so existing scripts and docs keep working. It
+  had been mandatory while also being the only legal value, which made the CLI
+  demand the one possible answer. `--cloud` is still refused by these flags,
+  but the refusal (and the help) now says what it means: *this flag* has no
+  cloud target — cloud deployment is `nyxgpt cloud infra apply` +
+  `nyxgpt cloud deploy`. The old "not yet implemented" wording read as "nyxGPT
+  cannot deploy to a cloud target at all", which was never true. One shared
+  constant (`ops.CLOUD_DEPLOY_POINTER`) backs both the error and the help so
+  they cannot drift, and `tests/unit/test_cli_locality_help.py` reads the
+  requirement claims out of the generated help and compares them against what
+  `_resolve_locality` enforces — a wording grep would not have caught this
+  drift and does not catch the next one.
+  Source: #3948; `src/nyxgpt/ops.py` (`_resolve_locality`);
+  `src/nyxgpt/cli.py` (`_add_install_arguments`);
+  `.github/workflows/cli-locality-smoke.yml`.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
