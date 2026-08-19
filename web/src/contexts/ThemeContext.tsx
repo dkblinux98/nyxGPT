@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
+import { createContext, useContext, useEffect, useSyncExternalStore, ReactNode } from 'react';
 
 type Theme = 'light' | 'dark';
 
@@ -12,52 +12,55 @@ type ThemeContextType = {
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
+// The active theme lives outside React: it is a `localStorage` entry with the
+// OS `prefers-color-scheme` as its fallback. `useSyncExternalStore` is the
+// sanctioned way to read that -- an effect that reads it and calls setState on
+// mount is the `react-hooks/set-state-in-effect` defect, because it renders
+// once with the wrong theme and then cascades a second render.
+const THEME_EVENT = 'nyxgpt:theme-change';
+
+function subscribeToTheme(onStoreChange: () => void): () => void {
+  const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+  mediaQuery.addEventListener('change', onStoreChange);
+  // `storage` covers another tab; the custom event covers this one, where
+  // `localStorage.setItem` does not fire `storage` for its own window.
+  window.addEventListener('storage', onStoreChange);
+  window.addEventListener(THEME_EVENT, onStoreChange);
+  return () => {
+    mediaQuery.removeEventListener('change', onStoreChange);
+    window.removeEventListener('storage', onStoreChange);
+    window.removeEventListener(THEME_EVENT, onStoreChange);
+  };
+}
+
+function readTheme(): Theme {
+  const stored = localStorage.getItem('theme');
+  if (stored === 'light' || stored === 'dark') {
+    return stored;
+  }
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+
+// The server has neither storage nor a media query, so it renders 'light' --
+// the same value the pre-hydration markup carries. A snapshot must be a
+// stable value; both of these return a primitive, so React can compare them.
+function readServerTheme(): Theme {
+  return 'light';
+}
+
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [theme, setThemeState] = useState<Theme>('light');
-  const [mounted, setMounted] = useState(false);
-
-  // Initialize theme from localStorage or system preference
-  useEffect(() => {
-    const storedTheme = localStorage.getItem('theme') as Theme | null;
-
-    if (storedTheme) {
-      setThemeState(storedTheme);
-    } else {
-      // Auto-detect system theme
-      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-      setThemeState(prefersDark ? 'dark' : 'light');
-    }
-
-    setMounted(true);
-  }, []);
-
-  // Listen for system theme changes
-  useEffect(() => {
-    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-
-    const handleChange = (e: MediaQueryListEvent) => {
-      // Only auto-update if user hasn't set a preference
-      if (!localStorage.getItem('theme')) {
-        setThemeState(e.matches ? 'dark' : 'light');
-      }
-    };
-
-    mediaQuery.addEventListener('change', handleChange);
-    return () => mediaQuery.removeEventListener('change', handleChange);
-  }, []);
+  const theme = useSyncExternalStore(subscribeToTheme, readTheme, readServerTheme);
 
   // Apply theme to document
   useEffect(() => {
-    if (!mounted) return;
-
     document.documentElement.setAttribute('data-theme', theme);
     document.documentElement.classList.remove('light', 'dark');
     document.documentElement.classList.add(theme);
-  }, [theme, mounted]);
+  }, [theme]);
 
   const setTheme = (newTheme: Theme) => {
-    setThemeState(newTheme);
     localStorage.setItem('theme', newTheme);
+    window.dispatchEvent(new Event(THEME_EVENT));
   };
 
   const toggleTheme = () => {

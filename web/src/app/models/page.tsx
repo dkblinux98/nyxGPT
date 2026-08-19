@@ -7,6 +7,7 @@ import SkeletonLoader from '../../components/SkeletonLoader';
 import { useToast } from '../../contexts/ToastContext';
 import { estimateModelResourceHint } from './model-hints';
 import { apiErrorText, errorMessage } from '../../lib/apiError';
+import Link from 'next/link';
 
 type Model = {
   name: string;
@@ -104,9 +105,9 @@ export default function ModelsPage() {
     <main style={{ padding: '2rem', maxWidth: 1200, margin: '0 auto' }}>
       <div style={{ marginBottom: '2rem' }}>
         <h1 style={{ margin: 0, marginBottom: 8 }}>Ollama Models</h1>
-        <a href="/" style={{ color: '#0066cc', textDecoration: 'none' }}>
+        <Link href="/" style={{ color: '#0066cc', textDecoration: 'none' }}>
           ← Back to Chat
-        </a>
+        </Link>
       </div>
 
       {/* Pull model form */}
