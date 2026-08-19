@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+from nyxgpt import wizard as wizard_module
 from nyxgpt.wizard import (
     _configure_rag,
     _generate_config_ini,
@@ -35,12 +36,17 @@ def test_validate_ollama_connection_success():
 
 
 def test_validate_ollama_connection_no_models():
-    """Test Ollama connection with no models available."""
+    """An empty model store is the fresh-machine case, not a failure (#3824).
+
+    `nyxgpt ops install` pulls the configured chat and embedding models, so
+    refusing here would dead-end the operator on the very path that fixes it.
+    """
     with patch("nyxgpt.wizard.list_models", return_value=[]):
         success, message, models = _validate_ollama_connection("http://127.0.0.1:11434")
 
-        assert success is False
-        assert "no models found" in message.lower()
+        assert success is True
+        assert "no models yet" in message.lower()
+        assert "nyxgpt ops install" in message
         assert models == []
 
 
@@ -372,12 +378,18 @@ def test_run_wizard_cancelled_on_existing_config(
         assert "cancelled" in captured.out.lower()
 
 
-def test_run_wizard_ollama_connection_failure(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
-    """Test wizard exits gracefully when Ollama connection fails."""
+def test_run_wizard_continues_when_ollama_is_not_installed_yet(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    """A clean machine has no Ollama at all until `nyxgpt ops install` puts one
+    there -- so the wizard says so, keeps the shipped default model, and writes
+    a usable config instead of exiting 1 (#3824)."""
     output_path = tmp_path / "config.ini"
 
     inputs = [
         "http://127.0.0.1:11434",  # Ollama URL
+        "",  # System prompt (empty)
+        "n",  # Disable RAG
     ]
 
     with (
@@ -389,10 +401,35 @@ def test_run_wizard_ollama_connection_failure(tmp_path: Path, capsys: pytest.Cap
     ):
         exit_code = run_wizard(output_path=output_path)
 
-        assert exit_code == 1
+        assert exit_code == 0
 
         captured = capsys.readouterr()
         assert "Cannot connect" in captured.out
+        assert "nyxgpt ops install" in captured.out
+        assert output_path.exists()
+        assert f"default_model = {wizard_module.SHIPPED_DEFAULT_MODEL}" in output_path.read_text()
+
+
+def test_run_wizard_continues_when_ollama_has_no_models_yet(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    """Same for a reachable Ollama whose store is still empty."""
+    output_path = tmp_path / "config.ini"
+
+    inputs = [
+        "http://127.0.0.1:11434",  # Ollama URL
+        "",  # System prompt (empty)
+        "n",  # Disable RAG
+    ]
+
+    with (
+        patch("builtins.input", side_effect=inputs),
+        patch("nyxgpt.wizard.list_models", return_value=[]),
+    ):
+        exit_code = run_wizard(output_path=output_path)
+
+        assert exit_code == 0
+        assert f"default_model = {wizard_module.SHIPPED_DEFAULT_MODEL}" in output_path.read_text()
 
 
 def test_run_wizard_success_minimal(tmp_path: Path, capsys: pytest.CaptureFixture[str]):

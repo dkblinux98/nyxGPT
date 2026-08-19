@@ -34,6 +34,7 @@ fails if it drifts. Do not hand-edit.
 | `cloud-status-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Status Smoke |
 | `code_scan_report.yml` | workflow_dispatch | Code Scan Report |
 | `comment-token-gate-smoke.yml` | push, pull_request, workflow_dispatch | Comment Token Gate Smoke |
+| `compose-model-prepull-smoke.yml` | pull_request, push, workflow_dispatch | Compose Model Pre-pull Smoke |
 | `conflict-resolution-smoke.yml` | push, pull_request, workflow_dispatch | Conflict Resolution Smoke |
 | `conflict_owner_escalation.yml` | issue_comment | Conflict Owner Escalation |
 | `delete_branch_on_pr_close.yml` | pull_request | Delete Branch on PR Close Without Merge |

@@ -229,17 +229,23 @@ After `env-sync` has generated `docker/config.docker.ini`, individual Compose
 services can be driven directly for debugging (e.g. `docker compose up -d
 grafana`). For the full stack, use the terraform `--local` install above.
 
-First boot takes a few minutes: Cassandra needs time to become healthy and
-Ollama needs models. Once `ollama` is up, pull the default chat model and
-the embedding model RAG uses for `/api/embed` (this only needs to be done
-once — both are stored in `~/.nyxGPT/volumes/ollama`). The chat model does
-*not* serve embeddings, so both pulls are required for chat with RAG context
-to work:
+First boot takes a few minutes: Cassandra needs time to become healthy, and
+the `ollama` service pulls the models before it reports healthy. It pulls both
+the configured chat model and the configured embedding model — the chat model
+does *not* serve embeddings, and RAG is a per-session toggle, so both are
+required for the first message to work whether or not RAG is on. Nothing has
+to be pulled by hand (#3824).
 
-```bash
-docker compose exec ollama ollama pull qwen2.5:0.5b
-docker compose exec ollama ollama pull nomic-embed-text
-```
+Which models it pulls comes from `~/.nyxGPT/config.ini` (`[nyxgpt]
+default_model`, `[rag] embedding_model`), carried into Compose's `.env` as
+`NYXGPT_DEFAULT_MODEL`/`NYXGPT_EMBEDDING_MODEL` by `nyxgpt ops env-sync`.
+Blobs live in `~/.nyxGPT/volumes/ollama`, shared with the native and Terraform
+deployments, so a model pulled by one mode is not re-downloaded by another,
+and a restart re-pulls nothing.
+
+`api` waits on `ollama`'s healthcheck, which requires both models to be
+present — so the stack does not report itself up while a required model is
+still downloading.
 
 Then verify:
 

@@ -9,7 +9,12 @@ Ollama's raw transport error:
 
 `embed_texts` now completes that bootstrap the same way the vector store
 creates its keyspace on demand: pull the model once, replay the batches, and
-fall back to an actionable message if the pull is disabled or fails.
+fall back to an actionable message if the pull fails.
+
+Since #3824 the pull is unconditional and its timeout is a constant: the
+`[rag] embedding_auto_pull` / `embedding_pull_timeout_seconds` knobs were
+retired, and a config.ini that still sets them must be ignored, never a
+startup error.
 """
 
 from __future__ import annotations
@@ -19,6 +24,7 @@ from configparser import ConfigParser
 import pytest
 
 from nyxgpt.cache import NoOpCache
+from nyxgpt.model_bootstrap import MODEL_PULL_TIMEOUT_SECONDS
 from nyxgpt.rag import embeddings as embeddings_module
 from nyxgpt.rag.embeddings import (
     EmbeddingError,
@@ -133,8 +139,12 @@ def test_missing_model_is_pulled_and_embedding_retried(monkeypatch: pytest.Monke
 
 
 @pytest.mark.unit
-def test_pull_timeout_is_configurable(monkeypatch: pytest.MonkeyPatch):
-    _patch_config(monkeypatch, _cfg(embedding_pull_timeout_seconds="90"))
+def test_retired_pull_knobs_are_ignored_not_honoured(monkeypatch: pytest.MonkeyPatch):
+    """A config.ini left over from before #3824 must not disable or re-time the pull."""
+    _patch_config(
+        monkeypatch,
+        _cfg(embedding_auto_pull="false", embedding_pull_timeout_seconds="90"),
+    )
     _patch_post_json(
         monkeypatch,
         [EmbeddingError(MISSING_MODEL_BODY), {"embeddings": [[0.1, 0.2, 0.3]]}],
@@ -150,9 +160,8 @@ def test_pull_timeout_is_configurable(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr("nyxgpt.models.pull_model", fake_pull_model)
 
-    embed_texts(["hello"])
-
-    assert seen == [90.0]
+    assert embed_texts(["hello"]) == [[0.1, 0.2, 0.3]]
+    assert seen == [float(MODEL_PULL_TIMEOUT_SECONDS)]
 
 
 @pytest.mark.unit
@@ -193,24 +202,6 @@ def test_unrelated_embedding_error_is_not_retried(monkeypatch: pytest.MonkeyPatc
 # ---------------------------------------------------------------------------
 # Actionable failure messages
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_auto_pull_disabled_raises_actionable_error(monkeypatch: pytest.MonkeyPatch):
-    _patch_config(monkeypatch, _cfg(embedding_auto_pull="false"))
-    _patch_post_json(monkeypatch, [EmbeddingError(MISSING_MODEL_BODY)])
-
-    def fail_pull(*_a, **_k):
-        raise AssertionError("pull_model must not be called when auto-pull is disabled")
-
-    monkeypatch.setattr("nyxgpt.models.pull_model", fail_pull)
-
-    with pytest.raises(EmbeddingModelMissingError) as excinfo:
-        embed_texts(["hello"])
-
-    message = str(excinfo.value)
-    assert "nyxgpt models pull nomic-embed-text" in message
-    assert "embedding_auto_pull is disabled" in message
 
 
 @pytest.mark.unit

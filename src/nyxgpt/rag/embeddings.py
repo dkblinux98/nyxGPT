@@ -53,9 +53,13 @@ class EmbeddingConfig:
             batches.
         adaptive_batching: Whether to dynamically adjust batch size based on
             detected GPU memory instead of using a fixed `batch_size`.
-        auto_pull: Whether a missing embedding model should be pulled into
-            Ollama on first use instead of failing the request.
-        pull_timeout: Timeout in seconds for that auto-pull.
+
+    A missing embedding model is always pulled on first use (see
+    `_pull_embedding_model`); the `[rag] embedding_auto_pull` and
+    `[rag] embedding_pull_timeout_seconds` knobs that used to gate and time
+    that were retired in #3824 -- pulling is internal bootstrap machinery, and
+    those settings could only be set to break RAG. The timeout is now
+    `nyxgpt.model_bootstrap.MODEL_PULL_TIMEOUT_SECONDS`.
     """
 
     base_url: str
@@ -67,8 +71,6 @@ class EmbeddingConfig:
     max_workers: int = 4
     enable_gpu: bool = False
     adaptive_batching: bool = False
-    auto_pull: bool = True
-    pull_timeout: int = 600
 
 
 @dataclass
@@ -174,10 +176,6 @@ def _embedding_cfg(model: str | None = None, dimension: int | None = None) -> Em
     enable_gpu = cfg.getboolean("rag", "embedding_gpu_enabled", fallback=False)
     adaptive_batching = cfg.getboolean("rag", "embedding_adaptive_batching", fallback=False)
 
-    # First-use bootstrap: pull the embedding model if Ollama doesn't have it.
-    auto_pull = cfg.getboolean("rag", "embedding_auto_pull", fallback=True)
-    pull_timeout = cfg.getint("rag", "embedding_pull_timeout_seconds", fallback=600)
-
     return EmbeddingConfig(
         base_url=base_url,
         model=model,
@@ -188,8 +186,6 @@ def _embedding_cfg(model: str | None = None, dimension: int | None = None) -> Em
         max_workers=max_workers,
         enable_gpu=enable_gpu,
         adaptive_batching=adaptive_batching,
-        auto_pull=auto_pull,
-        pull_timeout=int(pull_timeout),
     )
 
 
@@ -464,25 +460,29 @@ def _pull_embedding_model(config: EmbeddingConfig) -> None:
     provisioned on demand instead of requiring an out-of-band `models pull`
     before the very first upload.
 
+    Still needed after `nyxgpt ops install` pre-pulls the *configured*
+    embedding model (#3824): embedding models are per-collection, so a user
+    creating a collection on `mxbai-embed-large` or `all-minilm` needs that
+    model fetched on demand -- the install cannot know about it in advance.
+    Unconditional since #3824 retired `[rag] embedding_auto_pull`.
+
     Args:
         config: Resolved embedding configuration naming the model and server.
 
     Raises:
-        EmbeddingModelMissingError: If auto-pull is disabled or the pull fails.
+        EmbeddingModelMissingError: If the pull fails.
     """
-    if not config.auto_pull:
-        raise EmbeddingModelMissingError(
-            _missing_model_message(
-                config.model, config.base_url, "[rag] embedding_auto_pull is disabled"
-            )
-        )
-
+    from nyxgpt.model_bootstrap import MODEL_PULL_TIMEOUT_SECONDS
     from nyxgpt.models import pull_model
 
     logger.info("Embedding model '%s' missing; pulling it from Ollama", config.model)
     with _pull_lock:
         try:
-            pull_model(config.model, base_url=config.base_url, timeout_s=float(config.pull_timeout))
+            pull_model(
+                config.model,
+                base_url=config.base_url,
+                timeout_s=float(MODEL_PULL_TIMEOUT_SECONDS),
+            )
         except Exception as e:
             raise EmbeddingModelMissingError(
                 _missing_model_message(config.model, config.base_url, f"auto-pull failed: {e}")
@@ -679,8 +679,6 @@ def embed_texts(
       - `[rag] embedding_max_workers` (parallel worker threads)
       - `[rag] embedding_gpu_enabled` (enable GPU optimization)
       - `[rag] embedding_adaptive_batching` (enable adaptive batch sizing)
-      - `[rag] embedding_auto_pull` (pull the model if Ollama doesn't have it)
-      - `[rag] embedding_pull_timeout_seconds` (timeout for that auto-pull)
       - `[cache] embedding_cache_enabled` (enable/disable caching)
       - `[cache] embedding_cache_backend` (memory or disk)
       - `[cache] embedding_cache_ttl_seconds` (cache expiration time)

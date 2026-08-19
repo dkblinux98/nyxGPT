@@ -560,6 +560,31 @@ rather than mechanism, and nothing can enforce them.
   snapshot here: it is the defect, not a fallback.
   Source: #3829; `src/nyxgpt/canary.py`; `docs/kubernetes.md` §Metrics source.
 
+- **D-024** · 2026-08-18 · owner (issue #3824) — **Model pulling is internal
+  bootstrap machinery, not configuration.** Every run mode pulls the configured
+  chat model (`[nyxgpt] default_model`) and the configured embedding model
+  (`[rag] embedding_model`) as part of bringing the stack up, unconditionally:
+  no flag skips it, because an install already needs network egress for the CLI,
+  the service tarballs and Ollama's own installer, so a skip flag could only
+  create a supported way for `ops install` to report success while chat is
+  broken. Both models regardless of the RAG toggle — `rag_enabled` is
+  per-session, so "RAG is off now" is never a reason to leave the embedding
+  model unpulled. The knobs that used to gate and time this (`[rag]
+  embedding_auto_pull`, `[rag] embedding_pull_timeout_seconds`) are retired;
+  a config.ini that still sets them is ignored, never a startup error.
+  What each run mode actually does about it is *not* recorded here: it is
+  encoded in the guards that enforce it
+  (`tests/unit/test_required_model_bootstrap.py`,
+  `tests/unit/test_k8s_manifests.py`, `scripts/first-chat-smoke.py`,
+  `scripts/compose-model-prepull-smoke.sh`), per the retirement above.
+  (Filed as `D-021` under #3824; renumbered on successive merges of `v3.0.0`
+  because concurrently-open branches allocated `D-021`, `D-022` and `D-023`
+  first. `D-024` is what `python3 scripts/agents/lib/ledger_ids.py next D
+  --base origin/v3.0.0` allocates against the current release branch -- run,
+  not eyeballed, since a by-eye renumber against a stale base is what produced
+  an earlier collision here. IDs are never reused.)
+  Source: #3824.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
