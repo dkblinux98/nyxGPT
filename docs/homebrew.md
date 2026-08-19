@@ -7,7 +7,24 @@ nyxGPT provides two persistent background services using **Homebrew services**:
 1. **nyxgpt-api** - FastAPI backend (REST API)
 2. **nyxgpt-web** - Next.js web UI
 
-This is the recommended way to keep both services running locally without keeping terminals open.
+This is how both stay running locally without keeping terminals open.
+
+> **Start the stack with `nyxgpt up`, not `brew services start`.**
+>
+> The two kegs above are two of the stack's parts. `nyxgpt up` reconciles and
+> starts all of them — the API, the web UI, Ollama, the `nyxgpt-cassandra`
+> container and the observability services — waits for health and prints the
+> web UI URL. It also starts the two Homebrew services for you, so they still
+> restart at login.
+>
+> `brew services start nyxgpt-api` starts that one service and nothing else.
+> Homebrew prints that command after `brew install` because the formulas
+> declare a `service` block; on its own it produces a stack that reports
+> `ollama: unreachable` and `cassandra: unreachable`, with observability
+> absent and the web UI unable to load sessions (#3854). The formulas' own
+> caveats now say so at install time. Use `brew services` to control an
+> individual service **after** `nyxgpt up` has set the stack up — the
+> per-service sections below are written for that case, not for first start.
 
 A Homebrew install has no repository checkout, so the documentation you would
 otherwise read from `docs/` ships inside the package instead: once
@@ -221,7 +238,7 @@ immutable and can never take them), and pushes stamped `nyxgpt-api.rb` /
 brew tap dkblinux98/nyxgpt
 brew tap-trust dkblinux98/nyxgpt
 brew install nyxgpt-api nyxgpt-web
-brew services start nyxgpt-api && brew services start nyxgpt-web
+nyxgpt up
 ```
 
 Two guardrails make this safe to point at any tag:
@@ -250,9 +267,12 @@ brew tap dkblinux98/nyxgpt
 brew tap-trust dkblinux98/nyxgpt   # same one-time step as the stable formulas
 brew install nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc
 
-brew services start nyxgpt-api@3.0.0rc
-brew services start nyxgpt-web@3.0.0rc
+nyxgpt up
 ```
+
+`nyxgpt up` is the same command on either channel — the candidate kegs install
+the same `nyxgpt` CLI, and it starts whichever of the two formulas is present
+along with the rest of the stack.
 
 The formula is named for the **release line** it is a candidate for, so
 `3.1.0`'s candidates are `nyxgpt-api@3.1.0rc` -- a different formula that no
@@ -354,15 +374,19 @@ wrappers. Switching channels is an explicit uninstall, never a silent swap:
 ```bash
 # stable -> release candidate
 brew services stop nyxgpt-api && brew uninstall nyxgpt-api
-brew install nyxgpt-api@3.0.0rc && brew services start nyxgpt-api@3.0.0rc
+brew install nyxgpt-api@3.0.0rc && nyxgpt up
 
 # a newer candidate of the same line (same formula, restamped)
-brew update && brew upgrade nyxgpt-api@3.0.0rc
+brew update && brew upgrade nyxgpt-api@3.0.0rc && nyxgpt up
 
 # ...and back once the release is out
 brew services stop nyxgpt-api@3.0.0rc && brew uninstall nyxgpt-api@3.0.0rc
-brew install nyxgpt-api && brew services start nyxgpt-api
+brew install nyxgpt-api && nyxgpt up
 ```
+
+`brew services stop` before the uninstall is the right command there — it is
+stopping one keg's service, not starting a stack. `nyxgpt up` afterwards is
+what re-reconciles everything the new keg needs.
 
 Those two are channel *swaps*, not removals: the machine keeps a nyxGPT
 install throughout, so the `com.nyxgpt.*` agents and the containers are meant
@@ -607,7 +631,10 @@ control, is the arbiter.
 
 ### Start the API
 
-Start the FastAPI backend as a background service:
+`nyxgpt up` starts this service along with the rest of the stack, and is what
+you want on a machine that is not already running. The command below starts
+this one service on its own — useful when the rest of the stack is already up
+and only the API is down:
 
 ```bash
 brew services start nyxgpt-api
@@ -667,7 +694,9 @@ refusal -- shows up there too, without needing the raw paths above (#3629).
 
 ### Start the Web UI
 
-Start the Next.js web UI as a background service:
+As with the API, `nyxgpt up` starts this service along with everything else it
+needs. The command below starts this one service on its own, for when the rest
+of the stack is already up:
 
 ```bash
 brew services start nyxgpt-web
@@ -722,14 +751,26 @@ tail -f "$(brew --prefix)/var/log/nyxgpt-web.err.log"
 ### Start both services
 
 ```bash
-brew services start nyxgpt-api
-brew services start nyxgpt-web
+nyxgpt up
 ```
 
-Or use the `nyxgpt ops restart` command for a coordinated restart:
+That is the whole stack, not just these two services — see the note at the top
+of this document for what `brew services start` leaves out. `nyxgpt down` stops
+it again.
+
+To restart the services that are already installed, without reconciling
+anything:
 
 ```bash
 nyxgpt ops restart
+```
+
+Starting the two kegs individually is still available, and is the right tool
+only when the rest of the stack is already running:
+
+```bash
+brew services start nyxgpt-api
+brew services start nyxgpt-web
 ```
 
 ### Stop both services
@@ -817,7 +858,15 @@ is exactly why it is not a substitute for the teardown above.
 - Start the API before starting the Web UI
 - If the API is down, the Web UI will show connection errors
 
-Recommended startup order:
+`nyxgpt up` handles the ordering, and waits for health rather than for a
+guessed number of seconds — which is the other reason it is the recommended
+way to start:
+
+```bash
+nyxgpt up
+```
+
+Starting them by hand means starting the API first and waiting for it:
 
 ```bash
 brew services start nyxgpt-api
@@ -1048,4 +1097,6 @@ PATH reaches it.
 - The API is bound to `127.0.0.1` by default and is not exposed publicly
 - The Web UI is also bound to `127.0.0.1` for local-only access
 - Homebrew services automatically restart both services on login
-- Use `nyxgpt ops` commands for easier service management
+- Start the stack with `nyxgpt up`; `brew services start` covers only the one
+  service it names (see the note at the top of this document)
+- Use `nyxgpt ops` commands for service management

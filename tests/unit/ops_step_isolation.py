@@ -39,9 +39,9 @@ INSTALL_STEP_FUNCS: tuple[str, ...] = (
     "_sync_packaged_resources",
     "_clear_intentional_stops",
     "_install_config",
-    # Was missing until #3853: #3859 added it to `ops.install()` without
-    # adding it here, so `test_install_step_list_is_fully_enumerated` was red
-    # on the release branch and this step ran unpatched in every install test.
+    # Added to `ops.install()` by #3859 and not to this list, which is what
+    # this list's own guard test exists to catch: an unlisted step is not
+    # patched out, so it runs for real in every test that patches "all" steps.
     "_report_orphaned_launchd_jobs",
     "_reconcile_install_mode",
     # Stops an api/web brew service belonging to a *different* formula than

@@ -63,6 +63,13 @@ brew tap-trust dkblinux98/nyxgpt   # one-time: Homebrew gates third-party taps
 brew install nyxgpt-api nyxgpt-web
 ```
 
+Homebrew also prints a `brew services start nyxgpt-api` line, because the
+formulas declare a `service` block. That is not the start command: it brings up
+that one service without Ollama, Cassandra or observability. Start the stack
+with `nyxgpt up` below — the formulas' caveats say the same thing at install
+time (#3854), and [homebrew.md](homebrew.md) covers when `brew services` *is*
+the right tool.
+
 (That is the remote tap — see [homebrew.md](homebrew.md#remote-tap), and
 [Trusting the tap](homebrew.md#trusting-the-tap-one-time-required) for the
 trust step.) pip is not the macOS path: Homebrew's Python is PEP 668

@@ -20,7 +20,14 @@ name: macOS Brew Smoke
 #                the owner's Mac exhibited and this runner does not, because a
 #                job that only runs the install is green on any machine that
 #                fails to reproduce the bug -- which is exactly how the rc5
-#                candidate passed here and failed there.
+#                candidate passed here and failed there. Since #3854 it also
+#                asserts what the install *says*: the transcript has to name
+#                `nyxgpt up` and what `brew services start` leaves out. That
+#                assertion lives in the keg-install job and not in
+#                published-tap deliberately -- published-tap can be dispatched
+#                against an older candidate, whose formulas predate the
+#                caveats, and a gate that fails on correct history is a gate
+#                people learn to ignore.
 #   published-tap  Does what the owner actually types work? `brew tap` +
 #                `brew install` against the real published tap, and then --
 #                since #3860 -- the whole user path after it:
@@ -59,6 +66,10 @@ on:
     paths:
       - 'homebrew/**'
       - 'scripts/build_homebrew_artifacts.py'
+      # Unlike macos-user-path-smoke.sh below, this one IS in the filter: the
+      # PR-triggered keg-install job runs it, so a change to it changes what
+      # this workflow asserts on the next PR.
+      - 'scripts/homebrew-caveats-smoke.sh'
       - 'src/nyxgpt/release_tarball.py'
       - '.github/workflows/macos-brew-smoke.yml'
   workflow_dispatch:
@@ -499,7 +510,25 @@ jobs:
           # still fails the step rather than being masked by tail's exit 0.
           # The trimmed tail is the readable part; the full Homebrew log is
           # dumped by the on-failure step below.
-          brew install --verbose nyxgpt/brew-smoke/nyxgpt-api@3.0.0rc 2>&1 | tail -80
+          #
+          # `tee` keeps the whole transcript, because the next step asserts
+          # against what the operator was *told*, and the caveats are printed
+          # once, at install time (#3854).
+          brew install --verbose nyxgpt/brew-smoke/nyxgpt-api@3.0.0rc 2>&1 \
+            | tee "$RUNNER_TEMP/install-nyxgpt-api.log" | tail -80
+
+      - name: "Prove the install tells the operator to run `nyxgpt up`"
+        # #3854: the owner ran `brew services start` because that is what
+        # Homebrew told them to, and got a stack with no Ollama, no Cassandra
+        # and no observability. Every job here was green throughout -- they all
+        # asked whether the keg builds, and none asked what the install says.
+        #
+        # The script injects the condition itself (strip `caveats`, ask brew
+        # what it would print, require the check to fail), so this is not a
+        # gate that only ever runs against a good formula. See its header.
+        run: |
+          ./scripts/homebrew-caveats-smoke.sh nyxgpt/brew-smoke/nyxgpt-api@3.0.0rc \
+            "$RUNNER_TEMP/install-nyxgpt-api.log"
 
       - name: Verify the keg venv was really built
         run: |
@@ -595,8 +624,14 @@ jobs:
         if: ${{ inputs.include_web }}
         run: |
           set -euo pipefail
-          brew install --verbose nyxgpt/brew-smoke/nyxgpt-web@3.0.0rc 2>&1 | tail -80
+          brew install --verbose nyxgpt/brew-smoke/nyxgpt-web@3.0.0rc 2>&1 \
+            | tee "$RUNNER_TEMP/install-nyxgpt-web.log" | tail -80
           brew test nyxgpt/brew-smoke/nyxgpt-web@3.0.0rc
+          # The owner is told this twice, once per keg, so both formulas are
+          # asserted (#3854). This one only runs when the web keg is built,
+          # which is why tests/unit/test_homebrew_caveats_smoke.py pins the web
+          # formula's caveats on every PR as well.
+          ./scripts/homebrew-caveats-smoke.sh nyxgpt/brew-smoke/nyxgpt-web@3.0.0rc "$RUNNER_TEMP/install-nyxgpt-web.log"
 
       - name: "Teardown: prove the wrapped uninstall clears what `brew uninstall` cannot"
         # #3859. The owner ran `brew uninstall` on both candidate formulas and

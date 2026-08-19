@@ -172,6 +172,12 @@ and screenshots make verifiable in the review loop:
   by [`macos-brew-smoke.yml`](../.github/workflows/macos-brew-smoke.yml)
   (`published-tap` job, driving
   [`scripts/macos-user-path-smoke.sh`](../scripts/macos-user-path-smoke.sh)).
+  What the install *tells* the operator to run is executed too, on every PR
+  that touches a formula: the `keg-install` job captures the `brew install`
+  transcript and
+  [`scripts/homebrew-caveats-smoke.sh`](../scripts/homebrew-caveats-smoke.sh)
+  requires it to name `nyxgpt up` and what `brew services start` leaves out
+  (#3854), injecting the caveats-less formula to prove the check discriminates.
   A formula, service-lifecycle or install change is therefore not exempt from
   the executed-verification gate (`agents/runbooks/review-runbook.md` §1c) on
   the grounds that this entry exists; what remains uncovered on that runner is
