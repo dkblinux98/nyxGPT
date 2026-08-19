@@ -7830,15 +7830,19 @@ def test_stop_brew_service_leaves_a_clean_stop_alone(monkeypatch, tmp_path):
 
 
 @pytest.mark.unit
-def test_a_stale_error_column_is_not_a_registration(monkeypatch, tmp_path):
-    """brew keeps reporting `error <code>` after it has de-registered (#3861).
+def test_an_error_column_over_a_missing_plist_is_not_a_registration(monkeypatch, tmp_path):
+    """An `error <code>` row whose plist is gone is not a registration (#3861).
 
-    Measured on a real runner (`macos-brew-smoke.yml` run 32228088507): the
-    reconcile's escalation found no plist to remove and no loaded job, and
-    `brew services list` still listed the service. Treating that column as
-    "registered" reported a successful retire as a failure -- the mirror image
-    of trusting `brew services stop`'s exit code, and just as wrong. Nothing
-    will start this service again, so the stop is a stop.
+    The observable measured on real runners (`macos-brew-smoke.yml` runs
+    32222041921 and 32228088507): a column-based read reported the service
+    registered while launchd said it was gone -- in the latter, the
+    reconcile's escalation found no plist to remove and no loaded job. Whether
+    that came from a column outliving the registration or from coloured state
+    text is not established and is not what this pins; what it pins is the
+    rule both mechanisms lead to. Treating the column as "registered" reported
+    a successful retire as a failure -- the mirror image of trusting `brew
+    services stop`'s exit code, and just as wrong. Nothing will start this
+    service again, so the stop is a stop.
     """
     monkeypatch.setattr(ops, "_which", lambda _: "/opt/homebrew/bin/brew")
     monkeypatch.setattr(ops.platform, "system", lambda: "Darwin")

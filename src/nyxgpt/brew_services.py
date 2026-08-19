@@ -60,6 +60,7 @@ service-manager-agnostic layer.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
 
 __all__ = [
@@ -71,6 +72,7 @@ __all__ = [
     "parse_services_list",
     "resolve",
     "resolve_all",
+    "strip_ansi",
     "superseded",
     "unique",
     "variants",
@@ -102,8 +104,46 @@ VERSIONED_COMPONENTS: frozenset[str] = frozenset({"api", "web"})
 LIVE_STATES: frozenset[str] = frozenset({"started", "running"})
 
 
+# A CSI escape sequence: `ESC [` then parameter/intermediate bytes then a
+# final byte in `@`-`~`. Broader than the `\x1b\[[0-9;]*m` colour case on
+# purpose -- `strip_ansi` exists to make a comparison against brew's output
+# safe, and a comparison that is safe only against the escapes we happened to
+# think of is the defect it is fixing.
+_ANSI_CSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def strip_ansi(text: str) -> str:
+    """`text` with ANSI escape sequences removed.
+
+    **Every literal comparison against brew's output goes through here**, and
+    that is the point rather than a nicety. `brew services list` colours its
+    Status column, and the escapes survive a pipe: `macos-brew-smoke.yml` run
+    32228088507 captured `nyxgpt-api -> ESC[31merror` after a pipe through
+    `awk`, and `selenium-server ESC[39mnoneESC[0m` in the same log (`ESC`
+    standing for the 0x1b byte those logs carry literally). A
+    coloured token compares equal to nothing -- `state == "started"` is False
+    for a running service, `state != "none"` is True for one brew is not
+    running -- so every consumer of a parsed state (`LIVE_STATES` in `_rank`
+    and `ops._restart_native_api_for`, `superseded`'s `registered_only`
+    filter, `ops`'s ollama and `native_running` reads, and
+    `self_heal`'s `healthy = state == "started"`, which `nyxgpt up`'s exit
+    gate rides on) silently inverts.
+
+    Fixing it here rather than at each of those sites is deliberate: they read
+    a state they did not fetch, so none of them can know whether it was
+    coloured, and a per-site guard would have to be re-added every time a new
+    reader appears. `parse_services_list` is the one chokepoint every state
+    reaches them through (#3861).
+    """
+    return _ANSI_CSI.sub("", text)
+
+
 def parse_services_list(stdout: str) -> dict[str, str]:
     """Return `{service_name: state}` parsed from `brew services list` output.
+
+    Escapes are stripped first, so callers compare against `started`/`none`
+    and not against a colour-wrapped `error` -- see `strip_ansi` for why that
+    is not cosmetic.
 
     The header row (`Name Status User File`) parses to
     `{"Name": "Status"}` and is harmless: no component base name is `Name`,
@@ -111,7 +151,7 @@ def parse_services_list(stdout: str) -> dict[str, str]:
     couple this parser to Homebrew's column headings, which change.
     """
     snapshot: dict[str, str] = {}
-    for line in stdout.splitlines():
+    for line in strip_ansi(stdout).splitlines():
         parts = line.split()
         if len(parts) >= 2:
             snapshot[parts[0]] = parts[1]

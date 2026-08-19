@@ -463,9 +463,10 @@ def test_reconcile_retires_a_foreign_service_even_when_the_identity_is_unchanged
     )
     # An older channel's keg, registered and crash-looping, under a marker
     # that says the current build is the one installed. `error` is not by
-    # itself a registration -- brew keeps reporting it after de-registering
-    # (#3861, run 32228088507) -- so the plist that makes it one is on disk,
-    # exactly as it is on a machine launchd keeps restarting.
+    # itself a registration -- a column-based read reported services launchd
+    # had already forgotten (#3861, runs 32222041921 and 32228088507) -- so
+    # the plist that makes it one is on disk, exactly as it is on a machine
+    # launchd keeps restarting.
     _register_brew_plist(tmp_path, "nyxgpt-api@2.1.0")
     monkeypatch.setattr(
         ops,

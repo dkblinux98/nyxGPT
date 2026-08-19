@@ -1139,10 +1139,17 @@ jobs:
           #
           #   - the exit code says 0 for a service it did not stop (the first
           #     version of this step trusted it, run 32222041921);
-          #   - the Status column goes on saying `error <code>` for a service
-          #     whose plist is already gone and whose job is already unloaded
-          #     (run 32228088507 -- the reconcile's escalation found no plist
-          #     to remove, and the column still listed it).
+          #   - a column-based read reported a service registered whose plist
+          #     was already gone and whose job was already unloaded (run
+          #     32228088507 -- the reconcile's escalation found no plist to
+          #     remove, and the read still listed it). Two mechanisms produce
+          #     that identically and neither run separates them: a column that
+          #     outlives the registration, or ANSI-coloured state text that no
+          #     literal comparison matches (the same log carries `nyxgpt-api ->
+          #     ESC[31merror` verbatim through a pipe). The step below prints
+          #     the post-retire column through `cat -v` so the next run
+          #     captures which one it is; nothing here depends on the answer,
+          #     because the plist decides either way.
           #
           # So `registered` keys on the plist, exactly as
           # `ops._brew_service_will_restart` does. `brew services list` is
@@ -1185,6 +1192,20 @@ jobs:
 
           echo "=== a candidate install over a recorded stable retires the stable service ==="
           reconcile_from nyxgpt-api@3.0.0rc nyxgpt-api
+
+          # The measurement neither earlier run took, and the whole reason the
+          # tree cannot say WHY a column-based read reported a de-registered
+          # service: brew's rows immediately after a retire, byte-for-byte.
+          # `cat -v` renders escapes as `^[[31m` instead of letting the log
+          # viewer swallow them, so this settles "stale column" vs "coloured
+          # state token" from one run's output. Advisory only -- the plist
+          # assertions below are what pass or fail this step -- and printed
+          # here, before anything else touches the machine, because a second
+          # `brew services` invocation could itself refresh the column.
+          echo "=== post-retire \`brew services list\`, verbatim (cat -v) ==="
+          brew services list 2>&1 | cat -v || true
+          echo "=== end verbatim ==="
+
           after="$(registered)"
           echo "registered after: $after"
           case "$after" in

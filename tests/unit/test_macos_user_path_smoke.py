@@ -867,12 +867,12 @@ def test_the_identity_step_asserts_the_launchagent_plist_is_gone() -> None:
     """A "stopped" service is not a de-registered one (#3861 review).
 
     The first run of this step (32222041921) passed `brew services stop` and
-    still found both services registered: brew exits 0 without de-registering
-    a service that is registered but not running, and the plist it leaves in
-    ~/Library/LaunchAgents is what launchd starts again at the next login. A
-    check that reads only `brew services list` would also have passed the
-    moment brew changed *that* output without removing the file, so the file
-    itself is asserted gone.
+    still read both services back as registered: brew exits 0 for a service
+    that is registered but not running and reports nothing either way about
+    the plist, and a plist left in ~/Library/LaunchAgents is what launchd
+    starts again at the next login. A check that reads only `brew services
+    list` would also pass the moment that output stopped matching what is on
+    disk -- in either direction -- so the file itself is asserted gone.
     """
     run = _conflict_step(IDENTITY_STEP)["run"]
     assert "plist_gone" in run and "homebrew.mxcl" in run, (
@@ -884,6 +884,36 @@ def test_the_identity_step_asserts_the_launchagent_plist_is_gone() -> None:
             f"{formula!r} is gone: both directions retire a service, so both "
             "have to prove the registration went with it"
         )
+
+
+def test_the_identity_step_captures_the_post_retire_column_verbatim() -> None:
+    """The measurement two red runs never took (#3861 review round 3).
+
+    Runs 32222041921 and 32228088507 both showed a column-based read reporting
+    a service that launchd had already forgotten, and neither captured brew's
+    rows *after* the retire -- so the tree could name the observable but not
+    the mechanism. Two produce it identically: a Status column that outlives
+    the registration, or ANSI-coloured state text no literal comparison
+    matches. `cat -v` renders the escapes instead of letting the log viewer
+    swallow them, so one run's output separates them.
+
+    Advisory, not an assertion: the plist checks are what pass or fail the
+    step, and they are correct under either mechanism. This is here so the
+    next session can write down which one it was from a measurement rather
+    than from a hypothesis (D-005).
+    """
+    run = _conflict_step(IDENTITY_STEP)["run"]
+    capture = "brew services list 2>&1 | cat -v"
+    assert capture in run, (
+        "the post-retire `brew services list` capture is gone, so the next red "
+        "run again cannot say whether the column outlived the registration or "
+        "was simply coloured"
+    )
+    reconcile_at = run.index("reconcile_from nyxgpt-api@3.0.0rc nyxgpt-api")
+    assert run.index(capture) > reconcile_at, (
+        "the verbatim capture no longer runs after the first reconcile, so it "
+        "reads the column before the retire it is supposed to measure"
+    )
 
 
 def test_the_rc_keg_is_stamped_so_the_channel_it_detects_is_its_own() -> None:

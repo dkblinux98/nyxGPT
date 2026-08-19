@@ -566,11 +566,12 @@ def test_retiring_never_uninstalls_the_previous_keg(monkeypatch):
     ops._retire_service(MANAGER_BREW, "nyxgpt-api")
 
     # The stop, then the two reads that check it took. `brew services stop`
-    # exits 0 without de-registering a crashed service, so the exit code is
-    # not the answer -- and `brew services list`'s Status column is not the
-    # answer either, because it keeps reporting `error <code>` after brew has
-    # de-registered (#3861, run 32228088507). What settles it is launchd:
-    # no plist, and no such job. Nothing here removes the keg.
+    # exits 0 for a crashed service and says nothing about whether the plist
+    # survived, so the exit code is not the answer -- and `brew services
+    # list`'s Status column is not the answer either, because a column-based
+    # read reported services launchd had already forgotten (#3861, runs
+    # 32222041921 and 32228088507). What settles it is launchd: no plist, and
+    # no such job. Nothing here removes the keg.
     assert ran == [
         ["brew", "services", "stop", "nyxgpt-api"],
         ["brew", "services", "list"],

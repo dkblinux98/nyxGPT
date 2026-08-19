@@ -1256,6 +1256,13 @@ def _brew_service_registration(name: str) -> tuple[str, Path | None]:
     what this machine's brew actually wrote. `_brew_services_snapshot` stays
     the cheap name->state map its many callers want; this is the one caller
     that needs the file too.
+
+    This is the one place outside `brew_services.parse_services_list` that
+    reads brew's rows directly, so it strips escapes the same way: brew
+    colours the Status column and the escapes survive a pipe (#3861). The
+    path is matched as "the rest of the line from its leading `/` or `~`"
+    rather than taken as the last whitespace-separated field, so a home
+    directory containing a space still yields the whole plist path.
     """
     if _which("brew") is None:
         return "none", None
@@ -1265,11 +1272,11 @@ def _brew_service_registration(name: str) -> tuple[str, Path | None]:
         expected=True,
         timeout=LOCAL_PROBE_TIMEOUT_SECONDS,
     )
-    for line in (cp.stdout or "").splitlines():
+    for line in brew_services.strip_ansi(cp.stdout or "").splitlines():
         parts = line.split()
         if len(parts) >= 2 and parts[0] == name:
-            last = parts[-1]
-            plist = Path(last).expanduser() if last.endswith(".plist") else None
+            path_match = re.search(r"([/~].*\.plist)\s*$", line)
+            plist = Path(path_match.group(1)).expanduser() if path_match else None
             return parts[1], plist
     return "none", None
 
@@ -1283,17 +1290,22 @@ def _brew_service_will_restart(name: str, plist: Path | None = None) -> bool:
     still registered; neither means it is not, whatever brew says about it.
 
     `brew services list`'s Status column deliberately does **not** decide it.
-    That column reports the last *outcome*, and it keeps reporting `error
-    <code>` for a service whose plist brew has already removed and whose job
-    is already unloaded -- measured on a real runner
-    (`macos-brew-smoke.yml` run 32228088507: the escalation below found no
-    plist to remove, the job was not loaded, and the column still said
-    `error`). Reading that column as "registered" is the mirror image of
-    reading `brew services stop`'s exit code as "de-registered": both consult
-    a signal that is about something else. It cost a *false* failure (a
+    What was measured is the *observable*, not a mechanism: on two real
+    runners the column-based read reported the service registered while
+    launchd said it was gone (`macos-brew-smoke.yml` runs 32222041921 and
+    32228088507 -- in the latter, the escalation below found no plist to
+    remove and no loaded job, and the column-based read still reported it).
+    Two mechanisms produce that identically and the runs do not separate
+    them: a column that outlives the registration, or ANSI-coloured state
+    text that no literal comparison can match (the same logs carry
+    `nyxgpt-api -> ESC[31merror` verbatim through a pipe, which is why
+    `brew_services.strip_ansi` now exists). Either way the conclusion is the
+    same and is the only thing asserted here: **the column is not the
+    registration signal.** Reading it as one is the mirror image of reading
+    `brew services stop`'s exit code as "de-registered" -- both consult a
+    signal that is about something else -- and it cost a *false* failure (a
     successful retire reported as one) where the exit code cost a false
-    success, and #3861's first evidence run (32222041921) was almost certainly
-    measuring the same stale column rather than a stop that did nothing.
+    success.
 
     `plist` may be passed when the caller already has brew's File column, to
     honour a label scheme other than `homebrew.mxcl.<name>` without paying a
@@ -4302,11 +4314,13 @@ def _brew_row_is_a_live_registration(name: str, state: str) -> bool:
     Everything between them (`error <code>`, `stopped`, `scheduled`,
     `unknown`) is the ambiguity #3861 tripped on, twice and in both
     directions. `error 3` is the crash-looping keg the owner's Mac had -- and
-    it is *also* what brew goes on reporting for a service whose plist it has
-    already removed and whose job is already unloaded (measured, run
-    32228088507). So those states are settled at the launchd level rather than
-    read off the column: otherwise `doctor` names a service the last `nyxgpt
-    up` retired and prescribes re-running the retire that already worked.
+    a column-based read *also* reported services that launchd had already
+    forgotten (runs 32222041921, 32228088507); whether from a column that
+    outlives the registration or from coloured state text, the column is not
+    the registration signal (`_brew_service_will_restart`). So those states
+    are settled at the launchd level rather than read off the column:
+    otherwise `doctor` names a service the last `nyxgpt up` retired and
+    prescribes re-running the retire that already worked.
     """
     if state == "started":
         return True
@@ -11337,21 +11351,30 @@ def _force_deregister_brew_service(name: str) -> list[OpsResult]:
 def _stop_brew_service(name: str) -> list[OpsResult]:
     """Stop Homebrew service `name` and verify it is really de-registered.
 
-    Not `brew services stop` alone, and not its exit code: brew exits 0 for a
-    service that is registered but not currently running -- the `error` state
-    a crash-looping keg sits in, which is exactly the state the owner's Mac
-    was in (#3853) -- while leaving the LaunchAgent plist in place, so
-    launchd starts it again at the next login. Trusting the exit code is what
-    made #3861's reconcile print `Stopped brew service: nyxgpt-api` on a
-    machine where `brew services list` still showed it registered
-    (macos-brew-smoke run 32222041921, the evidence job for this very fix).
+    Not `brew services stop` alone, and not its exit code. What the exit code
+    reports is that brew ran, not that launchd forgot the service: brew exits
+    0 for a service that is registered but not currently running -- the
+    `error` state a crash-looping keg sits in, which is exactly the state the
+    owner's Mac was in (#3853) -- and the exit code says nothing either way
+    about whether the LaunchAgent plist survived. Trusting it is what made
+    #3861's reconcile print `Stopped brew service: nyxgpt-api` on a machine
+    the step then read back as still registered (macos-brew-smoke run
+    32222041921, the evidence job for this very fix).
 
-    So the stop is *checked* against `brew services list` and escalated to
-    `_force_deregister_brew_service` when it did not take, and a service
-    still registered after that is reported as a failure rather than as a
-    stop. Everything downstream -- the identity reconcile, `ops stop`,
-    teardown -- acts on the claim that nothing will start this service again,
-    so the claim has to be true or say it is not.
+    So the stop is *checked* -- against launchd, per
+    `_brew_service_is_registered` -- and escalated to
+    `_force_deregister_brew_service` when it did not take, and a service still
+    registered after that is reported as a failure rather than as a stop.
+
+    On every run this project has measured since the observation layer was
+    fixed, plain `brew services stop` **has** de-registered the `error`-state
+    service and the escalation has not fired (run 32229751239, four stops
+    across both reconcile directions and the teardown). The escalation is
+    therefore a guard against a state that has not been observed here, not a
+    path known to be needed; the *check* is what is load-bearing, because
+    everything downstream -- the identity reconcile, `ops stop`, teardown --
+    acts on the claim that nothing will start this service again, and that
+    claim has to be verified or say it is not.
     """
     if _which("brew") is None:
         return [OpsResult(False, f"brew not found; cannot stop {name}")]

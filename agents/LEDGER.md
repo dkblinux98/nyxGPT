@@ -878,15 +878,20 @@ rather than mechanism, and nothing can enforce them.
   (#3859); (d) **registration is a launchd fact, and neither of brew's two
   obvious signals reports it.** `brew services stop` exits 0 for a service
   that is registered but not *running* — the `error` state a crash-looping keg
-  sits in, which is the state the owner's Mac was in — so the exit code cannot
-  say whether the stop took (trusting it printed `ok Stopped brew service:
-  nyxgpt-api` over a service the step then found listed, run 32222041921).
-  **And `brew services list`'s Status column cannot say either**: it reports
-  the last *outcome* and keeps saying `error <code>` for a service whose plist
-  brew has already removed and whose job is already unloaded (measured, run
-  32228088507 — reading it as "registered" reported a *successful* retire as a
-  failure, the mirror image of the exit-code bug, and it is the likelier
-  reading of run 32222041921 too). What launchd acts on at the next login is
+  sits in, which is the state the owner's Mac was in — and reports nothing
+  either way about whether the plist survived, so the exit code cannot say
+  whether the stop took (trusting it printed `ok Stopped brew service:
+  nyxgpt-api` over a service the step then read back as registered, run
+  32222041921). **And `brew services list`'s Status column cannot say
+  either**: on two runs a column-based read reported a service registered
+  while launchd said it was gone (32222041921, 32228088507 — in the latter the
+  escalation found no plist to remove and no loaded job). *Which* mechanism
+  produced that is **not** established and must not be written down as if it
+  were: a column that outlives the registration and ANSI-coloured state text
+  that no literal comparison matches produce the identical observable, and the
+  same logs carry coloured state tokens verbatim through a pipe. Both are
+  handled — the column is not consulted for registration, and escapes are
+  stripped at the parser (see (f)). What launchd acts on at the next login is
   the **plist** in `~/Library/LaunchAgents`, plus whether the job is loaded, so
   that pair is the test — in `_brew_service_will_restart`, used both to verify
   a stop (escalate, then fail if it survives) and to decide what
@@ -894,14 +899,29 @@ rather than mechanism, and nothing can enforce them.
   `none` with no plist is taken as unregistered; only the states between them
   need the file. A future session must not "simplify" this back to the column:
   it would make `doctor` name a service the last `nyxgpt up` retired and
-  prescribe re-running the retire that already worked; (e) the subtraction runs on **every**
+  prescribe re-running the retire that already worked. Note also that since
+  the check moved onto launchd, plain `brew services stop` has de-registered
+  every time and the escalation has never fired (run 32229751239) — it is a
+  guard, not an observed-necessary path; (e) the subtraction runs on **every**
   install, not only when the recorded identity differs. A matching marker
   records what the last install *targeted*, not what is registered now
   (a failed retire, a hand-started service, an install made outside `nyxgpt
   ops`), and gating it on `differences` made `doctor`'s own remedy — "re-run
   `nyxgpt up` … to retire the ones that are not this install's" — a no-op in
   every state `doctor` can fire in. What the comparison gates is the
-  *reporting* of the change and the api-venv rebuild. Scope note: this is the
+  *reporting* of the change and the api-venv rebuild; (f) **every literal
+  comparison against a brew state goes through
+  `brew_services.parse_services_list`, which strips ANSI escapes first.**
+  `brew services list` colourises the Status column and the escapes survive a
+  pipe (`nyxgpt-api -> ESC[31merror` appears verbatim in run 32228088507's
+  log), so a coloured token compares equal to nothing — `state == "started"`
+  is False for a running service and `state != "none"` is True for one brew is
+  not running. That inverts `self_heal`'s `healthy = state == "started"`,
+  which `nyxgpt up`'s exit gate rides on, plus `LIVE_STATES`, `superseded`'s
+  `registered_only` filter and the ollama/`native_running` reads. The guard is
+  at the parser, not at each reader: readers receive a state they did not
+  fetch and cannot know whether it was coloured, so a per-site guard would
+  have to be re-added for every reader added later. Scope note: this is the
   runtime half of #3853, and it now sits **beside** that issue's packaging
   half rather than waiting on it — **D-030** landed on `v3.0.0` while this was
   in review, declaring `conflicts_with` in both directions and paying

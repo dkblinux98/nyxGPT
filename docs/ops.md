@@ -538,15 +538,31 @@ services it just named.
 
 **Retiring a service means de-registering it, and that is checked — against
 launchd, not against brew.** `brew services stop` exits 0 for a service that
-is registered but not running (the state a crash-looping keg sits in), so the
-exit code cannot say whether the stop took. Neither can `brew services list`'s
-Status column, which reports the last *outcome* and goes on saying `error
-<code>` for a service whose plist brew has already removed. The registration
-is the LaunchAgent plist in `~/Library/LaunchAgents`, plus whether the job is
-loaded — those are what launchd acts on at the next login, and those are what
-every stop is verified against. A stop that did not take is escalated to
-unloading the job and removing the plist, and a service still registered after
-*that* is reported as a **failure** rather than as a stop that worked.
+is registered but not running (the state a crash-looping keg sits in), and it
+reports nothing either way about whether the plist survived — so the exit code
+cannot say whether the stop took. Neither can `brew services list`'s Status
+column: on two CI runs a column-based read reported a service registered while
+launchd said it was gone (runs 32222041921, 32228088507), and whether that came
+from a column that outlives the registration or from ANSI-coloured state text
+that no literal comparison matches, the conclusion is the same — the column is
+not the registration signal. The registration is the LaunchAgent plist in
+`~/Library/LaunchAgents`, plus whether the job is loaded — those are what
+launchd acts on at the next login, and those are what every stop is verified
+against. A stop that did not take is escalated to unloading the job and
+removing the plist, and a service still registered after *that* is reported as
+a **failure** rather than as a stop that worked. (In every run measured since
+the check was moved onto launchd, plain `brew services stop` did de-register
+and the escalation did not fire; the check is what is load-bearing, the
+escalation is a guard.)
+
+**Where brew's states *are* read, they are read through one parser.**
+`brew services list`'s Status column is colourised, and the escape sequences
+survive a pipe — a coloured `started` matches no comparison against
+`"started"`, which would report a running service as down and a de-registered
+one as live. Every state nyxGPT compares therefore comes from
+`brew_services.parse_services_list`, which strips escapes before splitting, so
+the health reads that `nyxgpt up`'s exit gate and `ops status` ride on cannot
+be inverted by a colour setting on the machine.
 
 The same reading applies to what `doctor` names: a `started` service is
 registered on brew's word, an unlisted or `none` keg with no plist is not
