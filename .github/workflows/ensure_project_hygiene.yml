@@ -80,10 +80,19 @@ jobs:
     # The state_reason test is repeated inside the script rather than trusted
     # from here alone: this `if:` is the cheap filter, and the script is what
     # a test can execute.
+    #
+    # The null test is not redundant with the script's (#3871 review): the
+    # pipeline's DOMINANT closure path is `gh issue close` after a merge, which
+    # records `state_reason: null` (live on #3917/#3918/#3919). Without this
+    # clause every routine merge spins a runner, checks out the release branch
+    # and exits at the script's null branch -- a permanent per-merge cost for a
+    # guaranteed no-op. The script keeps its own null test, which is what
+    # protects a by-hand invocation.
     if: >-
       github.event_name == 'issues'
       && github.event.action == 'closed'
       && github.event.issue.state_reason != 'completed'
+      && github.event.issue.state_reason != null
       && !contains(github.event.issue.labels.*.name, 'Support')
     runs-on: ubuntu-latest
     permissions:

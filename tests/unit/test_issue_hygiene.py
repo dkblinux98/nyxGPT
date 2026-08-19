@@ -32,6 +32,31 @@ SMOKE = ROOT / ".github" / "workflows" / "project-hygiene-smoke.yml"
 #: Every project field the hygiene job knows how to populate.
 FIELDS = ["Status", "Priority", "Effort", "Module", "Sprint"]
 
+#: Project-field setters that write without re-reading first. The fill path may
+#: not use any of them (#3816); the closure rule uses the last two on purpose.
+UNGUARDED_SETTERS = (
+    "set_project_field_value",
+    "set_issue_status",
+    "set_field_with_retry",
+    "clear_project_field_value",
+)
+
+#: The closure function's boundaries in the script, used to slice the two rules
+#: apart. Assertions about one rule are made against its own slice rather than
+#: the whole file -- a file-wide claim about either is an invariant by proxy.
+CLOSURE_START = "apply_closure_rule() {"
+CLOSURE_END = 'if [[ "$MODE" == "closure" ]]'
+
+
+def _closure_rule(body: str) -> str:
+    """The closure function's body."""
+    return body[body.index(CLOSURE_START) : body.index(CLOSURE_END)]
+
+
+def _fill_path(body: str) -> str:
+    """Everything except the closure function's body."""
+    return body[: body.index(CLOSURE_START)] + body[body.index(CLOSURE_END) :]
+
 
 class TestShellSuite:
     def test_issue_hygiene_suite_passes(self):
@@ -75,14 +100,23 @@ class TestLibraryHelpers:
 
 
 class TestHygieneScript:
-    def test_no_unguarded_project_field_write(self):
-        """Every field write goes through the guard -- no bare setter."""
-        for number, line in enumerate(HYGIENE.read_text(encoding="utf-8").splitlines(), 1):
+    def test_no_unguarded_project_field_write_in_the_fill_path(self):
+        """Every field write in the FILL path goes through the guard.
+
+        Scoped to the fill path, and widened to the setters the closure rule
+        uses (#3871). Stating this over the whole file would be an invariant
+        by proxy: the closure rule writes unguarded on purpose, so a file-wide
+        claim is either false or (as the pre-#3871 setter list was) true only
+        because it names setters the closure path happens not to use.
+        """
+        for line in _fill_path(HYGIENE.read_text(encoding="utf-8")).splitlines():
             stripped = line.strip()
             if stripped.startswith("#"):
                 continue
-            for setter in ("set_project_field_value", "set_issue_status"):
-                assert setter not in stripped, f"{HYGIENE.name}:{number} writes via {setter}"
+            for setter in UNGUARDED_SETTERS:
+                assert (
+                    setter not in stripped
+                ), f"{HYGIENE.name}: the fill path writes via {setter}: {stripped}"
 
     @pytest.mark.parametrize("field", FIELDS)
     def test_every_field_is_guarded(self, field):
@@ -120,8 +154,7 @@ class TestHygieneScript:
         puts it on the owner -- so the ban now covers the path it is about.
         """
         body = HYGIENE.read_text(encoding="utf-8")
-        fill_path = body[: body.index("apply_closure_rule() {")]
-        assert "SCRUM_AGENT" not in fill_path
+        assert "SCRUM_AGENT" not in _fill_path(body)
         assert "issue.user.login" not in body
 
 
@@ -180,6 +213,38 @@ class TestClosureRule:
         assert "github.event.action == 'closed'" in condition
         assert "github.event.issue.state_reason != 'completed'" in condition
 
+    def test_the_closure_job_does_not_fire_on_a_null_state_reason(self):
+        """The cheap filter has to cover the pipeline's commonest closure.
+
+        `gh issue close` after a merge records `state_reason: null` (live on
+        #3917/#3918/#3919), which is not `'completed'` -- so without this
+        clause the job would spin a runner and check out the release branch on
+        every routine merge, only to exit at the script's null branch. The
+        script keeps its own null test for by-hand invocations.
+        """
+        workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+        condition = str(workflow["jobs"]["closure-hygiene"]["if"])
+        assert "github.event.issue.state_reason != null" in condition
+
+    def test_the_null_reason_is_also_handled_in_the_script(self):
+        body = _closure_rule(HYGIENE.read_text(encoding="utf-8"))
+        assert 'if [[ -z "$reason" ]]' in body
+
+    def test_the_smoke_guard_states_an_invariant_the_script_holds(self):
+        """The CI guard must be scoped to the fill path, not the whole file.
+
+        Before this review round it asserted "every field write in the hygiene
+        script goes through the re-read guard" over the entire file while the
+        closure path deliberately writes unguarded -- green, and false, because
+        its grep named only setters the closure path happens not to use. The
+        fix slices `apply_closure_rule` out and bans the closure rule's own
+        setters everywhere else, so passing means what the text says.
+        """
+        body = SMOKE.read_text(encoding="utf-8")
+        assert "apply_closure_rule" in body, "the guard no longer slices the closure rule out"
+        for setter in UNGUARDED_SETTERS:
+            assert setter in body, f"the guard no longer bans {setter} from the fill path"
+
     def test_the_reason_test_is_also_in_the_script(self):
         """The workflow `if:` is the cheap filter; the executable test is what
         a suite can run, and what protects a by-hand invocation."""
@@ -187,10 +252,7 @@ class TestClosureRule:
         assert 'if [[ "$reason" == "completed" ]]' in body
 
     def test_the_closure_rule_never_writes_status(self):
-        body = HYGIENE.read_text(encoding="utf-8")
-        closure = body[
-            body.index("apply_closure_rule() {") : body.index('if [[ "$MODE" == "closure" ]]')
-        ]
+        closure = _closure_rule(HYGIENE.read_text(encoding="utf-8"))
         for forbidden in ("$STATUS_FIELD", "set_issue_status", "STATUS_BACKLOG"):
             assert forbidden not in closure, f"the closure rule writes {forbidden}"
 
@@ -203,9 +265,6 @@ class TestClosureRule:
 
     def test_the_closure_rule_uses_the_lookup_only_item_finder(self):
         """A closed issue that was never on the board must not be added to it."""
-        body = HYGIENE.read_text(encoding="utf-8")
-        closure = body[
-            body.index("apply_closure_rule() {") : body.index('if [[ "$MODE" == "closure" ]]')
-        ]
+        closure = _closure_rule(HYGIENE.read_text(encoding="utf-8"))
         assert "find_issue_project_item" in closure
         assert "ensure_issue_in_project" not in closure

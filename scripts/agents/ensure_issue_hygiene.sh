@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # ============================================================
-# ensure_issue_hygiene.sh — fill-if-missing project hygiene for one issue
+# ensure_issue_hygiene.sh — fill-if-missing project hygiene for one issue, and
+# the non-completed closure rule (--closure)
 #
 # Invoked by .github/workflows/ensure_project_hygiene.yml on `issues: opened`.
 # It lives here rather than inline in the workflow so the invariant below can
@@ -80,7 +81,7 @@ require_gh_auth
 # Claude session's proxy blocks GraphQL, so the session that closed the issue
 # structurally could not finish it.
 apply_closure_rule() {
-  local state reason item_id current_phase current_sprint assignees
+  local state reason item_id current_phase current_sprint assignees rc
   local phase_option="Phase X"
 
   read -r state reason < <(
@@ -151,7 +152,8 @@ apply_closure_rule() {
   # non-completed issue is a leftover, and leaving it there is what makes
   # `_open_issues_assigned_to` miscount later.
   assignees="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${ISSUE}" --jq '.assignees[].login')"
-  if grep -qx "$HUMAN_OWNER" <<<"$assignees"; then
+  # -F: logins are matched literally, never as regex patterns.
+  if grep -qxF "$HUMAN_OWNER" <<<"$assignees"; then
     echo "✓ Assignee: ${HUMAN_OWNER} already assigned"
   else
     gh api -X POST "repos/${REPO_OWNER}/${REPO_NAME}/issues/${ISSUE}/assignees" \
@@ -163,7 +165,7 @@ apply_closure_rule() {
   local agent
   for agent in "$DEV_AGENT" "$REVIEW_AGENT" "$SCRUM_AGENT"; do
     [[ -n "$agent" ]] || continue
-    if grep -qx "$agent" <<<"$assignees"; then
+    if grep -qxF "$agent" <<<"$assignees"; then
       gh api -X DELETE "repos/${REPO_OWNER}/${REPO_NAME}/issues/${ISSUE}/assignees" \
         -f "assignees[]=${agent}" >/dev/null 2>&1 \
         && echo "✓ Assignee: removed ${agent}" \
