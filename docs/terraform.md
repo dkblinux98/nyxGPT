@@ -290,7 +290,7 @@ design. To actually delete it, remove the host directories yourself or use
 | [`nyxgpt ops`](ops.md) (Homebrew) | Native macOS install, no containers |
 | [Docker Compose](docker-compose.md) | One-command bring-up, including opt-in observability profiles |
 | **Terraform** (this doc) | You want plan/apply/destroy semantics and drift detection for the core stack |
-| [Kubernetes](kubernetes.md) | Local cluster (kind/minikube/k3s), canary rollout of the API |
+| [Kubernetes](kubernetes.md) | A cluster — local (kind/minikube/k3s) or the single-node k3s a `nyxgpt cloud deploy --kubernetes` puts on the instance — and canary rollout of the API |
 | [Cloud (AWS)](cloud.md) | You want the stack on an EC2 instance in your own AWS account, reachable only over an SSH tunnel (`nyxgpt cloud infra`) |
 
 This deployment is watched by the same [self-heal watchdog](self-healing.md)

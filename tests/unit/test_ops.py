@@ -11024,7 +11024,16 @@ class CP:
 
 
 @pytest.mark.unit
-def test_resolve_locality_rejects_cloud(capsys):
+def test_resolve_locality_rejects_cloud_by_naming_the_command_that_does_it(capsys):
+    """`--cloud` is refused with a pointer, not with a promise (#3956).
+
+    This test used to assert the words "not yet implemented" -- an
+    expiry-dated world-state claim of the kind #3744 forbids, and one that had
+    expired twice over by the time anyone read it: `nyxgpt cloud deploy`
+    shipped in #3513 and its Kubernetes mode in #3956. What the flag means is
+    that this command deploys to the machine it runs on; the cloud path is a
+    different command, and saying so is what an operator can act on.
+    """
     args = SimpleNamespace(local=False, cloud=True)
     assert ops._resolve_locality(args) is None
     err = capsys.readouterr().err
@@ -11033,6 +11042,12 @@ def test_resolve_locality_rejects_cloud(capsys):
     # (#3948).
     assert "not implemented for `ops install --terraform/--kubernetes`" in err
     assert ops.CLOUD_DEPLOY_POINTER in err
+    # ...and that pointer names the Kubernetes half of the cloud path too
+    # (#3956), so an operator who wants a cluster is not left believing the
+    # cloud target only runs Compose.
+    assert "nyxgpt cloud deploy" in err
+    assert "--kubernetes" in err
+    assert "not yet implemented" not in err
 
 
 @pytest.mark.unit

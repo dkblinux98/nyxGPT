@@ -1657,8 +1657,9 @@ def _add_install_arguments(parser: argparse.ArgumentParser) -> None:
             "cluster instead of native/Homebrew reconciliation; add --dev to build the two "
             "container images from your working tree. Uses an existing reachable cluster if "
             "kubectl is already configured, otherwise provisions a local kind cluster. "
-            "The cloud path is not a cluster: `nyxgpt cloud deploy` runs the stack on an "
-            "AWS instance with Compose (see docs/cloud.md)"
+            "The cloud path is a different command, not this flag: `nyxgpt cloud deploy` "
+            "runs the stack on an AWS instance with Compose, or on a single-node k3s "
+            "cluster on that instance with --kubernetes (#3956) -- see docs/cloud.md"
         ),
     )
     locality = parser.add_mutually_exclusive_group()
@@ -2807,6 +2808,29 @@ def cli(argv: list[str] | None = None) -> int:
             "see docs/session-storage.md"
         ),
     )
+    # #3956, implementing #3506's owner-approved decision: EC2 single-box with
+    # the existing k8s/*.yaml manifests optionally layered on a single-node
+    # k3s cluster. What that record rejected was a managed EKS control plane,
+    # not Kubernetes -- and canary rollout, which the whole `nyxgpt canary`
+    # surface implements, has no cluster to run in on the cloud target
+    # without it.
+    #
+    # BooleanOptionalAction, not store_true: the choice is recorded in
+    # deploy.json and carried forward, so a bare re-deploy does not install a
+    # native stack beside a running cluster -- and a carried-forward boolean
+    # with no way to say "off" is a trap. `--no-kubernetes` is how an
+    # operator moves a deployment back to the native substrate.
+    cloud_deploy_p.add_argument(
+        "--kubernetes",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Run the stack on a single-node k3s cluster on the instance, applying the "
+            "same k8s/*.yaml manifests as a local Kubernetes install -- this is what "
+            "makes `nyxgpt cloud canary` available (default: whatever the last deploy "
+            "used, else the native stack). See docs/cloud.md and docs/kubernetes.md"
+        ),
+    )
     cloud_deploy_p.add_argument(
         "--no-tunnel",
         action="store_true",
@@ -2882,6 +2906,48 @@ def cli(argv: list[str] | None = None) -> int:
         ),
     )
     _add_ssh_access_flags(cloud_ops_p)
+
+    # `cloud canary` (#3956): the capability #3506 was choosing a substrate
+    # FOR. It runs the instance's own `nyxgpt canary` over the same wrapped
+    # SSH path -- the cluster's API server binds the instance's private
+    # address and is reachable from nothing else, and tunnelling a
+    # cluster-admin kubeconfig back to the workstation would be both more
+    # exposure and a kubectl context that collides with any local cluster.
+    cloud_canary_p = cloud_sub.add_parser(
+        "canary",
+        help=(
+            "Run a canary rollout action against the Kubernetes cloud deployment "
+            "(status/start/evaluate/promote/rollback) over the wrapped SSH access path"
+        ),
+    )
+    cloud_canary_sub = cloud_canary_p.add_subparsers(dest="canary_cmd", required=True)
+    for _canary_name, _canary_help in (
+        ("status", "Rollout progress, stable/canary health and live per-track metrics"),
+        ("start", "Start a rollout at an initial traffic weight"),
+        ("evaluate", "Check the canary against the configured thresholds (rolls back on failure)"),
+        ("promote", "Increase the canary's traffic share by a step"),
+        ("rollback", "Cut all traffic back to stable, abandoning the canary"),
+    ):
+        _canary_p = cloud_canary_sub.add_parser(_canary_name, help=_canary_help)
+        _canary_p.add_argument(
+            "--component",
+            choices=["api", "web"],
+            help="Which stable/canary pair to act on (default: api)",
+        )
+        if _canary_name == "start":
+            _canary_p.add_argument(
+                "--weight", type=int, help="Initial canary traffic percentage (default: 10)"
+            )
+        if _canary_name == "promote":
+            _canary_p.add_argument(
+                "--step", type=int, help="Percentage points to add (default: from config)"
+            )
+            _canary_p.add_argument(
+                "--force",
+                action="store_true",
+                help="Promote even though the canary track has measurably served no traffic",
+            )
+        _add_ssh_access_flags(_canary_p)
 
     cloud_destroy_p = cloud_sub.add_parser(
         "destroy",
@@ -3153,9 +3219,22 @@ def cli(argv: list[str] | None = None) -> int:
     )
     _add_publish_arguments(release_rc, channelled=False)
 
-    # Add canary command (local weighted-traffic canary rollout on a local k8s cluster --
-    # the sole deployment model since #3409 retired blue/green in favor of it)
-    canary_p = sub.add_parser("canary", help="Local canary deployment (kind/minikube/k3s cluster)")
+    # Add canary command (weighted-traffic canary rollout against the cluster
+    # kubectl's current context points at -- the sole deployment model since
+    # #3409 retired blue/green in favor of it).
+    #
+    # "Local" here means "the cluster this machine can reach", not "a cluster
+    # nyxGPT can only ever run on a workstation": since #3956 the same
+    # subcommands run against an AWS deployment through `nyxgpt cloud canary`,
+    # which invokes this command *on the instance*, where the single-node k3s
+    # cluster `nyxgpt cloud deploy --kubernetes` installed is the local one.
+    canary_p = sub.add_parser(
+        "canary",
+        help=(
+            "Canary deployment on the cluster this machine reaches "
+            "(kind/minikube/k3s/...) -- `nyxgpt cloud canary` for an AWS deployment"
+        ),
+    )
     canary_sub = canary_p.add_subparsers(dest="canary_cmd", required=True)
 
     # --component is shared by every canary subcommand (default "api"; "web" as of
@@ -3373,7 +3452,12 @@ def cli(argv: list[str] | None = None) -> int:
     if cmd == "down":
         os.environ.setdefault("NYXGPT_CORRELATION_ID", mint_correlation_id())
         return ops_mod.down(args)
-    if cmd == "secrets" and args.secrets_cmd == "setup":
+    # pragma: allowlist secret -- `secrets_cmd == "setup"` is a subcommand
+    # name, not a credential. detect-secrets' keyword rule reads any `secret*`
+    # identifier compared against a literal as an assignment; the finding is
+    # pre-existing and is annotated here because this PR moves the line into
+    # its diff, so the hook would otherwise fail for everyone who runs it.
+    if cmd == "secrets" and args.secrets_cmd == "setup":  # pragma: allowlist secret
         return run_secrets_setup(cfg_path=args.config, reconfigure=args.reconfigure)
 
     if cmd == "ops":
@@ -3451,6 +3535,7 @@ def cli(argv: list[str] | None = None) -> int:
         "credentials",
         "status",
         "ops",
+        "canary",
     ):
         return cloud_deploy_mod.deploy_command(args)
 

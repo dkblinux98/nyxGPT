@@ -236,6 +236,10 @@ type CloudDeployStatus = {
   // Where the deployment's chat sessions live (#3865). Empty when the deploy
   // record predates the flag, which is not the same claim as 'file'.
   session_backend: string;
+  // What runs the stack on the instance (#3956): 'kubernetes' (a single-node
+  // k3s cluster running k8s/*.yaml) or 'native'. Empty on a deploy record
+  // that predates the flag -- reported as unknown, never as 'native'.
+  substrate: string;
   // Whether the instance is running a shipped working tree rather than the
   // published release `version` names (#3950). Only the deploy record can
   // answer: an instance asked about itself reads its own package metadata,
@@ -1092,6 +1096,24 @@ export default function InfrastructurePage() {
                       : cloud.os_family === 'linux'
                         ? 'Linux — published PyPI release + systemd --user, via nyxgpt ops install'
                         : 'not recorded — this deploy predates the `nyxgpt cloud deploy --os` flag'
+                  }
+                />
+                {/* #3956: which substrate the instance runs. Observed, never
+                    driven — switching substrates rebuilds the machine this
+                    page may itself be served from, which is exactly the class
+                    of action the Definition of Done keeps in the CLI (#3804).
+                    'unknown' rather than 'native' when nothing was recorded,
+                    for the same reason the session backend above says 'not
+                    recorded': a deploy predating the flag is not a claim
+                    about what is running. */}
+                <Row
+                  label="Substrate"
+                  value={
+                    cloud.substrate === 'kubernetes'
+                      ? 'single-node k3s cluster on the instance, running k8s/*.yaml — canary rollout available via `nyxgpt cloud canary`'
+                      : cloud.substrate === 'native'
+                        ? 'native services on the instance — `nyxgpt cloud deploy --kubernetes` deploys onto a cluster instead, which is what canary rollout needs'
+                        : 'not recorded — this deploy predates the substrate record; `nyxgpt cloud ops status` reports what the instance is actually running'
                   }
                 />
                 <Row label="Observability profiles" value={cloud.profiles.join(', ')} />

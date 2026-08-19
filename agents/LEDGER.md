@@ -1066,6 +1066,89 @@ rather than mechanism, and nothing can enforce them.
   into `v3.0.0` — #3867 took `D-033`, #3811 then took `D-034`, and #3950 then
   took `D-035`, each while this PR was in review. IDs are never reused and
   every entry stands.
+- **D-037** · 2026-08-19 · developer agent (#3956) — **A decision record is a
+  requirement even where no issue transcribed it, and "the cloud target" is a
+  *place the existing install mode runs*, not a second install mode.**
+  `DECISION_AWS_COMPUTE_SUBSTRATE.md` (#3506, owner-approved 2026-08-04) chose
+  EC2 single-box **with the `k8s/*.yaml` manifests optionally layered on a
+  single-node k3s cluster for canary** — the question put to the owner was EC2
+  vs EKS, i.e. *how* to host Kubernetes on the cloud target. #3513's
+  acceptance criteria never mentioned k3s, Kubernetes or canary, so what
+  shipped had no `--kubernetes` flag and canary rollout was unavailable on the
+  cloud target entirely: the capability the substrate was being chosen *for*.
+  The correction that generalises is the reading rule, not the flag — when a
+  decision record and the issue implementing it disagree, the record is the
+  higher authority and the gap is a spec-to-issue transcription failure, which
+  is where the retrospective should count it rather than as a developer miss.
+
+  Two things a future session would otherwise re-derive wrongly, both settled
+  by measurement rather than by preference:
+
+  (a) *The apiserver binds the node's **private** address, not loopback.* The
+  obvious reading of "#3503 exposes nothing but TCP 22" is `--bind-address
+  127.0.0.1`, and it is wrong: k3s builds the in-cluster `kubernetes` Service
+  endpoint from the advertise address, so pinned to loopback every Pod that
+  talks to the API server dials its own loopback. k3s's *default* is equally
+  wrong in the other direction (0.0.0.0 is the instance's public NIC, refused
+  by the security group but listening). The private address is the only
+  correct answer, and `--tls-san` plus a kubeconfig rewrite are what make it
+  usable — k3s writes `server: https://127.0.0.1:6443` regardless of
+  `--bind-address`.
+
+  (b) *`--disable=traefik --disable=servicelb`, but **never**
+  `--disable=local-storage`.* The first two are the ingress controller and the
+  `Service: LoadBalancer` implementation #3506's premise says the manifests
+  need neither of. The third looks like more of the same trimming and is a
+  trap: the Cassandra and Ollama StatefulSets declare `volumeClaimTemplates`
+  with no `storageClassName`, so they bind through the cluster's default
+  StorageClass, which on k3s is `local-path` — disabling it leaves both Pods
+  Pending on unbound PVCs, which reads as a capacity problem and is not one.
+
+  (c) *Switching substrates is a transition, and both directions fail
+  silently if it is not.* A `--no-kubernetes` re-deploy that merely renders
+  the native script leaves k3s and the `Restart=always` access bridge holding
+  127.0.0.1:8000/3000, so the new native services never bind and *every*
+  probe that would notice -- the install's health wait, the deploy's own
+  check, the tunnel -- is answered by the cluster the operator just asked to
+  leave, while `deploy.json` and the dashboard both say "native". Each
+  provisioning script therefore retires the substrate it replaces before
+  installing its own, guarded on existence so a first deploy runs neither.
+  The reverse direction failed *loudly* instead, which was no better: its
+  refusal prescribed `nyxgpt ops down` on the instance, a command no wrapped
+  `nyxgpt cloud` surface can run, leaving `cloud destroy` as the only exit.
+
+  What the change actually does is not recorded here — it is enforced by
+  `tests/unit/test_cloud_deploy_kubernetes.py`,
+  `tests/unit/test_k3s_image_import.py`,
+  `tests/unit/test_k8s_access_bridge_doctor.py` and
+  `.github/workflows/k3s-cloud-smoke.yml`, which executes the deploy's own
+  bootstrap text on a real cluster, per the verification retirement. Related:
+  **D-023** (canary reads the canary track's own Pods) is what makes the
+  cloud canary surface meaningful; **D-017** is why `nyxgpt cloud canary` is a
+  CLI command and the dashboard only *reports* which substrate is running.
+  Source: #3956; `product_management/DECISION_AWS_COMPUTE_SUBSTRATE.md`;
+  #3513 (the issue that under-specified it); `docs/cloud.md`
+  §Kubernetes on the instance.
+  Filed as **D-033** on this branch, then **D-034**, then **D-035**, then
+  **D-036** on the three earlier merges into `v3.0.0`; renumbered again here,
+  #3867, #3811, #3950 and #3948 having taken those four in turn while this PR
+  was in review. Number from `python3 scripts/agents/lib/ledger_ids.py next D
+  --base origin/v3.0.0` — run, not eyeballed, on each pass. IDs are never
+  reused.
+  Supersedes the reading in **D-035**(b) that there is "no Kubernetes cloud
+  target": that entry correctly called it unbuilt work rather than a scope
+  decision, and this PR builds it. It also supersedes D-035(b)'s "no Kubernetes
+  cloud target for `--dev` to modify" — the two flags **do** compose here:
+  `--kubernetes` chooses the substrate and `--dev` chooses where the images
+  come from, so `cloud deploy --dev --kubernetes` renders
+  `ops install --kubernetes --local --dev` on the instance. D-035(a) still
+  holds unchanged: `--dev` is not *carried forward* by `resolve_plan` on either
+  substrate. **D-036** (#3948) landed while this was in review and removed the
+  `--local` requirement these scripts were written against; the rendered
+  command still passes `--local` explicitly, which is now the accepted no-op,
+  and the `--cloud` refusal's pointer (`ops.CLOUD_DEPLOY_POINTER`) carries this
+  PR's `--kubernetes` half so both the help and the error name the whole cloud
+  path.
 
 ## Parked
 

@@ -1,11 +1,21 @@
-# Kubernetes Deployment (local clusters)
+# Kubernetes Deployment
 
-nyxGPT can be deployed to a **local** Kubernetes cluster (kind, minikube, k3s,
-Docker Desktop's built-in cluster, etc.) as an alternative to the Homebrew /
-`nyxgpt ops` workflow described in [ops.md](ops.md). This is aimed at running
-nyxGPT on your own workstation, in line with the project's local-first
-[VISION.md](../product_management/VISION.md) — it is not a guide for deploying to a cloud
-provider.
+nyxGPT can be deployed to a Kubernetes cluster as an alternative to the
+Homebrew / `nyxgpt ops` workflow described in [ops.md](ops.md). There are two
+targets, and they run the **same `k8s/*.yaml` manifests** on the same
+single-node shape:
+
+| Target | Command | Cluster |
+|---|---|---|
+| Your own workstation | `nyxgpt ops install --kubernetes --local` | kind, minikube, k3s, Docker Desktop's built-in cluster, or any reachable context |
+| An AWS EC2 instance | `nyxgpt cloud deploy --kubernetes` | a single-node **k3s** cluster the deploy installs on the instance |
+
+Most of this document is about the workstation target, in line with the
+project's local-first [VISION.md](../product_management/VISION.md). The cloud
+target is [Kubernetes on the cloud target](#kubernetes-on-the-cloud-target)
+below and in [cloud.md](cloud.md); it is deliberately *not* a separate
+deployment path — it puts a cluster on the instance and then runs the
+workstation command there.
 
 Scope: this deploys a **self-contained, chattable stack** — the FastAPI
 backend (`nyxgpt-api`), the web UI (`nyxgpt-web`), and the data/LLM tier
@@ -191,18 +201,21 @@ is refused up front (exit 2) when there is no checkout to build, rather than
 half-installing.
 
 **Where dev mode is available.** `--dev` applies to the machine you run
-`nyxgpt ops install`/`nyxgpt up` on — natively, under `--terraform --local`,
-and under `--kubernetes --local` as described here. On a cloud target,
+`nyxgpt ops install`/`nyxgpt up` on — natively, under `--terraform`, and under
+`--kubernetes` as described here. On a cloud target,
 `nyxgpt cloud deploy --dev` ships your checkout to the EC2 instance and
-installs it there ([cloud.md](cloud.md#dev-mode-on-a-cloud-target)) — but that
-is the **native** stack on that instance. There is no Kubernetes mode of
-`nyxgpt cloud deploy` for `--dev` to modify: `--kubernetes` is a local install
-mode, and `nyxgpt cloud deploy` deploys the native stack to one EC2 box.
-Kubernetes on a cloud target is separate, unbuilt work rather than a decision
-against it — `product_management/DECISION_AWS_COMPUTE_SUBSTRATE.md` (#3506)
-rejects a *managed EKS control plane* and calls for the existing `k8s/*.yaml`
-layered on a single-node k3s cluster on that instance, which nothing
-implements yet.
+installs it there ([cloud.md](cloud.md#dev-mode-on-a-cloud-target)) — on the
+**native** stack by default, and on the **cluster** when combined with
+`nyxgpt cloud deploy --kubernetes` (#3956), which passes `--dev` straight
+through to the `nyxgpt ops install --kubernetes` it runs on the instance. So
+the two flags compose there exactly as they do here: `--kubernetes` chooses the
+substrate, `--dev` chooses where the images come from. That is
+`product_management/DECISION_AWS_COMPUTE_SUBSTRATE.md` (#3506) implemented —
+it rejects a *managed EKS control plane* and calls for the existing
+`k8s/*.yaml` layered on a single-node k3s cluster on that instance, which is
+what [Kubernetes on the cloud target](#kubernetes-on-the-cloud-target) below
+does. `--dev` on an EC2 **Mac** target (`--os macos`) is refused rather than
+ignored, as is `--os macos --kubernetes`.
 
 Switching between the modes re-rolls the app tier: both modes produce the same
 `:local` tags, so the Deployment specs are identical across a switch and
@@ -220,10 +233,11 @@ Locality: this flag deploys to a cluster on the local machine, and that is the
 default — `nyxgpt ops install --kubernetes` needs no locality flag (#3948).
 `--local` is still accepted as an explicit no-op, so the commands on this page
 and in your scripts keep working. `--cloud` is accepted by the CLI surface but
-rejected, and here that is more than a limit of the flag: the cloud path
-provisions an AWS instance (`nyxgpt cloud infra apply`) and runs the stack on it
-with Compose (`nyxgpt cloud deploy`, see [cloud.md](cloud.md)) — it is not a
-cluster deployment, so there is no cloud target for this flag to accept.
+rejected, and that is a limit of *this flag*, not of the product: the cloud
+target is a different command, and it is deployed with
+[`nyxgpt cloud deploy --kubernetes`](#kubernetes-on-the-cloud-target), which
+provisions the substrate, installs a single-node k3s cluster on the instance,
+and then runs `nyxgpt ops install --kubernetes` **there** (#3956).
 
 The command refuses to start if the native/Compose stack already owns the
 `api` port — run `nyxgpt ops down` (or stop the conflicting components)
@@ -246,6 +260,88 @@ the canary rollout tooling that operates on top of this deployment once
 it's up — useful if you want to run the bring-up steps individually or
 troubleshoot a failure. It is reference material, not something you're
 expected to type by hand.
+
+## Kubernetes on the cloud target
+
+```bash
+nyxgpt cloud deploy --kubernetes
+```
+
+Deploys the same stack onto an AWS EC2 instance, running on a **single-node
+k3s cluster** installed on that instance. This is what makes
+[canary rollout](#canary-deployment) available on the cloud target: the
+stable/canary manifests need a cluster to weight traffic in, and without one
+there is nothing for `nyxgpt canary` to operate on.
+
+The substrate choice is the owner-approved decision in
+[`DECISION_AWS_COMPUTE_SUBSTRATE.md`](../product_management/DECISION_AWS_COMPUTE_SUBSTRATE.md):
+EC2 single-box with these manifests layered on k3s, rather than a managed EKS
+control plane. What is *not* used, and why:
+
+- **No EKS.** A managed control plane is a standing monthly charge and a
+  second cluster-lifecycle subsystem, and its natural ingress story (an ALB)
+  contradicts the SSH-tunnel-only access model below.
+- **No ingress controller and no `Service: LoadBalancer`.** k3s ships Traefik
+  and `servicelb` on by default; the deploy disables both. Nothing in
+  `k8s/*.yaml` asks for either, which is exactly the property that lets the
+  manifests run on any cluster flavour unchanged.
+- **The API server binds the instance's private address**, not `0.0.0.0`.
+  The security group still allows only TCP 22, so this is defence in depth
+  rather than the only barrier.
+- **`local-path` stays enabled.** The Cassandra and Ollama StatefulSets bind
+  through whatever the cluster's default StorageClass is, and on k3s that is
+  `local-path`.
+
+**How it reuses the workstation path.** The deploy installs k3s, writes a
+kubeconfig the login user owns, and then runs
+`nyxgpt ops install --kubernetes --local` on the instance — the same command
+documented above, taking the same bring-your-own-cluster branch it takes when
+you already have a cluster running. There is no cloud-specific deployment code
+path and the manifests are applied unchanged. The images are built on the
+instance from the **published** `nyxgpt-api`/`nyxgpt-web` artifacts and
+imported into k3s's containerd; no repository is ever checked out on the
+instance.
+
+**How you reach it.** Exactly as for a native cloud deployment: `nyxgpt cloud
+tunnel` forwards `127.0.0.1:8000`/`127.0.0.1:3000` on your workstation over
+SSH. Because the cluster's Services are ClusterIP-only, the deploy installs a
+small **access bridge** on the instance — systemd `--user` services running
+`nyxgpt ops port-forward`, which is what holds those loopback ports for the
+tunnel to forward to. They restart automatically, which matters during a
+canary rollout: replacing a Pod ends a port-forward.
+
+**Canary rollout against the cloud deployment:**
+
+```bash
+nyxgpt cloud canary status
+nyxgpt cloud canary start --weight 10
+nyxgpt cloud canary evaluate
+nyxgpt cloud canary promote --step 25
+nyxgpt cloud canary rollback
+```
+
+These run the instance's own `nyxgpt canary` over the same wrapped SSH path
+`nyxgpt cloud ops` uses — the cluster's API server is reachable from the
+instance and from nowhere else. `--component api|web` selects the pair, as it
+does locally. `canary deploy` has no cloud form on purpose: it builds an image
+from a source checkout, and the instance has none. Roll a new release out with
+`nyxgpt cloud deploy --version <release>`, which is idempotent.
+
+**Which substrate is running** is reported by `nyxgpt cloud status` and by the
+admin dashboard's Infrastructure page. The choice is recorded, so a later bare
+`nyxgpt cloud deploy` reconciles the same Kubernetes deployment rather than
+installing a native stack beside it; `--no-kubernetes` moves a deployment back
+to the native substrate. Both directions are a real transition, not a second
+install: the deploy retires the substrate it replaces first (`nyxgpt ops down`
+on the instance going in, the access bridge plus k3s's own uninstaller coming
+out). Sessions do not follow the move — each substrate has its own Cassandra;
+see [cloud.md](cloud.md#kubernetes-on-the-instance-3956).
+
+**Teardown** is `nyxgpt cloud destroy --yes`. The cluster is entirely on the
+instance — control plane, image store, `local-path` volumes — so terminating
+the instance removes it; there is no separate cluster to tear down first.
+
+See [cloud.md](cloud.md) for the substrate, access model and cost.
 
 ## Prerequisites
 
@@ -510,8 +606,10 @@ Notes:
 - **Storage is ephemeral.** Prometheus, Loki, Grafana and GlitchTip's
   Postgres use `emptyDir`, not PersistentVolumeClaims: `nyxgpt ops down
   --kubernetes` deletes the local cluster nyxgpt provisioned, so there is
-  nothing for that data to outlive. Long-lived retention is the native /
-  Compose path's job (see [ops.md](ops.md)).
+  nothing for that data to outlive. The same holds on the
+  [cloud target](#kubernetes-on-the-cloud-target), where `nyxgpt cloud
+  destroy` deletes the instance the cluster lives on. Long-lived retention is
+  the native / Compose path's job (see [ops.md](ops.md)).
 - **Secrets.** `k8s/observability/secret.yaml` is bootstrapped from
   `secret.example.yaml` on first apply and never committed. It carries
   Grafana's admin password (from `[monitoring] grafana_admin_password` when

@@ -101,8 +101,9 @@ works here too and is remembered for later runs, plus:
 | `--os {auto,linux,macos}` | Which target OS's bootstrap to drive (default `auto`: `macos` for a `mac*.metal` instance type, `linux` otherwise). See [EC2 Mac targets](#ec2-mac-targets) |
 | `--version` | Published release to install on the instance (default: this CLI's own version, then whatever the last deploy used). Ignored under `--dev` |
 | `--dev` | Deploy **your working tree** instead of a published release — Linux targets only, see [Dev mode on a cloud target](#dev-mode-on-a-cloud-target) |
+| `--kubernetes` / `--no-kubernetes` | Run the stack on a single-node k3s cluster on the instance instead of natively, applying the same `k8s/*.yaml` manifests — this is what makes `nyxgpt cloud canary` available. Linux targets only. Remembered for later runs. See [Kubernetes on the instance](#kubernetes-on-the-instance-3956) |
 | `--skip-observability` | Deploy the core app only, without monitoring/logging/tracing/errors (implied by `--os macos`, whose bootstrap installs none) |
-| `--session-backend` | Where the instance stores chat sessions: `cassandra` (default — shared with every mode pointed at the same Cassandra) or `file` (JSON on the instance's own disk). Remembered for later runs, so a re-deploy never silently moves an instance's sessions back to files. See [session-storage.md](session-storage.md) |
+| `--session-backend` | Where the instance stores chat sessions: `cassandra` (default — shared with every mode pointed at the same Cassandra) or `file` (JSON on the instance's own disk). Remembered for later runs, so a re-deploy never silently moves an instance's sessions back to files. Refused with `--kubernetes` for anything but `cassandra`, which the cluster's ConfigMap fixes. See [session-storage.md](session-storage.md) |
 | `--no-tunnel` | Don't open the tunnel (and so don't health-check through it); prints the `nyxgpt cloud tunnel` command to run instead |
 | `--ssh-user` | Login user on the instance (default `ec2-user`, the Amazon Linux 2023 default) |
 | `--identity-file` | Private key to authenticate with (default: whatever the last deploy used, then whatever `ssh` would pick from `~/.ssh` and your agent) |
@@ -290,6 +291,96 @@ provisioned)` with the command that provisions it, and the command exits 2.
 Credentials are never returned by the HTTP API (#3458/#3466); this path is
 CLI-side only.
 
+### Kubernetes on the instance (#3956)
+
+```bash
+nyxgpt cloud deploy --kubernetes
+```
+
+Runs the stack on a **single-node k3s cluster** on the instance instead of
+natively, applying the same `k8s/*.yaml` manifests a local Kubernetes install
+uses. This is the owner-approved decision in
+[`DECISION_AWS_COMPUTE_SUBSTRATE.md`](../product_management/DECISION_AWS_COMPUTE_SUBSTRATE.md)
+— EC2 single-box with those manifests layered on k3s, rather than a managed
+EKS control plane — and the capability it exists for is
+[canary rollout](kubernetes.md#canary-deployment), which needs a cluster to
+weight traffic in.
+
+It is not a second deployment path. The deploy installs k3s, writes a
+kubeconfig the login user owns, and then runs
+`nyxgpt ops install --kubernetes --local` **on the instance** — the same
+command you would run on a workstation, taking the same bring-your-own-cluster
+branch it takes against any reachable cluster. Steps 1, 2, 5 and 6 of the
+deploy above are unchanged; step 3 installs k3s in place of the host Ollama
+and Node toolchain (the cluster runs Ollama itself, and the web image is built
+by Docker rather than by `npm` on the host).
+
+Step 4 has no Kubernetes form: chat sessions live in the in-cluster Cassandra
+because `k8s/configmap.yaml` says so, and the Pods read that rather than the
+host's `config.ini`. `--session-backend file --kubernetes` is therefore
+**refused** rather than accepted and ignored — including when the `file` value
+was carried forward from an earlier native deploy of the same instance, which
+is exactly the case where the flag would otherwise change meaning underneath
+you.
+
+What the access model gets, beyond the single port-22 rule that is unchanged:
+
+- k3s's API server binds the instance's **private** address, not `0.0.0.0`.
+- Traefik (k3s's default ingress controller, which would bind host ports
+  80/443) and `servicelb` (its `Service: LoadBalancer` implementation) are
+  both disabled. Nothing in `k8s/*.yaml` asks for either.
+- The cluster's Services are ClusterIP-only, so the deploy installs an
+  **access bridge** — systemd `--user` services running `nyxgpt ops
+  port-forward` — to hold `127.0.0.1:8000`/`127.0.0.1:3000` on the instance
+  for [`nyxgpt cloud tunnel`](#reaching-it-nyxgpt-cloud-tunnel) to forward to.
+  They restart automatically, which matters during a rollout: replacing a Pod
+  ends a port-forward.
+
+Canary rollout against the deployment:
+
+```bash
+nyxgpt cloud canary status
+nyxgpt cloud canary start --weight 10
+nyxgpt cloud canary evaluate
+nyxgpt cloud canary promote --step 25
+nyxgpt cloud canary rollback
+```
+
+These run the instance's own `nyxgpt canary` over the same wrapped SSH path
+[`nyxgpt cloud ops`](#nyxgpt-cloud-ops--inspecting-the-instance-3813) uses,
+because the cluster's API server is reachable from the instance and from
+nowhere else. `--component api|web` selects the pair. There is no
+`nyxgpt cloud canary deploy`: `nyxgpt canary deploy` builds an image from a
+source checkout and the instance has none by construction — roll a new release
+out with `nyxgpt cloud deploy --version <release>`, which is idempotent.
+
+The substrate is recorded with the deployment, so a later bare `nyxgpt cloud
+deploy` reconciles the same Kubernetes deployment rather than installing a
+native stack beside it and fighting it for ports 8000/3000. `--no-kubernetes`
+moves a deployment back to the native substrate, and `--kubernetes` on a
+native deployment moves it forward: each provisioning script retires the
+substrate it replaces before installing its own — the k3s deploy runs the
+wrapped `nyxgpt ops down` on the instance first, the native deploy stops the
+access bridge and runs k3s's own uninstaller. Without that the two stacks
+would both be running and every health probe would be answered by the one the
+operator just asked to leave.
+
+**A switch moves the instance; it does not migrate it.** Each substrate keeps
+its own Cassandra, so chat sessions do not follow a switch: the native
+Cassandra's volume survives (`ops down` preserves volumes, so switching back
+finds it), but the cluster's `local-path` volumes go with `k3s-uninstall.sh`.
+Move the data yourself before switching if you need it, or keep the two on
+separate instances.
+[`nyxgpt cloud status`](#nyxgpt-cloud-status--where-is-my-instance-3813) and
+the dashboard's Infrastructure page report which one is running.
+
+Sizing: the cluster carries the whole stack, so the node needs what a local
+Kubernetes install needs — see
+[Node capacity](kubernetes.md#node-capacity-what-the-stack-reserves) and pass
+`--instance-type` accordingly. A node too small for the stack is refused by
+the install's capacity preflight before anything is built, rather than leaving
+a Pod Pending forever.
+
 ### Tearing it down
 
 ```bash
@@ -299,6 +390,12 @@ nyxgpt cloud destroy --yes
 Closes the tunnel, then destroys the substrate. `--yes` is required: the
 instance and its root volume go, and anything living only on that box —
 models, Cassandra data, logs — goes with them.
+
+That includes a `--kubernetes` deployment's cluster, in full: the k3s control
+plane, its containerd image store and its `local-path` volumes all live on the
+instance's root volume, so terminating the instance *is* the cluster teardown.
+There is no separate cluster to remove first, and the deploy record — with the
+substrate it pins — goes with it.
 
 ### Repo-less by construction
 
@@ -312,7 +409,12 @@ of this flow touches a checkout:
 - **Instance side** — the box installs `nyxgpt==<version>` from PyPI into a
   venv under `~/.nyxGPT`, seeds `config.ini` from the installed package, and
   runs `nyxgpt ops install`. It never runs `git clone`, and nothing is copied
-  from the operator's machine. This is the same sequence the
+  from the operator's machine. With
+  [`--kubernetes`](#kubernetes-on-the-instance-3956) the same holds one layer
+  down: the manifests come from the installed package (`nyxgpt.resources.k8s`,
+  synced to `~/.nyxGPT/k8s`) and the api/web images are built on the instance
+  from the **published** `nyxgpt-api`/`nyxgpt-web` tarballs. This is the same
+  sequence the
   `artifact-install-smoke` job in `.github/workflows/release-artifacts.yml`
   proves on a checkout-free runner for every release;
   `tests/unit/test_cloud_deploy.py` asserts the generated script contains no

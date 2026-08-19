@@ -5936,7 +5936,9 @@ def _cp_details(cp: subprocess.CompletedProcess[str]) -> str:
 # stack onto it. The unimplemented part is narrowly this flag.
 CLOUD_DEPLOY_POINTER = (
     "cloud deployment is `nyxgpt cloud infra apply` to provision the AWS substrate "
-    "and `nyxgpt cloud deploy` to deploy this stack onto it (see docs/cloud.md)"
+    "and `nyxgpt cloud deploy` to deploy this stack onto it -- add --kubernetes there "
+    "for a single-node k3s cluster running these same k8s/*.yaml manifests (#3956); "
+    "see docs/cloud.md and docs/kubernetes.md"
 )
 
 
@@ -5951,8 +5953,19 @@ def _resolve_locality(args) -> str | None:
     `--cloud` is accepted by the CLI surface (so it doesn't need a redesign
     later) but rejected: *this flag* deploys to the local machine. That is a
     limit of the flag, not of the product -- see `CLOUD_DEPLOY_POINTER` for
-    the commands that do deploy to a cloud target, and #3513 for what would
-    make `--cloud` meaningful here.
+    the commands that do deploy to a cloud target.
+
+    The cloud target is not a second mode of this command: it is
+    `nyxgpt cloud deploy`, which provisions the substrate, reaches the
+    instance over the #3503 SSH path, and runs this very command *there*
+    (#3956 -- `--kubernetes` on that command puts a single-node k3s cluster on
+    the box and then runs `ops install --kubernetes` on it, which is #3506's
+    "no new deployment code path" in one sentence). That is why the rejection
+    points at a command rather than promising a future one: the older wording
+    ("not yet implemented -- --local is the precursor to a future cloud
+    target") was an expiry-dated world-state claim of exactly the kind #3744
+    forbids, and by 2026-08-19 it had expired twice over -- `nyxgpt cloud
+    deploy` shipped in #3513 and its Kubernetes mode in #3956.
 
     Returns "local", or None (having already printed an error) if `--cloud`
     was asked for.
@@ -6856,6 +6869,15 @@ KIND_CONTEXT = f"kind-{KIND_CLUSTER_NAME}"
 KIND_DOWNLOAD_URL = (
     "https://github.com/kubernetes-sigs/kind/releases/latest/download/kind-{os}-{arch}"
 )
+# How long `_k3s_import_image` will wait for one image to land in k3s's
+# containerd store. Generous: the api image is multi-GB and the import is a
+# decompress-and-write of the whole thing onto the instance's root volume, on
+# hardware an operator chose for running nyxGPT rather than for build
+# throughput. Bounded all the same (D-027) -- `install_kubernetes_local` is
+# reachable from an HTTP handler, and an unbounded pipe there is a worker held
+# forever.
+K3S_IMAGE_IMPORT_TIMEOUT_SECONDS = 900
+
 KUBECTL_STABLE_URL = "https://dl.k8s.io/release/stable.txt"
 KUBECTL_DOWNLOAD_URL = "https://dl.k8s.io/release/{version}/bin/{os}/{arch}/kubectl"
 
@@ -7160,10 +7182,19 @@ def _build_and_load_k8s_image(
     """Build `image` from `context` and load it into the current cluster's image cache.
 
     Docker Desktop's built-in cluster shares the host's image cache, so a
-    build alone is enough there. kind/minikube each need an explicit
+    build alone is enough there. kind/minikube/k3s each need an explicit
     load step; an unrecognized cluster type is treated the same way the
     documented manual flow would be -- skip the load and tell the operator
     to do it themselves if their cluster doesn't share the host cache.
+
+    k3s is the branch `nyxgpt cloud deploy --kubernetes` lands on (#3956):
+    it runs its own containerd, so a `docker build` on the same box produces
+    an image the cluster cannot see, and every `:local` tag in `k8s/*.yaml`
+    would `ImagePullBackOff`. It is detected by the `k3s` binary rather than
+    by the context name, because k3s's default context is called `default` --
+    a name that says nothing. Ordered last of the three so a machine that has
+    k3s installed but is currently pointed at a kind cluster still takes the
+    kind branch.
 
     `image` defaults to the mutable `nyxgpt-api:local` tag `nyxgpt ops
     install --kubernetes` uses; `nyxgpt ops deploy --kubernetes` (via
@@ -7216,6 +7247,9 @@ def _build_and_load_k8s_image(
         else:
             results.append(OpsResult(True, f"Loaded {image} into minikube"))
         return results
+    if _which("k3s") is not None:
+        results += _k3s_import_image(image)
+        return results
     results.append(
         OpsResult(
             True,
@@ -7225,6 +7259,105 @@ def _build_and_load_k8s_image(
         )
     )
     return results
+
+
+def _k3s_import_image(image: str) -> list[OpsResult]:
+    """Import a locally-built docker image into k3s's containerd store (#3956).
+
+    k3s does not use docker: it runs its own containerd, with its own image
+    store, so an image `docker build` just produced is invisible to it. Every
+    `k8s/*.yaml` Deployment pins `imagePullPolicy: IfNotPresent` against a
+    `:local` tag that exists in no registry, so without this step the apply
+    succeeds, the Pods are created, and every one of them sits in
+    `ErrImagePull`/`ImagePullBackOff` forever.
+
+    That failure mode is why this is an `OpsResult(False)` on error rather
+    than the `True` the unrecognized-cluster branch above returns: there, the
+    operator was told to load the image themselves and a bring-your-own
+    cluster may genuinely share the host cache; here we know it does not, so
+    a failed import is a failed install, reported at the step that caused it
+    instead of eight minutes later as an unexplained Pending stack.
+
+    The image itself is **piped**, not staged through a temp file: the two
+    images together are several GB, and a cloud instance's root volume is
+    sized for the stack, not for a second copy of it. `docker save`'s
+    **stderr**, on the other hand, goes to a temp file rather than to a second
+    pipe, and that asymmetry is deliberate. Nothing reads a stderr pipe until
+    after the import returns, so a `docker save` that filled the 64KiB stderr
+    buffer would block on the write, stop feeding the import, and leave the
+    two processes waiting on each other until the timeout below expired. The
+    diagnostic is a line or two in practice, which is exactly why the deadlock
+    would never show up in testing and would surface as a fifteen-minute hang
+    on somebody's deploy.
+
+    `sudo` unless already root -- containerd's socket
+    (`/run/k3s/containerd/containerd.sock`) is root-owned, and the login user
+    a cloud deploy runs as is not.
+    """
+    argv = [*_k3s_sudo_prefix(), "k3s", "ctr", "images", "import", "-"]
+    try:
+        with (
+            tempfile.TemporaryFile(mode="w+") as save_errors,
+            subprocess.Popen(  # nosec B603
+                ["docker", "save", image], stdout=subprocess.PIPE, stderr=save_errors
+            ) as save,
+        ):
+            cp = subprocess.run(  # nosec B603 - fixed argv, no shell
+                argv,
+                stdin=save.stdout,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=K3S_IMAGE_IMPORT_TIMEOUT_SECONDS,
+            )
+            # Close our handle so `docker save` sees EPIPE and exits if the
+            # import died early, instead of blocking the `with` on a full pipe.
+            if save.stdout is not None:
+                save.stdout.close()
+            save.wait(timeout=K3S_IMAGE_IMPORT_TIMEOUT_SECONDS)
+            save_errors.seek(0)
+            save_stderr = save_errors.read()
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.warning(
+            "ops: k3s image import failed for %s: %s",
+            image,
+            e,
+            extra={"component": "ops", "action": "k3s-image-import", "image": image},
+        )
+        return [OpsResult(False, f"Could not import {image} into k3s", f"{type(e).__name__}: {e}")]
+
+    if save.returncode != 0:
+        logger.warning(
+            "ops: docker save %s exited %s: %s",
+            image,
+            save.returncode,
+            save_stderr.strip(),
+            extra={"component": "ops", "action": "k3s-image-import", "image": image},
+        )
+        return [
+            OpsResult(
+                False,
+                f"docker save {image} failed -- nothing to import into k3s",
+                save_stderr.strip(),
+            )
+        ]
+    if cp.returncode != 0:
+        logger.warning(
+            "ops: k3s ctr images import exited %s for %s: %s",
+            cp.returncode,
+            image,
+            (cp.stderr or "").strip(),
+            extra={"component": "ops", "action": "k3s-image-import", "image": image},
+        )
+        return [OpsResult(False, f"k3s ctr images import failed for {image}", _cp_details(cp))]
+    return [OpsResult(True, f"Imported {image} into k3s's containerd", _cp_details(cp))]
+
+
+def _k3s_sudo_prefix() -> list[str]:
+    """`["sudo", "-n"]` unless this process is already root (or sudo is absent)."""
+    if os.geteuid() == 0 or _which("sudo") is None:
+        return []
+    return ["sudo", "-n"]
 
 
 def build_and_load_k8s_image(
@@ -8928,6 +9061,60 @@ def _restart_k8s_app_tier() -> list[OpsResult]:
             return results
         results.append(OpsResult(True, f"Rolled {ref} onto the new install mode's image"))
     return results
+
+
+# The systemd --user template a `nyxgpt cloud deploy --kubernetes` installs to
+# bridge the instance's loopback into the ClusterIP-only Services (#3956). Named
+# here so `doctor` can report it: on a cloud Kubernetes deployment this unit,
+# not the API process, is what holds 127.0.0.1:8000, so it is a distinct thing
+# that can be down while every Pod is Running -- and an operator told only "the
+# API did not answer" goes looking in the cluster, where nothing is wrong.
+K8S_ACCESS_BRIDGE_UNIT = "nyxgpt-k8s-bridge@"
+K8S_ACCESS_BRIDGE_TARGETS: tuple[str, ...] = ("api", "web", "observability")
+
+
+def _k8s_access_bridge_issues() -> list[str]:
+    """Report the access bridge's units, returning `doctor` issues for any down.
+
+    Silent where no bridge exists: the template is installed only by a cloud
+    `--kubernetes` deploy, so a local kind/minikube cluster (where the operator
+    runs `nyxgpt ops port-forward` in a terminal) has no units to report and
+    gets no output. Reads only `is-active`; `doctor` never starts anything.
+    """
+    if not _is_linux():
+        return []
+    unit_dir = _systemd_user_dir()
+    if not (unit_dir / f"{K8S_ACCESS_BRIDGE_UNIT}.service").exists():
+        return []
+    issues: list[str] = []
+    for target in K8S_ACCESS_BRIDGE_TARGETS:
+        unit = f"{K8S_ACCESS_BRIDGE_UNIT}{target}.service"
+        enabled = _run(
+            ["systemctl", "--user", "is-enabled", unit],
+            check=False,
+            expected=True,
+            timeout=LOCAL_PROBE_TIMEOUT_SECONDS,
+        )
+        if (enabled.stdout or "").strip() != "enabled":
+            # Not enabled is not a fault: `--skip-observability` deliberately
+            # leaves the observability bridge alone.
+            continue
+        active = _run(
+            ["systemctl", "--user", "is-active", unit],
+            check=False,
+            expected=True,
+            timeout=LOCAL_PROBE_TIMEOUT_SECONDS,
+        )
+        state = (active.stdout or "").strip() or "unknown"
+        print(f"Kubernetes access bridge ({target}): {state}")
+        if state != "active":
+            issues.append(
+                f"The Kubernetes access bridge for {target} is {state}. That unit, not "
+                f"the Pod, is what holds this host's loopback port, so the stack is "
+                f"unreachable through the SSH tunnel even with every Pod Running. "
+                f"Re-run `nyxgpt cloud deploy` to reconcile it."
+            )
+    return issues
 
 
 def _record_k8s_install_mode(dev: bool) -> list[OpsResult]:
@@ -11020,6 +11207,7 @@ def doctor(_args) -> int:
                     "be rebuilt. Re-run `nyxgpt ops install --kubernetes` (add "
                     "--dev from a checkout to stay on the working tree)."
                 )
+        issues.extend(_k8s_access_bridge_issues())
     if install_mode.is_dev:
         checkout = Path(install_mode.checkout) if install_mode.checkout else None
         if checkout is None or not checkout.is_dir():
