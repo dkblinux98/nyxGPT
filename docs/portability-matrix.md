@@ -51,7 +51,7 @@ A row is **acceptance-ready** when its checks pass *and* it has no open gap.
 | macOS native (Homebrew + launchd) | Remote tap `dkblinux98/nyxgpt` | `brew tap dkblinux98/nyxgpt`<br>`brew tap-trust dkblinux98/nyxgpt`<br>`brew install nyxgpt-api nyxgpt-web` | `nyxgpt up` | `nyxgpt down` | Install **verified in CI** (`macos-brew-smoke.yml`); operate half owner acceptance |
 | Linux native (systemd `--user`) | PyPI wheel | `pip install nyxgpt` | `nyxgpt up` | `nyxgpt down` | **Verified in CI** on every release |
 | Docker / Compose | `ghcr.io/dkblinux98/nyxgpt-api`, `…/nyxgpt-web` | `pip install nyxgpt` | `nyxgpt up`, `nyxgpt ops observability` | `nyxgpt down` | **Gap** — see below |
-| Kubernetes | PyPI wheel + the `nyxgpt-api`/`nyxgpt-web` release tarballs | `pip install nyxgpt` | `nyxgpt ops install --kubernetes --local` | `nyxgpt ops down --kubernetes` | **Verified in CI** (`k8s-artifact-smoke.yml`) |
+| Kubernetes | PyPI wheel + the `nyxgpt-api`/`nyxgpt-web` release tarballs | `pip install nyxgpt` | `nyxgpt ops install --kubernetes` | `nyxgpt ops down --kubernetes` | **Verified in CI** (`k8s-artifact-smoke.yml`) |
 | AWS EC2 (private access path) | PyPI wheel, workstation and instance | `pip install nyxgpt`<br>`nyxgpt cloud credentials-setup` | `nyxgpt cloud deploy`, `nyxgpt cloud tunnel` | `nyxgpt cloud destroy --yes` | Owner acceptance — CI has no billable AWS account |
 
 ### Evidence
@@ -110,8 +110,7 @@ from the registry yet.
 
 **Terraform closed its gap in #3835.** The `.tf` configuration ships as package
 data (`nyxgpt.resources.terraform.local`, materialized into `~/.nyxGPT/terraform`)
-instead of being read from `REPO_ROOT`, and `nyxgpt ops install --terraform
---local` pulls the published `ghcr.io/dkblinux98/nyxgpt-api`/`-web` images rather
+instead of being read from `REPO_ROOT`, and `nyxgpt ops install --terraform` pulls the published `ghcr.io/dkblinux98/nyxgpt-api`/`-web` images rather
 than building the working tree. `--dev` still builds it, records that it did, and
 is refused where there is no checkout. The proof is executed, not inspected: the
 `terraform-artifact-smoke` job in
@@ -121,7 +120,7 @@ real published images, deploys, and requires the stack to serve.
 
 **Kubernetes closed its gap in #3834.** The manifests ship as package data
 (`nyxgpt.resources.k8s`, synced to `~/.nyxGPT/k8s`) instead of being read from
-`REPO_ROOT`, and `nyxgpt ops install --kubernetes --local` builds both images
+`REPO_ROOT`, and `nyxgpt ops install --kubernetes` builds both images
 from the published `nyxgpt-api`/`nyxgpt-web` release tarballs — the same
 artifacts the Homebrew formulas install, and the ones a *release candidate*
 publishes, which a container image is not. `--dev` still builds the working
@@ -242,7 +241,7 @@ nyxgpt up && nyxgpt ops status && nyxgpt down
 
 # Kubernetes (local cluster -- provisioned by the command if there isn't one)
 pip install nyxgpt
-nyxgpt ops install --kubernetes --local
+nyxgpt ops install --kubernetes
 nyxgpt ops status && nyxgpt ops down --kubernetes
 ```
 

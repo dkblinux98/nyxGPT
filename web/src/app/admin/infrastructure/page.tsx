@@ -110,7 +110,7 @@ type InfraStatus = {
     provisioned: boolean;
     // What the two images in this cluster were built from (#3834): the
     // published nyxgpt-api/nyxgpt-web artifacts, or a checkout's working tree
-    // (`nyxgpt ops install --kubernetes --local --dev`). `recorded: false`
+    // (`nyxgpt ops install --kubernetes --dev`). `recorded: false`
     // means no marker -- deployed before nyxGPT recorded one, or from another
     // machine -- which must read as UNRECORDED, never as the artifact
     // default: here that default would be a guess about someone else's
@@ -475,8 +475,8 @@ export default function InfrastructurePage() {
         }}
       >
         Full local Terraform and Kubernetes stacks are available today via{' '}
-        <code>nyxgpt ops install --terraform --local</code> and{' '}
-        <code>nyxgpt ops install --kubernetes --local</code> — see <code>docs/terraform.md</code>{' '}
+        <code>nyxgpt ops install --terraform</code> and{' '}
+        <code>nyxgpt ops install --kubernetes</code> — see <code>docs/terraform.md</code>{' '}
         and <code>docs/kubernetes.md</code>. Neither requires a pre-existing cluster: the
         Kubernetes path provisions a local <code>kind</code> cluster automatically when none is
         reachable, and uses an existing cluster (minikube, Docker Desktop, ...) as-is when one
@@ -694,7 +694,7 @@ export default function InfrastructurePage() {
                     The api and web containers were built from the working tree at{' '}
                     <code>{status.terraform.install_mode.checkout ?? 'an unrecorded checkout'}</code>,
                     not from published images — so this deployment is not exercising the artifact
-                    path. Re-run <code>nyxgpt up --terraform --local</code> without{' '}
+                    path. Re-run <code>nyxgpt up --terraform</code> without{' '}
                     <code>--dev</code> to return to it.
                   </>
                 ) : !status.terraform.install_mode?.recorded ? (
@@ -709,7 +709,7 @@ export default function InfrastructurePage() {
                     deployment predates the per-deployment install-mode marker, or was brought up
                     outside <code>nyxgpt ops</code>. Whether its api and web images came from a
                     checkout or from the published images is unknown, so neither is claimed here.
-                    Re-run <code>nyxgpt up --terraform --local</code> (add <code>--dev</code> for a
+                    Re-run <code>nyxgpt up --terraform</code> (add <code>--dev</code> for a
                     working-tree build) to redeploy it and record the mode.
                   </>
                 ) : (
@@ -779,7 +779,7 @@ export default function InfrastructurePage() {
                       <strong>dev</strong> — the Pods run images built from the working tree at{' '}
                       <code>{status.kubernetes.install_mode.checkout ?? 'an unrecorded checkout'}</code>{' '}
                       as it was at install time, not from published artifacts. Re-run{' '}
-                      <code>nyxgpt ops install --kubernetes --local</code> without{' '}
+                      <code>nyxgpt ops install --kubernetes</code> without{' '}
                       <code>--dev</code> to deploy the artifacts.
                     </>
                   ) : (
@@ -855,7 +855,7 @@ export default function InfrastructurePage() {
                     <span style={{ color: 'var(--foreground-muted)' }}>
                       No node had enough unreserved memory or CPU for them. Give the cluster VM
                       more of either (Docker Desktop: Settings &rarr; Resources), then re-run{' '}
-                      <code>nyxgpt ops install --kubernetes --local</code> — it checks the node&apos;s
+                      <code>nyxgpt ops install --kubernetes</code> — it checks the node&apos;s
                       capacity against the stack before applying anything.
                     </span>
                   </div>
@@ -915,8 +915,8 @@ export default function InfrastructurePage() {
                     <p style={{ fontSize: '0.875rem', color: 'var(--foreground-muted)' }}>
                       No observability workloads in the <code>{status.kubernetes.namespace}</code>{' '}
                       namespace — deploy them with{' '}
-                      <code>nyxgpt ops observability --kubernetes --local</code> (
-                      <code>nyxgpt ops install --kubernetes --local</code> includes them unless{' '}
+                      <code>nyxgpt ops observability --kubernetes</code> (
+                      <code>nyxgpt ops install --kubernetes</code> includes them unless{' '}
                       <code>--skip-observability</code> is passed).
                     </p>
                   )}

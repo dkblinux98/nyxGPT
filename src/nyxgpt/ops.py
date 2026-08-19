@@ -5907,34 +5907,41 @@ def _cp_details(cp: subprocess.CompletedProcess[str]) -> str:
     return (stdout + ("\n" + stderr if stderr else "")).strip()
 
 
+# The single statement of what deploys where, shared by `_resolve_locality`'s
+# rejection below and by the `--cloud` help text in `nyxgpt.cli` so the two
+# cannot drift (#3948). It says what `--cloud` is NOT ("this flag") and names
+# the commands that do the job, because the previous wording ("not yet
+# implemented -- --local is the precursor") read as "nyxGPT cannot deploy to a
+# cloud target at all", which is false: `nyxgpt cloud infra apply` provisions
+# the AWS substrate (with Terraform) and `nyxgpt cloud deploy` deploys this
+# stack onto it. The unimplemented part is narrowly this flag.
+CLOUD_DEPLOY_POINTER = (
+    "cloud deployment is `nyxgpt cloud infra apply` to provision the AWS substrate "
+    "and `nyxgpt cloud deploy` to deploy this stack onto it (see docs/cloud.md)"
+)
+
+
 def _resolve_locality(args) -> str | None:
-    """Validate the `--local`/`--cloud` locality flag shared by `--terraform`/`--kubernetes`.
+    """Resolve the `--local`/`--cloud` locality shared by `--terraform`/`--kubernetes`.
 
-    Only `--local` is implemented today. `--cloud` is accepted by the CLI
-    surface (so it doesn't need a redesign later) but always rejected -- the
-    local deployment is the precursor to a future cloud target, not an
-    alternative to it (see issue #3344). The AWS substrate itself is
-    provisioned by `nyxgpt cloud infra` (#3509); deploying this stack onto
-    that instance is #3513, which is what will make `--cloud` meaningful
-    here.
+    **Local is the default** (#3948). `--local` was previously required and
+    was also the only accepted value, which made the user type the one legal
+    answer to a question with no alternative; it is still accepted, as an
+    explicit no-op, so existing scripts and docs keep working.
 
-    Returns "local" once implemented, or None (having already printed an
-    error) if the flag is missing or unimplemented.
+    `--cloud` is accepted by the CLI surface (so it doesn't need a redesign
+    later) but rejected: *this flag* deploys to the local machine. That is a
+    limit of the flag, not of the product -- see `CLOUD_DEPLOY_POINTER` for
+    the commands that do deploy to a cloud target, and #3513 for what would
+    make `--cloud` meaningful here.
+
+    Returns "local", or None (having already printed an error) if `--cloud`
+    was asked for.
     """
     if getattr(args, "cloud", False):
         print(
-            "ERROR: --cloud is not yet implemented. Local Terraform/Kubernetes deployment "
-            "(--local) is the precursor to a future cloud target -- see docs/terraform.md "
-            "and docs/kubernetes.md. To provision the AWS substrate itself, use "
-            "`nyxgpt cloud infra apply` (see docs/cloud.md); deploying this stack onto "
-            "that instance lands with `nyxgpt cloud deploy`.",
-            file=sys.stderr,
-        )
-        return None
-    if not getattr(args, "local", False):
-        print(
-            "ERROR: --local is required with --terraform/--kubernetes "
-            "(the only locality implemented today; pass --local explicitly)",
+            "ERROR: --cloud is not implemented for `ops install --terraform/--kubernetes`, "
+            f"which deploys to the local machine; {CLOUD_DEPLOY_POINTER}.",
             file=sys.stderr,
         )
         return None
@@ -6668,7 +6675,7 @@ def _install_terraform(args) -> int:
         print(
             "ERROR: --dev needs a source checkout, and this nyxgpt is running from an "
             f"installed package ({REPO_ROOT} has no pyproject.toml/src/nyxgpt/web).\n"
-            "       Run `nyxgpt up --terraform --local --dev` from a clone of the "
+            "       Run `nyxgpt up --terraform --dev` from a clone of the "
             "repository, or drop --dev to deploy the published images.",
             file=sys.stderr,
         )
@@ -7083,7 +7090,7 @@ def _ensure_kubectl_and_cluster() -> list[OpsResult]:
             OpsResult(
                 False,
                 "No reachable Kubernetes cluster, and kind needs Docker to create one",
-                "Install/start Docker so `nyxgpt ops install --kubernetes --local` can "
+                "Install/start Docker so `nyxgpt ops install --kubernetes` can "
                 "provision a local kind cluster.",
             )
         ]
@@ -7820,7 +7827,7 @@ def _classify_k8s_observability_workload(name: str, value: str) -> K8sWorkloadSt
             name,
             K8S_STATE_FAILED,
             "absent",
-            "Re-run `nyxgpt ops observability --kubernetes --local`.",
+            "Re-run `nyxgpt ops observability --kubernetes`.",
         )
     ready, _, desired = value.partition("/")
     desired_count = desired.split()[0] if desired else ""
@@ -7850,7 +7857,7 @@ def _k8s_observability_health() -> list[OpsResult]:
             OpsResult(
                 False,
                 f"{len(missing)} observability workload(s) missing from the cluster",
-                "Re-run `nyxgpt ops observability --kubernetes --local`.",
+                "Re-run `nyxgpt ops observability --kubernetes`.",
             )
         )
     return results
@@ -8721,7 +8728,7 @@ def _evaluate_k8s_capacity(
             if layer and requested - layer <= free:
                 remedy += (
                     f", or install without the observability layer, which is {show(layer)} "
-                    "of the above: `nyxgpt ops install --kubernetes --local "
+                    "of the above: `nyxgpt ops install --kubernetes "
                     "--skip-observability`"
                 )
         message = (
@@ -10258,7 +10265,7 @@ def status(_args) -> int:
                     )
                 print(
                     "  The Pods run images built from that working tree as it was at install "
-                    "time; re-run `nyxgpt ops install --kubernetes --local --dev` to pick up "
+                    "time; re-run `nyxgpt ops install --kubernetes --dev` to pick up "
                     "new code, or drop --dev to deploy the published artifacts."
                 )
             for pod_state in pod_states:
@@ -10281,7 +10288,7 @@ def status(_args) -> int:
             else:
                 print(
                     "\nKubernetes observability: not deployed "
-                    "(`nyxgpt ops observability --kubernetes --local` deploys it)"
+                    "(`nyxgpt ops observability --kubernetes` deploys it)"
                 )
 
             serving = _serving_status("kubernetes")
@@ -10916,7 +10923,7 @@ def _terraform_install_mode_issues() -> list[str]:
     if deployed and not state.recorded:
         print(
             "  (nothing recorded what these containers were built from -- redeploy with "
-            "`nyxgpt up --terraform --local`, or `--dev` for a working-tree build, to "
+            "`nyxgpt up --terraform`, or `--dev` for a working-tree build, to "
             "record it)"
         )
         return []
@@ -10929,7 +10936,7 @@ def _terraform_install_mode_issues() -> list[str]:
         "Dev-mode Terraform deployment recorded, but its checkout is missing "
         f"({state.checkout or 'no path recorded'}) -- the running api/web images were "
         "built from a tree that is no longer there and cannot be rebuilt. Re-run "
-        "`nyxgpt up --terraform --local --dev` from a checkout, or without --dev to "
+        "`nyxgpt up --terraform --dev` from a checkout, or without --dev to "
         "deploy the published images."
     ]
 
@@ -10991,7 +10998,7 @@ def doctor(_args) -> int:
                     "Dev-mode Kubernetes deployment recorded, but its checkout is missing "
                     f"({k8s_install_mode.checkout or 'no path recorded'}) -- the images in "
                     "the cluster were built from a tree that is no longer there and cannot "
-                    "be rebuilt. Re-run `nyxgpt ops install --kubernetes --local` (add "
+                    "be rebuilt. Re-run `nyxgpt ops install --kubernetes` (add "
                     "--dev from a checkout to stay on the working tree)."
                 )
     if install_mode.is_dev:
@@ -11171,7 +11178,7 @@ def doctor(_args) -> int:
     ):
         issues.append(
             "Terraform state exists but no nyxgpt-tf-* containers are running "
-            "(run: nyxgpt ops install --terraform --local, or nyxgpt ops down --terraform "
+            "(run: nyxgpt ops install --terraform, or nyxgpt ops down --terraform "
             "to clean up the stale state)"
         )
 

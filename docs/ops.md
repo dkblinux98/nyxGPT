@@ -397,7 +397,7 @@ Compose app tier) left by an earlier run.
 **same topology** as above — native api/web service wrappers, Ollama, the
 Cassandra container, observability — but builds `api` and `web` from the
 checkout you run it in instead of from an artifact. The flag means the same
-thing in Kubernetes mode (`nyxgpt ops install --kubernetes --local --dev`,
+thing in Kubernetes mode (`nyxgpt ops install --kubernetes --dev`,
 #3834): the two container images are built from the working tree rather than
 from the published artifacts — see
 [kubernetes.md](kubernetes.md#install-modes-artifact-and---dev). The table
@@ -580,16 +580,20 @@ channel are the entire difference between two installs.
 
 ### `--terraform`/`--kubernetes`: the other local deployment paths
 
-`nyxgpt ops install --terraform --local` and
-`nyxgpt ops install --kubernetes --local` wrap the alternative
+`nyxgpt ops install --terraform` and
+`nyxgpt ops install --kubernetes` wrap the alternative
 [Terraform](terraform.md) and [Kubernetes](kubernetes.md) deployment paths
 the same way — one command each, no raw `terraform`/`kubectl` typing. They
 are mutually exclusive with each other and with the native reconciliation
 above (passing `--terraform`/`--kubernetes` skips the native steps
-entirely and runs that deployment's own install sequence instead). `--local`
-is required and explicit — see [terraform.md](terraform.md#one-command-bring-up-nyxgpt-ops)
+entirely and runs that deployment's own install sequence instead). Both
+deploy to the local machine, which is the default locality (#3948);
+`--local` is still accepted as an explicit no-op. `--cloud` is rejected by
+these flags — cloud deployment is `nyxgpt cloud infra apply` plus
+`nyxgpt cloud deploy` ([cloud.md](cloud.md)) — see
+[terraform.md](terraform.md#one-command-bring-up-nyxgpt-ops)
 / [kubernetes.md](kubernetes.md#one-command-bring-up-nyxgpt-ops) for what
-each one does and why `--cloud` is rejected today.
+each one does.
 
 `--dev` composes with `--terraform`: it builds that deployment's api/web
 images from the checkout instead of deploying the published ones, and the
@@ -1240,7 +1244,7 @@ Usage:
 
 ```bash
 nyxgpt ops observability                        # Compose profiles (default)
-nyxgpt ops observability --kubernetes --local   # the in-cluster layer
+nyxgpt ops observability --kubernetes   # the in-cluster layer
 ```
 
 `nyxgpt ops install` already runs this by default (see
@@ -1248,7 +1252,7 @@ nyxgpt ops observability --kubernetes --local   # the in-cluster layer
 own to re-run it later (e.g. after a reboot, or if you first installed with
 `--skip-observability`).
 
-`--kubernetes --local` targets a cluster instead of Compose (#3787): it
+`--kubernetes` targets a cluster instead of Compose (#3787): it
 applies `k8s/observability/` -- Prometheus, Grafana, Loki + promtail, the
 OTel collector, Jaeger and GlitchTip as in-cluster workloads -- without
 touching the app tier, and generates Grafana's provisioning ConfigMaps from
@@ -1508,7 +1512,7 @@ Usage:
 nyxgpt ops migrate-volumes
 ```
 
-`nyxgpt ops install` (native and `--terraform --local`) already runs this
+`nyxgpt ops install` (native and `--terraform`) already runs this
 automatically as its first step, so most users never need to run it by
 hand -- this is a standalone escape hatch for Compose-only users who never
 run `install`.
