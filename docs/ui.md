@@ -297,7 +297,7 @@ Back-nav follows two conventions depending on how a page is reached, not on its 
 Click **⚙️ Settings** at the bottom of the sidebar to open the navigation menu that gates every admin/ops destination:
 
 - **Admin** — a collapsible group. Clicking it expands in place (chevron rotates) to reveal: Dashboard, Manage Models, RAG Collections, and RAG Playground — the dashboard as the single admin entry point, plus the three day-to-day user tools. The Configuration Wizard, Resource Usage, Usage Analytics, Observability, Deployment, and Canary Rollout shortcuts were removed from this submenu (#3396); those destinations remain reachable from the [Admin Dashboard](#admin-dashboard)'s Configuration and System Status sections. The group stays open until you click a link, click outside the menu, or press `Escape` — clicking **Admin** itself only toggles the submenu and never closes the menu.
-- **Support** — a collapsible group (#3745), sitting between Admin and Theme: **Docs** (`/support/docs`, the documentation packaged with this install — renders offline), then **File an Issue** as one entry per ticket type (**Bug Found**, **Feature Request**, **Question**), each opening GitHub's support issue form with that type, the running version and the platform prefilled; filing needs internet and a GitHub account, which the tooltips say. Choosing the type here rather than on GitHub is what gets it recorded at all (#3811). Like Admin, it expands in place and toggling it never closes the menu; unlike Admin, opening it lazily fetches `/api/v1/support/context`, and the filing entries show a disabled placeholder until that resolves. See [Support menu](#support-menu).
+- **Support** — a collapsible group (#3745), sitting between Admin and Theme: **Docs** (`/support/docs`, the documentation packaged with this install — renders offline), then **File an Issue** as one entry per ticket type (**Bug Found**, **Feature Request**, **Question**), each opening the intake form *in the chat* — nyxGPT files the ticket and shows the filer a link to it, so they never leave the app (#3811). An install with no GitHub credential cannot file, and there the same entries open GitHub's prefilled form instead; filing needs internet either way. Like Admin, it expands in place and toggling it never closes the menu; unlike Admin, opening it lazily fetches `/api/v1/support/context`, and the filing entries show a disabled placeholder until that resolves. See [Support menu](#support-menu).
 - **Theme** — Light/Dark toggle, same state as the [Settings page](#settings) appearance setting.
 
 Clicking any link navigates and closes the menu. Clicking anywhere outside the menu (tracked via a ref on the menu container, not `stopPropagation`) or pressing `Escape` closes it without navigating.
@@ -705,40 +705,51 @@ grouping is data and not inferred from filenames, a newly added packaged
 document that no section lists fails `tests/unit/test_support_docs.py` instead
 of quietly appearing at the end of a flat list.
 
-**File an Issue** is three entries, one per ticket type. Each opens
-[`.github/ISSUE_TEMPLATE/support.yml`](https://github.com/dkblinux98/nyxGPT/blob/master/.github/ISSUE_TEMPLATE/support.yml)
-on GitHub with that type, the running version and the platform prefilled from
-`/api/v1/support/context`. This is a link, not an API call — nyxGPT never
-files an issue on a user's behalf, and there is no POST endpoint under
-`/support` to do it with. Unlike Docs, it needs internet access and a GitHub
-account, which the menu says in its tooltips rather than letting the link fail
-silently offline.
+**File an Issue** is three entries, one per ticket type. On an install that
+holds a GitHub credential (`[github] pat`), each opens the intake **in the
+chat**: a short form — ticket type, a one-line summary, what happened — which
+`POST /api/v1/support/tickets` files as a labeled issue, and a confirmation
+screen with a link to the ticket that was created. The filer never sees
+github.com. The version and platform are not asked; the running install
+already knows both and attaches them.
 
-Handing the filer to GitHub's compose page is where this stands today, not
-where it is going. The intended surface is an intake that captures the ticket
-in nyxGPT and files it from a background process, so the filer never leaves
-the chat and gets a confirmation there. That needs a GitHub credential, and
-who supplies one for a filer who is not the repository owner is an open
-decision (ledger `Q-006`) — a hosted intake, a configured token with this
-handoff as the fallback, or requiring a token. Until it is answered the
-compose page is what a filer sees, and the sidebar and post-submit landing on
-it are GitHub's rather than nyxGPT's.
+That is the surface the owner accepted the issue against (#3811). Handing a
+user with a broken install to GitHub's compose page showed them this
+repository's *development* metadata — assignees, dev labels, dev projects,
+milestones, a contributing-guidelines footer, none of it theirs — and left
+them on GitHub afterwards.
+
+Filing needs a credential, so there is one case the product cannot cover: an
+install with no `[github] pat`. There, `can_submit` is false and the same
+three entries degrade to the prefilled GitHub form, which is also what the
+dialog offers if filing from here fails. It is the honest answer to "this
+install cannot file for you" — better than a support feature that says no.
+Whether a hosted intake should remove even that case is the owner's call
+(ledger `Q-006`); nothing in this design forecloses it.
+
+Either path applies the `Support` label, which is what routes the ticket to
+the Support project and away from the agent loop. On the path nyxGPT files
+itself the label is **read back from the created issue** rather than assumed:
+GitHub silently drops `labels` for a token without push access, and an
+unlabeled support ticket is exactly what #3810 was.
 
 The type is asked in nyxGPT rather than on GitHub because nothing would
 otherwise record it (#3811): the Support project types tickets with a
 `Ticket Type` project field, and GitHub maps a form answer to neither a label
 nor a project field — `labels:` is a static template-level list and a dropdown
-answer lands in the issue body. So the answer travels as a form prefill,
-renders into the body under its own heading, and the owner sets the project
-field (and `Priority`, which is a judgement about the queue that the filer
-cannot make) at triage.
+answer lands in the issue body. So the answer renders into the body under its
+own heading (whichever path filed it), and the owner sets the project field
+(and `Priority`, which is a judgement about the queue that the filer cannot
+make) at triage. A ticket nyxGPT files is deliberately shaped like one the
+form produces — same `###` headings, same order — so triage reads one format
+rather than two, and `support_intake_guard.yml` recognises both.
 
-Reports filed this way carry the `Support` label, which the template declares
-itself (a `labels=` URL parameter is silently dropped for a filer without
-write access — exactly the filer this form is for). That label routes the
-report onto the separate **nyxGPT Support** project and keeps it out of the
-agent delivery loop entirely: no code-project item, no field stamping, no
-sprint, no selection. See `scripts/agents/lib/support_label.py`.
+The label routes the report onto the separate **nyxGPT Support** project and
+keeps it out of the agent delivery loop entirely: no code-project item, no
+field stamping, no sprint, no selection. See
+`scripts/agents/lib/support_label.py`. On the fallback path the template
+declares it (a `labels=` URL parameter would be silently dropped for a filer
+without write access — exactly the filer that form is for).
 
 All of which holds only while the label EXISTS — GitHub drops a
 template-declared label that does not, without erroring, and the form goes on
