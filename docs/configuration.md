@@ -162,6 +162,22 @@ System Health screen and the admin dashboard, #3384, #3413.)
   as "set" plus a masked preview (e.g. `abcd****wxyz`); the wizard's input
   for these is always blank, and leaving it blank on save keeps the existing
   value. Only typing a new value rotates it.
+- **Option names are case-insensitive, and the wizard keeps your spelling.**
+  `ConfigParser` lowercases option names when it reads the file, so
+  `SLACK_BOT_TOKEN`, `Slack_Bot_Token` and `slack_bot_token` are all the same
+  option — which matters if you spell keys to mirror the GitHub secret names
+  they sync to. A save finds the key however you spelled it and rewrites
+  **that** line, leaving its casing exactly as you wrote it (#3944). Section
+  names, by contrast, *are* case-sensitive: `[Monitoring]` and `[monitoring]`
+  are two different sections.
+- **A save can never leave `config.ini` unreadable.** The merged file is
+  written to a temporary file alongside `config.ini`, parsed there, and only
+  then swapped in atomically. If the result would not parse, nothing is
+  replaced: the save is refused, your file is untouched, and the wizard shows
+  the offending line rather than a generic error (#3944). The same applies to
+  the **Remove** button. A `config.ini` that is *already* unreadable — from a
+  hand-edit, say — is reported as such, by the wizard and by
+  `nyxgpt ops doctor`, naming the error and the line number.
 - **Single-user scope.** The wizard edits one global `config.ini` — there is
   no per-session configuration.
 
@@ -1279,3 +1295,23 @@ behaves.
 - All paths support `~` expansion.
 - Missing configuration values fall back to sensible defaults.
 - Changes to RAG embedding settings require re-ingesting documents.
+- **Option names are case-insensitive; section names are not.** `API_KEY` and
+  `api_key` are one option, but `[Auth]` and `[auth]` are two sections.
+  Writing the same option twice in a section under different spellings is a
+  duplicate, and the file will not load.
+
+### When `config.ini` will not parse
+
+Every API request loads `config.ini`, so one malformed line stops the whole
+API — requests answer `500` with `"code": "config_unreadable"`, and a
+restarted API cannot start at all (which the web tier reports as `502`).
+
+Run `nyxgpt ops doctor`: it names the file, the error and the line, e.g.
+
+```
+Cannot parse /Users/you/.nyxGPT/config.ini: DuplicateOptionError at line 134:
+option 'slack_bot_token' in section 'monitoring' is defined more than once ...
+```
+
+Fix that line and the API recovers on its next request — no reinstall, and
+nothing else to clean up.

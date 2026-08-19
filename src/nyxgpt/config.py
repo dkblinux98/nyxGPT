@@ -4,7 +4,18 @@ Wraps a stdlib ``ConfigParser`` with cached, hot-reloadable loading
 (`load_config`) plus one small getter per setting so callers never read
 raw section/option strings directly. Every getter documents which
 ``[section] option`` it reads and its fallback default, and swallows
-parse errors by falling back to that default rather than raising.
+*value* errors by falling back to that default rather than raising.
+
+A file-level parse error is the one thing not swallowed: `load_config`
+raises `ConfigParseError` naming the file, the fault and the line (#3944).
+There is no default to fall back to when the file itself cannot be read, and
+the alternative -- letting a bare `configparser` error escape into the API's
+catch-all handler -- reported a dead API as "Internal server error".
+
+Note that ``ConfigParser`` applies ``optionxform = str.lower`` to option
+names, so config.ini **option names are case-insensitive** (``API_KEY`` and
+``api_key`` are one option, and writing both is a duplicate the file will not
+load). Section names are case-sensitive.
 """
 
 from __future__ import annotations
