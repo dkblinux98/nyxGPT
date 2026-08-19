@@ -8,11 +8,16 @@ import { reconcileServiceWorkerToBuild } from '../lib/serviceWorkerRecovery';
  * Drops the service worker's asset caches when the running build differs from
  * the one this browser last loaded (#3857).
  *
- * Without this, an upgrade can leave a client permanently broken with no way
- * out: the previous build's service worker keeps answering `.js`/`.css`
- * requests from its `static-resources` cache and its precache, a service
- * worker survives an ordinary reload, and a chunk that is served stale or not
- * at all leaves `next/dynamic` on its loading fallback forever.
+ * Without this, an upgrade can leave a client stranded: the previous build's
+ * service worker keeps answering `.js`/`.css` requests from its
+ * `static-resources` cache and its precache, a service worker survives an
+ * ordinary reload, and a chunk that is served stale or not at all leaves
+ * `next/dynamic` on its loading fallback forever.
+ *
+ * This is a *repair*, not the last line of defence, and it only runs if the
+ * client bundle loaded well enough to hydrate. When it did not, the
+ * document-inline watchdog (`src/lib/hydrationWatchdog.ts`) is what surfaces
+ * the failure and offers the same recovery.
  *
  * Renders nothing; safe to mount once in the root layout.
  */

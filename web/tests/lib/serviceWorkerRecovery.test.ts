@@ -146,6 +146,40 @@ describe('reconcileServiceWorkerToBuild', () => {
     expect(window.localStorage.getItem(BUILD_ID_STORAGE_KEY)).toBe('build-2');
   });
 
+  it('records the new build only after the caches have actually been dropped', async () => {
+    // A page closed between the stamp and the drop would otherwise report
+    // `unchanged` on its next load and never retry, stranding the client on
+    // the stale caches permanently.
+    window.localStorage.setItem(BUILD_ID_STORAGE_KEY, 'build-1');
+    let stampWhenDropped: string | null = 'not-observed';
+    (caches.delete as ReturnType<typeof vi.fn>).mockImplementation(async (name: string) => {
+      stampWhenDropped = window.localStorage.getItem(BUILD_ID_STORAGE_KEY);
+      deletedCaches.push(name);
+      return true;
+    });
+
+    await expect(reconcileServiceWorkerToBuild('build-2')).resolves.toBe('refreshed');
+
+    expect(stampWhenDropped).toBe('build-1');
+    expect(window.localStorage.getItem(BUILD_ID_STORAGE_KEY)).toBe('build-2');
+  });
+
+  it('still reports refreshed when the new stamp cannot be written', async () => {
+    // Storage that disappears between the read and the write: the caches are
+    // already gone, and repeating the drop next load is the safe way to be
+    // wrong.
+    const setItem = vi
+      .spyOn(Storage.prototype, 'setItem')
+      .mockImplementation(() => {
+        throw new Error('storage full');
+      });
+
+    await expect(reconcileServiceWorkerToBuild('build-1')).resolves.toBe('refreshed');
+    expect(deletedCaches).toContain('static-resources');
+
+    setItem.mockRestore();
+  });
+
   it('treats a first-ever visit as a build change', async () => {
     await expect(reconcileServiceWorkerToBuild('build-1')).resolves.toBe('refreshed');
     expect(window.localStorage.getItem(BUILD_ID_STORAGE_KEY)).toBe('build-1');

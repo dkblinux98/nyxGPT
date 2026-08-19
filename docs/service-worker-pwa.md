@@ -242,7 +242,10 @@ result is a UI that looks like it is still working while it is permanently
 broken -- reported in #3857 as skeleton rows and a spinner that never resolved
 while every backend endpoint answered in under 110 ms.
 
-Three pieces close that hole:
+Four pieces close that hole. The first three run inside the client bundle and
+handle a *single chunk* failing; the fourth exists because the bundle itself
+may never run, and nothing that ships through `/_next/static/chunks/` can
+report that:
 
 - **`withChunkTimeout`** (`web/src/lib/chunkLoader.ts`) wraps every
   `next/dynamic` loader so an import still pending after
@@ -264,10 +267,27 @@ Three pieces close that hole:
   the document's `webpack-*.js` / `main-app-*.js` bootstrap chunk URLs
   (`web/src/lib/buildFingerprint.ts`), so it needs no build-argument plumbing
   and is inert rather than wrong where those markers are absent.
+- **The hydration watchdog** (`web/src/lib/hydrationWatchdog.ts`, emitted by
+  `HydrationWatchdog` as the first element in `<body>`) covers the case the
+  other three structurally cannot: the client bootstrap itself never executing.
+  When `webpack-*.js` / `main-app-*.js` do not run, hydration never happens --
+  no effect fires, no boundary mounts, no chunk import is even attempted -- and
+  what stays on screen is the *server-rendered* HTML: `/`'s `ssr: false`
+  loading fallbacks, and plain `useState(true)` states such as
+  `Loading canary status...` on `web/src/app/admin/canary/page.tsx`. The
+  watchdog is a dependency-free inline `<script>`, so it arrives with the
+  document and runs regardless of the chunk pipeline. It arms a
+  `HYDRATION_WATCHDOG_TIMEOUT_MS` (20 s, matching the chunk bound) timer and,
+  if `HydrationMarker` has not set `window.__nyxgptHydrated` by then, paints
+  the same "Failed to load the interface" surface with the same
+  service-worker-clearing reload, written in plain DOM calls. Hydration that
+  arrives late removes the surface, so a merely slow client is never left with
+  an error over a working page.
 
 Any new `next/dynamic` call must go through `withChunkTimeout` and sit inside
 a `ChunkErrorBoundary`; a `loading:` fallback with neither is the #3857 trap
-rebuilt.
+rebuilt. The watchdog needs no per-page work -- it is mounted once in the root
+layout and covers every route, including pages with no `dynamic()` at all.
 
 Note for test authors: Next resolves `next/dynamic` to the App Router
 implementation (React.lazy + Suspense) for everything under `app/`, while the

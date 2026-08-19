@@ -645,7 +645,11 @@ The web UI is kept lean via a small set of build-time practices:
   fetched only when needed, not in the initial page payload. Each loader is
   wrapped in `withChunkTimeout` and each call site in a `ChunkErrorBoundary`,
   so a chunk that fails or never arrives shows "Failed to load the interface"
-  instead of its loading placeholder forever (#3857) — see
+  instead of its loading placeholder forever (#3857). When the client bundle
+  never runs at all — so no boundary and no timeout can fire — a
+  dependency-free inline watchdog shipped inside the HTML
+  (`src/lib/hydrationWatchdog.ts`, mounted once in `src/app/layout.tsx`) paints
+  the same surface on any route after 20 s without hydration — see
   [service-worker-pwa.md](service-worker-pwa.md#chunks-that-never-arrive-3857).
 - **Vendor chunk isolation** — `web/next.config.ts` splits `react-virtuoso`
   into its own `vendor-virtuoso` chunk so it's fetched only alongside the

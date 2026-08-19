@@ -84,7 +84,6 @@ export async function reconcileServiceWorkerToBuild(
   let seen: string | null = null;
   try {
     seen = window.localStorage.getItem(BUILD_ID_STORAGE_KEY);
-    window.localStorage.setItem(BUILD_ID_STORAGE_KEY, buildId);
   } catch {
     // Storage disabled (private mode, blocked cookies): without a record of
     // the previous build there is nothing to compare, so do not guess.
@@ -100,6 +99,18 @@ export async function reconcileServiceWorkerToBuild(
   } catch {
     // An update() that fails leaves the caches already dropped, which is the
     // half that actually unblocks chunk loading.
+  }
+
+  // Recorded only once the drop has actually happened. Stamping first would
+  // make a page closed mid-recovery report `unchanged` on its next load and
+  // never retry, leaving the stale caches in place permanently. A write that
+  // fails here just means the next load repeats the drop -- the safe way to
+  // be wrong.
+  try {
+    window.localStorage.setItem(BUILD_ID_STORAGE_KEY, buildId);
+  } catch {
+    // Storage became unavailable between the read and the write; the caches
+    // are already gone, which is the part that unblocks the client.
   }
   return 'refreshed';
 }
