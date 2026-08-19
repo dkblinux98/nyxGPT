@@ -34,6 +34,7 @@ interface SupportContext {
 
 export default function SupportDocsIndexPage() {
   const [sections, setSections] = useState<DocumentSection[]>([]);
+  const [ungrouped, setUngrouped] = useState(false);
   const [context, setContext] = useState<SupportContext | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -48,15 +49,18 @@ export default function SupportDocsIndexPage() {
         }
         const data = await res.json();
         // An older backend answers with `documents` only; render that as one
-        // unnamed group rather than an empty page.
+        // unnamed group rather than an empty page -- but say so on the page
+        // (`ungrouped`), because an unlabelled flat list is exactly the
+        // symptom #3809 fixed and it must not read as that defect returning.
         const grouped: DocumentSection[] = data.sections ?? [];
-        setSections(
-          grouped.length > 0
-            ? grouped
-            : data.documents?.length
-              ? [{ title: '', documents: data.documents }]
-              : []
-        );
+        if (grouped.length > 0) {
+          setSections(grouped);
+        } else if (data.documents?.length) {
+          setSections([{ title: '', documents: data.documents }]);
+          setUngrouped(true);
+        } else {
+          setSections([]);
+        }
       } catch {
         setError('Could not reach the nyxGPT API to load the documentation index.');
       } finally {
@@ -137,17 +141,31 @@ export default function SupportDocsIndexPage() {
           <p style={{ opacity: 0.7 }}>No documentation shipped with this install.</p>
         )}
 
-        {sections.map((section) => (
-          <section key={section.title} style={{ marginBottom: 28 }}>
+        {ungrouped && (
+          <p role="status" style={{ opacity: 0.7, fontSize: 13, marginBottom: 16 }}>
+            This nyxGPT API is older than the web interface and did not send the grouped
+            index, so every document is listed together below.
+          </p>
+        )}
+
+        {sections.map((section, index) => (
+          <section key={section.title || `section-${index}`} style={{ marginBottom: 32 }}>
+            {/*
+              A real heading, not a caption (#3809 acceptance): the first
+              attempt rendered the section title at 13px, uppercase and at 60%
+              opacity -- smaller and fainter than the 15px document titles
+              underneath it -- so the page still read as one continuous list.
+              A group heading has to outweigh the items it groups, which is
+              what the size, full opacity and the rule below it are for.
+            */}
             {section.title && (
               <h2
                 style={{
-                  fontSize: 13,
+                  fontSize: 20,
                   fontWeight: 600,
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.06em',
-                  opacity: 0.6,
-                  margin: '0 0 4px',
+                  margin: '0 0 8px',
+                  paddingBottom: 8,
+                  borderBottom: '2px solid var(--border)',
                 }}
               >
                 {section.title}
