@@ -14019,6 +14019,18 @@ def test_env_sync_generates_compose_config(tmp_path, monkeypatch):
     out = tmp_path / "config.docker.ini"
     monkeypatch.setattr(ops.Path, "home", lambda: home)
     monkeypatch.setattr(ops, "COMPOSE_CONFIG_FILE", out)
+    # `env_sync` also runs the "slack webhook secret" step, which reaches the
+    # *live* Docker daemon via `_restart_grafana_if_running` and then polls
+    # Grafana's health for ~2 minutes. On a clean runner the container is
+    # absent and the step skips, which is the only reason this passed; on a
+    # runner where any `grafana` container exists (a leftover observability
+    # stack, a crash-looping one especially) the step fails and `env_sync`
+    # returns 2 instead of 0 -- a red build with nothing to do with the
+    # subject of this test. Stub it, as the tests that own that helper's
+    # behavior already do; `test_restart_grafana_if_running_*` covers it.
+    monkeypatch.setattr(
+        ops, "_restart_grafana_if_running", lambda reason="": ops.OpsResult(True, "restarted")
+    )
 
     args = MagicMock()
     args.config = str(cfg_path)
