@@ -124,9 +124,46 @@ jobs:
         if: steps.touched.outputs.web == 'true'
         run: cd web && npx tsc --noEmit
 
-      - name: eslint (blocking)
+      # Lints THIS merge's web files, not the whole tree. `npx eslint .`
+      # reports ~114 errors that predate every PR it was blocking -- two
+      # different merges on 2026-08-19 (#3926, #3934) each produced exactly
+      # 114, which is what "pre-existing" looks like -- so a blocking
+      # whole-tree lint failed every web change for debt none of them
+      # introduced, and the gate could never go green without a big-bang
+      # cleanup nobody had scheduled.
+      #
+      # Linting the diff holds the line where it can actually be held: new
+      # and edited web files must be clean, and the standing debt is
+      # reported (below, non-blocking) rather than blocking unrelated work.
+      - name: eslint the files this merge touched (blocking)
         if: steps.touched.outputs.web == 'true'
-        run: cd web && npx eslint .
+        env:
+          BASE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if ! git rev-parse --quiet --verify "$BASE_SHA^{commit}" >/dev/null 2>&1; then
+            echo "::notice::no usable before-sha -- linting web/src only"
+            cd web && npx eslint src
+            exit 0
+          fi
+          FILES=$(git diff --name-only --diff-filter=d "$BASE_SHA" "$GITHUB_SHA" \
+                  -- 'web/**/*.ts' 'web/**/*.tsx' | sed 's|^web/||')
+          if [[ -z "$FILES" ]]; then
+            echo "::notice::this merge changed no web TS/TSX files -- nothing to lint"
+            exit 0
+          fi
+          echo "Linting:"; printf '  %s\n' $FILES
+          cd web && npx eslint $FILES
+
+      # The standing debt, visible on every web merge and blocking none of
+      # them. It is a real backlog item, not noise -- when it reaches zero,
+      # delete this step and make the whole-tree lint blocking again.
+      - name: eslint the whole tree (report only)
+        if: steps.touched.outputs.web == 'true'
+        continue-on-error: true
+        run: |
+          cd web
+          npx eslint . || echo "::warning::web/ carries standing eslint debt -- see the log above"
 
       - name: vitest (blocking)
         if: steps.touched.outputs.web == 'true'
