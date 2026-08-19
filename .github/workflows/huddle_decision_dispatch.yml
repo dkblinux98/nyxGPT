@@ -2,8 +2,10 @@ name: Huddle Decision Dispatch
 
 # #3736: execute a huddle decision's "what happens next".
 #
-# The #3687 protocol ends with `scrummaster_huddle_mediation.yml` posting a
-# `## Huddle Decision` comment -- and, until now, nothing acting on it. The
+# The #3687 protocol ends with the scrummaster posting a `## Huddle Decision`
+# comment -- from `scrummaster_huddle_mediation.yml` when this was written,
+# from `huddle_session.yml`'s decision step since #3911 consolidated the
+# huddle into one run -- and, until now, nothing acting on it. The
 # decision was advisory text that the *next* fix cycle would read, but no
 # machinery started that fix cycle: the issue stayed In Review, assigned to
 # the review agent, waiting for something to happen. On PR #3733 the thing
@@ -18,7 +20,12 @@ name: Huddle Decision Dispatch
 # issue to In Progress itself, #3882), and the fix cycle
 # reads the decision from the PR thread as it already does
 # (developer_auto_implement.yml). `escalate` is terminal and left alone --
-# the mediation run performs that escalation itself.
+# the run that decided performs that escalation itself.
+#
+# The actor gate below is why `huddle_session.yml` posts its decision comment
+# under SCRUMMASTER_AGENT_TOKEN rather than the review-agent token its job
+# otherwise holds: a decision authored by anyone else lands, reads correctly,
+# and dispatches nothing.
 #
 # Runs under REVIEW_AGENT_TOKEN because the review agent is one of the
 # identities developer_auto_implement.yml accepts an assignment from.

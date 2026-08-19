@@ -616,8 +616,8 @@ jobs:
           # the two trigger paths of this workflow can be minutes apart, so
           # the state is re-read here, immediately before posting. A trigger
           # that slips through both checks is still absorbed downstream:
-          # developer_huddle_position.yml and scrummaster_huddle_mediation.yml
-          # act only for the round's *first* marker comment.
+          # huddle_session.yml's `gate` job stands the run down unless its
+          # trigger comment is the round's *first* marker comment (#3911).
           TRIGGERED=$(gh api "repos/${{ github.repository }}/issues/$PR/comments" \
             --paginate --jq '.[]' | jq -s '{comments: .}' \
             | python3 "$GITHUB_WORKSPACE/scripts/agents/lib/huddle_state.py" status \
@@ -639,19 +639,26 @@ jobs:
           # what it proposes), not another attempted patch. The review
           # agent's position is the code review comment already posted
           # above on this PR. HUDDLE_TRIGGERED is the marker
-          # developer_huddle_position.yml listens for.
+          # huddle_session.yml listens for.
+          #
+          # This body is read by a memoryless developer turn a few minutes
+          # from now, so it must describe the flow that actually runs: since
+          # #3911 the turns are written to the huddle thread by the workflow
+          # and nobody posts a position comment here. The old wording told
+          # the dev agent to post one and promised a separate mediation run,
+          # both of which would now contradict the turn's own prompt.
           BODY=$(printf '%s\n\n%s\n\n%s\n%s\n%s\n%s\n\n%s' \
             "🤝 **Review Agent**: Huddle triggered" \
             "$REASON_LINE" \
             "**Review position:** see the code review comment above on this PR -- that is the review agent's position." \
-            "**Next:** @${DEV_AGENT}, post a written position (what you believe the problem is, what was tried, what you propose) rather than attempting another fix. A fresh scrummaster mediation run will then read this thread and decide: proceed as-is / change approach / descope / escalate to owner." \
+            "**What happens now:** the huddle runs as a single workflow run (#3911) -- a developer turn and a review turn per round, up to the round cap, then the scrummaster's decision. Each turn is posted to the huddle thread by the workflow under its own agent identity; no position comment is posted here, and nothing is expected of @${DEV_AGENT} until the decision lands. That decision arrives on this PR as a short summary with the machine-readable decision line, plus the full transcript in a collapsed block." \
             "Issue #${ISSUE} stays in **In Review** status pending the huddle decision." \
             "See agents/runbooks/review-runbook.md for the huddle protocol (#3687)." \
             "HUDDLE_TRIGGERED")
           gh pr comment "$PR" --body "$BODY"
 
           echo "::endgroup::"
-          echo "✓ Huddle triggered for issue #${ISSUE} -- awaiting developer position"
+          echo "✓ Huddle triggered for issue #${ISSUE} -- huddle_session.yml takes it from here"
 
       - name: Send to developer (human override after escalation)
         if: steps.parse_decision.outputs.decision == 'SEND_TO_DEVELOPER'
