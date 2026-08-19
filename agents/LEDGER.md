@@ -968,6 +968,31 @@ rather than mechanism, and nothing can enforce them.
   `render_provision_script`, `provision_remote_command`); `docs/cloud.md`
   §EC2 Mac targets; `.github/workflows/cloud-target-os-smoke.yml`.
 
+- **D-034** · 2026-08-19 · owner acceptance (#3811), implemented by the
+  developer agent — **nyxGPT files a support ticket itself; the GitHub
+  compose page is a fallback, not the surface.** The owner failed the
+  previous fix in acceptance because Support → File an Issue still handed the
+  user to `github.com/.../issues/new`. The intake is now a form in the chat
+  and `POST /api/v1/support/tickets`, which creates the labeled issue from
+  the running install and answers with its number and URL; the UI shows the
+  filer their own ticket. This answers **Q-006**'s credential question in the
+  only way that leaves every filer able to report something: file with
+  `[github] pat` when it is configured (the owner's install, any operator's),
+  and offer the prefilled GitHub form when it is not — the one case the
+  product genuinely cannot cover. A hosted intake that would remove even that
+  case remains the owner's to decide and is not foreclosed. The `Support`
+  label is **read back from the created issue** rather than assumed: GitHub
+  drops `labels` silently for a token without push access, which is #3810's
+  failure mode from the other side; `support_intake_guard.yml` remains the
+  repair. Evidence is executed, not inspected — `tests/test_support_intake_live.sh`
+  files through the real API against a stub GitHub and injects the
+  dropped-label, no-credential and refusal cases.
+  Source: #3811; `src/nyxgpt/support.py`; `src/nyxgpt/app.py`;
+  `web/src/components/SupportTicketDialog.tsx`;
+  `.github/workflows/support-intake-smoke.yml` (`files-a-ticket`).
+  Filed as **D-033** on this branch; renumbered on the merge into `v3.0.0`,
+  where #3867 had already allocated that number. IDs are never reused.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
@@ -1128,17 +1153,17 @@ rather than mechanism, and nothing can enforce them.
   configured token. They are not variations on one design: the first needs
   hosting and abuse controls, the second is two permanent code paths, the
   third excludes the tokenless filer.
-  Needs: the owner's choice, then its own issue for the intake rework.
-  Blocks: three acceptance criteria on #3811 that this PR does **not** meet
-  and does not claim to — the filer not seeing GitHub's compose page, being
-  returned to the chat with a confirmation after submitting, and the ticket
-  type being applied by the product rather than answered on a form. Everything
-  in #3811 that does not depend on the answer shipped instead: the `Support`
-  label is guaranteed (**V-042**), the type is collected in nyxGPT and carried
-  into the body, and hygiene survives a vanished project item (**V-043**).
-  Not taken inside this PR: an intake path built on a guessed credential model
-  is one that gets rebuilt, and the two paths it would have to hedge across
-  differ in where the product is hosted, not in a detail.
+  Needs: ~~the owner's choice, then its own issue for the intake rework~~ —
+  **ANSWERED 2026-08-19** by the owner's acceptance failure on this issue,
+  which directed the rework rather than the decision: the second option, and
+  the intake shipped in #3811 rather than in an issue of its own. See
+  **D-034**. The residue is narrower than the original question: whether a
+  hosted intake should also cover the tokenless filer, who today gets the
+  prefilled GitHub form.
+  Blocks: nothing on #3811 — the three criteria this once held back (no
+  compose page, a confirmation in the chat, the product applying the label)
+  are met by D-034's intake. A hosted intake, if the owner wants one, is new
+  work and needs its own issue.
 
 - **Q-007** · 2026-08-19 · developer agent (#3853) — After the release
   ceremony retires a shipped line's candidate formulas from the tap
