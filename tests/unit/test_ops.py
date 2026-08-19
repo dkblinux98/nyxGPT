@@ -13195,6 +13195,129 @@ def test_status_shows_terraform_stack_when_present(monkeypatch, capsys):
     assert "terraform api: running" in out
 
 
+def _status_pod(name: str, phase: str, **status) -> dict:
+    """One `kubectl get pods -o json` item, as `nyxgpt ops status` now reads them."""
+    return {"metadata": {"name": name}, "status": {"phase": phase, **status}}
+
+
+_STATUS_READY_POD_LIST = {
+    "items": [
+        _status_pod(
+            "nyxgpt-api-stable-abc",
+            "Running",
+            conditions=[{"type": "Ready", "status": "True"}],
+        )
+    ]
+}
+
+
+@pytest.mark.unit
+def test_status_classifies_pending_and_blocked_pods_apart(monkeypatch, capsys):
+    """`nyxgpt ops status` labels Pods, it does not echo `kubectl get pods` (#3827).
+
+    The raw table renders a Pod pulling an image and a Pod no node will take
+    identically -- both read `Pending` -- and `ops status` is the command
+    every install failure message points the operator at, so it is exactly
+    where that conflation does the most damage. Asserted together, because
+    the defect is not "an unhelpful line" but *two different conditions
+    reported the same way*.
+    """
+    pods = {
+        "items": [
+            _status_pod(
+                "ready-pod",
+                "Running",
+                conditions=[{"type": "Ready", "status": "True"}],
+            ),
+            _status_pod(
+                "pulling-pod",
+                "Pending",
+                conditions=[{"type": "PodScheduled", "status": "True"}],
+                containerStatuses=[{"state": {"waiting": {"reason": "ContainerCreating"}}}],
+            ),
+            _status_pod(
+                "unschedulable-pod",
+                "Pending",
+                conditions=[
+                    {
+                        "type": "PodScheduled",
+                        "status": "False",
+                        "reason": "Unschedulable",
+                        "message": "0/1 nodes are available: 1 Insufficient memory.",
+                    }
+                ],
+            ),
+        ]
+    }
+
+    def fake_run(cmd, check=True, **_k):
+        if cmd[:4] == ["kubectl", "-n", "nyxgpt", "get"] and "pods" in cmd:
+            return CP(returncode=0, stdout=json.dumps(pods))
+        return CP(stdout="")
+
+    monkeypatch.setattr(
+        ops, "_which", lambda prog: "/usr/local/bin/kubectl" if prog == "kubectl" else None
+    )
+    monkeypatch.setattr(ops, "_run", fake_run)
+    monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+    monkeypatch.setattr(
+        ops, "_serving_status", lambda running_mode: {"supported": False, "message": "n/a"}
+    )
+    monkeypatch.setattr(ops, "_k8s_observability_workload_state", lambda: {})
+
+    assert ops.status(MagicMock()) == 0
+    out = capsys.readouterr().out
+
+    assert "[OK] pod ready-pod: Running" in out
+    assert "[PENDING] pod pulling-pod: Pending: ContainerCreating" in out
+    assert f"[FAIL] pod unschedulable-pod: {ops.K8S_SUMMARY_UNSCHEDULABLE}" in out
+    # The scheduler's own words, which is what tells the operator the remedy
+    # is a bigger node rather than a retry.
+    assert "Insufficient memory" in out
+    # The pre-fix behaviour: the raw table gave both Pending Pods the same
+    # single word and no verdict at all.
+    assert "[PENDING] pod unschedulable-pod" not in out
+    assert "[FAIL] pod pulling-pod" not in out
+
+
+@pytest.mark.unit
+def test_status_classifies_observability_workloads(monkeypatch, capsys):
+    """`0/1 ready` is PENDING in `ops status` too, not a bare count (#3827)."""
+
+    def fake_run(cmd, check=True, **_k):
+        if cmd[:4] == ["kubectl", "-n", "nyxgpt", "get"] and "pods" in cmd:
+            return CP(returncode=0, stdout=json.dumps(_STATUS_READY_POD_LIST))
+        return CP(stdout="")
+
+    monkeypatch.setattr(
+        ops, "_which", lambda prog: "/usr/local/bin/kubectl" if prog == "kubectl" else None
+    )
+    monkeypatch.setattr(ops, "_run", fake_run)
+    monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+    monkeypatch.setattr(
+        ops, "_serving_status", lambda running_mode: {"supported": False, "message": "n/a"}
+    )
+    monkeypatch.setattr(
+        ops,
+        "_k8s_observability_workload_state",
+        lambda: {"grafana": "0/1 ready", "prometheus": "1/1 ready", "loki": "absent"},
+    )
+
+    assert ops.status(MagicMock()) == 0
+    out = capsys.readouterr().out
+
+    assert "[PENDING] grafana: 0/1 ready" in out
+    assert "[OK] prometheus: 1/1 ready" in out
+    assert "[FAIL] loki: absent" in out
+    # This is the exact contradiction the issue reported: the install called a
+    # zero-ready workload a failure while `status` printed it with a green tick.
+    assert "[OK] grafana" not in out
+
+
 @pytest.mark.unit
 def test_status_shows_kubernetes_pods_when_present(monkeypatch, capsys):
     def fake_which(prog):
@@ -13202,7 +13325,7 @@ def test_status_shows_kubernetes_pods_when_present(monkeypatch, capsys):
 
     def fake_run(cmd, check=True, **_k):
         if cmd[:4] == ["kubectl", "-n", "nyxgpt", "get"] and "pods" in cmd:
-            return CP(returncode=0, stdout="nyxgpt-api-stable-abc   1/1   Running\n")
+            return CP(returncode=0, stdout=json.dumps(_STATUS_READY_POD_LIST))
         return CP(stdout="")
 
     monkeypatch.setattr(ops, "_which", fake_which)
@@ -13231,7 +13354,7 @@ def test_status_shows_per_component_canary_when_kubernetes_pods_present(monkeypa
 
     def fake_run(cmd, check=True, **_k):
         if cmd[:4] == ["kubectl", "-n", "nyxgpt", "get"] and "pods" in cmd:
-            return CP(returncode=0, stdout="nyxgpt-api-stable-abc   1/1   Running\n")
+            return CP(returncode=0, stdout=json.dumps(_STATUS_READY_POD_LIST))
         return CP(stdout="")
 
     monkeypatch.setattr(ops, "_which", fake_which)
