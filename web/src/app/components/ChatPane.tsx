@@ -46,8 +46,13 @@ export class VirtuosoErrorBoundary extends Component<
     });
 
     // In production, send to telemetry service
-    if (typeof window !== 'undefined' && (window as any).telemetry) {
-      (window as any).telemetry.captureException(error, {
+    const telemetry = (
+      globalThis as typeof globalThis & {
+        telemetry?: { captureException: (e: Error, ctx: Record<string, unknown>) => void };
+      }
+    ).telemetry;
+    if (typeof window !== 'undefined' && telemetry) {
+      telemetry.captureException(error, {
         context: 'VirtuosoErrorBoundary',
         sessionName: this.props.sessionName,
       });
@@ -396,6 +401,34 @@ function RagCitationsCollapsible({ initialChunks }: { initialChunks: RagChunk[] 
   );
 }
 
+// Body of POST /api/chat/stream. Both send paths build the same request;
+// naming the shape is what lets `rag_filters` and `attachments` be attached
+// conditionally without the object being `any`.
+type RagFilters = {
+  doc_ids?: string[];
+  filename?: string;
+  tags?: string[];
+  date_from?: string;
+  date_to?: string;
+  collection?: string;
+};
+
+type ChatAttachment = {
+  type: string;
+  media_type: string;
+  data: string;
+  filename: string;
+};
+
+type ChatStreamRequest = {
+  session: string;
+  prompt: string;
+  model?: string;
+  rag_enabled: boolean;
+  rag_filters?: RagFilters;
+  attachments?: ChatAttachment[];
+};
+
 export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessageIndex, releaseVersion }: Props) {
   const toast = useToast();
   const isMobile = useIsMobile();
@@ -422,14 +455,7 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
 
   // RAG filters state
   const [showRagFilters, setShowRagFilters] = useState<boolean>(false);
-  const [ragFilters, setRagFilters] = useState<{
-    doc_ids?: string[];
-    filename?: string;
-    tags?: string[];
-    date_from?: string;
-    date_to?: string;
-    collection?: string;
-  }>({});
+  const [ragFilters, setRagFilters] = useState<RagFilters>({});
   const [availableDocuments, setAvailableDocuments] = useState<Array<{
     doc_id: string;
     filename: string | null;
@@ -969,7 +995,7 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
 
     try {
       // Build request body with optional rag_filters and attachments
-      const requestBody: any = {
+      const requestBody: ChatStreamRequest = {
         session: sessionName,
         prompt: text || ' ',
         model: selectedModel || undefined,
@@ -1190,7 +1216,7 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
 
     try {
       // Build request body with optional rag_filters
-      const requestBody: any = {
+      const requestBody: ChatStreamRequest = {
         session: sessionName,
         prompt: prompt,
         model: selectedModel || undefined,

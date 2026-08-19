@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import LoadingSpinner from '../../../components/LoadingSpinner';
 import ErrorMessage from '../../../components/ErrorMessage';
 import { apiErrorText, errorMessage } from '../../../lib/apiError';
+import Link from 'next/link';
 
 type CollectionInfo = {
   name: string;
@@ -56,7 +57,20 @@ export default function CollectionsPage() {
   const [newCollectionDim, setNewCollectionDim] = useState('768');
   const [newCollectionModel, setNewCollectionModel] = useState('');
   const [viewingSettings, setViewingSettings] = useState<string | null>(null);
-  const [collectionSettings, setCollectionSettings] = useState<any>(null);
+  // Shape of GET/PUT /api/v1/rag/collections/{name}/settings. Only the
+  // fields this page reads are named; the endpoint may send more.
+  type CollectionSettings = {
+    settings?: {
+      embedding_model?: string | null;
+      chunk_size?: number | null;
+      chunk_overlap?: number | null;
+    };
+  };
+  // Write-only today: the settings modal renders from the three
+  // `settings*` edit fields seeded below, not from this object. Kept as
+  // state (rather than dropped) so a re-render is still triggered when a
+  // save returns, and so the fetched shape stays typed at one place.
+  const [, setCollectionSettings] = useState<CollectionSettings | null>(null);
   const [loadingSettings, setLoadingSettings] = useState(false);
   const [editingSettings, setEditingSettings] = useState(false);
   const [settingsEmbeddingModel, setSettingsEmbeddingModel] = useState('');
@@ -333,9 +347,9 @@ export default function CollectionsPage() {
           <p style={{ color: 'var(--foreground-muted)', marginBottom: 8 }}>
             Manage vector store collections and their settings
           </p>
-          <a href="/" style={{ color: '#0066cc', textDecoration: 'none' }}>
+          <Link href="/" style={{ color: '#0066cc', textDecoration: 'none' }}>
             ← Back to Chat
-          </a>
+          </Link>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           <button

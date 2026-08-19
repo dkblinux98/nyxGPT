@@ -2,11 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ChatPane from '@/app/components/ChatPane';
+import type { VirtuosoMockProps } from '../mocks/virtuoso';
 
 vi.mock('react-virtuoso', () => ({
-  Virtuoso: ({ data, itemContent, style }: any) => (
+  Virtuoso: ({ data, itemContent, style }: VirtuosoMockProps) => (
     <div style={style}>
-      {(data || []).map((item: any, index: number) => (
+      {(data || []).map((item: unknown, index: number) => (
         <div key={index}>{itemContent(index, item)}</div>
       ))}
     </div>
@@ -18,7 +19,7 @@ vi.mock('@/contexts/ToastContext', () => ({
   useToast: () => toastMocks,
 }));
 
-type Handler = (url: string, init?: RequestInit) => any;
+type Handler = (url: string, init?: RequestInit) => unknown;
 
 function sseResponse(raw: string) {
   let sent = false;
@@ -41,7 +42,7 @@ function sseResponse(raw: string) {
   };
 }
 
-function makeFetchMock(extra: Record<string, Handler> = {}, seedMessages: any[] = []) {
+function makeFetchMock(extra: Record<string, Handler> = {}, seedMessages: unknown[] = []) {
   return vi.fn().mockImplementation((url: string, init?: RequestInit) => {
     for (const key of Object.keys(extra)) {
       if (url.includes(key)) return Promise.resolve(extra[key](url, init));
@@ -509,7 +510,7 @@ describe('RAG toggle, filters, attach/detach, upload', () => {
   });
 
   it('selects a non-default collection, reflects it on the Filters button, and forwards it on the next chat request', async () => {
-    let sendBody: any = null;
+    let sendBody: Record<string, unknown> | null = null;
     global.fetch = makeFetchMock({
       '/metadata': () => ({ ok: true, status: 200, json: () => Promise.resolve({ rag_enabled: true, title: '', model: '' }) }),
       '/rag/collections': () =>
@@ -879,7 +880,7 @@ describe('RAG toggle, filters, attach/detach, upload', () => {
   });
 
   it('clears a stale doc_ids selection when the collection is switched, so the next query is not pinned to zero rows (#3585)', async () => {
-    let sendBody: any = null;
+    let sendBody: Record<string, unknown> | null = null;
     global.fetch = makeFetchMock({
       '/metadata': () => ({ ok: true, status: 200, json: () => Promise.resolve({ rag_enabled: true, title: '', model: '' }) }),
       '/rag/collections': () =>
@@ -931,7 +932,7 @@ describe('RAG toggle, filters, attach/detach, upload', () => {
   });
 
   it('scopes the Select Documents list to the selected collection and refreshes on change (#3566)', async () => {
-    const docsByCollection: Record<string, any[]> = {
+    const docsByCollection: Record<string, unknown[]> = {
       default: [{ doc_id: 'default-doc', filename: 'default.pdf', chunks: 1, tags: null, ingested_at: null }],
       docs2: [{ doc_id: 'docs2-doc', filename: 'docs2.pdf', chunks: 5, tags: null, ingested_at: null }],
       empty_coll: [],

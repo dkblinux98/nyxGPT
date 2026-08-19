@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import platform
+import plistlib
 import re
 import secrets
 import shlex
@@ -33,7 +34,7 @@ import tempfile
 import threading
 import time
 import tomllib
-from collections.abc import Callable, Container, Iterator
+from collections.abc import Callable, Container, Iterator, Mapping
 from configparser import ConfigParser
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -42,8 +43,15 @@ from typing import Any
 import httpx
 from nacl import public as nacl_public
 
+from nyxgpt import (
+    brew_services,
+    model_bootstrap,
+    release_tarball,
+    restart_state,
+    self_heal,
+    tracing,
+)
 from nyxgpt import metrics as prom_metrics
-from nyxgpt import model_bootstrap, release_tarball, restart_state, self_heal, tracing
 from nyxgpt import verify as verify_mod
 from nyxgpt.config import (
     VALID_SESSION_BACKENDS,
@@ -117,15 +125,19 @@ logger = logging.getLogger(__name__)
 # on the allowlist.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# Maps a logical component to its Homebrew service name for native mode.
-# Cassandra has no native brew service -- per product_management/PHASE_6_PLAN.md it stays the one
-# ops-managed Docker container even under native-first, so it's tracked via
+# Maps a logical component to the *stable* Homebrew formula its native-mode
+# service is named after. Cassandra has no native brew service -- per
+# product_management/PHASE_6_PLAN.md it stays the one ops-managed Docker
+# container even under native-first, so it's tracked via
 # `_docker_container_state` instead (see `detect_deployment_mode`).
-NATIVE_BREW_SERVICES: dict[str, str] = {
-    "api": "nyxgpt-api",
-    "web": "nyxgpt-web",
-    "ollama": "ollama",
-}
+#
+# Imported rather than restated: `self_heal.py` needs the same answer, and the
+# two hand-maintained copies agreeing by convention is what shipped #3853 (see
+# `nyxgpt/brew_services.py`). Never look a component up by this name directly
+# on macOS -- resolve it against a live `brew services list` snapshot with
+# `brew_services.resolve`, because a candidate install registers
+# `nyxgpt-api@<line>rc`.
+NATIVE_BREW_SERVICES = brew_services.NATIVE_BREW_SERVICES
 
 # Linux twin of NATIVE_BREW_SERVICES: maps a logical component to its
 # systemd --user unit name (see ops/systemd/*.service, #3508). "ollama" gets
@@ -1192,7 +1204,12 @@ def _tap_repo(tap: str) -> Path:
 
 
 def _brew_services_snapshot() -> dict[str, str]:
-    """Return {brew_service_name: state} parsed from `brew services list`."""
+    """Return {brew_service_name: state} parsed from `brew services list`.
+
+    Keyed by the literal formula name Homebrew prints, which on a candidate
+    install is `nyxgpt-api@<line>rc` -- resolve a component to its entry with
+    `brew_services.resolve`, never by indexing `NATIVE_BREW_SERVICES` (#3853).
+    """
     if _which("brew") is None:
         return {}
     cp = _run(
@@ -1201,12 +1218,19 @@ def _brew_services_snapshot() -> dict[str, str]:
         expected=True,
         timeout=LOCAL_PROBE_TIMEOUT_SECONDS,
     )
-    snapshot: dict[str, str] = {}
-    for line in (cp.stdout or "").splitlines():
-        parts = line.split()
-        if len(parts) >= 2:
-            snapshot[parts[0]] = parts[1]
-    return snapshot
+    return brew_services.parse_services_list(cp.stdout or "")
+
+
+def _resolved_brew_service(component: str, snapshot: Mapping[str, str] | None = None) -> str:
+    """The brew service name this machine actually registers for `component`.
+
+    One call site's worth of convenience over `brew_services.resolve`: takes
+    the `brew services list` snapshot when the caller already has one, and
+    reads a fresh one when it does not.
+    """
+    if snapshot is None:
+        snapshot = _brew_services_snapshot()
+    return brew_services.resolve(component, NATIVE_BREW_SERVICES[component], snapshot)
 
 
 def _docker_container_state(name: str) -> str:
@@ -1985,12 +2009,24 @@ def _install_from_remote_tap(name: str) -> list[OpsResult]:
     detail = f"version {version}"
     if formula != name:
         # brew names a service after its formula, so a candidate keg's
-        # service is `nyxgpt-api@3.0.0rc`, not `nyxgpt-api` -- which is what
-        # `nyxgpt ops status` and the self-heal watchdog look for.
+        # service is `nyxgpt-api@3.0.0rc`, not `nyxgpt-api`.
+        #
+        # This used to warn that `ops status` would therefore report the
+        # component as not running. It no longer does: the probe resolves the
+        # service from `brew services list` instead of asserting the stable
+        # name (#3853, `nyxgpt/brew_services.py`). Keeping the note as a
+        # statement of fact is still worth the line -- the operator sees a
+        # versioned name in `brew services list` and needs to know it is
+        # theirs -- but a caveat printed once at install time was never a
+        # substitute for `status` being right, and while it stood it also
+        # hid the half nobody had accounted for: `nyxgpt up` gates on the
+        # same probe, so it waited its full timeout and exited 2 on a stack
+        # that was entirely healthy.
         detail += (
-            f"\nCandidate channel: the service is named {formula} after its formula, "
-            "so `nyxgpt ops status` (which tracks the stable service names) reports "
-            "this component as not running. See docs/homebrew.md#candidate-channel."
+            f"\nCandidate channel: the service is named {formula} after its formula "
+            f"(not {name}), which is what `brew services list` shows and what "
+            "`nyxgpt ops status`, `nyxgpt up` and self-heal resolve it by. "
+            "See docs/homebrew.md#candidate-channel."
         )
     results = [OpsResult(True, f"Installed {formula} from {REMOTE_TAP}", detail)]
     results.extend(_restart_brew_service(formula))
@@ -3573,12 +3609,22 @@ def _native_services_snapshot() -> dict[str, str]:
     Used by `detect_deployment_mode()` in place of a direct
     `_brew_services_snapshot()` call so it reflects whichever native path
     (Homebrew/launchd or systemd) actually applies on this host.
+
+    The macOS branch resolves each component's service name against what
+    `brew services list` actually reports rather than indexing the stable
+    name, so `nyxgpt ops status` reports the candidate channel's
+    `nyxgpt-api@<line>rc` service under `api` instead of the `none` it used
+    to print on every rc install (#3853). Before this, the only place that
+    behavior was ever mentioned was a line `ops install` printed once, which
+    an operator running `status` days later never saw.
     """
     if _is_macos():
         brew_snapshot = _brew_services_snapshot()
         snapshot = {
             component: brew_snapshot.get(brew_name, "none")
-            for component, brew_name in NATIVE_BREW_SERVICES.items()
+            for component, brew_name in brew_services.resolve_all(
+                NATIVE_BREW_SERVICES, brew_snapshot
+            ).items()
         }
         if read_install_mode().is_dev:
             # A dev install runs api/web under its own LaunchAgents, not
@@ -3810,6 +3856,52 @@ def _install_native_web_dev() -> list[OpsResult]:
     return results
 
 
+def _launchagents_dir() -> Path:
+    """Return `~/Library/LaunchAgents`, where every user LaunchAgent lives.
+
+    Both nyxGPT's own `com.nyxgpt.*` plists and Homebrew's
+    `homebrew.mxcl.*` service plists land here, which is why the uninstall
+    teardown can clear a brew service whose formula brew can no longer even
+    resolve (#3859).
+    """
+    return Path.home() / "Library" / "LaunchAgents"
+
+
+def _remove_launchagents(labels: dict[str, str], kind: str) -> list[OpsResult]:
+    """Unload and delete each LaunchAgent in `labels` (macOS).
+
+    Unload *and* delete, in that order: a plist left in
+    ~/Library/LaunchAgents is reloaded at the next login, so a teardown that
+    only boots the job out reinstates it the next time the operator logs in.
+    `kind` names the population in the result lines ("dev-mode", "log/env")
+    so a run that clears several of them says which agent came from where.
+
+    Idempotent by construction: `_stop_launchagent` reports an unloaded job
+    as success, and an absent plist is simply not unlinked -- teardown runs
+    routinely against half-removed machines.
+    """
+    results: list[OpsResult] = []
+    la_dir = _launchagents_dir()
+    for component, label in labels.items():
+        plist = la_dir / f"{label}.plist"
+        results.extend(_stop_launchagent(label))
+        if plist.exists():
+            try:
+                plist.unlink()
+                results.append(
+                    OpsResult(True, f"Removed {kind} LaunchAgent for {component}", str(plist))
+                )
+            except OSError as e:
+                results.append(
+                    OpsResult(
+                        False,
+                        f"Failed to remove {kind} LaunchAgent for {component}",
+                        f"{type(e).__name__}: {e}",
+                    )
+                )
+    return results
+
+
 def _remove_dev_launchagents() -> list[OpsResult]:
     """Unload and delete the dev-mode api/web LaunchAgents (macOS).
 
@@ -3817,28 +3909,22 @@ def _remove_dev_launchagents() -> list[OpsResult]:
     hold ports 8000/3000 against the brew services the artifact install is
     about to start, and launchd would keep restarting it (KeepAlive) --
     exactly the "orphaned install breaks the other path" failure the mode
-    switch has to prevent.
+    switch has to prevent. `uninstall` runs it too (#3859): a mode switch
+    was only ever one of the situations that leaves these loaded.
     """
-    results: list[OpsResult] = []
-    la_dir = Path.home() / "Library" / "LaunchAgents"
-    for component, label in DEV_LAUNCHD_LABELS.items():
-        plist = la_dir / f"{label}.plist"
-        results.extend(_stop_launchagent(label))
-        if plist.exists():
-            try:
-                plist.unlink()
-                results.append(
-                    OpsResult(True, f"Removed dev-mode LaunchAgent for {component}", str(plist))
-                )
-            except OSError as e:
-                results.append(
-                    OpsResult(
-                        False,
-                        f"Failed to remove dev-mode LaunchAgent for {component}",
-                        f"{type(e).__name__}: {e}",
-                    )
-                )
-    return results
+    return _remove_launchagents(DEV_LAUNCHD_LABELS, "dev-mode")
+
+
+def _remove_support_launchagents() -> list[OpsResult]:
+    """Unload and delete the log-follower and Ollama-env LaunchAgents (macOS).
+
+    The population `brew uninstall` structurally cannot reach: Homebrew never
+    knew these existed, because `nyxgpt ops install` wrote them itself
+    (`SUPPORT_LAUNCHD_LABELS`). Until #3859 nothing removed them at all, in
+    any mode, which is why `com.nyxgpt.ollama-logs` outlived the owner's
+    complete uninstall.
+    """
+    return _remove_launchagents(SUPPORT_LAUNCHD_LABELS, "log/env")
 
 
 def _stop_artifact_brew_services() -> list[OpsResult]:
@@ -3848,12 +3934,111 @@ def _stop_artifact_brew_services() -> list[OpsResult]:
     back is then just another `nyxgpt up`), but their services must not be
     running: they would hold ports 8000/3000 against the dev LaunchAgents,
     and `brew services` restarts them at login.
+
+    Every registered variant, not the stable name alone: a machine that was
+    on the candidate channel registers `nyxgpt-api@<line>rc`, and stopping a
+    name it never registered left the dev switch racing a `keep_alive true`
+    service it thought it had stopped (#3853).
     """
     if _which("brew") is None:
         return []
+    snapshot = _brew_services_snapshot()
     results: list[OpsResult] = []
     for component in ("api", "web"):
-        results.extend(_stop_brew_service(NATIVE_BREW_SERVICES[component]))
+        for name in brew_services.unique(
+            [_resolved_brew_service(component, snapshot)]
+            + brew_services.variants(NATIVE_BREW_SERVICES[component], snapshot)
+        ):
+            results.extend(_stop_brew_service(name))
+    return results
+
+
+def _target_brew_formula(name: str) -> str:
+    """The formula this machine's next native install of `name` will register.
+
+    The same branch `_install_homebrew_api`/`_install_homebrew_web` take: a
+    checkout carrying `homebrew/<name>.rb` builds a local `file://` tap and
+    installs the plain stable formula; without one they fall through to
+    `_install_from_remote_tap`, which installs the published channel's
+    formula for the running version -- `nyxgpt-api@3.0.0rc` on a candidate.
+
+    Derived from the installer's own condition rather than guessed, because
+    `_stop_superseded_brew_services` uses it to decide what to stop: a wrong
+    answer here stops the service the install is about to start.
+    """
+    if (REPO_ROOT / "homebrew" / f"{name}.rb").exists():
+        return name
+    return _remote_tap_formula(name, _native_service_version())
+
+
+def _stop_superseded_brew_services() -> list[OpsResult]:
+    """Stop api/web brew services from a *different* formula than this install's.
+
+    The competing-install half of #3853, and the reason it is a step of its
+    own rather than part of `_reconcile_install_mode`: that function cleans up
+    only when the install **mode** changes (dev <-> artifact), and the owner's
+    machine never changed mode. What changed was the **formula** -- a prior
+    release's `nyxgpt-api` keg from 2.1.0 was still installed, with its
+    service still registered, when the candidate install registered
+    `nyxgpt-api@3.0.0rc` beside it. Homebrew treats a differently-named
+    formula as unrelated software, so nothing removed it, and both formulas
+    declare `keep_alive true`: launchd relaunched the loser of the :8000 race
+    every few seconds, indefinitely, filing `[Errno 48] address already in
+    use` into the error tracker the whole time.
+
+    Runs *before* the api/web install steps, so the port is free when the
+    service this install owns starts. Only the service is stopped -- the keg
+    is left installed, because removing software the operator installed is
+    not an install's call to make, and `nyxgpt ops uninstall` is the command
+    that does it.
+
+    Packaging is the first line of defence here, not this: since #3853 both
+    channels' published formulas declare `conflicts_with` each other, so brew
+    refuses the second install outright (`scripts/build_homebrew_artifacts.py`).
+    This is the fallback for machines already in the bad state, and for the
+    local `file://` tap path, whose checked-in formulas are not stamped by
+    that script.
+
+    A stop that fails is reported but does not fail the install: the very
+    next steps install and start the service this run owns, and *they* say
+    whether the port was actually free. Failing here instead would block an
+    install on a leftover the operator may already have removed by hand --
+    a diagnostic that fails an install is a diagnostic that gets skipped.
+    """
+    if not _is_macos() or _which("brew") is None:
+        return []
+    if read_install_mode().is_dev:
+        # Dev mode stops *every* api/web brew service on the mode switch
+        # (`_stop_artifact_brew_services`); there is no "the one this install
+        # owns" to keep, and treating the dev LaunchAgent's port-mate as
+        # superseded here would fight that path.
+        return []
+
+    snapshot = _brew_services_snapshot()
+    results: list[OpsResult] = []
+    for component, service in (("api", "nyxgpt-api"), ("web", "nyxgpt-web")):
+        keep = _target_brew_formula(service)
+        stale = brew_services.superseded(service, snapshot, keep=keep)
+        if not stale:
+            continue
+        results.append(
+            OpsResult(
+                True,
+                f"{component}: {len(stale)} superseded brew service(s) registered besides {keep}",
+                f"{brew_services.format_variants(service, snapshot)}\n"
+                f"Stopping {', '.join(stale)}: a service from another formula holds this "
+                "component's port and launchd restarts it (keep_alive), so leaving it "
+                "registered makes both builds fight for it (#3853). The keg itself is "
+                "left installed -- `nyxgpt ops uninstall` removes it.",
+            )
+        )
+        for name in stale:
+            for stopped in _stop_brew_service(name):
+                results.append(
+                    stopped
+                    if stopped.ok
+                    else OpsResult(True, stopped.message, stopped.details, status="NOTE")
+                )
     return results
 
 
@@ -4104,34 +4289,83 @@ def _restart_native_service(component: str) -> list[OpsResult]:
         label = _dev_launchd_label(component)
         if label is not None:
             return _restart_launchagent(label)
-        return _restart_brew_service(NATIVE_BREW_SERVICES[component])
+        # Resolved, not indexed: on a candidate install the running service
+        # is `nyxgpt-api@<line>rc` and restarting `nyxgpt-api` would act on
+        # something else entirely -- an older release's keg, or nothing (#3853).
+        return _restart_brew_service(_resolved_brew_service(component))
     if _is_linux():
         return _restart_systemd_service(NATIVE_SYSTEMD_SERVICES[component])
     return _unsupported_os_result(f"restart {component}")
 
 
 def _stop_native_service(component: str) -> list[OpsResult]:
-    """Stop the OS-appropriate native service for `component` ("api"/"web"/"ollama")."""
+    """Stop the OS-appropriate native service for `component` ("api"/"web"/"ollama").
+
+    On macOS this stops **every** registered brew service variant for the
+    component, not just the resolved one. "Stop the stack" has to mean the
+    ports are free afterwards, and both channels' formulas declare
+    `keep_alive true`: leaving a superseded `nyxgpt-api` registered while
+    stopping `nyxgpt-api@3.0.0rc` hands :8000 straight back to launchd, which
+    is the `[Errno 48] address already in use` restart loop from #3853.
+    """
     if _is_macos():
         label = _dev_launchd_label(component)
         if label is not None:
             return _stop_launchagent(label)
-        return _stop_brew_service(NATIVE_BREW_SERVICES[component])
+        snapshot = _brew_services_snapshot()
+        resolved = _resolved_brew_service(component, snapshot)
+        results = _stop_brew_service(resolved)
+        for stale in brew_services.superseded(
+            NATIVE_BREW_SERVICES[component], snapshot, keep=resolved
+        ):
+            results.extend(_stop_brew_service(stale))
+        return results
     if _is_linux():
         return _stop_systemd_service(NATIVE_SYSTEMD_SERVICES[component])
     return _unsupported_os_result(f"stop {component}")
 
 
-# Log-follower agent identifiers ("cassandra-logs"/"ollama-logs", matching
-# `nyxgpt ops restart`/`stop`'s `cassandra-logs` target) mapped to each OS's
-# native name for that agent.
-_NATIVE_LOG_FOLLOWER_LAUNCHD_LABELS: dict[str, str] = {
+# Every LaunchAgent `nyxgpt ops install` writes into ~/Library/LaunchAgents
+# regardless of install mode (#3859): the two log followers plus the Ollama
+# env agent. Deliberately *not* part of `DEV_LAUNCHD_LABELS` -- that map is
+# dev mode's substitute for the api/web brew services, while these three are
+# installed unconditionally, in both modes, by
+# `_install_cassandra_launchagent`, `_install_ollama_log_follower_service`
+# and `_install_ollama_env_agent`.
+#
+# One map, because the same three agents used to be enumerated in three
+# places and every list was different: removal knew only the dev pair,
+# `status` reported `com.nyxgpt.cassandra-logs` alone, and nothing at all
+# knew about `com.nyxgpt.ollama-env`. So `com.nyxgpt.ollama-logs` was still
+# running at PID 58068 after the owner's complete `brew uninstall` + `brew
+# untap`, and invisible to the command they would have checked with.
+# `_remove_support_launchagents` (teardown) and `status` (reporting) both
+# read this.
+SUPPORT_LAUNCHD_LABELS: dict[str, str] = {
     "cassandra-logs": "com.nyxgpt.cassandra-logs",
     "ollama-logs": "com.nyxgpt.ollama-logs",
+    "ollama-env": "com.nyxgpt.ollama-env",
 }
-_NATIVE_LOG_FOLLOWER_SYSTEMD_UNITS: dict[str, str] = {
+
+# Linux twin of SUPPORT_LAUNCHD_LABELS. There is no `ollama-env` unit: the
+# systemd path puts OLLAMA_MODELS in the service unit's own `Environment=`,
+# which applies on every start and needs no login-time agent (see
+# `_install_ollama_env_agent`'s Linux branch).
+SUPPORT_SYSTEMD_UNITS: dict[str, str] = {
     "cassandra-logs": "nyxgpt-cassandra-logs",
     "ollama-logs": "nyxgpt-ollama-logs",
+}
+
+# Log-follower agent identifiers ("cassandra-logs"/"ollama-logs", matching
+# `nyxgpt ops restart`/`stop`'s `cassandra-logs` target) mapped to each OS's
+# native name for that agent. A view of the two maps above rather than a
+# third list: restart/stop drive the followers only, since the env agent has
+# no log to follow.
+_NATIVE_LOG_FOLLOWER_LAUNCHD_LABELS: dict[str, str] = {
+    name: SUPPORT_LAUNCHD_LABELS[name] for name in ("cassandra-logs", "ollama-logs")
+}
+_NATIVE_LOG_FOLLOWER_SYSTEMD_UNITS: dict[str, str] = {
+    name: SUPPORT_SYSTEMD_UNITS[name] for name in ("cassandra-logs", "ollama-logs")
 }
 
 
@@ -9048,10 +9282,24 @@ def install(args) -> int:
             lambda: _clear_intentional_stops(["api", "web", "ollama", "cassandra"]),
         ),
         ("config", _install_config),
+        # Homebrew has no uninstall hook, so a keg removed without `nyxgpt ops
+        # uninstall` first leaves its service loaded and pointing at deleted
+        # files. Install is that condition reached from the other direction:
+        # report it before anything below tries to bind :8000/:3000 against
+        # it (#3859, #3853).
+        ("orphaned launchd jobs", _report_orphaned_launchd_jobs),
         # Must run before the api/web steps: it records the mode they (and
         # every later restart/stop/status) act in, and clears the other
         # mode's services/venv when switching between them (#3789).
         ("install mode", lambda: _reconcile_install_mode(dev)),
+        # Must run before the api/web steps and after the mode is recorded:
+        # it frees :8000/:3000 from a *different formula's* service for the
+        # same component -- the leftover `nyxgpt-api` keg a candidate
+        # install has no reason to touch and that launchd keeps restarting
+        # (#3853). `install mode` handles the dev <-> artifact transition;
+        # this handles the stable <-> candidate one, which is not a mode
+        # change and so was handled by nothing.
+        ("superseded brew services", _stop_superseded_brew_services),
         # Everything container-backed below (Cassandra, the observability
         # stack) needs a working engine, and requiring the operator to
         # install Docker by hand first was itself an acceptance failure
@@ -9250,7 +9498,17 @@ def required_models_status(
         installed = model_bootstrap.installed_model_names(base_url=base_url)
     except Exception as e:
         installed = None
-        error = f"{type(e).__name__}: {e}"
+        # #3837 (CodeQL #129, py/stack-trace-exposure). Same fault class as
+        # #123 one file over, and found by the same sweep: this dict is
+        # returned straight out of `GET /models/required` (`app.py`), so a
+        # caught exception's message reaching it reaches a browser. The bare
+        # `except Exception` is the point -- whatever `installed_model_names`
+        # raises against an unreachable Ollama is an httpx transport error,
+        # and its string names the base URL's resolution failure and the
+        # host's proxy. The class is what the dashboard renders ("Ollama did
+        # not answer (ConnectError)"); the message goes to the log.
+        logger.warning("Ollama model lookup failed at %s", base_url, exc_info=e)
+        error = type(e).__name__
 
     missing = (
         []
@@ -9471,7 +9729,12 @@ def status(_args) -> int:
         else:
             print("\nHomebrew services: brew not found")
 
-        labels = ["com.nyxgpt.cassandra-logs"]
+        # Every agent nyxGPT installs, from the map the removal path uses
+        # (#3859). It used to be `com.nyxgpt.cassandra-logs` alone, so the two
+        # agents this command is most needed for -- `ollama-logs` and
+        # `ollama-env`, which no `brew uninstall` can remove -- were invisible
+        # to the one command an operator would check a teardown with.
+        labels = list(SUPPORT_LAUNCHD_LABELS.values())
         if install_mode.is_dev:
             # Dev mode's api/web run as LaunchAgents, not brew services --
             # the "Homebrew services" block above says nothing about them.
@@ -11175,6 +11438,437 @@ def down(args) -> int:
     _record_ops_action("down", scope, result, message)
 
     return 0 if ok else 2
+
+
+# --- Uninstall teardown (#3859) ---
+#
+# `nyxgpt ops down` stops what is *running*; it deliberately leaves the
+# machine installed, so every agent and service is registered to come back at
+# the next login. That is right for "stop the stack" and wrong for "I am
+# removing nyxGPT", and the gap is not cosmetic: `brew uninstall` deletes a
+# keg's files without stopping its service first, and a running process
+# survives deletion of its executable. The owner's macOS teardown left
+# `nyxgpt-api`/`nyxgpt-web` serving on :8000/:3000 out of kegs whose 6,117 and
+# 48,824 files had just been removed -- and, the tap being gone, brew could no
+# longer resolve the formula names to stop them.
+#
+# Three populations, only one of which Homebrew has ever known about:
+#
+#   brew services   `homebrew.mxcl.nyxgpt-api@X.Y.Zrc` and its web twin.
+#                   Stopped through `brew services stop` where brew can still
+#                   resolve the formula, and through launchd directly where it
+#                   cannot -- which is the state an operator reaches by
+#                   untapping first, and the state that had no recovery path.
+#   nyxGPT agents   `com.nyxgpt.*` -- the dev-mode api/web pair plus the
+#                   unconditionally-installed log/env agents. `nyxgpt ops
+#                   install` wrote these itself, so no `brew uninstall` could
+#                   ever have removed them.
+#   containers      `nyxgpt-cassandra` plus the observability Compose tier,
+#                   torn down by the same steps `down` uses.
+#
+# Removal, not just unloading, for everything with a plist or unit file on
+# disk: launchd and systemd --user both reinstate a registered job at the next
+# login.
+
+_BREW_SERVICE_LABEL_PREFIX = "homebrew.mxcl."
+
+
+def _loaded_launchd_labels(prefix: str) -> list[str]:
+    """Every currently-loaded launchd label starting with `prefix`.
+
+    The plural of `_launchd_agent_loaded`, and same contract: any failure to
+    read launchd is "nothing known to be loaded" rather than an exception,
+    because both callers (the uninstall teardown and the install-time orphan
+    report) must still do their real work on a machine whose launchctl cannot
+    be queried.
+    """
+    if _which("launchctl") is None:
+        return []
+    try:
+        cp = _run(["launchctl", "list"], check=False, expected=True)
+    except Exception as e:
+        logger.warning(
+            "Could not query launchctl list for %s*: %s", prefix, e, extra={"component": "ops"}
+        )
+        return []
+    if cp.returncode != 0:
+        return []
+    labels = []
+    for line in (cp.stdout or "").splitlines():
+        parts = line.split()
+        if parts and parts[-1].startswith(prefix):
+            labels.append(parts[-1])
+    return labels
+
+
+def _brew_service_launchd_labels() -> list[str]:
+    """Every `homebrew.mxcl.nyxgpt*` launchd label this machine still carries.
+
+    The union of what is on disk and what is loaded, because either outlives
+    the other: `brew services stop` removes the plist while an already-booted
+    job keeps running under a label with no file behind it, and a plist that
+    was never bootstrapped is loaded by nothing until the next login. Matched
+    by prefix rather than against a known formula list on purpose -- the
+    candidate channel's services are named after their formula
+    (`nyxgpt-api@3.0.0rc`), and a release line this build has never heard of
+    is exactly the leftover a teardown is for.
+    """
+    labels: set[str] = set()
+    try:
+        for plist in _launchagents_dir().glob(f"{_BREW_SERVICE_LABEL_PREFIX}nyxgpt*.plist"):
+            labels.add(plist.name[: -len(".plist")])
+    except OSError as e:
+        logger.warning("Could not list %s: %s", _launchagents_dir(), e, extra={"component": "ops"})
+    labels.update(_loaded_launchd_labels(f"{_BREW_SERVICE_LABEL_PREFIX}nyxgpt"))
+    return sorted(labels)
+
+
+def _remove_brew_service_launchd_jobs() -> list[OpsResult]:
+    """Stop and deregister every Homebrew-managed nyxgpt service (macOS).
+
+    `brew services stop` first, so Homebrew's own state stays consistent when
+    it can still resolve the formula -- then `launchctl bootout` and the plist
+    unlink regardless, which is the half that works after `brew untap` has
+    made the formula unresolvable. Failing to stop through brew is tolerated
+    and unreported: an orphaned job is the normal case here, not an error.
+    """
+    labels = _brew_service_launchd_labels()
+    if not labels:
+        return [OpsResult(True, "No Homebrew-managed nyxgpt services left registered with launchd")]
+
+    brew = _which("brew")
+    la_dir = _launchagents_dir()
+    results: list[OpsResult] = []
+    for label in labels:
+        formula = label[len(_BREW_SERVICE_LABEL_PREFIX) :]
+        if brew is not None:
+            cp = _run(["brew", "services", "stop", formula], check=False, expected=True)
+            if cp.returncode == 0:
+                results.append(OpsResult(True, f"Stopped brew service: {formula}"))
+        results.extend(_stop_launchagent(label))
+        plist = la_dir / f"{label}.plist"
+        if plist.exists():
+            try:
+                plist.unlink()
+                results.append(
+                    OpsResult(True, f"Removed brew service LaunchAgent for {formula}", str(plist))
+                )
+            except OSError as e:
+                results.append(
+                    OpsResult(
+                        False,
+                        f"Failed to remove brew service LaunchAgent for {formula}",
+                        f"{type(e).__name__}: {e}",
+                    )
+                )
+    return results
+
+
+def _remove_native_systemd_units() -> list[OpsResult]:
+    """Stop, disable and delete every nyxgpt systemd --user unit (Linux).
+
+    The Linux twin of the two macOS removal paths: `disable --now` both stops
+    the unit and drops the login-time symlink, and the unit file is then
+    deleted so a `daemon-reload` leaves nothing to re-enable. Unit names come
+    from the same maps the installers write from, plus whatever
+    `nyxgpt-*.service` files are actually in `~/.config/systemd/user` -- so a
+    unit installed by an older nyxGPT that this build no longer knows about
+    is still removed rather than left running.
+    """
+    unit_dir = _systemd_user_dir()
+    units = set(NATIVE_SYSTEMD_SERVICES.values()) | set(SUPPORT_SYSTEMD_UNITS.values())
+    try:
+        units.update(path.name[: -len(".service")] for path in unit_dir.glob("nyxgpt-*.service"))
+    except OSError as e:
+        logger.warning("Could not list %s: %s", unit_dir, e, extra={"component": "ops"})
+
+    systemctl = _which("systemctl")
+    results: list[OpsResult] = []
+    for unit in sorted(units):
+        path = unit_dir / f"{unit}.service"
+        if systemctl is not None:
+            _run(
+                ["systemctl", "--user", "disable", "--now", f"{unit}.service"],
+                check=False,
+                expected=True,
+            )
+        if not path.exists():
+            continue
+        try:
+            path.unlink()
+            results.append(OpsResult(True, f"Removed systemd unit: {unit}", str(path)))
+        except OSError as e:
+            results.append(
+                OpsResult(
+                    False, f"Failed to remove systemd unit: {unit}", f"{type(e).__name__}: {e}"
+                )
+            )
+    if systemctl is not None:
+        _run(["systemctl", "--user", "daemon-reload"], check=False, expected=True)
+    if not results:
+        results.append(OpsResult(True, "No nyxgpt systemd --user units left installed"))
+    return results
+
+
+def _brew_formula_installed(name: str) -> bool:
+    """True if Homebrew reports formula `name` as installed on this machine."""
+    if _which("brew") is None:
+        return False
+    try:
+        return _run(["brew", "list", "--formula", name], check=False, expected=True).returncode == 0
+    except Exception as e:
+        logger.warning("Could not ask brew about %s: %s", name, e, extra={"component": "ops"})
+        return False
+
+
+def _uninstall_stop_native_service(component: str) -> list[OpsResult]:
+    """Stop `component` for the teardown, skipping one that was never installed.
+
+    `down` reports a stop it could not perform, and should: the operator asked
+    to stop a running stack, so `brew services stop ollama` failing is news.
+    Uninstall is the opposite -- it runs against machines where whole
+    populations are already gone (a keg removed by hand, ollama never
+    installed, the candidate channel's service registered under a formula name
+    this map does not carry), and "it is not there" is the desired end state,
+    not a reason to exit 2. What is genuinely still registered is found and
+    removed by `_uninstall_native_service_managers` regardless of this step.
+    """
+    if _is_macos() and _dev_launchd_label(component) is None:
+        # Resolved rather than indexed, so the candidate channel's keg is
+        # recognized as installed instead of being skipped as "no
+        # nyxgpt-api keg" and left registered by the teardown (#3853).
+        name = _resolved_brew_service(component)
+        if not _brew_formula_installed(name):
+            return [OpsResult(True, f"Skipped stopping {component}: no {name} keg installed")]
+    if _is_linux():
+        unit = NATIVE_SYSTEMD_SERVICES[component]
+        if not (_systemd_user_dir() / f"{unit}.service").exists():
+            return [OpsResult(True, f"Skipped stopping {component}: no {unit}.service installed")]
+    return _stop_native_service(component)
+
+
+def _uninstall_stop_container(name: str) -> list[OpsResult]:
+    """Stop container `name` for the teardown, skipping one that is not there.
+
+    Same rule as `_uninstall_stop_native_service`: a machine with no Docker,
+    or with the container already removed, is in the state this command is
+    trying to reach.
+    """
+    if _which("docker") is None:
+        return [OpsResult(True, f"Skipped stopping {name}: Docker not found")]
+    try:
+        cp = _run(["docker", "ps", "-aq", "--filter", f"name=^{name}$"], check=False, expected=True)
+    except Exception as e:
+        logger.warning("Could not list containers for %s: %s", name, e, extra={"component": "ops"})
+        return [OpsResult(True, f"Skipped stopping {name}: could not query Docker")]
+    if cp.returncode != 0 or not (cp.stdout or "").strip():
+        return [OpsResult(True, f"Skipped stopping {name}: no such container")]
+    return _stop_docker_container(name)
+
+
+def _uninstall_compose_teardown(volumes: bool) -> list[OpsResult]:
+    """Tear the Compose tiers down, skipping a machine that has no Compose file.
+
+    `_down_compose_teardown` resolves service names by asking `docker compose
+    -f <file> config --services`, which fails outright when the ops-managed
+    docker-compose.yml is not there. That is an uninstall's *end* state, and on
+    a machine that only ever ran the native path it is the starting one -- so
+    reporting it as two failed checks would exit 2 on exactly the machines this
+    command has just finished cleaning.
+    """
+    compose_file = Path(self_heal.COMPOSE_FILE)
+    if not compose_file.exists():
+        return [OpsResult(True, f"Skipped Compose teardown: no {compose_file}")]
+    return _down_compose_teardown("all", volumes)
+
+
+def _uninstall_native_service_managers() -> list[OpsResult]:
+    """Deregister nyxGPT from this OS's service manager, whichever it is."""
+    if _is_macos():
+        results = _remove_dev_launchagents()
+        results.extend(_remove_support_launchagents())
+        results.extend(_remove_brew_service_launchd_jobs())
+        return results
+    if _is_linux():
+        return _remove_native_systemd_units()
+    return _unsupported_os_result("native service teardown")
+
+
+def _uninstall_clear_install_mode() -> list[OpsResult]:
+    """Drop the native install-mode marker: the deployment it described is gone.
+
+    Same reason `ops down --kubernetes` clears its own marker -- a marker left
+    behind is a record of a deployment that no longer exists, and `ops
+    status`/`restart` read it to decide which service manager to drive.
+    """
+    marker = clear_install_mode()
+    return [OpsResult(True, "Cleared the native install-mode marker", str(marker))]
+
+
+def _uninstall_next_steps() -> str:
+    """The artifact-removal command to run *after* the teardown, per platform.
+
+    Named rather than performed: removing the artifact is the package
+    manager's job, and nyxGPT deliberately does not uninstall kegs out from
+    under Homebrew's own bookkeeping. What this teardown guarantees is that
+    the command below is now safe to run -- nothing is left holding a port or
+    registered to come back.
+    """
+    if _is_macos():
+        return (
+            "Next: remove the installed artifacts with Homebrew, e.g.\n"
+            "  brew uninstall $(brew list --formula | grep '^nyxgpt')\n"
+            "  brew untap <your-tap>\n"
+            "Your data and configuration are untouched -- ~/.nyxGPT (config.ini, "
+            "volumes, logs) is preserved. Delete it by hand if you want it gone."
+        )
+    return (
+        "Next: remove the installed artifacts, e.g. `pip uninstall nyxgpt` or by deleting\n"
+        "  ~/.nyxGPT/opt/nyxgpt-api and ~/.nyxGPT/opt/nyxgpt-web\n"
+        "Your data and configuration are untouched -- ~/.nyxGPT (config.ini, "
+        "volumes, logs) is preserved. Delete it by hand if you want it gone."
+    )
+
+
+def uninstall(args) -> int:
+    """CLI entrypoint for `nyxgpt ops uninstall` -- the wrapped teardown (#3859).
+
+    Stops and *deregisters* everything nyxGPT installed on this machine: the
+    Homebrew-managed api/web services (macOS) or systemd --user units (Linux),
+    the `com.nyxgpt.*` LaunchAgents nyxGPT installed itself, the Cassandra
+    container and the Compose observability tier. Run it before `brew
+    uninstall` -- Homebrew has no uninstall hook, so nothing else can.
+
+    Volumes are preserved unless `--volumes --yes-really` is given, and
+    `~/.nyxGPT` is never touched: uninstalling the software is not deleting
+    the operator's data.
+
+    Idempotent, and deliberately so -- the states it runs against are
+    routinely partial (the tap already gone, half the services already
+    stopped, a plist with no keg behind it). Returns 0 if every step
+    succeeded, else 2.
+    """
+    volumes = bool(getattr(args, "volumes", False))
+    if volumes and not bool(getattr(args, "yes_really", False)):
+        print(
+            "ERROR: refusing to remove volumes without --yes-really "
+            "(this deletes Cassandra/Postgres/Grafana data)",
+            file=sys.stderr,
+        )
+        return 2
+
+    logger.info(
+        "ops: uninstall starting (volumes=%s)",
+        volumes,
+        extra={"component": "ops", "action": "uninstall", "volumes": volumes},
+    )
+
+    # Same ordering rule as `down`: mark the components intentionally stopped
+    # before stopping any of them, or the next self-heal pass restarts what
+    # this command just tore down and re-occupies the ports within seconds.
+    steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
+        ("mark intentionally stopped", _down_mark_intentional_stops),
+        ("stop api", lambda: _uninstall_stop_native_service("api")),
+        ("stop web", lambda: _uninstall_stop_native_service("web")),
+        ("stop ollama", lambda: _uninstall_stop_native_service("ollama")),
+        ("stop cassandra container", lambda: _uninstall_stop_container("nyxgpt-cassandra")),
+        # After the stops, because deleting a plist out from under a loaded
+        # job leaves the job loaded with nothing to report it.
+        ("deregister native services", _uninstall_native_service_managers),
+        ("compose teardown", lambda: _uninstall_compose_teardown(volumes)),
+        ("clear install mode", _uninstall_clear_install_mode),
+    ]
+
+    quiet = bool(getattr(args, "quiet", False))
+    results, slow_steps = _run_steps("uninstall", steps, quiet=quiet)
+    ok = all(r.ok for r in results)
+    if not quiet:
+        _print_slow_steps_summary(slow_steps)
+        print("\n" + _uninstall_next_steps())
+    logger.info(
+        "ops: uninstall %s (%d/%d ok)",
+        "succeeded" if ok else "failed",
+        sum(1 for r in results if r.ok),
+        len(results),
+        extra={"component": "ops", "action": "uninstall", "ok": ok},
+    )
+    result, message = _ops_action_outcome(results)
+    _record_ops_action("uninstall", "all", result, message)
+
+    return 0 if ok else 2
+
+
+def _report_orphaned_launchd_jobs() -> list[OpsResult]:
+    """Report launchd jobs left over from a previous install (macOS, install-time).
+
+    Homebrew has no uninstall hook, so an operator who removes a keg without
+    running `nyxgpt ops uninstall` first leaves its service loaded and its
+    plist in place; the next install then races that orphan for :8000/:3000
+    and launchd keeps restarting it (`KeepAlive`), which is the
+    `[Errno 48] address already in use` crash loop from the install side
+    (#3853). This is the *report* half only: it never stops or removes
+    anything, because at install time a loaded nyxgpt job is usually the
+    operator's own running stack, which the install is about to restart
+    normally. It names `nyxgpt ops uninstall` as the fix for the case where
+    it is not.
+
+    Always succeeds -- a diagnostic that fails an install is a diagnostic
+    that gets skipped.
+    """
+    if not _is_macos():
+        return []
+    loaded = _loaded_launchd_labels(f"{_BREW_SERVICE_LABEL_PREFIX}nyxgpt")
+    loaded += [
+        label
+        for label in sorted(set(DEV_LAUNCHD_LABELS.values()) | set(SUPPORT_LAUNCHD_LABELS.values()))
+        if _launchd_agent_loaded(label)
+    ]
+    orphans = [label for label in loaded if _launchd_job_is_orphaned(label)]
+    if not orphans:
+        return []
+    return [
+        OpsResult(
+            True,
+            f"{len(orphans)} launchd job(s) from a previous install are loaded but "
+            "point at files that no longer exist",
+            "\n".join(orphans)
+            + "\nThey survive `brew uninstall` (Homebrew has no uninstall hook) and will "
+            "fight this install for ports 8000/3000.\nRun `nyxgpt ops uninstall` to clear "
+            "them, then install again.",
+        )
+    ]
+
+
+def _launchd_job_is_orphaned(label: str) -> bool:
+    """True if `label`'s plist names a file that is no longer on disk.
+
+    "Orphaned" is specifically "registered against a deleted install", not
+    "not running": a loaded job whose files still exist is a live service, and
+    reporting that as leftover would flag every healthy machine.
+
+    Every absolute path in the invocation is checked, not just `argv[0]`. A
+    Homebrew service plist runs `["/bin/bash", "<keg>/bin/nyxgpt-api"]`, so
+    `argv[0]` is `/bin/bash` and survives any uninstall -- the keg wrapper
+    behind it is the file that vanishes, and it is the whole signal. Parsed
+    with plistlib rather than `launchctl print` so the answer does not depend
+    on that command's output format; an unreadable plist, or one naming no
+    absolute path at all, is not orphaned, because this feeds a warning and
+    guessing loudly is worse than saying nothing.
+    """
+    plist = _launchagents_dir() / f"{label}.plist"
+    try:
+        with plist.open("rb") as handle:
+            parsed = plistlib.load(handle)
+    except (OSError, ValueError):
+        return False
+    if not isinstance(parsed, dict):
+        return False
+    invocation = [parsed.get("Program")]
+    argv = parsed.get("ProgramArguments")
+    if isinstance(argv, list):
+        invocation.extend(argv)
+    paths = [entry for entry in invocation if isinstance(entry, str) and entry.startswith("/")]
+    return any(not Path(entry).exists() for entry in paths)
 
 
 def logs(args) -> int:
@@ -14250,13 +14944,19 @@ def _restart_native_api_if_running(reason: str = "the new GlitchTip DSN") -> Ops
     start and restarts through `nyxgpt ops restart api` like any other
     Compose service.
     """
-    if _brew_services_snapshot().get("nyxgpt-api") not in ("started", "running"):
+    snapshot = _brew_services_snapshot()
+    # Resolved: on a candidate install the service holding the DSN-reading
+    # process is `nyxgpt-api@<line>rc`, so the stable-name lookup answered
+    # "not running natively" and the API kept reporting to the dead DSN
+    # forever (#3853).
+    service = _resolved_brew_service("api", snapshot)
+    if snapshot.get(service) not in brew_services.LIVE_STATES:
         return OpsResult(True, "Skipped nyxgpt-api restart (not running natively)")
 
-    result = _restart_brew_service("nyxgpt-api")[0]
+    result = _restart_brew_service(service)[0]
     if not result.ok:
         return result
-    return OpsResult(True, f"Restarted nyxgpt-api to pick up {reason}")
+    return OpsResult(True, f"Restarted {service} to pick up {reason}")
 
 
 def _slack_webhook_secret_path() -> Path:

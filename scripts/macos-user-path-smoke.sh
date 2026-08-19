@@ -372,18 +372,89 @@ for component in api web; do
   fi
 done
 
+# The same statement from the other end, and the one the owner actually saw.
+# `list_component_status` above IS what `_wait_for_stack_healthy` polls, so a
+# component missing from it is a component `nyxgpt up` waits its whole timeout
+# for and then names in `Still unhealthy:`. This runner cannot make `up`
+# return 0 -- it has no Docker daemon, so the `docker engine` step fails and
+# `up` returns install's exit code before the health wait ever runs (see
+# $TOLERATED_STEPS) -- so the exit code cannot be asserted here without
+# asserting something untrue. What CAN be asserted is that api/web never
+# appear in that line, which is non-vacuous exactly when the wait did run.
+if grep -q "Still unhealthy" "$WORK/up.log"; then
+  STILL_LINE="$(grep -h "Still unhealthy" "$WORK/up.log" | head -1)"
+  for component in api web; do
+    if printf '%s' "$STILL_LINE" | grep -qE "(^|[ ,:])${component}([,.]|$)"; then
+      fail "nyxgpt up reported $component unhealthy while its service was started: $STILL_LINE (#3853)"
+    else
+      pass "nyxgpt up's health wait did not report $component unhealthy"
+    fi
+  done
+fi
+
+# The resolution has to have engaged, not merely not-failed: on a candidate
+# install the started service is `nyxgpt-api@<line>rc`, so the probe agreeing
+# with `brew services list` is the whole fix. Printed either way -- a stable
+# install has no versioned service and this is simply absent, which is why it
+# is a log line rather than an assertion on the versioned name.
+log "the service names this install actually registered"
+brew services list | grep -E "^(nyxgpt-api|nyxgpt-web)" || true
+for formula in "nyxgpt-api@${RELEASE}rc" "nyxgpt-web@${RELEASE}rc"; do
+  if brew services list | grep -qE "^${formula}[[:space:]]+started"; then
+    pass "$formula is started, and the probe above resolved it (#3853)"
+  fi
+done
+
 # ---------------------------------------------------------------------------
 # 8. Teardown (#3859).
 #
-# The wrapped stop first, then the Homebrew removal, then the assertion that
-# nothing is left running or registered. Uninstalling a keg while its launchd
-# job is loaded is precisely the state the owner was left in.
+# The wrapped stop, then the wrapped *uninstall*, then the Homebrew removal,
+# then the assertion that nothing is left running or registered. Uninstalling
+# a keg while its launchd job is loaded is precisely the state the owner was
+# left in, and it is what the ordering here exists to make unnecessary.
+#
+# `down` and `ops uninstall` are both run, and they are not the same command:
+# `down` stops the stack and deliberately leaves the machine installed, so
+# every service is still registered to return at the next login. The plist
+# assertion between them records that difference rather than assuming it --
+# if `down` ever starts deregistering, the check below stops meaning anything
+# and should say so out loud.
 # ---------------------------------------------------------------------------
 log "nyxgpt down"
 if nyxgpt down 2>&1 | tee "$WORK/down.log"; then
   pass "nyxgpt down exited 0"
 else
   fail "nyxgpt down exited non-zero -- the supported stop does not work (#3859)"
+fi
+
+log "plists that survive nyxgpt down"
+shopt -s nullglob nocaseglob
+SURVIVORS=""
+for plist in "$HOME"/Library/LaunchAgents/*nyxgpt*; do
+  SURVIVORS="${SURVIVORS}${plist}"$'\n'
+done
+shopt -u nullglob nocaseglob
+printf '%s' "$SURVIVORS"
+if [ -n "$SURVIVORS" ]; then
+  pass "nyxgpt down leaves the machine installed, as designed"
+else
+  fail "nothing registered after nyxgpt down -- the uninstall check below tests nothing"
+fi
+
+log "nyxgpt ops uninstall"
+# The command that has to exist for the sequence below to be recoverable: once
+# `brew untap` has run, brew cannot resolve `nyxgpt-api@X.Y.Zrc` and
+# `brew services stop` has nothing to act on. This is the wrapped path that
+# does not need it (#3859).
+if nyxgpt ops uninstall 2>&1 | tee "$WORK/uninstall.log"; then
+  pass "nyxgpt ops uninstall exited 0"
+else
+  fail "nyxgpt ops uninstall exited non-zero (#3859)"
+fi
+if nyxgpt ops uninstall --quiet >> "$WORK/uninstall.log" 2>&1; then
+  pass "a second nyxgpt ops uninstall is a no-op, not a failure"
+else
+  fail "nyxgpt ops uninstall is not idempotent -- it fails on an already-clean machine (#3859)"
 fi
 
 log "brew uninstall / brew untap"

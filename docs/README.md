@@ -54,7 +54,11 @@ tree instead, for iterating on unreleased code
 Whichever mode brings the stack up, it pulls the configured chat and embedding
 models before reporting itself up, so the first chat message works — with RAG
 on or off — without anyone pulling a model by hand
-([ops.md](ops.md#nyxgpt-ops-install)).
+([ops.md](ops.md#nyxgpt-ops-install)). Removal is wrapped too: `nyxgpt ops
+uninstall` deregisters the services, the `com.nyxgpt.*` LaunchAgents and the
+containers before you remove the artifacts, so nothing is left running that no
+supported command can stop
+([ops.md](ops.md#nyxgpt-ops-uninstall)).
 AWS deployments are `nyxgpt cloud`-wrapped, with
 an SSH-tunnel-only access path; `nyxgpt cloud status` says what is deployed
 and how to reach it, and `nyxgpt cloud ops` inspects the instance over that

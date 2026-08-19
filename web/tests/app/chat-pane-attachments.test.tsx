@@ -2,11 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ChatPane from '@/app/components/ChatPane';
+import type { VirtuosoMockProps } from '../mocks/virtuoso';
 
 vi.mock('react-virtuoso', () => ({
-  Virtuoso: ({ data, itemContent, style }: any) => (
+  Virtuoso: ({ data, itemContent, style }: VirtuosoMockProps) => (
     <div style={style}>
-      {(data || []).map((item: any, index: number) => (
+      {(data || []).map((item: unknown, index: number) => (
         <div key={index}>{itemContent(index, item)}</div>
       ))}
     </div>
@@ -18,7 +19,7 @@ vi.mock('@/contexts/ToastContext', () => ({
   useToast: () => toastMocks,
 }));
 
-function makeFetchMock(extra: Record<string, (url: string, init?: RequestInit) => any> = {}) {
+function makeFetchMock(extra: Record<string, (url: string, init?: RequestInit) => unknown> = {}) {
   return vi.fn().mockImplementation((url: string, init?: RequestInit) => {
     for (const key of Object.keys(extra)) {
       if (url.includes(key)) return Promise.resolve(extra[key](url, init));
@@ -150,7 +151,7 @@ describe('ChatPane inline attachments', () => {
   });
 
   it('sends the message with attachments included in the request body, and clears pending attachments', async () => {
-    let capturedBody: any = null;
+    let capturedBody: Record<string, unknown> | null = null;
     global.fetch = makeFetchMock({
       '/api/chat/stream': (_url, init) => {
         capturedBody = init?.body ? JSON.parse(init.body as string) : null;
@@ -194,7 +195,7 @@ describe('ChatPane inline attachments', () => {
   });
 
   it('sends attachment-only messages (no text) using a single space as the prompt', async () => {
-    let capturedBody: any = null;
+    let capturedBody: Record<string, unknown> | null = null;
     global.fetch = makeFetchMock({
       '/api/chat/stream': (_url, init) => {
         capturedBody = init?.body ? JSON.parse(init.body as string) : null;
@@ -237,7 +238,7 @@ describe('ChatPane inline attachments', () => {
         role: 'user',
         content: 'look at this',
         attachments: [
-          { file: {} as any, preview: 'data:image/png;base64,AAA', type: 'image', media_type: 'image/png', data: 'AAA', filename: 'inline.png' },
+          { file: {} as File, preview: 'data:image/png;base64,AAA', type: 'image', media_type: 'image/png', data: 'AAA', filename: 'inline.png' },
         ],
       },
     ];
@@ -261,7 +262,7 @@ describe('ChatPane inline attachments', () => {
         role: 'user',
         content: 'a doc',
         attachments: [
-          { file: {} as any, preview: '', type: 'document', media_type: 'application/pdf', data: 'AAA', filename: 'inline.pdf' },
+          { file: {} as File, preview: '', type: 'document', media_type: 'application/pdf', data: 'AAA', filename: 'inline.pdf' },
         ],
       },
     ];

@@ -388,7 +388,7 @@ describe('PlaygroundPage', () => {
       { name: 'alt-collection', doc_count: 2, chunk_count: 10, embedding_models: [] },
     ]);
     const user = userEvent.setup();
-    let capturedBody: any = null;
+    let capturedBody: Record<string, unknown> | null = null;
 
     render(<PlaygroundPage />);
     await waitFor(() => {

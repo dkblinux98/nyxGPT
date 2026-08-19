@@ -3,13 +3,14 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import Home from '@/app/page';
 import { ThemeProvider } from '@/contexts/ThemeContext';
+import type { VirtuosoMockProps } from '../mocks/virtuoso';
 
 // Home renders the session sidebar via next/dynamic(VirtualizedSessionList),
 // which wraps react-virtuoso. Virtuoso relies on real layout/ResizeObserver
 // measurements it can't get in happy-dom, so without this mock it renders
 // zero items and every session-lookup query below times out.
 vi.mock('react-virtuoso', () => ({
-  Virtuoso: ({ totalCount, itemContent, style, ...props }: any) => (
+  Virtuoso: ({ totalCount, itemContent, style, ...props }: VirtuosoMockProps) => (
     <div style={style} aria-label={props['aria-label']} role={props.role}>
       {Array.from({ length: totalCount }).map((_, index) => (
         <div key={index}>{itemContent(index)}</div>
@@ -51,6 +52,15 @@ vi.mock('@/contexts/ToastContext', () => ({
   useToast: () => mockToastContext,
   ToastProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
+
+// Shape of the canned responses `mockFetchResponses` is seeded with, keyed
+// by "METHOD /path". Only `sessions` is read back (the live-state tracking
+// below replays it); everything else is handed to the component as-is.
+type SessionRecord = Record<string, unknown>;
+type MockResponse = {
+  sessions?: SessionRecord[];
+  [key: string]: unknown;
+};
 
 describe('Optimistic Updates Logic', () => {
   beforeEach(() => {
@@ -327,7 +337,7 @@ describe('Optimistic Updates Logic', () => {
 
   describe('Edge Cases', () => {
     it('should handle empty session list', () => {
-      const sessions: any[] = [];
+      const sessions: unknown[] = [];
       const optimisticSessions = sessions.filter((s) => s.name !== 'nonexistent');
 
       expect(optimisticSessions.length).toBe(0);
@@ -395,16 +405,16 @@ describe('Optimistic Updates Integration Tests', () => {
     },
   ];
 
-  const mockFetchResponses = (responses: Record<string, any>) => {
+  const mockFetchResponses = (responses: Record<string, MockResponse>) => {
     // Track live session state so that a revalidate's GET /api/sessions
     // reflects prior mutations (pin/unpin/delete/rename) instead of always
     // replaying the static list the test seeded — otherwise revalidate
     // silently clobbers the optimistic update it's meant to confirm.
     const seed = responses['GET /api/sessions'];
-    let liveSessions: any[] | null =
-      seed && Array.isArray(seed.sessions) ? seed.sessions.map((s: any) => ({ ...s })) : null;
+    let liveSessions: SessionRecord[] | null =
+      seed && Array.isArray(seed.sessions) ? seed.sessions.map((s) => ({ ...s })) : null;
 
-    (global.fetch as any).mockImplementation((url: string, options?: any) => {
+    vi.mocked(global.fetch).mockImplementation((url: string, options?: RequestInit) => {
       const method = options?.method || 'GET';
       const key = `${method} ${url}`;
 
@@ -483,8 +493,8 @@ describe('Optimistic Updates Integration Tests', () => {
     // so this mock isn't clobbered by MSW's real fetch interceptor.
     global.fetch = vi.fn();
     vi.clearAllMocks();
-    (global.confirm as any).mockReturnValue(true);
-    (global.prompt as any).mockReturnValue('New Title');
+    vi.mocked(global.confirm).mockReturnValue(true);
+    vi.mocked(global.prompt).mockReturnValue('New Title');
   });
 
   describe('Pin Toggle Integration', () => {
@@ -549,7 +559,7 @@ describe('Optimistic Updates Integration Tests', () => {
 
     it('should prevent concurrent pin operations on same session', async () => {
       let pinCallCount = 0;
-      (global.fetch as any).mockImplementation((url: string) => {
+      vi.mocked(global.fetch).mockImplementation((url: string) => {
         if (url.includes('/pin')) {
           pinCallCount++;
           return new Promise((resolve) => {
@@ -690,7 +700,7 @@ describe('Optimistic Updates Integration Tests', () => {
         '/rename': { success: true, new_name: 'session1' },
       });
 
-      (global.prompt as any).mockReturnValue('Updated Title');
+      vi.mocked(global.prompt).mockReturnValue('Updated Title');
 
       renderHome();
 
@@ -718,7 +728,7 @@ describe('Optimistic Updates Integration Tests', () => {
         '/rename': { error: 'Failed to rename session', status: 500 },
       });
 
-      (global.prompt as any).mockReturnValue('Failed Title');
+      vi.mocked(global.prompt).mockReturnValue('Failed Title');
 
       renderHome();
 
@@ -746,7 +756,7 @@ describe('Optimistic Updates Integration Tests', () => {
       // The rename endpoint responds slowly, keeping the first rename
       // "pending" long enough for the second, near-simultaneous rename to
       // land while it's still in flight and get blocked.
-      (global.fetch as any).mockImplementation((url: string) => {
+      vi.mocked(global.fetch).mockImplementation((url: string) => {
         if (url.includes('/rename')) {
           return new Promise((resolve) => setTimeout(() => resolve({
             ok: true,
@@ -765,7 +775,7 @@ describe('Optimistic Updates Integration Tests', () => {
       // prompt's return value matches the first rename's already-applied
       // optimistic title and renameSession() no-ops before ever reaching
       // the "operation already in progress" check.
-      (global.prompt as any)
+      vi.mocked(global.prompt)
         .mockReturnValueOnce('New Title 1')
         .mockReturnValueOnce('New Title 2');
 
@@ -808,7 +818,7 @@ describe('Optimistic Updates Integration Tests', () => {
       ];
 
       let callCount = 0;
-      (global.fetch as any).mockImplementation((url: string) => {
+      vi.mocked(global.fetch).mockImplementation((url: string) => {
         callCount++;
         // First call: initial load
         // Second call: operation
@@ -999,7 +1009,7 @@ describe('Optimistic Updates Integration Tests', () => {
         '/rename': { success: true, new_name: 'new-title' },
       });
 
-      (global.prompt as any).mockReturnValue('New Title');
+      vi.mocked(global.prompt).mockReturnValue('New Title');
 
       renderHome();
 
@@ -1025,7 +1035,7 @@ describe('Optimistic Updates Integration Tests', () => {
         '/rename': { error: 'Rename failed', status: 500 },
       });
 
-      (global.prompt as any).mockReturnValue('New Title');
+      vi.mocked(global.prompt).mockReturnValue('New Title');
 
       renderHome();
 
