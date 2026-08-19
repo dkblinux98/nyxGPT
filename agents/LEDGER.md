@@ -658,6 +658,38 @@ rather than mechanism, and nothing can enforce them.
   transcript is assembled from the turn files rather than read back from Slack,
   so the record survives both an outage and Slack's retention setting.
 
+- **D-027** · 2026-08-19 · developer agent (#3858) — **A subprocess reachable
+  from an HTTP handler is bounded, and an expired bound is a result rather
+  than an exception.** The vocabulary is one module,
+  `src/nyxgpt/subprocess_bounds.py`, which also carries the enumeration of all
+  18 `subprocess.run`/`Popen` call sites in `src/nyxgpt/` and which 10 of them
+  a handler can reach — the list is the deliverable, because bounding two
+  helpers while a third stays unbounded rebuilds the same trap. A timeout
+  comes back as returncode 124 (`timed_out()`), so a status probe degrades
+  ("… health check timed out after 5s") instead of 500ing. Two bounds are
+  applied deliberately where the tool offers one: `kubectl --request-timeout`
+  *and* Python's `timeout=` — **except from inside a Pod, where the kubectl
+  flag is withheld**: it lands in client-go's config overrides, which makes
+  kubectl skip its service-account fallback and dial `http://localhost:8080`.
+  The Python bound is the half that carries the safety property and applies
+  unconditionally; the reasoning and its cluster evidence live in
+  `bounded_argv`'s docstring. **Handlers stay plain `def`** — the considered
+  alternative, `async def` + `run_in_threadpool`, moves the same blocking call
+  onto the same threadpool and buys nothing, while making a future forgotten
+  `await` block the event loop instead of one worker; bounding the subprocess
+  is what actually releases the worker. `canary.status()` also **skips** the
+  per-track kubectl reads outside Kubernetes mode (the #3468 guard
+  `ops.infra_status()` already had), which removes the calls on a native
+  install rather than merely bounding them, and `canary.current_mode()` now
+  answers **"unknown"** when its probe times out rather than asserting
+  "native" about a substrate nothing could see.
+  (Filed as `D-023`, renumbered to `D-025` and then to `D-027` as successive
+  merges of `v3.0.0` landed #3829, #3824 and #3860 first. The number came from
+  `python3 scripts/agents/lib/ledger_ids.py next D --base origin/v3.0.0` — run,
+  not eyeballed. IDs are never reused.)
+  Source: #3858; `src/nyxgpt/subprocess_bounds.py` (enumeration + rationale),
+  `tests/unit/test_subprocess_bounds.py`.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
@@ -745,7 +777,14 @@ rather than mechanism, and nothing can enforce them.
   Needs: DevTools → Application → Service Workers on a reproducing machine.
   The owner's machine was torn down before this was captured, so it must be
   reproduced from scratch.
-  Blocks: #3857 — one branch of its fix is conditional on the answer.
+  Blocks: nothing. #3857 shipped **both** branches unconditionally rather than
+  waiting on the answer — a bounded chunk timeout with an error boundary, a
+  build-change service-worker cache drop, and a document-inline hydration
+  watchdog that surfaces the failure even when no client JS runs at all. The
+  question stays open because the trigger is still unidentified; the in-product
+  Details panel ("a service worker is controlling this page" / "no service
+  worker is controlling this page") now answers it at the next occurrence
+  without DevTools.
 
 - **Q-004** · 2026-08-18 · owner acceptance (#3853) — What produced
   `Unknown system error -11` opening

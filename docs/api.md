@@ -1161,17 +1161,35 @@ Deployment to; both are `0` when no rollout is in progress, since the pool
 only exists for the duration of one (#3833).
 
 `stable`/`canary.state` is one of `"not_deployed"` (cluster unreachable, the
-Deployment doesn't exist yet, or it's at 0 desired replicas -- neutral, not
-an alarm), `"unhealthy"` (Pods not all ready), `"healthy"`, or `"error"` (a
-genuine kubectl failure against a reachable cluster, distinguishable from
-"not deployed" -- see #3409). `available` is `false` when kubectl itself
-isn't reachable (e.g. under docker-compose, which has no cluster to reach —
-see [docker-compose.md](docker-compose.md#canary-deployment)); in that case
+Deployment doesn't exist yet, it's at 0 desired replicas, or the deployment
+mode isn't Kubernetes -- neutral, not an alarm), `"unhealthy"` (Pods not all
+ready), `"healthy"`, or `"error"` (a genuine kubectl failure against a
+reachable cluster, distinguishable from "not deployed" -- see #3409). The
+`"error"` state also covers a probe that **timed out** ("… health check timed
+out after 5s -- the cluster did not answer", #3858): a cluster that
+blackholes rather than refuses is a real fault worth showing, and every
+kubectl read behind this endpoint is bounded so a slow one degrades the
+reading instead of hanging the request or returning `500`.
+
+Outside Kubernetes mode the per-track reads are **not made at all** — the
+tracks report the mode message as their reason, so a native or Compose
+install dials no cluster on each poll (#3858, matching the guard
+`/infra/status` has applied since #3468).
+
+`available` is `false` when kubectl itself isn't reachable (e.g. under
+docker-compose, which has no cluster to reach — see
+[docker-compose.md](docker-compose.md#canary-deployment)); in that case
 `unavailable_reason` explains why. `mode` is the currently detected
-deployment mode (`"native"`/`"terraform"`/`"kubernetes"`/`"compose"`);
+deployment mode, one of
+`"native"`/`"terraform"`/`"kubernetes"`/`"compose"`/`"unknown"`;
 `mode_supported` is `false` outside Kubernetes mode, with `mode_message`
-explaining which mode provides canary — this is a positive mode detection,
-not an inference from a failed kubectl call.
+explaining which mode provides canary. The four named modes are a positive
+detection from the Compose marker, the Terraform stack state and a populated
+Kubernetes namespace — never an inference from a *failed* kubectl call.
+`"unknown"` is the one case where no mode could be established: the
+Kubernetes probe timed out, and `mode_message` says so rather than claiming
+`"native"`, which would assert something about the substrate that nothing
+managed to check (#3858).
 
 `metrics` is the **canary track's** own vitals -- read from the Pods
 labelled `track=canary`, never from the counters of the process answering
@@ -1183,7 +1201,12 @@ Pods, no readable `/metrics`, a component that exports none, no cluster).
 numbers came from. `/health` and `/metrics` requests are excluded from the
 counts so kubelet probes and Prometheus scrapes cannot read as canary
 traffic. `stable_metrics` is only measured while a rollout is active --
-otherwise it reports `attributable: false` with that as the reason. See
+otherwise it reports `attributable: false` with that as the reason. Outside
+Kubernetes mode neither track is measured at all: both report
+`attributable: false` naming the mode, for the same reason the per-track
+health reads are skipped there (#3858) -- there are no Pods to attribute
+traffic to, and dialing for them would spend a request thread on a cluster
+this deployment does not use. See
 [kubernetes.md](kubernetes.md#metrics-source-the-canary-tracks-own-pods-3829).
 
 ### `POST /api/v1/canary/deploy`

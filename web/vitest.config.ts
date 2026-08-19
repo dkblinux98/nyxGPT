@@ -33,6 +33,17 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      // Next.js resolves `next/dynamic` differently per router: everything
+      // under app/ is aliased to the App Router implementation
+      // (`next/dist/api/app-dynamic`, see Next's create-compiler-aliases.js),
+      // which is React.lazy + Suspense. The bare `next/dynamic` entry point
+      // is the Pages Router loadable, and the two disagree on the case that
+      // matters here: the Pages one catches a rejected chunk import and keeps
+      // rendering its `loading` fallback, while the App Router one lets the
+      // rejection reach an error boundary. This app is App Router only, so
+      // without this alias the tests exercise semantics the product never
+      // runs -- which is how #3857's permanent placeholders stayed untested.
+      'next/dynamic': 'next/dist/api/app-dynamic',
     },
   },
 });

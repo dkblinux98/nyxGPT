@@ -85,6 +85,12 @@ CHURN_WORKFLOWS = [
     "claude-code-review.yml",
     "developer_huddle_position.yml",
     "scrummaster_huddle_mediation.yml",
+    # #3919's grooming workflow. Two branches added it independently, the
+    # de-duplication of that (#3927) removed both copies, and `collect()`
+    # iterates this list directly -- so every grooming round was dropped from
+    # the retrospective rather than double-counted, until #3928 restored it.
+    # Exactly one entry; `test_no_claude_invoking_workflow_is_missing_from_the_list`
+    # and `test_listed_workflows_are_not_stale_duplicates` pin both directions.
     "scrummaster_groom_sprint.yml",
     "claude-md-binding-canary.yml",
 ]
@@ -93,9 +99,11 @@ CHURN_WORKFLOWS = [
 # dump_spend.py's "name contains claude": shell steps like "Check Claude
 # progress completion" and "Read Claude analysis result" mention Claude but
 # spend no tokens, and counting them would invent rounds. The huddle steps
-# ("Post developer position", "Run mediation") and the sprint-grooming step
-# ("Groom the draft ...") do not say "Claude" at all, hence the explicit
-# alternatives rather than a name-contains rule.
+# ("Post developer position", "Run mediation") do not say "Claude" at all,
+# hence the explicit alternatives rather than a name-contains rule -- and
+# neither does the sprint-grooming step ("Groom the draft (the judgment the
+# seed cannot make)", #3919), whose tokens were invisible to the retrospective
+# until it was named here.
 CLAUDE_STEP_RE = re.compile(
     r"^\s*(run claude|claude fix issues|deep analysis with claude"
     r"|post developer position|run mediation|groom the draft)",
