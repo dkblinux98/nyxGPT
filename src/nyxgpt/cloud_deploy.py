@@ -58,6 +58,7 @@ from typing import Any
 
 from nyxgpt import cloud_infra
 from nyxgpt.cloud import CloudCommandError
+from nyxgpt.config import VALID_SESSION_BACKENDS
 
 # The same `~/.nyxGPT/cloud` directory `cloud_infra` owns -- one place for
 # everything about a cloud deployment. `cloud_infra.CLOUD_STATE_FILE` (the
@@ -101,6 +102,19 @@ _VERSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 # Amazon Linux 2023's default login user -- the AMI the compute module
 # resolves by default (terraform/aws/modules/compute/main.tf).
 DEFAULT_SSH_USER = "ec2-user"
+
+# The session backend a cloud deploy selects unless told otherwise (#3865).
+#
+# `cassandra`, not the `file` back-compat default `example.config.ini` ships:
+# the whole point of the DB backend (#3590) is that every mode pointed at the
+# same Cassandra sees one session list, and the Kubernetes overlay already
+# asserts that declaratively (k8s/configmap.yaml). A cloud instance that
+# quietly ran the file backend broke the guarantee where it matters most --
+# chats saved as JSON on ephemeral instance disk, invisible to every other
+# mode, and lost with the instance. `ops install` provisions
+# `nyxgpt-cassandra` on the instance as a core service either way, so this
+# needs no infrastructure the deploy was not already creating.
+DEFAULT_SESSION_BACKEND = "cassandra"
 
 # Core services, always tunneled. Ports match docker-compose.yml and the
 # native systemd units; both bind 127.0.0.1 on the instance.
@@ -173,6 +187,7 @@ class DeployPlan:
     open_tunnel: bool = True
     health_timeout: float = 900.0
     ssh_timeout: float = 300.0
+    session_backend: str = DEFAULT_SESSION_BACKEND
 
     def to_dict(self) -> dict[str, Any]:
         """Serializable form, recorded in `deploy.json`."""
@@ -184,6 +199,7 @@ class DeployPlan:
             "open_tunnel": self.open_tunnel,
             "health_timeout": self.health_timeout,
             "ssh_timeout": self.ssh_timeout,
+            "session_backend": self.session_backend,
         }
 
 
@@ -342,9 +358,13 @@ def resolve_plan(args: argparse.Namespace) -> DeployPlan:
     """Merge flags over the last deploy's recorded choices.
 
     The choices that carry over are the ones `deploy.json` records: the
-    release, the SSH user and the identity file. Everything else (profiles,
-    timeouts, whether to open a tunnel) is per-run and comes from the flags
-    or their defaults.
+    release, the SSH user, the identity file and the session backend.
+    Everything else (profiles, timeouts, whether to open a tunnel) is per-run
+    and comes from the flags or their defaults.
+
+    The session backend carries over for the same reason the SSH user does:
+    a re-deploy of an instance whose sessions live in Cassandra must not
+    silently move them back to files because the operator omitted a flag.
     """
     previous = load_deploy_state()
     version = str(
@@ -370,6 +390,18 @@ def resolve_plan(args: argparse.Namespace) -> DeployPlan:
         from nyxgpt import ops
 
         profiles = list(ops.OBSERVABILITY_PROFILES)
+
+    backend = str(
+        getattr(args, "session_backend", None)
+        or previous.get("session_backend")
+        or DEFAULT_SESSION_BACKEND
+    )
+    if backend not in VALID_SESSION_BACKENDS:
+        raise CloudCommandError(
+            f"{backend!r} is not a valid session backend. "
+            f"Choose one of: {', '.join(VALID_SESSION_BACKENDS)} "
+            "(see docs/session-storage.md)."
+        )
     return DeployPlan(
         version=version,
         profiles=profiles,
@@ -382,6 +414,7 @@ def resolve_plan(args: argparse.Namespace) -> DeployPlan:
         open_tunnel=not getattr(args, "no_tunnel", False),
         health_timeout=float(getattr(args, "health_timeout", None) or 900.0),
         ssh_timeout=float(getattr(args, "ssh_timeout", None) or 300.0),
+        session_backend=backend,
     )
 
 
@@ -462,6 +495,7 @@ PROVISION_SCRIPT_TEMPLATE = """set -euo pipefail
 
 NYXGPT_VERSION="__VERSION__"
 NYXGPT_PROFILES="__PROFILES__"
+NYXGPT_SESSION_BACKEND_CHOICE="__SESSION_BACKEND__"
 
 echo "==> nyxGPT ${NYXGPT_VERSION}: provisioning $(hostname) from published artifacts"
 
@@ -605,6 +639,24 @@ if [ ! -f "$HOME/.nyxGPT/config.ini" ]; then
   chmod 600 "$HOME/.nyxGPT/config.ini"
 fi
 
+# --- Session storage backend (#3865) -----------------------------------
+# `example.config.ini` ships the back-compat `session_backend = file`, which
+# on a cloud instance means chats are JSON files on ephemeral instance disk:
+# invisible to every other deployment mode pointed at the same Cassandra, and
+# gone with the instance. Nothing in this path used to change it, so the
+# cross-mode session guarantee (docs/session-storage.md, #3590) silently did
+# not hold for cloud deploys and the only fix was to SSH in and hand-edit
+# config.ini -- exactly the raw-operations flow the wrapped-command
+# requirement forbids. Set it here instead, before `ops install`, so the
+# derived containerized config (`_generate_compose_config`) and the API's
+# first start both see the operator's choice.
+#
+# Idempotent (`ops session-backend` writes only on a change), so a re-deploy
+# is a no-op here, and it never overrides an operator who deployed with
+# `--session-backend file`: the choice is recorded in deploy.json and
+# carried forward by `resolve_plan`.
+"$NYXGPT" ops session-backend "$NYXGPT_SESSION_BACKEND_CHOICE"
+
 # --- Bring the stack up ------------------------------------------------
 # Services bind 127.0.0.1 (P6-1 loopback default); nothing is published to a
 # non-loopback address, which is what makes the SSH tunnel the only path in.
@@ -646,8 +698,10 @@ def render_provision_script(plan: DeployPlan) -> str:
     copy) and the artifact version pin are unit-testable without an EC2
     instance.
     """
-    return PROVISION_SCRIPT_TEMPLATE.replace("__VERSION__", plan.version).replace(
-        "__PROFILES__", ",".join(plan.profiles)
+    return (
+        PROVISION_SCRIPT_TEMPLATE.replace("__VERSION__", plan.version)
+        .replace("__PROFILES__", ",".join(plan.profiles))
+        .replace("__SESSION_BACKEND__", plan.session_backend)
     )
 
 
@@ -980,6 +1034,10 @@ def deploy(args: argparse.Namespace) -> dict[str, Any]:
         # pass --identity-file again, the same way --version and --ssh-user
         # carry over.
         "identity_file": plan.identity_file,
+        # Same carry-forward reason (#3865): a re-deploy must not silently
+        # move an instance's sessions back to files because the flag was
+        # omitted -- `resolve_plan` reads this back.
+        "session_backend": plan.session_backend,
         "host": target.host,
         "instance_id": target.instance_id,
         "region": target.region,
@@ -1117,6 +1175,12 @@ REMOTE_OPS_COMMANDS: dict[str, str] = {
     "status": "ops status",
     "doctor": "ops doctor",
     "self-heal": "self-heal status",
+    # #3865. A read by construction: `ops session-backend` with no backend
+    # argument reports the value in force and writes nothing. It answers the
+    # question the deploy record cannot for an instance deployed before the
+    # flag existed -- what the machine is *actually* running, rather than
+    # what was last requested of it.
+    "session-backend": "ops session-backend",
 }
 
 
@@ -1279,6 +1343,13 @@ def deploy_status(probe_health: bool = False) -> dict[str, Any]:
         "instance_type": str(infra.get("instance_type") or ""),
         "region": str(record.get("region") or infra.get("region") or ""),
         "profiles": profiles,
+        # Where this deployment's chat sessions live (#3865). Observable
+        # rather than operable, per the Definition of Done: the dashboard
+        # reports it and names the `nyxgpt cloud deploy --session-backend`
+        # command that changes it, and never drives the change itself.
+        # Empty when nothing was recorded -- a deploy from before #3865, or
+        # no deploy at all -- which is not the same claim as "file".
+        "session_backend": str(record.get("session_backend") or ""),
         "connection": connection_status(on_instance),
         "infra": infra,
         "tunnel": tunnel,
@@ -1304,6 +1375,18 @@ def _print_deploy_summary(result: dict[str, Any]) -> None:
     target = result["target"]
     plan = result["plan"]
     print(f"\nnyxGPT {plan['version']} deployed to {target['instance_id'] or target['host']}.")
+    backend = str(plan.get("session_backend") or DEFAULT_SESSION_BACKEND)
+    if backend == "cassandra":
+        print(
+            "Chat sessions: the instance's Cassandra (`nyxgpt.chat_sessions`) -- shared with "
+            "every mode pointed at the same Cassandra."
+        )
+    else:
+        print(
+            "Chat sessions: JSON files on the instance's own disk -- not shared with any "
+            "other deployment mode, and lost with the instance. Switch with "
+            "`nyxgpt cloud deploy --session-backend cassandra`."
+        )
     if result["tunnel"].get("running"):
         print("\nThe access tunnel is open. Reachable now:")
         _print_urls(result["urls"])

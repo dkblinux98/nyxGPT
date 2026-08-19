@@ -499,7 +499,7 @@ describe('useSessionCache', () => {
     });
 
     // Apply optimistic update
-    let revalidate: (() => Promise<any>) | undefined;
+    let revalidate: (() => Promise<unknown>) | undefined;
     await act(async () => {
       const mutation = result.current.mutate((sessions) =>
         sessions.map((s) =>

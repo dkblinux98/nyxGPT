@@ -30,8 +30,11 @@ import sys
 from pathlib import Path
 
 from nyxgpt.cloud import CloudCommandError
+from nyxgpt.cloud_deploy import DEFAULT_SESSION_BACKEND
+from nyxgpt.config import VALID_SESSION_BACKENDS
 
 VERSION_PLACEHOLDER = "__NYXGPT_VERSION__"
+SESSION_BACKEND_PLACEHOLDER = "__NYXGPT_SESSION_BACKEND__"
 
 # One entry per supported target OS family: the `--os` value, the packaged
 # template filename (see scripts/cloud/, symlinked into
@@ -43,6 +46,31 @@ _TEMPLATE_FILENAMES: dict[str, str] = {
 }
 
 OS_FAMILIES: tuple[str, ...] = tuple(_TEMPLATE_FILENAMES)
+
+# Which session backend each target OS gets when `--session-backend` is not
+# given (#3865). Not one constant, because the two templates do not provision
+# the same stack:
+#
+#   linux  `nyxgpt ops install` creates the `nyxgpt-cassandra` container as a
+#          core service, so `cassandra` is available on the instance the
+#          moment the bootstrap finishes. Default it, matching what
+#          k8s/configmap.yaml asserts and what `nyxgpt cloud deploy` does --
+#          every mode pointed at the same Cassandra then shares one session
+#          list.
+#
+#   macos  The EC2 Mac template installs the two Homebrew formulas and starts
+#          them, and deliberately does NOT run `ops install`'s macOS path (see
+#          that template's header). Nothing provisions a Cassandra, so
+#          defaulting to `cassandra` there would point the API at a database
+#          that is not on the machine and break session storage outright.
+#          File-backed by default and documented as such
+#          (docs/session-storage.md); `--session-backend cassandra` still
+#          works for an operator who points `[rag] cassandra_hosts` at a
+#          Cassandra they run elsewhere.
+DEFAULT_SESSION_BACKEND_BY_OS: dict[str, str] = {
+    "linux": DEFAULT_SESSION_BACKEND,
+    "macos": "file",
+}
 
 # Support matrix: what's actually validated (docs/cloud.md renders this same
 # data as a table, and tests/unit/test_cloud_provision.py asserts the two
@@ -108,7 +136,9 @@ def packaged_cloud_file(filename: str) -> Path:
     return _template_root() / filename
 
 
-def render_user_data(os_family: str, version: str | None = None) -> str:
+def render_user_data(
+    os_family: str, version: str | None = None, session_backend: str | None = None
+) -> str:
     """Render the EC2 user-data bootstrap script for `os_family`.
 
     `version`, when given, pins the Linux template's `pip install
@@ -116,22 +146,46 @@ def render_user_data(os_family: str, version: str | None = None) -> str:
     parity (Homebrew tracks the tap's current formula, not a pinned
     release -- see that template's header comment). Omit `version` (or pass
     `None`) to install whatever's latest.
+
+    `session_backend` selects `[nyxgpt] session_backend` on the instance
+    (#3865); omitted, it takes the target OS's default from
+    `DEFAULT_SESSION_BACKEND_BY_OS`. Both templates seed config.ini from
+    `example.config.ini`, which ships the back-compat `file` value -- so
+    without this the instance silently stored chats as JSON on its own disk,
+    invisible to every other mode pointed at the same Cassandra, and the only
+    way to change it was an SSH session and a hand edit.
     """
     if os_family not in _TEMPLATE_FILENAMES:
         raise CloudCommandError(
             f"Unsupported --os {os_family!r} -- choose one of: {', '.join(OS_FAMILIES)}"
         )
+    backend = (
+        (session_backend or DEFAULT_SESSION_BACKEND_BY_OS.get(os_family, DEFAULT_SESSION_BACKEND))
+        .strip()
+        .lower()
+    )
+    if backend not in VALID_SESSION_BACKENDS:
+        raise CloudCommandError(
+            f"Unsupported --session-backend {session_backend!r} -- choose one of: "
+            f"{', '.join(VALID_SESSION_BACKENDS)} (see docs/session-storage.md)"
+        )
     template_path = _template_root() / _TEMPLATE_FILENAMES[os_family]
     if not template_path.is_file():
         raise CloudCommandError(f"Missing packaged user-data template: {template_path}")
     rendered = template_path.read_text(encoding="utf-8")
-    return rendered.replace(VERSION_PLACEHOLDER, version or "")
+    return rendered.replace(VERSION_PLACEHOLDER, version or "").replace(
+        SESSION_BACKEND_PLACEHOLDER, backend
+    )
 
 
 def user_data(args: argparse.Namespace) -> int:
     """`nyxgpt cloud user-data` entry point: print (or write) the rendered bootstrap script."""
     try:
-        rendered = render_user_data(args.os, getattr(args, "version", None))
+        rendered = render_user_data(
+            args.os,
+            getattr(args, "version", None),
+            getattr(args, "session_backend", None),
+        )
     except CloudCommandError as exc:
         print(f"nyxgpt cloud user-data: {exc}", file=sys.stderr)
         return 1

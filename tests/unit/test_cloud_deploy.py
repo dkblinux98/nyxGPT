@@ -1464,9 +1464,15 @@ def test_deploy_status_flag_still_emits_json_and_names_its_replacement(monkeypat
 
 
 def test_remote_ops_inspections_are_read_only_wrapped_nyxgpt_commands():
+    # `session-backend` is a read for the same reason `status` is: `nyxgpt ops
+    # session-backend` with no backend argument reports the value in force and
+    # writes nothing. It is in this allowlist *without* an argument, which is
+    # what keeps it a read -- appending one here would make it a write.
     for remote in cloud_deploy.REMOTE_OPS_COMMANDS.values():
-        assert remote.split()[-1] in ("status", "doctor")
+        assert remote.split()[-1] in ("status", "doctor", "session-backend")
         assert "docker" not in remote
+
+    assert cloud_deploy.REMOTE_OPS_COMMANDS["session-backend"] == "ops session-backend"
 
 
 def test_remote_ops_runs_the_instances_own_command_over_ssh(monkeypatch):
@@ -1563,3 +1569,88 @@ def test_ops_command_defaults_to_the_container_state_inspection(
     cloud_deploy.deploy_command(_args(cloud_cmd="ops", inspection=None))
 
     assert seen["command"].endswith("ops status")
+
+
+# --- Session storage backend (#3865) --------------------------------------
+
+
+def test_a_deploy_defaults_to_the_cassandra_session_backend():
+    """The gap this closes: nothing in the cloud path used to set it at all.
+
+    The instance kept `example.config.ini`'s back-compat `file` value, so
+    chats became JSON on ephemeral instance disk that no other deployment
+    mode pointed at the same Cassandra could see.
+    """
+    plan = cloud_deploy.resolve_plan(_args(version="3.0.0"))
+
+    assert plan.session_backend == "cassandra"
+
+
+def test_the_provision_script_applies_the_backend_with_the_wrapped_command():
+    plan = cloud_deploy.resolve_plan(_args(version="3.0.0"))
+
+    script = cloud_deploy.render_provision_script(plan)
+
+    assert "__SESSION_BACKEND__" not in script
+    assert 'NYXGPT_SESSION_BACKEND_CHOICE="cassandra"' in script
+    assert '"$NYXGPT" ops session-backend "$NYXGPT_SESSION_BACKEND_CHOICE"' in script
+    # Before `ops install`: `_generate_compose_config` derives the
+    # containerized config from the native one, so a backend set afterwards
+    # would leave the derived file on the old value until the next reconcile.
+    assert script.index("ops session-backend") < script.index("run_nyxgpt ops install")
+
+
+def test_file_backed_is_available_for_a_deliberately_single_instance_deploy():
+    plan = cloud_deploy.resolve_plan(_args(version="3.0.0", session_backend="file"))
+
+    assert plan.session_backend == "file"
+    assert 'NYXGPT_SESSION_BACKEND_CHOICE="file"' in cloud_deploy.render_provision_script(plan)
+
+
+def test_an_unknown_backend_is_refused_before_anything_is_provisioned():
+    with pytest.raises(CloudCommandError, match="session backend"):
+        cloud_deploy.resolve_plan(_args(version="3.0.0", session_backend="postgres"))
+
+
+def test_the_backend_carries_forward_from_the_last_deploy():
+    """A re-deploy must not silently move an instance's sessions back to files.
+
+    Same carry-forward as --version/--ssh-user/--identity-file: omitting the
+    flag means "as before", not "back to the default".
+    """
+    cloud_deploy._write_json(
+        cloud_deploy.DEPLOY_STATE_FILE, {"version": "3.0.0", "session_backend": "file"}
+    )
+
+    plan = cloud_deploy.resolve_plan(_args(version=None))
+
+    assert plan.session_backend == "file"
+
+
+def test_an_explicit_flag_beats_the_recorded_choice():
+    cloud_deploy._write_json(
+        cloud_deploy.DEPLOY_STATE_FILE, {"version": "3.0.0", "session_backend": "file"}
+    )
+
+    plan = cloud_deploy.resolve_plan(_args(version=None, session_backend="cassandra"))
+
+    assert plan.session_backend == "cassandra"
+
+
+def test_deploy_status_reports_where_this_deployments_sessions_live():
+    """Observable, not operable (Definition of Done): the dashboard reads this."""
+    cloud_deploy._write_json(
+        cloud_deploy.DEPLOY_STATE_FILE,
+        {"version": "3.0.0", "host": "1.2.3.4", "session_backend": "cassandra"},
+    )
+
+    assert cloud_deploy.deploy_status()["session_backend"] == "cassandra"
+
+
+def test_a_pre_flag_deploy_record_reports_nothing_rather_than_guessing_file():
+    """ "Not recorded" and "file" are different claims, and only one is true here."""
+    cloud_deploy._write_json(
+        cloud_deploy.DEPLOY_STATE_FILE, {"version": "3.0.0", "host": "1.2.3.4"}
+    )
+
+    assert cloud_deploy.deploy_status()["session_backend"] == ""

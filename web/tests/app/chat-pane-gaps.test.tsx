@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ChatPane, { VirtuosoErrorBoundary } from '@/app/components/ChatPane';
+import type { VirtuosoMockProps } from '../mocks/virtuoso';
 
 /**
  * Closes the last reachable coverage gaps in ChatPane.tsx for the #3266 gate:
@@ -12,11 +13,11 @@ import ChatPane, { VirtuosoErrorBoundary } from '@/app/components/ChatPane';
 
 let capturedStartReached: (() => void) | undefined;
 vi.mock('react-virtuoso', () => ({
-  Virtuoso: ({ data, itemContent, style, startReached }: any) => {
+  Virtuoso: ({ data, itemContent, style, startReached }: VirtuosoMockProps) => {
     capturedStartReached = startReached;
     return (
       <div style={style}>
-        {(data || []).map((item: any, index: number) => (
+        {(data || []).map((item: unknown, index: number) => (
           <div key={index}>{itemContent(index, item)}</div>
         ))}
       </div>
@@ -78,11 +79,11 @@ function hangingResponse() {
   };
 }
 
-type FetchOverride = (url: string, init?: RequestInit) => any;
+type FetchOverride = (url: string, init?: RequestInit) => unknown;
 
 function makeFetchMock(
   streamHandler: FetchOverride | undefined,
-  seedMessages: any[],
+  seedMessages: unknown[],
   extra: Record<string, FetchOverride> = {},
   total?: number
 ) {

@@ -2,27 +2,39 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ChatPane from '@/app/components/ChatPane';
+import type { VirtuosoMockProps } from '../mocks/virtuoso';
 
 // A Virtuoso mock that can be told to throw during render (to exercise
 // VirtuosoErrorBoundary), and that exposes followOutput/atBottomStateChange
 // so those inline callbacks can be invoked directly from tests.
 const throwFlag = vi.hoisted(() => ({ value: false, message: '' }));
 
+// The Virtuoso stub parks `followOutput`'s return value on `window` so an
+// assertion can read what the component asked for, and one test installs a
+// `window.telemetry` double. Naming that surface here is what keeps both out
+// of `any`: `declare global` would leak the properties into every file's
+// `Window`, which is worse than a local cast for a two-property test hook.
+type TestWindow = Window & {
+  __followOutputResult?: unknown;
+  telemetry?: { captureException: (e: Error, ctx: Record<string, unknown>) => void };
+};
+const testWindow = () => window as TestWindow;
+
 vi.mock('react-virtuoso', () => ({
-  Virtuoso: ({ data, itemContent, style, followOutput, atBottomStateChange, startReached, components }: any) => {
+  Virtuoso: ({ data, itemContent, style, followOutput, atBottomStateChange, startReached, components }: VirtuosoMockProps) => {
     if (throwFlag.value) {
       throw new Error(throwFlag.message);
     }
     return (
       <div style={style} data-testid="virtuoso-mock">
         {components?.Header ? <components.Header /> : null}
-        <button data-testid="call-follow-output" onClick={() => (window as any).__followOutputResult = followOutput?.()}>
+        <button data-testid="call-follow-output" onClick={() => testWindow().__followOutputResult = followOutput?.()}>
           call-follow-output
         </button>
         <button data-testid="call-at-bottom-true" onClick={() => atBottomStateChange?.(true)}>at-bottom-true</button>
         <button data-testid="call-at-bottom-false" onClick={() => atBottomStateChange?.(false)}>at-bottom-false</button>
         <button data-testid="call-start-reached" onClick={() => startReached?.()}>start-reached</button>
-        {(data || []).map((item: any, index: number) => (
+        {(data || []).map((item: unknown, index: number) => (
           <div key={index}>{itemContent(index, item)}</div>
         ))}
       </div>
@@ -35,7 +47,7 @@ vi.mock('@/contexts/ToastContext', () => ({
   useToast: () => toastMocks,
 }));
 
-type Handler = (url: string, init?: RequestInit) => any;
+type Handler = (url: string, init?: RequestInit) => unknown;
 
 function makeFetchMock(extra: Record<string, Handler> = {}) {
   return vi.fn().mockImplementation((url: string, init?: RequestInit) => {
@@ -96,7 +108,7 @@ beforeEach(() => {
   toastMocks.info.mockClear();
   throwFlag.value = false;
   throwFlag.message = '';
-  delete (window as any).__followOutputResult;
+  delete testWindow().__followOutputResult;
 });
 
 describe('VirtuosoErrorBoundary', () => {
@@ -169,7 +181,7 @@ describe('VirtuosoErrorBoundary', () => {
     }) as unknown as typeof fetch;
 
     const captureException = vi.fn();
-    (window as any).telemetry = { captureException };
+    testWindow().telemetry = { captureException };
     throwFlag.value = true;
     throwFlag.message = 'telemetry error';
 
@@ -184,7 +196,7 @@ describe('VirtuosoErrorBoundary', () => {
     rerender(<ChatPane sessionName="boundary4" />);
     await waitFor(() => expect(screen.queryByText('Failed to render messages')).not.toBeInTheDocument());
 
-    delete (window as any).telemetry;
+    delete testWindow().telemetry;
   });
 
   it('falls back to "An unknown error occurred" when no error object is present (defensive branch)', () => {
@@ -209,15 +221,15 @@ describe('followOutput / atBottomStateChange / startReached callbacks', () => {
     const user = userEvent.setup();
 
     await user.click(screen.getByTestId('call-follow-output'));
-    expect((window as any).__followOutputResult).toBe('smooth');
+    expect(testWindow().__followOutputResult).toBe('smooth');
 
     await user.click(screen.getByTestId('call-at-bottom-false'));
     await user.click(screen.getByTestId('call-follow-output'));
-    expect((window as any).__followOutputResult).toBe(false);
+    expect(testWindow().__followOutputResult).toBe(false);
 
     await user.click(screen.getByTestId('call-at-bottom-true'));
     await user.click(screen.getByTestId('call-follow-output'));
-    expect((window as any).__followOutputResult).toBe('smooth');
+    expect(testWindow().__followOutputResult).toBe('smooth');
   });
 
   it('startReached no-ops when newOffset equals loadedOffset (nothing more to load)', async () => {
@@ -327,7 +339,7 @@ describe('Enter-key send behavior', () => {
     fireEvent.keyDown(input, { key: 'Enter' });
     // No stream request should have been made.
     await new Promise((r) => setTimeout(r, 10));
-    expect((global.fetch as any).mock.calls.some((c: any[]) => c[0] === '/api/chat/stream')).toBe(false);
+    expect(vi.mocked(global.fetch).mock.calls.some((c: unknown[]) => c[0] === '/api/chat/stream')).toBe(false);
   });
 
   it('pressing Enter with text sends the message', async () => {
@@ -352,7 +364,7 @@ describe('Enter-key send behavior', () => {
     fireEvent.change(input, { target: { value: 'multi\nline' } });
     fireEvent.keyDown(input, { key: 'Enter', shiftKey: true });
     await new Promise((r) => setTimeout(r, 10));
-    expect((global.fetch as any).mock.calls.some((c: any[]) => c[0] === '/api/chat/stream')).toBe(false);
+    expect(vi.mocked(global.fetch).mock.calls.some((c: unknown[]) => c[0] === '/api/chat/stream')).toBe(false);
   });
 });
 
@@ -441,7 +453,7 @@ describe('handleRegenerate — full SSE event-type parity with send()', () => {
   });
 
   it('includes rag_filters in the regenerate request body when RAG is enabled with active filters', async () => {
-    let capturedBody: any = null;
+    let capturedBody: Record<string, unknown> | null = null;
     const seed = [
       { role: 'user', content: 'Q2' },
       { role: 'assistant', content: 'old2' },

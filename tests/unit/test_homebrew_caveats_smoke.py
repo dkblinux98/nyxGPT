@@ -86,7 +86,13 @@ def _rendered_caveats(formula: Path, name: str) -> str:
     body = _caveats_body(formula)
     text = body.split("<<~EOS\n", 1)[1].rsplit("    EOS", 1)[0]
     api_formula = name.replace("nyxgpt-web", "nyxgpt-api")
-    return text.replace("#{name}", name).replace("#{api_formula}", api_formula)
+    return (
+        text.replace("#{name}", name).replace("#{api_formula}", api_formula)
+        # The teardown guidance (#3859) names the tap to untap; Homebrew fills
+        # it from the loaded formula, and the `|| "<your-tap>"` arm is what a
+        # formula loaded from a file rather than a tap prints.
+        .replace('#{tap || "<your-tap>"}', "nyxgpt/brew-smoke")
+    )
 
 
 def _script_env_name(formula: Path) -> str:
@@ -105,6 +111,29 @@ def test_every_formula_declares_caveats(formula: Path) -> None:
     developer sees would not have changed what they were told.
     """
     assert _caveats_body(formula)
+
+
+@pytest.mark.parametrize("formula", FORMULAS, ids=lambda p: p.name)
+def test_every_formula_declares_exactly_one_caveats_block(formula: Path) -> None:
+    """Two `def caveats` in one formula is one message, not two.
+
+    Ruby keeps the last definition of a method and discards the earlier one
+    silently -- `ruby -c` is clean, `brew audit` says nothing, and the formula
+    installs. The only symptom is that half the guidance never reaches the
+    operator. This is not hypothetical: merging v3.0.0 into this branch put the
+    teardown block (#3859) and the startup block (#3854) in every formula, and
+    git resolved it without a conflict because neither side's lines overlapped.
+    `scripts/homebrew-caveats-smoke.sh` also requires exactly one block to
+    inject its negative control, but that check only runs on macOS -- this one
+    runs on every PR.
+    """
+    text = formula.read_text(encoding="utf-8")
+    assert text.count("  def caveats\n") == 1, (
+        f"{formula.relative_to(REPO_ROOT)} declares "
+        f"{text.count('  def caveats')} caveats blocks; Ruby will print only "
+        "the last, so whichever guidance came first is silently lost. Merge "
+        "them into one block instead of adding a second."
+    )
 
 
 @pytest.mark.parametrize("formula", FORMULAS, ids=lambda p: p.name)

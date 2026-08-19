@@ -309,9 +309,13 @@ the PR and exercised by the owner during acceptance testing; everything else
 gets run. Note what is *not* on the list: `macos-brew-smoke.yml` runs the
 Homebrew keg install *and*, since #3860, the user path after it — `nyxgpt
 --version`, `nyxgpt up`, `GET /health`, `GET /api/v1/sessions`, the web UI on
-:3000, `nyxgpt ops status`, `nyxgpt down`, `brew uninstall`/`untap` and the
-launchd residue check — on a real `macos-15` runner, so neither a formula
-change nor a macOS service-lifecycle change can claim macOS is untestable.
+:3000, `nyxgpt ops status`, `nyxgpt down`, `nyxgpt ops uninstall`, `brew
+uninstall`/`untap` and the launchd residue check — on a real `macos-15`
+runner, so neither a formula change nor a macOS service-lifecycle change can
+claim macOS is untestable. The teardown half is proven on **pull requests**
+too, without waiting for a published candidate: `keg-install` injects the
+`com.nyxgpt.*` agents, shows they survive `nyxgpt ops down`, and asserts they
+do not survive `nyxgpt ops uninstall` (#3859).
 
 ## Notes
 

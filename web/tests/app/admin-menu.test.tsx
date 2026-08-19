@@ -3,13 +3,14 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import Home from '@/app/page';
 import { ThemeProvider } from '@/contexts/ThemeContext';
+import type { VirtuosoMockProps } from '../mocks/virtuoso';
 
 // Home renders the session sidebar via next/dynamic(VirtualizedSessionList),
 // which wraps react-virtuoso. Virtuoso relies on real layout/ResizeObserver
 // measurements it can't get in happy-dom, so without this mock it renders
 // zero items.
 vi.mock('react-virtuoso', () => ({
-  Virtuoso: ({ totalCount, itemContent, style, ...props }: any) => (
+  Virtuoso: ({ totalCount, itemContent, style, ...props }: VirtuosoMockProps) => (
     <div style={style} aria-label={props['aria-label']} role={props.role}>
       {Array.from({ length: totalCount }).map((_, index) => (
         <div key={index}>{itemContent(index)}</div>

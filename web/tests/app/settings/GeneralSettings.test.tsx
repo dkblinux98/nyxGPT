@@ -23,13 +23,13 @@ describe('GeneralSettings', () => {
   beforeEach(() => {
     // Re-assign after tests/setup.ts's MSW server.listen() patches global.fetch,
     // so this mock isn't clobbered by MSW's real fetch interceptor.
-    global.fetch = vi.fn() as any;
+    global.fetch = vi.fn() as unknown as typeof fetch;
     vi.clearAllMocks();
     localStorage.clear();
   });
 
   it('renders the appearance section with theme controls', async () => {
-    (global.fetch as any).mockResolvedValueOnce({
+    vi.mocked(global.fetch).mockResolvedValueOnce({
       ok: true,
       json: async () => mockInfo,
     });
@@ -42,7 +42,7 @@ describe('GeneralSettings', () => {
   });
 
   it('switches theme when a theme button is clicked', async () => {
-    (global.fetch as any).mockResolvedValueOnce({
+    vi.mocked(global.fetch).mockResolvedValueOnce({
       ok: true,
       json: async () => mockInfo,
     });
@@ -67,7 +67,7 @@ describe('GeneralSettings', () => {
   });
 
   it('fetches and displays app info in the about section', async () => {
-    (global.fetch as any).mockResolvedValueOnce({
+    vi.mocked(global.fetch).mockResolvedValueOnce({
       ok: true,
       json: async () => mockInfo,
     });
@@ -88,7 +88,7 @@ describe('GeneralSettings', () => {
   });
 
   it('displays an error message when fetching app info fails', async () => {
-    (global.fetch as any).mockRejectedValueOnce(new Error('Network error'));
+    vi.mocked(global.fetch).mockRejectedValueOnce(new Error('Network error'));
 
     renderWithTheme();
 
@@ -98,7 +98,7 @@ describe('GeneralSettings', () => {
   });
 
   it('reports a non-Error app info failure with a stringified reason', async () => {
-    (global.fetch as any).mockRejectedValueOnce('plain string failure');
+    vi.mocked(global.fetch).mockRejectedValueOnce('plain string failure');
 
     renderWithTheme();
 
@@ -108,7 +108,7 @@ describe('GeneralSettings', () => {
   });
 
   it('displays an error message when the app info response is not ok', async () => {
-    (global.fetch as any).mockResolvedValueOnce({
+    vi.mocked(global.fetch).mockResolvedValueOnce({
       ok: false,
       status: 500,
     });
@@ -121,7 +121,7 @@ describe('GeneralSettings', () => {
   });
 
   it('shows a fallback version label when release_version is not set', async () => {
-    (global.fetch as any).mockResolvedValueOnce({
+    vi.mocked(global.fetch).mockResolvedValueOnce({
       ok: true,
       json: async () => ({ ...mockInfo, release_version: null }),
     });
@@ -135,7 +135,7 @@ describe('GeneralSettings', () => {
 
   it('does not update state after unmounting before the app info request resolves', async () => {
     let resolveRequest: (() => void) | undefined;
-    (global.fetch as any).mockImplementationOnce(
+    vi.mocked(global.fetch).mockImplementationOnce(
       () =>
         new Promise((resolve) => {
           resolveRequest = () =>
@@ -161,7 +161,7 @@ describe('GeneralSettings', () => {
 
   it('does not update state after unmounting before the app info request rejects', async () => {
     let rejectRequest: ((reason: unknown) => void) | undefined;
-    (global.fetch as any).mockImplementationOnce(
+    vi.mocked(global.fetch).mockImplementationOnce(
       () =>
         new Promise((_resolve, reject) => {
           rejectRequest = reject;
@@ -182,7 +182,7 @@ describe('GeneralSettings', () => {
   });
 
   it('links to the Configuration Wizard for advanced settings', async () => {
-    (global.fetch as any).mockResolvedValueOnce({
+    vi.mocked(global.fetch).mockResolvedValueOnce({
       ok: true,
       json: async () => mockInfo,
     });

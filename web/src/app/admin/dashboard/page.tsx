@@ -11,6 +11,7 @@ import PendingRestartNotice, {
 } from '../../../components/PendingRestartNotice';
 import { ADMIN_NAV, grafanaSreHomeUrl } from './nav';
 import { apiErrorText, errorMessage } from '../../../lib/apiError';
+import Link from 'next/link';
 
 type OverviewData = {
   info: {
@@ -309,9 +310,9 @@ export default function AdminDashboardPage() {
     <main style={{ padding: '2rem', maxWidth: 1200, margin: '0 auto' }}>
       <div style={{ marginBottom: '2rem' }}>
         <h1 style={{ margin: 0, marginBottom: 8 }}>Admin Dashboard</h1>
-        <a href="/" style={inlineLinkStyle}>
+        <Link href="/" style={inlineLinkStyle}>
           ← Back to Chat
-        </a>
+        </Link>
       </div>
 
       <div style={{ display: 'grid', gap: '1.5rem', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))' }}>

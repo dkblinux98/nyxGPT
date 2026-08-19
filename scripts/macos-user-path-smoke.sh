@@ -375,15 +375,53 @@ done
 # ---------------------------------------------------------------------------
 # 8. Teardown (#3859).
 #
-# The wrapped stop first, then the Homebrew removal, then the assertion that
-# nothing is left running or registered. Uninstalling a keg while its launchd
-# job is loaded is precisely the state the owner was left in.
+# The wrapped stop, then the wrapped *uninstall*, then the Homebrew removal,
+# then the assertion that nothing is left running or registered. Uninstalling
+# a keg while its launchd job is loaded is precisely the state the owner was
+# left in, and it is what the ordering here exists to make unnecessary.
+#
+# `down` and `ops uninstall` are both run, and they are not the same command:
+# `down` stops the stack and deliberately leaves the machine installed, so
+# every service is still registered to return at the next login. The plist
+# assertion between them records that difference rather than assuming it --
+# if `down` ever starts deregistering, the check below stops meaning anything
+# and should say so out loud.
 # ---------------------------------------------------------------------------
 log "nyxgpt down"
 if nyxgpt down 2>&1 | tee "$WORK/down.log"; then
   pass "nyxgpt down exited 0"
 else
   fail "nyxgpt down exited non-zero -- the supported stop does not work (#3859)"
+fi
+
+log "plists that survive nyxgpt down"
+shopt -s nullglob nocaseglob
+SURVIVORS=""
+for plist in "$HOME"/Library/LaunchAgents/*nyxgpt*; do
+  SURVIVORS="${SURVIVORS}${plist}"$'\n'
+done
+shopt -u nullglob nocaseglob
+printf '%s' "$SURVIVORS"
+if [ -n "$SURVIVORS" ]; then
+  pass "nyxgpt down leaves the machine installed, as designed"
+else
+  fail "nothing registered after nyxgpt down -- the uninstall check below tests nothing"
+fi
+
+log "nyxgpt ops uninstall"
+# The command that has to exist for the sequence below to be recoverable: once
+# `brew untap` has run, brew cannot resolve `nyxgpt-api@X.Y.Zrc` and
+# `brew services stop` has nothing to act on. This is the wrapped path that
+# does not need it (#3859).
+if nyxgpt ops uninstall 2>&1 | tee "$WORK/uninstall.log"; then
+  pass "nyxgpt ops uninstall exited 0"
+else
+  fail "nyxgpt ops uninstall exited non-zero (#3859)"
+fi
+if nyxgpt ops uninstall --quiet >> "$WORK/uninstall.log" 2>&1; then
+  pass "a second nyxgpt ops uninstall is a no-op, not a failure"
+else
+  fail "nyxgpt ops uninstall is not idempotent -- it fails on an already-clean machine (#3859)"
 fi
 
 log "brew uninstall / brew untap"

@@ -2,12 +2,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ChatPane from '@/app/components/ChatPane';
+import type { VirtuosoMockProps } from '../mocks/virtuoso';
 
 // Full-featured Virtuoso mock that exposes startReached / atBottomStateChange
 // so pagination and auto-scroll behavior can be driven from tests, following
 // the data-attribute conventions used in virtual-scrolling.test.tsx.
 vi.mock('react-virtuoso', () => ({
-  Virtuoso: ({ data, itemContent, style, startReached, atBottomStateChange, components }: any) => (
+  Virtuoso: ({ data, itemContent, style, startReached, atBottomStateChange, components }: VirtuosoMockProps) => (
     <div style={style} data-testid="virtuoso-mock">
       {components?.Header ? <components.Header /> : null}
       <button data-testid="trigger-start-reached" onClick={() => startReached?.()}>
@@ -19,7 +20,7 @@ vi.mock('react-virtuoso', () => ({
       <button data-testid="trigger-at-bottom-false" onClick={() => atBottomStateChange?.(false)}>
         at-bottom-false
       </button>
-      {(data || []).map((item: any, index: number) => (
+      {(data || []).map((item: unknown, index: number) => (
         <div key={index}>{itemContent(index, item)}</div>
       ))}
     </div>
@@ -31,7 +32,7 @@ vi.mock('@/contexts/ToastContext', () => ({
   useToast: () => toastMocks,
 }));
 
-type Handler = (url: string, init?: RequestInit) => any;
+type Handler = (url: string, init?: RequestInit) => unknown;
 
 function makeFetchMock(extra: Record<string, Handler> = {}) {
   return vi.fn().mockImplementation((url: string, init?: RequestInit) => {

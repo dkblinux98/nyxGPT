@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import React from 'react';
 import Home from '@/app/page';
 import { ThemeProvider } from '@/contexts/ThemeContext';
+import type { VirtuosoMockProps } from '../mocks/virtuoso';
 
 /**
  * Behavioral coverage for the Home page (src/app/page.tsx): session CRUD with
@@ -12,7 +13,7 @@ import { ThemeProvider } from '@/contexts/ThemeContext';
  */
 
 vi.mock('react-virtuoso', () => ({
-  Virtuoso: ({ totalCount, itemContent, style, ...props }: any) => (
+  Virtuoso: ({ totalCount, itemContent, style, ...props }: VirtuosoMockProps) => (
     <div style={style} aria-label={props['aria-label']} role={props.role}>
       {Array.from({ length: totalCount }).map((_, index) => (
         <div key={index}>{itemContent(index)}</div>
@@ -32,10 +33,17 @@ vi.mock('@/contexts/ToastContext', () => ({
   ToastProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
 
+type ChatPaneStubProps = {
+  sessionName?: string;
+  onSessionUpdated?: () => void;
+  releaseVersion?: string;
+  scrollToMessageIndex?: number;
+};
+
 // ChatPane is exercised by its own suites; a stub keeps these tests focused on
 // page.tsx and lets us drive the onSessionUpdated callback deterministically.
 vi.mock('@/app/components/ChatPane', () => ({
-  default: ({ sessionName, onSessionUpdated, releaseVersion, scrollToMessageIndex }: any) => (
+  default: ({ sessionName, onSessionUpdated, releaseVersion, scrollToMessageIndex }: ChatPaneStubProps) => (
     <div data-testid="chatpane">
       <span data-testid="chatpane-session">{sessionName}</span>
       <span data-testid="chatpane-release">{releaseVersion ?? 'none'}</span>

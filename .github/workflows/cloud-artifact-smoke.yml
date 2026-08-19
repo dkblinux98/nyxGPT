@@ -9,7 +9,7 @@ name: Cloud Artifact Smoke
 # subprocess output, #3782 the 3.9 venv) was invisible to it for that reason --
 # the D-006 "green by luck" condition.
 #
-# Two jobs:
+# Three jobs:
 #
 #   fault-injection  Can this smoke SEE the defect class it claims to cover?
 #                    Runs `--inject old-python`, which rewrites the bootstrap's
@@ -21,8 +21,22 @@ name: Cloud Artifact Smoke
 #   artifact-install The full run: build the AMI-parity image, boot systemd,
 #                    execute the real rendered EC2 user-data bootstrap against
 #                    a wheel built from this checkout, and require api, web and
-#                    ollama to answer. No repo checkout exists inside the
+#                    ollama to answer -- then create a session through the
+#                    running API and read the row back out of the instance's
+#                    own Cassandra (#3865). No repo checkout exists inside the
 #                    container -- `git` is not even installed.
+#   session-backend-fault-injection
+#                    The other half of #3865, and the expensive one. The
+#                    session-storage defect is silent by construction: the
+#                    instance came up healthy and served chat, it just wrote
+#                    the chat somewhere no other deployment mode could read.
+#                    So there is no early failure to catch -- proving the
+#                    check bites means running the whole install with the
+#                    wiring removed (`--inject file-sessions`) and requiring
+#                    the smoke to fail, classified as `session-backend`.
+#                    Deliberately its own job rather than added to
+#                    `fault-injection` above, which is cheap on purpose and
+#                    would stop being the fast first signal.
 #
 # Path-scoped like the other expensive smokes: the ops/install layer, the
 # user-data templates, the smoke itself, and this workflow.
@@ -36,6 +50,7 @@ on:
     paths:
       - 'src/nyxgpt/cloud_artifact_smoke.py'
       - 'src/nyxgpt/cloud_provision.py'
+      - 'src/nyxgpt/cloud_deploy.py'
       - 'src/nyxgpt/ops.py'
       - 'scripts/cloud/**'
       - 'ops/systemd/**'
@@ -45,6 +60,7 @@ on:
     paths:
       - 'src/nyxgpt/cloud_artifact_smoke.py'
       - 'src/nyxgpt/cloud_provision.py'
+      - 'src/nyxgpt/cloud_deploy.py'
       - 'src/nyxgpt/ops.py'
       - 'scripts/cloud/**'
       - 'ops/systemd/**'
@@ -127,6 +143,41 @@ jobs:
           else
             nyxgpt cloud smoke --container --wheel "$(ls dist/*.whl | head -1)"
           fi
+
+      - name: Recorded result
+        if: always()
+        run: nyxgpt cloud smoke --container --status
+
+  # The #3865 half that cannot be proven cheaply -- see the header. `--inject
+  # file-sessions` strips the bootstrap's `nyxgpt ops session-backend` call, so
+  # the instance keeps example.config.ini's back-compat `session_backend =
+  # file`. Everything installs and every service answers; the run exits 0 only
+  # if the smoke nonetheless FAILED, and failed as `session-backend` rather
+  # than as some unrelated breakage (`injection_verdict`).
+  session-backend-fault-injection:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install nyxgpt (editable -- the driver, not the artifact under test)
+        run: |
+          python -m pip install --upgrade pip setuptools build
+          pip install -e .
+
+      - name: Build the wheel under test
+        run: python -m build --wheel --outdir dist/
+
+      - name: The smoke must fail when the session backend is left file-backed
+        run: |
+          nyxgpt cloud smoke --container \
+            --wheel "$(ls dist/*.whl | head -1)" \
+            --inject file-sessions
 
       - name: Recorded result
         if: always()

@@ -18,6 +18,7 @@ same workflow rather than uploading on its own.
 import argparse
 import io
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -332,8 +333,51 @@ def test_plan_treats_a_failed_pypi_lookup_as_blocking(monkeypatch):
     plan = rc.plan("v3.0.0")
 
     assert plan["publishable"] is False
-    assert "Could not reach PyPI" in plan["pypi_lookup_error"]
+    assert plan["pypi_lookup_error"]
     assert any("is unknown" in blocker for blocker in plan["blockers"])
+
+
+#: Host state of the three shapes an `httpx.HTTPError` actually carries into
+#: `fetch_published_versions`'s wrapper: the proxy the API host resolved
+#: through, the local trust store an SSL failure names, and the internal
+#: resolver behind a DNS failure. None of it may leave this function.
+_HOST_STATE = (
+    "proxy.corp.internal:3128",
+    "/etc/ssl/private/corp-root.pem",
+    "ns1.corp.internal",
+)
+
+
+def test_plan_keeps_the_transport_error_out_of_its_return_value(monkeypatch, caplog):
+    """#3837 (CodeQL #123): `plan()` is served verbatim by the dashboard.
+
+    PR #3899 redacted the branch where `plan()` *raises* and left the branch
+    where it *returns* -- which is the one that reaches a browser on the
+    ordinary, non-erroring response. Every value in the returned dict has to
+    be host-independent, not just the ones a caller remembers to check, so
+    this walks the whole structure rather than naming two fields.
+    """
+
+    def explode(*args, **kwargs):
+        raise rc.ReleaseCandidateError(
+            "Could not reach PyPI at https://pypi.org/pypi/nyxgpt/json: "
+            f"ProxyError connecting via {_HOST_STATE[0]} "
+            f"(verify={_HOST_STATE[1]}, resolver={_HOST_STATE[2]})"
+        )
+
+    monkeypatch.setattr(rc, "fetch_published_versions", explode)
+    with caplog.at_level(logging.WARNING, logger="nyxgpt.release_candidate"):
+        plan = rc.plan("v3.0.0")
+
+    served = json.dumps(plan)
+    for leaked in _HOST_STATE:
+        assert leaked not in served, f"{leaked!r} reached the response payload"
+    # Not merely absent -- absent *and* still reported somewhere the operator
+    # can reach, or the redaction has traded an alert for a blind spot.
+    assert plan["publishable"] is False
+    assert plan["pypi_lookup_error"]
+    assert any("is unknown" in blocker for blocker in plan["blockers"])
+    assert any(leaked in caplog.text for leaked in _HOST_STATE)
 
 
 def test_plan_commands_pin_the_candidate_exactly():
