@@ -122,6 +122,22 @@ both of them the same number and the collision is created at merge, by neither
 branch alone. That is how `V-034`/`V-035` came to be defined twice, failing
 `test_ledger_entry_ids_are_unique` for every review on the branch afterwards.
 
+**The number you are given is provisional, and that is fine** (#3862). A
+branch open for days cannot know what the base will hold by the time it lands,
+so `review_accept_and_merge.sh` re-runs the allocation immediately before the
+merge:
+
+```
+python3 scripts/agents/lib/ledger_ids.py reallocate --base origin/<release branch> --write
+```
+
+Only IDs that **both** sides invented since the merge base are moved, only on
+the branch, and cross-references move with them. Entries you merely edited keep
+their IDs. So do not hand-resolve a duplicate-ID conflict on a long-lived
+branch — the by-hand resolution got the `theirs`/`mine` sides backwards on the
+first attempt (#3836/`V-030`). `test_ledger_entry_ids_are_unique` stays as the
+backstop; it works, and it is what catches anything this misses.
+
 **Decision** — something was settled, and by whom.
 
 ```
@@ -752,6 +768,32 @@ rather than mechanism, and nothing can enforce them.
   eyeballed. IDs are never reused.)
   Source: #3911; `.github/workflows/huddle_session.yml`;
   `scripts/agents/lib/huddle_session_probe.py`; `tests/unit/test_huddle_session.py`.
+
+- **D-030** · 2026-08-19 · developer agent (#3862) — **A branch may be deleted
+  only when its content is provably on the target branch, and an issue may be
+  closed as `completed` only on the same proof.** "Provably" means blob-level:
+  an ancestor, or every path the branch touches already identical there (or a
+  subset of it, which is the shape a branch takes when the base has simply
+  moved ahead on `agents/LEDGER.md`). Commit ancestry, commit count, `git
+  branch --merged`, mergeability, branch age, "no PR exists" and "its issue is
+  closed" are **all** unusable, each disproven against a real three-branch set
+  on 2026-08-18: on that data the branch whose every byte had landed looked the
+  *most* unmerged of the three, so acting on any of them keeps the redundant
+  branch and destroys the two holding the only copy of 438 lines of tests.
+  Anything not positively proven is reported, never deleted, and every gate
+  fails closed — an unreachable check means "keep". This is the criterion
+  D-013's event-driven cleanup acts on; it does not reopen the no-scheduled-
+  sweep decision, and `.github/workflows/cleanup_stale_branches.yml` (a weekly
+  sweep that deleted unmerged branches for being 14 days old) was removed under
+  it. The behaviour itself is not recorded here — it is enforced by
+  `tests/unit/test_branch_content.py`, `tests/test_branch_hygiene.sh` and
+  `.github/workflows/branch-guard-smoke.yml`, per the retirement of the
+  verification log.
+  (Filed as `D-030`, allocated by `python3 scripts/agents/lib/ledger_ids.py
+  next D --base origin/v3.0.0` — run, not eyeballed. If it collides at merge,
+  `review_accept_and_merge.sh` renumbers this entry rather than a human.)
+  Source: #3862; `scripts/agents/lib/branch_content.py`;
+  `scripts/agents/developer_ensure_pr_exists.sh`.
 
 ## Parked
 

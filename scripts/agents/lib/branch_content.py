@@ -47,7 +47,7 @@ against real planted repositories (``tests/unit/test_branch_content.py``); the
 CLI at the bottom is what the shell callers use::
 
     python3 scripts/agents/lib/branch_content.py landed \\
-        --base origin/v3.0.0 --branch origin/feat/1234-thing
+        --base origin/<release branch> --branch origin/feat/1234-thing
 """
 
 from __future__ import annotations
@@ -150,12 +150,28 @@ def _added_line_count(repo: str, base: str, branch: str, path: str) -> int | Non
         return None
 
 
-def branch_content_landed(repo: str, base: str, branch: str) -> Verdict:
+def branch_content_landed(repo: str, base: str, branch: str, since: str | None = None) -> Verdict:
     """Is every byte `branch` carries already present on `base`?
+
+    `since` selects between the two questions this module gets asked, which
+    are NOT the same and were conflated in the first cut of this file:
+
+    * **omitted -- "is it safe to delete this branch?"** Reachability is the
+      answer, so an ancestor is landed by definition: its commits live in the
+      base's history and deleting the ref loses nothing. The divergence point
+      is computed from the two refs.
+
+    * **given -- "is this work on the base branch NOW?"** Reachability is not
+      the answer. A merge commit makes the head an ancestor even if a later
+      commit deleted every file it added, and the ancestry shortcut would then
+      certify a merge that landed nothing -- precisely the #3789 shape, and
+      caught by scripts/closure-gate-smoke.sh's fault injection. So `since`
+      pins the divergence point explicitly (the merge base recorded by the PR)
+      and the ancestry shortcut is skipped: only the blob comparison speaks.
 
     Returns a Verdict; never raises for an ordinary "cannot tell" (bad ref,
     unrelated histories, git unavailable) -- those all resolve to
-    ``landed=False`` so the caller reports instead of deleting.
+    ``landed=False`` so the caller reports instead of acting.
     """
     try:
         base_sha = _rev_parse(repo, base)
@@ -166,23 +182,24 @@ def branch_content_landed(repo: str, base: str, branch: str) -> Verdict:
     if base_sha == branch_sha:
         return Verdict(True, f"{branch} is exactly {base}")
 
-    try:
-        # Ancestry is a *sufficient* condition, never a necessary one. Kept
-        # first only because it is the cheapest true answer, not because it is
-        # the check that matters.
-        ancestor = subprocess.run(
-            ["git", "-C", repo, "merge-base", "--is-ancestor", branch_sha, base_sha],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except OSError as exc:
-        return Verdict(False, f"git could not run ({exc}) -- refusing to call it landed")
-    if ancestor.returncode == 0:
-        return Verdict(True, f"{branch} is an ancestor of {base}")
+    if since is None:
+        try:
+            ancestor = subprocess.run(
+                ["git", "-C", repo, "merge-base", "--is-ancestor", branch_sha, base_sha],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError as exc:
+            return Verdict(False, f"git could not run ({exc}) -- refusing to call it landed")
+        if ancestor.returncode == 0:
+            return Verdict(True, f"{branch} is an ancestor of {base}")
 
     try:
-        merge_base = _git(repo, "merge-base", base_sha, branch_sha, check=False).strip()
+        if since is None:
+            merge_base = _git(repo, "merge-base", base_sha, branch_sha, check=False).strip()
+        else:
+            merge_base = _rev_parse(repo, since)
         if not merge_base:
             return Verdict(
                 False,
@@ -238,7 +255,7 @@ def branch_content_landed(repo: str, base: str, branch: str) -> Verdict:
 
 
 def _cmd_landed(args: argparse.Namespace) -> int:
-    verdict = branch_content_landed(args.repo, args.base, args.branch)
+    verdict = branch_content_landed(args.repo, args.base, args.branch, args.since)
     print("LANDED" if verdict.landed else "UNLANDED")
     print(verdict.reason, file=sys.stderr)
     for item in verdict.stranded:
@@ -257,8 +274,17 @@ def main(argv: list[str] | None = None) -> int:
         "landed",
         help="print LANDED/UNLANDED; exit 0 only when the branch is provably landed",
     )
-    p_landed.add_argument("--base", required=True, help="base ref, e.g. origin/v3.0.0")
+    p_landed.add_argument(
+        "--base", required=True, help="base ref, e.g. the release branch as origin/<name>"
+    )
     p_landed.add_argument("--branch", required=True, help="branch ref, e.g. origin/feat/1-x")
+    p_landed.add_argument(
+        "--since",
+        help="explicit divergence point. Pass it to ask 'is this work on the base "
+        "NOW?' -- it skips the ancestry shortcut, which a merge commit satisfies "
+        "even when a later commit deleted everything the branch added. Omit it to "
+        "ask 'is this branch safe to delete?', where reachability is the answer.",
+    )
     p_landed.set_defaults(func=_cmd_landed)
 
     args = parser.parse_args(argv)

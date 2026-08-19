@@ -124,12 +124,12 @@ def test_a_branch_carrying_a_file_absent_from_the_base_is_never_deletable(repo: 
 
     verdict = branch_content_landed(str(repo), BASE, "fix/3789-dev-install-mode")
 
-    assert verdict.landed is False, (
-        "the guard would have deleted the only copy of the branch's test coverage"
-    )
-    assert any("test_ops_step_isolation.py" in item for item in verdict.stranded), (
-        f"the refusal must name the file that caused it; got {verdict.stranded}"
-    )
+    assert (
+        verdict.landed is False
+    ), "the guard would have deleted the only copy of the branch's test coverage"
+    assert any(
+        "test_ops_step_isolation.py" in item for item in verdict.stranded
+    ), f"the refusal must name the file that caused it; got {verdict.stranded}"
 
 
 def test_the_stranded_branch_looks_nearly_landed_to_the_cheap_signals(repo: Path) -> None:
@@ -210,14 +210,18 @@ def _plant_rebased_but_landed(repo: Path) -> str:
     _commit(repo, "fix: --blocks writes the native blocked-by edge (#3836)")
     _write(repo, "tests/test_create_issue_blocks.sh", "#!/usr/bin/env bash\nassert native\n")
     _commit(repo, "test: CI job proving native relationships only (#3836)")
-    _write(repo, "agents/LEDGER.md", LEDGER_HEADER + "- **D-001** old decision\n- **D-030** blocks\n")
+    _write(
+        repo, "agents/LEDGER.md", LEDGER_HEADER + "- **D-001** old decision\n- **D-030** blocks\n"
+    )
     _commit(repo, "docs: record the D-002 alignment (#3836)")
 
     _back_to_base(repo)
     # Re-applied elsewhere: identical bytes, different commits.
     _write(repo, "scripts/agents/create_issue.sh", "#!/usr/bin/env bash\n--blocks writes native\n")
     _write(repo, "tests/test_create_issue_blocks.sh", "#!/usr/bin/env bash\nassert native\n")
-    _write(repo, "agents/LEDGER.md", LEDGER_HEADER + "- **D-001** old decision\n- **D-030** blocks\n")
+    _write(
+        repo, "agents/LEDGER.md", LEDGER_HEADER + "- **D-001** old decision\n- **D-030** blocks\n"
+    )
     _commit(repo, "Merge pull request #3852 from claude/issue-3836")
     # ...and the base then moves ahead on the ledger, on its own.
     _write(
@@ -340,4 +344,76 @@ def test_the_cli_exit_code_is_the_verdict(repo: Path) -> None:
     )
     assert (
         branch_content.main(["--repo", str(repo), "landed", "--base", BASE, "--branch", BASE]) == 0
+    )
+
+
+# --------------------------------------------------------------------------
+# `since`: the second question, and why it is not the same one.
+# --------------------------------------------------------------------------
+
+
+def test_a_merge_that_dropped_a_file_is_not_landed_when_since_is_given(repo: Path) -> None:
+    """The closure gate's case, and the flaw its fault injection caught.
+
+    A merge commit makes the PR head an ancestor of the base forever, even if a
+    later commit deletes every file it added. Asking "are its commits
+    reachable?" therefore certifies a merge that landed nothing -- which is
+    indistinguishable from how #3789 closed as `completed` with its tests gone.
+    """
+    divergence = _git(repo, "rev-parse", "HEAD").strip()
+    _branch_from_base(repo, "fix/3789-acceptance-failure")
+    _write(repo, "tests/unit/test_ops_step_isolation.py", "def test_x():\n    pass\n")
+    _commit(repo, "fix: address acceptance failure (#3789)")
+    head = _git(repo, "rev-parse", "HEAD").strip()
+    _back_to_base(repo)
+    _git(repo, "merge", "-q", "--no-ff", "-m", "Merge PR", "fix/3789-acceptance-failure")
+    (repo / "tests/unit/test_ops_step_isolation.py").unlink()
+    _commit(repo, "the tests never actually reached the release branch")
+
+    # Reachability says yes...
+    assert _is_ancestor(repo, head)
+    assert branch_content_landed(str(repo), BASE, head).landed is True
+
+    # ...and the question the closure gate asks says no.
+    verdict = branch_content_landed(str(repo), BASE, head, since=divergence)
+    assert verdict.landed is False
+    assert any("test_ops_step_isolation.py" in item for item in verdict.stranded)
+
+
+def test_a_squash_merge_verifies_under_since(repo: Path) -> None:
+    """`--since` must not be ancestry in disguise: a squash keeps no SHA."""
+    divergence = _git(repo, "rev-parse", "HEAD").strip()
+    _branch_from_base(repo, "feat/9010-squashed")
+    _write(repo, "src/squashed.py", "VALUE = 1\n")
+    _commit(repo, "feat: part one (#9010)")
+    _write(repo, "src/squashed.py", "VALUE = 2\n")
+    _commit(repo, "feat: part two (#9010)")
+    head = _git(repo, "rev-parse", "HEAD").strip()
+    _back_to_base(repo)
+    _git(repo, "merge", "-q", "--squash", "feat/9010-squashed")
+    _commit(repo, "feat: squashed (#9010)")
+
+    assert not _is_ancestor(repo, head)
+    assert branch_content_landed(str(repo), BASE, head, since=divergence).landed is True
+
+
+def test_the_cli_passes_since_through(repo: Path) -> None:
+    divergence = _git(repo, "rev-parse", "HEAD").strip()
+    _branch_from_base(repo, "fix/9011-dropped")
+    _write(repo, "tests/unit/test_gone.py", "def test_x():\n    pass\n")
+    _commit(repo, "test: added then dropped (#9011)")
+    head = _git(repo, "rev-parse", "HEAD").strip()
+    _back_to_base(repo)
+    _git(repo, "merge", "-q", "--no-ff", "-m", "Merge PR", "fix/9011-dropped")
+    (repo / "tests/unit/test_gone.py").unlink()
+    _commit(repo, "dropped again")
+
+    assert (
+        branch_content.main(["--repo", str(repo), "landed", "--base", BASE, "--branch", head]) == 0
+    )
+    assert (
+        branch_content.main(
+            ["--repo", str(repo), "landed", "--base", BASE, "--branch", head, "--since", divergence]
+        )
+        == 1
     )

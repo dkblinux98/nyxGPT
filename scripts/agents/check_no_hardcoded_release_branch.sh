@@ -9,7 +9,7 @@ set -euo pipefail
 # is a time bomb that breaks the next roll. The base must always resolve
 # dynamically (vars.RELEASE_BRANCH, falling back to the live repo default
 # branch) — see get_release_branch() in scripts/agents/lib/gh_project.sh
-# and the base-resolution logic in .github/workflows/cleanup_stale_branches.yml.
+# and the base-resolution logic in scripts/agents/reconcile_dead_branches.sh.
 #
 # Scans .github/workflows/ and scripts/agents/ for any "vX.Y.Z"-shaped
 # string, then excludes the specific sites #3614 confirmed are NOT branch

@@ -76,6 +76,78 @@ def next_id(kind: str, *texts: str) -> str:
     return f"{kind}-{highest + 1:03d}"
 
 
+#: An ID as it is *referenced* anywhere in the prose, not just where it is
+#: defined. Renumbering an entry has to carry its cross-references with it, or
+#: the ledger's `[[D-021]]`-style links start pointing at somebody else's fact.
+REFERENCE_RE = re.compile(r"(?<![A-Za-z0-9])([DVPQS]-\d{3})(?![0-9])")
+
+
+def _ids_introduced(merge_base_text: str, text: str) -> list[str]:
+    """IDs present in `text` and absent from `merge_base_text`, in document order.
+
+    This is the exact test for "the branch added this entry", and it is why the
+    merge base is required rather than inferred: an ID that already existed at
+    the divergence point is a shared entry someone *edited*, and renumbering
+    an edit would be a different bug from the one this fixes.
+    """
+    already = set(parse_ids(merge_base_text))
+    seen: set[str] = set()
+    introduced = []
+    for entry in parse_ids(text):
+        if entry not in already and entry not in seen:
+            seen.add(entry)
+            introduced.append(entry)
+    return introduced
+
+
+def reallocate(
+    merge_base_text: str, base_text: str, branch_text: str
+) -> tuple[str, dict[str, str]]:
+    """Renumber the branch's colliding entries; return the new text and the mapping.
+
+    `agents/LEDGER.md`'s schema says to allocate the next unused number, which
+    is only true at the instant of merge. On a branch open for days it is a
+    guess, and two branches open at once are each *correctly* told the same
+    number by `next` -- the collision is created at merge, by neither branch
+    alone (#3862; it happened to `V-016`, `V-024`, `V-025`, and to `D-021`
+    through `D-023` before that).
+
+    So the allocation is redone here, at merge time, against what the base
+    branch actually holds by then. Only IDs the branch *introduced* that the
+    base has *also* introduced since the merge base are touched: a collision
+    needs both sides to have invented the same number independently. Entries
+    the branch merely edits keep their IDs, and the base is never rewritten --
+    the branch yields, so the merge is a fast-forward of the numbering rather
+    than a negotiation.
+
+    Deterministic: collisions are resolved in the branch's document order,
+    each taking max + 1 across the base, the branch, and every number handed
+    out so far. Same inputs, same output, on any machine and any re-run.
+    """
+    base_new = set(_ids_introduced(merge_base_text, base_text))
+    branch_new = _ids_introduced(merge_base_text, branch_text)
+    collisions = [entry for entry in branch_new if entry in base_new]
+    if not collisions:
+        return branch_text, {}
+
+    highest: dict[str, int] = {}
+    for text in (base_text, branch_text):
+        for kind, num in ENTRY_RE.findall(text):
+            if num != PLACEHOLDER_ID:
+                highest[kind] = max(highest.get(kind, 0), int(num))
+
+    mapping: dict[str, str] = {}
+    for entry in collisions:
+        kind = entry[0]
+        highest[kind] = highest.get(kind, 0) + 1
+        mapping[entry] = f"{kind}-{highest[kind]:03d}"
+
+    # One pass over the original text, so a chain (V-016 -> V-045 while
+    # V-045 -> V-046 in the same run) can never rewrite an already-rewritten ID.
+    rewritten = REFERENCE_RE.sub(lambda m: mapping.get(m.group(1), m.group(1)), branch_text)
+    return rewritten, mapping
+
+
 def read_git_ref(ref: str, path: str) -> str:
     """`path` as of git `ref`, or "" when that ref does not carry the file.
 
@@ -98,12 +170,49 @@ def read_git_ref(ref: str, path: str) -> str:
     raise RuntimeError(f"cannot read {path} at {ref}: {stderr or 'git show failed'}")
 
 
+def merge_base(base: str, branch: str) -> str:
+    """The divergence point of `base` and `branch`, or "" when there is none."""
+    result = subprocess.run(
+        ["git", "merge-base", base, branch],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
 def _cmd_next(args: argparse.Namespace) -> int:
     texts = [Path(args.ledger).read_text(encoding="utf-8")]
     if args.base:
         texts.append(read_git_ref(args.base, args.ledger))
     print(next_id(args.kind, *texts))
     return 0
+
+
+def _cmd_reallocate(args: argparse.Namespace) -> int:
+    """Merge-time reallocation. Exit 0 = nothing to do, 1 = collisions handled."""
+    ledger = Path(args.ledger)
+    branch_text = ledger.read_text(encoding="utf-8")
+    base_text = read_git_ref(args.base, args.ledger)
+    point = merge_base(args.base, args.branch)
+    if not point:
+        raise RuntimeError(
+            f"no merge base between {args.base} and {args.branch}; "
+            "refusing to guess which entries the branch introduced"
+        )
+    merge_base_text = read_git_ref(point, args.ledger)
+
+    new_text, mapping = reallocate(merge_base_text, base_text, branch_text)
+    if not mapping:
+        print(f"no ledger ID collisions between {args.branch} and {args.base}", file=sys.stderr)
+        return 0
+
+    for old, new in mapping.items():
+        print(f"{old} -> {new}")
+    if args.write:
+        ledger.write_text(new_text, encoding="utf-8")
+        print(f"rewrote {ledger}", file=sys.stderr)
+    return 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -123,6 +232,19 @@ def main(argv: list[str] | None = None) -> int:
         "(e.g. origin/v3.0.0); fetch it first",
     )
     p_next.set_defaults(func=_cmd_next)
+
+    p_realloc = sub.add_parser(
+        "reallocate",
+        help="renumber the branch's colliding entries against the live base branch",
+        description="Run at MERGE time. Prints 'old -> new' per collision; exits 1 "
+        "when anything was reallocated, 0 when there was nothing to do.",
+    )
+    p_realloc.add_argument("--base", required=True, help="live base ref, e.g. origin/v3.0.0")
+    p_realloc.add_argument("--branch", default="HEAD", help="branch ref (default: %(default)s)")
+    p_realloc.add_argument(
+        "--write", action="store_true", help="rewrite the ledger in place (default: report only)"
+    )
+    p_realloc.set_defaults(func=_cmd_reallocate)
 
     args = parser.parse_args(argv)
     try:
