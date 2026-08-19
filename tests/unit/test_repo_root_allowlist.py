@@ -77,9 +77,14 @@ _ALLOWLIST: dict[str, set[str]] = {
         # why the list is built from `_API_IMAGE_FINGERPRINT_RELPATHS`.
         "_API_IMAGE_FINGERPRINT_PATHS = [REPO_ROOT / rel for rel in _API_IMAGE_FINGERPRINT_RELPATHS]",
         # Homebrew formula templates -- also part of the tap-vendoring
-        # build-from-source flow above.
-        'template = REPO_ROOT / "homebrew" / "nyxgpt-api.rb"',
-        'template = REPO_ROOT / "homebrew" / "nyxgpt-web.rb"',
+        # build-from-source flow above. Both installers now read the path
+        # through `_homebrew_formula_template`, whose *presence* answer is
+        # also what `_native_install_identity` branches on to name the
+        # service an install will register (#3861): a checkout installs the
+        # local tap's plain `nyxgpt-api`, an artifact install the published
+        # tap's channel formula. Absent (the installed-package case) is a
+        # supported answer, not a failure.
+        'template = REPO_ROOT / "homebrew" / f"{name}.rb"',
         # Self-contained Linux venv build (`ops package --linux`): builds
         # an installable artifact from the checkout's own example.config.ini.
         'example_config = REPO_ROOT / "example.config.ini"',

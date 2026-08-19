@@ -69,6 +69,21 @@ def _force_macos_native_path(monkeypatch):
     monkeypatch.setattr(ops.platform, "system", lambda: "Darwin")
 
 
+@pytest.fixture(autouse=True)
+def _no_registered_native_services(monkeypatch):
+    """Report an empty machine to the install-identity check, for this whole file.
+
+    Pinned to Darwin above, every `doctor` here reaches that check (#3861),
+    which reads what the service managers actually have registered. These
+    tests stub `_which` truthy for every tool but leave `_run` real, so
+    without this the read shells out to a `brew` the Linux runner does not
+    have. Empty is the right default: none of them is about services left
+    behind by an earlier install -- the ones that are live in
+    tests/unit/test_install_identity.py, which sets its own answer.
+    """
+    monkeypatch.setattr(ops, "_discover_native_services", lambda: [])
+
+
 @pytest.mark.unit
 def test_ops_install_returns_zero_when_all_ok(capsys):
     # Mock internal steps to all succeed

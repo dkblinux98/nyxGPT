@@ -1,4 +1,5 @@
-"""Which mode a deployment's `api`/`web` were installed in (#3789, #3834, #3835).
+"""Which *build* a deployment's `api`/`web` were installed from (#3789, #3834,
+#3835, #3861).
 
 Two modes exist, and every layer that starts, stops, probes or reports on the
 services needs to agree on which one is live:
@@ -22,6 +23,33 @@ different service managers on macOS (launchd agents for dev, `brew services`
 for artifact) and guessing wrong is not a cosmetic error: it would start the
 old keg's api on the port the dev process already holds.
 
+**A mode is not an identity (#3861).** Until #3861 the record above *was* the
+whole model -- `mode`, plus a checkout path for dev mode -- so two artifact
+installs were indistinguishable from each other. Installing
+`nyxgpt-api@3.0.0rc` over an existing `nyxgpt-api` 2.1.0 wrote `artifact`
+where `artifact` already stood, and `ops._reconcile_install_mode`'s
+`previous.mode != target` gate saw nothing to reconcile. That is not a lazy
+check; it is the strongest check a two-value model can support. The owner's
+Mac accumulated four concurrent install identities that way, two of them
+`keep_alive` services registered on the same ports, producing a permanent
+crash loop (`[Errno 48] address already in use ('127.0.0.1', 8000)`) that
+nothing in the system could see -- the exact hazard the paragraph above says
+the marker exists to prevent, in the one direction it did not model.
+
+So what is recorded is an `InstallIdentity`: the service **manager**, the
+concrete **service name per component** (`nyxgpt-api@3.0.0rc`, not
+`nyxgpt-api`), the installed **version** and the **channel**, with `mode` as
+one field of it. Reconciliation compares whole identities and acts on any
+difference, rather than consulting a hand-maintained list of transition pairs
+-- a pair list reproduces this defect the first time an unanticipated pair
+appears, and every future artifact form (a Linux tarball venv, a container
+image) is such a pair.
+
+Identity *detection* deliberately lives in `nyxgpt.ops`, not here: it needs to
+know which tap, formula and version an install is about to use, and this
+module must stay import-free of `ops` (see the last paragraph). What lives
+here is the dataclass, its vocabulary, its comparison and its serialisation.
+
 **One marker per substrate (#3834, extended to Terraform by #3835).** The mode
 is a property of a *deployment*, not of a machine: a host can have a native dev
 install and a Kubernetes or Terraform artifact deployment at the same time, and
@@ -44,6 +72,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -88,6 +117,175 @@ DEV_LAUNCHD_LABELS: dict[str, str] = {
     "web": "com.nyxgpt.web",
 }
 
+# The service managers an install identity can name (#3861). `launchd` is dev
+# mode's macOS manager, `brew` the artifact path's; `systemd` is both modes on
+# Linux -- which is exactly why the manager alone cannot disambiguate an
+# identity there and the version/channel fields carry the whole signal.
+MANAGER_BREW = "brew"
+MANAGER_LAUNCHD = "launchd"
+MANAGER_SYSTEMD = "systemd"
+MANAGER_UNKNOWN = "unknown"
+
+# Which published channel an artifact identity came from. `candidate` is the
+# `nyxgpt-api@<line>rc` formula line (docs/homebrew.md#candidate-channel);
+# `dev` is not a published channel at all and marks a checkout build.
+CHANNEL_STABLE = "stable"
+CHANNEL_CANDIDATE = "candidate"
+CHANNEL_DEV = "dev"
+CHANNEL_UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class InstallIdentity:
+    """*Which* build is installed, not merely how it was installed (#3861).
+
+    Every field is part of the comparison, because the point of the type is
+    that reconciliation is a comparison rather than a table of anticipated
+    transitions. `services` maps a logical component (`api`, `web`) to the
+    concrete name its manager registered it under -- `nyxgpt-api@3.0.0rc` for
+    a candidate keg, `com.nyxgpt.api` for a dev LaunchAgent, `nyxgpt-api` for
+    a systemd --user unit -- and that mapping is what a teardown or a
+    reconcile needs in order to stop the *previous* install rather than
+    whatever the stable names happen to be.
+
+    `known=False` means "nothing recorded an identity here": a marker written
+    before #3861 (mode + checkout only), a marker that could not be parsed, or
+    no marker at all. An unknown identity **never compares equal to
+    anything**, including another unknown one -- treating "I do not know" as
+    "the same" is precisely the failure this type exists to remove.
+    """
+
+    mode: str = INSTALL_MODE_ARTIFACT
+    manager: str = MANAGER_UNKNOWN
+    # Sorted (component, service name) pairs rather than a dict, so the
+    # dataclass stays hashable and comparison is order-independent.
+    services: tuple[tuple[str, str], ...] = ()
+    version: str = ""
+    channel: str = CHANNEL_UNKNOWN
+    checkout: str | None = None
+    known: bool = False
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        mode: str,
+        manager: str,
+        services: Mapping[str, str],
+        version: str,
+        channel: str,
+        checkout: Path | str | None = None,
+    ) -> InstallIdentity:
+        """A known identity, with `services` normalised into sorted pairs."""
+        return cls(
+            mode=mode,
+            manager=manager,
+            services=tuple(sorted((str(k), str(v)) for k, v in services.items())),
+            version=str(version),
+            channel=channel,
+            checkout=str(checkout) if checkout else None,
+            known=True,
+        )
+
+    @property
+    def service_names(self) -> tuple[str, ...]:
+        """The concrete service names this identity registered, deduplicated."""
+        return tuple(sorted({name for _component, name in self.services}))
+
+    @property
+    def service_map(self) -> dict[str, str]:
+        """`{component: service name}` -- the pairs as a plain mapping."""
+        return dict(self.services)
+
+    def differences(self, other: InstallIdentity) -> list[str]:
+        """Human-readable list of every way `other` differs from `self`.
+
+        Empty means "the same install"; anything else means the previous
+        install must be reconciled before the new one starts. An unknown
+        identity on either side yields a single "unknown" difference: unknown
+        is a *possible* mismatch, and the caller reconciles defensively rather
+        than assuming the machine is already in the state it wants.
+        """
+        if not self.known or not other.known:
+            return ["previous install identity is unknown (no marker, or one written before #3861)"]
+        fields = (
+            ("mode", self.mode, other.mode),
+            ("service manager", self.manager, other.manager),
+            ("version", self.version, other.version),
+            ("channel", self.channel, other.channel),
+            ("checkout", self.checkout, other.checkout),
+        )
+        diffs = [
+            f"{name}: {was or 'none'} -> {now or 'none'}" for name, was, now in fields if was != now
+        ]
+        if self.services != other.services:
+            diffs.append(f"services: {self._service_text()} -> {other._service_text()}")
+        return diffs
+
+    def _service_text(self) -> str:
+        """`api=nyxgpt-api, web=nyxgpt-web`, or `none` when nothing is recorded."""
+        return ", ".join(f"{c}={n}" for c, n in self.services) or "none"
+
+    def detail(self) -> str:
+        """One-line description of which build this is, for status/doctor output."""
+        if not self.known:
+            return "no install identity recorded"
+        parts = [f"{self.manager}: {self._service_text()}"]
+        if self.version:
+            parts.append(f"version {self.version}")
+        parts.append(f"channel {self.channel}")
+        if self.checkout:
+            parts.append(f"checkout {self.checkout}")
+        return "; ".join(parts)
+
+    def to_payload(self) -> dict[str, object] | None:
+        """JSON form for the marker file, or None when nothing is known."""
+        if not self.known:
+            return None
+        return {
+            "mode": self.mode,
+            "manager": self.manager,
+            "services": self.service_map,
+            "version": self.version,
+            "channel": self.channel,
+            "checkout": self.checkout,
+        }
+
+    @classmethod
+    def from_payload(cls, raw: object) -> InstallIdentity:
+        """Parse a marker's `identity` block; anything malformed reads as unknown.
+
+        Never raises, for the same reason `read_install_mode` never raises: a
+        marker a future version wrote differently, or a half-written file,
+        must not be able to break an install.
+        """
+        if not isinstance(raw, dict):
+            return cls()
+        services = raw.get("services")
+        if raw.get("mode") not in (INSTALL_MODE_DEV, INSTALL_MODE_ARTIFACT) or not isinstance(
+            services, dict
+        ):
+            # An identity is a mode *and* the service names that mode
+            # registered. A block missing either -- an empty block, a
+            # truncated write, or one a future version spells differently --
+            # is not a partial identity to be filled in with defaults: a
+            # `known` identity whose service map is empty would subtract to
+            # "nothing to retire" and quietly under-reconcile, which is the
+            # class of silence this whole change exists to remove. Unknown is
+            # the honest answer and the defensive one.
+            return cls()
+        pairs = tuple(sorted((str(k), str(v)) for k, v in services.items()))
+        checkout = raw.get("checkout")
+        return cls(
+            mode=str(raw["mode"]),
+            manager=str(raw.get("manager") or MANAGER_UNKNOWN),
+            services=pairs,
+            version=str(raw.get("version") or ""),
+            channel=str(raw.get("channel") or CHANNEL_UNKNOWN),
+            checkout=str(checkout) if checkout else None,
+            known=True,
+        )
+
 
 def install_mode_file(substrate: str = SUBSTRATE_NATIVE) -> Path:
     """The marker path recording `substrate`'s install mode."""
@@ -113,6 +311,12 @@ class InstallModeState:
     # really running. For any other substrate there is no such history, so a
     # reader must say "unrecorded" rather than assert a mode nobody wrote.
     recorded: bool = False
+    # Which build this substrate is running (#3861). Defaults to the unknown
+    # identity, which is what a pre-#3861 marker and a missing marker both
+    # read back as -- and which never compares equal to the identity an
+    # install is about to write, so an install over an unknown previous
+    # reconciles defensively instead of assuming there is nothing to do.
+    identity: InstallIdentity = field(default_factory=InstallIdentity)
 
     @property
     def is_dev(self) -> bool:
@@ -152,8 +356,21 @@ class InstallModeState:
                 )
             return "artifact (images built from the published nyxgpt-api/nyxgpt-web artifacts)"
         if self.is_dev:
-            return f"dev (editable checkout at {self.checkout or 'unknown checkout'})"
-        return "artifact (published/vendored build -- the repo-less default)"
+            return self._with_identity(
+                f"dev (editable checkout at {self.checkout or 'unknown checkout'})"
+            )
+        return self._with_identity("artifact (published/vendored build -- the repo-less default)")
+
+    def _with_identity(self, base: str) -> str:
+        """`base`, plus which build it actually is when an identity is recorded.
+
+        The reason this exists (#3861): the bare native label printed
+        `artifact (published/vendored build -- the repo-less default)` for a
+        2.1.0 keg and for a 3.0.0rc12 keg alike, so an operator reading
+        `ops status` on a machine carrying both could not tell them apart --
+        the same blindness that let the two accumulate.
+        """
+        return f"{base} [{self.identity.detail()}]" if self.identity.known else base
 
     def short_label(self, *, deployed: bool = False) -> str:
         """One word for a per-component tag: dev, artifact, or unrecorded.
@@ -220,8 +437,14 @@ def read_install_mode(
         return default
     raw_images = raw.get("images")
     images = {str(k): str(v) for k, v in raw_images.items()} if isinstance(raw_images, dict) else {}
+    # A marker written before #3861 carries no `identity` block, so this is
+    # the unknown identity -- deliberately, and not the same thing as "the
+    # identity is whatever the mode field says". See `InstallIdentity`.
+    identity = InstallIdentity.from_payload(raw.get("identity"))
     if raw.get("mode") != INSTALL_MODE_DEV:
-        return InstallModeState(substrate=substrate, images=images, recorded=True)
+        return InstallModeState(
+            substrate=substrate, images=images, recorded=True, identity=identity
+        )
     checkout = raw.get("checkout")
     return InstallModeState(
         mode=INSTALL_MODE_DEV,
@@ -229,6 +452,7 @@ def read_install_mode(
         substrate=substrate,
         images=images,
         recorded=True,
+        identity=identity,
     )
 
 
@@ -239,20 +463,30 @@ def write_install_mode(
     *,
     substrate: str = SUBSTRATE_NATIVE,
     images: dict[str, str] | None = None,
+    identity: InstallIdentity | None = None,
 ) -> Path:
     """Record `mode` (and, for dev mode, its checkout) and return the marker path.
 
     `images` records which api/web image refs a Terraform deployment was
     brought up from; the other substrates leave it empty.
+
+    `identity` records *which build* this is (#3861) -- manager, per-component
+    service names, version, channel. Omitting it writes a marker with no
+    identity block, which reads back as the unknown identity: a caller that
+    cannot describe what it installed must not leave behind a record implying
+    it could.
     """
     marker = path or install_mode_file(substrate)
     marker.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
+    payload: dict[str, object] = {
         "mode": mode,
         "checkout": str(checkout) if checkout else None,
         "substrate": substrate,
         "images": dict(images or {}),
     }
+    identity_payload = identity.to_payload() if identity else None
+    if identity_payload is not None:
+        payload["identity"] = identity_payload
     marker.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return marker
 

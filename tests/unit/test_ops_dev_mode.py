@@ -309,6 +309,7 @@ def test_switching_to_dev_stops_brew_services_and_drops_the_stale_venv(
     monkeypatch.setattr(ops, "_native_install_root", lambda c: tmp_path / "opt" / c)
     venv = tmp_path / "opt" / "nyxgpt-api" / "venv"
     venv.mkdir(parents=True)
+    _record_identity(monkeypatch, install_mode.INSTALL_MODE_ARTIFACT, "brew", "nyxgpt-api")
 
     stopped: list[str] = []
     monkeypatch.setattr(
@@ -325,10 +326,11 @@ def test_switching_to_dev_stops_brew_services_and_drops_the_stale_venv(
     assert install_mode.read_install_mode().is_dev is True
 
 
-def test_switching_back_to_artifact_removes_the_dev_launchagents(monkeypatch, tmp_path):
+def test_switching_back_to_artifact_removes_the_dev_launchagents(monkeypatch, checkout, tmp_path):
+    monkeypatch.setattr(ops, "REPO_ROOT", checkout)
     monkeypatch.setattr(ops.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(ops, "_native_install_root", lambda c: tmp_path / "opt" / c)
-    install_mode.write_install_mode(install_mode.INSTALL_MODE_DEV, tmp_path / "co")
+    _record_identity(monkeypatch, install_mode.INSTALL_MODE_DEV, "launchd", "com.nyxgpt.api")
 
     la_dir = tmp_path / "Library" / "LaunchAgents"
     la_dir.mkdir(parents=True)
@@ -344,15 +346,50 @@ def test_switching_back_to_artifact_removes_the_dev_launchagents(monkeypatch, tm
     assert install_mode.read_install_mode().is_dev is False
 
 
-def test_reconcile_is_a_no_op_record_when_the_mode_is_unchanged(monkeypatch, tmp_path):
+def _record_identity(monkeypatch, mode, manager, api_service):
+    """Write a marker recording a *known* previous identity.
+
+    Without one the marker reads back as the unknown identity, which #3861
+    makes a deliberate mismatch -- so a test about a specific transition has
+    to say what the machine was, or it is testing the unknown-previous path
+    instead.
+    """
+    web_service = api_service.replace("api", "web")
+    identity = install_mode.InstallIdentity.build(
+        mode=mode,
+        manager=manager,
+        services={"api": api_service, "web": web_service},
+        version="0.0.0",
+        channel=install_mode.CHANNEL_DEV if mode == install_mode.INSTALL_MODE_DEV else "stable",
+    )
+    install_mode.write_install_mode(mode, None, identity=identity)
+    return identity
+
+
+def test_reconcile_is_a_no_op_record_when_the_identity_is_unchanged(
+    monkeypatch, checkout, tmp_path
+):
+    monkeypatch.setattr(ops, "REPO_ROOT", checkout)
     monkeypatch.setattr(ops.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(ops, "_native_install_root", lambda c: tmp_path / "opt" / c)
     venv = tmp_path / "opt" / "nyxgpt-api" / "venv"
     venv.mkdir(parents=True)
-    with patch.object(ops, "_stop_brew_service") as stop:
+    # Record exactly the identity this run is about to install, which is what
+    # a re-run of the same `nyxgpt up` on an already-installed machine leaves.
+    identity = ops._native_install_identity(dev=False)
+    install_mode.write_install_mode(install_mode.INSTALL_MODE_ARTIFACT, None, identity=identity)
+
+    with (
+        patch.object(ops, "_stop_brew_service") as stop,
+        patch.object(ops, "_brew_services_snapshot", return_value={}) as snapshot,
+    ):
         results = ops._reconcile_install_mode(dev=False)
+
     stop.assert_not_called()
-    # An unchanged mode must not bounce services or rebuild a healthy venv.
+    # Nothing is even *looked* for when the identity matches: an unchanged
+    # install must not pay a `brew services list` on every re-run.
+    snapshot.assert_not_called()
+    # An unchanged identity must not bounce services or rebuild a healthy venv.
     assert venv.exists()
     assert [r.message for r in results if "changing" in r.message] == []
 
@@ -663,7 +700,18 @@ def _dev_machine(monkeypatch, tmp_path):
     la_dir.mkdir(parents=True)
     for label in install_mode.DEV_LAUNCHD_LABELS.values():
         (la_dir / f"{label}.plist").write_text("<plist/>", encoding="utf-8")
-    install_mode.write_install_mode(install_mode.INSTALL_MODE_DEV, tmp_path / "checkout")
+    install_mode.write_install_mode(
+        install_mode.INSTALL_MODE_DEV,
+        tmp_path / "checkout",
+        identity=install_mode.InstallIdentity.build(
+            mode=install_mode.INSTALL_MODE_DEV,
+            manager=install_mode.MANAGER_LAUNCHD,
+            services=dict(install_mode.DEV_LAUNCHD_LABELS),
+            version="0.0.0",
+            channel=install_mode.CHANNEL_DEV,
+            checkout=tmp_path / "checkout",
+        ),
+    )
 
     return venv, la_dir, booted_out
 
