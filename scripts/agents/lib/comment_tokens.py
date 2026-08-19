@@ -3,23 +3,29 @@
 
 Every comment-driven trigger in this repo used a bare substring test:
 
-    contains(github.event.comment.body, 'RETRY_IMPLEMENTATION')
+    contains(github.event.comment.body, '<the token>')
 
 so a comment that merely *named* the token started a run -- including the
 agents' own guidance text. On 2026-08-15 the developer agent's "issue is no
-longer In Progress" stop message (which ended "...comment
-`RETRY_IMPLEMENTATION` to resume") re-triggered the very workflow that had
-just posted it, once every ~20 seconds: ~500 runs and ~500 comments across
-#3782 and #3784 in under two hours. #3706 was the same defect on the kick
-token.
+longer In Progress" stop message (which named the retry token in its resume
+instruction) re-triggered the very workflow that had just posted it, once
+every ~20 seconds: ~500 runs and ~500 comments across #3782 and #3784 in
+under two hours. #3706 was the same defect on the kick token.
 
-Two independent guards live here, and both are applied to *every* comment
-token (RETRY_IMPLEMENTATION, PAUSE_SPRINT,
-@acceptance-failure, @improvement):
+**The two workflow levers those incidents rode are gone (#3882).** The queue
+kick is a `repository_dispatch` event and rework is an assignment, so no
+token starts developer work any more. What remains here are the tokens that
+*author content* or *stop* work -- `@acceptance-failure`, `@improvement`,
+`PAUSE_SPRINT`, `CONFLICT_REQUIRES_OWNER_DECISION` -- and they keep both
+guards, because a comment is still the right surface for a human writing
+prose and the parsing hazard is unchanged.
+
+Two independent guards live here, and both are applied to *every* remaining
+comment token:
 
 1. **Anchored matching.** A token counts as a command only when it *opens a
    line* -- the form a human or an agent uses to issue it. Prose that names
-   the token mid-sentence ("comment `RETRY_IMPLEMENTATION` to resume") is a
+   the token mid-sentence ("comment `@improvement` to file one") is a
    mention, never a command. Fenced code blocks and quoted (`>`) lines are
    stripped first, so quoting an earlier comment cannot replay its commands.
 2. **The informational marker.** Any agent comment that must name a token
@@ -49,9 +55,15 @@ AUTOPILOT_INFO_MARKER = "<!-- nyxgpt-autopilot-informational -->"
 #: Substring forms, so a marker still disqualifies if its comment syntax drifts.
 INFORMATIONAL_MARKERS = ("nyxgpt-token-mention", "nyxgpt-autopilot-informational")
 
-#: Every comment token that starts work in this repo.
+#: Every comment token this repo still honours.
+#:
+#: Deliberately absent (#3882), and not to be re-added: the queue kick and the
+#: retry token. Both drove the *workflow state machine* from prose, which is
+#: what made #3706 and #3790 possible; both are native events now (a
+#: `repository_dispatch` for the kick, an assignment for rework). A token that
+#: files an issue from a human's words, or that pauses the loop, is content --
+#: not a lever -- and stays.
 COMMAND_TOKENS = (
-    "RETRY_IMPLEMENTATION",
     "PAUSE_SPRINT",
     "@acceptance-failure",
     "@improvement",
@@ -65,7 +77,7 @@ COMMAND_TOKENS = (
 _FENCE_RE = re.compile(r"^\s*(```+|~~~+)")
 
 # Optional list bullet / ordered-list number, then optional markdown
-# decoration (backticks, bold, italics) -- "- `RETRY_IMPLEMENTATION`" and
+# decoration (backticks, bold, italics) -- "- `PAUSE_SPRINT`" and
 # "**@improvement** the button is tiny" open a line just as plainly as the
 # bare token does.
 _LEAD = r"(?:[-*+]\s+|\d+[.)]\s+)?[`*_]*"
@@ -143,7 +155,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     check = sub.add_parser("is-command", help="exit 0 if the body issues the token")
-    check.add_argument("token", help="e.g. RETRY_IMPLEMENTATION")
+    check.add_argument("token", help="e.g. @improvement")
     check.add_argument(
         "--from-env",
         metavar="VAR",

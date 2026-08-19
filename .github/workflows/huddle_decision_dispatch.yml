@@ -16,7 +16,8 @@ name: Huddle Decision Dispatch
 #
 # So the decision now dispatches itself: proceed / change-approach / descope
 # hand the issue back to the developer agent exactly as a REQUEST_CHANGES
-# round does (In Progress + assign_and_trigger_developer), and the fix cycle
+# round does (assign_and_trigger_developer -- and the developer moves the
+# issue to In Progress itself, #3882), and the fix cycle
 # reads the decision from the PR thread as it already does
 # (developer_auto_implement.yml). `escalate` is terminal and left alone --
 # the run that decided performs that escalation itself.
@@ -26,10 +27,8 @@ name: Huddle Decision Dispatch
 # otherwise holds: a decision authored by anyone else lands, reads correctly,
 # and dispatches nothing.
 #
-# Runs under REVIEW_AGENT_TOKEN because `assign_and_trigger_developer` backs
-# the assignment with a RETRY_IMPLEMENTATION comment, and
-# developer_auto_implement.yml honors that comment only from the owner, the
-# dev agent, or the review agent.
+# Runs under REVIEW_AGENT_TOKEN because the review agent is one of the
+# identities developer_auto_implement.yml accepts an assignment from.
 
 on:
   issue_comment:
@@ -188,13 +187,12 @@ jobs:
             source scripts/agents/lib/gh_project.sh
             load_config
             require_gh_auth
-            set_issue_status "$1" "$STATUS_IN_PROGRESS"
             assign_and_trigger_developer "$1"
           ' huddle-decision-dispatch "$ISSUE"
 
           BODY=$(printf '%s\n\n%s\n\n%s\n%s\n%s\n\n%s\n\n%s' \
             "🔁 **Huddle decision dispatched**: \`${DECISION}\`" \
-            "Issue #${ISSUE} has been returned to **In Progress** and assigned to @${DEV_AGENT} to carry out the huddle decision above." \
+            "Issue #${ISSUE} has been assigned to @${DEV_AGENT} to carry out the huddle decision above; the developer agent moves it to **In Progress** as it picks the work up (#3882)." \
             "**Developer Instructions:**" \
             "1. Read the \`## Huddle Decision\` comment on this PR -- its \"What happens next\" section is the plan; follow it rather than deciding independently" \
             "2. Implement, run the tests locally, commit and push -- the PR will be automatically re-reviewed" \

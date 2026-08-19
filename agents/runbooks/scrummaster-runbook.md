@@ -161,15 +161,16 @@ To start the next issue:
 ./scripts/agents/scrummaster_dispatch_next.sh
 ```
 
-**Option 2: Manual comment**
-Post a comment on the **Release tracking issue** that *starts a line* with
-`READY_FOR_NEXT_ISSUE` -- since #3790 the token dispatches only where it opens
-a line, so a mid-sentence mention (including one after an `@mention`) is inert:
-```
-READY_FOR_NEXT_ISSUE
-```
+**Option 2: Assign the developer agent**
+Assign `myGPT-developer-agent` to the open Backlog issue you want started.
+That assignment **is** the dispatch (#3882): the developer workflow claims the
+issue, moves it to In Progress itself and implements it, skipping selection
+entirely. There is no comment that starts work -- a comment that could be
+matched by a workflow `if:` is how a park note once dispatched the next issue
+(#3706).
 
-The workflow will:
+Option 1's script sends a `repository_dispatch` (`dispatch-next-issue`), and
+that workflow will:
 - Post status updates on the Release tracking issue
 - Select the next backlog issue based on deterministic rules
 - Move that issue to In Progress and assign to developer-agent
@@ -179,7 +180,7 @@ The workflow will:
 Use `./scripts/watch_agents.sh` to monitor all agent workflows in real-time.
 
 ## Wait
-- Remain idle until triggered by READY_FOR_NEXT_ISSUE signal
+- Remain idle until a `dispatch-next-issue` event arrives
 
 ## Acceptance-criteria capability guardrail (#3647)
 
@@ -209,9 +210,9 @@ intervenes manually.
 ## Sprint autopilot (#3480)
 
 With the `SPRINT_AUTOPILOT` repo var set to `true` and a Sprint active,
-`scripts/agents/review_accept_and_merge.sh` posts `READY_FOR_NEXT_ISSUE`
-itself after every merge -- no human kick needed -- as long as the active
-Sprint still has open Backlog issues:
+`scripts/agents/review_accept_and_merge.sh` sends the `dispatch-next-issue`
+event itself after every merge -- no human kick needed -- as long as the
+active Sprint still has open Backlog issues:
 
 ```bash
 ./scripts/agents/developer_pull_next.sh --sprint-scoped
@@ -225,7 +226,8 @@ the expected-files lists and record deferrals.
 
 Once the sprint has no open Backlog issues left, the merge script posts a
 park note instead of a kick, and autopilot stops dispatching -- starting
-work outside the sprint still needs a manual `READY_FOR_NEXT_ISSUE`. What
+work outside the sprint still needs the owner to assign the developer agent
+to the issue they want. What
 that note *says* depends on the sprint's whole population, not just its
 Backlog: see "Park semantics" below.
 
@@ -252,25 +254,31 @@ a real work boundary, not bookkeeping:
   loud note** on the release tracking issue: which park state it is in (see
   "Park semantics"), what remains in the release per future sprint (and how
   much has no sprint at all), any parked issues waiting on gates, and that
-  work resumes when the next sprint's window opens or a human posts a kick.
+  work resumes when the next sprint's window opens or a human starts an
+  issue by assigning the developer agent to it.
   The boundary is an **acceptance gate** (owner context 2026-08-10: sprint
   completes -> owner runs acceptance testing -> next sprint begins), so
   nothing resumes the loop by itself -- a new window opening does not
-  dispatch work, because only a kick starts selection and agents post kicks
-  only after a merge.
+  dispatch work, because only a kick starts selection and agents send the
+  `dispatch-next-issue` event only after a merge, escalation or anomaly.
 - **Informational notes are inert by construction.** While the kick was a
   comment token, the workflow's job `if:` could only substring-test it, and
   the agents were on its actor allowlist -- so a park or `PAUSE_SPRINT`
   notice that merely *named* the token dispatched work: a "park" that was
-  really a kick. (#3882 removed the class outright by making the kick an
-  event; the convention below stays because the retry token is still a
-  comment command.) Such notes now avoid the token entirely and
-  carry `<!-- nyxgpt-autopilot-informational -->` (`AUTOPILOT_INFO_MARKER`),
-  which the workflow's job `if:` negates. Since #3790 the workflow also has a
-  `comment_gate` job: the token dispatches only where it *opens a line*
-  (`scripts/agents/lib/comment_tokens.py`), so a mid-sentence mention is
-  inert even unmarked. When adding any agent-posted status comment, follow
-  the same rule -- and see `docs/agent-comment-tokens.md`.
+  really a kick. **#3882 removed that class outright**: the kick is a
+  `repository_dispatch` and the developer's start/resume is an assignment,
+  and prose cannot fire either. The convention still applies to the tokens
+  that remain (`COMMAND_TOKENS`) — `PAUSE_SPRINT`,
+  `CONFLICT_REQUIRES_OWNER_DECISION`, `@acceptance-failure`,
+  `@improvement`. So a note that has to name one still carries
+  `<!-- nyxgpt-autopilot-informational -->` (`AUTOPILOT_INFO_MARKER`) or
+  `<!-- nyxgpt-token-mention -->`, which the shared gate
+  (`.github/actions/comment-token-gate`, backed by
+  `scripts/agents/lib/comment_tokens.py`) treats as disqualifying for the
+  whole comment; and since #3790 that gate honours a token only where it
+  *opens a line*, so a mid-sentence mention is inert even unmarked. When
+  adding any agent-posted status comment, follow the same rule -- and see
+  `docs/agent-comment-tokens.md`.
 - **Human override stays.** A dispatch sent by the owner runs unscoped
   (`developer_pull_next_issue.yml`), and assigning the developer agent to an
   issue directly starts it outright -- so the owner can deliberately pull
@@ -319,7 +327,7 @@ state parks with a note that says exactly which state it is:
 
 | State | Meaning | What the note says |
 | --- | --- | --- |
-| `continue` | open Backlog work remains | kick, `READY_FOR_NEXT_ISSUE` |
+| `continue` | open Backlog work remains | kick (the `dispatch-next-issue` event) |
 | `work_in_flight` | Backlog empty, issues still open (In Progress / In Review) | "parked, work still in flight" -- **not** completion |
 | `awaiting_acceptance` | every item closed, not all accepted | "agentic work complete; awaiting owner acceptance", lists the items |
 | `sprint_complete` | every item accepted and in **For Release** | "sprint complete" |
@@ -348,8 +356,9 @@ An In Progress issue is **parked** when it has (a) no open PR closing it and
 earlier behind a `Blocked by: #N` gate, or when its runs died in an
 incident. On every kick, before any park, the loop scans the active
 sprint's In Progress issues and, for **one** parked issue whose declared
-blockers are all closed, posts the same `RETRY_IMPLEMENTATION` trigger a
-human would. One resume per kick cycle: each merge opens one gate, and the
+blockers are all closed, re-assigns the developer agent to it -- the same act
+a human would perform (#3882) -- leaving a budget-marked comment as the
+record. One resume per kick cycle: each merge opens one gate, and the
 next merge kicks again, so a sequenced chain walks itself.
 
 - **Nothing is dropped silently.** Parked issues whose blockers are still
@@ -372,9 +381,9 @@ next merge kicks again, so a sequenced chain walks itself.
   that lands, delete the parser and read dependencies natively.
 
 **Why this exists:** the Sprint 8 cloud chain (#3509 -> #3510 -> #3513 ->
-#3514/#3515/#3516) was hand-walked by a human posting
-`RETRY_IMPLEMENTATION` at each gate opening. Owner requirement: **no
-babysitting -- the loop drives its own chain.**
+#3514/#3515/#3516) was hand-walked by a human re-dispatching the developer
+at each gate opening. Owner requirement: **no babysitting -- the loop drives
+its own chain.**
 
 ## Sprint reporting and reorganization (#3480)
 
