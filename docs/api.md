@@ -638,9 +638,15 @@ Returns the current value of every wizard-editable field, grouped by
 section, plus schema metadata (which fields are secret, and which need a
 restart or observability reconciliation) and `stale_keys` (config.ini drift
 -- keys present on disk but no longer declared in `example.config.ini`).
-Secret fields (`auth.api_key`, `error_tracking.dsn`, `error_tracking.
-admin_password`, `monitoring.grafana_admin_password`, ...) are never
-returned in cleartext.
+Secret fields (`auth.api_key`, `error_tracking.dsn`,
+`error_tracking.admin_password`, `monitoring.grafana_admin_password`,
+`monitoring.slack_webhook_url`, `monitoring.slack_bot_token`) are never
+returned in cleartext -- each comes back as a `{"set": bool, "masked":
+string|null}` pair instead. That set is not a hand-kept list: any key this
+codebase already treats as sensitive elsewhere (pushed to a GitHub Actions
+secret by `nyxgpt ops secrets-sync`, redacted in the effective-config
+summary, or walked by `nyxgpt secrets setup`) must be declared secret here,
+and `tests/unit/test_wizard_secret_classification.py` fails if one is not.
 
 **Response (abbreviated -- the real response covers all ~20 sections):**
 

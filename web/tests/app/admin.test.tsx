@@ -1844,6 +1844,84 @@ describe('AdminPage Component', () => {
       );
     });
 
+    it('renders the Slack bot token as a masked secret and leaves it alone when not retyped (#3947)', async () => {
+      // The backend now declares `[monitoring] slack_bot_token` secret=True,
+      // so it arrives as {set, masked} instead of the cleartext string it
+      // used to be. Nothing in this file is field-specific -- the generic
+      // extras path drives it off `f.secret` -- but that genericity is
+      // exactly what made the defect invisible, so the field the leak
+      // happened through is pinned here rather than assumed covered.
+      let capturedBody: Record<string, Record<string, unknown>> | undefined;
+      const schemaWithBotToken = [
+        SCHEMA_WITH_EXTRAS[0],
+        {
+          ...SCHEMA_WITH_EXTRAS[1],
+          fields: [
+            ...SCHEMA_WITH_EXTRAS[1].fields,
+            { key: 'slack_bot_token', secret: true, restart_components: [], observability: false },
+          ],
+        },
+      ];
+      server.use(
+        http.get('/api/v1/config/sections', () =>
+          HttpResponse.json({
+            sections: {
+              ...SECTIONS_WITH_EXTRAS,
+              monitoring: {
+                ...SECTIONS_WITH_EXTRAS.monitoring,
+                slack_bot_token: { set: true, masked: 'xoxb****9876' },
+              },
+            },
+            schema: schemaWithBotToken,
+            field_defaults: {},
+            stale_keys: {},
+          })
+        ),
+        http.post('/api/v1/config/sections', async ({ request }) => {
+          capturedBody = (await request.json()) as Record<string, Record<string, unknown>>;
+          return HttpResponse.json({
+            applied: capturedBody,
+            sections: SECTIONS_WITH_EXTRAS,
+            field_defaults: {},
+            stale_keys: {},
+            restart_required: [],
+            observability_reconciled: false,
+            observability_result: null,
+          });
+        })
+      );
+
+      await goToMoreStep();
+
+      const tokenInput = screen.getByLabelText('Slack Bot Token') as HTMLInputElement;
+      expect(tokenInput).toHaveAttribute('type', 'password');
+      expect(tokenInput).toHaveValue('');
+      expect(tokenInput).toHaveAttribute(
+        'placeholder',
+        'Set (xoxb****9876) -- leave blank to keep'
+      );
+
+      // Change something else, then save without touching the token.
+      fireEvent.change(screen.getByLabelText('Embedding Cache Dir'), {
+        target: { value: '/somewhere/else' },
+      });
+
+      await clickNext(1);
+      await waitFor(() => {
+        expect(screen.getByRole('heading', { name: 'Review Configuration' })).toBeInTheDocument();
+      });
+      // Summary shows the masked preview, never a value.
+      expect(screen.getByText('xoxb****9876')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
+
+      await waitFor(() => {
+        expect(capturedBody?.cache).toBeDefined();
+      });
+      // Untouched secret is omitted entirely, so the on-disk token survives.
+      expect(capturedBody?.monitoring?.slack_bot_token).toBeUndefined();
+    });
+
     it('names every service a field goes stale on, not just the first (#3806)', async () => {
       // Nothing in the shipped classification is restart-required for two
       // tiers at once today, but the classification is data the backend owns

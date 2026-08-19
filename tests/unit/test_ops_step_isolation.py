@@ -16,13 +16,22 @@ Two guards live here:
 * a guard/fault-injection pair (the #3753 template) proving the patching is
   load-bearing -- the same install with one step left real does reach the
   filesystem, so the guard above cannot pass vacuously.
+
+`ops.env_sync()` is a step list too, and its tests never adopted that
+convention: they call it directly with a `tmp_path` config, which isolates
+nothing about the two machine-facing things its "sync grafana slack webhook
+secret" step does (#3947). Those two are neutralized for the whole unit suite
+by `_isolate_grafana_secret_files` / `real_restart_grafana_if_running` in
+`conftest.py`; the guards at the bottom of this file are what keeps that true.
 """
 
 from __future__ import annotations
 
+import subprocess
 from contextlib import ExitStack
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from ops_step_isolation import (
@@ -150,3 +159,78 @@ def test_an_unpatched_terraform_step_really_would_reach_the_machine(monkeypatch,
 
     assert all(r.ok for r in results)
     assert (tmp_path / ".nyxGPT" / "self_heal_state.json").exists()
+
+
+def _env_sync_invocation(tmp_path, monkeypatch) -> MagicMock:
+    """A `nyxgpt ops env-sync` whose every *declared* path is under `tmp_path`.
+
+    Which is the whole point: `env_sync` takes `--config` and `--env-file` and
+    nothing else, so a test can look fully isolated and still have the slack
+    webhook step write the invoking machine's `~/.nyxGPT/secrets` -- the path
+    for that is derived from `Path.home()`, not from anything passed in.
+    `_sync_packaged_resources` is patched out because it resolves the *other*
+    real-home constant (`ops.NYXGPT_HOME`); it is not what these two guards are
+    about.
+    """
+    cfg_path = tmp_path / "config.ini"
+    cfg_path.write_text(
+        "[monitoring]\nenabled = true\n"
+        "slack_webhook_url = https://hooks.slack.com/services/T000/B000/isolated\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ops, "COMPOSE_CONFIG_FILE", tmp_path / "config.docker.ini")
+    monkeypatch.setattr(ops, "_sync_packaged_resources", lambda: [ops.OpsResult(True, "synced")])
+
+    args = MagicMock()
+    args.config = str(cfg_path)
+    args.env_file = str(tmp_path / ".env")
+    args.quiet = True
+    return args
+
+
+def test_env_sync_writes_the_grafana_slack_secret_outside_the_real_home(tmp_path, monkeypatch):
+    """`env_sync` must not write the running machine's Slack webhook secret (#3947).
+
+    Running the unit suite on a machine with a webhook configured used to
+    overwrite `~/.nyxGPT/secrets/slack-webhook-url` -- with the *unconfigured*
+    placeholder, whenever the test's config carried no webhook -- and the value
+    is not recoverable from Slack, which shows an incoming-webhook URL once.
+
+    The second assertion is what keeps the first from passing vacuously: the
+    step really does perform the write, it just lands in `tmp_path` now.
+    """
+    args = _env_sync_invocation(tmp_path, monkeypatch)
+    secret_path = ops._slack_webhook_secret_path()
+
+    assert Path.home() not in secret_path.parents
+    assert ops.env_sync(args) == 0
+    assert (
+        secret_path.read_text(encoding="utf-8").strip()
+        == "https://hooks.slack.com/services/T000/B000/isolated"
+    )
+
+
+def test_env_sync_never_restarts_the_machines_own_grafana(tmp_path, monkeypatch):
+    """`env_sync` must not reach the live Docker daemon (#3947).
+
+    Injects the exact condition that made this class visible -- a `grafana`
+    container present and never coming back healthy. Unstubbed,
+    `_sync_grafana_slack_webhook_secret` restarts it and polls for two minutes
+    before returning 2, so every `env_sync` test on that machine fails
+    `assert rc == 0` for a reason none of them is about. That is what cost
+    #3947 three verification runs, under two different-looking symptoms.
+    """
+    args = _env_sync_invocation(tmp_path, monkeypatch)
+    commands: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(list(cmd))
+        return subprocess.CompletedProcess(list(cmd), 0, "", "")
+
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "restarting"})
+    monkeypatch.setattr(ops, "_wait_for_grafana_healthy", lambda: False)
+    monkeypatch.setattr(ops, "_run", fake_run)
+
+    assert ops.env_sync(args) == 0
+    assert [c for c in commands if c[-2:] == ["restart", "grafana"]] == []

@@ -18,6 +18,19 @@ name: Config Wizard Save Smoke
 # pre-fix matcher and the unchecked write and asserts the API *does* break, so
 # the job cannot pass vacuously on a build that never fixed anything (#3753's
 # fault-injection rule), then asserts the shipped code passes.
+#
+# The same job now also answers the mirror-image question about that same
+# endpoint and that same key (#3947):
+#
+#   Does a browser opening the Configuration Wizard get `[monitoring]
+#   slack_bot_token` back in cleartext?
+#
+# It did: the field was declared `secret=False`, so `read_sections` returned
+# the live token on every load. The script removes the secret override,
+# rebuilds the schema and requires the running API to leak the seeded token,
+# then requires the shipped build to answer `{set, masked}` instead -- over a
+# real HTTP response, against the uppercase `SLACK_BOT_TOKEN` spelling a user
+# actually has on disk.
 
 on:
   pull_request:
@@ -64,5 +77,7 @@ jobs:
       # shape, starts a real uvicorn against it, clicks Remove then Save, and
       # asserts the file still parses, the option was rewritten in place with
       # its casing intact, the API still answers, and a fresh process boots.
-      - name: A wizard save must not brick the running API
+      # It then reads the wizard's own load request off the wire and asserts
+      # the Slack bot token is not in it (#3947).
+      - name: A wizard save must not brick the running API, or hand out its token
         run: python3 scripts/config-wizard-save-smoke.py

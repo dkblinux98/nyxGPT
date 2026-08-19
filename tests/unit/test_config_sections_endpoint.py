@@ -3,7 +3,10 @@
 `GET|POST /api/v1/config/sections` and `POST /api/v1/config/restart`.
 
 All tests redirect config.ini to a temp path via `nyxgpt.app._config_file_path`
-so they never touch the real `~/.nyxGPT/config.ini`.
+so they never touch the real `~/.nyxGPT/config.ini`, and stub observability
+reconciliation so a save cannot reach the host -- see
+`_no_observability_reconciliation`, which exists because that second half was
+missing and a single test cost three verification runs (#3947).
 """
 
 from __future__ import annotations
@@ -86,6 +89,33 @@ def _isolated_config(tmp_path, monkeypatch):
     config_module._CACHED_CFG = None
     config_module._CACHED_PATH = None
     config_module._CACHED_MTIME_NS = None
+
+
+@pytest.fixture(autouse=True)
+def _no_observability_reconciliation(monkeypatch):
+    """Keep a wizard save in this file from reaching the real host (#3947).
+
+    `POST /config/sections` calls `ops.reconcile_observability` whenever the
+    payload touches a monitoring/tracing/error_tracking/log_aggregation
+    `enabled` flag, and that function is not a stub: it creates bind-mount
+    directories, writes `.env` and runs `docker compose up` on whatever
+    machine the test happens to be on. `_isolated_config` redirects
+    `app._config_file_path`, but that redirect does not reach `ops`, which
+    resolves `Path.home() / ".nyxGPT"` for itself.
+
+    One test here posted `{"monitoring": {"enabled": True, ...}}` and so
+    started the observability stack mid-suite, leaving Grafana crash-looping;
+    the *next* Docker-touching unit test (`test_env_sync_generates_compose_config`)
+    then waited two minutes on its health and failed. That failure looked
+    transient and unrelated three separate times. The two tests that are
+    genuinely *about* reconciliation patch this same attribute themselves and
+    layer over this stub unchanged.
+    """
+    monkeypatch.setattr(
+        app_module.ops_module,
+        "reconcile_observability",
+        lambda enable: [OpsResult(True, "stubbed: no host reconciliation in unit tests")],
+    )
 
 
 def test_get_sections_returns_schema_and_values(_isolated_config):
@@ -175,6 +205,62 @@ def test_post_sections_never_echoes_secret_value(_isolated_config):
     assert "topsecret123" not in resp.text
     assert data["sections"]["auth"]["api_key"]["set"] is True
     assert data["applied"]["auth"]["api_key"] == {"set": True, "masked": "tops****t123"}
+
+
+def test_get_sections_does_not_hand_the_slack_bot_token_to_the_browser(_isolated_config):
+    """#3947: the wizard's GET is the surface the token actually leaked through.
+
+    `[monitoring] slack_bot_token` was declared `secret=False`, so
+    `read_sections` returned it verbatim -- into the page, into page state,
+    and back out on every save. The classification guard lives in
+    `test_wizard_secret_classification.py`; this asserts the HTTP response
+    itself, because that is what a browser (or a proxy, or a log) sees.
+    """
+    _isolated_config.write_text(
+        "[ollama]\nbase_url = http://localhost:11434\n"
+        "[monitoring]\nslack_bot_token = xoxb-000000-live-bot-token\n",
+        encoding="utf-8",
+    )
+    client = TestClient(app)
+    resp = client.get("/api/v1/config/sections")
+    assert resp.status_code == 200
+    assert "xoxb-000000-live-bot-token" not in resp.text
+    assert resp.json()["sections"]["monitoring"]["slack_bot_token"]["set"] is True
+
+
+def test_saving_without_retyping_the_slack_bot_token_keeps_it(_isolated_config):
+    """The wizard posts "" for a secret the user didn't retype -- it must survive.
+
+    Flipping a live field to `secret=True` changes what the browser sends;
+    this is the half that proves an existing user's token is not blanked by a
+    plain Save (#3947).
+
+    The save deliberately edits `grafana_ui_url` rather than `enabled`:
+    `enabled` carries `observability=True`, so posting it would call the real
+    `ops.reconcile_observability` and start Docker on the test host. It proves
+    the same thing -- a genuine write to the same section, alongside a blank
+    secret -- without that. `_no_observability_reconciliation` guards the file
+    as a whole; this keeps the test itself honest about what it exercises.
+    """
+    _isolated_config.write_text(
+        "[ollama]\nbase_url = http://localhost:11434\n"
+        "[monitoring]\ngrafana_ui_url = http://localhost:3001\n"
+        "slack_bot_token = xoxb-000000-live-bot-token\n",
+        encoding="utf-8",
+    )
+    client = TestClient(app)
+    resp = client.post(
+        "/api/v1/config/sections",
+        json={"monitoring": {"grafana_ui_url": "http://localhost:3009", "slack_bot_token": ""}},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["observability_reconciled"] is False
+    assert "xoxb-000000-live-bot-token" not in resp.text
+    on_disk = _isolated_config.read_text(encoding="utf-8")
+    # The save really happened...
+    assert "http://localhost:3009" in on_disk
+    # ...and the untyped secret came through it untouched.
+    assert "xoxb-000000-live-bot-token" in on_disk
 
 
 def test_post_sections_triggers_observability_reconciliation(_isolated_config):
@@ -284,7 +370,10 @@ def test_restart_status_empty_with_no_pending_restart(_isolated_config):
 def test_restart_status_reports_the_wrapped_command_and_session_impact(_isolated_config):
     """The notice tells the user the CLI equivalent and warns before dropping their session (#3806)."""
     client = TestClient(app)
-    client.post("/api/v1/config/sections", json={"auth": {"api_key": "rotated-key"}})
+    client.post(
+        "/api/v1/config/sections",
+        json={"auth": {"api_key": "rotated-key"}},  # pragma: allowlist secret
+    )
 
     data = client.get("/api/v1/infra/restart-status").json()
     assert data["pending"]["web"]["keys"] == ["auth.api_key"]

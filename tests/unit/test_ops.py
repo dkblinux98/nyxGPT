@@ -10480,24 +10480,28 @@ def test_ops_doctor_flags_glitchtip_secrets_issues(monkeypatch, capsys, tmp_path
 
 
 @pytest.mark.unit
-def test_restart_grafana_if_running_skips_without_docker(monkeypatch):
+def test_restart_grafana_if_running_skips_without_docker(
+    monkeypatch, real_restart_grafana_if_running
+):
     monkeypatch.setattr(ops, "_compose_available", lambda: False)
-    result = ops._restart_grafana_if_running()
+    result = real_restart_grafana_if_running()
     assert result.ok
     assert "Docker not found" in result.message
 
 
 @pytest.mark.unit
-def test_restart_grafana_if_running_skips_when_absent(monkeypatch):
+def test_restart_grafana_if_running_skips_when_absent(monkeypatch, real_restart_grafana_if_running):
     monkeypatch.setattr(ops, "_compose_available", lambda: True)
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
-    result = ops._restart_grafana_if_running()
+    result = real_restart_grafana_if_running()
     assert result.ok
     assert "not running" in result.message
 
 
 @pytest.mark.unit
-def test_restart_grafana_if_running_restarts_when_exited(monkeypatch):
+def test_restart_grafana_if_running_restarts_when_exited(
+    monkeypatch, real_restart_grafana_if_running
+):
     """Regression test (#3588): a crashed/exited Grafana container must still
     be restarted, not skipped -- `docker compose restart` handles a stopped
     container fine, and skipping here left Grafana dead after a from-scratch
@@ -10512,13 +10516,15 @@ def test_restart_grafana_if_running_restarts_when_exited(monkeypatch):
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(ops, "_run", fake_run)
-    result = ops._restart_grafana_if_running()
+    result = real_restart_grafana_if_running()
     assert result.ok
     assert captured_cmd["cmd"][-2:] == ["restart", "grafana"]
 
 
 @pytest.mark.unit
-def test_restart_grafana_if_running_restarts_when_running(monkeypatch):
+def test_restart_grafana_if_running_restarts_when_running(
+    monkeypatch, real_restart_grafana_if_running
+):
     monkeypatch.setattr(ops, "_compose_available", lambda: True)
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "running"})
     monkeypatch.setattr(ops, "_wait_for_grafana_healthy", lambda: True)
@@ -10529,13 +10535,13 @@ def test_restart_grafana_if_running_restarts_when_running(monkeypatch):
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(ops, "_run", fake_run)
-    result = ops._restart_grafana_if_running()
+    result = real_restart_grafana_if_running()
     assert result.ok
     assert captured_cmd["cmd"][-2:] == ["restart", "grafana"]
 
 
 @pytest.mark.unit
-def test_restart_grafana_if_running_reports_failure(monkeypatch):
+def test_restart_grafana_if_running_reports_failure(monkeypatch, real_restart_grafana_if_running):
     monkeypatch.setattr(ops, "_compose_available", lambda: True)
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "running"})
     monkeypatch.setattr(
@@ -10543,13 +10549,15 @@ def test_restart_grafana_if_running_reports_failure(monkeypatch):
         "_run",
         lambda cmd, check=False: SimpleNamespace(returncode=1, stdout="", stderr="boom"),
     )
-    result = ops._restart_grafana_if_running()
+    result = real_restart_grafana_if_running()
     assert not result.ok
     assert "boom" in result.details
 
 
 @pytest.mark.unit
-def test_restart_grafana_if_running_fails_when_never_healthy_again(monkeypatch):
+def test_restart_grafana_if_running_fails_when_never_healthy_again(
+    monkeypatch, real_restart_grafana_if_running
+):
     """A restart that leaves Grafana crash-looping (#3538) must surface as a
     failure, not a false "OK, restarted" while the container never actually
     comes back up."""
@@ -10560,7 +10568,7 @@ def test_restart_grafana_if_running_fails_when_never_healthy_again(monkeypatch):
     )
     monkeypatch.setattr(ops, "_wait_for_grafana_healthy", lambda: False)
 
-    result = ops._restart_grafana_if_running()
+    result = real_restart_grafana_if_running()
 
     assert result.ok is False
     assert "never became healthy" in result.message
@@ -14136,6 +14144,12 @@ def test_env_sync_generates_compose_config(tmp_path, monkeypatch):
     out = tmp_path / "config.docker.ini"
     monkeypatch.setattr(ops.Path, "home", lambda: home)
     monkeypatch.setattr(ops, "COMPOSE_CONFIG_FILE", out)
+    # `env_sync` also runs the "slack webhook secret" step, which writes the
+    # invoking machine's `~/.nyxGPT/secrets` and, when that write changes the
+    # file, restarts its Grafana over the live Docker daemon. Both halves are
+    # neutralized for every unit test by `_isolate_grafana_secret_files` and
+    # `real_restart_grafana_if_running` in tests/unit/conftest.py -- this test
+    # needs no stub of its own, and neither does the next one written here.
 
     args = MagicMock()
     args.config = str(cfg_path)
