@@ -300,12 +300,18 @@ picks a qualifying interpreter over it and installs cleanly.
 ### What still cannot be executed in CI
 
 The short list in [live verification in CI](live-verification-ci.md) — the
-native launchd/brew-services *operate* path, real Slack delivery, and LLM
+Docker-backed components on the hosted macOS runners (those images ship no
+Docker daemon), the setup wizard's interactive prompts, what a web panel
+*renders* on the brew path, Ollama model pulls, real Slack delivery, and LLM
 answer *quality* — plus EC2 Mac hardware, which has no hosted runner (see the
 [portability matrix](portability-matrix.md)). Those are named explicitly in
 the PR and exercised by the owner during acceptance testing; everything else
-gets run. Note what is *not* on the list: the Homebrew keg install runs on a
-real `macos-15` runner, so a formula change cannot claim macOS is untestable.
+gets run. Note what is *not* on the list: `macos-brew-smoke.yml` runs the
+Homebrew keg install *and*, since #3860, the user path after it — `nyxgpt
+--version`, `nyxgpt up`, `GET /health`, `GET /api/v1/sessions`, the web UI on
+:3000, `nyxgpt ops status`, `nyxgpt down`, `brew uninstall`/`untap` and the
+launchd residue check — on a real `macos-15` runner, so neither a formula
+change nor a macOS service-lifecycle change can claim macOS is untestable.
 
 ## Notes
 
