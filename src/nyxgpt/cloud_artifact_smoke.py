@@ -824,13 +824,21 @@ def verify_session_backend(timeout: float = 180.0) -> dict[str, Any]:
     # API would just re-report whatever store it used, which is the thing under
     # test. `cqlsh` ships inside the Cassandra image, so this needs nothing
     # installed on the instance.
+    #
+    # As root rather than through `_exec_as_target`: this is the smoke
+    # inspecting the machine, not the machine operating itself, and running it
+    # as the target user would make the check's verdict depend on that
+    # account's docker-group membership -- a different question, already
+    # answered by the bootstrap's own preflight.
     cql = (
         f"SELECT name FROM {CHAT_SESSIONS_TABLE} "
         f"WHERE name = '{SMOKE_SESSION_NAME}';"  # noqa: S608 - a fixed literal, not input
     )
-    rows = _exec_as_target(
-        f"docker exec {shlex.quote(CASSANDRA_CONTAINER)} cqlsh -e {shlex.quote(cql)}",
-        timeout=timeout,
+    rows = _combined(
+        _exec(
+            f"docker exec {shlex.quote(CASSANDRA_CONTAINER)} cqlsh -e {shlex.quote(cql)}",
+            timeout=timeout,
+        )
     )
     if SMOKE_SESSION_NAME not in rows:
         raise ArtifactSmokeFailure(
