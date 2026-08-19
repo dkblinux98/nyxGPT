@@ -73,7 +73,36 @@ def test_endpoint_survives_an_unreachable_pypi(monkeypatch):
     payload = TestClient(app).get("/api/v1/ops/release-candidate?branch=v3.0.0").json()
 
     assert payload["publishable"] is False
-    assert "Could not reach PyPI" in payload["pypi_lookup_error"]
+    assert payload["pypi_lookup_error"]
+
+
+def test_endpoint_does_not_serve_the_transport_error(monkeypatch):
+    """#3837 (CodeQL #123): the 200 response is the flow that stayed open.
+
+    The sink CodeQL names is the `return release_candidate_module.plan(...)`
+    on the success path, not the `except` branch PR #3899 redacted -- an
+    unreachable PyPI is answered 200 by design (the dashboard still renders
+    the line's state), so the leak travelled on the ordinary response.
+    """
+    host_state = "proxy.corp.internal:3128"
+
+    def explode(*args, **kwargs):
+        raise release_candidate.ReleaseCandidateError(
+            f"Could not reach PyPI at https://pypi.org/pypi/nyxgpt/json: "
+            f"ProxyError connecting via {host_state}"
+        )
+
+    monkeypatch.setattr(release_candidate, "fetch_published_versions", explode)
+    response = TestClient(app).get("/api/v1/ops/release-candidate?branch=v3.0.0")
+
+    assert response.status_code == 200
+    assert host_state not in response.text
+    # The failure is still reported -- redacting it into silence would leave
+    # the dashboard claiming an unknown next version with no reason given.
+    payload = response.json()
+    assert payload["publishable"] is False
+    assert payload["pypi_lookup_error"]
+    assert any("is unknown" in blocker for blocker in payload["blockers"])
 
 
 def test_endpoint_is_read_only():

@@ -1619,9 +1619,15 @@ def _resolve_cloud_secret(cfg: ConfigParser, key: str) -> str | None:
             f"{provider!r}: {type(exc).__name__} "
             "(enable DEBUG logging for the provider's own message)",
         )
-        _logger.debug(
-            "Cloud secret resolution failure detail for %r via %r", key, provider, exc_info=exc
-        )
+        # #3837 (CodeQL #130). The DEBUG line above this one used to repeat
+        # `provider` as a logged value, and CodeQL reads a value read out of
+        # the `secrets` config section as sensitive wherever it is written to
+        # a log (py/clear-text-logging-sensitive-data). That alert was opened
+        # by the #115 hardening in PR #3899 -- the fix for one alert built the
+        # next one. Repeating it bought nothing: the WARNING three lines up
+        # already names the same key and provider once per key, and this line
+        # exists for the exception, not the routing. Correlate on the key.
+        _logger.debug("Cloud secret resolution failure detail for %r", key, exc_info=exc)
         return ""
 
 

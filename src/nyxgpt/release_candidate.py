@@ -62,12 +62,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
 import sys
 import tomllib
 from pathlib import Path
 from typing import Any
+
+#: Where the detail this module deliberately keeps out of its return values
+#: goes instead (#3837, CodeQL #123). Not `nyxgpt.logging`'s configured
+#: logger by name: this module is imported by the CLI, the API and the
+#: ceremony, and each configures the root logger for itself -- a plain
+#: module logger lands in whichever of `cli.log` / `api.log` is in play.
+_log = logging.getLogger(__name__)
 
 #: The PyPI project acceptance installs pull from.
 PYPI_PROJECT = "nyxgpt"
@@ -659,7 +667,38 @@ def plan(
         try:
             published = fetch_published_versions()
         except ReleaseCandidateError as exc:
-            lookup_error = str(exc)
+            # #3837 (CodeQL #123, py/stack-trace-exposure). This dict is
+            # returned verbatim by `GET /ops/release-candidate`, so nothing in
+            # it may be built from a caught exception. The text this used to
+            # carry was `fetch_published_versions`'s wrapper around an
+            # `httpx.HTTPError`, whose string names whatever the transport
+            # failed on -- the resolved proxy from the API host's environment,
+            # a local trust-store path from an SSL error, a resolver failure
+            # naming internal DNS. That is host state, and the dashboard is
+            # not where it belongs.
+            #
+            # PR #3899 redacted the *raising* branch of this call in
+            # `app.py` and stopped there; this is the returning branch, and it
+            # was the flow that kept #123 open. Redaction lives here rather
+            # than at the API boundary because the boundary would have to
+            # rewrite two fields -- `pypi_lookup_error` and the `blockers`
+            # entry built from it -- duplicating this function's prose and
+            # going stale the first time either is reworded.
+            #
+            # The operator loses nothing: `configure_logging` attaches a
+            # console handler for the CLI (`cli.py`, `console=True`), so
+            # `nyxgpt release plan` prints this warning on the terminal, and
+            # the API writes it to `api.log` for `nyxgpt ops logs api`.
+            _log.warning(
+                "PyPI version lookup failed for the %s channel; "
+                "the publish plan will report the next version as unknown",
+                resolved_channel,
+                exc_info=exc,
+            )
+            lookup_error = (
+                "PyPI version lookup failed -- the transport error is in the API log "
+                "(`nyxgpt ops logs api`); `nyxgpt release plan` on the host prints it directly"
+            )
             published = []
 
     release = branch_version or declared
@@ -681,7 +720,7 @@ def plan(
     if lookup_error:
         blockers.append(
             f"PyPI lookup failed, so the next version for the {resolved_channel} channel is "
-            f"unknown: {lookup_error}"
+            f"unknown -- {lookup_error}"
         )
     elif candidate in published:
         blockers.append(
