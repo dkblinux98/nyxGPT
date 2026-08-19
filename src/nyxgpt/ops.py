@@ -84,6 +84,14 @@ from nyxgpt.release_tarball import (  # noqa: F401
     _vendor_tree,
     build_release_dist_tarball,
 )
+from nyxgpt.subprocess_bounds import (
+    LOCAL_PROBE_TIMEOUT_SECONDS,
+    PROBE_TIMEOUT_SECONDS,
+    bounded_argv,
+    timed_out,
+    timeout_message,
+    timeout_result,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -752,6 +760,16 @@ def _apply_docker_socket_hop(cmd: list[str]) -> list[str]:
     return cmd
 
 
+# The backstop bound for an ops subprocess: half an hour is far longer than
+# any real step (the slowest observed are `terraform apply` against AWS and a
+# cold `npm ci`, both minutes), and far shorter than "forever", which is what
+# every one of these calls was before #3858. It exists to stop a wedged
+# process from holding a thread for the life of the API, not to police
+# latency; callers on a polled endpoint pass `PROBE_TIMEOUT_SECONDS` instead,
+# and a call that blocks by contract passes `timeout=None` deliberately.
+DEFAULT_RUN_TIMEOUT_SECONDS = 1800.0
+
+
 def _run(
     cmd: list[str],
     *,
@@ -761,6 +779,7 @@ def _run(
     expected_message: str | None = None,
     input: str | None = None,
     env: dict[str, str] | None = None,
+    timeout: float | None = DEFAULT_RUN_TIMEOUT_SECONDS,
 ) -> subprocess.CompletedProcess[str]:
     """Run `cmd`, capturing stdout/stderr as text.
 
@@ -790,21 +809,52 @@ def _run(
     channel: `docker compose exec -e VAR` (bare, no `=value`) forwards VAR
     from this process's environment into the container without the value
     ever appearing on argv (CodeQL #105/#106).
+    Pass `timeout` to change the bound on how long this call may block, or
+    `None` to remove it (#3858). The default is a wedged-process backstop, not
+    a latency budget: `install`/`up` run `terraform apply`, `brew install` and
+    `docker pull` through here and those legitimately take minutes. Anything
+    reachable from a *polled* endpoint passes `PROBE_TIMEOUT_SECONDS` instead
+    -- see `subprocess_bounds` for why. An expired bound is reported the same
+    way any other failure is: `check=False` returns a `TIMEOUT_RETURNCODE`
+    result (see `timed_out`), `check=True` raises `CalledProcessError` with
+    that code, so no caller has to learn about `TimeoutExpired` and no handler
+    can be hit by one.
     """
     try:
         result = subprocess.run(
-            _apply_docker_socket_hop(cmd),
+            bounded_argv(_apply_docker_socket_hop(cmd), timeout),
             check=check,
             text=True,
             capture_output=True,
             input=input,
             env=env,
+            timeout=timeout,
         )
     except subprocess.CalledProcessError as e:
         _log_nonzero_exit(
             cmd, e.returncode, e.stdout, e.stderr, expected, expected_returncodes, expected_message
         )
         raise
+    except subprocess.TimeoutExpired as exc:
+        # Only a set bound can expire, but read the value back off the
+        # exception rather than asserting it: `assert` is stripped under
+        # `python -O`, and the narrowing has to hold in that build too.
+        expired = timeout if timeout is not None else exc.timeout
+        timed = timeout_result(cmd, exc, expired)
+        logger.warning(
+            f"Subprocess {timeout_message(expired)}: {' '.join(_redact_cmd(cmd))}",
+            extra={
+                "component": "ops",
+                "cmd": _redact_cmd(cmd),
+                "timeout_seconds": expired,
+                "stdout_tail": (timed.stdout or "")[-2000:],
+            },
+        )
+        if check:
+            raise subprocess.CalledProcessError(
+                timed.returncode, cmd, timed.stdout, timed.stderr
+            ) from exc
+        return timed
     if result.returncode != 0:
         _log_nonzero_exit(
             cmd,
@@ -1143,7 +1193,12 @@ def _brew_services_snapshot() -> dict[str, str]:
     """Return {brew_service_name: state} parsed from `brew services list`."""
     if _which("brew") is None:
         return {}
-    cp = _run(["brew", "services", "list"], check=False, expected=True)
+    cp = _run(
+        ["brew", "services", "list"],
+        check=False,
+        expected=True,
+        timeout=LOCAL_PROBE_TIMEOUT_SECONDS,
+    )
     snapshot: dict[str, str] = {}
     for line in (cp.stdout or "").splitlines():
         parts = line.split()
@@ -1160,6 +1215,10 @@ def _docker_container_state(name: str) -> str:
         ["docker", "ps", "-a", "--filter", f"name=^{name}$", "--format", "{{.State}}"],
         check=False,
         expected=True,
+        # Polled by `/infra/status` on every dashboard refresh, and the one
+        # call here that can dial a daemon that is not answering (a socket
+        # hop to a host that stopped responding). Bounded tightly (#3858).
+        timeout=PROBE_TIMEOUT_SECONDS,
     )
     out = (cp.stdout or "").strip()
     return out.splitlines()[0].strip() if out else "absent"
@@ -3496,7 +3555,10 @@ def _systemd_services_snapshot() -> dict[str, str]:
         if not (unit_dir / f"{unit}.service").exists():
             continue
         cp = _run(
-            ["systemctl", "--user", "is-active", f"{unit}.service"], check=False, expected=True
+            ["systemctl", "--user", "is-active", f"{unit}.service"],
+            check=False,
+            expected=True,
+            timeout=LOCAL_PROBE_TIMEOUT_SECONDS,
         )
         state = (cp.stdout or "").strip()
         snapshot[unit] = "started" if state == "active" else "none"
@@ -4002,7 +4064,9 @@ def _launchd_agent_loaded(label: str) -> bool:
     if _which("launchctl") is None:
         return False
     try:
-        cp = _run(["launchctl", "list"], check=False, expected=True)
+        cp = _run(
+            ["launchctl", "list"], check=False, expected=True, timeout=LOCAL_PROBE_TIMEOUT_SECONDS
+        )
     except Exception as e:
         logger.warning(
             "Could not query launchctl list for %s: %s", label, e, extra={"component": "ops"}
@@ -6390,7 +6454,12 @@ def _ensure_kubectl_and_cluster() -> list[OpsResult]:
 
 def _kubectl_context() -> str:
     """Return kubectl's current context name (e.g. `kind-nyxgpt`, `docker-desktop`), or "" if unset."""
-    cp = _run(["kubectl", "config", "current-context"], check=False, expected=True)
+    cp = _run(
+        ["kubectl", "config", "current-context"],
+        check=False,
+        expected=True,
+        timeout=PROBE_TIMEOUT_SECONDS,
+    )
     return (cp.stdout or "").strip()
 
 
@@ -6968,7 +7037,22 @@ def _k8s_pod_states(
         + (["-l", selector] if selector else []),
         check=False,
         expected=expected,
+        # `/infra/status` polls this, so it must not be able to hold a
+        # threadpool worker on a configured-but-unreachable cluster (#3858).
+        # A single `get pods` against a cluster that *is* answering is far
+        # inside this bound, install-time waits included.
+        timeout=PROBE_TIMEOUT_SECONDS,
     )
+    if timed_out(cp):
+        # Reported as its own failure so the page says "the cluster did not
+        # answer" rather than leaving an operator to infer it from an empty
+        # pod list -- this is the "cannot determine" case (#3468), not
+        # "nothing is deployed".
+        return [], OpsResult(
+            False,
+            f"Could not read pod status: the cluster {timeout_message(PROBE_TIMEOUT_SECONDS)}",
+            _cp_details(cp),
+        )
     if cp.returncode != 0:
         return [], OpsResult(False, "Could not read pod status", _cp_details(cp))
     try:
