@@ -2253,7 +2253,7 @@ open_blocked_by_issues() {
 # -- which is a legitimate state (a machinery PR with no issue behind it),
 # and the caller decides what that means.
 pr_linked_issue() {
-  local pr="$1" q num
+  local pr="$1" q num resp
 
   q='query($owner:String!, $name:String!, $pr:Int!){
     repository(owner:$owner, name:$name){
@@ -2262,11 +2262,19 @@ pr_linked_issue() {
       }
     }
   }'
-  num="$(graphql "$q" -f owner="$REPO_OWNER" -f name="$REPO_NAME" -F pr="$pr" 2>/dev/null \
-    | jq -r '.data.repository.pullRequest.closingIssuesReferences.nodes[0].number // empty' 2>/dev/null)"
-  if [[ -n "$num" && "$num" != "null" ]]; then
-    echo "$num"
-    return 0
+  # Captured, not piped (V-043): piping discards the wrapper's exit status,
+  # so a GraphQL read that FAILED would be indistinguishable from a PR that
+  # links no issue -- and since #3862 those two mean opposite things. "No
+  # link" makes the merge skip issue-side bookkeeping deliberately; a failed
+  # read that looks like "no link" would silently leave a real issue open.
+  if resp="$(graphql "$q" -f owner="$REPO_OWNER" -f name="$REPO_NAME" -F pr="$pr" 2>/dev/null)"; then
+    num="$(echo "$resp" | jq -r '.data.repository.pullRequest.closingIssuesReferences.nodes[0].number // empty' 2>/dev/null)"
+    if [[ -n "$num" && "$num" != "null" ]]; then
+      echo "$num"
+      return 0
+    fi
+  else
+    _warn "pr_linked_issue: closingIssuesReferences read failed for PR #${pr}; falling back to the body convention"
   fi
 
   # Fallback: the body convention. Still read, never required.
