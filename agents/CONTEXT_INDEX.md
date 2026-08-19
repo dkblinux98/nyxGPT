@@ -23,6 +23,7 @@ fails if it drifts. Do not hand-edit.
 | `bulk_set_issue_status.yml` | workflow_dispatch | Bulk Set Issue Status |
 | `canary-pod-reason-smoke.yml` | pull_request, push, workflow_dispatch | Canary Pod Reason Smoke |
 | `canary-rollout-smoke.yml` | pull_request, push, workflow_dispatch | Canary Rollout Smoke |
+| `canary-track-metrics-smoke.yml` | pull_request, push, workflow_dispatch | Canary Track Metrics Smoke |
 | `ci-tests.yml` | push | CI - Tests & Type Check |
 | `claude-code-review.yml` | pull_request, issue_comment, workflow_dispatch | Claude Code Review |
 | `claude-md-binding-canary.yml` | workflow_dispatch | CLAUDE.md Binding Canary |

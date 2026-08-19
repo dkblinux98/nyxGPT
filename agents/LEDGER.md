@@ -546,7 +546,21 @@ rather than mechanism, and nothing can enforce them.
   and `test_ops_and_self_heal_never_disagree_about_whether_a_pod_is_serving`.
   Source: #3832; `docs/self-healing.md` §Pending Pods are reported, not deleted.
 
-- **D-023** · 2026-08-18 · owner (issue #3824) — **Model pulling is internal
+- **D-023** · 2026-08-18 · developer-agent — **A canary rollout gate reads
+  the canary track's own Pods, never the serving process's counters.** The
+  metrics behind `evaluate`/`promote`/`status` come from the Pods labelled
+  `track=canary`, read through the API server's Pod proxy, with `/health`
+  and `/metrics` requests excluded — kubelet probes alone would otherwise
+  carry an idle canary past `min_requests_for_evaluation` within minutes.
+  Two consequences that look like restrictions and are the point: `promote`
+  refuses a canary track measurably at zero traffic (`--force` for an idle
+  cluster), and `--component web` is reported as *not measurable* rather
+  than being given a number belonging to something else, because Next.js
+  Pods export no `/metrics`. Do not "restore" a process-wide metrics
+  snapshot here: it is the defect, not a fallback.
+  Source: #3829; `src/nyxgpt/canary.py`; `docs/kubernetes.md` §Metrics source.
+
+- **D-024** · 2026-08-18 · owner (issue #3824) — **Model pulling is internal
   bootstrap machinery, not configuration.** Every run mode pulls the configured
   chat model (`[nyxgpt] default_model`) and the configured embedding model
   (`[rag] embedding_model`) as part of bringing the stack up, unconditionally:
@@ -564,10 +578,11 @@ rather than mechanism, and nothing can enforce them.
   `tests/unit/test_k8s_manifests.py`, `scripts/first-chat-smoke.py`,
   `scripts/compose-model-prepull-smoke.sh`), per the retirement above.
   (Filed as `D-021` under #3824; renumbered on successive merges of `v3.0.0`
-  because concurrently-open branches allocated `D-021` and `D-022` first.
-  `D-023` is what `python3 scripts/agents/lib/ledger_ids.py next D --base
-  origin/v3.0.0` allocates against the current release branch. IDs are never
-  reused.)
+  because concurrently-open branches allocated `D-021`, `D-022` and `D-023`
+  first. `D-024` is what `python3 scripts/agents/lib/ledger_ids.py next D
+  --base origin/v3.0.0` allocates against the current release branch -- run,
+  not eyeballed, since a by-eye renumber against a stale base is what produced
+  an earlier collision here. IDs are never reused.)
   Source: #3824.
 
 ## Parked

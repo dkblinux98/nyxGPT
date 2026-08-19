@@ -117,6 +117,18 @@ type InfraStatus = {
       probe_available: boolean;
       deployed: boolean;
       workloads: Record<string, string>;
+      // The same three states the Pod list above badges (#3827). Without it
+      // this section rendered raw `"0/1 ready"`/`"1/1 ready"`/`"absent"`
+      // strings in undifferentiated grey -- a workload that is up, one still
+      // rolling out and one that never deployed all looked identical, on the
+      // same card that badges every Pod READY/PENDING/FAILED. Optional, so an
+      // older api falls back to those plain lines.
+      workload_states?: {
+        name: string;
+        state: 'ready' | 'pending' | 'failed' | string;
+        summary: string;
+        details: string;
+      }[];
       port_forward_command: string;
     };
   };
@@ -817,7 +829,37 @@ export default function InfrastructurePage() {
                   </div>
                   {status.kubernetes.observability?.deployed ? (
                     <>
-                      <ComponentList components={status.kubernetes.observability.workloads} />
+                      {status.kubernetes.observability.workload_states &&
+                      status.kubernetes.observability.workload_states.length > 0 ? (
+                        /* Badged with the same three states as the Pods above (#3827):
+                           `0/1 ready` is PENDING, not a quiet grey line the operator
+                           has to interpret against a Pod list that already ruled on
+                           the same condition two sections up. */
+                        <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: '0.875rem' }}>
+                          {status.kubernetes.observability.workload_states.map((workload) => (
+                            <li
+                              key={workload.name}
+                              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', padding: '3px 0' }}
+                            >
+                              <span>{workload.name}</span>
+                              <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                <span style={{ color: 'var(--foreground-muted)', fontFamily: 'monospace', fontSize: '0.8rem' }}>
+                                  {workload.summary}
+                                </span>
+                                <span style={podStateBadgeStyle(workload.state)}>
+                                  {workload.state === 'ready'
+                                    ? 'READY'
+                                    : workload.state === 'pending'
+                                      ? 'PENDING'
+                                      : 'FAILED'}
+                                </span>
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <ComponentList components={status.kubernetes.observability.workloads} />
+                      )}
                       <p style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)', marginTop: '0.5rem' }}>
                         Services are ClusterIP-only. Publish Grafana, Prometheus, Jaeger and
                         GlitchTip on the ports this dashboard links to with{' '}

@@ -3255,6 +3255,21 @@ def test_cloud_credentials_setup_dispatch_defaults(monkeypatch: pytest.MonkeyPat
 # --- canary command dispatch ---
 
 
+def _unattributable_track_metrics(track: str) -> dict:
+    """A `canary.status()` metrics block for a track whose traffic cannot be attributed."""
+    return {
+        "track": track,
+        "attributable": False,
+        "reason": "no reachable Kubernetes cluster",
+        "source": "",
+        "pods_ready": 0,
+        "pods_scraped": 0,
+        "total_requests": 0,
+        "error_rate_percent": 0.0,
+        "p95_latency_ms": 0.0,
+    }
+
+
 def test_canary_status(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     import nyxgpt.cli as cli_mod
 
@@ -3268,9 +3283,26 @@ def test_canary_status(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFi
             "stable": {"state": "healthy", "message": "stable ok", "version": "1.0.0"},
             "canary": {"state": "unhealthy", "message": "canary not ready", "version": ""},
             "metrics": {
+                "track": "canary",
+                "attributable": True,
+                "reason": "",
+                "source": "pods",
+                "pods_ready": 1,
+                "pods_scraped": 1,
                 "total_requests": 100,
                 "error_rate_percent": 1.5,
                 "p95_latency_ms": 42.0,
+            },
+            "stable_metrics": {
+                "track": "stable",
+                "attributable": False,
+                "reason": "the stable track has no ready Pods",
+                "source": "",
+                "pods_ready": 0,
+                "pods_scraped": 0,
+                "total_requests": 0,
+                "error_rate_percent": 0.0,
+                "p95_latency_ms": 0.0,
             },
             "history": ["start at 10%"],
             "mode": "kubernetes",
@@ -3287,7 +3319,10 @@ def test_canary_status(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFi
     assert "namespace=test-ns" in out
     assert "stable: healthy - stable ok, version=1.0.0" in out
     assert "canary: unhealthy" in out
-    assert "100 requests" in out
+    # Track-scoped (#3829): the canary line is the gate's own input, and the
+    # stable track reads as a stated reason rather than a borrowed number.
+    assert "canary-track metrics: 100 requests across 1 Pod(s)" in out
+    assert "stable-track metrics: unavailable - the stable track has no ready Pods" in out
     assert "start at 10%" in out
 
 
@@ -3305,7 +3340,8 @@ def test_canary_status_notes_mode_when_unsupported(
             "weight_percent": 0,
             "stable": {"state": "not_deployed", "message": "no cluster", "version": ""},
             "canary": {"state": "not_deployed", "message": "no cluster", "version": ""},
-            "metrics": {"total_requests": 0, "error_rate_percent": 0.0, "p95_latency_ms": 0.0},
+            "metrics": _unattributable_track_metrics("canary"),
+            "stable_metrics": _unattributable_track_metrics("stable"),
             "history": [],
             "mode": "terraform",
             "mode_supported": False,
@@ -3391,8 +3427,8 @@ def test_canary_promote(
 
     calls: list[dict] = []
 
-    def fake_promote(*, namespace, step_percent, total_replicas, component="api"):
-        calls.append({"step_percent": step_percent})
+    def fake_promote(*, namespace, step_percent, total_replicas, component="api", force=False):
+        calls.append({"step_percent": step_percent, "force": force})
         return OpsResult(True, "Promoted canary to 30%")
 
     monkeypatch.setattr(cli_mod.canary_mod, "promote", fake_promote)
@@ -3401,6 +3437,11 @@ def test_canary_promote(
 
     assert exit_code == 0
     assert calls[0]["step_percent"] == 10
+    # The no-traffic gate is on unless the operator opts out (#3829).
+    assert calls[0]["force"] is False
+
+    assert cli(["canary", "promote", "--namespace", "test-ns", "--force"]) == 0
+    assert calls[1]["force"] is True
     assert "[OK] Promoted canary to 30%" in capsys.readouterr().out
 
 
@@ -3438,7 +3479,8 @@ def test_canary_status_uses_config_namespace(
             "weight_percent": 0,
             "stable": {"state": "healthy", "message": "ok", "version": "1.0.0"},
             "canary": {"state": "healthy", "message": "ok", "version": "1.0.0"},
-            "metrics": {"total_requests": 0, "error_rate_percent": 0.0, "p95_latency_ms": 0.0},
+            "metrics": _unattributable_track_metrics("canary"),
+            "stable_metrics": _unattributable_track_metrics("stable"),
             "history": [],
             "mode": "kubernetes",
             "mode_supported": True,
