@@ -132,12 +132,14 @@ def step_funcs_from_source(func: Callable[..., Any], extra: Sequence[str] = ()) 
     """
     source = textwrap.dedent(inspect.getsource(func))
     tree = ast.parse(source)
-    # Steps defined INSIDE the function under test (the terraform path's
-    # `_resolve_images` is one) are locals, not module attributes, so no
-    # caller can patch them by name -- enumerating them would only produce a
-    # list entry that `patch.object(ops, ...)` raises on. They are a real hole
-    # in this isolation (a nested step still runs for real), but a hole this
-    # guard cannot close: closing it means lifting the step to module scope.
+    # Steps defined INSIDE the function under test are locals, not module
+    # attributes, so no caller can patch them by name -- enumerating them would
+    # only produce a list entry that `patch.object(ops, ...)` raises on. They
+    # are a real hole in this isolation (a nested step still runs for real),
+    # but a hole this guard cannot close: closing it means lifting the step to
+    # module scope. The terraform path's `_resolve_images` was exactly that
+    # case, until #3863 lifted it to module scope so it could be patched; any
+    # future nested step lands here again and is surfaced, not silently run.
     local_defs = {
         node.name
         for node in ast.walk(tree)

@@ -285,12 +285,22 @@ jobs:
           # Only the automatic paths are gated. A human trigger
           # (@approve-merge / @request-changes / @send-to-developer) on a
           # merged PR is deliberate and still runs.
+          #
+          # The read fails open on purpose: `|| echo ""` leaves $PR_MERGED
+          # empty on an API blip and the round proceeds, which is exactly the
+          # behaviour of every round before this guard existed. Failing closed
+          # would jam every review cycle in the pipeline on a transient GitHub
+          # outage to prevent a rare duplicate. Do not "fix" this into a hard
+          # failure.
           if [[ "$TRIGGER_TYPE" == "auto" && "$DECISION" != "ALREADY_HANDLED" ]]; then
-            PR_NUM="${{ steps.get_pr.outputs.pr_number }}"
-            PR_MERGED=$(gh api "repos/${{ github.repository }}/pulls/$PR_NUM" \
+            # $PR comes from this step's env: block (steps.get_pr.outputs.pr_number).
+            # A step output must never be interpolated into a run: body -- it is
+            # shell source at that point, not data (#3820/#3837, the
+            # no-interpolation-in-script-bodies guard).
+            PR_MERGED=$(gh api "repos/${{ github.repository }}/pulls/$PR" \
               --jq '.merged|tostring' 2>/dev/null || echo "")
             if [[ "$PR_MERGED" == "true" ]]; then
-              echo "::notice::PR #$PR_NUM is already merged; skipping the automatic $DECISION round (stale or concurrent review)"
+              echo "::notice::PR #$PR is already merged; skipping the automatic $DECISION round (stale or concurrent review)"
               DECISION="ALREADY_HANDLED"
             fi
           fi

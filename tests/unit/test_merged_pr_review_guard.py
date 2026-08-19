@@ -76,7 +76,13 @@ class TestMergedPullRequestsAreInert:
     """The execute-decision workflow must refuse automatic rounds on a merge."""
 
     def test_the_merged_state_is_read(self, parse_step: str):
-        assert re.search(r"pulls/\$PR_NUM.*--jq\s+'\.merged", parse_step, re.S), (
+        # `$PR` is the step's own env: binding of steps.get_pr.outputs.pr_number.
+        # It is deliberately NOT `${{ steps.get_pr.outputs.pr_number }}`: a step
+        # output interpolated into a run: body is shell source, which is the
+        # #3820/#3837 class the no-interpolation-in-script-bodies guard fails on.
+        assert re.search(
+            r"pulls/\$PR\"\s*(?:\\\s*)?--jq\s+'\.merged\|tostring'", parse_step, re.S
+        ), (
             "parse_decision never asks whether the PR is already merged, so a "
             "stale verdict is executed against it (#3815)"
         )
