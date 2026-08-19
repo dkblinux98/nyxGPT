@@ -9,9 +9,9 @@ read [Installing nyxGPT](ops.md#installing-nyxgpt) and
 web UI serves them under **Support → Docs** — the same documents, matching the
 version you are running, readable with no checkout and no internet. The
 Support menu's other item, **File an Issue**, offers one entry per ticket type
-and opens a report form prefilled with that type, your version and your
-platform (it needs internet and a GitHub account). See
-[ui.md](ui.md#support-menu).
+and opens a report form in the app: nyxGPT files the ticket for you, with your
+version and platform already attached, and links you to it (filing needs
+internet). See [ui.md](ui.md#support-menu).
 
 Documents about how this repository *builds itself* — the agent loop, CI
 process, contributor setup — are not product documentation and are not

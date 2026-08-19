@@ -68,6 +68,24 @@ class ClientErrorReportRequest(BaseModel):
     url: str | None = Field(None, max_length=2000)
 
 
+class SupportTicketRequest(BaseModel):
+    """One support ticket, as the web UI's in-app intake collects it (#3811).
+
+    The filer answers these three questions in the chat and nyxGPT files the
+    issue for them -- the version and platform are not asked, because the
+    running install already knows both (`support.environment_summary`) and a
+    user should not have to look either up.
+
+    The bounds mirror `nyxgpt.support`'s: the edge refuses an oversized body
+    before it becomes a request to GitHub, and `submit_ticket` refuses it
+    again for callers that are not this endpoint.
+    """
+
+    ticket_type: str = Field(..., min_length=1, max_length=40)
+    summary: str = Field(..., min_length=1, max_length=120)
+    description: str = Field(..., min_length=1, max_length=8000)
+
+
 class RenameRequest(BaseModel):
     """Request model for renaming a session.
 

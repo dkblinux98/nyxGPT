@@ -119,6 +119,7 @@ from nyxgpt.config import (
     get_chat_timeout_seconds,
     get_default_model,
     get_error_tracking_config,
+    get_github_pat,
     get_log_aggregation_config,
     get_monitoring_config,
     get_ollama_base_url,
@@ -2683,7 +2684,7 @@ def ops_release_candidate(
         ) from e
 
 
-# --- Support endpoints (#3745) ---
+# --- Support endpoints (#3745, #3811) ---
 #
 # The web UI's Support menu, which is the only documentation surface a user
 # who installed from PyPI or Homebrew has: they never checked the repo out,
@@ -2691,9 +2692,10 @@ def ops_release_candidate(
 # Only product documentation ships -- the agent/CI process and contributor
 # docs are not in the artifact at all (#3809, `support.DOC_SECTIONS`).
 #
-# All three are read-only. "File an Issue" is deliberately a *link* the UI
-# opens, not an endpoint that posts on the user's behalf -- see
-# `nyxgpt.support`.
+# The docs endpoints are read-only. Filing is not: `POST /support/tickets`
+# creates the issue from this install so the filer never leaves the chat
+# (#3811). It is the ONLY write on this surface, and it writes exactly one
+# thing -- a labeled issue in the product's own tracker.
 
 
 @api.get("/support/docs")
@@ -2726,9 +2728,70 @@ def support_document(_request: Request, slug: str) -> dict[str, str]:
 
 
 @api.get("/support/context")
-def support_context(_request: Request) -> dict[str, Any]:
-    """Report the running environment and the prefilled issue-form link."""
-    return support_module.support_context()
+def support_context(request: Request) -> dict[str, Any]:
+    """Report the running environment and how this install can file a ticket.
+
+    `can_submit` is the branch the Support menu takes: with a credential
+    configured the UI opens its own form and nyxGPT files the ticket; without
+    one it offers the prefilled GitHub form instead. Resolved here rather
+    than in `nyxgpt.support`, which knows nothing about configuration.
+    """
+    return support_module.support_context(can_submit=bool(get_github_pat(_req_cfg(request))))
+
+
+@api.post("/support/tickets")
+def support_file_ticket(request: Request, body: api_models.SupportTicketRequest) -> JSONResponse:
+    """File a support ticket from this install and return the created issue.
+
+    This is the surface #3811 asked for: the filer answers the questions in
+    the chat, nyxGPT posts the issue, and the response carries the ticket's
+    number and URL so the UI can congratulate them with a link instead of
+    stranding them on github.com.
+
+    Three answers, and the difference between them matters to the person
+    waiting:
+
+    * **201** -- filed. `labeled` says whether the `Support` label made it
+      onto the issue; false means the token has no push access, GitHub
+      dropped the label, and `support_intake_guard.yml` will repair it. The
+      ticket exists either way, so this is not an error.
+    * **503** -- this install has no GitHub credential, so it cannot file for
+      anyone. The body carries `issue_form_url`, because the honest answer
+      is "here is the form, prefilled" and not "no".
+    * **502** -- GitHub was reached and said no (or could not be reached).
+      `detail` is written for the filer; the underlying error is in the API
+      log.
+    """
+    token = get_github_pat(_req_cfg(request))
+    if not token:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "no_credential",
+                "detail": (
+                    "This nyxGPT install has no GitHub token configured, so it "
+                    "cannot file the ticket for you. Open the prefilled form on "
+                    "GitHub instead, or set `[github] pat` in your configuration."
+                ),
+                "issue_form_url": support_module.issue_form_url(),
+            },
+        )
+
+    try:
+        created = support_module.submit_ticket(
+            ticket_type=body.ticket_type,
+            summary=body.summary,
+            description=body.description,
+            token=token,
+        )
+    except ValueError as e:
+        # The filer's own input -- an unknown ticket type, a blank field. A
+        # 400 with the reason, not a 500.
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except support_module.SupportTicketError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+    return JSONResponse(status_code=201, content={"status": "filed", **created})
 
 
 # --- Model management endpoints ---
