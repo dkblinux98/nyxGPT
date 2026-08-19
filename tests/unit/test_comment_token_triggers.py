@@ -92,21 +92,25 @@ class TestAssignmentIsTheOnlyLever:
         text = DEV_WF.read_text()
         assert not [token for token in RETIRED if token in text]
 
-    def test_the_claim_step_accepts_the_rework_lane(self):
-        """A review that requests changes hands the issue back by assigning
-        it, and it is In Review when it does -- so In Review must be
-        claimable or every rework round stalls."""
+    def test_the_claim_step_delegates_to_the_executable_decision(self):
+        """The lane and assigner rules live in `developer_claim_issue`
+        (gh_project.sh) so they can be RUN against stub state -- D-006. Inline
+        workflow YAML can only be inspected, and a second copy here would be
+        free to disagree with the tested one."""
         script = _step_scripts(
             next(s for s in _steps(_load(DEV_WF), "implement") if s.get("name") == VERIFY_STEP)
         )
-        assert "$STATUS_IN_REVIEW" in script
-        assert "$STATUS_BACKLOG" in script
+        assert 'developer_claim_issue "$ISSUE_NUMBER" "$ASSIGNER"' in script
 
-    def test_the_claim_step_refuses_an_unpermitted_assigner(self):
-        script = _step_scripts(
-            next(s for s in _steps(_load(DEV_WF), "implement") if s.get("name") == VERIFY_STEP)
-        )
-        assert "is not a permitted dispatcher" in script
+    def test_the_decision_accepts_rework_and_refuses_a_stranger(self):
+        """A review that requests changes hands the issue back by assigning
+        it, and it is In Review when it does -- so In Review must be claimable
+        or every rework round stalls."""
+        lib = (REPO_ROOT / "scripts" / "agents" / "lib" / "gh_project.sh").read_text()
+        body = lib.split("developer_claim_issue() {", 1)[1].split("\n}", 1)[0]
+        assert '"$STATUS_BACKLOG" | "$STATUS_IN_REVIEW"' in body
+        assert "is not a permitted dispatcher" in body
+        assert "claude[bot]" in body
 
 
 class TestStopMessageIsTokenFree:

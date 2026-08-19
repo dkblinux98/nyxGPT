@@ -2402,6 +2402,66 @@ If rework is genuinely needed, it is a **new issue**: a closed issue means the w
   _debug "Assigned developer to #$issue - workflow will trigger via assignment event"
 }
 
+# The other end of the same lever (#3882): the developer agent claiming an
+# issue it has just been assigned. Assignment IS the dispatch, and the actor
+# doing the work owns the status transition -- exactly as a person would put
+# a card in progress when they pick it up, rather than requiring a second
+# actor to stage the board and then announce it in a comment.
+#
+# Prints the status to proceed under; returns
+#   0  proceed (already In Progress, or claimed into it now)
+#   3  refuse  (the caller stops the run; this is a policy stop, not a failure)
+#
+# What it refuses, and why each one is not an oversight:
+#   * a lane that means "held" -- `Acceptance Failed` and `Acceptance Testing`
+#     are owner signal (D-001/D-008) and being assigned does not release them;
+#     `For Release` is finished work;
+#   * an issue that is not on the board at all -- there is no state to claim;
+#   * an assigner who is not a permitted identity, so a stray assignment by
+#     anyone else leaves the issue exactly as it was.
+#
+# Lives here rather than inline in developer_auto_implement.yml so the
+# decision can be executed against stub state (tests/test_gh_project_lib.sh,
+# run on a runner by assignment-dispatch-smoke.yml) instead of only read.
+developer_claim_issue() {
+  local issue="$1" assigner="${2:-}"
+  local status
+
+  status="$(issue_status "$issue")"
+  if [[ -z "$status" ]]; then
+    echo "::warning::Issue #${issue} not found in project." >&2
+    return 3
+  fi
+  echo "::notice::Issue #${issue} status=${status}" >&2
+
+  if [[ "$status" == "$STATUS_IN_PROGRESS" ]]; then
+    echo "$status"
+    return 0
+  fi
+
+  # Backlog is new work; In Review is rework handed back by a review round,
+  # a huddle decision, a conflict round or a human override.
+  case "$status" in
+    "$STATUS_BACKLOG" | "$STATUS_IN_REVIEW") ;;
+    *)
+      echo "::warning::Status '${status}' is not claimable by assignment." >&2
+      return 3
+      ;;
+  esac
+
+  case "$assigner" in
+    "$HUMAN_OWNER" | "$SCRUM_AGENT" | "$REVIEW_AGENT" | "$DEV_AGENT" | "claude[bot]") ;;
+    *)
+      echo "::warning::Assigner '${assigner}' is not a permitted dispatcher." >&2
+      return 3
+      ;;
+  esac
+
+  set_issue_status "$issue" "$STATUS_IN_PROGRESS"
+  echo "::notice::Claimed #${issue}: ${status} -> ${STATUS_IN_PROGRESS} (assigned by ${assigner})" >&2
+  echo "$STATUS_IN_PROGRESS"
+}
+
 # Classifies the current claim state of a Backlog issue for
 # scrummaster_start_issue.sh's start-guard decision matrix (owner ruling,
 # 2026-08-08, #3665). The #3647 guard treated ANY existing assignee as

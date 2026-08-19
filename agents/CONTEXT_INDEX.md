@@ -19,6 +19,7 @@ fails if it drifts. Do not hand-edit.
 | `admin_label_rename.yml` | workflow_dispatch | Admin - Rename Label |
 | `admin_set_fields.yml` | workflow_dispatch | Admin Set Item Fields |
 | `assign_backlog.yml` | issues | Assign Backlog Issues to scrummaster-agent |
+| `assignment-dispatch-smoke.yml` | push, pull_request, workflow_dispatch | Assignment Dispatch Smoke |
 | `auto-check-tasklist.yml` | issues, repository_dispatch | Auto-check Release Tracking Issues |
 | `bulk_set_issue_status.yml` | workflow_dispatch | Bulk Set Issue Status |
 | `canary-pod-reason-smoke.yml` | pull_request, push, workflow_dispatch | Canary Pod Reason Smoke |

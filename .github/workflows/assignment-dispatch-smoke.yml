@@ -1,0 +1,67 @@
+name: Assignment Dispatch Smoke
+
+# Which question does this job answer? (#3775 executed verification, D-006)
+#
+#   "When the developer agent is assigned an issue, does the claim decision
+#    actually claim the lanes it should, refuse the ones it must, and refuse
+#    an assigner who is not permitted -- when RUN, not when read?"
+#
+# #3882 made assignment the workflow lever: the developer claims the issue and
+# moves it to In Progress itself, and both retired comment tokens are gone.
+# The decision that makes that safe (which lane, which assigner, and the
+# status write) is `developer_claim_issue` in scripts/agents/lib/gh_project.sh
+# -- deliberately a shell function rather than inline workflow YAML, because
+# inline YAML can only be inspected, and inspection is what this project's
+# executed-verification rule exists to stop relying on.
+#
+# tests/test_gh_project_lib.sh drives that function against stubbed board
+# state (including the `Acceptance Failed` holding lane, which must stay held
+# per D-001/D-008, and a drive-by assigner, which must change nothing) and
+# asserts the writes it makes. This job runs it on a real runner.
+#
+# What it does not cover, and cannot: GitHub actually delivering the
+# `issues.assigned` event to developer_auto_implement.yml. That needs the live
+# repository -- the agent loop exercises it on every dispatch and every review
+# hand-back, which is where it is observed.
+
+on:
+  push:
+    paths:
+      - "scripts/agents/lib/gh_project.sh"
+      - "tests/test_gh_project_lib.sh"
+      - ".github/workflows/developer_auto_implement.yml"
+      - ".github/workflows/assignment-dispatch-smoke.yml"
+  pull_request:
+    paths:
+      - "scripts/agents/lib/gh_project.sh"
+      - "tests/test_gh_project_lib.sh"
+      - ".github/workflows/developer_auto_implement.yml"
+      - ".github/workflows/assignment-dispatch-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  claim-decision:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: The claim decision, executed against stub board state
+        shell: bash
+        run: bash tests/test_gh_project_lib.sh
+
+      - name: The workflow delegates the decision rather than re-implementing it
+        # Two copies of "which lane may an assignment claim" would be free to
+        # disagree, and the tested one would be the copy nothing runs.
+        shell: bash
+        run: |
+          set -euo pipefail
+          WF=".github/workflows/developer_auto_implement.yml"
+          if ! grep -q 'developer_claim_issue "\$ISSUE_NUMBER" "\$ASSIGNER"' "$WF"; then
+            echo "::error::$WF no longer calls developer_claim_issue -- the executed test above then covers nothing the workflow uses."
+            exit 1
+          fi
+          echo "ok: the claim step calls the tested helper"
