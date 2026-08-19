@@ -142,12 +142,21 @@ jobs:
         run: |
           set -euo pipefail
           if ! git rev-parse --quiet --verify "$BASE_SHA^{commit}" >/dev/null 2>&1; then
-            echo "::notice::no usable before-sha -- linting web/src only"
-            cd web && npx eslint src
+            # No identifiable diff -- a branch-creation push sends an
+            # all-zeros `before`, which is exactly the first push of the next
+            # release line. Blocking on `eslint src` here would re-create the
+            # defect this step removes: `src` carries 17 standing errors, so
+            # that push would fail on debt it never touched. The report-only
+            # step below still surfaces the whole tree.
+            echo "::notice::no usable before-sha -- nothing identifiable to block on"
             exit 0
           fi
-          FILES=$(git diff --name-only --diff-filter=d "$BASE_SHA" "$GITHUB_SHA" \
-                  -- 'web/**/*.ts' 'web/**/*.tsx' | sed 's|^web/||')
+          # Filtering in a tested script rather than in a git pathspec: the
+          # pathspec form `web/**/*.ts` requires an intermediate directory and
+          # silently missed `web/next.config.ts`, so a merge touching only
+          # that file linted nothing and passed (#3938 review).
+          FILES=$(git diff --name-only --diff-filter=d "$BASE_SHA" "$GITHUB_SHA" -- web \
+                  | python3 scripts/ci/select_web_lint_files.py)
           if [[ -z "$FILES" ]]; then
             echo "::notice::this merge changed no web TS/TSX files -- nothing to lint"
             exit 0
