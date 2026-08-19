@@ -7836,10 +7836,12 @@ def test_an_error_column_over_a_missing_plist_is_not_a_registration(monkeypatch,
     The observable measured on real runners (`macos-brew-smoke.yml` runs
     32222041921 and 32228088507): a column-based read reported the service
     registered while launchd said it was gone -- in the latter, the
-    reconcile's escalation found no plist to remove and no loaded job. Whether
-    that came from a column outliving the registration or from coloured state
-    text is not established and is not what this pins; what it pins is the
-    rule both mechanisms lead to. Treating the column as "registered" reported
+    reconcile's escalation found no plist to remove and no loaded job. Run
+    32233162053 traced that to ANSI-coloured state text rather than to a
+    column outliving the registration, but the mechanism is not what this
+    pins. What it pins is the rule that holds regardless: a state word says
+    whether the service RUNS, and `error` is a state of a *registered* one, so
+    the plist decides. Treating the column as "registered" reported
     a successful retire as a failure -- the mirror image of trusting `brew
     services stop`'s exit code, and just as wrong. Nothing will start this
     service again, so the stop is a stop.

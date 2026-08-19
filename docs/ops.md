@@ -541,11 +541,9 @@ launchd, not against brew.** `brew services stop` exits 0 for a service that
 is registered but not running (the state a crash-looping keg sits in), and it
 reports nothing either way about whether the plist survived — so the exit code
 cannot say whether the stop took. Neither can `brew services list`'s Status
-column: on two CI runs a column-based read reported a service registered while
-launchd said it was gone (runs 32222041921, 32228088507), and whether that came
-from a column that outlives the registration or from ANSI-coloured state text
-that no literal comparison matches, the conclusion is the same — the column is
-not the registration signal. The registration is the LaunchAgent plist in
+column, which answers "is it running" and not "will launchd start it again" —
+`error`, `stopped` and `scheduled` are all states of a *registered* service.
+The registration is the LaunchAgent plist in
 `~/Library/LaunchAgents`, plus whether the job is loaded — those are what
 launchd acts on at the next login, and those are what every stop is verified
 against. A stop that did not take is escalated to unloading the job and
@@ -557,9 +555,15 @@ escalation is a guard.)
 
 **Where brew's states *are* read, they are read through one parser.**
 `brew services list`'s Status column is colourised, and the escape sequences
-survive a pipe — a coloured `started` matches no comparison against
-`"started"`, which would report a running service as down and a de-registered
-one as live. Every state nyxGPT compares therefore comes from
+survive a pipe — CI run 32233162053 captured the rows through `cat -v` and
+every state token is wrapped, `none` included. A coloured `started` matches no
+comparison against `"started"`, which reports a running service as down, and a
+coloured `none` fails `!= "none"`, which reports a de-registered one as live.
+That is what made two earlier runs (32222041921, 32228088507) read services
+launchd had already forgotten as still registered — not, as first supposed, a
+Status column that outlives the registration: the same capture shows a
+just-retired service reading `none` with an empty File field within the second.
+Every state nyxGPT compares therefore comes from
 `brew_services.parse_services_list`, which strips escapes before splitting, so
 the health reads that `nyxgpt up`'s exit gate and `ops status` ride on cannot
 be inverted by a colour setting on the machine.

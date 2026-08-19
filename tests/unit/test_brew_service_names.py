@@ -389,27 +389,30 @@ def test_the_superseded_reconcile_runs_before_the_api_and_web_installs():
 
 # --- ANSI-coloured state text (#3861, review round 3) ------------------------
 
-# What a real runner captured. `brew services list`'s Status column is
-# colourised and the escapes survive a pipe: `macos-brew-smoke.yml` run
-# 32228088507 shows `nyxgpt-api -> \x1b[31merror` after a pipe through `awk`,
-# and `selenium-server \x1b[39mnone\x1b[0m` in the same log. Those two tokens
-# are reproduced verbatim below; the rest of the row shape is
-# `_OWNERS_MACHINE`'s.
+# What a real runner captured, byte-for-byte. `macos-brew-smoke.yml` run
+# 32233162053 printed `brew services list` through `cat -v` immediately after
+# a retire; the header, the `none` rows and the `error` row below are that
+# output with the component names re-pointed onto this file's fixture machine.
+# Two details are authentic and neither is one a hand-written fixture would
+# invent: the header is bolded, and the reset lands BEFORE the exit code
+# (`\x1b[31merror  \x1b[0m3`), so an unstripped split reads the exit code as
+# `\x1b[0m3` and every later column shifts with it. The `started` rows keep
+# green from the earlier capture in run 32228088507.
 #
 # Every state nyxGPT compares against a literal (`LIVE_STATES`, `state ==
 # "started"`, `state != "none"`) is read out of this, so if the escapes are not
 # stripped at the parser a running service reads as down and a de-registered
 # one reads as live -- in opposite directions, on the same machine.
 _COLOURED = (
-    "Name               Status  User   File\n"
-    "nyxgpt-api         \x1b[31merror 3\x1b[0m  runner "
+    "\x1b[1mName               Status   User   File\x1b[0m\n"
+    "nyxgpt-api         \x1b[31merror  \x1b[0m3 runner "
     "~/Library/LaunchAgents/homebrew.mxcl.nyxgpt-api.plist\n"
     "nyxgpt-api@3.0.0rc \x1b[32mstarted\x1b[0m  runner "
     "~/Library/LaunchAgents/homebrew.mxcl.nyxgpt-api@3.0.0rc.plist\n"
-    "nyxgpt-web         \x1b[39mnone\x1b[0m\n"
+    "nyxgpt-web         \x1b[39mnone\x1b[0m            \n"
     "nyxgpt-web@3.0.0rc \x1b[32mstarted\x1b[0m  runner "
     "~/Library/LaunchAgents/homebrew.mxcl.nyxgpt-web@3.0.0rc.plist\n"
-    "selenium-server    \x1b[39mnone\x1b[0m\n"
+    "selenium-server    \x1b[39mnone\x1b[0m            \n"
 )
 
 

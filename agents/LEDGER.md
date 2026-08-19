@@ -883,15 +883,19 @@ rather than mechanism, and nothing can enforce them.
   whether the stop took (trusting it printed `ok Stopped brew service:
   nyxgpt-api` over a service the step then read back as registered, run
   32222041921). **And `brew services list`'s Status column cannot say
-  either**: on two runs a column-based read reported a service registered
-  while launchd said it was gone (32222041921, 32228088507 — in the latter the
-  escalation found no plist to remove and no loaded job). *Which* mechanism
-  produced that is **not** established and must not be written down as if it
-  were: a column that outlives the registration and ANSI-coloured state text
-  that no literal comparison matches produce the identical observable, and the
-  same logs carry coloured state tokens verbatim through a pipe. Both are
-  handled — the column is not consulted for registration, and escapes are
-  stripped at the parser (see (f)). What launchd acts on at the next login is
+  either**: it answers "is it running", never "will launchd start it again" —
+  `error`, `stopped` and `scheduled` are all states of a *registered* service.
+  On two runs a column-based read also reported a service registered while
+  launchd said it was gone (32222041921, 32228088507 — in the latter the
+  escalation found no plist to remove and no loaded job); the mechanism was
+  left unestablished at the time and is now **measured**, run 32233162053,
+  which printed brew's rows through `cat -v`: every state token is
+  ANSI-wrapped (`ESC[39mnoneESC[0m`), so an unstripped `none` fails
+  `!= "none"` and reads as registered. The competing "the column outlives the
+  registration" explanation is **falsified** by that same capture — the
+  just-retired service reads `none` with an empty File field within the
+  second. Escapes are stripped at the parser now (see (f)). What launchd acts
+  on at the next login is
   the **plist** in `~/Library/LaunchAgents`, plus whether the job is loaded, so
   that pair is the test — in `_brew_service_will_restart`, used both to verify
   a stop (escalate, then fail if it survives) and to decide what
@@ -901,8 +905,9 @@ rather than mechanism, and nothing can enforce them.
   it would make `doctor` name a service the last `nyxgpt up` retired and
   prescribe re-running the retire that already worked. Note also that since
   the check moved onto launchd, plain `brew services stop` has de-registered
-  every time and the escalation has never fired (run 32229751239) — it is a
-  guard, not an observed-necessary path; (e) the subtraction runs on **every**
+  every time and the escalation has never fired (runs 32229751239,
+  32233162053) — it is a guard, not an observed-necessary path;
+  (e) the subtraction runs on **every**
   install, not only when the recorded identity differs. A matching marker
   records what the last install *targeted*, not what is registered now
   (a failed retire, a hand-started service, an install made outside `nyxgpt
@@ -913,8 +918,10 @@ rather than mechanism, and nothing can enforce them.
   comparison against a brew state goes through
   `brew_services.parse_services_list`, which strips ANSI escapes first.**
   `brew services list` colourises the Status column and the escapes survive a
-  pipe (`nyxgpt-api -> ESC[31merror` appears verbatim in run 32228088507's
-  log), so a coloured token compares equal to nothing — `state == "started"`
+  pipe (`nyxgpt-api ESC[39mnoneESC[0m` and `nyxgpt-api@3.0.0rc ESC[31merror
+  ESC[0m3` were captured verbatim through `cat -v` in run 32233162053, and
+  `nyxgpt-api -> ESC[31merror` through `awk` in 32228088507), so a coloured
+  token compares equal to nothing — `state == "started"`
   is False for a running service and `state != "none"` is True for one brew is
   not running. That inverts `self_heal`'s `healthy = state == "started"`,
   which `nyxgpt up`'s exit gate rides on, plus `LIVE_STATES`, `superseded`'s

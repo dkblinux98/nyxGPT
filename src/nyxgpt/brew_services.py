@@ -117,17 +117,26 @@ def strip_ansi(text: str) -> str:
 
     **Every literal comparison against brew's output goes through here**, and
     that is the point rather than a nicety. `brew services list` colours its
-    Status column, and the escapes survive a pipe: `macos-brew-smoke.yml` run
-    32228088507 captured `nyxgpt-api -> ESC[31merror` after a pipe through
-    `awk`, and `selenium-server ESC[39mnoneESC[0m` in the same log (`ESC`
-    standing for the 0x1b byte those logs carry literally). A
-    coloured token compares equal to nothing -- `state == "started"` is False
-    for a running service, `state != "none"` is True for one brew is not
-    running -- so every consumer of a parsed state (`LIVE_STATES` in `_rank`
-    and `ops._restart_native_api_for`, `superseded`'s `registered_only`
-    filter, `ops`'s ollama and `native_running` reads, and
-    `self_heal`'s `healthy = state == "started"`, which `nyxgpt up`'s exit
-    gate rides on) silently inverts.
+    Status column on a real macOS runner, and the escapes survive a pipe.
+    `macos-brew-smoke.yml` run 32233162053 printed brew's rows through
+    `cat -v`, which settles it byte-for-byte (`ESC` standing for the 0x1b byte
+    the log carries literally):
+
+        nyxgpt-api         ESC[39mnoneESC[0m
+        nyxgpt-api@3.0.0rc ESC[31merror  ESC[0m3 runner ~/Library/...plist
+
+    Every state token is wrapped, `none` included, so a coloured token
+    compares equal to nothing -- `state == "started"` is False for a running
+    service, `state != "none"` is True for one brew is not running -- and
+    every consumer of a parsed state (`LIVE_STATES` in `_rank` and
+    `ops._restart_native_api_for`, `superseded`'s `registered_only` filter,
+    `ops`'s ollama and `native_running` reads, and `self_heal`'s
+    `healthy = state == "started"`, which `nyxgpt up`'s exit gate rides on)
+    silently inverts. This is the mechanism behind the misreads in runs
+    32222041921 and 32228088507, where a column-based read reported services
+    launchd had already forgotten; the competing "the column goes stale"
+    explanation is falsified by the same capture, in which the just-retired
+    `nyxgpt-api` reads `none` with an empty File field within the second.
 
     Fixing it here rather than at each of those sites is deliberate: they read
     a state they did not fetch, so none of them can know whether it was

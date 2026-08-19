@@ -887,27 +887,30 @@ def test_the_identity_step_asserts_the_launchagent_plist_is_gone() -> None:
 
 
 def test_the_identity_step_captures_the_post_retire_column_verbatim() -> None:
-    """The measurement two red runs never took (#3861 review round 3).
+    """The measurement two red runs never took, and it settled them (#3861).
 
     Runs 32222041921 and 32228088507 both showed a column-based read reporting
     a service that launchd had already forgotten, and neither captured brew's
     rows *after* the retire -- so the tree could name the observable but not
-    the mechanism. Two produce it identically: a Status column that outlives
-    the registration, or ANSI-coloured state text no literal comparison
-    matches. `cat -v` renders the escapes instead of letting the log viewer
-    swallow them, so one run's output separates them.
+    the mechanism, and two produce it identically: a Status column that
+    outlives the registration, or ANSI-coloured state text no literal
+    comparison matches. `cat -v` renders the escapes instead of letting the log
+    viewer swallow them, and run 32233162053 decided it -- the just-retired
+    service printed `nyxgpt-api ^[[39mnone^[[0m` with an empty File field, so
+    the column was current and the colour was the whole defect.
 
-    Advisory, not an assertion: the plist checks are what pass or fail the
-    step, and they are correct under either mechanism. This is here so the
-    next session can write down which one it was from a measurement rather
-    than from a hypothesis (D-005).
+    The capture stays as the standing witness rather than being retired with
+    the question: it is what would show brew changing its colourisation, or
+    wrapping a token `brew_services.strip_ansi` does not cover. Advisory, not
+    an assertion -- the plist checks are what pass or fail the step, and they
+    hold either way.
     """
     run = _conflict_step(IDENTITY_STEP)["run"]
     capture = "brew services list 2>&1 | cat -v"
     assert capture in run, (
-        "the post-retire `brew services list` capture is gone, so the next red "
-        "run again cannot say whether the column outlived the registration or "
-        "was simply coloured"
+        "the post-retire `brew services list` capture is gone, so a change in "
+        "how brew colourises its rows would land unseen -- the escapes are "
+        "what `strip_ansi` is guarding against"
     )
     reconcile_at = run.index("reconcile_from nyxgpt-api@3.0.0rc nyxgpt-api")
     assert run.index(capture) > reconcile_at, (

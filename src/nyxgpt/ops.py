@@ -1290,22 +1290,25 @@ def _brew_service_will_restart(name: str, plist: Path | None = None) -> bool:
     still registered; neither means it is not, whatever brew says about it.
 
     `brew services list`'s Status column deliberately does **not** decide it.
-    What was measured is the *observable*, not a mechanism: on two real
-    runners the column-based read reported the service registered while
-    launchd said it was gone (`macos-brew-smoke.yml` runs 32222041921 and
-    32228088507 -- in the latter, the escalation below found no plist to
-    remove and no loaded job, and the column-based read still reported it).
-    Two mechanisms produce that identically and the runs do not separate
-    them: a column that outlives the registration, or ANSI-coloured state
-    text that no literal comparison can match (the same logs carry
-    `nyxgpt-api -> ESC[31merror` verbatim through a pipe, which is why
-    `brew_services.strip_ansi` now exists). Either way the conclusion is the
-    same and is the only thing asserted here: **the column is not the
-    registration signal.** Reading it as one is the mirror image of reading
-    `brew services stop`'s exit code as "de-registered" -- both consult a
-    signal that is about something else -- and it cost a *false* failure (a
-    successful retire reported as one) where the exit code cost a false
-    success.
+    On two real runners a column-based read reported the service registered
+    while launchd said it was gone (`macos-brew-smoke.yml` runs 32222041921
+    and 32228088507 -- in the latter, the escalation below found no plist to
+    remove and no loaded job, and the read still reported it). Run 32233162053
+    then captured brew's rows verbatim and identified the mechanism: every
+    state token is ANSI-wrapped (`ESC[39mnoneESC[0m`), so an unstripped state
+    matches no literal, and `!= "none"` reads a de-registered service as
+    registered. It is *not* that the column goes stale -- the same capture
+    shows the just-retired service reading `none` with an empty File field
+    within the second. The escapes are now stripped at the parser
+    (`brew_services.strip_ansi`).
+
+    The column still does not decide registration here, for a reason that
+    outlives that bug: a state word answers "is it running", and `error`,
+    `stopped` and `scheduled` are all *registered*. Reading it as
+    de-registration is the mirror image of reading `brew services stop`'s exit
+    code as "de-registered" -- both consult a signal that is about something
+    else -- and it cost a *false* failure (a successful retire reported as
+    one) where the exit code cost a false success.
 
     `plist` may be passed when the caller already has brew's File column, to
     honour a label scheme other than `homebrew.mxcl.<name>` without paying a
@@ -4313,12 +4316,14 @@ def _brew_row_is_a_live_registration(name: str, state: str) -> bool:
 
     Everything between them (`error <code>`, `stopped`, `scheduled`,
     `unknown`) is the ambiguity #3861 tripped on, twice and in both
-    directions. `error 3` is the crash-looping keg the owner's Mac had -- and
-    a column-based read *also* reported services that launchd had already
-    forgotten (runs 32222041921, 32228088507); whether from a column that
-    outlives the registration or from coloured state text, the column is not
-    the registration signal (`_brew_service_will_restart`). So those states
-    are settled at the launchd level rather than read off the column:
+    directions. `error 3` is the crash-looping keg the owner's Mac had, and it
+    is a *registered* service: the state word answers "is it running", never
+    "will launchd start it again". (A column-based read also reported services
+    launchd had already forgotten, runs 32222041921 and 32228088507; run
+    32233162053 traced that to ANSI-coloured state text rather than to a stale
+    column, and the escapes are stripped at the parser now --
+    `_brew_service_will_restart`.) So those states are settled at the launchd
+    level rather than read off the column:
     otherwise `doctor` names a service the last `nyxgpt up` retired and
     prescribes re-running the retire that already worked.
     """
@@ -11368,8 +11373,9 @@ def _stop_brew_service(name: str) -> list[OpsResult]:
 
     On every run this project has measured since the observation layer was
     fixed, plain `brew services stop` **has** de-registered the `error`-state
-    service and the escalation has not fired (run 32229751239, four stops
-    across both reconcile directions and the teardown). The escalation is
+    service and the escalation has not fired (runs 32229751239 and
+    32233162053, four stops each across both reconcile directions and the
+    teardown). The escalation is
     therefore a guard against a state that has not been observed here, not a
     path known to be needed; the *check* is what is load-bearing, because
     everything downstream -- the identity reconcile, `ops stop`, teardown --
