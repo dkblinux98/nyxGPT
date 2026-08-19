@@ -70,6 +70,7 @@ class TestStepClassification:
             ("Run Claude Code Review", "review"),
             ("Post developer position", "huddle"),
             ("Run mediation", "huddle"),
+            ("Groom the draft (the judgment the seed cannot make)", "groom"),
             ("Run Claude Code", "session"),
         ],
     )

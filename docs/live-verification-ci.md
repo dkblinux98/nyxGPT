@@ -164,12 +164,18 @@ and screenshots make verifiable in the review loop:
 - **Apple Silicon brew-services native layout** -- `nyxgpt ops verify` boots
   a pure-Compose stack (matches every other CI gate in this repo); it does
   not exercise the native launchd/brew path `nyxgpt ops install` uses on
-  macOS. This covers the *operate* half only: the Homebrew keg **install** is
-  executed on a real `macos-15` runner by
-  [`macos-brew-smoke.yml`](../.github/workflows/macos-brew-smoke.yml), so a
-  formula change is not exempt from the executed-verification gate
-  (`agents/runbooks/review-runbook.md` §1c) on the grounds that this entry
-  exists. The same boundary applies to the dev install mode's macOS
+  macOS. Do not read that as "macOS is owner-acceptance": the Homebrew keg
+  **install** *and*, since #3860, the **user path after it** -- `nyxgpt
+  --version`, `nyxgpt up`, `GET /health`, `GET /api/v1/sessions`, the web UI
+  on :3000, `nyxgpt ops status`, `nyxgpt down`, `brew uninstall`/`untap` and
+  the launchd/plist residue check -- are executed on a real `macos-15` runner
+  by [`macos-brew-smoke.yml`](../.github/workflows/macos-brew-smoke.yml)
+  (`published-tap` job, driving
+  [`scripts/macos-user-path-smoke.sh`](../scripts/macos-user-path-smoke.sh)).
+  A formula, service-lifecycle or install change is therefore not exempt from
+  the executed-verification gate (`agents/runbooks/review-runbook.md` §1c) on
+  the grounds that this entry exists; what remains uncovered on that runner is
+  the Docker-backed set immediately below. The same boundary applies to the dev install mode's macOS
   LaunchAgents (`com.nyxgpt.api`/`com.nyxgpt.web`, see
   [`--dev`](ops.md#--dev-run-the-current-checkout-without-an-artifact-build)):
   `launchctl bootstrap gui/<uid>` needs a real GUI session, which the hosted
@@ -179,6 +185,47 @@ and screenshots make verifiable in the review loop:
   [`linux-native-smoke.yml`](../.github/workflows/linux-native-smoke.yml)'s
   `linux-native-dev-smoke` job, so only the launchd load itself is owner
   acceptance.
+- **Docker-backed components on the hosted macOS runners** -- the `macos-15`
+  images ship no Docker daemon (Docker Desktop is a licensed GUI application,
+  and the Apple Silicon runners expose no nested virtualisation, so Colima
+  cannot stand in for it). The macOS user path
+  ([`scripts/macos-user-path-smoke.sh`](../scripts/macos-user-path-smoke.sh),
+  run by `macos-brew-smoke.yml`'s `published-tap` job) therefore runs
+  `nyxgpt up --skip-observability` and tolerates exactly the `nyxgpt ops
+  install` steps that need that daemon:
+  - `docker engine`
+  - `cassandra container`
+  - `cassandra log follower service`
+  - `observability stack`
+  - `glitchtip secrets dir`
+  - `glitchtip auto-provisioning`
+  - `slack webhook secret`
+
+  That list is the script's
+  `TOLERATED_STEPS` and this paragraph is its other half: **everything else in
+  `nyxgpt up` is asserted** -- the config, the install-mode record, the native
+  api/web/ollama services and the env sync are the user path, and a failure in
+  any of them fails the job. Widening the tolerated set is how a gate goes
+  hollow; a step that genuinely cannot run on a hosted runner belongs here,
+  named, in the same commit that tolerates it. What stays owner acceptance:
+  Cassandra-backed session storage (the CI run exercises the `file` backend
+  the default config selects), and the observability profiles on macOS.
+- **The setup wizard's prompts** -- `nyxgpt wizard` is interactive by design
+  and `ops install` correctly refuses to run it without a TTY, so the CI user
+  path seeds `~/.nyxGPT/config.ini` from the *installed package's* own
+  `example.config.ini` instead. The wizard's questions and defaults are owner
+  acceptance; that the packaged resource exists and is readable from a keg is
+  asserted (it is #3759's defect class).
+- **What the web UI renders** -- the user path asserts `GET /` on :3000
+  answers 200 with an HTML document, which catches a web service that is
+  installed but not serving (#3857's outer symptom). Whether a given panel
+  shows data rather than a permanent placeholder is a browser question:
+  `nyxgpt ops verify`'s Playwright screenshots cover it for the Compose
+  stack, and for the brew path it stays owner acceptance.
+- **Ollama model pulls and anything needing a GPU** -- the hosted runners have
+  neither the disk budget nor the hardware. The `ollama` *service* is
+  installed and started on the user path; pulling a model and generating from
+  it is owner acceptance.
 - **Real Slack delivery** -- `nyxgpt ops alert-test` (separate command)
   posts through Grafana's contact-point test API; actually landing a
   message in a real Slack workspace still requires a real webhook secret,

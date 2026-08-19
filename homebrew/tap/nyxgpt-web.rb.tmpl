@@ -109,10 +109,37 @@ PY
   end
 
   test do
-    # We only validate that the wrapper script and the production build it
-    # runs both exist. (The actual Next.js runtime is exercised by
-    # integration tests in the repo.)
     assert_predicate bin/"nyxgpt-web", :exist?
     assert_predicate libexec/".next", :exist?
+
+    # And the server has to actually come up, not merely be present (#3860):
+    # `npm prune --omit=dev` once left a keg whose `next start` crash-looped
+    # while `.next` sat there intact (#3406). See ../nyxgpt-web.rb's test
+    # block for the full account -- this is the same test, and deliberately
+    # so: the published keg is built from the same tarball by the same recipe.
+    port = free_port
+    ENV["HOME"] = testpath
+    (testpath/".nyxGPT").mkpath
+    (testpath/".nyxGPT/config.ini").write <<~INI
+      [web]
+      host = 127.0.0.1
+      port = #{port}
+    INI
+
+    pid = spawn "/bin/bash", bin/"nyxgpt-web", pgroup: true
+    begin
+      code = "000"
+      60.times do
+        sleep 2
+        code = shell_output(
+          "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:#{port}/ || true",
+        ).strip
+        break if code == "200"
+      end
+      assert_equal "200", code
+    ensure
+      Process.kill "TERM", -Process.getpgid(pid)
+      Process.wait pid
+    end
   end
 end

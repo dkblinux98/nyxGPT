@@ -585,7 +585,85 @@ rather than mechanism, and nothing can enforce them.
   an earlier collision here. IDs are never reused.)
   Source: #3824.
 
-- **D-025** · 2026-08-19 · owner (issue #3882) — **Assignment is the workflow
+- **D-025** · 2026-08-18 · developer agent (#3860) — **A green
+  `macos-brew-smoke.yml` run from before this entry is not evidence that a
+  macOS install works.** From the workflow's creation (#3753) until #3860, its
+  two jobs installed a keg and never invoked the product: no `nyxgpt` by name
+  from a shell, no `nyxgpt up`, no HTTP request to the API or the web UI, no
+  uninstall — and `brew test` asserted only that the keg venv existed and
+  `import nyxgpt.app` resolved, all of which is true of a keg carrying no
+  reachable CLI. That is the keg that shipped: #3850, #3851, #3853, #3854,
+  #3857 and #3859 all sit on the certified path and all passed. The Phase 6
+  capstone #3516, whose acceptance criterion *is* the clean-machine scenario,
+  closed as completed on that evidence. This is a correction, not a behavior
+  fact: the current coverage is enforced by
+  `tests/unit/test_macos_user_path_smoke.py` and by the job itself, and needs
+  no ledger copy — what a future session cannot re-derive is that the *older*
+  green runs certify nothing, so do not cite a pre-#3860 run of that workflow
+  as executed evidence, and do not read #3516's closure as proof the scenario
+  was ever run. The scenario rule that followed is
+  `agents/runbooks/review-runbook.md` §1c ("Scenario criteria need scenario
+  evidence") and §10.
+  (Filed as `D-023` under #3860, renumbered to `D-024` when #3829's canary
+  entry merged first, and to `D-025` here when #3824's model-bootstrap entry
+  took `D-024` on `v3.0.0`. IDs are never reused; each merge keeps the number
+  the mainline entry landed with and moves this one on.)
+  Source: #3860; #3516; `scripts/macos-user-path-smoke.sh`.
+
+- **D-026** · 2026-08-19 · huddle `change-approach` on PR #3925 (#3860) — **A
+  CI gate may *record* an open, parked defect; it may not *fail* on one.**
+  `macos-brew-smoke.yml`'s `stable-over-candidate` job covers both
+  `conflicts_with` directions. The direction AC4 names (candidate onto an
+  installed stable) works, so it stays a hard assertion. The reverse direction
+  — stable onto an installed candidate, added beyond AC4 — reproduces **#3853**,
+  which is open and whose fix direction is parked by **Q-002**. Hard-failing
+  there made the check unlandable by any fix cycle: no change to #3860's branch
+  could turn it green, and the only routes to green were softening the
+  assertion or taking the packaging side of a parked owner decision. So the
+  both-installed outcome is emitted as a `::warning::` naming #3853, while the
+  assertions about the state the machine is *left in* (`nyxgpt` on PATH and
+  running) stay hard. **The debt:** the PR that fixes #3853 flips that warning
+  back to `::error::` + `exit 1` and updates
+  `tests/unit/test_macos_user_path_smoke.py::test_the_reverse_direction_records_3853_instead_of_failing_on_it`
+  with it; the note is on #3853 itself. Generalise the rule, not the special
+  case: a gate that hard-fails on a defect the project has decided not to fix
+  yet is not a gate, it is a permanent red that trains readers to ignore it —
+  record it loudly and hold the debt where the fixer will find it.
+  Source: PR #3925 huddle decision 2026-08-19; run 32202943938; run 32204454740.
+
+- **D-027** · 2026-08-19 · developer agent (#3858) — **A subprocess reachable
+  from an HTTP handler is bounded, and an expired bound is a result rather
+  than an exception.** The vocabulary is one module,
+  `src/nyxgpt/subprocess_bounds.py`, which also carries the enumeration of all
+  18 `subprocess.run`/`Popen` call sites in `src/nyxgpt/` and which 10 of them
+  a handler can reach — the list is the deliverable, because bounding two
+  helpers while a third stays unbounded rebuilds the same trap. A timeout
+  comes back as returncode 124 (`timed_out()`), so a status probe degrades
+  ("… health check timed out after 5s") instead of 500ing. Two bounds are
+  applied deliberately where the tool offers one: `kubectl --request-timeout`
+  *and* Python's `timeout=` — **except from inside a Pod, where the kubectl
+  flag is withheld**: it lands in client-go's config overrides, which makes
+  kubectl skip its service-account fallback and dial `http://localhost:8080`.
+  The Python bound is the half that carries the safety property and applies
+  unconditionally; the reasoning and its cluster evidence live in
+  `bounded_argv`'s docstring. **Handlers stay plain `def`** — the considered
+  alternative, `async def` + `run_in_threadpool`, moves the same blocking call
+  onto the same threadpool and buys nothing, while making a future forgotten
+  `await` block the event loop instead of one worker; bounding the subprocess
+  is what actually releases the worker. `canary.status()` also **skips** the
+  per-track kubectl reads outside Kubernetes mode (the #3468 guard
+  `ops.infra_status()` already had), which removes the calls on a native
+  install rather than merely bounding them, and `canary.current_mode()` now
+  answers **"unknown"** when its probe times out rather than asserting
+  "native" about a substrate nothing could see.
+  (Filed as `D-023`, renumbered to `D-025` and then to `D-027` as successive
+  merges of `v3.0.0` landed #3829, #3824 and #3860 first. The number came from
+  `python3 scripts/agents/lib/ledger_ids.py next D --base origin/v3.0.0` — run,
+  not eyeballed. IDs are never reused.)
+  Source: #3858; `src/nyxgpt/subprocess_bounds.py` (enumeration + rationale),
+  `tests/unit/test_subprocess_bounds.py`.
+
+- **D-028** · 2026-08-19 · owner (issue #3882) — **Assignment is the workflow
   lever; "process by comment" is retired.** A reviewer comments what they
   found and **assigns the issue back**; the developer, on picking it up, moves
   it to In Progress and works it. The comment carries findings, the assignment
@@ -606,6 +684,10 @@ rather than mechanism, and nothing can enforce them.
   hours), not the wording. Tokens that author content (`@improvement`,
   `@acceptance-failure`) or stop the loop (`PAUSE_SPRINT`,
   `CONFLICT_REQUIRES_OWNER_DECISION`) are deliberately kept.
+  (Filed as `D-025` under #3882; renumbered to `D-028` when #3860, PR #3925's
+  huddle entry and #3858 took `D-025`, `D-026` and `D-027` on `v3.0.0` first.
+  The number came from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed. IDs are never reused.)
   Source: #3882; `docs/agent-comment-tokens.md`;
   `tests/unit/test_dispatch_is_an_event.py`;
   `tests/unit/test_comment_token_triggers.py`.
@@ -665,6 +747,29 @@ rather than mechanism, and nothing can enforce them.
   candidate, capture what Homebrew actually does. Prior context in #3753,
   #3763, #3770.
   Blocks: #3853's fix direction (packaging-level guard vs `ops.py` reconcile).
+  Answered 2026-08-19 (#3860), by the reproduction it asked for —
+  `macos-brew-smoke.yml`'s `stable-over-candidate` job, run 32202943938 on a
+  clean `macos-15` runner. **`conflicts_with` is directional, and only the rc
+  formula declares it.**
+  - Candidate onto an installed stable: the guard holds. Brew refuses with
+    `Cannot install …@3.0.0rc because conflicting formulae are installed` and
+    leaves `stable installed: 1 / candidate installed: 0`.
+  - Stable onto an installed candidate — **the owner's direction** — nothing
+    checks anything. Brew builds and installs the keg to completion
+    (`/opt/homebrew/Cellar/nyxgpt-api/3.0.0: 6,140 files, 152MB`); only
+    `brew link` then fails on the symlink collision (`Could not symlink
+    bin/nyxgpt … is a symlink belonging to nyxgpt-api@3.0.0rc`). The keg stays
+    installed, `/opt/homebrew/bin/nyxgpt` still points at the *candidate*, and
+    brew prints a "shadowed by other commands" caveat. Final state:
+    `stable installed: 1 / candidate installed: 1` — #3853's machine exactly.
+  So the answer to "why did `conflicts_with` not prevent it" is that in that
+  direction it was never asked. A `conflicts_with "nyxgpt-api@X.Y.Zrc"` on the
+  stable formula is the packaging-level half; `brew link`'s failure is not a
+  guard, because a failed link leaves the keg in place.
+  Also learned there, separate from the answer: a `brew tap-new` tap is
+  untrusted, and resolving `conflicts_with` *loads* the named formula, so brew
+  refuses on trust grounds before it ever evaluates the conflict — #3770's
+  shape, and why the job now trusts the whole tap.
 
 - **Q-003** · 2026-08-18 · owner acceptance (#3857) — What stops the web UI's
   client JS from loading: the two builds racing for port 3000 (#3853), or a

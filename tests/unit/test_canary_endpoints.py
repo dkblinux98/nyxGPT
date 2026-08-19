@@ -6,6 +6,7 @@ nyxgpt.canary mocked out, so no kubectl/cluster is needed.
 
 from __future__ import annotations
 
+import subprocess
 from unittest.mock import patch
 
 import pytest
@@ -221,3 +222,48 @@ def test_canary_failure_envelope_without_details_is_unchanged():
 
     assert response.status_code == 409
     assert response.json()["error"]["message"] == "A canary rollout is already in progress"
+
+
+def test_canary_status_endpoint_degrades_instead_of_500ing_when_kubectl_hangs(monkeypatch):
+    """The whole point of #3858: a hung probe is a reading, not an outage.
+
+    Nothing here is mocked above the subprocess call -- `canary.status()` runs
+    for real, and the only thing standing in is `subprocess.run` itself, hanging
+    exactly the way a kubeconfig context aimed at a torn-down cluster does.
+    """
+    from nyxgpt import canary
+
+    def _hang(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout") or 5.0)
+
+    monkeypatch.setattr(canary.subprocess, "run", _hang)
+    monkeypatch.setattr(canary, "_which", lambda _: "/usr/local/bin/kubectl")
+    monkeypatch.setattr(canary.ops_module, "terraform_stack_state", lambda: {})
+    monkeypatch.delenv("NYXGPT_COMPOSE_FILE", raising=False)
+
+    client = TestClient(app)
+    response = client.get("/api/v1/canary/status")
+
+    assert response.status_code == 200
+    body = response.json()
+    # The probe timed out, so the server declines to name a mode rather than
+    # claiming "native" -- and says why, in the field the page renders.
+    assert body["mode"] == "unknown"
+    assert body["mode_supported"] is False
+    assert "timed out" in body["mode_message"]
+
+
+def test_infra_status_endpoint_survives_a_hung_kubectl(monkeypatch):
+    """`/infra/status` is polled by the Infrastructure page; a hang must not reach the client."""
+    from nyxgpt import ops
+
+    def _hang(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout") or 5.0)
+
+    monkeypatch.setattr(ops.subprocess, "run", _hang)
+
+    client = TestClient(app)
+    response = client.get("/api/v1/infra/status")
+
+    assert response.status_code == 200
+    assert "mode" in response.json()

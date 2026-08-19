@@ -645,13 +645,17 @@ halves: the failure reproduces without the fix, and disappears with it. See
 the shim fixes it" step.
 
 **What genuinely cannot be executed in CI** is the short documented list in
-`docs/live-verification-ci.md` (the native launchd/brew-services *operate*
-path, real Slack delivery, LLM answer quality), plus EC2 Mac hardware, which
+`docs/live-verification-ci.md` (Docker-backed components on the hosted macOS
+runners, the setup wizard's prompts, what the web UI *renders*, Ollama model
+pulls, real Slack delivery, LLM answer quality), plus EC2 Mac hardware, which
 has no hosted runner (`docs/portability-matrix.md`). Name which item applies
 and what the owner must exercise — and prefer injecting the condition over
-deferring to that list. Note what is *not* on it: the Homebrew keg install
-runs on a real `macos-15` runner in `macos-brew-smoke.yml`, so a formula
-change cannot claim macOS is untestable.
+deferring to that list. Note what is *not* on it: `macos-brew-smoke.yml` runs
+the Homebrew keg install *and*, since #3860, the user path after it —
+`nyxgpt --version`, `nyxgpt up`, the API and web requests, `ops status`,
+`nyxgpt down`, uninstall and residue — on a real `macos-15` runner, so
+neither a formula change nor a macOS service-lifecycle change can claim macOS
+is untestable.
 
 The reviewer runs the same gate (`agents/runbooks/review-runbook.md` §1c) and
 missing executed evidence is a Medium (blocking) finding.

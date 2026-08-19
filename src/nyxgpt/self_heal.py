@@ -106,6 +106,7 @@ from nyxgpt.config import (
 from nyxgpt.install_mode import DEV_LAUNCHD_LABELS, read_install_mode
 from nyxgpt.k8s_pod_state import PodState, classify_pod
 from nyxgpt.logging import get_correlation_id, get_log_dir, mint_correlation_id
+from nyxgpt.subprocess_bounds import bounded_argv, timeout_message, timeout_result
 
 logger = logging.getLogger(__name__)
 
@@ -466,8 +467,23 @@ def _run(
     probe/restart action is visible in Loki even when the caller only checks
     `returncode` (#3415 gap 5). Pass `expected=True` for read-only probes where
     a non-zero exit is a normal outcome, to log at DEBUG instead of WARNING.
+
+    The bound has always been here, but until #3858 an expired one raised
+    `subprocess.TimeoutExpired` straight past every caller -- including
+    `/self-heal/status` and `/admin/overview`, where it is a 500 on a status
+    read. It is now the same `TIMEOUT_RETURNCODE` result every other bounded
+    helper returns (see `subprocess_bounds`), so "the command hung" reads as a
+    failed probe like any other rather than as a traceback.
     """
-    result = subprocess.run(cmd, check=False, text=True, capture_output=True, timeout=timeout)
+    cmd = bounded_argv(cmd, timeout)
+    try:
+        result = subprocess.run(cmd, check=False, text=True, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        logger.warning(
+            f"Subprocess {timeout_message(timeout)}: {' '.join(cmd)}",
+            extra={"component": "self_heal", "cmd": cmd, "timeout_seconds": timeout},
+        )
+        return timeout_result(cmd, exc, timeout)
     if result.returncode != 0:
         level = logging.DEBUG if expected else logging.WARNING
         logger.log(
