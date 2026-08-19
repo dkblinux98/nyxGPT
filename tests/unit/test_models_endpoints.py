@@ -23,6 +23,66 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# GET /api/v1/models/required (#3824)
+# ---------------------------------------------------------------------------
+
+
+def test_models_required_reports_readiness_for_the_dashboard():
+    """The dashboard's model-readiness panel and `nyxgpt ops status` must read
+    the same answer, so the endpoint is thin glue over ops.required_models_status."""
+    ready = {
+        "base_url": "http://127.0.0.1:11434",
+        "reachable": True,
+        "error": "",
+        "ready": True,
+        "remediation": "",
+        "models": [
+            {
+                "role": "chat",
+                "model": "qwen3:0.6b",
+                "setting": "[nyxgpt] default_model",
+                "present": True,
+            }
+        ],
+    }
+    with patch("nyxgpt.ops.required_models_status", return_value=ready) as mock_status:
+        client = TestClient(app)
+        response = client.get("/api/v1/models/required")
+
+    assert response.status_code == 200
+    assert response.json() == ready
+    # Answered from the request's own config, not a re-read of disk.
+    assert mock_status.call_args.kwargs.get("cfg") is not None
+
+
+def test_models_required_does_not_502_on_an_unreachable_ollama():
+    """ "Cannot tell" is an answer the panel renders, not an error -- the ollama
+    service's own health is reported elsewhere on the same page."""
+    unknown = {
+        "base_url": "http://127.0.0.1:11434",
+        "reachable": False,
+        "error": "RuntimeError: connection refused",
+        "ready": False,
+        "remediation": "",
+        "models": [
+            {
+                "role": "chat",
+                "model": "qwen3:0.6b",
+                "setting": "[nyxgpt] default_model",
+                "present": None,
+            }
+        ],
+    }
+    with patch("nyxgpt.ops.required_models_status", return_value=unknown):
+        client = TestClient(app)
+        response = client.get("/api/v1/models/required")
+
+    assert response.status_code == 200
+    assert response.json()["reachable"] is False
+    assert response.json()["models"][0]["present"] is None
+
+
 def test_models_list_returns_names():
     ollama_response = {
         "models": [

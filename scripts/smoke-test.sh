@@ -132,28 +132,27 @@ curl -sf -X POST "$API_URL/api/v1/self-heal/toggle" "${auth_args[@]}" \
   -H 'Content-Type: application/json' -d '{"enabled": true}' >/dev/null \
   || fail "could not reach $API_URL to enable self-heal -- is the api container up, and is NYXGPT_AUTH_API_KEY correct?"
 
-log "Ensuring the configured Ollama model is pulled"
-default_model="$(sed -n 's/^default_model[[:space:]]*=[[:space:]]*//p' docker/config.docker.ini | head -n1)"
-[[ -n "$default_model" ]] || fail "could not determine default_model from docker/config.docker.ini"
-have_model=$(curl -sf "${auth_args[@]}" "$API_URL/api/v1/models" 2>/dev/null | python3 -c "
+# Assert, never pull (#3824, ledger V-017). The Compose `ollama` service
+# pre-pulls the configured chat and embedding models on start and gates its
+# healthcheck on both, so by the time `api` is up they must already be there.
+# This script used to pull the model itself, which made it green on a stack
+# that never pulled anything -- the smoke pre-satisfying what it verifies.
+log "Checking the configured models are already pulled (the stack pulls them, not this script)"
+required=$(curl -sf "${auth_args[@]}" "$API_URL/api/v1/models/required" 2>/dev/null) \
+  || fail "could not read /api/v1/models/required from $API_URL"
+echo "$required" | python3 -c "
 import json, sys
-try:
-    d = json.load(sys.stdin)
-except Exception:
-    print('0')
-    sys.exit()
-print('1' if '$default_model' in d.get('models', []) else '0')
-" 2>/dev/null || echo "0")
-if [[ "$have_model" == "1" ]]; then
-  log "  '$default_model' already present"
-else
-  log "  Pulling '$default_model' (first run only -- can take a few minutes)..."
-  curl -sf --max-time 600 -X POST "$API_URL/api/v1/models/pull" "${auth_args[@]}" \
-    -H 'Content-Type: application/json' \
-    -d "{\"model\": \"$default_model\"}" >/dev/null \
-    || fail "failed to pull model '$default_model'"
-  log "  Pulled '$default_model'"
-fi
+d = json.load(sys.stdin)
+models = d.get('models') or []
+assert models, 'the api reported no required models'
+assert d.get('reachable'), f\"Ollama unreachable: {d.get('error')}\"
+missing = [m['model'] for m in models if m.get('present') is False]
+assert not missing, (
+    'the stack came up without required model(s) ' + ', '.join(missing) +
+    ' -- the ollama service did not pre-pull them. ' + (d.get('remediation') or '')
+)
+print('  present:', ', '.join(f\"{m['model']} ({m['role']})\" for m in models))
+" || fail "required models are not present on the running stack"
 
 log "Verifying chat works end-to-end"
 chat_response=$(curl -sf -X POST "$API_URL/api/v1/chat" "${auth_args[@]}" \
