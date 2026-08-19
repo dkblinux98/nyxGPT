@@ -159,4 +159,3 @@ publishes nothing (that commit already has one); the run reports `SKIP`
 rather than failing. Pass `--number` to override.
 Full runbook, including the one-time PyPI Trusted Publishing setup:
 [Cloud — PyPI publishing](cloud.md#pypi-publishing-rc-and-stable).
-

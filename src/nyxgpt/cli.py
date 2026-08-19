@@ -3404,7 +3404,12 @@ def cli(argv: list[str] | None = None) -> int:
     if cmd == "down":
         os.environ.setdefault("NYXGPT_CORRELATION_ID", mint_correlation_id())
         return ops_mod.down(args)
-    if cmd == "secrets" and args.secrets_cmd == "setup":
+    # pragma: allowlist secret -- `secrets_cmd == "setup"` is a subcommand
+    # name, not a credential. detect-secrets' keyword rule reads any `secret*`
+    # identifier compared against a literal as an assignment; the finding is
+    # pre-existing and is annotated here because this PR moves the line into
+    # its diff, so the hook would otherwise fail for everyone who runs it.
+    if cmd == "secrets" and args.secrets_cmd == "setup":  # pragma: allowlist secret
         return run_secrets_setup(cfg_path=args.config, reconfigure=args.reconfigure)
 
     if cmd == "ops":
