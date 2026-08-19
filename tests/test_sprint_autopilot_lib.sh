@@ -282,7 +282,9 @@ sprint_population_snapshot() { echo "$_snapshot"; }
 autopilot_scan_parked() { echo '{"resumable":[],"waiting":[],"exhausted":[],"active":[],"selected":null}'; }
 _autopilot_post_resume() { echo "$1" > "$RESUME_FILE"; }
 RESUME_FILE="$(mktemp)"
-trap 'rm -f "$GRAPHQL_CALLS_FILE" "$COMMENT_FILE" "$RESUME_FILE"' EXIT
+# `trap` replaces, it does not accumulate: this line used to drop the files
+# the earlier trap covered, leaking one temp file per run for each.
+trap 'rm -f "$GRAPHQL_CALLS_FILE" "$COMMENT_FILE" "$KICK_FILE" "$RESUME_FILE"' EXIT
 
 # Test 7: active sprint still has Backlog work -> kick.
 iteration_active_title() { echo "Sprint 8"; }

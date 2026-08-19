@@ -85,6 +85,7 @@ CHURN_WORKFLOWS = [
     "claude-code-review.yml",
     "developer_huddle_position.yml",
     "scrummaster_huddle_mediation.yml",
+    "scrummaster_groom_sprint.yml",
     "claude-md-binding-canary.yml",
     "scrummaster_groom_sprint.yml",
 ]
@@ -103,7 +104,9 @@ CLAUDE_STEP_RE = re.compile(
 
 # Round kind, first match wins (an acceptance-fix step also says "fix").
 ROUND_KIND_RULES = [
+    ("groom", r"groom"),
     ("huddle", r"position|mediation"),
+    ("groom", r"groom"),
     ("acceptance-fix", r"acceptance"),
     ("review-fix", r"review fix|fix review issues"),
     ("self-heal", r"fix issues|attempt\s*\d|deep analysis"),
