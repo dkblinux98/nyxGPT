@@ -46,11 +46,13 @@ from nyxgpt import metrics as prom_metrics
 from nyxgpt import model_bootstrap, release_tarball, restart_state, self_heal, tracing
 from nyxgpt import verify as verify_mod
 from nyxgpt.config import (
+    VALID_SESSION_BACKENDS,
     get_error_tracking_config,
     get_error_tracking_enabled,
     get_log_aggregation_enabled,
     get_monitoring_config,
     get_monitoring_slack_webhook_url,
+    get_session_backend,
     get_tracing_config,
     get_tracing_enabled,
     grafana_admin_password_path,
@@ -12635,6 +12637,135 @@ def env_sync(args) -> int:
     )
 
     return 0 if ok else 2
+
+
+# --- Session backend selection (#3865) ---------------------------------
+#
+# `[nyxgpt] session_backend` decides whether chat sessions live as JSON files
+# on one machine's disk or as rows in the stack's Cassandra -- and therefore
+# whether every deployment mode pointed at the same Cassandra sees one
+# session list (docs/session-storage.md, #3590). Kubernetes sets it
+# declaratively in k8s/configmap.yaml; Compose and Terraform-local inherit it
+# because `_generate_compose_config` copies the native config verbatim. The
+# provisioning paths (`nyxgpt cloud deploy`, `nyxgpt cloud user-data`) had no
+# way to set it at all, so a cloud instance silently ran the back-compat
+# `file` default and the only fix was to SSH in and hand-edit config.ini --
+# a raw-operations flow the operational command wrapping requirement
+# (CLAUDE.md, 2026-07-15) forbids as the user-facing path. This is the
+# wrapped setter those paths call, and that an operator can call directly.
+
+
+def set_session_backend(backend: str, cfg_path: Path | None = None) -> list[OpsResult]:
+    """Set `[nyxgpt] session_backend` in config.ini to `backend`, idempotently.
+
+    Line-based via `_patch_ini_value` rather than a `ConfigParser` round-trip:
+    the file this rewrites is normally the one just seeded from
+    `example.config.ini`, whose comments document every other key, and a
+    round-trip would drop all of them.
+
+    Re-running with the value already set writes nothing, so a re-deploy (the
+    provisioning scripts are reconciles, not first-run bootstraps) is a no-op
+    here. Refuses an unknown backend rather than writing a value
+    `get_session_backend` would later reject and silently downgrade to
+    `file` -- the failure this whole function exists to stop being silent.
+    """
+    normalized = backend.strip().lower()
+    if normalized not in VALID_SESSION_BACKENDS:
+        return [
+            OpsResult(
+                False,
+                f"Unknown session backend {backend!r}",
+                f"Choose one of: {', '.join(VALID_SESSION_BACKENDS)}",
+            )
+        ]
+
+    cfg_path = cfg_path or (Path.home() / ".nyxGPT" / "config.ini")
+    if not cfg_path.exists():
+        return [
+            OpsResult(
+                False,
+                f"No config.ini at {cfg_path}",
+                "Run `nyxgpt wizard` (or `nyxgpt ops install`) to create it, then retry.",
+            )
+        ]
+
+    try:
+        text = cfg_path.read_text(encoding="utf-8")
+        patched = _patch_ini_value(text, "nyxgpt", "session_backend", normalized)
+        if patched != text:
+            cfg_path.write_text(patched, encoding="utf-8")
+            # config.ini carries [auth] api_key and other secrets; keep the
+            # 0600 the seeding step gave it even if the umask would not.
+            os.chmod(cfg_path, 0o600)
+    except OSError as e:
+        return [
+            OpsResult(
+                False,
+                f"Failed to set the session backend in {cfg_path}",
+                f"{type(e).__name__}: {e}",
+            )
+        ]
+
+    if patched == text:
+        return [OpsResult(True, f"Session backend already `{normalized}` in {cfg_path}")]
+    detail = (
+        "Sessions are stored in the stack's Cassandra -- every deployment mode pointed at "
+        "the same Cassandra shares one session list. Restart the API to pick this up "
+        "(`nyxgpt ops restart api`)."
+        if normalized == "cassandra"
+        else (
+            "Sessions are stored as JSON files under `[nyxgpt] sessions_dir` on this host "
+            "only. Restart the API to pick this up (`nyxgpt ops restart api`)."
+        )
+    )
+    return [OpsResult(True, f"Set session backend to `{normalized}` in {cfg_path}", detail)]
+
+
+def session_backend(args: Any) -> int:
+    """CLI entrypoint for `nyxgpt ops session-backend [file|cassandra]`.
+
+    With no backend argument this reports the effective backend rather than
+    changing anything, which is deliberately not the same as "what config.ini
+    says": `NYXGPT_SESSION_BACKEND` overrides the file (config.get_session_backend),
+    and an operator debugging a container that disagrees with its config needs
+    to see the value actually in force.
+
+    Returns 0 on success, else 2.
+    """
+    from nyxgpt.config import load_config
+
+    cfg_path = (
+        Path(args.config).expanduser()
+        if getattr(args, "config", None)
+        else (Path.home() / ".nyxGPT" / "config.ini")
+    )
+    requested = str(getattr(args, "backend", None) or "").strip()
+
+    if not requested:
+        exists = cfg_path.exists()
+        cfg = load_config(cfg_path) if exists else ConfigParser()
+        effective = get_session_backend(cfg)
+        print(f"session_backend = {effective}")
+        override = os.environ.get("NYXGPT_SESSION_BACKEND", "").strip()
+        if override:
+            print(f"  (forced by NYXGPT_SESSION_BACKEND={override}, overriding {cfg_path})")
+        elif exists:
+            print(f"  (from {cfg_path})")
+        else:
+            # Attributing the answer to a file that is not there reads as "your
+            # config says file" when what happened is that nothing said
+            # anything and the back-compat default answered.
+            print(f"  (built-in default; no config.ini at {cfg_path})")
+        return 0
+
+    logger.info(
+        "ops: session-backend setting %s in %s",
+        requested,
+        cfg_path,
+        extra={"component": "ops", "action": "session-backend"},
+    )
+    results = set_session_backend(requested, cfg_path=cfg_path)
+    return 0 if _emit_results("session-backend", results) else 2
 
 
 # --- Secrets sync: config.ini -> GitHub Actions secrets (#3505) ---

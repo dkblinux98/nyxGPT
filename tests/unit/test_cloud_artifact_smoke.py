@@ -87,6 +87,12 @@ def fake_docker(monkeypatch, tmp_path):
         ),
     )
     fake.answer("http_code", _completed(0, "200"))
+    # A machine that came up on the Cassandra session backend (#3865): the
+    # wrapped reader says so, the API accepts the session, and the row is in
+    # `nyxgpt.chat_sessions`. Tests that care describe their own deviation.
+    fake.answer("ops session-backend", _completed(0, "session_backend = cassandra"))
+    fake.answer("sessions/init", _completed(0, '{"ok": true, "name": "cloud-artifact-smoke"}'))
+    fake.answer("cqlsh", _completed(0, "\n name\n------------\n cloud-artifact-smoke\n\n(1 rows)"))
     return fake
 
 
@@ -126,6 +132,7 @@ def test_passing_run_records_its_verdict_and_removes_the_container(fake_docker, 
         "bootstrap",
         "repo-less",
         "services",
+        "session-backend",
         "teardown",
     ]
     assert result["teardown"]["removed"] is True
@@ -488,3 +495,99 @@ def test_a_second_background_run_is_refused_while_one_is_in_flight(fake_docker, 
 
     with pytest.raises(smoke.ArtifactSmokeFailure, match="still running"):
         smoke.start_background_run(_args())
+
+
+# --- The session-storage check (#3865) ----------------------------------
+#
+# The defect this covers is silent by construction: the instance came up
+# healthy, every service answered, and chat worked -- it was just stored where
+# no other deployment mode could read it. So the check has to go looking, and
+# these tests pin what "looking" means.
+
+
+def test_a_passing_run_proves_a_session_reached_cassandra(fake_docker):
+    result = smoke.run_container_smoke(_args())
+
+    assert result["passed"], result["failure"]
+    step = next(s for s in result["steps"] if s["step"] == "session-backend")
+    assert step["backend"] == "cassandra"
+    assert step["table"] == "nyxgpt.chat_sessions"
+
+    joined = [" ".join(call) for call in fake_docker.calls]
+    # The session is created by the *running API* over HTTP, not by this
+    # process and not by the CLI -- the serving process's behaviour is the
+    # claim. `/sessions/init` needs no model, so it does not depend on Ollama
+    # having one pulled.
+    assert any("/api/v1/sessions/init" in call for call in joined)
+    # ...and the row is read back out of Cassandra itself. Asking the API
+    # would just re-report whatever store it used, which is the thing under
+    # test.
+    assert any("cqlsh" in call and "chat_sessions" in call for call in joined)
+
+
+def test_a_file_backed_instance_fails_the_run(fake_docker):
+    fake_docker.answer("ops session-backend", _completed(0, "session_backend = file"))
+
+    result = smoke.run_container_smoke(_args())
+
+    assert not result["passed"]
+    assert "Cassandra session backend" in result["failure"]
+    assert smoke.classify_failure(result["failure"]).startswith("session storage backend")
+
+
+def test_a_config_that_says_cassandra_is_not_enough(fake_docker):
+    """The row is the acceptance criterion, not the configuration.
+
+    A config.ini claiming `cassandra` while sessions still land on disk is
+    precisely the shape #3865 arrived in -- so an empty `chat_sessions` fails
+    the run even when every earlier check is green.
+    """
+    fake_docker.answer("cqlsh", _completed(0, "\n name\n------\n\n(0 rows)"))
+
+    result = smoke.run_container_smoke(_args())
+
+    assert not result["passed"]
+    assert "chat_sessions" in result["failure"]
+
+
+def test_an_api_that_refuses_the_session_fails_the_run(fake_docker):
+    fake_docker.answer("sessions/init", _completed(0, '{"detail": "Internal server error"}'))
+
+    result = smoke.run_container_smoke(_args())
+
+    assert not result["passed"]
+    assert "refused to create a session" in result["failure"]
+
+
+def test_injecting_file_sessions_removes_only_the_invocation():
+    script = smoke.cloud_provision.render_user_data("linux")
+
+    faulted, records = smoke.apply_faults(script, ["file-sessions"])
+
+    assert records[0]["changed"] is True
+    executable = [
+        line for line in faulted.splitlines() if line.strip() and not line.strip().startswith("#")
+    ]
+    assert not any("ops session-backend" in line for line in executable)
+    # The comment block explaining the step stays: the injected script should
+    # differ from the real one only in the defect, not in its documentation.
+    assert "ops session-backend" in faulted
+
+
+def test_the_file_sessions_injection_verdict_requires_the_right_failure_class(fake_docker):
+    """Both halves (#3753): the run must fail, and fail *as* this defect."""
+    fake_docker.answer("ops session-backend", _completed(0, "session_backend = file"))
+
+    result = smoke.run_container_smoke(_args(inject=["file-sessions"]))
+
+    assert result["passed"], result["detail"]
+    assert result["expected_failure"] is True
+    assert "session-backend" in result["detail"]
+
+
+def test_a_file_sessions_injection_that_still_passes_is_a_failure(fake_docker):
+    """If the wiring is gone and the smoke is still green, it is not looking."""
+    result = smoke.run_container_smoke(_args(inject=["file-sessions"]))
+
+    assert not result["passed"]
+    assert "cannot see that defect class" in result["detail"]

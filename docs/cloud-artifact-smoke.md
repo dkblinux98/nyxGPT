@@ -40,6 +40,7 @@ prevent (the same shape the macOS smoke had before #3753).
 | `bootstrap` | Runs the **real rendered EC2 user-data script** (`nyxgpt cloud user-data --os linux`) as root, exactly as cloud-init does |
 | `repo-less` | Asserts nyxGPT is answering from `site-packages`, and that no checkout exists in the container |
 | `services` | Requires api (`:8000/health`), web (`:3000/`) and ollama (`:11434/`) to answer |
+| `session-backend` | Requires the instance to have come up on the Cassandra session store (#3865): the wrapped reader says `cassandra`, the **running API** creates a session over `POST /api/v1/sessions/init`, and that session is read back as a row in `nyxgpt.chat_sessions` with `cqlsh` in the instance's own Cassandra container |
 | `teardown` | Removes the container — always, unless `--keep` |
 
 The bootstrap is not a copy of the install steps: it is the same text a real
@@ -99,6 +100,7 @@ verdict** — the run passes only if the smoke fails:
 | --- | --- | --- |
 | `old-python` | #3782 — rewrites every versioned interpreter reference back to the system `python3`, so the CLI venv is built on a Python the wheel's `requires-python` refuses | `interpreter-selection` |
 | `no-node` | #3761 — drops the Node 20 provisioning, so `ops install` reaches the web build with no `npm` | `node-provisioning` |
+| `file-sessions` | #3865 — drops the session-backend selection, so the instance keeps `example.config.ini`'s back-compat `session_backend = file` and writes chats to its own disk instead of the shared Cassandra | `session-backend` |
 
 ```bash
 nyxgpt cloud smoke --container --inject old-python   # exits 0 only if the smoke failed
@@ -115,8 +117,16 @@ passes only when all three hold (`injection_verdict`):
 2. it got as far as the bootstrap the fault was injected into, and
 3. the failure classifies as that fault's own class (the third column above).
 
-Both transforms are written against the *defect*, not against a particular
+Every transform is written against the *defect*, not against a particular
 line, so they keep reproducing it whatever shape the fix takes.
+
+`file-sessions` is the expensive one, and deliberately so. Its defect class is
+silent by construction: with the wiring removed the instance still installs
+cleanly, every service still answers, and chat still works — it is simply
+stored where no other deployment mode can read it. There is no early failure
+to catch, so proving the check bites means running the whole install. That is
+why it has its own CI job rather than joining the cheap `fault-injection`
+one.
 
 ### Diagnosing a failure
 
@@ -159,8 +169,11 @@ serial defects hid behind:
 - **Instance metadata (IMDS), instance profiles/IAM and cloud-sourced secrets.**
 - **Real AWS timing and hardware** — instance boot, EBS throughput and network
   egress.
-- **Deployment behaviour** — chat, RAG and the observability UIs are
-  `nyxgpt cloud smoke` without `--container`, against real AWS.
+- **Deployment behaviour** — model answers, RAG retrieval and the
+  observability UIs are `nyxgpt cloud smoke` without `--container`, against
+  real AWS. Session *storage* is the exception: the `session-backend` phase
+  drives the running API and reads the row back out of the instance's
+  Cassandra (#3865).
 
 ### Container-mode substitutes
 
@@ -221,6 +234,9 @@ layer, the user-data templates and the smoke itself:
 - **`artifact-install`** — the full run against a wheel built from the ref (or,
   on `workflow_dispatch` with a `version` input, against exactly what PyPI
   serves, which is the release-candidate path).
+- **`session-backend-fault-injection`** — `--inject file-sessions` must fail
+  the smoke, classified as `session-backend`. A full install, for the reason
+  above.
 
-Both are blocking. See [live-verification-ci.md](live-verification-ci.md) for
+All three are blocking. See [live-verification-ci.md](live-verification-ci.md) for
 what CI genuinely cannot execute.

@@ -73,10 +73,17 @@ reach from your workstation. It:
    unless `--skip-observability` is passed). See
    [Repo-less by construction](#repo-less-by-construction) below and
    [Docker on the instance](#docker-on-the-instance).
-4. **Enables self-healing** — a cloud instance is unattended by definition,
+4. **Selects the session storage backend** — `cassandra` by default (#3865),
+   applied with `nyxgpt ops session-backend` on the instance before
+   `ops install`, so the deployment's chats land in the `nyxgpt.chat_sessions`
+   table every other mode pointed at the same Cassandra reads, rather than as
+   JSON on the instance's own disk. Pass `--session-backend file` for a
+   deliberately single-instance deployment. See
+   [session-storage.md](session-storage.md).
+5. **Enables self-healing** — a cloud instance is unattended by definition,
    so the deploy turns the watchdog on explicitly once the stack is up (it
    ships disabled). See [self-healing.md](self-healing.md#turning-it-on).
-5. **Opens the tunnel and waits for health** — starts the SSH tunnel in the
+6. **Opens the tunnel and waits for health** — starts the SSH tunnel in the
    background, polls `http://localhost:8000/health` through it, and prints
    the localhost URLs, which are live the moment the command returns.
 
@@ -88,6 +95,7 @@ works here too and is remembered for later runs, plus:
 | --- | --- |
 | `--version` | Published release to install on the instance (default: this CLI's own version, then whatever the last deploy used) |
 | `--skip-observability` | Deploy the core app only, without monitoring/logging/tracing/errors |
+| `--session-backend` | Where the instance stores chat sessions: `cassandra` (default — shared with every mode pointed at the same Cassandra) or `file` (JSON on the instance's own disk). Remembered for later runs, so a re-deploy never silently moves an instance's sessions back to files. See [session-storage.md](session-storage.md) |
 | `--no-tunnel` | Don't open the tunnel (and so don't health-check through it); prints the `nyxgpt cloud tunnel` command to run instead |
 | `--ssh-user` | Login user on the instance (default `ec2-user`, the Amazon Linux 2023 default) |
 | `--identity-file` | Private key to authenticate with (default: whatever the last deploy used, then whatever `ssh` would pick from `~/.ssh` and your agent) |
@@ -138,6 +146,7 @@ Container state on the instance, without a hand-rolled `ssh` and a raw
 nyxgpt cloud ops status     # the instance's own `nyxgpt ops status` (default)
 nyxgpt cloud ops doctor     # the instance's own `nyxgpt ops doctor`
 nyxgpt cloud ops self-heal  # the instance's own `nyxgpt self-heal status`
+nyxgpt cloud ops session-backend  # which session store the instance is on (#3865)
 ```
 
 Each one runs the named wrapped command *on the instance* over the same SSH
@@ -777,7 +786,22 @@ nyxgpt cloud user-data --os macos
 | --- | --- |
 | `--os {linux,macos}` | Required. Target instance OS family. |
 | `--version <version>` | Pin the installed nyxGPT version. Linux: `pip install nyxgpt==<version>`. macOS: recorded in the script for reference only -- the Homebrew tap always tracks its current formula (see [Remote tap](homebrew.md#remote-tap)), not an arbitrary pinned release. Default: latest. |
+| `--session-backend {file,cassandra}` | Where the instance stores chat sessions (#3865). Default: `cassandra` on Linux, `file` on macOS -- see below. |
 | `--output <path>` | Write the rendered script to `path` instead of stdout. |
+
+**Why the session-backend default differs by target OS.** The Linux template
+runs `nyxgpt ops install`, which provisions the `nyxgpt-cassandra` container
+as a core service, so `cassandra` is available on the instance and is the
+default -- matching the Kubernetes overlay, and giving every mode pointed at
+the same Cassandra one shared session list. The EC2 Mac template deliberately
+does *not* run that path (it installs the two Homebrew formulas and starts
+them -- see [What the rendered script does](#what-the-rendered-script-does)),
+so nothing provisions a Cassandra there and the default is `file`. Passing
+`--session-backend cassandra` on macOS is supported for an operator who
+points `[rag] cassandra_hosts` at a Cassandra they run elsewhere. Both
+templates apply the choice with `nyxgpt ops session-backend`, before the
+services start, so no instance ever needs a hand-edited `config.ini`. See
+[session-storage.md](session-storage.md).
 
 ### What the rendered script does
 

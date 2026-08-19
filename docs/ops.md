@@ -116,6 +116,7 @@ nyxgpt ops stop
 nyxgpt ops down
 nyxgpt ops doctor
 nyxgpt ops env-sync
+nyxgpt ops session-backend
 nyxgpt ops secrets-sync
 nyxgpt ops logs
 nyxgpt ops observability
@@ -875,6 +876,40 @@ resulting `.env` is chmod'd `600`, same as `config.ini`.
 
 Run this after `nyxgpt wizard` and again any time you rotate a secret in
 config.ini, before `docker compose up`.
+
+---
+
+## `nyxgpt ops session-backend`
+
+Shows or sets `[nyxgpt] session_backend` in `config.ini` — where this
+machine's chat sessions are stored. The wrapped replacement for SSHing to a
+deployed instance and hand-editing the file (#3865).
+
+```bash
+nyxgpt ops session-backend             # report the backend in force
+nyxgpt ops session-backend cassandra   # sessions live in the stack's Cassandra
+nyxgpt ops session-backend file        # sessions live as JSON under `sessions_dir`
+nyxgpt ops restart api                 # the API reads the backend at startup
+```
+
+With no argument it reports the value **actually in force**, which is not
+always what the file says: `NYXGPT_SESSION_BACKEND` overrides `config.ini`,
+and the output names the override when there is one. That is the form the
+cloud path exposes as `nyxgpt cloud ops session-backend`, and it is a read —
+it writes nothing.
+
+Setting rewrites only that one line, leaving the file's comments intact, and
+writes nothing at all when the value is already what you asked for. Both
+properties are what make it safe for a provisioning script to call on every
+run: `nyxgpt cloud deploy` and `nyxgpt cloud user-data` both do, before
+`ops install`, so the derived containerized config
+(`docker/config.docker.ini`) picks the choice up in the same pass.
+
+An unknown backend is refused rather than written: an invalid value would be
+warned about and silently downgraded to `file` at load time, which is exactly
+the quiet wrong-store failure this command exists to prevent. See
+[session-storage.md](session-storage.md) for what each backend means and how
+every deployment mode selects one.
 
 ---
 

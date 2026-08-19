@@ -1141,6 +1141,62 @@ describe('InfrastructurePage', () => {
     expect(screen.getByText(/instance still present/)).toBeInTheDocument();
   });
 
+  it('names where a cloud deploy keeps its chat sessions, and separates "not recorded" from "file" (#3865)', async () => {
+    // The rc12 defect this row exists to make visible: a cloud deploy silently
+    // ran the back-compat `file` backend, so chats lived as JSON on the
+    // instance's own disk and no other mode could see them. Three distinct
+    // claims, and the third is the one that is easy to get wrong -- a deploy
+    // record written before the flag existed says *nothing* about the backend,
+    // which is not the same as saying the sessions are file-backed.
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    const deployed = {
+      ...CLOUD_DEPLOY_UNKNOWN,
+      source: 'deploy-record',
+      known: true,
+      deployed: true,
+      version: '3.0.0rc12',
+      tunnel: { running: false, pid: 0, host: '', profiles: [], urls: {} },
+    };
+
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({ ...deployed, session_backend: 'cassandra' })
+      )
+    );
+    const first = render(<InfrastructurePage />);
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Cassandra \(nyxgpt\.chat_sessions\) — shared with every mode/)
+      ).toBeInTheDocument();
+    });
+    first.unmount();
+
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({ ...deployed, session_backend: 'file' })
+      )
+    );
+    const second = render(<InfrastructurePage />);
+    await waitFor(() => {
+      expect(
+        screen.getByText(/JSON files on the instance’s own disk/)
+      ).toBeInTheDocument();
+    });
+    expect(screen.getByText(/lost with the instance/)).toBeInTheDocument();
+    second.unmount();
+
+    // No key at all: rather than guess, the page names the wrapped command
+    // that can ask the instance itself.
+    server.use(http.get('/api/v1/cloud/deploy', () => HttpResponse.json(deployed)));
+    render(<InfrastructurePage />);
+    await waitFor(() => {
+      expect(
+        screen.getByText(/not recorded — this deploy predates the session-backend flag/)
+      ).toBeInTheDocument();
+    });
+    expect(screen.getByText(/nyxgpt cloud ops session-backend/)).toBeInTheDocument();
+  });
+
   it('reads "not provisioned" only when this machine has Terraform state that records no instance', async () => {
     server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
     server.use(

@@ -33,6 +33,16 @@ set -euxo pipefail
 # nyxgpt version requested at render time (informational only -- see above).
 NYXGPT_VERSION="__NYXGPT_VERSION__"
 
+# Chat session storage backend for this instance (#3865), filled in by
+# `nyxgpt cloud user-data --session-backend`. Defaults to `file` for this
+# template, unlike the Linux one: nothing here provisions a Cassandra (this
+# script does not run `ops install`'s macOS path -- see the header), so
+# defaulting to `cassandra` would point the API at a database that is not on
+# the machine. Passing `--session-backend cassandra` is still supported, for
+# an operator who points `[rag] cassandra_hosts` at a Cassandra they run
+# elsewhere. See docs/session-storage.md.
+NYXGPT_SESSION_BACKEND_CHOICE="__NYXGPT_SESSION_BACKEND__"
+
 if [ "$(id -u)" -ne 0 ]; then
   echo "ec2-user-data-macos: must run as root (ec2-macos-init user-data does by default)" >&2
   exit 1
@@ -70,6 +80,16 @@ if [ ! -f "$TARGET_HOME/.nyxGPT/config.ini" ]; then
   EXAMPLE_CONFIG="$($BREW_BIN --prefix)/opt/nyxgpt-api/libexec/venv/lib/python3.12/site-packages/nyxgpt/example.config.ini"
   sudo -u "$NYXGPT_TARGET_USER" -H cp "$EXAMPLE_CONFIG" "$TARGET_HOME/.nyxGPT/config.ini"
 fi
+
+# Apply the session-backend choice before the services start, so the API's
+# first run already reads the intended backend (#3865). The `nyxgpt` console
+# script is the one the api keg symlinks onto the PATH
+# (`bin.install_symlink venv/"bin/nyxgpt"` in homebrew/tap/nyxgpt-api.rb.tmpl);
+# addressed through the keg rather than the PATH so this does not depend on
+# `brew link` having run for this shell. Idempotent -- it writes only when the
+# value actually changes.
+NYXGPT_CLI="$($BREW_BIN --prefix)/opt/nyxgpt-api/libexec/venv/bin/nyxgpt"
+sudo -u "$NYXGPT_TARGET_USER" -H "$NYXGPT_CLI" ops session-backend "$NYXGPT_SESSION_BACKEND_CHOICE"
 
 sudo -u "$NYXGPT_TARGET_USER" -H "$BREW_BIN" services start nyxgpt-api
 sudo -u "$NYXGPT_TARGET_USER" -H "$BREW_BIN" services start nyxgpt-web
