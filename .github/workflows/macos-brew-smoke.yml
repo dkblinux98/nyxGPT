@@ -91,6 +91,13 @@ on:
       - 'scripts/homebrew-caveats-smoke.sh'
       - 'src/nyxgpt/release_tarball.py'
       - 'src/nyxgpt/install_mode.py'
+      # The parser every brew state reaches a comparison through, and the one
+      # the identity step's reconcile depends on to decide what is registered
+      # (#3861). `ops.py` is deliberately NOT here -- it changes on nearly
+      # every PR, and a macOS job that runs every time is a job people learn
+      # to ignore -- but this file is small, focused, and its readers are the
+      # health gate and the retire.
+      - 'src/nyxgpt/brew_services.py'
       - '.github/workflows/macos-brew-smoke.yml'
   workflow_dispatch:
     inputs:
