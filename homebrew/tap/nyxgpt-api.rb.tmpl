@@ -227,6 +227,38 @@ PY
     error_log_path var/"log/nyxgpt-api.err.log"
   end
 
+  # A `service` block with no `caveats` leaves Homebrew's generated "To start
+  # ... brew services start ..." line as the only instruction the operator
+  # receives, and that command starts this one service without ever reaching
+  # `ops.install()` -- so no Ollama, no Cassandra, no observability and no
+  # packaged resources under ~/.nyxGPT (#3854). See ../nyxgpt-api.rb's caveats
+  # block for the full account and for why `service` stays. This is the
+  # template that publishes to the tap, so the text has to be here too, and
+  # `#{name}` keeps it correct for the rc channel, which installs this recipe
+  # as `nyxgpt-api@<line>rc`.
+  def caveats
+    <<~EOS
+      To start nyxGPT, run:
+        nyxgpt up
+
+      That brings up the whole stack -- this API, the web UI, Ollama, Cassandra
+      and the observability services -- waits for it to report healthy, and
+      prints the web UI URL. `nyxgpt down` stops it again, and `nyxgpt ops
+      status` shows what is running.
+
+      If you were pointed at `brew services start #{name}`, note
+      that it starts only this one service. It does not install or start
+      Ollama, it does not create the Cassandra container, and it does not
+      start observability. A stack brought up that way reports
+      `ollama: unreachable` and `cassandra: unreachable`, and the web UI
+      fails to load sessions. Use it to control this individual service once
+      `nyxgpt up` has set the stack up -- not instead of it.
+
+      `nyxgpt up` starts the Homebrew services for you, so they still restart
+      at login.
+    EOS
+  end
+
   test do
     # The venv and its uvicorn install have to exist -- the actual API is
     # exercised by integration tests in the repo.

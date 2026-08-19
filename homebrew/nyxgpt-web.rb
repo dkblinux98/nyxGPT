@@ -123,6 +123,45 @@ PY
     error_log_path var/"log/nyxgpt-web.err.log"
   end
 
+  # See ../nyxgpt-api.rb's caveats block for the full account (#3854): a
+  # formula with a `service` block and no `caveats` leaves Homebrew's generated
+  # "brew services start ..." line as the only instruction the operator gets,
+  # and following it produces a stack with no Ollama, no Cassandra and no
+  # observability. This formula needs the same message for the same reason --
+  # the owner is told it twice, once per keg.
+  #
+  # The one difference: the `nyxgpt` CLI ships in the nyxgpt-api keg
+  # (`bin.install_symlink venv/bin/nyxgpt` there), so a machine that installed
+  # only the web formula does not have the command this text names. Say so,
+  # and derive the counterpart's name from this one so the rc channel points at
+  # `nyxgpt-api@<line>rc` and the stable channel at `nyxgpt-api`.
+  def caveats
+    api_formula = name.sub("nyxgpt-web", "nyxgpt-api")
+    <<~EOS
+      To start nyxGPT, run:
+        nyxgpt up
+
+      That brings up the whole stack -- this web UI, the API, Ollama, Cassandra
+      and the observability services -- waits for it to report healthy, and
+      prints the web UI URL. `nyxgpt down` stops it again, and `nyxgpt ops
+      status` shows what is running.
+
+      The `nyxgpt` command is installed by the #{api_formula} formula:
+        brew install #{api_formula}
+
+      If you were pointed at `brew services start #{name}`, note
+      that it starts only this one service. It does not start the API this UI
+      talks to, it does not install or start Ollama, it does not create the
+      Cassandra container, and it does not start observability. A web UI
+      brought up that way fails to load sessions. Use it to control this
+      individual service once `nyxgpt up` has set the stack up -- not instead
+      of it.
+
+      `nyxgpt up` starts the Homebrew services for you, so they still restart
+      at login.
+    EOS
+  end
+
   test do
     assert_predicate bin/"nyxgpt-web", :exist?
     assert_predicate libexec/".next", :exist?

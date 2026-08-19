@@ -279,6 +279,54 @@ PY
     error_log_path var/"log/nyxgpt-api.err.log"
   end
 
+  # Homebrew generates its own post-install message for any formula carrying a
+  # `service` block -- "To start ... now and restart at login: brew services
+  # start ..." -- and with no `caveats` here that generated line was the only
+  # instruction an operator ever received. The owner followed it and got a
+  # stack with no Ollama, no Cassandra and no observability (#3854): `brew
+  # services start` starts the one service it names and nothing else, so it
+  # never reaches `ops.install()` -- which is what installs and starts Ollama
+  # (`_ensure_native_ollama_service`), creates the `nyxgpt-cassandra` container
+  # (`_ensure_cassandra_container`), brings the observability Compose profiles
+  # up (they are opt-*out*, behind `--skip-observability`) and syncs the
+  # packaged resources into ~/.nyxGPT (`_sync_packaged_resources`).
+  #
+  # The `service` block stays: it is what makes restart-at-login work, and what
+  # `nyxgpt ops restart`/self-heal drive (`brew services restart nyxgpt-api`).
+  # Removing it to silence the competing guidance would cost real behavior to
+  # fix a text problem. What was actually missing is any statement of which
+  # command comes first, so this block names `nyxgpt up` and says plainly what
+  # the per-service command does not do.
+  #
+  # `#{name}` rather than a literal: the rc channel installs this same recipe
+  # as `nyxgpt-api@<line>rc`, and naming the stable formula there would print a
+  # command the operator does not have.
+  #
+  # Asserted on the real `brew install` output by macos-brew-smoke.yml's
+  # "Prove the install tells the operator to run `nyxgpt up`" step.
+  def caveats
+    <<~EOS
+      To start nyxGPT, run:
+        nyxgpt up
+
+      That brings up the whole stack -- this API, the web UI, Ollama, Cassandra
+      and the observability services -- waits for it to report healthy, and
+      prints the web UI URL. `nyxgpt down` stops it again, and `nyxgpt ops
+      status` shows what is running.
+
+      If you were pointed at `brew services start #{name}`, note
+      that it starts only this one service. It does not install or start
+      Ollama, it does not create the Cassandra container, and it does not
+      start observability. A stack brought up that way reports
+      `ollama: unreachable` and `cassandra: unreachable`, and the web UI
+      fails to load sessions. Use it to control this individual service once
+      `nyxgpt up` has set the stack up -- not instead of it.
+
+      `nyxgpt up` starts the Homebrew services for you, so they still restart
+      at login.
+    EOS
+  end
+
   test do
     # The venv and its uvicorn install have to exist -- the actual API is
     # exercised by integration tests in the repo.
