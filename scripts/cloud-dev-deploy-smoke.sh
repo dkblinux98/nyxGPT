@@ -13,8 +13,15 @@
 # as rendered, never a copy) over a real SSH connection to a bare Amazon Linux
 # 2023 container.
 #
-# Four phases, and phase 1 is a fault injection so a green run cannot be luck:
+# Five phases, and phase 1 is a fault injection so a green run cannot be luck:
 #
+#   0. refusal     The built wheel, in a venv of its own, with no checkout
+#                  above it: `nyxgpt cloud deploy --dev` must refuse, name the
+#                  missing tree, and do it before the substrate is applied.
+#                  Checked here rather than only in a unit test because the
+#                  unit test monkeypatches the very function whose real answer
+#                  is the point, and because it cannot see whether the flag
+#                  reached argparse at all.
 #   1. no-tree     Run the dev install block on a box that was never shipped a
 #                  tree. It MUST fail, and fail *at the guard*, naming the
 #                  missing directory. Measured with the guard stripped out
@@ -126,6 +133,38 @@ remote() {
   ssh -o StrictHostKeyChecking=no -o BatchMode=yes -i "$WORK_DIR/id_smoke" \
     "ec2-user@$HOST_IP" "$@"
 }
+
+# --- Phase 0: the refusal, from an artifact-installed CLI ----------------
+#
+# The acceptance criterion is about what an operator *sees*, so it is checked
+# the way they meet it: the built wheel in a venv of its own, with no checkout
+# above it, running the real console script. A unit test cannot answer this --
+# it monkeypatches the very function whose real answer is the whole point, and
+# it never finds out whether the flag is wired into argparse at all.
+
+echo "==> phase 0: --dev from an installed package must refuse"
+python3 -m pip install --quiet --upgrade build
+python3 -m build --wheel --outdir "$WORK_DIR/dist" "$REPO_ROOT" >/dev/null
+python3 -m venv "$WORK_DIR/artifact-venv"
+"$WORK_DIR/artifact-venv/bin/pip" install --quiet --upgrade pip
+"$WORK_DIR/artifact-venv/bin/pip" install --quiet "$WORK_DIR"/dist/*.whl
+
+# From a directory that is not the checkout, so nothing above the installed
+# package could be mistaken for one.
+if (cd "$WORK_DIR" && "$WORK_DIR/artifact-venv/bin/nyxgpt" cloud deploy --dev) \
+    >"$WORK_DIR/phase0.log" 2>&1; then
+  cat "$WORK_DIR/phase0.log" >&2
+  fail "an artifact-installed nyxgpt accepted --dev -- it has no working tree to deploy"
+fi
+grep -q -- "--dev deploys your working tree" "$WORK_DIR/phase0.log" \
+  || { cat "$WORK_DIR/phase0.log" >&2; fail "it refused, but not with the --dev diagnostic"; }
+# It has to refuse *before* the substrate: an operator who mistypes this must
+# not be billed for an EC2 instance to find out.
+if grep -qi "terraform\|instance i-" "$WORK_DIR/phase0.log"; then
+  cat "$WORK_DIR/phase0.log" >&2
+  fail "it reached the substrate before refusing"
+fi
+pass "phase 0: refused before touching AWS, naming the missing checkout"
 
 # --- The install block, rendered by the product, never retyped -----------
 

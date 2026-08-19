@@ -15,6 +15,10 @@ name: Cloud Dev Deploy Smoke
 #
 # Both halves, per the #3753 fault-injection rule:
 #
+#   * phase 0 installs the built wheel into a venv with no checkout above it
+#     and requires `nyxgpt cloud deploy --dev` to refuse, naming the missing
+#     tree, before the substrate is applied. That is the acceptance criterion
+#     about what an operator sees, checked the way they meet it.
 #   * phase 1 runs the dev install block on a box that was never shipped a
 #     tree and requires it to FAIL at the working-tree guard. Measured with
 #     the guard removed: the run instead reaches pip and dies with a message
