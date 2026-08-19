@@ -392,6 +392,22 @@ or the wrapped equivalent:
 nyxgpt ops status
 ```
 
+### Removing nyxGPT
+
+```bash
+nyxgpt ops uninstall
+```
+
+Stops **and deregisters** every `nyxgpt-*` systemd `--user` unit (api, web,
+ollama and the two log followers), stops the `nyxgpt-cassandra` container and
+tears down the observability Compose tier. Removal, not just stopping: a unit
+file left in `~/.config/systemd/user` is re-enablable and comes back at the
+next login, which is the difference between this and `nyxgpt down`.
+
+Your data in `~/.nyxGPT` is preserved; remove the Python distribution itself
+afterwards (`pip uninstall nyxgpt`) if you installed one. Full description in
+[ops.md](ops.md#nyxgpt-ops-uninstall).
+
 ---
 
 ## Service dependencies
