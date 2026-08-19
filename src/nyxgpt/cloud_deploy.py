@@ -16,8 +16,8 @@ from my workstation":
 3. **Provision the instance from published artifacts** -- see
    `render_provision_script`. The instance `pip install`s a published
    `nyxgpt` release from PyPI and runs `nyxgpt ops install`; it never clones
-   this repository, and nothing is copied from the operator's checkout
-   (there may not be one). This mirrors, step for step, the
+   this repository, and on this path nothing is copied from the operator's
+   checkout (there may not be one). This mirrors, step for step, the
    `artifact-install-smoke` job in `.github/workflows/release-artifacts.yml`,
    which proves that exact sequence on a checkout-free Linux runner.
 

@@ -956,6 +956,48 @@ rather than mechanism, and nothing can enforce them.
   `tests/unit/test_install_identity.py`;
   `.github/workflows/macos-brew-smoke.yml` (`stable-over-candidate`).
 
+- **D-033** · 2026-08-19 · developer agent (#3950) — **"Dev mode on a cloud
+  target" means shipping the working tree to the instance; it does not mean a
+  cloud Terraform or Kubernetes deployment.** The two halves of this are what
+  a future session would re-derive wrongly, because the flag names look like
+  they compose and they do not.
+  (a) *What was built.* `nyxgpt cloud deploy --dev` copies the operator's tree
+  over the deploy's own SSH connection (git's file list — tracked plus
+  new-not-ignored, so **uncommitted edits go**; never `.git`) into
+  `~/.nyxGPT/src`, installs it editable there, and runs `ops install --dev` on
+  the box, so `ops.dev_checkout_root()` on the *instance* answers the shipped
+  directory. The refusal without a checkout is `ops.dev_checkout_root()` — the
+  local paths' own predicate, reached through a new public forwarder rather
+  than re-implemented, because two definitions of "is this a checkout" is how
+  one path refuses a tree the other accepts. `--dev` is **not** carried
+  forward by `resolve_plan` although every other recorded choice is: the
+  others describe the instance's configuration, this one describes where a
+  single run got its code, and inheriting it would re-ship whatever tree
+  happened to be checked out under a command every operator reads as the
+  artifact path. Not exposed on `POST /cloud/deploy`: the API host has no tree
+  to ship (D-017).
+  (b) *What "cloud mode" does and does not mean.* `--terraform` and
+  `--kubernetes` are **local install-mode** flags of `ops install`; neither is
+  a mode of `nyxgpt cloud deploy`, which deploys the native stack to one EC2
+  box. So there was no "Terraform dev mode on cloud" to add — cloud uses
+  Terraform for the *substrate* only — and no Kubernetes cloud target for
+  `--dev` to modify. The latter is **unbuilt work, not a scope decision
+  against it**: `product_management/DECISION_AWS_COMPUTE_SUBSTRATE.md` (#3506)
+  rejects a managed **EKS control plane** while explicitly calling for the
+  existing `k8s/*.yaml` on a single-node k3s cluster on that instance. #3950's
+  thread contains a retracted comment asserting the opposite from the Options
+  section alone; the Decision section is what binds.
+  The behaviour itself is not recorded here — it is enforced by
+  `tests/unit/test_cloud_deploy_dev_mode.py` and, on a real machine, by
+  `.github/workflows/cloud-dev-deploy-smoke.yml`, per the verification
+  retirement. What that smoke found and inspection did not: `is_file()` drops
+  every symlink-to-a-directory in `src/nyxgpt/resources/` (#3621), which
+  silently shipped a checkout whose `ops install` could not find its own
+  runtime data.
+  (Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed. IDs are never reused.)
+  Source: #3950; #3506; extends **D-009**.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

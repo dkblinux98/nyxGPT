@@ -137,6 +137,12 @@ export const CLOUD_DEPLOY_UNKNOWN = {
   instance_type: '',
   region: '',
   profiles: [],
+  // #3950. False rather than absent: "no deploy is known from here" is not a
+  // claim about how some other machine's deploy was built, and the page reads
+  // this as "published release" -- which is what a plain `nyxgpt cloud deploy`
+  // always does.
+  dev: false,
+  source_dir: '',
   connection: {
     known: false,
     host: '',
