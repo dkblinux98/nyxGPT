@@ -92,6 +92,7 @@ PROBES = (
     ("http://127.0.0.1:3000", "#3857: the web UI was never requested"),
     ("nyxgpt ops status", "#3854: brew's own caveats point elsewhere"),
     ("nyxgpt down", "#3859: the supported stop was never exercised"),
+    ("nyxgpt ops uninstall", "#3859: the wrapped teardown was never exercised"),
     ("brew uninstall", "#3859: removal was never exercised"),
     ("brew untap", "#3859: the tap was never removed"),
     ("launchctl list", "#3859: leftover launchd jobs were never checked"),
@@ -366,6 +367,70 @@ def test_the_published_tap_job_runs_the_user_path() -> None:
         "gate reports the first defect on the path instead of the whole path -- "
         "the same 'one broken step hides the rest' shape the script itself avoids"
     )
+
+
+def test_the_teardown_ordering_is_asserted_not_assumed() -> None:
+    """`ops uninstall` must be checked against what `down` deliberately leaves (#3859).
+
+    The whole defect is the difference between the two commands: `down` stops
+    a stack and leaves it installed, so a teardown check that runs only after
+    `ops uninstall` cannot tell "the command works" from "there was nothing
+    there". The script asserts the machine is still registered between them,
+    so a green run means the residue check had residue to clear.
+    """
+    script = _script()
+    down_at = script.index("nyxgpt down")
+    uninstall_at = script.index("nyxgpt ops uninstall")
+    removal_at = script.index("brew uninstall")
+    assert down_at < uninstall_at < removal_at, (
+        "the wrapped teardown must run after `nyxgpt down` and before the "
+        "Homebrew removal -- that ordering is what the formula caveats tell "
+        "the operator to follow, so it is the ordering the gate has to execute"
+    )
+    between = script[down_at:uninstall_at]
+    assert "the uninstall check below tests nothing" in between, (
+        "nothing asserts the machine is still registered after `nyxgpt down`, "
+        "so the residue check after the teardown could pass against a machine "
+        "that had nothing to remove"
+    )
+    assert "idempotent" in script or "second nyxgpt ops uninstall" in script, (
+        "the teardown routinely runs against partially-removed machines; the "
+        "second run is what proves absence is not treated as failure"
+    )
+
+
+def test_the_keg_install_job_proves_the_teardown_on_every_pr() -> None:
+    """The published-tap job needs a publish; this defect does not (#3859).
+
+    `keg-install` builds from the working tree and runs on pull requests, so
+    the teardown assertion lands on the PR that changes it rather than after
+    the next rc cut. It injects the three `com.nyxgpt.*` agents (this job
+    never runs `nyxgpt ops install`, so they would not otherwise exist and the
+    check would be green on a machine that never reproduced the bug) and
+    proves both halves: the plists survive `nyxgpt ops down`, and they do not
+    survive `nyxgpt ops uninstall`.
+    """
+    job = _workflow()["jobs"]["keg-install"]
+    step = next(
+        (s for s in job["steps"] if str(s.get("name", "")).startswith("Teardown")),
+        None,
+    )
+    assert step is not None, (
+        "keg-install no longer proves the teardown, so #3859's fix is only "
+        "exercised by a job that needs a published candidate"
+    )
+    run = step["run"]
+    for label in ("com.nyxgpt.cassandra-logs", "com.nyxgpt.ollama-logs", "com.nyxgpt.ollama-env"):
+        assert label in run, f"the injection no longer stages {label}"
+    assert "injection failed" in run, (
+        "nothing asserts the injected agents were really staged, so the "
+        "teardown assertion can pass against a machine with nothing on it"
+    )
+    assert "nyxgpt ops down" in run and "tests nothing" in run, (
+        "the negative control is gone: without it, a check that passes says "
+        "nothing about whether the command before this fix would have failed"
+    )
+    assert "nyxgpt ops uninstall" in run
 
 
 def test_the_stable_over_candidate_job_covers_the_present_counterpart_case() -> None:

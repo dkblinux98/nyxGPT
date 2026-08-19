@@ -11332,6 +11332,75 @@ def _remove_native_systemd_units() -> list[OpsResult]:
     return results
 
 
+def _brew_formula_installed(name: str) -> bool:
+    """True if Homebrew reports formula `name` as installed on this machine."""
+    if _which("brew") is None:
+        return False
+    try:
+        return _run(["brew", "list", "--formula", name], check=False, expected=True).returncode == 0
+    except Exception as e:
+        logger.warning("Could not ask brew about %s: %s", name, e, extra={"component": "ops"})
+        return False
+
+
+def _uninstall_stop_native_service(component: str) -> list[OpsResult]:
+    """Stop `component` for the teardown, skipping one that was never installed.
+
+    `down` reports a stop it could not perform, and should: the operator asked
+    to stop a running stack, so `brew services stop ollama` failing is news.
+    Uninstall is the opposite -- it runs against machines where whole
+    populations are already gone (a keg removed by hand, ollama never
+    installed, the candidate channel's service registered under a formula name
+    this map does not carry), and "it is not there" is the desired end state,
+    not a reason to exit 2. What is genuinely still registered is found and
+    removed by `_uninstall_native_service_managers` regardless of this step.
+    """
+    if _is_macos() and _dev_launchd_label(component) is None:
+        name = NATIVE_BREW_SERVICES[component]
+        if not _brew_formula_installed(name):
+            return [OpsResult(True, f"Skipped stopping {component}: no {name} keg installed")]
+    if _is_linux():
+        unit = NATIVE_SYSTEMD_SERVICES[component]
+        if not (_systemd_user_dir() / f"{unit}.service").exists():
+            return [OpsResult(True, f"Skipped stopping {component}: no {unit}.service installed")]
+    return _stop_native_service(component)
+
+
+def _uninstall_stop_container(name: str) -> list[OpsResult]:
+    """Stop container `name` for the teardown, skipping one that is not there.
+
+    Same rule as `_uninstall_stop_native_service`: a machine with no Docker,
+    or with the container already removed, is in the state this command is
+    trying to reach.
+    """
+    if _which("docker") is None:
+        return [OpsResult(True, f"Skipped stopping {name}: Docker not found")]
+    try:
+        cp = _run(["docker", "ps", "-aq", "--filter", f"name=^{name}$"], check=False, expected=True)
+    except Exception as e:
+        logger.warning("Could not list containers for %s: %s", name, e, extra={"component": "ops"})
+        return [OpsResult(True, f"Skipped stopping {name}: could not query Docker")]
+    if cp.returncode != 0 or not (cp.stdout or "").strip():
+        return [OpsResult(True, f"Skipped stopping {name}: no such container")]
+    return _stop_docker_container(name)
+
+
+def _uninstall_compose_teardown(volumes: bool) -> list[OpsResult]:
+    """Tear the Compose tiers down, skipping a machine that has no Compose file.
+
+    `_down_compose_teardown` resolves service names by asking `docker compose
+    -f <file> config --services`, which fails outright when the ops-managed
+    docker-compose.yml is not there. That is an uninstall's *end* state, and on
+    a machine that only ever ran the native path it is the starting one -- so
+    reporting it as two failed checks would exit 2 on exactly the machines this
+    command has just finished cleaning.
+    """
+    compose_file = Path(self_heal.COMPOSE_FILE)
+    if not compose_file.exists():
+        return [OpsResult(True, f"Skipped Compose teardown: no {compose_file}")]
+    return _down_compose_teardown("all", volumes)
+
+
 def _uninstall_native_service_managers() -> list[OpsResult]:
     """Deregister nyxGPT from this OS's service manager, whichever it is."""
     if _is_macos():
@@ -11418,14 +11487,14 @@ def uninstall(args) -> int:
     # this command just tore down and re-occupies the ports within seconds.
     steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
         ("mark intentionally stopped", _down_mark_intentional_stops),
-        ("stop api", lambda: _stop_native_service("api")),
-        ("stop web", lambda: _stop_native_service("web")),
-        ("stop ollama", lambda: _stop_native_service("ollama")),
-        ("stop cassandra container", lambda: _stop_docker_container("nyxgpt-cassandra")),
+        ("stop api", lambda: _uninstall_stop_native_service("api")),
+        ("stop web", lambda: _uninstall_stop_native_service("web")),
+        ("stop ollama", lambda: _uninstall_stop_native_service("ollama")),
+        ("stop cassandra container", lambda: _uninstall_stop_container("nyxgpt-cassandra")),
         # After the stops, because deleting a plist out from under a loaded
         # job leaves the job loaded with nothing to report it.
         ("deregister native services", _uninstall_native_service_managers),
-        ("compose teardown", lambda: _down_compose_teardown("all", volumes)),
+        ("compose teardown", lambda: _uninstall_compose_teardown(volumes)),
         ("clear install mode", _uninstall_clear_install_mode),
     ]
 

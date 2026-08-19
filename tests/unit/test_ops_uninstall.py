@@ -250,7 +250,13 @@ def test_uninstall_runs_every_population(monkeypatch, tmp_path, capsys):
         return _step
 
     monkeypatch.setattr(ops, "_down_mark_intentional_stops", record("mark"))
+    monkeypatch.setattr(ops, "_brew_formula_installed", lambda name: True)
+    monkeypatch.setattr(ops, "_dev_launchd_label", lambda c: None)
     monkeypatch.setattr(ops, "_stop_native_service", lambda c: called.append(f"stop:{c}") or [])
+    monkeypatch.setattr(ops, "_which", lambda tool: f"/usr/bin/{tool}")
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, **kw: SimpleNamespace(returncode=0, stdout="abc123\n", stderr="")
+    )
     monkeypatch.setattr(ops, "_stop_docker_container", lambda n: called.append(f"docker:{n}") or [])
     monkeypatch.setattr(ops, "_remove_dev_launchagents", record("dev-agents"))
     monkeypatch.setattr(ops, "_remove_support_launchagents", record("support-agents"))
@@ -276,6 +282,43 @@ def test_uninstall_runs_every_population(monkeypatch, tmp_path, capsys):
     # The operator is told what to run next -- removing the artifact stays
     # the package manager's job, and the teardown is what makes it safe.
     assert "brew uninstall" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_an_absent_population_is_skipped_not_failed(monkeypatch, tmp_path):
+    """A machine with no keg, no Docker and no container is the target state.
+
+    `down` reports a stop it could not perform and should; a teardown that
+    exits 2 because ollama was never installed would tell the operator their
+    uninstall failed on a machine it had just finished cleaning.
+    """
+    monkeypatch.setattr(ops.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(ops.Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(ops, "_which", lambda tool: None)
+    monkeypatch.setattr(ops, "_dev_launchd_label", lambda c: None)
+
+    stops = [r for c in ("api", "web", "ollama") for r in ops._uninstall_stop_native_service(c)]
+    container = ops._uninstall_stop_container("nyxgpt-cassandra")
+
+    assert all(r.ok for r in stops + container)
+    assert all(r.message.startswith("Skipped stopping") for r in stops + container)
+
+
+@pytest.mark.unit
+def test_a_container_that_is_there_is_still_stopped(monkeypatch, tmp_path):
+    """The skip above must not swallow a real container -- prove the other branch."""
+    monkeypatch.setattr(ops.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(ops, "_which", lambda tool: f"/usr/bin/{tool}")
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, **kw: SimpleNamespace(returncode=0, stdout="deadbeef\n", stderr="")
+    )
+    stopped: list[str] = []
+    monkeypatch.setattr(
+        ops, "_stop_docker_container", lambda n: stopped.append(n) or [ops.OpsResult(True, n)]
+    )
+
+    assert all(r.ok for r in ops._uninstall_stop_container("nyxgpt-cassandra"))
+    assert stopped == ["nyxgpt-cassandra"]
 
 
 @pytest.mark.unit
