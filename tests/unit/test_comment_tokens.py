@@ -59,7 +59,9 @@ class TestAnchoredMatching:
         assert not comment_tokens.is_command(body, TOKEN)
 
     def test_numbered_guidance_step_is_not_a_command(self):
-        body = "**Next steps:**\n1. Review the logs\n3. Once fixed, comment `PAUSE_SPRINT` to hold\n"
+        body = (
+            "**Next steps:**\n1. Review the logs\n3. Once fixed, comment `PAUSE_SPRINT` to hold\n"
+        )
         assert not comment_tokens.is_command(body, TOKEN)
 
     def test_list_bullet_and_markdown_decoration_still_open_a_line(self):
@@ -155,10 +157,7 @@ class TestIncidentReplay:
         assert not comment_tokens.is_command(self.STOP_MESSAGE, TOKEN)
 
     def test_a_deliberate_command_still_triggers(self):
-        body = (
-            "⏸️ Holding the sprint while the owner tests the candidate.\n\n"
-            f"{TOKEN}\n"
-        )
+        body = "⏸️ Holding the sprint while the owner tests the candidate.\n\n" f"{TOKEN}\n"
         assert comment_tokens.is_command(body, TOKEN)
 
 
