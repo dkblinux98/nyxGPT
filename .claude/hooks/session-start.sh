@@ -23,7 +23,7 @@ if [ "${CLAUDE_CODE_REMOTE:-}" = "true" ]; then
   echo "authored as the connected user, not as a nyxGPT agent -- the environment"
   echo "proxy overrides Authorization headers on api.github.com. Per project"
   echo "policy, prefer read-only GitHub access here and route writes through the"
-  echo "GitHub Actions triggers (READY_FOR_NEXT_ISSUE, RETRY_IMPLEMENTATION,"
+  echo "GitHub Actions triggers (assigning the developer agent to an issue,"
   echo "@claude mentions) or a local Claude Code session, which run as the"
   echo "proper agent identities."
   exit 0

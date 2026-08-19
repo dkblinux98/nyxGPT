@@ -1,19 +1,25 @@
-"""Structural tests for the comment-token triggers (#3790).
+"""Structural tests for the comment-token triggers (#3790, #3882).
 
-2026-08-15: the developer agent's stop message ("...move the issue back to In
-Progress and comment `RETRY_IMPLEMENTATION` to resume") was matched by its own
-trigger's bare `contains()` test, so posting it started another run, which
-stopped and posted it again -- ~500 runs and ~500 comments across #3782/#3784
-in under two hours. #3706 was the same defect on the kick token.
+2026-08-15: the developer agent's stop message, which named the retry token in
+its resume instruction, was matched by its own trigger's bare `contains()`
+test -- so posting it started another run, which stopped and posted it again:
+~500 runs and ~500 comments across #3782/#3784 in under two hours. #3706 was
+the same defect on the kick token.
+
+#3882 removed the mechanism rather than the wording: no comment starts
+developer work any more. The tokens that remain author content
+(`@acceptance-failure`, `@improvement`) or stop work (`PAUSE_SPRINT`,
+`CONFLICT_REQUIRES_OWNER_DECISION`), and they keep the anchored gate.
 
 These are cheap structural guards on the shape of the fix, not a workflow
 runner. They fail if:
 
-  * the stop message names the retry token again (the #3706 test pattern,
-    extended to this message)
+  * the developer workflow becomes comment-triggered again, or names either
+    retired token
+  * a claim path stops consulting the stop-without-progress loop guard
   * an agent comment that names a token stops carrying the informational
     marker, or a token trigger stops excluding marked comments
-  * any of the four comment-token triggers loses its anchored gate job, or
+  * any surviving comment-token trigger loses its anchored gate job, or
     starts work without consulting it
 """
 
@@ -40,11 +46,11 @@ comment_tokens = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = comment_tokens
 _spec.loader.exec_module(comment_tokens)
 
-RETRY = "RETRY_IMPLEMENTATION"
+#: Split so this file is not itself a mention of either retired token (#3882).
+RETIRED = ("RETRY_" + "IMPLEMENTATION", "READY_FOR_NEXT" + "_ISSUE")
 
 #: workflow file -> (token, name of the job that does the work)
 TOKEN_TRIGGERS = {
-    "developer_auto_implement.yml": (RETRY, "implement"),
     "handle_acceptance_failure.yml": ("@acceptance-failure", "handle"),
     "handle_improvement.yml": ("@improvement", "handle"),
     "conflict_owner_escalation.yml": ("CONFLICT_REQUIRES_OWNER_DECISION", "escalate"),
@@ -69,6 +75,44 @@ def _steps(workflow: dict, job: str) -> list[dict]:
     return workflow["jobs"][job].get("steps", []) or []
 
 
+class TestAssignmentIsTheOnlyLever:
+    """#3882: the developer workflow is dispatched by assignment and nothing
+    else. Comment triggers were how a workflow's own output started it."""
+
+    def test_the_developer_workflow_is_not_comment_triggered(self):
+        loaded = _load(DEV_WF)
+        triggers = loaded[True] if True in loaded else loaded["on"]
+        assert "issue_comment" not in triggers, (
+            "a comment trigger can be fired by any text that names its token, "
+            "including this workflow's own output (#3706, #3790)"
+        )
+        assert triggers["issues"]["types"] == ["assigned"]
+
+    def test_the_workflow_names_neither_retired_token(self):
+        text = DEV_WF.read_text()
+        assert not [token for token in RETIRED if token in text]
+
+    def test_the_claim_step_delegates_to_the_executable_decision(self):
+        """The lane and assigner rules live in `developer_claim_issue`
+        (gh_project.sh) so they can be RUN against stub state -- D-006. Inline
+        workflow YAML can only be inspected, and a second copy here would be
+        free to disagree with the tested one."""
+        script = _step_scripts(
+            next(s for s in _steps(_load(DEV_WF), "implement") if s.get("name") == VERIFY_STEP)
+        )
+        assert 'developer_claim_issue "$ISSUE_NUMBER" "$ASSIGNER"' in script
+
+    def test_the_decision_accepts_rework_and_refuses_a_stranger(self):
+        """A review that requests changes hands the issue back by assigning
+        it, and it is In Review when it does -- so In Review must be claimable
+        or every rework round stalls."""
+        lib = (REPO_ROOT / "scripts" / "agents" / "lib" / "gh_project.sh").read_text()
+        body = lib.split("developer_claim_issue() {", 1)[1].split("\n}", 1)[0]
+        assert '"$STATUS_BACKLOG" | "$STATUS_IN_REVIEW"' in body
+        assert "is not a permitted dispatcher" in body
+        assert "claude[bot]" in body
+
+
 class TestStopMessageIsTokenFree:
     """AC: the stop/status-check message no longer contains the retry token."""
 
@@ -78,12 +122,15 @@ class TestStopMessageIsTokenFree:
         assert matches, f"step {VERIFY_STEP!r} not found -- did it get renamed?"
         return matches[0]
 
-    def test_the_status_check_step_never_names_the_retry_token(self):
-        assert RETRY not in _step_scripts(self._verify_step())
-
-    def test_the_stop_message_points_at_the_runbook_instead(self):
+    def test_the_status_check_step_never_names_a_retired_token(self):
         script = _step_scripts(self._verify_step())
-        assert "agents/runbooks/developer-runbook.md" in script
+        assert not [token for token in RETIRED if token in script]
+
+    def test_the_stop_message_says_how_to_resume(self):
+        """Assignment, named plainly: there is no longer a token whose name
+        in an agent comment could restart the run."""
+        script = _step_scripts(self._verify_step())
+        assert "assign @%s again" in script
 
     def test_the_stop_message_is_stamped_informational(self):
         script = _step_scripts(self._verify_step())
@@ -109,27 +156,28 @@ class TestStopMessageIsTokenFree:
         script = _step_scripts(self._verify_step())
         assert "window, or until the repo owner comments" in script
 
+    def test_the_claim_path_gates_on_the_loop_guard_before_claiming(self):
+        """#3882 moved this check off the retry comment's gate job, which is
+        gone with the comment trigger. If it did not land here, converting the
+        lever would have silently dropped the one guard that bounds a
+        self-feeding retry."""
+        script = _step_scripts(self._verify_step())
+        assert "stop_loop_guard.py" in script and "gate" in script
+        assert 'ASSIGNER" != "$OWNER_LOGIN' in script, "the owner is never gated by the halt"
+
 
 class TestAgentCommentsCannotTriggerThemselves:
-    """Any comment this workflow posts that NAMES the retry token must either
-    be a deliberate command (token on its own line) or be stamped inert."""
+    """The property #3790 needed careful wording for, now structural: no step
+    of this workflow may name a retired token in anything it posts."""
 
-    def test_every_comment_posting_step_is_command_or_marked(self):
+    def test_no_step_posts_a_comment_naming_a_retired_token(self):
         offenders = []
         for step in _steps(_load(DEV_WF), "implement"):
             script = _step_scripts(step)
-            if RETRY not in script:
+            if not [token for token in RETIRED if token in script]:
                 continue
-            if "gh issue comment" not in script and "createComment" not in script:
-                continue
-            deliberate_command = f"\\n{RETRY}\\n" in script
-            marked = "nyxgpt-token-mention" in script
-            if not (deliberate_command or marked):
-                offenders.append(step.get("name", "<unnamed>"))
-        assert not offenders, (
-            "these steps post a comment naming the retry token without stamping it "
-            f"informational (#3790): {offenders}"
-        )
+            offenders.append(step.get("name", "<unnamed>"))
+        assert not offenders, f"these steps still name a retired token (#3882): {offenders}"
 
 
 class TestEveryTokenTriggerIsGated:
@@ -260,13 +308,26 @@ class TestClaudeBotIsAnAllowedTriggerAuthor:
                     )
 
 
-class TestRealCommandPostsStillTrigger:
-    """The scripts that legitimately POST a retry command keep working: their
-    token must open a line, or the anchored gate would swallow it."""
+class TestNoScriptPostsARetiredToken:
+    """Deleted, not deprecated (#3882). A producer left behind is a lever that
+    still works the moment anything subscribes to it again."""
 
-    def test_gh_project_posts_the_retry_command_at_line_start(self):
+    def test_no_agent_script_issues_a_retired_token(self):
+        offenders = []
+        for path in sorted((REPO_ROOT / "scripts").rglob("*.sh")):
+            for number, line in enumerate(path.read_text().splitlines(), 1):
+                stripped = line.strip()
+                if stripped.startswith("#"):
+                    continue  # history in a comment is fine; issuing it is not
+                if [token for token in RETIRED if token in stripped]:
+                    offenders.append(f"{path.relative_to(REPO_ROOT)}:{number}")
+        assert not offenders, f"retired tokens are still issued at: {offenders}"
+
+    def test_the_rework_dispatch_is_an_assignment_with_no_comment(self):
+        """`assign_and_trigger_developer` is the one rework primitive. It used
+        to back the assignment with a token comment; the assignment is now the
+        whole signal, and the write is verified instead."""
         source = (REPO_ROOT / "scripts" / "agents" / "lib" / "gh_project.sh").read_text()
-        posted = [line for line in source.splitlines() if line.strip() == RETRY]
-        assert posted, "no line-start retry command found in gh_project.sh"
-        for line in posted:
-            assert comment_tokens.is_command(line, RETRY)
+        body = source.split("assign_and_trigger_developer() {", 1)[1].split("\n}", 1)[0]
+        assert "assign_issue_verified" in body
+        assert not [token for token in RETIRED if token in body]

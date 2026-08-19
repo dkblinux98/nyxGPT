@@ -102,10 +102,13 @@ ok=0; failed=0
 for n in $normalized; do
   item_ok=1
   if [[ -n "$ASSIGNEE" ]]; then
-    gh api -X POST "repos/${REPO_OWNER}/${REPO_NAME}/issues/${n}/assignees" \
+    # PATCH replaces the assignee list; POST .../assignees appends to it. An
+    # issue carries exactly one assignee (owner rule), so setting is the only
+    # correct verb here.
+    gh api -X PATCH "repos/${REPO_OWNER}/${REPO_NAME}/issues/${n}" \
       -f "assignees[]=${ASSIGNEE}" >/dev/null \
-      && echo "[admin-fields] #${n} assignee += ${ASSIGNEE}" >&2 \
-      || { _warn "#${n}: failed to add assignee"; item_ok=0; }
+      && echo "[admin-fields] #${n} assignee = ${ASSIGNEE}" >&2 \
+      || { _warn "#${n}: failed to set assignee"; item_ok=0; }
   fi
   if [[ -n "$milestone_number" ]]; then
     gh api -X PATCH "repos/${REPO_OWNER}/${REPO_NAME}/issues/${n}" \

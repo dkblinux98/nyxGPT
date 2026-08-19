@@ -2,7 +2,7 @@
 """Huddle state derived from a PR's comment thread (#3687 protocol, #3736 race).
 
 The huddle protocol is carried entirely by marker comments on the PR
-(`HUDDLE_TRIGGERED` -> `HUDDLE_DEV_POSITION` -> `HUDDLE_MEDIATION_REQUESTED`
+(historically `HUDDLE_TRIGGERED` -> `HUDDLE_DEV_POSITION` -> `HUDDLE_MEDIATION_REQUESTED`
 -> `HUDDLE_DECISION:`), each one triggering the next workflow. Nothing
 recorded *whether a huddle was already in flight*, so two things raced
 (#3736):
@@ -58,6 +58,11 @@ STALE_AFTER_HOURS = float(os.environ.get("NYXGPT_HUDDLE_STALE_HOURS") or 6)
 STRUCTURED_REVIEW_MARKER = "nyxgpt-structured-review"
 
 HUDDLE_TRIGGER_MARKER = "HUDDLE_TRIGGERED"
+# Retired with the comment chain (#3911). The huddle is one workflow run now,
+# so no comment wakes the next leg and these two markers name nothing: a
+# position lands in the Slack thread and the PR transcript, and mediation is
+# the next step of the same job. Kept as names only so a thread written under
+# the old protocol still parses -- nothing writes them.
 HUDDLE_POSITION_MARKER = "HUDDLE_DEV_POSITION"
 HUDDLE_MEDIATION_MARKER = "HUDDLE_MEDIATION_REQUESTED"
 HUDDLE_DECISION_MARKER = "HUDDLE_DECISION:"
@@ -172,11 +177,15 @@ def is_primary_marker_comment(
     """True when `comment_id` is the round's *first* comment carrying `marker`.
 
     The dedupe of last resort: two racing runs can both pass a
-    check-before-posting guard and both post. Whichever landed first owns
-    the round, and the workflows that consume the marker
-    (`developer_huddle_position.yml`, `scrummaster_huddle_mediation.yml`,
-    `huddle_decision_dispatch.yml`) run only for that one -- so a double
-    trigger still produces a single huddle.
+    check-before-posting guard and both post. Whichever landed first owns the
+    round, and the workflow that consumes the marker runs only for that one.
+
+    #3911 removed most of what this defended -- the position and mediation
+    legs are steps of one job now, and one concurrency group per PR makes
+    those races structurally impossible rather than detectable. It is kept
+    because `huddle_decision_dispatch.yml` still calls it, for a race that
+    did not go away: a decision comment can be re-posted or duplicated by a
+    human, and only the round's first may start a fix cycle.
 
     An id that carries no such marker (or is unknown) is not primary: a
     consumer that cannot identify itself in the thread must stand down

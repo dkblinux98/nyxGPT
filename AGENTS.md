@@ -152,6 +152,32 @@ Closed       – released (human only)
 
 ---
 
+## Issue invariants (owner rules, 2026-08-19)
+
+**Exactly one assignee.** An issue is assigned to exactly one identity at a
+time — whoever owns the work right now. Handing work on means *replacing* the
+assignee, never adding to it: the developer hands a PR to the review agent and
+stops being the assignee; an escalation hands the issue to the owner and the
+agent stops being the assignee. Use `assign_issue_verified` (or PATCH the
+issue with the full list); GitHub's *add* verbs — `POST /issues/{n}/assignees`
+and `issues.addAssignees` — append, and are refused by
+`tests/unit/test_one_assignee_one_label.py`.
+
+**Exactly one label.** An issue carries exactly one real label
+(`Feature`, `Acceptance Failure`, `Improvement`, `Agent`, `Documentation`,
+`Release Management`, `Production Defect`, …). Workflow-control labels such as
+`usage-limit-retry` do not count — `real_label_names` is the one definition,
+shared by project hygiene and `developer_submit_for_review.sh`, which fails
+outright on a second label. Hygiene stamps `Feature` only on an issue with no
+real label at all.
+
+Both rules are old and both drifted anyway, which is why they are now checked
+rather than written down: an issue showing two agents makes "who owns this?"
+unanswerable from the board and miscounts every sweep that asks who an issue
+is assigned to, and a second label deadlocks the issue at submit time.
+
+---
+
 ## scrummaster-agent
 
 Controls backlog intake and sequencing.

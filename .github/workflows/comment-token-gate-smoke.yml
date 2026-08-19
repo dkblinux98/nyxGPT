@@ -4,7 +4,8 @@ name: Comment Token Gate Smoke
 #
 #   "When a comment that merely NAMES a command token arrives, does the
 #    trigger gate actually refuse to start work -- and does a comment that
-#    ISSUES the token still start it?"
+#    ISSUES the token still start it? And are the two retired levers
+#    (#3882) really gone rather than merely unused?"
 #
 # The unit tests cover the decision function. They cannot cover the part that
 # broke on 2026-08-15 (#3790): the gate as a *composite action executing on a
@@ -21,12 +22,14 @@ on:
     paths:
       - ".github/actions/comment-token-gate/**"
       - ".github/workflows/comment-token-gate-smoke.yml"
+      - ".github/workflows/developer_auto_implement.yml"
       - "scripts/agents/lib/comment_tokens.py"
       - "scripts/agents/lib/stop_loop_guard.py"
   pull_request:
     paths:
       - ".github/actions/comment-token-gate/**"
       - ".github/workflows/comment-token-gate-smoke.yml"
+      - ".github/workflows/developer_auto_implement.yml"
       - "scripts/agents/lib/comment_tokens.py"
       - "scripts/agents/lib/stop_loop_guard.py"
   workflow_dispatch:
@@ -41,50 +44,40 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # --- the message that caused the loop -------------------------------
-      - name: "Reproduce: the old substring rule matches the stop message"
+      # --- the incident shape, on a token that still exists ---------------
+      # The 2026-08-15 loop was a stop message that NAMED the retry token
+      # being matched by the trigger's bare `contains()`. That token is gone
+      # (#3882: work is dispatched by assignment, never by comment text), so
+      # the same shape is injected here with a surviving token: an agent
+      # comment that discusses a command must never issue it.
+      - name: "Reproduce: the old substring rule matches a comment that only names the token"
         shell: bash
         run: |
           set -euo pipefail
-          BODY='⏹️ **Developer Agent**: Stopping -- issue is no longer In Progress in the project (or is not in the project). This run will not proceed past this check. If this was a manual circuit breaker, no action is needed; move the issue back to In Progress and comment `RETRY_IMPLEMENTATION` to resume.'
-          # This is what the job `if:` did before #3790 -- and why a stop
-          # produced a start, ~500 times across #3782/#3784.
-          if printf '%s' "$BODY" | grep -q 'RETRY_IMPLEMENTATION'; then
+          BODY='🚫 **Dispatch refused**: if rework is genuinely needed, file it with `@improvement` on the feature issue instead.'
+          if printf '%s' "$BODY" | grep -q '@improvement'; then
             echo "::notice::Confirmed: the bare substring test matches this message (the defect)."
           else
-            echo "::error::Fault injection failed -- the incident message no longer contains the token, so this job proves nothing."
+            echo "::error::Fault injection failed -- the message no longer contains the token, so this job proves nothing."
             exit 1
           fi
 
-      - name: "Fix: the gate refuses the stop message"
+      - name: "Fix: the gate refuses a comment that only names the token"
         id: incident
         uses: ./.github/actions/comment-token-gate
         with:
-          token: RETRY_IMPLEMENTATION
-          comment-body: "⏹️ **Developer Agent**: Stopping -- issue is no longer In Progress in the project (or is not in the project). This run will not proceed past this check. If this was a manual circuit breaker, no action is needed; move the issue back to In Progress and comment `RETRY_IMPLEMENTATION` to resume."
+          token: "@improvement"
+          comment-body: "🚫 **Dispatch refused**: if rework is genuinely needed, file it with `@improvement` on the feature issue instead."
 
-      - name: "Fix: a genuine auto-retry comment still starts work"
-        id: auto_retry
-        uses: ./.github/actions/comment-token-gate
-        with:
-          token: RETRY_IMPLEMENTATION
-          comment-body: |
-            ⚠️ **Developer Agent**: Workflow failed - auto-retry triggered.
-
-            **Failed step:** Check if PR already exists
-
-            RETRY_IMPLEMENTATION
-            <!-- nyxgpt-retry: step=check_if_pr_already_exists sig=abc123 n=1 -->
-
-      - name: "Escalation guidance naming the token is inert"
+      - name: "Guidance carrying the informational marker is inert"
         id: escalation
         uses: ./.github/actions/comment-token-gate
         with:
-          token: RETRY_IMPLEMENTATION
+          token: "@improvement"
           comment-body: |
             ❌ **Developer Agent**: Auto-retry stopped.
 
-            3. Comment on this issue (as the repo owner) to reset the budget, then comment `RETRY_IMPLEMENTATION` to try again
+            @improvement is how a spec gap gets filed -- but not from this comment.
 
             <!-- nyxgpt-token-mention -->
 
@@ -103,26 +96,62 @@ jobs:
           token: "@improvement"
           comment-body: "I already filed that as an @improvement on #3731, no need to file another."
 
+      - name: "Owner command: the conflict escalation token issued proceeds"
+        id: conflict
+        uses: ./.github/actions/comment-token-gate
+        with:
+          token: CONFLICT_REQUIRES_OWNER_DECISION
+          comment-body: |
+            CONFLICT_REQUIRES_OWNER_DECISION
+
+            Both sides of this conflict are owner-accepted behavior.
+
       - name: "Quoted commands cannot be replayed"
         id: quoted
         uses: ./.github/actions/comment-token-gate
         with:
-          token: RETRY_IMPLEMENTATION
+          token: "@acceptance-failure"
           comment-body: |
             Quoting the earlier comment for context:
 
-            > RETRY_IMPLEMENTATION
+            > @acceptance-failure the install fails on a clean Mac
 
-            That run already happened.
+            That issue was already filed.
+
+      # --- the retired levers, proved absent (#3882) -----------------------
+      - name: "Retired: no token can start developer work any more"
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOKENS="$(python3 scripts/agents/lib/comment_tokens.py tokens)"
+          echo "$TOKENS"
+          fail=0
+          # Split so this file is not itself a mention of either token.
+          for retired in "RETRY_""IMPLEMENTATION" "READY_FOR_NEXT""_ISSUE"; do
+            if printf '%s\n' "$TOKENS" | grep -qx "$retired"; then
+              echo "::error::$retired is a live command token again -- #3882 deleted it"
+              fail=1
+            fi
+            if grep -rq "$retired" .github/workflows/developer_auto_implement.yml; then
+              echo "::error::the developer workflow names $retired again"
+              fail=1
+            fi
+          done
+          # And the workflow subscribes to no comment event at all.
+          if python3 -c "import sys,yaml; d=yaml.safe_load(open('.github/workflows/developer_auto_implement.yml')); t=d[True] if True in d else d['on']; sys.exit(0 if 'issue_comment' in t else 1)"; then
+            echo "::error::developer_auto_implement.yml is comment-triggered again"
+            fail=1
+          fi
+          exit "$fail"
 
       - name: Assert every verdict
         shell: bash
         env:
           INCIDENT: ${{ steps.incident.outputs.proceed }}
-          AUTO_RETRY: ${{ steps.auto_retry.outputs.proceed }}
           ESCALATION: ${{ steps.escalation.outputs.proceed }}
           IMPROVEMENT: ${{ steps.improvement.outputs.proceed }}
           IMPROVEMENT_PROSE: ${{ steps.improvement_prose.outputs.proceed }}
+          CONFLICT: ${{ steps.conflict.outputs.proceed }}
           QUOTED: ${{ steps.quoted.outputs.proceed }}
         run: |
           set -euo pipefail
@@ -144,12 +173,12 @@ jobs:
               fail=1
             fi
           }
-          check "incident stop message"        "$INCIDENT"          false
-          check "auto-retry command"           "$AUTO_RETRY"        true
-          check "escalation guidance"          "$ESCALATION"        false
-          check "@improvement issued"          "$IMPROVEMENT"       true
-          check "@improvement discussed"       "$IMPROVEMENT_PROSE" false
-          check "quoted command"               "$QUOTED"            false
+          check "comment naming the token"      "$INCIDENT"          false
+          check "marked guidance"               "$ESCALATION"        false
+          check "@improvement issued"           "$IMPROVEMENT"       true
+          check "@improvement discussed"        "$IMPROVEMENT_PROSE" false
+          check "conflict token issued"         "$CONFLICT"          true
+          check "quoted command"                "$QUOTED"            false
           exit "$fail"
 
   loop-guard-behavior:

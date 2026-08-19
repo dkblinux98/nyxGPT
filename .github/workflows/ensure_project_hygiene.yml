@@ -213,7 +213,20 @@ jobs:
 
           # The PR's linked issue, read from the native edge first and the
           # body convention only as a fallback (owner rule, 2026-08-19).
-          ISSUE=$(pr_linked_issue "$PR")
+          #
+          # This job checks out RELEASE_BRANCH, not the PR head, so on the PR
+          # that ADDS `pr_linked_issue` the sourced library is the one without
+          # it -- "command not found", and a red check on the very change that
+          # fixes the class. Guarded rather than assumed: once this is on the
+          # release branch the guard is always true, and the fallback arm can
+          # be deleted.
+          if declare -F pr_linked_issue >/dev/null; then
+            ISSUE=$(pr_linked_issue "$PR")
+          else
+            echo "::notice::release-branch lib predates pr_linked_issue -- reading the body"
+            ISSUE=$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/pulls/${PR}" --jq '.body // ""' \
+              | grep -oiE 'closes #[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+          fi
 
           if [[ -n "$ISSUE" ]]; then
             echo "PR #$PR links issue #$ISSUE — full hygiene via ensure_pr_project_hygiene"

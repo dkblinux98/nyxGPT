@@ -86,8 +86,12 @@ API Cache:       50 entries, 5 minutes
 
 ### Cache Invalidation
 - Service worker automatically updates when deployed
-- Users will get new service worker after closing all tabs
-- `skipWaiting: true` ensures immediate activation
+- `skipWaiting: true` ensures immediate activation, so tabs do not have to be
+  closed first
+- On every load, `ServiceWorkerVersionGuard` compares the running build
+  against the one this browser last loaded and, when they differ, deletes
+  `static-resources` and the Workbox precaches and calls `registration.update()`
+  -- see [Automatic update recovery](#automatic-update-recovery)
 
 ## Testing
 
@@ -227,6 +231,70 @@ default by `@ducanh2912/next-pwa` (no explicit override needed in
 (see the `duplicate-queue-name` note above -- that bug prevented the SW from
 ever reaching this point), it takes over existing tabs without waiting for
 them to close.
+
+### Chunks that never arrive (#3857)
+
+The three signals above all require the browser to *notice* a failure. A chunk
+request that is simply never answered produces none of them: `next/dynamic`
+renders its `loading:` fallback until the import settles, and an import that
+never settles leaves that fallback on screen for the life of the page. The
+result is a UI that looks like it is still working while it is permanently
+broken -- reported in #3857 as skeleton rows and a spinner that never resolved
+while every backend endpoint answered in under 110 ms.
+
+Four pieces close that hole. The first three run inside the client bundle and
+handle a *single chunk* failing; the fourth exists because the bundle itself
+may never run, and nothing that ships through `/_next/static/chunks/` can
+report that:
+
+- **`withChunkTimeout`** (`web/src/lib/chunkLoader.ts`) wraps every
+  `next/dynamic` loader so an import still pending after
+  `CHUNK_LOAD_TIMEOUT_MS` (20 s) rejects instead of hanging. The rejection is
+  named `ChunkLoadError`, so `useAppUpdate`'s existing detection treats a hung
+  chunk exactly like a failed one.
+- **`ChunkErrorBoundary`** (`web/src/components/ChunkErrorBoundary.tsx`) wraps
+  each `dynamic()` call site and renders "Failed to load the interface" with a
+  **Reload** button that unregisters the service worker and clears every cache
+  before reloading (`recoverAndReload` in
+  `web/src/lib/serviceWorkerRecovery.ts`) -- an ordinary refresh does not
+  remove a service worker. Non-chunk errors are re-thrown so the surrounding
+  boundaries still own real bugs. Its Details panel reports whether a service
+  worker was controlling the page, which is the discriminator between a stale
+  cached client and chunk URLs that are genuinely unavailable.
+- **`ServiceWorkerVersionGuard`** (mounted in `web/src/app/layout.tsx`) runs
+  the build comparison described under
+  [Cache Invalidation](#cache-invalidation). The build stamp is read out of
+  the document's `webpack-*.js` / `main-app-*.js` bootstrap chunk URLs
+  (`web/src/lib/buildFingerprint.ts`), so it needs no build-argument plumbing
+  and is inert rather than wrong where those markers are absent.
+- **The hydration watchdog** (`web/src/lib/hydrationWatchdog.ts`, emitted by
+  `HydrationWatchdog` as the first element in `<body>`) covers the case the
+  other three structurally cannot: the client bootstrap itself never executing.
+  When `webpack-*.js` / `main-app-*.js` do not run, hydration never happens --
+  no effect fires, no boundary mounts, no chunk import is even attempted -- and
+  what stays on screen is the *server-rendered* HTML: `/`'s `ssr: false`
+  loading fallbacks, and plain `useState(true)` states such as
+  `Loading canary status...` on `web/src/app/admin/canary/page.tsx`. The
+  watchdog is a dependency-free inline `<script>`, so it arrives with the
+  document and runs regardless of the chunk pipeline. It arms a
+  `HYDRATION_WATCHDOG_TIMEOUT_MS` (20 s, matching the chunk bound) timer and,
+  if `HydrationMarker` has not set `window.__nyxgptHydrated` by then, paints
+  the same "Failed to load the interface" surface with the same
+  service-worker-clearing reload, written in plain DOM calls. Hydration that
+  arrives late removes the surface, so a merely slow client is never left with
+  an error over a working page.
+
+Any new `next/dynamic` call must go through `withChunkTimeout` and sit inside
+a `ChunkErrorBoundary`; a `loading:` fallback with neither is the #3857 trap
+rebuilt. The watchdog needs no per-page work -- it is mounted once in the root
+layout and covers every route, including pages with no `dynamic()` at all.
+
+Note for test authors: Next resolves `next/dynamic` to the App Router
+implementation (React.lazy + Suspense) for everything under `app/`, while the
+bare entry point is the Pages Router loadable, which swallows a rejected chunk
+import and keeps rendering its fallback. `web/vitest.config.ts` aliases
+`next/dynamic` to `next/dist/api/app-dynamic` so tests exercise the semantics
+the product actually runs.
 
 ## Monitoring
 

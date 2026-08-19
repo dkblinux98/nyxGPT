@@ -30,14 +30,14 @@ May:
   rather than guessing a field value.
 - Maintain Sprint assignment to ensure there is always eligible work.
 - **Sprint autopilot (#3480):** when `SPRINT_AUTOPILOT` is enabled and a
-  Sprint is active, post `READY_FOR_NEXT_ISSUE` itself after a merge --
+  Sprint is active, send the `dispatch-next-issue` event itself after a merge --
   self-continuing the loop without a human kick -- as long as the active
   Sprint still has open Backlog issues. The pull it starts is always scoped
   to the active Sprint (`developer_pull_next.sh --sprint-scoped`); it never
   pulls in work from outside the sprint. Once the sprint has no
   open Backlog issues left, post a completion note instead of a kick and
-  stop -- starting work outside the sprint still requires a deliberate
-  human kick. Honor the kill switch: skip the auto-kick (and say so) when
+  stop -- starting work outside the sprint still requires the owner to
+  assign the developer agent to the issue they want (#3882). Honor the kill switch: skip the auto-kick (and say so) when
   `SPRINT_AUTOPILOT` is off, or when the most recent `PAUSE_SPRINT`/
   `RESUME_SPRINT` control comment on the release tracking issue is a
   `PAUSE_SPRINT`.

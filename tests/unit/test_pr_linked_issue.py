@@ -65,11 +65,21 @@ class TestTheHelper:
 
 class TestNoConsumerGrepsTheBodyItself:
     def test_every_caller_goes_through_the_helper(self):
+        """One transitional exemption: `ensure_project_hygiene.yml`'s
+        pr-hygiene job checks out RELEASE_BRANCH rather than the PR head, so
+        on the PR that ADDS the helper the sourced library does not have it
+        yet. It guards with `declare -F` and keeps the body read as the
+        fallback arm; delete that arm once this is on the release branch."""
         offenders = []
         sources = list(SCRIPTS.rglob("*.sh")) + sorted(WORKFLOWS.glob("*.yml"))
         for path in sources:
             if path.name == "gh_project.sh":
                 continue  # the helper's own fallback lives here
+            if path.name == "ensure_project_hygiene.yml":
+                # Exempt only while it guards on `declare -F` -- an unguarded
+                # body read here would be the old behavior wearing a comment.
+                assert "declare -F pr_linked_issue" in path.read_text(encoding="utf-8")
+                continue
             if _BODY_GREP.search(_uncommented(path)):
                 offenders.append(str(path.relative_to(ROOT)))
         assert not offenders, (

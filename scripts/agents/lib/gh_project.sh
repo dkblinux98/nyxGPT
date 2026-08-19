@@ -951,13 +951,15 @@ release_backlog_by_sprint() {
 
 # Machine marker stamped on every INFORMATIONAL sprint-autopilot comment
 # (park note, paused notice) -- anything that is a status report rather than
-# a dispatch kick. notify_scrum_ready.yml negates this marker in its job
-# `if:`, so an informational note can never trigger a dispatch run even if
-# its prose later drifts into naming the kick token (#3706 review finding:
-# the park note contained the token, and the dispatch trigger is a bare
-# substring test with the agent accounts on its actor allowlist -- so every
-# "park" was in fact a kick). Keep in sync with AUTOPILOT_INFO_MARKER in
-# lib/sprint_calc.py and the `if:` in .github/workflows/notify_scrum_ready.yml.
+# a dispatch kick. It was added for #3706, where the park note named the kick
+# token and the dispatch trigger was a bare substring test with the agent
+# accounts on its actor allowlist -- so every "park" was in fact a kick. That
+# particular hazard is gone: #3882 made the kick a repository_dispatch, which
+# prose cannot imitate. The marker is still load-bearing because these notes
+# name PAUSE_SPRINT, which remains a live token: the shared gate
+# (lib/comment_tokens.py, INFORMATIONAL_MARKERS) disqualifies any comment
+# carrying it. Keep in sync with AUTOPILOT_INFO_MARKER in lib/sprint_calc.py
+# and lib/comment_tokens.py.
 AUTOPILOT_INFO_MARKER="<!-- nyxgpt-autopilot-informational -->"
 
 # True if the most recent PAUSE_SPRINT/RESUME_SPRINT control comment on
@@ -1240,9 +1242,10 @@ drain_gate_release() {
       _warn "drain_gate_release: RELEASE_ISSUE_NUMBER not configured -- released the lane but cannot kick the queue."
     elif sprint_autopilot_paused "$RELEASE_ISSUE_NUMBER"; then
       # Same rule as the autopilot: while PAUSE_SPRINT is in force nothing
-      # dispatches. The note must not name the kick token (a bare substring
-      # match triggers notify_scrum_ready.yml), so it carries the
-      # informational marker as well -- belt and braces, #3706.
+      # dispatches. The note names PAUSE_SPRINT, which is still a live
+      # token, so it carries the informational marker that
+      # disqualifies it at the shared gate (#3706; the kick token it also
+      # had to avoid is gone -- the kick is an event since #3882).
       issue_comment "$RELEASE_ISSUE_NUMBER" "⏸️ **Drain gate (#3730)**: acceptance round drained and ${refs% } moved to ${STATUS_BACKLOG}, but the sprint is paused (\`PAUSE_SPRINT\`) — no kick posted. Comment \`RESUME_SPRINT\` to continue.
 
 ${AUTOPILOT_INFO_MARKER}" \
@@ -1275,8 +1278,8 @@ ${AUTOPILOT_INFO_MARKER}" \
 # in-flight developer run -- e.g. it refused earlier because a prose
 # "Blocked by: #N" gate was open at the time, or its runs died in an
 # incident. Before #3709 nothing picked those back up when their blockers
-# merged, so a human posted RETRY_IMPLEMENTATION at every gate opening (the
-# Sprint 8 cloud chain #3509 -> #3510 -> #3513 -> #3514/#3515/#3516 was
+# merged, so a human re-triggered the developer by hand at every gate
+# opening (the Sprint 8 cloud chain #3509 -> #3510 -> #3513 -> #3514/#3515/#3516 was
 # hand-walked that way). Owner requirement: no babysitting -- the loop
 # drives its own chain.
 #
@@ -1426,11 +1429,15 @@ autopilot_scan_parked() {
     | python3 "${_LIB_DIR}/parked_resume.py" scan
 }
 
-# Posts the auto-resume trigger on a parked issue: the same
-# RETRY_IMPLEMENTATION mechanics a human would post by hand, plus the budget
-# marker. developer_auto_implement.yml accepts this comment from the review
-# agent and the developer agent (its issue_comment gate), which are the two
-# identities sprint_autopilot_kick runs under.
+# Resumes a parked issue: assign it back to the developer agent (#3882), and
+# leave the budget-marked comment as the record of why.
+#
+# The assignment is the whole trigger. This used to post a retry token and
+# rely on developer_auto_implement.yml pattern-matching the comment body --
+# the mechanism that let a workflow's own prose start work (#3706, #3790).
+# The comment still carries the auto-resume marker, because
+# parked_resume.py counts *markers*, not tokens, when it decides whether the
+# budget is spent.
 _autopilot_post_resume() {
   local issue="$1"
   require_cmd jq
@@ -1441,12 +1448,14 @@ _autopilot_post_resume() {
   max="$(jq -r '.max_resumes // 3' <<<"$budget" 2>/dev/null || echo 3)"
   marker="$(python3 "${_LIB_DIR}/parked_resume.py" marker "$issue" "$n")"
 
-  issue_comment "$issue" "🔁 **Sprint Autopilot — auto-resume (${n}/${max})**: this issue is In Progress but parked (no open PR, no running developer job), and every dependency it declares is now closed. Restarting implementation automatically (#3709) -- no human trigger needed.
+  issue_comment "$issue" "🔁 **Sprint Autopilot — auto-resume (${n}/${max})**: this issue is In Progress but parked (no open PR, no running developer job), and every dependency it declares is now closed. Reassigning it to @${DEV_AGENT:-the developer agent} to restart implementation (#3709) -- no human trigger needed.
 
 If this run stops again without progress, the auto-resume budget (${max}) will be spent and the issue is reported as gate-stuck on the release tracking issue instead of being retried forever. A comment from the repo owner resets the budget (#3689).
 
-RETRY_IMPLEMENTATION
 ${marker}"
+
+  # The assignment, not the comment, is what starts the work (#3882).
+  assign_and_trigger_developer "$issue"
 }
 
 # -------------------------
@@ -1644,11 +1653,14 @@ sprint_autopilot_kick() {
     _warn "SPRINT_AUTOPILOT is on but RELEASE_ISSUE_NUMBER is not configured -- skipping auto-kick."
   elif sprint_autopilot_paused "$RELEASE_ISSUE_NUMBER"; then
     echo "[review] Sprint autopilot paused (PAUSE_SPRINT) -- no auto-kick." >&2
-    # Informational, NOT a kick: the note must neither spell out the kick
-    # token nor omit the informational marker, or posting it would itself
-    # trigger notify_scrum_ready.yml -- which is not gated on PAUSE_SPRINT,
-    # so a "paused" notice would dispatch work (#3706 review).
-    issue_comment "$RELEASE_ISSUE_NUMBER" "⏸️ **Sprint Autopilot**: ${event_phrase}, but autopilot is paused (\`PAUSE_SPRINT\`) -- no automatic kick posted. Comment \`RESUME_SPRINT\` to continue, or post the manual kick signal documented in \`docs/sprint-autopilot.md\` to kick manually.
+    # Informational, NOT a kick. The kick is now a repository_dispatch
+    # (#3882), which no comment can imitate, so the old hazard this note
+    # guarded against -- a "paused" notice whose own text re-triggered the
+    # then-comment-driven kick, which was not gated on PAUSE_SPRINT (#3706
+    # review) -- cannot recur. The marker stays because this note names
+    # `PAUSE_SPRINT`, which IS still a live token: it is what tells the
+    # shared comment-token gate this is a status report, not a command.
+    issue_comment "$RELEASE_ISSUE_NUMBER" "⏸️ **Sprint Autopilot**: ${event_phrase}, but autopilot is paused (\`PAUSE_SPRINT\`) -- no next issue dispatched. Comment \`RESUME_SPRINT\` to continue, or start an issue by hand by assigning the developer agent to it (\`docs/sprint-autopilot.md\`).
 
 ${AUTOPILOT_INFO_MARKER}" \
       || _warn "Failed to post autopilot-paused notice."
@@ -2405,23 +2417,28 @@ If rework is genuinely needed, it is a **new issue**: a closed issue means the w
 
   if [[ -n "$current_assignee" ]]; then
     # Developer already assigned - unassign first to force a new 'assigned'
-    # event (reassigning the same login fires none). This alone proved
-    # insufficient in production (#3647: a REQUEST_CHANGES redispatch with
-    # the assignee already parked on the dev agent started nothing, and the
-    # issue sat idle until a manual RETRY_IMPLEMENTATION comment) -- so it
-    # is backed by a RETRY_IMPLEMENTATION comment as a second, independent
-    # trigger path. developer_auto_implement.yml's issue_comment gate
-    # accepts that comment from the dev agent, the human owner, or the
-    # review agent, so whichever caller hits this branch (review-agent
-    # redispatch, conflict-resolution round, human override) has a working
-    # fallback even if the assignment-cycling event never fires/propagates.
+    # event (reassigning the same login fires none).
+    #
+    # #3882 removed the second trigger path this branch used to carry: a
+    # bare retry token posted as a comment, which developer_auto_implement.yml
+    # pattern-matched. That was the #3647 answer to one observed miss (a
+    # REQUEST_CHANGES redispatch that started nothing) -- and it is the same
+    # prose-as-API mechanism that later re-triggered a workflow from its own
+    # output ~500 times (#3790). Assignment is the lever; a comment carries
+    # findings.
+    #
+    # What backs the write instead: assign_issue_verified re-reads the
+    # assignees and retries until the PATCH has actually landed (a silent
+    # no-op PATCH is the failure mode a fire-and-forget call cannot see), the
+    # per-issue concurrency group in developer_auto_implement.yml serializes
+    # whatever it starts, and review_ensure_handoff.sh (#3704) is the
+    # backstop for a handoff that produces no developer run at all.
     _debug "Developer already assigned to #$issue - unassigning first to force event"
     gh issue edit "$issue" --remove-assignee "$DEV_AGENT"
     sleep 1  # Brief pause to ensure event processes
-    issue_assign_only "$issue" "$DEV_AGENT"
+    assign_issue_verified "$issue" "$DEV_AGENT" \
+      || _warn "Could not verify the re-assignment of #$issue to @${DEV_AGENT} -- the developer run may not have been dispatched."
     _debug "Reassigned developer to #$issue - workflow will trigger via assignment event"
-    issue_comment "$issue" "RETRY_IMPLEMENTATION"
-    _debug "Posted RETRY_IMPLEMENTATION fallback comment on #$issue"
     return
   fi
 
@@ -2430,6 +2447,66 @@ If rework is genuinely needed, it is a **new issue**: a closed issue means the w
   # Developer agent reads issue history to determine if this is new work or a retry
   issue_assign_only "$issue" "$DEV_AGENT"
   _debug "Assigned developer to #$issue - workflow will trigger via assignment event"
+}
+
+# The other end of the same lever (#3882): the developer agent claiming an
+# issue it has just been assigned. Assignment IS the dispatch, and the actor
+# doing the work owns the status transition -- exactly as a person would put
+# a card in progress when they pick it up, rather than requiring a second
+# actor to stage the board and then announce it in a comment.
+#
+# Prints the status to proceed under; returns
+#   0  proceed (already In Progress, or claimed into it now)
+#   3  refuse  (the caller stops the run; this is a policy stop, not a failure)
+#
+# What it refuses, and why each one is not an oversight:
+#   * a lane that means "held" -- `Acceptance Failed` and `Acceptance Testing`
+#     are owner signal (D-001/D-008) and being assigned does not release them;
+#     `For Release` is finished work;
+#   * an issue that is not on the board at all -- there is no state to claim;
+#   * an assigner who is not a permitted identity, so a stray assignment by
+#     anyone else leaves the issue exactly as it was.
+#
+# Lives here rather than inline in developer_auto_implement.yml so the
+# decision can be executed against stub state (tests/test_gh_project_lib.sh,
+# run on a runner by assignment-dispatch-smoke.yml) instead of only read.
+developer_claim_issue() {
+  local issue="$1" assigner="${2:-}"
+  local status
+
+  status="$(issue_status "$issue")"
+  if [[ -z "$status" ]]; then
+    echo "::warning::Issue #${issue} not found in project." >&2
+    return 3
+  fi
+  echo "::notice::Issue #${issue} status=${status}" >&2
+
+  if [[ "$status" == "$STATUS_IN_PROGRESS" ]]; then
+    echo "$status"
+    return 0
+  fi
+
+  # Backlog is new work; In Review is rework handed back by a review round,
+  # a huddle decision, a conflict round or a human override.
+  case "$status" in
+    "$STATUS_BACKLOG" | "$STATUS_IN_REVIEW") ;;
+    *)
+      echo "::warning::Status '${status}' is not claimable by assignment." >&2
+      return 3
+      ;;
+  esac
+
+  case "$assigner" in
+    "$HUMAN_OWNER" | "$SCRUM_AGENT" | "$REVIEW_AGENT" | "$DEV_AGENT" | "claude[bot]") ;;
+    *)
+      echo "::warning::Assigner '${assigner}' is not a permitted dispatcher." >&2
+      return 3
+      ;;
+  esac
+
+  set_issue_status "$issue" "$STATUS_IN_PROGRESS"
+  echo "::notice::Claimed #${issue}: ${status} -> ${STATUS_IN_PROGRESS} (assigned by ${assigner})" >&2
+  echo "$STATUS_IN_PROGRESS"
 }
 
 # Classifies the current claim state of a Backlog issue for

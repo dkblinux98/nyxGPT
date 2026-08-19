@@ -1,97 +1,36 @@
 name: Developer Agent Auto-Implement
 
+# Assignment is the only way work starts or resumes here (#3882).
+#
+# There was a second way: a comment whose body named a retry token. It was
+# added because assignment alone was inert -- this workflow refused anything
+# that was not already In Progress, so assigning the developer did nothing
+# and a second actor had to stage the board and then say so in prose. That
+# made comment text into an API, and twice the text that started a run was
+# this workflow's own output (#3706, #3790: ~500 runs in two hours).
+#
+# The lever is now the thing a person would use: assign the issue to the
+# developer agent, and the developer -- the actor doing the work -- moves it
+# to In Progress itself. Retries, review rework, conflict rounds and the
+# autopilot's auto-resume all take that same path; a comment carries findings
+# and nothing else.
 on:
   issues:
     types: [assigned]
-  # RETRY_IMPLEMENTATION comments: the failure handler posts an auto-retry
-  # comment ending in RETRY_IMPLEMENTATION, and the escalation comments tell
-  # a human to "comment RETRY_IMPLEMENTATION to retry" -- but until this
-  # trigger existed, those comments could never start anything (the job body
-  # always supported issue_comment; the `on:` block just never subscribed).
-  # Restarting a crashed run required manually cycling the assignee.
-  issue_comment:
-    types: [created]
 
 jobs:
-  # Layer 1 of the retry trigger (#3790). A job `if:` can only substring-match
-  # the comment body, and that is exactly what looped: this workflow's own
-  # stop message named the retry token, so posting it started another run,
-  # which stopped and posted it again -- ~500 runs across #3782/#3784 in under
-  # two hours. The cheap tests stay here (right actor, token present at all,
-  # no informational marker -- the #3706 structural guard); the anchored
-  # "does this comment ISSUE the token, or merely name it?" decision needs a
-  # regex and therefore a runner, which is what this gate job is.
-  comment_gate:
+  implement:
+    # The only trigger: DEV_AGENT was assigned. Who may assign is checked in
+    # the claim step below (it needs the board state, which an `if:` cannot
+    # read), so an unpermitted assigner leaves the issue untouched.
     if: >-
       ${{ vars.AGENTS_ENABLED == 'true'
-          && github.event_name == 'issue_comment'
-          && !github.event.issue.pull_request
-          && contains(github.event.comment.body, 'RETRY_IMPLEMENTATION')
-          && !contains(github.event.comment.body, 'nyxgpt-token-mention')
-          && (github.event.comment.author_association == 'OWNER'
-              || github.event.comment.user.login == vars.DEV_AGENT
-              || github.event.comment.user.login == vars.REVIEW_AGENT) }}
+          && github.event.assignee.login == vars.DEV_AGENT }}
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      issues: read
-    outputs:
-      proceed: ${{ steps.gate.outputs.proceed }}
-      reason: ${{ steps.gate.outputs.reason }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ vars.RELEASE_BRANCH }}
-
-      - name: Comment token gate
-        id: gate
-        uses: ./.github/actions/comment-token-gate
-        with:
-          token: RETRY_IMPLEMENTATION
-          comment-body: ${{ github.event.comment.body }}
-          author-association: ${{ github.event.comment.author_association }}
-          issue-number: ${{ github.event.issue.number }}
-          repository: ${{ github.repository }}
-          github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
-          # Also honour the stop-without-progress loop guard: once an issue
-          # has burned its budget, agent-authored retries are ignored until
-          # the owner comments.
-          check-stop-loop: "true"
-
-  implement:
-    # Triggers on assignment to DEV_AGENT, or on a retry comment on an issue
-    # (not a PR) from the owner (manual retry per the failure-comment
-    # instructions), the dev agent itself (bounded auto-retry -- the
-    # retry-count scan over prior retry comments caps the loop), or the
-    # review agent (redispatch fallback: assign_and_trigger_developer posts
-    # this comment whenever it has to unassign-then-reassign an
-    # already-assigned dev agent, because that assignment-cycling event alone
-    # proved unreliable in production -- #3647 -- and left a REQUEST_CHANGES
-    # redispatch stalled with no developer run started).
-    #
-    # The comment path's actor allowlist and token test now live in
-    # comment_gate above; this job takes its verdict. `!cancelled()` is
-    # required because comment_gate is *skipped* on the assignment path, and
-    # a skipped `needs:` would otherwise skip this job too.
-    # Developer agent reads issue history to determine if this is new work or a retry
-    # Status verification will exit early if not "In Progress"
-    needs: [comment_gate]
-    if: >-
-      ${{ !cancelled()
-          && vars.AGENTS_ENABLED == 'true'
-          && ((github.event_name == 'issues'
-               && github.event.assignee.login == vars.DEV_AGENT)
-              || (github.event_name == 'issue_comment'
-                  && needs.comment_gate.result == 'success'
-                  && needs.comment_gate.outputs.proceed == 'true')) }}
-    runs-on: ubuntu-latest
-    # Serialize runs per-issue: the redispatch fallback above deliberately
-    # fires two independent triggers (the assignment-cycling event AND the
-    # RETRY_IMPLEMENTATION comment) for the same handoff. Without this,
-    # both can start a job for the same issue at once (#3647 scope
-    # addition: duplicate developer runs observed 13s apart from an
-    # unrelated burst of triggers). cancel-in-progress stays false so a
+    # Serialize runs per-issue: a rework hand-back unassigns and reassigns to
+    # force the event, and an unrelated burst of assignment activity on the
+    # same issue can still land two events seconds apart (#3647: duplicate
+    # developer runs observed 13s apart). cancel-in-progress stays false so a
     # second trigger queues behind in-flight work instead of killing it.
     concurrency:
       group: developer-implement-${{ github.event.issue.number }}
@@ -204,65 +143,6 @@ jobs:
             echo "config ok: $REPO_OWNER/$REPO_NAME project $PROJECT_OWNER#$PROJECT_NUMBER release=$RELEASE_BRANCH"
           '
 
-      - name: Verify issue is assigned to developer-agent (comment trigger only)
-        if: github.event_name == 'issue_comment'
-        id: verify_assignment
-        uses: actions/github-script@v7
-        env:
-          DEV_AGENT: ${{ vars.DEV_AGENT }}
-        with:
-          github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
-          script: |
-            const issue = await github.rest.issues.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.payload.issue.number
-            });
-            const devAgent = process.env.DEV_AGENT;
-            const isAssigned = issue.data.assignees.some(a => a.login === devAgent);
-            // #3689: this is a policy gate, not an infra/implementation
-            // failure -- gate_stopped lets the Phase 0 self-heal entry
-            // point (and the post-verification-failure comment) tell the
-            // difference and skip themselves instead of misfiring (observed
-            // on this very issue: run 31320486307 posted a misleading
-            // "Failed after 3 attempts" comment and then ran a full Phase 3
-            // Claude diagnosis for a plain "not assigned yet" gate).
-            core.setOutput('gate_stopped', isAssigned ? 'false' : 'true');
-            if (!isAssigned) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.payload.issue.number,
-                body: `❌ **Developer Agent**: Cannot retry - issue is not assigned to @${devAgent}`
-              });
-              core.setFailed(`Issue not assigned to ${devAgent}`);
-            }
-
-      - name: Post workflow start comment
-        uses: actions/github-script@v7
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          REPO: ${{ github.repository }}
-          RUN_ID: ${{ github.run_id }}
-        with:
-          github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
-          script: |
-            const issue_number = context.payload.issue.number;
-            const isRetry = process.env.EVENT_NAME === 'issue_comment';
-            const repo = process.env.REPO;
-            const runId = process.env.RUN_ID;
-            const message = isRetry
-              ? `🔄 **Developer Agent**: Retry requested. Restarting implementation...\n\n` +
-                `Verifying issue status...\n\n[View workflow run](https://github.com/${repo}/actions/runs/${runId})`
-              : `🤖 **Developer Agent**: Auto-implementation workflow triggered.\n\n` +
-                `Verifying issue status...\n\n[View workflow run](https://github.com/${repo}/actions/runs/${runId})`;
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number,
-              body: message
-            });
-
       # Assignment IS the dispatch (#3882). The worker owns the transition:
       # a developer picking work up puts it In Progress, exactly as a person
       # would, instead of requiring a second actor to stage the board first and
@@ -281,10 +161,7 @@ jobs:
           GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ASSIGNER: ${{ github.event.sender.login }}
-          EVENT_NAME: ${{ github.event_name }}
           OWNER_LOGIN: ${{ vars.HUMAN_OWNER }}
-          SCRUM_LOGIN: ${{ vars.SCRUM_AGENT }}
-          REVIEW_LOGIN: ${{ vars.REVIEW_AGENT }}
           DEV_LOGIN: ${{ vars.DEV_AGENT }}
         run: |
           # #3689: the previous version of this check ran inside a nested
@@ -306,52 +183,50 @@ jobs:
           # `issue_status` helper (gh_project.sh) instead of re-implementing
           # a full paginated project-items scan inline -- issue->projectItems
           # is O(1) vs O(project size).
-          echo "::group::Verifying issue #$ISSUE_NUMBER status"
+
+          # Loop guard, first (#3882). Until assignment became the retry
+          # path, this check lived on the retry comment's gate job
+          # (`check-stop-loop`), which is gone with the comment trigger --
+          # so it moves here, where the dispatch now arrives. Without it the
+          # conversion would have quietly dropped the one guard that bounds a
+          # self-feeding retry: three stop-without-progress cycles in 30
+          # minutes escalate once and then go silent, and agent-driven
+          # re-dispatches are ignored for the rest of that window.
+          #
+          # The owner is never gated: the halt bounds automated spend, it is
+          # not a lockout (stop_loop_guard.gate's own rule).
+          if [[ "$ASSIGNER" != "$OWNER_LOGIN" ]]; then
+            LOOP_COMMENTS=$(gh api "repos/${{ github.repository }}/issues/$ISSUE_NUMBER/comments" --paginate \
+              --jq '[.[] | {body: .body, created_at: .created_at, author_association: .author_association}]' \
+              2>/dev/null | jq -s 'add // []')
+            if [[ -n "${LOOP_COMMENTS:-}" ]]; then
+              LOOP_GATE=$(printf '%s' "$LOOP_COMMENTS" \
+                | python3 "$GITHUB_WORKSPACE/scripts/agents/lib/stop_loop_guard.py" gate \
+                || echo '{"proceed":true,"reason":"loop-guard state unavailable"}')
+              if [[ "$(printf '%s' "$LOOP_GATE" | jq -r '.proceed // true')" != "true" ]]; then
+                echo "gate_stopped=true" >> "$GITHUB_OUTPUT"
+                echo "::error::Not claiming #$ISSUE_NUMBER: $(printf '%s' "$LOOP_GATE" | jq -r '.reason')"
+                # Deliberately silent on the issue: the halt comment was
+                # already posted once, and narrating the halt is the loop.
+                exit 1
+              fi
+            fi
+          fi
+
+          # The claim decision itself is `developer_claim_issue`
+          # (gh_project.sh): which lanes an assignment may claim, which
+          # identities may assign, and the status write. It lives there so it
+          # can be *executed* against stub state rather than only inspected
+          # (tests/test_gh_project_lib.sh, run on a runner by
+          # assignment-dispatch-smoke.yml) -- D-006.
+          echo "::group::Claiming issue #$ISSUE_NUMBER"
           set +e
           STATUS_OUTPUT="$(
             set -euo pipefail
             source scripts/agents/lib/gh_project.sh
             load_config
             require_gh_auth
-            status="$(issue_status "$ISSUE_NUMBER")"
-            if [[ -z "$status" ]]; then
-              echo "::warning::Issue not found in project." >&2
-              exit 3
-            fi
-            echo "::notice::Issue #$ISSUE_NUMBER status=$status" >&2
-
-            if [[ "$status" == "$STATUS_IN_PROGRESS" ]]; then
-              echo "$status"
-              exit 0
-            fi
-
-            # Held and finished lanes are never claimable by assignment.
-            case "$status" in
-              "$STATUS_BACKLOG")
-                ;;
-              *)
-                echo "::warning::Status '$status' is not claimable by assignment." >&2
-                exit 3
-                ;;
-            esac
-
-            if [[ "$EVENT_NAME" != "issues" ]]; then
-              echo "::warning::Backlog issue reached a non-assignment trigger." >&2
-              exit 3
-            fi
-
-            case "$ASSIGNER" in
-              "$OWNER_LOGIN"|"$SCRUM_LOGIN"|"$REVIEW_LOGIN"|"$DEV_LOGIN"|"claude[bot]")
-                ;;
-              *)
-                echo "::warning::Assigner '$ASSIGNER' is not a permitted dispatcher." >&2
-                exit 3
-                ;;
-            esac
-
-            set_issue_status "$ISSUE_NUMBER" "$STATUS_IN_PROGRESS"
-            echo "::notice::Claimed #$ISSUE_NUMBER: ${status} -> ${STATUS_IN_PROGRESS} (assigned by ${ASSIGNER})" >&2
-            echo "$STATUS_IN_PROGRESS"
+            developer_claim_issue "$ISSUE_NUMBER" "$ASSIGNER"
           )"
           RC=$?
           set -e
@@ -361,15 +236,15 @@ jobs:
             echo "gate_stopped=false" >> "$GITHUB_OUTPUT"
           elif [[ $RC -eq 3 ]]; then
             echo "gate_stopped=true" >> "$GITHUB_OUTPUT"
-            echo "::error::Issue #$ISSUE_NUMBER is not In Progress; stopping the workflow (manual circuit breaker engaged -- this is an intentional stop, not a failure requiring self-heal)."
+            echo "::error::Issue #$ISSUE_NUMBER is in a lane this assignment cannot claim; stopping the workflow (this is an intentional stop, not a failure requiring self-heal)."
 
-            # #3790: this message must NEVER name the retry token. Naming it
-            # is what looped -- the trigger substring-matched the comment
-            # this very step had just posted, so a stop produced a start,
-            # once every ~20 seconds (~500 runs across #3782/#3784). The
-            # resume instruction points at the runbook instead, and the
-            # informational marker makes the comment structurally inert even
-            # if the prose later drifts. Same rule as the kick token (#3706).
+            # This message once named the retry token in its resume
+            # instruction, and the trigger substring-matched the comment this
+            # very step had just posted -- a stop produced a start, once every
+            # ~20 seconds (~500 runs across #3782/#3784, #3790). No comment
+            # can start a run any more (#3882), so the hazard is closed at the
+            # trigger rather than by careful wording; the marker stays because
+            # tokens that survive (`@improvement`, `PAUSE_SPRINT`) read it.
             #
             # The loop guard is the backstop for any *other* self-feeding
             # path: three stop-without-progress cycles inside 30 minutes
@@ -391,16 +266,16 @@ jobs:
 
             case "$LOOP_ACTION" in
               escalate)
-                BODY="$(printf '🛑 **Developer Agent**: Auto-retry halted for this issue.\n\nThis is stop number %s at the In-Progress check within %s minutes with no progress in between, which is the shape of a retry loop (#3790). No further stop notices will be posted and automatic retries are ignored for the rest of that %s-minute window, or until the repo owner comments on this issue -- whichever comes first. The guard bounds spend per window; it is not a lockout.\n\n**What to do:** check why the issue keeps leaving In Progress, put it back in In Progress, then comment here as the repo owner -- an owner comment clears the halt immediately and re-enables the normal retry path (the command itself is listed in `agents/runbooks/developer-runbook.md`).\n\n%s\n%s\n' \
-                  "$LOOP_CYCLE_NUMBER" "$LOOP_WINDOW" "$LOOP_WINDOW" "<!-- nyxgpt-dev-stop-halted -->" "<!-- nyxgpt-token-mention -->")"
+                BODY="$(printf '🛑 **Developer Agent**: Auto-retry halted for this issue.\n\nThis is stop number %s at the claim check within %s minutes with no progress in between, which is the shape of a retry loop (#3790). No further stop notices will be posted and automatic re-assignments are ignored for the rest of that %s-minute window, or until the repo owner comments on this issue -- whichever comes first. The guard bounds spend per window; it is not a lockout.\n\n**What to do:** check why the issue keeps leaving a claimable lane, then comment here as the repo owner -- an owner comment clears the halt immediately, and an owner assigning @%s is never gated at all (#3882).\n\n%s\n%s\n' \
+                  "$LOOP_CYCLE_NUMBER" "$LOOP_WINDOW" "$LOOP_WINDOW" "$DEV_LOGIN" "<!-- nyxgpt-dev-stop-halted -->" "<!-- nyxgpt-token-mention -->")"
                 gh issue comment "$ISSUE_NUMBER" --body "$BODY" 2>/dev/null || true
                 ;;
               silent)
                 echo "::notice::Stop-loop guard already escalated on issue #$ISSUE_NUMBER; posting nothing."
                 ;;
               *)
-                BODY="$(printf '⏹️ **Developer Agent**: Stopping -- issue is no longer In Progress in the project (or is not in the project). This run will not proceed past this check.\n\nIf this was a manual circuit breaker, no action is needed. To resume, move the issue back to In Progress and post the developer retry command documented in `agents/runbooks/developer-runbook.md` -- it is deliberately not spelled out here, because naming it in an agent comment re-triggers this workflow (#3790).\n\n%s\n%s\n' \
-                  "<!-- nyxgpt-dev-stop-cycle -->" "<!-- nyxgpt-token-mention -->")"
+                BODY="$(printf '⏹️ **Developer Agent**: Stopping -- issue #%s is in a lane an assignment cannot claim (or is not in the project at all). This run will not proceed past this check.\n\nClaimable lanes are **Backlog** (new work) and **In Review** (rework); `Acceptance Failed`, `Acceptance Testing` and `For Release` are deliberately held and an assignment does not release them (D-001/D-008). If this was a manual circuit breaker, no action is needed. To resume, put the issue in a claimable lane and assign @%s again -- the assignment is the whole trigger (#3882), and the developer moves it to In Progress itself.\n\n%s\n%s\n' \
+                  "$ISSUE_NUMBER" "$DEV_LOGIN" "<!-- nyxgpt-dev-stop-cycle -->" "<!-- nyxgpt-token-mention -->")"
                 gh issue comment "$ISSUE_NUMBER" --body "$BODY" 2>/dev/null || true
                 ;;
             esac
@@ -422,6 +297,32 @@ jobs:
             echo "::error::Failed to verify issue #$ISSUE_NUMBER status (exit $RC) -- not a policy-gate stop; routing to self-heal."
             exit "$RC"
           fi
+
+      # Posted after the claim, not before it: a run that stops at the claim
+      # (a held lane, an unpermitted assigner, an active loop halt) should say
+      # only why it stopped, not announce work it never started.
+      - name: Post workflow start comment
+        uses: actions/github-script@v7
+        env:
+          ASSIGNER: ${{ github.event.sender.login }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        with:
+          github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          script: |
+            const issue_number = context.payload.issue.number;
+            const repo = process.env.REPO;
+            const runId = process.env.RUN_ID;
+            const assigner = process.env.ASSIGNER || 'someone';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              body:
+                `🤖 **Developer Agent**: Picked up -- assigned by @${assigner}. ` +
+                `Issue claimed and In Progress; implementing.\n\n` +
+                `[View workflow run](https://github.com/${repo}/actions/runs/${runId})`
+            });
 
       - name: Check if PR already exists
         id: check_pr
@@ -1612,7 +1513,6 @@ jobs:
         # misleading (and never even reached the verification steps).
         if: |
           failure() &&
-          steps.verify_assignment.outputs.gate_stopped != 'true' &&
           steps.verify_status.outputs.gate_stopped != 'true'
         uses: actions/github-script@v7
         env:
@@ -1789,12 +1689,24 @@ jobs:
               echo "::warning::Early-cutoff no-op detected (Claude step <90s, 0 commits) — auto-retrying (attempt $((EC_ATTEMPTS + 1))/3)."
               gh issue comment "$ISSUE" --body "🔁 **Developer Agent**: The implementation step ended early with no changes (a turn/budget cutoff, not a real block). **Auto-retry $((EC_ATTEMPTS + 1))/3** — re-assigning @${{ vars.DEV_AGENT }} to resume.
           <!-- early-cutoff-retry: $((EC_ATTEMPTS + 1)) -->" || true
-              # Re-fire: unassign then re-assign to emit the 'assigned' event
-              # that re-triggers this workflow (the issue stays In Progress).
-              gh api -X DELETE "repos/${{ github.repository }}/issues/$ISSUE/assignees" \
-                -f "assignees[]=${{ vars.DEV_AGENT }}" >/dev/null 2>&1 || true
+              # Re-fire: clear the assignee list, then set it back to the
+              # developer agent. That emits the 'assigned' event this
+              # workflow triggers on, and -- unlike DELETE-then-POST on
+              # .../assignees, which only removes and re-adds one login --
+              # it also guarantees the end state is exactly one assignee
+              # (owner rule), whatever the issue was carrying before.
+              # (The issue stays In Progress throughout.)
+              # The DOCUMENTED clear: an empty JSON array. `-F "assignees[]="`
+              # looks like a clear and is not -- it sends {"assignees":[""]},
+              # an assignee literally named "" -- so the clear silently
+              # no-opped and the set that follows became a same-login replace,
+              # which emits no `assigned` event (#3647) and therefore re-fired
+              # nothing. Failures are no longer suppressed either: a clear that
+              # does not happen is the whole re-fire not happening.
+              gh api -X PATCH "repos/${{ github.repository }}/issues/$ISSUE" \
+                --input - <<<'{"assignees":[]}' >/dev/null
               sleep 3
-              gh api -X POST "repos/${{ github.repository }}/issues/$ISSUE/assignees" \
+              gh api -X PATCH "repos/${{ github.repository }}/issues/$ISSUE" \
                 -f "assignees[]=${{ vars.DEV_AGENT }}" >/dev/null || true
               exit 0
             fi
@@ -1875,7 +1787,6 @@ jobs:
         # assigned yet" gate failure).
         if: |
           failure() &&
-          steps.verify_assignment.outputs.gate_stopped != 'true' &&
           steps.verify_status.outputs.gate_stopped != 'true'
         id: usage_limit
         shell: bash
@@ -1948,7 +1859,6 @@ jobs:
         # still run for a plain "not assigned"/"not In Progress" gate.
         if: |
           failure() && steps.usage_limit.outputs.handled != 'true' &&
-          steps.verify_assignment.outputs.gate_stopped != 'true' &&
           steps.verify_status.outputs.gate_stopped != 'true'
         id: classify_error
         shell: bash
@@ -2069,9 +1979,9 @@ jobs:
           ISSUE="${{ github.event.issue.number }}"
 
           # Full comment thread, chronological, with only the fields
-          # retry_budget.py needs. author_association is the same signal
-          # this workflow's own RETRY_IMPLEMENTATION trigger gate already
-          # uses for "human intervention" (see the `on:` block's `if:`) --
+          # retry_budget.py needs. author_association is the signal this
+          # workflow uses for "human intervention" throughout (the same one
+          # the stop-loop guard reads) --
           # unlike `user.login != 'github-actions[bot]'` (the old check),
           # it is not spuriously true for this workflow's own PAT-driven
           # comments (posted as myGPT-developer-agent, not
@@ -2128,12 +2038,8 @@ jobs:
             # unindented body line starting with e.g. `**` reads as new YAML,
             # not scalar content) -- build the body with printf instead, same
             # as the auto-retry/escalation comments below (#3689).
-            # The trailing marker (#3790) keeps this comment inert: it names
-            # the retry token as guidance, and without the marker a bare
-            # substring trigger would treat "here is how to retry" as "retry
-            # now".
-            BODY="$(printf '⏭️ **Developer Agent**: Skipping redundant diagnosis -- step `%s` failing here matches an already-open cross-issue infrastructure anomaly tracked on #%s (#3694).\n\nThis is being treated as one infrastructure event affecting multiple issues, not a problem specific to this one. This issue'"'"'s retry loop is stopped until the anomaly resolves.\n\n**What to do:** once #%s'"'"'s tracking comment shows the anomaly resolved, comment `RETRY_IMPLEMENTATION` here to resume.\n\n%s\n' \
-              "$FAILED_STEP" "$ORIGIN_ISSUE" "$ORIGIN_ISSUE" "<!-- nyxgpt-token-mention -->")"
+            BODY="$(printf '⏭️ **Developer Agent**: Skipping redundant diagnosis -- step `%s` failing here matches an already-open cross-issue infrastructure anomaly tracked on #%s (#3694).\n\nThis is being treated as one infrastructure event affecting multiple issues, not a problem specific to this one. This issue'"'"'s retry loop is stopped until the anomaly resolves.\n\n**What to do:** once #%s'"'"'s tracking comment shows the anomaly resolved, assign @%s here to resume -- the assignment is the trigger (#3882).\n' \
+              "$FAILED_STEP" "$ORIGIN_ISSUE" "$ORIGIN_ISSUE" "${DEV_AGENT:-the developer agent}")"
             gh issue comment "$ISSUE" --body "$BODY"
             exit 0
           fi
@@ -2339,12 +2245,16 @@ jobs:
                code/script/workflow-file change, not just an issue-state
                action:** determine whether the failing step can actually see
                that fix on its NEXT run, not just whether the fix is
-               correct. `issue_comment`-triggered runs of THIS workflow (the
-               retry path) always execute the workflow definition, and any
-               scripts it shells out to (e.g.
-               scripts/agents/developer_analyze_failure.sh), from the
-               repository's **default branch** -- never from whatever
-               feature/fix branch the commit landed on (see
+               correct. The caveat did not go away when #3882 retired the
+               `issue_comment` retry path -- it now applies to EVERY run of
+               THIS workflow, because the only trigger left is
+               `issues`(assigned) and GitHub runs issue-event workflows from
+               the workflow definition on the repository's **default
+               branch**. The scripts it shells out to (e.g.
+               scripts/agents/developer_analyze_failure.sh) come from this
+               job's checkout, which is `${{ vars.RELEASE_BRANCH }}`. Either
+               way the next run cannot see a commit that is still sitting on
+               a feature/fix branch (see
                agents/runbooks/developer-runbook.md §3c). Check:
                ```bash
                git fetch origin ${{ vars.RELEASE_BRANCH }} --quiet
@@ -2465,14 +2375,17 @@ jobs:
                     `[Workflow run](https://github.com/${repo}/actions/runs/${runId})\n\n` +
                     (humanOwner ? `@${humanOwner} -- ` : '') +
                     `this needs the fix landed on the default branch before a retry can succeed. ` +
-                    `Commenting \`RETRY_IMPLEMENTATION\` before then will just reproduce this escalation.\n\n` +
-                    // #3790: naming the retry token in guidance must never
-                    // trigger a retry -- the marker makes this comment inert.
-                    `<!-- nyxgpt-token-mention -->`
+                    `Re-assigning the developer agent before then will just reproduce this escalation.`
             });
 
             if (humanOwner) {
-              await github.rest.issues.addAssignees({
+              // SET, not add: an issue carries exactly one assignee (owner
+              // rule). An escalation hands the issue to the owner, so the
+              // developer agent that was carrying it stops being an assignee
+              // -- appending left both on it, which made "who owns this?"
+              // unanswerable and inflated every sweep that counts issues
+              // assigned to the owner.
+              await github.rest.issues.update({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number,
@@ -2540,6 +2453,7 @@ jobs:
           CLAUDE_WAIT_SECONDS: ${{ steps.claude_result.outputs.wait_seconds }}
           FIX_WAIT_SECONDS: ${{ steps.intelligent_fix.outputs.wait_seconds }}
           GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          DEV_AGENT_LOGIN: ${{ vars.DEV_AGENT }}
         run: |
           set -euo pipefail
           ISSUE="${{ github.event.issue.number }}"
@@ -2599,12 +2513,15 @@ jobs:
             # (an unindented body line starting with e.g. `**` or `-` reads
             # as new YAML, not scalar content) -- build the body with printf
             # instead, keeping every source line normally indented.
-            # Trailing marker (#3790): this comment names the retry token as
-            # guidance for the owner, so it must never be able to trigger a
-            # retry itself.
-            BODY="$(printf '%s\n\n**Failed step:** %s\n**Retry count:** %s/3 for this step (since last owner comment)\n**Same signature as immediately preceding run:** %s\n**Analysis:** %s\n\n%s\n\n**What to do:**\n1. Review the [failed workflow logs](https://github.com/%s/actions/runs/%s)\n2. Fix the underlying problem manually\n3. Comment on this issue (as the repo owner) to reset the budget, then comment `RETRY_IMPLEMENTATION` to try again\n\n**Note:** Only a comment from the repo owner resets this budget -- relabeling the error or a bot comment does not (#3689).\n\n%s\n' \
+            # Trailing marker (#3790): this comment used to name the retry
+            # token in its "what to do" list, and the trigger substring-
+            # matched it. The token is gone (#3882) and the instruction is
+            # now "assign the developer agent", which no comment can do --
+            # the marker stays as the standing convention for any agent
+            # comment that quotes control words back at the owner.
+            BODY="$(printf '%s\n\n**Failed step:** %s\n**Retry count:** %s/3 for this step (since last owner comment)\n**Same signature as immediately preceding run:** %s\n**Analysis:** %s\n\n%s\n\n**What to do:**\n1. Review the [failed workflow logs](https://github.com/%s/actions/runs/%s)\n2. Fix the underlying problem manually\n3. Comment on this issue (as the repo owner) to reset the budget, then assign @%s to try again\n\n**Note:** Only a comment from the repo owner resets this budget -- relabeling the error or a bot comment does not (#3689).\n\n%s\n' \
               "❌ **Developer Agent**: Auto-retry stopped -- unforgeable budget exhausted or signature disproof triggered." \
-              "$FAILED_STEP" "$RETRY_COUNT" "$SAME_SIG" "$ANALYSIS_PHASE" "$REASON" "$REPO" "$RUN_ID" "<!-- nyxgpt-token-mention -->")"
+              "$FAILED_STEP" "$RETRY_COUNT" "$SAME_SIG" "$ANALYSIS_PHASE" "$REASON" "$REPO" "$RUN_ID" "$DEV_AGENT_LOGIN" "<!-- nyxgpt-token-mention -->")"
             gh issue comment "$ISSUE" --body "$BODY"
             echo "escalated=true" >> "$GITHUB_OUTPUT"
             # #3695: one-line diagnosis + recommended action for the human-
@@ -2613,7 +2530,7 @@ jobs:
             # this step exits 1 below.
             {
               echo "diagnosis=${REASON} (failed step: ${FAILED_STEP})"
-              echo "action=Review the failed workflow logs, fix the underlying problem manually, then comment on the issue (as the repo owner) to reset the budget and RETRY_IMPLEMENTATION."
+              echo "action=Review the failed workflow logs, fix the underlying problem manually, then comment on the issue (as the repo owner) to reset the budget and re-assign @${DEV_AGENT_LOGIN}."
             } >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -2625,11 +2542,23 @@ jobs:
 
           MARKER="$(python3 "$GITHUB_WORKSPACE/scripts/agents/lib/retry_budget.py" marker "$FAILED_STEP" "$SIGNATURE" "$NEXT_N")"
 
-          BODY="$(printf '%s\n\n**Failed step:** %s\n**Analysis:** %s\n**Retry count:** %s/3 for this step (since last owner comment)\n\nThe agent will attempt to:\n1. Diagnose and fix any infrastructure issues\n2. Handle branch creation/checkout problems\n3. Retry the implementation\n\n[Previous failed run](https://github.com/%s/actions/runs/%s)\n\nRETRY_IMPLEMENTATION\n%s\n' \
+          # The comment is the record; the re-assignment is the retry
+          # (#3882). It used to be one artifact doing both jobs -- a body
+          # ending in a bare token that the workflow's own trigger
+          # substring-matched -- which is the mechanism that let unrelated
+          # prose start runs (#3706, #3790). The budget marker still rides in
+          # the comment: retry_budget.py counts markers, not tokens, so the
+          # cap and the owner reset are unchanged.
+          BODY="$(printf '%s\n\n**Failed step:** %s\n**Analysis:** %s\n**Retry count:** %s/3 for this step (since last owner comment)\n\nRe-assigning to @%s, which restarts the run. The agent will attempt to:\n1. Diagnose and fix any infrastructure issues\n2. Handle branch creation/checkout problems\n3. Retry the implementation\n\n[Previous failed run](https://github.com/%s/actions/runs/%s)\n\n%s\n' \
             "⚠️ **Developer Agent**: Workflow failed - auto-retry triggered." \
-            "$FAILED_STEP" "$ANALYSIS_PHASE" "$NEXT_N" "$REPO" "$RUN_ID" "$MARKER")"
+            "$FAILED_STEP" "$ANALYSIS_PHASE" "$NEXT_N" "$DEV_AGENT_LOGIN" "$REPO" "$RUN_ID" "$MARKER")"
           gh issue comment "$ISSUE" --body "$BODY"
-          echo "::notice::Auto-retry triggered (${NEXT_N}/3) for step '${FAILED_STEP}'"
+
+          source scripts/agents/lib/gh_project.sh
+          load_config
+          require_gh_auth
+          assign_and_trigger_developer "$ISSUE"
+          echo "::notice::Auto-retry triggered (${NEXT_N}/3) for step '${FAILED_STEP}' -- issue #${ISSUE} re-assigned to @${DEV_AGENT_LOGIN}"
 
       - name: Escalate fatal error (Phase 1+2+3 - no retry)
         # Phase 3's verdict outranks Phase 1's guess (#3909). Phase 1 is a
@@ -2662,12 +2591,14 @@ jobs:
           PHASE2_STATUS: ${{ steps.intelligent_fix.outputs.fix_status }}
           PHASE3_STATUS: ${{ steps.claude_result.outputs.status }}
           PHASE3_DIAGNOSIS: ${{ steps.claude_result.outputs.diagnosis }}
+          DEV_AGENT_LOGIN: ${{ vars.DEV_AGENT }}
         with:
           github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           script: |
             const issue_number = context.payload.issue.number;
             const repo = context.repo.owner + '/' + context.repo.repo;
             const runId = context.runId;
+            const devAgent = process.env.DEV_AGENT_LOGIN || 'the developer agent';
             const errorClass = process.env.ERROR_CLASS || '';
             const phase2Status = process.env.PHASE2_STATUS || '';
             const phase3Status = process.env.PHASE3_STATUS || '';
@@ -2728,11 +2659,8 @@ jobs:
                     `   - **auth_failure:** Verify repository secrets and permissions\n` +
                     `   - **already_merged:** Work may already be done, check PRs\n` +
                     `   - **unknown:** Investigate logs for specific error details\n` +
-                    `3. Once fixed, comment \`RETRY_IMPLEMENTATION\` to retry\n\n` +
-                    `**Note:** Phase 2 intelligent analysis will auto-fix many of these errors.\n\n` +
-                    // #3790: guidance that names the retry token is stamped
-                    // inert, so an escalation can never start a retry.
-                    `<!-- nyxgpt-token-mention -->`
+                    `3. Once fixed, assign @${devAgent} to the issue -- the assignment is the retry (#3882)\n\n` +
+                    `**Note:** Phase 2 intelligent analysis will auto-fix many of these errors.`
             });
 
             core.setOutput('developer_escalated', 'true');
@@ -2740,7 +2668,7 @@ jobs:
             // channel (Slack) notification the "Sprint autopilot kick"
             // step sends after this one.
             core.setOutput('diagnosis', explanation);
-            core.setOutput('action', 'Review the failed workflow logs, address the root cause, then comment RETRY_IMPLEMENTATION.');
+            core.setOutput('action', `Review the failed workflow logs, address the root cause, then assign @${devAgent} to retry.`);
             core.setFailed(`Fatal error (${errorClass}) - no auto-retry`);
 
       - name: Sprint autopilot kick (developer-side escalation)
@@ -2748,7 +2676,7 @@ jobs:
         # (sprint_autopilot_kick, #3480): a developer-side escalation frees
         # the issue from further automatic dev-agent work just as surely as
         # a review-cycle escalation does, so it must post the same
-        # READY_FOR_NEXT_ISSUE continuation kick -- otherwise a stuck issue
+        # continuation dispatch -- otherwise a stuck issue
         # silently parks the sprint-autopilot queue instead of moving on.
         # Also sends the #3695 human-channel (Slack DM) notification for
         # this terminal outcome -- whichever of the three escalation steps
@@ -2792,7 +2720,7 @@ jobs:
             sprint_autopilot_kick "$ISSUE" anomaly
             STATE="cross-issue-anomaly"
             DIAGNOSIS="Step '${ANOMALY_STEP}' failing here matches the unresolved cross-issue infrastructure anomaly tracked on #${ANOMALY_ORIGIN} (#3694) -- redundant diagnosis skipped."
-            ACTION="Resolve the shared anomaly tracked on #${ANOMALY_ORIGIN}; each affected issue resumes via RETRY_IMPLEMENTATION once it clears."
+            ACTION="Resolve the shared anomaly tracked on #${ANOMALY_ORIGIN}; each affected issue resumes when it is re-assigned to @${DEV_AGENT} once it clears."
             # Dedup on the ORIGIN issue, not this one: one infrastructure
             # event should produce one Slack DM total, not one per affected
             # issue (the same collapse #3694 applies to diagnosis).
