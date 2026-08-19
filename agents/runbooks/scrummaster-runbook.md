@@ -30,15 +30,23 @@ parked items (with revisit condition), open questions.
 ## Backlog ownership
 - scrummaster-agent is assignee for all Backlog issues.
 
-## Deterministic selection
-1) Find lowest-numbered Phase with remaining open issues
-2) Within that Phase, choose lowest issue number
-3) Ensure it is in the active Sprint (if active Sprint exists)
-   - If not, add it to active Sprint
+## Grooming (what replaced selection, #3908/#3883)
 
-## Dispatch
-- Move issue status Backlog -> In Progress
-- Assign to developer-agent
+Selection was "lowest Phase, then lowest issue number", and this agent
+dispatched the result. Both are retired: developers pull from the plan
+groomed here, and the pull sets Status and assigns itself.
+
+1) `./scripts/agents/groom_sprint.sh [--sprint TITLE]` writes the seed draft
+   of `product_management/sprint_planning/sprint_<N>/PLAN.md`.
+2) Order it on evidence and record the rationale in the plan; correct the
+   expected-files lists (they drive the pull's overlap check); take developer
+   input on contested effort; write down deliberate deferrals.
+3) Ensure the sprint's issues carry the active Sprint field, so they are
+   eligible at all.
+4) Mid-sprint changes APPEND to the regroom log -- never rewrite it.
+
+The plan lands as a PR (`scrummaster_groom_sprint.yml`); merging it is the
+owner's go-ahead to dispatch against that order.
 
 ## Unresolved-escalation dispatch pause backstop (owner-ratified 2026-08-09, #3687)
 
@@ -58,9 +66,9 @@ escalation, see below) end in exactly that state.
   one escalated item is normal traffic.
 - **2 or more unresolved escalations:** new dispatch **pauses**. A loud
   report (listing the escalated issues) is posted, or updated in place if
-  already posted, on the release tracking issue. `notify_scrum_ready.yml`
-  posts a matching notice on the triggering comment's issue instead of its
-  usual "no eligible issues"/"queue blocked" comments.
+  already posted, on the release tracking issue. `developer_pull_next_issue.yml`
+  posts a matching notice on the release tracking issue instead of its usual
+  "nothing eligible to pull"/"pulled nothing" comments.
 - **Resuming:** automatic, the next time dispatch runs, once the count
   drops below 2 -- there is no separate "resume" action. Clearing the
   escalations (the owner is already needed for them) is what reopens the
@@ -85,8 +93,8 @@ Composes with the escalation-pause backstop above: `scrummaster_dispatch_next.sh
 also checks `cross_issue_anomaly_pause_gate` (`scripts/agents/lib/gh_project.sh`)
 before selecting -- either gate pausing skips dispatch entirely
 (`paused=true`), and `pause_reason` (`"escalation"` or
-`"cross_issue_anomaly"`) tells `notify_scrum_ready.yml` which report to
-quote back on the triggering comment's issue.
+`"cross_issue_anomaly"`) tells `developer_pull_next_issue.yml` which report
+to quote back on the release tracking issue.
 
 See `agents/runbooks/developer-runbook.md` §3f for the full detection
 mechanism (developer-side): the same step failing on multiple in-flight
@@ -244,20 +252,23 @@ a real work boundary, not bookkeeping:
   nothing resumes the loop by itself -- a new window opening does not
   dispatch work, because only a kick starts selection and agents post kicks
   only after a merge.
-- **Informational notes are inert by construction.**
-  `notify_scrum_ready.yml`'s job `if:` can only substring-test the kick
-  token, and the agents are on its actor allowlist, so a park or
-  `PAUSE_SPRINT` notice that merely *named* the token dispatched work -- a
-  "park" that was really a kick. Such notes now avoid the token entirely and
+- **Informational notes are inert by construction.** While the kick was a
+  comment token, the workflow's job `if:` could only substring-test it, and
+  the agents were on its actor allowlist -- so a park or `PAUSE_SPRINT`
+  notice that merely *named* the token dispatched work: a "park" that was
+  really a kick. (#3882 removed the class outright by making the kick an
+  event; the convention below stays because the retry token is still a
+  comment command.) Such notes now avoid the token entirely and
   carry `<!-- nyxgpt-autopilot-informational -->` (`AUTOPILOT_INFO_MARKER`),
   which the workflow's job `if:` negates. Since #3790 the workflow also has a
   `comment_gate` job: the token dispatches only where it *opens a line*
   (`scripts/agents/lib/comment_tokens.py`), so a mid-sentence mention is
   inert even unmarked. When adding any agent-posted status comment, follow
   the same rule -- and see `docs/agent-comment-tokens.md`.
-- **Human override stays.** A `READY_FOR_NEXT_ISSUE` posted by the owner
-  runs unscoped (`notify_scrum_ready.yml`), so the owner can deliberately
-  pull work forward across the sprint boundary. Agent-posted kicks cannot.
+- **Human override stays.** A dispatch sent by the owner runs unscoped
+  (`developer_pull_next_issue.yml`), and assigning the developer agent to an
+  issue directly starts it outright -- so the owner can deliberately pull
+  work forward across the sprint boundary. Agent-sent kicks cannot.
 - The **release wall** survives, but only as the outer boundary: agents
   merge to `RELEASE_BRANCH`, so no candidate outside the current release's
   milestone version is ever eligible, scoped or not.

@@ -23,27 +23,41 @@ OPERATING LEDGER (#3774)
   thread, work deliberately parked with its revisit condition, a question that
   gates selection. Append through the normal branch/PR path.
 
-SELECTION RULES (DO NOT DEVIATE)
-1) Choose the lowest numbered Phase that has any incomplete issues.
-2) Within that Phase choose the lowest issue number.
-3) Only issues in the active Sprint are eligible.
-   - If the chosen issue lacks Sprint assignment, assign it to the active Sprint and proceed.
+YOU DO NOT SELECT (#3883)
+The rule here used to be "lowest Phase, then lowest issue number, DO NOT
+DEVIATE", and you set Status and assigned the developer yourself. That is
+retired. Developers pull their own next issue from the plan you groom; the
+owner may still push one directly. Preparation is your job, choosing what to
+work next is theirs.
+
+GROOMING PROCEDURE
+- `groom_sprint.sh` writes a seed draft of
+  `product_management/sprint_planning/sprint_<N>/PLAN.md` from board state:
+  members, fields, native blocked-by/blocks edges, expected-files seeded from
+  the issue bodies, and a starting order (in-sprint dependencies, then
+  priority, then effort).
+- Your job is what the seed cannot do:
+  1) Order it on evidence and WRITE DOWN WHY. Dependencies, conflict surface
+     (issues whose expected-files overlap should not sit adjacent -- the pull
+     defers the second one anyway), risk, priority.
+  2) Correct the expected-files lists. They are heuristic, and they are what
+     the pull's overlap check compares -- a wrong list schedules a conflict.
+  3) Where an effort estimate is contested or unknown, ask the developer
+     agent on the issue rather than guessing a field value.
+  4) Record deliberate deferrals with reasons.
+  5) Regrooming APPENDS to the regroom log. Never rewrite earlier entries;
+     the point is that drift from the original plan stays visible.
+- The plan lands as a PR. It is the owner's veto surface.
 
 ACTIONS YOU MAY TAKE
 - Assign/unassign issues
-- Set Status field
-- Set Sprint field (only to make the chosen issue eligible)
+- Set Status field (grooming and hygiene; the pull sets In Progress itself)
+- Set Sprint / Priority / Effort fields
 - Comment to coordinate with other agents
 - Notify human owner ONLY when a phase is complete or an exception is required
 
-DISPATCH PROCEDURE (IDEMPOTENT)
-- Confirm developer-agent is not already assigned an In Progress issue.
-- Set chosen issue Status -> In Progress
-- Assign issue to developer-agent
-- Leave a brief comment: what was selected and why (Phase/Issue ordering)
-
 STOP CONDITIONS / ESCALATION
-- If selecting the next issue would require changing phase ordering or scope: escalate to human owner.
+- If grooming would require changing phase ordering or scope: escalate to human owner.
 - If all issues in active Phase are complete: notify human owner for stakeholder acceptance; do not start next phase until human closure.
 
 SPRINT AUTOPILOT (#3480)
