@@ -325,7 +325,29 @@ jobs:
           # standing in for a native relationship -- the same mistake as
           # driving workflows from comment tokens -- and it hard-failed the
           # merge on PRs whose issue was linked but unspelled.
-          ISSUE=$(bash -lc "source scripts/agents/lib/gh_project.sh && load_config && require_gh_auth && pr_linked_issue '$PR'")
+          # Self-contained on purpose: no checkout, no config, no sourced
+          # library. A PR-triggered workflow runs the PR's copy of this file
+          # against a RELEASE_BRANCH checkout, so calling a helper the base
+          # branch does not have yet fails with exit 127 -- which is exactly
+          # how this step and pr-hygiene went red on the PR that introduced
+          # the helper. A query needs nothing checked out to work.
+          ISSUE=$(gh api graphql -f query='
+            query($owner:String!, $name:String!, $pr:Int!){
+              repository(owner:$owner, name:$name){
+                pullRequest(number:$pr){
+                  closingIssuesReferences(first:5){ nodes { number } }
+                }
+              }
+            }' -f owner="${GITHUB_REPOSITORY%%/*}" -f name="${GITHUB_REPOSITORY##*/}" \
+            -F pr="$PR" \
+            --jq '.data.repository.pullRequest.closingIssuesReferences.nodes[0].number // empty' \
+            2>/dev/null || true)
+
+          # Fallback for PRs opened before the link existed. Read, never required.
+          if [[ -z "$ISSUE" ]]; then
+            ISSUE=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}" --jq '.body // ""' \
+              | grep -oiE 'closes #[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+          fi
 
           if [[ -z "$ISSUE" ]]; then
             # A PR that closes no issue is legitimate but rare, and the rest

@@ -105,7 +105,26 @@ jobs:
               if (!pr || pr.state !== 'open' || pr.draft) continue;
               core.info(`PR #${number}: mergeable=${pr.mergeable} mergeable_state=${pr.mergeable_state}`);
               if (pr.mergeable === false || pr.mergeable_state === 'dirty') {
-                const match = (pr.body || '').match(/Closes #(\d+)/i);
+                // The link, not the sentence (owner rule, 2026-08-19):
+                // GitHub stores which issue this PR closes. The body match
+                // stays as a fallback for PRs that predate the link.
+                let linked = null;
+                try {
+                  const q = `query($owner:String!,$name:String!,$pr:Int!){
+                    repository(owner:$owner,name:$name){
+                      pullRequest(number:$pr){
+                        closingIssuesReferences(first:5){ nodes { number } }
+                      }
+                    }
+                  }`;
+                  const res = await github.graphql(q, { owner, name: repo, pr: number });
+                  linked = res.repository.pullRequest.closingIssuesReferences.nodes[0]?.number ?? null;
+                } catch (e) {
+                  core.info(`PR #${number}: linked-issue query failed (${e.message}) -- reading the body`);
+                }
+                const match = linked
+                  ? [null, String(linked)]
+                  : (pr.body || '').match(/Closes #(\d+)/i);
                 conflicted.push({
                   number: pr.number,
                   title: pr.title,

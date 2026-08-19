@@ -723,14 +723,14 @@ criterion honestly — the falsified section simply was not in the diff.
 
 ## 6) Commit discipline
 - Small commits with clear messages
-- Reference issue in PR body: "Closes #ISSUE"
+- Link the PR to its issue. `developer_submit_for_review.sh` writes `Closes #ISSUE`, which is one way to create GitHub's native closing-issue link; the Development sidebar is the other. Nothing reads the sentence back (owner rule, 2026-08-19)
 - Commit message format: `<type>: <description> (#ISSUE)`
 - Valid types: feat, fix, test, docs, refactor, chore
 - Only commit after ALL validation checks pass
 
 ## 7) Open PR
 - Target: active release branch
-- PR body MUST include: "Closes #ISSUE"
+- The PR MUST be linked to its issue. The submit script does this for you; if you open a PR by hand, link it in the sidebar or write `Closes #ISSUE`. Consumers read the link, not the text
 - Ensure CI runs green. The hooks no longer run black/ruff/mypy, so a clean
   commit is not evidence those pass -- run them yourself before submitting.
   The reviewer no longer re-runs them and will not catch it for you.

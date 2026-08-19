@@ -65,22 +65,24 @@ class TestTheHelper:
 
 class TestNoConsumerGrepsTheBodyItself:
     def test_every_caller_goes_through_the_helper(self):
-        """One transitional exemption: `ensure_project_hygiene.yml`'s
-        pr-hygiene job checks out RELEASE_BRANCH rather than the PR head, so
-        on the PR that ADDS the helper the sourced library does not have it
-        yet. It guards with `declare -F` and keeps the body read as the
-        fallback arm; delete that arm once this is on the release branch."""
+        """A body read is allowed only as the fallback arm of a native
+        lookup -- never as the source of truth."""
         offenders = []
         sources = list(SCRIPTS.rglob("*.sh")) + sorted(WORKFLOWS.glob("*.yml"))
         for path in sources:
-            if path.name == "gh_project.sh":
-                continue  # the helper's own fallback lives here
-            if path.name == "ensure_project_hygiene.yml":
-                # Exempt only while it guards on `declare -F` -- an unguarded
-                # body read here would be the old behavior wearing a comment.
-                assert "declare -F pr_linked_issue" in path.read_text(encoding="utf-8")
+            text = _uncommented(path)
+            if not _BODY_GREP.search(text):
                 continue
-            if _BODY_GREP.search(_uncommented(path)):
+            # A body read is legitimate as the FALLBACK arm of a native
+            # lookup -- PRs opened before the link existed still have to
+            # resolve. What is forbidden is deriving the link from prose with
+            # no native query anywhere in the file.
+            native = (
+                "closingIssuesReferences" in text
+                or "closedByPullRequestsReferences" in text
+                or "pr_linked_issue" in text
+            )
+            if not native:
                 offenders.append(str(path.relative_to(ROOT)))
         assert not offenders, (
             "these still derive a PR's issue by grepping its body instead of "
@@ -105,10 +107,21 @@ class TestNoConsumerGrepsTheBodyItself:
             "ensure_project_hygiene.yml",
             "huddle_decision_dispatch.yml",
             "link_revert_pr_to_issue.yml",
+            "huddle_session.yml",
+            "notify-merge-conflicts.yml",
+            "developer_auto_implement.yml",
         ],
     )
-    def test_the_workflow_consumers_call_it(self, consumer):
-        assert "pr_linked_issue" in (WORKFLOWS / consumer).read_text(encoding="utf-8")
+    def test_the_workflow_consumers_query_the_link_directly(self, consumer):
+        """Workflows do NOT source the helper. A PR-triggered workflow runs
+        the PR's copy of the file against a RELEASE_BRANCH checkout, so a
+        helper the base branch lacks fails with exit 127 -- which is how the
+        PR introducing that helper turned two gates red. A query needs
+        nothing checked out. `link_revert_pr_to_issue.yml` has no checkout
+        step at all, so for it this is the only form that can work."""
+        body = (WORKFLOWS / consumer).read_text(encoding="utf-8")
+        assert "closingIssuesReferences" in body or "closedByPullRequestsReferences" in body
+        assert "source scripts/agents/lib/gh_project.sh" not in body.split("linked")[0][-400:]
 
 
 class TestTheErrorNoLongerDemandsTheSentence:

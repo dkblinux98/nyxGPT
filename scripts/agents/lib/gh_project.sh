@@ -3103,7 +3103,7 @@ ensure_pr_project_hygiene() {
     || _die "Failed to set Status on PR #${pr_number} after retries"
 
   # Link issue to PR in Development field (closedBy relationship)
-  # Note: "Closes #N" in PR body creates the link, but we verify it here
+  # Note: the closing link is what matters here; "Closes #N" is one way it
   _debug "Verifying PR #${pr_number} is linked to issue #${issue_number}"
   local linked_pr
   linked_pr="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue_number}" --jq '.pull_request.url // empty')"

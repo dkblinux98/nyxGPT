@@ -114,7 +114,7 @@ while [[ "$pr_mergeable" == "UNKNOWN" && "$pr_state" == "OPEN" && "$attempt" -lt
   pr_state="$(jq -r '.state' <<<"$pr_json")"
 done
 
-# Issue number: explicit argument wins, else the PR body's "Closes #N"
+# Issue number: explicit argument wins, else the PR's linked issue
 # (the PR rule every PR in this repo follows).
 if [[ -z "$ISSUE" ]]; then
   # The link, not the sentence (owner rule, 2026-08-19): the native edge
@@ -176,9 +176,9 @@ if [[ -z "$ISSUE" ]]; then
   # No linked issue means no dispatch target (the developer agent is started
   # from the issue, not the PR). Say so on the PR rather than silently
   # dropping the conflict.
-  _warn "PR #${PR} has no 'Closes #N' issue link — cannot dispatch a resolution round."
+  _warn "PR #${PR} closes no issue — cannot dispatch a resolution round."
   if [[ "${DRY_RUN:-0}" != "1" ]]; then
-    UNLINKED_MSG="⚠️ **Merge conflict** with \`${pr_base}\`, and this PR has no \`Closes #N\` link, so no developer-agent round can be dispatched. Add the link (or resolve by merging \`origin/${pr_base}\` into \`${pr_head}\` — never rebase)."
+    UNLINKED_MSG="⚠️ **Merge conflict** with \`${pr_base}\`, and this PR closes no issue, so no developer-agent round can be dispatched. Link it to its issue (or resolve by merging \`origin/${pr_base}\` into \`${pr_head}\` — never rebase)."
     # An escalation still has to carry its question somewhere, or the one
     # thing the owner is actually being asked is dropped on the floor.
     if [[ "$action" == "escalate" && -n "$question" && "$question" != "null" ]]; then

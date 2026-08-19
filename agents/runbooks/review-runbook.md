@@ -3,11 +3,11 @@
 ## 0) Preconditions
 - PR targets active release branch.
 - CI is green (required to merge unless human exception).
-- PR body includes `Closes #ISSUE` linking to a valid issue.
+- The PR is linked to a valid issue (GitHub's closing-issue link, however it was created).
 
 ### Project hygiene
 Every assignee is responsible for verifying project hygiene before reassigning:
-- PRs must be linked to issues via `Closes #ISSUE` in PR body
+- PRs must be linked to issues natively; `Closes #ISSUE` in the body is one way to create that link, not a required sentence (owner rule, 2026-08-19)
 - Issues must have all required project fields populated
 - Merged PRs without linked issues must be corrected
 - Project fields must be accurate before state transitions
@@ -557,7 +557,7 @@ for both verdicts:
   (`scripts/agents/review_ensure_handoff.sh`) waits ~4 minutes for that chain
   to leave a footprint on the PR and, if none appears, executes the same
   routing decision itself: resolve the linked issue from the PR body's
-  `Closes #N`, then loop / huddle / escalate per §6b.
+  its linked issue, then loop / huddle / escalate per §6b.
 
   Routing is not duplicated — the backstop calls the same
   `huddle_routing_decision` in `scripts/agents/lib/sprint_calc.py` the primary

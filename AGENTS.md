@@ -78,7 +78,12 @@ GitHub API rate pools: GraphQL (5,000 points/hour) and REST (5,000
 requests/hour). Projects v2 field reads/writes (Status, Sprint, Priority,
 Effort, Module, iteration lookups -- everything behind
 `scripts/agents/lib/gh_project.sh`'s `graphql()` wrapper) have no REST
-equivalent and are the only thing that should draw from the GraphQL pool.
+equivalent and are the main draw on the GraphQL pool. The other, added
+2026-08-19, is the **PR/issue closing link** (`closingIssuesReferences`,
+`closedByPullRequestsReferences`) -- GitHub exposes it nowhere in REST, and
+the alternative was deriving it from `Closes #N` prose, which is what this
+repo retired.
+
 Every plain issue/PR read (title, body, labels, state, assignees, comments,
 reviews, files, mergeable status, PR/issue lists) is available via REST and
 MUST use it (#3663) -- freeing the shared GraphQL budget for what only it
