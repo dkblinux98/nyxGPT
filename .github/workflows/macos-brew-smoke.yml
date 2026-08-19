@@ -724,6 +724,21 @@ jobs:
         # direction where "both installed" can happen. Asserted the same way,
         # because a machine carrying both is broken regardless of the order it
         # got there.
+        #
+        # This step is RED TODAY, and it is red because the product is, not
+        # because the step is wrong. Run 32202943938 answered ledger Q-002 here:
+        # `conflicts_with` is directional and nothing checks this direction, so
+        # brew builds and installs the stable keg to completion
+        # (`/opt/homebrew/Cellar/nyxgpt-api/3.0.0: 6,140 files`) and only then
+        # fails `brew link` on the symlink collision -- `Could not symlink
+        # bin/nyxgpt ... is a symlink belonging to nyxgpt-api@3.0.0rc`. A failed
+        # link is not a guard: the keg stays installed, /opt/homebrew/bin/nyxgpt
+        # still points at the candidate, and the machine ends at
+        # `stable installed: 1 / candidate installed: 1`. Do not soften this
+        # assertion to get a green check -- reporting green over that state is
+        # the exact failure #3860 exists to remove. It goes green when #3853
+        # lands (a `conflicts_with` on the stable formula, or an equivalent
+        # packaging-level guard).
         run: |
           set -uo pipefail
           # Same rc-capture as the step above, for the same reason: the default

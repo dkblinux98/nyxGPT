@@ -180,51 +180,94 @@ fi
 # succeed here. What IS asserted is that every step outside $TOLERATED_STEPS
 # succeeded -- so an api/web/ollama service that fails to install or start
 # fails this script, which is the half of `up` this runner can measure.
+#
+# And, since run 32203021217, that the steps were *seen at all*. That run had
+# no `nyxgpt` on PATH (#3850), so `up` exited 127 having produced no output,
+# the parser found no [FAIL] lines to attribute, and this reported
+# "every nyxgpt up step ... succeeded" over a command that never ran. An
+# absence-of-failure assertion passes vacuously on an absent command -- which
+# is the hollow-gate shape #3860 exists to remove, reproduced inside the fix
+# for it. $REQUIRED_STEPS below is the positive half: these steps have to
+# appear in the log and be seen to succeed.
 # ---------------------------------------------------------------------------
+
+# The steps this runner can and must run, named exactly as `ops install`
+# streams them (`src/nyxgpt/ops.py`, the `steps` list). Complement of
+# $TOLERATED_STEPS: nothing may be in both, and the contract test enforces it.
+REQUIRED_STEPS='config,install mode,native api service,native web service,ollama service,env sync'
 log "nyxgpt up"
 nyxgpt up --skip-observability --timeout 300 2>&1 | tee "$WORK/up.log"
 UP_RC="${PIPESTATUS[0]}"
 echo "nyxgpt up exited $UP_RC"
 
-TOLERATED_STEPS="$TOLERATED_STEPS" python3 - "$WORK/up.log" <<'PY' > "$WORK/up-verdict.txt"
+TOLERATED_STEPS="$TOLERATED_STEPS" REQUIRED_STEPS="$REQUIRED_STEPS" \
+  python3 - "$WORK/up.log" <<'PY' > "$WORK/up-verdict.txt"
 """Attribute every [FAIL] line to the `[n/m] step...` banner above it.
 
 `nyxgpt ops install` streams a banner per step and then that step's own
 OK/FAIL results, so the banner is the only thing that says which step a
 failure belongs to. Anything failing outside the tolerated set is reported
 for the shell to turn into an assertion.
+
+The second half is the one run 32203021217 showed this needed: report which
+required steps were never *seen*. "No failure was attributed" is also what an
+empty log says, and an empty log is what a command that does not exist
+produces -- so absence of failure is only evidence when the steps that must
+run were observed running.
 """
 import os
 import re
 import sys
 
-tolerated = {s.strip() for s in os.environ["TOLERATED_STEPS"].split(",") if s.strip()}
+
+def parse_set(name: str) -> set[str]:
+    return {s.strip() for s in os.environ[name].split(",") if s.strip()}
+
+
+tolerated = parse_set("TOLERATED_STEPS")
+required = parse_set("REQUIRED_STEPS")
 banner = re.compile(r"^\[\d+/\d+\] (?P<step>.+?)\.\.\.\s*$")
 
 step = "(before the first step)"
+seen: set[str] = set()
+failed: set[str] = set()
 offenders: dict[str, list[str]] = {}
 for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
     line = line.rstrip("\n")
     match = banner.match(line)
     if match:
         step = match.group("step")
+        seen.add(step)
         continue
-    if line.startswith("[FAIL]") and step not in tolerated:
-        offenders.setdefault(step, []).append(line)
+    if line.startswith("[FAIL]"):
+        failed.add(step)
+        if step not in tolerated:
+            offenders.setdefault(step, []).append(line)
 
-for step, lines in offenders.items():
+for step, lines in sorted(offenders.items()):
     print(f"UNTOLERATED\t{step}\t{lines[0]}")
+for step in sorted(required - seen):
+    print(f"UNSEEN\t{step}")
+for step in sorted((required & seen) - failed):
+    print(f"RAN_OK\t{step}")
 print(f"TOLERATED_SET\t{', '.join(sorted(tolerated))}")
 PY
 
 cat "$WORK/up-verdict.txt"
-if grep -q '^UNTOLERATED' "$WORK/up-verdict.txt"; then
-  while IFS=$'\t' read -r _ step first; do
-    fail "nyxgpt up step '$step' failed on the user path: $first"
-  done < <(grep '^UNTOLERATED' "$WORK/up-verdict.txt")
-else
-  pass "every nyxgpt up step outside the documented Docker-only set succeeded"
+if [ "$UP_RC" = "127" ]; then
+  fail "nyxgpt up could not be run at all (exit 127) -- the capstone scenario's single command does not exist on this machine (#3850)"
 fi
+while IFS=$'\t' read -r _ step first; do
+  fail "nyxgpt up step '$step' failed on the user path: $first"
+done < <(grep '^UNTOLERATED' "$WORK/up-verdict.txt" || true)
+# The positive half. Without it, "no untolerated failure" is equally true of a
+# perfect install and of a command that never produced a line.
+while IFS=$'\t' read -r _ step; do
+  fail "nyxgpt up never reached the '$step' step, so nothing here observed it succeed -- an absent failure is not a success (#3860)"
+done < <(grep '^UNSEEN' "$WORK/up-verdict.txt" || true)
+while IFS=$'\t' read -r _ step; do
+  pass "nyxgpt up step '$step' ran and reported no failure"
+done < <(grep '^RAN_OK' "$WORK/up-verdict.txt" || true)
 
 # ---------------------------------------------------------------------------
 # 4. The API answers (#3853).

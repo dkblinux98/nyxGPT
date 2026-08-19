@@ -135,6 +135,56 @@ def test_the_script_tolerates_only_the_container_steps_this_runner_cannot_run() 
         )
 
 
+def _required_steps() -> list[str]:
+    """The steps the script requires to have been *seen* running."""
+    for line in _script().splitlines():
+        if line.startswith("REQUIRED_STEPS='"):
+            return [s.strip() for s in line.split("'")[1].split(",") if s.strip()]
+    raise AssertionError(
+        "REQUIRED_STEPS is gone from the script -- without it, 'no untolerated "
+        "failure' passes vacuously on a `nyxgpt up` that never ran (#3860)"
+    )
+
+
+def test_the_up_assertion_has_a_positive_half() -> None:
+    """Absence of failure is not evidence of success.
+
+    Run 32203021217 proved it: with no `nyxgpt` on PATH (#3850) the command
+    exited 127 having printed nothing, the parser found no `[FAIL]` line to
+    attribute, and the script reported "every nyxgpt up step ... succeeded"
+    over a command that did not run. That is the hollow-gate shape this whole
+    issue is about, reproduced inside the fix for it.
+    """
+    required = _required_steps()
+    tolerated = set(_tolerated_steps())
+    assert required, "the required-step list is empty, so nothing must be observed to run"
+    assert not (set(required) & tolerated), (
+        f"{sorted(set(required) & tolerated)} is both required to succeed and tolerated "
+        "when it fails; the two sets are complements"
+    )
+    script = _script()
+    assert 'if [ "$UP_RC" = "127" ]' in script, (
+        "a `nyxgpt up` that does not exist (exit 127) no longer fails the script "
+        "on its own (#3850)"
+    )
+    assert "UNSEEN" in script, "the parser no longer reports required steps it never saw"
+
+
+@pytest.mark.parametrize("step", _required_steps(), ids=lambda s: s.replace(" ", "-"))
+def test_every_required_step_is_a_step_ops_install_actually_streams(step: str) -> None:
+    """A typo here reads as "the install never reached that step" forever.
+
+    The names are matched against `ops install`'s banner text, so they have to
+    be the literal step names in `ops.py`'s step list -- not a paraphrase.
+    """
+    source = (REPO_ROOT / "src" / "nyxgpt" / "ops.py").read_text(encoding="utf-8")
+    assert f'("{step}"' in source, (
+        f"{step!r} is required to appear in `nyxgpt up`'s output but is not a step "
+        "name in src/nyxgpt/ops.py's install step list; the assertion would fail "
+        "forever rather than measure anything"
+    )
+
+
 def test_every_tolerated_step_is_justified_in_the_document_that_bounds_it() -> None:
     """The allowlist and its rationale drift apart the moment they are separate.
 

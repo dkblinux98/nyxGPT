@@ -622,19 +622,29 @@ rather than mechanism, and nothing can enforce them.
   candidate, capture what Homebrew actually does. Prior context in #3753,
   #3763, #3770.
   Blocks: #3853's fix direction (packaging-level guard vs `ops.py` reconcile).
-  Narrowed 2026-08-19 (#3860) — the reproduction exists now:
-  `macos-brew-smoke.yml`'s `stable-over-candidate` job. On a clean `macos-15`
-  runner with both formulas in **one tap**, `conflicts_with` holds: brew
-  refuses with `Cannot install nyxgpt/both-channels/nyxgpt-api@3.0.0rc because
-  conflicting formulae are installed` and leaves `stable installed: 1 /
-  candidate installed: 0` (run 32202247518, job 95918316286). So the guard is
-  load-bearing in that shape and the owner's both-installed state came from
-  somewhere else — a differently-shaped tap, a formula predating the
-  `conflicts_with` injection, or an install that bypassed the check. What
-  remains open is which. Also learned there, and separate from the answer: a
-  `brew tap-new` tap is untrusted, and resolving `conflicts_with` *loads* the
-  named formula, so brew refuses on trust grounds before it ever evaluates the
-  conflict — #3770's shape, and why the job now trusts the whole tap.
+  Answered 2026-08-19 (#3860), by the reproduction it asked for —
+  `macos-brew-smoke.yml`'s `stable-over-candidate` job, run 32202943938 on a
+  clean `macos-15` runner. **`conflicts_with` is directional, and only the rc
+  formula declares it.**
+  - Candidate onto an installed stable: the guard holds. Brew refuses with
+    `Cannot install …@3.0.0rc because conflicting formulae are installed` and
+    leaves `stable installed: 1 / candidate installed: 0`.
+  - Stable onto an installed candidate — **the owner's direction** — nothing
+    checks anything. Brew builds and installs the keg to completion
+    (`/opt/homebrew/Cellar/nyxgpt-api/3.0.0: 6,140 files, 152MB`); only
+    `brew link` then fails on the symlink collision (`Could not symlink
+    bin/nyxgpt … is a symlink belonging to nyxgpt-api@3.0.0rc`). The keg stays
+    installed, `/opt/homebrew/bin/nyxgpt` still points at the *candidate*, and
+    brew prints a "shadowed by other commands" caveat. Final state:
+    `stable installed: 1 / candidate installed: 1` — #3853's machine exactly.
+  So the answer to "why did `conflicts_with` not prevent it" is that in that
+  direction it was never asked. A `conflicts_with "nyxgpt-api@X.Y.Zrc"` on the
+  stable formula is the packaging-level half; `brew link`'s failure is not a
+  guard, because a failed link leaves the keg in place.
+  Also learned there, separate from the answer: a `brew tap-new` tap is
+  untrusted, and resolving `conflicts_with` *loads* the named formula, so brew
+  refuses on trust grounds before it ever evaluates the conflict — #3770's
+  shape, and why the job now trusts the whole tap.
 
 - **Q-003** · 2026-08-18 · owner acceptance (#3857) — What stops the web UI's
   client JS from loading: the two builds racing for port 3000 (#3853), or a
