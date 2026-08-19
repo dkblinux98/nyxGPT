@@ -750,7 +750,14 @@ rather than mechanism, and nothing can enforce them.
   Needs: DevTools → Application → Service Workers on a reproducing machine.
   The owner's machine was torn down before this was captured, so it must be
   reproduced from scratch.
-  Blocks: #3857 — one branch of its fix is conditional on the answer.
+  Blocks: nothing. #3857 shipped **both** branches unconditionally rather than
+  waiting on the answer — a bounded chunk timeout with an error boundary, a
+  build-change service-worker cache drop, and a document-inline hydration
+  watchdog that surfaces the failure even when no client JS runs at all. The
+  question stays open because the trigger is still unidentified; the in-product
+  Details panel ("a service worker is controlling this page" / "no service
+  worker is controlling this page") now answers it at the next occurrence
+  without DevTools.
 
 - **Q-004** · 2026-08-18 · owner acceptance (#3853) — What produced
   `Unknown system error -11` opening

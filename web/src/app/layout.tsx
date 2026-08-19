@@ -5,6 +5,9 @@ import { ThemeProvider } from "../contexts/ThemeContext";
 import { ToastProvider } from "../contexts/ToastContext";
 import ClientErrorReporter from "../components/ClientErrorReporter";
 import AppUpdateBanner from "../components/AppUpdateBanner";
+import ServiceWorkerVersionGuard from "../components/ServiceWorkerVersionGuard";
+import HydrationWatchdog from "../components/HydrationWatchdog";
+import HydrationMarker from "../components/HydrationMarker";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -54,9 +57,16 @@ export default function RootLayout({
         <link rel="prefetch" href="/settings" as="document" />
       </head>
       <body className={`${geistSans.variable} ${geistMono.variable}`}>
+        {/* First in the body and outside every provider on purpose (#3857):
+            this inline script must run even when none of the client bundle
+            does, which is the state that leaves server-rendered loading
+            placeholders on screen forever. HydrationMarker disarms it. */}
+        <HydrationWatchdog />
         <ThemeProvider>
           <ToastProvider>
+            <HydrationMarker />
             <ClientErrorReporter />
+            <ServiceWorkerVersionGuard />
             <AppUpdateBanner />
             {children}
           </ToastProvider>
