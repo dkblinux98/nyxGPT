@@ -66,11 +66,13 @@ __all__ = [
     "LIVE_STATES",
     "NATIVE_BREW_SERVICES",
     "VERSIONED_COMPONENTS",
+    "format_variants",
     "is_variant_of",
     "parse_services_list",
     "resolve",
     "resolve_all",
     "superseded",
+    "unique",
     "variants",
 ]
 
@@ -207,23 +209,6 @@ def superseded(
         for name in variants(base, snapshot)
         if name != keep and (not registered_only or snapshot.get(name, "none") != "none")
     ]
-
-
-def all_superseded(
-    bases: Mapping[str, str], snapshot: Mapping[str, str], keep: Mapping[str, str]
-) -> list[str]:
-    """Flatten `superseded` across `bases`, keeping `keep[component]` for each.
-
-    A component absent from `keep` is skipped entirely rather than having
-    every variant treated as superseded -- "I do not know which one is
-    wanted" must never mean "stop them all".
-    """
-    names: list[str] = []
-    for component, base in bases.items():
-        if component not in keep:
-            continue
-        names.extend(superseded(base, snapshot, keep=keep[component]))
-    return names
 
 
 def format_variants(base: str, snapshot: Mapping[str, str]) -> str:
