@@ -152,6 +152,20 @@ def test_the_reader_reports_the_env_override_rather_than_the_file(config_path, c
     assert "NYXGPT_SESSION_BACKEND" in out
 
 
+def test_the_reader_does_not_attribute_the_default_to_a_file_that_is_not_there(tmp_path, capsys):
+    absent = tmp_path / "absent.ini"
+
+    code = ops.session_backend(_args(config=str(absent)))
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "session_backend = file" in out
+    # "(from …/absent.ini)" would read as "your config says file" when what
+    # actually answered was the back-compat default and no file exists.
+    assert "built-in default" in out
+    assert f"(from {absent})" not in out
+
+
 def test_setting_via_the_cli_returns_zero_and_writes(config_path, capsys):
     code = ops.session_backend(_args(backend="cassandra", config=str(config_path)))
 

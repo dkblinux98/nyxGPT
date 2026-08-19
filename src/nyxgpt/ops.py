@@ -12742,14 +12742,20 @@ def session_backend(args: Any) -> int:
     requested = str(getattr(args, "backend", None) or "").strip()
 
     if not requested:
-        cfg = load_config(cfg_path) if cfg_path.exists() else ConfigParser()
+        exists = cfg_path.exists()
+        cfg = load_config(cfg_path) if exists else ConfigParser()
         effective = get_session_backend(cfg)
         print(f"session_backend = {effective}")
         override = os.environ.get("NYXGPT_SESSION_BACKEND", "").strip()
         if override:
             print(f"  (forced by NYXGPT_SESSION_BACKEND={override}, overriding {cfg_path})")
-        else:
+        elif exists:
             print(f"  (from {cfg_path})")
+        else:
+            # Attributing the answer to a file that is not there reads as "your
+            # config says file" when what happened is that nothing said
+            # anything and the back-compat default answered.
+            print(f"  (built-in default; no config.ini at {cfg_path})")
         return 0
 
     logger.info(
