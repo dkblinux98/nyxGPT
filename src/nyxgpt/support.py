@@ -25,7 +25,7 @@ Two surfaces live here:
   the ticket it created. The compose page on github.com is not part of that
   path.
 
-**How the credential question was answered (#3811, ledger D-033, closing
+**How the credential question was answered (#3811, ledger D-034, closing
 Q-006's first half).** Creating
 an issue needs a GitHub credential, and an install has one only when
 `[github] pat` is configured. So there are two cases and they are not
