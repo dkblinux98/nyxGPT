@@ -494,8 +494,12 @@ without any of them being enumerated anywhere.
 **An unrecorded identity is not a matching one.** A marker written before
 identities were recorded, a marker that cannot be parsed, and no marker at
 all all read as *unknown*, and an unknown previous identity is reconciled
-defensively against what the service managers actually report — never
-assumed to be the install about to happen. `nyxgpt ops doctor` reports the
+defensively — never assumed to be the install about to happen. What gets
+retired is the recorded previous identity's services **and** whatever the
+service managers actually have registered, minus the new install's own: the
+marker alone would miss an install nothing recorded, and the managers alone
+would miss a previous install whose services are stopped but still installed
+and due to start again at the next login. `nyxgpt ops doctor` reports the
 same reading from the other end: `api`/`web` services registered on the
 machine that the recorded install does not own are listed by name, which is
 what makes a second install visible instead of silent.

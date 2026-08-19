@@ -40,21 +40,36 @@ name: macOS Brew Smoke
 #                installed, candidate on top -- covered nowhere. That is the
 #                case the owner hit (#3853). Builds both channels from the
 #                working tree, so it needs no publish and runs on PRs.
+#                Since #3861 it also answers the question after that one: once
+#                two channels ARE installed, does an install reconcile the one
+#                it replaces, or leave two `keep_alive` service sets registered
+#                on ports 8000/3000? It gets both kegs registered and runs the
+#                real identity reconcile in both directions. Same machine
+#                state, one job -- #3861 shares this one rather than paying a
+#                second macOS runner to rebuild it.
 #
 # Cost: macOS runners bill at a multiple of Linux, so the PR trigger is
-# paths-filtered down to the formulas, the stamping script and this file.
+# paths-filtered down to the formulas, the stamping script, the install-identity
+# model and this file.
 # Deliberately NOT in the filter: `scripts/macos-user-path-smoke.sh` and its
 # unit test. No PR-triggered job runs that script (the job that drives it needs
 # a published candidate, so it is dispatch/rc-cut only), so a script-only PR
 # would spend two macOS runners to execute nothing that changed;
 # `tests/unit/test_macos_user_path_smoke.py` pins its content on every PR
 # instead, and the script itself is exercised by the dispatch/rc-cut run.
+# Also deliberately NOT in the filter: `src/nyxgpt/ops.py`, which holds the
+# install-identity *detection* the reconcile step drives. It is one of the
+# hottest files in the tree, and filtering on it would put two macOS runners
+# behind every ops change; `install_mode.py` -- the model itself, and the file
+# a change to this behavior has to touch -- is in the filter instead, with
+# `tests/unit/test_install_identity.py` pinning the ops half on every PR.
 on:
   pull_request:
     paths:
       - 'homebrew/**'
       - 'scripts/build_homebrew_artifacts.py'
       - 'src/nyxgpt/release_tarball.py'
+      - 'src/nyxgpt/install_mode.py'
       - '.github/workflows/macos-brew-smoke.yml'
   workflow_dispatch:
     inputs:

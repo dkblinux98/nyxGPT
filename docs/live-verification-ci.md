@@ -175,7 +175,11 @@ and screenshots make verifiable in the review loop:
   A formula, service-lifecycle or install change is therefore not exempt from
   the executed-verification gate (`agents/runbooks/review-runbook.md` §1c) on
   the grounds that this entry exists; what remains uncovered on that runner is
-  the Docker-backed set immediately below. The same boundary applies to the dev install mode's macOS
+  the Docker-backed set immediately below. The same workflow's
+  `stable-over-candidate` job additionally executes what happens when two
+  channels are installed at once: `brew services` really registers both keg's
+  services and the real install-identity reconcile (#3861) runs against them,
+  in both directions. The same boundary applies to the dev install mode's macOS
   LaunchAgents (`com.nyxgpt.api`/`com.nyxgpt.web`, see
   [`--dev`](ops.md#--dev-run-the-current-checkout-without-an-artifact-build)):
   `launchctl bootstrap gui/<uid>` needs a real GUI session, which the hosted

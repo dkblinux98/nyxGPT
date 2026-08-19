@@ -4025,21 +4025,26 @@ def _retire_previous_identity(
 
     One rule, not a table of transition pairs (the acceptance criterion is
     explicit about this, and a pair list is what produced the defect): take
-    the previous identity's services, subtract the ones the target is about
-    to register under its own name, stop the remainder. That single
-    subtraction covers dev -> artifact (launchd labels retire), artifact ->
-    dev (brew services retire), stable -> candidate (`nyxgpt-api` retires
-    while `nyxgpt-api@3.0.0rc` starts), candidate -> stable, and any future
-    artifact form, because none of them is a special case of anything.
+    everything registered that is not the target's own service, and stop it.
+    That single subtraction covers dev -> artifact (launchd labels retire),
+    artifact -> dev (brew services retire), stable -> candidate
+    (`nyxgpt-api` retires while `nyxgpt-api@3.0.0rc` starts), candidate ->
+    stable, and any future artifact form, because none of them is a special
+    case of anything.
 
-    An unknown previous identity is reconciled against what the managers
-    actually report (`_discover_native_services`) rather than skipped.
+    "Everything registered" is the recorded previous identity **union** what
+    the service managers actually report, and the union is load-bearing
+    rather than belt-and-braces. Each half alone misses a real machine: the
+    marker alone misses an install nothing recorded -- the owner's Mac
+    carried *four* identities and one marker -- and the managers alone miss
+    a previous install whose services are currently stopped but still
+    installed, which `brew services` restarts at the next login. The
+    target's own services are excluded from both halves, so an install never
+    retires what it is about to start.
     """
     keep = set(target.service_names)
-    stale = (
-        [(previous.manager, name) for name in previous.service_names]
-        if previous.known
-        else _discover_native_services()
+    stale = dict.fromkeys(
+        [(previous.manager, name) for name in previous.service_names] + _discover_native_services()
     )
     results: list[OpsResult] = []
     for manager, name in stale:

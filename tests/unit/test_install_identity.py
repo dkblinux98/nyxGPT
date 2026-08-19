@@ -363,6 +363,10 @@ def _macos_machine(monkeypatch, tmp_path):
         lambda name: stopped.append(name) or [ops.OpsResult(True, f"stopped {name}")],
     )
     monkeypatch.setattr(ops, "_stop_launchagent", lambda label: [ops.OpsResult(True, label)])
+    # An empty machine by default. The reconcile always reads what the managers
+    # actually have registered (the union in `_retire_previous_identity`), so a
+    # test that does not set this is saying "nothing beyond the marker".
+    monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
     return stopped
 
 
@@ -408,6 +412,40 @@ def test_installing_a_stable_over_a_candidate_retires_the_candidate_services(mon
     ops._reconcile_install_mode(dev=False)
 
     assert stopped == ["nyxgpt-api@3.0.0rc", "nyxgpt-web@3.0.0rc"]
+
+
+def test_a_third_install_nobody_recorded_is_retired_too(monkeypatch, tmp_path):
+    """The marker is not the only thing that can be holding a port.
+
+    The owner's Mac carried four install identities and one marker. Retiring
+    only what the marker names would leave every install nothing recorded
+    exactly where it was -- so the reconcile takes the union of the recorded
+    previous identity and what the managers actually report.
+    """
+    stopped = _macos_machine(monkeypatch, tmp_path)
+    install_mode.write_install_mode(INSTALL_MODE_ARTIFACT, None, identity=_identity())
+    monkeypatch.setattr(ops, "_native_service_version", lambda: "3.0.0rc12")
+    monkeypatch.setattr(
+        ops,
+        "_brew_services_snapshot",
+        lambda: {
+            # Neither the recorded previous nor the target: a keg from an
+            # install that predates the marker entirely.
+            "nyxgpt-api@2.9.0rc": "started",
+            # The target's own service, already registered -- never retired.
+            "nyxgpt-api@3.0.0rc": "started",
+            # Installed but unregistered, and the same brew service in every
+            # mode: neither is competing for anything.
+            "nyxgpt-web": "none",
+            "ollama": "started",
+        },
+    )
+
+    ops._reconcile_install_mode(dev=False)
+
+    # `nyxgpt-web` appears once, from the marker -- the union deduplicates,
+    # and `none` in the snapshot is not a second reason to stop it.
+    assert stopped == ["nyxgpt-api", "nyxgpt-web", "nyxgpt-api@2.9.0rc"]
 
 
 def test_a_version_bump_within_a_channel_keeps_the_services_and_the_venv(monkeypatch, tmp_path):

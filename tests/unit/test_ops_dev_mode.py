@@ -307,6 +307,7 @@ def test_switching_to_dev_stops_brew_services_and_drops_the_stale_venv(
     monkeypatch.setattr(ops.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(ops, "_which", lambda tool: f"/usr/bin/{tool}")
     monkeypatch.setattr(ops, "_native_install_root", lambda c: tmp_path / "opt" / c)
+    monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
     venv = tmp_path / "opt" / "nyxgpt-api" / "venv"
     venv.mkdir(parents=True)
     _record_identity(monkeypatch, install_mode.INSTALL_MODE_ARTIFACT, "brew", "nyxgpt-api")
@@ -330,6 +331,7 @@ def test_switching_back_to_artifact_removes_the_dev_launchagents(monkeypatch, ch
     monkeypatch.setattr(ops, "REPO_ROOT", checkout)
     monkeypatch.setattr(ops.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(ops, "_native_install_root", lambda c: tmp_path / "opt" / c)
+    monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
     _record_identity(monkeypatch, install_mode.INSTALL_MODE_DEV, "launchd", "com.nyxgpt.api")
 
     la_dir = tmp_path / "Library" / "LaunchAgents"
@@ -681,6 +683,7 @@ def _dev_machine(monkeypatch, tmp_path):
     monkeypatch.setattr(ops, "_native_install_root", lambda c: tmp_path / "opt" / c)
     monkeypatch.setattr(ops.Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.setattr(ops, "_stop_brew_service", lambda name: [ops.OpsResult(True, name)])
+    monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
     monkeypatch.setattr(ops, "_emit_results", lambda action, results: True)
     monkeypatch.setattr(ops, "_ops_action_outcome", lambda results: ("success", ""))
     monkeypatch.setattr(ops, "_record_ops_action", lambda *a, **k: None)

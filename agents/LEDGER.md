@@ -768,8 +768,10 @@ rather than mechanism, and nothing can enforce them.
   condition. Three consequences a future session must not undo: (a) the two
   hand-written cleanup halves (`_remove_dev_launchagents` /
   `_stop_artifact_brew_services`) are **deleted**, replaced by one subtraction
-  (`_retire_previous_identity`: previous identity's services minus the
-  target's) — their existence as a *pair* is why there was no third case;
+  (`_retire_previous_identity`: the recorded previous identity's services
+  **union** what the service managers actually report, minus the target's own)
+  — their existence as a *pair* is why there was no third case, and the union
+  is why a fourth one nothing recorded is retired as well;
   (b) an **unknown** previous identity (pre-#3861 marker, malformed, or
   absent) is a possible mismatch reconciled defensively against what the
   service managers actually report, never "the same"; (c) reconcile **stops
