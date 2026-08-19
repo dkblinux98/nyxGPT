@@ -132,10 +132,13 @@ SEVERITY MODEL
   Verification" section in your review citing what you ran and saw — an
   APPROVE on an eligible PR with no such section, or that skipped running the
   harness, is a process violation. Only what `docs/live-verification-ci.md`
-  documents as genuinely not-CI-coverable (the native Apple Silicon
-  brew-services *operate* path — the keg install itself runs on a real
-  macos-15 runner in `macos-brew-smoke.yml` — real Slack delivery, LLM answer
-  quality) still defers to owner acceptance — list which apply. Never
+  documents as genuinely not-CI-coverable (Docker-backed components on the
+  hosted macOS runners, the setup wizard's prompts, what a web panel renders
+  on the brew path, Ollama model pulls, real Slack delivery, LLM answer
+  quality) still defers to owner acceptance — list which apply. The macOS
+  brew-services *operate* path is NOT on that list: `macos-brew-smoke.yml`'s
+  `published-tap` job runs the keg install and the user path after it on a
+  real macos-15 runner (#3860). Never
   REQUEST_CHANGES to demand evidence the harness already produced or that's
   on that not-covered list.
 - EXECUTED VERIFICATION (owner requirement 2026-08-14, #3775, runbook §1c): if

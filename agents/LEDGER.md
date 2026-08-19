@@ -585,7 +585,52 @@ rather than mechanism, and nothing can enforce them.
   an earlier collision here. IDs are never reused.)
   Source: #3824.
 
-- **D-025** · 2026-08-19 · developer session (#3911) — **The review huddle is one
+- **D-025** · 2026-08-18 · developer agent (#3860) — **A green
+  `macos-brew-smoke.yml` run from before this entry is not evidence that a
+  macOS install works.** From the workflow's creation (#3753) until #3860, its
+  two jobs installed a keg and never invoked the product: no `nyxgpt` by name
+  from a shell, no `nyxgpt up`, no HTTP request to the API or the web UI, no
+  uninstall — and `brew test` asserted only that the keg venv existed and
+  `import nyxgpt.app` resolved, all of which is true of a keg carrying no
+  reachable CLI. That is the keg that shipped: #3850, #3851, #3853, #3854,
+  #3857 and #3859 all sit on the certified path and all passed. The Phase 6
+  capstone #3516, whose acceptance criterion *is* the clean-machine scenario,
+  closed as completed on that evidence. This is a correction, not a behavior
+  fact: the current coverage is enforced by
+  `tests/unit/test_macos_user_path_smoke.py` and by the job itself, and needs
+  no ledger copy — what a future session cannot re-derive is that the *older*
+  green runs certify nothing, so do not cite a pre-#3860 run of that workflow
+  as executed evidence, and do not read #3516's closure as proof the scenario
+  was ever run. The scenario rule that followed is
+  `agents/runbooks/review-runbook.md` §1c ("Scenario criteria need scenario
+  evidence") and §10.
+  (Filed as `D-023` under #3860, renumbered to `D-024` when #3829's canary
+  entry merged first, and to `D-025` here when #3824's model-bootstrap entry
+  took `D-024` on `v3.0.0`. IDs are never reused; each merge keeps the number
+  the mainline entry landed with and moves this one on.)
+  Source: #3860; #3516; `scripts/macos-user-path-smoke.sh`.
+
+- **D-026** · 2026-08-19 · huddle `change-approach` on PR #3925 (#3860) — **A
+  CI gate may *record* an open, parked defect; it may not *fail* on one.**
+  `macos-brew-smoke.yml`'s `stable-over-candidate` job covers both
+  `conflicts_with` directions. The direction AC4 names (candidate onto an
+  installed stable) works, so it stays a hard assertion. The reverse direction
+  — stable onto an installed candidate, added beyond AC4 — reproduces **#3853**,
+  which is open and whose fix direction is parked by **Q-002**. Hard-failing
+  there made the check unlandable by any fix cycle: no change to #3860's branch
+  could turn it green, and the only routes to green were softening the
+  assertion or taking the packaging side of a parked owner decision. So the
+  both-installed outcome is emitted as a `::warning::` naming #3853, while the
+  assertions about the state the machine is *left in* (`nyxgpt` on PATH and
+  running) stay hard. **The debt:** the PR that fixes #3853 flips that warning
+  back to `::error::` + `exit 1` and updates
+  `tests/unit/test_macos_user_path_smoke.py::test_the_reverse_direction_records_3853_instead_of_failing_on_it`
+  with it; the note is on #3853 itself. Generalise the rule, not the special
+  case: a gate that hard-fails on a defect the project has decided not to fix
+  yet is not a gate, it is a permanent red that trains readers to ignore it —
+  record it loudly and hold the debt where the fixer will find it.
+  Source: PR #3925 huddle decision 2026-08-19; run 32202943938; run 32204454740.
+- **D-027** · 2026-08-19 · developer session (#3911) — **The review huddle is one
   workflow run, and its venue is a Slack thread, not the PR thread.** The #3687
   protocol chained three comment-triggered workflows, so each leg's essay *was*
   its trigger: three long structured comments on every huddled PR, and two races
@@ -668,6 +713,29 @@ rather than mechanism, and nothing can enforce them.
   candidate, capture what Homebrew actually does. Prior context in #3753,
   #3763, #3770.
   Blocks: #3853's fix direction (packaging-level guard vs `ops.py` reconcile).
+  Answered 2026-08-19 (#3860), by the reproduction it asked for —
+  `macos-brew-smoke.yml`'s `stable-over-candidate` job, run 32202943938 on a
+  clean `macos-15` runner. **`conflicts_with` is directional, and only the rc
+  formula declares it.**
+  - Candidate onto an installed stable: the guard holds. Brew refuses with
+    `Cannot install …@3.0.0rc because conflicting formulae are installed` and
+    leaves `stable installed: 1 / candidate installed: 0`.
+  - Stable onto an installed candidate — **the owner's direction** — nothing
+    checks anything. Brew builds and installs the keg to completion
+    (`/opt/homebrew/Cellar/nyxgpt-api/3.0.0: 6,140 files, 152MB`); only
+    `brew link` then fails on the symlink collision (`Could not symlink
+    bin/nyxgpt … is a symlink belonging to nyxgpt-api@3.0.0rc`). The keg stays
+    installed, `/opt/homebrew/bin/nyxgpt` still points at the *candidate*, and
+    brew prints a "shadowed by other commands" caveat. Final state:
+    `stable installed: 1 / candidate installed: 1` — #3853's machine exactly.
+  So the answer to "why did `conflicts_with` not prevent it" is that in that
+  direction it was never asked. A `conflicts_with "nyxgpt-api@X.Y.Zrc"` on the
+  stable formula is the packaging-level half; `brew link`'s failure is not a
+  guard, because a failed link leaves the keg in place.
+  Also learned there, separate from the answer: a `brew tap-new` tap is
+  untrusted, and resolving `conflicts_with` *loads* the named formula, so brew
+  refuses on trust grounds before it ever evaluates the conflict — #3770's
+  shape, and why the job now trusts the whole tap.
 
 - **Q-003** · 2026-08-18 · owner acceptance (#3857) — What stops the web UI's
   client JS from loading: the two builds racing for port 3000 (#3853), or a
