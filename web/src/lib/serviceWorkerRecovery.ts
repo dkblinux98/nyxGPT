@@ -36,10 +36,14 @@ function isStaleAssetCache(cacheName: string): boolean {
 /**
  * True when a service worker is currently controlling this page.
  *
- * Everything here runs from a client component or a click handler, so
- * `navigator` always exists; only service-worker *support* is in question.
+ * `navigator` is guarded rather than assumed: `ChunkErrorBoundary` calls this
+ * from `getDerivedStateFromError`, which also runs during server rendering,
+ * and Node does not define a global `navigator` before v21. Throwing there
+ * would replace whatever error the boundary was handed with a ReferenceError
+ * -- masking the real fault with a bug in the code meant to report it.
  */
 export function hasControllingServiceWorker(): boolean {
+  if (typeof navigator === 'undefined') return false;
   return 'serviceWorker' in navigator && navigator.serviceWorker.controller !== null;
 }
 

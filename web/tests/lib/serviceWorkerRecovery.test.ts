@@ -83,6 +83,22 @@ describe('hasControllingServiceWorker', () => {
     removeServiceWorker();
     expect(hasControllingServiceWorker()).toBe(false);
   });
+
+  // ChunkErrorBoundary calls this from getDerivedStateFromError, which also
+  // runs during server rendering, and Node has no global `navigator` before
+  // v21 (CI runs Node 20). Throwing there would replace the error the boundary
+  // was handed with a ReferenceError from the reporting code itself.
+  it('is false, not a ReferenceError, where there is no navigator at all', () => {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+    // @ts-expect-error - simulating a server runtime with no navigator global
+    delete globalThis.navigator;
+    try {
+      expect(() => hasControllingServiceWorker()).not.toThrow();
+      expect(hasControllingServiceWorker()).toBe(false);
+    } finally {
+      if (descriptor) Object.defineProperty(globalThis, 'navigator', descriptor);
+    }
+  });
 });
 
 describe('reconcileServiceWorkerToBuild', () => {
