@@ -242,8 +242,8 @@ echo "[review] ✓ Critical path complete" >&2
 
 # ---- OPTIONAL: Sprint autopilot kick (#3480) ----
 # Self-continuing loop: while the active Sprint still has open Backlog work,
-# post READY_FOR_NEXT_ISSUE ourselves instead of waiting for a human to do
-# it. The sprint boundary is the stop condition (owner policy 2026-08-10,
+# send the next-issue dispatch event ourselves instead of waiting for a human
+# to do it. The sprint boundary is the stop condition (owner policy 2026-08-10,
 # #3706) -- once the ACTIVE sprint has no open Backlog issues left, post a
 # loud park note instead of a kick, even if the release still has work
 # queued in later sprints; a human kick is still required to start work

@@ -19,9 +19,17 @@ Each agent bot account needs a classic Personal Access Token with these scopes:
 
 | Secret Name | Bot Account | Used By |
 |------------|-------------|---------|
-| `SCRUMMASTER_AGENT_TOKEN` | `nyxGPT-scrummaster-agent` | scrummaster_groom_sprint.yml, assign_backlog.yml |
-| `DEVELOPER_AGENT_TOKEN` | `nyxGPT-developer-agent` | developer_auto_implement.yml |
-| `REVIEW_AGENT_TOKEN` | `nyxGPT-review-agent` | review_agent_auto_review.yml, huddle_decision_dispatch.yml |
+| `SCRUMMASTER_AGENT_TOKEN` | `nyxGPT-scrummaster-agent` | scrummaster_groom_sprint.yml, assign_backlog.yml, huddle_session.yml (the decision turn and the decision comment) |
+| `DEVELOPER_AGENT_TOKEN` | `nyxGPT-developer-agent` | developer_auto_implement.yml, huddle_session.yml (dev turns) |
+| `REVIEW_AGENT_TOKEN` | `nyxGPT-review-agent` | review_agent_auto_review.yml, huddle_decision_dispatch.yml, huddle_session.yml (job default + review turns) |
+
+**The huddle's decision comment must be authored by the scrummaster.**
+`huddle_decision_dispatch.yml` acts only on a `HUDDLE_DECISION:` comment
+whose author is `vars.SCRUM_AGENT` or `vars.HUMAN_OWNER`, so
+`huddle_session.yml` overrides `GH_TOKEN` to `SCRUMMASTER_AGENT_TOKEN` for
+the decision turn and the step that posts it. Posting it under the job's
+review-agent default is a silent failure: the comment lands, looks correct,
+and starts no fix cycle (the #3733 stall).
 
 ### Other Tokens
 
@@ -61,8 +69,16 @@ Configure these in: **Settings → Secrets and variables → Actions → Variabl
 | `DRAIN_GATE_BYPASS_LABELS` | *(empty)* | Comma-separated labels that mark an issue as agent-process work, exempt from the drain gate (#3730); optional |
 | `AGENT_MODEL_DEV` | `claude-opus-5` | Model for the developer agent's implementation runs (`developer_auto_implement.yml`); optional, defaults to `claude-opus-5` |
 | `AGENT_MODEL_REVIEW` | `claude-fable-5` | Model for the review agent, the `@claude` entry point and the developer's failure-analysis step; optional, defaults to `claude-fable-5` |
-| `AGENT_MODEL_HUDDLE` | `claude-fable-5` | Model for both huddle legs — the developer's position (`developer_huddle_position.yml`) and the scrummaster's mediation (`scrummaster_huddle_mediation.yml`); optional, defaults to `claude-fable-5` (ledger D-014) |
+| `AGENT_MODEL_HUDDLE` | `claude-fable-5` | Model for every turn of a review huddle — the developer and review turns of each round and the scrummaster's decision, all run by `huddle_session.yml` (#3911); optional, defaults to `claude-fable-5` (ledger D-014) |
 | `AGENT_MODEL_CANARY` | `claude-haiku-4-5-20251001` | Model for the CLAUDE.md binding canary (`claude-md-binding-canary.yml`); optional, defaults to `claude-haiku-4-5-20251001` |
+| `HUDDLE_MAX_ROUNDS` | `3` | Round cap for `huddle_session.yml` (#3911); optional, defaults to `3`. **Configurable downward only** — the rounds are three explicit pairs of steps, so any value above 3 behaves as 3 |
+| `SLACK_HUDDLE_CHANNEL` | *(empty)* | Channel id the huddle conversation is threaded in (#3910); optional — unset degrades the huddle to transcript-only, it never fails the run |
+
+### Review huddle Slack identities (#3910)
+
+| Secret | Purpose |
+|---|---|
+| `SLACK_USER_TOKEN_DEV` / `SLACK_USER_TOKEN_REVIEW` / `SLACK_USER_TOKEN_SCRUM` | User tokens with the `chat:write` user scope, one per agent, so each huddle turn posts under its own identity. A bot token would put every turn under one name, which defeats a thread you can read back. All three are **optional**: a missing token degrades that speaker (and a missing channel degrades the whole thread) to the PR transcript alone — `huddle_session.yml` deliberately does not validate them, because refusing to huddle over an unconfigured chat integration is a worse failure than the one it reports. |
 
 ### Switching agent models without a commit
 

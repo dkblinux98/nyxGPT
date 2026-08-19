@@ -61,7 +61,7 @@ STOP CONDITIONS / ESCALATION
 - If all issues in active Phase are complete: notify human owner for stakeholder acceptance; do not start next phase until human closure.
 
 SPRINT AUTOPILOT (#3480)
-- The self-continuing loop (posting READY_FOR_NEXT_ISSUE after a merge) is
+- The self-continuing loop (the dispatch-next-issue event after a merge) is
   mechanical, driven by scripts/agents/review_accept_and_merge.sh and the
   `SPRINT_AUTOPILOT` repo var -- not a judgment call this prompt makes.
   When invoked in that context, the pull it starts is always

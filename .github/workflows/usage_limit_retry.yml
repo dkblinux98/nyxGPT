@@ -66,8 +66,15 @@ jobs:
             # triggers on, and -- unlike DELETE-then-POST on .../assignees,
             # which only removes and re-adds one login -- guarantees the end
             # state is exactly one assignee (owner rule).
+            # The DOCUMENTED clear: an empty JSON array. `-F "assignees[]="`
+            # looks like a clear and is not -- it sends {"assignees":[""]},
+            # an assignee literally named "" -- so the clear silently
+            # no-opped and the set that follows became a same-login replace,
+            # which emits no `assigned` event (#3647) and therefore re-fired
+            # nothing. Failures are no longer suppressed either: a clear that
+            # does not happen is the whole re-fire not happening.
             gh api -X PATCH "repos/$REPO/issues/$ISSUE" \
-              -F "assignees[]=" >/dev/null 2>&1 || true
+              --input - <<<'{"assignees":[]}' >/dev/null
             sleep 3
             gh api -X PATCH "repos/$REPO/issues/$ISSUE" \
               -f "assignees[]=$DEV_AGENT" >/dev/null
