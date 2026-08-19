@@ -87,7 +87,6 @@ CHURN_WORKFLOWS = [
     "scrummaster_huddle_mediation.yml",
     "scrummaster_groom_sprint.yml",
     "claude-md-binding-canary.yml",
-    "scrummaster_groom_sprint.yml",
 ]
 
 # Step names that ARE a Claude invocation. Deliberately stricter than
