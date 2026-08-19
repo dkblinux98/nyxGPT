@@ -789,6 +789,15 @@ rather than mechanism, and nothing can enforce them.
   `tests/unit/test_branch_content.py`, `tests/test_branch_hygiene.sh` and
   `.github/workflows/branch-guard-smoke.yml`, per the retirement of the
   verification log.
+  The same change adds the **one** exception to "PRs are created only via
+  `developer_submit_for_review.sh`" — a draft rescue PR for a branch that
+  reached `origin` without one — and that exception is written into `CLAUDE.md`
+  § PR Rules, not left implicit here. A rescue draft is a waypoint: it carries a
+  marker the developer workflow matches so a reassignment continues on that
+  branch, and it is promoted (closing reference, out of draft) only when a run
+  passes verification. Without that loop the rescue would trade an orphan branch
+  for a stranded draft PR, which is worse — an open PR shields its head branch
+  from every cleanup there is.
   (Filed as `D-030`, allocated by `python3 scripts/agents/lib/ledger_ids.py
   next D --base origin/v3.0.0` — run, not eyeballed. If it collides at merge,
   `review_accept_and_merge.sh` renumbers this entry rather than a human.)

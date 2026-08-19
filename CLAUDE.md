@@ -460,9 +460,20 @@ markers.**
 
 ## PR Rules
 
-- PRs are created only via developer_submit_for_review.sh
-- PR body must include: Closes #ISSUE
-- Issues close only on merge
+- PRs are **submitted for review** only via developer_submit_for_review.sh, and
+  its PR body must include `Closes #ISSUE`.
+- **One exception, and it is not a submission (#3862):**
+  `developer_ensure_pr_exists.sh` runs `if: always()` at the end of every
+  developer run and opens a **draft** PR for a branch that reached `origin`
+  without one — the run died before the submit step, so its work would
+  otherwise sit unreviewed, unmerged and invisible. That body carries
+  `Refs #ISSUE`, deliberately: an unfinished draft must not close its issue if
+  someone merges it. It becomes a submission only when a continuation run
+  passes verification, at which point the body is rewritten to `Closes #ISSUE`
+  and the PR is taken out of draft. No other path may create a PR.
+- Issues close only on merge — and only on a merge whose content is verified
+  onto the release branch (`review_accept_and_merge.sh`, #3862). "The merge
+  command exited 0" is a report, not evidence.
 
 ---
 

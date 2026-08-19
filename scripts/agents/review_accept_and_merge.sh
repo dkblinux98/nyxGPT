@@ -166,6 +166,15 @@ OWNER_ASSIGN_FAILED=0
 #
 # Best-effort by design: a failure here leaves the pre-existing behavior (the
 # unique-ID test blocks the merge), which is worse but not wrong.
+#
+# Note for whoever debugs a merge that stalls right after this: the
+# reallocation pushes a NEW commit to the PR head moments before `gh pr merge`
+# runs. On a head with required status checks that resets them to pending, and
+# GitHub refuses the merge until they re-run on the new SHA -- the merge step
+# then reports "not mergeable" on a PR that was green a second earlier. That is
+# a delay, not a loss (the next review run merges it, and the unique-ID test is
+# still there if nothing does), and it only happens on the small minority of
+# PRs that touch agents/LEDGER.md at all: the function returns early otherwise.
 reallocate_ledger_ids() {
   local head="$1" base="$2" ledger="agents/LEDGER.md" wt=""
   command -v python3 >/dev/null 2>&1 || return 0

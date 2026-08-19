@@ -41,6 +41,24 @@ this is a rescue, not a submission. developer_submit_for_review.sh remains the
 only path that submits work for review (CLAUDE.md, PR Rules) -- when it ran,
 its PR is already there and this script finds it and stops.
 
+The draft is a waypoint, not a resting place, and the machinery has to agree
+with the instructions printed in its body:
+
+  * The body carries `<!-- rescue-pr: issue-N -->`. developer_auto_implement.yml
+    matches that marker among OPEN pull requests when its `Closes #N` lookups
+    find nothing, so reassigning the issue continues ON THIS BRANCH instead of
+    starting a fresh timestamped one and duplicating the rescued work.
+  * When that continuation run passes verification, "Request review for
+    existing PR" rewrites the body's `Refs #N` to `Closes #N` and takes the PR
+    out of draft. developer_submit_for_review.sh adopts an existing open PR on
+    the same head for the same reason.
+  * Closing the draft is the discard signal: the marker is matched on OPEN PRs
+    only, so a closed rescue leaves the issue free to be implemented again.
+
+Without that loop the rescue would trade one accumulation mode for a worse
+one -- an orphan branch at least gets deleted once its content lands, while a
+stranded draft PR shields its head branch from every cleanup there is.
+
 Never fails the caller: a rescue that breaks the job it is rescuing is worse
 than the orphan it was preventing.
 EOF
@@ -88,10 +106,21 @@ git fetch origin "$BRANCH" >/dev/null 2>&1 || true
 # Any PR at all -- open, closed or merged -- means the work was routed. A
 # closed-unmerged PR is an explicit abandonment decision and reopening the
 # question here would fight it.
-pr_count="$(gh api "repos/${REPO}/pulls?head=${REPO_OWNER}:${BRANCH}&state=all&per_page=100" \
-    --paginate 2>/dev/null | jq -s '[.[][]] | length' || echo "unknown")"
-if [[ "$pr_count" == "unknown" ]]; then
+#
+# The fetch is captured separately from the count on purpose. Written as one
+# `gh ... | jq ... || echo unknown` pipeline it is dead code under `set -o
+# pipefail`: jq succeeds on empty stdin and prints `0`, THEN pipefail fails the
+# pipeline and the fallback appends its own line, so a failed `gh` yields
+# `pr_count=$'0\nunknown'` -- which is neither `== unknown` nor `-gt 0`, and the
+# script proceeds exactly as if it had proved there were zero PRs. The one path
+# that promises to fail closed was the one that failed open.
+if ! pr_pages="$(gh api "repos/${REPO}/pulls?head=${REPO_OWNER}:${BRANCH}&state=all&per_page=100" \
+    --paginate 2>/dev/null)"; then
   _warn "Could not list PRs for ${BRANCH}; leaving it alone rather than opening a duplicate."
+  exit 0
+fi
+if ! pr_count="$(jq -s '[.[][]] | length' <<<"$pr_pages" 2>/dev/null)"; then
+  _warn "Could not parse the PR list for ${BRANCH}; leaving it alone rather than opening a duplicate."
   exit 0
 fi
 if [[ "$pr_count" -gt 0 ]]; then
@@ -123,6 +152,18 @@ RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/${REPO}/actions/runs/${GITHUB_
 body_file="$(mktemp)"
 trap 'rm -f "$body_file"' EXIT
 {
+  # Machine-readable, and the only thing that makes the "continue the work"
+  # instruction below true. developer_auto_implement.yml's `check_pr` finds an
+  # existing PR by searching for "Closes #ISSUE" in its body; this body carries
+  # `Refs`, deliberately (see above), so without a marker of its own a
+  # reassignment run would report pr_exists=false, start a fresh timestamped
+  # branch, and duplicate the rescued work -- leaving this draft open forever
+  # with its head branch shielded from every cleanup by that open PR. That is a
+  # new accumulation mode inside the change whose purpose is ending
+  # accumulation, so the marker is load-bearing, not decoration. Matched on
+  # OPEN PRs only: closing this PR is the discard signal, and a closed rescue
+  # must not keep the issue from being implemented again.
+  echo "<!-- rescue-pr: issue-${ISSUE} -->"
   echo "## ⚠️ Rescue PR — this work did not complete its checks"
   echo
   echo "The developer-agent run for #${ISSUE} pushed \`${BRANCH}\` to \`origin\` and then"
@@ -136,10 +177,16 @@ trap 'rm -f "$body_file"' EXIT
   echo
   echo "What to do with it:"
   echo
-  echo "- **Continue the work** — reassign the developer agent to #${ISSUE}; it reuses"
-  echo "  this branch and \`developer_submit_for_review.sh\` marks the PR ready."
+  echo "- **Continue the work** — reassign the developer agent to #${ISSUE}. It finds"
+  echo "  this draft by the marker at the top of this body, checks \`${BRANCH}\` out and"
+  echo "  continues on it; when the run's verification passes it rewrites the reference"
+  echo "  at the bottom of this body into a closing one, marks the PR ready and requests"
+  echo "  review. (The word itself is not written here on purpose: GitHub honours a"
+  echo "  closing keyword anywhere in a body, so spelling it out would close #${ISSUE} if"
+  echo "  anyone merged this unfinished draft.)"
   echo "- **Discard it** — close this PR. Closing it without merging is the explicit"
-  echo "  abandonment signal the branch cleanup acts on, so the branch goes with it."
+  echo "  abandonment signal the branch cleanup acts on, so the branch goes with it,"
+  echo "  and a later reassignment starts fresh rather than reopening this one."
   echo
   echo "## Context"
   echo "- Issue: ${GITHUB_SERVER_URL:-https://github.com}/${REPO}/issues/${ISSUE}"
@@ -175,7 +222,7 @@ if [[ -n "$label" ]]; then
     || _warn "Could not copy label '${label}' to the rescue PR."
 fi
 
-issue_comment "$ISSUE" "🛟 The developer-agent run ended before submitting for review, leaving \`${BRANCH}\` on the remote with no PR. Opened ${pr_url} as a **draft** so the work is not stranded (#3862). It is not ready for review — reassign the developer agent to continue, or close the PR to discard the branch." \
+issue_comment "$ISSUE" "🛟 The developer-agent run ended before submitting for review, leaving \`${BRANCH}\` on the remote with no PR. Opened ${pr_url} as a **draft** so the work is not stranded (#3862). It is not ready for review — reassign the developer agent and it will continue on that same branch, or close the PR to discard the branch." \
   >/dev/null 2>&1 || _warn "Could not comment the rescue PR link on issue #${ISSUE}."
 
 echo "$pr_number"
