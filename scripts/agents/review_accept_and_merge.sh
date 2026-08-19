@@ -49,12 +49,14 @@ echo "[review] Validating PR is mergeable..." >&2
 # state this script's downstream checks were written against.
 pr_data="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/pulls/${PR}" --jq '{
   headRefName: .head.ref,
+  headSha: .head.sha,
   baseRefName: .base.ref,
   mergeable: (if .mergeable == null then "UNKNOWN" elif .mergeable_state == "dirty" then "CONFLICTING" else "MERGEABLE" end),
   mergeStateStatus: (.mergeable_state | ascii_upcase),
   state: (if .merged then "MERGED" elif .state == "closed" then "CLOSED" else "OPEN" end)
 }')"
 pr_head_branch="$(echo "$pr_data" | jq -r '.headRefName')"
+pr_head_sha="$(echo "$pr_data" | jq -r '.headSha')"
 pr_base_branch="$(echo "$pr_data" | jq -r '.baseRefName')"
 pr_mergeable="$(echo "$pr_data" | jq -r '.mergeable')"
 pr_merge_state="$(echo "$pr_data" | jq -r '.mergeStateStatus')"
@@ -168,6 +170,55 @@ if close_pr_project_item "$PR"; then
   echo "[review] ✓ PR #${PR} project item -> ${STATUS_CLOSED}" >&2
 else
   _warn "Failed to set PR #${PR} project Status to '${STATUS_CLOSED}'. PR is merged but its card may still sit in an active lane; the periodic PR-lane sweep will reconcile it."
+fi
+
+# ---- Closure gate: the work must be ON the branch, not merely reported ----
+# #3862: #3789 and #3815 were both closed as `completed` while their fixes sat
+# on branches that never reached the release branch -- 438 lines of test
+# coverage, gone from the product and marked done. Whatever closed them was
+# trusting that a run reported success, not that the work landed.
+#
+# "gh pr merge exited 0" is a report. The evidence is the content: every path
+# the PR head touched has to be readable on the base branch now. A squash or
+# rebase merge changes every SHA, so this is deliberately the same blob-level
+# check the branch guard uses, not an ancestry test.
+echo "[review] Verifying PR #${PR}'s content is actually on ${pr_base_branch}..." >&2
+CONTENT_CHECK="${DIR}/lib/branch_content.py"
+
+verify_merged_content_landed() {
+  command -v python3 >/dev/null 2>&1 || {
+    _warn "python3 unavailable; the merge cannot be verified."
+    return 1
+  }
+  [[ -f "$CONTENT_CHECK" ]] || {
+    _warn "branch_content.py not found at ${CONTENT_CHECK}; the merge cannot be verified."
+    return 1
+  }
+  git fetch origin "$pr_base_branch" >/dev/null 2>&1 || {
+    _warn "Could not fetch ${pr_base_branch}; the merge cannot be verified."
+    return 1
+  }
+  # The head branch is gone by now (--delete-branch), but the SHA stays
+  # reachable from the merge commit. Ask for it by name anyway: a shallow or
+  # single-branch clone can hold the ref without the object, and "the object
+  # is missing" must never read as "the content is missing".
+  git rev-parse --verify --quiet "${pr_head_sha}^{commit}" >/dev/null 2>&1 \
+    || git fetch origin "$pr_head_sha" >/dev/null 2>&1 \
+    || _warn "Could not fetch PR head ${pr_head_sha}; the content check will report what it can see."
+  python3 "$CONTENT_CHECK" landed --base "origin/${pr_base_branch}" --branch "$pr_head_sha"
+}
+
+work_landed=0
+if verify_merged_content_landed >/dev/null; then
+  work_landed=1
+  echo "[review] ✓ every path PR #${PR} touched is present on ${pr_base_branch}" >&2
+fi
+
+if [[ "$work_landed" != "1" ]]; then
+  echo "::error::PR #${PR} reported a successful merge but its content is NOT verifiably on ${pr_base_branch}. Issue #${ISSUE} is deliberately left OPEN — closing it here is exactly how #3789 and #3815 were marked completed with their work stranded (#3862). Re-run the merge, or land the content, then close the issue." >&2
+  issue_comment "$ISSUE" "⚠️ **Not closed.** PR #${PR} reported a merge into \`${pr_base_branch}\`, but the content check could not confirm that the work is on that branch, so this issue was left open on purpose (#3862). See the review run's log for the paths that are missing." \
+    2>&1 || _warn "Failed to post the unverified-merge comment on #${ISSUE}."
+  exit 1
 fi
 
 # Close the issue (GitHub state) - required because merge to non-default branch doesn't auto-close

@@ -1,0 +1,181 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "$DIR/lib/gh_project.sh"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  developer_ensure_pr_exists.sh [--dry-run] <issue_number> [branch]
+
+The backstop that closes #3862's first defect: work reached `origin` and no
+pull request was ever opened, so it was never reviewed, never merged and
+never cleaned up.
+
+WHY THIS EXISTS. developer_auto_implement.yml pushes the work branch twice
+before any PR is possible -- once at creation (developer_create_branch.sh) and
+once from "Snapshot uncommitted implementation work", which is deliberate: a
+long implementation that hits the Claude step's turn limit must not evaporate
+with the runner. But "Submit PR for review" is gated on `success()`, so every
+exit between those two points -- Final Verification failing, a Phase 1-3
+escalation, a usage-limit abort, the job timing out -- leaves a branch on the
+remote with no PR. Three branches sat there for weeks that way, two of them
+holding the only copy of 438 lines of test coverage.
+
+Run this with `if: always()` at the end of the job. For the branch the run was
+working on it does exactly one of three things:
+
+  1. **Nothing reached the remote** (no such branch on origin) -> nothing to do.
+  2. **The branch's content is provably already on the release branch**
+     (scripts/agents/lib/branch_content.py) -> delete it. This is the D-013
+     supersession event: a retry onto a fresh branch, or a rebase-and-reapply,
+     removes the branch it replaced in the same run. Guarded, so a branch
+     carrying anything of its own is never the one that gets deleted.
+  3. **Otherwise** -> open a DRAFT pull request, so the work is visible,
+     reviewable, recoverable, and covered by `delete_branch_on_merge`.
+
+Draft, not ready-for-review, on purpose: the run did NOT finish its checks, so
+this is a rescue, not a submission. developer_submit_for_review.sh remains the
+only path that submits work for review (CLAUDE.md, PR Rules) -- when it ran,
+its PR is already there and this script finds it and stops.
+
+Never fails the caller: a rescue that breaks the job it is rescuing is worse
+than the orphan it was preventing.
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then usage; exit 0; fi
+if [[ "${1:-}" == "--self-test" ]]; then
+  load_config; require_gh_auth; require_cmd git; require_cmd jq
+  echo "OK"; exit 0
+fi
+
+DRY_RUN=0
+if [[ "${1:-}" == "--dry-run" ]]; then DRY_RUN=1; shift; fi
+
+ISSUE="${1:-}"
+if [[ -z "$ISSUE" ]]; then usage >&2; exit 2; fi
+
+load_config
+require_gh_auth
+require_cmd git
+require_cmd jq
+
+REPO="${REPO_OWNER}/${REPO_NAME}"
+BASE_BRANCH="$(get_release_branch)"
+
+BRANCH="${2:-$(git branch --show-current 2>/dev/null || true)}"
+
+if [[ -z "$BRANCH" || "$BRANCH" == "HEAD" ]]; then
+  echo "[ensure-pr] Detached HEAD and no branch argument; nothing to check." >&2
+  exit 0
+fi
+if [[ "$BRANCH" == "$BASE_BRANCH" || "$BRANCH" == "master" || "$BRANCH" == "main" ]]; then
+  echo "[ensure-pr] On '${BRANCH}' (a protected branch); nothing to check." >&2
+  exit 0
+fi
+
+git fetch origin "$BASE_BRANCH" >/dev/null 2>&1 || true
+
+if ! git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+  echo "[ensure-pr] ${BRANCH} never reached origin; nothing to review or clean up." >&2
+  exit 0
+fi
+git fetch origin "$BRANCH" >/dev/null 2>&1 || true
+
+# Any PR at all -- open, closed or merged -- means the work was routed. A
+# closed-unmerged PR is an explicit abandonment decision and reopening the
+# question here would fight it.
+pr_count="$(gh api "repos/${REPO}/pulls?head=${REPO_OWNER}:${BRANCH}&state=all&per_page=100" \
+    --paginate 2>/dev/null | jq -s '[.[][]] | length' || echo "unknown")"
+if [[ "$pr_count" == "unknown" ]]; then
+  _warn "Could not list PRs for ${BRANCH}; leaving it alone rather than opening a duplicate."
+  exit 0
+fi
+if [[ "$pr_count" -gt 0 ]]; then
+  echo "[ensure-pr] ${BRANCH} already has ${pr_count} pull request(s); nothing to do." >&2
+  exit 0
+fi
+
+# No PR. Either the branch carries nothing of its own (delete it) or it
+# carries work that must not be lost (open a draft PR for it).
+if classify_mergeable "$BRANCH" "$ISSUE" "$BASE_BRANCH" | grep -qx -e merged -e superseded; then
+  if [[ "$DRY_RUN" == "1" ]]; then
+    echo "[dry-run] would delete ${BRANCH} — content provably on ${BASE_BRANCH}" >&2
+    exit 0
+  fi
+  echo "[ensure-pr] Deleting ${BRANCH}: every path it touches is already on ${BASE_BRANCH}." >&2
+  delete_remote_branch "$BRANCH"
+  exit 0
+fi
+
+echo "[ensure-pr] ::warning::${BRANCH} is on origin with no pull request and content that is NOT on ${BASE_BRANCH}. Opening a draft PR so it is not stranded." >&2
+
+issue_json="$(gh api "repos/${REPO}/issues/${ISSUE}" --jq '{title, labels}' 2>/dev/null || echo '{}')"
+issue_title="$(echo "$issue_json" | jq -r '.title // ""')"
+[[ -n "$issue_title" ]] || issue_title="issue #${ISSUE}"
+
+PR_TITLE="wip: ${issue_title} (#${ISSUE})"
+RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/${REPO}/actions/runs/${GITHUB_RUN_ID:-unknown}"
+
+body_file="$(mktemp)"
+trap 'rm -f "$body_file"' EXIT
+{
+  echo "## ⚠️ Rescue PR — this work did not complete its checks"
+  echo
+  echo "The developer-agent run for #${ISSUE} pushed \`${BRANCH}\` to \`origin\` and then"
+  echo "ended before reaching \`developer_submit_for_review.sh\`. Without this PR the"
+  echo "branch would sit on the remote unreviewed, unmerged and invisible — the defect"
+  echo "filed as #3862, which stranded 438 lines of test coverage on two branches."
+  echo
+  echo "**This is not a submission for review.** It is deliberately a draft: the run's"
+  echo "verification did not pass, so the work is incomplete by definition. Reviewing"
+  echo "or merging it as-is is not expected."
+  echo
+  echo "What to do with it:"
+  echo
+  echo "- **Continue the work** — reassign the developer agent to #${ISSUE}; it reuses"
+  echo "  this branch and \`developer_submit_for_review.sh\` marks the PR ready."
+  echo "- **Discard it** — close this PR. Closing it without merging is the explicit"
+  echo "  abandonment signal the branch cleanup acts on, so the branch goes with it."
+  echo
+  echo "## Context"
+  echo "- Issue: ${GITHUB_SERVER_URL:-https://github.com}/${REPO}/issues/${ISSUE}"
+  echo "- Head branch: \`${BRANCH}\`"
+  echo "- Base branch: \`${BASE_BRANCH}\`"
+  echo "- Run that produced it: ${RUN_URL}"
+  echo
+  echo "Refs #${ISSUE}"
+} > "$body_file"
+
+if [[ "$DRY_RUN" == "1" ]]; then
+  echo "[dry-run] would run: gh pr create --draft --base ${BASE_BRANCH} --head ${BRANCH} --title '${PR_TITLE}'" >&2
+  echo "[dry-run] --- PR body ---" >&2
+  cat "$body_file" >&2
+  echo "[dry-run] --- end PR body ---" >&2
+  exit 0
+fi
+
+pr_url="$(gh pr create --repo "$REPO" --draft --base "$BASE_BRANCH" --head "$BRANCH" \
+  --title "$PR_TITLE" --body-file "$body_file" 2>&1)" || {
+  _warn "Could not open the rescue draft PR for ${BRANCH}: ${pr_url}"
+  exit 0
+}
+echo "[ensure-pr] Draft PR opened: ${pr_url}" >&2
+
+pr_number="${pr_url##*/}"
+
+# Best-effort hygiene only. The issue's single label keeps the PR consistent
+# with the one-label invariant; nothing here may fail the run.
+label="$(real_label_names "$(echo "$issue_json" | jq -c '.labels // []')" | head -1)"
+if [[ -n "$label" ]]; then
+  gh pr edit "$pr_number" --repo "$REPO" --add-label "$label" >/dev/null 2>&1 \
+    || _warn "Could not copy label '${label}' to the rescue PR."
+fi
+
+issue_comment "$ISSUE" "🛟 The developer-agent run ended before submitting for review, leaving \`${BRANCH}\` on the remote with no PR. Opened ${pr_url} as a **draft** so the work is not stranded (#3862). It is not ready for review — reassign the developer agent to continue, or close the PR to discard the branch." \
+  >/dev/null 2>&1 || _warn "Could not comment the rescue PR link on issue #${ISSUE}."
+
+echo "$pr_number"
