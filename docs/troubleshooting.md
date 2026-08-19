@@ -204,6 +204,48 @@ On a cloud instance this is handled during provisioning -- see
 
 ---
 
+### `brew install` refuses: "this interpreter cannot import part of its own standard library"
+
+**Symptoms:**
+- `brew install nyxgpt-api…` stops almost immediately with
+  `nyxgpt-api…: refusing to build against …/python3.12`, followed by a report
+  naming `import xml.parsers.expat`, a `dlopen(...)` error, and the machine's
+  macOS and SDK versions.
+
+**Cause:**
+
+Homebrew tags bottles by macOS **major** version, so a machine running an
+older minor release can be served a `python@3.12` bottle built against a
+newer one. That bottle's `pyexpat.cpython-312-darwin.so` resolves the system
+`/usr/lib/libexpat.1.dylib`, which does not export the symbol the newer expat
+gave it, and every import that reaches XML fails on that interpreter.
+
+nyxGPT cannot repair a Homebrew bottle, so it refuses to build on one. This
+message is the fix for a defect, not a new failure: the same broken
+interpreter used to surface minutes later as
+`ImportError: No module named 'pip._internal.operations.install.wheel'` — a
+module that was never missing.
+
+**Solutions:**
+
+1. **If the report's macOS version is behind its SDK version** (e.g. macOS
+   26.2, SDK 26.5), that is this fault. Update macOS, then:
+   ```bash
+   brew update && brew upgrade python@3.12
+   ```
+
+2. **If the two already match**, the keg is damaged rather than skewed:
+   ```bash
+   brew reinstall python@3.12
+   ```
+
+`brew reinstall python@3.12` re-fetches the same bottle, and
+`brew reinstall --build-from-source python@3.12` cannot build pyexpat against
+a newer SDK either — neither is a way around the version skew. See
+[homebrew.md](homebrew.md#when-the-install-refuses-to-build).
+
+---
+
 ### Grafana Dashboards Are Empty on Linux
 
 **Symptoms:**

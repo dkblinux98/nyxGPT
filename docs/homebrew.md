@@ -38,8 +38,15 @@ version and platform attached and links you to it. See [ui.md](ui.md#support-men
 
 ## Prerequisites
 
-- macOS
+- macOS, up to date within its major version — see below
 - Homebrew installed
+
+**Keep macOS current within its major release.** Homebrew tags bottles by
+macOS *major* version, so a machine running an older minor release can be
+served a `python@3.12` bottle built against a newer one, and that bottle's
+`pyexpat` cannot resolve the system `libexpat`. The formulas detect it and
+refuse to build rather than failing obscurely later — see
+[When the install refuses to build](#when-the-install-refuses-to-build).
 
 You do **not** need a Python environment of your own, and you must not try to
 `pip install nyxgpt` on macOS: Homebrew's Python is
@@ -521,13 +528,81 @@ raised from `_prevent_import_hook`. pip 26.2 pre-imports its lazily-imported
 modules just before it writes anything, so a distribution it is about to
 install cannot shadow them; when that pre-import fails it records the name
 and its audit hook turns the real import, moments later, into the error
-above. The failure is reported by pip's guard, but what the guard is
-reporting is that *that pip installation* cannot import its own wheel
-installer — which no ordering, option or `--upgrade`-free spelling of an
-install through it can route around. So the keg's pip is no longer allowed
-to install anything; `download` is the only subcommand the recipe uses, and
-it never reaches that module. The venv is populated by a pip freshly
-unpacked from a wheel, which is complete by construction.
+above.
+
+**That module was never missing.** This page used to say the fault was a pip
+installation that could not import its own wheel installer; that reading was
+wrong, and it is what sent three release candidates after pip. The
+pre-import chain runs `pip._internal.operations.install.wheel` →
+`pip._vendor.distlib.scripts` → `distlib.compat` → `import xmlrpc.client` →
+`xml.parsers.expat`, and it was **pyexpat** that would not load. pip
+discarded that `ImportError` and its audit hook re-raised the generic name.
+See [When the install refuses to build](#when-the-install-refuses-to-build)
+for the cause and what to do about it.
+
+The wheel bootstrap stays regardless, because it is the right shape: the
+keg's pip is no longer allowed to install anything; `download` is the only
+subcommand the recipe uses. The venv is populated by a pip freshly unpacked
+from a wheel, which is complete by construction.
+
+### When the install refuses to build
+
+Before it does anything, the `nyxgpt-api` install block runs a **preflight**
+against the interpreter it is about to build on — the resolved
+`python@3.12`, checked from inside `install`, which Homebrew calls only once
+dependencies are installed, so it is the interpreter the build will really
+use. It imports the compiled parts of the standard library the build and the
+product depend on (`xml.parsers.expat`, `plistlib`, `ssl`, `zlib`, `lzma`,
+`bz2`, `ctypes`, `sqlite3`). If any of them will not load, the install stops
+there with the keg path, the loader's own error quoted verbatim, the
+measured macOS and SDK versions, and what to do:
+
+```
+nyxgpt-api@3.0.0rc: refusing to build against /opt/homebrew/opt/python@3.12/bin/python3.12.
+
+nyxgpt-preflight: this interpreter cannot import part of its own
+standard library, so nyxGPT will not build a venv on it.
+
+  interpreter: /opt/homebrew/opt/python@3.12/bin/python3.12
+  keg:         /opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/…/3.12
+  macOS:       26.2
+  SDK:         26.5
+  mac_ver():   ('', ('', '', ''), '')
+  …
+```
+
+**Why an interpreter breaks this way.** Homebrew tags bottles by macOS
+*major* version, so a `python@3.12` bottle built against a newer minor
+release is served to a machine running an older one. Its
+`pyexpat.cpython-312-darwin.so` then resolves the system
+`/usr/lib/libexpat.1.dylib`, which does not export the newer expat's
+`_XML_SetAllocTrackerActivationThreshold`, and every import that reaches XML
+fails. Nothing nyxGPT does imports pyexpat directly, which is why the fault
+surfaced twice as something else: `plistlib` needs it, so
+`platform.mac_ver()` answered empty, and pip's vendored distlib needs it, so
+pip reported a missing module that was present all along.
+
+**What to do.** If the macOS version in the report is behind the SDK version,
+that is this fault: update macOS, then `brew update && brew upgrade
+python@3.12`. If the two already match, the keg is damaged rather than
+skewed and `brew reinstall python@3.12` is the repair. On the machine that
+reported this, `brew reinstall python@3.12` re-fetched the same bottle and
+`brew reinstall --build-from-source python@3.12` could not build pyexpat
+against the newer SDK either — updating macOS is what fixed it.
+
+nyxGPT cannot repair a Homebrew bottle, and does not try. What it does is
+refuse to build on one and name it, instead of failing several minutes later
+inside pip with a message about something unrelated.
+
+The check is Python nested in a Ruby heredoc, like the shim below, so
+`build_homebrew_artifacts.py` compiles it while stamping (and refuses to
+publish a formula that starts the brewed interpreter without one), the unit
+suite runs the extracted source against a deliberately broken interpreter,
+and [`macos-brew-smoke.yml`](../.github/workflows/macos-brew-smoke.yml)
+injects an unloadable `pyexpat` into a real `macos-15` runner and proves both
+halves: with the preflight stripped out the install walks straight past the
+fault the way it used to, and with it in place `brew install` refuses before
+the venv exists.
 
 ### Why the build environment gets a `sitecustomize.py`
 
@@ -554,6 +629,17 @@ falls back to a floor of `11.0` if that fails too; a Mac whose `mac_ver()`
 already works is left completely alone, so the reported version never becomes
 a lie that changes which wheels pip picks. The file lives in `buildpath` and
 is gone once the keg is built — nothing ships it.
+
+**What it deliberately does not repair.** An empty `mac_ver()` is a known
+*symptom* of a broken interpreter: `platform._mac_ver_xml()` reads
+SystemVersion.plist through `plistlib`, which imports pyexpat. Repairing the
+value in that case makes pip start on a keg that cannot work, and carries the
+install several minutes further before it dies of something else — which is
+exactly what happened. So the shim first asks whether `plistlib` imports at
+all; when it does not, it says so, names the cause, and leaves `mac_ver()`
+alone. The [preflight](#when-the-install-refuses-to-build) has already
+refused that build, so what is left for the shim is the case it was written
+for: an interpreter that is fine and an OS lookup that is not.
 
 The shim is Python nested inside a Ruby heredoc, which no linter or import in
 this repo would otherwise look at, so `build_homebrew_artifacts.py` extracts
