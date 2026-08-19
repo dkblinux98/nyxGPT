@@ -88,19 +88,43 @@ jobs:
           fi
           echo "OK: the add-to-project job delegates to the tested script."
 
-      - name: "Guard: no unconditional project-field write in the hygiene path"
+      - name: "Guard: no unconditional project-field write in the FILL path"
         shell: bash
         run: |
           set -euo pipefail
-          # Every field write in the hygiene script must go through the
-          # re-read guard. A bare set_project_field_value / set_issue_status
-          # there is the pre-#3816 shape that clobbered #3814.
-          if grep -nE '^[^#]*\b(set_project_field_value|set_issue_status)\b' \
-             scripts/agents/ensure_issue_hygiene.sh; then
-            echo "::error::ensure_issue_hygiene.sh writes a field without the re-read guard (#3816)."
+          # Every field write in the script's FILL path must go through the
+          # re-read guard. A bare setter there is the pre-#3816 shape that
+          # clobbered #3814.
+          #
+          # Scoped to the fill path on purpose (#3871). The closure rule is the
+          # deliberate exception: a closure that was not a completion must
+          # overwrite Phase and clear Sprint whatever they held, so
+          # apply_closure_rule writes unguarded by design. Stating the
+          # invariant over the whole file would make this guard assert
+          # something the script no longer holds while still passing green --
+          # the "invariant by proxy" fault fixed in test_no_author_based_exemption.
+          # So the closure function's body is sliced out, and the setters it
+          # legitimately uses are banned everywhere else.
+          script=scripts/agents/ensure_issue_hygiene.sh
+          if ! grep -q '^apply_closure_rule() {$' "$script"; then
+            echo "::error::apply_closure_rule() not found in $script — this guard's slice is stale (#3871)."
             exit 1
           fi
-          echo "OK: all field writes go through fill_project_field_if_empty."
+          sed '/^apply_closure_rule() {$/,/^}$/d' "$script" > /tmp/hygiene-fill-path.sh
+          # If the slice ever swallowed the fill path itself the grep below
+          # would pass over nothing, so prove the fill path survived it.
+          if ! grep -q 'fill_project_field_if_empty' /tmp/hygiene-fill-path.sh; then
+            echo "::error::the closure-function slice removed the fill path — this guard would be vacuous (#3871)."
+            exit 1
+          fi
+          if grep -nE '^[^#]*\b(set_project_field_value|set_issue_status|set_field_with_retry|clear_project_field_value)\b' \
+             /tmp/hygiene-fill-path.sh; then
+            echo "::error::the fill path in $script writes a field without the re-read guard (#3816)."
+            echo "::error::(line numbers above are into the closure-sliced copy, not the file.)"
+            exit 1
+          fi
+          echo "OK: every field write in the fill path goes through fill_project_field_if_empty;"
+          echo "OK: the closure rule's deliberate unguarded writes (#3871) are excluded by name, not by accident."
 
       - name: "Both directions: the race clobbers without the guard, survives with it"
         shell: bash

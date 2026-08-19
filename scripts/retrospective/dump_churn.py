@@ -85,7 +85,6 @@ CHURN_WORKFLOWS = [
     "claude-code-review.yml",
     "developer_huddle_position.yml",
     "scrummaster_huddle_mediation.yml",
-    "scrummaster_groom_sprint.yml",
     "claude-md-binding-canary.yml",
 ]
 

@@ -107,7 +107,7 @@ fails if it drifts. Do not hand-edit.
 | `developer_submit_for_review.sh` | "<SingleLabel>: <Issue Title> (#<N>)" |
 | `dispatch_conflict_resolution.sh` | route a conflicted PR (#3801) |
 | `drain_gate.sh` | acceptance drain gate watcher (#3730) |
-| `ensure_issue_hygiene.sh` | fill-if-missing project hygiene for one issue |
+| `ensure_issue_hygiene.sh` | fill-if-missing project hygiene for one issue, and the non-completed closure rule (--closure) |
 | `groom_sprint.sh` | Grooming: write the sprint plan doc the developers pull from (#3908) |
 | `manually_trigger_pr_review.sh` | Manually triggers a code review for a PR. This is useful for: |
 | `pr_close_project_status.sh` | stamp a merged/closed PR's project item to the terminal PR lane (STATUS_CLOSED) |
