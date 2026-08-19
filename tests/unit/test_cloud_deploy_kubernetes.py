@@ -397,6 +397,50 @@ def test_render_k3s_bootstrap_is_the_text_the_deploy_sends():
     assert "__K3S_SERVER_FLAGS__" not in cloud_deploy.render_k3s_bootstrap()
 
 
+# --- The CLI surface -----------------------------------------------------
+
+
+def _dispatched(monkeypatch, argv: list[str]) -> argparse.Namespace:
+    """Run `argv` through the real parser AND the real dispatcher.
+
+    Both halves matter and both fail silently on their own: a `store_true`
+    would parse and then break the carry-forward, and a `cloud_cmd` the
+    dispatcher does not list parses fine and falls through to an unrelated
+    branch at runtime.
+    """
+    from nyxgpt import cli as cli_mod
+
+    seen: dict[str, argparse.Namespace] = {}
+
+    def capture(args):
+        seen["args"] = args
+        return 0
+
+    monkeypatch.setattr(cli_mod.cloud_deploy_mod, "deploy_command", capture)
+    assert cli_mod.cli(argv) == 0
+    return seen["args"]
+
+
+@pytest.mark.parametrize(
+    ("flags", "expected"),
+    [([], None), (["--kubernetes"], True), (["--no-kubernetes"], False)],
+)
+def test_the_flag_is_tri_state_through_the_real_parser(monkeypatch, flags, expected):
+    """`resolve_plan` distinguishes three cases and argparse has to preserve
+    all three. A `store_true` here would collapse "not asked" into "asked for
+    off" -- which reads fine and quietly makes the carry-forward impossible to
+    turn off."""
+    args = _dispatched(monkeypatch, ["cloud", "deploy", *flags])
+    assert args.kubernetes is expected
+
+
+def test_cloud_canary_reaches_the_cloud_deploy_module(monkeypatch):
+    args = _dispatched(monkeypatch, ["cloud", "canary", "promote", "--step", "20", "--force"])
+    assert args.cloud_cmd == "canary"
+    assert args.canary_cmd == "promote"
+    assert cloud_deploy.canary_argv(args) == ["canary", "promote", "--step", "20", "--force"]
+
+
 # --- `nyxgpt cloud canary` -----------------------------------------------
 
 
@@ -549,6 +593,33 @@ def test_the_substrate_is_observable_in_the_status_payload(_isolated_cloud_home)
     assert status["substrate"] == "kubernetes"
     assert status["commands"]["deploy_kubernetes"] == "nyxgpt cloud deploy --kubernetes"
     assert status["commands"]["canary"] == "nyxgpt cloud canary status"
+
+
+@pytest.mark.parametrize(
+    ("substrate", "expected"),
+    [
+        ("kubernetes", "k3s"),
+        ("native", "--kubernetes"),
+        ("", "unknown"),
+    ],
+)
+def test_cloud_status_prints_which_substrate_is_running(
+    _isolated_cloud_home, capsys, substrate, expected
+):
+    """The status summary is where an operator looks after the deploy's
+    scrollback is gone (#3813), so a substrate that is only in the JSON is a
+    substrate they will not find. The native line names the flag, because
+    "how do I get canary here" is the question this answers."""
+    record = {"version": "3.0.0", "host": "198.51.100.10"}
+    if substrate:
+        record["substrate"] = substrate
+    (_isolated_cloud_home / "deploy.json").write_text(json.dumps(record), encoding="utf-8")
+
+    cloud_deploy._print_status_summary(cloud_deploy.deploy_status())
+
+    out = capsys.readouterr().out
+    assert "Substrate" in out
+    assert expected in out
 
 
 def test_an_unknown_substrate_is_reported_as_unknown_not_as_native(_isolated_cloud_home):
