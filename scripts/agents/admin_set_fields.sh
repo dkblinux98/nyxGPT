@@ -5,13 +5,18 @@
 #
 # Companion to bulk_set_status.sh, which covers only the Status field and only
 # resolves issues. This tool exists because board cleanup (e.g. the dead-PR
-# recipe: assign owner, milestone "Phase X", clear Sprint, Status Closed) needs
+# recipe: assign owner, set the `Phase X: Rejected` milestone, strip fields) needs
 # writes that no session-side API surface can perform on PRs (owner decision,
-# 2026-08-09).
+# 2026-08-09). For *issues*, the closure rule is automated -- see
+# `ensure_issue_hygiene.sh --closure`, which sets the `Phase X: Rejected`
+# milestone, makes the owner the sole assignee and clears every project field;
+# this tool remains the manual path for PRs and for one-off board edits.
 #
 # Env:
 #   ITEMS         Comma/space-separated issue/PR numbers (required).
-#   ASSIGNEE      Login to add as assignee (optional).
+#   ASSIGNEE      Login to set as the sole assignee (optional). One assignee
+#                 per item is the owner rule (2026-08-19), so this replaces
+#                 the assignee list rather than adding to it.
 #   MILESTONE     Milestone title to set, resolved to its number (optional).
 #   CLEAR_SPRINT  "true" to clear the Sprint iteration field (default false).
 #   SPRINT        Iteration title to set ("ACTIVE" = current iteration; optional;
@@ -87,7 +92,7 @@ for n in $normalized; do
 done
 
 echo "[admin-fields] items: ${normalized} (dry_run=${DRY_RUN})" >&2
-[[ -n "$ASSIGNEE" ]] && echo "[admin-fields]   assignee += ${ASSIGNEE}" >&2
+[[ -n "$ASSIGNEE" ]] && echo "[admin-fields]   assignee = ${ASSIGNEE} (replaces the list)" >&2
 [[ -n "$MILESTONE" ]] && echo "[admin-fields]   milestone -> '${MILESTONE}' (#${milestone_number})" >&2
 [[ "$CLEAR_SPRINT" == "true" ]] && echo "[admin-fields]   ${SPRINT_FIELD} -> (cleared)" >&2
 [[ -n "$SPRINT" ]] && echo "[admin-fields]   ${SPRINT_FIELD} -> '${SPRINT}'" >&2

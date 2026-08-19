@@ -71,9 +71,13 @@ jobs:
         run: bash scripts/agents/ensure_issue_hygiene.sh "${{ github.event.issue.number }}"
 
   closure-hygiene:
-    # Owner rule (2026-08-18, #3871): an issue closed for any reason other
-    # than completion ends up with Phase = `Phase X`, assigned to the owner,
-    # and Sprint cleared. It was being done by hand -- a remote Claude session
+    # Owner rule (2026-08-18, #3871; refined 2026-08-19): an issue closed for
+    # any reason other than completion ends up carrying the `Phase X:
+    # Rejected` milestone, assigned to the owner and only the owner, with
+    # every project field stripped -- Status, Priority, Effort, Module, Phase
+    # and Sprint. The milestone is the only marker it keeps: the purpose of
+    # Phase X is to take dead issues out of the picture, and a field left
+    # behind keeps them in somebody's lane, sprint or statistic. It was being done by hand -- a remote Claude session
     # cannot do it itself, because Projects v2 is GraphQL-only and the session
     # proxy blocks GraphQL, which is why #3870 needed the owner to finish it.
     #

@@ -32,7 +32,11 @@ set -euo pipefail
 #
 # THE OTHER RULE (owner rule, 2026-08-18, #3871), under --closure:
 #   An issue closed with any state_reason other than `completed` must end up
-#   with Phase = `Phase X`, assigned to the owner, and Sprint cleared.
+#   carrying the `Phase X: Rejected` milestone, assigned to the owner, and
+#   with every project field cleared. Phase X is how a dead issue leaves the
+#   picture (owner rule, 2026-08-19), so the milestone is the only marker it
+#   keeps -- a rejected issue that holds a Status still sits in a lane, and
+#   one that holds a Sprint still counts against that sprint's population.
 #
 # That one is deliberately NOT fill-if-missing. A closure that was not a
 # completion is a decision about the issue's disposition, and the fields have
@@ -81,9 +85,13 @@ require_gh_auth
 # Claude session's proxy blocks GraphQL, so the session that closed the issue
 # structurally could not finish it.
 apply_closure_rule() {
-  local state reason item_id current_phase current_sprint assignees rc
+  local state reason item_id assignees rc
   local issue_state_line
-  local phase_option="Phase X"
+  # The milestone is the marker (owner rule, 2026-08-19). It is a GitHub
+  # milestone, not a project field -- see `Phase X: Rejected` on the board,
+  # and `EXCLUDED_MILESTONES` in scripts/retrospective/build_dashboard.py,
+  # which is what makes rejected work drop out of the statistics.
+  local phase_milestone="${PHASE_X_MILESTONE:-Phase X: Rejected}"
 
   # Read into a variable first, then split: a `read < <(gh api …)` process
   # substitution reports the *read's* status, so a failing `gh api` dies under
@@ -115,50 +123,49 @@ apply_closure_rule() {
 
   echo "Issue #$ISSUE closed as '${reason}' -- applying the closure rule (#3871)."
 
-  item_id="$(find_issue_project_item "$ISSUE")"
-  if [[ -z "$item_id" ]]; then
-    echo "Issue #$ISSUE is not on the ${PROJECT_OWNER}#${PROJECT_NUMBER} board -- no fields to set."
-    return 0
-  fi
-
-  # Never create a field option (owner rule): if `Phase X` is missing from the
-  # board, that is a project-configuration change only the owner may make, and
-  # a silent skip would leave the issue looking handled.
-  if [[ -z "$(single_select_option_id "Phase" "$phase_option")" ]]; then
-    echo "::error::Project field 'Phase' has no option '${phase_option}' -- cannot apply the closure rule to #$ISSUE."
-    echo "Add the option to the board by hand (agents never create field options), then re-run."
-    return 1
-  fi
-
-  rc=0
-  current_phase="$(project_field_value "$item_id" "Phase")" || rc=$?
-  [[ "$rc" -eq 0 ]] || { echo "::error::Failed reading Phase on issue #$ISSUE"; return 1; }
-  if [[ "$current_phase" == "$phase_option" ]]; then
-    echo "✓ Phase: already '${phase_option}'"
+  # The milestone is set whether or not the issue is on the board: it is the
+  # marker, and an off-board issue still has to carry it.
+  local current_milestone
+  current_milestone="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${ISSUE}" \
+    --jq '.milestone.title // ""')" || current_milestone=""
+  if [[ "$current_milestone" == "$phase_milestone" ]]; then
+    echo "✓ Milestone: already '${phase_milestone}'"
   else
-    set_field_with_retry "$item_id" "Phase" "$phase_option" \
-      || { echo "::error::Failed setting Phase on issue #$ISSUE"; return 1; }
-    echo "✓ Phase: ${current_phase:-(unset)} -> ${phase_option}"
+    # Never create a milestone (owner rule: agents do not create project
+    # metadata). A missing one fails loudly rather than leaving the issue
+    # looking handled.
+    #
+    # Resolve the milestone NUMBER, and write it with REST. `gh issue edit
+    # --milestone <title>` resolves the title against *open* milestones only,
+    # and `Phase X: Rejected` is deliberately closed -- it is a graveyard, not
+    # a plan -- so the title write fails with "not found" on the live repo.
+    # The number never goes stale that way, and REST is the project's default
+    # for issue writes (AGENTS.md).
+    local milestones_json phase_milestone_number
+    if ! milestones_json="$(gh api --paginate \
+         "repos/${REPO_OWNER}/${REPO_NAME}/milestones?state=all&per_page=100" 2>&1)"; then
+      echo "::error::Failed listing milestones for issue #$ISSUE: $milestones_json"
+      return 1
+    fi
+    # `--paginate` emits one JSON array per page, so an aggregate like
+    # `first` would run per page. Slurp first (AGENTS.md's documented form).
+    phase_milestone_number="$(printf '%s' "$milestones_json" \
+      | jq -rs --arg t "$phase_milestone" '[.[][] | select(.title == $t) | .number] | first // empty')"
+    if [[ -z "$phase_milestone_number" ]]; then
+      echo "::error::Milestone '${phase_milestone}' does not exist -- cannot apply the closure rule to #$ISSUE."
+      echo "Create it by hand (agents never create milestones), then re-run."
+      return 1
+    fi
+    gh api -X PATCH "repos/${REPO_OWNER}/${REPO_NAME}/issues/${ISSUE}" \
+      -F "milestone=${phase_milestone_number}" >/dev/null \
+      || { echo "::error::Failed setting the milestone on issue #$ISSUE"; return 1; }
+    echo "✓ Milestone: ${current_milestone:-(none)} -> ${phase_milestone}"
   fi
 
-  rc=0
-  current_sprint="$(project_field_value "$item_id" "Sprint")" || rc=$?
-  [[ "$rc" -eq 0 ]] || { echo "::error::Failed reading Sprint on issue #$ISSUE"; return 1; }
-  if [[ -z "$current_sprint" ]]; then
-    echo "✓ Sprint: already clear"
-  else
-    clear_project_field_value "$item_id" "Sprint" \
-      || { echo "::error::Failed clearing Sprint on issue #$ISSUE"; return 1; }
-    echo "✓ Sprint: cleared (was '${current_sprint}')"
-  fi
-
-  # The issue lands in the owner's lap. An issue carries exactly ONE assignee
-  # (owner rule), so this SETS the owner rather than adding them alongside
-  # whichever agent was carrying it: an agent assignee on a closed,
-  # non-completed issue is a leftover, and leaving it there is what makes
-  # `_open_issues_assigned_to` miscount later. assign_issue_verified PATCHes
-  # the whole list and reads it back, so "exactly the owner" is checked, not
-  # assumed (#3332).
+  # One assignee, the owner (owner rule): assign_issue_verified PATCHes the
+  # whole list and reads it back, so "exactly the owner" is checked rather
+  # than assumed. An agent assignee left on a dead issue is what makes
+  # `_open_issues_assigned_to` miscount later.
   assignees="$(_issue_assignee_logins "$ISSUE" 2>/dev/null || echo "")"
   if [[ "$assignees" == "$HUMAN_OWNER" ]]; then
     echo "✓ Assignee: ${HUMAN_OWNER}, and only ${HUMAN_OWNER}, already assigned"
@@ -168,7 +175,51 @@ apply_closure_rule() {
     echo "✓ Assignee: ${assignees:-(none)} -> ${HUMAN_OWNER}"
   fi
 
-  echo "Closure rule applied to issue #$ISSUE (Status untouched by design)."
+  item_id="$(find_issue_project_item "$ISSUE")"
+  if [[ -z "$item_id" ]]; then
+    echo "Issue #$ISSUE is not on the ${PROJECT_OWNER}#${PROJECT_NUMBER} board -- nothing to strip."
+    echo "Closure rule applied to issue #$ISSUE."
+    return 0
+  fi
+
+  # Strip EVERY project field. The whole purpose of Phase X is to take dead
+  # issues out of the picture (owner rule, 2026-08-19): a rejected issue that
+  # keeps a Status sits in a lane, one that keeps a Sprint counts against a
+  # sprint's population, and one that keeps Priority/Effort/Module skews the
+  # statistics computed over those fields. The milestone is the only marker
+  # it needs, and the only thing this leaves behind.
+  #
+  # Status IS cleared here, which is the one place this rule writes it. The
+  # D-001/D-008 rule that lane placement is owner signal governs *live* work;
+  # an issue closed as not-planned or duplicate has no lane to be signalled
+  # about, and leaving it in one is exactly the debris this removes.
+  local field current
+  for field in "$STATUS_FIELD" Priority Effort Module Phase Sprint; do
+    [[ -n "$field" ]] || continue
+    rc=0
+    current="$(project_field_value "$item_id" "$field" 2>/dev/null)" || rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+      # A field this board does not define reads back empty with rc 0
+      # (#3811), so rc != 0 means the API call itself failed -- a rate limit
+      # or a transport error, not a board difference. Swallowing it would
+      # leave a rejected issue sitting in its lane under a green run, with
+      # nothing left to re-fire the strip.
+      echo "::error::Failed reading ${field} on issue #$ISSUE (rc=${rc})"
+      return 1
+    fi
+    if [[ -z "$current" ]]; then
+      echo "✓ ${field}: already clear"
+      continue
+    fi
+    if clear_project_field_value "$item_id" "$field" 2>/dev/null; then
+      echo "✓ ${field}: cleared (was '${current}')"
+    else
+      echo "::error::Failed clearing ${field} on issue #$ISSUE"
+      return 1
+    fi
+  done
+
+  echo "Closure rule applied to issue #$ISSUE."
   return 0
 }
 

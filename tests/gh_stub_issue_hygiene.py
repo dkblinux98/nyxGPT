@@ -24,7 +24,7 @@ Fixtures the suite writes into ``$GH_STUB_DIR``:
                        "labels": [str], "milestone": str|null}
   ``board.json``      {"item_id": str|null, "fields": {name: value}}
                       item_id null == the issue is not on the board yet
-  ``milestones.json`` [{"title": str, "state": str, "due_on": str}]
+  ``milestones.json`` [{"number": int, "title": str, "state": str, "due_on": str}]
   ``iterations.json`` [{"id": str, "title": str, "startDate": "YYYY-MM-DD"}]
   ``race.json``       {"after_reads": int,        # project field-value reads
                        "after_issue_reads": int,  # REST issue reads
@@ -68,9 +68,10 @@ SELECT_OPTIONS = {
     ],
     "Priority": ["P0 - Critical", "P1 - High", "P2 - Medium", "P3 - Low"],
     "Effort": ["XS", "S", "M", "L", "XL"],
-    # `Phase X` is the closure rule's target (#3871); the stub carries a
-    # couple of real phases alongside it so "the option is missing" can be
-    # tested by removing it, not by the field being absent entirely.
+    # Phase is one of the fields the closure rule CLEARS (#3871, owner rule
+    # 2026-08-19) -- the marker moved to the `Phase X: Rejected` milestone,
+    # so no Phase *option* is load-bearing any more. The options are here
+    # only so a closed issue has a Phase value to be stripped of.
     "Phase": ["Phase 6", "Phase 7", "Phase X"],
     "Module": [
         "web-ui",
@@ -216,14 +217,8 @@ def _maybe_race(state: dict) -> None:
 # GraphQL
 # --------------------------------------------------------------------------
 def _fields_payload() -> dict:
-    # GH_STUB_NO_PHASE_X models a board whose Phase field exists but has no
-    # `Phase X` option -- the case the closure rule must fail loudly on
-    # rather than create the option (#3871).
-
     nodes = []
     for name, options in SELECT_OPTIONS.items():
-        if name == "Phase" and os.environ.get("GH_STUB_NO_PHASE_X"):
-            options = [o for o in options if o != "Phase X"]
         nodes.append(
             {
                 "__typename": "ProjectV2SingleSelectField",
@@ -395,11 +390,43 @@ def _issue_payload(state: dict) -> dict:
 
 def _rest(route: str, jq_filter: str | None, params: dict, method: str) -> None:
     state = _state()
-    parts = route.strip("/").split("/")
+    # Match on the path only: the real API takes query strings (`?state=all`)
+    # and a stub that folded them into the last path segment would silently
+    # answer nothing, which reads as "the resource is empty" rather than
+    # "this stub does not implement that call".
+    parts = route.split("?", 1)[0].strip("/").split("/")
 
     # PATCH repos/{o}/{r}/issues/{n} with assignees[] REPLACES the list --
     # the only sanctioned way to assign, since an issue carries exactly one
     # assignee. Must be answered before the plain issue-read branch below.
+    # PATCH repos/{o}/{r}/issues/{n} with `milestone=<number>`. The closure
+    # rule writes the milestone by NUMBER, not by title: `gh issue edit
+    # --milestone <title>` resolves titles against OPEN milestones only, and
+    # `Phase X: Rejected` is deliberately closed. The stub resolves the number
+    # through milestones.json exactly as the API does, so a regression back to
+    # a title write against a closed milestone shows up as an unset marker.
+    if len(parts) == 5 and parts[3] == "issues" and method == "PATCH" and "milestone" in params:
+        wanted = str(params["milestone"])
+        matches = [
+            m for m in _read_json("milestones.json", [])
+            if str(m.get("number", "")) == wanted
+        ]
+        if not matches:
+            print(
+                f"gh: Validation Failed -- no milestone numbered {wanted}",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+        state["milestone"] = matches[0]["title"]
+        _log("issue_edit.log", f"--milestone-number\t{wanted}")
+        _save(state)
+        # Return rather than fall through to the generic issue-read branch
+        # below: that branch increments `issue_reads`, which the race
+        # injection counts against `after_issue_reads`, and a write must not
+        # look like a read to it.
+        _emit(_issue_payload(state), jq_filter)
+        return
+
     if len(parts) == 5 and parts[3] == "issues" and method == "PATCH":
         replacement = [v for k, v in params.items() if k.startswith("assignees")]
         # `-F "assignees[]="` sends one EMPTY login, not a clear -- the
@@ -457,8 +484,22 @@ def _issue_command(argv: list[str]) -> None:
                 _log("issue_edit.log", f"--add-label\t{argv[index + 1]}")
                 index += 2
             elif token == "--milestone":
-                state["milestone"] = argv[index + 1]
-                _log("issue_edit.log", f"--milestone\t{argv[index + 1]}")
+                # Real `gh issue edit --milestone <title>` resolves the title
+                # against OPEN milestones only and exits 1 with "not found"
+                # otherwise. The stub reproduces that, because it is the whole
+                # reason the closure rule writes the milestone by number: its
+                # marker, `Phase X: Rejected`, is a closed milestone.
+                wanted = argv[index + 1]
+                open_titles = [
+                    m.get("title")
+                    for m in _read_json("milestones.json", [])
+                    if m.get("state", "open") == "open"
+                ]
+                if wanted not in open_titles:
+                    print(f"gh: '{wanted}' not found", file=sys.stderr)
+                    raise SystemExit(1)
+                state["milestone"] = wanted
+                _log("issue_edit.log", f"--milestone\t{wanted}")
                 index += 2
             else:
                 index += 1
