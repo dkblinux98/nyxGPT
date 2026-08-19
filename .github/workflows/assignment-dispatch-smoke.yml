@@ -16,7 +16,9 @@ name: Assignment Dispatch Smoke
 #
 # tests/test_gh_project_lib.sh drives that function against stubbed board
 # state (including the `Acceptance Failed` holding lane, which must stay held
-# per D-001/D-008, and a drive-by assigner, which must change nothing) and
+# per D-001/D-008, a drive-by assigner, which must change nothing, and a
+# CLOSED issue, which is never claimable whatever lane it sits in -- #3956,
+# where a round dispatched before a merge started 28 minutes after it) and
 # asserts the writes it makes. This job runs it on a real runner.
 #
 # What it does not cover, and cannot: GitHub actually delivering the

@@ -316,6 +316,11 @@ STATUS_IN_REVIEW="In Review"
 
 CLAIM_STATUS_STUB=""
 issue_status() { echo "$CLAIM_STATUS_STUB"; }
+# The REST open/closed read, stubbed at the helper rather than at `gh` -- the
+# same seam `_issue_assignee_logins` uses above. Defaults to OPEN so every
+# lane/assigner assertion below still exercises the rule it names.
+CLAIM_ISSUE_STATE="OPEN"
+_issue_open_state() { echo "$CLAIM_ISSUE_STATE"; }
 # The claim runs inside a command substitution below, so a shell-array
 # recorder would be lost with that subshell -- the pitfall documented at the
 # top of this file. Record the writes in a temp file instead.
@@ -362,8 +367,35 @@ _assert_eq "finished work is not claimable" \
 _assert_eq "an issue that is not on the board is not claimable" \
   "3:" "$(_claim "" "$HUMAN_OWNER")"
 
+# --- #3956: a CLOSED issue is not claimable, whatever lane it is in. ---
+# The dispatcher's own closed-issue refusal (#3825/#3906,
+# assign_and_trigger_developer) is point-in-time and cannot see a merge that
+# lands after it. On #3956 a conflict round was dispatched at 19:13:22Z, the
+# runner queue held the job 28 minutes, PR #3965 merged and closed the issue
+# at 19:36:31Z, and the job claimed it at 19:43:05Z -- then, seeing a MERGED
+# PR, ran the acceptance-failure path on an issue with no reported failure.
+_claim_closed() { # <status> <assigner> -> "<rc>:<stdout>"
+  CLAIM_ISSUE_STATE="CLOSED"
+  local r; r="$(_claim "$1" "$2")"
+  CLAIM_ISSUE_STATE="OPEN"
+  echo "$r"
+}
+
+_assert_eq "a closed issue in a claimable lane is refused (#3956)" \
+  "3:" "$(_claim_closed "Backlog" "$HUMAN_OWNER")"
+_assert_eq "...and writes no status, so the board keeps its post-merge lane" \
+  "0" "$(_claim_writes)"
+_assert_eq "a closed issue handed back as rework is refused too" \
+  "3:" "$(_claim_closed "In Review" "$REVIEW_AGENT")"
+_assert_eq "the already-In-Progress shortcut does not smuggle a closed issue through" \
+  "3:" "$(_claim_closed "In Progress" "$REVIEW_AGENT")"
+CLAIM_ISSUE_STATE=""
+_assert_eq "an unreadable state fails open -- a REST hiccup must not stall dispatch" \
+  "0:In Progress" "$(_claim "Backlog" "$HUMAN_OWNER")"
+CLAIM_ISSUE_STATE="OPEN"
+
 rm -f "$CLAIM_WRITES"
-unset -f issue_status set_issue_status
+unset -f issue_status set_issue_status _issue_open_state
 
 # --- Test 11: classify_backlog_claim_state implements the #3665 start-guard ---
 # --- decision matrix -- distinguishing *who* holds the claim instead of ---
