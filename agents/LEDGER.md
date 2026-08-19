@@ -904,7 +904,15 @@ rather than mechanism, and nothing can enforce them.
   `_stop_superseded_brew_services` (D-030's install step) overlaps this
   subtraction by design since #3861 rather than covering a case reconcile
   cannot see; what it adds is a second stop attempt sited immediately before
-  the api/web installs. Extends **D-009**, whose "installing
+  the api/web installs. The fact that keeps the two from collapsing into one
+  was **measured** while merging them (run 32227410541): Homebrew checks
+  `conflicts_with` against the **linked** keg, not the installed one — its own
+  refusal says "Please `brew unlink nyxgpt-api@3.0.0rc` before continuing".
+  So D-030's declaration stops a second *linked* install; two kegs on one
+  machine stay reachable, and reconcile is what has to handle them. That is
+  also how the evidence job now stages the two-keg state, which no edit to the
+  tap could do safely — the declaration spans two lines, so a line-wise strip
+  breaks the formula. Extends **D-009**, whose "installing
   either mode over the other stops the other's services" now reads as the
   identity comparison's special case.
   Source: #3861; `src/nyxgpt/install_mode.py` (`InstallIdentity`);

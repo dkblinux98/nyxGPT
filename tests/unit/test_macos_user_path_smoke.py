@@ -776,45 +776,64 @@ def test_the_conflict_job_also_proves_the_install_identity_reconcile() -> None:
     )
 
 
-def test_the_identity_step_stages_the_second_keg_and_leaves_the_tap_alone() -> None:
-    """The two-keg machine is staged now, and the staging must not leak (#3853 merge).
+def test_the_identity_step_stages_the_second_keg_by_unlinking_not_by_editing() -> None:
+    """The two-keg machine is staged, and the staging must not leak (#3853 merge).
 
     Before #3853 this step relied on the stable install simply succeeding on
     top of the candidate: `conflicts_with` was declared on one side only, so
     that order was guarded by nothing (ledger Q-002). Both orders are now
     refused, which is the fix -- and it takes away the state this step exists
-    to reconcile, so the step strips the declaration from the tap's copy of
-    the stable formula for one install and puts the file straight back.
+    to reconcile, so the step has to stage it.
 
-    Three things have to hold together or the job silently stops measuring
-    what it claims. The strip has to be *checked*, or a tap whose stable
-    formula lost its declaration would stage nothing and the step would pass
-    on a one-keg machine. The restore has to be trapped, or a failed install
-    leaves the mutated formula behind and the "Measure" step after this one
-    reads this file instead of `render_stable_formula`. And the staged keg
-    has to be removed again, or that same step starts from a two-keg machine
-    it does not document.
+    *How* it stages it is the part a future session would get wrong. The first
+    attempt edited the tap's stable formula with `sed '/conflicts_with/d'` and
+    broke it outright (run 32227410541: the declaration spans two lines, so
+    deleting the first left an orphan `because:` and "syntax errors found").
+    The same run printed the right answer in brew's own refusal -- "Please
+    `brew unlink nyxgpt-api@3.0.0rc` before continuing" -- because
+    `conflicts_with` is checked against the **linked** keg, not the installed
+    one. So the staging unlinks and never edits: the tap keeps the formula
+    `render_stable_formula` produced, which is what the measurement step after
+    this one reads.
+
+    Both halves of the scaffolding also have to be undone, or that step starts
+    from a two-keg machine with the wrong `nyxgpt` on PATH.
     """
     run = _conflict_step(IDENTITY_STEP)["run"]
-    assert "conflicts_with" in run and "sed -i" in run, (
+    assert "brew unlink nyxgpt-api@3.0.0rc" in run, (
         "the step no longer stages the second keg. Since #3853 brew refuses "
-        "the stable onto an installed candidate, so without the staging this "
-        "step reconciles a machine with one keg on it and proves nothing"
+        "the stable onto a *linked* candidate, so without the unlink this step "
+        "reconciles a machine with one keg on it and proves nothing"
     )
-    assert "::error::the stable formula in the tap declares no conflicts_with" in run, (
-        "the staging no longer fails when there is no declaration to strip: it "
-        "would then quietly stage nothing on exactly the tree where #3853's "
-        "packaging fix had been lost"
+    assert "sed -i" not in run, (
+        "the staging edits a file in place again. It must not: the only file "
+        "worth editing here is the tap's stable formula, the step after this "
+        "one measures that formula's own conflicts_with, and the two-line "
+        "declaration does not survive a line-wise edit (run 32227410541)"
     )
-    assert 'trap \'cp "$RUNNER_TEMP/nyxgpt-api.rb.orig" "$STABLE_RB"\' EXIT' in run, (
-        "the tap restore is no longer guarded by a trap, so a failed staging "
-        "install leaves a formula with no conflicts_with in the tap -- and the "
-        "step after this one measures that edit rather than the real formula"
-    )
+    for guard, why in (
+        (
+            "::error::could not stage the stable keg alongside the candidate",
+            "a staging install that silently did nothing would leave this step "
+            "reconciling a one-keg machine and passing",
+        ),
+        (
+            "::error::the candidate keg is gone",
+            "staging that *replaced* the candidate rather than joining it would "
+            "also leave one keg, and the retire assertions would then be about a "
+            "service no keg owns",
+        ),
+    ):
+        assert guard in run, f"{guard!r} is gone: {why}"
     assert "brew uninstall --ignore-dependencies nyxgpt-api" in run, (
         "the staged keg is no longer removed, so the measurement step after "
         "this one starts from a two-keg machine instead of the "
         "candidate-only one its own comment describes"
+    )
+    assert "brew link --overwrite nyxgpt-api@3.0.0rc" in run, (
+        "the candidate is never relinked, so every step after this one runs "
+        "with no `nyxgpt` on PATH -- the unlink is scaffolding and has to be "
+        "undone with the keg it was for"
     )
 
 

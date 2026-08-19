@@ -187,12 +187,17 @@ and screenshots make verifiable in the review loop:
   services and the real install-identity reconcile (#3861) runs against them,
   in both directions. Since #3853 that job also proves brew *refuses* the
   second install in both orders, so the two-keg machine is staged there
-  deliberately (the stable formula's `conflicts_with` is stripped for one
-  install, then restored) rather than reached by installing. That is not a
-  weaker proof of the reconcile: packaging guards the machines that install
-  after the declaration ships, and reconcile is what every machine already in
-  the state needs -- including the local `file://` tap path, whose checked-in
-  formulas `build_homebrew_artifacts.py` never stamps. The same boundary
+  deliberately rather than reached by installing: the candidate is
+  `brew unlink`ed, the stable installed beside it, and both undone afterwards.
+  That works because `conflicts_with` is checked against the **linked** keg
+  rather than the installed one -- measured, from brew's own refusal ("Please
+  `brew unlink nyxgpt-api@3.0.0rc` before continuing", run 32227410541), not
+  read off Homebrew's source. It is not a weaker proof of the reconcile, and
+  the same fact is why the reconcile still has to exist: packaging guards the
+  machines that install after the declaration ships, and two kegs on one
+  machine stay reachable regardless -- the local `file://` tap path, whose
+  checked-in formulas `build_homebrew_artifacts.py` never stamps, and every
+  machine already in the state. The same boundary
   applies to the dev install mode's macOS
   LaunchAgents (`com.nyxgpt.api`/`com.nyxgpt.web`, see
   [`--dev`](ops.md#--dev-run-the-current-checkout-without-an-artifact-build)):

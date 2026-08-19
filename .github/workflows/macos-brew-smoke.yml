@@ -1020,16 +1020,28 @@ jobs:
         # checked-in formulas `build_homebrew_artifacts.py` never stamps, all
         # still arrive at reconcile carrying two service sets.
         #
-        # So the state is STAGED here rather than reached by installing:
-        # the tap's stable formula is installed with its `conflicts_with`
-        # line stripped, and the formula is put straight back. That is a
-        # deliberate change from the first version of this step, which simply
-        # relied on the stable install succeeding -- it did, because the
-        # one-sided declaration Q-002 found left that order unguarded, and
-        # #3853 has since closed it. Staging is the honest shape: this step
-        # is not measuring whether brew allows two kegs (the steps above do
-        # that, and would fail if it did), it is measuring what `nyxgpt ops`
-        # does when it finds them.
+        # So the state is STAGED here rather than reached by installing, which
+        # is a deliberate change from the first version of this step: that one
+        # simply relied on the stable install succeeding on top of the
+        # candidate, and it did, because the one-sided declaration Q-002 found
+        # left that order unguarded. #3853 has since closed it. Staging is the
+        # honest shape -- this step is not measuring whether brew allows two
+        # kegs (the steps above do that, and fail if it does), it is measuring
+        # what `nyxgpt ops` does when it finds them.
+        #
+        # MEASURED, not assumed (run 32227410541): `conflicts_with` is checked
+        # against the **linked** keg, not the installed one. Brew's own refusal
+        # says so -- "Please `brew unlink nyxgpt-api@3.0.0rc` before
+        # continuing" -- so the staging simply follows that instruction and
+        # touches nothing else. It needs no edit to the tap, which matters
+        # because the step after this one measures the stable formula's own
+        # declaration. (The first attempt did edit it, with `sed
+        # '/conflicts_with/d'`, and that broke the formula outright: the
+        # declaration spans two lines and deleting the first left an orphan
+        # `because:` -- "syntax errors found", same run.) It also says
+        # something true about the guard: `conflicts_with` stops a second
+        # *linked* install, so two kegs on one machine remain reachable and
+        # reconcile remains the thing that has to handle them.
         #
         # What still needs proving is that the FIX is what removes the second
         # service set, so the driver first prints the old gate's own verdict:
@@ -1046,37 +1058,20 @@ jobs:
         run: |
           set -euo pipefail
 
-          TAP_DIR="$(brew --repository nyxgpt/both-channels)"
-          STABLE_RB="$TAP_DIR/Formula/nyxgpt-api.rb"
-
           echo "=== stage the two-keg machine this step is about ==="
-          # The tap goes back exactly as the stamping steps left it, whatever
-          # happens below. The step after this one measures the STABLE
-          # formula's own `conflicts_with` against a retired counterpart; if
-          # this step's edit leaked, that measurement would be reading this
-          # file rather than `build_homebrew_artifacts.render_stable_formula`.
-          # Restored from a trap and not merely from the next line, because
-          # under `set -e` a failed install would skip an unguarded restore.
-          cp "$STABLE_RB" "$RUNNER_TEMP/nyxgpt-api.rb.orig"
-          trap 'cp "$RUNNER_TEMP/nyxgpt-api.rb.orig" "$STABLE_RB"' EXIT
-
-          grep -n conflicts_with "$STABLE_RB" || {
-            echo "::error::the stable formula in the tap declares no conflicts_with, so #3853's packaging fix is not in this tree -- the steps above are not asserting what they claim and the staging below would be stripping nothing"
-            exit 1
-          }
-          sed -i '' '/conflicts_with/d' "$STABLE_RB"
-          # A failed `brew link` is expected and is not a failure of this
-          # staging: both kegs own `bin/nyxgpt`, so the second one to install
-          # cannot be linked. The keg is still installed -- which is exactly
-          # what run 32202943938 recorded, and exactly the state the owner's
-          # machine was in -- and `brew services` works off the keg, not the
-          # link.
+          # Exactly what brew's refusal above prescribes, and nothing more:
+          # unlink the candidate, install the stable beside it. The tap is not
+          # touched, so the measurement step after this one still reads the
+          # formula `render_stable_formula` produced.
+          brew unlink nyxgpt-api@3.0.0rc
           brew install --verbose nyxgpt/both-channels/nyxgpt-api > stage-stable.log 2>&1 || true
           tail -20 stage-stable.log
-          cp "$RUNNER_TEMP/nyxgpt-api.rb.orig" "$STABLE_RB"
-          trap - EXIT
           brew list --versions nyxgpt-api || {
-            echo "::error::could not stage the stable keg alongside the candidate (see stage-stable.log above) -- this step has nothing to reconcile and is measuring nothing"
+            echo "::error::could not stage the stable keg alongside the candidate even with the candidate unlinked (see stage-stable.log above) -- this step has nothing to reconcile and is measuring nothing"
+            exit 1
+          }
+          brew list --versions nyxgpt-api@3.0.0rc || {
+            echo "::error::the candidate keg is gone, so staging replaced the two-keg machine instead of creating it"
             exit 1
           }
           brew list --versions | grep -i nyxgpt || true
@@ -1214,12 +1209,16 @@ jobs:
           nyxgpt --version
 
           # Hand the next step the machine state it documents: candidate
-          # installed, stable not. The staged keg was this step's own
-          # scaffolding and must not outlive it -- leaving it installed would
-          # make the measurement below read a two-keg machine.
-          echo "=== unstage: remove the keg this step installed ==="
+          # installed and linked, stable not installed at all. The staged keg
+          # and the unlink were this step's own scaffolding and must not
+          # outlive it -- leaving them would have the measurement below read a
+          # two-keg machine with the wrong `nyxgpt` on PATH.
+          echo "=== unstage: remove the keg this step installed, relink the candidate ==="
           brew uninstall --ignore-dependencies nyxgpt-api 2>&1 | tail -5 || true
+          brew link --overwrite nyxgpt-api@3.0.0rc 2>&1 | tail -5
           brew list --versions | grep -i nyxgpt || true
+          command -v nyxgpt
+          nyxgpt --version
 
       - name: "Measure: the same conflict after the candidate is retired from the tap"
         # An open question, measured rather than guessed (#3853, ledger Q-007).
