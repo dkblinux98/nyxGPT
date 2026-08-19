@@ -183,8 +183,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$HUDDLE_DIR"
-          ISSUE=$(gh pr view "$PR_NUMBER" --json body \
-            --jq '.body // ""' | grep -oiE 'closes #[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+          # The link, not the sentence (owner rule, 2026-08-19).
+          ISSUE=$(bash -lc "cd '$GITHUB_WORKSPACE' && source scripts/agents/lib/gh_project.sh \
+            && load_config && require_gh_auth && pr_linked_issue '$PR_NUMBER'")
           if [[ -z "$ISSUE" ]]; then
             echo "::error::PR #$PR_NUMBER links no issue (no 'Closes #N') -- a huddle needs the acceptance criteria"
             exit 1
